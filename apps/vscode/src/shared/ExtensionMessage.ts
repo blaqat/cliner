@@ -58,6 +58,8 @@ export interface ExtensionState {
 	askProfileId?: string
 	/** Profile id assigned to Act mode. */
 	actProfileId?: string
+	/** Immutable model details from the focused session's build, independent of saved profile edits. */
+	focusedSessionModels?: Partial<Record<Mode, { profileId?: string; provider?: string; modelId: string }>>
 	autoApprovalSettings: AutoApprovalSettings
 	browserSettings: BrowserSettings
 	remoteBrowserHost?: string

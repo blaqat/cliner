@@ -34,7 +34,10 @@ export async function assignApiProfile(controller: Controller, request: AssignAp
 				controller.task.api = createTaskApiModelShim(modelId)
 			}
 		}
-		controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration)
+		controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration, {
+			[mode === "plan" ? "askProfileId" : "actProfileId"]: profileId,
+			[`${mode}ModeReasoningEffort`]: nextApiConfiguration[`${mode}ModeReasoningEffort`],
+		})
 
 		await controller.postStateToWebview()
 		return Empty.create()

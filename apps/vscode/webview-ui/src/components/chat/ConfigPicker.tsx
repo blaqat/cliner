@@ -28,11 +28,17 @@ interface ConfigPickerProps {
  * settings tab.
  */
 const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
-	const { apiConfigProfiles, askProfileId, actProfileId, navigateToSettings } = useExtensionState()
+	const { apiConfigProfiles, askProfileId, actProfileId, focusedSessionModels, navigateToSettings } = useExtensionState()
 	const profiles: ApiConfigProfile[] = apiConfigProfiles ?? []
 	const currentId = assignedProfileId(mode, { askProfileId, actProfileId })
 	const current = profiles.find((profile) => profile.id === currentId)
 	const modeLabel = mode === "plan" ? "Ask" : "Act"
+	const effective = focusedSessionModels?.[mode]
+	const pending =
+		!!effective &&
+		!!current &&
+		(effective.profileId !== current.id || effective.provider !== current.provider || effective.modelId !== current.modelId)
+	const modelLabel = effective ? `${effective.provider}:${effective.modelId}` : `${current?.provider}:${current?.modelId}`
 
 	return (
 		<Select
@@ -54,10 +60,17 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 				className="h-5 min-w-0 max-w-40 shrink gap-0.5 rounded-xs border-0 bg-transparent px-1 py-0 text-xs text-description shadow-none hover:text-foreground focus-visible:ring-0 data-[size=default]:h-5 [&_svg]:size-2.5"
 				data-testid="config-picker"
 				title={
-					current ? `${modeLabel} uses ${current.name} (${current.provider}:${current.modelId})` : "Open API settings"
+					effective
+						? `${modeLabel} currently uses ${modelLabel}${pending ? `; ${current?.name} change pending` : ""}`
+						: current
+							? `${modeLabel} uses ${current.name} (${modelLabel})`
+							: "Open API settings"
 				}>
 				<SelectValue placeholder={fallbackLabel}>
-					<span className="truncate">{current?.name ?? fallbackLabel}</span>
+					<span className="truncate">
+						{current?.name ?? fallbackLabel}
+						{pending ? " (pending)" : ""}
+					</span>
 				</SelectValue>
 			</SelectTrigger>
 			<SelectContent align="start" className="menu-rise" side="top">

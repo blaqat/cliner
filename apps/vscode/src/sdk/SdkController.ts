@@ -30,10 +30,11 @@ import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { Settings } from "@shared/storage/state-keys"
-import type { Mode } from "@shared/storage/types"
+import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import { applyTaskApiSelection, captureTaskApiSelection, resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
+import { resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
@@ -992,9 +993,14 @@ export class Controller {
 			const liveSession = this.sessions.getSession(taskId ?? "")
 			const liveSelection = liveSession?.apiSnapshot?.selection
 			const resolved =
-				(liveSession ? (context?.apiSelection ?? liveSelection) : undefined) ??
+				(liveSession ? (context?.pendingApiSelection ?? context?.apiSelection ?? liveSelection) : undefined) ??
 				resolveTaskApiSelection(this.stateManager, historyItem ?? {}, effectiveMode)
 			applyTaskApiSelection(this.stateManager, resolved)
+			// A pending request belongs in the picker, but is not last-used history yet.
+			if (context?.pendingApiSelection) {
+				void this.stateManager.flushPendingState?.()
+				return
+			}
 			void this.stateManager.flushPendingState?.()
 			const captured =
 				liveSession && (context?.apiSelection || liveSelection) ? resolved : captureTaskApiSelection(this.stateManager)
@@ -1009,14 +1015,29 @@ export class Controller {
 		}
 	}
 
-	handleApiConfigurationChanged(previous: ApiConfiguration, next: ApiConfiguration): void {
+	handleApiConfigurationChanged(
+		previous: ApiConfiguration,
+		next: ApiConfiguration,
+		selectionChanges: Partial<TaskApiSelection> = {},
+	): void {
 		const previousSelections = this.snapshotTaskApiSelections()
 		const taskId = this.task?.taskId
 		if (taskId && this.sessions.getSession(taskId)) {
 			// Keep the live selection authoritative until replacement succeeds.
 			// Running sessions retain this request separately until the scheduler
 			// can rebuild them between turns, even if another chat takes focus.
-			this.getTaskSessionContext(taskId).pendingApiSelection = captureTaskApiSelection(this.stateManager)
+			const context = this.getTaskSessionContext(taskId)
+			const changes = { ...selectionChanges }
+			for (const key of ["planModeReasoningEffort", "actModeReasoningEffort"] as const) {
+				if (previous[key] !== next[key]) {
+					const effort = next[key]
+					changes[key] = isOpenaiReasoningEffort(effort) ? effort : undefined
+				}
+			}
+			context.pendingApiSelection = {
+				...(context.pendingApiSelection ?? context.apiSelection ?? captureTaskApiSelection(this.stateManager)),
+				...changes,
+			}
 		} else {
 			this.recordTaskApiSelection()
 		}
@@ -2962,18 +2983,33 @@ export class Controller {
 				snapshotTask && snapshotSession?.sessionId === snapshotTask.taskId
 					? (this.taskSessions?.get(snapshotTask.taskId)?.apiSelection ?? snapshotSession.apiSnapshot?.selection)
 					: undefined
+			const pendingSelection = snapshotTask ? this.taskSessions?.get(snapshotTask.taskId)?.pendingApiSelection : undefined
+			const pickerSelection = pendingSelection ?? liveSelection
 			const liveConfiguration = snapshotSession?.apiSnapshot?.configuration
+			const focusedSessionModels: ExtensionState["focusedSessionModels"] = liveConfiguration
+				? Object.fromEntries(
+						(["plan", "act"] as const).map((mode) => [
+							mode,
+							{
+								profileId: mode === "plan" ? liveSelection?.askProfileId : liveSelection?.actProfileId,
+								provider: liveConfiguration[`${mode}ModeApiProvider`],
+								modelId: resolveActiveModelIdFromApiConfiguration(liveConfiguration, mode),
+							},
+						]),
+					)
+				: undefined
 			return {
 				...state,
-				...(liveSelection
+				focusedSessionModels,
+				...(pickerSelection
 					? {
-							askProfileId: liveSelection.askProfileId,
-							actProfileId: liveSelection.actProfileId,
+							askProfileId: pickerSelection.askProfileId,
+							actProfileId: pickerSelection.actProfileId,
 							apiConfiguration: {
 								...state.apiConfiguration,
 								...liveConfiguration,
-								planModeReasoningEffort: liveSelection.planModeReasoningEffort,
-								actModeReasoningEffort: liveSelection.actModeReasoningEffort,
+								planModeReasoningEffort: pickerSelection.planModeReasoningEffort,
+								actModeReasoningEffort: pickerSelection.actModeReasoningEffort,
 							},
 						}
 					: {}),

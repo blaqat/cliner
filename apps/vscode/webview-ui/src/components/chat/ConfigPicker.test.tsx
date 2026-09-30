@@ -90,6 +90,37 @@ describe("ConfigPicker", () => {
 		expect(screen.getByTestId("config-picker")).toHaveTextContent("Local vLLM")
 	})
 
+	it.each(["plan", "act"] as const)("shows the live %s model after a saved profile edit until rebuild", (mode) => {
+		mocks.state = {
+			apiConfigProfiles: [{ ...profiles[0], modelId: "edited-model" }],
+			askProfileId: "p1",
+			actProfileId: "p1",
+			focusedSessionModels: { [mode]: { profileId: "p1", provider: "anthropic", modelId: "claude-sonnet" } },
+		}
+		const { rerender } = render(<ConfigPicker fallbackLabel="x" mode={mode} />)
+		expect(screen.getByTestId("config-picker")).toHaveAttribute("title", expect.stringContaining("anthropic:claude-sonnet"))
+		expect(screen.getByTestId("config-picker").title).not.toContain("edited-model")
+		expect(screen.getByTestId("config-picker")).toHaveTextContent("Claude work (pending)")
+		mocks.state.focusedSessionModels = { [mode]: { profileId: "p1", provider: "anthropic", modelId: "edited-model" } }
+		rerender(<ConfigPicker fallbackLabel="updated" mode={mode} />)
+		expect(screen.getByTestId("config-picker")).toHaveAttribute("title", expect.stringContaining("anthropic:edited-model"))
+		expect(screen.getByTestId("config-picker")).not.toHaveTextContent("pending")
+	})
+
+	it("selects the pending profile while the tooltip describes the running model", () => {
+		mocks.state.actProfileId = "p2"
+		mocks.state.focusedSessionModels = { act: { profileId: "p1", provider: "anthropic", modelId: "claude-sonnet" } }
+		render(<ConfigPicker fallbackLabel="x" mode="act" />)
+		expect(screen.getByRole("option", { name: "Local vLLM" })).toHaveAttribute("aria-selected", "true")
+		expect(screen.getByTestId("config-picker")).toHaveAttribute(
+			"title",
+			"Act currently uses anthropic:claude-sonnet; Local vLLM change pending",
+		)
+		expect(screen.getByTestId("config-picker")).toHaveTextContent("Local vLLM (pending)")
+		fireEvent.click(screen.getByRole("option", { name: "Claude work" }))
+		expect(mocks.assignApiProfile).toHaveBeenCalledWith(expect.objectContaining({ mode: "act", profileId: "p1" }))
+	})
+
 	it("assigns the picked configuration to the current mode", () => {
 		render(<ConfigPicker fallbackLabel="x" mode="act" />)
 

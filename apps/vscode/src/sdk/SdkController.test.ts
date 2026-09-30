@@ -1,3 +1,4 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { describe, expect, it, vi } from "vitest"
 import { telemetryService } from "@/services/telemetry"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -852,7 +853,7 @@ describe("task configuration races", () => {
 	it("keeps pending picker changes separate from the live selection and posts the live build snapshot", async () => {
 		const controller = Object.create(SdkController.prototype)
 		const selection = { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" }
-		const context = { apiSelection: selection, pendingApiSelection: undefined }
+		const context = { apiSelection: selection, pendingApiSelection: undefined as TaskApiSelection | undefined }
 		const task = { taskId: "live", messageStateHandler: { getClineMessages: () => [] } }
 		Object.defineProperty(controller, "task", { value: task, writable: true })
 		const session = {
@@ -882,12 +883,74 @@ describe("task configuration races", () => {
 			turnStateTracker: { get: () => undefined },
 			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
 		})
-		controller.handleApiConfigurationChanged({}, {})
+		controller.handleApiConfigurationChanged(
+			{ actModeReasoningEffort: "low" },
+			{ actModeReasoningEffort: "high" },
+			{ actProfileId: "Q" },
+		)
 		expect(context.apiSelection).toBe(selection)
 		expect(context.pendingApiSelection).toMatchObject({ actProfileId: "Q", actModeReasoningEffort: "high" })
 		const state = await controller.getStateToPostToWebview()
-		expect(state.actProfileId).toBe("P")
-		expect(state.apiConfiguration).toMatchObject({ actModeOpenAiModelId: "p-model", actModeReasoningEffort: "low" })
+		expect(state.actProfileId).toBe("Q")
+		expect(state.apiConfiguration).toMatchObject({ actModeOpenAiModelId: "p-model", actModeReasoningEffort: "high" })
+		expect(state.focusedSessionModels.act).toEqual({ profileId: "P", provider: "openai", modelId: "p-model" })
+		// A background profile edit cannot change the displayed live model on refocus.
+		controller.stateManager.getApiConfiguration = () => ({ actModeOpenAiModelId: "edited-p-model" })
+		const editedState = await controller.getStateToPostToWebview()
+		expect(editedState.focusedSessionModels.act.modelId).toBe("p-model")
+	})
+
+	it("restores pending selection on refocus and preserves it across unrelated saves and other-mode changes", () => {
+		const controller = Object.create(SdkController.prototype)
+		const selection = { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" }
+		const context = { apiSelection: selection, pendingApiSelection: undefined as TaskApiSelection | undefined }
+		const profiles = ["P", "Q", "R"].map((id) => ({ id, name: id, provider: "openai", modelId: id }))
+		const globals: Record<string, unknown> = { apiConfigProfiles: profiles, askProfileId: "P", actProfileId: "Q" }
+		const config: Record<string, unknown> = { actModeReasoningEffort: "high" }
+		Object.defineProperty(controller, "task", { value: { taskId: "live" } })
+		Object.assign(controller, {
+			taskSessions: new Map([["live", context]]),
+			getTaskSessionContext: () => context,
+			sessions: { getSession: () => ({ isRunning: true, apiSnapshot: { selection } }) },
+			stateManager: {
+				getGlobalStateKey: (key: string) => globals[key],
+				getGlobalSettingsKey: () => "act",
+				getApiConfiguration: () => config,
+				setGlobalStateBatch: (updates: object) => Object.assign(globals, updates),
+				setApiConfiguration: (updates: object) => Object.assign(config, updates),
+				getSecretForKey: () => undefined,
+				listSecretStorageKeys: () => [],
+			},
+			taskHistory: { setTaskApiSelection: vi.fn(async () => {}) },
+			providerChanges: { handleApiConfigurationChanged: vi.fn() },
+		})
+		controller.handleApiConfigurationChanged(
+			{ actModeReasoningEffort: "low" },
+			{ actModeReasoningEffort: "high" },
+			{ actProfileId: "Q" },
+		)
+		// Another chat changes globals before A regains focus.
+		globals.actProfileId = "R"
+		config.actModeReasoningEffort = "medium"
+		controller.restoreTaskApiSelection({ id: "live", apiSelection: selection }, "act")
+		expect(globals.actProfileId).toBe("Q")
+		expect(config.actModeReasoningEffort).toBe("high")
+		expect(controller.taskHistory.setTaskApiSelection).not.toHaveBeenCalled()
+		// Saving a profile changes connection options, not the requested selection.
+		controller.handleApiConfigurationChanged({ openAiBaseUrl: "old" }, { openAiBaseUrl: "new" })
+		expect(context.pendingApiSelection).toEqual({ ...selection, actProfileId: "Q", actModeReasoningEffort: "high" })
+		controller.handleApiConfigurationChanged({}, {}, { askProfileId: "R" })
+		expect(context.pendingApiSelection).toEqual({
+			...selection,
+			askProfileId: "R",
+			actProfileId: "Q",
+			actModeReasoningEffort: "high",
+		})
+		// Explicitly choosing the live profile again must cancel the pending switch.
+		controller.handleApiConfigurationChanged({}, {}, { actProfileId: "P" })
+		expect(context.pendingApiSelection?.actProfileId).toBe("P")
+		expect(context.pendingApiSelection?.askProfileId).toBe("R")
+		expect(context.apiSelection).toBe(selection)
 	})
 
 	it("commits mode and selection for a history-only chat after switching completes", async () => {
