@@ -1,4 +1,4 @@
-import type { ApiProvider } from "@shared/api"
+import { type ApiProvider, azureOpenAiDefaultApiVersion, openAiModelInfoSafeDefaults } from "@shared/api"
 import { ALLOWED_API_PROVIDERS, type OpenAiCompatibleApiType } from "@shared/api-profiles"
 import BedrockData from "@shared/providers/bedrock.json"
 import { VSCodeButton, VSCodeCheckbox, VSCodeDropdown, VSCodeOption, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
@@ -8,9 +8,13 @@ import { ModelSelector } from "../common/ModelSelector"
 import {
 	API_TYPE_LABELS,
 	changeDraftProvider,
+	getDraftHeaders,
+	getDraftModelInfo,
 	hasSavedSecret,
 	PROVIDER_LABELS,
 	type ProfileDraft,
+	setDraftHeaders,
+	setDraftModelInfo,
 	setDraftOption,
 	setDraftSecret,
 } from "./profileDraft"
@@ -89,6 +93,131 @@ const TextOption = ({
 	</VSCodeTextField>
 )
 
+const HeadersField = ({ draft, onChange }: { draft: ProfileDraft; onChange: (draft: ProfileDraft) => void }) => {
+	const entries = Object.entries(getDraftHeaders(draft))
+	const update = (next: [string, string][]) => onChange(setDraftHeaders(draft, Object.fromEntries(next)))
+	return (
+		<div>
+			<div className="flex items-center justify-between">
+				<span className="font-medium">Custom Headers</span>
+				<VSCodeButton onClick={() => update([...entries, [`header${entries.length + 1}`, ""]])}>Add Header</VSCodeButton>
+			</div>
+			{entries.map(([name, value], index) => (
+				<div className="flex gap-1 mt-1" key={index}>
+					<VSCodeTextField
+						data-testid={`header-name-${index}`}
+						onInput={(e) => {
+							const next = [...entries]
+							next[index] = [(e.target as HTMLInputElement).value, value]
+							update(next)
+						}}
+						placeholder="Header name"
+						style={{ width: "40%" }}
+						value={name}
+					/>
+					<VSCodeTextField
+						data-testid={`header-value-${index}`}
+						onInput={(e) => {
+							const next = [...entries]
+							next[index] = [name, (e.target as HTMLInputElement).value]
+							update(next)
+						}}
+						placeholder="Header value"
+						style={{ width: "40%" }}
+						value={value}
+					/>
+					<VSCodeButton appearance="secondary" onClick={() => update(entries.filter((_, i) => i !== index))}>
+						Remove
+					</VSCodeButton>
+				</div>
+			))}
+		</div>
+	)
+}
+
+type ModelNumberKey = "contextWindow" | "maxTokens" | "inputPrice" | "outputPrice" | "temperature"
+
+const ModelNumberField = ({
+	draft,
+	field,
+	label,
+	onChange,
+}: {
+	draft: ProfileDraft
+	field: ModelNumberKey
+	label: string
+	onChange: (draft: ProfileDraft) => void
+}) => {
+	const stored = getDraftModelInfo(draft)?.[field]
+	// -1 is the legacy "not set" sentinel.
+	const [text, setText] = useState(typeof stored === "number" && stored !== -1 ? String(stored) : "")
+	const invalid = text.trim() !== "" && !Number.isFinite(Number(text))
+	return (
+		<div style={{ flex: 1 }}>
+			<VSCodeTextField
+				data-testid={`model-info-${field}`}
+				onInput={(e) => {
+					const next = (e.target as HTMLInputElement).value
+					setText(next)
+					const trimmed = next.trim()
+					if (trimmed === "") {
+						onChange(setDraftModelInfo(draft, { [field]: undefined }))
+					} else if (Number.isFinite(Number(trimmed))) {
+						onChange(setDraftModelInfo(draft, { [field]: Number(trimmed) }))
+					}
+				}}
+				placeholder="not set"
+				style={{ width: "100%" }}
+				value={text}>
+				<span className="font-medium">{label}</span>
+			</VSCodeTextField>
+			{invalid && <p className="text-xs text-(--vscode-errorForeground)">Enter a number.</p>}
+		</div>
+	)
+}
+
+const ModelConfigurationFields = ({ draft, onChange }: { draft: ProfileDraft; onChange: (draft: ProfileDraft) => void }) => {
+	const [open, setOpen] = useState(false)
+	const info = getDraftModelInfo(draft)
+	return (
+		<div>
+			<button
+				className="flex items-center gap-1 bg-transparent border-0 p-0 cursor-pointer text-(--vscode-descriptionForeground)"
+				onClick={() => setOpen((value) => !value)}
+				type="button">
+				<span className={`codicon ${open ? "codicon-chevron-down" : "codicon-chevron-right"}`} />
+				<span className="font-bold uppercase">Model Configuration</span>
+			</button>
+			{open && (
+				<div className="flex flex-col gap-2 mt-2">
+					<VSCodeCheckbox
+						checked={info?.supportsImages ?? openAiModelInfoSafeDefaults.supportsImages}
+						onChange={(e: any) => onChange(setDraftModelInfo(draft, { supportsImages: e.target.checked === true }))}>
+						Supports Images
+					</VSCodeCheckbox>
+					<div className="flex gap-2">
+						<ModelNumberField draft={draft} field="contextWindow" label="Context Window Size" onChange={onChange} />
+						<ModelNumberField draft={draft} field="maxTokens" label="Max Output Tokens" onChange={onChange} />
+					</div>
+					<div className="flex gap-2">
+						<ModelNumberField draft={draft} field="inputPrice" label="Input Price / 1M tokens" onChange={onChange} />
+						<ModelNumberField
+							draft={draft}
+							field="outputPrice"
+							label="Output Price / 1M tokens"
+							onChange={onChange}
+						/>
+					</div>
+					<div className="flex gap-2">
+						<ModelNumberField draft={draft} field="temperature" label="Temperature" onChange={onChange} />
+						<div style={{ flex: 1 }} />
+					</div>
+				</div>
+			)}
+		</div>
+	)
+}
+
 const ModelField = ({ draft, onChange }: { draft: ProfileDraft; onChange: (draft: ProfileDraft) => void }) => {
 	const { models } = useProviderModels(draft.provider)
 	if (draft.provider === "openai") {
@@ -143,6 +272,20 @@ const ProviderFields = ({ draft, onChange }: { draft: ProfileDraft; onChange: (d
 							<VSCodeOption value="responses">{API_TYPE_LABELS.responses} (GPT-5.6 to 6.1)</VSCodeOption>
 						</VSCodeDropdown>
 					</div>
+					<HeadersField draft={draft} onChange={onChange} />
+					<TextOption
+						draft={draft}
+						label="Set Azure API version"
+						onChange={onChange}
+						optionKey="azureApiVersion"
+						placeholder={`Default: ${azureOpenAiDefaultApiVersion}`}
+					/>
+					<VSCodeCheckbox
+						checked={draft.options.azureIdentity === true}
+						onChange={(e: any) => onChange(setDraftOption(draft, "azureIdentity", e.target.checked === true))}>
+						Use Azure Identity Authentication
+					</VSCodeCheckbox>
+					<ModelConfigurationFields draft={draft} onChange={onChange} />
 				</>
 			)
 		case "anthropic":

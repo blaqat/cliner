@@ -6,12 +6,39 @@ import {
 	describeProfile,
 	draftFromProto,
 	duplicateDraft,
+	getDraftModelInfo,
 	newProfileDraft,
+	setDraftHeaders,
+	setDraftModelInfo,
 	setDraftOption,
 	setDraftSecret,
 } from "./profileDraft"
 
 describe("profileDraft", () => {
+	it("saves custom headers, Azure settings and model info, dropping unnamed headers", () => {
+		let draft = { ...newProfileDraft("openai"), name: "Proxy", modelId: "m" }
+		draft = setDraftHeaders(draft, { "X-Team": "core", " ": "ignored", " X-Trace ": "1" })
+		draft = setDraftOption(draft, "azureApiVersion", "2025-01-01")
+		draft = setDraftOption(draft, "azureIdentity", true)
+		draft = setDraftModelInfo(draft, { contextWindow: 64_000, temperature: 0.2 })
+		const options = JSON.parse(buildSaveRequest(draft).optionsJson)
+		expect(options.openAiHeaders).toEqual({ "X-Team": "core", "X-Trace": "1" })
+		expect(options.azureApiVersion).toBe("2025-01-01")
+		expect(options.azureIdentity).toBe(true)
+		expect(options.planModeOpenAiModelInfo).toMatchObject({ contextWindow: 64_000, temperature: 0.2 })
+	})
+
+	it("edits model info captured under either mode prefix into a single copy", () => {
+		const draft = setDraftOption(newProfileDraft("openai"), "actModeOpenAiModelInfo", {
+			contextWindow: 8_000,
+			maxTokens: 512,
+		})
+		expect(getDraftModelInfo(draft)?.contextWindow).toBe(8_000)
+		const edited = setDraftModelInfo(draft, { maxTokens: 1_024 })
+		expect(edited.options.actModeOpenAiModelInfo).toBeUndefined()
+		expect(edited.options.planModeOpenAiModelInfo).toMatchObject({ contextWindow: 8_000, maxTokens: 1_024 })
+	})
+
 	it("splits options and secrets, omitting blank secrets", () => {
 		let draft = {
 			...newProfileDraft("openai"),

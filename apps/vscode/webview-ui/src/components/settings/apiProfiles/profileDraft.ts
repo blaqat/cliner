@@ -1,4 +1,4 @@
-import type { ApiProvider } from "@shared/api"
+import { type ApiProvider, type OpenAiCompatibleModelInfo, openAiModelInfoSafeDefaults } from "@shared/api"
 import { ALLOWED_API_PROVIDERS, type OpenAiCompatibleApiType, toAllowedApiProvider } from "@shared/api-profiles"
 import { ApiConfigProfile, SaveApiProfileRequest } from "@shared/proto/cline/models"
 
@@ -17,7 +17,7 @@ export const API_TYPE_LABELS: Record<OpenAiCompatibleApiType, string> = {
 /** Non-secret option keys the editor owns, per provider. */
 export const PROVIDER_OPTION_KEYS: Record<string, readonly string[]> = {
 	anthropic: ["anthropicBaseUrl"],
-	openai: ["openAiBaseUrl"],
+	openai: ["openAiBaseUrl", "openAiHeaders", "azureApiVersion", "azureIdentity", "planModeOpenAiModelInfo"],
 	"openai-native": [],
 	bedrock: ["awsRegion", "awsAuthentication", "awsProfile", "awsUseProfile", "awsUseCrossRegionInference"],
 }
@@ -102,6 +102,32 @@ export function setDraftSecret(draft: ProfileDraft, key: string, value: string):
 	return { ...draft, secrets: { ...draft.secrets, [key]: value } }
 }
 
+export function getDraftHeaders(draft: ProfileDraft): Record<string, string> {
+	const headers = draft.options.openAiHeaders
+	return headers && typeof headers === "object" && !Array.isArray(headers) ? (headers as Record<string, string>) : {}
+}
+
+export function setDraftHeaders(draft: ProfileDraft, headers: Record<string, string>): ProfileDraft {
+	return setDraftOption(draft, "openAiHeaders", headers)
+}
+
+/**
+ * Model info is snapshotted under a mode-prefixed key; assignment rewrites it
+ * onto whichever mode uses the profile. The editor reads either prefix and
+ * always writes the plan-prefixed key so only one copy is stored.
+ */
+export function getDraftModelInfo(draft: ProfileDraft): OpenAiCompatibleModelInfo | undefined {
+	return (draft.options.planModeOpenAiModelInfo ?? draft.options.actModeOpenAiModelInfo) as
+		| OpenAiCompatibleModelInfo
+		| undefined
+}
+
+export function setDraftModelInfo(draft: ProfileDraft, patch: Partial<OpenAiCompatibleModelInfo>): ProfileDraft {
+	const { actModeOpenAiModelInfo: _, ...options } = draft.options
+	const current = getDraftModelInfo(draft) ?? openAiModelInfoSafeDefaults
+	return { ...draft, options: { ...options, planModeOpenAiModelInfo: { ...current, ...patch } } }
+}
+
 export function hasSavedSecret(draft: ProfileDraft, key: string): boolean {
 	return draft.provider === draft.savedProvider && draft.savedSecretKeys.includes(key)
 }
@@ -119,6 +145,14 @@ export function buildSaveRequest(draft: ProfileDraft): SaveApiProfileRequest {
 			continue
 		}
 		options[key] = value
+	}
+	if (options.openAiHeaders) {
+		// Headers without a name would make every request fail.
+		options.openAiHeaders = Object.fromEntries(
+			Object.entries(options.openAiHeaders as Record<string, string>)
+				.map(([name, value]) => [name.trim(), value] as const)
+				.filter(([name]) => name),
+		)
 	}
 	const secrets: Record<string, string> = {}
 	for (const key of ownedSecrets) {
