@@ -14,6 +14,7 @@ import NewTaskButton from "./buttons/NewTaskButton"
 import OpenDiskConversationHistoryButton from "./buttons/OpenDiskConversationHistoryButton"
 import ContextWindow from "./ContextWindow"
 import { highlightText } from "./Highlights"
+import TaskSessionControls from "./TaskSessionControls"
 import TaskWorkingDirectoryBadge from "./TaskWorkingDirectoryBadge"
 
 const IS_DEV = process.env.IS_DEV === "true"
@@ -182,6 +183,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({
 								<span className="text-xs sm:text-sm">${totalCost?.toFixed(4)}</span>
 							</div>
 						)}
+						<TaskSessionControls onShowInbox={onClose} />
 						<NewTaskButton className={BUTTON_CLASS} onClick={onClose} />
 					</div>
 				</div>

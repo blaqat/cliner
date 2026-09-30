@@ -24,6 +24,7 @@ import {
 	MessagesArea,
 	QueuedPrompts,
 	TaskSection,
+	ThreadStrip,
 	useChatState,
 	useMessageHandlers,
 	useScrollBehavior,
@@ -34,6 +35,8 @@ import {
 	isPendingResponseUnconfirmed,
 	withPendingUserMessage,
 } from "./chat-view/utils/pendingResponse"
+import type { ThreadItem } from "./chat-view/utils/threadUtils"
+import { clearSubagentExpandTarget, emitSubagentExpand } from "./subagentExpand"
 
 interface ChatViewProps {
 	isHidden: boolean
@@ -341,12 +344,36 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
+	// A threads-strip subagent chip scrolls the transcript to that subagent's
+	// status row and expands its prompt/output details there.
+	const openSubagentDetails = useCallback(
+		(item: ThreadItem) => {
+			const [tsText, indexText] = item.id.split(":")
+			const ts = Number(tsText)
+			const itemIndex = Number(indexText)
+			if (!Number.isFinite(ts) || !Number.isFinite(itemIndex)) {
+				return
+			}
+			const messageIndex = displayMessages.findIndex((message) => message.ts === ts)
+			if (messageIndex >= 0) {
+				scrollBehavior.scrollToMessage(messageIndex)
+			}
+			emitSubagentExpand(ts, itemIndex)
+		},
+		[displayMessages, scrollBehavior],
+	)
+
 	// When a prompt gets queued, the queue banner mounts (or grows) in the footer, which
 	// shrinks the messages area and visually covers the bottom of the conversation. No new
 	// chat row is added, so the list-length-based auto-scroll never fires — re-pin to the
 	// bottom here so the latest content stays visible.
 	const queuedPromptCount = queuedPrompts?.length ?? 0
 	const taskTs = task?.ts
+	// A pending subagent-expand target belongs to the task it was requested in;
+	// drop it on a task switch so it can't expand a row in another conversation.
+	useEffect(() => {
+		clearSubagentExpandTarget()
+	}, [taskTs])
 	const prevQueuedPromptCountRef = useRef(queuedPromptCount)
 	const prevQueuedPromptTaskTsRef = useRef(taskTs)
 	useEffect(() => {
@@ -401,6 +428,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
+				{task && <ThreadStrip messages={messages} onOpenSubagent={openSubagentDetails} />}
 				{task && (
 					<MessagesArea
 						chatState={chatState}

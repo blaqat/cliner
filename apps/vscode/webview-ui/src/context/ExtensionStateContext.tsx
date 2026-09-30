@@ -277,6 +277,10 @@ export const ExtensionStateContextProvider: React.FC<{
 		version: "",
 		clineMessages: [],
 		queuedPrompts: [],
+		sessionStatuses: {},
+		subagentCounts: {},
+		enterSendsAs: "steer",
+		promptStash: [],
 		taskHistory: [],
 		shouldShowAnnouncement: false,
 		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
@@ -324,6 +328,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showFeatureTips: false,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
+		apiConfigProfiles: [],
 
 		// NEW: Add workspace information with defaults
 		workspaceRoots: [],

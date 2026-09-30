@@ -212,6 +212,20 @@ export function useScrollBehavior(
 		[messages, visibleMessages, groupedMessages],
 	)
 
+	// Jump to a row of the rendered list (minimap). Leaves room for the sticky user header
+	// except at the very top, and stops auto-scroll so the jump isn't undone by streaming.
+	const scrollToIndex = useCallback((groupIndex: number) => {
+		disableAutoScrollRef.current = true
+		requestAnimationFrame(() => {
+			virtuosoRef.current?.scrollToIndex({
+				index: groupIndex,
+				align: "start",
+				behavior: "smooth",
+				offset: groupIndex === 0 ? 0 : -STICKY_HEADER_HEIGHT,
+			})
+		})
+	}, [])
+
 	// scroll when user toggles certain rows
 	const toggleRowExpansion = useCallback(
 		(ts: number, options?: { preserveAutoScroll?: boolean }) => {
@@ -337,6 +351,7 @@ export function useScrollBehavior(
 		scrollToBottomSmooth,
 		scrollToBottomAuto,
 		scrollToMessage,
+		scrollToIndex,
 		toggleRowExpansion,
 		handleRowHeightChange,
 		handleLastRowContentChange,
