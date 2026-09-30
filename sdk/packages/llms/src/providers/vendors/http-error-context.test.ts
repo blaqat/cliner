@@ -51,6 +51,27 @@ describe("resolveAzureResponsesEndpoint", () => {
 		).toEqual({ baseUrl: "https://x.cognitiveservices.azure.com/openai/v1" });
 	});
 
+	it("maps an API Management deployment URL to /openai with the api-version", () => {
+		expect(
+			resolveAzureResponsesEndpoint(
+				"https://x.azure-api.net/openai/deployments/gpt-5.5",
+				"2025-04-01-preview",
+			),
+		).toEqual({
+			baseUrl: "https://x.azure-api.net/openai",
+			deployment: "gpt-5.5",
+			apiVersion: "2025-04-01-preview",
+		});
+		expect(
+			resolveAzureResponsesEndpoint(
+				"https://x.azure-api.net/team/openai/deployments/gpt-5.5?api-version=2025-01-01-preview",
+			),
+		).toMatchObject({
+			baseUrl: "https://x.azure-api.net/team/openai",
+			apiVersion: "2025-01-01-preview",
+		});
+	});
+
 	it("leaves v1 Azure URLs and other hosts alone", () => {
 		expect(
 			resolveAzureResponsesEndpoint("https://x.openai.azure.com/openai/v1"),

@@ -5,7 +5,9 @@ import type {
 } from "@cline/shared";
 import { resolveApiKey } from "../http";
 import {
+	isAzureOpenAIHost,
 	resolveAzureResponsesEndpoint,
+	withApiVersion,
 	withHttpErrorContext,
 } from "./http-error-context";
 import type { ProviderFactoryResult } from "./types";
@@ -27,16 +29,27 @@ export async function createOpenAIProviderModule(
 	context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
 	const apiKey = await resolveApiKey(config);
-	const azure = resolveAzureResponsesEndpoint(config.baseUrl);
+	const configuredApiVersion =
+		typeof config.options?.apiVersion === "string"
+			? config.options.apiVersion
+			: undefined;
+	const azure = resolveAzureResponsesEndpoint(
+		config.baseUrl,
+		configuredApiVersion,
+	);
+	const errorFetch = withHttpErrorContext(config.fetch);
 	const provider = createOpenAI({
 		apiKey,
 		baseURL: azure?.baseUrl ?? config.baseUrl,
-		// Azure API keys authenticate via `api-key`; keep any explicit header.
+		// Azure API keys authenticate via `api-key`; explicit headers (e.g. an
+		// API Management subscription key) are kept and win.
 		headers:
-			azure && apiKey
+			azure && apiKey && isAzureOpenAIHost(config.baseUrl)
 				? { "api-key": apiKey, ...(config.headers ?? {}) }
 				: config.headers,
-		fetch: withHttpErrorContext(config.fetch),
+		fetch: azure?.apiVersion
+			? withApiVersion(errorFetch, azure.baseUrl, azure.apiVersion)
+			: errorFetch,
 		name: context.provider.id,
 	});
 	// The ChatGPT OAuth Codex backend rejects `max_output_tokens`, and the

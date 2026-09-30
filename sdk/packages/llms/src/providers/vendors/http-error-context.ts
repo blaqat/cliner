@@ -79,15 +79,22 @@ export interface AzureResponsesEndpoint {
 	baseUrl: string;
 	/** Deployment named in a deployment-style base URL, used as the model. */
 	deployment?: string;
+	/** Appended as `api-version` to requests under `baseUrl`. */
+	apiVersion?: string;
 }
 
 /**
- * Azure OpenAI serves the Responses API at `/openai/v1/responses`, not under
- * `/openai/deployments/<name>` (where Chat Completions lives). Returns the
- * v1 base URL for Azure hosts, or undefined for everything else.
+ * Azure OpenAI (directly or behind a gateway such as API Management) serves
+ * Chat Completions under `<prefix>/openai/deployments/<name>`, but the
+ * Responses API at `<prefix>/openai/responses?api-version=...` with the
+ * deployment passed as the model, or at `<prefix>/openai/v1/responses`
+ * without an API version. Maps a deployment-style base URL (any host) or a
+ * bare Azure OpenAI host to the Responses base. Returns undefined when the
+ * base URL needs no rewrite (e.g. api.openai.com or an explicit /openai/v1).
  */
 export function resolveAzureResponsesEndpoint(
 	baseUrl: string | undefined,
+	apiVersion?: string,
 ): AzureResponsesEndpoint | undefined {
 	if (!baseUrl) {
 		return undefined;
@@ -98,17 +105,72 @@ export function resolveAzureResponsesEndpoint(
 	} catch {
 		return undefined;
 	}
-	const host = url.hostname.toLowerCase();
-	if (!AZURE_OPENAI_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
-		return undefined;
-	}
 	const path = url.pathname.replace(/\/+$/, "");
-	const deployment = /^\/openai\/deployments\/([^/]+)/.exec(path)?.[1];
-	if (deployment || path === "" || path === "/openai") {
-		return {
-			baseUrl: `${url.origin}/openai/v1`,
-			...(deployment ? { deployment: decodeURIComponent(deployment) } : {}),
-		};
+	const match = /^(.*?)\/openai\/deployments\/([^/]+)/.exec(path);
+	let prefix: string;
+	let deployment: string | undefined;
+	if (match) {
+		prefix = match[1];
+		deployment = decodeURIComponent(match[2]);
+	} else {
+		const host = url.hostname.toLowerCase();
+		const isAzureHost = AZURE_OPENAI_HOST_SUFFIXES.some((suffix) =>
+			host.endsWith(suffix),
+		);
+		if (!isAzureHost || (path !== "" && path !== "/openai")) {
+			return undefined;
+		}
+		prefix = "";
 	}
-	return undefined;
+	const version =
+		apiVersion?.trim() || url.searchParams.get("api-version") || undefined;
+	return {
+		baseUrl: `${url.origin}${prefix}/openai${version ? "" : "/v1"}`,
+		...(deployment ? { deployment } : {}),
+		...(version ? { apiVersion: version } : {}),
+	};
+}
+
+/** Add `api-version` to requests under `baseUrl` that don't already carry one. */
+export function withApiVersion(
+	baseFetch: typeof fetch,
+	baseUrl: string,
+	apiVersion: string,
+): typeof fetch {
+	const wrapped = ((input, init) => {
+		let url: URL;
+		try {
+			url = new URL(input instanceof Request ? input.url : input.toString());
+		} catch {
+			return baseFetch(input, init);
+		}
+		if (
+			!url.toString().startsWith(baseUrl) ||
+			url.searchParams.has("api-version")
+		) {
+			return baseFetch(input, init);
+		}
+		url.searchParams.set("api-version", apiVersion);
+		return baseFetch(
+			input instanceof Request ? new Request(url.toString(), input) : url.toString(),
+			init,
+		);
+	}) as typeof fetch;
+	const withPreconnect = baseFetch as FetchWithOptionalPreconnect;
+	(wrapped as FetchWithOptionalPreconnect).preconnect =
+		typeof withPreconnect.preconnect === "function"
+			? withPreconnect.preconnect.bind(baseFetch)
+			: () => undefined;
+	return wrapped;
+}
+
+/** Azure-owned hosts authenticate API keys via the `api-key` header. */
+export function isAzureOpenAIHost(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return false;
+	try {
+		const host = new URL(baseUrl).hostname.toLowerCase();
+		return AZURE_OPENAI_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+	} catch {
+		return false;
+	}
 }

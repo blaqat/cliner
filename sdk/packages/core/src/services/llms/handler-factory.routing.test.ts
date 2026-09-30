@@ -85,6 +85,63 @@ describe("core agent per-model protocol routing", () => {
 			baseUrl,
 		);
 	});
+
+	it("sends Azure API Management Responses requests to /openai/responses", async () => {
+		const fetchMock = vi.fn(
+			async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+				Response.json({ error: { message: "stop" } }, { status: 400 }),
+		);
+		const baseUrl = "https://x.azure-api.net/openai/deployments/gpt-5.5";
+		for (const routingProviderId of [undefined, "openai-native"]) {
+			const model = createAgentModelFromConfig(
+				{
+					providerId: "openai-compatible",
+					modelId: "gpt-5.5",
+					providerConfig: {
+						providerId: "openai-compatible",
+						modelId: "gpt-5.5",
+						apiKey: "unused",
+						baseUrl,
+						headers: { "Ocp-Apim-Subscription-Key": "sub-key" },
+						azure: { apiVersion: "2025-04-01-preview" },
+						...(routingProviderId ? { routingProviderId } : {}),
+						fetch: fetchMock,
+					},
+					systemPrompt: "",
+					tools: [],
+				},
+				{ debug: vi.fn(), log: vi.fn(), error: vi.fn() },
+			);
+			for await (const _event of await model.stream({
+				messages: [
+					{
+						id: "m",
+						createdAt: 0,
+						role: "user",
+						content: [{ type: "text", text: "Hello" }],
+					},
+				],
+				tools: [],
+			})) {
+				// drain
+			}
+		}
+		const [chatUrl, chatInit] = fetchMock.mock.calls[0];
+		const [responsesUrl, responsesInit] = fetchMock.mock.calls[1];
+		// Chat Completions keeps the deployment URL unchanged.
+		expect(String(chatUrl)).toBe(
+			`${baseUrl}/chat/completions?api-version=2025-04-01-preview`,
+		);
+		expect(String(responsesUrl)).toBe(
+			"https://x.azure-api.net/openai/responses?api-version=2025-04-01-preview",
+		);
+		expect(JSON.parse(String(responsesInit?.body)).model).toBe("gpt-5.5");
+		for (const init of [chatInit, responsesInit]) {
+			expect(new Headers(init?.headers).get("Ocp-Apim-Subscription-Key")).toBe(
+				"sub-key",
+			);
+		}
+	});
 });
 
 async function expectEndpoint(
