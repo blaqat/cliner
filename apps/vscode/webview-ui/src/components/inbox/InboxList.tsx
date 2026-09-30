@@ -1,10 +1,18 @@
-import { motion } from "framer-motion"
+import { AnimatePresence, motion } from "framer-motion"
 import { BotIcon, CheckIcon, MessageSquareIcon, RotateCcwIcon } from "lucide-react"
-import { memo, useMemo } from "react"
+import { memo, useCallback, useMemo, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
 import { cn } from "@/lib/utils"
-import { buildInbox, describeActivity, formatAge, formatStamp, type InboxRow } from "./inboxUtils"
+import {
+	buildInbox,
+	DEFAULT_SETTLED_LIMIT,
+	describeActivity,
+	formatAge,
+	formatStamp,
+	type InboxRow,
+	SETTLED_PAGE_SIZE,
+} from "./inboxUtils"
 import { SessionStatusIcon } from "./SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "./sessionActions"
 
@@ -118,6 +126,16 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	)
 }
 
+const SETTLED_COLLAPSED_KEY = "inbox.settledCollapsed"
+
+function readCollapsed(): boolean {
+	try {
+		return localStorage.getItem(SETTLED_COLLAPSED_KEY) === "1"
+	} catch {
+		return false
+	}
+}
+
 interface InboxListProps {
 	showHistoryView: () => void
 	/** Clock override for tests. */
@@ -132,17 +150,31 @@ interface InboxListProps {
 const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 	const { taskHistory, sessionStatuses, subagentCounts } = useExtensionState()
 	const reduceMotion = useReducedMotionPreference()
-	const { active, settled, hiddenCount } = useMemo(
-		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts),
-		[taskHistory, sessionStatuses, subagentCounts],
+	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
+	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
+	const { active, settled, settledTotal, hiddenCount } = useMemo(
+		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit }),
+		[taskHistory, sessionStatuses, subagentCounts, settledLimit],
 	)
+	const toggleSettledCollapsed = useCallback(() => {
+		setSettledCollapsed((collapsed) => {
+			try {
+				localStorage.setItem(SETTLED_COLLAPSED_KEY, collapsed ? "0" : "1")
+			} catch {
+				// Persistence is best-effort; the toggle still works for this session.
+			}
+			return !collapsed
+		})
+	}, [])
 
-	if (active.length === 0 && settled.length === 0) {
+	if (active.length === 0 && settledTotal === 0) {
 		return null
 	}
 
 	const sectionClass =
 		"flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-description"
+
+	const moreClass = "border-0 bg-transparent p-0 text-xs text-description hover:text-foreground cursor-pointer"
 
 	return (
 		<div className="shrink-0 px-3" data-testid="inbox-list">
@@ -163,15 +195,61 @@ const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 			) : (
 				<div className="px-2 py-1.5 text-xs text-description">Nothing active.</div>
 			)}
-			{settled.length > 0 && (
+			{settledTotal > 0 && (
 				<>
-					<div className={sectionClass}>
+					<button
+						aria-expanded={!settledCollapsed}
+						aria-label={`${settledCollapsed ? "Expand" : "Collapse"} settled chats`}
+						className={cn(
+							sectionClass,
+							"w-full cursor-pointer border-0 bg-transparent text-left hover:text-foreground",
+						)}
+						onClick={toggleSettledCollapsed}
+						type="button">
+						<span
+							className={cn(
+								"codicon codicon-chevron-down text-[12px] transition-transform duration-150 motion-reduce:transition-none",
+								settledCollapsed && "-rotate-90",
+							)}
+						/>
 						<span>Settled</span>
-						<span className="opacity-70">{settled.length}</span>
-					</div>
-					{settled.map((row) => (
-						<InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />
-					))}
+						<span className="opacity-70">{settledTotal}</span>
+					</button>
+					<AnimatePresence initial={false}>
+						{!settledCollapsed && (
+							<motion.div
+								animate={reduceMotion ? undefined : { height: "auto", opacity: 1 }}
+								exit={reduceMotion ? undefined : { height: 0, opacity: 0 }}
+								initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+								key="settled-rows"
+								style={{ overflow: "hidden" }}
+								transition={{ duration: 0.18, ease: "easeOut" }}>
+								{settled.map((row) => (
+									<InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />
+								))}
+								{(settledTotal > settled.length || settledLimit > DEFAULT_SETTLED_LIMIT) && (
+									<div className="flex gap-3 px-2 py-1">
+										{settledTotal > settled.length && (
+											<button
+												className={moreClass}
+												onClick={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
+												type="button">
+												Show more ({settledTotal - settled.length})
+											</button>
+										)}
+										{settledLimit > DEFAULT_SETTLED_LIMIT && (
+											<button
+												className={moreClass}
+												onClick={() => setSettledLimit(DEFAULT_SETTLED_LIMIT)}
+												type="button">
+												Show fewer
+											</button>
+										)}
+									</div>
+								)}
+							</motion.div>
+						)}
+					</AnimatePresence>
 				</>
 			)}
 			{hiddenCount > 0 && (

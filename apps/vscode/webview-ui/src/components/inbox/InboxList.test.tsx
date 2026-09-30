@@ -69,6 +69,50 @@ describe("InboxList", () => {
 		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "run" }))
 	})
 
+	describe("settled section", () => {
+		const settledHistory = (count: number) =>
+			Array.from({ length: count }, (_, i) => item(`s${i}`, NOW - i * 1000, { isSettled: true, settledAt: NOW - i * 1000 }))
+
+		beforeEach(() => {
+			const store = new Map<string, string>()
+			vi.stubGlobal("localStorage", {
+				getItem: (key: string) => store.get(key) ?? null,
+				setItem: (key: string, value: string) => void store.set(key, value),
+			})
+			mocks.state = { taskHistory: settledHistory(40), sessionStatuses: {} }
+		})
+
+		it("pages settled chats and shows fewer again", () => {
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(10)
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(30\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(35)
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(5\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(40)
+			expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument()
+
+			fireEvent.click(screen.getByRole("button", { name: "Show fewer" }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(10)
+		})
+
+		it("collapses the section, shows the total, and persists the state", async () => {
+			const { unmount } = render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			const toggle = screen.getByRole("button", { name: "Collapse settled chats" })
+			expect(toggle).toHaveTextContent("40")
+
+			fireEvent.click(toggle)
+			expect(screen.getByRole("button", { name: "Expand settled chats" })).toHaveAttribute("aria-expanded", "false")
+			expect(localStorage.getItem("inbox.settledCollapsed")).toBe("1")
+			unmount()
+
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			expect(screen.getByRole("button", { name: "Expand settled chats" })).toBeInTheDocument()
+			expect(screen.queryAllByTestId("inbox-row")).toHaveLength(0)
+		})
+	})
+
 	it("links to the full history", () => {
 		const showHistoryView = vi.fn()
 		render(<InboxList now={NOW} showHistoryView={showHistoryView} />)

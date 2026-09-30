@@ -7,6 +7,8 @@ export type SubagentCounts = ExtensionState["subagentCounts"]
 
 export const DEFAULT_ACTIVE_LIMIT = 15
 export const DEFAULT_SETTLED_LIMIT = 10
+/** How many more settled rows each "Show more" reveals. */
+export const SETTLED_PAGE_SIZE = 25
 
 export interface InboxRow {
 	item: HistoryItem
@@ -25,7 +27,9 @@ export interface InboxRow {
 export interface InboxGroups {
 	active: InboxRow[]
 	settled: InboxRow[]
-	/** Rows cut by the limits; the list links to the full history when non-zero. */
+	/** All settled chats, including those cut by the settled limit. */
+	settledTotal: number
+	/** Active rows cut by the active limit; the list links to the full history when non-zero. */
 	hiddenCount: number
 }
 
@@ -85,7 +89,8 @@ export function buildInbox(
 	return {
 		active: active.slice(0, activeLimit),
 		settled: settled.slice(0, settledLimit),
-		hiddenCount: Math.max(0, active.length - activeLimit) + Math.max(0, settled.length - settledLimit),
+		settledTotal: settled.length,
+		hiddenCount: Math.max(0, active.length - activeLimit),
 	}
 }
 

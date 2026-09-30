@@ -80,6 +80,19 @@ describe("buildInbox", () => {
 		expect(hiddenCount).toBe(5)
 	})
 
+	it("reports the full settled total beyond the settled limit", () => {
+		const history = Array.from({ length: 30 }, (_, i) =>
+			item(`s${i}`, NOW - i * MIN, { isSettled: true, settledAt: NOW - i * MIN }),
+		)
+
+		const { settled, settledTotal, hiddenCount } = buildInbox(history, {}, undefined, { settledLimit: 10 })
+
+		expect(settled).toHaveLength(10)
+		expect(settledTotal).toBe(30)
+		expect(hiddenCount).toBe(0)
+		expect(buildInbox(history, {}, undefined, { settledLimit: 35 }).settled).toHaveLength(30)
+	})
+
 	it("skips history entries without a task or timestamp", () => {
 		const { active } = buildInbox([item("ok", NOW), item("empty", NOW, { task: "" }), item("zero", 0)], {})
 		expect(active.map((row) => row.item.id)).toEqual(["ok"])
