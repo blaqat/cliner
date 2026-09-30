@@ -1,7 +1,7 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { describe, expect, it } from "vitest"
 import { filterVisibleMessages, groupLowStakesTools, groupMessages } from "./messageUtils"
-import { getCurrentMinimapItem, getMinimapItems, type MinimapItem, minimapItemKey } from "./minimapUtils"
+import { getCurrentMinimapItem, getMinimapItems, getMinimapKind, type MinimapItem, minimapItemKey } from "./minimapUtils"
 
 const say = (ts: number, sayType: ClineMessage["say"], text?: string, partial?: boolean): ClineMessage => ({
 	ts,
@@ -37,10 +37,10 @@ describe("getMinimapItems", () => {
 		const items = fromRows(rows, say(1, "task", "Fix the bug"))
 		expect(items.map((item) => item.role)).toEqual(["user", "agent", "user", "agent"])
 		expect(items).toEqual([
-			{ index: 0, startIndex: -1, ts: 1, role: "user", snippet: "Fix the bug", streaming: false },
-			{ index: 3, startIndex: 0, ts: 6, role: "agent", snippet: "Turn one done", streaming: false },
-			{ index: 4, startIndex: 4, ts: 7, role: "user", snippet: "What does this do?", streaming: false },
-			{ index: 7, startIndex: 5, ts: 10, role: "agent", snippet: "Here is the answer", streaming: false },
+			{ index: 0, startIndex: -1, ts: 1, role: "user", kind: "user", snippet: "Fix the bug", streaming: false },
+			{ index: 3, startIndex: 0, ts: 6, role: "agent", kind: "completion", snippet: "Turn one done", streaming: false },
+			{ index: 4, startIndex: 4, ts: 7, role: "user", kind: "user", snippet: "What does this do?", streaming: false },
+			{ index: 7, startIndex: 5, ts: 10, role: "agent", kind: "answer", snippet: "Here is the answer", streaming: false },
 		])
 	})
 
@@ -190,5 +190,51 @@ describe("getCurrentMinimapItem", () => {
 	it("falls back to the first item", () => {
 		expect(getCurrentMinimapItem(items, -5)?.ts).toBe(1)
 		expect(getCurrentMinimapItem([], 3)).toBeUndefined()
+	})
+})
+
+describe("getMinimapKind", () => {
+	const ask = (askType: ClineMessage["ask"], text: string): ClineMessage => ({ ts: 1, type: "ask", ask: askType, text })
+
+	it("maps each turn-ending block to its kind", () => {
+		expect(getMinimapKind(say(1, "completion_result", "done"))).toBe("completion")
+		expect(getMinimapKind(ask("completion_result", ""))).toBe("completion")
+		expect(getMinimapKind(say(1, "plan_completion_result", "answer"))).toBe("answer")
+		expect(getMinimapKind(ask("plan_mode_respond", "{}"))).toBe("answer")
+		expect(getMinimapKind(ask("followup", "{}"))).toBe("question")
+		expect(getMinimapKind(say(1, "text", "hi"))).toBe("agent")
+		expect(getMinimapKind(say(1, "tool", "{}"))).toBe("agent")
+		expect(getMinimapKind(ask("command", "ls"))).toBe("agent")
+	})
+
+	it("colors a reply by the block that ended its turn", () => {
+		const followup = { ts: 3, type: "ask", ask: "followup", text: JSON.stringify({ question: "Which one?" }) } as const
+		const items = fromRows([
+			say(1, "user_feedback", "a"),
+			say(2, "text", "Looking"),
+			followup,
+			say(4, "user_feedback", "b"),
+			say(5, "text", "Checking"),
+			[say(6, "tool", "{}")],
+			say(7, "user_feedback", "c"),
+			[say(8, "tool", "{}")],
+			say(9, "user_feedback", "d"),
+			say(10, "plan_completion_result", "Here's how"),
+			say(11, "user_feedback", "e"),
+			say(12, "text", "Done soon"),
+			say(13, "completion_result", "All done"),
+		])
+		expect(items.map((item) => item.kind)).toEqual([
+			"user",
+			"question",
+			"user",
+			"agent",
+			"user",
+			"agent",
+			"user",
+			"answer",
+			"user",
+			"completion",
+		])
 	})
 })

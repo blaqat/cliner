@@ -105,4 +105,20 @@ describe("MiniMap", () => {
 		await scrollTo(0)
 		expect(current()).toBe(live)
 	})
+
+	it("colors each square like the block it jumps to, and marks the current one with an outline", () => {
+		const rows: ClineMessage[] = [
+			say(2, "completion_result", "Done"),
+			say(3, "user_feedback", "why?"),
+			{ ts: 4, type: "ask", ask: "plan_mode_respond", text: JSON.stringify({ response: "Because" }) },
+		]
+		setup(rows, false)
+		expect(squares().map((square) => square.dataset.kind)).toEqual(["user", "completion", "user", "answer"])
+		const [, completion, , answer] = squares()
+		expect(completion.className).toContain("bg-minimap-completion")
+		expect(answer.className).toContain("bg-minimap-answer")
+		// The current square keeps its fill: the highlight is an outline.
+		expect(current()).toBe(answer)
+		expect(answer.className).toContain("outline-minimap-current")
+	})
 })

@@ -1,5 +1,12 @@
 import type { ClineMessage, ClinePlanModeResponse } from "@shared/ExtensionMessage"
 
+/**
+ * What a square stands for, so it takes the color of the chat block it jumps to: the user's
+ * message, or the block that ended the agent's turn (completed task, Ask-mode answer,
+ * followup question, or plain agent output).
+ */
+export type MinimapKind = "user" | "agent" | "completion" | "answer" | "question"
+
 export interface MinimapItem {
 	/** Index into the rendered (grouped) list to jump to, for scrollToIndex. */
 	index: number
@@ -7,6 +14,7 @@ export interface MinimapItem {
 	startIndex: number
 	ts: number
 	role: "user" | "agent"
+	kind: MinimapKind
 	snippet: string
 	/** The reply is still streaming. */
 	streaming: boolean
@@ -35,6 +43,29 @@ function agentText(message: ClineMessage): string | undefined {
 		}
 	}
 	return undefined
+}
+
+/** The block kind an agent message renders as (see ChatRow): drives its square's color. */
+export function getMinimapKind(message: ClineMessage): Exclude<MinimapKind, "user"> {
+	if (message.type === "say") {
+		if (message.say === "completion_result") {
+			return "completion"
+		}
+		if (message.say === "plan_completion_result") {
+			return "answer"
+		}
+		return "agent"
+	}
+	switch (message.ask) {
+		case "completion_result":
+			return "completion"
+		case "plan_mode_respond":
+			return "answer"
+		case "followup":
+			return "question"
+		default:
+			return "agent"
+	}
 }
 
 function isUserMessage(message: ClineMessage): boolean {
@@ -81,7 +112,15 @@ export function getMinimapItems(
 ): MinimapItem[] {
 	const items: MinimapItem[] = []
 	if (task) {
-		items.push({ index: 0, startIndex: -1, ts: task.ts, role: "user", snippet: userSnippet(task), streaming: false })
+		items.push({
+			index: 0,
+			startIndex: -1,
+			ts: task.ts,
+			role: "user",
+			kind: "user",
+			snippet: userSnippet(task),
+			streaming: false,
+		})
 	}
 
 	const rowByTs = indexRows(rows)
@@ -100,6 +139,7 @@ export function getMinimapItems(
 	let lastIndex = -1
 	let lastMessage: ClineMessage | undefined
 	let lastText: string | undefined
+	let lastKind: MinimapKind = "agent"
 	const flushTurn = (isLastTurn: boolean) => {
 		if (lastIndex >= 0 && lastMessage) {
 			// Only the last turn can be in progress.
@@ -109,6 +149,7 @@ export function getMinimapItems(
 				startIndex: turnStart,
 				ts: lastMessage.ts,
 				role: "agent",
+				kind: lastKind,
 				snippet: lastText ?? (streaming ? "Working…" : "Used tools"),
 				streaming,
 			})
@@ -117,6 +158,7 @@ export function getMinimapItems(
 		lastIndex = -1
 		lastMessage = undefined
 		lastText = undefined
+		lastKind = "agent"
 	}
 
 	messages.forEach((message, messageIndex) => {
@@ -134,6 +176,7 @@ export function getMinimapItems(
 					startIndex: index,
 					ts: message.ts,
 					role: "user",
+					kind: "user",
 					snippet: userSnippet(message),
 					streaming: false,
 				})
@@ -142,7 +185,9 @@ export function getMinimapItems(
 		}
 		const text = agentText(message)?.trim()
 		if (text) {
+			// The block that previews the turn is the one the square takes its color from.
 			lastText = toSnippet(text)
+			lastKind = getMinimapKind(message)
 		}
 		if (row === undefined) {
 			return

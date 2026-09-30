@@ -73,8 +73,12 @@
 	--color-success: var(--vscode-charts-green);
 	--color-warning: var(--vscode-charts-yellow);
 	/* Minimap + hover widget (semantic tokens so Tailwind classes follow the VS Code theme) */
-	--color-minimap-user: var(--vscode-textLink-foreground);
-	--color-minimap-agent: var(--vscode-charts-purple);
+	/* Squares take the color of the chat block they jump to (see ChatRow / UserMessage). */
+	--color-minimap-user: var(--vscode-badge-background);
+	--color-minimap-agent: var(--vscode-descriptionForeground);
+	--color-minimap-completion: var(--color-success);
+	--color-minimap-answer: var(--color-warning);
+	--color-minimap-question: var(--vscode-foreground);
 	--color-minimap-current: var(--vscode-focusBorder);
 	--color-minimap-rail: var(--vscode-panel-border);
 	--color-hover-widget: var(--vscode-editorHoverWidget-background);
@@ -150,7 +154,7 @@
 	--animate-minimap-live: minimap-live 2.4s ease-in-out infinite;
 	@keyframes minimap-live {
 		50% {
-			background-color: color-mix(in srgb, var(--color-minimap-agent) 35%, transparent);
+			background-color: color-mix(in srgb, var(--minimap-fill) 35%, transparent);
 		}
 	}
 

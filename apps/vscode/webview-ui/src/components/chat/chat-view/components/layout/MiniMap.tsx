@@ -3,7 +3,7 @@ import type React from "react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { getCurrentMinimapItem, getMinimapItems, minimapItemKey } from "../../utils/minimapUtils"
+import { getCurrentMinimapItem, getMinimapItems, type MinimapKind, minimapItemKey } from "../../utils/minimapUtils"
 
 // Below this chat width the rail takes too much room from the messages.
 const MIN_CHAT_WIDTH = 280
@@ -11,6 +11,16 @@ const MIN_CHAT_WIDTH = 280
 const TOP_INSET = 32
 // The list follows new output: the last turn is current.
 const LIVE_END = Number.MAX_SAFE_INTEGER
+
+// Each square's fill, exposed as --minimap-fill so the streaming fade dims the same color.
+// The current square is marked with an outline, which stays legible on every fill.
+const KIND_FILL: Record<MinimapKind, string> = {
+	user: "bg-minimap-user [--minimap-fill:var(--color-minimap-user)]",
+	agent: "bg-minimap-agent [--minimap-fill:var(--color-minimap-agent)]",
+	completion: "bg-minimap-completion [--minimap-fill:var(--color-minimap-completion)]",
+	answer: "bg-minimap-answer [--minimap-fill:var(--color-minimap-answer)]",
+	question: "bg-minimap-question [--minimap-fill:var(--color-minimap-question)]",
+}
 
 interface MiniMapProps {
 	/** The unfiltered transcript (after the task prompt): turn boundaries come from here. */
@@ -142,10 +152,11 @@ export const MiniMap = memo(
 										aria-label={`Jump to ${label}: ${item.snippet}`}
 										className={cn(
 											"block size-2.5 shrink-0 rounded-[2px] border-0 p-0 cursor-pointer transition-transform duration-100 hover:scale-135 motion-reduce:transition-none",
-											item.role === "user" ? "bg-minimap-user" : "bg-minimap-agent/80",
+											KIND_FILL[item.kind],
 											isCurrent && "outline outline-1 outline-offset-1 outline-minimap-current",
 											item.streaming && "animate-minimap-live",
 										)}
+										data-kind={item.kind}
 										data-role={item.role}
 										onClick={() => handleJump(item.index)}
 										ref={isCurrent ? currentButtonRef : undefined}
