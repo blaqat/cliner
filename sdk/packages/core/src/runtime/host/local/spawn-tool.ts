@@ -1,15 +1,24 @@
-import type { AgentEvent, AgentTool } from "@cline/shared";
+import type {
+	AgentEvent,
+	AgentTool,
+	ToolApprovalRequest,
+	ToolApprovalResult,
+} from "@cline/shared";
 import {
 	createBuiltinTools,
-	resolveToolPresetName,
 	type ToolExecutors,
 	ToolPresets,
 } from "../../../extensions/tools";
 import type {
+	SpawnAgentInput,
 	SubAgentEndContext,
 	SubAgentStartContext,
 } from "../../../extensions/tools/team";
 import { createSpawnAgentTool } from "../../../extensions/tools/team";
+import {
+	createPlanModeCommandGuardExtension,
+	PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
+} from "../../../extensions/tools/command-guard-extension";
 import { buildTelemetryAgentIdentity } from "../../../services/agent-events";
 import { filterDisabledTools } from "../../../services/global-settings";
 import {
@@ -18,15 +27,34 @@ import {
 } from "../../../services/telemetry/core-events";
 import type { CoreSessionConfig } from "../../../types/config";
 import type { ActiveSession } from "../../../types/session";
+import { filterToolsByPolicies } from "../../orchestration/runtime-builder";
 
 export type SubAgentStartTracker = Map<
 	string,
 	{ startedAt: number; rootSessionId: string }
 >;
 
+/**
+ * Per-call abort handles for in-flight sub-agent runs, scoped by root
+ * session id + spawn_agent tool call id. Lets a host stop one child agent
+ * without aborting the parent run.
+ */
+export interface SubAgentAbortTracker {
+	register(
+		rootSessionId: string,
+		toolCallId: string,
+		controller: AbortController,
+	): void;
+	unregister(rootSessionId: string, toolCallId: string): void;
+}
+
 export interface SpawnToolDeps {
+	requestToolApproval?: (
+		request: ToolApprovalRequest,
+	) => Promise<ToolApprovalResult> | ToolApprovalResult;
 	getSession(sessionId: string): ActiveSession | undefined;
 	subAgentStarts: SubAgentStartTracker;
+	subAgentAborts?: SubAgentAbortTracker;
 	onAgentEvent(
 		rootSessionId: string,
 		config: CoreSessionConfig,
@@ -129,21 +157,38 @@ export function createSessionSpawnTool(
 		config,
 		rootSessionId,
 	);
-	const createSubAgentTools = () => {
+	const effectiveAccess = (input: SpawnAgentInput) =>
+		input.access === "write" && config.mode !== "plan" ? "write" : "read";
+	const createSubAgentTools = (input: SpawnAgentInput) => {
+		// Writer subagents get the act preset; readers get the plan (read-only)
+		// preset. A parent in plan mode can never spawn a writer -- the request
+		// is downgraded to read. The resulting toolset is intersected with the
+		// parent's tool policies and global disables so a child can never
+		// exceed the parent's effective tools.
+		const access = effectiveAccess(input);
+		const preset = access === "write" ? ToolPresets.act : ToolPresets.plan;
 		const tools: AgentTool[] = config.enableTools
 			? createBuiltinTools({
 					cwd: config.cwd,
 					telemetry: config.telemetry,
-					...ToolPresets[resolveToolPresetName({ mode: config.mode })],
+					...preset,
 					executors: toolExecutors,
 				})
 			: [];
 		if (config.enableSpawnAgent) {
 			tools.push(
-				createSessionSpawnTool(deps, config, rootSessionId, toolExecutors),
+				createSessionSpawnTool(
+					deps,
+					{ ...config, mode: access === "read" ? "plan" : "act" },
+					rootSessionId,
+					toolExecutors,
+				),
 			);
 		}
-		return filterDisabledTools(tools);
+		return filterToolsByPolicies(
+			filterDisabledTools(tools),
+			config.toolPolicies,
+		);
 	};
 
 	return createSpawnAgentTool({
@@ -182,7 +227,45 @@ export function createSessionSpawnTool(
 				},
 			updateConnectionDefaults: () => {},
 		},
+		toolPolicies: config.toolPolicies,
+		requestToolApproval: deps.requestToolApproval
+			? (request) =>
+					deps.requestToolApproval!({ ...request, sessionId: rootSessionId })
+			: undefined,
+		createSubAgentExtensions: (input) => {
+			const extensions =
+				deps
+					.getSession(rootSessionId)
+					?.runtime.delegatedAgentConfigProvider?.getRuntimeConfig()
+					.extensions ??
+				config.extensions ??
+				[];
+			if (
+				effectiveAccess(input) === "write" ||
+				extensions.some(
+					(extension) =>
+						extension.name === PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
+				)
+			)
+				return extensions;
+			return [
+				...extensions,
+				createPlanModeCommandGuardExtension({ telemetry: config.telemetry }),
+			];
+		},
 		createSubAgentTools,
+		abortHandleRegistry: deps.subAgentAborts
+			? {
+					register: (toolCallId, controller) =>
+						deps.subAgentAborts?.register(
+							rootSessionId,
+							toolCallId,
+							controller,
+						),
+					unregister: (toolCallId) =>
+						deps.subAgentAborts?.unregister(rootSessionId, toolCallId),
+				}
+			: undefined,
 		...lifecycle,
 	}) as AgentTool;
 }

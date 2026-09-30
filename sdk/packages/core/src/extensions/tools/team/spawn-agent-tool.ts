@@ -32,6 +32,12 @@ export const SpawnAgentInputSchema = z.object({
 		.string()
 		.describe("System prompt defining the sub-agent's behavior"),
 	task: z.string().describe("Task for the sub-agent to complete"),
+	access: z
+		.enum(["read", "write"])
+		.optional()
+		.describe(
+			'Tool access for the sub-agent: "read" (default) gives it read-only investigation tools; "write" gives it the full editing toolset. Choose "write" only when the task requires the sub-agent to modify files. A write request is downgraded to read when the parent is in a read-only mode, and the child never receives tools the parent lacks.',
+		),
 });
 
 export type SpawnAgentInput = z.infer<typeof SpawnAgentInputSchema>;
@@ -63,10 +69,22 @@ export interface SubAgentEndContext {
 	error?: Error;
 }
 
+/**
+ * Registry hook for per-call abort handles. When provided, the spawn_agent
+ * tool registers one AbortController per in-flight sub-agent run (keyed by
+ * the spawn_agent tool call id) so a host can stop a single child without
+ * aborting the parent run. Entries are removed when the run settles.
+ */
+export interface SpawnAgentAbortRegistry {
+	register(toolCallId: string, controller: AbortController): void;
+	unregister(toolCallId: string): void;
+}
+
 export interface SpawnAgentToolConfig {
 	configProvider: DelegatedAgentConfigProvider;
 	defaultMaxIterations?: number;
 	subAgentTools?: AgentTool[];
+	createSubAgentExtensions?: (input: SpawnAgentInput) => AgentExtension[];
 	createSubAgentTools?: (
 		input: SpawnAgentInput,
 		context: AgentToolContext,
@@ -95,6 +113,10 @@ export interface SpawnAgentToolConfig {
 	 */
 	onSubAgentEnd?: (context: SubAgentEndContext) => void | Promise<void>;
 	/**
+	 * Optional per-call abort registry; see {@link SpawnAgentAbortRegistry}.
+	 */
+	abortHandleRegistry?: SpawnAgentAbortRegistry;
+	/**
 	 * Optional per-tool policy for spawned sub-agents.
 	 */
 	toolPolicies?: Record<string, ToolPolicy>;
@@ -120,21 +142,42 @@ export function createSpawnAgentTool(
 	return createTool<SpawnAgentInput, SpawnAgentOutput>({
 		name: "spawn_agent",
 		executionMode: "parallel",
-		description: `Spawn a sub-agent with custom instructions for a specialized task. Waits for the sub-agent to finish and returns its result before your next step.`,
+		description: `Spawn a sub-agent with custom instructions for a specialized task. Waits for the sub-agent to finish and returns its result before your next step. Set access="write" when the task requires the sub-agent to edit files or make changes; leave it at the default "read" for investigation, search, and analysis tasks. A write-capable sub-agent is downgraded to read-only when you are in a read-only mode.`,
 		inputSchema: zodToJsonSchema(SpawnAgentInputSchema),
 		execute: async (input, context) => {
 			const tools = config.createSubAgentTools
 				? await config.createSubAgentTools(input, context)
 				: (config.subAgentTools ?? []);
 
+			// A per-call abort handle lets a host stop this one child without
+			// aborting the parent run; it still follows the parent's signal.
+			const toolCallId = context.toolCallId;
+			const abortController = new AbortController();
+			if (toolCallId) {
+				config.abortHandleRegistry?.register(toolCallId, abortController);
+			}
+			const abortSignal = context.signal
+				? AbortSignal.any([context.signal, abortController.signal])
+				: abortController.signal;
+
 			const subAgent = createDelegatedAgent({
 				kind: "subagent",
 				prompt: input.systemPrompt,
-				configProvider: config.configProvider,
+				configProvider: {
+					...config.configProvider,
+					getRuntimeConfig: () => {
+						const runtime = config.configProvider.getRuntimeConfig();
+						return {
+							...runtime,
+							extensions:
+								config.createSubAgentExtensions?.(input) ?? runtime.extensions,
+						};
+					},
+				},
 				tools,
 				maxIterations: config.defaultMaxIterations,
 				parentAgentId: context.agentId,
-				abortSignal: context.signal,
+				abortSignal,
 				onEvent: config.onSubAgentEvent,
 				hookErrorMode: config.hookErrorMode,
 				toolPolicies: config.toolPolicies,
@@ -196,6 +239,10 @@ export function createSpawnAgentTool(
 					}
 				}
 				throw error;
+			} finally {
+				if (toolCallId) {
+					config.abortHandleRegistry?.unregister(toolCallId);
+				}
 			}
 		},
 		timeoutMs: 300000,

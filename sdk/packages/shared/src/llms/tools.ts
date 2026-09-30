@@ -15,6 +15,8 @@ export interface ToolPolicy {
 	 * @default true
 	 */
 	autoApprove?: boolean;
+	/** Mandatory runtime approval; hosts must not override this with auto-approval. */
+	requireApproval?: boolean;
 }
 
 // =============================================================================
@@ -46,6 +48,8 @@ export interface ToolCallRecord {
 }
 
 export interface ToolApprovalRequest {
+	/** Cancellation of the agent run awaiting this approval. */
+	signal?: AbortSignal;
 	/**
 	 * Core/hub runtime session identifier.
 	 *

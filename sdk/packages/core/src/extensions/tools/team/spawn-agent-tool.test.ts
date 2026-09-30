@@ -327,6 +327,90 @@ describe("createSpawnAgentTool", () => {
 		);
 	});
 
+	it("registers a per-call abort handle that aborts only that child run", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const registry = { register: vi.fn(), unregister: vi.fn() };
+		const parent = new AbortController();
+		let resolveRun: ((value: unknown) => void) | undefined;
+		runMock.mockImplementation(
+			() => new Promise((resolve) => (resolveRun = resolve)),
+		);
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+			abortHandleRegistry: registry,
+		});
+
+		const executing = tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-9",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-9",
+				signal: parent.signal,
+			},
+		);
+
+		expect(registry.register).toHaveBeenCalledWith("call-9", expect.any(AbortController));
+		const controller = registry.register.mock.calls[0][1] as AbortController;
+		const childSignal = agentConstructorSpy.mock.calls[0][0].abortSignal as AbortSignal;
+
+		controller.abort();
+		expect(childSignal.aborted).toBe(true);
+		expect(parent.signal.aborted).toBe(false);
+
+		resolveRun?.({
+			text: "stopped",
+			iterations: 1,
+			finishReason: "cancelled",
+			usage: { inputTokens: 0, outputTokens: 0 },
+		});
+		await executing;
+		expect(registry.unregister).toHaveBeenCalledWith("call-9");
+	});
+
+	it("propagates the parent abort signal into the child run", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const parent = new AbortController();
+		runMock.mockImplementation(
+			() =>
+				new Promise((_, reject) =>
+					agentConstructorSpy.mock.calls.at(-1)?.[0].abortSignal?.addEventListener(
+						"abort",
+						() => reject(new Error("aborted")),
+						{ once: true },
+					),
+				),
+		);
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+		});
+
+		const executing = tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-10",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-10",
+				signal: parent.signal,
+			},
+		);
+		await Promise.resolve();
+		parent.abort();
+		await expect(executing).rejects.toThrow("aborted");
+	});
+
 	it("resolves connection settings lazily at execution time", async () => {
 		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
 		runMock.mockResolvedValue({

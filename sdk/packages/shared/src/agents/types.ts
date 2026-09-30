@@ -986,6 +986,7 @@ export const AgentConfigSchema = z.object({
 			z.object({
 				enabled: z.boolean().optional(),
 				autoApprove: z.boolean().optional(),
+				requireApproval: z.boolean().optional(),
 			}),
 		)
 		.optional(),
@@ -1004,6 +1005,7 @@ export const AgentConfigSchema = z.object({
 					.object({
 						enabled: z.boolean().optional(),
 						autoApprove: z.boolean().optional(),
+						requireApproval: z.boolean().optional(),
 					})
 					.default({}),
 			}),

@@ -191,7 +191,10 @@ function buildProviderConfig(
 	modelCatalogDefaults?: Partial<ProviderSettings["modelCatalog"]>,
 	defaultFetch?: typeof fetch,
 ): ProviderConfig {
-	const stored = providerSettingsManager.getProviderSettings(config.providerId);
+	const stored =
+		config.inheritProviderSettings === false
+			? undefined
+			: providerSettingsManager.getProviderSettings(config.providerId);
 	const modelCatalog =
 		modelCatalogDefaults || stored?.modelCatalog
 			? {

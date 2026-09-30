@@ -249,6 +249,9 @@ export interface CoreSessionConfig
 			| "missionLogIntervalMs"
 			| "maxConsecutiveMistakes"
 		> {
+	/** When false, this session owns its provider settings and ignores providers.json. */
+	inheritProviderSettings?: boolean;
+
 	/**
 	 * Core/hub runtime session identifier.
 	 *

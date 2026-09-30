@@ -123,6 +123,7 @@ import {
 import {
 	createSessionSpawnTool,
 	createSessionSubAgentLifecycleCallbacks,
+	type SubAgentAbortTracker,
 	type SubAgentStartTracker,
 } from "./local/spawn-tool";
 import { loadUserFileContent } from "./local/user-files";
@@ -260,6 +261,7 @@ export interface LocalRuntimeHostOptions {
 
 export class LocalRuntimeHost implements RuntimeHost {
 	public readonly runtimeAddress = undefined;
+	private readonly turnsInFlight = new Map<string, object>();
 	public readonly pendingPrompts: PendingPromptsServiceApi;
 	private readonly sessionService: SessionBackend;
 	private readonly runtimeBuilder: RuntimeBuilder;
@@ -283,6 +285,17 @@ export class LocalRuntimeHost implements RuntimeHost {
 		SessionAccumulatedUsage
 	>();
 	private readonly subAgentStarts: SubAgentStartTracker = new Map();
+	// In-flight sub-agent abort handles keyed by `${rootSessionId}:${toolCallId}`;
+	// entries are removed by the spawn tool when each run settles.
+	private readonly subAgentAbortHandles = new Map<string, AbortController>();
+	private readonly subAgentAborts: SubAgentAbortTracker = {
+		register: (rootSessionId, toolCallId, controller) => {
+			this.subAgentAbortHandles.set(`${rootSessionId}:${toolCallId}`, controller);
+		},
+		unregister: (rootSessionId, toolCallId) => {
+			this.subAgentAbortHandles.delete(`${rootSessionId}:${toolCallId}`);
+		},
+	};
 	private readonly pendingPromptsController: PendingPromptsController;
 	private readonly eventBridge: AgentEventBridge;
 	private readonly sessionVersioning = new SessionVersioningService();
@@ -553,6 +566,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		const subAgentDeps = {
 			getSession: (sid: string) => this.sessions.get(sid),
 			subAgentStarts: this.subAgentStarts,
+			subAgentAborts: this.subAgentAborts,
 			onAgentEvent: (
 				rootSessionId: string,
 				config: CoreSessionConfig,
@@ -608,8 +622,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 			},
 			createSpawnTool: () =>
 				createSessionSpawnTool(
-					subAgentDeps,
-					bootstrap.config,
+					{ ...subAgentDeps, requestToolApproval: bootstrap.requestToolApproval },
+					{ ...bootstrap.config, toolPolicies: bootstrap.toolPolicies },
 					sessionId,
 					sessionToolExecutors,
 				),
@@ -1085,6 +1099,27 @@ export class LocalRuntimeHost implements RuntimeHost {
 	async runTurn(input: SendSessionInput): Promise<AgentResult | undefined> {
 		const session = this.getSessionOrThrow(input.sessionId);
 		const canStartRun = session.agent.canStartRun();
+		if (input.delivery === "interject") {
+			// abort raises the fence synchronously. Enqueue before yielding so older
+			// prompts cannot drain between abort and the priority follow-up.
+			const aborting =
+				!canStartRun ||
+				this.turnsInFlight.has(input.sessionId) ||
+				session.status === "running" ||
+				session.status === "pending" ||
+				session.aborting
+					? this.abort(input.sessionId)
+					: Promise.resolve();
+			this.pendingPromptsController.enqueue(input.sessionId, {
+				prompt: input.prompt,
+				mode: input.mode,
+				delivery: "steer",
+				userImages: input.userImages,
+				userFiles: input.userFiles,
+			});
+			await aborting;
+			return undefined;
+		}
 		const delivery =
 			input.delivery ??
 			(session.interactive && !canStartRun ? ("queue" as const) : undefined);
@@ -1108,6 +1143,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 			});
 			return undefined;
 		}
+		const turnIdentity = {};
+		this.turnsInFlight.set(input.sessionId, turnIdentity);
 		try {
 			const result = await this.executeTurn(session, {
 				prompt: input.prompt,
@@ -1151,6 +1188,9 @@ export class LocalRuntimeHost implements RuntimeHost {
 			});
 			await this.failSession(session);
 			throw error;
+		} finally {
+			if (this.turnsInFlight.get(input.sessionId) === turnIdentity)
+				this.turnsInFlight.delete(input.sessionId);
 		}
 	}
 
@@ -1204,6 +1244,18 @@ export class LocalRuntimeHost implements RuntimeHost {
 			sessionId,
 			toolCallId,
 		);
+	}
+
+	/**
+	 * Aborts a single in-flight sub-agent run by its spawn_agent tool call id.
+	 * The child rejects its run with an abort error; the parent tool call then
+	 * ends like any failed tool call and the parent run continues.
+	 */
+	async abortSubAgent(sessionId: string, toolCallId: string): Promise<boolean> {
+		const controller = this.subAgentAbortHandles.get(`${sessionId}:${toolCallId}`);
+		if (!controller || controller.signal.aborted) return false;
+		controller.abort(new Error("Subagent stopped by user"));
+		return true;
 	}
 
 	async stopSession(sessionId: string): Promise<void> {
