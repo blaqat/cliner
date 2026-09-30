@@ -186,6 +186,23 @@ describe("SdkTaskHistory", () => {
 		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
 	})
 
+	it("keeps last-activity time when settling and only bumps it on activity", async () => {
+		const { history } = makeHistory([
+			makeSessionRecord("task-1", { updatedAt: "2026-01-02T00:00:00.000Z", metadata: { lastActivityTs: 1234 } }),
+			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z" }),
+		])
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ ts: 1234, lastActivityTs: 1234, isSettled: true })
+		// Chats from before the field existed freeze their previous updatedAt on settle.
+		await history.toggleTaskSettled("old-1")
+		const frozen = Date.parse("2026-01-03T00:00:00.000Z")
+		expect(await history.findHistoryItem("old-1")).toMatchObject({ ts: frozen, lastActivityTs: frozen })
+		await history.toggleTaskSettled("old-1")
+		expect((await history.findHistoryItem("old-1"))?.ts).toBe(frozen)
+		await history.markTaskActive("task-1")
+		expect((await history.findHistoryItem("task-1"))?.ts).toBeGreaterThan(1234)
+	})
+
 	it("maps SDK session history records to legacy history items", () => {
 		const result = sessionHistoryRecordToHistoryItem(
 			makeSessionRecord("task-1", {

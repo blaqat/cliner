@@ -95,6 +95,9 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		isFavorited: item.isFavorited ?? false,
 		isSettled: item.isSettled ?? false,
 		settledAt: item.settledAt ?? 0,
+		// Frozen at the last real interaction; `ts` of a listed item already carries it,
+		// so settle/favorite/metadata rewrites keep the same value.
+		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
 		parentTaskId: item.parentTaskId ?? "",
 		forkedAtTs: item.forkedAtTs ?? 0,
 		subagentCount: item.subagentCount ?? 0,
@@ -183,11 +186,24 @@ export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDi
 	})
 }
 
+/**
+ * Time of the chat's last real interaction. `updatedAt` is bumped by every
+ * write (settle, favorite, metadata edits), so prefer the persisted
+ * `lastActivityTs` and fall back to it only for chats that predate the field.
+ */
+export function sessionRecordActivityTs(item: SessionHistoryRecord): number {
+	return (
+		metadataNumber(item.metadata, "lastActivityTs") || dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt)
+	)
+}
+
 export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): HistoryItem {
 	const metadata = item.metadata
+	const lastActivityTs = sessionRecordActivityTs(item)
 	return {
 		id: item.sessionId,
-		ts: dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt),
+		ts: lastActivityTs,
+		lastActivityTs,
 		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
@@ -827,7 +843,13 @@ export class SdkTaskHistory {
 		const write = (async () => {
 			const item = await this.findHistoryItem(taskId)
 			if (!item) return
-			if (item.isSettled) await this.updateTaskHistoryItem({ ...item, isSettled: false, settledAt: undefined })
+			// First interaction of this activity window: stamp it, and unsettle if needed.
+			const now = Date.now()
+			await this.updateTaskHistoryItem(
+				item.isSettled
+					? { ...item, isSettled: false, settledAt: undefined, ts: now, lastActivityTs: now }
+					: { ...item, ts: now, lastActivityTs: now },
+			)
 			this.activityUnsettled.add(taskId)
 		})().finally(() => this.activityWrites.delete(taskId))
 		this.activityWrites.set(taskId, write)
@@ -854,6 +876,7 @@ export class SdkTaskHistory {
 		historyItem.cacheWrites = (historyItem.cacheWrites || 0) + (usage.cacheWrites ?? 0)
 		historyItem.totalCost = (historyItem.totalCost || 0) + (usage.totalCost ?? 0)
 		historyItem.ts = Date.now()
+		historyItem.lastActivityTs = historyItem.ts
 		historyItem.isSettled = false
 		historyItem.settledAt = undefined
 

@@ -10,12 +10,12 @@ function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): History
 }
 
 describe("buildInbox", () => {
-	it("puts unsettled chats on top by recency and settled chats below by settle time", () => {
+	it("puts unsettled chats on top by recency and settled chats below by last activity (not settle time)", () => {
 		const history = [
 			item("old", NOW - 50 * MIN),
-			item("s1", NOW - 90 * MIN, { isSettled: true, settledAt: NOW - 80 * MIN }),
+			item("s1", NOW - 90 * MIN, { isSettled: true, settledAt: NOW - MIN }),
 			item("new", NOW - 5 * MIN),
-			item("s2", NOW - 200 * MIN, { isSettled: true, settledAt: NOW - 10 * MIN }),
+			item("s2", NOW - 20 * MIN, { isSettled: true, settledAt: NOW - 2 * MIN }),
 		]
 
 		const { active, settled, hiddenCount } = buildInbox(history, {})
@@ -125,6 +125,6 @@ describe("inbox helpers", () => {
 		expect(describeActivity(row("running"), NOW)).toBe("Working…")
 		expect(describeActivity(row("waiting"), NOW)).toBe("Waiting for you")
 		expect(describeActivity(row("error"), NOW)).toBe("Stopped with an error")
-		expect(describeActivity(row("done", true), NOW)).toBe("Settled 3m ago")
+		expect(describeActivity(row("done", true), NOW)).toBe("Last active 1m ago")
 	})
 })

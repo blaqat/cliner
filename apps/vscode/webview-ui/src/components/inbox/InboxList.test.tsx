@@ -50,7 +50,7 @@ describe("InboxList", () => {
 		expect(rows[0]).toHaveTextContent("task run")
 		expect(rows[0]).toHaveTextContent("Working…")
 		expect(rows[0]).toHaveTextContent("1")
-		expect(rows[1]).toHaveTextContent("Settled 1m ago")
+		expect(rows[1]).toHaveTextContent("Last active 2m ago")
 		expect(screen.getByRole("img", { name: "Running" })).toBeInTheDocument()
 		expect(screen.getByRole("img", { name: "Settled" })).toBeInTheDocument()
 	})

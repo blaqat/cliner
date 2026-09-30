@@ -43,7 +43,7 @@ interface InboxRowViewProps {
 
 const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	const { item, status, settled, subthreadCount, liveSubthreadCount, subagentCount, liveSubagentCount } = row
-	const time = settled ? formatStamp(item.settledAt ?? item.ts, now) : formatAge(item.ts, now)
+	const time = settled ? formatStamp(item.ts, now) : formatAge(item.ts, now)
 	const activity = describeActivity(row, now)
 
 	return (

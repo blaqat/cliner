@@ -17,6 +17,8 @@ export type HistoryItem = {
 	isFavorited?: boolean
 	isSettled?: boolean
 	settledAt?: number
+	/** Last real interaction (message, approval, turn); unaffected by settle/favorite/metadata edits. Mirrored into `ts`. */
+	lastActivityTs?: number
 	parentTaskId?: string
 	forkedAtTs?: number
 	/** Total subagents ever spawned by this task (persisted for inbox counts). */

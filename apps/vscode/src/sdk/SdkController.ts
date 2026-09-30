@@ -93,7 +93,7 @@ import { SdkSessionHistoryLoader } from "./sdk-session-history-loader"
 import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import { SdkTaskHistory, sessionHistoryRecordToHistoryItem, sessionRecordActivityTs } from "./sdk-task-history"
 import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 import { createVscodeSdkTelemetryHandle, type VscodeSdkTelemetryHandle } from "./sdk-telemetry"
 import { isToolAutoApproved } from "./sdk-tool-policies"
@@ -2514,10 +2514,7 @@ export class Controller {
 		filteredTasks.sort((a, b) => {
 			switch (sortBy) {
 				case "oldest":
-					return (
-						dateStringToTimestamp(a.updatedAt ?? a.endedAt ?? a.startedAt) -
-						dateStringToTimestamp(b.updatedAt ?? b.endedAt ?? b.startedAt)
-					)
+					return sessionRecordActivityTs(a) - sessionRecordActivityTs(b)
 				case "mostExpensive":
 					return (metadataNumber(b.metadata, "totalCost") ?? 0) - (metadataNumber(a.metadata, "totalCost") ?? 0)
 				case "mostTokens":
@@ -2532,10 +2529,7 @@ export class Controller {
 							(metadataNumber(a.metadata, "cacheReads") ?? 0))
 					)
 				default:
-					return (
-						dateStringToTimestamp(b.updatedAt ?? b.endedAt ?? b.startedAt) -
-						dateStringToTimestamp(a.updatedAt ?? a.endedAt ?? a.startedAt)
-					)
+					return sessionRecordActivityTs(b) - sessionRecordActivityTs(a)
 			}
 		})
 
@@ -2545,7 +2539,7 @@ export class Controller {
 			return {
 				id: item.sessionId,
 				task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
-				ts: dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt),
+				ts: sessionRecordActivityTs(item),
 				isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
 				isSettled: metadataBoolean(metadata, "isSettled"),
 				settledAt: metadataNumber(metadata, "settledAt") || undefined,

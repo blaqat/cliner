@@ -82,9 +82,7 @@ export function buildInbox(
 		})
 
 	const active = rows.filter((row) => !row.settled).sort((a, b) => b.item.ts - a.item.ts)
-	const settled = rows
-		.filter((row) => row.settled)
-		.sort((a, b) => (b.item.settledAt ?? b.item.ts) - (a.item.settledAt ?? a.item.ts))
+	const settled = rows.filter((row) => row.settled).sort((a, b) => b.item.ts - a.item.ts)
 
 	return {
 		active: active.slice(0, activeLimit),
@@ -112,7 +110,7 @@ export function formatAge(ts: number, now: number): string {
 	return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
-/** Settled timestamp: time of day when today, otherwise a short date. */
+/** Last-activity timestamp: time of day when today, otherwise a short date. */
 export function formatStamp(ts: number, now: number): string {
 	const date = new Date(ts)
 	const today = new Date(now)
@@ -125,8 +123,8 @@ export function formatStamp(ts: number, now: number): string {
 /** Second line of an inbox row. */
 export function describeActivity(row: InboxRow, now: number): string {
 	if (row.settled) {
-		const age = formatAge(row.item.settledAt ?? row.item.ts, now)
-		return age === "now" ? "Settled just now" : `Settled ${age} ago`
+		const age = formatAge(row.item.ts, now)
+		return age === "now" ? "Last active just now" : `Last active ${age} ago`
 	}
 	switch (row.status) {
 		case "running":
