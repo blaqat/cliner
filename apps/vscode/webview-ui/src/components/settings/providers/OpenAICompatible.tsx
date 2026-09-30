@@ -301,6 +301,32 @@ export const OpenAICompatibleProvider = ({
 
 	return (
 		<div>
+			{/* API type: only the built-in OpenAI Compatible provider switches
+			    between Chat Completions and the Responses API (plan §10). */}
+			{isOpenAiProvider && (
+				<div style={{ marginBottom: 10 }}>
+					<label htmlFor="openai-compatible-api-type">
+						<span style={{ fontWeight: 500 }}>API Type</span>
+					</label>
+					<DropdownContainer className="dropdown-container">
+						<VSCodeDropdown
+							aria-label="API type"
+							className="w-full"
+							id="openai-compatible-api-type"
+							onChange={(event) =>
+								handleFieldChange(
+									"openAiCompatibleApiType",
+									(event.target as HTMLSelectElement).value as "chat" | "responses",
+								)
+							}
+							value={apiConfiguration?.openAiCompatibleApiType ?? "chat"}>
+							<VSCodeOption value="chat">Chat Completions (GPT-5.3 to 5.5, local servers)</VSCodeOption>
+							<VSCodeOption value="responses">Responses (GPT-5.6 to 6.1)</VSCodeOption>
+						</VSCodeDropdown>
+					</DropdownContainer>
+				</div>
+			)}
+
 			<Tooltip>
 				<TooltipTrigger>
 					<div className="mb-2.5">

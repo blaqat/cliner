@@ -1,0 +1,75 @@
+import { ApiConfigProfile } from "@shared/proto/cline/models"
+import { describe, expect, it } from "vitest"
+import {
+	buildSaveRequest,
+	changeDraftProvider,
+	describeProfile,
+	draftFromProto,
+	duplicateDraft,
+	newProfileDraft,
+	setDraftOption,
+	setDraftSecret,
+} from "./profileDraft"
+
+describe("profileDraft", () => {
+	it("splits options and secrets, omitting blank secrets", () => {
+		let draft = {
+			...newProfileDraft("openai"),
+			name: " Local ",
+			modelId: "gpt-x",
+			openAiCompatibleApiType: "responses" as const,
+		}
+		draft = setDraftOption(draft, "openAiBaseUrl", "http://localhost:1234/v1")
+		draft = setDraftOption(draft, "openAiHeaders", "")
+		draft = setDraftSecret(draft, "openAiApiKey", "")
+		const request = buildSaveRequest(draft)
+		expect(request.name).toBe("Local")
+		expect(request.openAiCompatibleApiType).toBe("responses")
+		expect(JSON.parse(request.optionsJson)).toEqual({ openAiBaseUrl: "http://localhost:1234/v1" })
+		expect(request.secrets).toEqual({})
+		expect(request.id).toBe("")
+
+		const withKey = buildSaveRequest(setDraftSecret(draft, "openAiApiKey", "sk-1"))
+		expect(withKey.secrets).toEqual({ openAiApiKey: "sk-1" })
+	})
+
+	it("loads a stored profile and keeps untouched options on save", () => {
+		const draft = draftFromProto(
+			ApiConfigProfile.create({
+				id: "p1",
+				name: "Claude",
+				provider: "anthropic",
+				modelId: "m",
+				optionsJson: JSON.stringify({ anthropicBaseUrl: "https://x" }),
+				secretKeys: ["apiKey"],
+			}),
+		)
+		const request = buildSaveRequest(draft)
+		expect(request.id).toBe("p1")
+		expect(JSON.parse(request.optionsJson)).toEqual({ anthropicBaseUrl: "https://x" })
+		expect(request.secrets).toEqual({})
+		expect(request.openAiCompatibleApiType).toBe("")
+	})
+
+	it("resets provider-specific state when the provider changes", () => {
+		const draft = setDraftSecret(
+			setDraftOption({ ...newProfileDraft("openai"), modelId: "m" }, "openAiBaseUrl", "u"),
+			"openAiApiKey",
+			"k",
+		)
+		const next = changeDraftProvider(draft, "anthropic")
+		expect(next).toMatchObject({ provider: "anthropic", modelId: "", options: {}, secrets: {} })
+	})
+
+	it("duplicates as an unsaved copy", () => {
+		const copy = duplicateDraft({ ...newProfileDraft("anthropic"), id: "p1", name: "A", savedSecretKeys: ["apiKey"] })
+		expect(copy).toMatchObject({ id: undefined, name: "A copy", savedSecretKeys: [] })
+	})
+
+	it("describes profiles with API type for OpenAI Compatible", () => {
+		expect(describeProfile({ provider: "openai", modelId: "m", openAiCompatibleApiType: "responses" })).toBe(
+			"OpenAI Compatible · m · Responses",
+		)
+		expect(describeProfile({ provider: "anthropic", modelId: "c" })).toBe("Anthropic · c")
+	})
+})

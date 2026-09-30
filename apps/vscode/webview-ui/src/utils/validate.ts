@@ -1,4 +1,5 @@
 import { ApiConfiguration } from "@shared/api"
+import { toAllowedApiProvider } from "@shared/api-profiles"
 import { Mode } from "@shared/storage/types"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 
@@ -7,7 +8,11 @@ export function validateApiConfiguration(currentMode: Mode, apiConfiguration?: A
 		const { apiProvider, openAiModelId, togetherModelId, ollamaModelId, lmStudioModelId, vsCodeLmModelSelector } =
 			getModeSpecificFields(apiConfiguration, currentMode)
 
-		switch (apiProvider) {
+		// The fork's provider allowlist (plan §1a): a stored provider outside it
+		// is treated as the first allowed provider, matching ApiOptions' mapping.
+		const provider = toAllowedApiProvider(apiProvider)
+
+		switch (provider) {
 			case "anthropic":
 				if (!apiConfiguration.apiKey) {
 					return "You must provide a valid API key or choose a different provider."
