@@ -72,6 +72,12 @@ export function getMinimapItems(
 	messages: readonly ClineMessage[],
 	rows: readonly (ClineMessage | ClineMessage[])[],
 	task?: ClineMessage,
+	/**
+	 * The backend reports an active turn. When given, it decides whether the last reply is
+	 * streaming: `partial` flips off and on between every message of a turn, which would
+	 * restart the square's animation each time.
+	 */
+	turnActive?: boolean,
 ): MinimapItem[] {
 	const items: MinimapItem[] = []
 	if (task) {
@@ -94,9 +100,10 @@ export function getMinimapItems(
 	let lastIndex = -1
 	let lastMessage: ClineMessage | undefined
 	let lastText: string | undefined
-	const flushTurn = () => {
+	const flushTurn = (isLastTurn: boolean) => {
 		if (lastIndex >= 0 && lastMessage) {
-			const streaming = lastMessage.partial === true
+			// Only the last turn can be in progress.
+			const streaming = turnActive === undefined ? lastMessage.partial === true : isLastTurn && turnActive
 			items.push({
 				index: lastIndex,
 				startIndex: turnStart,
@@ -115,7 +122,7 @@ export function getMinimapItems(
 	messages.forEach((message, messageIndex) => {
 		const row = rowByTs.get(message.ts)
 		if (isUserMessage(message)) {
-			flushTurn()
+			flushTurn(false)
 			// A hidden user message (the echo of a selected followup option) jumps to the
 			// question row that shows the selection, else to the next rendered row.
 			const previous = messages[messageIndex - 1]
@@ -147,11 +154,20 @@ export function getMinimapItems(
 		lastIndex = row
 		lastMessage = message
 	})
-	flushTurn()
+	flushTurn(true)
 	return items
 }
 
-/** The item covering the row at the top of the viewport: the last item starting at or before `topIndex`. */
+/** Stable identity of a square: unlike `ts`, it doesn't change as the turn it covers grows. */
+export function minimapItemKey(item: MinimapItem): string {
+	return `${item.role}:${item.startIndex}`
+}
+
+/**
+ * The item covering the row at the top of the viewport: the last item starting at or before
+ * `topIndex`. Pass `Number.MAX_SAFE_INTEGER` while the list follows new output: the reader is
+ * at the live end, so the last turn stays current however the rows above shift as it grows.
+ */
 export function getCurrentMinimapItem(items: readonly MinimapItem[], topIndex: number): MinimapItem | undefined {
 	let current: MinimapItem | undefined
 	for (const item of items) {

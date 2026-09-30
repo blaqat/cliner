@@ -301,12 +301,14 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 					}}
 				/>
 				<MiniMap
+					autoScrollDisabledRef={disableAutoScrollRef}
 					listKey={task.ts}
 					messages={modifiedMessages}
 					onJump={scrollToIndex}
 					rows={groupedMessages}
 					scrollContainerRef={scrollContainerRef}
 					task={task}
+					turnActive={turnState?.phase === "streaming"}
 				/>
 			</div>
 		</div>

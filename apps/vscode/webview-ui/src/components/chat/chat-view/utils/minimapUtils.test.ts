@@ -1,7 +1,7 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { describe, expect, it } from "vitest"
 import { filterVisibleMessages, groupLowStakesTools, groupMessages } from "./messageUtils"
-import { getCurrentMinimapItem, getMinimapItems, type MinimapItem } from "./minimapUtils"
+import { getCurrentMinimapItem, getMinimapItems, type MinimapItem, minimapItemKey } from "./minimapUtils"
 
 const say = (ts: number, sayType: ClineMessage["say"], text?: string, partial?: boolean): ClineMessage => ({
 	ts,
@@ -14,6 +14,9 @@ const say = (ts: number, sayType: ClineMessage["say"], text?: string, partial?: 
 // Rows that render every message: the transcript is just the rows flattened.
 const fromRows = (rows: (ClineMessage | ClineMessage[])[], task?: ClineMessage): MinimapItem[] =>
 	getMinimapItems(rows.flat(), rows, task)
+
+const fromRowsWith = (rows: (ClineMessage | ClineMessage[])[], turnActive: boolean): MinimapItem[] =>
+	getMinimapItems(rows.flat(), rows, undefined, turnActive)
 
 // The real ChatView pipeline from the unfiltered transcript to the rendered rows.
 const render = (messages: ClineMessage[]) => groupLowStakesTools(groupMessages(filterVisibleMessages(messages)))
@@ -60,6 +63,33 @@ describe("getMinimapItems", () => {
 
 		const items = fromRows([say(1, "user_feedback", "go"), say(2, "text", "Partial", true)])
 		expect(items[1]).toMatchObject({ role: "agent", snippet: "Partial", streaming: true })
+	})
+
+	it("keeps the in-progress reply streaming, with the same key, while its messages complete one by one", () => {
+		// A streaming turn: each message goes partial -> complete, then the next one appears.
+		const snapshots: (ClineMessage | ClineMessage[])[][] = [
+			[say(1, "user_feedback", "go"), say(2, "text", "Look", true)],
+			[say(1, "user_feedback", "go"), say(2, "text", "Looking")],
+			[say(1, "user_feedback", "go"), say(2, "text", "Looking"), [say(3, "tool", "{}", true)]],
+			[say(1, "user_feedback", "go"), say(2, "text", "Looking"), [say(3, "tool", "{}")]],
+			[say(1, "user_feedback", "go"), say(2, "text", "Looking"), [say(3, "tool", "{}")], say(4, "text", "Fo", true)],
+		]
+		const replies = snapshots.map((rows) => fromRowsWith(rows, true)[1])
+		expect(replies.map((reply) => reply.streaming)).toEqual([true, true, true, true, true])
+		expect(new Set(replies.map(minimapItemKey)).size).toBe(1)
+		// The ts follows the latest message, so it can't serve as the square's identity.
+		expect(new Set(replies.map((reply) => reply.ts)).size).toBeGreaterThan(1)
+	})
+
+	it("stops streaming when the turn ends, even on a partial tail, and never marks earlier turns", () => {
+		const rows = [
+			say(1, "user_feedback", "a"),
+			say(2, "text", "one", true),
+			say(3, "user_feedback", "b"),
+			say(4, "text", "two"),
+		]
+		expect(fromRowsWith(rows, false).map((item) => item.streaming)).toEqual([false, false, false, false])
+		expect(fromRowsWith(rows, true).map((item) => item.streaming)).toEqual([false, false, false, true])
 	})
 
 	it("does not add an agent square between consecutive user messages", () => {
@@ -144,6 +174,17 @@ describe("getCurrentMinimapItem", () => {
 		expect(getCurrentMinimapItem(items, 2)?.ts).toBe(4)
 		expect(getCurrentMinimapItem(items, 3)?.ts).toBe(6)
 		expect(getCurrentMinimapItem(items, 99)?.ts).toBe(6)
+	})
+
+	it("keeps the last turn current at the live end as its rows grow", () => {
+		let rows: (ClineMessage | ClineMessage[])[] = [say(2, "text", "a"), say(3, "user_feedback", "u")]
+		const keys: (string | undefined)[] = []
+		for (let ts = 4; ts < 12; ts++) {
+			rows = [...rows, ts % 2 ? say(ts, "text", `t${ts}`, true) : [say(ts, "tool", "{}")]]
+			const current = getCurrentMinimapItem(fromRows(rows, say(1, "task", "t")), Number.MAX_SAFE_INTEGER)
+			keys.push(current && minimapItemKey(current))
+		}
+		expect(new Set(keys)).toEqual(new Set(["agent:2"]))
 	})
 
 	it("falls back to the first item", () => {

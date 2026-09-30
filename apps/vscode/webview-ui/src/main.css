@@ -274,6 +274,7 @@ vscode-dropdown::part(listbox) {
 @media (prefers-reduced-motion: reduce) {
 	.animate-shimmer,
 	.animate-breathe,
+	.animate-minimap-live,
 	.animate-row-in,
 	.streaming-dot .inline-markdown-block *::after,
 	[data-slot="popover-content"].menu-rise[data-state="open"],
@@ -284,6 +285,7 @@ vscode-dropdown::part(listbox) {
 
 body.vscode-reduce-motion .animate-shimmer,
 body.vscode-reduce-motion .animate-breathe,
+body.vscode-reduce-motion .animate-minimap-live,
 body.vscode-reduce-motion .animate-row-in,
 body.vscode-reduce-motion .streaming-dot .inline-markdown-block *::after,
 body.vscode-reduce-motion [data-slot="popover-content"].menu-rise[data-state="open"],

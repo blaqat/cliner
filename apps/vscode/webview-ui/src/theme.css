@@ -146,6 +146,14 @@
 		}
 	}
 
+	/* The in-progress minimap reply: fades only the fill, so the current-square outline stays steady. */
+	--animate-minimap-live: minimap-live 2.4s ease-in-out infinite;
+	@keyframes minimap-live {
+		50% {
+			background-color: color-mix(in srgb, var(--color-minimap-agent) 35%, transparent);
+		}
+	}
+
 	--animate-breathe: breathe 1.2s ease-in-out infinite;
 	@keyframes breathe {
 		0%,
