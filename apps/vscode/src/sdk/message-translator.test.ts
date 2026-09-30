@@ -4411,3 +4411,73 @@ describe("persisted display-only errors", () => {
 		expect(rendered.some((message) => message.say === "completion_result" || message.ask === "completion_result")).toBe(false)
 	})
 })
+
+describe("translateSessionEvent — spawn_agent stop", () => {
+	const spawnStart = (state: MessageTranslatorState, callId: string, task: string) =>
+		translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "content_start",
+						contentType: "tool",
+						toolName: "spawn_agent",
+						toolCallId: callId,
+						input: { task },
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+	const spawnEnd = (state: MessageTranslatorState, callId: string, error?: string) =>
+		translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "content_end",
+						contentType: "tool",
+						toolName: "spawn_agent",
+						toolCallId: callId,
+						output: { text: "", usage: { inputTokens: 0, outputTokens: 0 } },
+						error,
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+
+	it("keeps a user-stopped entry stopped when its tool call ends with an abort error", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "research")
+		expect(state.getSpawnAgentTotalCount()).toBe(1)
+		expect(state.getSpawnAgentToolCallId(1)).toBe("call-1")
+		expect(state.markSpawnAgentStopped("call-1")).toBe(true)
+
+		const result = spawnEnd(state, "call-1", "aborted")
+		const statusMessage = result.messages.find((message) => message.say === "subagent")
+		const parsed = JSON.parse(statusMessage?.text ?? "{}")
+		expect(parsed.items[0].status).toBe("stopped")
+		expect(parsed.status).toBe("failed")
+		expect(statusMessage?.partial).toBe(false)
+	})
+
+	it("does not mark finished or unknown entries stopped", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "research")
+		spawnEnd(state, "call-1")
+		expect(state.markSpawnAgentStopped("call-1")).toBe(false)
+		expect(state.markSpawnAgentStopped("missing")).toBe(false)
+	})
+
+	it("keeps the cumulative total across per-iteration resets", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "one")
+		state.reset()
+		spawnStart(state, "call-2", "two")
+		expect(state.getSpawnAgentTotalCount()).toBe(2)
+		expect(state.getSpawnAgentItems()).toHaveLength(1)
+	})
+})

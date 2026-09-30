@@ -11,6 +11,10 @@ interface McpToolDescriptor {
 	name: string
 	description?: string
 	inputSchema: Record<string, unknown>
+	annotations?: {
+		readOnlyHint?: boolean
+		[key: string]: unknown
+	}
 }
 
 export class McpHubToolProvider {
@@ -31,6 +35,7 @@ export class McpHubToolProvider {
 				type: "object",
 				properties: {},
 			},
+			annotations: tool.annotations,
 		}))
 	}
 

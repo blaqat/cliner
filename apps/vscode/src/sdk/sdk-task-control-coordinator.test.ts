@@ -35,6 +35,40 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
 
+	it("aborts an interject without adding a resumable message", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		await coordinator.cancelTask(false)
+		expect(options.raiseCancelFence).toHaveBeenCalledOnce()
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+	})
+
+	it("fences interject then uses the SDK atomic abort and priority-send path", async () => {
+		const active = makeActiveSession()
+		const { coordinator, options } = makeCoordinator({ activeSession: active })
+		await coordinator.cancelTask(false, { text: "Next", images: ["image"], files: ["file"] })
+		expect(options.raiseCancelFence).toHaveBeenCalledOnce()
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+			active.sdkHost,
+			"session-123",
+			"Next",
+			["image"],
+			["file"],
+			"interject",
+		)
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+	})
+
+	it("focuses an existing live task without reloading or stopping it", async () => {
+		const { options } = makeCoordinator({ hasHistoryItem: true })
+		const focusLiveTask = vi.fn(() => true)
+		await new SdkTaskControlCoordinator({ ...options, focusLiveTask }).showTaskWithId("task-1")
+		expect(focusLiveTask).toHaveBeenCalledWith("task-1")
+		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.interactions.clearPending).not.toHaveBeenCalled()
+	})
+
 	it("cancels a running Cline task when the user signs out", async () => {
 		const activeSession = makeActiveSession()
 		const { coordinator, options } = makeCoordinator({ activeSession })
@@ -78,14 +112,15 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.clearTask()
 
-		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cleared")
+		expect(options.interactions.clearPending).not.toHaveBeenCalled()
 		expect(options.rebuilds.runTaskTransition).toHaveBeenCalledOnce()
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("clearTask")
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith()
 		expect(options.messages.finalizeMessagesForSave).not.toHaveBeenCalled()
 		expect(options.messages.cancelPendingSave).toHaveBeenCalledOnce()
-		expect(task.messageStateHandler.clear).toHaveBeenCalledOnce()
+		expect(task.messageStateHandler.clear).not.toHaveBeenCalled()
 		expect(state.task).toBeUndefined()
-		expect(options.resetMessageTranslator).toHaveBeenCalledOnce()
+		expect(options.resetMessageTranslator).not.toHaveBeenCalled()
 	})
 
 	it("waits for the task-transition boundary before ending the active session", async () => {
@@ -108,7 +143,8 @@ describe("SdkTaskControlCoordinator", () => {
 		releaseRebuild()
 		await clear
 
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("clearTask")
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith()
 	})
 
 	it("does not end the session when a task selection supersedes clearTask during the rebuild wait", async () => {
@@ -182,9 +218,10 @@ describe("SdkTaskControlCoordinator", () => {
 		await coordinator.showTaskWithId("task-1")
 
 		expect(options.taskHistory.findHistoryItem).toHaveBeenCalledWith("task-1")
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("showTaskWithId", { awaitStop: false })
-		expect(existingTask.messageStateHandler.clear).toHaveBeenCalledOnce()
-		expect(options.resetMessageTranslator).toHaveBeenCalledOnce()
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith("task-1")
+		expect(existingTask.messageStateHandler.clear).not.toHaveBeenCalled()
+		expect(options.resetMessageTranslator).not.toHaveBeenCalled()
 		expect(state.task?.taskId).toBe("task-1")
 		expect(options.taskHistory.getClineMessages).toHaveBeenCalledWith("task-1")
 		expect(state.task?.messageStateHandler.getClineMessages()).toEqual([
@@ -195,7 +232,37 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
 
-	it("clears a pending approval when switching tasks so the new task input is not consumed", async () => {
+	it.each(["cancel", "interject"])("clears active and queued child approvals on parent %s", async (action) => {
+		const task = createTaskProxy("session-123", vi.fn(), vi.fn())
+		const interactions = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => task.taskId,
+			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+		})
+		const { options } = makeCoordinator({ activeSession: makeActiveSession() })
+		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions })
+		const approvals = ["child-1", "child-2"].map((id) =>
+			interactions.handleRequestToolApproval({
+				agentId: id,
+				conversationId: id,
+				iteration: 1,
+				toolCallId: id,
+				toolName: "editor",
+				input: {},
+				policy: { autoApprove: false },
+				signal: new AbortController().signal,
+			}),
+		)
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		await coordinator.cancelTask(false, action === "interject" ? { text: "new direction" } : undefined)
+		for (const approval of approvals) await expect(approval).resolves.toMatchObject({ approved: false })
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
+		expect(interactions.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(false)
+		if (action === "interject") expect(options.sessions.fireAndForgetSend).toHaveBeenCalled()
+		else expect(options.sessions.getActiveSession()?.sdkHost.abort).toHaveBeenCalled()
+	})
+
+	it("preserves a background approval across task switching", async () => {
 		const pendingTask = createTaskProxy("old-task", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => pendingTask }),
@@ -221,11 +288,11 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		await expect(approvalPromise).resolves.toEqual({ approved: false, reason: "Task switched" })
-		expect(interactions.resolvePendingToolApproval("next task input", "noButtonClicked")).toBe(false)
+		expect(interactions.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
 
-	it("settles a pending question when switching tasks so the outgoing run can unwind", async () => {
+	it("preserves a background question across task switching", async () => {
 		const pendingTask = createTaskProxy("old-task", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => pendingTask }),
@@ -243,8 +310,8 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		await expect(questionPromise).resolves.toBe("")
-		expect(interactions.resolvePendingAskQuestion("late answer")).toBe(false)
+		expect(interactions.resolvePendingAskQuestion("late answer")).toBe(true)
+		await expect(questionPromise).resolves.toBe("late answer")
 	})
 
 	it("shows a legacy task with a warning and a resume ask", async () => {
@@ -493,6 +560,8 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		sessions: {
 			getActiveSession: vi.fn(() => input.activeSession),
 			endActiveSession: vi.fn().mockResolvedValue(input.activeSession),
+			focusSession: vi.fn(),
+			fireAndForgetSend: vi.fn(),
 			setRunning: vi.fn(),
 		},
 		interactions: {
@@ -546,6 +615,8 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		sessions: SdkTaskControlCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
 			endActiveSession: ReturnType<typeof vi.fn>
+			focusSession: ReturnType<typeof vi.fn>
+			fireAndForgetSend: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 		}
 		interactions: SdkTaskControlCoordinatorOptions["interactions"] & { clearPending: ReturnType<typeof vi.fn> }

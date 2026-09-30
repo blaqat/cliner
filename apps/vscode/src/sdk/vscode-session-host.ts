@@ -54,13 +54,15 @@ import { getEffectiveTerminalExecutionMode } from "./vscode-terminal-execution-m
 export interface VscodeSessionHostOptions {
 	mcpHub: McpHub
 	requestToolApproval?: (request: {
+		signal?: AbortSignal
+		sessionId: string
 		agentId: string
 		conversationId: string
 		iteration: number
 		toolCallId: string
 		toolName: string
 		input: unknown
-		policy: { enabled: boolean; autoApprove: boolean }
+		policy: { enabled: boolean; autoApprove: boolean; requireApproval?: boolean }
 	}) => Promise<{ approved: boolean; reason?: string }>
 	/** Executor for the SDK's built-in ask_question tool (equivalent to classic ask_followup_question). */
 	askQuestion?: (question: string, options: string[], context: AgentToolContext) => Promise<string>
@@ -248,6 +250,10 @@ export class VscodeSessionHost implements SdkSessionHost {
 			}
 			throw error
 		}
+	}
+
+	async stopSubagent(sessionId: string, toolCallId: string): Promise<boolean> {
+		return this.inner.abortSubAgent(sessionId, toolCallId)
 	}
 
 	async stop(sessionId: string): Promise<void> {

@@ -19,6 +19,20 @@ type StartInput = Parameters<VscodeSessionHost["start"]>[0]
 type InitialMessages = StartInput["initialMessages"]
 type SessionConfig = Awaited<ReturnType<SdkSessionConfigBuilder["build"]>>
 
+function latestModeResult(messages: ClineMessage[]): ClineMessage | undefined {
+	return [...messages]
+		.reverse()
+		.find(
+			(message) =>
+				(message.type === "say" && (message.say === "plan_completion_result" || message.say === "completion_result")) ||
+				(message.type === "ask" && (message.ask === "plan_mode_respond" || message.ask === "completion_result")),
+		)
+}
+
+function isAskAnswer(message: ClineMessage | undefined): boolean {
+	return !!message && !message.partial && (message.say === "plan_completion_result" || message.ask === "plan_mode_respond")
+}
+
 function usesClineAccountAuth(providerId: string): boolean {
 	return getProviderAuthStorageId(providerId) === "cline"
 }
@@ -26,6 +40,7 @@ function usesClineAccountAuth(providerId: string): boolean {
 export { ACT_MODE_CONTINUATION_PROMPT }
 
 export interface SdkModeCoordinatorOptions {
+	resumeInAct?: (content?: ChatContent) => Promise<boolean>
 	stateManager: StateManager
 	sessions: SdkSessionLifecycle
 	interactions: SdkInteractionCoordinator
@@ -127,19 +142,12 @@ export class SdkModeCoordinator {
 			// act -> plan -> act round trip from starting work on a stale plan.
 			const task = this.options.getTask()
 			const clineMessages = task?.messageStateHandler.getClineMessages() ?? []
-			const latestAssistantResult = [...clineMessages]
-				.reverse()
-				.find(
-					(message) =>
-						message.type === "say" &&
-						(message.say === "plan_completion_result" || message.say === "completion_result"),
-				)
+			const latestAssistantResult = latestModeResult(clineMessages)
 			const turnPhase = this.options.getTurnPhase()
 			const planPresented =
 				!activeSession.isRunning &&
 				(turnPhase === "awaiting_followup" || turnPhase === "completed") &&
-				latestAssistantResult?.say === "plan_completion_result" &&
-				!latestAssistantResult.partial
+				isAskAnswer(latestAssistantResult)
 			const autoContinue = modeToSwitchTo === "act" && planPresented
 			const userPrompt = chatContent?.message?.trim() || undefined
 			const userImages = chatContent?.images?.length ? chatContent.images : undefined
@@ -156,6 +164,14 @@ export class SdkModeCoordinator {
 		}
 
 		this.options.stateManager.setGlobalState("mode", modeToSwitchTo)
+		const task = this.options.getTask()
+		const latestResult = latestModeResult(task?.messageStateHandler.getClineMessages() ?? [])
+		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && this.options.resumeInAct) {
+			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
+			const sent = await this.options.resumeInAct(chatContent)
+			await this.options.postStateToWebview()
+			return sent && !!(chatContent?.message?.trim() || chatContent?.images?.length || chatContent?.files?.length)
+		}
 		await this.options.postStateToWebview()
 		return false
 	}

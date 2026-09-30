@@ -6,6 +6,7 @@ import { RemoteConfigFields } from "@shared/storage/state-keys"
 import type { Environment } from "../config"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration } from "./api"
+import type { ApiConfigProfile } from "./api-profiles"
 import { BrowserSettings } from "./BrowserSettings"
 import { ClineFeatureSetting } from "./ClineFeatureSetting"
 import { BannerCardData } from "./cline/banner"
@@ -38,10 +39,25 @@ export const DEFAULT_PLATFORM = "unknown"
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
 export interface ExtensionState {
+	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error">
+	/**
+	 * Subagent counts per task id. Live sessions report total spawned + still
+	 * running; settled/history rows fall back to the persisted `subagentCount`
+	 * on HistoryItem (rendered as `live: 0`).
+	 */
+	subagentCounts: Record<string, { total: number; live: number }>
+	enterSendsAs: "steer" | "interject"
+	promptStash: { id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }[]
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined
 	apiConfiguration?: ApiConfiguration
+	/** Saved API configurations (one provider + one model each). */
+	apiConfigProfiles: ApiConfigProfile[]
+	/** Profile id assigned to Ask (plan) mode. */
+	askProfileId?: string
+	/** Profile id assigned to Act mode. */
+	actProfileId?: string
 	autoApprovalSettings: AutoApprovalSettings
 	browserSettings: BrowserSettings
 	remoteBrowserHost?: string
@@ -176,6 +192,9 @@ export interface QueuedPrompt {
 }
 
 export interface ClineMessage {
+	/** Index in the persisted SDK transcript, for conversation-only forks. */
+	sdkMessageIndex?: number
+	sdkToolCallId?: string
 	ts: number
 	type: "ask" | "say"
 	ask?: ClineAsk
@@ -303,11 +322,13 @@ export interface ClineSayBrowserAction {
 	text?: string
 }
 
-export type SubagentExecutionStatus = "pending" | "running" | "completed" | "failed"
+export type SubagentExecutionStatus = "pending" | "running" | "completed" | "failed" | "stopped"
 
 export interface SubagentStatusItem {
 	index: number
 	prompt: string
+	/** Access level requested via spawn_agent ("read" default, "write" for editing tools). */
+	access?: "read" | "write"
 	status: SubagentExecutionStatus
 	toolCalls: number
 	inputTokens: number
@@ -353,6 +374,8 @@ export interface ClineAskUseMcpServer {
 
 export interface ClineAskUseSubagents {
 	prompts: string[]
+	/** Parallel to `prompts`: access level requested for each spawned subagent. */
+	access?: ("read" | "write")[]
 }
 
 export interface ClinePlanModeResponse {

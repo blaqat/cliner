@@ -21,6 +21,32 @@ describe("SdkModeCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("continues a persisted Ask answer in Act after its live handle was evicted", async () => {
+		const task = makeTask("old-session", planMessages())
+		const { coordinator, options, state } = makeCoordinator({ task, mode: "plan", turnPhase: "resumable" })
+		const resume = vi.fn().mockResolvedValue(true)
+		Object.assign(options, { resumeInAct: resume })
+		await expect(coordinator.togglePlanActMode("act", { message: "implement", images: [], files: [] })).resolves.toBe(true)
+		expect(state.mode).toBe("act")
+		expect(resume).toHaveBeenCalledWith({ message: "implement", images: [], files: [] })
+		expect(coordinator.consumeModeSwitchNotice("old-session")).toEqual({ from: "plan", to: "act" })
+	})
+
+	it("continues a persisted legacy plan_mode_respond answer in Act", async () => {
+		const task = makeTask("old-session", [{ ts: 1, type: "ask", ask: "plan_mode_respond", text: "Answer", partial: false }])
+		const { coordinator, options } = makeCoordinator({ task, mode: "plan" })
+		const resume = vi.fn().mockResolvedValue(true)
+		Object.assign(options, { resumeInAct: resume })
+		await coordinator.togglePlanActMode("act")
+		expect(resume).toHaveBeenCalledOnce()
+	})
+
+	it("preserves input when a persisted Act continuation could not start", async () => {
+		const { coordinator, options } = makeCoordinator({ task: makeTask("old-session", planMessages()), mode: "plan" })
+		Object.assign(options, { resumeInAct: vi.fn().mockResolvedValue(false) })
+		await expect(coordinator.togglePlanActMode("act", { message: "implement", images: [], files: [] })).resolves.toBe(false)
+	})
+
 	it("preserves pending input by returning false when toggling mode without an active session", async () => {
 		const { coordinator, state, options } = makeCoordinator({ mode: "act" })
 

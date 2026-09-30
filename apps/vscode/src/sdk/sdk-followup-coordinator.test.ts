@@ -15,6 +15,15 @@ describe("SdkFollowupCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("resumes a persisted answer with the hidden Act continuation prompt", async () => {
+		const { coordinator, options } = makeCoordinator({ task: makeTask("task-1") })
+		await coordinator.askResponse(undefined, undefined, undefined, undefined, undefined, "[ACT MODE] Implement the answer.")
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith(expect.objectContaining({ mode: "act" }))
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("[ACT MODE] Implement the answer.")
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+	})
+
 	it("resolves pending tool approvals without sending a follow-up", async () => {
 		const { coordinator, options } = makeCoordinator()
 		options.interactions.resolvePendingToolApproval.mockReturnValue(true)

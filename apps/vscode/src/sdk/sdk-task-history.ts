@@ -30,6 +30,7 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
 	sessions: SdkSessionLifecycle
 	/**
@@ -91,6 +92,11 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 	return {
 		title: item.task,
 		isFavorited: item.isFavorited ?? false,
+		isSettled: item.isSettled ?? false,
+		settledAt: item.settledAt ?? 0,
+		parentTaskId: item.parentTaskId ?? "",
+		forkedAtTs: item.forkedAtTs ?? 0,
+		subagentCount: item.subagentCount ?? 0,
 		size: item.size ?? 0,
 		totalCost: item.totalCost ?? 0,
 		tokensIn: item.tokensIn ?? 0,
@@ -149,7 +155,7 @@ function parseUserMessageMode(content: SdkMessage["content"]): "plan" | "act" | 
 	return undefined
 }
 
-function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDisplayMessage[] {
+export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDisplayMessage[] {
 	return messages.map((message): SdkDisplayMessage => {
 		if (message.role !== "user") {
 			return message
@@ -188,6 +194,11 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 		size: metadataNumber(metadata, "size"),
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
+		isSettled: metadataBoolean(metadata, "isSettled") ?? false,
+		settledAt: metadataNumber(metadata, "settledAt") || undefined,
+		parentTaskId: metadataString(metadata, "parentTaskId"),
+		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
+		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
@@ -207,6 +218,9 @@ export class SdkTaskHistory {
 		createdAt: number
 	}
 	private disposed = false
+	private readonly activityUnsettled = new Set<string>()
+	private readonly activityWrites = new Map<string, Promise<void>>()
+	private readonly subagentCountWrites = new Map<string, Promise<void>>()
 	private readonly cachedHistoryHostIdleMs = 30_000
 	private readonly metadataHistoryCacheTtlMs = 10_000
 
@@ -521,6 +535,20 @@ export class SdkTaskHistory {
 		return sdkRecord?.status
 	}
 
+	async getTaskMode(taskId: string): Promise<"plan" | "act" | undefined> {
+		const record = await this.getSdkRecord(taskId)
+		const mode = record?.metadata?.taskMode
+		return mode === "plan" || mode === "act" ? mode : undefined
+	}
+
+	async setTaskMode(taskId: string, mode: "plan" | "act"): Promise<void> {
+		await this.withHistoryHost(async (host) => {
+			const record = await host.get(taskId)
+			if (record) await host.update(taskId, { metadata: { ...record.metadata, taskMode: mode } })
+		})
+		this.invalidateMetadataHistoryCache()
+	}
+
 	async isLegacyTask(taskId: string): Promise<boolean> {
 		const sdkRecord = await this.getSdkRecord(taskId)
 		if (sdkRecord) {
@@ -595,7 +623,54 @@ export class SdkTaskHistory {
 		await this.updateSession(item.id, item)
 	}
 
-	private async deleteSession(sessionId: string): Promise<void> {
+	/**
+	 * Persists the task's cumulative subagent count so settled/history inbox
+	 * rows keep showing a total. Writes are serialized per task and skipped
+	 * unless the count grew.
+	 */
+	async updateTaskSubagentCount(taskId: string, total: number): Promise<void> {
+		const pending = this.subagentCountWrites.get(taskId)
+		const write = (pending ?? Promise.resolve()).then(async () => {
+			const item = await this.findHistoryItem(taskId)
+			if (!item || (item.subagentCount ?? 0) >= total) return
+			await this.updateTaskHistoryItem({ ...item, subagentCount: total })
+		})
+		const tracked = write.finally(() => {
+			if (this.subagentCountWrites.get(taskId) === tracked) this.subagentCountWrites.delete(taskId)
+		})
+		this.subagentCountWrites.set(taskId, tracked)
+		return tracked
+	}
+
+	private async prepareSessionsDeletion(ids: string[]): Promise<void> {
+		const results = await Promise.allSettled(ids.map((id) => this.prepareSessionDeletion(id)))
+		for (const result of results) if (result.status === "rejected") throw result.reason
+	}
+
+	private async prepareSessionDeletion(sessionId: string): Promise<void> {
+		await this.options.beforeDeleteSession?.(sessionId)
+		await this.options.sessions.removeSession?.(sessionId)
+		await this.activityWrites.get(sessionId)
+		await this.subagentCountWrites.get(sessionId)
+	}
+
+	private async deleteSession(sessionId: string, prepared = false): Promise<void> {
+		if (!prepared) {
+			const release = this.options.sessions.beginTaskDeletion?.(sessionId)
+			try {
+				await this.prepareSessionDeletion(sessionId)
+				return await this.deleteSession(sessionId, true)
+			} finally {
+				release?.()
+			}
+		}
+		// Asides survive parent deletion as independent tasks, including favorites.
+		for (const record of await this.listHistory({ hydrate: false })) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.parentTaskId === sessionId) {
+				await this.updateTaskHistoryItem({ ...item, parentTaskId: undefined, forkedAtTs: undefined })
+			}
+		}
 		const legacyTask = this.findLegacyTask(sessionId)
 		try {
 			await this.withHistoryHost(async (host) => {
@@ -633,39 +708,83 @@ export class SdkTaskHistory {
 	}
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
-		await this.deleteSession(id)
-		return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+		return this.deleteTasksFromState([id])
+	}
+
+	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
+		const releases = [...new Set(ids)].map((id) => this.options.sessions.beginTaskDeletion?.(id))
+		try {
+			await this.prepareSessionsDeletion(ids)
+			for (const id of ids) await this.deleteSession(id, true)
+			return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+		} finally {
+			for (const release of releases) release?.()
+		}
 	}
 
 	async deleteAllTaskHistory(options: { preserveFavorites?: boolean } = {}): Promise<number> {
-		const history = await this.listHistory({ hydrate: false })
-		const tasksToDelete = options.preserveFavorites
-			? history.filter(
-					(item) =>
-						!(
-							metadataBoolean(item.metadata, "isFavorited") ??
-							metadataBoolean(item.metadata, "is_favorited") ??
-							false
-						),
-				)
-			: history
+		const releaseHistory = this.options.sessions.beginHistoryDeletion?.()
+		const releases: Array<(() => void) | undefined> = []
+		try {
+			await this.options.sessions.waitForPendingStarts?.()
+			const history = await this.listHistory({ hydrate: false })
+			const tasksToDelete = options.preserveFavorites
+				? history.filter(
+						(item) =>
+							!(
+								metadataBoolean(item.metadata, "isFavorited") ??
+								metadataBoolean(item.metadata, "is_favorited") ??
+								false
+							),
+					)
+				: history
 
-		let deletedCount = 0
-		for (const item of tasksToDelete) {
-			try {
-				await this.deleteSession(item.sessionId)
-				deletedCount += 1
-			} catch (error) {
-				Logger.error(`[SdkTaskHistory] Failed to delete task history item: ${item.sessionId}`, error)
+			// Stop every targeted task before deleting any records.
+			for (const item of tasksToDelete) releases.push(this.options.sessions.beginTaskDeletion?.(item.sessionId))
+			await this.prepareSessionsDeletion(tasksToDelete.map((item) => item.sessionId))
+			let deletedCount = 0
+			for (const item of tasksToDelete) {
+				try {
+					await this.deleteSession(item.sessionId, true)
+					deletedCount += 1
+				} catch (error) {
+					Logger.error(`[SdkTaskHistory] Failed to delete task history item: ${item.sessionId}`, error)
+				}
 			}
-		}
 
-		return deletedCount
+			return deletedCount
+		} finally {
+			for (const release of releases) release?.()
+			releaseHistory?.()
+		}
 	}
 
 	async updateTaskHistory(item: HistoryItem): Promise<HistoryItem[]> {
 		await this.updateTaskHistoryItem(item)
 		return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+	}
+
+	async toggleTaskSettled(taskId: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		this.activityUnsettled.delete(taskId)
+		item.isSettled = !item.isSettled
+		item.settledAt = item.isSettled ? Date.now() : undefined
+		await this.updateTaskHistoryItem(item)
+	}
+
+	async markTaskActive(taskId: string): Promise<void> {
+		if (this.activityUnsettled.has(taskId)) return
+		const pending = this.activityWrites.get(taskId)
+		if (pending) return pending
+		const write = (async () => {
+			const item = await this.findHistoryItem(taskId)
+			if (!item) return
+			if (item.isSettled) await this.updateTaskHistoryItem({ ...item, isSettled: false, settledAt: undefined })
+			this.activityUnsettled.add(taskId)
+		})().finally(() => this.activityWrites.delete(taskId))
+		this.activityWrites.set(taskId, write)
+		return write
 	}
 
 	async updateTaskUsage(taskId: string | undefined, usage: TaskUsage): Promise<void> {
@@ -688,6 +807,8 @@ export class SdkTaskHistory {
 		historyItem.cacheWrites = (historyItem.cacheWrites || 0) + (usage.cacheWrites ?? 0)
 		historyItem.totalCost = (historyItem.totalCost || 0) + (usage.totalCost ?? 0)
 		historyItem.ts = Date.now()
+		historyItem.isSettled = false
+		historyItem.settledAt = undefined
 
 		await this.updateTaskHistoryItem(historyItem)
 	}

@@ -44,6 +44,8 @@ export interface SdkTaskControlCoordinatorOptions {
 	 * suppresses its remaining DISPLAY output (usage is still accounted).
 	 */
 	raiseCancelFence?: () => void
+	focusLiveTask?: (taskId: string) => boolean
+	setTaskMode?: (mode: "plan" | "act") => void
 }
 
 export class SdkTaskControlCoordinator {
@@ -66,7 +68,7 @@ export class SdkTaskControlCoordinator {
 		await this.cancelTask()
 	}
 
-	async cancelTask(): Promise<void> {
+	async cancelTask(appendResume = true, interject?: { text: string; images?: string[]; files?: string[] }): Promise<void> {
 		this.options.interactions.clearPending("Task cancelled")
 
 		const activeSession = this.options.sessions.getActiveSession()
@@ -83,6 +85,18 @@ export class SdkTaskControlCoordinator {
 		// accounted). Order matters — aborting first would leave a window where a straggler gets
 		// the new epoch.
 		this.options.raiseCancelFence?.()
+
+		if (interject) {
+			this.options.sessions.fireAndForgetSend(
+				sdkHost,
+				sessionId,
+				interject.text,
+				interject.images,
+				interject.files,
+				"interject",
+			)
+			return
+		}
 
 		try {
 			await sdkHost.abort(sessionId)
@@ -103,7 +117,8 @@ export class SdkTaskControlCoordinator {
 			text: "",
 			partial: false,
 		}
-		this.options.messages.appendAndEmit([resumeMessage], { type: "status", payload: { sessionId, status: "cancelled" } })
+		if (appendResume)
+			this.options.messages.appendAndEmit([resumeMessage], { type: "status", payload: { sessionId, status: "cancelled" } })
 
 		await this.options.postStateToWebview()
 		Logger.log(`[SdkController] Task cancelled: ${sessionId}`)
@@ -113,25 +128,22 @@ export class SdkTaskControlCoordinator {
 		// Supersede any in-flight showTaskWithId so it cannot re-install a task
 		// after the user cleared the view (e.g. clicked New Task).
 		const generation = ++this.taskViewGeneration
-		this.options.interactions.clearPending("Task cleared")
 		await this.options.rebuilds.runTaskTransition(async () => {
 			if (generation !== this.taskViewGeneration) {
 				return
 			}
 
-			await this.options.sessions.endActiveSession("clearTask")
+			this.options.sessions.focusSession()
 
 			const task = this.options.getTask()
 			if (task) {
 				// SDK session persistence owns conversation history. Do not write classic
 				// ui_messages.json here; history viewing reloads from SDK readMessages().
 				this.options.messages.cancelPendingSave()
-				task.messageStateHandler.clear()
 				this.options.setTask(undefined)
 			}
 
 			await this.options.clearTaskSettings()
-			this.options.resetMessageTranslator()
 		})
 	}
 
@@ -149,6 +161,7 @@ export class SdkTaskControlCoordinator {
 	 * skips mutating the task view.
 	 */
 	async showTaskWithId(taskId: string): Promise<HistoryItem | undefined> {
+		this.options.sessions.assertTaskAvailable?.(taskId)
 		const generation = ++this.taskViewGeneration
 		const isSuperseded = (): boolean => {
 			if (generation === this.taskViewGeneration) {
@@ -170,59 +183,32 @@ export class SdkTaskControlCoordinator {
 			return undefined
 		}
 
-		// FENCE: before stopping the active session. A superseded request must
-		// not stop a session that a newer selection just started or resumed.
+		// A superseded request must not change the focus selected by a newer request.
 		if (isSuperseded()) {
 			return historyItem
 		}
 
 		await this.options.rebuilds.runTaskTransition(async () => {
 			try {
-				// Reject any outstanding approval before tearing down the old session. Approval
-				// resolvers live on the shared interaction coordinator, so ending the session
-				// alone does not discard them; if one leaks across this task switch, the first
-				// message sent in the newly selected task is consumed as the old task's response.
-				this.options.interactions.clearPending("Task switched")
-				if (isSuperseded()) {
-					return
-				}
-
-				// When reopening the task that is currently active, wait for its stop to
-				// land so the persisted session status read below reflects how the last
-				// turn actually ended (completed vs cancelled) instead of a transient
-				// non-terminal status.
-				const activeSession = this.options.sessions.getActiveSession()
-				await this.options.sessions.endActiveSession("showTaskWithId", {
-					awaitStop: activeSession?.sessionId === taskId,
-				})
-
-				// FENCE: everything below mutates the shared task view (clearing the
-				// current task, installing the new proxy, setting the turn phase). If a
-				// newer showTaskWithId/clearTask started while this call awaited I/O,
-				// bail out so the stale request cannot clobber the newer selection.
-				if (isSuperseded()) {
+				if (isSuperseded()) return historyItem
+				await this.options.clearTaskSettings()
+				if (isSuperseded()) return historyItem
+				if (this.options.focusLiveTask?.(taskId)) {
+					await this.options.postStateToWebview()
 					return historyItem
 				}
-
-				const currentTask = this.options.getTask()
-				if (currentTask) {
-					currentTask.messageStateHandler.clear()
-				}
-
-				// The outgoing task's settings overlay must not apply to the newly
-				// opened task (see clearTaskSettings option doc).
-				await this.options.clearTaskSettings()
-
-				this.options.resetMessageTranslator()
+				this.options.sessions.focusSession(taskId)
 
 				// Load messages before installing the new task proxy so any concurrent
 				// postStateToWebview() caller never sees the new id with empty messages.
 				const isLegacyTask = await this.options.taskHistory.isLegacyTask(taskId)
 				const sessionStatus = isLegacyTask ? undefined : await this.options.taskHistory.getSessionStatus(taskId)
 				const rawMessages = await this.options.taskHistory.getClineMessages(taskId)
+				const taskMode = await this.options.taskHistory.getTaskMode?.(taskId)
 				if (isSuperseded()) {
 					return historyItem
 				}
+				this.options.sessions.assertTaskAvailable?.(taskId)
 				const messages = this.options.messages.finalizeMessagesForSave(rawMessages)
 				const cleanedMessages = isLegacyTask
 					? this.appendLegacyTaskWarningAndResumeMessage(messages)
@@ -238,6 +224,7 @@ export class SdkTaskControlCoordinator {
 				if (cleanedMessages.length > 0) {
 					task.messageStateHandler.addMessages(cleanedMessages)
 				}
+				if (taskMode) this.options.setTaskMode?.(taskMode)
 				this.options.setTask(task)
 
 				// Derive the turn phase from the appended resume ask. The webview

@@ -7,7 +7,7 @@ import type { TelemetryService } from "@/services/telemetry/TelemetryService"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import { historyItemToSessionMetadata, SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 vi.mock("@/core/storage/disk", () => ({
@@ -91,6 +91,50 @@ describe("SdkTaskHistory", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+	})
+
+	it("round trips settle and aside metadata", () => {
+		const item = makeHistoryItem("aside", { isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("aside", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+	})
+
+	it("round trips the persisted subagent count", () => {
+		const item = makeHistoryItem("task", { subagentCount: 3 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.subagentCount).toBe(3)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).subagentCount).toBeUndefined()
+	})
+
+	it("persists a growing subagent count and skips non-growth writes", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 2 })
+		const writes = updateSession.mock.calls.length
+		await history.updateTaskSubagentCount("task-1", 1)
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.updateTaskSubagentCount("task-1", 3)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 3 })
+	})
+
+	it("toggles settle and automatically clears it on activity", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		await history.toggleTaskSettled("task-1")
+		expect((await history.findHistoryItem("task-1"))?.isSettled).toBe(true)
+		expect((await history.findHistoryItem("task-1"))?.settledAt).toBeGreaterThan(0)
+		await history.markTaskActive("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
+		const writes = updateSession.mock.calls.length
+		await history.markTaskActive("task-1")
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.toggleTaskSettled("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
 	})
 
 	it("maps SDK session history records to legacy history items", () => {
@@ -524,6 +568,59 @@ describe("SdkTaskHistory", () => {
 		expect(result?.size).toBeUndefined()
 		expect(getFolderSize.loose).toHaveBeenCalledTimes(1)
 		expect(updateSession).not.toHaveBeenCalled()
+	})
+
+	it("awaits live task teardown before deleting persistence and orphans its aside", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("parent"),
+			makeSessionRecord("aside", { metadata: { parentTaskId: "parent", forkedAtTs: 42 } }),
+		])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTaskFromState("parent")
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledWith("parent"))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect((await history.findHistoryItem("aside"))?.parentTaskId).toBeUndefined()
+		expect((await history.findHistoryItem("aside"))?.forkedAtTs).toBeUndefined()
+	})
+
+	it("stops all selected sessions before deleting any of a multi-task selection", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([makeSessionRecord("a"), makeSessionRecord("b")])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTasksFromState(["a", "b"])
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledTimes(2))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect(deleteSession).toHaveBeenCalledTimes(2)
+	})
+
+	it("stops every deleted task before deleting all history while preserving favorites", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("a"),
+			makeSessionRecord("b"),
+			makeSessionRecord("favorite", { metadata: { isFavorited: true } }),
+		])
+		expect(await history.deleteAllTaskHistory({ preserveFavorites: true })).toBe(2)
+		expect(removeSession.mock.calls).toEqual([["a"], ["b"]])
+		for (let index = 0; index < 2; index++) {
+			expect(removeSession.mock.invocationCallOrder[index]).toBeLessThan(deleteSession.mock.invocationCallOrder[index])
+		}
+		expect(await history.deleteAllTaskHistory()).toBe(1)
+		expect(removeSession).toHaveBeenLastCalledWith("favorite")
 	})
 
 	it("deletes SDK sessions", async () => {
@@ -972,7 +1069,9 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 		update: updateSession,
 		delete: deleteSession,
 	} as unknown as VscodeSessionHost
+	const removeSession = vi.fn().mockResolvedValue(undefined)
 	const sessions = {
+		removeSession,
 		getActiveSession: () => ({ sdkHost: host }),
 	} as unknown as SdkSessionLifecycle
 	const history = new SdkTaskHistory({
@@ -984,6 +1083,7 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 
 	return {
 		history,
+		removeSession,
 		getSession,
 		listHistory,
 		updateSession,

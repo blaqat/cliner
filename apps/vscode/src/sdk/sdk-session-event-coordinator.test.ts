@@ -88,7 +88,7 @@ describe("SdkSessionEventCoordinator", () => {
 
 		await coordinator.handleSessionEvent(event)
 
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
 	})
 
 	it("posts state on turn end even when the turn-complete event carries NO messages", async () => {
@@ -151,7 +151,7 @@ describe("SdkSessionEventCoordinator", () => {
 
 		expect(clearTurnOutcome).toHaveBeenCalledOnce()
 		expect(options.beginProviderFailureTelemetryTurn).toHaveBeenCalledOnce()
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(true, "session-123")
 		expect(options.setTurnPhase).toHaveBeenCalledWith("streaming")
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith([message], event)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
@@ -222,7 +222,7 @@ describe("SdkSessionEventCoordinator", () => {
 		await coordinator.handleSessionEvent(event)
 
 		expect(options.setTurnPhase).toHaveBeenCalledWith("awaiting_followup")
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
 	})
 
 	it("updates task usage when the active session has a start result", async () => {
@@ -245,6 +245,29 @@ describe("SdkSessionEventCoordinator", () => {
 			cacheWrites: 0,
 			totalCost: 0.01,
 		})
+	})
+
+	it("does not recreate status or persist usage after a session is removed during cost lookup", async () => {
+		let release!: (free: boolean) => void
+		const { coordinator, options, event } = makeCoordinator({
+			isClineFreeModel: () =>
+				new Promise<boolean>((resolve) => {
+					release = resolve
+				}),
+			translation: {
+				messages: [{ ts: 1, type: "say", say: "text", text: "late" }],
+				sessionEnded: false,
+				turnComplete: true,
+				usage: { tokensIn: 1, tokensOut: 1, totalCost: 1 },
+			},
+		})
+		const handling = coordinator.handleSessionEvent(event)
+		options.sessions.getActiveSession.mockReturnValue(undefined)
+		release(false)
+		await handling
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+		expect(options.taskHistory.updateTaskUsage).not.toHaveBeenCalled()
 	})
 
 	it("zeros usage and api request message cost for free Cline models", async () => {
@@ -390,6 +413,37 @@ describe("SdkSessionEventCoordinator", () => {
 			failurePhase: PROVIDER_FAILURE_PHASE.STREAMING,
 		})
 	})
+
+	it("tracks per-session subagent counts from translator state and posts state", async () => {
+		const { coordinator, options, event } = makeCoordinator()
+		options.messageTranslatorState.addSpawnAgent("call-1", "research the codebase")
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 1, live: 1 })
+		expect(options.taskHistory.updateTaskSubagentCount).toHaveBeenCalledWith("session-123", 1)
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("drops live to 0 when a child stops and when the session is idle", async () => {
+		const { coordinator, options, event } = makeCoordinator()
+		const state = options.messageTranslatorState
+		state.addSpawnAgent("call-1", "one")
+		state.addSpawnAgent("call-2", "two")
+
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 2 })
+		expect(options.taskHistory.updateTaskSubagentCount).toHaveBeenCalledWith("session-123", 2)
+
+		state.markSpawnAgentStopped("call-1")
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 1 })
+
+		// A finished turn has no live children, even if a content_end never arrived.
+		options.sessions.getActiveSession.mockReturnValue({ ...makeActiveSession(), isRunning: false } as never)
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 0 })
+	})
 })
 
 function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
@@ -401,18 +455,30 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 	} as unknown as CoreSessionEvent
 	const activeSession = input.activeSession ?? makeActiveSession()
+	const subagentCounts: Record<string, { total: number; live: number }> = {}
 	const options = {
 		messageTranslatorState: new MessageTranslatorState(),
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
+			getSession: vi.fn(() => activeSession),
 			setRunning: vi.fn(),
 			setQueuedPromptCount: vi.fn(),
+			subagentCounts,
+			setSubagentCounts: vi.fn((id: string, counts: { total: number; live: number }) => {
+				const current = subagentCounts[id]
+				if (current && current.total === counts.total && current.live === counts.live) {
+					return false
+				}
+				subagentCounts[id] = counts
+				return true
+			}),
 		},
 		messages: {
 			appendAndEmit: vi.fn(),
 		},
 		taskHistory: {
 			updateTaskUsage: vi.fn(),
+			updateTaskSubagentCount: vi.fn(async () => {}),
 		},
 		getTask: vi.fn(() => input.task),
 		postStateToWebview: vi.fn().mockResolvedValue(undefined),

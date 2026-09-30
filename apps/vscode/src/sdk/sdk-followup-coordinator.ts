@@ -68,6 +68,7 @@ export class SdkFollowupCoordinator {
 		files?: string[],
 		askResponse?: ClineAskResponse,
 		turnPhaseAtSubmit?: TurnPhase,
+		fallbackPrompt = TASK_RESUMPTION_PROMPT,
 	): Promise<void> {
 		if (this.options.interactions.resolvePendingToolApproval(prompt, askResponse, images, files)) {
 			return
@@ -110,13 +111,13 @@ export class SdkFollowupCoordinator {
 			// reserved for tasks without a live session (opened from history,
 			// extension host reload).
 			if (currentSession && (!task || currentSession.sessionId === task.taskId)) {
-				await this.continueIdleSession(currentSession, prompt, images, files)
+				await this.continueIdleSession(currentSession, prompt, images, files, fallbackPrompt)
 				return
 			}
 
 			if (task) {
 				Logger.log(`[SdkController] askResponse: Resuming task ${task.taskId} before follow-up`)
-				await this.tryResumeSessionFromTask(task, prompt, images, files)
+				await this.tryResumeSessionFromTask(task, prompt, images, files, fallbackPrompt)
 				return
 			}
 
@@ -175,6 +176,7 @@ export class SdkFollowupCoordinator {
 		prompt?: string,
 		images?: string[],
 		files?: string[],
+		fallbackPrompt = TASK_RESUMPTION_PROMPT,
 	): Promise<void> {
 		const { sdkHost, sessionId } = activeSession
 		Logger.log(`[SdkController] Continuing idle session for follow-up: ${sessionId}`)
@@ -190,14 +192,20 @@ export class SdkFollowupCoordinator {
 			this.emitUserFeedback(sessionId, prompt, images, files)
 		}
 
-		const effectivePrompt = prompt?.trim() || TASK_RESUMPTION_PROMPT
+		const effectivePrompt = prompt?.trim() || fallbackPrompt
 		const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt)
 		this.options.sessions.fireAndForgetSend(sdkHost, sessionId, resolvedPrompt, images, files)
 	}
 
-	private async tryResumeSessionFromTask(task: TaskProxy, prompt?: string, images?: string[], files?: string[]): Promise<void> {
+	private async tryResumeSessionFromTask(
+		task: TaskProxy,
+		prompt?: string,
+		images?: string[],
+		files?: string[],
+		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+	): Promise<void> {
 		try {
-			await this.resumeSessionFromTask(task, prompt, images, files)
+			await this.resumeSessionFromTask(task, prompt, images, files, fallbackPrompt)
 		} catch (error) {
 			if (this.options.getTask()?.taskId !== task.taskId) {
 				// Settle the pre-set streaming phase, but do not emit the stale
@@ -235,7 +243,13 @@ export class SdkFollowupCoordinator {
 		}
 	}
 
-	private async resumeSessionFromTask(task: TaskProxy, prompt?: string, images?: string[], files?: string[]): Promise<void> {
+	private async resumeSessionFromTask(
+		task: TaskProxy,
+		prompt?: string,
+		images?: string[],
+		files?: string[],
+		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+	): Promise<void> {
 		const taskId = task.taskId
 		Logger.log(`[SdkController] Resuming session from task: ${taskId}`)
 
@@ -274,7 +288,7 @@ export class SdkFollowupCoordinator {
 				}
 			}
 
-			const effectivePrompt = prompt?.trim() || TASK_RESUMPTION_PROMPT
+			const effectivePrompt = prompt?.trim() || fallbackPrompt
 			const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt)
 			if (this.options.getTask()?.taskId !== taskId) {
 				await this.endStartedResume(sdkHost, startResult.sessionId)

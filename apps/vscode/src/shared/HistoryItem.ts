@@ -13,6 +13,12 @@ export type HistoryItem = {
 	cwdOnTaskInitialization?: string
 	conversationHistoryDeletedRange?: [number, number]
 	isFavorited?: boolean
+	isSettled?: boolean
+	settledAt?: number
+	parentTaskId?: string
+	forkedAtTs?: number
+	/** Total subagents ever spawned by this task (persisted for inbox counts). */
+	subagentCount?: number
 
 	modelId?: string
 	/**

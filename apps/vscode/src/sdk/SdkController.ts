@@ -20,12 +20,12 @@ import {
 	setTelemetryOptOutGlobally,
 	type UserInstructionConfigService,
 } from "@cline/core"
-import { formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
+import { createSessionId, formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
 import type { ApiConfiguration } from "@shared/api"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { mentionRegexGlobal } from "@shared/context-mentions"
-import type { ClineApiReqInfo, ClineMessage, ExtensionState } from "@shared/ExtensionMessage"
+import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { Settings } from "@shared/storage/state-keys"
@@ -55,6 +55,7 @@ import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession } from "./cline-session-factory"
+import { buildAgentHooks } from "./hooks-adapter"
 import { MessageTranslatorState, reshapeErrorForWebview } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
 import type { Disposable, ProviderCatalog, ProviderConfigChange, ProviderConfigStore } from "./model-catalog/contracts"
@@ -67,6 +68,7 @@ import {
 	ProviderFailureTelemetryTurnGate,
 } from "./provider-failure-telemetry"
 import { RemoteConfigRefreshCoordinator } from "./remote-config-refresh-coordinator"
+import { buildAsideConversation } from "./sdk-aside-conversation"
 import {
 	findVisibleCheckpointUserMessageByRun,
 	getCheckpointRunCountForMessage,
@@ -79,7 +81,7 @@ import { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordi
 import { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkMessageCoordinator, type SessionEventListener } from "./sdk-message-coordinator"
-import { SdkModeCoordinator } from "./sdk-mode-coordinator"
+import { ACT_MODE_CONTINUATION_PROMPT, SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
 import { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import { SdkSessionConfigChangeCoordinator } from "./sdk-session-config-change-coordinator"
@@ -151,6 +153,10 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		task: formatDisplayUserInput(item.task),
 		ts: item.ts,
 		isFavorited: item.isFavorited ?? false,
+		isSettled: item.isSettled,
+		settledAt: item.settledAt,
+		parentTaskId: item.parentTaskId,
+		forkedAtTs: item.forkedAtTs,
 		size: item.size ?? 0,
 		totalCost: item.totalCost ?? 0,
 		tokensIn: item.tokensIn ?? 0,
@@ -159,6 +165,17 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		cacheReads: item.cacheReads ?? 0,
 		isLegacy: item.isLegacy ?? false,
 	})
+}
+
+interface TaskSessionContext {
+	task: TaskProxy
+	translator: MessageTranslatorState
+	turn: TurnStateTracker
+	messages: SdkMessageCoordinator
+	interactions: SdkInteractionCoordinator
+	events: SdkSessionEventCoordinator
+	mode: "plan" | "act"
+	cancelled: boolean
 }
 
 /**
@@ -216,7 +233,36 @@ export class Controller {
 
 	// Presents the Task interface that gRPC handlers expect, delegating to the
 	// active SDK session.
-	task?: TaskProxy
+	private focusedTask?: TaskProxy
+	private readonly taskSessions = new Map<string, TaskSessionContext>()
+	private sessionEventStream!: SdkMessageCoordinator
+	private homeContext!: Pick<TaskSessionContext, "translator" | "turn" | "messages" | "interactions">
+
+	get task(): TaskProxy | undefined {
+		return this.focusedTask
+	}
+	set task(task: TaskProxy | undefined) {
+		const previous = this.focusedTask
+		if (
+			previous &&
+			previous.taskId !== task?.taskId &&
+			!this.sessions.getSession(previous.taskId) &&
+			this.taskSessions.get(previous.taskId)?.turn.currentPhase !== "streaming"
+		) {
+			this.taskSessions.get(previous.taskId)?.messages.dispose()
+			this.taskSessions.delete(previous.taskId)
+		}
+		this.focusedTask = task
+		const context = task ? this.getTaskSessionContext(task.taskId, task) : this.homeContext
+		if (!context) return
+		this.messageTranslatorState = context.translator
+		this.turnStateTracker = context.turn
+		this.messages = context.messages
+		this.interactions = context.interactions
+		this.sessions.focusSession(task?.taskId)
+		this.messageTranslatorState.getMinter().bumpEpoch()
+		this.turnStateTracker.set(this.turnStateTracker.currentPhase)
+	}
 
 	mcpHub: McpHub
 	accountService: ClineAccountService
@@ -292,6 +338,7 @@ export class Controller {
 	}
 
 	constructor(readonly context: ClineExtensionContext) {
+		const controller = this
 		// StateManager must be initialized before creating the Controller
 		this.stateManager = StateManager.get()
 		syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
@@ -373,7 +420,9 @@ export class Controller {
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
 		})
 		this.interactions = new SdkInteractionCoordinator({
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			getSessionId: () => this.sessions.getActiveSession()?.sessionId ?? "",
 			postStateToWebview: () => this.postStateToWebview(),
 			// Share the single id/seq/epoch authority so interaction-minted ids (tool-approval
@@ -397,19 +446,47 @@ export class Controller {
 			getCwd: () => this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
+			prepareStartInput: (input) => {
+				const id = input.config?.sessionId || createSessionId()
+				return {
+					...input,
+					config: {
+						...input.config,
+						sessionId: id,
+						onConsecutiveMistakeLimitReached: (context) =>
+							this.getTaskSessionContext(id).interactions.handleConsecutiveMistakeLimitReached(context),
+						hooks: buildAgentHooks(
+							this.stateManager,
+							(message) => this.getTaskSessionContext(id).messages.emitHookMessage(message),
+							input.config?.cwd,
+						),
+					},
+				}
+			},
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
-			requestToolApproval: (request) => this.interactions.handleRequestToolApproval(request),
-			askQuestion: (question, options, context) => this.interactions.handleAskQuestion(question, options, context),
+			requestToolApproval: async (request) =>
+				this.getTaskSessionContext(
+					this.sessions.getSession(request.sessionId)
+						? request.sessionId
+						: await this.resolveTaskSessionId(request.conversationId),
+				).interactions.handleRequestToolApproval(request),
+			askQuestion: async (question, options, context) =>
+				this.getTaskSessionContext(
+					context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+				).interactions.handleAskQuestion(question, options, context),
 			editorExecutor: (input, cwd, context) => this.diffEdits.executeEditorTool(input, cwd, context),
 			applyPatchExecutor: (input, cwd, context) => this.diffEdits.executeApplyPatchTool(input, cwd, context),
 			// The SDK's built-in reader resolves relative paths against the extension
 			// host's process.cwd() (usually "/"); resolve them against the workspace instead.
 			readFileExecutor: createWorkspaceFileReadExecutor(() => this.getWorkspaceRoot()),
 			onSessionEvent: (event) => {
-				this.sessionEvents.handleSessionEvent(event).catch((err) => {
-					Logger.error("[SdkController] Failed to handle session event:", err)
-				})
+				if (!this.sessions.getSession(event.payload.sessionId) && !this.taskSessions.has(event.payload.sessionId)) return
+				this.getTaskSessionContext(event.payload.sessionId)
+					.events.handleSessionEvent(event)
+					.catch((err) => {
+						Logger.error("[SdkController] Failed to handle session event:", err)
+					})
 			},
 			onDidBecomeIdle: () => this.handleSessionBecameIdle(),
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
@@ -430,21 +507,40 @@ export class Controller {
 				}
 				return this._terminalManager
 			},
-			onSendStart: () => {
+			onSessionRemoved: (id) => {
+				this.sessionRebuilds?.forgetSession(id)
+				this.taskSessions.get(id)?.interactions.clearPending("Session removed")
+				this.taskSessions.get(id)?.messages.dispose()
+				this.taskSessions.delete(id)
+			},
+			onSendStart: (id, delivery) => {
+				if (delivery !== "interject") this.getTaskSessionContext(id).cancelled = false
+				this.getTaskSessionContext(id).turn.set("streaming")
+				void this.taskHistory.markTaskActive(id)
 				this.beginProviderFailureTelemetryTurn()
 			},
 			// this.mode is assigned later in this constructor; the closure only
 			// runs at send time, long after construction completes.
 			consumeModeSwitchNotice: (sessionId) => this.mode.consumeModeSwitchNotice(sessionId),
-			onSendComplete: async () => {
+			onSendComplete: async (id) => {
+				await this.taskHistory.markTaskActive(id)
 				// Normal flows close their diff sessions inline; anything left here is orphaned.
-				void this.diffEdits.discardAllPreviews("turn complete")
+				if (this.task?.taskId === id) void this.diffEdits.discardAllPreviews("turn complete")
 
 				this.postStateToWebview().catch((err) => {
 					Logger.error("[SdkController] Failed to post state after turn:", err)
 				})
 			},
 			onSendError: async (error, sessionId) => {
+				const context = this.getTaskSessionContext(sessionId)
+				context.turn.set("error")
+				if (this.task?.taskId !== sessionId) {
+					context.messages.appendMessages([
+						{ ts: context.translator.nextTs(), type: "say", say: "error", text: String(error) },
+					])
+					await this.postStateToWebview()
+					return
+				}
 				// A turn failed — the UI shows error recovery (Retry / Sign In / Add Credits).
 				void this.diffEdits.discardAllPreviews("turn error")
 				this.turnStateTracker.set("error")
@@ -500,6 +596,18 @@ export class Controller {
 		})
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
+			beforeDeleteSession: async (id) => {
+				await this.sessionRebuilds.runExclusive(async () => {
+					const context = this.taskSessions.get(id)
+					if (context) {
+						context.cancelled = true
+						context.interactions.clearPending("Task deleted")
+						context.messages.cancelPendingSave()
+					}
+					await this.sessions.removeSession(id)
+				})
+				if (this.task?.taskId === id) await this.clearTask()
+			},
 			mcpHub: this.mcpHub,
 			sessions: this.sessions,
 			legacyExtensionStorageDir: this.context.globalStorageUri.fsPath,
@@ -509,10 +617,29 @@ export class Controller {
 			getMinter: () => this.messageTranslatorState.getMinter(),
 		})
 		this.mode = new SdkModeCoordinator({
+			resumeInAct: async (content) => {
+				const id = this.task?.taskId
+				if (!id) return false
+				this.turnStateTracker.set("streaming")
+				this.messageTranslatorState.clearTurnOutcome()
+				await this.followups.askResponse(
+					content?.message,
+					content?.images,
+					content?.files,
+					undefined,
+					undefined,
+					ACT_MODE_CONTINUATION_PROMPT,
+				)
+				return this.task?.taskId === id && this.sessions.getSession(id)?.isRunning === true
+			},
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			interactions: this.interactions,
-			messages: this.messages,
+			get interactions() {
+				return controller.interactions
+			},
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getTask: () => this.task,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -537,7 +664,9 @@ export class Controller {
 		this.mcpTools = new SdkMcpCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: async (sdkHost, sessionId) =>
@@ -549,7 +678,9 @@ export class Controller {
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: async (sdkHost, sessionId) =>
@@ -561,7 +692,9 @@ export class Controller {
 		this.providerChanges = new SdkProviderChangeCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getTask: () => this.task,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -573,9 +706,13 @@ export class Controller {
 		})
 		this.followups = new SdkFollowupCoordinator({
 			stateManager: this.stateManager,
-			interactions: this.interactions,
+			get interactions() {
+				return controller.interactions
+			},
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			runExclusive: (operation) => this.sessionRebuilds.runExclusive(operation),
@@ -602,8 +739,12 @@ export class Controller {
 		})
 		this.taskControl = new SdkTaskControlCoordinator({
 			sessions: this.sessions,
-			interactions: this.interactions,
-			messages: this.messages,
+			get interactions() {
+				return controller.interactions
+			},
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			getTask: () => this.task,
 			setTask: (task) => {
@@ -614,7 +755,16 @@ export class Controller {
 			// Bump the epoch synchronously before abort so straggler events from the cancelled
 			// turn carry the old epoch and are dropped by the webview. The resumable phase is set
 			// in SdkController.cancelTask before this runs.
+			setTaskMode: (mode) => this.stateManager.setGlobalState("mode", mode),
+			focusLiveTask: (id) => {
+				const context = this.taskSessions.get(id)
+				if (!context || !this.sessions.getSession(id)) return false
+				this.task = context.task
+				this.stateManager.setGlobalState("mode", context.mode)
+				return true
+			},
 			raiseCancelFence: () => {
+				if (this.task) this.getTaskSessionContext(this.task.taskId).cancelled = true
 				this.messageTranslatorState.clearApprovedToolMessageTs()
 				this.messageTranslatorState.getMinter().bumpEpoch()
 			},
@@ -626,7 +776,9 @@ export class Controller {
 		this.taskStart = new SdkTaskStartCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			buildStartSessionInput,
@@ -653,7 +805,9 @@ export class Controller {
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			rebuilds: this.sessionRebuilds,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getDisplayedTaskId: () => this.task?.taskId,
@@ -665,7 +819,9 @@ export class Controller {
 		this.sessionEvents = new SdkSessionEventCoordinator({
 			messageTranslatorState: this.messageTranslatorState,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			stateManager: this.stateManager,
 			getTask: () => this.task,
@@ -686,6 +842,14 @@ export class Controller {
 		// Wire the bridge to the controller's getStateToPostToWebview()
 		// so state updates include messages, currentTaskItem, and task history
 		this.grpcBridge.setGetStateFn(() => this.getStateToPostToWebview())
+
+		this.sessionEventStream = this.messages
+		this.homeContext = {
+			translator: this.messageTranslatorState,
+			turn: this.turnStateTracker,
+			messages: this.messages,
+			interactions: this.interactions,
+		}
 
 		// Register the bridge as a session event listener
 		this.onSessionEvent(this.grpcBridge.createListener())
@@ -956,12 +1120,125 @@ export class Controller {
 		this.mcpHub?.clearToolListChangeCallback()
 		await this.diffEdits.discardAllPreviews("controller dispose")
 		await this.clearTask()
+		for (const context of this.taskSessions.values()) {
+			context.interactions.clearPending("Controller disposed")
+			context.messages.dispose()
+		}
+		this.taskSessions.clear()
 		await this.sessions.dispose("SdkController.dispose")
 		await this.taskHistory.dispose()
 		this.mcpHub?.dispose?.()
 		this.messages.dispose()
 		await this.sdkTelemetry.dispose()
 		Logger.log("[SdkController] Disposed")
+	}
+
+	private async resolveTaskSessionId(conversationId: string): Promise<string> {
+		if (this.sessions.getSession(conversationId)) return conversationId
+		for (const [id, session] of this.sessions.getSessions()) {
+			const record = await session.sdkHost.get(id)
+			if (record?.conversationId === conversationId) return id
+		}
+		throw new Error(`No live task for conversation ${conversationId}`)
+	}
+
+	private getTaskSessionContext(id: string, task?: TaskProxy): TaskSessionContext {
+		const existing = this.taskSessions.get(id)
+		if (existing) {
+			if (task) existing.task = task
+			return existing
+		}
+		const mode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+		const translator = new MessageTranslatorState(
+			this.homeContext?.translator.getMinter() ?? this.messageTranslatorState.getMinter(),
+			() => this.sessions.getSession(id)?.startConfig?.providerId,
+			() => context.mode,
+			() => this.lastKnownWorkspaceRoot,
+			() => this.sessions.getSession(id)?.startConfig?.modelId,
+		)
+		const turn = new TurnStateTracker(translator.getMinter())
+		const messages = new SdkMessageCoordinator({
+			getTask: () => context.task,
+			getMinter: () => translator.getMinter(),
+			isFocused: () => this.task?.taskId === id,
+		})
+		messages.onSessionEvent((updates, event) => {
+			if (event.type === "status" && event.payload.status === "error") setPhase("error")
+			if (this.task?.taskId === id) this.sessionEventStream.emitSessionEvents(updates, event)
+		})
+		const setPhase = (phase: TurnPhase, anchorTs?: number) => {
+			turn.set(phase, anchorTs)
+			this.sessions.setStatus(
+				id,
+				phase === "awaiting_approval" || (phase === "awaiting_followup" && this.sessions.getSession(id)?.isRunning)
+					? "waiting"
+					: phase === "streaming"
+						? "running"
+						: phase === "error"
+							? "error"
+							: "done",
+			)
+		}
+		const interactions = new SdkInteractionCoordinator({
+			messages,
+			getSessionId: () => id,
+			getMode: () => context.mode,
+			getMinter: () => translator.getMinter(),
+			postStateToWebview: () => this.postStateToWebview(),
+			setTurnPhase: setPhase,
+			getCwd: () => this.lastKnownWorkspaceRoot,
+			onToolApprovalAsk: (request) =>
+				this.task?.taskId === id
+					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input)
+					: Promise.resolve(),
+			recordApprovedToolMessage: (callId, ts) => translator.recordApprovedToolMessageTs(callId, ts),
+			recordDeniedToolApproval: (callId, name, reason) => {
+				translator.recordDeniedToolApproval(callId, name, reason)
+				void this.diffEdits.discardPreview(callId)
+			},
+			shouldAutoApproveTool: (request) => {
+				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
+				return settings ? isToolAutoApproved(request.toolName, settings) : false
+			},
+		})
+		const events = new SdkSessionEventCoordinator({
+			sessionId: id,
+			messageTranslatorState: translator,
+			sessions: this.sessions,
+			messages,
+			taskHistory: this.taskHistory,
+			stateManager: this.stateManager,
+			getTask: () => context.task,
+			postStateToWebview: () => this.postStateToWebview(),
+			setTurnPhase: setPhase,
+			getTurnPhase: () => turn.currentPhase,
+			getProviderId: () => this.sessions.getSession(id)?.startConfig?.providerId,
+			getModelId: () => this.sessions.getSession(id)?.startConfig?.modelId,
+			isTurnCancelled: () => context.cancelled,
+			onTurnStarted: () => {
+				context.cancelled = false
+			},
+			captureProviderApiError: (event) => this.captureProviderFailure(event),
+		})
+		const context: TaskSessionContext = {
+			task:
+				task ??
+				createTaskProxy(
+					id,
+					(text, images, files) => this.askResponse(text, images, files),
+					() => this.cancelTask(),
+				),
+			translator,
+			turn,
+			messages,
+			interactions,
+			events,
+			mode,
+			cancelled: false,
+		}
+		this.taskSessions.set(id, context)
+		if (!this.sessions.getSession(id) && task?.messageStateHandler.getClineMessages().length === 0) setPhase("streaming")
+		return context
 	}
 
 	// ---- Slash command + context mention resolution ----
@@ -1173,7 +1450,7 @@ export class Controller {
 	 * Returns an unsubscribe function.
 	 */
 	onSessionEvent(listener: SessionEventListener): () => void {
-		return this.messages.onSessionEvent(listener)
+		return this.sessionEventStream.onSessionEvent(listener)
 	}
 
 	/**
@@ -1196,7 +1473,7 @@ export class Controller {
 	}
 
 	private getSessionProviderId(sessionId?: string): string | undefined {
-		const activeSession = this.sessions.getActiveSession()
+		const activeSession = sessionId ? this.sessions.getSession(sessionId) : this.sessions.getActiveSession()
 		if (sessionId && activeSession?.sessionId !== sessionId) {
 			return undefined
 		}
@@ -1206,7 +1483,7 @@ export class Controller {
 	}
 
 	private getSessionModelId(sessionId?: string): string | undefined {
-		const activeSession = this.sessions.getActiveSession()
+		const activeSession = sessionId ? this.sessions.getSession(sessionId) : this.sessions.getActiveSession()
 		if (sessionId && activeSession?.sessionId !== sessionId) {
 			return undefined
 		}
@@ -1415,16 +1692,11 @@ export class Controller {
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A new task is starting — the agent is about to stream.
-		this.turnStateTracker.set("streaming")
-		// Clear the previous turn's completion signal so this turn's phase is computed fresh.
-		this.messageTranslatorState.clearTurnOutcome()
 		return this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
 		await this.waitForInitialRemoteConfig()
-		this.turnStateTracker.set("streaming")
-		this.messageTranslatorState.clearTurnOutcome()
 		await this.taskStart.reinitExistingTaskFromId(taskId)
 	}
 
@@ -1490,8 +1762,8 @@ export class Controller {
 	async clearTask(): Promise<void> {
 		this.pendingClineAuthRetry = undefined
 		// No active task — UI returns to idle (input enabled, no buttons/thinking).
-		this.turnStateTracker.set("idle")
 		await this.taskControl.clearTask()
+		this.turnStateTracker.set("idle")
 		await this.postStateToWebview()
 	}
 
@@ -1509,6 +1781,7 @@ export class Controller {
 	 * return immediately so the webview stays responsive.
 	 */
 	async askResponse(prompt?: string, images?: string[], files?: string[]): Promise<void> {
+		this.sessions.assertTaskAvailable(this.task?.taskId)
 		// The sign-in retry answers only the next response to the task that
 		// showed the error; a task opened since then does not inherit it.
 		const retry = this.pendingClineAuthRetry
@@ -1528,6 +1801,9 @@ export class Controller {
 			}
 		}
 
+		const submittedTaskId = this.task?.taskId
+		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		this.sessions.assertTaskAvailable(submittedTaskId)
 		const turnStateBefore = this.turnStateTracker.get()
 
 		// Answering an ask / continuing after completion / resuming a cancelled task all kick off a
@@ -1935,28 +2211,14 @@ export class Controller {
 	}
 
 	/**
-	 * Show a task from history by loading its messages.
-	 * This does NOT start inference — it just loads the task for viewing.
-	 *
-	 * IMPORTANT: We do NOT call clearTask() here because clearTask() sets
-	 * this.task = undefined and may trigger async operations (session stop/dispose)
-	 * that race with the new task proxy creation. If any of those async operations
-	 * trigger postStateToWebview() while this.task is undefined, the webview
-	 * receives a state with no currentTaskItem/clineMessages and flashes back
-	 * to the welcome screen (S6-6/S6-23 fix).
-	 *
-	 * Instead, we:
-	 * 1. Silently tear down the active session (unsubscribe + stop in background)
-	 * 2. Create the new task proxy with loaded messages BEFORE any state push
-	 * 3. Only then push state to the webview
-	 *
-	 * Delegates straight to the coordinator (including the history lookup) so
-	 * the "latest selection wins" generation is allocated synchronously at the
-	 * moment of the request — awaiting the lookup here first would let a
-	 * stalled older request grab a NEWER generation than a later selection and
-	 * replace it.
+	 * Focuses a retained live task, or loads a persisted task for viewing.
+	 * Other sessions keep running with their own transcript and approvals.
+	 * The coordinator allocates its selection generation before the history
+	 * lookup, so a stalled lookup cannot replace a newer user selection.
 	 */
+
 	async showTaskWithId(taskId: string): Promise<TaskResponse> {
+		this.sessions.assertTaskAvailable(taskId)
 		const historyItem = await this.taskControl.showTaskWithId(taskId)
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
@@ -1967,6 +2229,8 @@ export class Controller {
 	// ---- Mode switching ----
 
 	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+		if (this.task) this.getTaskSessionContext(this.task.taskId).mode = modeToSwitchTo === "plan" ? "plan" : "act"
+		if (this.task) await this.taskHistory.setTaskMode(this.task.taskId, modeToSwitchTo === "plan" ? "plan" : "act")
 		return this.mode.togglePlanActMode(modeToSwitchTo, chatContent)
 	}
 
@@ -2129,6 +2393,10 @@ export class Controller {
 				task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
 				ts: dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt),
 				isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
+				isSettled: metadataBoolean(metadata, "isSettled"),
+				settledAt: metadataNumber(metadata, "settledAt") || undefined,
+				parentTaskId: metadataString(metadata, "parentTaskId"),
+				forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
 				size: metadataNumber(metadata, "size") ?? 0,
 				totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 				tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
@@ -2154,6 +2422,10 @@ export class Controller {
 					task: formatDisplayUserInput(taskMessage.text),
 					ts: taskMessage.ts || Date.now(),
 					isFavorited: false,
+					isSettled: undefined,
+					settledAt: undefined,
+					parentTaskId: undefined,
+					forkedAtTs: undefined,
 					size: 0,
 					totalCost: 0,
 					tokensIn: 0,
@@ -2184,6 +2456,10 @@ export class Controller {
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
 		return this.taskHistory.deleteTaskFromState(id)
+	}
+
+	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
+		return this.taskHistory.deleteTasksFromState(ids)
 	}
 
 	async deleteAllTaskHistory(): Promise<DeleteAllTaskHistoryCount> {
@@ -2248,6 +2524,137 @@ export class Controller {
 
 	async updateTaskHistory(item: HistoryItem): Promise<HistoryItem[]> {
 		return this.taskHistory.updateTaskHistory(item)
+	}
+
+	async forkTaskAt(taskId: string, messageTs: number): Promise<string> {
+		this.sessions.assertTaskAvailable(taskId)
+		let newId = ""
+		await this.sessionRebuilds.runExclusive(async () => {
+			this.sessions.assertTaskAvailable(taskId)
+			const parent = await this.taskHistory.findHistoryItem(taskId)
+			if (!parent) throw new Error("Parent task not found")
+			const visible =
+				this.taskSessions.get(taskId)?.task.messageStateHandler.getClineMessages() ??
+				(await this.taskHistory.getClineMessages(taskId))
+			let temporaryHost: VscodeSessionHost | undefined
+			const reader =
+				this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
+			const focusedId = this.task?.taskId
+			try {
+				const raw = await readCurrentMessages(reader, taskId)
+				const initialMessages = buildAsideConversation(raw, visible, messageTs, parent.cwdOnTaskInitialization)
+				const cwd = parent.cwdOnTaskInitialization || (await this.getWorkspaceRoot())
+				const config = await this.sessionConfigBuilder.build({ cwd, mode: "plan" })
+				const input = buildStartSessionInput(config, { cwd, mode: "plan" })
+				this.sessions.assertTaskAvailable(taskId)
+				const { startResult } = await this.sessions.startNewSession({
+					...input,
+					initialMessages,
+					sessionMetadata: { ...input.sessionMetadata, taskMode: "plan", parentTaskId: taskId, forkedAtTs: messageTs },
+				})
+				newId = startResult.sessionId
+				const item = {
+					...createHistoryItemFromSession(newId, `Aside: ${parent.task}`, config.modelId, cwd),
+					parentTaskId: taskId,
+					forkedAtTs: messageTs,
+				}
+				await this.taskHistory.updateTaskHistoryItem(item)
+				const context = this.getTaskSessionContext(newId)
+				context.mode = "plan"
+				context.task.messageStateHandler.addMessages(await this.taskHistory.getClineMessages(newId))
+				context.turn.set("awaiting_followup")
+				this.sessions.setRunning(false, newId)
+			} finally {
+				try {
+					this.sessions.focusSession(focusedId)
+				} finally {
+					await temporaryHost?.dispose("forkTaskAt")
+				}
+			}
+		})
+		await this.postStateToWebview()
+		return newId
+	}
+
+	async toggleTaskSettled(taskId: string): Promise<void> {
+		await this.taskHistory.toggleTaskSettled(taskId)
+		await this.postStateToWebview()
+	}
+
+	/**
+	 * Aborts one running subagent of a live session. `subagentId` is the
+	 * ThreadStrip chip id — `${statusMessageTs}:${index}` (see
+	 * collectSubagents) — resolved to the spawn_agent tool call id through the
+	 * session's translator state, then aborted via the SDK host. On success the
+	 * entry is marked "stopped" and an updated status row is emitted.
+	 */
+	async stopSubagent(taskId: string, subagentId: string): Promise<boolean> {
+		const context = this.taskSessions.get(taskId)
+		const session = this.sessions.getSession(taskId)
+		if (!context || !session || !session.sdkHost.stopSubagent) {
+			return false
+		}
+		const separator = subagentId.lastIndexOf(":")
+		const statusTs = Number(subagentId.slice(0, separator))
+		const index = Number(subagentId.slice(separator + 1))
+		const translator = context.translator
+		if (!Number.isFinite(statusTs) || !Number.isFinite(index) || statusTs !== translator.getCurrentSpawnAgentStatusTs()) {
+			return false
+		}
+		const toolCallId = translator.getSpawnAgentToolCallId(index)
+		if (!toolCallId || !(await session.sdkHost.stopSubagent(taskId, toolCallId))) {
+			return false
+		}
+		translator.markSpawnAgentStopped(toolCallId)
+		// Emit an updated status row so the transcript and chip show the stop
+		// immediately, before the aborted child's content_end lands.
+		const items = translator.getSpawnAgentItems()
+		const stillRunning = items.some((entry) => entry.status === "running" || entry.status === "pending")
+		const status = translator.buildSubagentStatus(
+			stillRunning
+				? "running"
+				: items.some((entry) => entry.status === "failed" || entry.status === "stopped")
+					? "failed"
+					: "completed",
+		)
+		context.messages.emitHookMessage({
+			ts: translator.getSpawnAgentStatusTs(),
+			type: "say",
+			say: "subagent" as ClineSay,
+			text: JSON.stringify(status),
+			partial: stillRunning,
+		})
+		this.sessions.setSubagentCounts(taskId, {
+			total: translator.getSpawnAgentTotalCount(),
+			live: items.filter((entry) => entry.status === "running" || entry.status === "pending").length,
+		})
+		await this.postStateToWebview()
+		return true
+	}
+
+	async interjectPrompt(text: string, images?: string[], files?: string[]): Promise<void> {
+		this.sessions.assertTaskAvailable(this.task?.taskId)
+		if (!text.trim() && !images?.length && !files?.length) throw new Error("Interject requires content")
+		const task = this.task
+		if (!task) throw new Error("No focused task")
+		const active = this.sessions.getActiveSession()
+		if (active) {
+			const resolved = await this.resolveContextMentions(text)
+			if (this.task !== task) throw new Error("Focused task changed during interject")
+			await this.taskHistory.markTaskActive(task.taskId)
+			this.messageTranslatorState.reset()
+			this.messageTranslatorState.clearTurnOutcome()
+			this.sessions.assertTaskAvailable(task.taskId)
+			await this.taskControl.cancelTask(false, { text: resolved, images, files })
+			this.turnStateTracker.set("streaming")
+			await this.postStateToWebview()
+			return
+		}
+		this.turnStateTracker.set("resumable")
+		await this.taskControl.cancelTask(false)
+		if (this.task !== task) throw new Error("Focused task changed during interject")
+		this.turnStateTracker.set("idle")
+		await this.askResponse(text, images, files)
 	}
 
 	async toggleTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {
@@ -2334,7 +2741,8 @@ export class Controller {
 				// badge and anything else keyed on workspaceRoots depend on it.
 				workspaceManager: await this.ensureWorkspaceManager(),
 			})
-			const sdkTaskHistory = (await this.taskHistory.listHistory({ limit: 100, hydrate: false }))
+			const sdkHistoryRecords = await this.taskHistory.listHistory({ limit: 100, hydrate: false })
+			const sdkTaskHistory = sdkHistoryRecords
 				.map(sessionHistoryRecordToHistoryItem)
 				.filter((item) => item.ts && item.task)
 				.sort((a, b) => b.ts - a.ts)
@@ -2416,6 +2824,25 @@ export class Controller {
 				taskHistory: processedTaskHistory,
 				turnState: this.turnStateTracker.get(),
 				queuedPrompts,
+				sessionStatuses: {
+					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
+					...Object.fromEntries(
+						sdkHistoryRecords
+							.filter((record) => record.status === "failed")
+							.map((record) => [record.sessionId, "error" as const]),
+					),
+					...this.sessions.sessionStatuses,
+				},
+				// Live sessions report total + running; persisted history totals fill
+				// in settled tasks whose sessions are gone.
+				subagentCounts: {
+					...Object.fromEntries(
+						processedTaskHistory
+							.filter((item) => (item.subagentCount ?? 0) > 0)
+							.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
+					),
+					...this.sessions.subagentCounts,
+				},
 				stateVersion: minter.nextSeq(),
 				epoch: minter.epoch,
 			}
