@@ -29,6 +29,7 @@ import {
 } from "@cline/llms"
 import { buildClineSystemPrompt, isClineProvider } from "@cline/shared"
 import type { ApiConfiguration } from "@shared/api"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { ClineClient } from "@shared/cline"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, type LanguageDisplay } from "@shared/Languages"
@@ -77,6 +78,23 @@ export interface SessionConfigInput {
 	workspaceRoot?: string
 	/** Current mode (act/plan) */
 	mode?: Mode
+	/**
+	 * Resolved ApiConfiguration to build from instead of the global selection —
+	 * used when a session is pinned to its task's recorded configuration so a
+	 * rebuild keeps the chat's own provider/model.
+	 */
+	apiConfiguration?: ApiConfiguration
+	apiSelection?: TaskApiSelection
+}
+
+/** In-memory only. Connection secrets must never be written to task metadata. */
+export interface SessionApiSnapshot {
+	selection: TaskApiSelection
+	configuration: ApiConfiguration
+}
+
+export function getSessionApiSnapshot(config: unknown): SessionApiSnapshot | undefined {
+	return (config as (CoreSessionConfig & { apiSnapshot?: SessionApiSnapshot }) | undefined)?.apiSnapshot
 }
 
 /** Active session state tracked by the factory */
@@ -85,6 +103,7 @@ export interface ActiveSession {
 	sessionId: string
 	/** The config used to start the active session. */
 	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode }
+	apiSnapshot?: SessionApiSnapshot
 	/** The runtime host instance managing this session (VscodeSessionHost) */
 	sdkHost: SdkSessionHost
 	/** Unsubscribe function for session events */
@@ -856,7 +875,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 
 	try {
 		const stateManager = StateManager.get()
-		apiConfig = stateManager.getApiConfiguration(mode)
+		apiConfig = input.apiConfiguration ?? stateManager.getApiConfiguration(mode)
 
 		// Resolve the provider for the current mode. State written by older
 		// builds or other hosts may carry SDK catalog spellings (e.g.
@@ -1178,6 +1197,8 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 export function buildStartSessionInput(config: CoreSessionConfig, input: SessionConfigInput): ClineCoreStartInput {
 	return {
 		config,
+		mode: input.mode,
+		sessionMetadata: { apiSelection: getSessionApiSnapshot(config)?.selection, taskMode: input.mode },
 		// Do NOT pass prompt here — start() should return immediately.
 		// The prompt is sent separately via core.send() after session creation.
 		prompt: undefined,

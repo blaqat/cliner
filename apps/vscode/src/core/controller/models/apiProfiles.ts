@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto"
 import type { ApiConfiguration, ApiProvider } from "@shared/api"
-import { type ApiConfigProfile, isAllowedApiProvider, type OpenAiCompatibleApiType } from "@shared/api-profiles"
+import {
+	type ApiConfigProfile,
+	isAllowedApiProvider,
+	type OpenAiCompatibleApiType,
+	type TaskApiSelection,
+} from "@shared/api-profiles"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import {
@@ -329,6 +334,16 @@ export function hasAssignedApiProfile(configuration: ApiConfiguration): boolean 
 
 const modeSnapshots = new WeakMap<ApiConfiguration, Record<Mode, ApiConfiguration>>()
 
+/** Clone a resolved connection without losing its profile-owned semantics. */
+export function cloneApiProfileConfiguration(configuration: ApiConfiguration): ApiConfiguration {
+	const clone = structuredClone(configuration)
+	if (profileConfigurations.has(configuration)) profileConfigurations.add(clone)
+	const modes = modeSnapshots.get(configuration)
+	if (modes)
+		modeSnapshots.set(clone, { plan: cloneApiProfileConfiguration(modes.plan), act: cloneApiProfileConfiguration(modes.act) })
+	return clone
+}
+
 export function resolveApiConfigurationForMode(configuration: ApiConfiguration, mode: Mode): ApiConfiguration {
 	return modeSnapshots.get(configuration)?.[mode] ?? configuration
 }
@@ -514,4 +529,130 @@ export function ensureApiConfigProfiles(stateManager: ApiProfileStore): {
 		if (updates.actProfileId && actProfileId) assignApiConfigProfile(stateManager, "act", actProfileId)
 	}
 	return { profiles: readApiConfigProfiles(stateManager), askProfileId, actProfileId }
+}
+
+// ---------------------------------------------------------------------------
+// Per-task API selection
+//
+// Each task records which saved configuration (and reasoning effort) it last
+// used per mode. Focusing a chat restores that selection into the global
+// per-mode keys; running sessions keep their own resolved configuration via
+// `resolveApiConfigurationForTaskSelection`, so a focus change never rewrites
+// a background chat's model.
+// ---------------------------------------------------------------------------
+
+/** Snapshot of the global per-mode selection, as stored on a task. */
+export function captureTaskApiSelection(
+	stateManager: Pick<ApiProfileStore, "getGlobalStateKey" | "getApiConfiguration">,
+): TaskApiSelection {
+	const config = stateManager.getApiConfiguration()
+	const selection: TaskApiSelection = {
+		askProfileId: stateManager.getGlobalStateKey("askProfileId"),
+		actProfileId: stateManager.getGlobalStateKey("actProfileId"),
+	}
+	if (isOpenaiReasoningEffort(config.planModeReasoningEffort)) {
+		selection.planModeReasoningEffort = config.planModeReasoningEffort
+	}
+	if (isOpenaiReasoningEffort(config.actModeReasoningEffort)) {
+		selection.actModeReasoningEffort = config.actModeReasoningEffort
+	}
+	return selection
+}
+
+function taskSelectionProfileId(selection: TaskApiSelection | undefined, mode: Mode): string | undefined {
+	return mode === "plan" ? selection?.askProfileId : selection?.actProfileId
+}
+
+function taskSelectionEffort(selection: TaskApiSelection | undefined, mode: Mode) {
+	return mode === "plan" ? selection?.planModeReasoningEffort : selection?.actModeReasoningEffort
+}
+
+/**
+ * Merge a task's stored selection with the fallback for tasks recorded before
+ * selections existed: match the task's recorded provider+model to a saved
+ * configuration for the given mode. No match leaves that mode unset.
+ */
+export function resolveTaskApiSelection(
+	stateManager: Pick<ApiProfileStore, "getGlobalStateKey">,
+	item: { apiSelection?: TaskApiSelection; apiProvider?: string; modelId?: string },
+	mode: Mode,
+): TaskApiSelection {
+	const profiles = readApiConfigProfiles(stateManager)
+	const known = new Set(profiles.map((p) => p.id))
+	const resolved: TaskApiSelection = { ...item.apiSelection }
+	if (resolved.askProfileId && !known.has(resolved.askProfileId)) {
+		delete resolved.askProfileId
+	}
+	if (resolved.actProfileId && !known.has(resolved.actProfileId)) {
+		delete resolved.actProfileId
+	}
+	const key = mode === "plan" ? "askProfileId" : "actProfileId"
+	if (!resolved[key] && item.apiProvider && item.modelId) {
+		const provider = toLegacyApiProvider(item.apiProvider)
+		const matched = profiles.find((p) => p.provider === provider && p.modelId === item.modelId)
+		if (matched) {
+			resolved[key] = matched.id
+		}
+	}
+	return resolved
+}
+
+/**
+ * Write a task selection into the global per-mode keys without notifying
+ * session rebuilds — callers pair this with a state post. `mode`, when given,
+ * restricts the write to that mode. Unknown profile ids are skipped.
+ */
+export function applyTaskApiSelection(stateManager: ApiProfileStore, selection: TaskApiSelection, mode?: Mode): boolean {
+	const modes: Mode[] = mode ? [mode] : ["plan", "act"]
+	const known = new Set(readApiConfigProfiles(stateManager).map((p) => p.id))
+	let applied = false
+	for (const target of modes) {
+		const profileId = taskSelectionProfileId(selection, target)
+		if (profileId && known.has(profileId)) {
+			if (stateManager.getGlobalStateKey(target === "plan" ? "askProfileId" : "actProfileId") !== profileId) {
+				assignApiConfigProfile(stateManager, target, profileId, false)
+				applied = true
+			}
+		}
+		const effort = taskSelectionEffort(selection, target)
+		if (effort && isOpenaiReasoningEffort(effort)) {
+			const effortKey = `${target}ModeReasoningEffort` as const
+			if (stateManager.getApiConfiguration()[effortKey] !== effort) {
+				stateManager.setApiConfiguration({ [effortKey]: effort })
+				applied = true
+			}
+		}
+	}
+	return applied
+}
+
+/**
+ * Resolve what a session pinned to `selection` should run for `mode`: the
+ * given configuration snapshot with the pinned profile's connection/model and
+ * the pinned effort overlaid. Falls back to the snapshot (global selection)
+ * when the task has no pinned profile for that mode or it was deleted.
+ */
+export function resolveApiConfigurationForTaskSelection(
+	stateManager: Pick<ApiProfileStore, "getGlobalStateKey" | "listSecretStorageKeys" | "getSecretForKey">,
+	configuration: ApiConfiguration,
+	mode: Mode,
+	selection: TaskApiSelection | undefined,
+): ApiConfiguration {
+	const base = resolveApiConfigurationForMode(configuration, mode)
+	const profileId = taskSelectionProfileId(selection, mode)
+	if (!profileId) {
+		return base
+	}
+	const profile = readApiConfigProfiles(stateManager).find((p) => p.id === profileId)
+	if (!profile) {
+		return base
+	}
+	const fragment = buildApiConfigurationFromProfile(profile, readProfileSecrets(stateManager, profileId), mode, false)
+	const resolved: ApiConfiguration = { ...base, ...fragment }
+	const effort = taskSelectionEffort(selection, mode) ?? "none"
+	if (isOpenaiReasoningEffort(effort)) {
+		resolved[`${mode}ModeReasoningEffort`] = effort
+	}
+	profileConfigurations.add(resolved)
+	return resolved
 }

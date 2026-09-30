@@ -1,8 +1,10 @@
 import { getProviderAuthStorageId } from "@cline/core"
 import { createModeSwitchNoticeTracker, type ModeSwitchNotice, type ModeSwitchNoticeTracker } from "@cline/shared"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
+import { resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
@@ -40,6 +42,8 @@ function usesClineAccountAuth(providerId: string): boolean {
 export { ACT_MODE_CONTINUATION_PROMPT }
 
 export interface SdkModeCoordinatorOptions {
+	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
+	onModeRebuilt?: (taskId: string, mode: Mode, selection: TaskApiSelection | undefined) => Promise<void>
 	resumeInAct?: (content?: ChatContent) => Promise<boolean>
 	stateManager: StateManager
 	sessions: SdkSessionLifecycle
@@ -238,9 +242,21 @@ export class SdkModeCoordinator {
 		try {
 			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const cwd = await this.options.getWorkspaceRoot()
+			const selection = this.options.getTaskApiSelection?.(oldSessionId) ?? activeSession.apiSnapshot?.selection
 			const config = await this.options.sessionConfigBuilder.build({
 				cwd,
 				mode: newMode,
+				...(selection
+					? {
+							apiSelection: selection,
+							apiConfiguration: resolveApiConfigurationForTaskSelection(
+								this.options.stateManager,
+								this.options.stateManager.getApiConfiguration(newMode),
+								newMode,
+								selection,
+							),
+						}
+					: {}),
 			})
 			Logger.log(
 				`[SdkController] Mode rebuild config: mode=${newMode}, provider=${config.providerId}, model=${config.modelId}, hasApiKey=${!!config.apiKey}`,
@@ -285,6 +301,7 @@ export class SdkModeCoordinator {
 
 			sessionReplaced = true
 			const { sdkHost, startResult } = rebuildResult
+			await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
 			const task = this.options.getTask()
 			if (task && task.taskId !== startResult.sessionId) {
 				Logger.warn(

@@ -1,10 +1,12 @@
 import { getProviderAuthStorageId } from "@cline/core"
 import { createSessionId } from "@cline/shared"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
+import { captureTaskApiSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import { isDirectory } from "@/utils/fs"
@@ -55,6 +57,12 @@ export interface SdkTaskStartCoordinatorOptions {
 	isClineManagedProviderActive: () => boolean
 	emitClineAuthError: (task?: string) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
+	/**
+	 * Pins the current global per-mode selection onto the new task's session
+	 * context and persists it, so the chat keeps running on (and reopens to)
+	 * the configuration it was started with.
+	 */
+	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
 	postStateToWebview: () => Promise<void>
 }
 
@@ -77,6 +85,7 @@ export class SdkTaskStartCoordinator {
 
 			const cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
+			const apiSelection = captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
 			const config = await this.options.sessionConfigBuilder.build({
 				prompt,
@@ -86,6 +95,7 @@ export class SdkTaskStartCoordinator {
 				taskSettings,
 				cwd,
 				mode,
+				apiSelection,
 			})
 			providerId = config.providerId
 			modelId = config.modelId
@@ -120,6 +130,7 @@ export class SdkTaskStartCoordinator {
 				mode,
 			})
 
+			startInput.sessionMetadata = { ...startInput.sessionMetadata, apiSelection }
 			const task = this.createAndSetTask(taskSessionId)
 			this.emitInitialTaskMessage(taskSessionId, prompt ?? "", images, files)
 
@@ -131,6 +142,7 @@ export class SdkTaskStartCoordinator {
 				Logger.error("[SdkController] Failed to post state after emitting initial task message:", error)
 			})
 
+			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 			const { startResult, sdkHost } = await this.options.sessions.startNewSession(startInput)
 			if (startResult.sessionId !== taskSessionId) {
 				Logger.warn(
@@ -140,13 +152,12 @@ export class SdkTaskStartCoordinator {
 				taskSessionId = startResult.sessionId
 			}
 
-			const newHistoryItem = this.options.createHistoryItemFromSession(
-				taskSessionId,
-				prompt ?? "",
-				configWithSessionId.modelId,
-				cwd,
-			)
+			const newHistoryItem = {
+				...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
+				apiSelection,
+			}
 			await this.options.taskHistory.updateTaskHistoryItem(newHistoryItem)
+			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 			await this.options.postStateToWebview()
 
 			if (prompt?.trim() || images?.length || files?.length) {
@@ -190,9 +201,11 @@ export class SdkTaskStartCoordinator {
 			// workspace root instead.
 			const storedCwd = historyItem.cwdOnTaskInitialization
 			const cwd = storedCwd && (await isDirectory(storedCwd)) ? storedCwd : await this.options.getWorkspaceRoot()
+			const apiSelection = captureTaskApiSelection(this.options.stateManager)
 			const config = await this.options.sessionConfigBuilder.build({
 				cwd,
 				mode: "act",
+				apiSelection,
 			})
 
 			const tempManager = await this.options.createTempSessionHost()
@@ -207,6 +220,7 @@ export class SdkTaskStartCoordinator {
 			})
 
 			this.createAndSetTask(startResult.sessionId)
+			this.options.recordTaskApiSelection?.(startResult.sessionId, apiSelection, "act")
 			await this.options.postStateToWebview()
 
 			Logger.log(`[SdkController] Task resumed: ${taskId} → ${startResult.sessionId}`)

@@ -5,6 +5,7 @@ import { MessageTranslatorState } from "./message-translator"
 import { Controller as SdkController } from "./SdkController"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
+import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
 
@@ -679,6 +680,7 @@ describe("aside session creation", () => {
 		const context = { mode: "act", task: createTaskProxy("aside", vi.fn(), vi.fn()), turn: { set: vi.fn() } }
 		const host = { readLiveMessages: vi.fn(async () => raw), restore: vi.fn() }
 		const controller = {
+			stateManager: { getGlobalStateKey: () => undefined, getApiConfiguration: () => ({}) },
 			task,
 			taskSessions: new Map([["parent", { task }]]),
 			sessionRebuilds: { runExclusive: async (run: () => Promise<void>) => run() },
@@ -795,5 +797,143 @@ describe("task deletion fence", () => {
 			"Task is being deleted",
 		)
 		expect(controller.sessions.assertTaskAvailable).toHaveBeenCalledWith("deleting")
+	})
+})
+
+describe("task configuration races", () => {
+	it("uses live selection when history was read before a picker change inside the transition lock", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const profiles = ["P", "Q"].map((id) => ({ id, name: id, provider: "openai", modelId: id }))
+		const globals: Record<string, unknown> = { apiConfigProfiles: profiles, askProfileId: "P", actProfileId: "P" }
+		const config: Record<string, unknown> = { actModeReasoningEffort: "low" }
+		const context = {
+			mode: "act",
+			apiSelection: { actProfileId: "P", actModeReasoningEffort: "low" },
+			task: createTaskProxy("live", vi.fn(), vi.fn()),
+		}
+		Object.assign(controller, {
+			stateManager: {
+				getGlobalStateKey: (key: string) => globals[key],
+				getGlobalSettingsKey: () => "act",
+				getApiConfiguration: () => config,
+				setGlobalStateBatch: (updates: object) => Object.assign(globals, updates),
+				setApiConfiguration: (updates: object) => Object.assign(config, updates),
+				getSecretForKey: () => undefined,
+				listSecretStorageKeys: () => [],
+			},
+			taskSessions: new Map([["live", context]]),
+			sessions: { getSession: () => ({}) },
+			taskHistory: { setTaskApiSelection: vi.fn(async () => {}) },
+		})
+		const stale = { id: "live", apiSelection: { actProfileId: "P", actModeReasoningEffort: "low" } }
+		const control = new SdkTaskControlCoordinator({
+			taskHistory: { findHistoryItem: async () => stale },
+			sessions: {},
+			clearTaskSettings: async () => {},
+			rebuilds: {
+				runTaskTransition: async (run: () => Promise<void>) => {
+					// A picker change lands after history lookup but before focus restoration.
+					context.apiSelection = { actProfileId: "Q", actModeReasoningEffort: "high" }
+					await run()
+				},
+			},
+			focusLiveTask: (_id: string, item: unknown) => {
+				controller.restoreTaskApiSelection(item, "act")
+				return true
+			},
+			postStateToWebview: async () => {},
+		} as never)
+		await control.showTaskWithId("live")
+		expect(globals.actProfileId).toBe("Q")
+		expect(config.actModeReasoningEffort).toBe("high")
+		expect(context.apiSelection).toEqual({ actProfileId: "Q", actModeReasoningEffort: "high" })
+	})
+
+	it("keeps pending picker changes separate from the live selection and posts the live build snapshot", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const selection = { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" }
+		const context = { apiSelection: selection, pendingApiSelection: undefined }
+		const task = { taskId: "live", messageStateHandler: { getClineMessages: () => [] } }
+		Object.defineProperty(controller, "task", { value: task, writable: true })
+		const session = {
+			sessionId: "live",
+			apiSnapshot: {
+				selection,
+				configuration: { actModeApiProvider: "openai", actModeOpenAiModelId: "p-model", actModeReasoningEffort: "low" },
+			},
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		Object.assign(controller, {
+			task,
+			taskSessions: new Map([["live", context]]),
+			getTaskSessionContext: () => context,
+			stateManager: {
+				getGlobalStateKey: () => "Q",
+				getApiConfiguration: () => ({ actModeReasoningEffort: "high" }),
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			providerChanges: { handleApiConfigurationChanged: vi.fn() },
+			sessions: { getSession: () => session, getActiveSession: () => session, sessionStatuses: {} },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: { listHistory: async () => [] },
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+		controller.handleApiConfigurationChanged({}, {})
+		expect(context.apiSelection).toBe(selection)
+		expect(context.pendingApiSelection).toMatchObject({ actProfileId: "Q", actModeReasoningEffort: "high" })
+		const state = await controller.getStateToPostToWebview()
+		expect(state.actProfileId).toBe("P")
+		expect(state.apiConfiguration).toMatchObject({ actModeOpenAiModelId: "p-model", actModeReasoningEffort: "low" })
+	})
+
+	it("commits mode and selection for a history-only chat after switching completes", async () => {
+		const context = { mode: "plan" }
+		const controller = {
+			task: { taskId: "history" },
+			getTaskSessionContext: () => context,
+			sessions: { getSession: () => undefined },
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			mode: { togglePlanActMode: vi.fn(async () => false) },
+			recordTaskApiSelection: vi.fn(),
+			taskHistory: { setTaskMode: vi.fn(async () => {}) },
+		}
+		await SdkController.prototype.togglePlanActMode.call(controller as never, "act")
+		expect(context.mode).toBe("act")
+		expect(controller.recordTaskApiSelection).toHaveBeenCalledWith("history")
+		expect(controller.taskHistory.setTaskMode).toHaveBeenCalledWith("history", "act")
+		expect(controller.taskHistory.setTaskMode.mock.invocationCallOrder[0]).toBeGreaterThan(
+			controller.mode.togglePlanActMode.mock.invocationCallOrder[0],
+		)
+	})
+
+	it("does not mutate the live mode snapshot before a failed rebuild", async () => {
+		const session = { startConfig: { mode: "plan" } }
+		const context = { mode: "plan" }
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const controller = {
+			task: { taskId: "live" },
+			getTaskSessionContext: () => context,
+			sessions: { getSession: () => session },
+			mode: {
+				togglePlanActMode: async () => {
+					await gate
+					return false
+				},
+			},
+		}
+		const switchMode = SdkController.prototype.togglePlanActMode.call(controller as never, "act")
+		expect(session.startConfig.mode).toBe("plan")
+		expect(context.mode).toBe("plan")
+		release()
+		await switchMode
+		expect(session.startConfig.mode).toBe("plan")
+		expect(context.mode).toBe("plan")
 	})
 })

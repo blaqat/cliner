@@ -38,6 +38,7 @@ describe("SdkTaskStartCoordinator", () => {
 			taskSettings: undefined,
 			cwd: "/workspace",
 			mode: "act",
+			apiSelection: {},
 		})
 		expect(options.buildStartSessionInput).toHaveBeenCalledWith(
 			expect.objectContaining({ providerId: "anthropic", modelId: "model", sessionId }),
@@ -84,6 +85,42 @@ describe("SdkTaskStartCoordinator", () => {
 			["image.png"],
 			["a.ts"],
 		)
+	})
+
+	it("pins the build selection through slow startup while another chat changes the picker", async () => {
+		const { options } = makeCoordinator()
+		let selected = "P"
+		Object.assign(options.stateManager, {
+			getGlobalStateKey: () => selected,
+			getApiConfiguration: () => ({ actModeReasoningEffort: "low" }),
+		})
+		const record = vi.fn()
+		const coordinatorWithRecord = new SdkTaskStartCoordinator({ ...options, recordTaskApiSelection: record })
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		options.sessions.startNewSession.mockImplementationOnce(async () => {
+			selected = "Q"
+			await gate
+			return { startResult: { sessionId: "started" }, sdkHost: { send: vi.fn() } }
+		})
+		const start = coordinatorWithRecord.initTask("hello")
+		await vi.waitFor(() => expect(options.sessions.startNewSession).toHaveBeenCalledOnce())
+		expect(record).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ actProfileId: "P" }), "act")
+		release()
+		await start
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiSelection: expect.objectContaining({ actProfileId: "P", actModeReasoningEffort: "low" }),
+			}),
+		)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionMetadata: expect.objectContaining({ apiSelection: expect.objectContaining({ actProfileId: "P" }) }),
+			}),
+		)
+		expect(record).toHaveBeenLastCalledWith("started", expect.objectContaining({ actProfileId: "P" }), "act")
 	})
 
 	it("omits images/files from the task message when the task has no attachments", async () => {
@@ -189,7 +226,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.taskHistory.findHistoryItem).toHaveBeenCalledWith("task-1")
 		expect(isDirectory).toHaveBeenCalledWith("/task-cwd")
 		expect(options.getWorkspaceRoot).not.toHaveBeenCalled()
-		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/task-cwd", mode: "act" })
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/task-cwd", mode: "act", apiSelection: {} })
 		expect(options.createTempSessionHost).toHaveBeenCalledOnce()
 		expect(options.loadInitialMessages).toHaveBeenCalledWith(tempHost, "task-1")
 		expect(tempHost.dispose).toHaveBeenCalledWith("readMessages")
@@ -222,7 +259,7 @@ describe("SdkTaskStartCoordinator", () => {
 
 		expect(isDirectory).toHaveBeenCalledWith("/missing-task-cwd")
 		expect(options.getWorkspaceRoot).toHaveBeenCalledOnce()
-		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/workspace", mode: "act" })
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/workspace", mode: "act", apiSelection: {} })
 	})
 
 	it("emits Cline auth errors when reinitialization fails due auth", async () => {
@@ -262,6 +299,8 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	const options = {
 		stateManager: {
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
+			getGlobalStateKey: vi.fn(() => undefined),
+			getApiConfiguration: vi.fn(() => ({})),
 		} as unknown as StateManager,
 		sessions: {
 			startNewSession: vi.fn((startInput?: { config?: { sessionId?: string } }) => ({

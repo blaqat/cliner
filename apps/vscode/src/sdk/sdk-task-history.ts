@@ -4,6 +4,7 @@ import type { ClineCoreListHistoryOptions, SessionHistoryRecord } from "@cline/c
 import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
+import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import getFolderSize from "get-folder-size"
@@ -104,6 +105,7 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheWrites: item.cacheWrites ?? 0,
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
+		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
 		legacyTask: item.isLegacy ?? false,
 	}
 }
@@ -201,6 +203,7 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
+		apiSelection: readTaskApiSelection(metadata?.apiSelection),
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
 		isLegacy:
 			metadataBoolean(metadata, "legacyTask") === true || metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -542,11 +545,48 @@ export class SdkTaskHistory {
 	}
 
 	async setTaskMode(taskId: string, mode: "plan" | "act"): Promise<void> {
-		await this.withHistoryHost(async (host) => {
-			const record = await host.get(taskId)
-			if (record) await host.update(taskId, { metadata: { ...record.metadata, taskMode: mode } })
+		await this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (record) await host.update(taskId, { metadata: { ...record.metadata, taskMode: mode } })
+			})
+			this.invalidateMetadataHistoryCache()
 		})
-		this.invalidateMetadataHistoryCache()
+	}
+
+	/**
+	 * Persists the saved-configuration selection a task was last using (see
+	 * `TaskApiSelection`) so reopening the chat restores it. Reads it back via
+	 * `findHistoryItem().apiSelection` or `getTaskApiSelection`.
+	 */
+	private readonly selectionWrites = new Map<string, Promise<void>>()
+
+	setTaskApiSelection(taskId: string, selection: TaskApiSelection): Promise<void> {
+		const captured = { ...selection }
+		return this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (record) await host.update(taskId, { metadata: { ...record.metadata, apiSelection: captured } })
+			})
+			this.invalidateMetadataHistoryCache()
+		})
+	}
+
+	private serializeMetadataWrite(taskId: string, operation: () => Promise<void>): Promise<void> {
+		const previous = this.selectionWrites.get(taskId) ?? Promise.resolve()
+		const write = previous.catch(() => {}).then(operation)
+		this.selectionWrites.set(taskId, write)
+		void write
+			.finally(() => {
+				if (this.selectionWrites.get(taskId) === write) this.selectionWrites.delete(taskId)
+			})
+			.catch(() => {})
+		return write
+	}
+
+	async getTaskApiSelection(taskId: string): Promise<TaskApiSelection | undefined> {
+		const record = await this.getSdkRecord(taskId)
+		return readTaskApiSelection(record?.metadata?.apiSelection)
 	}
 
 	async isLegacyTask(taskId: string): Promise<boolean> {
@@ -577,12 +617,19 @@ export class SdkTaskHistory {
 		return appendLegacyResumeWarning(fallbackMessages as { role: string; content: unknown }[])
 	}
 
-	private async updateSession(sessionId: string, item: HistoryItem): Promise<void> {
+	private updateSession(sessionId: string, item: HistoryItem): Promise<void> {
+		return this.serializeMetadataWrite(sessionId, () => this.performUpdateSession(sessionId, item))
+	}
+
+	private async performUpdateSession(sessionId: string, item: HistoryItem): Promise<void> {
 		const { metadata: writtenMetadata, updated } = await this.withHistoryHost(async (host) => {
 			const existing = await host.get(sessionId)
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// History reads may predate live picker changes. Only explicit selection
+				// writes may replace an existing authoritative selection.
+				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
 			}
 			if (item.size === undefined) {
 				const existingSize = existing?.metadata?.size

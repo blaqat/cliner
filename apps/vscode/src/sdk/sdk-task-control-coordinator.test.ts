@@ -63,7 +63,7 @@ describe("SdkTaskControlCoordinator", () => {
 		const { options } = makeCoordinator({ hasHistoryItem: true })
 		const focusLiveTask = vi.fn(() => true)
 		await new SdkTaskControlCoordinator({ ...options, focusLiveTask }).showTaskWithId("task-1")
-		expect(focusLiveTask).toHaveBeenCalledWith("task-1")
+		expect(focusLiveTask).toHaveBeenCalledWith("task-1", expect.objectContaining({ id: "task-1" }))
 		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
 		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
 		expect(options.interactions.clearPending).not.toHaveBeenCalled()

@@ -12,6 +12,7 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import type { ActiveSession } from "./cline-session-factory"
+import { getSessionApiSnapshot } from "./cline-session-factory"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { buildToolPolicies } from "./sdk-tool-policies"
 import type { SdkSessionHost } from "./session-host"
@@ -285,6 +286,7 @@ export class SdkSessionLifecycle {
 		})
 		this.activeSession = {
 			sessionId: startResult.sessionId,
+			apiSnapshot: getSessionApiSnapshot(startInput.config),
 			startConfig: startInput.config
 				? {
 						providerId: startInput.config.providerId,
@@ -365,6 +367,7 @@ export class SdkSessionLifecycle {
 			...old,
 			sessionId: startResult.sessionId,
 			startResult,
+			apiSnapshot: getSessionApiSnapshot(input.config),
 			startConfig: input.config
 				? {
 						providerId: input.config.providerId,
@@ -397,6 +400,7 @@ export class SdkSessionLifecycle {
 		this.activeSession = {
 			...activeSession,
 			sessionId: restored.sessionId,
+			apiSnapshot: input.start?.config ? getSessionApiSnapshot(input.start.config) : activeSession.apiSnapshot,
 			startConfig: input.start?.config
 				? {
 						providerId: input.start.config.providerId,

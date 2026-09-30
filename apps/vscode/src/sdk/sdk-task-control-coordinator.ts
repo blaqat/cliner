@@ -44,8 +44,15 @@ export interface SdkTaskControlCoordinatorOptions {
 	 * suppresses its remaining DISPLAY output (usage is still accounted).
 	 */
 	raiseCancelFence?: () => void
-	focusLiveTask?: (taskId: string) => boolean
+	focusLiveTask?: (taskId: string, historyItem: HistoryItem) => boolean
 	setTaskMode?: (mode: "plan" | "act") => void
+	/**
+	 * Restores the task's last-used saved-configuration selection (profile +
+	 * reasoning effort per mode) into the global per-mode keys so the composer
+	 * shows what this chat runs on. Must not notify provider-change rebuilds:
+	 * running sessions keep their own pinned selection.
+	 */
+	applyTaskApiSelection?: (historyItem: HistoryItem, mode?: "plan" | "act") => void
 }
 
 export class SdkTaskControlCoordinator {
@@ -193,7 +200,7 @@ export class SdkTaskControlCoordinator {
 				if (isSuperseded()) return historyItem
 				await this.options.clearTaskSettings()
 				if (isSuperseded()) return historyItem
-				if (this.options.focusLiveTask?.(taskId)) {
+				if (this.options.focusLiveTask?.(taskId, historyItem)) {
 					await this.options.postStateToWebview()
 					return historyItem
 				}
@@ -225,6 +232,7 @@ export class SdkTaskControlCoordinator {
 					task.messageStateHandler.addMessages(cleanedMessages)
 				}
 				if (taskMode) this.options.setTaskMode?.(taskMode)
+				this.options.applyTaskApiSelection?.(historyItem, taskMode)
 				this.options.setTask(task)
 
 				// Derive the turn phase from the appended resume ask. The webview

@@ -1,4 +1,5 @@
 import type { CoreSessionConfig } from "@cline/core"
+import { captureTaskApiSelection, cloneApiProfileConfiguration } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { buildSessionConfig, type SessionConfigInput } from "./cline-session-factory"
 import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
@@ -18,7 +19,16 @@ export class SdkSessionConfigBuilder {
 	constructor(private readonly options: SdkSessionConfigBuilderOptions) {}
 
 	async build(input: SessionConfigInput): Promise<Awaited<ReturnType<typeof buildSessionConfig>>> {
-		const config = await buildSessionConfig(input)
+		// Capture both before the builder's first await. Focus changes cannot split
+		// the picker selection from the credentials/model used to build the session.
+		const selection = structuredClone(input.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
+		const configuration = cloneApiProfileConfiguration(
+			input.apiConfiguration ?? this.options.stateManager.getApiConfiguration(input.mode ?? "act"),
+		)
+		const snapshot = { selection, configuration: structuredClone(configuration) }
+		const config = Object.assign(await buildSessionConfig({ ...input, apiConfiguration: configuration }), {
+			apiSnapshot: snapshot,
+		})
 		if (this.options.onConsecutiveMistakeLimitReached) {
 			config.onConsecutiveMistakeLimitReached = this.options.onConsecutiveMistakeLimitReached
 		}

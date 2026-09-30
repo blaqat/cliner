@@ -110,6 +110,55 @@ describe("SdkTaskHistory", () => {
 		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).subagentCount).toBeUndefined()
 	})
 
+	it("round trips the task's last-used API selection", () => {
+		const apiSelection = {
+			askProfileId: "ask-1",
+			actProfileId: "act-1",
+			planModeReasoningEffort: "low" as const,
+			actModeReasoningEffort: "high" as const,
+		}
+		const item = makeHistoryItem("task", { apiSelection })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.apiSelection).toEqual(apiSelection)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).apiSelection).toBeUndefined()
+	})
+
+	it("serializes selection writes and preserves the latest selection across stale history updates", async () => {
+		const { history, getSession, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const firstGet = getSession.getMockImplementation()!
+		getSession.mockImplementationOnce(async (id) => {
+			await gate
+			return firstGet(id)
+		})
+		const first = history.setTaskApiSelection("task-1", { actProfileId: "P" })
+		const second = history.setTaskApiSelection("task-1", { actProfileId: "Q" })
+		await vi.waitFor(() => expect(getSession).toHaveBeenCalledOnce())
+		expect(updateSession).not.toHaveBeenCalled()
+		release()
+		await Promise.all([first, second])
+		await history.updateTaskHistoryItem(makeHistoryItem("task-1", { apiSelection: { actProfileId: "P" } }))
+		expect(await history.getTaskApiSelection("task-1")).toEqual({ actProfileId: "Q" })
+	})
+
+	it("persists and reads back a task's API selection via setTaskApiSelection", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1")])
+		await history.setTaskApiSelection("task-1", { actProfileId: "act-1", actModeReasoningEffort: "medium" })
+		expect((await history.findHistoryItem("task-1"))?.apiSelection).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+		expect(await history.getTaskApiSelection("task-1")).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+	})
+
 	it("persists a growing subagent count and skips non-growth writes", async () => {
 		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
 		await history.updateTaskSubagentCount("task-1", 2)
