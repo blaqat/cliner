@@ -197,7 +197,8 @@ function shouldRouteThroughOpenAIResponses(
 	settings: ProviderSettings,
 ): boolean {
 	return (
-		settings.protocol === "openai-responses" || settings.client === "openai"
+		settings.protocol === "openai-responses" ||
+		(settings.protocol === undefined && settings.client === "openai")
 	);
 }
 

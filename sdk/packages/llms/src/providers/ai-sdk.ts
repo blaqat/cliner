@@ -748,6 +748,35 @@ function toAiSdkMessages(
 					continue;
 				}
 				const metadata = part.metadata as Record<string, unknown> | undefined;
+				const openaiReasoningItems = metadata?.openaiReasoningItems;
+				if (Array.isArray(openaiReasoningItems)) {
+					for (const item of openaiReasoningItems) {
+						if (
+							!item ||
+							typeof item !== "object" ||
+							typeof item.itemId !== "string"
+						)
+							continue;
+						content.push({
+							type: "reasoning",
+							text: sanitizeSurrogates(
+								typeof item.text === "string" ? item.text : "",
+							),
+							providerOptions: {
+								openai: {
+									itemId: item.itemId,
+									...(typeof item.reasoningEncryptedContent === "string"
+										? {
+												reasoningEncryptedContent:
+													item.reasoningEncryptedContent,
+											}
+										: {}),
+								},
+							},
+						});
+					}
+					continue;
+				}
 				const signature = metadata?.signature;
 				const redactedData = metadata?.redactedData;
 				content.push({
@@ -803,10 +832,16 @@ function toAiSdkMessages(
 					toolCallId: part.toolCallId,
 					toolName: part.toolName,
 					input: part.input,
-					...(typeof thoughtSignature === "string"
+					...(typeof thoughtSignature === "string" ||
+					typeof metadata?.openaiItemId === "string"
 						? {
 								providerOptions: {
-									google: { thoughtSignature },
+									...(typeof thoughtSignature === "string"
+										? { google: { thoughtSignature } }
+										: {}),
+									...(typeof metadata?.openaiItemId === "string"
+										? { openai: { itemId: metadata.openaiItemId } }
+										: {}),
 								},
 							}
 						: {}),
@@ -1397,6 +1432,17 @@ function suppressDanglingStreamPromises(
 	}
 }
 
+function extractOpenAIItemMetadata(
+	part: AiSdkStreamPart,
+): Record<string, unknown> | undefined {
+	const openai = (
+		part.providerMetadata as { openai?: Record<string, unknown> } | undefined
+	)?.openai;
+	return typeof openai?.itemId === "string"
+		? { openaiItemId: openai.itemId }
+		: undefined;
+}
+
 function extractGoogleThoughtMetadata(
 	part: AiSdkStreamPart,
 ): Record<string, unknown> | undefined {
@@ -1493,6 +1539,13 @@ async function* emitAiSdkEvents(
 	let finishProviderMetadata: unknown;
 	let streamAborted = false;
 	let sawVisibleContent = false;
+	// AgentRuntime coalesces adjacent reasoning deltas. Keep each Responses item
+	// separately so coalescing cannot overwrite ids or encrypted content.
+	const openaiReasoningItems = new Map<
+		string,
+		{ itemId: string; text: string; reasoningEncryptedContent?: string }
+	>();
+	const openaiReasoningPartIds = new Map<string, string>();
 	const mediaBudget = createMediaBudgetState();
 	const rejectedMediaErrors: string[] = [];
 	const activeProjectedModelToolCalls = new Map<
@@ -1522,6 +1575,48 @@ async function* emitAiSdkEvents(
 					)?.[1];
 					continue;
 				}
+				if (part.type?.startsWith("reasoning")) {
+					const openai = (
+						part.providerMetadata as
+							| { openai?: Record<string, unknown> }
+							| undefined
+					)?.openai;
+					const partId = typeof part.id === "string" ? part.id : "";
+					const itemId =
+						typeof openai?.itemId === "string"
+							? openai.itemId
+							: openaiReasoningPartIds.get(partId);
+					if (itemId) {
+						openaiReasoningPartIds.set(partId, itemId);
+						const item = openaiReasoningItems.get(itemId) ?? {
+							itemId,
+							text: "",
+						};
+						const text =
+							part.type === "reasoning-delta"
+								? String(part.text ?? part.textDelta ?? "")
+								: "";
+						item.text += text;
+						if (typeof openai?.reasoningEncryptedContent === "string")
+							item.reasoningEncryptedContent = openai.reasoningEncryptedContent;
+						openaiReasoningItems.set(itemId, item);
+						if (text) sawVisibleContent = true;
+						yield {
+							type: "reasoning-delta",
+							text,
+							metadata: {
+								openaiReasoningItems: [...openaiReasoningItems.values()].map(
+									(value) => ({ ...value }),
+								),
+							},
+						};
+						continue;
+					}
+				} else if (part.type === "text-delta" || part.type === "tool-call") {
+					openaiReasoningItems.clear();
+					openaiReasoningPartIds.clear();
+				}
+
 				if (part.type === "text-delta") {
 					const text =
 						(part.textDelta as string | undefined) ??
@@ -1669,7 +1764,10 @@ async function* emitAiSdkEvents(
 						input: typeof input === "string" ? undefined : input,
 						inputText,
 						metadata: buildToolCallMetadata({
-							metadata: extractGoogleThoughtMetadata(part),
+							metadata: {
+								...extractGoogleThoughtMetadata(part),
+								...extractOpenAIItemMetadata(part),
+							},
 							request,
 							context,
 						}),
@@ -1870,6 +1968,11 @@ async function* emitAiSdkEvents(
 		// Prefer the real provider error from onError over the generic
 		// NoOutputGeneratedError the AI SDK throws when 0 steps are recorded.
 		streamError = capturedError?.current ?? captureStreamError(error);
+	}
+
+	if (streamAborted || request.signal?.aborted) {
+		yield { type: "finish", reason: "aborted" };
+		return;
 	}
 
 	if (!streamError) {
@@ -2408,6 +2511,10 @@ function createAiSdkProvider(
 				);
 			} catch (error) {
 				suppressDanglingStreamPromises(stream);
+				if (request.signal?.aborted) {
+					yield { type: "finish", reason: "aborted" };
+					return;
+				}
 				// Prefer the real provider error captured in onError over the generic
 				// NoOutputGeneratedError that the AI SDK throws when 0 steps are recorded.
 				const captured = capturedError.current ?? captureStreamError(error);

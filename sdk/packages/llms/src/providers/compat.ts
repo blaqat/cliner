@@ -304,11 +304,20 @@ export function toGatewayRequestMessages(
 										type: "reasoning" as const,
 										text: part.thinking,
 										metadata:
-											part.signature || part.call_id
+											part.signature || part.call_id || part.details
 												? {
 														signature: part.signature,
 														callId: part.call_id,
 														details: part.details,
+														...(part.details &&
+														typeof part.details === "object" &&
+														!Array.isArray(part.details)
+															? {
+																	openaiReasoningItems: (
+																		part.details as Record<string, unknown>
+																	).openaiReasoningItems,
+																}
+															: {}),
 													}
 												: undefined,
 									},
@@ -486,6 +495,7 @@ function buildGatewayConfig(config: ProviderConfig) {
 	return {
 		providerId,
 		apiKey: config.apiKey ?? config.accessToken,
+		apiKeyEnv: config.apiKeyEnv,
 		baseUrl: config.baseUrl,
 		headers: config.headers,
 		timeoutMs: config.timeoutMs,
@@ -542,7 +552,9 @@ function toApiStreamChunk(
 						: typeof metadata?.signature === "string"
 							? metadata.signature
 							: undefined,
-				details: metadata?.details,
+				details: Array.isArray(metadata?.openaiReasoningItems)
+					? { openaiReasoningItems: metadata.openaiReasoningItems }
+					: metadata?.details,
 			};
 		}
 		case "tool-call-delta": {

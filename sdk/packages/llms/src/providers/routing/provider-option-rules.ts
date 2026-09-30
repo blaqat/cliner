@@ -171,6 +171,10 @@ const openAiAdapterRule: ProviderOptionRule = {
 	applies: (input) => input.target === "openai",
 	build: (input) => ({
 		openai: {
+			// Replay history directly, including opaque reasoning, without relying
+			// on server-side response storage at compatible endpoints.
+			store: false,
+			include: ["reasoning.encrypted_content"],
 			strictJsonSchema: false,
 			...(["openai", "openai-native"].includes(input.request.providerId)
 				? buildOpenAINativeProviderOptions()
