@@ -69,14 +69,8 @@ const ApiProfilesPanel = () => {
 		setIsSaving(true)
 		setError(undefined)
 		try {
-			const response = await ModelsServiceClient.saveApiProfile(buildSaveRequest(next))
-			const savedId = response.profile?.id ?? next.id
-			// Re-assign so edits to a configuration in use take effect for its modes.
-			for (const { mode } of MODES) {
-				if (savedId && assignedId[mode] === savedId) {
-					await ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode, profileId: savedId }))
-				}
-			}
+			// The backend refreshes saved connection/model edits and preserves chat effort.
+			await ModelsServiceClient.saveApiProfile(buildSaveRequest(next))
 			setDraft(undefined)
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Failed to save configuration.")

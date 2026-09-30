@@ -28,6 +28,7 @@ export async function saveApiProfile(controller: Controller, request: SaveApiPro
 			provider: request.provider,
 			modelId: request.modelId,
 			openAiCompatibleApiType: request.openAiCompatibleApiType || undefined,
+			reasoningEffort: request.reasoningEffort || undefined,
 			options,
 			secrets: request.secrets,
 		})
@@ -42,6 +43,7 @@ export async function saveApiProfile(controller: Controller, request: SaveApiPro
 				provider: profile.provider,
 				modelId: profile.modelId,
 				openAiCompatibleApiType: profile.openAiCompatibleApiType ?? "",
+				reasoningEffort: profile.reasoningEffort ?? "",
 				optionsJson: JSON.stringify(profile.options ?? {}),
 				secretKeys: listProfileSecretKeys(controller.stateManager, profile.id),
 			}),

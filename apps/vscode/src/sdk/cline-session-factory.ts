@@ -974,7 +974,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	const reasoningConfig = profileAssigned
 		? isReasoningEffort(profileEffort)
 			? { reasoningEffort: profileEffort }
-			: { thinking: false }
+			: {}
 		: providerId === "oca"
 			? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
 			: resolveProviderReasoningConfig(providerId)

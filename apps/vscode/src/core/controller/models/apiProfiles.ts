@@ -12,7 +12,7 @@ import {
 	type Secrets,
 	type SettingsKey,
 } from "@shared/storage/state-keys"
-import type { Mode } from "@shared/storage/types"
+import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 
 /**
@@ -163,6 +163,8 @@ function sanitizeProfileOptions(options: Record<string, unknown> | undefined): R
 		// `profile:<id>:` secret scope — and only known settings keys persist.
 		if (
 			value === undefined ||
+			key === "planModeReasoningEffort" ||
+			key === "actModeReasoningEffort" ||
 			isSecretKey(key) ||
 			!ApiHandlerSettingsKeys.includes(key as (typeof ApiHandlerSettingsKeys)[number])
 		) {
@@ -183,6 +185,7 @@ export interface SaveApiProfileInput {
 	provider: string
 	modelId: string
 	openAiCompatibleApiType?: string
+	reasoningEffort?: string
 	options?: Record<string, unknown>
 	secrets?: Record<string, string | undefined>
 }
@@ -196,6 +199,9 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
 	const provider = toLegacyApiProvider(input.provider?.trim() || "") as ApiProvider | undefined
 	if (!provider) {
 		throw new Error("provider is required")
+	}
+	if (input.reasoningEffort && !isOpenaiReasoningEffort(input.reasoningEffort)) {
+		throw new Error("Invalid reasoning effort")
 	}
 	const name = input.name?.trim() || PROFILE_PROVIDER_NAMES[provider] || provider
 	const profiles = readApiConfigProfiles(stateManager)
@@ -215,6 +221,7 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
 		provider,
 		modelId: input.modelId ?? "",
 		openAiCompatibleApiType: normalizeApiType(input.openAiCompatibleApiType),
+		reasoningEffort: isOpenaiReasoningEffort(input.reasoningEffort) ? input.reasoningEffort : undefined,
 		options: sanitizeProfileOptions(input.options),
 	}
 
@@ -228,7 +235,8 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
 	ensureApiConfigProfiles(stateManager)
 	for (const mode of ["plan", "act"] as const) {
 		if (stateManager.getGlobalStateKey(mode === "plan" ? "askProfileId" : "actProfileId") === id) {
-			assignApiConfigProfile(stateManager, mode, id)
+			// Refresh saved model/connection edits without resetting the current effort.
+			assignApiConfigProfile(stateManager, mode, id, false)
 		}
 	}
 	return profile
@@ -261,6 +269,7 @@ export function buildApiConfigurationFromProfile(
 	profile: ApiConfigProfile,
 	secrets: Partial<Secrets>,
 	mode: Mode,
+	applyDefaultEffort = true,
 ): Partial<ApiConfiguration> {
 	const provider = toLegacyApiProvider(profile.provider) as ApiProvider
 	const updates: Record<string, unknown> = {}
@@ -268,8 +277,8 @@ export function buildApiConfigurationFromProfile(
 	// values deliberately remove legacy fields rather than inheriting them.
 	for (const key of [...ApiHandlerSettingsKeys, ...SecretKeys]) {
 		if (key.startsWith(mode === "plan" ? "actMode" : "planMode")) continue
-		// Effort is selected separately from the saved connection profile.
-		if (key === `${mode}ModeReasoningEffort`) continue
+		// Reads and saves preserve current effort; assignment resets it.
+		if (key === `${mode}ModeReasoningEffort` && !applyDefaultEffort) continue
 		updates[key] = undefined
 	}
 	Object.assign(updates, {
@@ -278,7 +287,7 @@ export function buildApiConfigurationFromProfile(
 	})
 
 	for (const [key, value] of Object.entries(profile.options ?? {})) {
-		if (value === undefined || isSecretKey(key)) {
+		if (value === undefined || isSecretKey(key) || key === "planModeReasoningEffort" || key === "actModeReasoningEffort") {
 			continue
 		}
 		// Mode-prefixed option keys captured from one mode rewrite onto the
@@ -297,6 +306,9 @@ export function buildApiConfigurationFromProfile(
 	updates[`${mode}ModeApiProvider`] = provider
 	updates[getProviderModelIdKey(provider, mode)] = profile.modelId
 	updates.openAiCompatibleApiType = profile.openAiCompatibleApiType ?? "chat"
+	if (applyDefaultEffort) {
+		updates[`${mode}ModeReasoningEffort`] = profile.reasoningEffort ?? "none"
+	}
 
 	for (const [key, value] of Object.entries(secrets)) {
 		if (value && isSecretKey(key)) {
@@ -331,8 +343,16 @@ export function snapshotApiProfileConfiguration(store: ApiProfileStore, legacy: 
 			profile ?? { id, name: "", provider: "openai", modelId: "" },
 			profile ? readProfileSecrets(store, id) : {},
 			target,
+			false,
 		)
 		const resolved = { ...legacy, ...fragment }
+		// Current model selection belongs to the mode, never to the saved record.
+		if (profile) {
+			const modelKey = getProviderModelIdKey(profile.provider, target) as keyof ApiConfiguration
+			if (legacy[`${target}ModeApiProvider`] === profile.provider && legacy[modelKey] !== undefined) {
+				Object.assign(resolved, { [modelKey]: legacy[modelKey] })
+			}
+		}
 		profileConfigurations.add(resolved)
 		return resolved
 	}
@@ -348,13 +368,18 @@ export function snapshotApiProfileConfiguration(store: ApiProfileStore, legacy: 
  * Global connection keys remain a legacy fallback. Effective reads resolve
  * connection options and secrets from `askProfileId` / `actProfileId`.
  */
-export function assignApiConfigProfile(stateManager: ApiProfileStore, mode: Mode, profileId: string): ApiConfigProfile {
+export function assignApiConfigProfile(
+	stateManager: ApiProfileStore,
+	mode: Mode,
+	profileId: string,
+	applyDefaultEffort = true,
+): ApiConfigProfile {
 	const profile = readApiConfigProfiles(stateManager).find((p) => p.id === profileId)
 	if (!profile) {
 		throw new Error(`No saved configuration with id "${profileId}"`)
 	}
 	const secrets = readProfileSecrets(stateManager, profile.id)
-	const updates = buildApiConfigurationFromProfile(profile, secrets, mode)
+	const updates = buildApiConfigurationFromProfile(profile, secrets, mode, applyDefaultEffort)
 	const modeUpdates = Object.fromEntries(Object.entries(updates).filter(([key]) => key.startsWith(`${mode}Mode`)))
 	stateManager.setApiConfiguration(modeUpdates)
 	stateManager.setGlobalStateBatch(modeUpdates)
@@ -392,6 +417,7 @@ function captureProfileFromConfiguration(
 		}
 	}
 
+	const effort = config[`${mode}ModeReasoningEffort`]
 	const secrets: Record<string, string> = {}
 	for (const key of PROFILE_PROVIDER_SECRET_KEYS[provider] ?? []) {
 		const value = config[key] as string | undefined
@@ -404,6 +430,7 @@ function captureProfileFromConfiguration(
 		profile: {
 			provider,
 			modelId,
+			reasoningEffort: isOpenaiReasoningEffort(effort) ? effort : undefined,
 			openAiCompatibleApiType: provider === "openai" ? normalizeApiType(config.openAiCompatibleApiType) : undefined,
 			options: Object.keys(options).length > 0 ? options : undefined,
 		},
@@ -415,6 +442,7 @@ function profileSignature(profile: Omit<ApiConfigProfile, "id" | "name">, secret
 	return JSON.stringify([
 		profile.provider,
 		profile.modelId,
+		profile.reasoningEffort ?? "none",
 		profile.openAiCompatibleApiType ?? "",
 		profile.options ?? {},
 		secrets,

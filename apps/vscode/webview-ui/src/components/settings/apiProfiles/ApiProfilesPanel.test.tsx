@@ -1,8 +1,12 @@
+import { ALLOWED_API_PROVIDERS } from "@shared/api-profiles"
 import { ApiConfigProfile } from "@shared/proto/cline/models"
+import { OPENAI_REASONING_EFFORT_OPTIONS } from "@shared/storage/types"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import ApiProfileEditor from "./ApiProfileEditor"
 import ApiProfilesPanel from "./ApiProfilesPanel"
+import { newProfileDraft } from "./profileDraft"
 
 const mocks = vi.hoisted(() => ({
 	state: {} as Record<string, unknown>,
@@ -88,6 +92,21 @@ describe("ApiProfilesPanel", () => {
 		mocks.updateSettings.mockResolvedValue({})
 	})
 
+	it("edits the default effort without assigning the configuration", async () => {
+		render(<ApiProfilesPanel />)
+		fireEvent.click(card("Claude"))
+		const selector = await screen.findByLabelText("Default reasoning effort")
+		expect(Array.from((selector as HTMLSelectElement).options).map((option) => option.value)).toEqual(
+			OPENAI_REASONING_EFFORT_OPTIONS,
+		)
+		fireEvent.change(selector, { target: { value: "xhigh" } })
+		fireEvent.click(screen.getByText("Save"))
+		await waitFor(() =>
+			expect(mocks.saveApiProfile).toHaveBeenCalledWith(expect.objectContaining({ id: "a", reasoningEffort: "xhigh" })),
+		)
+		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
+	})
+
 	it("lists cards with provider · model · API type and mode badges", () => {
 		render(<ApiProfilesPanel />)
 		expect(screen.getByText("OpenAI Compatible · qwen · Responses")).toBeTruthy()
@@ -121,7 +140,7 @@ describe("ApiProfilesPanel", () => {
 		expect(mocks.deleteApiProfile.mock.calls[0][0]).toMatchObject({ id: "b" })
 	})
 
-	it("saves edits with blank secrets unchanged and re-assigns the modes using it", async () => {
+	it("saves edits with blank secrets unchanged without reassigning the modes using it", async () => {
 		render(<ApiProfilesPanel />)
 		fireEvent.click(card("Claude"))
 		await screen.findByText("Configurations")
@@ -131,8 +150,7 @@ describe("ApiProfilesPanel", () => {
 		const request = mocks.saveApiProfile.mock.calls[0][0]
 		expect(request).toMatchObject({ id: "a", name: "Claude 2", provider: "anthropic", modelId: "claude-x" })
 		expect(request.secrets).toEqual({})
-		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalledTimes(1))
-		expect(mocks.assignApiProfile.mock.calls[0][0]).toMatchObject({ mode: "plan", profileId: "a" })
+		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 	})
 
 	it("creates a new configuration with options_json and typed secrets", async () => {
@@ -157,5 +175,17 @@ describe("ApiProfilesPanel", () => {
 		fireEvent.click(screen.getByText("Create"))
 		expect(await screen.findByText("Name is required.")).toBeTruthy()
 		expect(mocks.saveApiProfile).not.toHaveBeenCalled()
+	})
+})
+
+describe("ApiProfileEditor default effort", () => {
+	it.each(ALLOWED_API_PROVIDERS)("offers the bottom-bar effort options for %s", (provider) => {
+		const onChange = vi.fn()
+		render(<ApiProfileEditor assignedModes={[]} draft={newProfileDraft(provider)} onChange={onChange} onSave={vi.fn()} />)
+		const selector = screen.getByLabelText("Default reasoning effort") as HTMLSelectElement
+		expect(Array.from(selector.options).map((option) => option.value)).toEqual(OPENAI_REASONING_EFFORT_OPTIONS)
+		expect(selector.value).toBe("none")
+		fireEvent.change(selector, { target: { value: "high" } })
+		expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider, reasoningEffort: "high" }))
 	})
 })

@@ -89,6 +89,8 @@ message ApiConfigProfile {
   string options_json = 6;
   // Names of the secret fields stored under `profile:<id>:*`.
   repeated string secret_keys = 7;
+  // none/empty uses the provider default; otherwise low, medium, high or xhigh.
+  string reasoning_effort = 8;
 }
 
 message ListApiProfilesResponse {
@@ -109,6 +111,7 @@ message SaveApiProfileRequest {
   // Secret field name (e.g. "apiKey", "openAiApiKey") -> value. Each entry is
   // stored under `profile:<id>:<key>`; an empty value deletes the key.
   map<string, string> secrets = 8;
+  string reasoning_effort = 9;
 }
 
 message SaveApiProfileResponse {

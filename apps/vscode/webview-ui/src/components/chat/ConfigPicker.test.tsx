@@ -3,10 +3,13 @@ import type React from "react"
 import { createContext, useContext } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import ConfigPicker, { MANAGE_CONFIGURATIONS_VALUE } from "./ConfigPicker"
-import { providerReasoningPatch } from "./ReasoningEffortPicker"
+import ReasoningEffortPicker from "./ReasoningEffortPicker"
 
 const mocks = vi.hoisted(() => ({
 	assignApiProfile: vi.fn(),
+	handleFieldChange: vi.fn().mockResolvedValue({}),
+	writeProviderConfig: vi.fn(),
+	saveApiProfile: vi.fn(),
 	navigateToSettings: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
@@ -16,7 +19,15 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 }))
 
 vi.mock("@/services/grpc-client", () => ({
-	ModelsServiceClient: { assignApiProfile: (request: unknown) => mocks.assignApiProfile(request) },
+	ModelsServiceClient: {
+		assignApiProfile: (request: unknown) => mocks.assignApiProfile(request),
+		writeProviderConfig: mocks.writeProviderConfig,
+		saveApiProfile: mocks.saveApiProfile,
+	},
+}))
+
+vi.mock("@/components/settings/utils/useApiConfigurationHandlers", () => ({
+	useApiConfigurationHandlers: () => ({ handleFieldChange: mocks.handleFieldChange }),
 }))
 
 // Radix Select does not open in jsdom; a flat stand-in keeps the picker's own logic under test.
@@ -113,16 +124,40 @@ describe("ConfigPicker", () => {
 	})
 })
 
-describe("providerReasoningPatch", () => {
-	it("matches the settings writes for Anthropic and OpenAI Compatible", () => {
-		expect(providerReasoningPatch("anthropic", "high")).toMatchObject({ enabled: true, effort: "high" })
-		expect(providerReasoningPatch("anthropic", "none")).toMatchObject({ enabled: false, effort: "none" })
-		expect(providerReasoningPatch("openai", "low")).toMatchObject({ enabled: true, effort: "low" })
-		expect(providerReasoningPatch("openai", "none")).toMatchObject({ enabled: false, effort: undefined })
+describe("ReasoningEffortPicker", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		mocks.state = {
+			apiConfiguration: { planModeReasoningEffort: "low", actModeReasoningEffort: "high" },
+			planActSeparateModelsSetting: false,
+		}
 	})
 
-	it("leaves other providers to the per-mode field only", () => {
-		expect(providerReasoningPatch("openai-native", "high")).toBeUndefined()
-		expect(providerReasoningPatch("bedrock", "high")).toBeUndefined()
+	it.each(["plan", "act"] as const)("updates only %s effort without saving provider or profile settings", (mode) => {
+		render(<ReasoningEffortPicker mode={mode} modelId="m" modelInfo={{ supportsReasoning: true }} provider="anthropic" />)
+		fireEvent.click(screen.getByRole("option", { name: "Xhigh" }))
+		expect(mocks.handleFieldChange).toHaveBeenCalledExactlyOnceWith(`${mode}ModeReasoningEffort`, "xhigh")
+		expect(mocks.writeProviderConfig).not.toHaveBeenCalled()
+		expect(mocks.saveApiProfile).not.toHaveBeenCalled()
+	})
+
+	it("shows provider default for an assigned profile with unset effective effort", () => {
+		mocks.state = { apiConfiguration: {}, actProfileId: "p1" }
+		render(
+			<ReasoningEffortPicker
+				defaultEffort="medium"
+				mode="act"
+				modelId="m"
+				modelInfo={{ supportsReasoning: true }}
+				provider="openai-native"
+			/>,
+		)
+		expect(screen.getByRole("option", { name: "Provider default" })).toHaveAttribute("aria-selected", "true")
+	})
+
+	it("can return to provider default", () => {
+		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} provider="openai" />)
+		fireEvent.click(screen.getByRole("option", { name: "Provider default" }))
+		expect(mocks.handleFieldChange).toHaveBeenCalledWith("actModeReasoningEffort", "none")
 	})
 })

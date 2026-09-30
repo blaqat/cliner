@@ -12,6 +12,7 @@ function toProtoProfile(stateManager: ApiProfileStore, profile: ApiConfigProfile
 		provider: profile.provider,
 		modelId: profile.modelId,
 		openAiCompatibleApiType: profile.openAiCompatibleApiType ?? "",
+		reasoningEffort: profile.reasoningEffort ?? "",
 		optionsJson: JSON.stringify(profile.options ?? {}),
 		secretKeys: listProfileSecretKeys(stateManager, profile.id),
 	})

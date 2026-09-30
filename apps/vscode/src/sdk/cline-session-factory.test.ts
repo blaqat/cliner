@@ -386,6 +386,33 @@ describe("buildSessionConfig", () => {
 		})
 	})
 
+	it.each([
+		undefined,
+		"none",
+		"low",
+		"xhigh",
+	] as const)("uses effective profile effort %s without inheriting provider effort", async (effort) => {
+		const state = {
+			apiConfigProfiles: [{ id: "a", name: "A", provider: "anthropic", modelId: "m", reasoningEffort: "high" }],
+			askProfileId: "a",
+			actProfileId: "a",
+		}
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		const snapshot = snapshotApiProfileConfiguration(store, { actModeReasoningEffort: effort }, "act")
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshot as never)
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
+			provider: "anthropic",
+			reasoning: { enabled: true, effort: "medium" },
+		} as never)
+		const result = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		expect(result.reasoningEffort).toBe(effort === "none" ? undefined : effort)
+		expect(result.thinking).toBeUndefined()
+	})
+
 	it("resolves Cline OAuth credentials after defaulting to the Cline provider", async () => {
 		mocks.stateManager.getApiConfiguration.mockReturnValue({} as any)
 		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({

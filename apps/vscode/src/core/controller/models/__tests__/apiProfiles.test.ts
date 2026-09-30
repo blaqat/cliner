@@ -26,6 +26,7 @@ function createStore(config: Partial<ApiConfiguration> = {}) {
 		getGlobalStateKey: ((key: string) => globalState[key]) as ApiProfileStore["getGlobalStateKey"],
 		setGlobalStateBatch: (updates) => {
 			Object.assign(globalState, updates)
+			Object.assign(apiConfig, updates)
 		},
 		getApiConfiguration: () => apiConfig as ApiConfiguration,
 		setApiConfiguration: (updates) => {
@@ -337,5 +338,93 @@ describe("isolated profile configuration", () => {
 describe("isSecretKey sanity", () => {
 	it("treats profile secret field names as ApiConfiguration secrets", () => {
 		expect(isSecretKey("openAiApiKey")).toBe(true)
+	})
+})
+
+describe("profile reasoning defaults", () => {
+	it("applies defaults independently on assignment and resets overrides on reassignment", () => {
+		const { store, apiConfig } = createStore()
+		const high = upsertApiConfigProfile(store, { name: "High", provider: "anthropic", modelId: "m", reasoningEffort: "high" })
+		const low = upsertApiConfigProfile(store, { name: "Low", provider: "openai", modelId: "n", reasoningEffort: "low" })
+		assignApiConfigProfile(store, "plan", low.id)
+		assignApiConfigProfile(store, "act", high.id)
+		expect(apiConfig.planModeReasoningEffort).toBe("low")
+		expect(apiConfig.actModeReasoningEffort).toBe("high")
+		store.setApiConfiguration({ actModeReasoningEffort: "xhigh" })
+		assignApiConfigProfile(store, "act", high.id)
+		expect(apiConfig.actModeReasoningEffort).toBe("high")
+		expect(apiConfig.planModeReasoningEffort).toBe("low")
+	})
+
+	it.each([undefined, "none"])("resets old effort to provider default for %s", (reasoningEffort) => {
+		const { store, apiConfig } = createStore()
+		const profile = upsertApiConfigProfile(store, { name: "Default", provider: "openai", modelId: "m", reasoningEffort })
+		store.setApiConfiguration({ actModeReasoningEffort: "high" })
+		assignApiConfigProfile(store, "act", profile.id)
+		expect(apiConfig.actModeReasoningEffort).toBe("none")
+	})
+
+	it("preserves current effort on save and reads, applying edits only on assignment", () => {
+		const { store, apiConfig } = createStore()
+		const profile = upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "a", reasoningEffort: "high" })
+		store.setApiConfiguration({ planModeReasoningEffort: "low", actModeReasoningEffort: "xhigh" })
+		const updated = upsertApiConfigProfile(store, { ...profile, modelId: "b", reasoningEffort: "medium" })
+		const snapshot = snapshotApiProfileConfiguration(store, apiConfig as ApiConfiguration, "act")
+		expect(snapshot.actModeReasoningEffort).toBe("xhigh")
+		expect(resolveApiConfigurationForMode(snapshot, "plan").planModeReasoningEffort).toBe("low")
+		expect(snapshot.actModeOpenAiModelId).toBe("b")
+		expect(updated.reasoningEffort).toBe("medium")
+		assignApiConfigProfile(store, "act", profile.id)
+		expect(apiConfig.actModeReasoningEffort).toBe("medium")
+		expect(apiConfig.planModeReasoningEffort).toBe("low")
+	})
+
+	it("keeps temporary model and effort selections out of the saved profile", () => {
+		const { store, apiConfig } = createStore()
+		const profile = upsertApiConfigProfile(store, {
+			name: "A",
+			provider: "openai",
+			modelId: "saved",
+			reasoningEffort: "high",
+		})
+		store.setApiConfiguration({ actModeOpenAiModelId: "temporary", actModeReasoningEffort: "low" })
+		const snapshot = snapshotApiProfileConfiguration(store, apiConfig as ApiConfiguration, "act")
+		expect(snapshot.actModeOpenAiModelId).toBe("temporary")
+		expect(snapshot.actModeReasoningEffort).toBe("low")
+		expect(readApiConfigProfiles(store)[0]).toEqual(profile)
+		assignApiConfigProfile(store, "act", profile.id)
+		expect(apiConfig.actModeOpenAiModelId).toBe("saved")
+		expect(apiConfig.actModeReasoningEffort).toBe("high")
+	})
+
+	it("rejects invalid defaults and drops mode efforts from option snapshots", () => {
+		const { store } = createStore()
+		expect(() =>
+			upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "m", reasoningEffort: "max" }),
+		).toThrow("Invalid reasoning effort")
+		const profile = upsertApiConfigProfile(store, {
+			name: "A",
+			provider: "openai",
+			modelId: "m",
+			reasoningEffort: "low",
+			options: { planModeReasoningEffort: "high" },
+		})
+		expect(profile.options).toBeUndefined()
+		expect(store.getApiConfiguration().planModeReasoningEffort).toBe("low")
+	})
+
+	it("migrates mode defaults and separates otherwise identical profiles with different efforts", () => {
+		const { store } = createStore({
+			planModeApiProvider: "anthropic",
+			actModeApiProvider: "anthropic",
+			planModeApiModelId: "m",
+			actModeApiModelId: "m",
+			planModeReasoningEffort: "low",
+			actModeReasoningEffort: "high",
+		})
+		const { profiles, askProfileId, actProfileId } = ensureApiConfigProfiles(store)
+		expect(profiles).toHaveLength(2)
+		expect(profiles.find((p) => p.id === askProfileId)?.reasoningEffort).toBe("low")
+		expect(profiles.find((p) => p.id === actProfileId)?.reasoningEffort).toBe("high")
 	})
 })

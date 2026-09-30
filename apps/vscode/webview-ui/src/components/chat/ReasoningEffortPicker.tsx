@@ -1,18 +1,15 @@
 import type { ModelInfo, OpenAiCompatibleModelInfo } from "@shared/api"
-import { ProviderReasoningPatch, WriteProviderConfigPatch, WriteProviderConfigRequest } from "@shared/proto/cline/models"
 import {
 	isOpenaiReasoningEffort,
 	type Mode,
 	OPENAI_REASONING_EFFORT_OPTIONS,
 	type OpenaiReasoningEffort,
 } from "@shared/storage/types"
-import { isClaudeOpusAdaptiveThinkingModel, resolveClaudeOpusAdaptiveThinking } from "@shared/utils/reasoning-support"
 import { memo } from "react"
 import { getModeSpecificFields, supportsReasoningEffortForModelId } from "@/components/settings/utils/providerUtils"
 import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { ModelsServiceClient } from "@/services/grpc-client"
 
 /** True when the selected model exposes any reasoning control the effort picker can drive. */
 export function modelHasReasoning(modelId: string | undefined, modelInfo: ModelInfo | undefined): boolean {
@@ -27,31 +24,12 @@ export function modelHasReasoning(modelId: string | undefined, modelInfo: ModelI
 	)
 }
 
-/**
- * Providers whose settings UI also writes effort into the provider config
- * (AnthropicProvider / OpenAICompatible `write({ reasoning })`). The bottom-bar
- * picker mirrors that so both surfaces have the same effect. Undefined for
- * providers that only use the per-mode `*ModeReasoningEffort` field.
- */
-export function providerReasoningPatch(
-	provider: string | undefined,
-	effort: OpenaiReasoningEffort,
-): ProviderReasoningPatch | undefined {
-	switch (provider) {
-		case "anthropic":
-			return ProviderReasoningPatch.create({ enabled: effort !== "none", effort })
-		case "openai":
-			return ProviderReasoningPatch.create({ enabled: effort !== "none", effort: effort !== "none" ? effort : undefined })
-		default:
-			return undefined
-	}
-}
-
-const formatEffort = (effort: string) => effort.charAt(0).toUpperCase() + effort.slice(1)
+const formatEffort = (effort: string) =>
+	effort === "none" ? "Provider default" : effort.charAt(0).toUpperCase() + effort.slice(1)
 
 interface ReasoningEffortPickerProps {
 	mode: Mode
-	/** Selected provider id for `mode`; drives the provider-config write. */
+	/** Selected provider id for `mode`; used by the composer. */
 	provider?: string
 	modelId: string | undefined
 	modelInfo: ModelInfo | undefined
@@ -62,9 +40,9 @@ interface ReasoningEffortPickerProps {
  * Compact effort dropdown for the composer's bottom bar. Persists the same
  * per-mode `*ModeReasoningEffort` field as the settings ReasoningEffortSelector.
  */
-const ReasoningEffortPicker = ({ mode, provider, modelId, modelInfo, defaultEffort = "medium" }: ReasoningEffortPickerProps) => {
-	const { apiConfiguration } = useExtensionState()
-	const { handleModeFieldChange } = useApiConfigurationHandlers()
+const ReasoningEffortPicker = ({ mode, modelId, modelInfo, defaultEffort = "none" }: ReasoningEffortPickerProps) => {
+	const { apiConfiguration, askProfileId, actProfileId } = useExtensionState()
+	const { handleFieldChange } = useApiConfigurationHandlers()
 
 	if (!modelHasReasoning(modelId, modelInfo)) {
 		return null
@@ -72,28 +50,16 @@ const ReasoningEffortPicker = ({ mode, provider, modelId, modelInfo, defaultEffo
 
 	const modeFields = getModeSpecificFields(apiConfiguration, mode)
 	const storedEffort = modeFields.reasoningEffort
-	// Same fallback as the Anthropic settings selector (legacy thinking budget => high).
-	const fallbackEffort =
-		provider === "anthropic" && isClaudeOpusAdaptiveThinkingModel(modelId)
-			? (resolveClaudeOpusAdaptiveThinking(storedEffort, modeFields.thinkingBudgetTokens).effort ?? "none")
-			: defaultEffort
-	const selectedEffort = isOpenaiReasoningEffort(storedEffort) ? storedEffort : fallbackEffort
+	const profileAssigned = mode === "plan" ? askProfileId : actProfileId
+	const selectedEffort = isOpenaiReasoningEffort(storedEffort) ? storedEffort : profileAssigned ? "none" : defaultEffort
 
 	return (
 		<Select
 			onValueChange={(value) => {
-				void handleModeFieldChange({ plan: "planModeReasoningEffort", act: "actModeReasoningEffort" }, value, mode).catch(
+				if (!isOpenaiReasoningEffort(value)) return
+				void handleFieldChange(mode === "plan" ? "planModeReasoningEffort" : "actModeReasoningEffort", value).catch(
 					(error) => console.error("Failed to update reasoning effort:", error),
 				)
-				const reasoning = isOpenaiReasoningEffort(value) ? providerReasoningPatch(provider, value) : undefined
-				if (provider && reasoning) {
-					void ModelsServiceClient.writeProviderConfig(
-						WriteProviderConfigRequest.create({
-							providerId: provider,
-							patch: WriteProviderConfigPatch.create({ reasoning }),
-						}),
-					).catch((error) => console.error("Failed to update provider reasoning effort:", error))
-				}
 			}}
 			value={selectedEffort}>
 			<SelectTrigger

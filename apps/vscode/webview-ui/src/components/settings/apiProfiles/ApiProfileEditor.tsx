@@ -1,6 +1,7 @@
 import { type ApiProvider, azureOpenAiDefaultApiVersion, openAiModelInfoSafeDefaults } from "@shared/api"
 import { ALLOWED_API_PROVIDERS, type OpenAiCompatibleApiType } from "@shared/api-profiles"
 import BedrockData from "@shared/providers/bedrock.json"
+import { OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort } from "@shared/storage/types"
 import { VSCodeButton, VSCodeCheckbox, VSCodeDropdown, VSCodeOption, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import { useState } from "react"
 import { useProviderModels } from "@/hooks/useProviderModels"
@@ -445,6 +446,25 @@ const ApiProfileEditor = ({
 			<ProviderFields draft={draft} onChange={onChange} />
 			<ModelField draft={draft} onChange={onChange} />
 			{touched && modelMissing && <p className="text-xs text-(--vscode-errorForeground)">Choose a model.</p>}
+
+			<div>
+				<Label htmlFor="profile-reasoning-effort">Default reasoning effort</Label>
+				<VSCodeDropdown
+					aria-label="Default reasoning effort"
+					className="w-full"
+					id="profile-reasoning-effort"
+					onChange={(e) =>
+						onChange({ ...draft, reasoningEffort: (e.target as HTMLSelectElement).value as OpenaiReasoningEffort })
+					}
+					value={draft.reasoningEffort}>
+					{OPENAI_REASONING_EFFORT_OPTIONS.map((effort) => (
+						<VSCodeOption key={effort} value={effort}>
+							{effort === "none" ? "None / provider default" : effort.charAt(0).toUpperCase() + effort.slice(1)}
+						</VSCodeOption>
+					))}
+				</VSCodeDropdown>
+				<Hint>Applied when assigned to Ask or Act. Saving preserves the current chat's effort.</Hint>
+			</div>
 
 			{error && <p className="text-xs text-(--vscode-errorForeground)">{error}</p>}
 

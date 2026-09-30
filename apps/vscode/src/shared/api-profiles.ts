@@ -1,4 +1,5 @@
 import type { ApiProvider } from "./api"
+import type { OpenaiReasoningEffort } from "./storage/types"
 
 /**
  * Provider allowlist for this fork (plan §1a). Only these providers are
@@ -39,6 +40,8 @@ export interface ApiConfigProfile {
 	provider: ApiProvider
 	modelId: string
 	openAiCompatibleApiType?: OpenAiCompatibleApiType
+	/** Applied on assignment; none/unset leaves effort to the provider. */
+	reasoningEffort?: OpenaiReasoningEffort
 	/** Non-secret option snapshot (subset of ApiConfiguration keys). */
 	options?: Record<string, unknown>
 }

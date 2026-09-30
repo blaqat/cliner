@@ -1,6 +1,7 @@
 import { type ApiProvider, type OpenAiCompatibleModelInfo, openAiModelInfoSafeDefaults } from "@shared/api"
 import { ALLOWED_API_PROVIDERS, type OpenAiCompatibleApiType, toAllowedApiProvider } from "@shared/api-profiles"
 import { ApiConfigProfile, SaveApiProfileRequest } from "@shared/proto/cline/models"
+import { isOpenaiReasoningEffort, type OpenaiReasoningEffort } from "@shared/storage/types"
 
 export const PROVIDER_LABELS: Record<string, string> = {
 	openai: "OpenAI Compatible",
@@ -37,6 +38,7 @@ export interface ProfileDraft {
 	provider: ApiProvider
 	modelId: string
 	openAiCompatibleApiType: OpenAiCompatibleApiType
+	reasoningEffort: OpenaiReasoningEffort
 	/** Non-secret options, including keys the editor does not render. */
 	options: Record<string, unknown>
 	/** Secret values the user typed. Absent/blank means "unchanged". */
@@ -53,6 +55,7 @@ export function newProfileDraft(provider: ApiProvider = ALLOWED_API_PROVIDERS[0]
 		provider,
 		modelId: "",
 		openAiCompatibleApiType: "chat",
+		reasoningEffort: "none",
 		options: {},
 		secrets: {},
 		savedSecretKeys: [],
@@ -75,6 +78,7 @@ export function draftFromProto(profile: ApiConfigProfile): ProfileDraft {
 		name: profile.name,
 		provider,
 		modelId: profile.modelId,
+		reasoningEffort: isOpenaiReasoningEffort(profile.reasoningEffort) ? profile.reasoningEffort : "none",
 		openAiCompatibleApiType: profile.openAiCompatibleApiType === "responses" ? "responses" : "chat",
 		options,
 		secrets: {},
@@ -166,6 +170,7 @@ export function buildSaveRequest(draft: ProfileDraft): SaveApiProfileRequest {
 		name: draft.name.trim(),
 		provider: draft.provider,
 		modelId: draft.modelId,
+		reasoningEffort: draft.reasoningEffort,
 		openAiCompatibleApiType: draft.provider === "openai" ? draft.openAiCompatibleApiType : "",
 		optionsJson: JSON.stringify(options),
 		secrets,

@@ -1,4 +1,5 @@
 import { ApiConfigProfile } from "@shared/proto/cline/models"
+import { OPENAI_REASONING_EFFORT_OPTIONS } from "@shared/storage/types"
 import { describe, expect, it } from "vitest"
 import {
 	buildSaveRequest,
@@ -98,5 +99,22 @@ describe("profileDraft", () => {
 			"OpenAI Compatible · m · Responses",
 		)
 		expect(describeProfile({ provider: "anthropic", modelId: "c" })).toBe("Anthropic · c")
+	})
+})
+
+describe("profile default effort drafts", () => {
+	it.each(OPENAI_REASONING_EFFORT_OPTIONS)("round trips %s through editing and duplication", (reasoningEffort) => {
+		const draft = draftFromProto(ApiConfigProfile.create({ id: "a", provider: "anthropic", reasoningEffort }))
+		expect(draft.reasoningEffort).toBe(reasoningEffort)
+		expect(buildSaveRequest(draft).reasoningEffort).toBe(reasoningEffort)
+		expect(buildSaveRequest(duplicateDraft(draft)).reasoningEffort).toBe(reasoningEffort)
+		expect(changeDraftProvider(draft, "openai").reasoningEffort).toBe(reasoningEffort)
+	})
+
+	it("uses provider default for new, old and invalid profiles", () => {
+		expect(newProfileDraft().reasoningEffort).toBe("none")
+		for (const reasoningEffort of ["", "invalid"]) {
+			expect(draftFromProto(ApiConfigProfile.create({ reasoningEffort })).reasoningEffort).toBe("none")
+		}
 	})
 })
