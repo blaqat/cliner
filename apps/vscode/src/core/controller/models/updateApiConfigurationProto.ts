@@ -8,6 +8,7 @@ import {
 	fromProtobufOpenAiCompatibleModelInfo,
 } from "@shared/proto-conversions/models/typeConversion"
 import { OpenaiReasoningEffort } from "@shared/storage/types"
+import type { ApiConfiguration } from "@/shared/api"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { clearOrganizationForClinePassProviderSelection } from "./handleClinePassProviderSelection"
@@ -130,6 +131,7 @@ export async function updateApiConfigurationProto(
 			geminiActModeThinkingLevel: protoApiConfiguration.geminiActModeThinkingLevel,
 			planModeReasoningEffort: protoApiConfiguration.planModeReasoningEffort as OpenaiReasoningEffort | undefined,
 			actModeReasoningEffort: protoApiConfiguration.actModeReasoningEffort as OpenaiReasoningEffort | undefined,
+			openAiCompatibleApiType: protoApiConfiguration.openAiCompatibleApiType as ApiConfiguration["openAiCompatibleApiType"],
 		}
 
 		const previousApiConfiguration = controller.stateManager.getApiConfiguration()

@@ -10,11 +10,9 @@ export interface SdkSessionConfigBuilderOptions {
 }
 
 /**
- * Unlike the CLI interactive runtime, plan-mode sessions do NOT expose a
- * switch_to_act_mode tool: matching the legacy extension, the model cannot
- * switch modes itself and must ask the user to flip the Plan/Act toggle. The
- * plan-mode system prompt (planModeSwitchTool: false in the session factory)
- * carries the matching instructions.
+ * Ask-mode sessions (internal mode value "plan") get the shared read-only
+ * investigation contract; the mode never instructs the model to switch modes
+ * or produce a plan artifact.
  */
 export class SdkSessionConfigBuilder {
 	constructor(private readonly options: SdkSessionConfigBuilderOptions) {}

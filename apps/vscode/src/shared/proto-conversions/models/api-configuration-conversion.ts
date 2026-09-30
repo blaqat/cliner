@@ -339,6 +339,7 @@ export function convertApiConfigurationToProto(config: ApiConfiguration): ProtoA
 		aihubmixAppCode: config.aihubmixAppCode,
 		hicapApiKey: config.hicapApiKey,
 		hicapModelId: config.hicapModelId,
+		openAiCompatibleApiType: config.openAiCompatibleApiType,
 
 		// Plan mode configurations
 		planModeApiProvider: config.planModeApiProvider,
@@ -523,6 +524,7 @@ export function convertProtoToApiConfiguration(protoConfig: ProtoApiConfiguratio
 		hicapModelId: protoConfig.hicapModelId,
 		nousResearchApiKey: protoConfig.nousResearchApiKey,
 		clineApiKey: protoConfig.clineApiKey,
+		openAiCompatibleApiType: protoConfig.openAiCompatibleApiType as ApiConfiguration["openAiCompatibleApiType"],
 
 		// Plan mode configurations
 		planModeApiProvider:

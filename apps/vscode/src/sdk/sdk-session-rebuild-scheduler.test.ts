@@ -74,6 +74,35 @@ describe("SdkSessionRebuildScheduler", () => {
 		expect(first).toHaveBeenCalledOnce()
 	})
 
+	it("rebuilds the owning background session after focus switches", async () => {
+		const a = { sessionId: "a", isRunning: true, queuedPromptCount: 0 }
+		const b = { sessionId: "b", isRunning: false, queuedPromptCount: 0 }
+		let focused = a
+		const sessions = new Map([
+			["a", a],
+			["b", b],
+		])
+		const scheduler = new SdkSessionRebuildScheduler({
+			sessions: {
+				getActiveSession: () => focused as never,
+				getSession: (id) => sessions.get(id) as never,
+			},
+		})
+		const rebuildA = vi.fn().mockResolvedValue(undefined)
+		const rebuildB = vi.fn().mockResolvedValue(undefined)
+		scheduler.request("provider", rebuildA, "a")
+		await scheduler.runTaskTransition(async () => {
+			focused = b
+		})
+		scheduler.request("provider", rebuildB, "b")
+		await vi.waitFor(() => expect(rebuildB).toHaveBeenCalledOnce())
+		expect(rebuildA).not.toHaveBeenCalled()
+		a.isRunning = false
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(rebuildA).toHaveBeenCalledOnce())
+		expect(focused).toBe(b)
+	})
+
 	it("leaves pending work dormant when there is no active session", async () => {
 		const scheduler = new SdkSessionRebuildScheduler({ sessions: { getActiveSession: () => undefined } })
 		const rebuild = vi.fn().mockResolvedValue(undefined)
@@ -126,7 +155,7 @@ describe("SdkSessionRebuildScheduler", () => {
 		await vi.waitFor(() => expect(passiveRebuild).toHaveBeenCalledOnce())
 	})
 
-	it("cancels dormant rebuilds before a task transition", async () => {
+	it("preserves dormant rebuilds through a task transition", async () => {
 		const activeSession = { isRunning: true }
 		const scheduler = makeScheduler(activeSession)
 		const rebuild = vi.fn().mockResolvedValue(undefined)
@@ -138,7 +167,7 @@ describe("SdkSessionRebuildScheduler", () => {
 		scheduler.sessionBecameIdle()
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
-		expect(rebuild).not.toHaveBeenCalled()
+		expect(rebuild).toHaveBeenCalledOnce()
 	})
 
 	it("runs rebuilds requested during a task transition after it completes", async () => {

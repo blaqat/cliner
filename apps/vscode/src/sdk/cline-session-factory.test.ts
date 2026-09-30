@@ -6,6 +6,7 @@ import * as LlmsModels from "@cline/llms"
 import { ApiFormat } from "@shared/proto/cline/models"
 import { Logger } from "@shared/services/Logger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { type ApiProfileStore, snapshotApiProfileConfiguration } from "@/core/controller/models/apiProfiles"
 import {
 	buildResumeSessionInput,
 	buildSessionConfig,
@@ -345,6 +346,46 @@ describe("normalizeProviderReasoningSettings", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildSessionConfig", () => {
+	it("builds profile sessions for their own mode without stored connection settings", async () => {
+		const profiles = [
+			{ id: "ask", name: "A", provider: "openai", modelId: "ask-model", options: { openAiBaseUrl: "https://ask/v1" } },
+			{
+				id: "act",
+				name: "B",
+				provider: "openai",
+				modelId: "act-model",
+				openAiCompatibleApiType: "responses",
+				options: { openAiBaseUrl: "https://act/v1" },
+			},
+		]
+		const state = { apiConfigProfiles: profiles, askProfileId: "ask", actProfileId: "act" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => ["profile:act:openAiApiKey"],
+			getSecretForKey: () => "act-key",
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "plan") as never)
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
+			provider: "openai-compatible",
+			apiKey: "stored-key",
+			baseUrl: "https://stored/v1",
+			azure: { apiVersion: "stored-version" },
+		} as never)
+		const ask = await buildSessionConfig({ cwd: tempDir, mode: "plan" })
+		expect(mocks.stateManager.getApiConfiguration).toHaveBeenCalledWith("plan")
+		expect(ask.inheritProviderSettings).toBe(false)
+		expect(ask.providerConfig).toMatchObject({ modelId: "ask-model", apiKey: "", baseUrl: "https://ask/v1", headers: {} })
+		expect(ask.providerConfig?.azure?.apiVersion).toBeUndefined()
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "act") as never)
+		const act = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		expect(act.providerConfig).toMatchObject({
+			modelId: "act-model",
+			apiKey: "act-key",
+			baseUrl: "https://act/v1",
+			routingProviderId: "openai-native",
+		})
+	})
+
 	it("resolves Cline OAuth credentials after defaulting to the Cline provider", async () => {
 		mocks.stateManager.getApiConfiguration.mockReturnValue({} as any)
 		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
@@ -1454,21 +1495,20 @@ describe("buildSessionConfig", () => {
 
 		// The shared prompt builder now owns the mode semantics: the
 		// <user_input mode> / <mode_notice> explanation goes to both modes, the
-		// plan-mode contract (read-only run_commands included) only to plan.
-		expect(actConfig.systemPrompt).toContain("# Plan / Act Modes")
+		// ask-mode contract (read-only run_commands included) only to ask.
+		expect(actConfig.systemPrompt).toContain("# Ask / Act Modes")
 		expect(actConfig.systemPrompt).toContain("<mode_notice>")
-		expect(actConfig.systemPrompt).not.toContain("# Plan Mode\n")
+		expect(actConfig.systemPrompt).not.toContain("# Ask Mode\n")
 
-		expect(planConfig.systemPrompt).toContain("# Plan / Act Modes")
-		expect(planConfig.systemPrompt).toContain("# Plan Mode\n")
+		expect(planConfig.systemPrompt).toContain("# Ask / Act Modes")
+		expect(planConfig.systemPrompt).toContain("# Ask Mode\n")
 		expect(planConfig.systemPrompt).toContain(
-			"run_commands tool remains available in plan mode strictly for read-only inspection",
+			"run_commands tool remains available in Ask mode strictly for read-only inspection",
 		)
-		// Unlike the CLI, the extension never exposes switch_to_act_mode: the
-		// plan contract must direct the model to the manual Plan/Act toggle
-		// instead of a tool it does not have.
+		// Ask mode never steers the model toward a mode switch.
 		expect(planConfig.systemPrompt).not.toContain("switch_to_act_mode")
-		expect(planConfig.systemPrompt).toContain("Plan/Act toggle")
+		expect(planConfig.systemPrompt).not.toContain("toggle to Act")
+		expect(planConfig.systemPrompt).not.toContain("Plan/Act toggle")
 	})
 })
 

@@ -118,4 +118,44 @@ describe("buildSdkProviderConfig", () => {
 		expect(providerConfig.providerId).toBe("ollama")
 		expect("timeoutMs" in providerConfig).toBe(false)
 	})
+
+	it("routes OpenAI Compatible to the Responses adapter when the api type is responses", () => {
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue(undefined)
+
+		const providerConfig = buildSdkProviderConfig(
+			{
+				actModeApiProvider: "openai",
+				actModeOpenAiModelId: "gpt-5.6",
+				openAiBaseUrl: "http://localhost:8000/v1",
+				openAiApiKey: "sk-test",
+				openAiCompatibleApiType: "responses",
+			},
+			"act",
+		)
+
+		expect(providerConfig).toMatchObject({
+			providerId: "openai-compatible",
+			routingProviderId: "openai-native",
+			modelId: "gpt-5.6",
+			baseUrl: "http://localhost:8000/v1",
+			apiKey: "sk-test",
+		})
+	})
+
+	it("keeps chat completions routing when the api type is chat or unset", () => {
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue(undefined)
+
+		for (const openAiCompatibleApiType of ["chat", undefined] as const) {
+			const providerConfig = buildSdkProviderConfig(
+				{
+					actModeApiProvider: "openai",
+					actModeOpenAiModelId: "gpt-5.5",
+					openAiCompatibleApiType,
+				},
+				"act",
+			)
+			expect(providerConfig.providerId).toBe("openai-compatible")
+			expect(providerConfig.routingProviderId).toBeUndefined()
+		}
+	})
 })

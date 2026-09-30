@@ -7,6 +7,7 @@ import {
 	type OcaModelInfo,
 	OpenAiCompatibleModelInfo,
 } from "@shared/api"
+import { type ApiConfigProfile, type OpenAiCompatibleApiType, toAllowedApiProvider } from "@shared/api-profiles"
 import { BrowserSettings, DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { ClineRulesToggles } from "@shared/cline-rules"
 import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusChainSettings"
@@ -68,6 +69,9 @@ const GLOBAL_STATE_FIELDS = {
 	clineVersion: { default: undefined as string | undefined },
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },
+	promptStash: {
+		default: [] as Array<{ id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }>,
+	},
 	taskHistory: { default: [] as HistoryItem[], isAsync: true },
 	userInfo: { default: undefined as UserInfo | undefined },
 	favoritedModelIds: { default: [] as string[] },
@@ -97,6 +101,11 @@ const GLOBAL_STATE_FIELDS = {
 	dismissedBanners: { default: [] as Array<{ bannerId: string; dismissedAt: number }> },
 	// Path to worktree that should auto-open Cline sidebar when launched
 	worktreeAutoOpenPath: { default: undefined as string | undefined },
+	// Saved API configurations (one provider + one model each) and the
+	// profile assigned to each mode. Plan keys serve Ask mode.
+	apiConfigProfiles: { default: [] as ApiConfigProfile[] },
+	askProfileId: { default: undefined as string | undefined },
+	actProfileId: { default: undefined as string | undefined },
 } satisfies FieldDefinitions
 
 // Fields that map directly to ApiHandlerOptions in @shared/api.ts
@@ -145,6 +154,9 @@ const API_HANDLER_SETTINGS_FIELDS = {
 	ocaMode: { default: "internal" as string },
 	aihubmixBaseUrl: { default: undefined as string | undefined },
 	aihubmixAppCode: { default: undefined as string | undefined },
+	// OpenAI Compatible "API type": Chat Completions (default, local servers)
+	// or the native Responses API.
+	openAiCompatibleApiType: { default: "chat" as OpenAiCompatibleApiType },
 
 	// Plan mode configurations
 	planModeApiModelId: { default: undefined as string | undefined },
@@ -244,11 +256,13 @@ const API_HANDLER_SETTINGS_FIELDS = {
 	// by older builds or other hosts is loaded from disk.
 	planModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
+		// Fold disallowed providers onto the allowlist so requests, settings
+		// and validation all agree on a provider the fork actually supports.
+		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
 	},
 	actModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
+		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
 	},
 
 	// Deprecated model settings
@@ -279,6 +293,7 @@ const USER_SETTINGS_FIELDS = {
 	worktreesEnabled: { default: false as boolean },
 	preferredLanguage: { default: "English" as string },
 	mode: { default: "act" as Mode },
+	enterSendsAs: { default: "steer" as "steer" | "interject" },
 	focusChainSettings: { default: DEFAULT_FOCUS_CHAIN_SETTINGS as FocusChainSettings },
 	backgroundEditEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },

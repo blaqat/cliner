@@ -16,9 +16,11 @@ import {
 	type SettingsKey,
 } from "@shared/storage/state-keys"
 import type { StorageContext } from "@shared/storage/storage-context"
+import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
+import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
@@ -110,6 +112,7 @@ export class StateManager {
 			StateManager.instance.populateCache(globalState, secrets, workspaceState)
 
 			StateManager.instance.isInitialized = true
+			ensureApiConfigProfiles(StateManager.instance)
 
 			await AgentConfigLoader.getInstance().ready()
 		} catch (error) {
@@ -414,13 +417,13 @@ export class StateManager {
 	 * Convenience method for getting API configuration
 	 * Ensures cache is initialized if not already done
 	 */
-	getApiConfiguration(): ApiConfiguration {
+	getApiConfiguration(mode: Mode = this.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"): ApiConfiguration {
 		if (!this.isInitialized) {
 			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
 		}
 
 		// Construct API configuration from cached component keys
-		return this.constructApiConfigurationFromCache()
+		return snapshotApiProfileConfiguration(this, this.constructApiConfigurationFromCache(), mode)
 	}
 
 	/**
@@ -505,6 +508,39 @@ export class StateManager {
 			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
 		}
 		return this.secretsCache[key]
+	}
+
+	/**
+	 * Read a secret stored under an arbitrary key in the secrets store.
+	 * Used for per-profile secrets (`profile:<id>:<secretKey>`), which are not
+	 * part of the typed `Secrets` map.
+	 */
+	getSecretForKey(key: string): string | undefined {
+		if (!this.isInitialized) {
+			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
+		}
+		return this.storage.secrets.get<string>(key)
+	}
+
+	/**
+	 * Write secrets under arbitrary keys in the secrets store. Empty/undefined
+	 * values delete the key. Writes go straight to the backing store.
+	 */
+	setSecretsForKeys(entries: Record<string, string | undefined>): void {
+		if (!this.isInitialized) {
+			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
+		}
+		void this.storage.secrets.setBatch(entries)
+	}
+
+	/**
+	 * List all keys currently present in the secrets store.
+	 */
+	listSecretStorageKeys(): readonly string[] {
+		if (!this.isInitialized) {
+			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
+		}
+		return this.storage.secrets.keys()
 	}
 
 	/**

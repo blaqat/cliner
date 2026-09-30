@@ -1,3 +1,4 @@
+import { hasAssignedApiProfile } from "@/core/controller/models/apiProfiles"
 // Replaces classic task creation from src/core/task/index.ts (see origin/main)
 //
 // Creates and manages SDK sessions using ClineCore. This factory handles:
@@ -83,7 +84,7 @@ export interface ActiveSession {
 	/** The session ID */
 	sessionId: string
 	/** The config used to start the active session. */
-	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId">
+	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode }
 	/** The runtime host instance managing this session (VscodeSessionHost) */
 	sdkHost: SdkSessionHost
 	/** Unsubscribe function for session events */
@@ -470,6 +471,10 @@ export function getDefaultModelIdForProvider(providerId: string): string | undef
  * via ProviderSettingsManager (the single source of truth for credentials).
  */
 export function resolveApiKey(providerId: string, config: ApiConfiguration): string | undefined {
+	if (hasAssignedApiProfile(config)) {
+		const keyField = PROVIDER_API_KEY_MAP[providerId]
+		return keyField ? (config[keyField] as string | undefined) : undefined
+	}
 	const authHandler = getProviderAuthHandler(providerId)
 	if (authHandler) {
 		const keyField = PROVIDER_API_KEY_MAP[providerId]
@@ -635,6 +640,9 @@ export function resolveVertexProviderConfig(config: ApiConfiguration): Pick<Prov
  */
 export function resolveAzureProviderConfig(config: ApiConfiguration): Pick<ProviderSettings, "azure"> | undefined {
 	const apiVersion = config.azureApiVersion?.trim() || undefined
+	if (hasAssignedApiProfile(config)) {
+		return { azure: { apiVersion, useIdentity: config.azureIdentity } }
+	}
 	const useIdentity = typeof config.azureIdentity === "boolean" ? config.azureIdentity : undefined
 
 	let stored: ProviderSettings | undefined
@@ -730,6 +738,8 @@ export function resolveBaseUrl(providerId: string, config: ApiConfiguration): st
 			return fromState
 		}
 	}
+
+	if (hasAssignedApiProfile(config)) return undefined
 
 	// SDK-backed providers save their base URL in providers.json instead of
 	// legacy ApiConfiguration fields. Fall back to that store (mirroring
@@ -846,7 +856,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 
 	try {
 		const stateManager = StateManager.get()
-		apiConfig = stateManager.getApiConfiguration()
+		apiConfig = stateManager.getApiConfiguration(mode)
 
 		// Resolve the provider for the current mode. State written by older
 		// builds or other hosts may carry SDK catalog spellings (e.g.
@@ -953,14 +963,19 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		apiKey = resolveApiKey(providerId, apiConfig)
 	}
 	apiKey = apiKey ?? ""
-	const committedRuntimeModel = resolveCommittedRuntimeModel(providerId, mode, modelId)
+	const profileAssigned = apiConfig !== undefined && hasAssignedApiProfile(apiConfig)
+	const committedRuntimeModel = profileAssigned ? undefined : resolveCommittedRuntimeModel(providerId, mode, modelId)
 	const overriddenMaxTokens = committedRuntimeModel?.overrides?.maxTokens
 	const maxTokensPerTurn =
 		positiveFiniteNumber(overriddenMaxTokens) ??
 		(providerId === "openai" ? resolveOpenAiCompatibleMaxTokens(apiConfig, mode) : undefined)
 	const temperature = nonNegativeFiniteNumber(committedRuntimeModel?.overrides?.temperature)
-	const reasoningConfig =
-		providerId === "oca"
+	const profileEffort = mode === "plan" ? apiConfig?.planModeReasoningEffort : apiConfig?.actModeReasoningEffort
+	const reasoningConfig = profileAssigned
+		? isReasoningEffort(profileEffort)
+			? { reasoningEffort: profileEffort }
+			: { thinking: false }
+		: providerId === "oca"
 			? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
 			: resolveProviderReasoningConfig(providerId)
 
@@ -986,10 +1001,9 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 			mode: mode === "plan" ? "plan" : "act",
 			providerId,
 			platform: process.platform,
-			// The extension never exposes switch_to_act_mode (unlike the CLI):
-			// matching the legacy extension, the user must flip the Plan/Act
-			// toggle themselves, so the plan contract must not tell the model to
-			// call a tool it does not have.
+			// The extension never exposes switch_to_act_mode (unlike the CLI).
+			// The flag is now a no-op: Ask mode never steers the model toward a
+			// mode switch regardless.
 			planModeSwitchTool: false,
 		})
 		Logger.log(`[SessionFactory] Built system prompt: ${systemPrompt.length} chars`)
@@ -1062,8 +1076,22 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		...(azureProviderConfig ?? {}),
 		providerId: sdkProviderId,
 		modelId,
-		...(apiKey ? { apiKey } : {}),
-		...(baseUrl !== undefined ? { baseUrl } : {}),
+		...(apiKey || profileAssigned ? { apiKey: apiKey ?? "" } : {}),
+		...(profileAssigned ? { apiKeyEnv: [] } : {}),
+		...(providerId === "openai" && apiConfig?.openAiHeaders
+			? { headers: apiConfig.openAiHeaders }
+			: profileAssigned
+				? { headers: {} }
+				: {}),
+		...(baseUrl !== undefined || profileAssigned ? { baseUrl } : {}),
+		// OpenAI Compatible "Responses" API type: route through the native
+		// OpenAI Responses adapter while keeping base URL/key/model. Mirrors
+		// buildSdkProviderConfig in sdk-api-handler.ts.
+		...(providerId === "openai" && apiConfig?.openAiCompatibleApiType === "responses"
+			? { routingProviderId: "openai-native" }
+			: profileAssigned
+				? { routingProviderId: sdkProviderId }
+				: {}),
 		...(apiLine !== undefined ? { apiLine } : {}),
 		...(knownModels && Object.keys(knownModels).length > 0 ? { knownModels } : {}),
 		// Mirror the user's Max Output Tokens for consumers that build handlers
@@ -1074,6 +1102,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	}
 
 	const config: CoreSessionConfig = {
+		inheritProviderSettings: apiConfig ? !hasAssignedApiProfile(apiConfig) : true,
 		providerId: sdkProviderId,
 		modelId,
 		apiKey,

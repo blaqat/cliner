@@ -1,3 +1,5 @@
+import { hasAssignedApiProfile, resolveApiConfigurationForMode } from "@/core/controller/models/apiProfiles"
+import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 // Replaces classic src/core/api buildApiHandler (see origin/main).
 //
 // Builds an SDK ApiHandler (from `@cline/llms`) directly from the extension's
@@ -15,6 +17,7 @@ import { fetch } from "@/shared/net"
 import { buildBedrockProviderConfig } from "./bedrock-config"
 import {
 	resolveApiKey,
+	resolveAzureProviderConfig,
 	resolveBaseUrl,
 	resolveModelId,
 	resolveOllamaProviderConfig,
@@ -53,7 +56,10 @@ export function buildSdkProviderConfig(
 	mode: Mode,
 	options?: BuildApiHandlerOptions,
 ): ProviderConfig {
-	const providerId = (mode === "plan" ? configuration.planModeApiProvider : configuration.actModeApiProvider) ?? "cline"
+	configuration = resolveApiConfigurationForMode(configuration, mode)
+	const providerId = toLegacyApiProvider(
+		(mode === "plan" ? configuration.planModeApiProvider : configuration.actModeApiProvider) ?? "cline",
+	)
 
 	const apiKey = resolveApiKey(providerId, configuration)
 	const modelId = resolveModelId(providerId, mode, configuration)
@@ -69,8 +75,18 @@ export function buildSdkProviderConfig(
 		providerId: toSdkProviderId(providerId),
 		modelId: modelId ?? "",
 		apiKey: apiKey ?? "",
+		...(hasAssignedApiProfile(configuration) ? { apiKeyEnv: [] } : {}),
 		baseUrl,
+		headers: providerId === "openai" ? (configuration.openAiHeaders ?? {}) : {},
+		// OpenAI Compatible "Responses" API type: route through the native
+		// OpenAI Responses adapter (the same route `protocol: "openai-responses"`
+		// takes in provider-settings) while keeping the user's base URL, key,
+		// headers and model id.
+		...(providerId === "openai" && configuration.openAiCompatibleApiType === "responses"
+			? { routingProviderId: "openai-native" }
+			: {}),
 		...(vertexProviderConfig ?? {}),
+		...(providerId === "openai" ? resolveAzureProviderConfig(configuration) : {}),
 		// Use the proxy-aware fetch so gateway providers respect corporate proxy
 		// configuration (see .clinerules/network.md).
 		fetch,
