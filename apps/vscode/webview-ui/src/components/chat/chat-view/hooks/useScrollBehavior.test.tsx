@@ -107,4 +107,79 @@ describe("useScrollBehavior", () => {
 
 		expect(result.current.disableAutoScrollRef.current).toBe(false)
 	})
+
+	describe("minimap jumps", () => {
+		const rows = [commandMessage, { ...commandMessage, ts: 2 }] as any[]
+
+		const setup = () => {
+			const hook = renderHook(() => useScrollBehavior([], [], rows, {}, vi.fn()))
+			const scrollTo = vi.fn()
+			const scrollToIndex = vi.fn()
+			;(hook.result.current.virtuosoRef as MutableRefObject<unknown>).current = { scrollTo, scrollToIndex }
+			const container = document.createElement("div")
+			const scroller = document.createElement("div")
+			scroller.dataset.virtuosoScroller = "true"
+			container.appendChild(scroller)
+			;(hook.result.current.scrollContainerRef as MutableRefObject<HTMLDivElement>).current = container
+			act(() => {
+				vi.runOnlyPendingTimers()
+			})
+			scrollTo.mockClear()
+			return { ...hook, scrollTo, scrollToIndex, scroller }
+		}
+
+		it("keeps follow off after jumping to the last row when the jump leaves the bottom", () => {
+			const { result, scrollTo, scrollToIndex } = setup()
+			act(() => {
+				result.current.setIsAtBottom(true)
+			})
+
+			act(() => {
+				result.current.scrollToIndex(rows.length - 1)
+				// The jump aligns the tall streaming reply's start, which leaves the bottom.
+				result.current.setIsAtBottom(false)
+				vi.advanceTimersByTime(1_000)
+			})
+			expect(scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: rows.length - 1, align: "start" }))
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+
+			// Streaming growth must not pull the reader back to the bottom.
+			act(() => {
+				result.current.handleLastRowContentChange()
+				vi.runAllTimers()
+			})
+			expect(scrollTo).not.toHaveBeenCalled()
+		})
+
+		it("re-enables follow when the jump lands at the bottom", () => {
+			const { result } = setup()
+			act(() => {
+				result.current.setIsAtBottom(true)
+				result.current.scrollToIndex(rows.length - 1)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+
+			act(() => {
+				vi.advanceTimersByTime(1_000)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("waits for the smooth scroll to settle before checking the bottom", () => {
+			const { result, scroller } = setup()
+			act(() => {
+				result.current.scrollToIndex(0)
+				vi.advanceTimersByTime(150)
+				scroller.dispatchEvent(new Event("scroll"))
+				result.current.setIsAtBottom(true)
+				vi.advanceTimersByTime(150)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+
+			act(() => {
+				vi.advanceTimersByTime(100)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+	})
 })

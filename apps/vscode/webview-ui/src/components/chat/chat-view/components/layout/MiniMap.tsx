@@ -11,7 +11,12 @@ const MIN_CHAT_WIDTH = 280
 const TOP_INSET = 32
 
 interface MiniMapProps {
+	/** The unfiltered transcript (after the task prompt): turn boundaries come from here. */
+	messages: ClineMessage[]
+	/** The rendered (grouped) list: jump targets index into it. */
 	rows: (ClineMessage | ClineMessage[])[]
+	/** The task prompt: rendered in the header, shown as the first user square. */
+	task?: ClineMessage
 	/** Changes when the list remounts (task switch), so the scroll listener re-attaches. */
 	listKey: number
 	scrollContainerRef: React.RefObject<HTMLDivElement>
@@ -19,11 +24,12 @@ interface MiniMapProps {
 }
 
 /**
- * Vertical rail at the right edge of the chat: one square per user message and
- * per assistant reply. Hover shows a snippet, click jumps to the row.
+ * Vertical rail at the right edge of the chat: one square per user message, each
+ * followed by one square for the agent's reply to that turn. Hover shows a snippet,
+ * click jumps to the row. The rail is bounded by the chat height and scrolls itself.
  */
-export const MiniMap = memo(({ rows, listKey, scrollContainerRef, onJump }: MiniMapProps) => {
-	const items = useMemo(() => getMinimapItems(rows), [rows])
+export const MiniMap = memo(({ messages, rows, task, listKey, scrollContainerRef, onJump }: MiniMapProps) => {
+	const items = useMemo(() => getMinimapItems(messages, rows, task), [messages, rows, task])
 	const [wide, setWide] = useState(true)
 	const [topIndex, setTopIndex] = useState(Number.MAX_SAFE_INTEGER)
 	const currentButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -92,14 +98,14 @@ export const MiniMap = memo(({ rows, listKey, scrollContainerRef, onJump }: Mini
 	return (
 		<nav
 			aria-label="Conversation minimap"
-			className="w-[18px] shrink-0 flex flex-col overflow-y-auto border-l border-minimap-rail [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+			className="w-[18px] min-h-0 max-h-full shrink-0 flex flex-col overflow-y-auto overscroll-contain border-l border-minimap-rail [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 			data-testid="chat-minimap">
 			<div className="my-auto flex flex-col items-center gap-[3px] py-1.5">
 				{items.map((item) => {
 					const isCurrent = item.ts === current?.ts
 					const label = item.role === "user" ? "You" : "Cline"
 					return (
-						<Tooltip key={item.ts}>
+						<Tooltip key={`${item.role}:${item.startIndex}`}>
 							<TooltipTrigger asChild>
 								<button
 									aria-current={isCurrent ? "location" : undefined}

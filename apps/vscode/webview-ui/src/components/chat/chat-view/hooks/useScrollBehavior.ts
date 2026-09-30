@@ -8,6 +8,19 @@ import { ScrollBehavior } from "../types/chatTypes"
 // Height of the sticky user message header (padding + content)
 const STICKY_HEADER_HEIGHT = 32
 
+// A minimap jump counts as finished once the list has not scrolled for this long.
+const JUMP_SETTLE_MS = 200
+
+// The Virtuoso scroller inside the chat container, or the closest scrollable fallback.
+function findScrollableElement(scrollContainer: HTMLElement): HTMLElement {
+	const virtuosoScroller = scrollContainer.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement
+	if (virtuosoScroller) {
+		return virtuosoScroller
+	}
+	const scrollable = scrollContainer.querySelector(".scrollable") as HTMLElement
+	return scrollable || scrollContainer
+}
+
 /**
  * Custom hook for managing scroll behavior
  * Handles auto-scrolling, manual scrolling, and scroll-to-message functionality
@@ -31,9 +44,19 @@ export function useScrollBehavior(
 	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const disableAutoScrollRef = useRef(false)
 	const layoutSettleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const jumpSettleCleanupRef = useRef<(() => void) | null>(null)
 
 	// State
-	const [isAtBottom, setIsAtBottom] = useState(false)
+	const [isAtBottom, setIsAtBottomState] = useState(false)
+	// Mirrors Virtuoso's at-bottom state for callbacks that run outside render.
+	const isAtBottomRef = useRef(isAtBottom)
+	isAtBottomRef.current = isAtBottom
+	const setIsAtBottom = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
+		if (typeof value === "boolean") {
+			isAtBottomRef.current = value
+		}
+		setIsAtBottomState(value)
+	}, [])
 	const [pendingScrollToMessage, setPendingScrollToMessage] = useState<number | null>(null)
 	const [scrolledPastUserMessage, setScrolledPastUserMessage] = useState<ClineMessage | null>(null)
 
@@ -99,18 +122,7 @@ export function useScrollBehavior(
 		}
 
 		// The scrollable element is the Virtuoso scroller or a child with overflow
-		const findScrollableElement = () => {
-			// Try finding the Virtuoso scroller
-			const virtuosoScroller = scrollContainer.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement
-			if (virtuosoScroller) {
-				return virtuosoScroller
-			}
-			// Fallback to the first child with scrollable class
-			const scrollable = scrollContainer.querySelector(".scrollable") as HTMLElement
-			return scrollable || scrollContainer
-		}
-
-		const scrollableElement = findScrollableElement()
+		const scrollableElement = findScrollableElement(scrollContainer)
 
 		const handleScroll = () => {
 			checkScrolledPastUserMessage()
@@ -214,8 +226,12 @@ export function useScrollBehavior(
 
 	// Jump to a row of the rendered list (minimap). Leaves room for the sticky user header
 	// except at the very top, and stops auto-scroll so the jump isn't undone by streaming.
+	// Follow resumes only once the viewport is at the bottom: atBottomStateChange covers
+	// reaching it later, and the settle check covers a jump that lands there (or never leaves
+	// it), where Virtuoso reports no state change.
 	const scrollToIndex = useCallback((groupIndex: number) => {
 		disableAutoScrollRef.current = true
+		jumpSettleCleanupRef.current?.()
 		requestAnimationFrame(() => {
 			virtuosoRef.current?.scrollToIndex({
 				index: groupIndex,
@@ -224,6 +240,27 @@ export function useScrollBehavior(
 				offset: groupIndex === 0 ? 0 : -STICKY_HEADER_HEIGHT,
 			})
 		})
+
+		const scrollContainer = scrollContainerRef.current
+		const scroller = scrollContainer ? findScrollableElement(scrollContainer) : undefined
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const cleanup = () => {
+			clearTimeout(timer)
+			scroller?.removeEventListener("scroll", restartTimer)
+			jumpSettleCleanupRef.current = null
+		}
+		function restartTimer() {
+			clearTimeout(timer)
+			timer = setTimeout(() => {
+				cleanup()
+				if (isAtBottomRef.current) {
+					disableAutoScrollRef.current = false
+				}
+			}, JUMP_SETTLE_MS)
+		}
+		scroller?.addEventListener("scroll", restartTimer, { passive: true })
+		restartTimer()
+		jumpSettleCleanupRef.current = cleanup
 	}, [])
 
 	// scroll when user toggles certain rows
@@ -309,6 +346,7 @@ export function useScrollBehavior(
 	}, [keepPinnedToBottomAfterLayout])
 
 	useEffect(() => clearLayoutSettleScrollTimers, [clearLayoutSettleScrollTimers])
+	useEffect(() => () => jumpSettleCleanupRef.current?.(), [])
 
 	useEffect(() => {
 		if (!disableAutoScrollRef.current) {
@@ -339,6 +377,7 @@ export function useScrollBehavior(
 			if (scrollContainerRef.current?.contains(wheelEvent.target as Node)) {
 				// user scrolled up
 				disableAutoScrollRef.current = true
+				jumpSettleCleanupRef.current?.()
 			}
 		}
 	}, [])

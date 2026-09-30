@@ -248,7 +248,9 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				/>
 			</div>
 
-			<div className="grow flex relative" ref={scrollContainerRef}>
+			{/* min-h-0: without it this flex item grows to the minimap's full content height, which
+			    stretches Virtuoso past the clipped viewport so its bottom rows can't be scrolled to. */}
+			<div className="grow min-h-0 flex relative" ref={scrollContainerRef}>
 				{/* Empty-list fast path: paint the loader immediately without waiting for the
 				    virtualized list's initial measure/render cycle. Mirrors the in-list row's
 				    markup (MessageRenderer wrapper + ChatRow) so the swap to a real row later
@@ -300,9 +302,11 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				/>
 				<MiniMap
 					listKey={task.ts}
+					messages={modifiedMessages}
 					onJump={scrollToIndex}
-					rows={displayedGroupedMessages}
+					rows={groupedMessages}
 					scrollContainerRef={scrollContainerRef}
+					task={task}
 				/>
 			</div>
 		</div>

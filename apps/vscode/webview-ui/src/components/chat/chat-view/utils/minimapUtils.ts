@@ -1,8 +1,10 @@
 import type { ClineMessage, ClinePlanModeResponse } from "@shared/ExtensionMessage"
 
 export interface MinimapItem {
-	/** Index into the rendered (grouped) list, for scrollToIndex. */
+	/** Index into the rendered (grouped) list to jump to, for scrollToIndex. */
 	index: number
+	/** First row index the square covers; the square is "current" from here on. */
+	startIndex: number
 	ts: number
 	role: "user" | "agent"
 	snippet: string
@@ -35,36 +37,125 @@ function agentText(message: ClineMessage): string | undefined {
 	return undefined
 }
 
-/**
- * One minimap square per user message and per assistant text/answer row.
- * Tool groups, browser sessions, reasoning and other noise rows are skipped.
- */
-export function getMinimapItems(rows: readonly (ClineMessage | ClineMessage[])[]): MinimapItem[] {
-	const items: MinimapItem[] = []
+function isUserMessage(message: ClineMessage): boolean {
+	return message.type === "say" && message.say === "user_feedback"
+}
+
+function userSnippet(message: ClineMessage): string {
+	const text = message.text?.trim() || (message.images?.length || message.files?.length ? "(attachments)" : "")
+	return toSnippet(text)
+}
+
+/** Maps every rendered message (including members of grouped rows) to its row index. */
+function indexRows(rows: readonly (ClineMessage | ClineMessage[])[]): Map<number, number> {
+	const rowByTs = new Map<number, number>()
 	rows.forEach((row, index) => {
-		if (Array.isArray(row)) {
-			return
+		for (const message of Array.isArray(row) ? row : [row]) {
+			rowByTs.set(message.ts, index)
 		}
-		if (row.type === "say" && row.say === "user_feedback") {
-			const text = row.text?.trim() || (row.images?.length || row.files?.length ? "(attachments)" : "")
-			if (text) {
-				items.push({ index, ts: row.ts, role: "user", snippet: toSnippet(text), streaming: false })
+	})
+	return rowByTs
+}
+
+/**
+ * One minimap square per user message, each followed by one square for the agent's reply
+ * to that turn. The task prompt (rendered in the header, not the list) is the first user
+ * square. Everything the agent produced between two user messages (tool groups, reasoning,
+ * partial text) collapses into the reply square, which jumps to the turn's last rendered
+ * row and previews its latest agent text.
+ *
+ * Turns come from the unfiltered transcript (`messages`), since the rendered `rows` hide
+ * some user messages (e.g. the echo of a selected followup option); jump targets are then
+ * mapped onto the rendered rows.
+ */
+export function getMinimapItems(
+	messages: readonly ClineMessage[],
+	rows: readonly (ClineMessage | ClineMessage[])[],
+	task?: ClineMessage,
+): MinimapItem[] {
+	const items: MinimapItem[] = []
+	if (task) {
+		items.push({ index: 0, startIndex: -1, ts: task.ts, role: "user", snippet: userSnippet(task), streaming: false })
+	}
+
+	const rowByTs = indexRows(rows)
+	// Nearest rendered row at or after message `from`.
+	const nextRenderedRow = (from: number): number | undefined => {
+		for (let i = from; i < messages.length; i++) {
+			const row = rowByTs.get(messages[i].ts)
+			if (row !== undefined) {
+				return row
+			}
+		}
+		return undefined
+	}
+
+	let turnStart = -1
+	let lastIndex = -1
+	let lastMessage: ClineMessage | undefined
+	let lastText: string | undefined
+	const flushTurn = () => {
+		if (lastIndex >= 0 && lastMessage) {
+			const streaming = lastMessage.partial === true
+			items.push({
+				index: lastIndex,
+				startIndex: turnStart,
+				ts: lastMessage.ts,
+				role: "agent",
+				snippet: lastText ?? (streaming ? "Working…" : "Used tools"),
+				streaming,
+			})
+		}
+		turnStart = -1
+		lastIndex = -1
+		lastMessage = undefined
+		lastText = undefined
+	}
+
+	messages.forEach((message, messageIndex) => {
+		const row = rowByTs.get(message.ts)
+		if (isUserMessage(message)) {
+			flushTurn()
+			// A hidden user message (the echo of a selected followup option) jumps to the
+			// question row that shows the selection, else to the next rendered row.
+			const previous = messages[messageIndex - 1]
+			const optionRow = previous?.type === "ask" ? rowByTs.get(previous.ts) : undefined
+			const index = row ?? optionRow ?? nextRenderedRow(messageIndex + 1)
+			if (index !== undefined) {
+				items.push({
+					index,
+					startIndex: index,
+					ts: message.ts,
+					role: "user",
+					snippet: userSnippet(message),
+					streaming: false,
+				})
 			}
 			return
 		}
-		const text = agentText(row)?.trim()
+		const text = agentText(message)?.trim()
 		if (text) {
-			items.push({ index, ts: row.ts, role: "agent", snippet: toSnippet(text), streaming: row.partial === true })
+			lastText = toSnippet(text)
 		}
+		if (row === undefined) {
+			return
+		}
+		if (turnStart < 0) {
+			turnStart = row
+		}
+		// Keep the containing row of the latest rendered message, even when it's a grouped row.
+		lastIndex = row
+		lastMessage = message
 	})
+	flushTurn()
 	return items
 }
 
-/** The item for the row at the top of the viewport: the last item at or before `topIndex`. */
+/** The item covering the row at the top of the viewport: the last item starting at or before `topIndex`. */
 export function getCurrentMinimapItem(items: readonly MinimapItem[], topIndex: number): MinimapItem | undefined {
 	let current: MinimapItem | undefined
 	for (const item of items) {
-		if (item.index > topIndex) {
+		if (item.startIndex > topIndex) {
 			break
 		}
 		current = item
