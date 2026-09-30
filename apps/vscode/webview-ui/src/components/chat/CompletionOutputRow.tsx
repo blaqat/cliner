@@ -1,6 +1,6 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
 import { GitCompareIcon } from "lucide-react"
-import { memo, useEffect, useState } from "react"
+import { MouseEvent, memo, RefObject, useEffect, useState } from "react"
 import { CheckpointsServiceClient } from "@/services/grpc-client"
 import { CopyButton } from "../common/CopyButton"
 import SuccessButton from "../common/SuccessButton"
@@ -13,6 +13,9 @@ interface CompletionOutputRowProps {
 	text: string
 	quoteButtonState: QuoteButtonState
 	handleQuoteClick: () => void
+	/** Selection handler + ref for the content area (the Quote button is scoped to it, not the header/actions). */
+	onMouseUp?: (event: MouseEvent<HTMLDivElement>) => void
+	contentRef?: RefObject<HTMLDivElement>
 	/**
 	 * Allows the "View Changes" action inside the card, which opens a
 	 * multi-file diff of everything that changed between the latest checkpoint
@@ -35,7 +38,15 @@ interface CompletionOutputRowProps {
  * rather than a definitive task completion.
  */
 export const CompletionOutputRow = memo(
-	({ text, quoteButtonState, handleQuoteClick, showViewChanges, asideFromTs }: CompletionOutputRowProps) => {
+	({
+		text,
+		quoteButtonState,
+		handleQuoteClick,
+		onMouseUp,
+		contentRef,
+		showViewChanges,
+		asideFromTs,
+	}: CompletionOutputRowProps) => {
 		const [viewChangesPending, setViewChangesPending] = useState(false)
 		// undefined = still checking; the button stays hidden until the host
 		// confirms the latest run actually changed files. A count of 0 also
@@ -79,7 +90,10 @@ export const CompletionOutputRow = memo(
 						<CopyButton ariaLabel="Copy response" className="text-success/70" textToCopy={text} />
 					</div>
 				</div>
-				<div className="completion-output-content relative p-2 w-full [&_hr]:opacity-20 [&_p:last-child]:mb-0 rounded-sm">
+				<div
+					className="completion-output-content relative p-2 w-full [&_hr]:opacity-20 [&_p:last-child]:mb-0 rounded-sm"
+					onMouseUp={onMouseUp}
+					ref={contentRef}>
 					<MarkdownRow markdown={text} />
 					{quoteButtonState.visible && (
 						<QuoteButton left={quoteButtonState.left} onClick={handleQuoteClick} top={quoteButtonState.top} />

@@ -960,7 +960,9 @@ export const ChatRowContent = memo(
 						return (
 							<CompletionOutputRow
 								asideFromTs={message.ts}
+								contentRef={contentRef}
 								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
 								quoteButtonState={quoteButtonState}
 								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
 								text={text || ""}
@@ -972,6 +974,10 @@ export const ChatRowContent = memo(
 						return (
 							<PlanCompletionOutputRow
 								asideFromTs={message.ts}
+								contentRef={contentRef}
+								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
+								quoteButtonState={quoteButtonState}
 								showContinueInAct={isLast && mode === "plan" && message.partial !== true}
 								text={message.text || ""}
 							/>
@@ -1073,7 +1079,9 @@ export const ChatRowContent = memo(
 							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
 							return (
 								<CompletionOutputRow
+									contentRef={contentRef}
 									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
 									quoteButtonState={quoteButtonState}
 									text={text || ""}
 								/>
@@ -1177,6 +1185,10 @@ export const ChatRowContent = memo(
 							<div>
 								<PlanCompletionOutputRow
 									asideFromTs={message.ts}
+									contentRef={contentRef}
+									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
+									quoteButtonState={quoteButtonState}
 									showContinueInAct={isLast && mode === "plan" && message.partial !== true}
 									text={response || message.text || ""}
 								/>
