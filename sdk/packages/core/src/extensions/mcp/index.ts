@@ -1,3 +1,7 @@
+export {
+	ASK_MODE_MCP_GATE_EXTENSION_NAME,
+	createAskModeMcpGateExtension,
+} from "./ask-mode-gate";
 export type {
 	DefaultMcpServerClientFactoryOptions,
 	ProbeMcpServerConnectionOptions,
@@ -60,7 +64,11 @@ export {
 	createDisabledMcpToolPolicy,
 } from "./policies";
 export { augmentMcpTimeoutError } from "./timeout";
-export { createMcpTools } from "./tools";
+export {
+	createMcpTools,
+	MCP_TOOL_METADATA_KEY,
+	type McpToolMetadata,
+} from "./tools";
 export type {
 	CreateMcpToolsOptions,
 	McpConnectionStatus,
@@ -77,6 +85,7 @@ export type {
 	McpSseTransportConfig,
 	McpStdioTransportConfig,
 	McpStreamableHttpTransportConfig,
+	McpToolAnnotations,
 	McpToolCallRequest,
 	McpToolCallResult,
 	McpToolDescriptor,

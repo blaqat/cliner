@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	ASK_MODE_INSTRUCTIONS,
 	buildClineSystemPrompt,
 	MODE_TAG_INSTRUCTIONS,
 	PLAN_MODE_INSTRUCTIONS,
@@ -46,38 +47,42 @@ describe("buildClineSystemPrompt mode instructions", () => {
 		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS);
 	});
 
-	it("appends the plan-mode contract only in plan mode", () => {
+	it("appends the Ask-mode contract only in plan mode", () => {
 		const prompt = buildClineSystemPrompt({ ...BASE_OPTIONS, mode: "plan" });
 		expect(prompt).toContain(MODE_TAG_INSTRUCTIONS);
-		expect(prompt).toContain(PLAN_MODE_INSTRUCTIONS);
-		// The mode-tag explanation precedes the plan contract, matching the
+		expect(prompt).toContain(ASK_MODE_INSTRUCTIONS);
+		// The mode-tag explanation precedes the ask-mode contract, matching the
 		// order the CLI historically composed by hand.
 		expect(prompt.indexOf(MODE_TAG_INSTRUCTIONS)).toBeLessThan(
-			prompt.indexOf(PLAN_MODE_INSTRUCTIONS),
+			prompt.indexOf(ASK_MODE_INSTRUCTIONS),
 		);
 	});
 
-	it("keeps run_commands available-but-read-only in the plan contract", () => {
-		// Explicit product decision: run_commands is NOT removed in plan mode
+	it("keeps run_commands available-but-read-only in the ask contract", () => {
+		// Explicit product decision: run_commands is NOT removed in Ask mode
 		// (it is essential for read-only investigation); the mitigation for
-		// plan-mode mutations is prompting, so the contract must spell out the
-		// inspection-only usage.
-		expect(PLAN_MODE_INSTRUCTIONS).toContain("run_commands");
-		expect(PLAN_MODE_INSTRUCTIONS).toContain("read-only");
-		expect(PLAN_MODE_INSTRUCTIONS).toContain("switch_to_act_mode");
+		// ask-mode mutations is prompting plus the command-guard hook, so the
+		// contract must spell out the inspection-only usage.
+		expect(ASK_MODE_INSTRUCTIONS).toContain("run_commands");
+		expect(ASK_MODE_INSTRUCTIONS).toContain("read-only");
 	});
 
-	it("swaps in the manual-switch plan contract when the host has no switch tool", () => {
-		const prompt = buildClineSystemPrompt({
+	it("never instructs the model to produce a plan or prompt a mode switch", () => {
+		const prompt = buildClineSystemPrompt({ ...BASE_OPTIONS, mode: "plan" });
+		expect(prompt).toContain("# Ask Mode");
+		expect(prompt).not.toContain("switch_to_act_mode");
+		expect(prompt).not.toContain("toggle to Act");
+		expect(prompt).not.toContain("Plan/Act toggle");
+		// planModeSwitchTool no longer changes the contract.
+		const manual = buildClineSystemPrompt({
 			...BASE_OPTIONS,
 			mode: "plan",
 			planModeSwitchTool: false,
 		});
-		expect(prompt).toContain(PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH);
-		expect(prompt).not.toContain("switch_to_act_mode");
-		// The read-only run_commands contract is shared by both variants.
-		expect(PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH).toContain("run_commands");
-		expect(PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH).toContain("Plan/Act toggle");
+		expect(manual).toContain(ASK_MODE_INSTRUCTIONS);
+		// The legacy plan-mode export names remain as aliases.
+		expect(PLAN_MODE_INSTRUCTIONS).toBe(ASK_MODE_INSTRUCTIONS);
+		expect(PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH).toBe(ASK_MODE_INSTRUCTIONS);
 	});
 
 	it("explains mode tags when the mode defaults to act", () => {
@@ -95,9 +100,8 @@ describe("buildClineSystemPrompt mode instructions", () => {
 		});
 		expect(prompt).toContain(rules);
 		expect(prompt).not.toContain(MODE_TAG_INSTRUCTIONS);
-		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS);
-		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH);
-		expect(prompt).not.toContain("# Plan / Act Modes");
+		expect(prompt).not.toContain(ASK_MODE_INSTRUCTIONS);
+		expect(prompt).not.toContain("# Ask / Act Modes");
 		expect(prompt).not.toContain("switch_to_act_mode");
 	});
 

@@ -1,9 +1,24 @@
 import type { AgentToolContext } from "@cline/shared";
 
+/**
+ * MCP tool annotations as declared by the server in tools/list
+ * (https://modelcontextprotocol.io spec, `Tool.annotations`). All hints are
+ * optional; absent means "unknown", not "false".
+ */
+export interface McpToolAnnotations {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+	title?: string;
+	[key: string]: unknown;
+}
+
 export interface McpToolDescriptor {
 	name: string;
 	description?: string;
 	inputSchema: Record<string, unknown>;
+	annotations?: McpToolAnnotations;
 }
 
 export interface McpToolCallRequest {

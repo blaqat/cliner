@@ -42,7 +42,9 @@ export function formatModeSwitchNotice(
 	from: "act" | "plan",
 	to: "act" | "plan",
 ): string {
-	return `<mode_notice>The user switched from ${from} mode to ${to} mode before sending this message.</mode_notice>`;
+	// The internal "plan" mode is presented to users (and the model) as "Ask".
+	const label = (mode: "act" | "plan") => (mode === "plan" ? "Ask" : "Act");
+	return `<mode_notice>The user switched from ${label(from)} mode to ${label(to)} mode before sending this message.</mode_notice>`;
 }
 
 export type ModeSwitchNotice = {

@@ -108,8 +108,8 @@ describe("resolveSystemPrompt YOLO mode", () => {
 		expect(prompt).toContain("Always run the relevant tests.");
 		expect(prompt).toContain("# Workspace Configuration");
 		expect(prompt).toContain(JSON.stringify(cwd));
-		expect(prompt).not.toContain("# Plan / Act Modes");
-		expect(prompt).not.toContain("# Plan Mode");
+		expect(prompt).not.toContain("# Ask / Act Modes");
+		expect(prompt).not.toContain("# Ask Mode");
 		expect(prompt).not.toContain("switch_to_act_mode");
 	});
 });

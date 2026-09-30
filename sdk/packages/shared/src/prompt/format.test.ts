@@ -70,7 +70,7 @@ describe("prompt format helpers", () => {
 
 	it("formats a mode switch notice", () => {
 		expect(formatModeSwitchNotice("plan", "act")).toBe(
-			"<mode_notice>The user switched from plan mode to act mode before sending this message.</mode_notice>",
+			"<mode_notice>The user switched from Ask mode to Act mode before sending this message.</mode_notice>",
 		);
 	});
 

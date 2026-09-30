@@ -19,6 +19,7 @@ import {
 	type UserInstructionConfigService,
 } from "../../extensions/config";
 import {
+	createAskModeMcpGateExtension,
 	createDefaultMcpServerClientFactory,
 	createMcpTools,
 	hasMcpSettingsFile,
@@ -67,7 +68,7 @@ function hasConfigExtension(
 	return hasRuntimeConfigExtension(extensions, kind);
 }
 
-function isToolEnabledByPolicies(
+export function isToolEnabledByPolicies(
 	toolName: string,
 	toolPolicies: CoreSessionConfig["toolPolicies"],
 ): boolean {
@@ -81,7 +82,7 @@ function isToolEnabledByPolicies(
 	);
 }
 
-function filterToolsByPolicies(
+export function filterToolsByPolicies(
 	tools: AgentTool[],
 	toolPolicies: CoreSessionConfig["toolPolicies"],
 ): AgentTool[] {
@@ -555,9 +556,17 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 						telemetry: telemetry ?? config.telemetry,
 					})
 				: undefined;
+		// Ask-mode MCP gate: MCP tools without annotations.readOnlyHint === true
+		// always require user approval in Ask (plan) mode, regardless of
+		// auto-approve settings. Act mode is untouched.
+		const askModeMcpGate =
+			normalized.mode === "plan" && normalized.enableTools
+				? createAskModeMcpGateExtension()
+				: undefined;
 		const injectedExtensions = [
 			userInstructionPlugin,
 			planModeCommandGuard,
+			askModeMcpGate,
 		].filter((extension) => extension !== undefined);
 		const runtimeExtensions =
 			injectedExtensions.length > 0
