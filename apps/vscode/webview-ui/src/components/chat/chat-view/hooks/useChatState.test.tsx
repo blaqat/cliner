@@ -21,7 +21,7 @@ describe("useChatState draft snapshots", () => {
 
 		act(() => {
 			result.current.setInputValue("feedback")
-			result.current.setActiveQuote("selected context")
+			result.current.setQuotes([{ text: "selected context", note: "" }])
 			result.current.setSelectedImages(["image.png"])
 			result.current.setSelectedFiles(["notes.md"])
 		})
@@ -30,7 +30,7 @@ describe("useChatState draft snapshots", () => {
 		act(() => result.current.consumeDraftSnapshot(snapshot))
 
 		expect(result.current.inputValue).toBe("")
-		expect(result.current.activeQuote).toBeNull()
+		expect(result.current.quotes).toEqual([])
 		expect(result.current.selectedImages).toEqual([])
 		expect(result.current.selectedFiles).toEqual([])
 	})

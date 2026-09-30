@@ -1,3 +1,4 @@
+import { PlanActMode } from "@shared/proto/cline/state"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CompletionOutputRow } from "./CompletionOutputRow"
@@ -12,11 +13,15 @@ vi.mock("@/components/common/MarkdownBlock", () => ({
 }))
 
 const checkpointLatestChangesCount = vi.fn()
+const togglePlanActModeProto = vi.fn(() => Promise.resolve({ value: true }))
 
 vi.mock("@/services/grpc-client", () => ({
 	CheckpointsServiceClient: {
 		checkpointLatestChangesCount: (...args: unknown[]) => checkpointLatestChangesCount(...args),
 		checkpointViewLatestChanges: vi.fn(() => Promise.resolve({})),
+	},
+	StateServiceClient: {
+		togglePlanActModeProto: (...args: unknown[]) => togglePlanActModeProto(...(args as [])),
 	},
 }))
 
@@ -160,18 +165,29 @@ describe("PlanCompletionOutputRow", () => {
 		Object.assign(navigator, { clipboard: { writeText } })
 	})
 
-	it("shows a small Plan header with a copy button", () => {
-		render(<PlanCompletionOutputRow text="Here is the plan" />)
+	it("shows a small Answer header with a copy button", () => {
+		render(<PlanCompletionOutputRow text="Here is the answer" />)
 
-		expect(screen.getByText("Plan")).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "Copy plan response" })).toBeInTheDocument()
+		expect(screen.getByText("Answer")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Copy answer" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Continue in Act" })).toBeNull()
 	})
 
-	it("copies the plan response text to the clipboard", async () => {
-		render(<PlanCompletionOutputRow text="Here is the plan" />)
+	it("copies the answer text to the clipboard", async () => {
+		render(<PlanCompletionOutputRow text="Here is the answer" />)
 
-		fireEvent.click(screen.getByRole("button", { name: "Copy plan response" }))
+		fireEvent.click(screen.getByRole("button", { name: "Copy answer" }))
 
-		await waitFor(() => expect(writeText).toHaveBeenCalledWith("Here is the plan"))
+		await waitFor(() => expect(writeText).toHaveBeenCalledWith("Here is the answer"))
+	})
+
+	it("switches to Act mode from Continue in Act", async () => {
+		togglePlanActModeProto.mockClear()
+		render(<PlanCompletionOutputRow showContinueInAct text="Here is the answer" />)
+
+		fireEvent.click(screen.getByRole("button", { name: "Continue in Act" }))
+
+		await waitFor(() => expect(togglePlanActModeProto).toHaveBeenCalledTimes(1))
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: PlanActMode.ACT }))
 	})
 })

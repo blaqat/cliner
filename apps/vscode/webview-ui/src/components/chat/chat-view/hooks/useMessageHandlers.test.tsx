@@ -61,15 +61,16 @@ function makeChatState(messages: ClineMessage[], overrides: Partial<ChatState> =
 	const state = {
 		inputValue: "",
 		setInputValue: vi.fn(),
-		activeQuote: null,
-		setActiveQuote: vi.fn(),
+		quotes: [],
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		setIsTextAreaFocused: vi.fn(),
 		selectedImages: [],
 		setSelectedImages: vi.fn(),
 		selectedFiles: [],
 		setSelectedFiles: vi.fn(),
-		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", activeQuote: null, images: [], files: [] })),
+		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", quotes: [], images: [], files: [] })),
 		consumeDraftSnapshot: vi.fn(),
 		sendingDisabled: false,
 		setSendingDisabled: vi.fn(),
@@ -224,7 +225,7 @@ describe("useMessageHandlers — send routing", () => {
 				}),
 		)
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -232,11 +233,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState(completedConversation, {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -261,7 +262,7 @@ describe("useMessageHandlers — send routing", () => {
 			}),
 		)
 		expect(setInputValue).toHaveBeenCalledWith("")
-		expect(setActiveQuote).toHaveBeenCalledWith(null)
+		expect(setQuotes).toHaveBeenCalledWith([])
 		expect(setSendingDisabled).toHaveBeenCalledWith(true)
 		expect(setSelectedImages).toHaveBeenCalledWith([])
 		expect(setSelectedFiles).toHaveBeenCalledWith([])
@@ -295,7 +296,7 @@ describe("useMessageHandlers — send routing", () => {
 		mockTurnState = { phase: "completed", seq: 7 }
 		const error = new Error("transport down")
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -303,11 +304,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState(completedConversation, {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -330,8 +331,8 @@ describe("useMessageHandlers — send routing", () => {
 		expect(caught).toBe(error)
 		expect(setInputValue).toHaveBeenNthCalledWith(1, "")
 		expect(setInputValue).toHaveBeenLastCalledWith("another question")
-		expect(setActiveQuote).toHaveBeenNthCalledWith(1, null)
-		expect(setActiveQuote).toHaveBeenLastCalledWith("selected context")
+		expect(setQuotes).toHaveBeenNthCalledWith(1, [])
+		expect(setQuotes).toHaveBeenLastCalledWith([{ text: "selected context", note: "" }])
 		expect(setSendingDisabled).toHaveBeenNthCalledWith(1, true)
 		expect(setSendingDisabled).toHaveBeenLastCalledWith(false)
 		expect(setSelectedImages).toHaveBeenNthCalledWith(1, [])
@@ -525,7 +526,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 4,
 			text: "try a different approach",
-			activeQuote: null,
+			quotes: [],
 			images: ["image.png"],
 			files: ["notes.txt"],
 		}
@@ -980,7 +981,7 @@ describe("useMessageHandlers — send routing", () => {
 		mockTurnState = { phase: "idle", seq: 1 }
 		const error = new Error("transport down")
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -988,11 +989,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState([], {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -1022,8 +1023,8 @@ describe("useMessageHandlers — send routing", () => {
 		)
 		expect(setInputValue).toHaveBeenNthCalledWith(1, "")
 		expect(setInputValue).toHaveBeenLastCalledWith("brand new task")
-		expect(setActiveQuote).toHaveBeenNthCalledWith(1, null)
-		expect(setActiveQuote).toHaveBeenLastCalledWith("selected context")
+		expect(setQuotes).toHaveBeenNthCalledWith(1, [])
+		expect(setQuotes).toHaveBeenLastCalledWith([{ text: "selected context", note: "" }])
 		expect(setSendingDisabled).toHaveBeenNthCalledWith(1, true)
 		expect(setSendingDisabled).toHaveBeenLastCalledWith(false)
 		expect(setSelectedImages).toHaveBeenNthCalledWith(1, [])
@@ -1048,11 +1049,11 @@ describe("useMessageHandlers — send routing", () => {
 		]
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const { result } = renderHook(() =>
 			useMessageHandlers(
 				streamingConversation,
-				makeChatState(streamingConversation, { setActiveQuote, setPendingUserMessage, setPendingResponse }),
+				makeChatState(streamingConversation, { setQuotes, setPendingUserMessage, setPendingResponse }),
 			),
 		)
 
@@ -1063,7 +1064,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(clearTask).toHaveBeenCalledTimes(1)
 		expect(setPendingUserMessage).toHaveBeenCalledWith(undefined)
 		expect(setPendingResponse).toHaveBeenCalledWith(undefined)
-		expect(setActiveQuote).toHaveBeenCalledWith(null)
+		expect(setQuotes).toHaveBeenCalledWith([])
 	})
 
 	it("does not clear a quote selected while New Task is pending", async () => {
@@ -1078,19 +1079,19 @@ describe("useMessageHandlers — send routing", () => {
 			const chatState = useChatState(newTaskConversation)
 			return { chatState, handlers: useMessageHandlers(newTaskConversation, chatState) }
 		})
-		act(() => result.current.chatState.setActiveQuote("old task quote"))
+		act(() => result.current.chatState.setQuotes([{ text: "old task quote", note: "" }]))
 
 		let action: Promise<void> | undefined
 		act(() => {
 			action = result.current.handlers.executeButtonAction({ type: "new_task" })
 		})
-		act(() => result.current.chatState.setActiveQuote("new draft quote"))
+		act(() => result.current.chatState.setQuotes([{ text: "new draft quote", note: "" }]))
 		await act(async () => {
 			resolveNewTask?.()
 			await action
 		})
 
-		expect(result.current.chatState.activeQuote).toBe("new draft quote")
+		expect(result.current.chatState.quotes).toEqual([{ text: "new draft quote", note: "" }])
 	})
 
 	it("retries a failed request without changing the unsent draft", async () => {
@@ -1100,13 +1101,13 @@ describe("useMessageHandlers — send routing", () => {
 			{ ts: 2, type: "ask", ask: "api_req_failed", text: "server error" },
 		]
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
 		const draft = {
 			revision: 7,
 			text: "First paragraph.\n\nSecond paragraph.",
-			activeQuote: null,
+			quotes: [],
 			images: ["image.png"],
 			files: ["notes.md"],
 		}
@@ -1118,7 +1119,7 @@ describe("useMessageHandlers — send routing", () => {
 					selectedImages: draft.images,
 					selectedFiles: draft.files,
 					setInputValue,
-					setActiveQuote,
+					setQuotes,
 					setSelectedImages,
 					setSelectedFiles,
 				}),
@@ -1131,7 +1132,7 @@ describe("useMessageHandlers — send routing", () => {
 
 		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
 		expect(setInputValue).not.toHaveBeenCalled()
-		expect(setActiveQuote).not.toHaveBeenCalled()
+		expect(setQuotes).not.toHaveBeenCalled()
 		expect(setSelectedImages).not.toHaveBeenCalled()
 		expect(setSelectedFiles).not.toHaveBeenCalled()
 	})
@@ -1146,7 +1147,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 11,
 			text: "submitted feedback",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: ["old.png"],
 			files: ["old.md"],
 		}
@@ -1160,14 +1161,14 @@ describe("useMessageHandlers — send routing", () => {
 
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
-			text: `[context] \n>  ${draft.activeQuote} \n[/context] \n\n ${draft.text}`,
+			text: `> selected context\n\n${draft.text}`,
 			images: draft.images,
 			files: draft.files,
 		})
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 
-	it("does not submit a quote without message content", async () => {
+	it("submits quotes as feedback even without typed text", async () => {
 		mockTurnState = { phase: "awaiting_approval", anchorTs: 2, seq: 3 }
 		const approvalConversation: ClineMessage[] = [
 			{ ts: 1, type: "say", say: "task", text: "task" },
@@ -1177,7 +1178,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 12,
 			text: "  ",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: [],
 			files: [],
 		}
@@ -1189,7 +1190,12 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.executeButtonAction({ type: "approve", draft })
 		})
 
-		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
+		expect(askResponse).toHaveBeenCalledWith({
+			responseType: "yesButtonClicked",
+			text: "> selected context",
+			images: [],
+			files: [],
+		})
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 

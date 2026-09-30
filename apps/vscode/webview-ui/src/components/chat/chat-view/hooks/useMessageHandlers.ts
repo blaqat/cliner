@@ -1,19 +1,14 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { EmptyRequest, StringRequest } from "@shared/proto/cline/common"
-import { AskResponseRequest, NewTaskRequest } from "@shared/proto/cline/task"
+import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
-
-function formatDraftText(text: string, activeQuote: string | null): string {
-	if (!activeQuote) {
-		return text
-	}
-	return `[context] \n>  ${activeQuote} \n[/context] \n\n ${text}`
-}
+import { latestMessageTs, startAside } from "../utils/asideUtils"
+import { formatMessageWithQuotes } from "../utils/quoteUtils"
 
 // `/compact` and its aliases `/smol` and `/newtask` run a real SDK manual
 // compaction via the condense RPC. Sending the literal text to the model would
@@ -30,11 +25,11 @@ function isCompactionCommand(text: string): boolean {
  * Handles sending messages, button clicks, and task management
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
-	const { backgroundCommandRunning, turnState } = useExtensionState()
+	const { backgroundCommandRunning, turnState, currentTaskItem } = useExtensionState()
 	const {
 		setInputValue,
-		activeQuote,
-		setActiveQuote,
+		quotes,
+		setQuotes,
 		setSelectedImages,
 		setSelectedFiles,
 		sendingDisabled,
@@ -100,13 +95,14 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			const submittedText = recoveryDraft?.text ?? text
 			const submittedImages = recoveryDraft?.images ?? images
 			const submittedFiles = recoveryDraft?.files ?? files
-			const submittedQuote = recoveryDraft?.activeQuote ?? activeQuote
+			const submittedQuotes = recoveryDraft?.quotes ?? quotes
 			let messageToSend = submittedText.trim()
-			const hasContent = messageToSend || submittedImages.length > 0 || submittedFiles.length > 0
+			const hasContent =
+				messageToSend || submittedQuotes.length > 0 || submittedImages.length > 0 || submittedFiles.length > 0
 
-			// Prepend the active quote if it exists
-			if (submittedQuote && hasContent) {
-				messageToSend = formatDraftText(messageToSend, submittedQuote)
+			// Prepend the quotes (each followed by its note) if there are any
+			if (submittedQuotes.length > 0) {
+				messageToSend = formatMessageWithQuotes(messageToSend, submittedQuotes)
 			}
 
 			// Intercept the built-in compaction commands when an active task exists.
@@ -122,7 +118,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				// after compaction finishes, and the typed command lingering in the
 				// field the whole time reads as if the send didn't register.
 				setInputValue("")
-				setActiveQuote(null)
+				setQuotes([])
 				await compactTask().catch((err) => console.error("Failed to compact task:", err))
 				if ("disableAutoScrollRef" in chatState) {
 					;(chatState as any).disableAutoScrollRef.current = false
@@ -148,7 +144,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 				const clearSentMessageState = () => {
 					setInputValue("")
-					setActiveQuote(null)
+					setQuotes([])
 					setSendingDisabled(true)
 					setSelectedImages([])
 					setSelectedFiles([])
@@ -156,7 +152,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 				const restorePendingMessageState = () => {
 					setInputValue(text)
-					setActiveQuote(activeQuote)
+					setQuotes(quotes)
 					setSendingDisabled(sendingDisabled)
 					setSelectedImages(images)
 					setSelectedFiles(files)
@@ -406,14 +402,14 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			messages,
 			clineAsk,
 			turnState,
-			activeQuote,
+			quotes,
 			recoverySeq,
 			errorRecoveryAvailable,
 			compactTask,
 			claimErrorRecovery,
 			releaseErrorRecoveryClaim,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			sendingDisabled,
 			setSendingDisabled,
 			setSelectedImages,
@@ -454,7 +450,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			// Quotes refer to rows in the task being closed. Keep independent draft
 			// text and attachments, but do not carry stale task context forward.
-			setActiveQuote(null)
+			setQuotes([])
 			try {
 				await clearTask(source)
 			} catch (error) {
@@ -463,7 +459,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setActiveQuote],
+		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes],
 	)
 
 	// Execute button action based on type
@@ -492,8 +488,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				case "proceed": {
 					const { draft } = invocation
 					const trimmedText = draft.text.trim()
-					const hasContent = trimmedText.length > 0 || draft.images.length > 0 || draft.files.length > 0
-					const text = hasContent ? formatDraftText(trimmedText, draft.activeQuote) : undefined
+					const hasContent =
+						trimmedText.length > 0 || draft.quotes.length > 0 || draft.images.length > 0 || draft.files.length > 0
+					const text = hasContent ? formatMessageWithQuotes(trimmedText, draft.quotes) : undefined
 					const responseType = invocation.type === "reject" ? "noButtonClicked" : "yesButtonClicked"
 					await TaskServiceClient.askResponse(
 						AskResponseRequest.create(
@@ -517,7 +514,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (clineAsk === "new_task") {
 						// Reset context from the old task before the first await. A quote
 						// selected while New Task is in flight belongs to the new draft.
-						setActiveQuote(null)
+						setQuotes([])
 						await TaskServiceClient.newTask(
 							NewTaskRequest.create({
 								text: lastMessage?.text,
@@ -584,12 +581,71 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			backgroundCommandRunning,
 			claimErrorRecovery,
 			releaseErrorRecoveryClaim,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setEnableButtons,
 		],
 	)
 	const retryFailedRequest = useCallback(() => executeButtonAction({ type: "retry" }), [executeButtonAction])
+
+	// Sends the draft through `send`, clearing the composer first and restoring it if the send fails.
+	const sendDraftVia = useCallback(
+		async (text: string, images: string[], files: string[], send: (message: string) => Promise<unknown>) => {
+			const message = quotes.length > 0 ? formatMessageWithQuotes(text, quotes) : text.trim()
+			if (!message && images.length === 0 && files.length === 0) {
+				return false
+			}
+			const sentQuotes = quotes
+			setInputValue("")
+			setQuotes([])
+			setSelectedImages([])
+			setSelectedFiles([])
+			try {
+				await send(message)
+			} catch (error) {
+				setInputValue(text)
+				setQuotes(sentQuotes)
+				setSelectedImages(images)
+				setSelectedFiles(files)
+				throw error
+			}
+			if ("disableAutoScrollRef" in chatState) {
+				;(chatState as any).disableAutoScrollRef.current = false
+			}
+			return true
+		},
+		[quotes, setInputValue, setQuotes, setSelectedImages, setSelectedFiles, chatState],
+	)
+
+	// Interject: stop the focused task's current turn and send the draft as the next turn.
+	const handleInterject = useCallback(
+		async (text: string, images: string[], files: string[]) => {
+			await sendDraftVia(text, images, files, (message) =>
+				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, images, files })),
+			).catch((error) => console.error("Failed to interject:", error))
+		},
+		[sendDraftVia],
+	)
+
+	// Aside: fork the focused task at `messageTs` (default: the latest message), open the
+	// fork (in Ask) and send the draft there. With no task yet, it is just a normal send.
+	const handleAside = useCallback(
+		async (text: string, images: string[], files: string[], messageTs = latestMessageTs(messages)) => {
+			const taskId = currentTaskItem?.id
+			if (!taskId || messageTs === undefined) {
+				await handleSendMessage(text, images, files)
+				return
+			}
+			const hasDraft = !!text.trim() || quotes.length > 0 || images.length > 0 || files.length > 0
+			const open = (message: string) => startAside({ taskId, messageTs, text: message, images, files })
+			if (!hasDraft) {
+				await open("").catch((error) => console.error("Failed to start aside:", error))
+				return
+			}
+			await sendDraftVia(text, images, files, open).catch((error) => console.error("Failed to start aside:", error))
+		},
+		[messages, currentTaskItem?.id, quotes.length, handleSendMessage, sendDraftVia],
+	)
 
 	// Handle task close button click
 	const handleTaskCloseButtonClick = useCallback(() => {
@@ -601,6 +657,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		recoveryActionInFlight,
 		compactTask,
 		handleSendMessage,
+		handleInterject,
+		handleAside,
 		executeButtonAction,
 		handleTaskCloseButtonClick,
 		retryFailedRequest,

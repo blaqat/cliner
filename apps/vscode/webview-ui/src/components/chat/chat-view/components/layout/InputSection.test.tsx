@@ -1,41 +1,62 @@
 import type { TurnState } from "@shared/ExtensionMessage"
 import { fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { resetPromptStashForTests } from "../../hooks/usePromptStash"
 import type { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 import { InputSection } from "./InputSection"
 
 const mockTurnState = vi.fn<() => TurnState | undefined>(() => undefined)
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ turnState: mockTurnState() }),
+	useExtensionState: () => ({ turnState: mockTurnState(), currentTaskItem: { id: "task-1" } }),
+}))
+
+vi.mock("@/services/grpc-client", () => ({
+	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
 }))
 
 vi.mock("@/components/chat/ChatTextArea", () => ({
-	default: React.forwardRef<HTMLTextAreaElement, { sendingDisabled: boolean; onSend: () => void }>(
-		({ sendingDisabled, onSend }, ref) => (
-			<>
-				<textarea
-					aria-label="composer"
-					disabled={sendingDisabled}
-					onKeyDown={(event) => {
-						if (event.key === "Enter" && !sendingDisabled) {
-							onSend()
-						}
-					}}
-					ref={ref}
-				/>
-				<button disabled={sendingDisabled} onClick={onSend} type="button">
-					Send
+	default: React.forwardRef<
+		HTMLTextAreaElement,
+		{
+			sendingDisabled: boolean
+			onSend: () => void
+			onStash?: () => boolean
+			onRestoreStash?: (id: string) => void
+			stashEntries?: { id: string; text: string }[]
+		}
+	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [] }, ref) => (
+		<>
+			<button onClick={() => onStash?.()} type="button">
+				Stash
+			</button>
+			{stashEntries.map((entry) => (
+				<button key={entry.id} onClick={() => onRestoreStash?.(entry.id)} type="button">
+					{`Restore ${entry.text}`}
 				</button>
-			</>
-		),
-	),
+			))}
+			<textarea
+				aria-label="composer"
+				disabled={sendingDisabled}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" && !sendingDisabled) {
+						onSend()
+					}
+				}}
+				ref={ref}
+			/>
+			<button disabled={sendingDisabled} onClick={onSend} type="button">
+				Send
+			</button>
+		</>
+	)),
 }))
 
 function makeChatState(overrides: Partial<ChatState> = {}): ChatState {
 	return {
-		activeQuote: null,
-		setActiveQuote: vi.fn(),
+		quotes: [],
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		inputValue: "queue this",
 		setInputValue: vi.fn(),
@@ -242,5 +263,88 @@ describe("InputSection", () => {
 
 		expect(screen.getByLabelText("composer")).toBeDisabled()
 		expect(screen.getByRole("button", { name: "Send" })).toBeDisabled()
+	})
+
+	describe("quotes and stash", () => {
+		beforeEach(() => resetPromptStashForTests())
+
+		const renderSection = (chatState: ChatState) =>
+			render(
+				<InputSection
+					chatState={chatState}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+
+		it("renders every quote with a note input and a remove button", () => {
+			const setQuotes = vi.fn()
+			renderSection(
+				makeChatState({
+					quotes: [
+						{ text: "first passage", note: "" },
+						{ text: "second passage", note: "why?" },
+					],
+					setQuotes,
+				}),
+			)
+
+			expect(screen.getByText("first passage")).toBeInTheDocument()
+			expect(screen.getByText("second passage")).toBeInTheDocument()
+			const notes = screen.getAllByLabelText("Note on this quote")
+			expect(notes).toHaveLength(2)
+			expect(notes[1]).toHaveValue("why?")
+
+			fireEvent.change(notes[0], { target: { value: "check this" } })
+			const noteUpdate = setQuotes.mock.calls[0][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
+			expect(
+				noteUpdate([
+					{ text: "first passage", note: "" },
+					{ text: "second passage", note: "why?" },
+				]),
+			).toEqual([
+				{ text: "first passage", note: "check this" },
+				{ text: "second passage", note: "why?" },
+			])
+
+			fireEvent.click(screen.getAllByLabelText("Dismiss quote")[0])
+			const removal = setQuotes.mock.calls[1][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
+			expect(
+				removal([
+					{ text: "first passage", note: "" },
+					{ text: "second passage", note: "why?" },
+				]),
+			).toEqual([{ text: "second passage", note: "why?" }])
+		})
+
+		it("stashes text + quotes and clears them, then restores the entry", () => {
+			const setInputValue = vi.fn()
+			const setQuotes = vi.fn()
+			const quotes = [{ text: "q", note: "n" }]
+			const { rerender } = renderSection(makeChatState({ inputValue: "draft", quotes, setInputValue, setQuotes }))
+
+			fireEvent.click(screen.getByRole("button", { name: "Stash" }))
+			expect(setInputValue).toHaveBeenCalledWith("")
+			expect(setQuotes).toHaveBeenCalledWith([])
+
+			rerender(
+				<InputSection
+					chatState={makeChatState({ inputValue: "", quotes: [], setInputValue, setQuotes })}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+			fireEvent.click(screen.getByRole("button", { name: "Restore draft" }))
+
+			expect(setInputValue).toHaveBeenLastCalledWith("draft")
+			expect(setQuotes).toHaveBeenLastCalledWith(quotes)
+			expect(screen.queryByRole("button", { name: "Restore draft" })).toBeNull()
+		})
 	})
 })
