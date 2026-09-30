@@ -68,12 +68,30 @@ describe("core agent per-model protocol routing", () => {
 			inputField,
 		);
 	});
+
+	it("routes OpenAI Compatible to the Responses API via routingProviderId", async () => {
+		const base = toProviderConfig({
+			provider: "openai-compatible",
+			model: "gpt-5.6-sol",
+			apiKey: "test-key",
+			baseUrl: "https://example.test/v1",
+		});
+		const baseUrl = "https://example.test/v1";
+		await expectEndpoint(base, "chat/completions", "messages", baseUrl);
+		await expectEndpoint(
+			{ ...base, routingProviderId: "openai-native" },
+			"responses",
+			"input",
+			baseUrl,
+		);
+	});
 });
 
 async function expectEndpoint(
 	providerConfig: ReturnType<typeof toProviderConfig>,
 	endpoint: string,
 	inputField: string,
+	baseUrl = "https://opencode.ai/zen/go/v1",
 ) {
 	// Exercise the real gateway and HTTP serializers, but stop at the network
 	// boundary. A non-retryable response keeps this test offline and deterministic.
@@ -113,7 +131,7 @@ async function expectEndpoint(
 	);
 	expect(fetchMock).toHaveBeenCalledTimes(1);
 	const [url, init] = fetchMock.mock.calls[0];
-	expect(String(url)).toBe(`https://opencode.ai/zen/go/v1/${endpoint}`);
+	expect(String(url)).toBe(`${baseUrl}/${endpoint}`);
 	const body = JSON.parse(String(init?.body));
 	expect(body[inputField]).toBeDefined();
 	if (inputField !== "contents") {

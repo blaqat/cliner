@@ -638,6 +638,38 @@ describe("createGatewayApiHandler.createMessage", () => {
 		expect(serializedMessages).not.toContain("drop me");
 	});
 
+	it("uses the Responses client when OpenAI Compatible is routed to openai-native", async () => {
+		const models: Array<{ family?: string }> = [];
+		for (const routingProviderId of [undefined, "openai-native"] as const) {
+			streamTextSpy.mockReturnValue({
+				fullStream: (async function* () {
+					yield { type: "finish", finishReason: "stop" };
+				})(),
+				usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+			});
+			const handler = createGatewayApiHandler({
+				providerId: "openai-compatible",
+				modelId: "gpt-5.6-sol",
+				apiKey: "test-key",
+				baseUrl: "https://example.test/v1",
+				...(routingProviderId ? { routingProviderId } : {}),
+			});
+			for await (const _chunk of handler.createMessage("", [
+				{ role: "user", content: "Hello" },
+			])) {
+				// Drain the stream so the provider is constructed.
+			}
+			const input = streamTextSpy.mock.calls.at(-1)?.[0] as {
+				model: { family?: string };
+			};
+			models.push(input.model);
+		}
+		expect(models.map((model) => model.family)).toEqual([
+			"openai-compatible",
+			"openai",
+		]);
+	});
+
 	it("adds Azure API version to deployment-style OpenAI-compatible requests", async () => {
 		streamTextSpy.mockReturnValue({
 			fullStream: (async function* () {

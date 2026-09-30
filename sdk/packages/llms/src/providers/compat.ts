@@ -196,17 +196,22 @@ async function resolveProviderRegistration(
 			baseUrl: collection.provider.baseUrl ?? routedBuiltin?.defaults?.baseUrl,
 			apiKeyEnv: collection.provider.env ?? routedBuiltin?.defaults?.apiKeyEnv,
 		},
+		// A built-in provider explicitly routed to another built-in (e.g. OpenAI
+		// Compatible -> openai-native for the Responses API) must use the routed
+		// transport; the source collection's own client would pick the wrong API.
 		createProvider:
-			routedBuiltin?.createProvider ??
-			resolveFactory(routedProviderId, {
-				client: config.clientType ?? collection.provider.client,
-				protocol: collection.provider.protocol,
-			}),
+			builtin && routedBuiltin
+				? routedBuiltin.createProvider
+				: (routedBuiltin?.createProvider ??
+					resolveFactory(routedProviderId, {
+						client: config.clientType ?? collection.provider.client,
+						protocol: collection.provider.protocol,
+					})),
 		loadProvider: routedBuiltin?.loadProvider,
 	};
 }
 
-function resolveProviderRegistrationSync(
+export function resolveProviderRegistrationSync(
 	config: ProviderConfig,
 ): GatewayProviderRegistration | undefined {
 	const providerId = normalizeProviderId(config.providerId);
@@ -261,12 +266,17 @@ function resolveProviderRegistrationSync(
 			baseUrl: collection.provider.baseUrl ?? routedBuiltin?.defaults?.baseUrl,
 			apiKeyEnv: collection.provider.env ?? routedBuiltin?.defaults?.apiKeyEnv,
 		},
+		// A built-in provider explicitly routed to another built-in (e.g. OpenAI
+		// Compatible -> openai-native for the Responses API) must use the routed
+		// transport; the source collection's own client would pick the wrong API.
 		createProvider:
-			routedBuiltin?.createProvider ??
-			resolveFactory(routedProviderId, {
-				client: config.clientType ?? collection.provider.client,
-				protocol: collection.provider.protocol,
-			}),
+			builtin && routedBuiltin
+				? routedBuiltin.createProvider
+				: (routedBuiltin?.createProvider ??
+					resolveFactory(routedProviderId, {
+						client: config.clientType ?? collection.provider.client,
+						protocol: collection.provider.protocol,
+					})),
 		loadProvider: routedBuiltin?.loadProvider,
 	};
 }
