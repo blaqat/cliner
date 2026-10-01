@@ -51,7 +51,11 @@ import type { ResolvedModelSelection } from "./model-catalog/contracts"
 import { nonNegativeFiniteNumber, positiveFiniteNumber, toSdkApiFormat } from "./model-catalog/model-values"
 import { parseProviderId } from "./model-catalog/provider-id"
 import { toSdkProviderId } from "./model-catalog/sdk-provider-id"
-import { createProviderConfigStore, resolveRuntimeModelSelection } from "./model-catalog/store"
+import {
+	createProviderConfigStore,
+	resolveAssignedProfileModelSelection,
+	resolveRuntimeModelSelection,
+} from "./model-catalog/store"
 import { getProviderSettingsManager } from "./provider-migration"
 import { buildSapProviderConfig, type SapProviderConfig } from "./sap-config"
 import type { SdkSessionHost } from "./session-host"
@@ -356,6 +360,30 @@ function resolveCommittedRuntimeModel(
 		return selection?.modelId === modelId ? selection : resolveRuntimeModelSelection(parsedProviderId, modelId)
 	} catch (error) {
 		Logger.warn(`[SessionFactory] Failed to resolve committed model settings for provider=${providerId}:`, error)
+		return undefined
+	}
+}
+
+/**
+ * A chat pinned to a saved API configuration never runs `commitSelection`, so
+ * the profile's model metadata lives only on the mode-scoped `*Mode*ModelInfo`
+ * key of the resolved ApiConfiguration. Resolve it through the catalog store
+ * so user-authored fields (context window, max output tokens, prices, …)
+ * override the catalog while untouched fields still come from the catalog.
+ */
+function resolveAssignedProfileRuntimeModel(
+	providerId: string,
+	mode: Mode,
+	modelId: string,
+	apiConfig: ApiConfiguration | undefined,
+): ResolvedModelSelection | undefined {
+	if (!apiConfig) {
+		return undefined
+	}
+	try {
+		return resolveAssignedProfileModelSelection(parseProviderId(providerId), mode, modelId, apiConfig)
+	} catch (error) {
+		Logger.warn(`[SessionFactory] Failed to resolve profile model settings for provider=${providerId}:`, error)
 		return undefined
 	}
 }
@@ -983,7 +1011,9 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	}
 	apiKey = apiKey ?? ""
 	const profileAssigned = apiConfig !== undefined && hasAssignedApiProfile(apiConfig)
-	const committedRuntimeModel = profileAssigned ? undefined : resolveCommittedRuntimeModel(providerId, mode, modelId)
+	const committedRuntimeModel = profileAssigned
+		? resolveAssignedProfileRuntimeModel(providerId, mode, modelId, apiConfig)
+		: resolveCommittedRuntimeModel(providerId, mode, modelId)
 	const overriddenMaxTokens = committedRuntimeModel?.overrides?.maxTokens
 	const maxTokensPerTurn =
 		positiveFiniteNumber(overriddenMaxTokens) ??
@@ -1069,10 +1099,18 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		// (catalog/state base or user overrides). Pure fallback fabrications
 		// must not reach the runtime; the SDK's own resolution handles those.
 		const isPureFallbackModel = committedRuntimeModel?.modelInfoSource === "fallback" && !committedRuntimeModel.overrides
-		if (committedRuntimeModel && !isPureFallbackModel && !knownModels?.[modelId]) {
+		// A profile's model info is user-authored and never lands in the
+		// models.json registry, so it must overlay catalog entries too. The
+		// committed-selection path can rely on the registry already carrying
+		// stored overrides and only needs to inject models the catalog lacks.
+		const profileOverridesCatalog = profileAssigned && committedRuntimeModel?.overrides !== undefined
+		if (committedRuntimeModel && !isPureFallbackModel && (!knownModels?.[modelId] || profileOverridesCatalog)) {
 			knownModels = {
 				...(knownModels ?? {}),
-				[modelId]: toSdkModelInfo(committedRuntimeModel),
+				[modelId]: {
+					...(knownModels?.[modelId] ?? {}),
+					...toSdkModelInfo(committedRuntimeModel),
+				},
 			}
 		}
 	} catch (error) {

@@ -413,6 +413,96 @@ describe("buildSessionConfig", () => {
 		expect(result.thinking).toBeUndefined()
 	})
 
+	it.each(["plan", "act"] as const)("applies the saved configuration's model info to the %s session catalog", async (mode) => {
+		const profiles = [
+			{
+				id: "cfg",
+				name: "Custom",
+				provider: "openai",
+				modelId: "custom-reasoner",
+				options: {
+					openAiBaseUrl: "https://custom/v1",
+					planModeOpenAiModelInfo: {
+						contextWindow: 64_000,
+						maxTokens: 2_048,
+						supportsImages: false,
+						supportsPromptCache: true,
+						inputPrice: 0.5,
+						outputPrice: 1.5,
+					},
+				},
+			},
+		]
+		const state = { apiConfigProfiles: profiles, askProfileId: "cfg", actProfileId: "cfg" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, mode) as never)
+
+		const config = await buildSessionConfig({ cwd: tempDir, mode })
+		const knownModel = (config.providerConfig as any).knownModels["custom-reasoner"]
+
+		expect(config.providerId).toBe("openai-compatible")
+		expect(knownModel).toMatchObject({
+			id: "custom-reasoner",
+			contextWindow: 64_000,
+			maxTokens: 2_048,
+			pricing: { input: 0.5, output: 1.5 },
+		})
+		expect(knownModel.capabilities).toContain("prompt-cache")
+		expect(knownModel.capabilities).toContain("tools")
+		expect(knownModel.capabilities).not.toContain("images")
+		// Manual compaction budgets against the same top-level catalog.
+		expect(config.knownModels?.["custom-reasoner"]).toEqual(knownModel)
+		// Max Output Tokens flows to per-turn and summarizer limits.
+		expect((config as any).maxTokensPerTurn).toBe(2_048)
+		expect((config.providerConfig as any).maxOutputTokens).toBe(2_048)
+	})
+
+	it("overlays a profile's context window on catalog-known models", async () => {
+		const catalogModel = (await LlmsModels.getModelsForProvider("openai-compatible"))["gpt-4o"]
+		expect(catalogModel).toBeDefined()
+		const profiles = [
+			{
+				id: "cfg",
+				name: "Custom",
+				provider: "openai",
+				modelId: "gpt-4o",
+				options: {
+					openAiBaseUrl: "https://custom/v1",
+					planModeOpenAiModelInfo: {
+						// Seeded from the editor's safe defaults; only contextWindow was changed.
+						maxTokens: -1,
+						contextWindow: 64_000,
+						supportsImages: true,
+						supportsPromptCache: false,
+						inputPrice: 0,
+						outputPrice: 0,
+						temperature: 0,
+					},
+				},
+			},
+		]
+		const state = { apiConfigProfiles: profiles, actProfileId: "cfg" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "act") as never)
+
+		const config = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		const knownModel = (config.providerConfig as any).knownModels["gpt-4o"]
+
+		expect(knownModel.contextWindow).toBe(64_000)
+		// Untouched fields still come from the catalog.
+		expect(knownModel.maxTokens).toBe(catalogModel.maxTokens)
+		expect(knownModel.capabilities).toEqual(expect.arrayContaining(catalogModel.capabilities ?? []))
+		expect(config.knownModels?.["gpt-4o"]).toEqual(knownModel)
+	})
+
 	it("resolves Cline OAuth credentials after defaulting to the Cline provider", async () => {
 		mocks.stateManager.getApiConfiguration.mockReturnValue({} as any)
 		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
