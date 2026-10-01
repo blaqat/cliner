@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react"
 import type { MutableRefObject } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { useScrollBehavior } from "./useScrollBehavior"
+import { scrollIntentFromKey, scrollIntentFromWheel, shouldResumeFollowAtBottom, useScrollBehavior } from "./useScrollBehavior"
 
 const commandMessage = {
 	ts: 1,
@@ -180,6 +180,162 @@ describe("useScrollBehavior", () => {
 				vi.advanceTimersByTime(100)
 			})
 			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+	})
+
+	describe("user scroll intent", () => {
+		const setup = () => {
+			const hook = renderHook(() => useScrollBehavior([], [], [commandMessage as any], {}, vi.fn()))
+			const scrollTo = vi.fn()
+			const scrollToIndex = vi.fn()
+			;(hook.result.current.virtuosoRef as MutableRefObject<unknown>).current = { scrollTo, scrollToIndex }
+			const container = document.createElement("div")
+			const scroller = document.createElement("div")
+			scroller.dataset.virtuosoScroller = "true"
+			const row = document.createElement("div")
+			scroller.appendChild(row)
+			container.appendChild(scroller)
+			document.body.appendChild(container)
+			;(hook.result.current.scrollContainerRef as MutableRefObject<HTMLDivElement>).current = container
+			act(() => {
+				vi.runOnlyPendingTimers()
+				hook.result.current.handleAtBottomStateChange(true)
+			})
+			scrollTo.mockClear()
+			const wheel = (deltaY: number) =>
+				act(() => {
+					row.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true }))
+				})
+			const key = (k: string, target: HTMLElement = row) =>
+				act(() => {
+					target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }))
+				})
+			return { ...hook, scrollTo, scrollToIndex, row, container, wheel, key }
+		}
+
+		afterEach(() => {
+			document.body.innerHTML = ""
+		})
+
+		it("stops following when the user scrolls up", () => {
+			const { result, wheel } = setup()
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+			wheel(-40)
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+		})
+
+		it("does not resume following when the bottom is reached right after the user scrolled up", () => {
+			const { result, scrollTo, wheel } = setup()
+			wheel(-40)
+			act(() => {
+				// A smooth scroll-to-bottom finishing, or rows shrinking, lands on the bottom anyway.
+				result.current.handleAtBottomStateChange(false)
+				result.current.handleAtBottomStateChange(true)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+
+			// Rich rows finishing layout (highlighting, diagrams) must not pull the reader down.
+			act(() => {
+				result.current.handleRowHeightChange(true)
+				result.current.handleLastRowContentChange()
+				vi.runAllTimers()
+			})
+			expect(scrollTo).not.toHaveBeenCalled()
+		})
+
+		it("resumes following when the user scrolls down to the bottom", () => {
+			const { result, scrollTo, wheel } = setup()
+			wheel(-40)
+			act(() => {
+				result.current.handleAtBottomStateChange(false)
+			})
+			wheel(40)
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+			act(() => {
+				result.current.handleAtBottomStateChange(true)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+
+			act(() => {
+				result.current.handleLastRowContentChange()
+				vi.runAllTimers()
+			})
+			expect(scrollTo).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" })
+		})
+
+		it("resumes following when the user scrolls down while already at the bottom", () => {
+			const { result, wheel } = setup()
+			wheel(-5)
+			// A small nudge up leaves the viewport within the bottom threshold: no state change.
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+			wheel(5)
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("keeps the default resume when the bottom is reached without a scroll-up gesture", () => {
+			const { result } = setup()
+			act(() => {
+				result.current.disableAutoScrollRef.current = true
+				result.current.handleAtBottomStateChange(false)
+				result.current.handleAtBottomStateChange(true)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("treats keyboard scrolling in the chat like the wheel", () => {
+			const { result, key } = setup()
+			key("PageUp")
+			expect(result.current.disableAutoScrollRef.current).toBe(true)
+			key("End")
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("ignores keys typed into an input", () => {
+			const { result, key } = setup()
+			const textarea = document.createElement("textarea")
+			document.body.appendChild(textarea)
+			key("ArrowUp", textarea)
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("ignores wheel events outside the chat", () => {
+			const { result } = setup()
+			const outside = document.createElement("div")
+			document.body.appendChild(outside)
+			act(() => {
+				outside.dispatchEvent(new WheelEvent("wheel", { deltaY: -40, bubbles: true }))
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+
+		it("lets a minimap jump that lands at the bottom resume following after a scroll-up", () => {
+			const { result, wheel } = setup()
+			wheel(-40)
+			act(() => {
+				result.current.scrollToIndex(0)
+				vi.advanceTimersByTime(1_000)
+			})
+			expect(result.current.disableAutoScrollRef.current).toBe(false)
+		})
+	})
+
+	describe("intent helpers", () => {
+		it("maps wheel deltas and keys to a direction", () => {
+			expect(scrollIntentFromWheel(-1)).toBe("up")
+			expect(scrollIntentFromWheel(1)).toBe("down")
+			expect(scrollIntentFromWheel(0)).toBeNull()
+			expect(scrollIntentFromKey("PageUp")).toBe("up")
+			expect(scrollIntentFromKey("Home")).toBe("up")
+			expect(scrollIntentFromKey(" ", true)).toBe("up")
+			expect(scrollIntentFromKey(" ")).toBe("down")
+			expect(scrollIntentFromKey("ArrowDown")).toBe("down")
+			expect(scrollIntentFromKey("a")).toBeNull()
+		})
+
+		it("only resumes at the bottom when the last gesture was not a scroll up", () => {
+			expect(shouldResumeFollowAtBottom(null)).toBe(true)
+			expect(shouldResumeFollowAtBottom("down")).toBe(true)
+			expect(shouldResumeFollowAtBottom("up")).toBe(false)
 		})
 	})
 })

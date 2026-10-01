@@ -130,6 +130,8 @@ export interface ScrollBehavior {
 	setPendingScrollToMessage: React.Dispatch<React.SetStateAction<number | null>>
 	scrolledPastUserMessage: ClineMessage | null
 	handleRangeChanged: (range: ListRange) => void
+	/** Virtuoso's atBottomStateChange: tracks the bottom and resumes auto-follow when appropriate. */
+	handleAtBottomStateChange: (atBottom: boolean) => void
 }
 
 /**
