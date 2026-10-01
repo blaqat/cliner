@@ -290,7 +290,10 @@ export class LocalRuntimeHost implements RuntimeHost {
 	private readonly subAgentAbortHandles = new Map<string, AbortController>();
 	private readonly subAgentAborts: SubAgentAbortTracker = {
 		register: (rootSessionId, toolCallId, controller) => {
-			this.subAgentAbortHandles.set(`${rootSessionId}:${toolCallId}`, controller);
+			this.subAgentAbortHandles.set(
+				`${rootSessionId}:${toolCallId}`,
+				controller,
+			);
 		},
 		unregister: (rootSessionId, toolCallId) => {
 			this.subAgentAbortHandles.delete(`${rootSessionId}:${toolCallId}`);
@@ -622,7 +625,10 @@ export class LocalRuntimeHost implements RuntimeHost {
 			},
 			createSpawnTool: () =>
 				createSessionSpawnTool(
-					{ ...subAgentDeps, requestToolApproval: bootstrap.requestToolApproval },
+					{
+						...subAgentDeps,
+						requestToolApproval: bootstrap.requestToolApproval,
+					},
 					{ ...bootstrap.config, toolPolicies: bootstrap.toolPolicies },
 					sessionId,
 					sessionToolExecutors,
@@ -1101,19 +1107,26 @@ export class LocalRuntimeHost implements RuntimeHost {
 		const canStartRun = session.agent.canStartRun();
 		if (input.delivery === "interject") {
 			// abort raises the fence synchronously. Enqueue before yielding so older
-			// prompts cannot drain between abort and the priority follow-up.
+			// prompts cannot drain between abort and the priority follow-up. The
+			// entry carries the "interject" delivery: it stays hidden from queue
+			// listings (so the message does not reappear as queued) and drains
+			// ahead of any steer/queue entries once the abort settles. The abort
+			// preserves the rest of the pending queue — interject means "send this
+			// now", not "cancel the queued work".
 			const aborting =
 				!canStartRun ||
 				this.turnsInFlight.has(input.sessionId) ||
 				session.status === "running" ||
 				session.status === "pending" ||
 				session.aborting
-					? this.abort(input.sessionId)
+					? this.abort(input.sessionId, undefined, {
+							preservePendingPrompts: true,
+						})
 					: Promise.resolve();
 			this.pendingPromptsController.enqueue(input.sessionId, {
 				prompt: input.prompt,
 				mode: input.mode,
-				delivery: "steer",
+				delivery: "interject",
 				userImages: input.userImages,
 				userFiles: input.userFiles,
 			});
@@ -1204,7 +1217,11 @@ export class LocalRuntimeHost implements RuntimeHost {
 		return usage || aggregateUsage ? { usage, aggregateUsage } : undefined;
 	}
 
-	async abort(sessionId: string, reason?: unknown): Promise<void> {
+	async abort(
+		sessionId: string,
+		reason?: unknown,
+		options?: { preservePendingPrompts?: boolean },
+	): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
 		session.config.telemetry?.capture({
@@ -1220,7 +1237,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		// and start a fresh provider call, and the session could never be
 		// brought to a full stop.
 		session.aborting = true;
-		if (session.drainingPendingPrompts) {
+		if (session.drainingPendingPrompts && !options?.preservePendingPrompts) {
 			this.pendingPromptsController.discardQueue(session);
 		}
 		const teamRuntime = session.runtime.teamRuntime;
@@ -1252,7 +1269,9 @@ export class LocalRuntimeHost implements RuntimeHost {
 	 * ends like any failed tool call and the parent run continues.
 	 */
 	async abortSubAgent(sessionId: string, toolCallId: string): Promise<boolean> {
-		const controller = this.subAgentAbortHandles.get(`${sessionId}:${toolCallId}`);
+		const controller = this.subAgentAbortHandles.get(
+			`${sessionId}:${toolCallId}`,
+		);
 		if (!controller || controller.signal.aborted) return false;
 		controller.abort(new Error("Subagent stopped by user"));
 		return true;

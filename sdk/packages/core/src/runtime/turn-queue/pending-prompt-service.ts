@@ -11,7 +11,10 @@ import type {
 	PendingPromptsUpdateInput,
 } from "../host/runtime-host";
 
-export type PendingPromptDelivery = "queue" | "steer";
+// "interject" is a committed stop-and-send: it rides the pending queue so it
+// survives the abort it triggers, but it is hidden from snapshots/lists (the
+// UI queue must not show it again) and always drains ahead of steer/queue.
+export type PendingPromptDelivery = "queue" | "steer" | "interject";
 
 export interface PendingPromptEntry {
 	id: string;
@@ -139,9 +142,15 @@ export class PendingPromptService {
 		input: PendingPromptEnqueueInput,
 	): SessionPendingPrompt[] {
 		const { prompt, mode, delivery, userImages, userFiles } = input;
-		const existingIndex = state.pendingPrompts.findIndex(
-			(queued) => queued.prompt === prompt,
-		);
+		// Interject entries are hidden and one-shot: they never merge into an
+		// existing queued prompt, and a queued prompt never swallows them.
+		const existingIndex =
+			delivery === "interject"
+				? -1
+				: state.pendingPrompts.findIndex(
+						(queued) =>
+							queued.prompt === prompt && queued.delivery !== "interject",
+					);
 		if (existingIndex >= 0) {
 			const [existing] = state.pendingPrompts.splice(existingIndex, 1);
 			const next: PendingPromptEntry = {
@@ -152,7 +161,7 @@ export class PendingPromptService {
 				userFiles: userFiles ?? existing.userFiles,
 			};
 			if (delivery === "steer" || existing.delivery === "steer") {
-				state.pendingPrompts.unshift({ ...next, delivery: "steer" });
+				insertPriorityEntry(state, { ...next, delivery: "steer" });
 			} else {
 				state.pendingPrompts.push(next);
 			}
@@ -165,11 +174,7 @@ export class PendingPromptService {
 				userImages,
 				userFiles,
 			};
-			if (delivery === "steer") {
-				state.pendingPrompts.unshift(newEntry);
-			} else {
-				state.pendingPrompts.push(newEntry);
-			}
+			insertPriorityEntry(state, newEntry);
 		}
 		return snapshotPrompts(state);
 	}
@@ -218,7 +223,7 @@ export class PendingPromptsController {
 		// client snapshot or asynchronous request can intervene between them.
 		const session = this.deps.getSession(sessionId);
 		const first = session?.pendingPrompts[0];
-		if (!first || first.delivery === "steer") {
+		if (!first || first.delivery !== "queue") {
 			return { sessionId, prompts: this.service.list(session), updated: false };
 		}
 		return this.update({ sessionId, promptId: first.id, delivery: "steer" });
@@ -258,7 +263,7 @@ export class PendingPromptsController {
 		entry: {
 			prompt: string;
 			mode?: AgentMode;
-			delivery: "queue" | "steer";
+			delivery: PendingPromptDelivery;
 			userImages?: string[];
 			userFiles?: string[];
 		},
@@ -273,7 +278,7 @@ export class PendingPromptsController {
 		// abort is settling.
 		this.service.enqueue(session, entry);
 		this.emitPrompts(session);
-		if (entry.delivery === "steer" && !session.aborting) {
+		if (entry.delivery !== "queue" && !session.aborting) {
 			session.agent.notifyPendingUserMessage();
 		}
 		this.scheduleDrain(sessionId, session);
@@ -404,7 +409,9 @@ function snapshotPrompt(entry: PendingPromptEntry): SessionPendingPrompt {
 	return {
 		id: entry.id,
 		prompt: entry.prompt,
-		delivery: entry.delivery,
+		// Interject stays internal to the queue: it never appears in listings,
+		// and once submitted it is reported as an immediate (steer) send.
+		delivery: entry.delivery === "interject" ? "steer" : entry.delivery,
 		attachmentCount:
 			(entry.userImages?.length ?? 0) + (entry.userFiles?.length ?? 0),
 		userImages: entry.userImages,
@@ -415,7 +422,28 @@ function snapshotPrompt(entry: PendingPromptEntry): SessionPendingPrompt {
 function snapshotPrompts(
 	state: PendingPromptQueueState,
 ): SessionPendingPrompt[] {
-	return state.pendingPrompts.map(snapshotPrompt);
+	// Interject entries are committed sends waiting on their own abort; they are
+	// not user-editable queue items and must not resurface in queue listings.
+	return state.pendingPrompts
+		.filter((entry) => entry.delivery !== "interject")
+		.map(snapshotPrompt);
+}
+
+// Front-priority insert: interject leads (it is an abort-and-send-now), steer
+// follows, queue trails.
+function insertPriorityEntry(
+	state: PendingPromptQueueState,
+	entry: PendingPromptEntry,
+): void {
+	if (entry.delivery === "queue") {
+		state.pendingPrompts.push(entry);
+		return;
+	}
+	let index = 0;
+	if (entry.delivery === "steer") {
+		while (state.pendingPrompts[index]?.delivery === "interject") index++;
+	}
+	state.pendingPrompts.splice(index, 0, entry);
 }
 
 function insertUpdatedPrompt(
@@ -424,9 +452,9 @@ function insertUpdatedPrompt(
 	previousIndex: number,
 	previousDelivery: PendingPromptDelivery,
 ): void {
-	if (next.delivery === "steer") {
-		state.pendingPrompts.unshift(next);
-	} else if (previousDelivery === "steer") {
+	if (next.delivery === "steer" || next.delivery === "interject") {
+		insertPriorityEntry(state, next);
+	} else if (previousDelivery !== "queue") {
 		state.pendingPrompts.push(next);
 	} else {
 		state.pendingPrompts.splice(previousIndex, 0, next);

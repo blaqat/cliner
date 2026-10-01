@@ -36,16 +36,22 @@ describe("interject delivery", () => {
 			userFiles: ["file"],
 		});
 		expect(order).toEqual(["abort", "enqueue"]);
+		// The interjected prompt rides the queue with the "interject" delivery so
+		// it stays hidden from queue listings and drains ahead of steer/queue.
 		expect(host.pendingPromptsController.enqueue).toHaveBeenCalledWith(
 			"parent",
 			{
 				prompt: "Interject",
 				mode: undefined,
-				delivery: "steer",
+				delivery: "interject",
 				userImages: ["image"],
 				userFiles: ["file"],
 			},
 		);
+		// Interject aborts the current turn, not the queued work.
+		expect(host.abort).toHaveBeenCalledWith("parent", undefined, {
+			preservePendingPrompts: true,
+		});
 		releaseAbort();
 		await sending;
 	});
