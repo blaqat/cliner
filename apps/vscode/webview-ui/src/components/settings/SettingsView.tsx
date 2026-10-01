@@ -30,13 +30,14 @@ import DebugSection from "./sections/DebugSection"
 import FeatureSettingsSection from "./sections/FeatureSettingsSection"
 import GeneralSettingsSection from "./sections/GeneralSettingsSection"
 import { RemoteConfigSection } from "./sections/RemoteConfigSection"
+import SubagentsSettingsSection from "./sections/SubagentsSettingsSection"
 import TerminalSettingsSection from "./sections/TerminalSettingsSection"
 import { getNextSettingsNavigationRequestId, resolveSettingsTarget, type SettingsNavigationRequest } from "./settingsTargets"
 
 const IS_DEV = process.env.IS_DEV
 
 // Tab definitions
-type SettingsTabID = "api-config" | "features" | "terminal" | "general" | "about" | "debug" | "remote-config"
+type SettingsTabID = "api-config" | "subagents" | "features" | "terminal" | "general" | "about" | "debug" | "remote-config"
 interface SettingsTab {
 	id: SettingsTabID
 	name: string
@@ -59,6 +60,13 @@ const SETTINGS_TABS: SettingsTab[] = [
 		name: "Features",
 		tooltipText: "Feature Settings",
 		headerText: "Feature Settings",
+		icon: CheckCheck,
+	},
+	{
+		id: "subagents",
+		name: "Subagents",
+		tooltipText: "Subagents",
+		headerText: "Subagents",
 		icon: CheckCheck,
 	},
 	{
@@ -132,6 +140,7 @@ const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 			"api-config": ApiConfigurationSection,
 			general: GeneralSettingsSection,
 			features: FeatureSettingsSection,
+			subagents: SubagentsSettingsSection,
 			terminal: TerminalSettingsSection,
 			"remote-config": RemoteConfigSection,
 			about: AboutSection,

@@ -19,6 +19,10 @@ import {
 	createPlanModeCommandGuardExtension,
 	PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
 } from "../../../extensions/tools/command-guard-extension";
+import {
+	createAskModeMcpGateExtension,
+	MCP_TOOL_METADATA_KEY,
+} from "../../../extensions/mcp";
 import { buildTelemetryAgentIdentity } from "../../../services/agent-events";
 import { filterDisabledTools } from "../../../services/global-settings";
 import {
@@ -47,6 +51,11 @@ export interface SubAgentAbortTracker {
 	): void;
 	unregister(rootSessionId: string, toolCallId: string): void;
 }
+
+const activeSubagentCounts = new WeakMap<
+	SubAgentStartTracker,
+	Map<string, number>
+>();
 
 export interface SpawnToolDeps {
 	requestToolApproval?: (
@@ -157,6 +166,13 @@ export function createSessionSpawnTool(
 		config,
 		rootSessionId,
 	);
+	const settings = config.subagentSettings ?? {};
+	let counts = activeSubagentCounts.get(deps.subAgentStarts);
+	if (!counts) {
+		counts = new Map();
+		activeSubagentCounts.set(deps.subAgentStarts, counts);
+	}
+	const activeCounts = counts;
 	const effectiveAccess = (input: SpawnAgentInput) =>
 		input.access === "write" && config.mode !== "plan" ? "write" : "read";
 	const createSubAgentTools = (input: SpawnAgentInput) => {
@@ -185,13 +201,52 @@ export function createSessionSpawnTool(
 				),
 			);
 		}
+		// Use the parent's actual tools, including host replacements and MCP,
+		// rather than recreating tools the parent does not have.
+		const parentTools = deps.getSession(rootSessionId)?.runtime.tools;
+		const available = parentTools
+			? [...parentTools, ...(config.extraTools ?? [])]
+			: [...tools, ...(config.extraTools ?? [])];
+		const allowedNames = new Set(tools.map((tool) => tool.name));
+		if (config.enableTools && preset.enableBash)
+			allowedNames.add("run_commands");
+		if (config.enableTools && access === "write") {
+			allowedNames.add("editor");
+			allowedNames.add("apply_patch");
+		}
+		const childTools = available
+			.filter((tool) => {
+				const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];
+				if (isMcp) return config.enableTools && settings.allowMcp !== false;
+				if (!allowedNames.has(tool.name)) return false;
+				if (tool.name === "run_commands" && settings.allowCommands === false)
+					return false;
+				if (
+					[
+						"fetch_web_content",
+						"web_fetch",
+						"web_search",
+						"browser_action",
+					].includes(tool.name) &&
+					settings.allowWeb === false
+				)
+					return false;
+				return true;
+			})
+			.map((tool) =>
+				tool.name === "spawn_agent"
+					? tools.find((child) => child.name === "spawn_agent")!
+					: tool,
+			);
 		return filterToolsByPolicies(
-			filterDisabledTools(tools),
+			filterDisabledTools([
+				...new Map(childTools.map((tool) => [tool.name, tool])).values(),
+			]),
 			config.toolPolicies,
 		);
 	};
 
-	return createSpawnAgentTool({
+	const spawnTool = createSpawnAgentTool({
 		configProvider: {
 			getRuntimeConfig: () =>
 				deps
@@ -234,6 +289,7 @@ export function createSessionSpawnTool(
 			: undefined,
 		createSubAgentExtensions: (input) => {
 			const extensions =
+				deps.getSession(rootSessionId)?.runtime.extensions ??
 				deps
 					.getSession(rootSessionId)
 					?.runtime.delegatedAgentConfigProvider?.getRuntimeConfig()
@@ -251,6 +307,7 @@ export function createSessionSpawnTool(
 			return [
 				...extensions,
 				createPlanModeCommandGuardExtension({ telemetry: config.telemetry }),
+				createAskModeMcpGateExtension(),
 			];
 		},
 		createSubAgentTools,
@@ -268,4 +325,32 @@ export function createSessionSpawnTool(
 			: undefined,
 		...lifecycle,
 	}) as AgentTool;
+	return {
+		...spawnTool,
+		execute: async (rawInput, context) => {
+			const input = rawInput as SpawnAgentInput;
+			if (input.access === "write" && settings.allowWrite === false) {
+				return {
+					error:
+						"Write subagents are disabled in Subagents settings. Use access=read.",
+				};
+			}
+			const active = activeCounts.get(rootSessionId) ?? 0;
+			const limit = settings.maxConcurrent ?? 0;
+			if (limit > 0 && active >= limit) {
+				return {
+					error: `Maximum concurrent subagents (${limit}) reached. Wait for an active subagent to finish before spawning another.`,
+				};
+			}
+			// Reserve before any await, so parallel calls cannot race the limit.
+			activeCounts.set(rootSessionId, active + 1);
+			try {
+				return await spawnTool.execute(input, context);
+			} finally {
+				const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;
+				if (remaining > 0) activeCounts.set(rootSessionId, remaining);
+				else activeCounts.delete(rootSessionId);
+			}
+		},
+	};
 }

@@ -41,7 +41,7 @@ const mocks = vi.hoisted(() => {
 				actModeApiModelId: "claude-sonnet-4-6",
 				apiKey: "test-key",
 			})),
-			getGlobalSettingsKey: vi.fn((key: string): boolean | undefined => {
+			getGlobalSettingsKey: vi.fn((key: string): boolean | number | undefined => {
 				if (key === "subagentsEnabled" || key === "useAutoCondense") {
 					return false
 				}
@@ -1505,6 +1505,41 @@ describe("buildSessionConfig", () => {
 		expect(config.apiKey).toBe("")
 		expect(config.providerConfig).toMatchObject({ providerId: "cline-pass", modelId: "cline-pass/glm-5.2" })
 		expect(config.providerConfig).not.toHaveProperty("apiKey")
+	})
+
+	it.each(["plan", "act"] as const)("registers subagents by default in %s mode", async (mode) => {
+		mocks.stateManager.getGlobalSettingsKey.mockReturnValue(undefined)
+		const config = await buildSessionConfig({ cwd: "/tmp/workspace", mode })
+		expect(config.enableSpawnAgent).toBe(true)
+		expect(config.enableAgentTeams).toBe(false)
+		expect(config.subagentSettings).toEqual({
+			maxConcurrent: 0,
+			allowWrite: true,
+			allowCommands: true,
+			allowMcp: true,
+			allowWeb: true,
+		})
+	})
+
+	it("passes persisted subagent permissions and disables registration when off", async () => {
+		const settings: Record<string, boolean | number> = {
+			subagentsEnabled: false,
+			subagentsMaxConcurrent: 2,
+			subagentsAllowWrite: false,
+			subagentsAllowCommands: false,
+			subagentsAllowMcp: false,
+			subagentsAllowWeb: false,
+		}
+		mocks.stateManager.getGlobalSettingsKey.mockImplementation((key: string) => settings[key])
+		const config = await buildSessionConfig({ cwd: "/tmp/workspace" })
+		expect(config.enableSpawnAgent).toBe(false)
+		expect(config.subagentSettings).toEqual({
+			maxConcurrent: 2,
+			allowWrite: false,
+			allowCommands: false,
+			allowMcp: false,
+			allowWeb: false,
+		})
 	})
 
 	it("enables agentic SDK compaction when global useAutoCondense is true", async () => {

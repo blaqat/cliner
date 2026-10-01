@@ -48,6 +48,15 @@ export class SdkSessionConfigChangeCoordinator {
 		})
 	}
 
+	handleSubagentSettingsChanged(): void {
+		this.requestRebuild({
+			reason: "subagents",
+			description: "subagent settings",
+			disposeReason: "subagentSettingsChange",
+			failureMessage: "Failed to reload subagent settings. The change may not apply until the next task.",
+		})
+	}
+
 	handleCheckpointsSettingChanged(previous: boolean, next: boolean): void {
 		if (previous === next) {
 			return

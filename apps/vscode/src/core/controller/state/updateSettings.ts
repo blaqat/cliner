@@ -169,6 +169,28 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			}
 		}
 
+		for (const key of ["subagentsAllowWrite", "subagentsAllowCommands", "subagentsAllowMcp", "subagentsAllowWeb"] as const) {
+			if (request[key] !== undefined) controller.stateManager.setGlobalState(key, request[key])
+		}
+		if (request.subagentsMaxConcurrent !== undefined) {
+			if (!Number.isInteger(request.subagentsMaxConcurrent) || request.subagentsMaxConcurrent < 0) {
+				throw new Error("Maximum concurrent subagents must be a nonnegative integer; use 0 for unlimited.")
+			}
+			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
+		}
+		if (
+			[
+				request.subagentsEnabled,
+				request.subagentsMaxConcurrent,
+				request.subagentsAllowWrite,
+				request.subagentsAllowCommands,
+				request.subagentsAllowMcp,
+				request.subagentsAllowWeb,
+			].some((value) => value !== undefined)
+		) {
+			controller.handleSubagentSettingsChanged()
+		}
+
 		// Update auto-condense setting
 		if (request.useAutoCondense !== undefined) {
 			if (controller.task) {

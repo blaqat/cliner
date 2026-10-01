@@ -223,3 +223,129 @@ describe("createSessionSpawnTool sub-agent access", () => {
 		}
 	});
 });
+
+describe("subagent settings enforcement", () => {
+	beforeEach(() => vi.clearAllMocks());
+	const input = { systemPrompt: "sub", task: "work" };
+	const context = { agentId: "parent", conversationId: "conv", iteration: 1 };
+
+	it("rejects disabled write access without constructing a child", async () => {
+		const { createSessionSpawnTool } = await import("./spawn-tool.js");
+		const tool = createSessionSpawnTool(
+			makeDeps(),
+			makeConfig({ subagentSettings: { allowWrite: false } }),
+			"root",
+		);
+		expect(await tool.execute({ ...input, access: "write" }, context)).toEqual({
+			error: expect.stringContaining("Write subagents are disabled"),
+		});
+		expect(agentConstructorSpy).not.toHaveBeenCalled();
+	});
+
+	it("removes shell and web tools when denied", async () => {
+		const names = await childToolNames(
+			makeConfig({
+				subagentSettings: { allowCommands: false, allowWeb: false },
+			}),
+			{},
+		);
+		expect(names).toContain("read_files");
+		expect(names).not.toContain("run_commands");
+		expect(names).not.toContain("fetch_web_content");
+	});
+
+	it("inherits host tools and caps them by the parent's actual toolset", async () => {
+		const { createSessionSpawnTool } = await import("./spawn-tool.js");
+		const { MCP_TOOL_METADATA_KEY } = await import(
+			"../../../extensions/mcp/tools.js"
+		);
+		const read = {
+			name: "read_files",
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const shell = {
+			name: "run_commands",
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const mcp = {
+			name: "server__tool",
+			metadata: {
+				[MCP_TOOL_METADATA_KEY]: { serverName: "server", toolName: "tool" },
+			},
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const deps = {
+			...makeDeps(),
+			getSession: () =>
+				({ runtime: { tools: [read], extensions: [] } }) as never,
+		};
+		const config = makeConfig({
+			mode: "act",
+			extraTools: [shell, mcp],
+			subagentSettings: { allowMcp: true },
+		});
+		runMock.mockResolvedValue({
+			text: "done",
+			iterations: 1,
+			finishReason: "completed",
+			usage: { inputTokens: 1, outputTokens: 1 },
+		});
+		await createSessionSpawnTool(deps, config, "root", TOOL_EXECUTORS).execute(
+			{ ...input, access: "write" },
+			context,
+		);
+		const child = agentConstructorSpy.mock.calls.at(-1)![0];
+		expect(child.tools).toEqual([read, shell, mcp]);
+		expect(child.tools.map((tool: AgentTool) => tool.name)).not.toContain(
+			"editor",
+		);
+		await createSessionSpawnTool(
+			deps,
+			{
+				...config,
+				subagentSettings: { allowMcp: false, allowCommands: false },
+			},
+			"root",
+			TOOL_EXECUTORS,
+		).execute(input, context);
+		expect(agentConstructorSpy.mock.calls.at(-1)![0].tools).toEqual([read]);
+	});
+
+	it("reserves concurrency atomically across nested tools and releases it after errors", async () => {
+		const { createSessionSpawnTool } = await import("./spawn-tool.js");
+		const deps = makeDeps();
+		const config = makeConfig({
+			enableSpawnAgent: true,
+			subagentSettings: { maxConcurrent: 1 },
+		});
+		const tool = createSessionSpawnTool(deps, config, "root", TOOL_EXECUTORS);
+		let rejectRun!: (error: Error) => void;
+		runMock.mockImplementationOnce(
+			() =>
+				new Promise((_, reject) => {
+					rejectRun = reject;
+				}),
+		);
+		const first = tool.execute(input, context) as Promise<unknown>;
+		await vi.waitFor(() => expect(rejectRun).toBeDefined());
+		expect(await tool.execute(input, context)).toEqual({
+			error: expect.stringContaining("Maximum concurrent subagents (1)"),
+		});
+		const nested = agentConstructorSpy.mock.calls
+			.at(-1)![0]
+			.tools.find((tool: AgentTool) => tool.name === "spawn_agent");
+		expect(await nested.execute(input, context)).toEqual({
+			error: expect.stringContaining("Maximum concurrent subagents (1)"),
+		});
+		const failure = expect(first).rejects.toThrow("failed");
+		rejectRun(new Error("failed"));
+		await failure;
+		runMock.mockResolvedValue({
+			text: "done",
+			iterations: 1,
+			finishReason: "completed",
+			usage: { inputTokens: 1, outputTokens: 1 },
+		});
+		expect(await tool.execute(input, context)).toMatchObject({ text: "done" });
+	});
+});

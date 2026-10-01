@@ -51,7 +51,17 @@ export interface CoreModelConfig {
 	temperature?: number;
 }
 
+export interface SubagentSettings {
+	/** Zero or absent means unlimited. Includes nested children of this session. */
+	maxConcurrent?: number;
+	allowWrite?: boolean;
+	allowCommands?: boolean;
+	allowMcp?: boolean;
+	allowWeb?: boolean;
+}
+
 export interface CoreRuntimeFeatures {
+	subagentSettings?: SubagentSettings;
 	enableTools: boolean;
 	enableSpawnAgent: boolean;
 	enableAgentTeams: boolean;

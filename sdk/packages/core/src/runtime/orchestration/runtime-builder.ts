@@ -647,7 +647,10 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			workspaceMetadata: config.workspaceMetadata,
 		});
 		if (normalized.enableSpawnAgent) {
-			if (configuredAgents.configs.length > 0) {
+			// Sessions with explicit subagent permissions use the guarded spawn_agent
+			// path. Legacy configured-agent tools run children without inherited
+			// approvals and must not bypass these restrictions.
+			if (configuredAgents.configs.length > 0 && !config.subagentSettings) {
 				tools.push(
 					...filterAvailableTools(
 						createConfiguredAgentTools({

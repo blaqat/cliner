@@ -1176,7 +1176,14 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		checkpoint: {
 			enabled: enableCheckpoints,
 		},
-		enableSpawnAgent: false,
+		enableSpawnAgent: stateManager.getGlobalSettingsKey("subagentsEnabled") ?? true,
+		subagentSettings: {
+			maxConcurrent: stateManager.getGlobalSettingsKey("subagentsMaxConcurrent") ?? 0,
+			allowWrite: stateManager.getGlobalSettingsKey("subagentsAllowWrite") ?? true,
+			allowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands") ?? true,
+			allowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp") ?? true,
+			allowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb") ?? true,
+		},
 		enableAgentTeams: false,
 		...(useAutoCondense
 			? {
