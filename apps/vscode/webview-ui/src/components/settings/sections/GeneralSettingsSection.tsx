@@ -1,6 +1,7 @@
 import { VSCodeCheckbox, VSCodeLink, VSCodeRadio, VSCodeRadioGroup } from "@vscode/webview-ui-toolkit/react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useMetaKeyDetection } from "@/utils/hooks"
 import PreferredLanguageSetting from "../PreferredLanguageSetting"
 import Section from "../Section"
 import { updateSetting } from "../utils/settingsHandlers"
@@ -10,7 +11,9 @@ interface GeneralSettingsSectionProps {
 }
 
 const GeneralSettingsSection = ({ renderSectionHeader }: GeneralSettingsSectionProps) => {
-	const { telemetrySetting, remoteConfigSettings, enterSendsAs } = useExtensionState()
+	const { telemetrySetting, remoteConfigSettings, enterSendsAs, platform } = useExtensionState()
+	const [, modKeyChar] = useMetaKeyDetection(platform)
+	const isMac = modKeyChar === "⌘"
 
 	return (
 		<div>
@@ -40,7 +43,7 @@ const GeneralSettingsSection = ({ renderSectionHeader }: GeneralSettingsSectionP
 						</VSCodeRadio>
 					</VSCodeRadioGroup>
 					<p className="text-sm mt-[5px] text-description">
-						Ctrl/⌘+Enter does the other one. Alt/⌥+Enter sends as an aside.
+						{modKeyChar}+Enter does the other one. {isMac ? "⌥" : "Alt"}+Enter sends as an aside.
 					</p>
 				</div>
 

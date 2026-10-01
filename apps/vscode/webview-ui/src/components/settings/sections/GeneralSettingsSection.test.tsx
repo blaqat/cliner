@@ -3,10 +3,15 @@ import type { ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import GeneralSettingsSection from "./GeneralSettingsSection"
 
-const mocks = vi.hoisted(() => ({ updateSetting: vi.fn(), enterSendsAs: "steer" }))
+const mocks = vi.hoisted(() => ({ updateSetting: vi.fn(), enterSendsAs: "steer", platform: "win32" }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ telemetrySetting: "enabled", remoteConfigSettings: {}, enterSendsAs: mocks.enterSendsAs }),
+	useExtensionState: () => ({
+		telemetrySetting: "enabled",
+		remoteConfigSettings: {},
+		enterSendsAs: mocks.enterSendsAs,
+		platform: mocks.platform,
+	}),
 }))
 vi.mock("../utils/settingsHandlers", () => ({ updateSetting: mocks.updateSetting }))
 vi.mock("../PreferredLanguageSetting", () => ({ default: () => null }))
@@ -37,8 +42,18 @@ describe("GeneralSettingsSection", () => {
 
 	it("persists Enter sends as", () => {
 		render(<GeneralSettingsSection renderSectionHeader={() => null} />)
-		expect(screen.getByText(/Ctrl\/⌘\+Enter does the other one/)).toBeTruthy()
 		fireEvent.click(screen.getByText("Interject"))
 		expect(mocks.updateSetting).toHaveBeenCalledWith("enterSendsAs", "interject")
+	})
+
+	it("labels the mod key per platform", () => {
+		mocks.platform = "win32"
+		const { unmount } = render(<GeneralSettingsSection renderSectionHeader={() => null} />)
+		expect(screen.getByText(/Ctrl\+Enter does the other one\. Alt\+Enter sends as an aside\./)).toBeTruthy()
+		unmount()
+
+		mocks.platform = "darwin"
+		render(<GeneralSettingsSection renderSectionHeader={() => null} />)
+		expect(screen.getByText(/⌘\+Enter does the other one\. ⌥\+Enter sends as an aside\./)).toBeTruthy()
 	})
 })

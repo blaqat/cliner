@@ -18,17 +18,11 @@ export const detectOS = (platform: string) => {
 	return detectedOs
 }
 
+// Label for the platform "mod" key used by shortcuts: Cmd on macOS, Ctrl on
+// Windows/Linux (the OS captures the Win/Super key, so it can never be a
+// usable webview shortcut).
 export const detectMetaKeyChar = (platform: string) => {
-	if (platform.match(platforms.mac)) {
-		return "CMD"
-	}
-	if (platform.match(platforms.windows)) {
-		return "Win"
-	}
-	if (platform.match(platforms.linux)) {
-		return "Super"
-	}
-	return "CMD"
+	return platform.match(platforms.mac) ? "⌘" : "Ctrl"
 }
 
 const userAgent = navigator?.userAgent || ""
