@@ -58,6 +58,8 @@ message NewTaskRequest {
   repeated string images = 3;
   repeated string files = 4;
   optional Settings task_settings = 5;
+  // Starts the task without focusing it (home composer "start in background").
+  bool run_in_background = 6;
 }
 
 // Request message for toggling task favorite status

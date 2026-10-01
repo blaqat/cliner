@@ -247,6 +247,34 @@ describe("SdkSessionLifecycle", () => {
 		expect(lifecycle.getSession("a")?.isRunning).toBe(false)
 	})
 
+	it("starts a session in the background without moving the focused task", async () => {
+		const host = makeSdkHost({
+			start: vi.fn().mockResolvedValueOnce({ sessionId: "focused" }).mockResolvedValueOnce({ sessionId: "bg" }),
+		})
+		mockCreateSessionHost.mockResolvedValueOnce(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ config: { sessionId: "focused" } } as StartInput)
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("focused")
+
+		await lifecycle.startNewSession({ config: { sessionId: "bg" } } as StartInput, { focus: false })
+
+		expect(lifecycle.getSession("bg")).toBeDefined()
+		expect(lifecycle.sessionStatuses.bg).toBe("running")
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("focused")
+	})
+
+	it("leaves nothing focused when a background session starts from the inbox", async () => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValueOnce(host)
+		const lifecycle = makeLifecycle()
+
+		await lifecycle.startNewSession({} as StartInput, { focus: false })
+
+		expect(lifecycle.getSession("session-123")).toBeDefined()
+		expect(lifecycle.sessionStatuses["session-123"]).toBe("running")
+		expect(lifecycle.getActiveSession()).toBeUndefined()
+	})
+
 	it("starts a session and stores active session state", async () => {
 		const unsubscribe = vi.fn()
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" }, unsubscribe })

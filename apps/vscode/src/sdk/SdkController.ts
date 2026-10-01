@@ -790,9 +790,10 @@ export class Controller {
 				if (!context || !this.sessions.getSession(id)) return false
 				this.task = context.task
 				this.stateManager.setGlobalState("mode", context.mode)
-				this.restoreTaskApiSelection(historyItem, context.mode)
+				if (historyItem) this.restoreTaskApiSelection(historyItem, context.mode)
 				return true
 			},
+			getLiveTaskItem: (id) => this.liveTaskHistoryItem(id),
 			applyTaskApiSelection: (historyItem, mode) => this.restoreTaskApiSelection(historyItem, mode),
 			raiseCancelFence: () => {
 				if (this.task) this.getTaskSessionContext(this.task.taskId).cancelled = true
@@ -821,6 +822,7 @@ export class Controller {
 			setTask: (task) => {
 				this.task = task
 			},
+			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
 			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
 			onCancelTask: () => this.cancelTask(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -1046,6 +1048,10 @@ export class Controller {
 
 	handleTerminalExecutionModeChanged(previous: VscodeTerminalExecutionMode, next: VscodeTerminalExecutionMode): void {
 		this.sessionConfigChanges.handleTerminalExecutionModeChanged(previous, next)
+	}
+
+	handleSubagentSettingsChanged(): void {
+		this.sessionConfigChanges.handleSubagentSettingsChanged()
 	}
 
 	handleCheckpointsSettingChanged(previous: boolean, next: boolean): void {
@@ -1381,6 +1387,40 @@ export class Controller {
 		this.taskSessions.set(id, context)
 		if (!this.sessions.getSession(id) && task?.messageStateHandler.getClineMessages().length === 0) setPhase("streaming")
 		return context
+	}
+
+	/**
+	 * Displayable HistoryItem for a session that is live but absent from
+	 * persisted history — Core only writes the record when the first send
+	 * lands, so without this a just-backgrounded chat vanishes from the inbox
+	 * and cannot be reopened. The title comes from the session's own transcript
+	 * (the say:task message emitted at start); cwd fills in at the call site.
+	 */
+	private liveTaskHistoryItem(taskId: string): HistoryItem | undefined {
+		const session = this.sessions.getSession(taskId)
+		if (!session) {
+			return undefined
+		}
+		const context = this.taskSessions.get(taskId)
+		const taskProxy = this.task?.taskId === taskId ? this.task : context?.task
+		const taskMessage = taskProxy?.messageStateHandler
+			.getClineMessages()
+			.find((message) => message.type === "say" && message.say === "task" && message.text)
+		if (!taskMessage?.text) {
+			return undefined
+		}
+		return {
+			id: taskId,
+			ts: taskMessage.ts || Date.now(),
+			task: taskMessage.text,
+			tokensIn: 0,
+			tokensOut: 0,
+			cacheWrites: 0,
+			cacheReads: 0,
+			totalCost: 0,
+			modelId: session.startConfig?.modelId ?? taskProxy?.api?.getModel?.().id,
+			cwdOnTaskInitialization: this.lastKnownWorkspaceRoot,
+		}
 	}
 
 	// ---- Slash command + context mention resolution ----
@@ -1831,10 +1871,13 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
+		options?: { background?: boolean },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A new task is starting — the agent is about to stream.
-		return this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
+		return options
+			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
+			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
@@ -2936,6 +2979,19 @@ export class Controller {
 						modelId: snapshotTask.api?.getModel?.().id,
 						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
 					})
+				}
+			}
+
+			// The same persistence lag applies to every OTHER live session: closing
+			// (X) a just-started chat, or starting one in the background, unfocuses
+			// it while it keeps running. Without a synthesized row the inbox drops
+			// the chat entirely — it looks deleted and cannot be reopened.
+			for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
+				if (mergedTaskHistoryById.has(session.sessionId)) continue
+				const item = this.liveTaskHistoryItem(session.sessionId)
+				if (item) {
+					item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
+					mergedTaskHistoryById.set(session.sessionId, item)
 				}
 			}
 

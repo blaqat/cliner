@@ -128,6 +128,12 @@ export async function getStateToPostToWebview(controller: {
 		compactionStrategy,
 		webSearchEnabled,
 		subagentsEnabled,
+		subagentsMaxConcurrent: stateManager.getGlobalSettingsKey("subagentsMaxConcurrent"),
+		subagentsAllowWrite: stateManager.getGlobalSettingsKey("subagentsAllowWrite"),
+		subagentsAllowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands"),
+		subagentsAllowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp"),
+		subagentsAllowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb"),
+
 		userInfo,
 		mcpMarketplaceEnabled,
 		mcpDisplayMode,

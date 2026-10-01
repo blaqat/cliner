@@ -79,8 +79,13 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	}, [promptStash, inputValue, quotes, setInputValue, setQuotes])
 
 	const handleSendAs = useCallback(
-		(kind: "interject" | "aside") => {
-			const send = kind === "interject" ? messageHandlers.handleInterject : messageHandlers.handleAside
+		(kind: "interject" | "aside" | "background") => {
+			const send =
+				kind === "interject"
+					? messageHandlers.handleInterject
+					: kind === "aside"
+						? messageHandlers.handleAside
+						: messageHandlers.handleSendInBackground
 			void send(inputValue, selectedImages, selectedFiles)
 		},
 		[messageHandlers, inputValue, selectedImages, selectedFiles],
@@ -126,6 +131,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 				enterSendsAs={enterSendsAs}
 				hasQuotes={quotes.length > 0}
 				inputValue={inputValue}
+				isHome={!currentTaskItem}
 				isRunning={isRunning}
 				onDeleteStash={promptStash.remove}
 				onFocusChange={handleFocusChange}

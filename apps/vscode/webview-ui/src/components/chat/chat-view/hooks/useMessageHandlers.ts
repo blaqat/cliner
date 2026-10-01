@@ -681,6 +681,20 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		[quotes, setInputValue, setQuotes, setSelectedImages, setSelectedFiles, chatState],
 	)
 
+	// Background start (home composer Ctrl/Cmd+Enter): the draft becomes a NEW chat
+	// that runs without taking focus — the user stays on home and it shows up in
+	// the inbox Active list via the normal state post.
+	const handleSendInBackground = useCallback(
+		async (text: string, images: string[], files: string[]) => {
+			await sendDraftVia(text, images, files, (message) =>
+				TaskServiceClient.newTask(NewTaskRequest.create({ text: message, images, files, runInBackground: true })).then(
+					() => undefined,
+				),
+			).catch((error) => console.error("Failed to start background task:", error))
+		},
+		[sendDraftVia],
+	)
+
 	// Interject: stop the focused task's current turn and send the draft as the next turn.
 	const handleInterject = useCallback(
 		async (text: string, images: string[], files: string[]) => {
@@ -721,6 +735,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		recoveryActionInFlight,
 		compactTask,
 		handleSendMessage,
+		handleSendInBackground,
 		handleInterject,
 		handleAside,
 		executeButtonAction,

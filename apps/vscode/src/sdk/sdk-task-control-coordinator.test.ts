@@ -336,6 +336,24 @@ describe("SdkTaskControlCoordinator", () => {
 		])
 	})
 
+	it("focuses a live session that has no persisted history item yet", async () => {
+		// A just-started chat outruns its persisted history record (Core writes it
+		// when the first send lands). Closing it with X unfocuses the session but
+		// keeps it running, so the inbox row must reopen through the live path.
+		const { options } = makeCoordinator({ hasHistoryItem: false })
+		const liveItem = { id: "live-1", ts: 5, task: "bg task", tokensIn: 0, tokensOut: 0, totalCost: 0 }
+		const focusLiveTask = vi.fn(() => true)
+		const getLiveTaskItem = vi.fn((id: string) => (id === "live-1" ? liveItem : undefined))
+		const coordinator = new SdkTaskControlCoordinator({ ...options, focusLiveTask, getLiveTaskItem })
+
+		const result = await coordinator.showTaskWithId("live-1")
+
+		expect(getLiveTaskItem).toHaveBeenCalledWith("live-1")
+		expect(focusLiveTask).toHaveBeenCalledWith("live-1", expect.objectContaining({ id: "live-1" }))
+		expect(result).toMatchObject({ id: "live-1" })
+		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
+	})
+
 	it("does not show a task that is missing from history", async () => {
 		const { coordinator, options } = makeCoordinator({ hasHistoryItem: false })
 

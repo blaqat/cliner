@@ -4,6 +4,7 @@ import type { StateManager } from "@/core/storage/StateManager"
 import { isDirectory } from "@/utils/fs"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE } from "./provider-failure-telemetry"
 import { SdkTaskStartCoordinator, type SdkTaskStartCoordinatorOptions } from "./sdk-task-start-coordinator"
+import { createTaskProxy } from "./task-proxy"
 
 vi.mock("@/shared/services/Logger", () => ({
 	Logger: {
@@ -85,6 +86,50 @@ describe("SdkTaskStartCoordinator", () => {
 			["image.png"],
 			["a.ts"],
 		)
+	})
+
+	it("starts a chat in the background without clearing or focusing the view", async () => {
+		const { options, state } = makeCoordinator()
+		const contextTask = createTaskProxy("", vi.fn(), vi.fn())
+		const contextMessages = { appendAndEmit: vi.fn() }
+		const createTaskContext = vi.fn((taskId: string) => {
+			contextTask.taskId = taskId
+			return { task: contextTask, messages: contextMessages }
+		})
+		const coordinator = new SdkTaskStartCoordinator({ ...options, createTaskContext })
+
+		const sessionId = await coordinator.initTask("quiet task", ["image.png"], [], undefined, undefined, {
+			background: true,
+		})
+
+		expect(sessionId).toEqual(expect.any(String))
+		// The view is untouched: no clear, no focused task, and the task message is
+		// written into the background task's own transcript, not the visible one.
+		expect(options.clearTask).not.toHaveBeenCalled()
+		expect(options.setTask).not.toHaveBeenCalled()
+		expect(state.task).toBeUndefined()
+		expect(createTaskContext).toHaveBeenCalledWith(sessionId)
+		expect(contextTask.taskId).toBe(sessionId)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ sessionId }) }),
+			{ focus: false },
+		)
+		expect(contextMessages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ type: "say", say: "task", text: "quiet task", images: ["image.png"] })],
+			{ type: "status", payload: { sessionId, status: "running" } },
+		)
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ id: sessionId, task: "quiet task" }),
+		)
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+			expect.anything(),
+			sessionId,
+			"resolved: quiet task",
+			["image.png"],
+			[],
+		)
+		expect(options.postStateToWebview).toHaveBeenCalled()
 	})
 
 	it("pins the build selection through slow startup while another chat changes the picker", async () => {

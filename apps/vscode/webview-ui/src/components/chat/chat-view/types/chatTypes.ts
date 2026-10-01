@@ -100,6 +100,8 @@ export interface MessageHandlers {
 	compactTask: () => Promise<boolean>
 	executeButtonAction: (invocation: ButtonActionInvocation) => Promise<boolean>
 	handleSendMessage: (text: string, images: string[], files: string[]) => Promise<void>
+	/** Starts the draft as a NEW chat that runs in the background (home composer). */
+	handleSendInBackground: (text: string, images: string[], files: string[]) => Promise<void>
 	/** Stops the focused task's current turn and sends the draft immediately. */
 	handleInterject: (text: string, images: string[], files: string[]) => Promise<void>
 	/** Forks the focused task at `messageTs` (default: latest message) and sends the draft there. */

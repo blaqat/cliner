@@ -29,6 +29,30 @@ describe("resolveSubmitKey", () => {
 		expect(resolveSubmitKey(key({ altKey: true, ctrlKey: true }), { running: true, enterSendsAs: "steer" })).toBe("aside")
 	})
 
+	it("starts a background chat on Ctrl/Cmd+Enter from the home composer", () => {
+		expect(resolveSubmitKey(key({ ctrlKey: true }), { running: false, enterSendsAs: "steer", onHome: true })).toBe(
+			"background",
+		)
+		expect(resolveSubmitKey(key({ metaKey: true }), { running: false, enterSendsAs: "interject", onHome: true })).toBe(
+			"background",
+		)
+	})
+
+	it("keeps Enter and Alt+Enter unchanged on the home composer", () => {
+		expect(resolveSubmitKey(key(), { running: false, enterSendsAs: "steer", onHome: true })).toBe("send")
+		expect(
+			resolveSubmitKey(key({ altKey: true, ctrlKey: true }), { running: false, enterSendsAs: "steer", onHome: true }),
+		).toBe("aside")
+	})
+
+	it("does not change Ctrl/Cmd+Enter inside a chat", () => {
+		expect(resolveSubmitKey(key({ ctrlKey: true }), { running: true, enterSendsAs: "steer", onHome: false })).toBe(
+			"interject",
+		)
+		expect(resolveSubmitKey(key({ ctrlKey: true }), { running: true, enterSendsAs: "steer" })).toBe("interject")
+		expect(resolveSubmitKey(key({ ctrlKey: true }), { running: false, enterSendsAs: "steer", onHome: false })).toBe("send")
+	})
+
 	it("ignores Shift+Enter and other keys", () => {
 		expect(resolveSubmitKey(key({ shiftKey: true }), { running: true, enterSendsAs: "steer" })).toBeNull()
 		expect(resolveSubmitKey(key({ key: "a" }), { running: true, enterSendsAs: "steer" })).toBeNull()

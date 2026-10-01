@@ -373,6 +373,52 @@ describe("SDK remote-config coordination", () => {
 		})
 	})
 
+	it("lists a live background session in taskHistory before its record persists", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const bgTask = createTaskProxy("bg-1", vi.fn(), vi.fn())
+		bgTask.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "quiet work" }])
+		const session = {
+			sessionId: "bg-1",
+			isRunning: true,
+			startConfig: { modelId: "bg-model" },
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		const liveSessions = new Map([["bg-1", session]])
+		Object.assign(controller, {
+			lastKnownWorkspaceRoot: "/workspace",
+			taskSessions: new Map([["bg-1", { task: bgTask }]]),
+			stateManager: {
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			backgroundCommandRunning: false,
+			backgroundCommandTaskId: undefined,
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { listHistory: async () => [] },
+			sessions: {
+				getActiveSession: () => undefined,
+				getSessions: () => liveSessions,
+				getSession: (id: string) => liveSessions.get(id),
+				sessionStatuses: { "bg-1": "running" },
+				subagentCounts: {},
+			},
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+
+		const state = await controller.getStateToPostToWebview()
+
+		// No focused task and no persisted record — the running chat must still
+		// surface in the inbox instead of looking deleted.
+		expect(state.currentTaskItem).toBeUndefined()
+		const row = state.taskHistory.find((item: { id: string }) => item.id === "bg-1")
+		expect(row).toMatchObject({ task: "quiet work", modelId: "bg-model", cwdOnTaskInitialization: "/workspace" })
+		expect(state.sessionStatuses["bg-1"]).toBe("running")
+	})
+
 	it("waits for initial remote config before resuming an existing task", async () => {
 		const events: string[] = []
 		const controller = {

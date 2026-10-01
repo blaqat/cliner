@@ -251,6 +251,40 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		expect(onSend).toHaveBeenCalledTimes(1)
 	})
 
+	it("starts a background chat with Ctrl/Cmd+Enter on the home composer", () => {
+		const { textarea, onSend, onSendAs } = renderComposer({ isHome: true })
+
+		fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true })
+		expect(onSendAs).toHaveBeenCalledWith("background")
+		expect(onSend).not.toHaveBeenCalled()
+
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true })
+		expect(onSendAs).toHaveBeenLastCalledWith("background")
+
+		// Plain Enter still sends a focused task.
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps Ctrl/Cmd+Enter as a normal send inside an idle chat", () => {
+		const { textarea, onSend, onSendAs } = renderComposer()
+
+		fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true })
+		expect(onSend).toHaveBeenCalledTimes(1)
+		expect(onSendAs).not.toHaveBeenCalled()
+	})
+
+	it("offers a Start in background button on home only", () => {
+		const { onSendAs } = renderComposer({ isHome: true })
+		fireEvent.click(screen.getByTestId("send-background-button"))
+		expect(onSendAs).toHaveBeenCalledWith("background")
+	})
+
+	it("hides the background button inside a chat", () => {
+		renderComposer()
+		expect(screen.queryByTestId("send-background-button")).toBeNull()
+	})
+
 	it("steers with Enter and interjects with Ctrl/Cmd+Enter by default while running", () => {
 		const { textarea, onSend, onSendAs } = renderComposer({ isRunning: true })
 

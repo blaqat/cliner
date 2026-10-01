@@ -5,7 +5,7 @@ import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state
 import { type SlashCommand } from "@shared/slashCommands"
 import { Mode } from "@shared/storage/types"
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
-import { AtSignIcon, PlusIcon, SendHorizontalIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
+import { AtSignIcon, PlusIcon, SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
@@ -97,9 +97,11 @@ interface ChatTextAreaProps {
 	onDeleteStash?: (id: string) => void
 	/** The focused task is mid-turn: submits become steer / interject. */
 	isRunning?: boolean
+	/** No task is open (home composer): Ctrl/Cmd+Enter starts the chat in the background. */
+	isHome?: boolean
 	/** What Enter does while running; Ctrl/Cmd+Enter does the other. */
 	enterSendsAs?: EnterSendsAs
-	/** Sends as interject / aside. Steer and normal sends go through `onSend`. */
+	/** Sends as interject / aside / background. Steer and normal sends go through `onSend`. */
 	onSendAs?: (kind: Exclude<SendKind, "send" | "steer">) => void
 }
 
@@ -238,6 +240,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			onRestoreStash,
 			onDeleteStash,
 			isRunning = false,
+			isHome = false,
 			enterSendsAs = "steer",
 			onSendAs,
 		},
@@ -295,7 +298,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
 		// Leave room for the stash icon next to send while the stash has entries.
 		const showRunningSendButtons = isRunning && !!onSendAs
-		const inputPaddingRight = (stashEntries.length > 0 ? 48 : 28) + (showRunningSendButtons ? 22 : 0)
+		const showHomeBackgroundButton = isHome && !isRunning && !!onSendAs
+		const inputPaddingRight =
+			(stashEntries.length > 0 ? 48 : 28) + (showRunningSendButtons ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
 		const unsupportedImagesAttached = selectedImages.length > 0 && !modelSupportsImages
 
 		// Fetch git commits when Git is selected or when typing a hash
@@ -628,7 +633,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					return
 				}
 
-				const submitKind = isComposing ? null : resolveSubmitKey(event, { running: isRunning, enterSendsAs })
+				const submitKind = isComposing
+					? null
+					: resolveSubmitKey(event, { running: isRunning, enterSendsAs, onHome: isHome })
 				if (submitKind) {
 					event.preventDefault()
 
@@ -638,10 +645,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						// blur desyncs it permanently (programmatic .focus() on an
 						// already-focused element never re-fires onFocus), which hides the
 						// plan/act mode outline until a real blur/refocus cycle.
-						if ((submitKind === "interject" || submitKind === "aside") && onSendAs) {
-							onSendAs(submitKind)
-						} else {
+						if (submitKind === "send" || submitKind === "steer" || !onSendAs) {
 							onSend()
+						} else {
+							onSendAs(submitKind)
 						}
 					}
 				}
@@ -731,6 +738,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				onStash,
 				hasQuotes,
 				isRunning,
+				isHome,
 				enterSendsAs,
 				onSendAs,
 			],
@@ -1648,20 +1656,45 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									onSteer={onSend}
 								/>
 							) : (
-								<div
-									className={cn(
-										"input-icon-button",
-										{ disabled: sendingDisabled },
-										"codicon codicon-send text-sm",
+								<div className="flex items-center gap-0.5">
+									{showHomeBackgroundButton && (
+										<Tooltip>
+											<TooltipContent side="top">
+												Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay
+												here
+											</TooltipContent>
+											<TooltipTrigger asChild>
+												<button
+													aria-label="Start in background"
+													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+													data-testid="send-background-button"
+													disabled={sendingDisabled}
+													onClick={() => onSendAs("background")}
+													type="button">
+													<SendToBackIcon size={13} />
+												</button>
+											</TooltipTrigger>
+										</Tooltip>
 									)}
-									data-testid="send-button"
-									onClick={() => {
-										if (!sendingDisabled) {
-											onSend()
+									<div
+										className={cn(
+											"input-icon-button",
+											{ disabled: sendingDisabled },
+											"codicon codicon-send text-sm",
+										)}
+										data-testid="send-button"
+										onClick={() => {
+											if (!sendingDisabled) {
+												onSend()
+											}
+										}}
+										title={
+											isHome
+												? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
+												: "Send (Enter) · Aside (Alt+Enter)"
 										}
-									}}
-									title="Send (Enter) · Aside (Alt+Enter)"
-								/>
+									/>
+								</div>
 							)}
 						</div>
 					</div>

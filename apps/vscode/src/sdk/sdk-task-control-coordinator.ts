@@ -44,7 +44,14 @@ export interface SdkTaskControlCoordinatorOptions {
 	 * suppresses its remaining DISPLAY output (usage is still accounted).
 	 */
 	raiseCancelFence?: () => void
-	focusLiveTask?: (taskId: string, historyItem: HistoryItem) => boolean
+	focusLiveTask?: (taskId: string, historyItem?: HistoryItem) => boolean
+	/**
+	 * Returns a displayable HistoryItem for a session that is still live but has
+	 * no persisted history record yet. A just-started task only reaches the
+	 * history listing once Core persists the first send, so without this the
+	 * inbox drops a backgrounded brand-new chat and it cannot be reopened.
+	 */
+	getLiveTaskItem?: (taskId: string) => HistoryItem | undefined
 	setTaskMode?: (mode: "plan" | "act") => void
 	/**
 	 * Restores the task's last-used saved-configuration selection (profile +
@@ -184,6 +191,12 @@ export class SdkTaskControlCoordinator {
 		} catch (error) {
 			Logger.error(`[SdkController] Failed to look up task in history: ${taskId}`, error)
 			return undefined
+		}
+		if (!historyItem) {
+			// A live session can outrun its persisted record (Core only writes the
+			// row when the first send lands). Focusing it through the live path
+			// keeps a backgrounded brand-new chat reopenable from the inbox.
+			historyItem = this.options.getLiveTaskItem?.(taskId)
 		}
 		if (!historyItem) {
 			Logger.error(`[SdkController] Task not found in history: ${taskId}`)

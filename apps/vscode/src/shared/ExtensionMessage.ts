@@ -140,6 +140,11 @@ export interface ExtensionState {
 	compactionStrategy?: string
 	webSearchEnabled?: boolean
 	subagentsEnabled?: boolean
+	subagentsMaxConcurrent?: number
+	subagentsAllowWrite?: boolean
+	subagentsAllowCommands?: boolean
+	subagentsAllowMcp?: boolean
+	subagentsAllowWeb?: boolean
 	worktreesEnabled?: ClineFeatureSetting
 	favoritedModelIds: string[]
 	// NEW: Add workspace information

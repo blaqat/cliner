@@ -239,10 +239,11 @@ export class SdkSessionLifecycle {
 
 	async startNewSession(
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
+		options?: { focus?: boolean },
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
 		const id = startInput.config?.sessionId?.trim()
 		this.assertTaskAvailable(id)
-		const starting = this.performStartNewSession(startInput)
+		const starting = this.performStartNewSession(startInput, options)
 		const key = id ?? ""
 		const starts = this.pendingStarts.get(key) ?? new Set<Promise<unknown>>()
 		starts.add(starting)
@@ -257,6 +258,7 @@ export class SdkSessionLifecycle {
 
 	private async performStartNewSession(
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
+		options?: { focus?: boolean },
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
 		startInput = this.options.prepareStartInput?.(startInput) ?? startInput
 		// A new task leaves other tasks alive. Only a same-id replacement stops first.
@@ -305,7 +307,13 @@ export class SdkSessionLifecycle {
 		this.setStatus(startResult.sessionId, "running")
 		// Register first so deletion can stop a start that crossed an awaited host.start.
 		this.assertTaskAvailable(startResult.sessionId)
-		this.focusSession(this.focusedSessionId ?? focusedIdAtStart ?? startResult.sessionId)
+		// A background (focus:false) start leaves whatever the user was looking at —
+		// including the inbox — focused; the new chat runs without being shown.
+		this.focusSession(
+			options?.focus === false
+				? (this.focusedSessionId ?? focusedIdAtStart)
+				: (this.focusedSessionId ?? focusedIdAtStart ?? startResult.sessionId),
+		)
 		await this.pruneIdleSessions()
 		return { startResult, sdkHost }
 	}
