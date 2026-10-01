@@ -1,10 +1,12 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { EmptyRequest, StringRequest } from "@shared/proto/cline/common"
+import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { SlashServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { parseModeSwitchCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
 import { latestMessageTs, startAside } from "../utils/asideUtils"
@@ -25,7 +27,7 @@ function isCompactionCommand(text: string): boolean {
  * Handles sending messages, button clicks, and task management
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
-	const { backgroundCommandRunning, turnState, currentTaskItem } = useExtensionState()
+	const { backgroundCommandRunning, turnState, currentTaskItem, mode } = useExtensionState()
 	const {
 		setInputValue,
 		quotes,
@@ -97,12 +99,73 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			const submittedFiles = recoveryDraft?.files ?? files
 			const submittedQuotes = recoveryDraft?.quotes ?? quotes
 			let messageToSend = submittedText.trim()
+
+			// `/ask` and `/act` switch the chat's mode through the same RPC as the
+			// Ask/Act toggle, so the mode's saved configuration and default
+			// reasoning effort apply exactly as toggling does. Any text after the
+			// command is sent in the new mode: passing it as chatContent lets the
+			// host consume it directly when the switch auto-continues (a plan
+			// awaiting approval), otherwise it falls through to the normal send
+			// path below. The literal command text is never sent to the model.
+			const modeCommand = parseModeSwitchCommand(messageToSend)
+			if (modeCommand) {
+				messageToSend = modeCommand.rest
+			}
+
 			const hasContent =
 				messageToSend || submittedQuotes.length > 0 || submittedImages.length > 0 || submittedFiles.length > 0
 
 			// Prepend the quotes (each followed by its note) if there are any
 			if (submittedQuotes.length > 0) {
 				messageToSend = formatMessageWithQuotes(messageToSend, submittedQuotes)
+			}
+
+			if (modeCommand) {
+				if (mode === modeCommand.mode) {
+					// Already in the target mode — a bare command is a no-op, and
+					// text after it falls through to the normal send path.
+					if (!hasContent) {
+						setInputValue("")
+						return
+					}
+				} else {
+					let consumed = false
+					try {
+						const response = await StateServiceClient.togglePlanActModeProto(
+							TogglePlanActModeRequest.create({
+								mode: modeCommand.mode === "act" ? PlanActMode.ACT : PlanActMode.PLAN,
+								chatContent: {
+									message: hasContent ? messageToSend : undefined,
+									images: submittedImages,
+									files: submittedFiles,
+								},
+							}),
+						)
+						consumed = response.value === true
+					} catch (error) {
+						console.error("Failed to switch mode:", error)
+						return
+					}
+					if (consumed) {
+						// The host echoed the message itself as part of the switch, so
+						// clear the composer like a completed send.
+						setInputValue("")
+						setQuotes([])
+						setSelectedImages([])
+						setSelectedFiles([])
+						if (recoveryDraft) {
+							chatState.consumeDraftSnapshot(recoveryDraft)
+						}
+						if ("disableAutoScrollRef" in chatState) {
+							;(chatState as any).disableAutoScrollRef.current = false
+						}
+						return
+					}
+					if (!hasContent) {
+						setInputValue("")
+						return
+					}
+				}
 			}
 
 			// Intercept the built-in compaction commands when an active task exists.
@@ -402,6 +465,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			messages,
 			clineAsk,
 			turnState,
+			mode,
 			quotes,
 			recoverySeq,
 			errorRecoveryAvailable,

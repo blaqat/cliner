@@ -11,6 +11,7 @@ const cancelTask = vi.fn().mockResolvedValue(undefined)
 const clearTask = vi.fn().mockResolvedValue(undefined)
 const condense = vi.fn().mockResolvedValue(undefined)
 const trackIntent = vi.fn().mockResolvedValue(undefined)
+const togglePlanActModeProto = vi.fn().mockResolvedValue({ value: false })
 
 vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
@@ -24,6 +25,9 @@ vi.mock("@/services/grpc-client", () => ({
 		condense: (req: unknown) => condense(req),
 		reportBug: vi.fn().mockResolvedValue(undefined),
 	},
+	StateServiceClient: {
+		togglePlanActModeProto: (req: unknown) => togglePlanActModeProto(req),
+	},
 	UiServiceClient: {
 		trackIntent: (req: unknown) => trackIntent(req),
 	},
@@ -34,6 +38,10 @@ vi.mock("@shared/proto/cline/task", () => ({
 	AskResponseRequest: { create: (x: unknown) => x },
 	NewTaskRequest: { create: (x: unknown) => x },
 }))
+vi.mock("@shared/proto/cline/state", () => ({
+	PlanActMode: { PLAN: 0, ACT: 1 },
+	TogglePlanActModeRequest: { create: (x: unknown) => x },
+}))
 vi.mock("@shared/proto/cline/ui", () => ({
 	IntentEvent: { create: (x: unknown) => x },
 }))
@@ -42,12 +50,14 @@ vi.mock("@shared/proto/cline/common", () => ({
 	StringRequest: { create: (x: unknown) => x },
 }))
 
-// useExtensionState supplies turnState (+ backgroundCommandRunning) to the hook.
+// useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
 let mockTurnState: TurnState | undefined
+let mockMode: "plan" | "act" = "act"
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		backgroundCommandRunning: false,
 		turnState: mockTurnState,
+		mode: mockMode,
 	}),
 }))
 
@@ -119,7 +129,10 @@ describe("useMessageHandlers — send routing", () => {
 		condense.mockResolvedValue(undefined)
 		trackIntent.mockReset()
 		trackIntent.mockResolvedValue(undefined)
+		togglePlanActModeProto.mockReset()
+		togglePlanActModeProto.mockResolvedValue({ value: false })
 		mockTurnState = undefined
+		mockMode = "act"
 	})
 
 	it("routes /compact to the condense RPC instead of sending it as a message", async () => {
@@ -186,6 +199,134 @@ describe("useMessageHandlers — send routing", () => {
 				hasActiveTask: false,
 				textLength: "/compact".length,
 			}),
+		)
+	})
+
+	it("routes a bare /act to the mode toggle RPC without sending a message", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledTimes(1)
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: undefined }) }),
+		)
+		expect(newTask).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(condense).not.toHaveBeenCalled()
+	})
+
+	it("routes a bare /ask to the mode toggle RPC with PLAN mode", async () => {
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/ask", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: 0 }))
+		expect(newTask).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+	})
+
+	it("sends text after /act via the toggle's chatContent so the host can consume it", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "awaiting_followup", seq: 7 }
+		togglePlanActModeProto.mockResolvedValue({ value: true })
+		const setInputValue = vi.fn()
+		const { result } = renderHook(() =>
+			useMessageHandlers(completedConversation, makeChatState(completedConversation, { setInputValue })),
+		)
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act build it", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: "build it" }) }),
+		)
+		// Host consumed the message as the mode-switch continuation — nothing is sent again.
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(newTask).not.toHaveBeenCalled()
+		expect(setInputValue).toHaveBeenCalledWith("")
+	})
+
+	it("sends the text as a normal follow-up when the mode switch does not consume it", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act build it", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: "build it" }) }),
+		)
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "messageResponse", text: "build it" }))
+		expect(askResponse).not.toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("/act") }))
+	})
+
+	it("starts a new task in Ask mode from the welcome screen with /ask <text>", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "idle", seq: 1 }
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/ask think about caching", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: 0 }))
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ text: "think about caching" }))
+	})
+
+	it("sends text after /act normally when already in act mode", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act ship it", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "messageResponse", text: "ship it" }))
+	})
+
+	it("is a no-op for a bare /act when already in act mode", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const setInputValue = vi.fn()
+		const { result } = renderHook(() =>
+			useMessageHandlers(completedConversation, makeChatState(completedConversation, { setInputValue })),
+		)
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(newTask).not.toHaveBeenCalled()
+		expect(setInputValue).toHaveBeenCalledWith("")
+	})
+
+	it("does not treat /activity as a mode command", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/activity is fine", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({ responseType: "messageResponse", text: "/activity is fine" }),
 		)
 	})
 

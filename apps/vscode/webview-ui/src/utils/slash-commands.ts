@@ -105,6 +105,23 @@ export const slashCommandRegexGlobal = new RegExp(slashCommandRegex.source, "g")
 export const slashCommandDeleteRegex = /(^|\s)(\/[a-zA-Z0-9_.:@-]+)$/
 
 /**
+ * Parses a leading `/ask` or `/act` mode-switch command. `/ask` maps to the
+ * internal "plan" mode. Only a command at the very start of the text counts,
+ * and it must be followed by whitespace or end-of-text so "/activity" is not
+ * treated as `/act`. Returns the target mode and the remaining message text.
+ */
+export function parseModeSwitchCommand(text: string): { mode: "plan" | "act"; rest: string } | null {
+	const match = /^\/(ask|act)(?:\s+|$)/i.exec(text)
+	if (!match) {
+		return null
+	}
+	return {
+		mode: match[1].toLowerCase() === "ask" ? "plan" : "act",
+		rest: text.slice(match[0].length).trim(),
+	}
+}
+
+/**
  * Removes a slash command at the cursor position
  */
 export function removeSlashCommand(text: string, position: number): { newText: string; newPosition: number } {
