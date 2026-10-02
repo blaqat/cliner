@@ -14,6 +14,14 @@ const AutoApproveSchema = z.array(z.string()).default([])
 const ReadTimeoutSchema = z.preprocess(resolveMcpTimeoutSeconds, z.number()).optional().default(DEFAULT_MCP_TIMEOUT_SECONDS)
 export const McpTimeoutSecondsSchema = z.number().finite().min(MIN_MCP_TIMEOUT_SECONDS).max(MAX_MCP_TIMEOUT_SECONDS)
 
+export const StartHookSchema = z.object({
+	command: z.string().min(1),
+	args: z.array(z.string()).optional(),
+	cwd: z.string().optional(),
+	env: z.record(z.string(), z.string()).optional(),
+	timeout: z.number().finite().positive().optional().default(60),
+})
+
 export const BaseConfigSchema = z.object({
 	autoApprove: AutoApproveSchema.optional(),
 	disabled: z.boolean().optional(),
@@ -21,6 +29,7 @@ export const BaseConfigSchema = z.object({
 	// Marker for servers that were added by remote config sync.
 	// Used to identify which servers should be removed when they are no longer in the remote config.
 	remoteConfigured: z.boolean().optional(),
+	startHook: StartHookSchema.optional(),
 	// OAuth state written by the CLI — preserved as-is (VSCode doesn't implement OAuth flows yet)
 	oauth: z.unknown().optional(),
 	// Arbitrary metadata written by the CLI — preserved as-is
@@ -74,6 +83,7 @@ const nestedTransportConfigSchema = z
 		autoApprove: AutoApproveSchema.optional(),
 		timeout: ReadTimeoutSchema,
 		remoteConfigured: z.boolean().optional(),
+		startHook: StartHookSchema.optional(),
 		oauth: z.unknown().optional(),
 		metadata: z.unknown().optional(),
 	})

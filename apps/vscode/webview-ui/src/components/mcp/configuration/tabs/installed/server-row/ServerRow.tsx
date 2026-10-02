@@ -282,7 +282,9 @@ const ServerRow = ({
 				/>
 			</div>
 
-			{server.error ? (
+			{server.status === "connecting" && server.error === "Running start hook…" ? (
+				<div className="text-sm text-description px-2.5 pb-2">Running start hook…</div>
+			) : server.error ? (
 				<div className="text-sm bg-text-block-background rounded-b-sm">
 					<div className="text-failed-icon mb-2 px-2.5 break-words">{server.error}</div>
 					{server.oauthRequired && server.oauthAuthStatus === "unauthenticated" ? (

@@ -45,6 +45,7 @@ import { McpOAuthManager } from "./McpOAuthManager"
 import { StreamableHttpReconnectHandler } from "./StreamableHttpReconnectHandler"
 import { McpSettingsSchema, McpTimeoutSecondsSchema, ServerConfigSchema } from "./schemas"
 import { updateMcpSettingsFile } from "./settingsLock"
+import { runMcpStartHook } from "./startHook"
 import { augmentMcpTimeoutError, resolveMcpServerTimeoutMs } from "./timeout"
 import type { McpConnection, McpServerConfig, Transport } from "./types"
 
@@ -383,10 +384,39 @@ export class McpHub {
 		return this.connections.find((conn) => conn.server.name === name)
 	}
 
+	private connectionRevision = 0
+	private connectingServers = new Map<
+		string,
+		{ config: McpServerConfig; promise: Promise<void>; controller: AbortController }
+	>()
+
 	private async connectToServer(
 		name: string,
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "rpc" | "internal",
+	): Promise<void> {
+		this.connectingServers ??= new Map()
+		const pending = this.connectingServers.get(name)
+		if (pending) {
+			if (!this.configsRequireRestart(pending.config, config)) return pending.promise
+			await this.deleteConnection(name)
+			return this.connectToServer(name, config, source)
+		}
+		const controller = new AbortController()
+		const attempt = this.connectToServerOnce(name, config, source, controller.signal)
+		this.connectingServers.set(name, { config, promise: attempt, controller })
+		try {
+			await attempt
+		} finally {
+			if (this.connectingServers.get(name)?.promise === attempt) this.connectingServers.delete(name)
+		}
+	}
+
+	private async connectToServerOnce(
+		name: string,
+		config: z.infer<typeof ServerConfigSchema>,
+		source: "rpc" | "internal",
+		signal: AbortSignal,
 	): Promise<void> {
 		// Remove existing connection if it exists (should never happen, the connection should be deleted beforehand)
 		this.connections = this.connections.filter((conn) => conn.server.name !== name)
@@ -453,12 +483,39 @@ export class McpHub {
 			return
 		}
 
+		let attemptClient: Client | undefined
+		let attemptTransport: Transport | undefined
+		const cancelled = async () => {
+			if (!signal.aborted) return false
+			await attemptClient?.close().catch(() => {})
+			await attemptTransport?.close().catch(() => {})
+			return true
+		}
 		try {
 			// Store unexpanded config for display/comparison (keeps credentials out of stored config)
 			const configForStorage = JSON.stringify(config)
 
 			// Expand environment variables in config before using it
-			const expandedConfig = expandEnvironmentVariables(config)
+			let expandedConfig = expandEnvironmentVariables(config)
+			if (expandedConfig.startHook) {
+				const pendingConnection: McpConnection = {
+					server: { name, config: configForStorage, status: "connecting", error: "Running start hook…" },
+					client: null as unknown as Client,
+					transport: null as unknown as Transport,
+				}
+				this.connections.push(pendingConnection)
+				await this.notifyWebviewOfServerChanges()
+				if (signal.aborted) {
+					await cancelled()
+					return
+				}
+				expandedConfig = await runMcpStartHook(name, expandedConfig, signal)
+				if (signal.aborted) {
+					await cancelled()
+					return
+				}
+				this.connections = this.connections.filter((conn) => conn !== pendingConnection)
+			}
 
 			// Each MCP server requires its own transport connection and has unique capabilities, configurations, and error handling. Having separate clients also allows proper scoping of resources/tools and independent server management like reconnection.
 			const client = new Client(
@@ -471,6 +528,7 @@ export class McpHub {
 				},
 			)
 
+			attemptClient = client
 			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
 
 			// Create OAuth provider for remote transports (SSE and HTTP)
@@ -479,6 +537,10 @@ export class McpHub {
 					? await this.mcpOAuthManager.getOrCreateProvider(name, expandedConfig.url)
 					: undefined
 
+			if (signal.aborted) {
+				await cancelled()
+				return
+			}
 			switch (expandedConfig.type) {
 				case "stdio": {
 					transport = new StdioClientTransport({
@@ -493,6 +555,7 @@ export class McpHub {
 					})
 
 					transport.onerror = async (error) => {
+						if (signal.aborted) return
 						Logger.error(`Transport error for "${name}":`, error)
 						const connection = this.findConnection(name, source)
 						if (connection) {
@@ -507,6 +570,7 @@ export class McpHub {
 					}
 
 					transport.onclose = async () => {
+						if (signal.aborted) return
 						const connection = this.findConnection(name, source)
 						if (connection) {
 							connection.server.status = "disconnected"
@@ -514,10 +578,16 @@ export class McpHub {
 						await this.notifyWebviewOfServerChanges()
 					}
 
+					attemptTransport = transport
 					await transport.start()
+					if (signal.aborted) {
+						await cancelled()
+						return
+					}
 					const stderrStream = transport.stderr
 					if (stderrStream) {
 						stderrStream.on("data", async (data: Buffer) => {
+							if (signal.aborted) return
 							const output = data.toString()
 							const isInfoLog = !/\berror\b/i.test(output)
 
@@ -577,6 +647,7 @@ export class McpHub {
 					})
 
 					transport.onerror = async (error) => {
+						if (signal.aborted) return
 						Logger.error(`Transport error for "${name}":`, error)
 						const connection = this.findConnection(name, source)
 						if (connection) {
@@ -649,13 +720,21 @@ export class McpHub {
 						},
 					})
 
-					transport.onerror = (error) => reconnectHandler.handleError(error)
+					transport.onerror = (error) => {
+						if (signal.aborted) return
+						return reconnectHandler.handleError(error)
+					}
 					break
 				}
 				default:
 					throw new Error(`Unknown transport type: ${(config as any).type}`)
 			}
 
+			attemptTransport = transport
+			if (signal.aborted) {
+				await cancelled()
+				return
+			}
 			const connection: McpConnection = {
 				server: {
 					name,
@@ -675,7 +754,15 @@ export class McpHub {
 			try {
 				const timeout = resolveMcpServerTimeoutMs(connection.server.config)
 				await client.connect(transport, { timeout })
+				if (signal.aborted) {
+					await cancelled()
+					return
+				}
 			} catch (error) {
+				if (signal.aborted) {
+					await cancelled()
+					return
+				}
 				if (error instanceof UnauthorizedError) {
 					// Server requires OAuth authentication
 					Logger.log(`Server "${name}" requires OAuth authentication`)
@@ -705,6 +792,8 @@ export class McpHub {
 				throw augmentMcpTimeoutError(error, name, resolveMcpServerTimeoutMs(connection.server.config))
 			}
 
+			;(connection as McpConnection & { revision?: number }).revision = this.connectionRevision =
+				(this.connectionRevision ?? 0) + 1
 			connection.server.status = "connected"
 			connection.server.error = ""
 
@@ -717,6 +806,10 @@ export class McpHub {
 			try {
 				// Import the notification schema from MCP SDK
 				const { z } = await import("zod")
+				if (signal.aborted) {
+					await cancelled()
+					return
+				}
 
 				// Define the notification schema for notifications/message
 				const NotificationMessageSchema = z.object({
@@ -788,7 +881,16 @@ export class McpHub {
 
 			// Initial fetch of tools, resources, and prompts
 			await this.fetchServerCapabilities(connection)
+			if (signal.aborted) {
+				await cancelled()
+				return
+			}
+			this.checkToolListChanged()
 		} catch (error) {
+			if (signal.aborted) {
+				await cancelled()
+				return
+			}
 			// Update status with error. A failure before the connection was
 			// registered (e.g. the transport failed to start) must still leave
 			// an entry, so the server stays visible in the list with its error
@@ -808,7 +910,9 @@ export class McpHub {
 				this.connections.push(connection)
 			}
 			connection.server.status = "disconnected"
+			connection.server.error = ""
 			this.appendErrorMessage(connection, error instanceof Error ? error.message : String(error))
+			await this.notifyWebviewOfServerChanges()
 			throw error
 		}
 	}
@@ -1166,6 +1270,9 @@ export class McpHub {
 	}
 
 	async deleteConnection(name: string): Promise<void> {
+		// Invalidates the attempt even while its hook or handshake is suspended.
+		this.connectingServers?.get(name)?.controller.abort()
+		this.connectingServers?.delete(name)
 		// Cancel pending list_changed refresh timers for this server (either
 		// it's going away, or a replacement connection will fetch fresh lists
 		// itself) and bump the generation to supersede any refresh already in
@@ -2048,6 +2155,9 @@ export class McpHub {
 			if (conn.server.disabled || conn.server.status !== "connected") {
 				continue
 			}
+			entries.push(
+				stableJsonStringify([conn.server.name, "server", (conn as McpConnection & { revision?: number }).revision ?? 0]),
+			)
 			const timeoutMs = resolveMcpServerTimeoutMs(conn.server.config)
 			for (const tool of conn.server.tools ?? []) {
 				entries.push(
@@ -2102,6 +2212,12 @@ export class McpHub {
 	 * Fire the tool list change callback if the fingerprint has changed.
 	 * Called after the debounce timer expires.
 	 */
+	flushToolListChanges(): void {
+		if (this.toolListChangeDebounceTimer) clearTimeout(this.toolListChangeDebounceTimer)
+		this.toolListChangeDebounceTimer = undefined
+		this.fireToolListChangeIfNeeded()
+	}
+
 	private fireToolListChangeIfNeeded(): void {
 		if (!this.toolListChangeCallback) {
 			return
