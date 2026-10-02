@@ -53,7 +53,7 @@ const ReasoningEffortPicker = ({ mode, modelId, modelInfo, defaultEffort = "none
 		focusedSessionModels,
 	} = useExtensionState()
 	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
-	const update = (changes: Partial<Parameters<typeof AssignApiProfileRequest.create>[0]>) =>
+	const update = (changes: Partial<AssignApiProfileRequest>) =>
 		void ModelsServiceClient.assignApiProfile(
 			AssignApiProfileRequest.create({ mode, chatOverride: true, taskId: currentTaskItem?.id ?? "", ...changes }),
 		).catch((error) => console.error("Failed to update chat effort:", error))

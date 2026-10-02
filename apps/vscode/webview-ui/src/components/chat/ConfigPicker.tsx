@@ -55,7 +55,7 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 		currentId === assignedProfileId(mode, defaults) &&
 		selection[`${mode}ModeReasoningEffort`] === defaults[`${mode}ModeReasoningEffort`]
 	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
-	const update = (changes: Partial<Parameters<typeof AssignApiProfileRequest.create>[0]>) =>
+	const update = (changes: Partial<AssignApiProfileRequest>) =>
 		void ModelsServiceClient.assignApiProfile(
 			AssignApiProfileRequest.create({ mode, chatOverride: true, taskId: currentTaskItem?.id ?? "", ...changes }),
 		).catch((error) => console.error("Failed to update chat configuration:", error))
