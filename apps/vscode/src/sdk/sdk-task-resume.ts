@@ -8,6 +8,7 @@
 // migrated into an SDK session. Deriving both callers from one function keeps
 // resume and compaction from drifting apart.
 
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -26,6 +27,7 @@ export interface TaskResumeStartInput {
 }
 
 export interface PrepareTaskResumeStartDeps {
+	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
 	stateManager: StateManager
 	taskHistory: SdkTaskHistory
 	sessionConfigBuilder: SdkSessionConfigBuilder
@@ -48,7 +50,8 @@ export async function prepareTaskResumeStartInput(
 
 	const modeValue = deps.stateManager.getGlobalSettingsKey("mode")
 	const mode: Mode = modeValue === "plan" || modeValue === "act" ? modeValue : "act"
-	const config = await deps.sessionConfigBuilder.build({ cwd, mode })
+	const apiSelection = deps.getTaskApiSelection?.(taskId) ?? historyItem?.apiSelection
+	const config = await deps.sessionConfigBuilder.build({ cwd, mode, ...(apiSelection ? { apiSelection } : {}) })
 	config.sessionId = taskId
 
 	const isLegacyTask = await deps.taskHistory.isLegacyTask(taskId)

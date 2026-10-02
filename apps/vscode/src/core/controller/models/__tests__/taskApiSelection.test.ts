@@ -3,7 +3,6 @@ import type { ApiConfiguration } from "@shared/api"
 import { readTaskApiSelection, type TaskApiSelection, taskApiSelectionsEqual } from "@shared/api-profiles"
 import {
 	type ApiProfileStore,
-	applyTaskApiSelection,
 	captureTaskApiSelection,
 	resolveApiConfigurationForTaskSelection,
 	resolveTaskApiSelection,
@@ -125,40 +124,6 @@ describe("resolveTaskApiSelection", () => {
 	})
 })
 
-describe("applyTaskApiSelection", () => {
-	it("assigns profiles and efforts per mode without touching defaults", () => {
-		const { store, globalState, apiConfig } = createStore()
-		const ask = upsertApiConfigProfile(store, { name: "Ask", provider: "anthropic", modelId: "claude-a" })
-		const act = upsertApiConfigProfile(store, { name: "Act", provider: "openai", modelId: "gpt-5.5" })
-
-		const applied = applyTaskApiSelection(store, {
-			askProfileId: ask.id,
-			actProfileId: act.id,
-			planModeReasoningEffort: "low",
-			actModeReasoningEffort: "xhigh",
-		})
-
-		expect(applied).toBe(true)
-		expect(globalState.askProfileId).toBe(ask.id)
-		expect(globalState.actProfileId).toBe(act.id)
-		expect(apiConfig.planModeApiProvider).toBe("anthropic")
-		expect(apiConfig.actModeApiProvider).toBe("openai")
-		expect(apiConfig.planModeReasoningEffort).toBe("low")
-		expect(apiConfig.actModeReasoningEffort).toBe("xhigh")
-	})
-
-	it("restricts to a single mode when given and skips unknown ids", () => {
-		const { store, globalState } = createStore()
-		const act = upsertApiConfigProfile(store, { name: "Act", provider: "openai", modelId: "gpt-5.5" })
-		globalState.askProfileId = "existing-ask"
-
-		applyTaskApiSelection(store, { askProfileId: "missing", actProfileId: act.id }, "act")
-
-		expect(globalState.askProfileId).toBe("existing-ask")
-		expect(globalState.actProfileId).toBe(act.id)
-	})
-})
-
 describe("resolveApiConfigurationForTaskSelection", () => {
 	it("overlays the pinned profile and effort over the resolved snapshot", () => {
 		const { store, apiConfig } = createStore({
@@ -203,5 +168,16 @@ describe("TaskApiSelection metadata shape", () => {
 			actModeReasoningEffort: "none",
 		}
 		expect(readTaskApiSelection(JSON.parse(JSON.stringify({ apiSelection: selection })).apiSelection)).toEqual(selection)
+	})
+})
+
+describe("effort-only chat overrides", () => {
+	it("resolves an effort without an assigned profile and leaves Settings unchanged", () => {
+		const { store, apiConfig } = createStore({ actModeReasoningEffort: "low", actModeApiProvider: "openai" })
+		const resolved = resolveApiConfigurationForTaskSelection(store, apiConfig as ApiConfiguration, "act", {
+			actModeReasoningEffort: "xhigh",
+		})
+		expect(resolved.actModeReasoningEffort).toBe("xhigh")
+		expect(apiConfig.actModeReasoningEffort).toBe("low")
 	})
 })

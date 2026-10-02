@@ -220,7 +220,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	// Use message handlers hook
 	const messageHandlers = useMessageHandlers(messages, chatState)
 
-	const { selectedModelInfo } = useNormalizedApiConfiguration(mode)
+	const { selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 
 	const selectFilesAndImages = useCallback(async () => {
 		try {

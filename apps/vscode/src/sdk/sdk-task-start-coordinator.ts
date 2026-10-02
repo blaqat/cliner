@@ -75,6 +75,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	 * the configuration it was started with.
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
+	consumeDraftApiSelection?: () => TaskApiSelection | undefined
 	postStateToWebview: () => Promise<void>
 }
 
@@ -102,7 +103,7 @@ export class SdkTaskStartCoordinator {
 
 			const cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
-			const apiSelection = captureTaskApiSelection(this.options.stateManager)
+			const apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
 			const config = await this.options.sessionConfigBuilder.build({
 				prompt,
@@ -226,7 +227,7 @@ export class SdkTaskStartCoordinator {
 			// workspace root instead.
 			const storedCwd = historyItem.cwdOnTaskInitialization
 			const cwd = storedCwd && (await isDirectory(storedCwd)) ? storedCwd : await this.options.getWorkspaceRoot()
-			const apiSelection = captureTaskApiSelection(this.options.stateManager)
+			const apiSelection = historyItem.apiSelection ?? captureTaskApiSelection(this.options.stateManager)
 			const config = await this.options.sessionConfigBuilder.build({
 				cwd,
 				mode: "act",
@@ -241,7 +242,7 @@ export class SdkTaskStartCoordinator {
 				config,
 				interactive: true,
 				...(initialMessages ? { initialMessages: initialMessages as InitialMessages } : {}),
-				sessionMetadata: historyItemToSessionMetadata(historyItem, config.modelId),
+				sessionMetadata: { ...historyItemToSessionMetadata(historyItem, config.modelId), taskResumed: true },
 			})
 
 			this.createAndSetTask(startResult.sessionId)

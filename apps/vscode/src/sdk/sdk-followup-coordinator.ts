@@ -1,3 +1,4 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
@@ -27,6 +28,7 @@ type SessionConfig = Awaited<ReturnType<SdkSessionConfigBuilder["build"]>>
 const TASK_RESUMPTION_PROMPT = "[TASK RESUMPTION] Please continue where you left off."
 
 export interface SdkFollowupCoordinatorOptions {
+	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
 	stateManager: StateManager
 	interactions: SdkInteractionCoordinator
 	sessions: SdkSessionLifecycle
@@ -141,7 +143,7 @@ export class SdkFollowupCoordinator {
 		// briefly stale. Keep passive rebuilds behind the active turn while mention
 		// resolution runs. Core owns the queue: it shows the prompt in the webview
 		// at once, and a later session rebuild carries the queue over.
-		this.options.sessions.setRunning(true)
+		this.options.sessions.markSendRunning()
 		const resolvedPrompt = prompt ? await this.options.resolveContextMentions(prompt) : ""
 		if (displayedTaskId && this.options.getTask()?.taskId !== displayedTaskId) {
 			await this.abandonFollowUp(`Task changed while resolving a follow-up for ${displayedTaskId}; cancelling follow-up`)
@@ -181,7 +183,7 @@ export class SdkFollowupCoordinator {
 		const { sdkHost, sessionId } = activeSession
 		Logger.log(`[SdkController] Continuing idle session for follow-up: ${sessionId}`)
 
-		this.options.sessions.setRunning(true)
+		this.options.sessions.markSendRunning()
 		// Bump the epoch before echoing the bubble, as resumeSessionFromTask does.
 		// Echoed first, the bubble would carry the old epoch while a state snapshot
 		// built moments later carries the new one; that snapshot replaces the
@@ -267,6 +269,9 @@ export class SdkFollowupCoordinator {
 
 		const { startResult, sdkHost } = await this.options.sessions.startNewSession({
 			...resumeStart,
+			// Marks this session as a task resume so the hooks adapter fires
+			// TaskResume (not TaskStart) on its first run.
+			sessionMetadata: { ...resumeStart.sessionMetadata, taskResumed: true },
 			interactive: true,
 		})
 

@@ -28,13 +28,19 @@ import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
-import { applyTaskApiSelection, captureTaskApiSelection, resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
-import { resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
+import {
+	captureTaskApiSelection,
+	readApiConfigProfiles,
+	resolveApiConfigurationForTaskSelection,
+	resolveTaskApiSelection,
+} from "@/core/controller/models/apiProfiles"
+import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
@@ -49,7 +55,6 @@ import { ClineError } from "@/services/error/ClineError"
 import { McpHub } from "@/services/mcp/McpHub"
 import { telemetryService } from "@/services/telemetry"
 import type { ClineExtensionContext } from "@/shared/cline"
-import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 import { ShowMessageRequest, ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -57,7 +62,7 @@ import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
-import { buildStartSessionInput, createHistoryItemFromSession } from "./cline-session-factory"
+import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
 import { MessageTranslatorState, reshapeErrorForWebview } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
@@ -182,11 +187,17 @@ interface TaskSessionContext {
 	/**
 	 * The saved-configuration selection this task was last using (per mode).
 	 * Sessions pin to it so switching chats never rewrites a running chat's
-	 * provider/model; restored into the global per-mode keys on focus.
+	 * provider/model without changing the settings defaults.
 	 */
 	apiSelection?: TaskApiSelection
 	/** Requested changes waiting for an idle session rebuild. */
 	pendingApiSelection?: TaskApiSelection
+	nextMessageSelection?: {
+		previous: TaskApiSelection
+		started: boolean
+		restoring?: boolean
+		deferred: { prompt: string; images?: string[]; files?: string[] }[]
+	}
 }
 
 /**
@@ -459,8 +470,10 @@ export class Controller {
 		this.sessions = new SdkSessionLifecycle({
 			prepareStartInput: (input) => {
 				const id = input.config?.sessionId || createSessionId()
+				const previous = this.taskSessions.get(id)?.nextMessageSelection?.previous
 				return {
 					...input,
+					...(previous ? { sessionMetadata: { ...input.sessionMetadata, apiSelection: previous } } : {}),
 					config: {
 						...input.config,
 						sessionId: id,
@@ -470,6 +483,7 @@ export class Controller {
 							this.stateManager,
 							(message) => this.getTaskSessionContext(id).messages.emitHookMessage(message),
 							input.config?.cwd,
+							{ taskResumed: input.sessionMetadata?.taskResumed === true },
 						),
 					},
 				}
@@ -519,12 +533,16 @@ export class Controller {
 				return this._terminalManager
 			},
 			onSessionRemoved: (id) => {
+				this.mcpTools?.forgetSession(id)
 				this.sessionRebuilds?.forgetSession(id)
 				this.taskSessions.get(id)?.interactions.clearPending("Session removed")
 				this.taskSessions.get(id)?.messages.dispose()
 				this.taskSessions.delete(id)
 			},
+			deferSend: (id, prompt, images, files, delivery) => this.deferOneTurnFollowup(id, prompt, images, files, delivery),
 			onSendStart: (id, delivery) => {
+				const temporary = this.taskSessions.get(id)?.nextMessageSelection
+				if (temporary && !temporary.started) temporary.started = true
 				if (delivery !== "interject") this.getTaskSessionContext(id).cancelled = false
 				this.getTaskSessionContext(id).turn.set("streaming")
 				void this.taskHistory.markTaskActive(id)
@@ -533,6 +551,7 @@ export class Controller {
 			// this.mode is assigned later in this constructor; the closure only
 			// runs at send time, long after construction completes.
 			consumeModeSwitchNotice: (sessionId) => this.mode.consumeModeSwitchNotice(sessionId),
+			consumeMcpChangeNotice: (id) => this.mcpTools.consumeMcpChangeNotice(id),
 			onSendComplete: async (id) => {
 				await this.taskHistory.markTaskActive(id)
 				// Normal flows close their diff sessions inline; anything left here is orphaned.
@@ -541,6 +560,20 @@ export class Controller {
 				this.postStateToWebview().catch((err) => {
 					Logger.error("[SdkController] Failed to post state after turn:", err)
 				})
+			},
+			onHeldSendCancelled: (sessionId, prompt, images, files) => {
+				const context = this.getTaskSessionContext(sessionId)
+				context.messages.appendMessages([
+					{
+						ts: context.translator.nextTs(),
+						type: "say",
+						say: "text",
+						text: `Cancelled before sending:\n\n${prompt}`,
+						images,
+						files,
+					},
+				])
+				void this.postStateToWebview().catch((error) => Logger.error("Failed to post cancelled submission:", error))
 			},
 			onSendError: async (error, sessionId) => {
 				const context = this.getTaskSessionContext(sessionId)
@@ -628,11 +661,12 @@ export class Controller {
 			getMinter: () => this.messageTranslatorState.getMinter(),
 		})
 		this.mode = new SdkModeCoordinator({
-			getTaskApiSelection: (id) => this.taskSessions.get(id)?.apiSelection,
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			onModeRebuilt: async (id, mode, selection) => {
 				this.getTaskSessionContext(id).mode = mode
+				this.refreshTaskApiModel(id)
 				if (selection) this.recordTaskApiSelection(id, selection)
-				if (this.task?.taskId === id && selection) applyTaskApiSelection(this.stateManager, selection)
 				await this.taskHistory.setTaskMode(id, mode)
 			},
 			resumeInAct: async (content) => {
@@ -680,6 +714,14 @@ export class Controller {
 			},
 		})
 		this.mcpTools = new SdkMcpCoordinator({
+			getToolSnapshot: () =>
+				Object.fromEntries(
+					this.mcpHub
+						.getServers()
+						.filter((server) => server.status === "connected" && !server.disabled)
+						.map((server) => [server.name, (server.tools ?? []).map((tool) => tool.name).sort()]),
+				),
+			getMessages: (id) => this.getTaskSessionContext(id).messages,
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -723,17 +765,14 @@ export class Controller {
 				const context = this.taskSessions.get(taskId)
 				return context?.pendingApiSelection ?? context?.apiSelection
 			},
-			onSelectionRebuilt: (taskId, selection, requestedSelection) => {
-				const context = this.taskSessions.get(taskId)
-				if (context && taskApiSelectionsEqual(context.pendingApiSelection, requestedSelection))
-					context.pendingApiSelection = undefined
-				this.recordTaskApiSelection(taskId, selection)
-				if (this.task?.taskId === taskId) applyTaskApiSelection(this.stateManager, selection)
-			},
+			onSelectionRebuilt: (taskId, selection, requestedSelection) =>
+				this.commitTaskApiSelection(taskId, selection, requestedSelection),
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
 		})
 		this.followups = new SdkFollowupCoordinator({
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
 			get interactions() {
 				return controller.interactions
@@ -832,6 +871,11 @@ export class Controller {
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
+			consumeDraftApiSelection: () => {
+				const draft = this.draftApiSelection
+				this.draftApiSelection = undefined
+				return draft
+			},
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
 				this.recordTaskApiSelection(taskId, selection)
@@ -839,6 +883,8 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 		})
 		this.compaction = new SdkCompactionCoordinator({
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			rebuilds: this.sessionRebuilds,
@@ -927,19 +973,22 @@ export class Controller {
 		this.providerCatalog.invalidateProviderListings()
 	}
 
-	private handleProviderConfigChange(event: ProviderConfigChange): void {
+	private handleProviderConfigChange(_event: ProviderConfigChange): void {
 		this.scheduleProviderConfigStatePost()
-
-		if (event.kind === "selection" && this.isSelectionForActiveModeProvider(event)) {
-			this.sessions
-				?.updateActiveSessionModel(event.selection.modelId)
-				.catch((error) => Logger.error("[SdkController] Failed to update active session model:", error))
-		}
 	}
 
 	/**
-	 * Captures the current global per-mode selection (assigned profile +
-	 * reasoning effort) as the given task's last-used selection — pinned on
+	 * Home picker draft lives only in this host, survives webview remounts, and is consumed
+	 * by the next task-start attempt. It is never written to Settings or carried to later chats.
+	 * Chats capture both modes at start and keep that selection when defaults change.
+	 * Reset copies the current Settings default for the selected mode into this chat.
+	 * One-turn choices are armed while idle, retain the prior selection in history,
+	 * and restore it before deferred follow-ups are sent, including after cancel/error.
+	 */
+	private draftApiSelection?: TaskApiSelection
+
+	/**
+	 * Records a chat's per-mode selection as its last-used selection, pinned on
 	 * the session context so provider-change rebuilds resolve against it, and
 	 * persisted to session metadata so reopening the chat restores it.
 	 */
@@ -949,12 +998,13 @@ export class Controller {
 	): TaskApiSelection | undefined {
 		if (!taskId) return undefined
 		try {
-			const selection = capturedSelection ?? captureTaskApiSelection(this.stateManager)
+			const selection =
+				capturedSelection ?? this.taskSessions.get(taskId)?.apiSelection ?? captureTaskApiSelection(this.stateManager)
 			const context = this.getTaskSessionContext(taskId)
 			if (taskApiSelectionsEqual(context?.apiSelection, selection)) return selection
 			if (context) context.apiSelection = selection
 			void this.taskHistory
-				.setTaskApiSelection(taskId, selection)
+				.setTaskApiSelection(taskId, context?.nextMessageSelection?.previous ?? selection)
 				.catch((error) => Logger.error(`[SdkController] Failed to persist API selection for ${taskId}:`, error))
 			return selection
 		} catch (error) {
@@ -964,8 +1014,8 @@ export class Controller {
 	}
 
 	/**
-	 * Snapshot of every task session's pinned selection, taken before a global
-	 * configuration change mutates them — the provider-change coordinator uses
+	 * Snapshot of every task session's pinned selection, taken before a
+	 * configuration rebuild — the provider-change coordinator uses
 	 * it as the "before" side of each session's effective-config comparison.
 	 */
 	private snapshotTaskApiSelections(): Map<string, TaskApiSelection | undefined> {
@@ -976,74 +1026,135 @@ export class Controller {
 		return snapshot
 	}
 
-	/**
-	 * Restores a task's last-used saved-configuration selection into the global
-	 * per-mode keys so the composer shows (and new sessions for the task use)
-	 * the configuration this chat ran on. Tasks recorded before selections
-	 * existed fall back to matching their recorded provider+model to a saved
-	 * configuration; failing that the current selection is left untouched.
-	 *
-	 * Deliberately skips provider-change notifications: running sessions stay
-	 * pinned to their own recorded selection instead of following whichever
-	 * chat is focused.
-	 */
+	private deferOneTurnFollowup(
+		id: string,
+		prompt: string,
+		images?: string[],
+		files?: string[],
+		delivery?: "queue" | "steer" | "interject",
+	): boolean {
+		const temporary = this.taskSessions.get(id)?.nextMessageSelection
+		if (delivery === "interject") return false
+		if (!temporary?.started || (!temporary.restoring && !delivery)) return false
+		temporary.deferred.push({ prompt, images, files })
+		return true
+	}
+
+	private refreshTaskApiModel(taskId: string): void {
+		const context = this.taskSessions.get(taskId)
+		const modelId = this.sessions.getSession(taskId)?.startConfig?.modelId
+		if (context?.task && modelId) context.task.api = createTaskApiModelShim(modelId)
+	}
+
+	private commitTaskApiSelection(taskId: string, selection: TaskApiSelection, requestedSelection?: TaskApiSelection): void {
+		const context = this.taskSessions.get(taskId)
+		if (context && taskApiSelectionsEqual(context.pendingApiSelection, requestedSelection))
+			context.pendingApiSelection = undefined
+		const temporary = context?.nextMessageSelection
+		const reverted = temporary?.restoring && taskApiSelectionsEqual(requestedSelection, temporary.previous)
+		if (reverted && context) context.nextMessageSelection = undefined
+		this.recordTaskApiSelection(taskId, selection)
+		this.refreshTaskApiModel(taskId)
+		if (reverted) {
+			const session = this.sessions.getSession(taskId)
+			if (session) {
+				for (const [index, message] of temporary!.deferred.entries()) {
+					this.sessions.markSendRunning(taskId)
+					this.sessions.fireAndForgetSend(
+						session.sdkHost,
+						taskId,
+						message.prompt,
+						message.images,
+						message.files,
+						index === 0 ? undefined : "queue",
+					)
+				}
+			}
+		}
+	}
+
+	/** Restore chat state without writing Settings defaults. */
 	private restoreTaskApiSelection(historyItem: HistoryItem | undefined, mode?: Mode): void {
-		try {
-			const taskId = historyItem?.id
-			const effectiveMode = mode ?? (this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
-			const context = taskId ? this.taskSessions.get(taskId) : undefined
-			const liveSession = this.sessions.getSession(taskId ?? "")
-			const liveSelection = liveSession?.apiSnapshot?.selection
-			const resolved =
-				(liveSession ? (context?.pendingApiSelection ?? context?.apiSelection ?? liveSelection) : undefined) ??
-				resolveTaskApiSelection(this.stateManager, historyItem ?? {}, effectiveMode)
-			applyTaskApiSelection(this.stateManager, resolved)
-			// A pending request belongs in the picker, but is not last-used history yet.
-			if (context?.pendingApiSelection) {
-				void this.stateManager.flushPendingState?.()
-				return
+		const taskId = historyItem?.id
+		if (!taskId) return
+		const context = this.getTaskSessionContext(taskId)
+		const live = this.sessions.getSession(taskId)?.apiSnapshot?.selection
+		if (context.apiSelection || context.pendingApiSelection) return
+		const resolved = live ?? {
+			...captureTaskApiSelection(this.stateManager),
+			...resolveTaskApiSelection(this.stateManager, historyItem ?? {}, mode ?? context.mode),
+		}
+		this.recordTaskApiSelection(taskId, resolved)
+	}
+
+	/** Composer RPC. Only the Settings branch of assignApiProfile writes defaults. */
+	async updateChatApiSelection(mode: Mode, request: AssignApiProfileRequest): Promise<void> {
+		const taskId = this.task?.taskId
+		if ((request.taskId || undefined) !== taskId) throw new Error("Focused chat changed during selection")
+		const defaults = captureTaskApiSelection(this.stateManager)
+		const context = taskId ? this.getTaskSessionContext(taskId) : undefined
+		const session = taskId ? this.sessions.getSession(taskId) : undefined
+		const current = context?.pendingApiSelection ?? context?.apiSelection ?? this.draftApiSelection ?? defaults
+		const profileKey = mode === "plan" ? "askProfileId" : "actProfileId"
+		const effortKey = `${mode}ModeReasoningEffort` as const
+		if (request.reasoningEffort !== undefined && !isOpenaiReasoningEffort(request.reasoningEffort)) {
+			throw new Error("Invalid reasoning effort")
+		}
+		const profile = request.profileId
+			? readApiConfigProfiles(this.stateManager).find((p) => p.id === request.profileId)
+			: undefined
+		if (request.profileId && !profile) throw new Error("Unknown configuration")
+		if (request.nextMessageOnly !== undefined) {
+			if (!context) throw new Error("Next-message selection requires a chat")
+			if (session?.isRunning || session?.queuedPromptCount || context.nextMessageSelection?.started) {
+				throw new Error("Wait for this turn to finish before arming a one-turn selection")
 			}
-			void this.stateManager.flushPendingState?.()
-			const captured =
-				liveSession && (context?.apiSelection || liveSelection) ? resolved : captureTaskApiSelection(this.stateManager)
-			if (context && !context.apiSelection) context.apiSelection = captured
-			if (taskId && !taskApiSelectionsEqual(historyItem?.apiSelection, captured)) {
-				void this.taskHistory
-					.setTaskApiSelection(taskId, captured)
-					.catch((error) => Logger.error(`[SdkController] Failed to persist API selection for ${taskId}:`, error))
+			if (request.nextMessageOnly && !context.nextMessageSelection) {
+				context.nextMessageSelection = { previous: structuredClone(current), started: false, deferred: [] }
+			} else if (!request.nextMessageOnly) {
+				context.nextMessageSelection = undefined
+				// A built temporary choice becomes durable when the user chooses Keep.
+				if (taskId && taskApiSelectionsEqual(current, context.apiSelection)) {
+					await this.taskHistory.setTaskApiSelection(taskId, current)
+				}
 			}
-		} catch (error) {
-			Logger.error("[SdkController] Failed to restore task API selection:", error)
+		}
+		if (context?.nextMessageSelection?.started && !(request.resetToDefault && !session?.isRunning)) {
+			throw new Error("Wait for the one-turn selection to revert")
+		}
+		const selection = { ...current }
+		if (request.resetToDefault) {
+			selection[profileKey] = defaults[profileKey]
+			selection[effortKey] = defaults[effortKey]
+			if (context?.nextMessageSelection?.started) {
+				context.nextMessageSelection.previous = selection
+				context.nextMessageSelection.restoring = true
+			} else if (context) context.nextMessageSelection = undefined
+		} else {
+			if (profile) {
+				selection[profileKey] = profile.id
+				selection[effortKey] = profile.reasoningEffort ?? "none"
+			}
+			if (isOpenaiReasoningEffort(request.reasoningEffort)) selection[effortKey] = request.reasoningEffort
+		}
+		if (!context) {
+			this.draftApiSelection = taskApiSelectionsEqual(selection, defaults) ? undefined : selection
+		} else if (session) {
+			context.pendingApiSelection = selection
+			const configuration = this.stateManager.getApiConfiguration()
+			this.providerChanges.handleApiConfigurationChanged(configuration, configuration, this.snapshotTaskApiSelections())
+		} else {
+			this.recordTaskApiSelection(taskId, selection)
 		}
 	}
 
 	handleApiConfigurationChanged(
 		previous: ApiConfiguration,
 		next: ApiConfiguration,
-		selectionChanges: Partial<TaskApiSelection> = {},
+		_selectionChanges: Partial<TaskApiSelection> = {},
 	): void {
-		const previousSelections = this.snapshotTaskApiSelections()
-		const taskId = this.task?.taskId
-		if (taskId && this.sessions.getSession(taskId)) {
-			// Keep the live selection authoritative until replacement succeeds.
-			// Running sessions retain this request separately until the scheduler
-			// can rebuild them between turns, even if another chat takes focus.
-			const context = this.getTaskSessionContext(taskId)
-			const changes = { ...selectionChanges }
-			for (const key of ["planModeReasoningEffort", "actModeReasoningEffort"] as const) {
-				if (previous[key] !== next[key]) {
-					const effort = next[key]
-					changes[key] = isOpenaiReasoningEffort(effort) ? effort : undefined
-				}
-			}
-			context.pendingApiSelection = {
-				...(context.pendingApiSelection ?? context.apiSelection ?? captureTaskApiSelection(this.stateManager)),
-				...changes,
-			}
-		} else {
-			this.recordTaskApiSelection()
-		}
-		this.providerChanges.handleApiConfigurationChanged(previous, next, previousSelections)
+		// Existing chats keep their captured selection; saved profile edits still rebuild users of that profile.
+		this.providerChanges.handleApiConfigurationChanged(previous, next, this.snapshotTaskApiSelections())
 	}
 
 	handleTerminalExecutionModeChanged(previous: VscodeTerminalExecutionMode, next: VscodeTerminalExecutionMode): void {
@@ -1059,30 +1170,17 @@ export class Controller {
 	}
 
 	private handleSessionBecameIdle(): void {
-		this.sessionRebuilds?.sessionBecameIdle()
-	}
-
-	private isSelectionForActiveModeProvider(event: Extract<ProviderConfigChange, { kind: "selection" }>): boolean {
-		try {
-			const modeValue = this.stateManager.getGlobalSettingsKey("mode")
-			const mode = modeValue === "plan" ? "plan" : "act"
-			if (event.mode !== mode) {
-				return false
-			}
-
-			const apiConfig = this.stateManager.getApiConfiguration()
-			const activeProvider = mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
-			if (activeProvider === undefined) {
-				return false
-			}
-			// Normalize both sides so stale SDK spellings in cached state
-			// (e.g. `openai-compatible`) still match the parse-normalized
-			// event id and model-only commits keep the lightweight
-			// in-session update path.
-			return toLegacyApiProvider(activeProvider) === toLegacyApiProvider(event.providerId.toString())
-		} catch {
-			return false
+		for (const [taskId, context] of this.taskSessions) {
+			const temporary = context.nextMessageSelection
+			const session = this.sessions.getSession(taskId)
+			if (!temporary?.started || temporary.restoring || !session || session.isRunning || session.queuedPromptCount) continue
+			temporary.restoring = true
+			context.pendingApiSelection = temporary.previous
+			const configuration = this.stateManager.getApiConfiguration()
+			this.providerChanges.handleApiConfigurationChanged(configuration, configuration, this.snapshotTaskApiSelections())
 		}
+		this.mcpTools?.sessionBecameIdle()
+		this.sessionRebuilds?.sessionBecameIdle()
 	}
 
 	private scheduleProviderConfigStatePost(): void {
@@ -2078,8 +2176,24 @@ export class Controller {
 				sessionRecord?.workspaceRoot?.trim() ||
 				historyItem?.cwdOnTaskInitialization?.trim() ||
 				fallbackCwd
-			const mode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
-			const config = await this.sessionConfigBuilder.build({ cwd, mode, prompt: historyTitle })
+			const mode =
+				activeSession?.startConfig?.mode ??
+				this.taskSessions?.get(currentTask.taskId)?.mode ??
+				(this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
+			const apiSelection =
+				this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection ??
+				this.taskSessions?.get(currentTask.taskId)?.apiSelection ??
+				activeSession?.apiSnapshot?.selection ??
+				historyItem?.apiSelection
+			const config = await this.sessionConfigBuilder.build({
+				cwd,
+				mode,
+				prompt: historyTitle,
+				...(apiSelection ? { apiSelection } : {}),
+				...(activeSession?.apiSnapshot && !this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection
+					? { apiConfiguration: activeSession.apiSnapshot.configuration }
+					: {}),
+			})
 			if (usesClineAccountAuth(config.providerId) && !config.apiKey) {
 				this.emitClineAuthErrorWithTelemetry(editedText)
 				return
@@ -2090,6 +2204,7 @@ export class Controller {
 				...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 				initialMessages,
 				sessionMetadata: {
+					apiSelection: getSessionApiSnapshot(config)?.selection,
 					title: historyTitle,
 					modelId: config.modelId,
 					...(checkpointRunCount
@@ -2136,7 +2251,10 @@ export class Controller {
 			)
 			this.task = task
 
-			const newHistoryItem = createHistoryItemFromSession(startResult.sessionId, historyTitle, config.modelId, cwd)
+			const newHistoryItem = {
+				...createHistoryItemFromSession(startResult.sessionId, historyTitle, config.modelId, cwd),
+				apiSelection: getSessionApiSnapshot(config)?.selection,
+			}
 			await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
 
 			const visibleMessages = clineMessages.slice(0, targetIndex)
@@ -2186,11 +2304,28 @@ export class Controller {
 		}
 
 		const cwd = await this.getWorkspaceRoot()
-		const mode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+		const mode =
+			activeSession?.startConfig?.mode ??
+			this.taskSessions?.get(currentTask.taskId)?.mode ??
+			(this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
 		const firstUserMessage = currentMessages.find(isVisibleCheckpointUserMessage)
 		const restoredText = target?.message.text ?? ""
 		const historyTitle = checkpointRunCount === 1 ? restoredText : firstUserMessage?.text || restoredText
-		const config = restoreMessages ? await this.sessionConfigBuilder.build({ cwd, mode, prompt: historyTitle }) : undefined
+		const apiSelection =
+			this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection ??
+			this.taskSessions?.get(currentTask.taskId)?.apiSelection ??
+			activeSession.apiSnapshot?.selection
+		const config = restoreMessages
+			? await this.sessionConfigBuilder.build({
+					cwd,
+					mode,
+					prompt: historyTitle,
+					...(apiSelection ? { apiSelection } : {}),
+					...(activeSession.apiSnapshot && !this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection
+						? { apiConfiguration: activeSession.apiSnapshot.configuration }
+						: {}),
+				})
+			: undefined
 		if (config && usesClineAccountAuth(config.providerId) && !config.apiKey) {
 			this.emitClineAuthErrorWithTelemetry(restoredText)
 			return
@@ -2200,6 +2335,7 @@ export class Controller {
 			? {
 					...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 					sessionMetadata: {
+						apiSelection: getSessionApiSnapshot(config)?.selection,
 						title: historyTitle,
 						modelId: config.modelId,
 					},
@@ -2238,7 +2374,10 @@ export class Controller {
 		)
 		this.task = task
 
-		const newHistoryItem = createHistoryItemFromSession(restored.sessionId, historyTitle, config?.modelId ?? "", cwd)
+		const newHistoryItem = {
+			...createHistoryItemFromSession(restored.sessionId, historyTitle, config?.modelId ?? "", cwd),
+			apiSelection: getSessionApiSnapshot(config)?.selection,
+		}
 		await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
 
 		const visibleMessages = currentMessages.slice(0, target.index)
@@ -2735,7 +2874,12 @@ export class Controller {
 				const raw = await readCurrentMessages(reader, taskId)
 				const initialMessages = buildAsideConversation(raw, visible, messageTs, parent.cwdOnTaskInitialization)
 				const cwd = parent.cwdOnTaskInitialization || (await this.getWorkspaceRoot())
-				const apiSelection = captureTaskApiSelection(this.stateManager)
+				const apiSelection =
+					this.taskSessions.get(taskId)?.pendingApiSelection ??
+					this.taskSessions.get(taskId)?.apiSelection ??
+					this.sessions.getSession(taskId)?.apiSnapshot?.selection ??
+					parent.apiSelection ??
+					captureTaskApiSelection(this.stateManager)
 				const config = await this.sessionConfigBuilder.build({ cwd, mode: "plan", apiSelection })
 				const input = buildStartSessionInput(config, { cwd, mode: "plan" })
 				this.sessions.assertTaskAvailable(taskId)
@@ -3034,7 +3178,10 @@ export class Controller {
 					? (this.taskSessions?.get(snapshotTask.taskId)?.apiSelection ?? snapshotSession.apiSnapshot?.selection)
 					: undefined
 			const pendingSelection = snapshotTask ? this.taskSessions?.get(snapshotTask.taskId)?.pendingApiSelection : undefined
-			const pickerSelection = pendingSelection ?? liveSelection
+			const pickerSelection =
+				pendingSelection ??
+				liveSelection ??
+				(snapshotTask ? this.taskSessions.get(snapshotTask.taskId)?.apiSelection : this.draftApiSelection)
 			const liveConfiguration = snapshotSession?.apiSnapshot?.configuration
 			const focusedSessionModels: ExtensionState["focusedSessionModels"] = liveConfiguration
 				? Object.fromEntries(
@@ -3044,6 +3191,7 @@ export class Controller {
 								profileId: mode === "plan" ? liveSelection?.askProfileId : liveSelection?.actProfileId,
 								provider: liveConfiguration[`${mode}ModeApiProvider`],
 								modelId: resolveActiveModelIdFromApiConfiguration(liveConfiguration, mode),
+								reasoningEffort: liveConfiguration[`${mode}ModeReasoningEffort`],
 							},
 						]),
 					)
@@ -3051,18 +3199,18 @@ export class Controller {
 			return {
 				...state,
 				focusedSessionModels,
-				...(pickerSelection
-					? {
-							askProfileId: pickerSelection.askProfileId,
-							actProfileId: pickerSelection.actProfileId,
-							apiConfiguration: {
-								...state.apiConfiguration,
-								...liveConfiguration,
-								planModeReasoningEffort: pickerSelection.planModeReasoningEffort,
-								actModeReasoningEffort: pickerSelection.actModeReasoningEffort,
-							},
-						}
-					: {}),
+				composerApiSelection: pickerSelection,
+				composerNextMessageOnly: snapshotTask
+					? !!this.taskSessions.get(snapshotTask.taskId)?.nextMessageSelection
+					: false,
+				composerApiConfiguration: pickerSelection
+					? resolveApiConfigurationForTaskSelection(
+							this.stateManager,
+							state.apiConfiguration ?? {},
+							state.mode,
+							pickerSelection,
+						)
+					: undefined,
 				currentTaskItem: snapshotTask?.taskId
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,

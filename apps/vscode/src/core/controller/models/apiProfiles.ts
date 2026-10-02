@@ -598,35 +598,6 @@ export function resolveTaskApiSelection(
 }
 
 /**
- * Write a task selection into the global per-mode keys without notifying
- * session rebuilds — callers pair this with a state post. `mode`, when given,
- * restricts the write to that mode. Unknown profile ids are skipped.
- */
-export function applyTaskApiSelection(stateManager: ApiProfileStore, selection: TaskApiSelection, mode?: Mode): boolean {
-	const modes: Mode[] = mode ? [mode] : ["plan", "act"]
-	const known = new Set(readApiConfigProfiles(stateManager).map((p) => p.id))
-	let applied = false
-	for (const target of modes) {
-		const profileId = taskSelectionProfileId(selection, target)
-		if (profileId && known.has(profileId)) {
-			if (stateManager.getGlobalStateKey(target === "plan" ? "askProfileId" : "actProfileId") !== profileId) {
-				assignApiConfigProfile(stateManager, target, profileId, false)
-				applied = true
-			}
-		}
-		const effort = taskSelectionEffort(selection, target)
-		if (effort && isOpenaiReasoningEffort(effort)) {
-			const effortKey = `${target}ModeReasoningEffort` as const
-			if (stateManager.getApiConfiguration()[effortKey] !== effort) {
-				stateManager.setApiConfiguration({ [effortKey]: effort })
-				applied = true
-			}
-		}
-	}
-	return applied
-}
-
-/**
  * Resolve what a session pinned to `selection` should run for `mode`: the
  * given configuration snapshot with the pinned profile's connection/model and
  * the pinned effort overlaid. Falls back to the snapshot (global selection)
@@ -638,7 +609,9 @@ export function resolveApiConfigurationForTaskSelection(
 	mode: Mode,
 	selection: TaskApiSelection | undefined,
 ): ApiConfiguration {
-	const base = resolveApiConfigurationForMode(configuration, mode)
+	const base = cloneApiProfileConfiguration(resolveApiConfigurationForMode(configuration, mode))
+	const selectedEffort = taskSelectionEffort(selection, mode)
+	if (selectedEffort) base[`${mode}ModeReasoningEffort`] = selectedEffort
 	const profileId = taskSelectionProfileId(selection, mode)
 	if (!profileId) {
 		return base

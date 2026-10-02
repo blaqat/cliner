@@ -127,6 +127,11 @@ message AssignApiProfileRequest {
   Metadata metadata = 1;
   string mode = 2; // "plan" (Ask) or "act"
   string profile_id = 3;
+  bool chat_override = 4; // Composer only; false retains the Settings assignment behavior.
+  optional string reasoning_effort = 5;
+  bool reset_to_default = 6;
+  optional bool next_message_only = 7; // Arm before choosing a configuration or effort.
+  optional string task_id = 8; // Empty means the home draft; fences delayed picker requests.
 }
 
 // List of VS Code LM models

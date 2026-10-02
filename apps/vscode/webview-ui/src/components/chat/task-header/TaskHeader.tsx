@@ -91,7 +91,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({
 	}, [isHighlightedTextExpanded])
 
 	// Simplified computed values
-	const { selectedModelInfo } = useNormalizedApiConfiguration(mode)
+	const { selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 	const modeFields = getModeSpecificFields(apiConfiguration, mode)
 
 	// Local providers report no cost; the openai-compatible provider can

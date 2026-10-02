@@ -240,7 +240,6 @@ export class SdkModeCoordinator {
 		let continuationSent = false
 		let sessionReplaced = false
 		try {
-			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const cwd = await this.options.getWorkspaceRoot()
 			const selection = this.options.getTaskApiSelection?.(oldSessionId) ?? activeSession.apiSnapshot?.selection
 			const config = await this.options.sessionConfigBuilder.build({
@@ -279,11 +278,19 @@ export class SdkModeCoordinator {
 				cwd,
 				mode: newMode,
 			})
+			let committed = false
 			const rebuildResult = await this.options.sessions.replaceActiveSession({
 				expectedSession: activeSession,
 				startInput,
-				initialMessages: initialMessages as InitialMessages,
+				loadInitialMessages: async () =>
+					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "modeChange",
+				onReplaced: async (sessionId) => {
+					sessionReplaced = true
+					this.recordModeSwitchNotice(sessionId, previousMode, newMode)
+					await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
+					committed = true
+				},
 			})
 			if (!rebuildResult) {
 				// Replacement was refused. When the session we tried to replace is
@@ -301,7 +308,7 @@ export class SdkModeCoordinator {
 
 			sessionReplaced = true
 			const { sdkHost, startResult } = rebuildResult
-			await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
+			if (!committed) await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
 			const task = this.options.getTask()
 			if (task && task.taskId !== startResult.sessionId) {
 				Logger.warn(
@@ -315,7 +322,7 @@ export class SdkModeCoordinator {
 			// fails earlier rolls the mode setting back, and a notice for a switch
 			// that never took effect would lie to the model. Recording before the
 			// auto-continue send lets that send carry the notice.
-			this.recordModeSwitchNotice(startResult.sessionId, previousMode, newMode)
+			if (!committed) this.recordModeSwitchNotice(startResult.sessionId, previousMode, newMode)
 			if (options.autoContinue) {
 				const userPrompt = options.userContinuationPrompt
 				const userImages = options.userImages
@@ -324,7 +331,7 @@ export class SdkModeCoordinator {
 				// before anything is emitted or sent, so no listener ever sees a
 				// user_feedback message while the phase still reads awaiting_followup.
 				autoContinueStarted = true
-				this.options.sessions.setRunning(true)
+				this.options.sessions.markSendRunning()
 				this.options.onAutoContinueStarting()
 				// Resolve mentions before echoing so a resolution failure cannot
 				// leave an echoed-but-never-sent user message in the transcript.

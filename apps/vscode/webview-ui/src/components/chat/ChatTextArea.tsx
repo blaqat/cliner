@@ -292,7 +292,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
 		const [searchLoading, setSearchLoading] = useState(false)
 		const [, metaKeyChar] = useMetaKeyDetection(platform)
-		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode)
+		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
 		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false

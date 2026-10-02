@@ -1,5 +1,9 @@
 import type { CoreSessionConfig } from "@cline/core"
-import { captureTaskApiSelection, cloneApiProfileConfiguration } from "@/core/controller/models/apiProfiles"
+import {
+	captureTaskApiSelection,
+	cloneApiProfileConfiguration,
+	resolveApiConfigurationForTaskSelection,
+} from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { buildSessionConfig, type SessionConfigInput } from "./cline-session-factory"
 import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
@@ -23,7 +27,13 @@ export class SdkSessionConfigBuilder {
 		// the picker selection from the credentials/model used to build the session.
 		const selection = structuredClone(input.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
 		const configuration = cloneApiProfileConfiguration(
-			input.apiConfiguration ?? this.options.stateManager.getApiConfiguration(input.mode ?? "act"),
+			input.apiConfiguration ??
+				resolveApiConfigurationForTaskSelection(
+					this.options.stateManager,
+					this.options.stateManager.getApiConfiguration(input.mode ?? "act"),
+					input.mode ?? "act",
+					selection,
+				),
 		)
 		const snapshot = { selection, configuration: structuredClone(configuration) }
 		const config = Object.assign(await buildSessionConfig({ ...input, apiConfiguration: configuration }), {

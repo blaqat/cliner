@@ -6,7 +6,7 @@ import { RemoteConfigFields } from "@shared/storage/state-keys"
 import type { Environment } from "../config"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration } from "./api"
-import type { ApiConfigProfile } from "./api-profiles"
+import type { ApiConfigProfile, TaskApiSelection } from "./api-profiles"
 import { BrowserSettings } from "./BrowserSettings"
 import { ClineFeatureSetting } from "./ClineFeatureSetting"
 import { BannerCardData } from "./cline/banner"
@@ -59,7 +59,21 @@ export interface ExtensionState {
 	/** Profile id assigned to Act mode. */
 	actProfileId?: string
 	/** Immutable model details from the focused session's build, independent of saved profile edits. */
-	focusedSessionModels?: Partial<Record<Mode, { profileId?: string; provider?: string; modelId: string }>>
+	/** Composer values are separate from Settings defaults. On home, this is the next-chat draft. */
+	composerApiSelection?: TaskApiSelection
+	composerApiConfiguration?: ApiConfiguration
+	composerNextMessageOnly?: boolean
+	focusedSessionModels?: Partial<
+		Record<
+			Mode,
+			{
+				profileId?: string
+				provider?: string
+				modelId: string
+				reasoningEffort?: ApiConfiguration["actModeReasoningEffort"]
+			}
+		>
+	>
 	autoApprovalSettings: AutoApprovalSettings
 	browserSettings: BrowserSettings
 	remoteBrowserHost?: string

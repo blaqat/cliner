@@ -8,6 +8,8 @@ import { ModelsServiceClient } from "@/services/grpc-client"
 
 /** Sentinel value for the "Manage configurations…" entry; never assigned. */
 export const MANAGE_CONFIGURATIONS_VALUE = "__manage_configurations__"
+export const RESET_CONFIGURATION_VALUE = "__reset_configuration__"
+export const NEXT_MESSAGE_VALUE = "__next_message__"
 
 export function assignedProfileId(
 	mode: Mode,
@@ -24,13 +26,39 @@ interface ConfigPickerProps {
 
 /**
  * Bottom-bar picker listing saved configuration names for the current mode.
- * Picking one assigns it to the mode; "Manage configurations…" opens the API
+ * Picking one overrides this chat or the next-chat draft; "Manage configurations…" opens the API
  * settings tab.
  */
 const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
-	const { apiConfigProfiles, askProfileId, actProfileId, focusedSessionModels, navigateToSettings } = useExtensionState()
+	const {
+		apiConfigProfiles,
+		askProfileId,
+		actProfileId,
+		apiConfiguration,
+		composerApiSelection,
+		composerNextMessageOnly,
+		currentTaskItem,
+		turnState,
+		focusedSessionModels,
+		navigateToSettings,
+	} = useExtensionState()
 	const profiles: ApiConfigProfile[] = apiConfigProfiles ?? []
-	const currentId = assignedProfileId(mode, { askProfileId, actProfileId })
+	const defaults = {
+		askProfileId,
+		actProfileId,
+		planModeReasoningEffort: apiConfiguration?.planModeReasoningEffort,
+		actModeReasoningEffort: apiConfiguration?.actModeReasoningEffort,
+	}
+	const selection = composerApiSelection ?? defaults
+	const currentId = assignedProfileId(mode, selection)
+	const isDefault =
+		currentId === assignedProfileId(mode, defaults) &&
+		selection[`${mode}ModeReasoningEffort`] === defaults[`${mode}ModeReasoningEffort`]
+	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
+	const update = (changes: Partial<Parameters<typeof AssignApiProfileRequest.create>[0]>) =>
+		void ModelsServiceClient.assignApiProfile(
+			AssignApiProfileRequest.create({ mode, chatOverride: true, taskId: currentTaskItem?.id ?? "", ...changes }),
+		).catch((error) => console.error("Failed to update chat configuration:", error))
 	const current = profiles.find((profile) => profile.id === currentId)
 	const modeLabel = mode === "plan" ? "Ask" : "Act"
 	const effective = focusedSessionModels?.[mode]
@@ -42,17 +70,24 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 
 	return (
 		<Select
+			disabled={!!composerNextMessageOnly && busy}
 			onValueChange={(value) => {
 				if (value === MANAGE_CONFIGURATIONS_VALUE) {
 					navigateToSettings("api-config")
 					return
 				}
+				if (value === RESET_CONFIGURATION_VALUE) {
+					update({ resetToDefault: true })
+					return
+				}
+				if (value === NEXT_MESSAGE_VALUE) {
+					update({ nextMessageOnly: !composerNextMessageOnly })
+					return
+				}
 				if (value === currentId) {
 					return
 				}
-				void ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode, profileId: value })).catch(
-					(error) => console.error("Failed to assign configuration:", error),
-				)
+				update({ profileId: value })
 			}}
 			value={current?.id ?? ""}>
 			<SelectTrigger
@@ -70,6 +105,15 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 					<span className="truncate">
 						{current?.name ?? fallbackLabel}
 						{pending ? " (pending)" : ""}
+						<span className="ml-1 opacity-60">
+							{composerNextMessageOnly
+								? "next message"
+								: isDefault
+									? "default"
+									: currentTaskItem
+										? "chat"
+										: "next chat"}
+						</span>
 					</span>
 				</SelectValue>
 			</SelectTrigger>
@@ -80,6 +124,14 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 					</SelectItem>
 				))}
 				{profiles.length > 0 && <SelectSeparator />}
+				<SelectItem className="text-xs text-description" value={RESET_CONFIGURATION_VALUE}>
+					Reset to default
+				</SelectItem>
+				{currentTaskItem && (
+					<SelectItem className="text-xs text-description" disabled={busy} value={NEXT_MESSAGE_VALUE}>
+						{composerNextMessageOnly ? "Keep for this chat" : "Use next choice for next message only"}
+					</SelectItem>
+				)}
 				<SelectItem className="text-xs text-description" value={MANAGE_CONFIGURATIONS_VALUE}>
 					Manage configurations…
 				</SelectItem>

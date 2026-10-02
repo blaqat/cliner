@@ -101,11 +101,20 @@ export class SdkSessionConfigChangeCoordinator {
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
-			const mode: Mode = modeValue === "plan" || modeValue === "act" ? modeValue : "act"
-			const config = await this.options.sessionConfigBuilder.build({ cwd, mode })
+			const mode: Mode =
+				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
+			const config = await this.options.sessionConfigBuilder.build({
+				cwd,
+				mode,
+				...(activeSession.apiSnapshot
+					? {
+							apiSelection: activeSession.apiSnapshot.selection,
+							apiConfiguration: activeSession.apiSnapshot.configuration,
+						}
+					: {}),
+			})
 			config.sessionId = oldSessionId
 
-			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
 
 			// Rebuilds may preserve the session ID, so identity is the only reliable
@@ -131,15 +140,17 @@ export class SdkSessionConfigChangeCoordinator {
 				return
 			}
 
-			// replaceActiveSession detaches the old session synchronously before its
-			// first suspension, so no send can enter it after this final state check.
+			// Admission closes before the replacement reads the current history.
 			const restartResult = await this.options.sessions.replaceActiveSession({
 				expectedSession: activeSession,
 				startInput,
-				initialMessages: initialMessages as InitialMessages,
+				loadInitialMessages: async () =>
+					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: details.disposeReason,
 			})
 			if (!restartResult) {
+				if (context.isCurrent() && this.options.sessions.getActiveSession() === activeSession)
+					this.options.rebuilds.request(details.reason, (nextContext) => this.restartSession(details, nextContext))
 				return
 			}
 

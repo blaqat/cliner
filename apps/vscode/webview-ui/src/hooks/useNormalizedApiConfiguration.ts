@@ -85,8 +85,9 @@ function getActiveProviderAndModelId(apiConfiguration: ReturnType<typeof useExte
  * treat `unknownModelInfo` as "no data yet" — render placeholders, do
  * not assume features are unsupported.
  */
-export function useNormalizedApiConfiguration(mode: Mode): NormalizedApiConfig {
-	const { apiConfiguration } = useExtensionState()
+export function useNormalizedApiConfiguration(mode: Mode, composer = false): NormalizedApiConfig {
+	const state = useExtensionState()
+	const apiConfiguration = (composer ? state.composerApiConfiguration : undefined) ?? state.apiConfiguration
 	const { provider, modelId } = getActiveProviderAndModelId(apiConfiguration, mode)
 	const [resolvedInfo, setResolvedInfo] = useState<
 		Awaited<ReturnType<typeof ModelsServiceClient.resolveModelInfo>> | undefined

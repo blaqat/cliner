@@ -55,7 +55,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("hello @file", ["image.png"], ["a.ts"])
 
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[
 				expect.objectContaining({
@@ -454,7 +454,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 		expect(options.loadInitialMessages).not.toHaveBeenCalled()
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
 		const [sdkHost, sessionId, sentPrompt] = options.sessions.fireAndForgetSend.mock.calls[0]
 		expect(sdkHost).toBe(activeSession.sdkHost)
@@ -621,6 +621,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 		sessions: {
 			getActiveSession: vi.fn(() => input.activeSession),
+			markSendRunning: vi.fn(),
 			setRunning: vi.fn(),
 			fireAndForgetSend: vi.fn(),
 			startNewSession: vi.fn().mockResolvedValue({
@@ -663,6 +664,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		sessions: SdkFollowupCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
+			markSendRunning: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
 			startNewSession: ReturnType<typeof vi.fn>

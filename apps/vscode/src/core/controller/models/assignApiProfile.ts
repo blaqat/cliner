@@ -4,7 +4,6 @@ import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { assignApiConfigProfile } from "./apiProfiles"
 import { parseModeRequest } from "./providerCatalogShared"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "./taskApiModel"
 
 /**
  * Assigns a saved API configuration profile to a mode ("plan" serves Ask).
@@ -15,6 +14,11 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
 export async function assignApiProfile(controller: Controller, request: AssignApiProfileRequest): Promise<Empty> {
 	try {
 		const mode = parseModeRequest(request.mode)
+		if (request.chatOverride) {
+			await controller.updateChatApiSelection(mode, request)
+			await controller.postStateToWebview()
+			return Empty.create()
+		}
 		const profileId = request.profileId?.trim()
 		if (!profileId) {
 			throw new Error("profile_id is required")
@@ -26,14 +30,6 @@ export async function assignApiProfile(controller: Controller, request: AssignAp
 
 		const nextApiConfiguration = controller.stateManager.getApiConfiguration()
 
-		// Refresh the task's API model shim when the assigned mode is the active one
-		if (controller.task) {
-			const currentMode = controller.stateManager.getGlobalSettingsKey("mode")
-			if (currentMode === mode) {
-				const modelId = resolveActiveModelIdFromApiConfiguration(nextApiConfiguration, currentMode)
-				controller.task.api = createTaskApiModelShim(modelId)
-			}
-		}
 		controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration, {
 			[mode === "plan" ? "askProfileId" : "actProfileId"]: profileId,
 			[`${mode}ModeReasoningEffort`]: nextApiConfiguration[`${mode}ModeReasoningEffort`],

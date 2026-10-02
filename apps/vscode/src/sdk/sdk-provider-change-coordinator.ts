@@ -146,21 +146,26 @@ export class SdkProviderChangeCoordinator {
 			})
 			config.sessionId = oldSessionId
 
-			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
 			if (!isCurrent()) return
 			const replace =
 				this.options.sessions.replaceSession?.bind(this.options.sessions) ??
 				this.options.sessions.replaceActiveSession.bind(this.options.sessions)
+			let selectionCommitted = false
 			const restartResult = await replace({
 				expectedSession: activeSession,
 				startInput,
-				...(initialMessages ? { initialMessages } : {}),
+				loadInitialMessages: async () =>
+					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "providerChange",
+				onReplaced: () => {
+					if (selection) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+					selectionCommitted = true
+				},
 			})
 			if (!restartResult) {
 				const retained = this.options.sessions.getSession?.(oldSessionId)
-				if (isCurrent() && retained === activeSession && (retained.isRunning || retained.queuedPromptCount > 0)) {
+				if (isCurrent() && retained === activeSession) {
 					this.options.rebuilds.request(
 						"provider",
 						(context) => this.performRestartActiveSessionForProviderChange(oldSessionId, context.isCurrent),
@@ -171,7 +176,7 @@ export class SdkProviderChangeCoordinator {
 			}
 
 			const { startResult } = restartResult
-			if (selection) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+			if (selection && !selectionCommitted) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
 			const task = this.options.getTask()
 			if (task?.taskId === oldSessionId && task.taskId !== startResult.sessionId) {
 				Logger.warn(

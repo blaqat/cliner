@@ -32,7 +32,10 @@ describe("SdkSessionConfigBuilder", () => {
 			return { providerId: "openai", modelId: "p-model" }
 		})
 		const builder = new SdkSessionConfigBuilder({
-			stateManager: { getGlobalStateKey: () => selected, getApiConfiguration: () => configuration } as never,
+			stateManager: {
+				getGlobalStateKey: (key: string) => (key === "apiConfigProfiles" ? [] : selected),
+				getApiConfiguration: () => configuration,
+			} as never,
 			emitHookMessage: vi.fn(),
 		})
 		const building = builder.build({ cwd: "/workspace", mode: "act" })

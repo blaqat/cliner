@@ -132,6 +132,25 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalled()
 	})
 
+	it("applies the home draft once, then starts the next chat from Settings defaults", async () => {
+		const { options } = makeCoordinator()
+		Object.assign(options.stateManager, {
+			getGlobalStateKey: () => "P",
+			getApiConfiguration: () => ({ actModeReasoningEffort: "low" }),
+		})
+		const draft = { actProfileId: "Q", actModeReasoningEffort: "high" as const }
+		const consume = vi.fn().mockReturnValueOnce(draft).mockReturnValue(undefined)
+		const coordinator = new SdkTaskStartCoordinator({ ...options, consumeDraftApiSelection: consume })
+		await coordinator.initTask("draft chat")
+		expect(options.sessionConfigBuilder.build).toHaveBeenLastCalledWith(expect.objectContaining({ apiSelection: draft }))
+		await coordinator.initTask("default chat")
+		expect(options.sessionConfigBuilder.build).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				apiSelection: { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" },
+			}),
+		)
+	})
+
 	it("pins the build selection through slow startup while another chat changes the picker", async () => {
 		const { options } = makeCoordinator()
 		let selected = "P"

@@ -84,8 +84,9 @@ describe("SdkModeCoordinator", () => {
 		expect(options.sessions.replaceActiveSession).toHaveBeenCalledWith({
 			expectedSession: activeSession,
 			startInput: { prompt: "start" },
-			initialMessages: [{ role: "user", content: "hello" }],
+			loadInitialMessages: expect.any(Function),
 			disposeReason: "modeChange",
+			onReplaced: expect.any(Function),
 		})
 		expect(task.taskId).toBe("new-session")
 		expect(options.resetMessageTranslator).toHaveBeenCalledOnce()
@@ -172,7 +173,7 @@ describe("SdkModeCoordinator", () => {
 		await expect(coordinator.togglePlanActMode("act")).resolves.toBe(false)
 
 		expect(state.mode).toBe("act")
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.onAutoContinueStarting).toHaveBeenCalledOnce()
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.anything(),
@@ -426,7 +427,7 @@ describe("SdkModeCoordinator", () => {
 		await expect(coordinator.togglePlanActMode("act")).resolves.toBe(false)
 
 		expect(state.mode).toBe("act")
-		expect(options.sessions.setRunning).not.toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).not.toHaveBeenCalledWith(true)
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
 
@@ -571,7 +572,7 @@ describe("SdkModeCoordinator", () => {
 		).resolves.toBe(true)
 
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
-		expect(options.sessions.setRunning).not.toHaveBeenCalledWith(false)
+		expect(options.sessions.markSendRunning).not.toHaveBeenCalledWith(false)
 		expect(options.onAutoContinueFailed).not.toHaveBeenCalled()
 		// Only the user_feedback echo was emitted, no mode-switch error message.
 		expect(options.messages.appendAndEmit).toHaveBeenCalledOnce()
@@ -818,11 +819,13 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		} as unknown as StateManager,
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
-			replaceActiveSession: vi.fn().mockResolvedValue({
-				startResult: { sessionId: "new-session" },
-				sdkHost: { send: vi.fn() },
+			replaceActiveSession: vi.fn(async (input) => {
+				await input.loadInitialMessages?.()
+				await input.onReplaced?.("new-session")
+				return { startResult: { sessionId: "new-session" }, sdkHost: { send: vi.fn() } }
 			}),
 			fireAndForgetSend: vi.fn(),
+			markSendRunning: vi.fn(),
 			setRunning: vi.fn(),
 		},
 		interactions: {
@@ -861,6 +864,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 			getActiveSession: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
 			replaceActiveSession: ReturnType<typeof vi.fn>
+			markSendRunning: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 		}
 		interactions: SdkModeCoordinatorOptions["interactions"] & {

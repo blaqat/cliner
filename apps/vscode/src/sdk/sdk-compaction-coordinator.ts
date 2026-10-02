@@ -25,6 +25,7 @@
 // fake "Conversation Summary" instead of compacting (CLINE-2503).
 
 import type { Message as SdkMessage } from "@cline/llms"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ClineCompactionInfo, ClineMessage } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
@@ -46,6 +47,7 @@ const COMPACTION_TURN_RUNNING_MESSAGE =
 
 export interface SdkCompactionCoordinatorOptions {
 	stateManager: StateManager
+	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
 	sessions: SdkSessionLifecycle
 	rebuilds: SdkSessionRebuildScheduler
 	messages: SdkMessageCoordinator
@@ -213,8 +215,21 @@ export class SdkCompactionCoordinator {
 		}
 
 		const cwd = await this.options.getWorkspaceRoot()
-		const mode = this.getCurrentMode()
-		const config = await this.options.sessionConfigBuilder.build({ cwd, mode })
+		const mode = this.options.sessions.getActiveSession()?.startConfig?.mode ?? this.getCurrentMode()
+		const snapshot =
+			this.options.sessions.getActiveSession()?.sessionId === sessionId
+				? this.options.sessions.getActiveSession()?.apiSnapshot
+				: undefined
+		const apiSelection =
+			snapshot?.selection ??
+			this.options.getTaskApiSelection?.(sessionId) ??
+			(await this.options.taskHistory.findHistoryItem(sessionId))?.apiSelection
+		const config = await this.options.sessionConfigBuilder.build({
+			cwd,
+			mode,
+			...(apiSelection ? { apiSelection } : {}),
+			...(snapshot ? { apiConfiguration: snapshot.configuration } : {}),
+		})
 
 		// A live divider row, updated in place (same ts) from "started" to its
 		// terminal state — the same UX as the CLI's compaction divider.

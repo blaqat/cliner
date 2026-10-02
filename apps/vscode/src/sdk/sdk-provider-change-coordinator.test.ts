@@ -80,8 +80,9 @@ describe("SdkProviderChangeCoordinator", () => {
 		expect(options.sessions.replaceActiveSession).toHaveBeenCalledWith({
 			expectedSession: activeSession,
 			startInput: { prompt: "start" },
-			initialMessages: [{ role: "user", content: "hello" }],
+			loadInitialMessages: expect.any(Function),
 			disposeReason: "providerChange",
+			onReplaced: expect.any(Function),
 		})
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
@@ -556,9 +557,10 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		} as unknown as StateManager,
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
-			replaceActiveSession: vi.fn().mockResolvedValue({
-				startResult: { sessionId: "new-session" },
-				sdkHost: { send: vi.fn() },
+			replaceActiveSession: vi.fn(async (input) => {
+				await input.loadInitialMessages?.()
+				input.onReplaced?.("new-session")
+				return { startResult: { sessionId: "new-session" }, sdkHost: { send: vi.fn() } }
 			}),
 		},
 		messages: {

@@ -85,7 +85,12 @@ describe("ConfigPicker", () => {
 		render(<ConfigPicker fallbackLabel="anthropic:claude-sonnet" mode="plan" />)
 
 		const options = screen.getAllByRole("option")
-		expect(options.map((option) => option.textContent)).toEqual(["Claude work", "Local vLLM", "Manage configurations…"])
+		expect(options.map((option) => option.textContent)).toEqual([
+			"Claude work",
+			"Local vLLM",
+			"Reset to default",
+			"Manage configurations…",
+		])
 		expect(screen.getByRole("option", { name: "Local vLLM" })).toHaveAttribute("aria-selected", "true")
 		expect(screen.getByTestId("config-picker")).toHaveTextContent("Local vLLM")
 	})
@@ -108,7 +113,7 @@ describe("ConfigPicker", () => {
 	})
 
 	it("selects the pending profile while the tooltip describes the running model", () => {
-		mocks.state.actProfileId = "p2"
+		mocks.state.composerApiSelection = { actProfileId: "p2" }
 		mocks.state.focusedSessionModels = { act: { profileId: "p1", provider: "anthropic", modelId: "claude-sonnet" } }
 		render(<ConfigPicker fallbackLabel="x" mode="act" />)
 		expect(screen.getByRole("option", { name: "Local vLLM" })).toHaveAttribute("aria-selected", "true")
@@ -126,7 +131,9 @@ describe("ConfigPicker", () => {
 
 		fireEvent.click(screen.getByRole("option", { name: "Local vLLM" }))
 
-		expect(mocks.assignApiProfile).toHaveBeenCalledWith(expect.objectContaining({ mode: "act", profileId: "p2" }))
+		expect(mocks.assignApiProfile).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "act", profileId: "p2", chatOverride: true, taskId: "" }),
+		)
 	})
 
 	it("does not reassign the current configuration", () => {
@@ -146,12 +153,31 @@ describe("ConfigPicker", () => {
 		)
 	})
 
+	it("arms a one-turn choice and can reset the chat to Settings defaults", () => {
+		mocks.state.currentTaskItem = { id: "chat" }
+		mocks.state.composerApiSelection = { actProfileId: "p2" }
+		render(<ConfigPicker fallbackLabel="x" mode="act" />)
+		expect(screen.getByTestId("config-picker")).toHaveTextContent("chat")
+		fireEvent.click(screen.getByRole("option", { name: "Use next choice for next message only" }))
+		expect(mocks.assignApiProfile).toHaveBeenCalledWith(
+			expect.objectContaining({ taskId: "chat", chatOverride: true, nextMessageOnly: true }),
+		)
+		fireEvent.click(screen.getByRole("option", { name: "Reset to default" }))
+		expect(mocks.assignApiProfile).toHaveBeenCalledWith(
+			expect.objectContaining({ taskId: "chat", chatOverride: true, resetToDefault: true }),
+		)
+		expect(mocks.state.actProfileId).toBe("p1")
+	})
+
 	it("falls back to the model label when nothing is assigned", () => {
 		mocks.state = { apiConfigProfiles: [] }
 		render(<ConfigPicker fallbackLabel="anthropic:claude-sonnet" mode="plan" />)
 
 		expect(screen.getByTestId("config-picker")).toHaveTextContent("anthropic:claude-sonnet")
-		expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Manage configurations…"])
+		expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+			"Reset to default",
+			"Manage configurations…",
+		])
 	})
 })
 
@@ -167,7 +193,10 @@ describe("ReasoningEffortPicker", () => {
 	it.each(["plan", "act"] as const)("updates only %s effort without saving provider or profile settings", (mode) => {
 		render(<ReasoningEffortPicker mode={mode} modelId="m" modelInfo={{ supportsReasoning: true }} provider="anthropic" />)
 		fireEvent.click(screen.getByRole("option", { name: "Xhigh" }))
-		expect(mocks.handleFieldChange).toHaveBeenCalledExactlyOnceWith(`${mode}ModeReasoningEffort`, "xhigh")
+		expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ mode, reasoningEffort: "xhigh", chatOverride: true }),
+		)
+		expect(mocks.handleFieldChange).not.toHaveBeenCalled()
 		expect(mocks.writeProviderConfig).not.toHaveBeenCalled()
 		expect(mocks.saveApiProfile).not.toHaveBeenCalled()
 	})
@@ -186,9 +215,22 @@ describe("ReasoningEffortPicker", () => {
 		expect(screen.getByRole("option", { name: "Provider default" })).toHaveAttribute("aria-selected", "true")
 	})
 
+	it("reads the chat effort and shows a queued change without changing Settings", () => {
+		mocks.state.composerApiSelection = { actProfileId: "p1", actModeReasoningEffort: "xhigh" }
+		mocks.state.focusedSessionModels = {
+			act: { profileId: "p1", provider: "anthropic", modelId: "m", reasoningEffort: "high" },
+		}
+		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} />)
+		expect(screen.getByRole("option", { name: "Xhigh" })).toHaveAttribute("aria-selected", "true")
+		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent("Xhigh (pending)")
+		expect(mocks.state.apiConfiguration).toEqual({ planModeReasoningEffort: "low", actModeReasoningEffort: "high" })
+	})
+
 	it("can return to provider default", () => {
 		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} provider="openai" />)
 		fireEvent.click(screen.getByRole("option", { name: "Provider default" }))
-		expect(mocks.handleFieldChange).toHaveBeenCalledWith("actModeReasoningEffort", "none")
+		expect(mocks.assignApiProfile).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "act", reasoningEffort: "none", chatOverride: true }),
+		)
 	})
 })
