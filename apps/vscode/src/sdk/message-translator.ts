@@ -2193,28 +2193,11 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 				break
 			}
 
-			// Tool hook events — translate to hook_status messages
-			const payload = event.payload
-			const hookName = payload.hookEventName
-			const toolName = payload.toolName
-
-			if (hookName === "tool_call") {
-				result.messages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: "hook_status" as ClineSay,
-					text: toolName ? `Running ${toolName}...` : "Running tool...",
-					partial: false,
-				})
-			} else if (hookName === "tool_result") {
-				result.messages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: "hook_status" as ClineSay,
-					text: toolName ? `${toolName} completed` : "Tool completed",
-					partial: false,
-				})
-			}
+			// These are the SDK's internal tool lifecycle events (tool_call /
+			// tool_result), not user hook-file executions — the extension's
+			// hooks-adapter emits real hook_status rows itself. Translating them
+			// produced a "Running X... / X completed" hook row per tool call even
+			// with no hook scripts installed, so they are dropped entirely.
 			break
 		}
 

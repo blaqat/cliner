@@ -1798,7 +1798,7 @@ describe("translateSessionEvent — ended event", () => {
 // ---------------------------------------------------------------------------
 
 describe("translateSessionEvent — hook events", () => {
-	it("translates tool_call hook to hook_status message", () => {
+	it("suppresses internal tool_call hook events", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
 			type: "hook",
@@ -1810,12 +1810,10 @@ describe("translateSessionEvent — hook events", () => {
 		}
 
 		const result = translateSessionEvent(event, state)
-		expect(result.messages).toHaveLength(1)
-		expect(result.messages[0].say).toBe("hook_status")
-		expect(result.messages[0].text).toContain("write_to_file")
+		expect(result.messages).toHaveLength(0)
 	})
 
-	it("translates tool_result hook to hook_status message", () => {
+	it("suppresses internal tool_result hook events", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
 			type: "hook",
@@ -1827,8 +1825,7 @@ describe("translateSessionEvent — hook events", () => {
 		}
 
 		const result = translateSessionEvent(event, state)
-		expect(result.messages).toHaveLength(1)
-		expect(result.messages[0].text).toContain("completed")
+		expect(result.messages).toHaveLength(0)
 	})
 })
 
