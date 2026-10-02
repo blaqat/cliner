@@ -56,7 +56,7 @@ describe("auto-approve settings after New Task (#13260)", () => {
 
 	const makeCoordinator = () =>
 		new SdkTaskControlCoordinator({
-			sessions: { endActiveSession: async () => {}, focusSession: () => {} },
+			sessions: { getActiveSession: () => undefined, endActiveSession: async () => {}, focusSession: () => {} },
 			interactions: { clearPending: () => {} },
 			messages: { cancelPendingSave: () => {} },
 			taskHistory: {},

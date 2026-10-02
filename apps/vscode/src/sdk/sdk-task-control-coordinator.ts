@@ -113,6 +113,7 @@ export class SdkTaskControlCoordinator {
 		}
 
 		try {
+			this.options.sessions.cancelHeldSends(sessionId)
 			await sdkHost.abort(sessionId)
 		} catch (error) {
 			if (!isAbortError(error)) {
@@ -139,6 +140,8 @@ export class SdkTaskControlCoordinator {
 	}
 
 	async clearTask(): Promise<void> {
+		const activeSession = this.options.sessions.getActiveSession()
+		if (activeSession) this.options.sessions.cancelHeldSends(activeSession.sessionId)
 		// Supersede any in-flight showTaskWithId so it cannot re-install a task
 		// after the user cleared the view (e.g. clicked New Task).
 		const generation = ++this.taskViewGeneration

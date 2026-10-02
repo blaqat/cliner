@@ -45,15 +45,25 @@ export interface SdkSessionLifecycleOptions {
 	getRemoteConfigIntegration?: () => PreparedRemoteConfigCoreIntegration | undefined
 	/** Shared SDK telemetry service owned by SdkController. */
 	telemetry?: ITelemetryService
+	/** Keeps submissions out of Core's queue until a one-turn selection has reverted. */
+	deferSend?: (
+		sessionId: string,
+		prompt: string,
+		images?: string[],
+		files?: string[],
+		delivery?: "queue" | "steer" | "interject",
+	) => boolean
 	onSendStart?: (sessionId: string, delivery?: "queue" | "steer" | "interject") => void
 	onSendComplete: (sessionId: string) => Promise<void> | void
 	onSendError: (error: unknown, sessionId: string) => Promise<void> | void
+	onHeldSendCancelled?: (sessionId: string, prompt: string, images?: string[], files?: string[]) => void
 	/**
 	 * Returns (and clears) a pending user-initiated plan/act switch recorded by
 	 * SdkModeCoordinator for this session, so fireAndForgetSend — the single
 	 * funnel for outbound turn sends — can stamp a <mode_notice> onto the next
 	 * message. Consumed exactly once; null when no switch is pending.
 	 */
+	consumeMcpChangeNotice?: (sessionId: string) => string | undefined
 	consumeModeSwitchNotice?: (sessionId: string) => ModeSwitchNotice | null
 	onDidBecomeIdle?: () => void
 	onSessionRemoved?: (sessionId: string) => void
@@ -61,6 +71,9 @@ export interface SdkSessionLifecycleOptions {
 }
 
 export class SdkSessionLifecycle {
+	private readonly replacements = new Map<string, Promise<string>>()
+	private readonly heldSends = new Map<string, Set<() => void>>()
+	private readonly replacementHosts = new Set<SdkSessionHost>()
 	private activeSession: ActiveSession | undefined
 	private focusedSessionId?: string
 	private readonly liveSessions = new Map<string, ActiveSession>()
@@ -89,6 +102,7 @@ export class SdkSessionLifecycle {
 	/** The caller owns this fence through persistence deletion, including failure recovery. */
 	beginTaskDeletion(taskId: string): () => void {
 		this.deletionFences.set(taskId, (this.deletionFences.get(taskId) ?? 0) + 1)
+		this.cancelHeldSends(taskId)
 		let released = false
 		return () => {
 			if (released) return
@@ -102,6 +116,7 @@ export class SdkSessionLifecycle {
 	/** Fence starts while delete-all enumerates history and processes its selected ids. */
 	beginHistoryDeletion(): () => void {
 		this.historyDeletionFences++
+		for (const taskId of this.heldSends.keys()) this.cancelHeldSends(taskId)
 		let released = false
 		return () => {
 			if (released) return
@@ -153,6 +168,10 @@ export class SdkSessionLifecycle {
 		return true
 	}
 
+	markSendRunning(taskId = this.activeSession?.sessionId): void {
+		if (taskId && !this.replacements.has(taskId)) this.setRunning(true, taskId)
+	}
+
 	setRunning(isRunning: boolean, taskId = this.activeSession?.sessionId): void {
 		const activeSession = taskId ? this.liveSessions.get(taskId) : undefined
 		if (!activeSession || activeSession.isRunning === isRunning) {
@@ -196,6 +215,7 @@ export class SdkSessionLifecycle {
 		if (!activeSession) {
 			return undefined
 		}
+		this.cancelHeldSends(activeSession.sessionId)
 
 		this.liveSessions.delete(activeSession.sessionId)
 		this.turnGenerations.delete(activeSession.sessionId)
@@ -323,6 +343,8 @@ export class SdkSessionLifecycle {
 		startInput: Parameters<VscodeSessionHost["start"]>[0]
 		initialMessages?: Parameters<VscodeSessionHost["start"]>[0]["initialMessages"]
 		disposeReason: string
+		loadInitialMessages?: () => Promise<Parameters<VscodeSessionHost["start"]>[0]["initialMessages"]>
+		onReplaced?: (sessionId: string) => Promise<void> | void
 	}): Promise<
 		| {
 				oldSessionId: string
@@ -336,61 +358,97 @@ export class SdkSessionLifecycle {
 			return undefined
 		}
 
-		const { sessionId: oldSessionId } = oldSession
-
-		// No need to await the stop here: callers reuse oldSessionId in the
-		// startInput, and startNewSession waits on the pending stop for it.
-		await this.endActiveSession(options.disposeReason)
-
-		const { startResult, sdkHost } = await this.startNewSession({
-			...options.startInput,
-			...(options.initialMessages ? { initialMessages: options.initialMessages } : {}),
-		})
-		this.setRunning(false)
-
-		return { oldSessionId, startResult, sdkHost }
+		return this.replaceSession(options)
 	}
 
 	/** Replace an idle retained session without moving the user's focus. */
 	async replaceSession(options: Parameters<SdkSessionLifecycle["replaceActiveSession"]>[0]) {
 		const old = options.expectedSession
+		const generation = this.turnGenerations.get(old.sessionId)
+		if (this.replacements.has(old.sessionId)) return undefined
 		this.assertTaskAvailable(old.sessionId)
 		if (this.liveSessions.get(old.sessionId) !== old || old.isRunning || old.queuedPromptCount > 0) return undefined
-		const input = this.options.prepareStartInput?.(options.startInput) ?? options.startInput
-		await this.trackSessionStop(old.sdkHost, old.sessionId, options.disposeReason)
-		if (this.liveSessions.get(old.sessionId) !== old) return undefined
-		const approval = StateManager.get().getGlobalSettingsKey("autoApprovalSettings")
-		const toolPolicies = approval ? buildToolPolicies(approval, this.options.mcpHub) : undefined
-		this.assertTaskAvailable(old.sessionId)
-		const startResult = await old.sdkHost.start({
-			...input,
-			...(toolPolicies ? { toolPolicies } : {}),
-			...(options.initialMessages ? { initialMessages: options.initialMessages } : {}),
+		// Close admission synchronously, before reading history or creating a host.
+		let release!: (sessionId: string) => void
+		let liveId = old.sessionId
+		const barrier = new Promise<string>((resolve) => {
+			release = resolve
 		})
-		if (this.liveSessions.get(old.sessionId) !== old) {
-			await this.trackSessionStop(old.sdkHost, startResult.sessionId, "superseded provider rebuild")
-			return undefined
+		this.replacements.set(old.sessionId, barrier)
+		let sdkHost: SdkSessionHost | undefined
+		let installed = false
+		try {
+			const input = this.options.prepareStartInput?.(options.startInput) ?? options.startInput
+			const initialMessages = options.loadInitialMessages ? await options.loadInitialMessages() : options.initialMessages
+			sdkHost = await this.createHost()
+			const idle = () =>
+				this.liveSessions.get(old.sessionId) === old &&
+				this.turnGenerations.get(old.sessionId) === generation &&
+				!old.isRunning &&
+				old.queuedPromptCount === 0
+			if (!idle()) return undefined
+			const approval = StateManager.get().getGlobalSettingsKey("autoApprovalSettings")
+			const toolPolicies = approval ? buildToolPolicies(approval, this.options.mcpHub) : undefined
+			this.assertTaskAvailable(old.sessionId)
+			const startResult = await sdkHost.start({
+				...input,
+				...(toolPolicies ? { toolPolicies } : {}),
+				...(initialMessages ? { initialMessages } : {}),
+			})
+			// Core can drain a previously queued prompt without an extension send.
+			// Keep the old runtime if a turn entered while the new host started.
+			if (!idle()) return undefined
+			this.assertTaskAvailable(old.sessionId)
+			const replacement: ActiveSession = {
+				...old,
+				sessionId: startResult.sessionId,
+				sdkHost,
+				startResult,
+				apiSnapshot: getSessionApiSnapshot(input.config),
+				startConfig: input.config
+					? {
+							providerId: input.config.providerId,
+							modelId: input.config.modelId,
+							mode: input.mode === "plan" ? "plan" : "act",
+						}
+					: undefined,
+				unsubscribe: this.createSafeUnsubscribe(
+					sdkHost.subscribe((event) => {
+						const current = this.liveSessions.get(event.payload.sessionId)
+						if (!current || current.sdkHost === sdkHost) this.options.onSessionEvent(event)
+					}),
+					"replacement",
+				),
+				isRunning: false,
+				queuedPromptCount: 0,
+			}
+			this.liveSessions.delete(old.sessionId)
+			this.liveSessions.set(startResult.sessionId, replacement)
+			this.replacementHosts.add(sdkHost)
+			liveId = startResult.sessionId
+			installed = true
+			this.setStatus(startResult.sessionId, "done")
+			if (this.focusedSessionId === old.sessionId) this.focusSession(startResult.sessionId)
+			this.safeUnsubscribe(old, options.disposeReason)
+			try {
+				await options.onReplaced?.(startResult.sessionId)
+			} finally {
+				await this.trackSessionStop(old.sdkHost, old.sessionId, options.disposeReason)
+			}
+			return { oldSessionId: old.sessionId, startResult, sdkHost }
+		} finally {
+			if (sdkHost && !installed)
+				await sdkHost
+					.dispose("replacement abandoned")
+					.catch((error) => Logger.warn("[SdkController] Failed to dispose replacement", error))
+			this.replacements.delete(old.sessionId)
+			release(liveId)
 		}
-		const replacement: ActiveSession = {
-			...old,
-			sessionId: startResult.sessionId,
-			startResult,
-			apiSnapshot: getSessionApiSnapshot(input.config),
-			startConfig: input.config
-				? {
-						providerId: input.config.providerId,
-						modelId: input.config.modelId,
-						mode: input.mode === "plan" ? "plan" : "act",
-					}
-				: undefined,
-			isRunning: false,
-			queuedPromptCount: 0,
-		}
-		this.liveSessions.set(startResult.sessionId, replacement)
-		this.setStatus(startResult.sessionId, "done")
-		this.assertTaskAvailable(startResult.sessionId)
-		if (this.focusedSessionId === old.sessionId) this.focusSession(startResult.sessionId)
-		return { oldSessionId: old.sessionId, startResult, sdkHost: old.sdkHost }
+	}
+
+	async waitForReplacement(sessionId: string): Promise<string> {
+		while (this.replacements.has(sessionId)) sessionId = await this.replacements.get(sessionId)!
+		return sessionId
 	}
 
 	async restoreActiveSession(input: RestoreInput): Promise<RestoreResult> {
@@ -437,6 +495,8 @@ export class SdkSessionLifecycle {
 	}
 
 	async dispose(reason = "SdkSessionLifecycle.dispose"): Promise<void> {
+		for (const taskId of this.heldSends.keys()) this.cancelHeldSends(taskId)
+		await Promise.allSettled([...this.replacements.values()])
 		await Promise.all(
 			[...this.liveSessions.values()].map((session) => this.trackSessionStop(session.sdkHost, session.sessionId, reason)),
 		)
@@ -444,6 +504,8 @@ export class SdkSessionLifecycle {
 		this.turnGenerations.clear()
 		this.activeSession = undefined
 
+		await Promise.all([...this.replacementHosts].map((host) => host.dispose(reason)))
+		this.replacementHosts.clear()
 		const sharedHost = this.sharedHost ?? (await this.sharedHostPromise?.catch(() => undefined))
 		this.sharedHost = undefined
 		this.sharedHostPromise = undefined
@@ -454,27 +516,33 @@ export class SdkSessionLifecycle {
 
 	/** Stop a task by id, including background tasks, before deleting its persistence. */
 	async removeSession(taskId: string): Promise<void> {
-		await Promise.allSettled([...(this.pendingStarts.get(taskId) ?? [])])
-		const session = this.liveSessions.get(taskId)
-		if (session) {
-			this.liveSessions.delete(taskId)
-			this.turnGenerations.delete(taskId)
-			if (this.activeSession === session) this.activeSession = undefined
-			this.safeUnsubscribe(session, "task deleted")
-			try {
-				await this.trackSessionStop(session.sdkHost, taskId, "task deleted", true)
-			} catch (error) {
-				// Keep the handle available for a retry; persistence must survive a failed stop.
-				if (!this.liveSessions.has(taskId)) this.liveSessions.set(taskId, session)
-				if (this.focusedSessionId === taskId) this.activeSession = session
-				throw error
+		const release = this.beginTaskDeletion(taskId)
+		try {
+			await this.waitForReplacement(taskId)
+			await Promise.allSettled([...(this.pendingStarts.get(taskId) ?? [])])
+			const session = this.liveSessions.get(taskId)
+			if (session) {
+				this.liveSessions.delete(taskId)
+				this.turnGenerations.delete(taskId)
+				if (this.activeSession === session) this.activeSession = undefined
+				this.safeUnsubscribe(session, "task deleted")
+				try {
+					await this.trackSessionStop(session.sdkHost, taskId, "task deleted", true)
+				} catch (error) {
+					// Keep the handle available for a retry; persistence must survive a failed stop.
+					if (!this.liveSessions.has(taskId)) this.liveSessions.set(taskId, session)
+					if (this.focusedSessionId === taskId) this.activeSession = session
+					throw error
+				}
+			} else {
+				await this.waitForPendingStop(taskId)
 			}
-		} else {
-			await this.waitForPendingStop(taskId)
+			delete this.sessionStatuses[taskId]
+			delete this.subagentCounts[taskId]
+			this.options.onSessionRemoved?.(taskId)
+		} finally {
+			release()
 		}
-		delete this.sessionStatuses[taskId]
-		delete this.subagentCounts[taskId]
-		this.options.onSessionRemoved?.(taskId)
 	}
 
 	/** Retain at most eight idle handles. Re-evaluate after every asynchronous stop. */
@@ -493,6 +561,7 @@ export class SdkSessionLifecycle {
 			this.focusedSessionId !== session.sessionId &&
 			this.activeSession !== session &&
 			!session.isRunning &&
+			!this.replacements.has(session.sessionId) &&
 			!session.queuedPromptCount &&
 			this.sessionStatuses[session.sessionId] !== "waiting"
 		while (true) {
@@ -533,7 +602,13 @@ export class SdkSessionLifecycle {
 		if (this.sharedHostUnsubscribe) {
 			return
 		}
-		this.sharedHostUnsubscribe = this.createSafeUnsubscribe(sdkHost.subscribe(this.options.onSessionEvent), "shared-host")
+		this.sharedHostUnsubscribe = this.createSafeUnsubscribe(
+			sdkHost.subscribe((event) => {
+				const current = this.liveSessions.get(event.payload.sessionId)
+				if (!current || current.sdkHost === sdkHost) this.options.onSessionEvent(event)
+			}),
+			"shared-host",
+		)
 	}
 
 	/**
@@ -544,7 +619,16 @@ export class SdkSessionLifecycle {
 		const startedAt = Date.now()
 		const stopPromise = sdkHost
 			.stop(sessionId)
-			.then(() => {
+			.then(async () => {
+				if (
+					this.replacementHosts.has(sdkHost) &&
+					![...this.liveSessions.values()].some((session) => session.sdkHost === sdkHost)
+				) {
+					this.replacementHosts.delete(sdkHost)
+					await sdkHost
+						.dispose(reason)
+						.catch((error) => Logger.warn("[SdkController] Failed to dispose unused replacement host", error))
+				}
 				const elapsed = Date.now() - startedAt
 				if (elapsed > 250) {
 					Logger.log(`[SdkController] SDK session ${sessionId} stopped in ${elapsed}ms (${reason})`)
@@ -576,6 +660,22 @@ export class SdkSessionLifecycle {
 		}
 	}
 
+	private createHost(): Promise<SdkSessionHost> {
+		return VscodeSessionHost.create({
+			mcpHub: this.options.mcpHub,
+			requestToolApproval: this.options.requestToolApproval,
+			askQuestion: this.options.askQuestion,
+			editorExecutor: this.options.editorExecutor,
+			applyPatchExecutor: this.options.applyPatchExecutor,
+			readFileExecutor: this.options.readFileExecutor,
+			getTerminalManager: this.options.getTerminalManager,
+			foregroundCommands: this.options.foregroundCommands,
+			beforeStartSession: this.options.beforeStartSession,
+			getRemoteConfigIntegration: this.options.getRemoteConfigIntegration,
+			telemetry: this.options.telemetry,
+		})
+	}
+
 	private async getOrCreateSharedHost(): Promise<SdkSessionHost> {
 		if (this.sharedHost) {
 			this.ensureSharedHostSubscription(this.sharedHost)
@@ -584,19 +684,7 @@ export class SdkSessionLifecycle {
 		if (!this.sharedHostPromise) {
 			// Host-lifetime dependencies only. Anything task/session-specific must be
 			// supplied to sdkHost.start(...), otherwise it can leak across reused sessions.
-			this.sharedHostPromise = VscodeSessionHost.create({
-				mcpHub: this.options.mcpHub,
-				requestToolApproval: this.options.requestToolApproval,
-				askQuestion: this.options.askQuestion,
-				editorExecutor: this.options.editorExecutor,
-				applyPatchExecutor: this.options.applyPatchExecutor,
-				readFileExecutor: this.options.readFileExecutor,
-				getTerminalManager: this.options.getTerminalManager,
-				foregroundCommands: this.options.foregroundCommands,
-				beforeStartSession: this.options.beforeStartSession,
-				getRemoteConfigIntegration: this.options.getRemoteConfigIntegration,
-				telemetry: this.options.telemetry,
-			})
+			this.sharedHostPromise = this.createHost()
 				.then((sdkHost) => {
 					this.ensureSharedHostSubscription(sdkHost)
 					this.sharedHost = sdkHost
@@ -609,6 +697,14 @@ export class SdkSessionLifecycle {
 		return this.sharedHostPromise
 	}
 
+	/** Drop admission-held submissions before aborting, and fence an uninstalled swap. */
+	cancelHeldSends(sessionId: string): void {
+		this.turnGenerations.set(sessionId, (this.turnGenerations.get(sessionId) ?? 0) + 1)
+		const held = this.heldSends.get(sessionId)
+		this.heldSends.delete(sessionId)
+		for (const cancel of held ?? []) cancel()
+	}
+
 	fireAndForgetSend(
 		sdkHost: SdkSessionHost,
 		sessionId: string,
@@ -618,6 +714,45 @@ export class SdkSessionLifecycle {
 		delivery?: "queue" | "steer" | "interject",
 	): void {
 		this.assertTaskAvailable(sessionId)
+		const racedLive = this.liveSessions.get(sessionId)
+		if (this.replacements.has(sessionId) && delivery === "interject" && racedLive?.isRunning) {
+			// A turn raced into the old runtime during replacement start, so the
+			// replacement's generation check will reject the swap. Deliver the
+			// interject to that runtime through Core's own interject path, which
+			// aborts the turn immediately while preserving the pending queue.
+			sdkHost = racedLive.sdkHost
+		} else if (this.replacements.has(sessionId)) {
+			const held = this.heldSends.get(sessionId) ?? new Set<() => void>()
+			this.heldSends.set(sessionId, held)
+			let cancelled = false
+			const cancellation = Promise.withResolvers<never>()
+			const cancel = () => {
+				cancelled = true
+				const error = new Error("Held submission aborted")
+				error.name = "AbortError"
+				cancellation.reject(error)
+				this.options.onHeldSendCancelled?.(sessionId, prompt, images, files)
+			}
+			held.add(cancel)
+			void Promise.race([Promise.all([this.waitForReplacement(sessionId)]), cancellation.promise])
+				.then(([liveId]) => {
+					if (cancelled) return
+					held.delete(cancel)
+					const live = this.liveSessions.get(liveId)
+					if (!live) throw new Error("Session ended during replacement")
+					this.fireAndForgetSend(live.sdkHost, live.sessionId, prompt, images, files, delivery)
+				})
+				.catch((error) => {
+					if (!isAbortError(error)) return this.options.onSendError(error, sessionId)
+				})
+				.finally(() => {
+					held.delete(cancel)
+					if (!held.size && this.heldSends.get(sessionId) === held) this.heldSends.delete(sessionId)
+				})
+			return
+		}
+		sdkHost = this.liveSessions.get(sessionId)?.sdkHost ?? sdkHost
+		if (this.options.deferSend?.(sessionId, prompt, images, files, delivery)) return
 		// Captured by object identity, not sessionId: rebuilds (mode change) reuse
 		// the same sessionId for the replacement session, so only reference
 		// equality can tell this send's session apart from a successor. If the
@@ -627,6 +762,7 @@ export class SdkSessionLifecycle {
 		// treat the new turn's completion as a cancelled-turn straggler). The
 		// same applies within one session when Core drains a queued prompt into
 		// a new turn before this send's promise settles.
+		this.setRunning(true, sessionId)
 		const sessionAtSend = this.liveSessions.get(sessionId)
 		const turnAtSend = this.turnGenerations.get(sessionId)
 		const isSuperseded = (label: string): boolean => {
@@ -643,7 +779,10 @@ export class SdkSessionLifecycle {
 		// normalizeUserInput sanitize and is hidden from display surfaces by
 		// stripModeNotices.
 		const notice = this.options.consumeModeSwitchNotice?.(sessionId)
-		const noticedPrompt = notice ? `${formatModeSwitchNotice(notice.from, notice.to)}\n${prompt}` : prompt
+		const mcpNotice = this.options.consumeMcpChangeNotice?.(sessionId)
+		const noticedPrompt = [mcpNotice, notice ? formatModeSwitchNotice(notice.from, notice.to) : undefined, prompt]
+			.filter(Boolean)
+			.join("\n")
 		this.options.onSendStart?.(sessionId, delivery)
 		sdkHost
 			.send({

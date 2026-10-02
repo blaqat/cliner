@@ -27,6 +27,10 @@ describe("SdkTaskControlCoordinator", () => {
 
 		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cancelled")
 		expect(activeSession.sdkHost.abort).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.cancelHeldSends.mock.invocationCallOrder[0]).toBeLessThan(
+			activeSession.sdkHost.abort.mock.invocationCallOrder[0],
+		)
 		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ type: "ask", ask: "resume_task" })],
@@ -57,6 +61,7 @@ describe("SdkTaskControlCoordinator", () => {
 		)
 		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
 		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+		expect(options.sessions.cancelHeldSends).not.toHaveBeenCalled()
 	})
 
 	it("focuses an existing live task without reloading or stopping it", async () => {
@@ -116,6 +121,7 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.rebuilds.runTaskTransition).toHaveBeenCalledOnce()
 		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
 		expect(options.sessions.focusSession).toHaveBeenCalledWith()
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
 		expect(options.messages.finalizeMessagesForSave).not.toHaveBeenCalled()
 		expect(options.messages.cancelPendingSave).toHaveBeenCalledOnce()
 		expect(task.messageStateHandler.clear).not.toHaveBeenCalled()
@@ -138,6 +144,7 @@ describe("SdkTaskControlCoordinator", () => {
 		const clear = coordinator.clearTask()
 		await Promise.resolve()
 
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
 		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
 
 		releaseRebuild()
@@ -580,6 +587,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 			endActiveSession: vi.fn().mockResolvedValue(input.activeSession),
 			focusSession: vi.fn(),
 			fireAndForgetSend: vi.fn(),
+			cancelHeldSends: vi.fn(),
 			setRunning: vi.fn(),
 		},
 		interactions: {
@@ -635,6 +643,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 			endActiveSession: ReturnType<typeof vi.fn>
 			focusSession: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
+			cancelHeldSends: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 		}
 		interactions: SdkTaskControlCoordinatorOptions["interactions"] & { clearPending: ReturnType<typeof vi.fn> }
