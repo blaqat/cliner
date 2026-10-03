@@ -35,6 +35,9 @@ import deepEqual from "fast-deep-equal"
 import * as fs from "fs/promises"
 import ReconnectingEventSource from "reconnecting-eventsource"
 import { z } from "zod"
+import { HookExecutionError } from "@/core/hooks/HookError"
+import { HookFactory } from "@/core/hooks/hook-factory"
+import { getHooksEnabledSafe } from "@/core/hooks/hooks-utils"
 import { HostProvider } from "@/hosts/host-provider"
 import { fetch } from "@/shared/net"
 import { ShowMessageType } from "@/shared/proto/host/window"
@@ -45,9 +48,10 @@ import { McpOAuthManager } from "./McpOAuthManager"
 import { StreamableHttpReconnectHandler } from "./StreamableHttpReconnectHandler"
 import { McpSettingsSchema, McpTimeoutSecondsSchema, ServerConfigSchema } from "./schemas"
 import { updateMcpSettingsFile } from "./settingsLock"
-import { runMcpStartHook } from "./startHook"
 import { augmentMcpTimeoutError, resolveMcpServerTimeoutMs } from "./timeout"
 import type { McpConnection, McpServerConfig, Transport } from "./types"
+
+type McpServerStartReason = "initial" | "restart" | "reconnect" | "config_changed"
 
 function stableJsonStringify(value: unknown): string {
 	if (value === undefined) {
@@ -394,16 +398,17 @@ export class McpHub {
 		name: string,
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "rpc" | "internal",
+		reason: McpServerStartReason = "initial",
 	): Promise<void> {
 		this.connectingServers ??= new Map()
 		const pending = this.connectingServers.get(name)
 		if (pending) {
 			if (!this.configsRequireRestart(pending.config, config)) return pending.promise
 			await this.deleteConnection(name)
-			return this.connectToServer(name, config, source)
+			return this.connectToServer(name, config, source, "config_changed")
 		}
 		const controller = new AbortController()
-		const attempt = this.connectToServerOnce(name, config, source, controller.signal)
+		const attempt = this.connectToServerOnce(name, config, source, controller.signal, reason)
 		this.connectingServers.set(name, { config, promise: attempt, controller })
 		try {
 			await attempt
@@ -417,6 +422,7 @@ export class McpHub {
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "rpc" | "internal",
 		signal: AbortSignal,
+		reason: McpServerStartReason,
 	): Promise<void> {
 		// Remove existing connection if it exists (should never happen, the connection should be deleted beforehand)
 		this.connections = this.connections.filter((conn) => conn.server.name !== name)
@@ -496,26 +502,41 @@ export class McpHub {
 			const configForStorage = JSON.stringify(config)
 
 			// Expand environment variables in config before using it
-			let expandedConfig = expandEnvironmentVariables(config)
-			if (expandedConfig.startHook) {
-				const pendingConnection: McpConnection = {
-					server: { name, config: configForStorage, status: "connecting", error: "Running start hook…" },
-					client: null as unknown as Client,
-					transport: null as unknown as Transport,
+			const expandedConfig = expandEnvironmentVariables(config)
+			if (getHooksEnabledSafe(StateManager.get().getGlobalSettingsKey("hooksEnabled"))) {
+				const runner = await new HookFactory().createWithStreaming("McpServerStart", undefined, signal)
+				if (signal.aborted) return
+				if (!runner.isNoOp) {
+					const pendingConnection: McpConnection = {
+						server: { name, config: configForStorage, status: "connecting" },
+						client: null as unknown as Client,
+						transport: null as unknown as Transport,
+					}
+					this.connections.push(pendingConnection)
+					await this.notifyWebviewOfServerChanges()
+					if (signal.aborted) return
+					const output = await runner.run({
+						mcpServerStart: {
+							serverName: name,
+							transportType: config.type,
+							reason,
+							...(config.type === "stdio"
+								? { command: config.command, args: config.args ?? [] }
+								: { url: config.url, args: [] }),
+						},
+					})
+					if (signal.aborted) return
+					if (output.errorMessage) throw new Error(output.errorMessage)
+					if (output.cancel) {
+						pendingConnection.server.status = "disconnected"
+						pendingConnection.server.error = "Skipped by McpServerStart hook"
+						await this.notifyWebviewOfServerChanges()
+						return
+					}
+					this.connections = this.connections.filter((conn) => conn !== pendingConnection)
 				}
-				this.connections.push(pendingConnection)
-				await this.notifyWebviewOfServerChanges()
-				if (signal.aborted) {
-					await cancelled()
-					return
-				}
-				expandedConfig = await runMcpStartHook(name, expandedConfig, signal)
-				if (signal.aborted) {
-					await cancelled()
-					return
-				}
-				this.connections = this.connections.filter((conn) => conn !== pendingConnection)
 			}
+			if (signal.aborted) return
 
 			// Each MCP server requires its own transport connection and has unique capabilities, configurations, and error handling. Having separate clients also allows proper scoping of resources/tools and independent server management like reconnection.
 			const client = new Client(
@@ -695,7 +716,7 @@ export class McpHub {
 					const reconnectHandler = new StreamableHttpReconnectHandler(name, {
 						findConnection: () => this.findConnection(name, source),
 						deleteConnection: () => this.deleteConnection(name),
-						connectToServer: () => this.connectToServer(name, config, source),
+						connectToServer: () => this.connectToServer(name, config, source, "reconnect"),
 						notifyWebviewOfServerChanges: () => this.notifyWebviewOfServerChanges(),
 						appendErrorMessage: (conn, msg) => this.appendErrorMessage(conn as McpConnection, msg),
 						delay: (ms) => setTimeoutPromise(ms),
@@ -911,7 +932,9 @@ export class McpHub {
 			}
 			connection.server.status = "disconnected"
 			connection.server.error = ""
-			this.appendErrorMessage(connection, error instanceof Error ? error.message : String(error))
+			const message = error instanceof Error ? error.message : String(error)
+			const tail = HookExecutionError.isHookError(error) ? error.errorInfo.stderr?.slice(-4000).trim() : undefined
+			this.appendErrorMessage(connection, tail ? `${message}\n${tail}` : message)
 			await this.notifyWebviewOfServerChanges()
 			throw error
 		}
@@ -1331,7 +1354,10 @@ export class McpHub {
 	async updateServerConnectionsRPC(newServers: Record<string, McpServerConfig>): Promise<void> {
 		this.isConnecting = true
 		this.removeAllFileWatchers()
-		const currentNames = new Set(this.connections.map((conn) => conn.server.name))
+		const currentNames = new Set([
+			...this.connections.map((conn) => conn.server.name),
+			...(this.connectingServers?.keys() ?? []),
+		])
 		const newNames = new Set(Object.keys(newServers))
 
 		// Delete removed servers
@@ -1367,7 +1393,7 @@ export class McpHub {
 						this.setupFileWatcher(name, config)
 					}
 					await this.deleteConnection(name) // Don't clear OAuth - just reconnecting with new config
-					await this.connectToServer(name, config, "rpc")
+					await this.connectToServer(name, config, "rpc", "config_changed")
 					Logger.log(`Reconnected MCP server with updated config: ${name}`)
 				} catch (error) {
 					Logger.error(`Failed to reconnect MCP server ${name}:`, error)
@@ -1402,7 +1428,10 @@ export class McpHub {
 	async updateServerConnections(newServers: Record<string, McpServerConfig>): Promise<void> {
 		this.isConnecting = true
 		this.removeAllFileWatchers()
-		const currentNames = new Set(this.connections.map((conn) => conn.server.name))
+		const currentNames = new Set([
+			...this.connections.map((conn) => conn.server.name),
+			...(this.connectingServers?.keys() ?? []),
+		])
 		const newNames = new Set(Object.keys(newServers))
 
 		// Track if any connection-level changes occurred (excludes Cline-specific settings)
@@ -1453,7 +1482,7 @@ export class McpHub {
 						this.setupFileWatcher(name, config)
 					}
 					await this.deleteConnection(name)
-					await this.connectToServer(name, config, "internal")
+					await this.connectToServer(name, config, "internal", "config_changed")
 					Logger.log(`Reconnected MCP server with updated config: ${name}`)
 					connectionChangesOccurred = true
 				} catch (error) {
@@ -1610,7 +1639,7 @@ export class McpHub {
 			try {
 				await this.deleteConnection(serverName)
 				// Try to connect again using existing config
-				await this.connectToServer(serverName, JSON.parse(inMemoryConfig), "rpc")
+				await this.connectToServer(serverName, JSON.parse(inMemoryConfig), "rpc", "restart")
 			} catch (error) {
 				Logger.error(`Failed to restart connection for ${serverName}:`, error)
 			}
@@ -1645,7 +1674,7 @@ export class McpHub {
 			try {
 				await this.deleteConnection(serverName)
 				// Try to connect again using existing config
-				await this.connectToServer(serverName, JSON.parse(config), "internal")
+				await this.connectToServer(serverName, JSON.parse(config), "internal", "restart")
 				HostProvider.window.showMessage({
 					type: ShowMessageType.INFORMATION,
 					message: `${serverName} MCP server connected`,
@@ -1754,7 +1783,7 @@ export class McpHub {
 			const mcpServers = config.mcpServers as Record<string, McpServerConfig>
 			const newConfig = mcpServers[serverName]
 			await this.deleteConnection(serverName)
-			await this.connectToServer(serverName, newConfig, "rpc")
+			await this.connectToServer(serverName, newConfig, "rpc", "config_changed")
 
 			// Refresh the SDK session's tool list to reflect the server
 			// appearing or disappearing.

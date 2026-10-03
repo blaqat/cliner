@@ -14,14 +14,14 @@ function show(status: McpServer["status"], error: string) {
 }
 
 describe("MCP startup hook status", () => {
-	it("shows a running hook without a retry button or failure styling", () => {
-		show("connecting", "Running start hook…")
-		expect(screen.getByText("Running start hook…")).toHaveClass("text-description")
-		expect(screen.queryByRole("button", { name: "Retrying..." })).not.toBeInTheDocument()
+	it("shows a skipped connection and lets the user retry", () => {
+		show("disconnected", "Skipped by McpServerStart hook")
+		expect(screen.getByText("Skipped by McpServerStart hook")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Retry Connection" })).toBeEnabled()
 	})
 	it("shows hook failure and lets the user retry", () => {
-		show("disconnected", "Start hook failed: invalid credentials")
-		expect(screen.getByText("Start hook failed: invalid credentials")).toHaveClass("text-failed-icon")
+		show("disconnected", "McpServerStart hook failed: invalid credentials")
+		expect(screen.getByText("McpServerStart hook failed: invalid credentials")).toHaveClass("text-failed-icon")
 		expect(screen.getByRole("button", { name: "Retry Connection" })).toBeEnabled()
 	})
 })
