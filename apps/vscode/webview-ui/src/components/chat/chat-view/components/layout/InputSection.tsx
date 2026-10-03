@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
-import QuotedMessagePreview from "@/components/chat/QuotedMessagePreview"
+import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePromptStash } from "../../hooks/usePromptStash"
 import { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
@@ -28,7 +28,6 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	const {
 		quotes,
 		setQuotes,
-		isTextAreaFocused,
 		inputValue,
 		setInputValue,
 		sendingDisabled,
@@ -60,7 +59,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 			? "Interject with Enter, steer with Ctrl/⌘+Enter"
 			: "Steer with Enter, interject with Ctrl/⌘+Enter"
 
-	// Focus the note of a quote only when it was just added, not when quotes are restored in bulk.
+	// Open the note editor of a quote only when it was just added, not when quotes are restored in bulk.
 	const prevQuoteCountRef = useRef(quotes.length)
 	const focusNewQuoteNote = quotes.length === prevQuoteCountRef.current + 1
 	useEffect(() => {
@@ -106,56 +105,44 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	)
 
 	return (
-		<>
-			{quotes.length > 0 && (
-				<div className="flex flex-col gap-0.5" style={{ marginBottom: "-12px", marginTop: "10px" }}>
-					{quotes.map((quote, index) => (
-						<QuotedMessagePreview
-							autoFocusNote={focusNewQuoteNote && index === quotes.length - 1}
-							isFocused={isTextAreaFocused}
-							// biome-ignore lint/suspicious/noArrayIndexKey: quotes have no id and are only appended or removed
-							key={index}
-							note={quote.note}
-							onDismiss={() => setQuotes((current) => current.filter((_, i) => i !== index))}
-							onNoteChange={(note) =>
-								setQuotes((current) => current.map((q, i) => (i === index ? { ...q, note } : q)))
-							}
-							onNoteDone={focusComposer}
-							text={quote.text}
-						/>
-					))}
-				</div>
-			)}
-
-			<ChatTextArea
-				enterSendsAs={enterSendsAs}
-				hasQuotes={quotes.length > 0}
-				inputValue={inputValue}
-				isHome={!currentTaskItem}
-				isRunning={isRunning}
-				onDeleteStash={promptStash.remove}
-				onFocusChange={handleFocusChange}
-				onHeightChange={() => {
-					if (isAtBottom) {
-						scrollToBottomAuto()
-					}
-				}}
-				onRestoreStash={handleRestoreStash}
-				onSelectFilesAndImages={selectFilesAndImages}
-				onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}
-				onSendAs={handleSendAs}
-				onStash={handleStash}
-				placeholderText={isRunning ? runningPlaceholder : placeholderText}
-				ref={textAreaRef}
-				selectedFiles={selectedFiles}
-				selectedImages={selectedImages}
-				sendingDisabled={submitDisabled}
-				setInputValue={setInputValue}
-				setSelectedFiles={setSelectedFiles}
-				setSelectedImages={setSelectedImages}
-				shouldDisableFilesAndImages={shouldDisableFilesAndImages}
-				stashEntries={promptStash.entries}
-			/>
-		</>
+		<ChatTextArea
+			enterSendsAs={enterSendsAs}
+			hasQuotes={quotes.length > 0}
+			inputValue={inputValue}
+			isHome={!currentTaskItem}
+			isRunning={isRunning}
+			onDeleteStash={promptStash.remove}
+			onFocusChange={handleFocusChange}
+			onHeightChange={() => {
+				if (isAtBottom) {
+					scrollToBottomAuto()
+				}
+			}}
+			onRestoreStash={handleRestoreStash}
+			onSelectFilesAndImages={selectFilesAndImages}
+			onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}
+			onSendAs={handleSendAs}
+			onStash={handleStash}
+			placeholderText={isRunning ? runningPlaceholder : placeholderText}
+			quoteTags={
+				quotes.length > 0 ? (
+					<QuoteTagList
+						autoOpenIndex={focusNewQuoteNote ? quotes.length - 1 : undefined}
+						focusComposer={focusComposer}
+						quotes={quotes}
+						setQuotes={setQuotes}
+					/>
+				) : undefined
+			}
+			ref={textAreaRef}
+			selectedFiles={selectedFiles}
+			selectedImages={selectedImages}
+			sendingDisabled={submitDisabled}
+			setInputValue={setInputValue}
+			setSelectedFiles={setSelectedFiles}
+			setSelectedImages={setSelectedImages}
+			shouldDisableFilesAndImages={shouldDisableFilesAndImages}
+			stashEntries={promptStash.entries}
+		/>
 	)
 }

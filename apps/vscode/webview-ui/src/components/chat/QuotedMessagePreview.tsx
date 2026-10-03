@@ -2,7 +2,7 @@ import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import React from "react"
 import styled from "styled-components"
 
-const PreviewContainer = styled.div`
+const PreviewContainer = styled.div<{ $compact?: boolean }>`
 	background-color: var(--vscode-input-background); /* Outer box matches text area */
 	/* border-left: 3px solid var(--vscode-textBlockQuote-border); */ /* Remove left border */
 	/* border-top: 1px solid var(--vscode-editorGroup-border); */ /* Remove top border */
@@ -12,6 +12,8 @@ const PreviewContainer = styled.div`
 	display: flex;
 	/* flex-direction: column; */ /* No longer needed as Label is removed */
 	position: relative; /* Keep for button positioning */
+
+	${(props) => (props.$compact ? "margin: 0; padding: 0; background-color: transparent;" : "")}
 `
 
 // Removed Label component
@@ -95,6 +97,8 @@ interface QuotedMessagePreviewProps {
 	/** Called when Enter or Escape is pressed in the note input, e.g. to return focus to the composer. */
 	onNoteDone?: () => void
 	autoFocusNote?: boolean
+	/** Drops the panel margins so the editor fits inside a popover. */
+	compact?: boolean
 }
 
 const QuotedMessagePreview: React.FC<QuotedMessagePreviewProps> = ({
@@ -105,11 +109,12 @@ const QuotedMessagePreview: React.FC<QuotedMessagePreviewProps> = ({
 	onNoteChange,
 	onNoteDone,
 	autoFocusNote,
+	compact,
 }) => {
 	const _cardClassName = `reply-card ${isFocused ? "reply-card--focused" : ""}`
 
 	return (
-		<PreviewContainer>
+		<PreviewContainer $compact={compact}>
 			{/* Removed Label */}
 			<ContentRow>
 				<ReplyIcon className="codicon codicon-reply" />

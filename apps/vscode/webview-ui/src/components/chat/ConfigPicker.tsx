@@ -61,6 +61,8 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 		).catch((error) => console.error("Failed to update chat configuration:", error))
 	const current = profiles.find((profile) => profile.id === currentId)
 	const modeLabel = mode === "plan" ? "Ask" : "Act"
+	// The home screen only marks the default; a non-default pick there needs no "next chat" label.
+	const scopeLabel = composerNextMessageOnly ? "next message" : isDefault ? "default" : currentTaskItem ? "chat" : undefined
 	const effective = focusedSessionModels?.[mode]
 	const pending =
 		!!effective &&
@@ -105,15 +107,7 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 					<span className="truncate">
 						{current?.name ?? fallbackLabel}
 						{pending ? " (pending)" : ""}
-						<span className="ml-1 opacity-60">
-							{composerNextMessageOnly
-								? "next message"
-								: isDefault
-									? "default"
-									: currentTaskItem
-										? "chat"
-										: "next chat"}
-						</span>
+						{scopeLabel && <span className="ml-1 opacity-60">{scopeLabel}</span>}
 					</span>
 				</SelectValue>
 			</SelectTrigger>

@@ -78,6 +78,8 @@ interface ChatTextAreaProps {
 	inputValue: string
 	/** Whether quotes are attached above the composer; counts as draft content for Esc-to-stash. */
 	hasQuotes?: boolean
+	/** Quote chips shown in one row at the top of the input box. */
+	quoteTags?: React.ReactNode
 	setInputValue: (value: string) => void
 	sendingDisabled: boolean
 	placeholderText: string
@@ -111,6 +113,8 @@ interface GitCommit {
 	label: string
 	description: string
 }
+
+const QUOTE_ROW_HEIGHT = 24
 
 const PLAN_MODE_COLOR = "var(--vscode-activityWarningBadge-background)"
 const ACT_MODE_COLOR = "var(--vscode-focusBorder)"
@@ -235,6 +239,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			onHeightChange,
 			onFocusChange,
 			hasQuotes = false,
+			quoteTags,
 			stashEntries = [],
 			onStash,
 			onRestoreStash,
@@ -267,6 +272,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const slashCommandsMenuContainerRef = useRef<HTMLDivElement>(null)
 
 		const [thumbnailsHeight, setThumbnailsHeight] = useState(0)
+		// Space reserved above the text for the quote chip row.
+		const quoteRowHeight = quoteTags ? QUOTE_ROW_HEIGHT : 0
 		const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
 		const [showContextMenu, setShowContextMenu] = useState(false)
 		const [cursorPosition, setCursorPosition] = useState(0)
@@ -1540,7 +1547,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							borderRight: isTextAreaFocused ? 0 : undefined,
 							borderTop: isTextAreaFocused ? 0 : undefined,
 							borderBottom: isTextAreaFocused ? 0 : undefined,
-							padding: `9px ${inputPaddingRight}px ${9 + thumbnailsHeight}px 9px`,
+							padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${9 + thumbnailsHeight}px 9px`,
 						}}
 					/>
 					<DynamicTextArea
@@ -1596,7 +1603,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							// borderTop: "9px solid transparent",
 							borderLeft: 0,
 							borderRight: 0,
-							borderTop: 0,
+							borderTop: `${quoteRowHeight}px solid transparent`,
 							borderBottom: `${thumbnailsHeight}px solid transparent`,
 							borderColor: "transparent",
 							// borderRight: "54px solid transparent",
@@ -1617,6 +1624,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						}}
 						value={inputValue}
 					/>
+					{quoteTags && (
+						<div className="absolute top-3.5 left-5.5 right-5.5 z-2 h-5" data-testid="composer-quote-row">
+							{quoteTags}
+						</div>
+					)}
 					{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
 						<div className="text-xs absolute bottom-5 left-6.5 right-16 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
 							Type @ for context, / for slash commands & workflows, hold shift to drag in files/images

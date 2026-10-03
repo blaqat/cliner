@@ -24,9 +24,11 @@ vi.mock("@/components/chat/ChatTextArea", () => ({
 			onStash?: () => boolean
 			onRestoreStash?: (id: string) => void
 			stashEntries?: { id: string; text: string }[]
+			quoteTags?: React.ReactNode
 		}
-	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [] }, ref) => (
+	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [], quoteTags }, ref) => (
 		<>
+			{quoteTags}
 			<button onClick={() => onStash?.()} type="button">
 				Stash
 			</button>
@@ -280,7 +282,7 @@ describe("InputSection", () => {
 				/>,
 			)
 
-		it("renders every quote with a note input and a remove button", () => {
+		it("renders quotes as inline tags inside the composer, not a stacked note panel", () => {
 			const setQuotes = vi.fn()
 			renderSection(
 				makeChatState({
@@ -292,32 +294,23 @@ describe("InputSection", () => {
 				}),
 			)
 
+			expect(screen.getAllByTestId("quote-tag")).toHaveLength(2)
 			expect(screen.getByText("first passage")).toBeInTheDocument()
-			expect(screen.getByText("second passage")).toBeInTheDocument()
-			const notes = screen.getAllByLabelText("Note on this quote")
-			expect(notes).toHaveLength(2)
-			expect(notes[1]).toHaveValue("why?")
+			expect(screen.queryByLabelText("Note on this quote")).toBeNull()
 
-			fireEvent.change(notes[0], { target: { value: "check this" } })
-			const noteUpdate = setQuotes.mock.calls[0][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
-			expect(
-				noteUpdate([
-					{ text: "first passage", note: "" },
-					{ text: "second passage", note: "why?" },
-				]),
-			).toEqual([
-				{ text: "first passage", note: "check this" },
-				{ text: "second passage", note: "why?" },
-			])
-
-			fireEvent.click(screen.getAllByLabelText("Dismiss quote")[0])
-			const removal = setQuotes.mock.calls[1][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
+			fireEvent.click(screen.getAllByRole("button", { name: "Remove quote" })[0])
+			const removal = setQuotes.mock.calls[0][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
 			expect(
 				removal([
 					{ text: "first passage", note: "" },
 					{ text: "second passage", note: "why?" },
 				]),
 			).toEqual([{ text: "second passage", note: "why?" }])
+		})
+
+		it("renders no quote row without quotes", () => {
+			renderSection(makeChatState())
+			expect(screen.queryByTestId("quote-tag-list")).toBeNull()
 		})
 
 		it("stashes text + quotes and clears them, then restores the entry", () => {

@@ -169,6 +169,16 @@ describe("ConfigPicker", () => {
 		expect(mocks.state.actProfileId).toBe("p1")
 	})
 
+	it("labels the default on the home screen but not a next-chat override", () => {
+		const { unmount } = render(<ConfigPicker fallbackLabel="x" mode="act" />)
+		expect(screen.getByTestId("config-picker")).toHaveTextContent("Claude workdefault")
+		unmount()
+		mocks.state.composerApiSelection = { actProfileId: "p2" }
+		render(<ConfigPicker fallbackLabel="x" mode="act" />)
+		expect(screen.getByTestId("config-picker")).toHaveTextContent(/^Local vLLM$/)
+		expect(screen.getByTestId("config-picker")).not.toHaveTextContent("next chat")
+	})
+
 	it("falls back to the model label when nothing is assigned", () => {
 		mocks.state = { apiConfigProfiles: [] }
 		render(<ConfigPicker fallbackLabel="anthropic:claude-sonnet" mode="plan" />)
