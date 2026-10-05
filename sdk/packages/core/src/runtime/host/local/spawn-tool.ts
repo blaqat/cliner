@@ -5,31 +5,33 @@ import type {
 	ToolApprovalResult,
 } from "@cline/shared";
 import {
+	createAskModeMcpGateExtension,
+	MCP_TOOL_METADATA_KEY,
+} from "../../../extensions/mcp";
+import {
 	createBuiltinTools,
 	type ToolExecutors,
 	ToolPresets,
 } from "../../../extensions/tools";
+import {
+	createPlanModeCommandGuardExtension,
+	PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
+} from "../../../extensions/tools/command-guard-extension";
 import type {
 	SpawnAgentInput,
 	SubAgentEndContext,
 	SubAgentStartContext,
 } from "../../../extensions/tools/team";
 import { createSpawnAgentTool } from "../../../extensions/tools/team";
-import {
-	createPlanModeCommandGuardExtension,
-	PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
-} from "../../../extensions/tools/command-guard-extension";
-import {
-	createAskModeMcpGateExtension,
-	MCP_TOOL_METADATA_KEY,
-} from "../../../extensions/mcp";
 import { buildTelemetryAgentIdentity } from "../../../services/agent-events";
 import { filterDisabledTools } from "../../../services/global-settings";
 import {
 	captureAgentCreated,
 	captureSubagentExecution,
 } from "../../../services/telemetry/core-events";
+import { makeSubSessionId } from "../../../session/models/session-graph";
 import type { CoreSessionConfig } from "../../../types/config";
+import type { CoreSessionEvent } from "../../../types/events";
 import type { ActiveSession } from "../../../types/session";
 import { filterToolsByPolicies } from "../../orchestration/runtime-builder";
 
@@ -58,6 +60,7 @@ const activeSubagentCounts = new WeakMap<
 >();
 
 export interface SpawnToolDeps {
+	emit?: (event: CoreSessionEvent) => void;
 	requestToolApproval?: (
 		request: ToolApprovalRequest,
 	) => Promise<ToolApprovalResult> | ToolApprovalResult;
@@ -74,8 +77,8 @@ export interface SpawnToolDeps {
 
 export interface SessionSubAgentLifecycleCallbacks {
 	onSubAgentEvent: (event: AgentEvent) => void;
-	onSubAgentStart: (context: SubAgentStartContext) => void;
-	onSubAgentEnd: (context: SubAgentEndContext) => void;
+	onSubAgentStart: (context: SubAgentStartContext) => void | Promise<void>;
+	onSubAgentEnd: (context: SubAgentEndContext) => void | Promise<void>;
 }
 
 export function createSessionSubAgentLifecycleCallbacks(
@@ -85,7 +88,7 @@ export function createSessionSubAgentLifecycleCallbacks(
 ): SessionSubAgentLifecycleCallbacks {
 	return {
 		onSubAgentEvent: (event) => deps.onAgentEvent(rootSessionId, config, event),
-		onSubAgentStart: (context) => {
+		onSubAgentStart: async (context) => {
 			const teamRuntime = deps.getSession(rootSessionId)?.runtime.teamRuntime;
 			deps.subAgentStarts.set(context.subAgentId, {
 				startedAt: Date.now(),
@@ -115,13 +118,34 @@ export function createSessionSubAgentLifecycleCallbacks(
 				agentId: context.subAgentId,
 				...agentIdentity,
 			});
-			void deps.invokeBackendOptional(
-				"handleSubAgentStart",
-				rootSessionId,
-				context,
-			);
+			await deps.invokeBackendOptional("handleSubAgentStart", rootSessionId, {
+				...context,
+				input: {
+					...context.input,
+					access:
+						context.input.access === "write" && config.mode !== "plan"
+							? "write"
+							: "read",
+				},
+			});
+			deps.emit?.({
+				type: "subagent",
+				payload: {
+					sessionId: rootSessionId,
+					childSessionId: makeSubSessionId(rootSessionId, context.subAgentId),
+					agentId: context.subAgentId,
+					parentAgentId: context.parentAgentId,
+					toolCallId: context.toolCallId,
+					prompt: context.input.task,
+					access:
+						context.input.access === "write" && config.mode !== "plan"
+							? "write"
+							: "read",
+					status: "running",
+				},
+			});
 		},
-		onSubAgentEnd: (context) => {
+		onSubAgentEnd: async (context) => {
 			const teamRuntime = deps.getSession(rootSessionId)?.runtime.teamRuntime;
 			const started = deps.subAgentStarts.get(context.subAgentId);
 			const durationMs = started ? Date.now() - started.startedAt : 0;
@@ -146,11 +170,37 @@ export function createSessionSubAgentLifecycleCallbacks(
 				}),
 			});
 			deps.subAgentStarts.delete(context.subAgentId);
-			void deps.invokeBackendOptional(
-				"handleSubAgentEnd",
-				rootSessionId,
-				context,
-			);
+			await deps.invokeBackendOptional("handleSubAgentEnd", rootSessionId, {
+				...context,
+				input: {
+					...context.input,
+					access:
+						context.input.access === "write" && config.mode !== "plan"
+							? "write"
+							: "read",
+				},
+			});
+			deps.emit?.({
+				type: "subagent",
+				payload: {
+					sessionId: rootSessionId,
+					childSessionId: makeSubSessionId(rootSessionId, context.subAgentId),
+					agentId: context.subAgentId,
+					parentAgentId: context.parentAgentId,
+					toolCallId: context.toolCallId,
+					prompt: context.input.task,
+					access:
+						context.input.access === "write" && config.mode !== "plan"
+							? "write"
+							: "read",
+					status:
+						context.error || context.result?.finishReason === "error"
+							? "failed"
+							: context.result?.finishReason === "aborted"
+								? "cancelled"
+								: "completed",
+				},
+			});
 		},
 	};
 }
@@ -323,6 +373,12 @@ export function createSessionSpawnTool(
 						deps.subAgentAborts?.unregister(rootSessionId, toolCallId),
 				}
 			: undefined,
+		onSubAgentMessages: (agentId, messages) =>
+			deps.invokeBackendOptional(
+				"persistSessionMessages",
+				makeSubSessionId(rootSessionId, agentId),
+				messages,
+			),
 		...lifecycle,
 	}) as AgentTool;
 	return {

@@ -20,6 +20,7 @@ export interface ToolApprovalRequest {
 
 export interface SdkInteractionCoordinatorOptions {
 	messages: SdkMessageCoordinator
+	onDecisionMessage?: (agentId: string | undefined, message: ClineMessage) => void
 	getSessionId: () => string
 	postStateToWebview: () => Promise<void>
 	getMode?: () => "plan" | "act"
@@ -51,22 +52,45 @@ export interface SdkInteractionCoordinatorOptions {
 	getCwd?: () => string | undefined
 }
 
-export class SdkInteractionCoordinator {
-	private pendingAskResolve: ((answer: string) => void) | undefined
-	private pendingToolApprovalRequest: ToolApprovalRequest | undefined
-	private pendingToolApprovalResolve: ((result: { approved: boolean; reason?: string }) => void) | undefined
-	private pendingToolApprovalMessage:
-		| {
-				toolCallId: string
-				messageTs: number
-				toolName: string
-		  }
-		| undefined
+type ApprovalResolver = (result: { approved: boolean; reason?: string }) => void
 
-	private toolApprovalQueue: {
-		request: ToolApprovalRequest
-		resolve: (result: { approved: boolean; reason?: string }) => void
-	}[] = []
+export class SdkInteractionCoordinator {
+	private pendingQuestions = new Map<
+		string,
+		{
+			id: string
+			agentId?: string
+			message: ClineMessage
+			resolve: (answer: string) => void
+		}
+	>()
+	private preparingApproval: { request: ToolApprovalRequest; resolve: ApprovalResolver } | undefined
+	private pendingApproval:
+		| { id: string; request: ToolApprovalRequest; message: ClineMessage; resolve: ApprovalResolver }
+		| undefined
+	private toolApprovalQueue: { request: ToolApprovalRequest; resolve: ApprovalResolver }[] = []
+
+	getPendingDecision(agentId?: string): { id: string; message: ClineMessage; kind: "approval" | "question" } | undefined {
+		const approval = this.pendingApproval
+		if (approval && (agentId === undefined || approval.request.agentId === agentId))
+			return { id: approval.id, message: approval.message, kind: "approval" }
+		const question = [...this.pendingQuestions.values()]
+			.reverse()
+			.find((pending) => agentId === undefined || pending.agentId === agentId)
+		return question ? { id: question.id, message: question.message, kind: "question" } : undefined
+	}
+
+	hasPendingDecision(id: string): boolean {
+		return this.pendingApproval?.id === id || this.pendingQuestions.has(id)
+	}
+
+	private updateTurnPhase(): void {
+		const decision = this.getPendingDecision()
+		this.options.setTurnPhase?.(
+			decision ? (decision.kind === "approval" ? "awaiting_approval" : "awaiting_followup") : "streaming",
+			decision?.message.ts,
+		)
+	}
 
 	constructor(private readonly options: SdkInteractionCoordinatorOptions) {}
 
@@ -118,25 +142,13 @@ export class SdkInteractionCoordinator {
 				resolve(result)
 			}
 			const onAbort = () => {
-				const reason = "Agent run aborted"
-				this.options.recordDeniedToolApproval?.(request.toolCallId, request.toolName, reason)
-				this.toolApprovalQueue = this.toolApprovalQueue.filter((pending) => pending.resolve !== settle)
-				if (this.pendingToolApprovalResolve === settle) {
-					const message = this.pendingToolApprovalMessage
-					this.pendingToolApprovalResolve = undefined
-					this.pendingToolApprovalRequest = undefined
-					this.pendingToolApprovalMessage = undefined
-					if (message) this.options.messages.removeMessage(message.messageTs)
-					if (this.toolApprovalQueue.length === 0) this.options.setTurnPhase?.("streaming")
-					void this.showNextToolApproval()
-					void this.options.postStateToWebview()
-				}
-				settle({ approved: false, reason })
+				this.clearPending("Agent run aborted", request.agentId, settle)
 			}
+
 			request.signal?.addEventListener("abort", onAbort, { once: true })
 			this.toolApprovalQueue.push({ request, resolve: settle })
 			if (request.signal?.aborted) onAbort()
-			else if (!this.pendingToolApprovalResolve) void this.showNextToolApproval()
+			else if (!this.pendingApproval && !this.preparingApproval) void this.showNextToolApproval()
 		})
 	}
 
@@ -144,26 +156,27 @@ export class SdkInteractionCoordinator {
 		const pending = this.toolApprovalQueue.shift()
 		if (!pending) return
 		const { request, resolve } = pending
-		this.pendingToolApprovalResolve = resolve
-		this.pendingToolApprovalRequest = request
+		this.pendingApproval = undefined
+		this.preparingApproval = pending
 		// Reserve the active slot before awaiting the preview. Concurrent children queue behind it.
 		try {
 			await this.options.onToolApprovalAsk?.(request)
 		} catch (error) {
 			Logger.warn(`[SdkController] onToolApprovalAsk failed; showing plain approval ask: ${error}`)
 		}
-		if (this.pendingToolApprovalResolve !== resolve) return
+		if (this.preparingApproval !== pending) return
 		const toolAskMessage = buildToolApprovalAskMessage(
 			request.toolName,
 			request.input,
 			this.nextMessageTs(),
 			this.options.getCwd?.(),
 		)
-		this.pendingToolApprovalMessage = {
-			toolCallId: request.toolCallId,
-			messageTs: toolAskMessage.ts,
-			toolName: request.toolName,
-		}
+		const id = String(toolAskMessage.ts)
+		toolAskMessage.decisionId = id
+		this.pendingApproval = { id, request, message: toolAskMessage, resolve }
+		this.preparingApproval = undefined
+		this.options.onDecisionMessage?.(request.agentId, toolAskMessage)
+
 		this.options.messages.appendAndEmit([toolAskMessage], {
 			type: "status",
 			payload: { sessionId: this.options.getSessionId(), status: "running" },
@@ -172,29 +185,39 @@ export class SdkInteractionCoordinator {
 		await this.options.postStateToWebview()
 	}
 
-	async handleAskQuestion(question: string, options: string[], _context: unknown): Promise<string> {
-		const askData: ClineAskQuestion = {
-			question,
-			options: options?.length ? options : undefined,
-		}
+	async handleAskQuestion(
+		question: string,
+		options: string[],
+		context?: { agentId?: string; signal?: AbortSignal },
+	): Promise<string> {
+		if (context?.signal?.aborted) return ""
+		const askData: ClineAskQuestion = { question, options: options?.length ? options : undefined }
+		const ts = this.nextMessageTs()
+		const id = String(ts)
 		const askMessage: ClineMessage = {
-			ts: this.nextMessageTs(),
+			ts,
+			decisionId: id,
 			type: "ask",
 			ask: "followup",
 			text: JSON.stringify(askData),
 			partial: false,
 		}
-
 		const response = new Promise<string>((resolve) => {
-			this.pendingAskResolve = resolve
+			const onAbort = () => this.clearPending("Agent run aborted", context?.agentId, settle)
+			const settle = (answer: string) => {
+				context?.signal?.removeEventListener("abort", onAbort)
+				resolve(answer)
+			}
+			this.pendingQuestions.set(id, { id, agentId: context?.agentId, message: askMessage, resolve: settle })
+			context?.signal?.addEventListener("abort", onAbort, { once: true })
 		})
+		this.options.onDecisionMessage?.(context?.agentId, askMessage)
 		this.options.messages.appendAndEmit([askMessage], {
 			type: "status",
 			payload: { sessionId: this.options.getSessionId(), status: "running" },
 		})
-		this.options.setTurnPhase?.("awaiting_followup", askMessage.ts)
+		this.updateTurnPhase()
 		await this.options.postStateToWebview()
-
 		return response
 	}
 
@@ -203,13 +226,12 @@ export class SdkInteractionCoordinator {
 		responseType: ClineAskResponse | undefined,
 		images?: string[],
 		files?: string[],
+		decisionId?: string,
 	): boolean {
-		if (!this.pendingToolApprovalResolve) {
-			return false
-		}
-
-		const resolve = this.pendingToolApprovalResolve
-		const pendingMessage = this.pendingToolApprovalMessage
+		const decision = this.pendingApproval
+		if (!decision || (decisionId && decision.id !== decisionId)) return false
+		const { resolve, request } = decision
+		const pendingMessage = { toolCallId: request.toolCallId, messageTs: decision.message.ts, toolName: request.toolName }
 
 		if (responseType === "messageResponse") {
 			Logger.log("[SdkController] Leaving pending tool approval open and routing user message as queued follow-up")
@@ -218,9 +240,8 @@ export class SdkInteractionCoordinator {
 			return false
 		}
 
-		this.pendingToolApprovalResolve = undefined
-		this.pendingToolApprovalRequest = undefined
-		this.pendingToolApprovalMessage = undefined
+		if (responseType !== "yesButtonClicked" && responseType !== "noButtonClicked") return false
+		this.pendingApproval = undefined
 
 		const approved = responseType === "yesButtonClicked"
 		Logger.log(`[SdkController] Resolving pending tool approval: approved=${approved} (responseType=${responseType})`)
@@ -230,7 +251,7 @@ export class SdkInteractionCoordinator {
 
 		// Approved or rejected by approval controls, the agent resumes its turn and returns to streaming.
 		// On rejection the agent receives the denial and continues; the SDK drives the next phase.
-		if (this.toolApprovalQueue.length === 0) this.options.setTurnPhase?.("streaming")
+		this.updateTurnPhase()
 		// The reason must state the operation did NOT happen (for edits: the file is
 		// unchanged) — raw feedback alone reads like iteration on an applied change.
 		const denialReason = buildToolApprovalDenialReason(pendingMessage?.toolName, prompt)
@@ -244,6 +265,7 @@ export class SdkInteractionCoordinator {
 				files,
 				partial: false,
 			}
+			this.options.onDecisionMessage?.(request.agentId, userMessage)
 			this.options.messages.appendAndEmit([userMessage], {
 				type: "status",
 				payload: { sessionId: this.options.getSessionId(), status: "running" },
@@ -260,16 +282,12 @@ export class SdkInteractionCoordinator {
 		return true
 	}
 
-	resolvePendingAskQuestion(prompt: string | undefined): boolean {
-		if (!this.pendingAskResolve) {
-			return false
-		}
-
-		const resolve = this.pendingAskResolve
-		this.pendingAskResolve = undefined
+	resolvePendingAskQuestion(prompt: string | undefined, decisionId?: string): boolean {
+		const selectedId = decisionId || this.getPendingDecision()?.id
+		const pending = selectedId ? this.pendingQuestions.get(selectedId) : undefined
+		if (!pending) return false
+		this.pendingQuestions.delete(pending.id)
 		const responseText = prompt ?? ""
-		Logger.log(`[SdkController] Resolving pending ask_question with: "${responseText.substring(0, 80)}"`)
-
 		if (responseText) {
 			const userMessage: ClineMessage = {
 				ts: this.nextMessageTs(),
@@ -278,46 +296,46 @@ export class SdkInteractionCoordinator {
 				text: responseText,
 				partial: false,
 			}
+			this.options.onDecisionMessage?.(pending.agentId, userMessage)
 			this.options.messages.appendAndEmit([userMessage], {
 				type: "status",
 				payload: { sessionId: this.options.getSessionId(), status: "running" },
 			})
 		}
-
-		// User answered the follow-up — the agent resumes its turn.
-		this.options.setTurnPhase?.("streaming")
-		resolve(responseText)
+		this.updateTurnPhase()
+		pending.resolve(responseText)
 		return true
 	}
 
-	clearPending(reason: string): void {
-		for (const pending of this.toolApprovalQueue.splice(0)) {
+	clearPending(reason: string, agentId?: string, resolver?: ApprovalResolver | ((answer: string) => void)): void {
+		const matches = (pending: { request: ToolApprovalRequest; resolve: ApprovalResolver }) =>
+			resolver ? pending.resolve === resolver : agentId === undefined || pending.request.agentId === agentId
+		const approvals = this.toolApprovalQueue.filter(matches)
+		this.toolApprovalQueue = this.toolApprovalQueue.filter((pending) => !matches(pending))
+		if (this.preparingApproval && matches(this.preparingApproval)) {
+			approvals.push(this.preparingApproval)
+			this.preparingApproval = undefined
+		}
+		if (this.pendingApproval && matches(this.pendingApproval)) {
+			approvals.push(this.pendingApproval)
+			this.options.messages.removeMessage(this.pendingApproval.message.ts)
+			this.pendingApproval = undefined
+		}
+		for (const pending of approvals) {
 			this.options.recordDeniedToolApproval?.(pending.request.toolCallId, pending.request.toolName, reason)
 			pending.resolve({ approved: false, reason })
 		}
-		const resolveAsk = this.pendingAskResolve
-		this.pendingAskResolve = undefined
-		// ask_question is awaiting this promise inside the outgoing agent run. Settle it
-		// before session teardown so the run can unwind instead of remaining suspended;
-		// use an empty answer so the lifecycle reason is not presented as user input.
-		resolveAsk?.("")
-
-		const pendingRequest = this.pendingToolApprovalRequest
-		this.pendingToolApprovalRequest = undefined
-		const pendingMessage = this.pendingToolApprovalMessage
-		if (pendingMessage) this.options.messages.removeMessage(pendingMessage.messageTs)
-		this.pendingToolApprovalMessage = undefined
-		if (this.pendingToolApprovalResolve) {
-			// Record before resolving: the denial unblocks the core, which emits the
-			// tool's lifecycle events before the caller's abort lands. Unless the
-			// denial is already recorded, the translator renders those events as a
-			// second tool row next to the still-visible approval ask.
-			if (pendingRequest) {
-				this.options.recordDeniedToolApproval?.(pendingRequest.toolCallId, pendingRequest.toolName, reason)
-			}
-			this.pendingToolApprovalResolve({ approved: false, reason })
-			this.pendingToolApprovalResolve = undefined
+		let clearedQuestion = false
+		for (const [id, pending] of this.pendingQuestions) {
+			if (resolver ? pending.resolve !== resolver : agentId !== undefined && pending.agentId !== agentId) continue
+			clearedQuestion = true
+			this.pendingQuestions.delete(id)
+			this.options.messages.removeMessage(pending.message.ts)
+			pending.resolve("")
 		}
+		if (approvals.length || clearedQuestion) this.updateTurnPhase()
+		if (!this.pendingApproval && !this.preparingApproval) void this.showNextToolApproval()
+		void this.options.postStateToWebview()
 	}
 
 	/**

@@ -32,15 +32,39 @@ describe("collectSubagents", () => {
 		]
 
 		expect(collectSubagents(messages)).toEqual([
-			{ kind: "subagent", id: "11:1", title: "read the code", status: "done", current: false, access: "read" },
-			{ kind: "subagent", id: "11:2", title: "fix the bug", status: "running", current: false, access: "write" },
+			{
+				kind: "subagent",
+				id: "11:1",
+				title: "read the code",
+				status: "done",
+				current: false,
+				previewOnly: true,
+				access: "read",
+			},
+			{
+				kind: "subagent",
+				id: "11:2",
+				title: "fix the bug",
+				status: "running",
+				current: false,
+				previewOnly: true,
+				access: "write",
+			},
 		])
 	})
 
 	it("shows spawns without a status row yet as waiting", () => {
 		const items = collectSubagents([spawn(10, ["explore"], ["write"])])
 		expect(items).toEqual([
-			{ kind: "subagent", id: "10:1", title: "explore", status: "waiting", current: false, access: "write" },
+			{
+				kind: "subagent",
+				id: "10:1",
+				title: "explore",
+				status: "waiting",
+				current: false,
+				previewOnly: true,
+				access: "write",
+			},
 		])
 	})
 
@@ -110,4 +134,54 @@ describe("buildThreadItems", () => {
 		const items = buildThreadItems(focused, [...history, focused], {}, [spawn(10, ["inherited"]), spawn(60, ["own"])])
 		expect(items.filter((it) => it.kind === "subagent").map((it) => it.title)).toEqual(["own"])
 	})
+})
+
+it("uses A as B's parent chip and shows B's siblings from A", () => {
+	const root = item("root", 1)
+	const a = { ...item("a", 2), isSubagent: true, parentTaskId: "root", runtimeOwnerTaskId: "root" }
+	const b = { ...item("b", 3), isSubagent: true, parentTaskId: "a", runtimeOwnerTaskId: "root" }
+	const c = { ...item("c", 4), isSubagent: true, parentTaskId: "a", runtimeOwnerTaskId: "root" }
+	const threads = buildThreadItems(b, [root, a, b, c], {}, [])
+	expect(threads.map((item) => item.id)).toEqual(["a", "b", "c"])
+	expect(threads.find((item) => item.id === "b")).toMatchObject({ parentTaskId: "a", current: true })
+})
+
+it("shows A's own children alongside its siblings and preserves their parent IDs", () => {
+	const root = item("root", 1)
+	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
+	const sibling = item("sibling", 3, { isSubagent: true, parentTaskId: "root" })
+	const b = item("b", 4, { isSubagent: true, parentTaskId: "a" })
+	const threads = buildThreadItems(a, [root, a, sibling, b], { b: "waiting" }, [])
+	expect(threads.map((thread) => thread.id)).toEqual(["root", "a", "sibling", "b"])
+	expect(threads.find((thread) => thread.id === "b")).toMatchObject({ parentTaskId: "a", status: "waiting" })
+	expect(threads.find((thread) => thread.id === "a")).toMatchObject({ parentTaskId: "root", current: true })
+})
+
+it("shows nested transcript children before their saved history is available", () => {
+	const root = item("root", 1)
+	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
+	const messages: ClineMessage[] = [
+		{
+			ts: 10,
+			type: "say",
+			say: "subagent",
+			text: JSON.stringify({
+				items: [{ index: 1, prompt: "B", status: "running", childSessionId: "b" }],
+			}),
+		},
+	]
+	const threads = buildThreadItems(a, [root, a], {}, messages)
+	expect(threads.find((thread) => thread.id === "b")).toMatchObject({
+		parentTaskId: "a",
+		status: "running",
+		previewOnly: false,
+	})
+})
+
+it("does not suppress A's unsaved child when a sibling has the same prompt", () => {
+	const root = item("root", 1)
+	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
+	const sibling = item("sibling", 3, { isSubagent: true, parentTaskId: "root", task: "Same prompt" })
+	const threads = buildThreadItems(a, [root, a, sibling], {}, [spawn(10, ["Same prompt"])])
+	expect(threads.find((thread) => thread.id === "10:1")).toMatchObject({ parentTaskId: "a", previewOnly: true })
 })

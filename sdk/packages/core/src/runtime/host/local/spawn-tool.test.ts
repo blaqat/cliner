@@ -1,7 +1,7 @@
 import type { AgentTool } from "@cline/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SpawnToolDeps } from "./spawn-tool";
 import type { CoreSessionConfig } from "../../../types/config";
+import type { SpawnToolDeps } from "./spawn-tool";
 
 const runMock = vi.fn();
 const agentConstructorSpy = vi.fn();
@@ -11,6 +11,10 @@ vi.mock("../../orchestration/session-runtime-orchestrator", () => {
 		SessionRuntime: class MockSessionRuntime {
 			constructor(config: unknown) {
 				agentConstructorSpy(config);
+			}
+
+			getMessages() {
+				return [];
 			}
 
 			getAgentId(): string {
@@ -347,5 +351,58 @@ describe("subagent settings enforcement", () => {
 			usage: { inputTokens: 1, outputTokens: 1 },
 		});
 		expect(await tool.execute(input, context)).toMatchObject({ text: "done" });
+	});
+});
+
+describe("child lifecycle notification", () => {
+	it("publishes stable child and spawn identities only after the history write completes", async () => {
+		const { createSessionSubAgentLifecycleCallbacks } = await import(
+			"./spawn-tool"
+		);
+		let release!: () => void;
+		const write = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const emit = vi.fn();
+		const deps = {
+			...makeDeps(),
+			emit,
+			invokeBackendOptional: vi.fn(() => write),
+		};
+		const lifecycle = createSessionSubAgentLifecycleCallbacks(
+			deps,
+			makeConfig({ mode: "plan" }),
+			"root",
+		);
+		const started = lifecycle.onSubAgentStart({
+			subAgentId: "a",
+			parentAgentId: "lead",
+			conversationId: "conv-a",
+			toolCallId: "spawn-a",
+			input: { systemPrompt: "Review", task: "Report", access: "write" },
+		});
+		expect(emit).not.toHaveBeenCalled();
+		release();
+		await started;
+		expect(emit).toHaveBeenCalledWith({
+			type: "subagent",
+			payload: {
+				sessionId: "root",
+				childSessionId: "root__a",
+				agentId: "a",
+				parentAgentId: "lead",
+				toolCallId: "spawn-a",
+				prompt: "Report",
+				access: "read",
+				status: "running",
+			},
+		});
+		expect(deps.invokeBackendOptional).toHaveBeenCalledWith(
+			"handleSubAgentStart",
+			"root",
+			expect.objectContaining({
+				input: expect.objectContaining({ access: "read" }),
+			}),
+		);
 	});
 });

@@ -35,6 +35,7 @@ describe("SdkFollowupCoordinator", () => {
 			"yesButtonClicked",
 			undefined,
 			undefined,
+			undefined,
 		)
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
@@ -45,7 +46,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("answer")
 
-		expect(options.interactions.resolvePendingAskQuestion).toHaveBeenCalledWith("answer")
+		expect(options.interactions.resolvePendingAskQuestion).toHaveBeenCalledWith("answer", undefined)
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
 
@@ -138,6 +139,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"do the next thing after this",
 			"messageResponse",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -260,6 +262,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"just give me an answer",
 			"messageResponse",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -736,3 +739,10 @@ function makeTask(taskId: string) {
 		taskState: {},
 	}
 }
+
+it("ignores a stale decision response instead of queuing or resuming a turn", async () => {
+	const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+	await coordinator.askResponse("stale", undefined, undefined, "yesButtonClicked", "awaiting_approval", undefined, "resolved-a")
+	expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+	expect(options.runExclusive).not.toHaveBeenCalled()
+})

@@ -69,6 +69,19 @@ describe("buildInbox", () => {
 		])
 	})
 
+	it("rolls nested subagent totals and waiting counts up to the root", () => {
+		const history = [
+			item("root", NOW),
+			item("a", NOW + 1, { isSubagent: true, parentTaskId: "root" }),
+			item("b", NOW + 2, { isSubagent: true, parentTaskId: "a" }),
+		]
+		for (const counts of [undefined, { root: { total: 2, live: 0 } }]) {
+			const { active } = buildInbox(history, { a: "done", b: "waiting" }, counts)
+			expect(active).toHaveLength(1)
+			expect(active[0]).toMatchObject({ item: { id: "root" }, subagentCount: 2, liveSubagentCount: 1 })
+		}
+	})
+
 	it("shows more than three chats and counts what the limits cut", () => {
 		const history = Array.from({ length: 20 }, (_, i) => item(`t${i}`, NOW - i * MIN))
 		history.push(item("s", NOW, { isSettled: true, settledAt: NOW }))
@@ -100,6 +113,14 @@ describe("buildInbox", () => {
 })
 
 describe("inbox helpers", () => {
+	it("does not count grouped subagents as additional background chats", () => {
+		expect(
+			countBackgroundRunning({ parent: "running", child: "running", other: "running" }, "parent", [
+				item("child", NOW, { isSubagent: true, parentTaskId: "parent" }),
+			]),
+		).toBe(1)
+	})
+
 	it("counts other running tasks for the header indicator", () => {
 		expect(countBackgroundRunning({ a: "running", b: "running", c: "waiting", d: "done" }, "a")).toBe(1)
 		expect(countBackgroundRunning(undefined, undefined)).toBe(0)

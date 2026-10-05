@@ -40,6 +40,13 @@ export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
 export interface ExtensionState {
 	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error">
+	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
+	subagentView?: {
+		parentTaskId: string
+		agentId: string
+		status: "running" | "waiting" | "done" | "error"
+		pendingDecision?: "approval" | "question"
+	} | null
 	/**
 	 * Subagent counts per task id. Live sessions report total spawned + still
 	 * running; settled/history rows fall back to the persisted `subagentCount`
@@ -213,6 +220,7 @@ export interface QueuedPrompt {
 }
 
 export interface ClineMessage {
+	decisionId?: string
 	/** Index in the persisted SDK transcript, for conversation-only forks. */
 	sdkMessageIndex?: number
 	sdkToolCallId?: string
@@ -346,6 +354,8 @@ export interface ClineSayBrowserAction {
 export type SubagentExecutionStatus = "pending" | "running" | "completed" | "failed" | "stopped"
 
 export interface SubagentStatusItem {
+	toolCallId?: string
+	childSessionId?: string
 	index: number
 	prompt: string
 	/** Access level requested via spawn_agent ("read" default, "write" for editing tools). */

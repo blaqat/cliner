@@ -20,6 +20,12 @@ export type HistoryItem = {
 	/** Last real interaction (message, approval, turn); unaffected by settle/favorite/metadata edits. Mirrored into `ts`. */
 	lastActivityTs?: number
 	parentTaskId?: string
+	/** Root session that owns the child runtime and persisted artifacts. */
+	runtimeOwnerTaskId?: string
+	isSubagent?: boolean
+	agentId?: string
+	spawnToolCallId?: string
+	subagentAccess?: "read" | "write"
 	forkedAtTs?: number
 	/** Total subagents ever spawned by this task (persisted for inbox counts). */
 	subagentCount?: number

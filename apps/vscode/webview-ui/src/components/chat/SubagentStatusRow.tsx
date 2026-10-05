@@ -16,6 +16,7 @@ import {
 	NetworkIcon,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { openTask } from "@/components/inbox/sessionActions"
 import MarkdownBlock from "../common/MarkdownBlock"
 import { consumeSubagentExpand, onSubagentExpand } from "./subagentExpand"
 
@@ -274,6 +275,15 @@ export default function SubagentStatusRow({ message, isLast, lastModifiedMessage
 								<div className="mt-1 text-[11px] opacity-70 min-w-0 whitespace-pre-wrap break-words">
 									<span>{statsText}</span>
 								</div>
+							)}
+							{entry.childSessionId && (
+								<button
+									aria-label={`Open subagent ${entry.prompt}`}
+									className="mt-1 text-[11px] text-link bg-transparent border-0 p-0 cursor-pointer"
+									onClick={() => void openTask(entry.childSessionId!)}
+									type="button">
+									Open thread
+								</button>
 							)}
 							{shouldShowStats && hasDetails && (
 								<button

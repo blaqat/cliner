@@ -64,6 +64,29 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.sessions.cancelHeldSends).not.toHaveBeenCalled()
 	})
 
+	it("opens a saved child transcript without offering to resume it or stopping its parent", async () => {
+		const { coordinator, options } = makeCoordinator({ hasHistoryItem: true })
+		options.taskHistory.findHistoryItem.mockResolvedValueOnce({
+			id: "child",
+			task: "Report",
+			isSubagent: true,
+			parentTaskId: "parent",
+		})
+		options.taskHistory.getClineMessages.mockResolvedValueOnce([
+			{ ts: 1, type: "say", say: "task", text: "Report" },
+			{ ts: 2, type: "say", say: "completion_result", text: "# Full report" },
+		])
+		await coordinator.showTaskWithId("child")
+		const task = options.setTask.mock.calls[0][0]
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(2)
+		expect(
+			task.messageStateHandler
+				.getClineMessages()
+				.some((message: ClineMessage) => message.ask === "resume_task" || message.ask === "resume_completed_task"),
+		).toBe(false)
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+	})
+
 	it("focuses an existing live task without reloading or stopping it", async () => {
 		const { options } = makeCoordinator({ hasHistoryItem: true })
 		const focusLiveTask = vi.fn(() => true)
@@ -264,7 +287,15 @@ describe("SdkTaskControlCoordinator", () => {
 		await coordinator.cancelTask(false, action === "interject" ? { text: "new direction" } : undefined)
 		for (const approval of approvals) await expect(approval).resolves.toMatchObject({ approved: false })
 		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
-		expect(interactions.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(false)
+		expect(
+			interactions.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				interactions.getPendingDecision()?.id,
+			),
+		).toBe(false)
 		if (action === "interject") expect(options.sessions.fireAndForgetSend).toHaveBeenCalled()
 		else expect(options.sessions.getActiveSession()?.sdkHost.abort).toHaveBeenCalled()
 	})
@@ -295,7 +326,15 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		expect(interactions.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			interactions.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				interactions.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
 
@@ -317,7 +356,7 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		expect(interactions.resolvePendingAskQuestion("late answer")).toBe(true)
+		expect(interactions.resolvePendingAskQuestion("late answer", interactions.getPendingDecision()?.id)).toBe(true)
 		await expect(questionPromise).resolves.toBe("late answer")
 	})
 
@@ -705,3 +744,31 @@ function makeTask(taskId: string, messages: ClineMessage[] = []) {
 		},
 	}
 }
+
+it("reloads the selected saved child transcript and preserves its nested relationship", async () => {
+	const messages: ClineMessage[] = [
+		{ ts: 1, type: "say", say: "task", text: "B" },
+		{ ts: 2, type: "say", say: "text", text: "Full nested report" },
+	]
+	const { coordinator, options, state } = makeCoordinator({ clineMessages: messages, sessionStatus: "completed" })
+	const child = {
+		id: "root__b",
+		ts: 1,
+		task: "B",
+		tokensIn: 0,
+		tokensOut: 0,
+		totalCost: 0,
+		isSubagent: true,
+		parentTaskId: "root__a",
+		runtimeOwnerTaskId: "root",
+		agentId: "b",
+	}
+	options.taskHistory.findHistoryItem.mockResolvedValue(child)
+	await coordinator.showTaskWithId(child.id)
+	expect(state.task?.taskId).toBe(child.id)
+	expect(state.task?.messageStateHandler.getClineMessages()).toEqual(messages)
+	await coordinator.showTaskWithId(child.id)
+	expect(state.task?.messageStateHandler.getClineMessages()).toEqual(messages)
+	expect(options.applyTaskApiSelection).toBeUndefined()
+	expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+})

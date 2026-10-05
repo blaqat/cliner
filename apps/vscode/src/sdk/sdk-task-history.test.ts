@@ -492,6 +492,72 @@ describe("SdkTaskHistory", () => {
 		expect(result.map((item) => item.sessionId)).toEqual(["root"])
 	})
 
+	it("reopens a saved child report with its parent, spawn identity, reasoning, and full completion", async () => {
+		const child = makeSessionRecord("root__agent", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "agent",
+			prompt: "Report on the SDK",
+			status: "completed",
+			metadata: { spawnToolCallId: "spawn-a", subagentAccess: "read" },
+		})
+		const { history, readMessages } = makeHistory([makeSessionRecord("root"), child])
+		expect((await history.listHistory({ includeSubagents: true })).map((item) => item.sessionId)).toContain("root__agent")
+		await expect(history.findHistoryItem("root__agent")).resolves.toMatchObject({
+			id: "root__agent",
+			isSubagent: true,
+			parentTaskId: "root",
+			agentId: "agent",
+			spawnToolCallId: "spawn-a",
+		})
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "Report on the SDK" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Read the source" },
+					{ type: "text", text: "# Full report\n\n```ts\nconst a = 1\n```" },
+				],
+			},
+		] as never)
+		const messages = await history.getClineMessages("root__agent")
+		expect(messages).toContainEqual(expect.objectContaining({ say: "task", text: "Report on the SDK" }))
+		expect(messages).toContainEqual(expect.objectContaining({ say: "reasoning", text: "Read the source" }))
+		expect(messages).toContainEqual(
+			expect.objectContaining({ say: "completion_result", text: "# Full report\n\n```ts\nconst a = 1\n```" }),
+		)
+	})
+
+	it("restores nested spawn links from a subagent transcript on reopen", async () => {
+		const root = makeSessionRecord("root")
+		const a = makeSessionRecord("root__a", { isSubagent: true, parentSessionId: "root", agentId: "a" })
+		const b = makeSessionRecord("root__b", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "b",
+			metadata: { immediateParentSessionId: a.sessionId, spawnToolCallId: "spawn-b" },
+		})
+		const { history, readMessages } = makeHistory([root, a, b])
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "A" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "spawn-b", name: "spawn_agent", input: { task: "B" } }] },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "spawn-b", content: JSON.stringify({ text: "B report" }) }],
+			},
+		] as never)
+		const messages = await history.getClineMessages(a.sessionId)
+		const status = messages.find((message) => message.say === "subagent")
+		expect(status).toBeDefined()
+		expect(JSON.parse(status!.text!).items).toContainEqual(
+			expect.objectContaining({ childSessionId: b.sessionId, toolCallId: "spawn-b" }),
+		)
+		await expect(history.findHistoryItem(b.sessionId)).resolves.toMatchObject({
+			parentTaskId: a.sessionId,
+			runtimeOwnerTaskId: root.sessionId,
+		})
+	})
+
 	it("finds a task from SDK history", async () => {
 		const record = makeSessionRecord("task-1")
 		const { history } = makeHistory([record])
@@ -1158,3 +1224,21 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 		startSession,
 	}
 }
+
+it("reopens a nested child with its immediate parent and separate runtime owner", () => {
+	const record = makeSessionRecord("root__b", {
+		sessionId: "root__b",
+		parentSessionId: "root",
+		isSubagent: true,
+		agentId: "b",
+		prompt: "B",
+		startedAt: "2026-10-01T00:00:00Z",
+		metadata: { immediateParentSessionId: "root__a", spawnToolCallId: "spawn-b" },
+	})
+	expect(sessionHistoryRecordToHistoryItem(record)).toMatchObject({
+		id: "root__b",
+		parentTaskId: "root__a",
+		runtimeOwnerTaskId: "root",
+		spawnToolCallId: "spawn-b",
+	})
+})

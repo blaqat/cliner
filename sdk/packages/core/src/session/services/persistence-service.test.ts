@@ -533,6 +533,96 @@ describe("UnifiedSessionPersistenceService", () => {
 		},
 	);
 
+	it("reopens separate child transcripts and removes their artifacts with the parent", async () => {
+		const sessionsDir = mkdtempSync(join(tmpdir(), "child-transcript-reopen-"));
+		tempDirs.push(sessionsDir);
+		const service = new FileSessionService(sessionsDir);
+		await createRootSession(service, "parent", "Review the code");
+		for (const agentId of ["a", "b"]) {
+			const context = {
+				subAgentId: agentId,
+				conversationId: `conv-${agentId}`,
+				parentAgentId: "lead",
+				toolCallId: `spawn-${agentId}`,
+				input: {
+					systemPrompt: "Review",
+					task: `Report ${agentId}`,
+					access: "read" as const,
+				},
+			};
+			await service.handleSubAgentStart("parent", context);
+			await service.handleSubAgentEnd("parent", {
+				...context,
+				...(agentId === "b" ? { error: new Error("Interrupted") } : {}),
+				messages: [
+					{ role: "user", content: `Report ${agentId}` },
+					{
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: `Reasoning ${agentId}` },
+							{ type: "text", text: `# Full report ${agentId}` },
+						],
+					},
+				],
+			});
+		}
+		const reopened = new FileSessionService(sessionsDir);
+		const children = (await reopened.listSessions(10)).filter(
+			(row) => row.isSubagent,
+		);
+		expect(children).toHaveLength(2);
+		for (const row of children) {
+			expect(row.metadata).toMatchObject({
+				spawnToolCallId: `spawn-${row.agentId}`,
+				subagentAccess: "read",
+			});
+			if (!row.messagesPath) throw new Error("Missing child transcript path");
+			const saved = JSON.parse(readFileSync(row.messagesPath, "utf8"));
+			expect(saved.messages[0].content).toBe(`Report ${row.agentId}`);
+			expect(saved.messages[1].content).toEqual([
+				{ type: "thinking", thinking: `Reasoning ${row.agentId}` },
+				{ type: "text", text: `# Full report ${row.agentId}` },
+			]);
+		}
+		expect(children.find((row) => row.agentId === "b")?.status).toBe("failed");
+		await reopened.deleteSession("parent");
+		expect(await reopened.listSessions()).toEqual([]);
+		for (const child of children)
+			expect(existsSync(child.messagesPath!)).toBe(false);
+	});
+
+	it("reopens a nested child's immediate parent while keeping root artifact ownership", async () => {
+		const sessionsDir = mkdtempSync(join(tmpdir(), "nested-child-reopen-"));
+		tempDirs.push(sessionsDir);
+		const service = new FileSessionService(sessionsDir);
+		await createRootSession(service, "root", "Root");
+		for (const [agentId, parentAgentId] of [
+			["a", "lead"],
+			["b", "a"],
+		]) {
+			await service.handleSubAgentStart("root", {
+				subAgentId: agentId,
+				conversationId: `conv-${agentId}`,
+				parentAgentId,
+				toolCallId: `spawn-${agentId}`,
+				input: { systemPrompt: "Review", task: agentId, access: "read" },
+			});
+		}
+		const reopened = new FileSessionService(sessionsDir);
+		const children = (await reopened.listSessions(10)).filter(
+			(row) => row.isSubagent,
+		);
+		const a = children.find((row) => row.agentId === "a")!;
+		const b = children.find((row) => row.agentId === "b")!;
+		expect(a.metadata?.immediateParentSessionId).toBe("root");
+		expect(b.metadata?.immediateParentSessionId).toBe(a.sessionId);
+		expect(b.parentSessionId).toBe("root");
+		expect(b.metadata?.spawnToolCallId).toBe("spawn-b");
+		expect(b.messagesPath).toContain("root");
+		await reopened.deleteSession("root");
+		expect(await reopened.listSessions()).toEqual([]);
+	});
+
 	it("persists plain spawn_agent result usage on child messages", async () => {
 		const sessionsDir = mkdtempSync(join(tmpdir(), "spawn-agent-messages-"));
 		tempDirs.push(sessionsDir);

@@ -353,6 +353,8 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"messageResponse",
 				"error",
+				undefined,
+				undefined,
 			)
 
 			// The follow-up answered the error, so a later approval continues the conversation.
@@ -371,6 +373,8 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"yesButtonClicked",
 				"error",
+				undefined,
+				undefined,
 			)
 		})
 	})
@@ -657,9 +661,9 @@ describe("task session contexts", () => {
 		expect(a.task.messageStateHandler.getClineMessages()).toHaveLength(1)
 		expect(b.task.messageStateHandler.getClineMessages()).toHaveLength(0)
 		expect(stream.emitSessionEvents).not.toHaveBeenCalled()
-		expect(b.interactions.resolvePendingAskQuestion("wrong session")).toBe(false)
+		expect(b.interactions.resolvePendingAskQuestion("wrong session", b.interactions.getPendingDecision()?.id)).toBe(false)
 		controller.task = { taskId: "a" }
-		expect(a.interactions.resolvePendingAskQuestion("Answer")).toBe(true)
+		expect(a.interactions.resolvePendingAskQuestion("Answer", a.interactions.getPendingDecision()?.id)).toBe(true)
 		await expect(answer).resolves.toBe("Answer")
 		expect(statuses.a).toBe("running")
 		expect(stream.emitSessionEvents).toHaveBeenCalledOnce()
@@ -711,11 +715,23 @@ describe("child approval task ownership", () => {
 		await vi.waitFor(() => expect(statuses["background-ask"]).toBe("waiting"))
 		expect(focus.task.messageStateHandler.getClineMessages()).toHaveLength(0)
 		expect(stream.emitSessionEvents).not.toHaveBeenCalled()
-		owner.interactions.resolvePendingToolApproval(undefined, "yesButtonClicked")
+		owner.interactions.resolvePendingToolApproval(
+			undefined,
+			"yesButtonClicked",
+			undefined,
+			undefined,
+			owner.interactions.getPendingDecision()?.id,
+		)
 		await expect(first).resolves.toEqual({ approved: true })
 		await vi.waitFor(() => expect(owner.task.messageStateHandler.getClineMessages()).toHaveLength(2))
 		expect(statuses["background-ask"]).toBe("waiting")
-		owner.interactions.resolvePendingToolApproval(undefined, "noButtonClicked")
+		owner.interactions.resolvePendingToolApproval(
+			undefined,
+			"noButtonClicked",
+			undefined,
+			undefined,
+			owner.interactions.getPendingDecision()?.id,
+		)
 		await expect(second).resolves.toMatchObject({ approved: false })
 		expect(statuses["background-ask"]).toBe("running")
 		await expect(focus.interactions.handleRequestToolApproval(request)).resolves.toEqual({ approved: true })
@@ -1274,4 +1290,359 @@ describe("composer selections", () => {
 		expect(globals.actProfileId).toBe("P")
 		expect(config.actModeReasoningEffort).toBe("low")
 	})
+})
+
+describe("subagent thread routing", () => {
+	const route = (controller: unknown, event: import("@cline/core").CoreSessionEvent): boolean =>
+		Reflect.apply(Reflect.get(SdkController.prototype, "handleSubagentEvent"), controller, [event])
+
+	it("retains independent live transcripts for two children and links their spawn calls", () => {
+		const parentTranslator = new MessageTranslatorState()
+		parentTranslator.addSpawnAgent("spawn-a", "Report A")
+		parentTranslator.addSpawnAgent("spawn-b", "Report B")
+		const contexts = new Map<
+			string,
+			{ translator: MessageTranslatorState; messages: SdkMessageCoordinator; turn: { set: ReturnType<typeof vi.fn> } }
+		>()
+		const childTasks = new Map<string, TaskProxy>()
+		const controller = {
+			subagentThreads: new Map(),
+			taskSessions: new Map([["parent", { translator: parentTranslator }]]),
+			sessions: { getSession: () => ({}), setStatus: vi.fn() },
+			taskHistory: { invalidateMetadataHistoryCache: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			getTaskSessionContext: (id: string) => {
+				if (!contexts.has(id)) {
+					const task = createTaskProxy(
+						id,
+						async () => {},
+						async () => {},
+					)
+					childTasks.set(id, task)
+					const append = (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+						task.messageStateHandler.addMessages(messages)
+					contexts.set(id, {
+						translator: new MessageTranslatorState(),
+						messages: { appendMessages: append, appendAndEmit: append } as unknown as SdkMessageCoordinator,
+						turn: { set: vi.fn() },
+					})
+				}
+				return contexts.get(id)!
+			},
+		}
+		for (const child of ["a", "b"]) {
+			expect(
+				route(controller, {
+					type: "subagent",
+					payload: {
+						sessionId: "parent",
+						childSessionId: `parent__${child}`,
+						agentId: child,
+						parentAgentId: "lead",
+						toolCallId: `spawn-${child}`,
+						prompt: `Report ${child.toUpperCase()}`,
+						access: "read",
+						status: "running",
+					},
+				}),
+			).toBe(true)
+			route(controller, {
+				type: "agent_event",
+				payload: {
+					sessionId: "parent",
+					event: {
+						type: "content_start",
+						agentId: child,
+						parentAgentId: "lead",
+						contentType: "text",
+						text: `Report from ${child}`,
+					} as import("@cline/core").AgentEvent,
+				},
+			})
+		}
+		expect(parentTranslator.getSpawnAgent("spawn-a")?.childSessionId).toBe("parent__a")
+		expect(
+			childTasks
+				.get("parent__a")
+				?.messageStateHandler.getClineMessages()
+				.map((message) => message.text),
+		).toEqual(["Report A", "Report from a"])
+		expect(
+			childTasks
+				.get("parent__b")
+				?.messageStateHandler.getClineMessages()
+				.map((message) => message.text),
+		).toEqual(["Report B", "Report from b"])
+	})
+
+	it("forwards only the selected child's approval to the parent's queue and blocks followups", async () => {
+		const resolvePendingToolApproval = vi.fn()
+		const child = { parentTaskId: "parent", agentId: "a" }
+		const parent = {
+			interactions: {
+				getPendingDecision: vi.fn(() => ({ id: "decision-a", kind: "approval" })),
+				resolvePendingToolApproval,
+			},
+		}
+		const controller = {
+			task: { taskId: "child", taskState: { askResponse: "yesButtonClicked" } },
+			subagentThreads: new Map([["child", child]]),
+			taskSessions: new Map([["parent", parent]]),
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "decision-a")
+		expect(parent.interactions.getPendingDecision).toHaveBeenCalledWith("a")
+		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "decision-a")
+		controller.task.taskState.askResponse = "messageResponse"
+		await expect(SdkController.prototype.askResponse.call(controller as never, "Follow up")).rejects.toThrow("read-only")
+		expect(resolvePendingToolApproval).toHaveBeenCalledTimes(1)
+	})
+
+	it("publishes a newer streaming phase when a child's projected approval resolves", async () => {
+		const translator = new MessageTranslatorState()
+		const minter = translator.getMinter()
+		const task = createTaskProxy("child", vi.fn(), vi.fn())
+		const ask = { ts: 5, type: "ask", ask: "tool", text: "{}" } as const
+		let pending = true
+		const controller = {
+			task,
+			subagentThreads: new Map([
+				["child", { id: "child", task: "Report", ts: 1, isSubagent: true, parentTaskId: "parent", agentId: "a" }],
+			]),
+			taskSessions: new Map<string, unknown>([
+				["child", {}],
+				[
+					"parent",
+					{ interactions: { getPendingDecision: () => (pending ? { message: ask, kind: "approval" } : undefined) } },
+				],
+			]),
+			stateManager: { getGlobalSettingsKey: () => undefined, getRemoteConfigSettings: () => ({}), setGlobalState: vi.fn() },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: {
+				listHistory: async () => [
+					{ sessionId: "parent", prompt: "Parent", startedAt: "2026-10-01T00:00:00Z" },
+					{
+						sessionId: "child",
+						prompt: "Report",
+						startedAt: "2026-10-01T00:00:00Z",
+						parentSessionId: "parent",
+						isSubagent: true,
+					},
+				],
+			},
+			sessions: { getActiveSession: () => undefined, sessionStatuses: { child: "running" } },
+			messageTranslatorState: translator,
+			turnStateTracker: { get: () => ({ phase: "streaming", seq: 1 }) },
+		}
+		buildBaseStateMock.mockResolvedValueOnce({ taskHistory: [], clineMessages: [] } as never)
+		const waiting = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(waiting.turnState?.phase).toBe("awaiting_approval")
+		pending = false
+		buildBaseStateMock.mockResolvedValueOnce({ taskHistory: [], clineMessages: [] } as never)
+		const streaming = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(streaming.turnState?.phase).toBe("streaming")
+		expect(streaming.turnState!.seq).toBeGreaterThan(waiting.turnState!.seq)
+		expect(streaming.subagentView?.pendingDecision).toBeUndefined()
+		expect(minter.seq).toBeGreaterThan(streaming.turnState!.seq)
+	})
+
+	it("stops the selected child by its saved spawn call without aborting its parent", async () => {
+		const stopSubagent = vi.fn(async () => true)
+		const controller = {
+			subagentThreads: new Map([["child", { parentTaskId: "parent", spawnToolCallId: "spawn-a" }]]),
+			taskSessions: new Map([["parent", {}]]),
+			sessions: { getSession: () => ({ sdkHost: { stopSubagent } }) },
+		}
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "parent", "child")).resolves.toBe(true)
+		expect(stopSubagent).toHaveBeenCalledWith("parent", "spawn-a")
+	})
+})
+
+describe("nested subagent conversation parents", () => {
+	it.each(["live", "reopened"])("keeps nested children in %s state when A is focused and B returns to A", async (source) => {
+		const a = {
+			id: "root__a",
+			task: "A",
+			ts: 2,
+			isSubagent: true,
+			parentTaskId: "root",
+			runtimeOwnerTaskId: "root",
+			agentId: "a",
+		}
+		const b = {
+			id: "root__b",
+			task: "B",
+			ts: 3,
+			isSubagent: true,
+			parentTaskId: a.id,
+			runtimeOwnerTaskId: "root",
+			agentId: "b",
+		}
+		const records = [
+			{ sessionId: "root", prompt: "Root", startedAt: "2026-10-01T00:00:00Z" },
+			...(source === "reopened"
+				? [a, b].map((child) => ({
+						sessionId: child.id,
+						prompt: child.task,
+						startedAt: "2026-10-01T00:00:01Z",
+						isSubagent: true,
+						parentSessionId: "root",
+						agentId: child.agentId,
+						metadata: { immediateParentSessionId: child.parentTaskId },
+					}))
+				: []),
+		]
+		const controller = {
+			task: createTaskProxy(a.id, vi.fn(), vi.fn()),
+			// Reverse insertion order to cover live children before their parents.
+			subagentThreads: new Map(
+				source === "live"
+					? [
+							[b.id, b],
+							[a.id, a],
+						]
+					: [[a.id, a]],
+			),
+			taskSessions: new Map<string, unknown>([["root", { interactions: { getPendingDecision: () => undefined } }]]),
+			stateManager: { getGlobalSettingsKey: () => undefined, getRemoteConfigSettings: () => ({}), setGlobalState: vi.fn() },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: { listHistory: async () => records },
+			sessions: { getActiveSession: () => undefined, sessionStatuses: { [b.id]: "waiting" } },
+			messageTranslatorState: new MessageTranslatorState(),
+			turnStateTracker: { get: () => ({ phase: "streaming", seq: 1 }) },
+		}
+		const state = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(state.currentTaskItem?.id).toBe(a.id)
+		expect(state.taskHistory.map((item) => item.id)).toEqual(expect.arrayContaining(["root", a.id, b.id]))
+		expect(state.taskHistory.filter((item) => item.id === a.id)).toHaveLength(1)
+		expect(state.sessionStatuses?.[b.id]).toBe("waiting")
+		controller.task = createTaskProxy(b.id, vi.fn(), vi.fn())
+		controller.subagentThreads.set(b.id, b)
+		const childState = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(childState.subagentView?.parentTaskId).toBe(a.id)
+		expect(childState.taskHistory.filter((item) => item.id === a.id)).toHaveLength(1)
+	})
+
+	it("links B in A's translator, streams into B, and routes B's approval and Stop through root", async () => {
+		const rootTranslator = new MessageTranslatorState()
+		rootTranslator.addSpawnAgent("spawn-a", "A")
+		const aTranslator = new MessageTranslatorState()
+		aTranslator.addSpawnAgent("spawn-b", "B")
+		const resolvePendingToolApproval = vi.fn()
+		const clearPending = vi.fn()
+		const stopSubagent = vi.fn(async () => true)
+		const root = {
+			translator: rootTranslator,
+			interactions: {
+				getPendingDecision: () => ({ id: "b-approval", kind: "approval" }),
+				resolvePendingToolApproval,
+				clearPending,
+			},
+		}
+		const aTask = createTaskProxy("root__a", vi.fn(), vi.fn())
+		const bTask = createTaskProxy("root__b", vi.fn(), vi.fn())
+		const context = (task: TaskProxy, translator: MessageTranslatorState) => ({
+			translator,
+			messages: {
+				appendMessages: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+					task.messageStateHandler.addMessages(messages),
+				appendAndEmit: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+					task.messageStateHandler.addMessages(messages),
+			},
+			turn: { set: vi.fn() },
+		})
+		const contexts = new Map<string, unknown>([
+			["root", root],
+			["root__a", context(aTask, aTranslator)],
+			["root__b", context(bTask, new MessageTranslatorState())],
+		])
+		const threads = new Map<string, import("@shared/HistoryItem").HistoryItem>()
+		const controller = {
+			task: bTask,
+			taskSessions: contexts,
+			subagentThreads: threads,
+			sessions: {
+				getSession: (id: string) => (id === "root" ? { sdkHost: { stopSubagent } } : undefined),
+				setStatus: vi.fn(),
+			},
+			taskHistory: { invalidateMetadataHistoryCache: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			getTaskSessionContext: (id: string) => contexts.get(id),
+		}
+		const route = (event: import("@cline/core").CoreSessionEvent) =>
+			Reflect.apply(Reflect.get(SdkController.prototype, "handleSubagentEvent"), controller, [event])
+		for (const [agentId, parentAgentId] of [
+			["a", "lead"],
+			["b", "a"],
+		])
+			route({
+				type: "subagent",
+				payload: {
+					sessionId: "root",
+					childSessionId: `root__${agentId}`,
+					agentId,
+					parentAgentId,
+					toolCallId: `spawn-${agentId}`,
+					prompt: agentId,
+					access: "read",
+					status: "running",
+				},
+			})
+		expect(threads.get("root__b")).toMatchObject({ parentTaskId: "root__a", runtimeOwnerTaskId: "root" })
+		expect(aTranslator.getSpawnAgent("spawn-b")?.childSessionId).toBe("root__b")
+		expect(rootTranslator.getSpawnAgent("spawn-b")).toBeUndefined()
+		route({
+			type: "agent_event",
+			payload: {
+				sessionId: "root",
+				event: {
+					type: "content_start",
+					agentId: "b",
+					parentAgentId: "a",
+					contentType: "text",
+					text: "Nested report",
+				} as import("@cline/core").AgentEvent,
+			},
+		})
+		expect(bTask.messageStateHandler.getClineMessages().at(-1)?.text).toBe("Nested report")
+		expect(aTask.messageStateHandler.getClineMessages()).toHaveLength(1)
+		bTask.taskState.askResponse = "yesButtonClicked"
+		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "b-approval")
+		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "b-approval")
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root__a", "root__b")).resolves.toBe(true)
+		expect(stopSubagent).toHaveBeenCalledWith("root", "spawn-b")
+		expect(clearPending).toHaveBeenCalledWith("Subagent stopped", "b")
+	})
+})
+
+it("marks live descendants stopped with a clear status when their root runtime is replaced", () => {
+	const task = createTaskProxy("root__b", vi.fn(), vi.fn())
+	const clearPending = vi.fn()
+	const context = {
+		translator: new MessageTranslatorState(),
+		messages: {
+			appendMessages: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+				task.messageStateHandler.addMessages(messages),
+		},
+		turn: { set: vi.fn() },
+	}
+	const controller = {
+		taskSessions: new Map([["root", { interactions: { clearPending } }]]),
+		subagentThreads: new Map([
+			["root__b", { id: "root__b", parentTaskId: "root__a", runtimeOwnerTaskId: "root" }],
+			["other__c", { id: "other__c", parentTaskId: "other", runtimeOwnerTaskId: "other" }],
+		]),
+		sessions: { sessionStatuses: { root__b: "waiting", other__c: "running" }, setStatus: vi.fn() },
+		getTaskSessionContext: () => context,
+		postStateToWebview: vi.fn(async () => {}),
+	}
+	Reflect.apply(Reflect.get(SdkController.prototype, "handleParentSessionReplaced"), controller, ["root"])
+	expect(clearPending).toHaveBeenCalledWith("Parent session replaced")
+	expect(task.messageStateHandler.getClineMessages()).toMatchObject([
+		{ say: "error", text: "Subagent stopped because its parent session was rebuilt." },
+	])
+	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root__b", "error")
+	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root", "done")
 })

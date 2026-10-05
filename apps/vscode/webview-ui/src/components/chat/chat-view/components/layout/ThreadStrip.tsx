@@ -15,10 +15,9 @@ interface ThreadChipProps {
 }
 
 const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) => {
-	// Subagent chips don't open a task; they scroll the transcript to the
-	// subagent's status row and expand its details (via onOpenSubagent).
-	const clickable = item.kind === "subagent" ? !!onOpenSubagent : !item.current
-	const handleOpen = () => (item.kind === "subagent" ? onOpenSubagent?.(item) : onOpen(item))
+	// Saved children open through the same task navigation as asides.
+	const clickable = item.previewOnly ? !!onOpenSubagent : !item.current
+	const handleOpen = () => (item.previewOnly ? onOpenSubagent?.(item) : onOpen(item))
 	const tooltip =
 		item.kind === "subagent"
 			? `Subagent (${item.access === "write" ? "read + write" : "read-only"}): ${item.title}`
@@ -118,7 +117,7 @@ const ThreadStrip = ({ messages, onOpenSubagent }: ThreadStripProps) => {
 	const handleClose = (item: ThreadItem) => {
 		setHiddenIds((current) => new Set(current).add(item.id))
 		if (item.kind === "subagent" && item.status === "running" && currentTaskItem) {
-			void stopSubagent(currentTaskItem.id, item.id)
+			void stopSubagent(item.parentTaskId ?? currentTaskItem.id, item.id)
 		}
 		if (item.current) {
 			void openTask(main.id)

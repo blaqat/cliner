@@ -5,7 +5,7 @@ import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
-import type { ClineMessage } from "@shared/ExtensionMessage"
+import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
@@ -214,7 +214,14 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
 		isSettled: metadataBoolean(metadata, "isSettled") ?? false,
 		settledAt: metadataNumber(metadata, "settledAt") || undefined,
-		parentTaskId: metadataString(metadata, "parentTaskId"),
+		parentTaskId: item.isSubagent
+			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
+			: metadataString(metadata, "parentTaskId"),
+		runtimeOwnerTaskId: item.isSubagent ? (item.parentSessionId ?? undefined) : undefined,
+		isSubagent: item.isSubagent || undefined,
+		agentId: item.agentId ?? undefined,
+		spawnToolCallId: metadataString(metadata, "spawnToolCallId"),
+		subagentAccess: metadataString(metadata, "subagentAccess") === "write" ? "write" : "read",
 		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
@@ -232,6 +239,7 @@ export class SdkTaskHistory {
 	private cachedHistoryHostRefCount = 0
 	private cachedHistoryHostIdleTimer?: NodeJS.Timeout
 	private metadataHistoryCache?: {
+		includeSubagents: boolean
 		records: SessionHistoryRecord[]
 		hostLimit: number
 		createdAt: number
@@ -361,7 +369,7 @@ export class SdkTaskHistory {
 		await this.disposeCachedHistoryHost("controllerDispose")
 	}
 
-	private invalidateMetadataHistoryCache(): void {
+	invalidateMetadataHistoryCache(): void {
 		this.metadataHistoryCache = undefined
 	}
 
@@ -426,7 +434,12 @@ export class SdkTaskHistory {
 		const useCache = this.canUseMetadataHistoryCache(options)
 		const now = Date.now()
 		const cached = useCache ? this.metadataHistoryCache : undefined
-		if (cached && cached.hostLimit >= hostLimit && now - cached.createdAt < this.metadataHistoryCacheTtlMs) {
+		if (
+			cached &&
+			cached.includeSubagents === (options.includeSubagents === true) &&
+			cached.hostLimit >= hostLimit &&
+			now - cached.createdAt < this.metadataHistoryCacheTtlMs
+		) {
 			const result = cached.records.slice(offset, offset + limit)
 			return result
 		}
@@ -439,9 +452,10 @@ export class SdkTaskHistory {
 				...hostOptions,
 				limit: hostLimit || 10_000,
 				includeManifestFallback: true,
+				includeSubagents: options.includeSubagents === true,
 			}),
 		)
-		const visibleSdkHistory = sdkHistory.filter((item) => item.isSubagent !== true)
+		const visibleSdkHistory = options.includeSubagents ? sdkHistory : sdkHistory.filter((item) => !item.isSubagent)
 		const sdkIds = new Set(visibleSdkHistory.map((item) => item.sessionId))
 		const legacyHistory = this.readAllLegacyTaskHistory()
 			.filter(({ item }) => item.task && !sdkIds.has(item.id))
@@ -457,6 +471,7 @@ export class SdkTaskHistory {
 		const mergedHistory = [...visibleSdkHistory, ...legacyHistory].sort(compareSessionHistoryRecordsByRecencyDesc)
 		if (useCache) {
 			this.metadataHistoryCache = {
+				includeSubagents: options.includeSubagents === true,
 				records: mergedHistory,
 				hostLimit,
 				createdAt: Date.now(),
@@ -509,6 +524,26 @@ export class SdkTaskHistory {
 				cwd: sdkRecord?.cwd || sdkRecord?.workspaceRoot || undefined,
 			},
 		)
+		if (sdkRecord) {
+			const children = (await this.listHistory({ hydrate: false, includeSubagents: true })).filter(
+				(item) => item.isSubagent && sessionHistoryRecordToHistoryItem(item).parentTaskId === taskId,
+			)
+			for (const message of clineMessages) {
+				if (message.say !== "subagent" || !message.text) continue
+				try {
+					const status = JSON.parse(message.text) as ClineSaySubagentStatus
+					for (const entry of status.items ?? []) {
+						const child = entry.toolCallId
+							? children.find((record) => record.metadata?.spawnToolCallId === entry.toolCallId)
+							: undefined
+						if (child) entry.childSessionId = child.sessionId
+					}
+					message.text = JSON.stringify(status)
+				} catch {
+					/* Older status rows can still be opened through the thread strip. */
+				}
+			}
+		}
 		if (sdkRecord && legacyTask) {
 			return mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
 		}
@@ -730,7 +765,7 @@ export class SdkTaskHistory {
 		// Asides survive parent deletion as independent tasks, including favorites.
 		for (const record of await this.listHistory({ hydrate: false })) {
 			const item = sessionHistoryRecordToHistoryItem(record)
-			if (item.parentTaskId === sessionId) {
+			if (item.parentTaskId === sessionId && !item.isSubagent) {
 				await this.updateTaskHistoryItem({ ...item, parentTaskId: undefined, forkedAtTs: undefined })
 			}
 		}
@@ -754,7 +789,7 @@ export class SdkTaskHistory {
 	async findHistoryItem(taskId: string): Promise<HistoryItem | undefined> {
 		const sdkHistoryItem = await this.withHistoryHost(async (host) => {
 			const sdkRecord = await host.get(taskId)
-			if (!sdkRecord || sdkRecord.isSubagent === true) {
+			if (!sdkRecord) {
 				return undefined
 			}
 

@@ -43,6 +43,18 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		clineAsk,
 		lastMessage,
 	} = chatState
+	const displayedAsk = getTurnStateMessage(messages, turnState) ?? lastMessage
+	const createAskResponse = useCallback(
+		(input: Partial<AskResponseRequest>) => {
+			const isDecisionResponse = input?.responseType !== "messageResponse" || displayedAsk?.ask === "followup"
+			return AskResponseRequest.create({
+				...input,
+				taskId: currentTaskItem?.id,
+				decisionId: isDecisionResponse ? displayedAsk?.decisionId : undefined,
+			})
+		},
+		[currentTaskItem?.id, displayedAsk],
+	)
 	const cancelInFlightRef = useRef(false)
 	const pendingResponseIdRef = useRef(0)
 	// The first recovery action for an authoritative turn sequence owns that
@@ -284,7 +296,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (!recoveryDraft || !claimErrorRecovery()) {
 						return false
 					}
-					const request = AskResponseRequest.create({
+					const request = createAskResponse({
 						responseType: "messageResponse",
 						text: messageToSend,
 						images: submittedImages,
@@ -347,7 +359,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					messageSent = true
 				} else if (turnState?.phase === "awaiting_approval") {
 					await sendAskResponseWithPendingState(
-						AskResponseRequest.create({
+						createAskResponse({
 							responseType: "noButtonClicked",
 							text: messageToSend,
 							images,
@@ -364,7 +376,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						// user's message would not appear until the (slow) resume finishes — the
 						// chat would show only the Thinking loader in the meantime.
 						await sendAskResponseWithPendingState(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "yesButtonClicked",
 								text: messageToSend,
 								images,
@@ -400,7 +412,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								const showPendingMessage = clineAsk !== "followup" && turnState?.phase !== "streaming"
 
 								await sendAskResponseWithPendingState(
-									AskResponseRequest.create({
+									createAskResponse({
 										responseType: "messageResponse",
 										text: messageToSend,
 										images,
@@ -436,7 +448,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (turnAllowsFollowup || isTaskRunning) {
 						// Continue the conversation / interrupt with feedback.
 						await sendAskResponseWithPendingState(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "messageResponse",
 								text: messageToSend,
 								images,
@@ -462,6 +474,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 		},
 		[
+			createAskResponse,
 			messages,
 			clineAsk,
 			turnState,
@@ -537,7 +550,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					// For API retry (api_req_failed), always send simple approval without content
 					try {
 						await TaskServiceClient.askResponse(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "yesButtonClicked",
 							}),
 						)
@@ -557,7 +570,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					const text = hasContent ? formatMessageWithQuotes(trimmedText, draft.quotes) : undefined
 					const responseType = invocation.type === "reject" ? "noButtonClicked" : "yesButtonClicked"
 					await TaskServiceClient.askResponse(
-						AskResponseRequest.create(
+						createAskResponse(
 							hasContent ? { responseType, text, images: draft.images, files: draft.files } : { responseType },
 						),
 					)
@@ -638,6 +651,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			return true
 		},
 		[
+			createAskResponse,
 			clineAsk,
 			lastMessage,
 			startNewTask,

@@ -35,6 +35,7 @@ interface MessagesAreaProps {
 	scrollBehavior: ScrollBehavior
 	chatState: ChatState
 	messageHandlers: MessageHandlers
+	onSetQuote?: (text: string) => void
 }
 
 /**
@@ -48,6 +49,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 	scrollBehavior,
 	chatState,
 	messageHandlers,
+	onSetQuote,
 }) => {
 	const { clineMessages, turnState } = useExtensionState()
 	const lastRawMessage = useMemo(() => clineMessages.at(-1), [clineMessages])
@@ -83,7 +85,8 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 		}
 	}, [scrollToMessage, scrolledPastUserMessageIndex])
 
-	const { expandedRows, inputValue, addQuote } = chatState
+	const { expandedRows, inputValue } = chatState
+	const addQuote = onSetQuote ?? chatState.addQuote
 	const lastVisibleRow = useMemo(() => groupedMessages.at(-1), [groupedMessages])
 	const lastVisibleMessage = useMemo(() => {
 		const lastRow = lastVisibleRow

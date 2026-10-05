@@ -13,7 +13,7 @@ import { Controller } from ".."
  */
 export async function askResponse(controller: Controller, request: AskResponseRequest): Promise<Empty> {
 	try {
-		if (!controller.task) {
+		if (!controller.task || (request.taskId && controller.task.taskId !== request.taskId)) {
 			Logger.warn("askResponse: No active task to receive response")
 			return Empty.create()
 		}
@@ -36,7 +36,13 @@ export async function askResponse(controller: Controller, request: AskResponseRe
 		}
 
 		// Call the task's handler for webview responses
-		await controller.task.handleWebviewAskResponse(responseType, request.text, request.images, request.files)
+		await controller.task.handleWebviewAskResponse(
+			responseType,
+			request.text,
+			request.images,
+			request.files,
+			request.decisionId,
+		)
 
 		return Empty.create()
 	} catch (error) {

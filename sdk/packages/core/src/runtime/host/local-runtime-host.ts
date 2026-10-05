@@ -567,6 +567,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 			this.defaultTelemetry;
 		let bootstrap!: Awaited<ReturnType<typeof prepareLocalRuntimeBootstrap>>;
 		const subAgentDeps = {
+			emit: (event: CoreSessionEvent) => this.emit(event),
 			getSession: (sid: string) => this.sessions.get(sid),
 			subAgentStarts: this.subAgentStarts,
 			subAgentAborts: this.subAgentAborts,

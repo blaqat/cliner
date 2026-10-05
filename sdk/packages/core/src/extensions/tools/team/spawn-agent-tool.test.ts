@@ -16,6 +16,10 @@ vi.mock("../../../runtime/orchestration/session-runtime-orchestrator", () => {
 				agentConstructorSpy(config);
 			}
 
+			getMessages() {
+				return [];
+			}
+
 			getAgentId(): string {
 				return getAgentIdMock();
 			}
@@ -356,9 +360,13 @@ describe("createSpawnAgentTool", () => {
 			},
 		);
 
-		expect(registry.register).toHaveBeenCalledWith("call-9", expect.any(AbortController));
+		expect(registry.register).toHaveBeenCalledWith(
+			"call-9",
+			expect.any(AbortController),
+		);
 		const controller = registry.register.mock.calls[0][1] as AbortController;
-		const childSignal = agentConstructorSpy.mock.calls[0][0].abortSignal as AbortSignal;
+		const childSignal = agentConstructorSpy.mock.calls[0][0]
+			.abortSignal as AbortSignal;
 
 		controller.abort();
 		expect(childSignal.aborted).toBe(true);
@@ -380,11 +388,13 @@ describe("createSpawnAgentTool", () => {
 		runMock.mockImplementation(
 			() =>
 				new Promise((_, reject) =>
-					agentConstructorSpy.mock.calls.at(-1)?.[0].abortSignal?.addEventListener(
-						"abort",
-						() => reject(new Error("aborted")),
-						{ once: true },
-					),
+					agentConstructorSpy.mock.calls
+						.at(-1)?.[0]
+						.abortSignal?.addEventListener(
+							"abort",
+							() => reject(new Error("aborted")),
+							{ once: true },
+						),
 				),
 		);
 

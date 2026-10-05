@@ -161,6 +161,8 @@ message AskResponseRequest {
   string text = 3;
   repeated string images = 4;
   repeated string files = 5;
+  string decision_id = 6;
+  string task_id = 7;
 }
 
 // Request for editing a past user message and regenerating the conversation after it

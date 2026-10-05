@@ -55,6 +55,20 @@ describe("InboxList", () => {
 		expect(screen.getByRole("img", { name: "Settled" })).toBeInTheDocument()
 	})
 
+	it("opens grouped child reports without opening the parent or double-counting asides", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW),
+			item("child", NOW + 1, { parentTaskId: "parent", isSubagent: true, task: "Child report" }),
+		]
+		mocks.state.sessionStatuses = { parent: "done", child: "done" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		expect(screen.getAllByTestId("inbox-row")).toHaveLength(1)
+		expect(screen.getByTitle("1 subagent")).toBeInTheDocument()
+		expect(screen.queryByTitle("1 subthread")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "Open subagent Child report" }))
+		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "child" }))
+	})
+
 	it("opens a row and settles without opening", () => {
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 

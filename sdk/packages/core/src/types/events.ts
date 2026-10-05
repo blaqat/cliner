@@ -67,7 +67,19 @@ export interface SessionSnapshotEvent {
 	snapshot: CoreSessionSnapshot;
 }
 
+export interface SessionSubagentEvent {
+	sessionId: string;
+	childSessionId: string;
+	agentId: string;
+	parentAgentId: string;
+	toolCallId?: string;
+	prompt: string;
+	access: "read" | "write";
+	status: "running" | "completed" | "failed" | "cancelled";
+}
+
 export type CoreSessionEvent =
+	| { type: "subagent"; payload: SessionSubagentEvent }
 	| { type: "chunk"; payload: SessionChunkEvent }
 	| {
 			type: "agent_event";

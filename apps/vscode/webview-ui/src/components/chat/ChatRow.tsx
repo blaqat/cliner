@@ -153,6 +153,7 @@ export const ChatRowContent = memo(
 		retryFailedRequest,
 	}: ChatRowContentProps) => {
 		const {
+			currentTaskItem,
 			backgroundEditEnabled,
 			mcpServers,
 			vscodeTerminalExecutionMode,
@@ -1130,10 +1131,12 @@ export const ChatRowContent = memo(
 								</WithCopyButton>
 								<div className="pt-3">
 									<OptionsButtons
+										decisionId={message.decisionId}
 										inputValue={inputValue}
 										isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 										options={options}
 										selected={selected}
+										taskId={currentTaskItem?.id}
 									/>
 								</div>
 							</div>
@@ -1193,10 +1196,12 @@ export const ChatRowContent = memo(
 									text={response || message.text || ""}
 								/>
 								<OptionsButtons
+									decisionId={message.decisionId}
 									inputValue={inputValue}
 									isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 									options={options}
 									selected={selected}
+									taskId={currentTaskItem?.id}
 								/>
 							</div>
 						)

@@ -15,9 +15,9 @@ interface TaskSessionControlsProps {
  * running in the background (click for the inbox) and Settle / Unsettle.
  */
 const TaskSessionControls = ({ onShowInbox }: TaskSessionControlsProps) => {
-	const { currentTaskItem, sessionStatuses } = useExtensionState()
+	const { currentTaskItem, sessionStatuses, taskHistory } = useExtensionState()
 	const taskId = currentTaskItem?.id
-	const backgroundRunning = countBackgroundRunning(sessionStatuses, taskId)
+	const backgroundRunning = countBackgroundRunning(sessionStatuses, taskId, taskHistory)
 	const settled = !!currentTaskItem?.isSettled
 
 	const stop = (event: React.SyntheticEvent) => {

@@ -66,7 +66,17 @@ export function buildInbox(
 	const rows: InboxRow[] = valid
 		.filter((item) => !item.parentTaskId || !ids.has(item.parentTaskId))
 		.map((item) => {
-			const children = childrenByParent.get(item.id) ?? []
+			const allChildren = childrenByParent.get(item.id) ?? []
+			const children = allChildren.filter((child) => !child.isSubagent)
+			const agents: HistoryItem[] = []
+			const seen = new Set([item.id])
+			const pending = allChildren.filter((child) => child.isSubagent)
+			for (const child of pending) {
+				if (seen.has(child.id)) continue
+				seen.add(child.id)
+				agents.push(child)
+				pending.push(...(childrenByParent.get(child.id) ?? []).filter((nested) => nested.isSubagent))
+			}
 			const counts = subagentCounts?.[item.id]
 			return {
 				item,
@@ -76,8 +86,11 @@ export function buildInbox(
 				subthreadCount: children.length,
 				liveSubthreadCount: children.filter((child) => statusFor(statuses, child.id) === "running").length,
 				// Live sessions report total+live; otherwise fall back to the persisted total.
-				subagentCount: counts?.total ?? item.subagentCount ?? 0,
-				liveSubagentCount: counts?.live ?? 0,
+				subagentCount: Math.max(counts?.total ?? item.subagentCount ?? 0, agents.length),
+				liveSubagentCount: Math.max(
+					counts?.live ?? 0,
+					agents.filter((child) => isLive(statusFor(statuses, child.id))).length,
+				),
 			}
 		})
 
@@ -93,8 +106,14 @@ export function buildInbox(
 }
 
 /** Number of tasks other than `focusedId` that are running in the background. */
-export function countBackgroundRunning(statuses: SessionStatuses | undefined, focusedId: string | undefined): number {
-	return Object.entries(statuses ?? {}).filter(([id, status]) => id !== focusedId && status === "running").length
+export function countBackgroundRunning(
+	statuses: SessionStatuses | undefined,
+	focusedId: string | undefined,
+	history: readonly HistoryItem[] = [],
+): number {
+	const childIds = new Set(history.filter((item) => item.isSubagent).map((item) => item.id))
+	return Object.entries(statuses ?? {}).filter(([id, status]) => id !== focusedId && !childIds.has(id) && status === "running")
+		.length
 }
 
 /** Compact relative age: "now", "5m", "3h", "2d". */

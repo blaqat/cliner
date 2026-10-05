@@ -18,6 +18,9 @@ export interface ThreadItem {
 	/** True for the chip of the focused task. */
 	current: boolean
 	access?: "read" | "write"
+	parentTaskId?: string
+	/** Older transcripts without a saved child record retain their inline preview. */
+	previewOnly?: boolean
 }
 
 const SUBAGENT_STATUS: Record<SubagentExecutionStatus, SessionStatus> = {
@@ -64,6 +67,7 @@ export function collectSubagents(messages: readonly ClineMessage[]): ThreadItem[
 				status: "waiting",
 				current: false,
 				access: payload.access?.[index] ?? "read",
+				previewOnly: true,
 			})
 		})
 		pendingSpawn = undefined
@@ -89,7 +93,8 @@ export function collectSubagents(messages: readonly ClineMessage[]): ThreadItem[
 			for (const item of status.items) {
 				items.push({
 					kind: "subagent",
-					id: `${message.ts}:${item.index}`,
+					id: item.childSessionId ?? `${message.ts}:${item.index}`,
+					previewOnly: !item.childSessionId,
 					title: item.prompt.trim(),
 					status: SUBAGENT_STATUS[item.status] ?? "done",
 					current: false,
@@ -104,8 +109,8 @@ export function collectSubagents(messages: readonly ClineMessage[]): ThreadItem[
 }
 
 /**
- * Chips for the threads strip: Main (the root task), its asides, then the
- * focused transcript's subagents. Returns [] when there is nothing but Main.
+ * Chips for the focused thread, its immediate parent, siblings, and direct
+ * children. Returns [] when there is nothing but Main.
  */
 export function buildThreadItems(
 	focused: HistoryItem | undefined,
@@ -123,7 +128,12 @@ export function buildThreadItems(
 	]
 
 	const asides = history
-		.filter((item) => item.parentTaskId === root.id && (!hiddenIds.has(item.id) || item.id === focused.id))
+		.filter(
+			(item) =>
+				!item.isSubagent &&
+				(item.parentTaskId === root.id || item.parentTaskId === focused.id) &&
+				(!hiddenIds.has(item.id) || item.id === focused.id),
+		)
 		.sort((a, b) => a.ts - b.ts)
 	for (const aside of asides) {
 		items.push({
@@ -135,7 +145,7 @@ export function buildThreadItems(
 		})
 	}
 	// An aside that is not yet in the (possibly lagging) history list still gets a chip.
-	if (focused.id !== root.id && !asides.some((aside) => aside.id === focused.id)) {
+	if (!focused.isSubagent && focused.id !== root.id && !asides.some((aside) => aside.id === focused.id)) {
 		items.push({
 			kind: "aside",
 			id: focused.id,
@@ -145,12 +155,35 @@ export function buildThreadItems(
 		})
 	}
 
-	// An aside's transcript starts with a copy of the parent's; its subagents belong to Main.
+	const children = history.filter(
+		(item) => item.isSubagent && (item.parentTaskId === root.id || item.parentTaskId === focused.id),
+	)
+	if (focused.isSubagent && !children.some((item) => item.id === focused.id)) children.push(focused)
+	for (const child of children.sort((a, b) => a.ts - b.ts)) {
+		if (hiddenIds.has(child.id) && child.id !== focused.id) continue
+		items.push({
+			kind: "subagent",
+			id: child.id,
+			title: child.task,
+			status: statusFor(statuses, child.id),
+			current: child.id === focused.id,
+			access: child.subagentAccess ?? "read",
+			parentTaskId: child.parentTaskId,
+		})
+	}
 	const ownMessages = focused.forkedAtTs ? messages.filter((message) => message.ts > (focused.forkedAtTs ?? 0)) : messages
 	for (const subagent of collectSubagents(ownMessages)) {
-		if (!hiddenIds.has(subagent.id)) {
-			items.push(subagent)
-		}
+		// A saved child already has a chip. Match pre-lifecycle prompt rows by title only
+		// to avoid a duplicate preview while the spawn tool is streaming its input.
+		if (
+			children.some(
+				(child) =>
+					child.parentTaskId === focused.id &&
+					(child.id === subagent.id || (subagent.previewOnly && child.task.trim() === subagent.title)),
+			)
+		)
+			continue
+		if (!hiddenIds.has(subagent.id)) items.push({ ...subagent, parentTaskId: focused.id })
 	}
 
 	return items.length > 1 ? items : []

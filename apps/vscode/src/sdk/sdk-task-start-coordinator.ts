@@ -60,7 +60,7 @@ export interface SdkTaskStartCoordinatorOptions {
 		task: TaskProxy
 		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
 	}
-	onAskResponse: (text?: string, images?: string[], files?: string[]) => Promise<void>
+	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
 	onCancelTask: () => Promise<void>
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
@@ -263,7 +263,8 @@ export class SdkTaskStartCoordinator {
 	private createAndSetTask(sessionId: string): TaskProxy {
 		const task = createTaskProxy(
 			sessionId,
-			(text?: string, images?: string[], files?: string[]) => this.options.onAskResponse(text, images, files),
+			(text?: string, images?: string[], files?: string[], decisionId?: string) =>
+				this.options.onAskResponse(text, images, files, decisionId),
 			() => this.options.onCancelTask(),
 		)
 		this.options.setTask(task)

@@ -56,13 +56,16 @@ export interface SubAgentStartContext {
 	subAgentId: string;
 	conversationId: string;
 	parentAgentId: string;
+	toolCallId?: string;
 	input: SpawnAgentInput;
 }
 
 export interface SubAgentEndContext {
+	messages?: AgentResult["messages"];
 	subAgentId: string;
 	conversationId: string;
 	parentAgentId: string;
+	toolCallId?: string;
 	input: SpawnAgentInput;
 	result?: SpawnAgentOutput;
 	agentResult?: AgentResult;
@@ -112,6 +115,11 @@ export interface SpawnAgentToolConfig {
 	 * Errors are ignored so lifecycle observers cannot break task execution.
 	 */
 	onSubAgentEnd?: (context: SubAgentEndContext) => void | Promise<void>;
+	/** Checkpoint a child conversation after each completed iteration. */
+	onSubAgentMessages?: (
+		subAgentId: string,
+		messages: NonNullable<AgentResult["messages"]>,
+	) => void | Promise<void>;
 	/**
 	 * Optional per-call abort registry; see {@link SpawnAgentAbortRegistry}.
 	 */
@@ -160,6 +168,7 @@ export function createSpawnAgentTool(
 				? AbortSignal.any([context.signal, abortController.signal])
 				: abortController.signal;
 
+			let messagesWrite = Promise.resolve();
 			const subAgent = createDelegatedAgent({
 				kind: "subagent",
 				prompt: input.systemPrompt,
@@ -178,7 +187,20 @@ export function createSpawnAgentTool(
 				maxIterations: config.defaultMaxIterations,
 				parentAgentId: context.agentId,
 				abortSignal,
-				onEvent: config.onSubAgentEvent,
+				onEvent: (event) => {
+					config.onSubAgentEvent?.(event);
+					if (event.type === "iteration_end" && config.onSubAgentMessages) {
+						const messages = structuredClone(subAgent.getMessages());
+						messagesWrite = messagesWrite
+							.then(() =>
+								config.onSubAgentMessages!(subAgent.getAgentId(), messages),
+							)
+							.then(
+								() => {},
+								() => {},
+							);
+					}
+				},
 				hookErrorMode: config.hookErrorMode,
 				toolPolicies: config.toolPolicies,
 				requestToolApproval: config.requestToolApproval,
@@ -192,6 +214,7 @@ export function createSpawnAgentTool(
 						subAgentId,
 						conversationId,
 						parentAgentId,
+						toolCallId,
 						input,
 					});
 				} catch {
@@ -200,6 +223,7 @@ export function createSpawnAgentTool(
 			}
 			try {
 				const result = await subAgent.run(input.task);
+				await messagesWrite;
 				const output: SpawnAgentOutput = {
 					text: result.text,
 					iterations: result.iterations,
@@ -215,9 +239,11 @@ export function createSpawnAgentTool(
 							subAgentId,
 							conversationId,
 							parentAgentId,
+							toolCallId,
 							input,
 							result: output,
 							agentResult: result,
+							messages: subAgent.getMessages(),
 						});
 					} catch {
 						// Best-effort observer callback.
@@ -225,14 +251,17 @@ export function createSpawnAgentTool(
 				}
 				return output;
 			} catch (error) {
+				await messagesWrite;
 				if (config.onSubAgentEnd) {
 					try {
 						await config.onSubAgentEnd({
 							subAgentId,
 							conversationId,
 							parentAgentId,
+							toolCallId,
 							input,
 							error: error instanceof Error ? error : new Error(String(error)),
+							messages: subAgent.getMessages(),
 						});
 					} catch {
 						// Best-effort observer callback.

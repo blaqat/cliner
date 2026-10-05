@@ -3,8 +3,9 @@ import { combineCommandSequences } from "@shared/combineCommandSequences"
 import { combineHookSequences } from "@shared/combineHookSequences"
 import { getApiMetrics, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
+import { openTask } from "@/components/inbox/sessionActions"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
@@ -30,11 +31,13 @@ import {
 	useScrollBehavior,
 	WelcomeSection,
 } from "./chat-view"
+import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
 import {
 	hasPendingMessageConfirmation,
 	isPendingResponseUnconfirmed,
 	withPendingUserMessage,
 } from "./chat-view/utils/pendingResponse"
+import { subagentReportText } from "./chat-view/utils/subagentReport"
 import type { ThreadItem } from "./chat-view/utils/threadUtils"
 import { clearSubagentExpandTarget, emitSubagentExpand } from "./subagentExpand"
 
@@ -62,6 +65,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		checkpointRestoreInput,
 		queuedPrompts,
 		turnState,
+		subagentView,
+		currentTaskItem,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -84,6 +89,24 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		setPendingResponse,
 		textAreaRef,
 	} = chatState
+
+	const [childQuotes, setChildQuotes] = useState<Record<string, string[]>>({})
+	const selectedChildQuotes = childQuotes[currentTaskItem?.id ?? ""] ?? []
+	const pendingParentQuote = useRef<{ parentTaskId: string; text: string } | undefined>(undefined)
+	useEffect(() => {
+		const pending = pendingParentQuote.current
+		if (pending && currentTaskItem?.id === pending.parentTaskId) {
+			pendingParentQuote.current = undefined
+			chatState.setQuotes((quotes) => [...quotes, { text: pending.text, note: "" }])
+		}
+	}, [currentTaskItem?.id, chatState.setQuotes])
+	const report = subagentReportText(messages)
+	const quoteIntoParent = () => {
+		if (!subagentView) return
+		const selected = selectedChildQuotes.join("\n\n")
+		pendingParentQuote.current = { parentTaskId: subagentView.parentTaskId, text: selected || report }
+		void openTask(subagentView.parentTaskId)
+	}
 
 	const displayMessages = useMemo(() => withPendingUserMessage(messages, pendingUserMessage), [messages, pendingUserMessage])
 
@@ -406,7 +429,9 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-				{task ? (
+				{subagentView && currentTaskItem ? (
+					<SubagentThreadHeader item={currentTaskItem} view={subagentView} />
+				) : task ? (
 					<TaskSection
 						apiMetrics={apiMetrics}
 						lastApiReqTotalTokens={lastApiReqTotalTokens}
@@ -435,29 +460,45 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						groupedMessages={groupedMessages}
 						messageHandlers={messageHandlers}
 						modifiedMessages={modifiedMessages}
+						onSetQuote={
+							subagentView && currentTaskItem
+								? (text) =>
+										setChildQuotes((quotes) => ({
+											...quotes,
+											[currentTaskItem.id]: [...(quotes[currentTaskItem.id] ?? []), text],
+										}))
+								: undefined
+						}
 						scrollBehavior={scrollBehavior}
 						task={task}
 					/>
 				)}
 			</div>
 			<footer className="bg-(--vscode-sidebar-background) flex flex-col" style={{ gridRow: "2" }}>
-				<AutoApproveBar />
-				<ActionButtons
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					messages={messages}
-					mode={mode}
-					task={task}
-				/>
-				<QueuedPrompts items={queuedPrompts} />
-				<InputSection
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					placeholderText={placeholderText}
-					scrollBehavior={scrollBehavior}
-					selectFilesAndImages={selectFilesAndImages}
-					shouldDisableFilesAndImages={shouldDisableFilesAndImages}
-				/>
+				{!subagentView && <AutoApproveBar />}
+				{(!subagentView || subagentView.pendingDecision === "approval") && (
+					<ActionButtons
+						chatState={chatState}
+						messageHandlers={messageHandlers}
+						messages={messages}
+						mode={mode}
+						task={task}
+					/>
+				)}
+				{!subagentView && <QueuedPrompts items={queuedPrompts} />}
+				{(!subagentView || subagentView.pendingDecision === "question") && (
+					<InputSection
+						chatState={chatState}
+						messageHandlers={messageHandlers}
+						placeholderText={placeholderText}
+						scrollBehavior={scrollBehavior}
+						selectFilesAndImages={selectFilesAndImages}
+						shouldDisableFilesAndImages={shouldDisableFilesAndImages}
+					/>
+				)}
+				{subagentView && (
+					<SubagentThreadFooter hasReport={!!report || selectedChildQuotes.length > 0} onQuote={quoteIntoParent} />
+				)}
 			</footer>
 		</ChatLayout>
 	)

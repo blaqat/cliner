@@ -15,7 +15,7 @@ export interface SdkTaskControlCoordinatorOptions {
 	taskHistory: SdkTaskHistory
 	getTask: () => TaskProxy | undefined
 	setTask: (task: TaskProxy | undefined) => void
-	onAskResponse: (text?: string, images?: string[], files?: string[]) => Promise<void>
+	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
 	resetMessageTranslator: () => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "runTaskTransition">
@@ -235,13 +235,16 @@ export class SdkTaskControlCoordinator {
 				const messages = this.options.messages.finalizeMessagesForSave(rawMessages)
 				const cleanedMessages = isLegacyTask
 					? this.appendLegacyTaskWarningAndResumeMessage(messages)
-					: messages.length > 0
-						? this.appendFreshResumeMessage(messages, sessionStatus)
-						: []
+					: historyItem.isSubagent
+						? messages
+						: messages.length > 0
+							? this.appendFreshResumeMessage(messages, sessionStatus)
+							: []
 
 				const task = createTaskProxy(
 					taskId,
-					(text?: string, images?: string[], files?: string[]) => this.options.onAskResponse(text, images, files),
+					(text?: string, images?: string[], files?: string[], decisionId?: string) =>
+						this.options.onAskResponse(text, images, files, decisionId),
 					() => this.cancelTask(),
 				)
 				if (cleanedMessages.length > 0) {

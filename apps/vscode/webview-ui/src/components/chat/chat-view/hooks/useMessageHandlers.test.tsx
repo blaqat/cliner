@@ -1356,3 +1356,23 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).not.toHaveBeenCalled()
 	})
 })
+
+it("submits the displayed approval id even when another ask appears later in the transcript", async () => {
+	askResponse.mockClear()
+	mockTurnState = { phase: "awaiting_approval", seq: 20, anchorTs: 10 }
+	const messages: ClineMessage[] = [
+		{ ts: 10, decisionId: "approval-a", type: "ask", ask: "tool", text: "{}" },
+		{ ts: 11, decisionId: "question-b", type: "ask", ask: "followup", text: "{}" },
+	]
+	const { result } = renderHook(() => useMessageHandlers(messages, makeChatState(messages)))
+	await act(async () => {
+		await result.current.executeButtonAction({
+			type: "approve",
+			draft: { revision: 0, text: "", quotes: [], images: [], files: [] },
+		})
+	})
+	expect(askResponse).toHaveBeenCalledWith(
+		expect.objectContaining({ decisionId: "approval-a", responseType: "yesButtonClicked" }),
+	)
+	mockTurnState = undefined
+})

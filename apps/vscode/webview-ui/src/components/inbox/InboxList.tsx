@@ -43,6 +43,8 @@ interface InboxRowViewProps {
 
 const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	const { item, status, settled, subthreadCount, liveSubthreadCount, subagentCount, liveSubagentCount } = row
+	const { taskHistory } = useExtensionState()
+	const subagents = (taskHistory ?? []).filter((child) => child.isSubagent && child.parentTaskId === item.id)
 	const time = settled ? formatStamp(item.ts, now) : formatAge(item.ts, now)
 	const activity = describeActivity(row, now)
 
@@ -79,6 +81,25 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 					)}>
 					{activity}
 				</div>
+				{subagents.length > 0 && (
+					<div className="mt-1 flex flex-col gap-1">
+						{subagents.map((child) => (
+							<button
+								aria-label={`Open subagent ${child.task}`}
+								className="flex items-center gap-1 truncate border-0 bg-transparent p-0 text-left text-xs text-link cursor-pointer"
+								key={child.id}
+								onClick={(event) => {
+									event.stopPropagation()
+									void openTask(child.id)
+								}}
+								onKeyDown={(event) => event.stopPropagation()}
+								type="button">
+								<BotIcon className="size-3 shrink-0" />
+								<span className="truncate">{child.task}</span>
+							</button>
+						))}
+					</div>
+				)}
 			</div>
 			<div className="flex flex-col items-end gap-0.5">
 				{(subagentCount > 0 || subthreadCount > 0) && (

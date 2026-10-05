@@ -443,6 +443,7 @@ export class MessageTranslatorState {
 			index: ++this.spawnAgentNextIndex,
 			prompt,
 			access: access === "write" ? "write" : "read",
+			toolCallId,
 			status: "running",
 			toolCalls: 0,
 			inputTokens: 0,
@@ -2097,7 +2098,11 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
  * both top-level session events (chunk, ended, status) and nested
  * agent events.
  */
-export function translateSessionEvent(event: CoreSessionEvent, state: MessageTranslatorState): TranslationResult {
+export function translateSessionEvent(
+	event: CoreSessionEvent,
+	state: MessageTranslatorState,
+	childAgentId?: string,
+): TranslationResult {
 	const result: TranslationResult = {
 		messages: [],
 		sessionEnded: false,
@@ -2131,11 +2136,14 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 			const isSpawnAgentToolEvent =
 				isToolLifecycleEvent && agentEvent.contentType === "tool" && agentEvent.toolName === "spawn_agent"
 
-			// Newer SDK events carry parentAgentId on sub-agent events. Older/local
-			// RuntimeEventAdapter output does not, so while spawn_agent calls are in
-			// flight we also suppress every non-spawn_agent event. This preserves the
-			// parent spawn_agent status updates while hiding sub-agent internals.
-			if (agentEvent.parentAgentId || (state.hasRunningSpawnAgents() && !isSpawnAgentToolEvent)) {
+			// Identified children have their own transcript. The fallback hides
+			// unidentified legacy child events while a spawn is running, but keeps
+			// identified parent events visible alongside parallel tool calls.
+			if (
+				childAgentId
+					? agentEvent.agentId !== childAgentId
+					: agentEvent.parentAgentId || (!agentEvent.agentId && state.hasRunningSpawnAgents() && !isSpawnAgentToolEvent)
+			) {
 				break
 			}
 
@@ -2239,6 +2247,7 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 			break
 		}
 
+		case "subagent":
 		case "team_progress":
 		case "pending_prompts": {
 			// These are handled by the team/subagent system, not translated

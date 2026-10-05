@@ -66,6 +66,7 @@ export interface SdkSessionLifecycleOptions {
 	consumeMcpChangeNotice?: (sessionId: string) => string | undefined
 	consumeModeSwitchNotice?: (sessionId: string) => ModeSwitchNotice | null
 	onDidBecomeIdle?: () => void
+	onSessionReplaced?: (sessionId: string) => void
 	onSessionRemoved?: (sessionId: string) => void
 	prepareStartInput?: (input: Parameters<VscodeSessionHost["start"]>[0]) => Parameters<VscodeSessionHost["start"]>[0]
 }
@@ -431,6 +432,7 @@ export class SdkSessionLifecycle {
 			if (this.focusedSessionId === old.sessionId) this.focusSession(startResult.sessionId)
 			this.safeUnsubscribe(old, options.disposeReason)
 			try {
+				this.options.onSessionReplaced?.(old.sessionId)
 				await options.onReplaced?.(startResult.sessionId)
 			} finally {
 				await this.trackSessionStop(old.sdkHost, old.sessionId, options.disposeReason)

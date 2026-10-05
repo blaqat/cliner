@@ -4478,3 +4478,59 @@ describe("translateSessionEvent — spawn_agent stop", () => {
 		expect(state.getSpawnAgentItems()).toHaveLength(1)
 	})
 })
+
+describe("child transcript routing", () => {
+	it("streams a child's text, reasoning, tools, and report without consuming sibling or parent events", () => {
+		const state = new MessageTranslatorState()
+		const event = (agentId: string, data: Partial<AgentEvent>): CoreSessionEvent => ({
+			type: "agent_event",
+			payload: { sessionId: "parent", event: { agentId, parentAgentId: "lead", ...data } as AgentEvent },
+		})
+		const text = event("child-a", { type: "content_start", contentType: "text", text: "# Full report" })
+		expect(translateSessionEvent(text, new MessageTranslatorState()).messages).toEqual([])
+		expect(translateSessionEvent(text, state, "child-a").messages).toContainEqual(
+			expect.objectContaining({ say: "text", text: "# Full report", partial: true }),
+		)
+		expect(
+			translateSessionEvent(
+				event("child-b", { type: "content_end", contentType: "text", text: "Wrong report" }),
+				state,
+				"child-a",
+			).messages,
+		).toEqual([])
+		expect(
+			translateSessionEvent(
+				event("child-a", { type: "content_end", contentType: "reasoning", reasoning: "Review evidence" }),
+				state,
+				"child-a",
+			).messages,
+		).toContainEqual(expect.objectContaining({ say: "reasoning", text: "Review evidence" }))
+		expect(
+			translateSessionEvent(
+				event("child-a", {
+					type: "content_start",
+					contentType: "tool",
+					toolName: "read_files",
+					toolCallId: "read-a",
+					input: { paths: ["a.ts"] },
+				}),
+				state,
+				"child-a",
+			).messages.length,
+		).toBeGreaterThan(0)
+		expect(
+			translateSessionEvent(
+				event("child-a", { type: "content_end", contentType: "text", text: "# Full report\n\n```ts\nconst a = 1\n```" }),
+				state,
+				"child-a",
+			).messages,
+		).toContainEqual(expect.objectContaining({ text: "# Full report\n\n```ts\nconst a = 1\n```" }))
+		const done = translateSessionEvent(
+			event("child-a", { type: "done", reason: "completed", text: "", iterations: 1 }),
+			state,
+			"child-a",
+		)
+		expect(done.turnComplete).toBe(true)
+		expect(done.messages).toContainEqual(expect.objectContaining({ say: "completion_result" }))
+	})
+})

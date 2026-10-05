@@ -71,14 +71,18 @@ export class SdkFollowupCoordinator {
 		askResponse?: ClineAskResponse,
 		turnPhaseAtSubmit?: TurnPhase,
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+		decisionId?: string,
 	): Promise<void> {
-		if (this.options.interactions.resolvePendingToolApproval(prompt, askResponse, images, files)) {
+		if (this.options.interactions.resolvePendingToolApproval(prompt, askResponse, images, files, decisionId)) {
 			return
 		}
 
-		if (this.options.interactions.resolvePendingAskQuestion(prompt)) {
+		if (this.options.interactions.resolvePendingAskQuestion(prompt, decisionId)) {
 			return
 		}
+
+		// A stale decision response must never become a follow-up or resume.
+		if (decisionId) return
 
 		const activeSession = this.options.sessions.getActiveSession()
 		const task = this.options.getTask()

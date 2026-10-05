@@ -8,6 +8,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
 	type CompareCheckpointResult,
+	type CoreSessionEvent,
 	createRestoredCheckpointMetadata,
 	createUserInstructionConfigService,
 	ensureChatWorkspace,
@@ -64,7 +65,7 @@ import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
-import { MessageTranslatorState, reshapeErrorForWebview } from "./message-translator"
+import { MessageTranslatorState, reshapeErrorForWebview, translateSessionEvent } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
 import type { Disposable, ProviderCatalog, ProviderConfigChange, ProviderConfigStore } from "./model-catalog/contracts"
 import { parseProviderId } from "./model-catalog/provider-id"
@@ -258,6 +259,7 @@ export class Controller {
 	private focusedTask?: TaskProxy
 	private readonly taskSessions = new Map<string, TaskSessionContext>()
 	private sessionEventStream!: SdkMessageCoordinator
+	private readonly subagentThreads = new Map<string, HistoryItem>()
 	private homeContext!: Pick<TaskSessionContext, "translator" | "turn" | "messages" | "interactions">
 
 	get task(): TaskProxy | undefined {
@@ -269,6 +271,7 @@ export class Controller {
 			previous &&
 			previous.taskId !== task?.taskId &&
 			!this.sessions.getSession(previous.taskId) &&
+			!this.subagentThreads?.has(previous.taskId) &&
 			this.taskSessions.get(previous.taskId)?.turn.currentPhase !== "streaming"
 		) {
 			this.taskSessions.get(previous.taskId)?.messages.dispose()
@@ -498,7 +501,10 @@ export class Controller {
 				).interactions.handleRequestToolApproval(request),
 			askQuestion: async (question, options, context) =>
 				this.getTaskSessionContext(
-					context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+					Array.from(this.subagentThreads?.values() ?? []).find((child) => child.agentId === context.agentId)
+						?.runtimeOwnerTaskId ??
+						context.sessionId ??
+						(await this.resolveTaskSessionId(context.conversationId ?? "")),
 				).interactions.handleAskQuestion(question, options, context),
 			editorExecutor: (input, cwd, context) => this.diffEdits.executeEditorTool(input, cwd, context),
 			applyPatchExecutor: (input, cwd, context) => this.diffEdits.executeApplyPatchTool(input, cwd, context),
@@ -506,6 +512,7 @@ export class Controller {
 			// host's process.cwd() (usually "/"); resolve them against the workspace instead.
 			readFileExecutor: createWorkspaceFileReadExecutor(() => this.getWorkspaceRoot()),
 			onSessionEvent: (event) => {
+				if (this.handleSubagentEvent(event)) return
 				if (!this.sessions.getSession(event.payload.sessionId) && !this.taskSessions.has(event.payload.sessionId)) return
 				this.getTaskSessionContext(event.payload.sessionId)
 					.events.handleSessionEvent(event)
@@ -514,6 +521,7 @@ export class Controller {
 					})
 			},
 			onDidBecomeIdle: () => this.handleSessionBecameIdle(),
+			onSessionReplaced: (id) => this.handleParentSessionReplaced(id),
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
 			foregroundCommands: this.foregroundCommands,
@@ -650,7 +658,19 @@ export class Controller {
 					}
 					await this.sessions.removeSession(id)
 				})
-				if (this.task?.taskId === id) await this.clearTask()
+				if (
+					this.task?.taskId === id ||
+					(this.subagentThreads?.get(this.task?.taskId ?? "")?.runtimeOwnerTaskId ??
+						this.subagentThreads?.get(this.task?.taskId ?? "")?.parentTaskId) === id
+				)
+					await this.clearTask()
+				for (const [childId, child] of this.subagentThreads) {
+					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) !== id && childId !== id) continue
+					this.taskSessions.get(childId)?.messages.dispose()
+					this.taskSessions.delete(childId)
+					this.subagentThreads.delete(childId)
+					delete this.sessions.sessionStatuses[childId]
+				}
 			},
 			mcpHub: this.mcpHub,
 			sessions: this.sessions,
@@ -818,21 +838,22 @@ export class Controller {
 			setTask: (task) => {
 				this.task = task
 			},
-			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
+			onAskResponse: (text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			// Bump the epoch synchronously before abort so straggler events from the cancelled
 			// turn carry the old epoch and are dropped by the webview. The resumable phase is set
 			// in SdkController.cancelTask before this runs.
 			setTaskMode: (mode) => this.stateManager.setGlobalState("mode", mode),
 			focusLiveTask: (id, historyItem) => {
+				if (historyItem?.isSubagent && !this.subagentThreads?.has(id)) this.subagentThreads.set(id, historyItem)
 				const context = this.taskSessions.get(id)
-				if (!context || !this.sessions.getSession(id)) return false
+				if (!context || (!this.sessions.getSession(id) && !this.subagentThreads?.has(id))) return false
 				this.task = context.task
 				this.stateManager.setGlobalState("mode", context.mode)
 				if (historyItem) this.restoreTaskApiSelection(historyItem, context.mode)
 				return true
 			},
-			getLiveTaskItem: (id) => this.liveTaskHistoryItem(id),
+			getLiveTaskItem: (id) => this.subagentThreads?.get(id) ?? this.liveTaskHistoryItem(id),
 			applyTaskApiSelection: (historyItem, mode) => this.restoreTaskApiSelection(historyItem, mode),
 			raiseCancelFence: () => {
 				if (this.task) this.getTaskSessionContext(this.task.taskId).cancelled = true
@@ -862,7 +883,7 @@ export class Controller {
 				this.task = task
 			},
 			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
-			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
+			onAskResponse: (text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
 			onCancelTask: () => this.cancelTask(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
@@ -1377,6 +1398,98 @@ export class Controller {
 		Logger.log("[SdkController] Disposed")
 	}
 
+	private handleParentSessionReplaced(id: string): void {
+		const owner = this.taskSessions.get(id)
+		owner?.interactions.clearPending("Parent session replaced")
+		if (owner?.turn?.currentPhase === "streaming") owner.turn.set("completed")
+		this.sessions.setStatus(id, "done")
+		for (const child of this.subagentThreads.values()) {
+			if (
+				(child.runtimeOwnerTaskId ?? child.parentTaskId) !== id ||
+				!["running", "waiting"].includes(this.sessions.sessionStatuses[child.id])
+			)
+				continue
+			const context = this.getTaskSessionContext(child.id)
+			context.messages.appendMessages([
+				{
+					ts: context.translator.nextTs(),
+					type: "say",
+					say: "error",
+					text: "Subagent stopped because its parent session was rebuilt.",
+				},
+			])
+			context.turn.set("error")
+			this.sessions.setStatus(child.id, "error")
+		}
+		void this.postStateToWebview()
+	}
+
+	/** Child events are translated once into their own transcript, never into siblings. */
+	private handleSubagentEvent(event: CoreSessionEvent): boolean {
+		if (event.type === "subagent") {
+			const payload = event.payload
+			const owner = this.taskSessions.get(payload.sessionId)
+			if (!owner || !this.sessions.getSession(payload.sessionId)) return true
+			const immediateParent = Array.from(this.subagentThreads?.values() ?? []).find(
+				(child) =>
+					(child.runtimeOwnerTaskId ?? child.parentTaskId) === payload.sessionId &&
+					child.agentId === payload.parentAgentId,
+			)
+			const parentTaskId = immediateParent?.id ?? payload.sessionId
+			const parent = this.taskSessions.get(parentTaskId)
+			const existing = this.subagentThreads?.get(payload.childSessionId)
+			const item: HistoryItem = {
+				id: payload.childSessionId,
+				ts: existing?.ts ?? Date.now(),
+				task: payload.prompt,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				isSubagent: true,
+				parentTaskId,
+				runtimeOwnerTaskId: payload.sessionId,
+				agentId: payload.agentId,
+				spawnToolCallId: payload.toolCallId,
+				subagentAccess: payload.access,
+			}
+			this.subagentThreads.set(item.id, item)
+			const context = this.getTaskSessionContext(item.id)
+			context.mode = payload.access === "write" ? "act" : "plan"
+			if (!existing)
+				context.messages.appendMessages([
+					{ ts: context.translator.nextTs(), type: "say", say: "task", text: payload.prompt },
+				])
+			context.turn.set(payload.status === "running" ? "streaming" : payload.status === "failed" ? "error" : "completed")
+			this.sessions.setStatus(
+				item.id,
+				payload.status === "running"
+					? "running"
+					: payload.status === "failed" || payload.status === "cancelled"
+						? "error"
+						: "done",
+			)
+			if (payload.status !== "running") owner.interactions?.clearPending("Subagent ended", payload.agentId)
+			const spawn = payload.toolCallId ? parent?.translator.getSpawnAgent(payload.toolCallId) : undefined
+			if (spawn) spawn.childSessionId = item.id
+			this.taskHistory.invalidateMetadataHistoryCache()
+			void this.postStateToWebview()
+			return true
+		}
+		if (event.type !== "agent_event" || !event.payload.event.parentAgentId) return false
+		const child = Array.from(this.subagentThreads?.values() ?? []).find(
+			(item) =>
+				(item.runtimeOwnerTaskId ?? item.parentTaskId) === event.payload.sessionId &&
+				item.agentId === event.payload.event.agentId,
+		)
+		if (!child) return true
+		const context = this.getTaskSessionContext(child.id)
+		const result = translateSessionEvent(event, context.translator, child.agentId)
+		context.messages.appendAndEmit(result.messages, { ...event, payload: { ...event.payload, sessionId: child.id } })
+		if (result.turnComplete) context.turn.set(context.translator.wasErrorSeen() ? "error" : "completed")
+		void this.postStateToWebview()
+		return true
+	}
+
 	private async resolveTaskSessionId(conversationId: string): Promise<string> {
 		if (this.sessions.getSession(conversationId)) return conversationId
 		for (const [id, session] of this.sessions.getSessions()) {
@@ -1426,6 +1539,12 @@ export class Controller {
 		}
 		const interactions = new SdkInteractionCoordinator({
 			messages,
+			onDecisionMessage: (agentId, message) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				if (child) this.getTaskSessionContext(child.id).messages.appendMessages([{ ...message }])
+			},
 			getSessionId: () => id,
 			getMode: () => context.mode,
 			getMinter: () => translator.getMinter(),
@@ -1436,9 +1555,19 @@ export class Controller {
 				this.task?.taskId === id
 					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input)
 					: Promise.resolve(),
-			recordApprovedToolMessage: (callId, ts) => translator.recordApprovedToolMessageTs(callId, ts),
+			recordApprovedToolMessage: (callId, ts) => {
+				translator.recordApprovedToolMessageTs(callId, ts)
+				for (const child of this.subagentThreads?.values() ?? []) {
+					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
+						this.taskSessions.get(child.id)?.translator.recordApprovedToolMessageTs(callId, ts)
+				}
+			},
 			recordDeniedToolApproval: (callId, name, reason) => {
 				translator.recordDeniedToolApproval(callId, name, reason)
+				for (const child of this.subagentThreads?.values() ?? []) {
+					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
+						this.taskSessions.get(child.id)?.translator.recordDeniedToolApproval(callId, name, reason)
+				}
 				void this.diffEdits.discardPreview(callId)
 			},
 			shouldAutoApproveTool: (request) => {
@@ -1470,7 +1599,7 @@ export class Controller {
 				task ??
 				createTaskProxy(
 					id,
-					(text, images, files) => this.askResponse(text, images, files),
+					(text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
 					() => this.cancelTask(),
 				),
 			translator,
@@ -1843,7 +1972,8 @@ export class Controller {
 		if (!this.task) {
 			this.task = createTaskProxy(
 				`auth-error-${ts}`,
-				(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+				(text?: string, images?: string[], files?: string[], decisionId?: string) =>
+					this.askResponse(text, images, files, decisionId),
 				() => this.cancelTask(),
 			)
 		}
@@ -1984,6 +2114,11 @@ export class Controller {
 	}
 
 	async cancelTask(): Promise<void> {
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		if (child?.parentTaskId) {
+			await this.stopSubagent(child.runtimeOwnerTaskId ?? child.parentTaskId, child.id)
+			return
+		}
 		// Fence first: mark resumable before aborting so any straggler events from the aborted
 		// turn land on the wrong side of the UI mode. (Full fence-before-abort epoch bump lands
 		// in S6; this sets the authoritative phase now.)
@@ -2039,6 +2174,7 @@ export class Controller {
 	 * reduced on the next turn and later resumes.
 	 */
 	async compactTask(): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		await this.compaction.compactTask()
 	}
 
@@ -2054,6 +2190,16 @@ export class Controller {
 		await this.initTask(prompt)
 	}
 
+	getPendingDecisionId(responseType: "messageResponse" | "yesButtonClicked" | "noButtonClicked"): string | undefined {
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		const decision = child
+			? this.taskSessions
+					.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+					?.interactions.getPendingDecision(child.agentId ?? "")
+			: this.interactions?.getPendingDecision()
+		return decision?.kind === (responseType === "messageResponse" ? "question" : "approval") ? decision.id : undefined
+	}
+
 	/**
 	 * Send a follow-up message to the active session.
 	 * This is the "askResponse" equivalent — continues the conversation.
@@ -2063,7 +2209,33 @@ export class Controller {
 	 * subscription. We do NOT await the send — the gRPC handler needs to
 	 * return immediately so the webview stays responsive.
 	 */
-	async askResponse(prompt?: string, images?: string[], files?: string[]): Promise<void> {
+	async askResponse(prompt?: string, images?: string[], files?: string[], decisionId?: string): Promise<void> {
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		if (child) {
+			const parent = this.taskSessions.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+			const decision = parent?.interactions.getPendingDecision(child.agentId ?? "")
+			const responseType = this.task?.taskState.askResponse
+			if (decisionId && decision?.id !== decisionId) return
+			if (decision?.kind === "approval" && (responseType === "yesButtonClicked" || responseType === "noButtonClicked")) {
+				parent!.interactions.resolvePendingToolApproval(prompt, responseType, images, files, decision.id)
+			} else if (decision?.kind === "question" && responseType === "messageResponse") {
+				parent!.interactions.resolvePendingAskQuestion(prompt, decision.id)
+			} else throw new Error("Subagent threads are read-only. Quote into the parent to continue.")
+			await this.postStateToWebview()
+			return
+		}
+		if (decisionId && !this.interactions.hasPendingDecision(decisionId)) return
+		if (!decisionId) {
+			// Capture the projected decision before awaiting metadata writes. A legacy
+			// response must not answer a later decision that replaces it while we wait.
+			const decision = this.interactions?.getPendingDecision?.()
+			const responseType = this.task?.taskState?.askResponse
+			if (
+				decision &&
+				(decision.kind === "question" || responseType === "yesButtonClicked" || responseType === "noButtonClicked")
+			)
+				decisionId = decision.id
+		}
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		// The sign-in retry answers only the next response to the task that
 		// showed the error; a task opened since then does not inherit it.
@@ -2087,6 +2259,7 @@ export class Controller {
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
 		this.sessions.assertTaskAvailable(submittedTaskId)
+		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
 		const turnStateBefore = this.turnStateTracker.get()
 
 		// Answering an ask / continuing after completion / resuming a cancelled task all kick off a
@@ -2104,7 +2277,15 @@ export class Controller {
 		this.postStateToWebview().catch((error) => {
 			Logger.error("[SdkController] Failed to post state after askResponse phase change:", error)
 		})
-		await this.followups.askResponse(prompt, images, files, this.task?.taskState?.askResponse, turnStateBefore.phase)
+		await this.followups.askResponse(
+			prompt,
+			images,
+			files,
+			this.task?.taskState?.askResponse,
+			turnStateBefore.phase,
+			undefined,
+			decisionId,
+		)
 	}
 
 	async editMessageAndRegenerate(input: {
@@ -2114,6 +2295,7 @@ export class Controller {
 		files?: string[]
 		restoreWorkspace?: boolean
 	}): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const editedText = input.text.trim()
 		if (!editedText && (input.images?.length ?? 0) === 0 && (input.files?.length ?? 0) === 0) {
 			throw new Error("Edited message cannot be empty")
@@ -2246,7 +2428,8 @@ export class Controller {
 
 			const task = createTaskProxy(
 				startResult.sessionId,
-				(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+				(text?: string, images?: string[], files?: string[], decisionId?: string) =>
+					this.askResponse(text, images, files, decisionId),
 				() => this.cancelTask(),
 			)
 			this.task = task
@@ -2281,6 +2464,7 @@ export class Controller {
 	}
 
 	async restoreCheckpoint(input: { checkpointRunCount: number; restoreType: ClineCheckpointRestore }): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const restoreMessages = input.restoreType === "task" || input.restoreType === "taskAndWorkspace"
 		const restoreWorkspace = input.restoreType === "workspace" || input.restoreType === "taskAndWorkspace"
 		const checkpointRunCount = Number(input.checkpointRunCount)
@@ -2369,7 +2553,8 @@ export class Controller {
 
 		const task = createTaskProxy(
 			restored.sessionId,
-			(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+			(text?: string, images?: string[], files?: string[], decisionId?: string) =>
+				this.askResponse(text, images, files, decisionId),
 			() => this.cancelTask(),
 		)
 		this.task = task
@@ -2553,6 +2738,7 @@ export class Controller {
 	// ---- Mode switching ----
 
 	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const taskId = this.task?.taskId
 		const hadLiveSession = taskId ? !!this.sessions.getSession(taskId) : false
 		const result = await this.mode.togglePlanActMode(modeToSwitchTo, chatContent)
@@ -2933,11 +3119,17 @@ export class Controller {
 	 * entry is marked "stopped" and an updated status row is emitted.
 	 */
 	async stopSubagent(taskId: string, subagentId: string): Promise<boolean> {
-		const context = this.taskSessions.get(taskId)
-		const session = this.sessions.getSession(taskId)
-		if (!context || !session || !session.sdkHost.stopSubagent) {
-			return false
+		const child = this.subagentThreads?.get(subagentId)
+		const ownerId = child?.runtimeOwnerTaskId ?? taskId
+		const context = this.taskSessions.get(ownerId)
+		const session = this.sessions.getSession(ownerId)
+		if (!context || !session || !session.sdkHost.stopSubagent) return false
+		if (child && (child.parentTaskId === taskId || ownerId === taskId) && child.spawnToolCallId) {
+			const stopped = await session.sdkHost.stopSubagent(ownerId, child.spawnToolCallId)
+			if (stopped) context.interactions?.clearPending("Subagent stopped", child.agentId)
+			return stopped
 		}
+
 		const separator = subagentId.lastIndexOf(":")
 		const statusTs = Number(subagentId.slice(0, separator))
 		const index = Number(subagentId.slice(separator + 1))
@@ -2977,6 +3169,7 @@ export class Controller {
 	}
 
 	async interjectPrompt(text: string, images?: string[], files?: string[]): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		if (!text.trim() && !images?.length && !files?.length) throw new Error("Interject requires content")
 		const task = this.task
@@ -3085,7 +3278,11 @@ export class Controller {
 				// badge and anything else keyed on workspaceRoots depend on it.
 				workspaceManager: await this.ensureWorkspaceManager(),
 			})
-			const sdkHistoryRecords = await this.taskHistory.listHistory({ limit: 100, hydrate: false })
+			const sdkHistoryRecords = await this.taskHistory.listHistory({
+				limit: 10_000,
+				hydrate: false,
+				includeSubagents: true,
+			})
 			const sdkTaskHistory = sdkHistoryRecords
 				.map(sessionHistoryRecordToHistoryItem)
 				.filter((item) => item.ts && item.task)
@@ -3139,10 +3336,36 @@ export class Controller {
 				}
 			}
 
-			const processedTaskHistory = Array.from(mergedTaskHistoryById.values())
+			for (const child of this.subagentThreads?.values() ?? []) {
+				mergedTaskHistoryById.set(child.id, child)
+			}
+			const sortedHistory = Array.from(mergedTaskHistoryById.values())
 				.filter((item) => item.ts && item.task)
 				.sort((a, b) => b.ts - a.ts)
-				.slice(0, 100)
+			const roots = sortedHistory.filter((item) => !item.isSubagent).slice(0, 100)
+			const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
+			for (const id of [focusedItem?.isSubagent ? undefined : focusedItem?.id, focusedItem?.parentTaskId]) {
+				const item = id ? mergedTaskHistoryById.get(id) : undefined
+				if (item && !roots.some((root) => root.id === item.id)) roots.push(item)
+			}
+			// Keep the full child tree so navigation and inbox counts survive nested spawns.
+			const parentIds = new Set(roots.map((item) => item.id))
+			let addedChild = true
+			while (addedChild) {
+				addedChild = false
+				for (const item of sortedHistory) {
+					if (item.isSubagent && parentIds.has(item.parentTaskId ?? "") && !parentIds.has(item.id)) {
+						parentIds.add(item.id)
+						addedChild = true
+					}
+				}
+			}
+			const processedTaskHistory = [
+				...roots,
+				...sortedHistory.filter(
+					(item) => item.isSubagent && parentIds.has(item.id) && !roots.some((root) => root.id === item.id),
+				),
+			]
 
 			let queuedPrompts: ExtensionState["queuedPrompts"] = []
 			if (snapshotSession) {
@@ -3196,8 +3419,64 @@ export class Controller {
 						]),
 					)
 				: undefined
+			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
+			const decision = child
+				? this.taskSessions
+						.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+						?.interactions.getPendingDecision(child.agentId ?? "")
+				: undefined
+			const childDecisionStatuses = Object.fromEntries(
+				Array.from(this.subagentThreads?.values() ?? [])
+					.filter((item) =>
+						this.taskSessions
+							.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+							?.interactions.getPendingDecision(item.agentId ?? ""),
+					)
+					.map((item) => [item.id, "waiting" as const]),
+			)
+			const childStatus = child
+				? (this.sessions.sessionStatuses[child.id] ??
+					(sdkHistoryRecords.some(
+						(record) =>
+							record.sessionId === child.id && (record.status === "failed" || record.status === "cancelled"),
+					)
+						? "error"
+						: "done"))
+				: undefined
+			// The projected decision has its own freshness stamp. Once it resolves,
+			// publish a newer child phase so the replica can leave awaiting_approval.
+			const childTurn = child
+				? {
+						...(decision
+							? {
+									phase:
+										decision.kind === "approval"
+											? ("awaiting_approval" as const)
+											: ("awaiting_followup" as const),
+									anchorTs: decision.message.ts,
+								}
+							: this.turnStateTracker.get()),
+						seq: minter.nextSeq(),
+					}
+				: undefined
 			return {
 				...state,
+				...(child
+					? {
+							clineMessages: decision
+								? [
+										...state.clineMessages.filter((message) => message.ts !== decision.message.ts),
+										decision.message,
+									]
+								: state.clineMessages,
+							subagentView: {
+								parentTaskId: child.parentTaskId!,
+								agentId: child.agentId!,
+								status: decision ? ("waiting" as const) : childStatus!,
+								pendingDecision: decision?.kind,
+							},
+						}
+					: { subagentView: null }),
 				focusedSessionModels,
 				composerApiSelection: pickerSelection,
 				composerNextMessageOnly: snapshotTask
@@ -3215,7 +3494,7 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				taskHistory: processedTaskHistory,
-				turnState: this.turnStateTracker.get(),
+				turnState: childTurn ?? this.turnStateTracker.get(),
 				queuedPrompts,
 				sessionStatuses: {
 					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
@@ -3225,6 +3504,7 @@ export class Controller {
 							.map((record) => [record.sessionId, "error" as const]),
 					),
 					...this.sessions.sessionStatuses,
+					...childDecisionStatuses,
 				},
 				// Live sessions report total + running; persisted history totals fill
 				// in settled tasks whose sessions are gone.

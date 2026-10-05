@@ -1251,3 +1251,43 @@ function makeDeletionHistory(lifecycle: SdkSessionLifecycle, failure?: Error) {
 	vi.spyOn(history, "listHistory").mockResolvedValue([{ sessionId: "session-123", metadata: {} } as never])
 	return { history, deletingPersistence, releasePersistence, deleteRecord }
 }
+
+it("keeps a child event subscription while an active parent blocks a model/MCP replacement", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const onSessionEvent = vi.fn()
+	const lifecycle = makeLifecycle({ onSessionEvent })
+	await lifecycle.startNewSession({} as StartInput)
+	lifecycle.setRunning(true)
+	const parent = lifecycle.getActiveSession()!
+	const result = await lifecycle.replaceSession({
+		expectedSession: parent,
+		startInput: {} as StartInput,
+		disposeReason: "model/MCP rebuild",
+	})
+	expect(result).toBeUndefined()
+	const childEvent = {
+		type: "agent_event",
+		payload: {
+			sessionId: parent.sessionId,
+			event: { agentId: "child", parentAgentId: "lead", type: "content_update", text: "still streaming" },
+		},
+	}
+	host.subscribe.mock.calls[0][0](childEvent)
+	expect(onSessionEvent).toHaveBeenCalledWith(childEvent)
+	expect(host.stop).not.toHaveBeenCalled()
+})
+
+it("notifies child cleanup when replacement retires the parent's runtime", async () => {
+	const oldHost = makeSdkHost()
+	const nextHost = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(nextHost)
+	const onSessionReplaced = vi.fn()
+	const lifecycle = makeLifecycle({ onSessionReplaced })
+	await lifecycle.startNewSession({} as StartInput)
+	lifecycle.setRunning(false)
+	const parent = lifecycle.getActiveSession()!
+	await lifecycle.replaceSession({ expectedSession: parent, startInput: {} as StartInput, disposeReason: "MCP rebuild" })
+	expect(onSessionReplaced).toHaveBeenCalledExactlyOnceWith(parent.sessionId)
+	expect(oldHost.stop).toHaveBeenCalledWith(parent.sessionId)
+})

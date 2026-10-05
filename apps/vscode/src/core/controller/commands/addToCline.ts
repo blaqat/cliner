@@ -32,7 +32,13 @@ export async function addToCline(controller: Controller, request: CommandContext
 
 	// Notebooks send immediately, regular adds just fill input
 	if (notebookContext && controller.task) {
-		await controller.task.handleWebviewAskResponse("messageResponse", input)
+		await controller.task.handleWebviewAskResponse(
+			"messageResponse",
+			input,
+			undefined,
+			undefined,
+			controller.getPendingDecisionId("messageResponse"),
+		)
 	} else if (notebookContext) {
 		await controller.initTask(input)
 	} else {
