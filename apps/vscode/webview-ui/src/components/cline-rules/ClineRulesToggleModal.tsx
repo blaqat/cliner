@@ -601,19 +601,6 @@ const ClineRulesToggleModal: React.FC = () => {
 							</>
 						) : currentView === "workflows" ? (
 							<>
-								{/* Deprecation warning banner */}
-								<div className="flex items-center gap-2 px-3 py-3 mb-4 bg-vscode-inputValidation-warningBackground border-l-[3px] border-vscode-inputValidation-warningBorder">
-									<i className="codicon codicon-warning text-sm" />
-									<span className="text-base">
-										Workflows are being deprecated. Use skills instead.{" "}
-										<VSCodeLink
-											href="https://docs.cline.bot/customization/skills"
-											style={{ display: "inline", fontSize: "inherit" }}>
-											Learn more
-										</VSCodeLink>
-									</span>
-								</div>
-
 								{/* Enterprise Workflows Section (remote) */}
 								{hasRemoteWorkflows && (
 									<div className="mb-3">

@@ -6,7 +6,7 @@ import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
-import { parseModeSwitchCommand } from "@/utils/slash-commands"
+import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
 import { latestMessageTs, startAside } from "../utils/asideUtils"
@@ -154,6 +154,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							}),
 						)
 						consumed = response.value === true
+						// Let the Ask/Act toggle flash so the command-driven switch is visible.
+						document.dispatchEvent(new CustomEvent(MODE_SWITCHED_BY_COMMAND_EVENT))
 					} catch (error) {
 						console.error("Failed to switch mode:", error)
 						return

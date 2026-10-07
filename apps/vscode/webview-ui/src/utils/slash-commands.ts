@@ -105,20 +105,41 @@ export const slashCommandRegexGlobal = new RegExp(slashCommandRegex.source, "g")
 export const slashCommandDeleteRegex = /(^|\s)(\/[a-zA-Z0-9_.:@-]+)$/
 
 /**
- * Parses a leading `/ask` or `/act` mode-switch command. `/ask` maps to the
- * internal "plan" mode. Only a command at the very start of the text counts,
- * and it must be followed by whitespace or end-of-text so "/activity" is not
- * treated as `/act`. Returns the target mode and the remaining message text.
+ * Matches a standalone `/ask` or `/act` token: at the start of the text or
+ * after whitespace, and followed by whitespace or end-of-text — the same
+ * boundary rule as `slashCommandRegex`. Tokens inside words (`a/act`),
+ * longer commands (`/actions`), and URL/path segments (`foo/ask`) don't match.
+ */
+const MODE_SWITCH_TOKEN_REGEX = /(^|\s)\/(ask|act)(?=\s|$)/gi
+
+/**
+ * Event dispatched on `document` when a `/ask` or `/act` command switched the
+ * chat mode, so the Ask/Act toggle can flash to make the switch visible.
+ */
+export const MODE_SWITCHED_BY_COMMAND_EVENT = "cline:mode-switched-by-command"
+
+/**
+ * Parses `/ask` and `/act` mode-switch commands anywhere in the text. `/ask`
+ * maps to the internal "plan" mode. When several mode commands appear, the
+ * last one wins; all of them are removed from the sent text and the extra
+ * whitespace they leave behind is collapsed. Returns the target mode and the
+ * remaining message text.
  */
 export function parseModeSwitchCommand(text: string): { mode: "plan" | "act"; rest: string } | null {
-	const match = /^\/(ask|act)(?:\s+|$)/i.exec(text)
-	if (!match) {
+	let mode: "plan" | "act" | null = null
+	MODE_SWITCH_TOKEN_REGEX.lastIndex = 0
+	const rest = text
+		.replace(MODE_SWITCH_TOKEN_REGEX, (_match, _prefix, token: string) => {
+			mode = token.toLowerCase() === "ask" ? "plan" : "act"
+			return " "
+		})
+		.replace(/[^\S\r\n]+/g, " ")
+		.replace(/ ?\r?\n ?/g, "\n")
+		.trim()
+	if (mode === null) {
 		return null
 	}
-	return {
-		mode: match[1].toLowerCase() === "ask" ? "plan" : "act",
-		rest: text.slice(match[0].length).trim(),
-	}
+	return { mode, rest }
 }
 
 /**
@@ -146,8 +167,8 @@ export function removeSlashCommand(text: string, position: number): { newText: s
 
 /**
  * Determines whether the slash command menu should be displayed based on text input.
- * Only shows for the FIRST valid slash command position in the message - subsequent
- * slash commands won't trigger suggestions since only one is processed per message.
+ * Shows for a `/command` typed at the cursor anywhere in the message — every
+ * command in the message is expanded, not just the first.
  */
 export function shouldShowSlashCommandsMenu(text: string, cursorPosition: number): boolean {
 	const beforeCursor = text.slice(0, cursorPosition)
@@ -171,17 +192,6 @@ export function shouldShowSlashCommandsMenu(text: string, cursorPosition: number
 
 	// don't show menu if there's whitespace after the slash but before the cursor
 	if (/\s/.test(textAfterSlash)) {
-		return false
-	}
-
-	// Only show suggestions for the FIRST slash command in the message.
-	// Check if there's already a valid slash command earlier in the text.
-	// A valid earlier slash command is one that: starts at beginning or after whitespace,
-	// and is followed by whitespace (meaning it's complete).
-	// Note: Colons are allowed to support MCP prompt commands like /mcp:server:prompt
-	const firstSlashCommandRegex = /(^|\s)\/[a-zA-Z0-9_.:@-]+\s/
-	const textBeforeCurrentSlash = text.slice(0, slashIndex)
-	if (firstSlashCommandRegex.test(textBeforeCurrentSlash)) {
 		return false
 	}
 
