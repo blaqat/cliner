@@ -55,18 +55,56 @@ describe("InboxList", () => {
 		expect(screen.getByRole("img", { name: "Settled" })).toBeInTheDocument()
 	})
 
-	it("opens grouped child reports without opening the parent or double-counting asides", () => {
+	it("groups children into icon counts instead of per-subagent status lines", () => {
 		mocks.state.taskHistory = [
 			item("parent", NOW),
 			item("child", NOW + 1, { parentTaskId: "parent", isSubagent: true, task: "Child report" }),
+			item("aside", NOW + 2, { parentTaskId: "parent", task: "Aside: q" }),
 		]
 		mocks.state.sessionStatuses = { parent: "done", child: "done" }
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const [row] = screen.getAllByTestId("inbox-row")
 		expect(screen.getAllByTestId("inbox-row")).toHaveLength(1)
-		expect(screen.getByTitle("1 subagent")).toBeInTheDocument()
-		expect(screen.queryByTitle("1 subthread")).toBeNull()
-		fireEvent.click(screen.getByRole("button", { name: "Open subagent Child report" }))
-		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "child" }))
+		expect(row).not.toHaveTextContent("Child report")
+		expect(screen.queryByRole("button", { name: /Open subagent/ })).toBeNull()
+		const subagents = screen.getByTitle("1 subagent")
+		expect(subagents).toHaveTextContent("1")
+		expect(subagents.querySelector(".codicon-type-hierarchy-sub")).not.toBeNull()
+		expect(subagents).toHaveAttribute("data-tone", "idle")
+		expect(screen.getByTitle("1 aside").querySelector(".codicon-repo-forked")).not.toBeNull()
+	})
+
+	it("turns the subagent count yellow when a child needs the user", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW),
+			item("a", NOW + 1, { parentTaskId: "parent", isSubagent: true }),
+			item("b", NOW + 2, { parentTaskId: "parent", isSubagent: true }),
+		]
+		mocks.state.sessionStatuses = { parent: "running", a: "waiting", b: "running" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const subagents = screen.getByTitle("2 subagents, 1 needs you, 2 running")
+		expect(subagents).toHaveAttribute("data-tone", "attention")
+		expect(subagents).toHaveClass("text-warning")
+	})
+
+	it("gives every row the same fixed height", () => {
+		mocks.state.taskHistory = [
+			item("busy", NOW),
+			...["a", "b", "c", "d"].map((id, i) =>
+				item(id, NOW + i + 1, { parentTaskId: "busy", isSubagent: true, task: `child ${id}` }),
+			),
+			item("plain", NOW - 1000),
+		]
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const rows = screen.getAllByTestId("inbox-row")
+		expect(rows).toHaveLength(2)
+		for (const row of rows) {
+			expect(row).toHaveClass("h-11")
+			expect(row).toHaveClass("overflow-hidden")
+		}
 	})
 
 	it("opens a row and settles without opening", () => {

@@ -109,17 +109,17 @@ export function collectSubagents(messages: readonly ClineMessage[]): ThreadItem[
 }
 
 /**
- * Chips for the focused thread, its immediate parent, siblings, and direct
- * children. Returns [] when there is nothing but Main.
+ * Chips for the human-made threads of the focused chat: Main and its asides.
+ * Subagents live in the header's subagent panel instead. Returns [] when the
+ * chat has no asides, or when a subagent thread is focused.
  */
 export function buildThreadItems(
 	focused: HistoryItem | undefined,
 	history: readonly HistoryItem[],
 	statuses: SessionStatuses | undefined,
-	messages: readonly ClineMessage[],
 	hiddenIds: ReadonlySet<string> = new Set(),
 ): ThreadItem[] {
-	if (!focused) {
+	if (!focused || focused.isSubagent) {
 		return []
 	}
 	const root = (focused.parentTaskId && history.find((item) => item.id === focused.parentTaskId)) || focused
@@ -139,52 +139,119 @@ export function buildThreadItems(
 		items.push({
 			kind: "aside",
 			id: aside.id,
-			title: aside.task.replace(ASIDE_PREFIX, "") || "Aside",
+			title: asideTitle(aside),
 			status: statusFor(statuses, aside.id),
 			current: aside.id === focused.id,
 		})
 	}
 	// An aside that is not yet in the (possibly lagging) history list still gets a chip.
-	if (!focused.isSubagent && focused.id !== root.id && !asides.some((aside) => aside.id === focused.id)) {
+	if (focused.id !== root.id && !asides.some((aside) => aside.id === focused.id)) {
 		items.push({
 			kind: "aside",
 			id: focused.id,
-			title: focused.task.replace(ASIDE_PREFIX, "") || "Aside",
+			title: asideTitle(focused),
 			status: statusFor(statuses, focused.id),
 			current: true,
 		})
 	}
 
-	const children = history.filter(
-		(item) => item.isSubagent && (item.parentTaskId === root.id || item.parentTaskId === focused.id),
-	)
-	if (focused.isSubagent && !children.some((item) => item.id === focused.id)) children.push(focused)
-	for (const child of children.sort((a, b) => a.ts - b.ts)) {
-		if (hiddenIds.has(child.id) && child.id !== focused.id) continue
-		items.push({
-			kind: "subagent",
-			id: child.id,
-			title: child.task,
-			status: statusFor(statuses, child.id),
-			current: child.id === focused.id,
-			access: child.subagentAccess ?? "read",
-			parentTaskId: child.parentTaskId,
-		})
+	return items.length > 1 ? items : []
+}
+
+export function asideTitle(item: HistoryItem): string {
+	return item.task.replace(ASIDE_PREFIX, "") || "Aside"
+}
+
+export interface LineageRow {
+	/** Task id; `<statusMessageTs>:<index>` for an unsaved transcript preview. */
+	id: string
+	title: string
+	status: SessionStatus
+	access?: "read" | "write"
+	/** Older transcripts without a saved child record; opens by scrolling to its status row. */
+	previewOnly?: boolean
+	/** Task that spawned this row (the id to pass to stopSubagent). */
+	parentTaskId?: string
+}
+
+export interface SubagentLineage {
+	/** Immediate parent, only when the focused thread is a subagent. */
+	parent?: LineageRow
+	current: LineageRow
+	/** Direct children of the focused thread, oldest first. */
+	children: LineageRow[]
+}
+
+/**
+ * One level up and one level down from the focused thread: its immediate
+ * parent (when it is a subagent), itself, and the subagents it spawned. No
+ * grandparents or grandchildren.
+ */
+export function buildSubagentLineage(
+	focused: HistoryItem | undefined,
+	history: readonly HistoryItem[],
+	statuses: SessionStatuses | undefined,
+	messages: readonly ClineMessage[],
+	fallbackParentId?: string,
+): SubagentLineage | undefined {
+	if (!focused) {
+		return undefined
 	}
-	const ownMessages = focused.forkedAtTs ? messages.filter((message) => message.ts > (focused.forkedAtTs ?? 0)) : messages
-	for (const subagent of collectSubagents(ownMessages)) {
-		// A saved child already has a chip. Match pre-lifecycle prompt rows by title only
-		// to avoid a duplicate preview while the spawn tool is streaming its input.
-		if (
-			children.some(
-				(child) =>
-					child.parentTaskId === focused.id &&
-					(child.id === subagent.id || (subagent.previewOnly && child.task.trim() === subagent.title)),
-			)
-		)
-			continue
-		if (!hiddenIds.has(subagent.id)) items.push({ ...subagent, parentTaskId: focused.id })
+	const parentId = focused.isSubagent ? (focused.parentTaskId ?? fallbackParentId) : undefined
+	const parentItem = parentId ? history.find((item) => item.id === parentId) : undefined
+	const parent: LineageRow | undefined = parentId
+		? {
+				id: parentId,
+				title: parentItem ? (parentItem.isSubagent ? parentItem.task : asideTitleOrTask(parentItem)) : "Parent",
+				status: statusFor(statuses, parentId),
+				access: parentItem?.isSubagent ? (parentItem.subagentAccess ?? "read") : undefined,
+			}
+		: undefined
+	const current: LineageRow = {
+		id: focused.id,
+		title: focused.isSubagent ? focused.task : asideTitleOrTask(focused),
+		status: statusFor(statuses, focused.id),
+		access: focused.isSubagent ? (focused.subagentAccess ?? "read") : undefined,
+		parentTaskId: parentId,
 	}
 
-	return items.length > 1 ? items : []
+	const saved = history.filter((item) => item.isSubagent && item.parentTaskId === focused.id).sort((a, b) => a.ts - b.ts)
+	const children: LineageRow[] = saved.map((child) => ({
+		id: child.id,
+		title: child.task,
+		status: statusFor(statuses, child.id),
+		access: child.subagentAccess ?? "read",
+		parentTaskId: focused.id,
+	}))
+	const ownMessages = focused.forkedAtTs ? messages.filter((message) => message.ts > (focused.forkedAtTs ?? 0)) : messages
+	for (const subagent of collectSubagents(ownMessages)) {
+		// A saved child already has a row. Match pre-lifecycle prompt rows by title only
+		// to avoid a duplicate preview while the spawn tool is streaming its input.
+		if (saved.some((child) => child.id === subagent.id || (subagent.previewOnly && child.task.trim() === subagent.title)))
+			continue
+		children.push({
+			id: subagent.id,
+			title: subagent.title,
+			status: subagent.status,
+			access: subagent.access,
+			previewOnly: subagent.previewOnly,
+			parentTaskId: focused.id,
+		})
+	}
+
+	return { parent, current, children }
+}
+
+function asideTitleOrTask(item: HistoryItem): string {
+	return item.parentTaskId ? asideTitle(item) : item.task
+}
+
+/** A child that needs the user (approval or question pending). */
+export function needsAttention(row: LineageRow): boolean {
+	return row.status === "waiting" && !row.previewOnly
+}
+
+/** A child that a Stop button can still end. */
+export function isStoppable(row: LineageRow): boolean {
+	return row.status === "running" || row.status === "waiting"
 }

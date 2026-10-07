@@ -22,6 +22,8 @@ export interface InboxRow {
 	subagentCount: number
 	/** Subagents still running. */
 	liveSubagentCount: number
+	/** Subagents waiting on the user (approval or question). */
+	attentionSubagentCount: number
 }
 
 export interface InboxGroups {
@@ -91,6 +93,7 @@ export function buildInbox(
 					counts?.live ?? 0,
 					agents.filter((child) => isLive(statusFor(statuses, child.id))).length,
 				),
+				attentionSubagentCount: agents.filter((child) => statusFor(statuses, child.id) === "waiting").length,
 			}
 		})
 

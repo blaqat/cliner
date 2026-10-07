@@ -1,39 +1,63 @@
 import type { ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { ArrowLeftIcon } from "lucide-react"
+import { useEffect, useState } from "react"
+import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
+import { SubagentPanelButton } from "@/components/chat/task-header/SubagentPanel"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, stopSubagent } from "@/components/inbox/sessionActions"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import type { LineageRow } from "../../utils/threadUtils"
 
 interface Props {
 	item: HistoryItem
 	view: NonNullable<ExtensionState["subagentView"]>
+	onOpenSubagentPreview?: (row: LineageRow) => void
 }
 
-export function SubagentThreadHeader({ item, view }: Props) {
+/** Compact header of a subagent thread: back to parent, the prompt, Stop while live, and the lineage panel. */
+export function SubagentThreadHeader({ item, view, onOpenSubagentPreview }: Props) {
+	const live = view.status === "running" || view.status === "waiting"
+	const [stopState, setStopState] = useState<"idle" | "stopping" | "failed">("idle")
+	// A different subagent, or the child leaving its live state, resets the button.
+	useEffect(() => setStopState("idle"), [item.id, live])
+	const stop = async () => {
+		setStopState("stopping")
+		if (!(await stopSubagent(view.parentTaskId, item.id))) setStopState("failed")
+	}
 	return (
-		<div className="mx-4 my-2 flex flex-col gap-2" data-testid="subagent-thread-header">
-			<button
-				className="flex w-fit items-center gap-1 border-0 bg-transparent p-0 text-link cursor-pointer"
-				onClick={() => void openTask(view.parentTaskId)}
-				type="button">
-				<ArrowLeftIcon className="size-3" /> Back to parent
-			</button>
-			<div className="flex items-center gap-2">
+		<div className="px-4 pt-2 pb-1" data-testid="subagent-thread-header">
+			<div className="flex h-7.5 items-center gap-1.5 rounded-xs border border-transparent pl-1 pr-1 bg-(--vscode-toolbar-hoverBackground)/40">
+				<HeaderIconButton icon="arrow-left" label="Back to parent" onClick={() => void openTask(view.parentTaskId)} />
 				<SessionStatusIcon status={view.status} />
-				<details className="min-w-0 flex-1 text-foreground">
-					<summary className="truncate cursor-pointer" title={item.task}>
-						{item.task}
-					</summary>
-					<div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-xs">{item.task}</div>
-				</details>
-				{(view.status === "running" || view.status === "waiting") && (
-					<button
-						className="rounded-xs border border-editor-group-border bg-button-secondary-background px-2 text-button-secondary-foreground cursor-pointer"
-						onClick={() => void stopSubagent(view.parentTaskId, item.id)}
-						type="button">
-						Stop subagent
-					</button>
-				)}
+				<Tooltip>
+					<TooltipContent className="block max-w-sm p-2" side="bottom">
+						<div className="line-clamp-[12] whitespace-pre-wrap break-words">{item.task}</div>
+					</TooltipContent>
+					<TooltipTrigger asChild>
+						<div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground" tabIndex={0}>
+							{item.task}
+						</div>
+					</TooltipTrigger>
+				</Tooltip>
+				<div className="flex shrink-0 items-center gap-0.5">
+					{live && (
+						<button
+							aria-label="Stop subagent"
+							className="flex h-5.5 items-center gap-1 rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[11px] text-button-secondary-foreground cursor-pointer hover:bg-button-secondary-background-hover disabled:cursor-default disabled:opacity-60"
+							disabled={stopState === "stopping"}
+							onClick={() => void stop()}
+							title={
+								stopState === "failed"
+									? "Couldn't stop this subagent. Click to retry."
+									: "Stop this subagent; its parent continues"
+							}
+							type="button">
+							<span aria-hidden className="codicon codicon-debug-stop text-[12px]" />
+							{stopState === "stopping" ? "Stopping…" : stopState === "failed" ? "Retry stop" : "Stop"}
+						</button>
+					)}
+					<SubagentPanelButton onOpenPreview={onOpenSubagentPreview} />
+				</div>
 			</div>
 		</div>
 	)

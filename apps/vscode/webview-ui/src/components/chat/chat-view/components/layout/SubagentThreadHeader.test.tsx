@@ -1,10 +1,13 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./SubagentThreadHeader"
 
 const mocks = vi.hoisted(() => ({ openTask: vi.fn(), stopSubagent: vi.fn() }))
 vi.mock("@/components/inbox/sessionActions", () => mocks)
+vi.mock("@/context/ExtensionStateContext", () => ({
+	useExtensionState: () => ({ currentTaskItem: undefined, taskHistory: [], sessionStatuses: {}, clineMessages: [] }),
+}))
 const item: HistoryItem = {
 	id: "parent__child",
 	ts: 1,
@@ -25,6 +28,18 @@ describe("subagent thread controls", () => {
 		expect(mocks.stopSubagent).toHaveBeenCalledWith("parent", item.id)
 		rerender(<SubagentThreadHeader item={item} view={{ ...view, status: "done" }} />)
 		expect(screen.queryByRole("button", { name: "Stop subagent" })).toBeNull()
+	})
+
+	it("shows a retryable state when Stop fails", async () => {
+		mocks.stopSubagent.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+		const view = { parentTaskId: "parent", agentId: "child", status: "running" as const }
+		render(<SubagentThreadHeader item={item} view={view} />)
+		fireEvent.click(screen.getByRole("button", { name: "Stop subagent" }))
+		await waitFor(() => expect(screen.getByRole("button", { name: "Stop subagent" })).toHaveTextContent("Retry stop"))
+		expect(screen.getByRole("button", { name: "Stop subagent" })).toBeEnabled()
+		fireEvent.click(screen.getByRole("button", { name: "Stop subagent" }))
+		await waitFor(() => expect(screen.getByRole("button", { name: "Stop subagent" })).toHaveTextContent("Stopping…"))
+		expect(screen.getByRole("button", { name: "Stop subagent" })).toBeDisabled()
 	})
 
 	it("explains read-only behavior and quotes the report without sending a followup", () => {

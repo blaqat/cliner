@@ -1,7 +1,7 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { describe, expect, it } from "vitest"
-import { buildThreadItems, collectSubagents } from "./threadUtils"
+import { buildSubagentLineage, buildThreadItems, collectSubagents, isStoppable, needsAttention } from "./threadUtils"
 
 function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): HistoryItem {
 	return { id, ts, task: `task ${id}`, tokensIn: 0, tokensOut: 0, totalCost: 0, ...extra }
@@ -93,95 +93,106 @@ describe("buildThreadItems", () => {
 		item("other", 400),
 	]
 
-	it("returns nothing when the chat has no asides or subagents", () => {
-		expect(buildThreadItems(history[3], history, {}, [])).toEqual([])
-		expect(buildThreadItems(undefined, history, {}, [])).toEqual([])
+	it("returns nothing when the chat has no asides", () => {
+		expect(buildThreadItems(history[3], history, {})).toEqual([])
+		expect(buildThreadItems(undefined, history, {})).toEqual([])
 	})
 
-	it("lists Main, then asides oldest first, then subagents", () => {
-		const items = buildThreadItems(history[0], history, { "aside-1": "running" }, [spawn(1, ["scan"])])
+	it("lists Main then asides oldest first, and never subagents", () => {
+		const child = item("child", 150, { isSubagent: true, parentTaskId: "root" })
+		const items = buildThreadItems(history[0], [...history, child], { "aside-1": "running" })
 
 		expect(items.map((it) => [it.kind, it.id, it.title, it.current])).toEqual([
 			["main", "root", "Main", true],
 			["aside", "aside-1", "first", false],
 			["aside", "aside-2", "second", false],
-			["subagent", "1:1", "scan", false],
 		])
 		expect(items[1].status).toBe("running")
 	})
 
+	it("is empty for a chat whose only children are subagents, and inside a subagent thread", () => {
+		const root = item("solo", 1)
+		const child = item("solo__a", 2, { isSubagent: true, parentTaskId: "solo" })
+		expect(buildThreadItems(root, [root, child], {})).toEqual([])
+		expect(buildThreadItems(child, [root, child], {})).toEqual([])
+	})
+
 	it("roots the strip at the parent when an aside is focused", () => {
-		const items = buildThreadItems(history[1], history, {}, [])
+		const items = buildThreadItems(history[1], history, {})
 		expect(items[0]).toMatchObject({ kind: "main", id: "root", current: false })
 		expect(items.find((it) => it.id === "aside-2")?.current).toBe(true)
 	})
 
 	it("keeps a chip for a focused aside missing from history", () => {
 		const focused = item("fresh", 500, { parentTaskId: "root", task: "Aside: fresh" })
-		const items = buildThreadItems(focused, history, {}, [])
+		const items = buildThreadItems(focused, history, {})
 		expect(items.at(-1)).toMatchObject({ kind: "aside", id: "fresh", title: "fresh", current: true })
 	})
 
 	it("hides closed chips but never the focused one", () => {
-		const hidden = new Set(["aside-1", "aside-2", "1:1"])
-		expect(buildThreadItems(history[0], history, {}, [spawn(1, ["scan"])], hidden)).toEqual([])
-		const focusedAside = buildThreadItems(history[1], history, {}, [], hidden)
+		const hidden = new Set(["aside-1", "aside-2"])
+		expect(buildThreadItems(history[0], history, {}, hidden)).toEqual([])
+		const focusedAside = buildThreadItems(history[1], history, {}, hidden)
 		expect(focusedAside.map((it) => it.id)).toEqual(["root", "aside-2"])
 	})
+})
 
-	it("ignores subagents inherited from the parent's transcript in an aside", () => {
-		const focused = item("aside-3", 600, { parentTaskId: "root", forkedAtTs: 50 })
-		const items = buildThreadItems(focused, [...history, focused], {}, [spawn(10, ["inherited"]), spawn(60, ["own"])])
-		expect(items.filter((it) => it.kind === "subagent").map((it) => it.title)).toEqual(["own"])
+describe("buildSubagentLineage", () => {
+	const root = item("root", 1, { task: "Refactor auth" })
+	const a = item("a", 2, { isSubagent: true, parentTaskId: "root", task: "explore-auth", subagentAccess: "read" })
+	const sibling = item("sibling", 3, { isSubagent: true, parentTaskId: "root", task: "sibling" })
+	const b = item("b", 4, { isSubagent: true, parentTaskId: "a", task: "patch-cookie", subagentAccess: "write" })
+	const grandchild = item("c", 5, { isSubagent: true, parentTaskId: "b", task: "grandchild" })
+	const history = [root, a, sibling, b, grandchild]
+
+	it("shows the root with its direct children only (no grandchildren)", () => {
+		const lineage = buildSubagentLineage(root, history, { a: "running" }, [])
+		expect(lineage?.parent).toBeUndefined()
+		expect(lineage?.current).toMatchObject({ id: "root", title: "Refactor auth" })
+		expect(lineage?.children.map((row) => [row.id, row.status, row.access, row.parentTaskId])).toEqual([
+			["a", "running", "read", "root"],
+			["sibling", "done", "read", "root"],
+		])
 	})
-})
 
-it("uses A as B's parent chip and shows B's siblings from A", () => {
-	const root = item("root", 1)
-	const a = { ...item("a", 2), isSubagent: true, parentTaskId: "root", runtimeOwnerTaskId: "root" }
-	const b = { ...item("b", 3), isSubagent: true, parentTaskId: "a", runtimeOwnerTaskId: "root" }
-	const c = { ...item("c", 4), isSubagent: true, parentTaskId: "a", runtimeOwnerTaskId: "root" }
-	const threads = buildThreadItems(b, [root, a, b, c], {}, [])
-	expect(threads.map((item) => item.id)).toEqual(["a", "b", "c"])
-	expect(threads.find((item) => item.id === "b")).toMatchObject({ parentTaskId: "a", current: true })
-})
+	it("shows a subagent's immediate parent, itself and its children; no grandparent, siblings or grandchildren", () => {
+		const lineage = buildSubagentLineage(a, history, { b: "waiting" }, [])
+		expect(lineage?.parent).toMatchObject({ id: "root", title: "Refactor auth" })
+		expect(lineage?.current).toMatchObject({ id: "a", access: "read" })
+		expect(lineage?.children.map((row) => row.id)).toEqual(["b"])
+		expect(needsAttention(lineage!.children[0])).toBe(true)
 
-it("shows A's own children alongside its siblings and preserves their parent IDs", () => {
-	const root = item("root", 1)
-	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
-	const sibling = item("sibling", 3, { isSubagent: true, parentTaskId: "root" })
-	const b = item("b", 4, { isSubagent: true, parentTaskId: "a" })
-	const threads = buildThreadItems(a, [root, a, sibling, b], { b: "waiting" }, [])
-	expect(threads.map((thread) => thread.id)).toEqual(["root", "a", "sibling", "b"])
-	expect(threads.find((thread) => thread.id === "b")).toMatchObject({ parentTaskId: "a", status: "waiting" })
-	expect(threads.find((thread) => thread.id === "a")).toMatchObject({ parentTaskId: "root", current: true })
-})
-
-it("shows nested transcript children before their saved history is available", () => {
-	const root = item("root", 1)
-	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
-	const messages: ClineMessage[] = [
-		{
-			ts: 10,
-			type: "say",
-			say: "subagent",
-			text: JSON.stringify({
-				items: [{ index: 1, prompt: "B", status: "running", childSessionId: "b" }],
-			}),
-		},
-	]
-	const threads = buildThreadItems(a, [root, a], {}, messages)
-	expect(threads.find((thread) => thread.id === "b")).toMatchObject({
-		parentTaskId: "a",
-		status: "running",
-		previewOnly: false,
+		const nested = buildSubagentLineage(b, history, {}, [])
+		expect(nested?.parent).toMatchObject({ id: "a", title: "explore-auth", access: "read" })
+		expect(nested?.children.map((row) => row.id)).toEqual(["c"])
 	})
-})
 
-it("does not suppress A's unsaved child when a sibling has the same prompt", () => {
-	const root = item("root", 1)
-	const a = item("a", 2, { isSubagent: true, parentTaskId: "root" })
-	const sibling = item("sibling", 3, { isSubagent: true, parentTaskId: "root", task: "Same prompt" })
-	const threads = buildThreadItems(a, [root, a, sibling], {}, [spawn(10, ["Same prompt"])])
-	expect(threads.find((thread) => thread.id === "10:1")).toMatchObject({ parentTaskId: "a", previewOnly: true })
+	it("falls back to the subagent view's parent id and a placeholder title", () => {
+		const orphan = item("x", 9, { isSubagent: true, task: "orphan" })
+		expect(buildSubagentLineage(orphan, [orphan], {}, [], "gone")?.parent).toMatchObject({ id: "gone", title: "Parent" })
+	})
+
+	it("adds unsaved transcript children without duplicating saved ones", () => {
+		const messages: ClineMessage[] = [
+			{
+				ts: 5,
+				type: "say",
+				say: "subagent",
+				text: JSON.stringify({ items: [{ index: 1, prompt: "live child", status: "running", childSessionId: "live" }] }),
+			},
+			spawn(10, ["explore-auth", "new one"], ["read", "write"]),
+		]
+		const lineage = buildSubagentLineage(root, [root, a], {}, messages)
+		expect(lineage?.children.map((row) => [row.id, row.previewOnly ?? false])).toEqual([
+			["a", false],
+			["live", false],
+			["10:2", true],
+		])
+		expect(lineage?.children.map(isStoppable)).toEqual([false, true, true])
+		expect(needsAttention(lineage!.children[1])).toBe(false)
+	})
+
+	it("is undefined without a focused task", () => {
+		expect(buildSubagentLineage(undefined, history, {}, [])).toBeUndefined()
+	})
 })

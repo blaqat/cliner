@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion"
-import { BotIcon, CheckIcon, MessageSquareIcon, RotateCcwIcon } from "lucide-react"
+import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { memo, useCallback, useMemo, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
@@ -17,20 +17,22 @@ import { SessionStatusIcon } from "./SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "./sessionActions"
 
 interface CountBadgeProps {
-	icon: React.ReactNode
+	/** Codicon name without the `codicon-` prefix. */
+	icon: string
 	count: number
-	live: boolean
+	tone: "idle" | "live" | "attention"
 	title: string
 }
 
-export const CountBadge = ({ icon, count, live, title }: CountBadgeProps) => (
+export const CountBadge = ({ icon, count, tone, title }: CountBadgeProps) => (
 	<span
 		className={cn(
-			"inline-flex h-4 items-center gap-0.5 rounded-full border px-1.5 text-[10px] leading-none",
-			live ? "border-link/60 text-link" : "border-editor-group-border text-description",
+			"inline-flex h-4 items-center gap-0.5 text-[10.5px] leading-none tabular-nums transition-colors duration-200 motion-reduce:transition-none",
+			tone === "attention" ? "text-warning" : tone === "live" ? "text-link" : "text-description",
 		)}
+		data-tone={tone}
 		title={title}>
-		{icon}
+		<span aria-hidden className={`codicon codicon-${icon} text-[12px]`} />
 		{count}
 	</span>
 )
@@ -41,17 +43,34 @@ interface InboxRowViewProps {
 	animateLayout: boolean
 }
 
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+
 const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
-	const { item, status, settled, subthreadCount, liveSubthreadCount, subagentCount, liveSubagentCount } = row
-	const { taskHistory } = useExtensionState()
-	const subagents = (taskHistory ?? []).filter((child) => child.isSubagent && child.parentTaskId === item.id)
+	const {
+		item,
+		status,
+		settled,
+		subthreadCount,
+		liveSubthreadCount,
+		subagentCount,
+		liveSubagentCount,
+		attentionSubagentCount,
+	} = row
 	const time = settled ? formatStamp(item.ts, now) : formatAge(item.ts, now)
 	const activity = describeActivity(row, now)
+	const subagentTitle = [
+		plural(subagentCount, "subagent"),
+		attentionSubagentCount ? `${attentionSubagentCount} need${attentionSubagentCount === 1 ? "s" : ""} you` : "",
+		liveSubagentCount ? `${liveSubagentCount} running` : "",
+	]
+		.filter(Boolean)
+		.join(", ")
 
 	return (
 		<motion.div
 			className={cn(
-				"group grid grid-cols-[14px_minmax(0,1fr)_auto] items-start gap-2 rounded-xs border border-transparent px-2 py-1.5 cursor-pointer animate-row-in",
+				// Fixed height: every row is the same size whatever the chat holds.
+				"group grid h-11 grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden rounded-xs border border-transparent px-2 cursor-pointer animate-row-in motion-reduce:animate-none",
 				"hover:bg-list-hover hover:border-editor-group-border focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
 				settled && "opacity-55 hover:opacity-90",
 			)}
@@ -67,7 +86,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 			role="button"
 			tabIndex={0}
 			transition={{ duration: 0.18, ease: "easeOut" }}>
-			<div className="flex h-5 items-center justify-center">
+			<div className="flex h-5 items-center justify-center self-start pt-1.5">
 				<SessionStatusIcon settled={settled} status={status} />
 			</div>
 			<div className="min-w-0">
@@ -76,48 +95,29 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 					className={cn(
 						"truncate text-xs",
 						status === "running" && !settled
-							? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent"
+							? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description"
 							: "text-description",
 					)}>
 					{activity}
 				</div>
-				{subagents.length > 0 && (
-					<div className="mt-1 flex flex-col gap-1">
-						{subagents.map((child) => (
-							<button
-								aria-label={`Open subagent ${child.task}`}
-								className="flex items-center gap-1 truncate border-0 bg-transparent p-0 text-left text-xs text-link cursor-pointer"
-								key={child.id}
-								onClick={(event) => {
-									event.stopPropagation()
-									void openTask(child.id)
-								}}
-								onKeyDown={(event) => event.stopPropagation()}
-								type="button">
-								<BotIcon className="size-3 shrink-0" />
-								<span className="truncate">{child.task}</span>
-							</button>
-						))}
-					</div>
-				)}
 			</div>
-			<div className="flex flex-col items-end gap-0.5">
+			<div className="flex items-center gap-2">
 				{(subagentCount > 0 || subthreadCount > 0) && (
-					<div className="flex gap-1">
+					<div className="flex items-center gap-1.5" data-testid="inbox-row-counts">
 						{subagentCount > 0 && (
 							<CountBadge
-								count={liveSubagentCount || subagentCount}
-								icon={<BotIcon className="size-2.5" />}
-								live={liveSubagentCount > 0}
-								title={`${subagentCount} subagent${subagentCount === 1 ? "" : "s"}${liveSubagentCount ? `, ${liveSubagentCount} running` : ""}`}
+								count={subagentCount}
+								icon="type-hierarchy-sub"
+								title={subagentTitle}
+								tone={attentionSubagentCount > 0 ? "attention" : liveSubagentCount > 0 ? "live" : "idle"}
 							/>
 						)}
 						{subthreadCount > 0 && (
 							<CountBadge
 								count={subthreadCount}
-								icon={<MessageSquareIcon className="size-2.5" />}
-								live={liveSubthreadCount > 0}
-								title={`${subthreadCount} subthread${subthreadCount === 1 ? "" : "s"}${liveSubthreadCount ? `, ${liveSubthreadCount} running` : ""}`}
+								icon="repo-forked"
+								title={`${plural(subthreadCount, "aside")}${liveSubthreadCount ? `, ${liveSubthreadCount} running` : ""}`}
+								tone={liveSubthreadCount > 0 ? "live" : "idle"}
 							/>
 						)}
 					</div>

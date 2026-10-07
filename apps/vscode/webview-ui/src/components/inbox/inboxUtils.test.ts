@@ -78,7 +78,12 @@ describe("buildInbox", () => {
 		for (const counts of [undefined, { root: { total: 2, live: 0 } }]) {
 			const { active } = buildInbox(history, { a: "done", b: "waiting" }, counts)
 			expect(active).toHaveLength(1)
-			expect(active[0]).toMatchObject({ item: { id: "root" }, subagentCount: 2, liveSubagentCount: 1 })
+			expect(active[0]).toMatchObject({
+				item: { id: "root" },
+				subagentCount: 2,
+				liveSubagentCount: 1,
+				attentionSubagentCount: 1,
+			})
 		}
 	})
 
@@ -142,6 +147,7 @@ describe("inbox helpers", () => {
 			liveSubthreadCount: 0,
 			subagentCount: 0,
 			liveSubagentCount: 0,
+			attentionSubagentCount: 0,
 		})
 		expect(describeActivity(row("running"), NOW)).toBe("Working…")
 		expect(describeActivity(row("waiting"), NOW)).toBe("Waiting for you")

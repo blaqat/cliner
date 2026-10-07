@@ -1,8 +1,7 @@
-import type { ClineMessage } from "@shared/ExtensionMessage"
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, MessageSquareIcon, XIcon } from "lucide-react"
+import { ChevronDownIcon, ChevronRightIcon, MessageSquareIcon, XIcon } from "lucide-react"
 import { memo, useMemo, useState } from "react"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
-import { openTask, stopSubagent } from "@/components/inbox/sessionActions"
+import { openTask } from "@/components/inbox/sessionActions"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { buildThreadItems, type ThreadItem } from "../../utils/threadUtils"
@@ -10,20 +9,12 @@ import { buildThreadItems, type ThreadItem } from "../../utils/threadUtils"
 interface ThreadChipProps {
 	item: ThreadItem
 	onOpen: (item: ThreadItem) => void
-	onOpenSubagent: ((item: ThreadItem) => void) | undefined
 	onClose: (item: ThreadItem) => void
 }
 
-const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) => {
-	// Saved children open through the same task navigation as asides.
-	const clickable = item.previewOnly ? !!onOpenSubagent : !item.current
-	const handleOpen = () => (item.previewOnly ? onOpenSubagent?.(item) : onOpen(item))
-	const tooltip =
-		item.kind === "subagent"
-			? `Subagent (${item.access === "write" ? "read + write" : "read-only"}): ${item.title}`
-			: item.kind === "main"
-				? "Main conversation"
-				: `Aside: ${item.title}`
+const ThreadChip = ({ item, onOpen, onClose }: ThreadChipProps) => {
+	const clickable = !item.current
+	const tooltip = item.kind === "main" ? "Main conversation" : `Aside: ${item.title}`
 
 	return (
 		<div
@@ -31,7 +22,7 @@ const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) 
 			aria-label={clickable ? tooltip : undefined}
 			className={cn(
 				// Room for the title plus the kind and status icons before the strip starts scrolling.
-				"group/chip flex h-5.5 min-w-[calc(12px+12px+10ch)] max-w-48 flex-[0_1_auto] items-center gap-1 rounded-xs border py-0.5 pr-1 pl-1.5 text-[11px] animate-row-in",
+				"group/chip flex h-5.5 min-w-[calc(12px+12px+10ch)] max-w-48 flex-[0_1_auto] items-center gap-1 rounded-xs border py-0.5 pr-1 pl-1.5 text-[11px] animate-row-in motion-reduce:animate-none",
 				item.current
 					? "border-(--vscode-focusBorder) bg-selection/40 text-foreground"
 					: "border-editor-group-border bg-input-background/50 text-description",
@@ -39,13 +30,13 @@ const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) 
 			)}
 			data-kind={item.kind}
 			data-testid="thread-chip"
-			onClick={clickable ? handleOpen : undefined}
+			onClick={clickable ? () => onOpen(item) : undefined}
 			onKeyDown={
 				clickable
 					? (event) => {
 							if (event.key === "Enter" || event.key === " ") {
 								event.preventDefault()
-								handleOpen()
+								onOpen(item)
 							}
 						}
 					: undefined
@@ -53,32 +44,18 @@ const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) 
 			role={clickable ? "button" : undefined}
 			tabIndex={clickable ? 0 : undefined}
 			title={tooltip}>
-			{item.kind === "subagent" ? (
-				<BotIcon className="size-3 shrink-0" />
-			) : (
-				<MessageSquareIcon className="size-3 shrink-0" />
-			)}
+			<MessageSquareIcon className="size-3 shrink-0" />
 			<span className="min-w-0 flex-1 truncate">{item.title}</span>
-			{item.kind === "subagent" && (
-				<span
-					className={cn(
-						"flex h-3.5 shrink-0 items-center rounded-[3px] border px-1 text-[9px] leading-none",
-						item.access === "write" ? "border-warning/50 text-warning" : "border-editor-group-border",
-					)}
-					title={item.access === "write" ? "Can edit files" : "Read-only"}>
-					{item.access === "write" ? "W" : "R"}
-				</span>
-			)}
 			<SessionStatusIcon className={item.status === "running" ? "size-2.5" : undefined} status={item.status} />
 			{item.kind !== "main" && (
 				<button
-					aria-label={`Close ${item.kind === "subagent" ? "subagent" : "aside"} ${item.title}`}
+					aria-label={`Close aside ${item.title}`}
 					className="flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border-0 bg-transparent p-0 text-description opacity-60 hover:text-foreground hover:opacity-100 cursor-pointer"
 					onClick={(event) => {
 						event.stopPropagation()
 						onClose(item)
 					}}
-					title={item.kind === "subagent" && item.status === "running" ? "Stop subagent" : "Close"}
+					title="Close"
 					type="button">
 					<XIcon className="size-2.5" />
 				</button>
@@ -87,26 +64,20 @@ const ThreadChip = ({ item, onOpen, onOpenSubagent, onClose }: ThreadChipProps) 
 	)
 }
 
-interface ThreadStripProps {
-	messages: ClineMessage[]
-	/** Scrolls to + expands a subagent's status row; when absent chips stay static. */
-	onOpenSubagent?: (item: ThreadItem) => void
-}
-
 /**
- * Threads of the focused chat, directly under the task header: Main, its
- * asides and the subagents it spawned. Clicking an aside focuses it; Main
- * returns to the parent. Closing an aside only hides the chip (the session
- * keeps running); closing a running subagent aborts it via stopSubagent.
+ * Human-made threads of the focused chat, directly under the task header:
+ * Main and its asides. Hidden when the chat has no asides; subagents are in
+ * the header's subagent panel. Closing an aside only hides the chip (the
+ * session keeps running).
  */
-const ThreadStrip = ({ messages, onOpenSubagent }: ThreadStripProps) => {
+const ThreadStrip = () => {
 	const { currentTaskItem, taskHistory, sessionStatuses } = useExtensionState()
 	const [open, setOpen] = useState(true)
 	const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(() => new Set())
 
 	const items = useMemo(
-		() => buildThreadItems(currentTaskItem, taskHistory ?? [], sessionStatuses, messages, hiddenIds),
-		[currentTaskItem, taskHistory, sessionStatuses, messages, hiddenIds],
+		() => buildThreadItems(currentTaskItem, taskHistory ?? [], sessionStatuses, hiddenIds),
+		[currentTaskItem, taskHistory, sessionStatuses, hiddenIds],
 	)
 
 	if (items.length === 0) {
@@ -116,9 +87,6 @@ const ThreadStrip = ({ messages, onOpenSubagent }: ThreadStripProps) => {
 	const main = items[0]
 	const handleClose = (item: ThreadItem) => {
 		setHiddenIds((current) => new Set(current).add(item.id))
-		if (item.kind === "subagent" && item.status === "running" && currentTaskItem) {
-			void stopSubagent(item.parentTaskId ?? currentTaskItem.id, item.id)
-		}
 		if (item.current) {
 			void openTask(main.id)
 		}
@@ -143,7 +111,6 @@ const ThreadStrip = ({ messages, onOpenSubagent }: ThreadStripProps) => {
 							key={`${item.kind}:${item.id}`}
 							onClose={handleClose}
 							onOpen={(it) => void openTask(it.id)}
-							onOpenSubagent={onOpenSubagent}
 						/>
 					))}
 				</div>
