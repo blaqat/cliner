@@ -11,7 +11,6 @@ import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { Navbar } from "../menu/Navbar"
-import AutoApproveBar from "./auto-approve-menu/AutoApproveBar"
 // Import utilities and hooks from the new structure
 import {
 	ActionButtons,
@@ -38,7 +37,7 @@ import {
 	withPendingUserMessage,
 } from "./chat-view/utils/pendingResponse"
 import { subagentReportText } from "./chat-view/utils/subagentReport"
-import type { ThreadItem } from "./chat-view/utils/threadUtils"
+import type { LineageRow } from "./chat-view/utils/threadUtils"
 import { clearSubagentExpandTarget, emitSubagentExpand } from "./subagentExpand"
 
 interface ChatViewProps {
@@ -367,10 +366,10 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
-	// A threads-strip subagent chip scrolls the transcript to that subagent's
-	// status row and expands its prompt/output details there.
+	// A transcript-only subagent row in the header's subagent panel scrolls the
+	// transcript to that subagent's status row and expands its details there.
 	const openSubagentDetails = useCallback(
-		(item: ThreadItem) => {
+		(item: LineageRow) => {
 			const [tsText, indexText] = item.id.split(":")
 			const ts = Number(tsText)
 			const itemIndex = Number(indexText)
@@ -430,18 +429,13 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
 				{subagentView && currentTaskItem ? (
-					<SubagentThreadHeader item={currentTaskItem} view={subagentView} />
-				) : task ? (
-					<TaskSection
-						apiMetrics={apiMetrics}
-						lastApiReqTotalTokens={lastApiReqTotalTokens}
-						messageHandlers={messageHandlers}
-						selectedModelInfo={{
-							supportsPromptCache: selectedModelInfo.supportsPromptCache,
-							supportsImages: selectedModelInfo.supportsImages || false,
-						}}
-						task={task}
+					<SubagentThreadHeader
+						item={currentTaskItem}
+						onOpenSubagentPreview={openSubagentDetails}
+						view={subagentView}
 					/>
+				) : task ? (
+					<TaskSection messageHandlers={messageHandlers} onOpenSubagentPreview={openSubagentDetails} task={task} />
 				) : (
 					<WelcomeSection
 						hideAnnouncement={hideAnnouncement}
@@ -453,7 +447,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
-				{task && <ThreadStrip messages={messages} onOpenSubagent={openSubagentDetails} />}
+				{task && !subagentView && <ThreadStrip />}
 				{task && (
 					<MessagesArea
 						chatState={chatState}
@@ -475,7 +469,6 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 				)}
 			</div>
 			<footer className="bg-(--vscode-sidebar-background) flex flex-col" style={{ gridRow: "2" }}>
-				{!subagentView && <AutoApproveBar />}
 				{(!subagentView || subagentView.pendingDecision === "approval") && (
 					<ActionButtons
 						chatState={chatState}
@@ -488,7 +481,9 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 				{!subagentView && <QueuedPrompts items={queuedPrompts} />}
 				{(!subagentView || subagentView.pendingDecision === "question") && (
 					<InputSection
+						apiMetrics={apiMetrics}
 						chatState={chatState}
+						lastApiReqTotalTokens={lastApiReqTotalTokens}
 						messageHandlers={messageHandlers}
 						placeholderText={placeholderText}
 						scrollBehavior={scrollBehavior}

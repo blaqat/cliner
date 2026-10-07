@@ -84,7 +84,7 @@ const ReasoningEffortPicker = ({ mode, modelId, modelInfo, defaultEffort = "none
 			value={selectedEffort}>
 			<SelectTrigger
 				aria-label="Reasoning effort"
-				className="h-5 shrink-0 gap-0.5 rounded-xs border-0 bg-transparent px-1 py-0 text-xs text-description shadow-none hover:text-foreground focus-visible:ring-0 data-[size=default]:h-5 [&_svg]:size-2.5"
+				className="h-5 min-w-0 shrink gap-0.5 rounded-xs border-0 bg-transparent px-1 py-0 text-xs text-description shadow-none hover:text-foreground focus-visible:ring-0 data-[size=default]:h-5 [&_svg]:size-2.5"
 				data-testid="reasoning-effort-picker"
 				title={
 					pending

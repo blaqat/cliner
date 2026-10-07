@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
+import { ContextUsageIndicator, useComposerContextUsage } from "@/components/chat/composer/ContextUsageIndicator"
+import {
+	canCompactNow,
+	contextUsagePercent,
+	formatChatCost,
+	isCompactionRunning,
+	showsCompactNudge,
+} from "@/components/chat/composer/contextUsage"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePromptStash } from "../../hooks/usePromptStash"
@@ -12,6 +20,15 @@ interface InputSectionProps {
 	placeholderText: string
 	shouldDisableFilesAndImages: boolean
 	selectFilesAndImages: () => Promise<void>
+	/** The open chat's usage, for the context meter. Omitted on the home composer. */
+	apiMetrics?: {
+		totalTokensIn: number
+		totalTokensOut: number
+		totalCacheWrites?: number
+		totalCacheReads?: number
+		totalCost: number
+	}
+	lastApiReqTotalTokens?: number
 }
 
 /**
@@ -24,6 +41,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	placeholderText,
 	shouldDisableFilesAndImages,
 	selectFilesAndImages,
+	apiMetrics,
+	lastApiReqTotalTokens,
 }) => {
 	const {
 		quotes,
@@ -42,7 +61,15 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	} = chatState
 
 	const { isAtBottom, scrollToBottomAuto } = scrollBehavior
-	const { turnState, currentTaskItem, enterSendsAs = "steer" } = useExtensionState()
+	const {
+		turnState,
+		currentTaskItem,
+		enterSendsAs = "steer",
+		clineMessages = [],
+		mode,
+		subagentView,
+		sessionStatuses,
+	} = useExtensionState()
 	const promptStash = usePromptStash(currentTaskItem?.id)
 	const legacyTaskRunning =
 		turnState === undefined &&
@@ -54,6 +81,15 @@ export const InputSection: React.FC<InputSectionProps> = ({
 		legacyTaskRunning
 	const submitDisabled = sendingDisabled && !allowSubmitWhileDisabled
 	const isRunning = turnState?.phase === "streaming" || legacyTaskRunning
+	const canCompact = canCompactNow({
+		turnPhase: turnState?.phase,
+		sessionStatus: currentTaskItem ? sessionStatuses?.[currentTaskItem.id] : undefined,
+		legacyRunning: legacyTaskRunning,
+		isSubagentView: !!subagentView,
+		errorRecoveryAvailable: messageHandlers.errorRecoveryAvailable,
+		compactionRunning: isCompactionRunning(clineMessages),
+	})
+	const usage = useComposerContextUsage(mode, apiMetrics?.totalCost)
 	const runningPlaceholder =
 		enterSendsAs === "interject"
 			? "Interject with Enter, steer with Ctrl/⌘+Enter"
@@ -143,6 +179,35 @@ export const InputSection: React.FC<InputSectionProps> = ({
 			setSelectedImages={setSelectedImages}
 			shouldDisableFilesAndImages={shouldDisableFilesAndImages}
 			stashEntries={promptStash.entries}
+			usageIndicator={
+				currentTaskItem && apiMetrics
+					? {
+							hasCost: formatChatCost(usage.cost) !== undefined,
+							hasCompactNudge: showsCompactNudge(
+								canCompact,
+								contextUsagePercent(lastApiReqTotalTokens, usage.contextWindow),
+							),
+							render: ({ showCost, inlineCompactNudge }) => (
+								<ContextUsageIndicator
+									{...usage}
+									cacheReads={apiMetrics.totalCacheReads}
+									cacheWrites={apiMetrics.totalCacheWrites}
+									canCompact={canCompact}
+									inlineCompactNudge={inlineCompactNudge}
+									onCompact={() =>
+										void messageHandlers
+											.compactTask()
+											.catch((err) => console.error("Failed to compact task:", err))
+									}
+									showCost={showCost}
+									tokensIn={apiMetrics.totalTokensIn}
+									tokensOut={apiMetrics.totalTokensOut}
+									usedTokens={lastApiReqTotalTokens}
+								/>
+							),
+						}
+					: undefined
+			}
 		/>
 	)
 }

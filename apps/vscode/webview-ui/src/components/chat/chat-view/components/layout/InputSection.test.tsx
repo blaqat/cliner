@@ -1,15 +1,27 @@
-import type { TurnState } from "@shared/ExtensionMessage"
+import type { ExtensionState, TurnState } from "@shared/ExtensionMessage"
 import { fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { FULL_COMPOSER_ROW } from "@/components/chat/composer/composerRowLayout"
 import { resetPromptStashForTests } from "../../hooks/usePromptStash"
 import type { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 import { InputSection } from "./InputSection"
 
 const mockTurnState = vi.fn<() => TurnState | undefined>(() => undefined)
+const mockSessionStatuses = vi.fn<() => ExtensionState["sessionStatuses"]>(() => ({}))
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ turnState: mockTurnState(), currentTaskItem: { id: "task-1" } }),
+	useExtensionState: () => ({
+		turnState: mockTurnState(),
+		currentTaskItem: { id: "task-1" },
+		sessionStatuses: mockSessionStatuses(),
+		mode: "act",
+	}),
 }))
+
+vi.mock("@/components/chat/composer/useFocusedChatModel", () => ({
+	useFocusedChatModel: () => ({ provider: "anthropic", modelId: "claude", contextWindow: 100_000 }),
+}))
+vi.mock("@/hooks/useProviderUsageCostDisplay", () => ({ useProviderUsageCostDisplay: () => "show" }))
 
 vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
@@ -25,10 +37,12 @@ vi.mock("@/components/chat/ChatTextArea", () => ({
 			onRestoreStash?: (id: string) => void
 			stashEntries?: { id: string; text: string }[]
 			quoteTags?: React.ReactNode
+			usageIndicator?: { render: (layout: typeof FULL_COMPOSER_ROW) => React.ReactNode }
 		}
-	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [], quoteTags }, ref) => (
+	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [], quoteTags, usageIndicator }, ref) => (
 		<>
 			{quoteTags}
+			{usageIndicator?.render(FULL_COMPOSER_ROW)}
 			<button onClick={() => onStash?.()} type="button">
 				Stash
 			</button>
@@ -265,6 +279,54 @@ describe("InputSection", () => {
 
 		expect(screen.getByLabelText("composer")).toBeDisabled()
 		expect(screen.getByRole("button", { name: "Send" })).toBeDisabled()
+	})
+
+	describe("Compact", () => {
+		beforeEach(() => {
+			mockSessionStatuses.mockReturnValue({})
+			vi.stubGlobal(
+				"ResizeObserver",
+				class ResizeObserver {
+					observe() {}
+					unobserve() {}
+					disconnect() {}
+				},
+			)
+		})
+
+		const renderWithUsage = () =>
+			render(
+				<InputSection
+					apiMetrics={{ totalTokensIn: 80_000, totalTokensOut: 5_000, totalCost: 0 }}
+					chatState={makeChatState({ sendingDisabled: false })}
+					lastApiReqTotalTokens={90_000}
+					messageHandlers={{ handleSendMessage: vi.fn(), compactTask: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+
+		it("is not offered during a live question: the runtime is still running", () => {
+			mockTurnState.mockReturnValue({ phase: "awaiting_followup", seq: 1 })
+			mockSessionStatuses.mockReturnValue({ "task-1": "waiting" })
+			renderWithUsage()
+
+			expect(screen.queryByTestId("compact-nudge")).toBeNull()
+			fireEvent.click(screen.getByTestId("context-usage-button"))
+			expect(screen.getByTestId("compact-now-button")).toBeDisabled()
+		})
+
+		it("is offered for a followup after the turn ended", () => {
+			mockTurnState.mockReturnValue({ phase: "awaiting_followup", seq: 1 })
+			mockSessionStatuses.mockReturnValue({ "task-1": "done" })
+			renderWithUsage()
+
+			expect(screen.getByTestId("compact-nudge")).toBeInTheDocument()
+			fireEvent.click(screen.getByTestId("context-usage-button"))
+			expect(screen.getByTestId("compact-now-button")).toBeEnabled()
+		})
 	})
 
 	describe("quotes and stash", () => {
