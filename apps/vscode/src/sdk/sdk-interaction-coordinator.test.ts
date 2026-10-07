@@ -621,7 +621,7 @@ describe("SdkInteractionCoordinator", () => {
 		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
-	it.each([true, false])("enforces the Ask MCP gate against host auto-approval=%s", async (autoApprove) => {
+	it.each([true, false])("Ask MCP tools follow host MCP auto-approval=%s; read-only tools never ask", async (autoApprove) => {
 		const task = createTaskProxy("background-ask", vi.fn(), vi.fn())
 		const coordinator = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => task }),
@@ -638,8 +638,8 @@ describe("SdkInteractionCoordinator", () => {
 					snapshot: {},
 					toolCall: {},
 					input: {},
-				} as never) as { policy: { autoApprove: boolean; requireApproval: boolean } }
-			).policy
+				} as never) as { policy: { autoApprove: boolean; requireApproval?: boolean } } | undefined
+			)?.policy ?? { autoApprove: false }
 			const approval = coordinator.handleRequestToolApproval({
 				agentId: "child",
 				conversationId: "child-conversation",
@@ -649,7 +649,7 @@ describe("SdkInteractionCoordinator", () => {
 				input: {},
 				policy,
 			})
-			if (readOnlyHint !== true) {
+			if (readOnlyHint !== true && !autoApprove) {
 				await vi.waitFor(() =>
 					expect(task.messageStateHandler.getClineMessages().at(-1)).toMatchObject({ ask: "use_mcp_server" }),
 				)
@@ -665,7 +665,7 @@ describe("SdkInteractionCoordinator", () => {
 			}
 			await expect(approval).resolves.toEqual({ approved: true })
 		}
-		expect(task.messageStateHandler.getClineMessages()).toHaveLength(2)
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(autoApprove ? 0 : 2)
 	})
 
 	it("queues concurrent child approvals on the owning background task and keeps it waiting", async () => {

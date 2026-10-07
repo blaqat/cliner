@@ -31,16 +31,14 @@ describe("createAskModeMcpGateExtension", () => {
 	const extension = createAskModeMcpGateExtension();
 	const beforeTool = extension.hooks?.beforeTool;
 
-	it("requires approval for MCP tools without readOnlyHint", () => {
+	it("defers to configured approval policy for MCP tools without readOnlyHint", () => {
 		const tool = makeTool({
 			[MCP_TOOL_METADATA_KEY]: { serverName: "s", toolName: "t" },
 		});
-		expect(beforeTool?.(makeContext(tool))).toEqual({
-			policy: { autoApprove: false, requireApproval: true },
-		});
+		expect(beforeTool?.(makeContext(tool))).toBeUndefined();
 	});
 
-	it("requires approval when readOnlyHint is explicitly false", () => {
+	it("defers to configured approval policy when readOnlyHint is explicitly false", () => {
 		const tool = makeTool({
 			[MCP_TOOL_METADATA_KEY]: {
 				serverName: "s",
@@ -48,9 +46,7 @@ describe("createAskModeMcpGateExtension", () => {
 				annotations: { readOnlyHint: false },
 			},
 		});
-		expect(beforeTool?.(makeContext(tool))).toEqual({
-			policy: { autoApprove: false, requireApproval: true },
-		});
+		expect(beforeTool?.(makeContext(tool))).toBeUndefined();
 	});
 
 	it("auto-approves read-only MCP tools", () => {

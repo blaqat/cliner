@@ -125,10 +125,7 @@ export class SdkInteractionCoordinator {
 
 	async handleRequestToolApproval(request: ToolApprovalRequest): Promise<{ approved: boolean; reason?: string }> {
 		if (request.signal?.aborted) return { approved: false, reason: "Agent run aborted" }
-		const askMcpRequiresApproval =
-			this.options.getMode?.() === "plan" && request.toolName.includes("__") && request.policy.requireApproval !== false
 		if (
-			!askMcpRequiresApproval &&
 			request.policy.requireApproval !== true &&
 			(request.policy.autoApprove === true || this.options.shouldAutoApproveTool?.(request) === true)
 		) {

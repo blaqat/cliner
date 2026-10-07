@@ -556,9 +556,9 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 						telemetry: telemetry ?? config.telemetry,
 					})
 				: undefined;
-		// Ask-mode MCP gate: MCP tools without annotations.readOnlyHint === true
-		// always require user approval in Ask (plan) mode, regardless of
-		// auto-approve settings. Act mode is untouched.
+		// Ask-mode MCP gate: MCP tools with annotations.readOnlyHint === true
+		// run without approval in Ask (plan) mode; other MCP tools follow the
+		// user's approval settings. Act mode is untouched.
 		const askModeMcpGate =
 			normalized.mode === "plan" && normalized.enableTools
 				? createAskModeMcpGateExtension()
