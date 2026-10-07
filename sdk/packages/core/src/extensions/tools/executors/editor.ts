@@ -4,11 +4,18 @@
  * Built-in implementation for filesystem editing operations.
  */
 
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolContext } from "@cline/shared";
 import type { EditFileInput } from "../schemas";
 import type { EditorExecutor } from "../types";
+import {
+	contentHash,
+	createFileExclusive,
+	throwIfAborted,
+	validateSnapshot,
+} from "./edit-validation";
 import {
 	detectLineEnding,
 	normalizeLineEndings,
@@ -142,11 +149,14 @@ async function createFile(
 	filePath: string,
 	fileText: string,
 	encoding: BufferEncoding,
+	signal?: AbortSignal,
 ): Promise<string> {
-	await fs.mkdir(path.dirname(filePath), { recursive: true });
-	await fs.writeFile(filePath, normalizeNewFileLineEndings(fileText), {
-		encoding,
-	});
+	throwIfAborted(signal);
+	validateSnapshot(filePath, undefined);
+	fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+	const content = normalizeNewFileLineEndings(fileText);
+	validateSnapshot(filePath, undefined);
+	createFileExclusive(filePath, content, encoding);
 	return `File created successfully at: ${filePath}`;
 }
 
@@ -165,8 +175,12 @@ async function replaceInFile(
 	newStr: string | null | undefined,
 	encoding: BufferEncoding,
 	maxDiffLines: number,
+	signal?: AbortSignal,
 ): Promise<string> {
-	const content = await fs.readFile(filePath, encoding);
+	const bytes = await fs.readFile(filePath);
+	throwIfAborted(signal);
+	const snapshot = contentHash(bytes);
+	const content = bytes.toString(encoding);
 	const eol = detectLineEnding(content);
 	const normalizedOldStr = normalizeLineEndings(oldStr, eol);
 	const normalizedNewStr = normalizeLineEndings(newStr ?? "", eol);
@@ -185,7 +199,9 @@ async function replaceInFile(
 	// Replacer function so "$"-sequences in new_text ($&, $', $`, $$, $n)
 	// are inserted literally instead of being expanded by String.replace.
 	const updated = content.replace(normalizedOldStr, () => normalizedNewStr);
-	await fs.writeFile(filePath, updated, { encoding });
+	throwIfAborted(signal);
+	validateSnapshot(filePath, snapshot);
+	fsSync.writeFileSync(filePath, updated, { encoding });
 
 	const diff = createLineDiff(content, updated, maxDiffLines);
 	return `Edited ${filePath}\n${diff}`;
@@ -196,8 +212,12 @@ async function insertInFile(
 	insertLineOneBased: number,
 	newStr: string,
 	encoding: BufferEncoding,
+	signal?: AbortSignal,
 ): Promise<string> {
-	const content = await fs.readFile(filePath, encoding);
+	const bytes = await fs.readFile(filePath);
+	throwIfAborted(signal);
+	const snapshot = contentHash(bytes);
+	const content = bytes.toString(encoding);
 	const eol = detectLineEnding(content);
 	const lines = content.split(/\r\n|\n/);
 	const maxBoundaryLine = lines.length + 1;
@@ -209,8 +229,15 @@ async function insertInFile(
 	}
 
 	const insertLine = insertLineOneBased - 1;
-	lines.splice(insertLine, 0, ...newStr.split(/\r\n|\n/));
-	await fs.writeFile(filePath, lines.join(eol), { encoding });
+	// Avoid spreading model-produced lines into function arguments. Large inserts
+	// otherwise exceed the engine's argument limit before writing anything.
+	const updated = lines
+		.slice(0, insertLine)
+		.concat(newStr.split(/\r\n|\n/), lines.slice(insertLine))
+		.join(eol);
+	throwIfAborted(signal);
+	validateSnapshot(filePath, snapshot);
+	fsSync.writeFileSync(filePath, updated, { encoding });
 
 	return `Inserted content at line ${insertLineOneBased} in ${filePath}.`;
 }
@@ -230,8 +257,9 @@ export function createEditorExecutor(
 	return async (
 		input: EditFileInput,
 		cwd: string,
-		_context: AgentToolContext,
+		context: AgentToolContext,
 	): Promise<string> => {
+		throwIfAborted(context.signal);
 		const filePath = resolveFilePath(cwd, input.path, restrictToCwd);
 
 		if (input.insert_line != null) {
@@ -240,11 +268,14 @@ export function createEditorExecutor(
 				input.insert_line, // One-based index
 				input.new_text,
 				encoding,
+				context.signal,
 			);
 		}
 
-		if (!(await fileExists(filePath))) {
-			return createFile(filePath, input.new_text, encoding);
+		const exists = await fileExists(filePath);
+		throwIfAborted(context.signal);
+		if (!exists) {
+			return createFile(filePath, input.new_text, encoding, context.signal);
 		}
 		if (input.old_text == null) {
 			// Models that fill optional params with null hit this repeatedly and
@@ -263,6 +294,7 @@ export function createEditorExecutor(
 			input.new_text,
 			encoding,
 			maxDiffLines,
+			context.signal,
 		);
 	};
 }
