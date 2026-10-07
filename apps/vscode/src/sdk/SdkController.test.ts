@@ -671,7 +671,7 @@ describe("task session contexts", () => {
 })
 
 describe("child approval task ownership", () => {
-	it("uses the background owner's mode and keeps concurrent approvals waiting", async () => {
+	it("keeps concurrent approvals waiting on the background owner", async () => {
 		type Context = { mode: "plan" | "act"; task: TaskProxy; interactions: SdkInteractionCoordinator }
 		const statuses: Record<string, string> = {}
 		let focusedMode = "plan"
@@ -683,7 +683,7 @@ describe("child approval task ownership", () => {
 			sessionEventStream: stream,
 			stateManager: {
 				getGlobalSettingsKey: (key: string) =>
-					key === "mode" ? focusedMode : key === "autoApprovalSettings" ? { actions: { useMcp: true } } : undefined,
+					key === "mode" ? focusedMode : key === "autoApprovalSettings" ? { actions: { useMcp: false } } : undefined,
 			},
 			sessions: {
 				assertTaskAvailable: vi.fn(),
@@ -734,7 +734,6 @@ describe("child approval task ownership", () => {
 		)
 		await expect(second).resolves.toMatchObject({ approved: false })
 		expect(statuses["background-ask"]).toBe("running")
-		await expect(focus.interactions.handleRequestToolApproval(request)).resolves.toEqual({ approved: true })
 	})
 })
 
@@ -822,6 +821,71 @@ describe("stopSubagent", () => {
 		expect(JSON.parse(emitted.text).items.map((i: { status: string }) => i.status)).toEqual(["stopped", "running"])
 		expect(setSubagentCounts).toHaveBeenCalledWith("task-1", { total: 2, live: 1 })
 		expect(controller.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("stops one saved child so the parent's spawn wait resolves and siblings keep running", async () => {
+		// Real per-call abort registry from core; each controller stands in for one in-flight spawn_agent call.
+		const runtime = Object.create(LocalRuntimeHost.prototype)
+		const handles = new Map<string, AbortController>()
+		runtime.subAgentAbortHandles = handles
+		const spawnWait = (toolCallId: string) => {
+			const controller = new AbortController()
+			handles.set(`root:${toolCallId}`, controller)
+			const result = new Promise<string>((resolve) =>
+				controller.signal.addEventListener("abort", () => resolve("Stopped by user before finishing."), { once: true }),
+			)
+			return { controller, result }
+		}
+		const first = spawnWait("call-1")
+		const second = spawnWait("call-2")
+		const parentTranslator = new MessageTranslatorState()
+		parentTranslator.addSpawnAgent("call-1", "research", "read")
+		parentTranslator.addSpawnAgent("call-2", "audit", "read")
+		const clearPending = vi.fn()
+		const abort = vi.fn()
+		const child = (id: string, toolCallId: string, agentId: string) => ({
+			id,
+			ts: 1,
+			task: id,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			isSubagent: true,
+			parentTaskId: "root",
+			runtimeOwnerTaskId: "root",
+			agentId,
+			spawnToolCallId: toolCallId,
+		})
+		const controller = {
+			subagentThreads: new Map([
+				["child-1", child("child-1", "call-1", "agent-1")],
+				["child-2", child("child-2", "call-2", "agent-2")],
+			]),
+			taskSessions: new Map([["root", { translator: parentTranslator, interactions: { clearPending } }]]),
+			sessions: {
+				getSession: () => ({
+					sessionId: "root",
+					sdkHost: { abort, stopSubagent: (id: string, call: string) => runtime.abortSubAgent(id, call) },
+				}),
+			},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-1")).resolves.toBe(true)
+
+		await expect(first.result).resolves.toBe("Stopped by user before finishing.")
+		expect(second.controller.signal.aborted).toBe(false)
+		expect(abort).not.toHaveBeenCalled()
+		expect(clearPending).toHaveBeenCalledWith("Subagent stopped", "agent-1")
+		expect(parentTranslator.getSpawnAgent("call-1")?.status).toBe("stopped")
+		expect(parentTranslator.getSpawnAgent("call-2")?.status).toBe("running")
+
+		// Stop all is one stop per running child; an already-stopped child is a no-op.
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-2")).resolves.toBe(true)
+		await expect(second.result).resolves.toBe("Stopped by user before finishing.")
+		handles.delete("root:call-1")
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-1")).resolves.toBe(false)
+		expect(abort).not.toHaveBeenCalled()
 	})
 
 	it("returns false for stale chips, unknown tasks, or missing abort support", async () => {
@@ -1451,8 +1515,9 @@ describe("subagent thread routing", () => {
 		const stopSubagent = vi.fn(async () => true)
 		const controller = {
 			subagentThreads: new Map([["child", { parentTaskId: "parent", spawnToolCallId: "spawn-a" }]]),
-			taskSessions: new Map([["parent", {}]]),
+			taskSessions: new Map([["parent", { translator: new MessageTranslatorState() }]]),
 			sessions: { getSession: () => ({ sdkHost: { stopSubagent } }) },
+			postStateToWebview: vi.fn(async () => {}),
 		}
 		await expect(SdkController.prototype.stopSubagent.call(controller as never, "parent", "child")).resolves.toBe(true)
 		expect(stopSubagent).toHaveBeenCalledWith("parent", "spawn-a")

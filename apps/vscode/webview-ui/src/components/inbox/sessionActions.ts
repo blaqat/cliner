@@ -18,10 +18,16 @@ export function toggleTaskSettled(taskId: string): Promise<void> {
 	)
 }
 
-/** Aborts one running subagent of a task. `subagentId` is the strip chip id (`<statusTs>:<index>`). */
-export function stopSubagent(taskId: string, subagentId: string): Promise<void> {
+/**
+ * Aborts one running subagent of a task. `subagentId` is the strip chip id (`<statusTs>:<index>`).
+ * Resolves false when the stop failed (the child may still be running).
+ */
+export function stopSubagent(taskId: string, subagentId: string): Promise<boolean> {
 	return TaskServiceClient.stopSubagent(StopSubagentRequest.create({ taskId, subagentId })).then(
-		() => undefined,
-		(error) => console.error("Failed to stop subagent:", error),
+		() => true,
+		(error) => {
+			console.error("Failed to stop subagent:", error)
+			return false
+		},
 	)
 }

@@ -378,8 +378,214 @@ describe("createSpawnAgentTool", () => {
 			finishReason: "cancelled",
 			usage: { inputTokens: 0, outputTokens: 0 },
 		});
-		await executing;
+		const output = (await executing) as { text: string; finishReason: string };
+		expect(output.finishReason).toBe("aborted");
+		expect(output.text).toBe(
+			"Stopped by user before finishing. Partial output:\nstopped",
+		);
 		expect(registry.unregister).toHaveBeenCalledWith("call-9");
+	});
+
+	it("returns a stopped result instead of throwing when the user stops a child", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const registry = { register: vi.fn(), unregister: vi.fn() };
+		const onSubAgentEnd = vi.fn();
+		const parent = new AbortController();
+		runMock.mockImplementation(
+			() =>
+				new Promise((_, reject) =>
+					agentConstructorSpy.mock.calls
+						.at(-1)?.[0]
+						.abortSignal?.addEventListener(
+							"abort",
+							() => reject(new Error("Subagent stopped by user")),
+							{ once: true },
+						),
+				),
+		);
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+			abortHandleRegistry: registry,
+			onSubAgentEnd,
+		});
+
+		const executing = tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-11",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-11",
+				signal: parent.signal,
+			},
+		);
+		await Promise.resolve();
+		(registry.register.mock.calls[0][1] as AbortController).abort();
+
+		await expect(executing).resolves.toMatchObject({
+			text: "Stopped by user before finishing.",
+			finishReason: "aborted",
+		});
+		expect(parent.signal.aborted).toBe(false);
+		expect(onSubAgentEnd).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolCallId: "call-11",
+				result: expect.objectContaining({ finishReason: "aborted" }),
+			}),
+		);
+		expect(onSubAgentEnd.mock.calls[0][0].error).toBeUndefined();
+		expect(registry.unregister).toHaveBeenCalledWith("call-11");
+	});
+
+	it("keeps a completed result when Stop lands while messages persist", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const registry = { register: vi.fn(), unregister: vi.fn() };
+		const onSubAgentEnd = vi.fn();
+		let releasePersist: (() => void) | undefined;
+		const persistGate = new Promise<void>((resolve) => {
+			releasePersist = resolve;
+		});
+		const onSubAgentMessages = vi.fn(() => persistGate);
+		runMock.mockImplementation(async () => {
+			agentConstructorSpy.mock.calls
+				.at(-1)?.[0]
+				.onEvent?.({ type: "iteration_end", iteration: 1 });
+			return {
+				text: "all done",
+				iterations: 1,
+				finishReason: "completed",
+				usage: { inputTokens: 3, outputTokens: 2 },
+			};
+		});
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+			abortHandleRegistry: registry,
+			onSubAgentMessages,
+			onSubAgentEnd,
+		});
+
+		const executing = tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-12",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-12",
+				signal: new AbortController().signal,
+			},
+		);
+		await vi.waitFor(() => expect(onSubAgentMessages).toHaveBeenCalled());
+		// The run has settled; its handle is already gone, so a late Stop
+		// (simulated by aborting the captured controller) changes nothing.
+		expect(registry.unregister).toHaveBeenCalledWith("call-12");
+		(registry.register.mock.calls[0][1] as AbortController).abort();
+		releasePersist?.();
+
+		await expect(executing).resolves.toMatchObject({
+			text: "all done",
+			finishReason: "completed",
+		});
+		expect(onSubAgentEnd).toHaveBeenCalledWith(
+			expect.objectContaining({
+				result: expect.objectContaining({ finishReason: "completed" }),
+			}),
+		);
+	});
+
+	it("unregisters the abort handle before onSubAgentEnd runs", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const registry = { register: vi.fn(), unregister: vi.fn() };
+		let unregisteredBeforeEnd = false;
+		runMock.mockResolvedValue({
+			text: "ok",
+			iterations: 1,
+			finishReason: "completed",
+			usage: { inputTokens: 1, outputTokens: 1 },
+		});
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+			abortHandleRegistry: registry,
+			onSubAgentEnd: () => {
+				unregisteredBeforeEnd = registry.unregister.mock.calls.length === 1;
+			},
+		});
+
+		await tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-13",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-13",
+			},
+		);
+		expect(unregisteredBeforeEnd).toBe(true);
+	});
+
+	it("throws on a parent abort even when the child resolves as aborted", async () => {
+		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+		const parent = new AbortController();
+		const onSubAgentEnd = vi.fn();
+		runMock.mockImplementation(
+			() =>
+				new Promise((resolve) =>
+					agentConstructorSpy.mock.calls
+						.at(-1)?.[0]
+						.abortSignal?.addEventListener(
+							"abort",
+							() =>
+								resolve({
+									text: "",
+									iterations: 1,
+									finishReason: "aborted",
+									usage: { inputTokens: 0, outputTokens: 0 },
+								}),
+							{ once: true },
+						),
+				),
+		);
+
+		const tool = createSpawnAgentTool({
+			configProvider: createDelegatedAgentConfigProvider({
+				providerId: "anthropic",
+				modelId: "mock-model",
+			}),
+			subAgentTools: [],
+			onSubAgentEnd,
+		});
+
+		const executing = tool.execute(
+			{ systemPrompt: "System", task: "Do task" },
+			{
+				agentId: "parent-14",
+				conversationId: "conv-parent",
+				iteration: 1,
+				toolCallId: "call-14",
+				signal: parent.signal,
+			},
+		);
+		await Promise.resolve();
+		parent.abort(new Error("Task cancelled"));
+		await expect(executing).rejects.toThrow("Task cancelled");
+		expect(onSubAgentEnd).toHaveBeenCalledWith(
+			expect.objectContaining({ error: expect.any(Error) }),
+		);
+		expect(onSubAgentEnd.mock.calls[0][0].result).toBeUndefined();
 	});
 
 	it("propagates the parent abort signal into the child run", async () => {

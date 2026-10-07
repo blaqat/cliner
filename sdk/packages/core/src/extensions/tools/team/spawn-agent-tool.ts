@@ -141,6 +141,17 @@ export interface SpawnAgentToolConfig {
 	telemetry?: ITelemetryService;
 }
 
+function stoppedByUserText(partial: string): string {
+	const text = partial.trim();
+	return text
+		? `Stopped by user before finishing. Partial output:\n${text}`
+		: "Stopped by user before finishing.";
+}
+
+function toError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Create a spawn_agent tool that can run a delegated task with a focused sub-agent.
  */
@@ -167,7 +178,6 @@ export function createSpawnAgentTool(
 			const abortSignal = context.signal
 				? AbortSignal.any([context.signal, abortController.signal])
 				: abortController.signal;
-
 			let messagesWrite = Promise.resolve();
 			const subAgent = createDelegatedAgent({
 				kind: "subagent",
@@ -221,58 +231,71 @@ export function createSpawnAgentTool(
 					// Best-effort observer callback.
 				}
 			}
+			// Decide the terminal outcome the moment execution settles, then drop
+			// the abort handle: a Stop that lands during persistence or observer
+			// callbacks must not relabel a finished child as stopped.
+			let result: AgentResult | undefined;
+			let runError: unknown;
 			try {
-				const result = await subAgent.run(input.task);
-				await messagesWrite;
-				const output: SpawnAgentOutput = {
-					text: result.text,
+				result = await subAgent.run(input.task);
+			} catch (error) {
+				runError = error;
+			}
+			const parentAborted = context.signal?.aborted === true;
+			const stopped = !parentAborted && abortController.signal.aborted;
+			if (toolCallId) {
+				config.abortHandleRegistry?.unregister(toolCallId);
+			}
+
+			let output: SpawnAgentOutput | undefined;
+			let error: Error | undefined;
+			if (parentAborted) {
+				// The whole parent run is cancelled; surface it as a failure rather
+				// than a result the parent model would read and act on.
+				error = toError(runError ?? context.signal?.reason ?? "Aborted");
+			} else if (result) {
+				const stoppedEarly = stopped && result.finishReason !== "completed";
+				output = {
+					text: stoppedEarly ? stoppedByUserText(result.text) : result.text,
 					iterations: result.iterations,
-					finishReason: result.finishReason,
+					finishReason: stoppedEarly ? "aborted" : result.finishReason,
 					usage: {
 						inputTokens: result.usage.inputTokens,
 						outputTokens: result.usage.outputTokens,
 					},
 				};
-				if (config.onSubAgentEnd) {
-					try {
-						await config.onSubAgentEnd({
-							subAgentId,
-							conversationId,
-							parentAgentId,
-							toolCallId,
-							input,
-							result: output,
-							agentResult: result,
-							messages: subAgent.getMessages(),
-						});
-					} catch {
-						// Best-effort observer callback.
-					}
-				}
-				return output;
-			} catch (error) {
-				await messagesWrite;
-				if (config.onSubAgentEnd) {
-					try {
-						await config.onSubAgentEnd({
-							subAgentId,
-							conversationId,
-							parentAgentId,
-							toolCallId,
-							input,
-							error: error instanceof Error ? error : new Error(String(error)),
-							messages: subAgent.getMessages(),
-						});
-					} catch {
-						// Best-effort observer callback.
-					}
-				}
-				throw error;
-			} finally {
-				if (toolCallId) {
-					config.abortHandleRegistry?.unregister(toolCallId);
+			} else if (stopped) {
+				output = {
+					text: stoppedByUserText(""),
+					iterations: 0,
+					finishReason: "aborted",
+					usage: { inputTokens: 0, outputTokens: 0 },
+				};
+			} else {
+				error = toError(runError);
+			}
+
+			await messagesWrite;
+			if (config.onSubAgentEnd) {
+				try {
+					await config.onSubAgentEnd({
+						subAgentId,
+						conversationId,
+						parentAgentId,
+						toolCallId,
+						input,
+						...(output ? { result: output } : { error }),
+						...(result && output ? { agentResult: result } : {}),
+						messages: subAgent.getMessages(),
+					});
+				} catch {
+					// Best-effort observer callback.
 				}
 			}
+			if (output) {
+				return output;
+			}
+			throw runError ?? error;
 		},
 		timeoutMs: 300000,
 		retryable: false,

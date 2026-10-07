@@ -3125,9 +3125,14 @@ export class Controller {
 		const session = this.sessions.getSession(ownerId)
 		if (!context || !session || !session.sdkHost.stopSubagent) return false
 		if (child && (child.parentTaskId === taskId || ownerId === taskId) && child.spawnToolCallId) {
+			// Only this child's run aborts: core resolves the parent's spawn_agent call with a
+			// "Stopped by user" result, so the parent turn and sibling children keep running.
 			const stopped = await session.sdkHost.stopSubagent(ownerId, child.spawnToolCallId)
-			if (stopped) context.interactions?.clearPending("Subagent stopped", child.agentId)
-			return stopped
+			if (!stopped) return false
+			context.interactions?.clearPending("Subagent stopped", child.agentId)
+			this.taskSessions.get(child.parentTaskId ?? ownerId)?.translator.markSpawnAgentStopped(child.spawnToolCallId)
+			await this.postStateToWebview()
+			return true
 		}
 
 		const separator = subagentId.lastIndexOf(":")
