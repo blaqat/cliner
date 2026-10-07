@@ -6,6 +6,8 @@ import styled from "styled-components"
 import type { Node } from "unist"
 import { visit } from "unist-util-visit"
 import "./codeblock-parser.css"
+import { LargeTextPreview } from "./LargeTextPreview"
+import { getTextPreview } from "./text-preview"
 
 export const CODE_BLOCK_BG_COLOR = "var(--vscode-editor-background, --vscode-sideBar-background, rgb(30 30 30))"
 
@@ -149,6 +151,8 @@ const REMARK_OPTIONS = {
 // code/diff/output row (scrolling it back into view) the row shrank and grew again, and the
 // list's scroll position jumped to compensate while the user was scrolling.
 export function renderCodeBlockContent(source: string): React.ReactNode {
+	const preview = getTextPreview(source)
+	if (preview.truncated) return <pre>{preview.text}</pre>
 	try {
 		return renderRemarkSync(source, REMARK_OPTIONS)
 	} catch (error) {
@@ -158,7 +162,11 @@ export function renderCodeBlockContent(source: string): React.ReactNode {
 }
 
 const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
-	const reactContent = useMemo(() => renderCodeBlockContent(source || ""), [source])
+	const preview = getTextPreview(source || "")
+	const reactContent = useMemo(
+		() => (preview.truncated ? null : renderCodeBlockContent(preview.text)),
+		[preview.text, preview.truncated],
+	)
 
 	return (
 		<div
@@ -168,7 +176,7 @@ const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
 				backgroundColor: CODE_BLOCK_BG_COLOR,
 			}}>
 			<StyledMarkdown className="ph-no-capture markdown" forceWrap={forceWrap}>
-				{reactContent}
+				{preview.truncated ? <LargeTextPreview source={source || ""} /> : reactContent}
 			</StyledMarkdown>
 		</div>
 	)

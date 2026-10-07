@@ -1,10 +1,18 @@
 import type { AgentToolContext, ApplyPatchExecutor, EditFileInput, EditorExecutor } from "@cline/core"
+import * as diff from "diff"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
-import { buildEditPreviewAnimation, EditPreview, type EditPreviewContent } from "@/integrations/editor/EditPreview"
+import {
+	buildEditPreviewAnimation,
+	canAnimateEditPreview,
+	EditPreview,
+	type EditPreviewContent,
+} from "@/integrations/editor/EditPreview"
 import { computeNewEditorContent, SdkDiffEditCoordinator } from "./sdk-diff-edit-coordinator"
+
+vi.mock("diff", { spy: true })
 
 /** Records open/close calls; previews are purely visual so no other behavior is needed. */
 class FakeEditPreview extends EditPreview {
@@ -118,6 +126,25 @@ describe("computeNewEditorContent", () => {
 })
 
 describe("buildEditPreviewAnimation", () => {
+	it.each([
+		[Array.from({ length: 20_000 }, (_, i) => `old ${i}`).join("\n"), "small"],
+		["prefix\n" + "x".repeat(2 * 1024 * 1024), "prefix\nchanged"],
+		[
+			Array.from({ length: 2_500 }, (_, i) => `old ${i}`).join("\n"),
+			Array.from({ length: 2_500 }, (_, i) => `new ${i}`).join("\n"),
+		],
+	])("bounds diff work before allocating animation frames", (left, right) => {
+		// Assert the deterministic early-exit guard; heartbeat timing lives in the profiler.
+		const canAnimate = canAnimateEditPreview(left, right)
+		const diffSpy = vi.spyOn(diff, "diffLines")
+		const animation = buildEditPreviewAnimation(left, right)
+		if (canAnimate) expect(diffSpy).toHaveBeenCalledWith(left, right, { maxEditLength: 1_000 })
+		else expect(diffSpy).not.toHaveBeenCalled()
+		diffSpy.mockRestore()
+		expect(animation.frames).toHaveLength(1)
+		expect(animation.frames[0].content).toBe(right)
+	})
+
 	it("types fully-changed content in line by line and ends exactly at rightContent", () => {
 		const left = "one\ntwo\nthree\nfour"
 		const right = "ONE\nTWO\nTHREE\nFOUR"

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
-import { VscodeEditPreview } from "./VscodeEditPreview"
+import { editPreviewContentProvider, VscodeEditPreview } from "./VscodeEditPreview"
 
 describe("VscodeEditPreview", () => {
 	afterEach(() => {
@@ -27,6 +27,25 @@ describe("VscodeEditPreview", () => {
 			{ preview: false, preserveFocus: true },
 		)
 
+		await preview.close()
+	})
+
+	it("opens a giant-line preview with the complete final content immediately", async () => {
+		const right = "x".repeat(2 * 1024 * 1024)
+		const executeCommand = vi
+			.spyOn(vscode.commands, "executeCommand")
+			.mockImplementation(async (_command, _left, rightUri) => {
+				expect(editPreviewContentProvider.provideTextDocumentContent(rightUri as vscode.Uri)).toBe(right)
+			})
+		const preview = new VscodeEditPreview()
+		await preview.open({
+			title: "large",
+			absolutePath: "/large.txt",
+			displayPath: "large.txt",
+			leftContent: "old",
+			rightContent: right,
+		})
+		expect(executeCommand).toHaveBeenCalledTimes(1)
 		await preview.close()
 	})
 })

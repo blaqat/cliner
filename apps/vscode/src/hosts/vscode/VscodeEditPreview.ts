@@ -1,5 +1,11 @@
 import * as vscode from "vscode"
-import { buildEditPreviewAnimation, EditPreview, type EditPreviewContent } from "@/integrations/editor/EditPreview"
+import {
+	buildEditPreviewAnimation,
+	canAnimateEditPreview,
+	EditPreview,
+	type EditPreviewContent,
+	firstDifferingLine,
+} from "@/integrations/editor/EditPreview"
 import { Logger } from "@/shared/services/Logger"
 import { DecorationController } from "./DecorationController"
 
@@ -13,8 +19,6 @@ export const EDIT_PREVIEW_URI_SCHEME = "cline-edit-preview"
 const ANIMATION_START_BEAT_MS = 400
 /** Beat between the sweep finishing at the bottom and the reveal of the first change. */
 const ANIMATION_END_BEAT_MS = 250
-/** Files larger than this skip the animation and render the final diff immediately. */
-const MAX_ANIMATED_LINES = 3_000
 
 /**
  * Serves the virtual documents backing edit-preview diff tabs. Mutable (unlike the
@@ -31,6 +35,7 @@ class EditPreviewContentStore implements vscode.TextDocumentContentProvider {
 	}
 
 	set(uri: vscode.Uri, content: string): void {
+		if (this.contents.get(uri.toString()) === content) return
 		this.contents.set(uri.toString(), content)
 		this.emitter.fire(uri)
 	}
@@ -44,19 +49,6 @@ class EditPreviewContentStore implements vscode.TextDocumentContentProvider {
 export const editPreviewContentProvider = new EditPreviewContentStore()
 
 let nextPreviewId = 1
-
-/** 0-based first line where the two contents differ (cheap prefix scan, no full diff). */
-function firstDifferingLine(leftContent: string, rightContent: string): number {
-	const leftLines = leftContent.split("\n")
-	const rightLines = rightContent.split("\n")
-	const max = Math.min(leftLines.length, rightLines.length)
-	for (let i = 0; i < max; i++) {
-		if (leftLines[i] !== rightLines[i]) {
-			return i
-		}
-	}
-	return leftLines.length === rightLines.length ? 0 : max
-}
 
 /**
  * VS Code implementation of the read-only edit preview: a `vscode.diff` tab whose
@@ -87,7 +79,10 @@ export class VscodeEditPreview extends EditPreview {
 		})
 		editPreviewContentProvider.set(this.leftUri, content.leftContent)
 		// The right side starts as the original; the animation sweeps the new content in.
-		editPreviewContentProvider.set(this.rightUri, content.leftContent)
+		editPreviewContentProvider.set(
+			this.rightUri,
+			canAnimateEditPreview(content.leftContent, content.rightContent) ? content.leftContent : content.rightContent,
+		)
 
 		await vscode.commands.executeCommand("vscode.diff", this.leftUri, this.rightUri, content.title, {
 			preview: false,
@@ -109,9 +104,8 @@ export class VscodeEditPreview extends EditPreview {
 		if (!rightUri) {
 			return
 		}
-		const totalLines = content.rightContent.split("\n").length
 		const editor = await this.findRightEditor(rightUri)
-		if (!editor || totalLines > MAX_ANIMATED_LINES) {
+		if (!editor || !canAnimateEditPreview(content.leftContent, content.rightContent)) {
 			// Skip the animation (and its line-diff computation) entirely; a cheap
 			// prefix scan is enough to aim the viewport at the change.
 			editPreviewContentProvider.set(rightUri, content.rightContent)
