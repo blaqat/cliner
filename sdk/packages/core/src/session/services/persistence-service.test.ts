@@ -712,6 +712,47 @@ describe("UnifiedSessionPersistenceService", () => {
 			cacheWriteTokens: 2,
 			cost: 0.045,
 		});
+		const reloaded = new FileSessionService(sessionsDir);
+		expect(
+			(await reloaded.listSessions(10)).find(
+				(item) => item.sessionId === row!.sessionId,
+			)?.metadata,
+		).toMatchObject({
+			tokensIn: 5,
+			tokensOut: 3,
+			cacheReads: 4,
+			cacheWrites: 2,
+			totalCost: 0.045,
+		});
+		// A thrown run has no AgentResult, but its observed totals still survive.
+		await service.handleSubAgentEnd(rootSessionId, {
+			...context,
+			error: new Error("Provider failed after doing work"),
+			usage: {
+				inputTokens: 1000,
+				outputTokens: 20,
+				cacheReadTokens: 850,
+				cacheWriteTokens: 50,
+				totalCost: 0.002,
+			},
+			toolCalls: 2,
+			messages: [
+				{ role: "user", content: context.input.task },
+				{ role: "assistant", content: "Partial work" },
+			],
+		});
+		const failed = (await reloaded.listSessions(10)).find(
+			(item) => item.sessionId === row!.sessionId,
+		);
+		expect(failed?.status).toBe("failed");
+		expect(failed?.metadata).toMatchObject({
+			tokensIn: 100,
+			tokensOut: 20,
+			cacheReads: 850,
+			cacheWrites: 50,
+			totalCost: 0.002,
+			subagentToolCalls: 2,
+		});
 	});
 
 	it("preserves an existing title when the stored prompt changes", async () => {

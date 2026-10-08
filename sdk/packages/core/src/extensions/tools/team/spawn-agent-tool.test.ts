@@ -1,10 +1,11 @@
-import type { AgentConfig } from "@cline/shared";
+import type { AgentConfig, AgentEvent } from "@cline/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDelegatedAgentConfigProvider } from "./delegated-agent";
 
 type AgentExtension = NonNullable<AgentConfig["extensions"]>[number];
 
 const runMock = vi.fn();
+let onEvent: ((event: AgentEvent) => void) | undefined;
 const getAgentIdMock = vi.fn(() => "sub-agent-1");
 const getConversationIdMock = vi.fn(() => "conv-sub-1");
 const agentConstructorSpy = vi.fn();
@@ -28,7 +29,8 @@ vi.mock("../../../runtime/orchestration/session-runtime-orchestrator", () => {
 				return getConversationIdMock();
 			}
 
-			subscribeEvents(): () => void {
+			subscribeEvents(listener: (event: AgentEvent) => void): () => void {
+				onEvent = listener;
 				return () => {};
 			}
 
@@ -586,6 +588,9 @@ describe("createSpawnAgentTool", () => {
 			expect.objectContaining({ error: expect.any(Error) }),
 		);
 		expect(onSubAgentEnd.mock.calls[0][0].result).toBeUndefined();
+		expect(onSubAgentEnd.mock.calls[0][0].agentResult).toMatchObject({
+			finishReason: "aborted",
+		});
 	});
 
 	it("propagates the parent abort signal into the child run", async () => {
@@ -677,4 +682,76 @@ describe("createSpawnAgentTool", () => {
 			}),
 		);
 	});
+});
+
+it.each([
+	"error",
+	"parent cancelled",
+	"stopped by user",
+])("retains accumulated usage when the run throws: %s", async (ending) => {
+	const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
+	const parent = new AbortController();
+	const registry = { register: vi.fn(), unregister: vi.fn() };
+	const onSubAgentEnd = vi.fn();
+	runMock.mockImplementation(async () => {
+		onEvent!({
+			type: "usage",
+			agentId: "sub-agent-1",
+			conversationId: "conv-sub-1",
+			inputTokens: 1000,
+			outputTokens: 20,
+			cacheReadTokens: 850,
+			cacheWriteTokens: 50,
+			cost: 0.002,
+			totalInputTokens: 1000,
+			totalOutputTokens: 20,
+		});
+		onEvent!({
+			type: "content_start",
+			contentType: "tool",
+			toolName: "read_files",
+			agentId: "sub-agent-1",
+			conversationId: "conv-sub-1",
+		});
+		if (ending === "parent cancelled") parent.abort(new Error("Cancelled"));
+		if (ending === "stopped by user")
+			registry.register.mock.calls[0][1].abort();
+		throw new Error("Run failed");
+	});
+	const tool = createSpawnAgentTool({
+		configProvider: createDelegatedAgentConfigProvider({
+			providerId: "test",
+			modelId: "test",
+		}),
+		abortHandleRegistry: registry,
+		onSubAgentEnd,
+	});
+	const executing = tool.execute(
+		{ task: "Investigate", systemPrompt: "Test" },
+		{
+			agentId: "parent",
+			conversationId: "parent",
+			iteration: 1,
+			toolCallId: "spawn",
+			signal: parent.signal,
+		},
+	);
+	if (ending === "stopped by user")
+		await expect(executing).resolves.toMatchObject({
+			finishReason: "aborted",
+			usage: { inputTokens: 1000, outputTokens: 20 },
+		});
+	else await expect(executing).rejects.toThrow("Run failed");
+	expect(onSubAgentEnd).toHaveBeenCalledWith(
+		expect.objectContaining({
+			usage: {
+				inputTokens: 1000,
+				outputTokens: 20,
+				cacheReadTokens: 850,
+				cacheWriteTokens: 50,
+				totalCost: 0.002,
+			},
+			toolCalls: 1,
+		}),
+	);
 });

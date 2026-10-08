@@ -4,7 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type ApiStreamChunk, registerHandler } from "@cline/llms"
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
+import { combineApiRequests } from "@shared/combineApiRequests"
 import type { ExtensionState } from "@shared/ExtensionMessage"
+import { getApiMetrics } from "@shared/getApiMetrics"
 import { describe, expect, it, vi } from "vitest"
 import { StateManager } from "@/core/storage/StateManager"
 import { ClineCore, type CoreSessionEvent } from "../../../../sdk/packages/core/dist/index.js"
@@ -16,6 +18,9 @@ import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { SdkTaskHistory } from "./sdk-task-history"
 import type { SdkSessionHost } from "./session-host"
+
+// The gRPC shell is not used by this direct Core transport.
+vi.mock("@/core/controller/grpc-handler", () => ({ getRequestRegistry: () => ({ registerRequest: vi.fn() }) }))
 
 // Base state is the VS Code shell, not the session/translator/interaction code under test.
 vi.mock("@core/controller/state/getStateToPostToWebview", () => ({
@@ -38,7 +43,12 @@ describe("subagents through the real parent session", () => {
 		{ mode: "plan" as const, autoApprove: false },
 		{ mode: "act" as const, autoApprove: true },
 		{ mode: "plan" as const, autoApprove: true },
-	])("projects concurrent progress and decisions in $mode, MCP auto-approve=$autoApprove", async ({ mode, autoApprove }) => {
+		{ mode: "act" as const, autoApprove: true, cancel: true },
+	])("projects concurrent progress and decisions in $mode, MCP auto-approve=$autoApprove", async ({
+		mode,
+		autoApprove,
+		cancel,
+	}) => {
 		const dir = mkdtempSync(join(tmpdir(), "cline-child-repro-"))
 		const oldData = process.env.CLINE_DATA_DIR
 		process.env.CLINE_DATA_DIR = join(dir, "data")
@@ -92,7 +102,15 @@ describe("subagents through the real parent session", () => {
 						await finish.promise
 						yield { type: "text", id: name, text: `Report ${name}` } as const
 					} else yield { type: "text", id: name, text: "All children finished" } as const
-					yield { type: "usage", id: name, inputTokens: 100, outputTokens: 20, totalCost: 0.002 } as const
+					yield {
+						type: "usage",
+						id: name,
+						inputTokens: 1000,
+						cacheReadTokens: 850,
+						cacheWriteTokens: 50,
+						outputTokens: 20,
+						totalCost: 0.002,
+					} as const
 					yield { type: "done", id: name, success: true } as const
 				},
 			}))
@@ -259,32 +277,100 @@ describe("subagents through the real parent session", () => {
 			questions.resolve()
 			await vi.waitFor(async () => expect((await state()).pendingSubagentDecisions).toHaveLength(3))
 			const pendingQuestions = (await state()).pendingSubagentDecisions!
-			// Answer out of order from parent and child views without crossing resolvers.
-			for (const index of [1, 0, 2]) {
-				const pending = pendingQuestions[index]
-				if (index === 2) await controller.showTaskWithId(pending.taskId)
-				await controller.task.handleWebviewAskResponse(
-					"messageResponse",
-					`Answer ${pending.name}`,
-					undefined,
-					undefined,
-					pending.message.decisionId,
-				)
+			if (cancel) {
+				await core.abort(startResult.sessionId)
+			} else {
+				// Answer out of order from parent and child views without crossing resolvers.
+				for (const index of [1, 0, 2]) {
+					const pending = pendingQuestions[index]
+					if (index === 2) await controller.showTaskWithId(pending.taskId)
+					if (index === 1) {
+						// Both UI routes can submit the same decision in one event-loop turn.
+						const parentTask = controller.task
+						const childTask = controller.taskSessions.get(pending.taskId).task
+						const interactions = controller.interactions
+						const resolve = vi.spyOn(interactions, "resolvePendingAskQuestion")
+						const parentResponse = parentTask.handleWebviewAskResponse(
+							"messageResponse",
+							`Answer ${pending.name}`,
+							undefined,
+							undefined,
+							pending.message.decisionId,
+						)
+						controller.task = childTask
+						await Promise.all([
+							parentResponse,
+							childTask.handleWebviewAskResponse(
+								"messageResponse",
+								"Duplicate answer",
+								undefined,
+								undefined,
+								pending.message.decisionId,
+							),
+						])
+						expect(resolve.mock.results.filter((result) => result.value === true)).toHaveLength(1)
+						resolve.mockRestore()
+						await controller.showTaskWithId(startResult.sessionId)
+						continue
+					}
+					await controller.task.handleWebviewAskResponse(
+						"messageResponse",
+						`Answer ${pending.name}`,
+						undefined,
+						undefined,
+						pending.message.decisionId,
+					)
+				}
 			}
 			finish.resolve()
 			await running
 			await controller.showTaskWithId(startResult.sessionId)
 			const done = await state()
 			expect(done.pendingSubagentDecisions).toEqual([])
+			if (!cancel) {
+				// Parent chat metrics include the batch once; child transcript metrics
+				// remain on their own threads and must not be added again.
+				const totals = getApiMetrics(combineApiRequests(done.clineMessages))
+				expect(
+					totals.totalTokensIn + totals.totalTokensOut + (totals.totalCacheReads ?? 0) + (totals.totalCacheWrites ?? 0),
+				).toBe(11 * 1020)
+				expect(totals.totalCost).toBeCloseTo(11 * 0.002)
+			}
 			for (const child of children) {
-				expect(done.sessionStatuses[child.id]).toBe("done")
-				expect(done.taskHistory.find((item) => item.id === child.id)?.tokensIn).toBe(300)
+				expect(done.sessionStatuses[child.id]).toBe(cancel ? "error" : "done")
+				expect(done.taskHistory.find((item) => item.id === child.id)?.tokensIn).toBe(cancel ? 200 : 300)
 				await controller.showTaskWithId(child.id)
-				expect((await state()).clineMessages.some((message) => message.text?.includes(`Report ${child.task}`))).toBe(true)
+				expect(
+					(await state()).clineMessages.some((message) =>
+						message.text?.includes(cancel ? `Read complete ${child.task}` : `Report ${child.task}`),
+					),
+				).toBe(true)
 			}
 			for (const child of children) {
 				const saved = await controller.taskHistory.findHistoryItem(child.id)
-				expect(saved).toMatchObject({ tokensIn: 300, tokensOut: 60, totalCost: 0.006, subagentToolCalls: 3 })
+				const turns = cancel ? 2 : 3
+				expect(saved).toMatchObject({
+					tokensIn: 100 * turns,
+					tokensOut: 20 * turns,
+					cacheReads: 850 * turns,
+					cacheWrites: 50 * turns,
+					totalCost: 0.002 * turns,
+					subagentToolCalls: 3,
+				})
+				// Drop all live projections and load the persisted transcript and metadata.
+				controller.subagentThreads.delete(child.id)
+				controller.taskSessions.delete(child.id)
+				await controller.showTaskWithId(child.id)
+				const reloaded = await state()
+				expect(reloaded.currentTaskItem).toMatchObject({
+					tokensIn: saved.tokensIn,
+					tokensOut: saved.tokensOut,
+					cacheReads: saved.cacheReads,
+					cacheWrites: saved.cacheWrites,
+					totalCost: saved.totalCost,
+					subagentToolCalls: 3,
+				})
+				expect(reloaded.clineMessages.some((message) => message.text?.includes(`Read complete ${child.task}`))).toBe(true)
 			}
 			expect(done.subagentCounts[startResult.sessionId]).toEqual({ total: 3, live: 0 })
 			expect(events.filter((event) => event.type === "agent_event" && event.payload.event.parentAgentId)).not.toHaveLength(
