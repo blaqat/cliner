@@ -207,6 +207,7 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
+		subagentToolCalls: metadataNumber(metadata, "subagentToolCalls"),
 		cacheWrites: metadataNumber(metadata, "cacheWrites") ?? 0,
 		cacheReads: metadataNumber(metadata, "cacheReads") ?? 0,
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
@@ -285,7 +286,11 @@ export class SdkTaskHistory {
 	}
 
 	private getActiveHistoryHost(): VscodeSessionHost | undefined {
-		const sdkHost = this.options.sessions.getActiveSession()?.sdkHost
+		// Focusing a child changes the view, not the runtime owner. Reuse a
+		// retained host when that view has no top-level active session.
+		const sdkHost =
+			this.options.sessions.getActiveSession()?.sdkHost ??
+			this.options.sessions.getSessions?.().values().next().value?.sdkHost
 		if (sdkHost && "listHistory" in sdkHost) {
 			return sdkHost as VscodeSessionHost
 		}

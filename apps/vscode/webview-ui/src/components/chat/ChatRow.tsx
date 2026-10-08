@@ -39,6 +39,7 @@ import { canRestoreWorkspaceFromMessage } from "@/components/chat/chat-view/util
 import { OptionsButtons } from "@/components/chat/OptionsButtons"
 import { WithCopyButton } from "@/components/common/CopyButton"
 import Thumbnails from "@/components/common/Thumbnails"
+import { openTask } from "@/components/inbox/sessionActions"
 import McpResponseDisplay from "@/components/mcp/chat-display/McpResponseDisplay"
 import McpResourceRow from "@/components/mcp/configuration/tabs/installed/server-row/McpResourceRow"
 import McpToolRow from "@/components/mcp/configuration/tabs/installed/server-row/McpToolRow"
@@ -62,6 +63,7 @@ import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
+import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
 import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
@@ -109,7 +111,18 @@ const ChatRow = memo(
 
 		const [chatrow, { height }] = useSize(
 			<div className="relative pt-2.5 px-4">
+				{message.subagentName && (
+					<button
+						className="mb-1 border-0 bg-transparent p-0 text-[11px] text-link cursor-pointer hover:underline"
+						onClick={() => message.subagentTaskId && void openTask(message.subagentTaskId)}
+						type="button">
+						Subagent: {message.subagentName}
+					</button>
+				)}
 				<ChatRowContent {...props} />
+				{message.subagentTaskId && message.decisionId && (
+					<SubagentDecisionControls key={message.decisionId} message={message} />
+				)}
 			</div>,
 		)
 

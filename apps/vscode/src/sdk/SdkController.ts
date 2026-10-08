@@ -1442,9 +1442,12 @@ export class Controller {
 				id: payload.childSessionId,
 				ts: existing?.ts ?? Date.now(),
 				task: payload.prompt,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
+				tokensIn: existing?.tokensIn ?? 0,
+				tokensOut: existing?.tokensOut ?? 0,
+				totalCost: existing?.totalCost ?? 0,
+				cacheReads: existing?.cacheReads ?? 0,
+				cacheWrites: existing?.cacheWrites ?? 0,
+				subagentToolCalls: existing?.subagentToolCalls ?? 0,
 				isSubagent: true,
 				parentTaskId,
 				runtimeOwnerTaskId: payload.sessionId,
@@ -1484,6 +1487,15 @@ export class Controller {
 		if (!child) return true
 		const context = this.getTaskSessionContext(child.id)
 		const result = translateSessionEvent(event, context.translator, child.agentId)
+		if (event.payload.event.type === "content_start" && event.payload.event.contentType === "tool")
+			child.subagentToolCalls = (child.subagentToolCalls ?? 0) + 1
+		if (result.usage) {
+			child.tokensIn += result.usage.tokensIn
+			child.tokensOut += result.usage.tokensOut
+			child.totalCost = (child.totalCost ?? 0) + (result.usage.totalCost ?? 0)
+			child.cacheReads = (child.cacheReads ?? 0) + (result.usage.cacheReads ?? 0)
+			child.cacheWrites = (child.cacheWrites ?? 0) + (result.usage.cacheWrites ?? 0)
+		}
 		context.messages.appendAndEmit(result.messages, { ...event, payload: { ...event.payload, sessionId: child.id } })
 		if (result.turnComplete) context.turn.set(context.translator.wasErrorSeen() ? "error" : "completed")
 		void this.postStateToWebview()
@@ -1543,7 +1555,14 @@ export class Controller {
 				const child = Array.from(this.subagentThreads?.values() ?? []).find(
 					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
 				)
-				if (child) this.getTaskSessionContext(child.id).messages.appendMessages([{ ...message }])
+				if (child) {
+					message.subagentTaskId = child.id
+					message.subagentName = child.task
+					this.getTaskSessionContext(child.id).messages.appendAndEmit([{ ...message }], {
+						type: "status",
+						payload: { sessionId: child.id, status: "running" },
+					})
+				}
 			},
 			getSessionId: () => id,
 			getMode: () => context.mode,
@@ -1555,19 +1574,19 @@ export class Controller {
 				this.task?.taskId === id
 					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input)
 					: Promise.resolve(),
-			recordApprovedToolMessage: (callId, ts) => {
-				translator.recordApprovedToolMessageTs(callId, ts)
-				for (const child of this.subagentThreads?.values() ?? []) {
-					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
-						this.taskSessions.get(child.id)?.translator.recordApprovedToolMessageTs(callId, ts)
-				}
+			recordApprovedToolMessage: (callId, ts, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordApprovedToolMessageTs(callId, ts)
 			},
-			recordDeniedToolApproval: (callId, name, reason) => {
-				translator.recordDeniedToolApproval(callId, name, reason)
-				for (const child of this.subagentThreads?.values() ?? []) {
-					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
-						this.taskSessions.get(child.id)?.translator.recordDeniedToolApproval(callId, name, reason)
-				}
+			recordDeniedToolApproval: (callId, name, reason, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordDeniedToolApproval(callId, name, reason)
 				void this.diffEdits.discardPreview(callId)
 			},
 			shouldAutoApproveTool: (request) => {
@@ -2211,6 +2230,36 @@ export class Controller {
 	 */
 	async askResponse(prompt?: string, images?: string[], files?: string[], decisionId?: string): Promise<void> {
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
+		const ownerInteractions = ownerId ? this.taskSessions?.get(ownerId)?.interactions : undefined
+		const childDecision = ownerInteractions?.getPendingDecisions?.().find((pending) => {
+			if (decisionId ? pending.id !== decisionId : pending.id !== ownerInteractions.getPendingDecision()?.id) return false
+			return Array.from(this.subagentThreads?.values() ?? []).some(
+				(item) =>
+					(item.runtimeOwnerTaskId ?? item.parentTaskId) === ownerId &&
+					item.agentId === pending.agentId &&
+					(!child || item.id === child.id || item.parentTaskId === child.id),
+			)
+		})
+		const decisionResponseType = this.task?.taskState?.askResponse
+		if (
+			childDecision &&
+			(childDecision.kind === "question"
+				? decisionResponseType === "messageResponse"
+				: decisionResponseType === "yesButtonClicked" || decisionResponseType === "noButtonClicked")
+		) {
+			const responseType = decisionResponseType
+			if (
+				childDecision.kind === "approval" &&
+				(responseType === "yesButtonClicked" || responseType === "noButtonClicked")
+			) {
+				ownerInteractions!.resolvePendingToolApproval(prompt, responseType, images, files, childDecision.id)
+			} else if (childDecision.kind === "question" && responseType === "messageResponse") {
+				ownerInteractions!.resolvePendingAskQuestion(prompt, childDecision.id)
+			}
+			await this.postStateToWebview()
+			return
+		}
 		if (child) {
 			const parent = this.taskSessions.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
 			const decision = parent?.interactions.getPendingDecision(child.agentId ?? "")
@@ -3425,17 +3474,39 @@ export class Controller {
 					)
 				: undefined
 			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
+			const focusedOwner = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : snapshotTask?.taskId
+			const ownerInteractions = focusedOwner ? this.taskSessions.get(focusedOwner)?.interactions : undefined
 			const decision = child
 				? this.taskSessions
 						.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
 						?.interactions.getPendingDecision(child.agentId ?? "")
-				: undefined
+				: ownerInteractions?.getPendingDecision?.()
+			const pendingSubagentDecisions: NonNullable<ExtensionState["pendingSubagentDecisions"]> = []
+			for (const pending of ownerInteractions?.getPendingDecisions?.() ?? []) {
+				const item = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) =>
+						(item.runtimeOwnerTaskId ?? item.parentTaskId) === focusedOwner &&
+						item.agentId === pending.agentId &&
+						(!child || item.id === child.id || item.parentTaskId === child.id),
+				)
+				if (item)
+					pendingSubagentDecisions.push({
+						taskId: item.id,
+						name: item.task,
+						kind: pending.kind,
+						message: pending.message,
+					})
+			}
 			const childDecisionStatuses = Object.fromEntries(
 				Array.from(this.subagentThreads?.values() ?? [])
-					.filter((item) =>
-						this.taskSessions
-							.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
-							?.interactions.getPendingDecision(item.agentId ?? ""),
+					.filter(
+						(item) =>
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.hasPendingDecisionForAgent?.(item.agentId ?? "") ||
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.getPendingDecision(item.agentId ?? ""),
 					)
 					.map((item) => [item.id, "waiting" as const]),
 			)
@@ -3477,12 +3548,13 @@ export class Controller {
 							subagentView: {
 								parentTaskId: child.parentTaskId!,
 								agentId: child.agentId!,
-								status: decision ? ("waiting" as const) : childStatus!,
+								status: decision || childDecisionStatuses[child.id] ? ("waiting" as const) : childStatus!,
 								pendingDecision: decision?.kind,
 							},
 						}
 					: { subagentView: null }),
 				focusedSessionModels,
+				pendingSubagentDecisions,
 				composerApiSelection: pickerSelection,
 				composerNextMessageOnly: snapshotTask
 					? !!this.taskSessions.get(snapshotTask.taskId)?.nextMessageSelection
@@ -3499,7 +3571,15 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				taskHistory: processedTaskHistory,
-				turnState: childTurn ?? this.turnStateTracker.get(),
+				turnState:
+					childTurn ??
+					(decision
+						? {
+								phase: decision.kind === "approval" ? "awaiting_approval" : "awaiting_followup",
+								anchorTs: decision.message.ts,
+								seq: minter.nextSeq(),
+							}
+						: this.turnStateTracker.get()),
 				queuedPrompts,
 				sessionStatuses: {
 					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
