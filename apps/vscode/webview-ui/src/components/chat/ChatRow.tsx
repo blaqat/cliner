@@ -876,7 +876,7 @@ export const ChatRowContent = memo(
 									<div className={cn("flex flex-col gap-2", hasText && "mt-2")}>
 										{message.media.map((media) => (
 											<GeneratedMediaContent
-												className="max-h-96 max-w-full rounded-sm"
+												className="max-h-70 w-auto max-w-full rounded-sm object-contain"
 												key={media.id}
 												media={media}
 											/>
