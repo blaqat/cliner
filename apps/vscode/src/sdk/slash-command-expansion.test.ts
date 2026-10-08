@@ -66,8 +66,34 @@ describe("expandSlashCommands", () => {
 		expect(expandSlashCommands("please run /release.md for v2", commands)).toBe("please run Run the release workflow. for v2")
 	})
 
-	it("only expands the first matching command", () => {
-		expect(expandSlashCommands("/release then /debug", commands)).toBe("Run the release workflow. then /debug")
+	it("expands every matching command in order of appearance", () => {
+		const review = workflow("review", "Review the diff.")
+		const all = [...commands, review]
+		expect(expandSlashCommands("/release then /review", all)).toBe("Run the release workflow. then Review the diff.")
+		expect(expandSlashCommands("do /review and then /release please", all)).toBe(
+			"do Review the diff. and then Run the release workflow. please",
+		)
+	})
+
+	it("skips a disabled workflow mid-message but still expands the rest", () => {
+		const review = workflow("review", "Review the diff.")
+		expect(
+			expandSlashCommands("/release then /review", [...commands, review], {
+				disabledWorkflowNames: new Set(["release"]),
+			}),
+		).toBe("/release then Review the diff.")
+	})
+
+	it("does not re-scan the instructions a command expands to", () => {
+		const a = workflow("a", "run /b next")
+		const b = workflow("b", "B!")
+		expect(expandSlashCommands("/a", [a, b])).toBe("run /b next")
+	})
+
+	it("ignores /ask and /act mode-switch tokens defensively", () => {
+		const sneaky = workflow("act", "hijacked")
+		expect(expandSlashCommands("/act build it", [sneaky])).toBe("/act build it")
+		expect(expandSlashCommands("/ask /release", commands)).toBe("/ask Run the release workflow.")
 	})
 
 	it("skips unknown commands but still expands a later known one", () => {

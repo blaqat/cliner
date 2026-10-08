@@ -6,6 +6,7 @@ import * as LlmsModels from "@cline/llms"
 import { ApiFormat } from "@shared/proto/cline/models"
 import { Logger } from "@shared/services/Logger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { type ApiProfileStore, snapshotApiProfileConfiguration } from "@/core/controller/models/apiProfiles"
 import {
 	buildResumeSessionInput,
 	buildSessionConfig,
@@ -40,7 +41,7 @@ const mocks = vi.hoisted(() => {
 				actModeApiModelId: "claude-sonnet-4-6",
 				apiKey: "test-key",
 			})),
-			getGlobalSettingsKey: vi.fn((key: string): boolean | undefined => {
+			getGlobalSettingsKey: vi.fn((key: string): boolean | number | undefined => {
 				if (key === "subagentsEnabled" || key === "useAutoCondense") {
 					return false
 				}
@@ -345,6 +346,163 @@ describe("normalizeProviderReasoningSettings", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildSessionConfig", () => {
+	it("builds profile sessions for their own mode without stored connection settings", async () => {
+		const profiles = [
+			{ id: "ask", name: "A", provider: "openai", modelId: "ask-model", options: { openAiBaseUrl: "https://ask/v1" } },
+			{
+				id: "act",
+				name: "B",
+				provider: "openai",
+				modelId: "act-model",
+				openAiCompatibleApiType: "responses",
+				options: { openAiBaseUrl: "https://act/v1" },
+			},
+		]
+		const state = { apiConfigProfiles: profiles, askProfileId: "ask", actProfileId: "act" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => ["profile:act:openAiApiKey"],
+			getSecretForKey: () => "act-key",
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "plan") as never)
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
+			provider: "openai-compatible",
+			apiKey: "stored-key",
+			baseUrl: "https://stored/v1",
+			azure: { apiVersion: "stored-version" },
+		} as never)
+		const ask = await buildSessionConfig({ cwd: tempDir, mode: "plan" })
+		expect(mocks.stateManager.getApiConfiguration).toHaveBeenCalledWith("plan")
+		expect(ask.inheritProviderSettings).toBe(false)
+		expect(ask.providerConfig).toMatchObject({ modelId: "ask-model", apiKey: "", baseUrl: "https://ask/v1", headers: {} })
+		expect(ask.providerConfig?.azure?.apiVersion).toBeUndefined()
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "act") as never)
+		const act = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		expect(act.providerConfig).toMatchObject({
+			modelId: "act-model",
+			apiKey: "act-key",
+			baseUrl: "https://act/v1",
+			routingProviderId: "openai-native",
+		})
+	})
+
+	it.each([
+		undefined,
+		"none",
+		"low",
+		"xhigh",
+	] as const)("uses effective profile effort %s without inheriting provider effort", async (effort) => {
+		const state = {
+			apiConfigProfiles: [{ id: "a", name: "A", provider: "anthropic", modelId: "m", reasoningEffort: "high" }],
+			askProfileId: "a",
+			actProfileId: "a",
+		}
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		const snapshot = snapshotApiProfileConfiguration(store, { actModeReasoningEffort: effort }, "act")
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshot as never)
+		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
+			provider: "anthropic",
+			reasoning: { enabled: true, effort: "medium" },
+		} as never)
+		const result = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		expect(result.reasoningEffort).toBe(effort === "none" ? undefined : effort)
+		expect(result.thinking).toBeUndefined()
+	})
+
+	it.each(["plan", "act"] as const)("applies the saved configuration's model info to the %s session catalog", async (mode) => {
+		const profiles = [
+			{
+				id: "cfg",
+				name: "Custom",
+				provider: "openai",
+				modelId: "custom-reasoner",
+				options: {
+					openAiBaseUrl: "https://custom/v1",
+					planModeOpenAiModelInfo: {
+						contextWindow: 64_000,
+						maxTokens: 2_048,
+						supportsImages: false,
+						supportsPromptCache: true,
+						inputPrice: 0.5,
+						outputPrice: 1.5,
+					},
+				},
+			},
+		]
+		const state = { apiConfigProfiles: profiles, askProfileId: "cfg", actProfileId: "cfg" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, mode) as never)
+
+		const config = await buildSessionConfig({ cwd: tempDir, mode })
+		const knownModel = (config.providerConfig as any).knownModels["custom-reasoner"]
+
+		expect(config.providerId).toBe("openai-compatible")
+		expect(knownModel).toMatchObject({
+			id: "custom-reasoner",
+			contextWindow: 64_000,
+			maxTokens: 2_048,
+			pricing: { input: 0.5, output: 1.5 },
+		})
+		expect(knownModel.capabilities).toContain("prompt-cache")
+		expect(knownModel.capabilities).toContain("tools")
+		expect(knownModel.capabilities).not.toContain("images")
+		// Manual compaction budgets against the same top-level catalog.
+		expect(config.knownModels?.["custom-reasoner"]).toEqual(knownModel)
+		// Max Output Tokens flows to per-turn and summarizer limits.
+		expect((config as any).maxTokensPerTurn).toBe(2_048)
+		expect((config.providerConfig as any).maxOutputTokens).toBe(2_048)
+	})
+
+	it("overlays a profile's context window on catalog-known models", async () => {
+		const catalogModel = (await LlmsModels.getModelsForProvider("openai-compatible"))["gpt-4o"]
+		expect(catalogModel).toBeDefined()
+		const profiles = [
+			{
+				id: "cfg",
+				name: "Custom",
+				provider: "openai",
+				modelId: "gpt-4o",
+				options: {
+					openAiBaseUrl: "https://custom/v1",
+					planModeOpenAiModelInfo: {
+						// Seeded from the editor's safe defaults; only contextWindow was changed.
+						maxTokens: -1,
+						contextWindow: 64_000,
+						supportsImages: true,
+						supportsPromptCache: false,
+						inputPrice: 0,
+						outputPrice: 0,
+						temperature: 0,
+					},
+				},
+			},
+		]
+		const state = { apiConfigProfiles: profiles, actProfileId: "cfg" }
+		const store = {
+			getGlobalStateKey: (key: keyof typeof state) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		} as unknown as ApiProfileStore
+		mocks.stateManager.getApiConfiguration.mockReturnValue(snapshotApiProfileConfiguration(store, {}, "act") as never)
+
+		const config = await buildSessionConfig({ cwd: tempDir, mode: "act" })
+		const knownModel = (config.providerConfig as any).knownModels["gpt-4o"]
+
+		expect(knownModel.contextWindow).toBe(64_000)
+		// Untouched fields still come from the catalog.
+		expect(knownModel.maxTokens).toBe(catalogModel.maxTokens)
+		expect(knownModel.capabilities).toEqual(expect.arrayContaining(catalogModel.capabilities ?? []))
+		expect(config.knownModels?.["gpt-4o"]).toEqual(knownModel)
+	})
+
 	it("resolves Cline OAuth credentials after defaulting to the Cline provider", async () => {
 		mocks.stateManager.getApiConfiguration.mockReturnValue({} as any)
 		mocks.providerSettingsManager.getProviderSettings.mockReturnValue({
@@ -1349,6 +1507,41 @@ describe("buildSessionConfig", () => {
 		expect(config.providerConfig).not.toHaveProperty("apiKey")
 	})
 
+	it.each(["plan", "act"] as const)("registers subagents by default in %s mode", async (mode) => {
+		mocks.stateManager.getGlobalSettingsKey.mockReturnValue(undefined)
+		const config = await buildSessionConfig({ cwd: "/tmp/workspace", mode })
+		expect(config.enableSpawnAgent).toBe(true)
+		expect(config.enableAgentTeams).toBe(false)
+		expect(config.subagentSettings).toEqual({
+			maxConcurrent: 0,
+			allowWrite: true,
+			allowCommands: true,
+			allowMcp: true,
+			allowWeb: true,
+		})
+	})
+
+	it("passes persisted subagent permissions and disables registration when off", async () => {
+		const settings: Record<string, boolean | number> = {
+			subagentsEnabled: false,
+			subagentsMaxConcurrent: 2,
+			subagentsAllowWrite: false,
+			subagentsAllowCommands: false,
+			subagentsAllowMcp: false,
+			subagentsAllowWeb: false,
+		}
+		mocks.stateManager.getGlobalSettingsKey.mockImplementation((key: string) => settings[key])
+		const config = await buildSessionConfig({ cwd: "/tmp/workspace" })
+		expect(config.enableSpawnAgent).toBe(false)
+		expect(config.subagentSettings).toEqual({
+			maxConcurrent: 2,
+			allowWrite: false,
+			allowCommands: false,
+			allowMcp: false,
+			allowWeb: false,
+		})
+	})
+
 	it("enables agentic SDK compaction when global useAutoCondense is true", async () => {
 		mocks.stateManager.getGlobalSettingsKey.mockImplementation((key: string) => {
 			if (key === "useAutoCondense") {
@@ -1454,21 +1647,20 @@ describe("buildSessionConfig", () => {
 
 		// The shared prompt builder now owns the mode semantics: the
 		// <user_input mode> / <mode_notice> explanation goes to both modes, the
-		// plan-mode contract (read-only run_commands included) only to plan.
-		expect(actConfig.systemPrompt).toContain("# Plan / Act Modes")
+		// ask-mode contract (read-only run_commands included) only to ask.
+		expect(actConfig.systemPrompt).toContain("# Ask / Act Modes")
 		expect(actConfig.systemPrompt).toContain("<mode_notice>")
-		expect(actConfig.systemPrompt).not.toContain("# Plan Mode\n")
+		expect(actConfig.systemPrompt).not.toContain("# Ask Mode\n")
 
-		expect(planConfig.systemPrompt).toContain("# Plan / Act Modes")
-		expect(planConfig.systemPrompt).toContain("# Plan Mode\n")
+		expect(planConfig.systemPrompt).toContain("# Ask / Act Modes")
+		expect(planConfig.systemPrompt).toContain("# Ask Mode\n")
 		expect(planConfig.systemPrompt).toContain(
-			"run_commands tool remains available in plan mode strictly for read-only inspection",
+			"run_commands tool remains available in Ask mode strictly for read-only inspection",
 		)
-		// Unlike the CLI, the extension never exposes switch_to_act_mode: the
-		// plan contract must direct the model to the manual Plan/Act toggle
-		// instead of a tool it does not have.
+		// Ask mode never steers the model toward a mode switch.
 		expect(planConfig.systemPrompt).not.toContain("switch_to_act_mode")
-		expect(planConfig.systemPrompt).toContain("Plan/Act toggle")
+		expect(planConfig.systemPrompt).not.toContain("toggle to Act")
+		expect(planConfig.systemPrompt).not.toContain("Plan/Act toggle")
 	})
 })
 

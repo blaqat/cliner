@@ -1,5 +1,6 @@
 import type { GatewayStreamRequest } from "@cline/shared";
 import type { CallSettings } from "ai";
+import { supportsOpenAINoneReasoningEffort } from "../model-facts";
 
 export type AiSdkReasoning = NonNullable<CallSettings["reasoning"]>;
 
@@ -36,7 +37,14 @@ export function resolvePortableReasoning(
 	}
 	const fullySupported = PORTABLE_REASONING_PROVIDERS.has(request.providerId);
 	if (reasoning.enabled === false) {
-		return fullySupported ? "none" : undefined;
+		// OpenAI-compatible endpoints serving GPT-5.1+ need an explicit "none":
+		// omitting it applies the model's default effort, which Chat
+		// Completions rejects alongside function tools.
+		return fullySupported ||
+			(request.providerId === "openai-compatible" &&
+				supportsOpenAINoneReasoningEffort(request.modelId))
+			? "none"
+			: undefined;
 	}
 	if (typeof reasoning.budgetTokens === "number") {
 		return undefined;

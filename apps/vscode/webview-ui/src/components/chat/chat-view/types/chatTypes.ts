@@ -6,10 +6,16 @@ import { ClineAsk, ClineMessage } from "@shared/ExtensionMessage"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import type { ButtonActionType, SubmittingButtonActionType } from "../shared/buttonConfig"
 
+/** A passage quoted from the conversation, with an optional note typed under it. */
+export interface QuoteDraft {
+	text: string
+	note: string
+}
+
 export interface DraftSnapshot {
 	revision: number
 	text: string
-	activeQuote: string | null
+	quotes: QuoteDraft[]
 	images: string[]
 	files: string[]
 }
@@ -39,8 +45,10 @@ export interface ChatState {
 	// State values
 	inputValue: string
 	setInputValue: React.Dispatch<React.SetStateAction<string>>
-	activeQuote: string | null
-	setActiveQuote: React.Dispatch<React.SetStateAction<string | null>>
+	quotes: QuoteDraft[]
+	setQuotes: React.Dispatch<React.SetStateAction<QuoteDraft[]>>
+	/** Appends a quote with an empty note. */
+	addQuote: (text: string) => void
 	isTextAreaFocused: boolean
 	setIsTextAreaFocused: React.Dispatch<React.SetStateAction<boolean>>
 	selectedImages: string[]
@@ -92,6 +100,12 @@ export interface MessageHandlers {
 	compactTask: () => Promise<boolean>
 	executeButtonAction: (invocation: ButtonActionInvocation) => Promise<boolean>
 	handleSendMessage: (text: string, images: string[], files: string[]) => Promise<void>
+	/** Starts the draft as a NEW chat that runs in the background (home composer). */
+	handleSendInBackground: (text: string, images: string[], files: string[]) => Promise<void>
+	/** Stops the focused task's current turn and sends the draft immediately. */
+	handleInterject: (text: string, images: string[], files: string[]) => Promise<void>
+	/** Forks the focused task at `messageTs` (default: latest message) and sends the draft there. */
+	handleAside: (text: string, images: string[], files: string[], messageTs?: number) => Promise<void>
 	handleTaskCloseButtonClick: () => void
 	retryFailedRequest: () => Promise<boolean>
 	startNewTask: (source?: "chat_new_task" | "navbar") => Promise<boolean>
@@ -107,6 +121,8 @@ export interface ScrollBehavior {
 	scrollToBottomSmooth: () => void
 	scrollToBottomAuto: () => void
 	scrollToMessage: (messageIndex: number) => void
+	/** Scrolls so the row at `groupIndex` (index into the rendered list) is at the top. */
+	scrollToIndex: (groupIndex: number) => void
 	toggleRowExpansion: (ts: number, options?: { preserveAutoScroll?: boolean }) => void
 	handleRowHeightChange: (isTaller: boolean) => void
 	handleLastRowContentChange: () => void
@@ -116,6 +132,8 @@ export interface ScrollBehavior {
 	setPendingScrollToMessage: React.Dispatch<React.SetStateAction<number | null>>
 	scrolledPastUserMessage: ClineMessage | null
 	handleRangeChanged: (range: ListRange) => void
+	/** Virtuoso's atBottomStateChange: tracks the bottom and resumes auto-follow when appropriate. */
+	handleAtBottomStateChange: (atBottom: boolean) => void
 }
 
 /**

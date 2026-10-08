@@ -33,6 +33,10 @@ service TaskService {
   rpc exportTaskWithId(StringRequest) returns (Empty);
   // Toggles the favorite status of a task
   rpc toggleTaskFavorite(TaskFavoriteRequest) returns (Empty);
+  rpc toggleTaskSettled(TaskSettledRequest) returns (Empty);
+  rpc forkTaskAt(ForkTaskAtRequest) returns (String);
+  rpc interjectPrompt(InterjectPromptRequest) returns (Empty);
+  rpc stopSubagent(StopSubagentRequest) returns (Empty);
   // Gets filtered task history
   rpc getTaskHistory(GetTaskHistoryRequest) returns (TaskHistoryArray);
   // Sends a response to a previous ask operation
@@ -54,6 +58,8 @@ message NewTaskRequest {
   repeated string images = 3;
   repeated string files = 4;
   optional Settings task_settings = 5;
+  // Starts the task without focusing it (home composer "start in background").
+  bool run_in_background = 6;
 }
 
 // Request message for toggling task favorite status
@@ -61,6 +67,31 @@ message TaskFavoriteRequest {
   Metadata metadata = 1;
   string task_id = 2;
   bool is_favorited = 3;
+}
+
+message TaskSettledRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+}
+
+message ForkTaskAtRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  int64 message_ts = 3;
+}
+
+message InterjectPromptRequest {
+  Metadata metadata = 1;
+  string text = 2;
+  repeated string images = 3;
+  repeated string files = 4;
+}
+
+message StopSubagentRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  // ThreadStrip chip id: "<subagent-status-message-ts>:<item index>".
+  string subagent_id = 3;
 }
 
 // Response for task details
@@ -77,6 +108,10 @@ message TaskResponse {
   int32 cache_reads = 10;
   string model_id = 11;
   bool is_legacy = 12;
+  optional bool is_settled = 14;
+  optional int64 settled_at = 15;
+  optional string parent_task_id = 16;
+  optional int64 forked_at_ts = 17;
 }
 
 // Request for getting task history with filtering
@@ -110,6 +145,10 @@ message TaskItem {
   int32 cache_reads = 10;
   string model_id = 11;
   bool is_legacy = 12;
+  optional bool is_settled = 14;
+  optional int64 settled_at = 15;
+  optional string parent_task_id = 16;
+  optional int64 forked_at_ts = 17;
   // Provider id the task ran on. Empty for tasks recorded before this
   // field existed and for legacy imports; consumers show cost in that case.
   string api_provider = 13;
@@ -122,6 +161,8 @@ message AskResponseRequest {
   string text = 3;
   repeated string images = 4;
   repeated string files = 5;
+  string decision_id = 6;
+  string task_id = 7;
 }
 
 // Request for editing a past user message and regenerating the conversation after it

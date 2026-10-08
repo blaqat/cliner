@@ -1,41 +1,78 @@
-import type { TurnState } from "@shared/ExtensionMessage"
+import type { ExtensionState, TurnState } from "@shared/ExtensionMessage"
 import { fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { FULL_COMPOSER_ROW } from "@/components/chat/composer/composerRowLayout"
+import { resetPromptStashForTests } from "../../hooks/usePromptStash"
 import type { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 import { InputSection } from "./InputSection"
 
 const mockTurnState = vi.fn<() => TurnState | undefined>(() => undefined)
+const mockSessionStatuses = vi.fn<() => ExtensionState["sessionStatuses"]>(() => ({}))
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ turnState: mockTurnState() }),
+	useExtensionState: () => ({
+		turnState: mockTurnState(),
+		currentTaskItem: { id: "task-1" },
+		sessionStatuses: mockSessionStatuses(),
+		mode: "act",
+	}),
+}))
+
+vi.mock("@/components/chat/composer/useFocusedChatModel", () => ({
+	useFocusedChatModel: () => ({ provider: "anthropic", modelId: "claude", contextWindow: 100_000 }),
+}))
+vi.mock("@/hooks/useProviderUsageCostDisplay", () => ({ useProviderUsageCostDisplay: () => "show" }))
+
+vi.mock("@/services/grpc-client", () => ({
+	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
 }))
 
 vi.mock("@/components/chat/ChatTextArea", () => ({
-	default: React.forwardRef<HTMLTextAreaElement, { sendingDisabled: boolean; onSend: () => void }>(
-		({ sendingDisabled, onSend }, ref) => (
-			<>
-				<textarea
-					aria-label="composer"
-					disabled={sendingDisabled}
-					onKeyDown={(event) => {
-						if (event.key === "Enter" && !sendingDisabled) {
-							onSend()
-						}
-					}}
-					ref={ref}
-				/>
-				<button disabled={sendingDisabled} onClick={onSend} type="button">
-					Send
+	default: React.forwardRef<
+		HTMLTextAreaElement,
+		{
+			sendingDisabled: boolean
+			onSend: () => void
+			onStash?: () => boolean
+			onRestoreStash?: (id: string) => void
+			stashEntries?: { id: string; text: string }[]
+			quoteTags?: React.ReactNode
+			usageIndicator?: { render: (layout: typeof FULL_COMPOSER_ROW) => React.ReactNode }
+		}
+	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [], quoteTags, usageIndicator }, ref) => (
+		<>
+			{quoteTags}
+			{usageIndicator?.render(FULL_COMPOSER_ROW)}
+			<button onClick={() => onStash?.()} type="button">
+				Stash
+			</button>
+			{stashEntries.map((entry) => (
+				<button key={entry.id} onClick={() => onRestoreStash?.(entry.id)} type="button">
+					{`Restore ${entry.text}`}
 				</button>
-			</>
-		),
-	),
+			))}
+			<textarea
+				aria-label="composer"
+				disabled={sendingDisabled}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" && !sendingDisabled) {
+						onSend()
+					}
+				}}
+				ref={ref}
+			/>
+			<button disabled={sendingDisabled} onClick={onSend} type="button">
+				Send
+			</button>
+		</>
+	)),
 }))
 
 function makeChatState(overrides: Partial<ChatState> = {}): ChatState {
 	return {
-		activeQuote: null,
-		setActiveQuote: vi.fn(),
+		quotes: [],
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		inputValue: "queue this",
 		setInputValue: vi.fn(),
@@ -242,5 +279,127 @@ describe("InputSection", () => {
 
 		expect(screen.getByLabelText("composer")).toBeDisabled()
 		expect(screen.getByRole("button", { name: "Send" })).toBeDisabled()
+	})
+
+	describe("Compact", () => {
+		beforeEach(() => {
+			mockSessionStatuses.mockReturnValue({})
+			vi.stubGlobal(
+				"ResizeObserver",
+				class ResizeObserver {
+					observe() {}
+					unobserve() {}
+					disconnect() {}
+				},
+			)
+		})
+
+		const renderWithUsage = () =>
+			render(
+				<InputSection
+					apiMetrics={{ totalTokensIn: 80_000, totalTokensOut: 5_000, totalCost: 0 }}
+					chatState={makeChatState({ sendingDisabled: false })}
+					lastApiReqTotalTokens={90_000}
+					messageHandlers={{ handleSendMessage: vi.fn(), compactTask: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+
+		it("is not offered during a live question: the runtime is still running", () => {
+			mockTurnState.mockReturnValue({ phase: "awaiting_followup", seq: 1 })
+			mockSessionStatuses.mockReturnValue({ "task-1": "waiting" })
+			renderWithUsage()
+
+			expect(screen.queryByTestId("compact-nudge")).toBeNull()
+			fireEvent.click(screen.getByTestId("context-usage-button"))
+			expect(screen.getByTestId("compact-now-button")).toBeDisabled()
+		})
+
+		it("is offered for a followup after the turn ended", () => {
+			mockTurnState.mockReturnValue({ phase: "awaiting_followup", seq: 1 })
+			mockSessionStatuses.mockReturnValue({ "task-1": "done" })
+			renderWithUsage()
+
+			expect(screen.getByTestId("compact-nudge")).toBeInTheDocument()
+			fireEvent.click(screen.getByTestId("context-usage-button"))
+			expect(screen.getByTestId("compact-now-button")).toBeEnabled()
+		})
+	})
+
+	describe("quotes and stash", () => {
+		beforeEach(() => resetPromptStashForTests())
+
+		const renderSection = (chatState: ChatState) =>
+			render(
+				<InputSection
+					chatState={chatState}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+
+		it("renders quotes as inline tags inside the composer, not a stacked note panel", () => {
+			const setQuotes = vi.fn()
+			renderSection(
+				makeChatState({
+					quotes: [
+						{ text: "first passage", note: "" },
+						{ text: "second passage", note: "why?" },
+					],
+					setQuotes,
+				}),
+			)
+
+			expect(screen.getAllByTestId("quote-tag")).toHaveLength(2)
+			expect(screen.getByText("first passage")).toBeInTheDocument()
+			expect(screen.queryByLabelText("Note on this quote")).toBeNull()
+
+			fireEvent.click(screen.getAllByRole("button", { name: "Remove quote" })[0])
+			const removal = setQuotes.mock.calls[0][0] as (q: ChatState["quotes"]) => ChatState["quotes"]
+			expect(
+				removal([
+					{ text: "first passage", note: "" },
+					{ text: "second passage", note: "why?" },
+				]),
+			).toEqual([{ text: "second passage", note: "why?" }])
+		})
+
+		it("renders no quote row without quotes", () => {
+			renderSection(makeChatState())
+			expect(screen.queryByTestId("quote-tag-list")).toBeNull()
+		})
+
+		it("stashes text + quotes and clears them, then restores the entry", () => {
+			const setInputValue = vi.fn()
+			const setQuotes = vi.fn()
+			const quotes = [{ text: "q", note: "n" }]
+			const { rerender } = renderSection(makeChatState({ inputValue: "draft", quotes, setInputValue, setQuotes }))
+
+			fireEvent.click(screen.getByRole("button", { name: "Stash" }))
+			expect(setInputValue).toHaveBeenCalledWith("")
+			expect(setQuotes).toHaveBeenCalledWith([])
+
+			rerender(
+				<InputSection
+					chatState={makeChatState({ inputValue: "", quotes: [], setInputValue, setQuotes })}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+			fireEvent.click(screen.getByRole("button", { name: "Restore draft" }))
+
+			expect(setInputValue).toHaveBeenLastCalledWith("draft")
+			expect(setQuotes).toHaveBeenLastCalledWith(quotes)
+			expect(screen.queryByRole("button", { name: "Restore draft" })).toBeNull()
+		})
 	})
 })

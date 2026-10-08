@@ -3,14 +3,14 @@ import { combineCommandSequences } from "@shared/combineCommandSequences"
 import { combineHookSequences } from "@shared/combineHookSequences"
 import { getApiMetrics, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
+import { openTask } from "@/components/inbox/sessionActions"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { Navbar } from "../menu/Navbar"
-import AutoApproveBar from "./auto-approve-menu/AutoApproveBar"
 // Import utilities and hooks from the new structure
 import {
 	ActionButtons,
@@ -24,16 +24,21 @@ import {
 	MessagesArea,
 	QueuedPrompts,
 	TaskSection,
+	ThreadStrip,
 	useChatState,
 	useMessageHandlers,
 	useScrollBehavior,
 	WelcomeSection,
 } from "./chat-view"
+import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
 import {
 	hasPendingMessageConfirmation,
 	isPendingResponseUnconfirmed,
 	withPendingUserMessage,
 } from "./chat-view/utils/pendingResponse"
+import { subagentReportText } from "./chat-view/utils/subagentReport"
+import type { LineageRow } from "./chat-view/utils/threadUtils"
+import { clearSubagentExpandTarget, emitSubagentExpand } from "./subagentExpand"
 
 interface ChatViewProps {
 	isHidden: boolean
@@ -59,6 +64,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		checkpointRestoreInput,
 		queuedPrompts,
 		turnState,
+		subagentView,
+		currentTaskItem,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -81,6 +88,24 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		setPendingResponse,
 		textAreaRef,
 	} = chatState
+
+	const [childQuotes, setChildQuotes] = useState<Record<string, string[]>>({})
+	const selectedChildQuotes = childQuotes[currentTaskItem?.id ?? ""] ?? []
+	const pendingParentQuote = useRef<{ parentTaskId: string; text: string } | undefined>(undefined)
+	useEffect(() => {
+		const pending = pendingParentQuote.current
+		if (pending && currentTaskItem?.id === pending.parentTaskId) {
+			pendingParentQuote.current = undefined
+			chatState.setQuotes((quotes) => [...quotes, { text: pending.text, note: "" }])
+		}
+	}, [currentTaskItem?.id, chatState.setQuotes])
+	const report = subagentReportText(messages)
+	const quoteIntoParent = () => {
+		if (!subagentView) return
+		const selected = selectedChildQuotes.join("\n\n")
+		pendingParentQuote.current = { parentTaskId: subagentView.parentTaskId, text: selected || report }
+		void openTask(subagentView.parentTaskId)
+	}
 
 	const displayMessages = useMemo(() => withPendingUserMessage(messages, pendingUserMessage), [messages, pendingUserMessage])
 
@@ -217,7 +242,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	// Use message handlers hook
 	const messageHandlers = useMessageHandlers(messages, chatState)
 
-	const { selectedModelInfo } = useNormalizedApiConfiguration(mode)
+	const { selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 
 	const selectFilesAndImages = useCallback(async () => {
 		try {
@@ -341,12 +366,36 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
+	// A transcript-only subagent row in the header's subagent panel scrolls the
+	// transcript to that subagent's status row and expands its details there.
+	const openSubagentDetails = useCallback(
+		(item: LineageRow) => {
+			const [tsText, indexText] = item.id.split(":")
+			const ts = Number(tsText)
+			const itemIndex = Number(indexText)
+			if (!Number.isFinite(ts) || !Number.isFinite(itemIndex)) {
+				return
+			}
+			const messageIndex = displayMessages.findIndex((message) => message.ts === ts)
+			if (messageIndex >= 0) {
+				scrollBehavior.scrollToMessage(messageIndex)
+			}
+			emitSubagentExpand(ts, itemIndex)
+		},
+		[displayMessages, scrollBehavior],
+	)
+
 	// When a prompt gets queued, the queue banner mounts (or grows) in the footer, which
 	// shrinks the messages area and visually covers the bottom of the conversation. No new
 	// chat row is added, so the list-length-based auto-scroll never fires — re-pin to the
 	// bottom here so the latest content stays visible.
 	const queuedPromptCount = queuedPrompts?.length ?? 0
 	const taskTs = task?.ts
+	// A pending subagent-expand target belongs to the task it was requested in;
+	// drop it on a task switch so it can't expand a row in another conversation.
+	useEffect(() => {
+		clearSubagentExpandTarget()
+	}, [taskTs])
 	const prevQueuedPromptCountRef = useRef(queuedPromptCount)
 	const prevQueuedPromptTaskTsRef = useRef(taskTs)
 	useEffect(() => {
@@ -379,17 +428,14 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-				{task ? (
-					<TaskSection
-						apiMetrics={apiMetrics}
-						lastApiReqTotalTokens={lastApiReqTotalTokens}
-						messageHandlers={messageHandlers}
-						selectedModelInfo={{
-							supportsPromptCache: selectedModelInfo.supportsPromptCache,
-							supportsImages: selectedModelInfo.supportsImages || false,
-						}}
-						task={task}
+				{subagentView && currentTaskItem ? (
+					<SubagentThreadHeader
+						item={currentTaskItem}
+						onOpenSubagentPreview={openSubagentDetails}
+						view={subagentView}
 					/>
+				) : task ? (
+					<TaskSection messageHandlers={messageHandlers} onOpenSubagentPreview={openSubagentDetails} task={task} />
 				) : (
 					<WelcomeSection
 						hideAnnouncement={hideAnnouncement}
@@ -401,35 +447,53 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
+				{task && !subagentView && <ThreadStrip />}
 				{task && (
 					<MessagesArea
 						chatState={chatState}
 						groupedMessages={groupedMessages}
 						messageHandlers={messageHandlers}
 						modifiedMessages={modifiedMessages}
+						onSetQuote={
+							subagentView && currentTaskItem
+								? (text) =>
+										setChildQuotes((quotes) => ({
+											...quotes,
+											[currentTaskItem.id]: [...(quotes[currentTaskItem.id] ?? []), text],
+										}))
+								: undefined
+						}
 						scrollBehavior={scrollBehavior}
 						task={task}
 					/>
 				)}
 			</div>
 			<footer className="bg-(--vscode-sidebar-background) flex flex-col" style={{ gridRow: "2" }}>
-				<AutoApproveBar />
-				<ActionButtons
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					messages={messages}
-					mode={mode}
-					task={task}
-				/>
-				<QueuedPrompts items={queuedPrompts} />
-				<InputSection
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					placeholderText={placeholderText}
-					scrollBehavior={scrollBehavior}
-					selectFilesAndImages={selectFilesAndImages}
-					shouldDisableFilesAndImages={shouldDisableFilesAndImages}
-				/>
+				{(!subagentView || subagentView.pendingDecision === "approval") && (
+					<ActionButtons
+						chatState={chatState}
+						messageHandlers={messageHandlers}
+						messages={messages}
+						mode={mode}
+						task={task}
+					/>
+				)}
+				{!subagentView && <QueuedPrompts items={queuedPrompts} />}
+				{(!subagentView || subagentView.pendingDecision === "question") && (
+					<InputSection
+						apiMetrics={apiMetrics}
+						chatState={chatState}
+						lastApiReqTotalTokens={lastApiReqTotalTokens}
+						messageHandlers={messageHandlers}
+						placeholderText={placeholderText}
+						scrollBehavior={scrollBehavior}
+						selectFilesAndImages={selectFilesAndImages}
+						shouldDisableFilesAndImages={shouldDisableFilesAndImages}
+					/>
+				)}
+				{subagentView && (
+					<SubagentThreadFooter hasReport={!!report || selectedChildQuotes.length > 0} onQuote={quoteIntoParent} />
+				)}
 			</footer>
 		</ChatLayout>
 	)

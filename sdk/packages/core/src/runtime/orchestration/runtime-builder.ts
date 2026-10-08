@@ -19,6 +19,7 @@ import {
 	type UserInstructionConfigService,
 } from "../../extensions/config";
 import {
+	createAskModeMcpGateExtension,
 	createDefaultMcpServerClientFactory,
 	createMcpTools,
 	hasMcpSettingsFile,
@@ -67,7 +68,7 @@ function hasConfigExtension(
 	return hasRuntimeConfigExtension(extensions, kind);
 }
 
-function isToolEnabledByPolicies(
+export function isToolEnabledByPolicies(
 	toolName: string,
 	toolPolicies: CoreSessionConfig["toolPolicies"],
 ): boolean {
@@ -81,7 +82,7 @@ function isToolEnabledByPolicies(
 	);
 }
 
-function filterToolsByPolicies(
+export function filterToolsByPolicies(
 	tools: AgentTool[],
 	toolPolicies: CoreSessionConfig["toolPolicies"],
 ): AgentTool[] {
@@ -555,9 +556,17 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 						telemetry: telemetry ?? config.telemetry,
 					})
 				: undefined;
+		// Ask-mode MCP gate: MCP tools with annotations.readOnlyHint === true
+		// run without approval in Ask (plan) mode; other MCP tools follow the
+		// user's approval settings. Act mode is untouched.
+		const askModeMcpGate =
+			normalized.mode === "plan" && normalized.enableTools
+				? createAskModeMcpGateExtension()
+				: undefined;
 		const injectedExtensions = [
 			userInstructionPlugin,
 			planModeCommandGuard,
+			askModeMcpGate,
 		].filter((extension) => extension !== undefined);
 		const runtimeExtensions =
 			injectedExtensions.length > 0
@@ -638,7 +647,10 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			workspaceMetadata: config.workspaceMetadata,
 		});
 		if (normalized.enableSpawnAgent) {
-			if (configuredAgents.configs.length > 0) {
+			// Sessions with explicit subagent permissions use the guarded spawn_agent
+			// path. Legacy configured-agent tools run children without inherited
+			// approvals and must not bypass these restrictions.
+			if (configuredAgents.configs.length > 0 && !config.subagentSettings) {
 				tools.push(
 					...filterAvailableTools(
 						createConfiguredAgentTools({

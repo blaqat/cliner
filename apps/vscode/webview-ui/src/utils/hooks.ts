@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { detectMetaKeyChar, detectOS, unknown } from "./platformUtils"
+import { detectMetaKeyChar, detectOS, getCurrentPlatform, unknown } from "./platformUtils"
 
 export const useMetaKeyDetection = (platform: string) => {
 	const [metaKeyChar, setMetaKeyChar] = useState(unknown)
@@ -30,10 +30,13 @@ export const useShortcut = (shortcut: string, callback: (...args: unknown[]) => 
 				(event.target instanceof HTMLInputElement && (!event.target.type || event.target.type === "text")) ||
 				(event.target as HTMLElement).isContentEditable
 
+			// "Meta" in a shortcut means the platform mod key: Cmd on macOS,
+			// Ctrl on Windows/Linux (where the Win/Super key is captured by the
+			// OS and never reaches the webview).
 			const modifierMap: { [key: string]: boolean } = {
 				Control: event.ctrlKey,
 				Alt: event.altKey,
-				Meta: event.metaKey, // alias for Command
+				Meta: getCurrentPlatform() === "mac" ? event.metaKey : event.ctrlKey || event.metaKey,
 				Shift: event.shiftKey,
 			}
 

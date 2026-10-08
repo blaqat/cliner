@@ -1,3 +1,5 @@
+import { isAllowedApiProvider, toAllowedApiProvider } from "@shared/api-profiles"
+import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import type { Mode } from "@shared/storage/types"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import Fuse from "fuse.js"
@@ -93,8 +95,11 @@ const ApiOptions = ({
 	// Use full context state for immediate save payload
 	const { apiConfiguration, remoteConfigSettings } = useExtensionState()
 
-	const selectedProvider =
+	// A stored provider outside the fork's allowlist maps to the first allowed
+	// one so the settings UI and validation agree (plan §1a).
+	const storedProvider =
 		(currentMode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider) || "anthropic"
+	const selectedProvider = toAllowedApiProvider(storedProvider)
 	const { providers: catalogProviderListings } = useProviderListings()
 	const catalogProviderListing = useMemo(
 		() => catalogProviderListings.find((provider) => provider.id === selectedProvider),
@@ -129,6 +134,10 @@ const ApiOptions = ({
 			value: provider.id,
 			label: provider.name,
 		}))
+		// Fork provider allowlist (plan §1a). Catalog ids use SDK spellings
+		// (e.g. "openai-compatible"); fold them to the legacy ids the allowlist
+		// and stored config use (e.g. "openai").
+		providers = providers.filter((option) => isAllowedApiProvider(toLegacyApiProvider(option.value)))
 		// Filter by platform
 		if (PLATFORM_CONFIG.type !== PlatformType.VSCODE) {
 			// Don't include VS Code LM API for non-VSCode platforms

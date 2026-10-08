@@ -60,6 +60,17 @@ vi.mock("ai-sdk-provider-codex-cli", () => ({
 }));
 
 describe("createGatewayApiHandler.getMessages", () => {
+	it("preserves disabled credential fallbacks through the provider adapter", () => {
+		expect(
+			_testing.buildGatewayConfig({
+				providerId: "openai-compatible",
+				modelId: "model",
+				apiKey: "",
+				apiKeyEnv: [],
+			}),
+		).toMatchObject({ apiKey: "", apiKeyEnv: [] });
+	});
+
 	it("preserves structured tool_result content for gateway requests", () => {
 		const handler = createGatewayApiHandler({
 			providerId: "openai-compatible",
@@ -363,6 +374,49 @@ describe("createGatewayApiHandler.createMessage", () => {
 		openaiCompatibleSpy.mockClear();
 	});
 
+	it("exposes encrypted reasoning in legacy stream details", async () => {
+		streamTextSpy.mockReturnValue({
+			fullStream: (async function* () {
+				yield {
+					type: "reasoning-start",
+					id: "rs:0",
+					providerMetadata: { openai: { itemId: "rs" } },
+				};
+				yield {
+					type: "reasoning-end",
+					id: "rs:0",
+					providerMetadata: {
+						openai: { itemId: "rs", reasoningEncryptedContent: "opaque" },
+					},
+				};
+				yield { type: "finish", finishReason: "stop" };
+			})(),
+			usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+		});
+		const handler = createGatewayApiHandler({
+			providerId: "openai-compatible",
+			routingProviderId: "openai-native",
+			modelId: "custom-model",
+			apiKey: "test-key",
+		});
+		const chunks = [];
+		for await (const chunk of handler.createMessage("", [
+			{ role: "user", content: "Hello" },
+		]))
+			chunks.push(chunk);
+		expect(chunks).toContainEqual(
+			expect.objectContaining({
+				type: "reasoning",
+				reasoning: "",
+				details: {
+					openaiReasoningItems: [
+						{ itemId: "rs", text: "", reasoningEncryptedContent: "opaque" },
+					],
+				},
+			}),
+		);
+	});
+
 	it.each([
 		["openai-responses", "openai"],
 		["anthropic", "anthropic"],
@@ -582,6 +636,38 @@ describe("createGatewayApiHandler.createMessage", () => {
 		expect(serializedMessages).not.toContain("reasoning");
 		expect(serializedMessages).not.toContain("private trace");
 		expect(serializedMessages).not.toContain("drop me");
+	});
+
+	it("uses the Responses client when OpenAI Compatible is routed to openai-native", async () => {
+		const models: Array<{ family?: string }> = [];
+		for (const routingProviderId of [undefined, "openai-native"] as const) {
+			streamTextSpy.mockReturnValue({
+				fullStream: (async function* () {
+					yield { type: "finish", finishReason: "stop" };
+				})(),
+				usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+			});
+			const handler = createGatewayApiHandler({
+				providerId: "openai-compatible",
+				modelId: "gpt-5.6-sol",
+				apiKey: "test-key",
+				baseUrl: "https://example.test/v1",
+				...(routingProviderId ? { routingProviderId } : {}),
+			});
+			for await (const _chunk of handler.createMessage("", [
+				{ role: "user", content: "Hello" },
+			])) {
+				// Drain the stream so the provider is constructed.
+			}
+			const input = streamTextSpy.mock.calls.at(-1)?.[0] as {
+				model: { family?: string };
+			};
+			models.push(input.model);
+		}
+		expect(models.map((model) => model.family)).toEqual([
+			"openai-compatible",
+			"openai",
+		]);
 	});
 
 	it("adds Azure API version to deployment-style OpenAI-compatible requests", async () => {
@@ -969,5 +1055,30 @@ describe("buildGatewayModels", () => {
 				modelId: "llama3.1",
 			}),
 		).toBeUndefined();
+	});
+});
+
+describe("Responses reasoning history bridge", () => {
+	it("restores encrypted reasoning details without a visible summary or signature", () => {
+		const items = [
+			{ itemId: "rs_1", text: "", reasoningEncryptedContent: "opaque" },
+		];
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "thinking",
+						thinking: "",
+						details: { openaiReasoningItems: items },
+					},
+				],
+			},
+		];
+		expect(toGatewayRequestMessages(messages)[0].content[0]).toMatchObject({
+			type: "reasoning",
+			text: "",
+			metadata: { openaiReasoningItems: items },
+		});
 	});
 });

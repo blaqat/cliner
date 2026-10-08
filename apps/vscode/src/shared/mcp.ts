@@ -35,6 +35,15 @@ export type McpTool = {
 	description?: string
 	inputSchema?: object
 	autoApprove?: boolean
+	/** Tool annotations reported by the MCP server in tools/list (e.g. readOnlyHint). */
+	annotations?: {
+		readOnlyHint?: boolean
+		destructiveHint?: boolean
+		idempotentHint?: boolean
+		openWorldHint?: boolean
+		title?: string
+		[key: string]: unknown
+	}
 }
 
 export type McpResource = {

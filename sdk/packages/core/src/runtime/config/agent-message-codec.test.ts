@@ -320,6 +320,93 @@ describe("agent message codec", () => {
 		});
 	});
 
+	it("round-trips OpenAI Responses reasoning items and tool item ids", () => {
+		// The OpenAI Responses adapter reports encrypted reasoning items on the
+		// reasoning part's `metadata.openaiReasoningItems` and the function_call
+		// item id on tool calls' `metadata.openaiItemId`. Persisting must keep
+		// both so a restored session still sends them on the next request.
+		const reasoningItems = [
+			{ itemId: "rs_1", text: "plan", reasoningEncryptedContent: "opaque-1" },
+			{ itemId: "rs_2", text: "", reasoningEncryptedContent: "opaque-2" },
+		];
+		const persisted = agentMessageToMessageWithMetadata({
+			id: "msg_responses",
+			role: "assistant",
+			createdAt: 1,
+			content: [
+				{
+					type: "reasoning",
+					text: "plan",
+					metadata: { openaiReasoningItems: reasoningItems },
+				},
+				{
+					type: "tool-call",
+					toolCallId: "call_1",
+					toolName: "read_files",
+					input: { path: "/tmp/a" },
+					metadata: { openaiItemId: "fc_1" },
+				},
+			],
+		});
+
+		expect(persisted.content).toEqual([
+			expect.objectContaining({
+				type: "thinking",
+				details: { openaiReasoningItems: reasoningItems },
+			}),
+			expect.objectContaining({
+				type: "tool_use",
+				id: "call_1",
+				openaiItemId: "fc_1",
+			}),
+		]);
+
+		// Deserialize the persisted shape (as JSON storage would) and confirm the
+		// next-request-facing metadata still carries item ids + encrypted content.
+		const [restored] = messagesToAgentMessages([
+			JSON.parse(JSON.stringify(persisted)),
+		]);
+		expect(restored?.content[0]).toMatchObject({
+			type: "reasoning",
+			text: "plan",
+			metadata: { openaiReasoningItems: reasoningItems },
+		});
+		expect(restored?.content[1]).toMatchObject({
+			type: "tool-call",
+			toolCallId: "call_1",
+			metadata: { openaiItemId: "fc_1" },
+		});
+
+		// A second persist cycle must not lose or duplicate the fields.
+		expect(agentMessageToMessageWithMetadata(restored!)).toEqual(persisted);
+	});
+
+	it("restores the legacy details.openaiReasoningItems bridge shape", () => {
+		const items = [
+			{ itemId: "rs_1", text: "", reasoningEncryptedContent: "opaque" },
+		];
+		const [restored] = messageToAgentMessages({
+			id: "legacy",
+			role: "assistant",
+			ts: 1,
+			content: [
+				{
+					type: "thinking",
+					thinking: "",
+					// The Responses bridge persists object-form details.
+					details: { openaiReasoningItems: items } as unknown as unknown[],
+				},
+			],
+		});
+		expect(restored?.content[0]).toMatchObject({
+			type: "reasoning",
+			metadata: {
+				details: { openaiReasoningItems: items },
+				openaiReasoningItems: items,
+			},
+		});
+	});
+
 	it("keeps tool result message ids stable across restore/persist round-trips", () => {
 		// Regression: the tool-id suffix used to be re-appended on every
 		// conversion, so each agent.restore() mutated the id. Ids feed the

@@ -5,11 +5,11 @@ import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state
 import { type SlashCommand } from "@shared/slashCommands"
 import { Mode } from "@shared/storage/types"
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
-import { AtSignIcon, PlusIcon, TriangleAlertIcon } from "lucide-react"
+import { AtSignIcon, PlusIcon, SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
-import styled from "styled-components"
+import styled, { css, keyframes } from "styled-components"
 import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
@@ -36,6 +36,7 @@ import { isSafari } from "@/utils/platformUtils"
 import {
 	getMatchingSlashCommands,
 	insertSlashCommand,
+	MODE_SWITCHED_BY_COMMAND_EVENT,
 	removeSlashCommand,
 	shouldShowSlashCommandsMenu,
 	slashCommandDeleteRegex,
@@ -43,7 +44,15 @@ import {
 	validateSlashCommand,
 } from "@/utils/slash-commands"
 import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
+import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
+import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
+import type { PromptStashEntry } from "./chat-view/utils/promptStash"
+import ApprovalsMenu from "./composer/ApprovalsMenu"
+import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
+import PickerOverflowMenu from "./composer/PickerOverflowMenu"
+import PromptStashButton from "./PromptStashButton"
+import ReasoningEffortPicker, { modelHasReasoning } from "./ReasoningEffortPicker"
 import ServersToggleModal from "./ServersToggleModal"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
@@ -69,9 +78,12 @@ const getImageDimensions = (dataUrl: string): Promise<{ width: number; height: n
 // Set to "File" option by default
 const DEFAULT_CONTEXT_MENU_OPTION = getContextMenuOptionIndex(ContextMenuOptionType.File)
 
-interface ChatTextAreaProps {
+export interface ChatTextAreaProps {
 	inputValue: string
-	activeQuote: string | null
+	/** Whether quotes are attached above the composer; counts as draft content for Esc-to-stash. */
+	hasQuotes?: boolean
+	/** Quote chips shown in one row at the top of the input box. */
+	quoteTags?: React.ReactNode
 	setInputValue: (value: string) => void
 	sendingDisabled: boolean
 	placeholderText: string
@@ -84,6 +96,28 @@ interface ChatTextAreaProps {
 	shouldDisableFilesAndImages: boolean
 	onHeightChange?: (height: number) => void
 	onFocusChange?: (isFocused: boolean) => void
+	stashEntries?: PromptStashEntry[]
+	/** Stashes and clears the current draft. Returns false when there was nothing to stash. */
+	onStash?: () => boolean
+	onRestoreStash?: (id: string) => void
+	onDeleteStash?: (id: string) => void
+	/** The focused task is mid-turn: submits become steer / interject. */
+	isRunning?: boolean
+	/** No task is open (home composer): Ctrl/Cmd+Enter starts the chat in the background. */
+	isHome?: boolean
+	/** What Enter does while running; Ctrl/Cmd+Enter does the other. */
+	enterSendsAs?: EnterSendsAs
+	/** Sends as interject / aside / background. Steer and normal sends go through `onSend`. */
+	onSendAs?: (kind: Exclude<SendKind, "send" | "steer">) => void
+	/**
+	 * Context usage + cost meter at the right of the bottom row, before the Ask/Act toggle. The row
+	 * collapses its optional parts (`hasCost`, `hasCompactNudge`) when narrow; `render` gets the result.
+	 */
+	usageIndicator?: {
+		hasCost: boolean
+		hasCompactNudge: boolean
+		render: (layout: ComposerRowLayout) => React.ReactNode
+	}
 }
 
 interface GitCommit {
@@ -93,10 +127,23 @@ interface GitCommit {
 	description: string
 }
 
+const QUOTE_ROW_HEIGHT = 24
+
 const PLAN_MODE_COLOR = "var(--vscode-activityWarningBadge-background)"
 const ACT_MODE_COLOR = "var(--vscode-focusBorder)"
 
-const SwitchContainer = styled.div<{ disabled: boolean }>`
+const modeSwitchFlash = keyframes`
+	0% {
+		box-shadow: 0 0 0 0 var(--vscode-focusBorder);
+	}
+	100% {
+		box-shadow: 0 0 0 7px transparent;
+	}
+`
+
+const SwitchContainer = styled.div.withConfig({
+	shouldForwardProp: (prop) => prop !== "$flash",
+})<{ disabled: boolean; $flash?: boolean }>`
 	display: flex;
 	align-items: center;
 	background-color: transparent;
@@ -109,6 +156,15 @@ const SwitchContainer = styled.div<{ disabled: boolean }>`
 	transform-origin: right center;
 	margin-left: 0;
 	user-select: none; // Prevent text selection
+	animation: ${(props) => (props.$flash ? css`${modeSwitchFlash} 0.7s ease-out` : "none")};
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+	}
+	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
+	body.vscode-reduce-motion & {
+		animation: none;
+	}
 `
 
 const Slider = styled.div.withConfig({
@@ -118,8 +174,18 @@ const Slider = styled.div.withConfig({
 	height: 100%;
 	width: 50%;
 	background-color: ${(props) => (props.isPlan ? PLAN_MODE_COLOR : ACT_MODE_COLOR)};
-	transition: transform 0.2s ease;
+	transition:
+		transform 0.22s cubic-bezier(0.3, 0.7, 0.2, 1),
+		background-color 0.22s ease;
 	transform: translateX(${(props) => (props.isAct ? "100%" : "0%")});
+
+	@media (prefers-reduced-motion: reduce) {
+		transition: none;
+	}
+	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
+	body.vscode-reduce-motion & {
+		transition: none;
+	}
 `
 
 const ButtonGroup = styled.div`
@@ -128,6 +194,15 @@ const ButtonGroup = styled.div`
 	gap: 4px;
 	flex: 1;
 	min-width: 0;
+	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
+	overflow-x: clip;
+	/* Icon buttons keep their size; the config and effort pickers truncate to their min-width. */
+	& > * {
+		flex-shrink: 0;
+	}
+	& > [data-shrink] {
+		flex-shrink: 1;
+	}
 `
 
 const ButtonContainer = styled.div`
@@ -140,60 +215,54 @@ const ButtonContainer = styled.div`
 	width: 100%;
 `
 
-const ModelContainer = styled.div`
-	position: relative;
-	display: flex;
-	flex: 1;
-	min-width: 0;
-`
+interface RunningSendButtonsProps {
+	disabled: boolean
+	enterSendsAs: EnterSendsAs
+	metaKeyChar: string
+	onSteer: () => void
+	onInterject: () => void
+}
 
-const ModelButtonWrapper = styled.div`
-	display: inline-flex; // Make it shrink to content
-	min-width: 0; // Allow shrinking
-	max-width: 100%; // Don't overflow parent
-`
-
-const ModelDisplayButton = styled.a<{ isActive?: boolean; disabled?: boolean }>`
-	padding: 0px 0px;
-	height: 20px;
-	width: 100%;
-	min-width: 0;
-	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
-	text-decoration: ${(props) => (props.isActive ? "underline" : "none")};
-	color: ${(props) => (props.isActive ? "var(--vscode-foreground)" : "var(--vscode-descriptionForeground)")};
-	display: flex;
-	align-items: center;
-	font-size: 10px;
-	outline: none;
-	user-select: none;
-	opacity: ${(props) => (props.disabled ? 0.5 : 1)};
-	pointer-events: ${(props) => (props.disabled ? "none" : "auto")};
-
-	&:hover,
-	&:focus {
-		color: ${(props) => (props.disabled ? "var(--vscode-descriptionForeground)" : "var(--vscode-foreground)")};
-		text-decoration: ${(props) => (props.disabled ? "none" : "underline")};
-		outline: none;
-	}
-
-	&:active {
-		color: ${(props) => (props.disabled ? "var(--vscode-descriptionForeground)" : "var(--vscode-foreground)")};
-		text-decoration: ${(props) => (props.disabled ? "none" : "underline")};
-		outline: none;
-	}
-
-	&:focus-visible {
-		outline: none;
-	}
-`
-
-const ModelButtonContent = styled.div`
-	width: 100%;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-`
+/** While the agent runs, send splits into steer (queue after this turn) and interject (stop and send now). */
+const RunningSendButtons = ({ disabled, enterSendsAs, metaKeyChar, onSteer, onInterject }: RunningSendButtonsProps) => {
+	const keyFor = (kind: EnterSendsAs) => (kind === enterSendsAs ? "Enter" : `${metaKeyChar}+Enter`)
+	const buttons = [
+		{
+			kind: "steer" as const,
+			label: "Steer",
+			tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
+			icon: <SendHorizontalIcon size={13} />,
+			onClick: onSteer,
+		},
+		{
+			kind: "interject" as const,
+			label: "Interject",
+			tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
+			icon: <ZapIcon size={13} />,
+			onClick: onInterject,
+		},
+	]
+	return (
+		<div className="flex items-center gap-0.5">
+			{buttons.map((button) => (
+				<button
+					aria-label={button.label}
+					className={cn(
+						"flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer hover:bg-toolbar-hover disabled:cursor-not-allowed disabled:opacity-50",
+						button.kind === enterSendsAs ? "text-link" : "text-description hover:text-foreground",
+					)}
+					data-testid={`${button.kind}-button`}
+					disabled={disabled}
+					key={button.kind}
+					onClick={button.onClick}
+					title={button.tooltip}
+					type="button">
+					{button.icon}
+				</button>
+			))}
+		</div>
+	)
+}
 
 const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
@@ -211,6 +280,17 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			shouldDisableFilesAndImages,
 			onHeightChange,
 			onFocusChange,
+			hasQuotes = false,
+			quoteTags,
+			stashEntries = [],
+			onStash,
+			onRestoreStash,
+			onDeleteStash,
+			isRunning = false,
+			isHome = false,
+			enterSendsAs = "steer",
+			onSendAs,
+			usageIndicator,
 		},
 		ref,
 	) => {
@@ -235,6 +315,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const slashCommandsMenuContainerRef = useRef<HTMLDivElement>(null)
 
 		const [thumbnailsHeight, setThumbnailsHeight] = useState(0)
+		// Space reserved above the text for the quote chip row.
+		const quoteRowHeight = quoteTags ? QUOTE_ROW_HEIGHT : 0
 		const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
 		const [showContextMenu, setShowContextMenu] = useState(false)
 		const [cursorPosition, setCursorPosition] = useState(0)
@@ -248,8 +330,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [justDeletedSpaceAfterSlashCommand, setJustDeletedSpaceAfterSlashCommand] = useState(false)
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
+		const bottomRowRef = useRef<HTMLDivElement>(null)
 
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
+		const [modeSwitchFlash, setModeSwitchFlash] = useState(false)
 		const [pendingInsertions, setPendingInsertions] = useState<string[]>([])
 		const _shiftHoldTimerRef = useRef<NodeJS.Timeout | null>(null)
 		const [showUnsupportedFileError, setShowUnsupportedFileError] = useState(false)
@@ -260,10 +344,15 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
 		const [searchLoading, setSearchLoading] = useState(false)
 		const [, metaKeyChar] = useMetaKeyDetection(platform)
-		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode)
+		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
 		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
+		// Leave room for the stash icon next to send while the stash has entries.
+		const showRunningSendButtons = isRunning && !!onSendAs
+		const showHomeBackgroundButton = isHome && !isRunning && !!onSendAs
+		const inputPaddingRight =
+			(stashEntries.length > 0 ? 48 : 28) + (showRunningSendButtons ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
 		const unsupportedImagesAttached = selectedImages.length > 0 && !modelSupportsImages
 
 		// Fetch git commits when Git is selected or when typing a hash
@@ -587,7 +676,19 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
 				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
-				if (event.key === "Enter" && !event.shiftKey && !isComposing) {
+				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
+				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
+					if (onStash()) {
+						event.preventDefault()
+						setCursorPosition(0)
+					}
+					return
+				}
+
+				const submitKind = isComposing
+					? null
+					: resolveSubmitKey(event, { running: isRunning, enterSendsAs, onHome: isHome })
+				if (submitKind) {
 					event.preventDefault()
 
 					if (!sendingDisabled) {
@@ -596,7 +697,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						// blur desyncs it permanently (programmatic .focus() on an
 						// already-focused element never re-fires onFocus), which hides the
 						// plan/act mode outline until a real blur/refocus cycle.
-						onSend()
+						if (submitKind === "send" || submitKind === "steer" || !onSendAs) {
+							onSend()
+						} else {
+							onSendAs(submitKind)
+						}
 					}
 				}
 
@@ -682,6 +787,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				slashCommandsQuery,
 				handleSlashCommandsSelect,
 				sendingDisabled,
+				onStash,
+				hasQuotes,
+				isRunning,
+				isHome,
+				enterSendsAs,
+				onSendAs,
 			],
 		)
 
@@ -975,16 +1086,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				// highlight @mentions
 				.replace(mentionRegexGlobal, '<mark class="mention-context-textarea-highlight">$&</mark>')
 
-			// Highlight only the FIRST valid /slash-command in the text
-			// Only one slash command is processed per message, so we only highlight the first one
+			// Highlight every valid /slash-command in the text — each one is
+			// expanded when the message is sent, and /ask /act switch the mode.
 			slashCommandRegexGlobal.lastIndex = 0
-			let hasHighlightedSlashCommand = false
 			processedText = processedText.replace(slashCommandRegexGlobal, (match, prefix, command) => {
-				// Only highlight the first valid slash command
-				if (hasHighlightedSlashCommand) {
-					return match
-				}
-
 				// Extract just the command name (without the slash)
 				const commandName = command.substring(1)
 				const isValidCommand = validateSlashCommand(
@@ -996,7 +1101,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				)
 
 				if (isValidCommand) {
-					hasHighlightedSlashCommand = true
 					// Keep the prefix (whitespace or empty) and wrap the command in highlight
 					return `${prefix}<mark class="mention-context-textarea-highlight">${command}</mark>`
 				}
@@ -1083,6 +1187,22 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		}, [mode, inputValue, selectedImages, selectedFiles, setInputValue, setSelectedImages, setSelectedFiles])
 
 		useShortcut(usePlatform().togglePlanActKeys, onModeToggle, { disableTextInputs: false }) // important that we don't disable the text input here
+
+		// A `/ask` or `/act` command switches the mode from inside the textarea;
+		// flash the toggle briefly so the switch is visible as it happens.
+		useEffect(() => {
+			const onModeSwitchedByCommand = () => setModeSwitchFlash(true)
+			document.addEventListener(MODE_SWITCHED_BY_COMMAND_EVENT, onModeSwitchedByCommand)
+			return () => document.removeEventListener(MODE_SWITCHED_BY_COMMAND_EVENT, onModeSwitchedByCommand)
+		}, [])
+
+		useEffect(() => {
+			if (!modeSwitchFlash) {
+				return
+			}
+			const timer = setTimeout(() => setModeSwitchFlash(false), 750)
+			return () => clearTimeout(timer)
+		}, [modeSwitchFlash])
 
 		const handleContextButtonClick = useCallback(() => {
 			// Focus the textarea first
@@ -1410,6 +1530,24 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", metaKeyChar)
 			.replace(/.$/, (match) => match.toUpperCase())
 
+		const rowLayout = useComposerRowLayout(bottomRowRef, {
+			hasUsage: !!usageIndicator,
+			hasCost: !!usageIndicator?.hasCost,
+			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
+			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
+		})
+
+		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
+		const effortPicker = (
+			<ReasoningEffortPicker
+				defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
+				mode={mode}
+				modelId={selectedModelId}
+				modelInfo={selectedModelInfo}
+				provider={selectedProvider}
+			/>
+		)
+
 		return (
 			<div>
 				<div
@@ -1481,7 +1619,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							borderRight: isTextAreaFocused ? 0 : undefined,
 							borderTop: isTextAreaFocused ? 0 : undefined,
 							borderBottom: isTextAreaFocused ? 0 : undefined,
-							padding: `9px 28px ${9 + thumbnailsHeight}px 9px`,
+							padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${9 + thumbnailsHeight}px 9px`,
 						}}
 					/>
 					<DynamicTextArea
@@ -1537,14 +1675,14 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							// borderTop: "9px solid transparent",
 							borderLeft: 0,
 							borderRight: 0,
-							borderTop: 0,
+							borderTop: `${quoteRowHeight}px solid transparent`,
 							borderBottom: `${thumbnailsHeight}px solid transparent`,
 							borderColor: "transparent",
 							// borderRight: "54px solid transparent",
 							// borderLeft: "9px solid transparent", // NOTE: react-textarea-autosize doesn't calculate correct height when using borderLeft/borderRight so we need to use horizontal padding instead
 							// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
 							// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
-							padding: "9px 28px 9px 9px",
+							padding: `9px ${inputPaddingRight}px 9px 9px`,
 							cursor: "text",
 							flex: 1,
 							zIndex: 1,
@@ -1558,6 +1696,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						}}
 						value={inputValue}
 					/>
+					{quoteTags && (
+						<div className="absolute top-3.5 left-5.5 right-5.5 z-2 h-5" data-testid="composer-quote-row">
+							{quoteTags}
+						</div>
+					)}
 					{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
 						<div className="text-xs absolute bottom-5 left-6.5 right-16 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
 							Type @ for context, / for slash commands & workflows, hold shift to drag in files/images
@@ -1585,15 +1728,58 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						className="absolute flex items-end bottom-4.5 right-5 z-10 h-8 text-xs"
 						style={{ height: textAreaBaseHeight }}>
 						<div className="flex flex-row items-center">
-							<div
-								className={cn("input-icon-button", { disabled: sendingDisabled }, "codicon codicon-send text-sm")}
-								data-testid="send-button"
-								onClick={() => {
-									if (!sendingDisabled) {
-										onSend()
-									}
-								}}
-							/>
+							{onRestoreStash && onDeleteStash && (
+								<PromptStashButton entries={stashEntries} onDelete={onDeleteStash} onRestore={onRestoreStash} />
+							)}
+							{showRunningSendButtons && onSendAs ? (
+								<RunningSendButtons
+									disabled={sendingDisabled}
+									enterSendsAs={enterSendsAs}
+									metaKeyChar={metaKeyChar}
+									onInterject={() => onSendAs("interject")}
+									onSteer={onSend}
+								/>
+							) : (
+								<div className="flex items-center gap-0.5">
+									{showHomeBackgroundButton && (
+										<Tooltip>
+											<TooltipContent side="top">
+												Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay
+												here
+											</TooltipContent>
+											<TooltipTrigger asChild>
+												<button
+													aria-label="Start in background"
+													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+													data-testid="send-background-button"
+													disabled={sendingDisabled}
+													onClick={() => onSendAs("background")}
+													type="button">
+													<SendToBackIcon size={13} />
+												</button>
+											</TooltipTrigger>
+										</Tooltip>
+									)}
+									<div
+										className={cn(
+											"input-icon-button",
+											{ disabled: sendingDisabled },
+											"codicon codicon-send text-sm",
+										)}
+										data-testid="send-button"
+										onClick={() => {
+											if (!sendingDisabled) {
+												onSend()
+											}
+										}}
+										title={
+											isHome
+												? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
+												: "Send (Enter) · Aside (Alt+Enter)"
+										}
+									/>
+								</div>
+							)}
 						</div>
 					</div>
 				</div>
@@ -1619,92 +1805,112 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						</span>
 					</div>
 				)}
-				<div className="flex justify-between items-center -mt-[2px] px-3 pb-2">
-					{/* Always render both components, but control visibility with CSS */}
-					<div className="relative flex-1 min-w-0 h-5">
-						{/* ButtonGroup - always in DOM but visibility controlled */}
-						<ButtonGroup className="absolute top-0 left-0 right-0 ease-in-out w-full h-5 z-10 flex items-center">
-							<Tooltip>
-								<TooltipContent>Add Context</TooltipContent>
-								<TooltipTrigger>
-									<VSCodeButton
-										appearance="icon"
-										aria-label="Add Context"
-										className="p-0 m-0 flex items-center"
-										data-testid="context-button"
-										onClick={handleContextButtonClick}>
-										<ButtonContainer>
-											<AtSignIcon size={12} />
-										</ButtonContainer>
-									</VSCodeButton>
-								</TooltipTrigger>
-							</Tooltip>
+				<div
+					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
+					data-collapse-pickers={rowLayout.collapsePickers}
+					data-testid="composer-bottom-row"
+					ref={bottomRowRef}>
+					<ButtonGroup className="h-5" data-testid="composer-pickers">
+						<Tooltip>
+							<TooltipContent>Add Context</TooltipContent>
+							<TooltipTrigger>
+								<VSCodeButton
+									appearance="icon"
+									aria-label="Add Context"
+									className="p-0 m-0 flex items-center"
+									data-testid="context-button"
+									onClick={handleContextButtonClick}>
+									<ButtonContainer>
+										<AtSignIcon size={12} />
+									</ButtonContainer>
+								</VSCodeButton>
+							</TooltipTrigger>
+						</Tooltip>
 
-							<Tooltip>
-								<TooltipContent>Add Files & Images</TooltipContent>
-								<TooltipTrigger>
-									<VSCodeButton
-										appearance="icon"
-										aria-label="Add Files & Images"
-										className="p-0 m-0 flex items-center"
-										data-testid="files-button"
-										disabled={shouldDisableFilesAndImages}
-										onClick={() => {
-											if (!shouldDisableFilesAndImages) {
-												onSelectFilesAndImages()
-											}
-										}}>
-										<ButtonContainer>
-											<PlusIcon size={13} />
-										</ButtonContainer>
-									</VSCodeButton>
-								</TooltipTrigger>
-							</Tooltip>
+						<Tooltip>
+							<TooltipContent>Add Files & Images</TooltipContent>
+							<TooltipTrigger>
+								<VSCodeButton
+									appearance="icon"
+									aria-label="Add Files & Images"
+									className="p-0 m-0 flex items-center"
+									data-testid="files-button"
+									disabled={shouldDisableFilesAndImages}
+									onClick={() => {
+										if (!shouldDisableFilesAndImages) {
+											onSelectFilesAndImages()
+										}
+									}}>
+									<ButtonContainer>
+										<PlusIcon size={13} />
+									</ButtonContainer>
+								</VSCodeButton>
+							</TooltipTrigger>
+						</Tooltip>
 
-							<ServersToggleModal />
+						<ServersToggleModal />
 
-							<ClineRulesToggleModal />
+						<ClineRulesToggleModal />
 
-							<ModelContainer>
-								<ModelButtonWrapper>
-									<ModelDisplayButton
-										disabled={false}
-										onClick={handleModelButtonClick}
-										role="button"
-										tabIndex={0}
-										title="Open API Settings">
-										<ModelButtonContent className="text-xs">{modelDisplayName}</ModelButtonContent>
-									</ModelDisplayButton>
-								</ModelButtonWrapper>
-							</ModelContainer>
-						</ButtonGroup>
-					</div>
-					{/* Tooltip for Plan/Act toggle remains outside the conditional rendering */}
+						{!rowLayout.collapseConfig && (
+							<span className="flex min-w-14" data-shrink="">
+								{configPicker}
+							</span>
+						)}
+
+						{rowLayout.collapsePickers ? (
+							<PickerOverflowMenu>
+								{rowLayout.collapseConfig && configPicker}
+								{effortPicker}
+								<ApprovalsMenu />
+							</PickerOverflowMenu>
+						) : (
+							<>
+								<span className="flex min-w-11 empty:hidden" data-shrink="">
+									{effortPicker}
+								</span>
+								<ApprovalsMenu />
+							</>
+						)}
+					</ButtonGroup>
+					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
+					{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
 					<Tooltip>
 						<TooltipContent
 							className="text-xs px-2 flex flex-col gap-1"
 							hidden={shownTooltipMode === null}
 							side="top">
-							{`In ${shownTooltipMode === "act" ? "Act" : "Plan"}  mode, Cline will ${shownTooltipMode === "act" ? "complete the task immediately" : "gather information to architect a plan"}`}
+							{shownTooltipMode === "act"
+								? "In Act mode, Cline will complete the task immediately"
+								: "In Ask mode, Cline will answer questions and explore the codebase"}
 							<p className="text-description/80 text-xs mb-0">
 								Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
 							</p>
 						</TooltipContent>
-						<TooltipTrigger>
-							<SwitchContainer data-testid="mode-switch" disabled={false} onClick={onModeToggle}>
+						<TooltipTrigger className="shrink-0">
+							<SwitchContainer
+								$flash={modeSwitchFlash}
+								data-testid="mode-switch"
+								disabled={false}
+								onClick={onModeToggle}>
 								<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
-								{["Plan", "Act"].map((m) => (
+								{(
+									[
+										{ value: "plan", label: "Ask" },
+										{ value: "act", label: "Act" },
+									] as const
+								).map((m) => (
 									<div
-										aria-checked={mode === m.toLowerCase()}
+										aria-checked={mode === m.value}
 										className={cn(
-											"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent",
-											mode === m.toLowerCase() ? "text-white" : "text-input-foreground",
+											"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
+											mode === m.value ? "text-button-foreground" : "text-input-foreground",
 										)}
-										key={m}
+										key={m.value}
 										onMouseLeave={() => setShownTooltipMode(null)}
-										onMouseOver={() => setShownTooltipMode(m.toLowerCase() === "plan" ? "plan" : "act")}
+										onMouseOver={() => setShownTooltipMode(m.value)}
 										role="switch">
-										{m}
+										{m.label}
 									</div>
 								))}
 							</SwitchContainer>

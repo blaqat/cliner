@@ -41,6 +41,7 @@ import type {
 	RuntimeHostSubscribeOptions,
 	SessionConnectionRuntimeService,
 	SessionModelRuntimeService,
+	SessionSubagentRuntimeService,
 	SessionUsageRuntimeService,
 	StartSessionInput,
 	StartSessionResult,
@@ -375,6 +376,16 @@ export class ClineCore {
 	 * ```
 	 */
 	abort: RuntimeHost["abort"] = (...args) => this.host.abort(...args);
+	/**
+	 * Aborts a single in-flight sub-agent run (keyed by its spawn_agent tool
+	 * call id) without aborting the parent run or stopping the session.
+	 * Resolves false when no matching child is running or the host does not
+	 * support per-subagent aborts.
+	 */
+	abortSubAgent: SessionSubagentRuntimeService["abortSubAgent"] = (...args) => {
+		const service = this.host as RuntimeHostServiceExtensions;
+		return service.abortSubAgent?.(...args) ?? Promise.resolve(false);
+	};
 	/**
 	 * Stops an active session gracefully.
 	 *

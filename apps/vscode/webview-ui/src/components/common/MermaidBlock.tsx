@@ -1,7 +1,7 @@
 import { StringRequest } from "@shared/proto/cline/common"
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import mermaid from "mermaid"
-import { useEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import styled from "styled-components"
 import { FileServiceClient } from "@/services/grpc-client"
 import { useDebounceEffect } from "@/utils/useDebounceEffect"
@@ -80,18 +80,43 @@ interface MermaidBlockProps {
 	code: string
 }
 
+// Rendered markup per diagram source. The chat list unmounts rows scrolled out of view; without
+// this a re-mounted diagram starts empty and re-renders 500ms later, so the row shrinks and grows
+// again while the user scrolls past it and the list's scroll position jumps to compensate.
+const MAX_CACHED_DIAGRAMS = 50
+const renderedDiagrams = new Map<string, string>()
+
+function cacheDiagram(code: string, html: string) {
+	renderedDiagrams.delete(code)
+	renderedDiagrams.set(code, html)
+	if (renderedDiagrams.size > MAX_CACHED_DIAGRAMS) {
+		const oldest = renderedDiagrams.keys().next().value
+		if (oldest !== undefined) {
+			renderedDiagrams.delete(oldest)
+		}
+	}
+}
+
 export default function MermaidBlock({ code }: MermaidBlockProps) {
 	const containerRef = useRef<HTMLDivElement>(null)
-	const [isLoading, setIsLoading] = useState(false)
+	const [isLoading, setIsLoading] = useState(() => !renderedDiagrams.has(code))
 
-	// 1) Whenever `code` changes, mark that we need to re-render a new chart
-	useEffect(() => {
-		setIsLoading(true)
+	// 1) Whenever `code` changes, mark that we need to re-render a new chart. A diagram rendered
+	// before is restored before paint, so the block mounts at its final height.
+	useLayoutEffect(() => {
+		const cached = renderedDiagrams.get(code)
+		if (cached !== undefined && containerRef.current) {
+			containerRef.current.innerHTML = cached
+		}
+		setIsLoading(cached === undefined)
 	}, [code])
 
 	// 2) Debounce the actual parse/render
 	useDebounceEffect(
 		() => {
+			if (renderedDiagrams.has(code)) {
+				return
+			}
 			if (containerRef.current) {
 				containerRef.current.innerHTML = ""
 			}
@@ -105,13 +130,18 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 					return mermaid.render(id, code)
 				})
 				.then(({ svg }) => {
+					cacheDiagram(code, svg)
 					if (containerRef.current) {
 						containerRef.current.innerHTML = svg
 					}
 				})
 				.catch((err) => {
 					console.warn("Mermaid parse/render failed:", err)
-					containerRef.current!.innerHTML = code.replace(/</g, "&lt;").replace(/>/g, "&gt;")
+					const escaped = code.replace(/</g, "&lt;").replace(/>/g, "&gt;")
+					cacheDiagram(code, escaped)
+					if (containerRef.current) {
+						containerRef.current.innerHTML = escaped
+					}
 				})
 				.finally(() => {
 					setIsLoading(false)
@@ -157,7 +187,7 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 			{isLoading && <LoadingMessage>Generating mermaid diagram...</LoadingMessage>}
 			<ButtonContainer>
 				<StyledVSCodeButton aria-label="Copy Code" onClick={handleCopyCode} title="Copy Code">
-					<span className="codicon codicon-copy"></span>
+					<span className="codicon codicon-copy" />
 				</StyledVSCodeButton>
 			</ButtonContainer>
 			<SvgContainer $isLoading={isLoading} onClick={handleClick} ref={containerRef} />

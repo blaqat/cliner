@@ -1,3 +1,4 @@
+import { hasAssignedApiProfile } from "@/core/controller/models/apiProfiles"
 // Replaces classic task creation from src/core/task/index.ts (see origin/main)
 //
 // Creates and manages SDK sessions using ClineCore. This factory handles:
@@ -28,6 +29,7 @@ import {
 } from "@cline/llms"
 import { buildClineSystemPrompt, isClineProvider } from "@cline/shared"
 import type { ApiConfiguration } from "@shared/api"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { ClineClient } from "@shared/cline"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, type LanguageDisplay } from "@shared/Languages"
@@ -49,7 +51,11 @@ import type { ResolvedModelSelection } from "./model-catalog/contracts"
 import { nonNegativeFiniteNumber, positiveFiniteNumber, toSdkApiFormat } from "./model-catalog/model-values"
 import { parseProviderId } from "./model-catalog/provider-id"
 import { toSdkProviderId } from "./model-catalog/sdk-provider-id"
-import { createProviderConfigStore, resolveRuntimeModelSelection } from "./model-catalog/store"
+import {
+	createProviderConfigStore,
+	resolveAssignedProfileModelSelection,
+	resolveRuntimeModelSelection,
+} from "./model-catalog/store"
 import { getProviderSettingsManager } from "./provider-migration"
 import { buildSapProviderConfig, type SapProviderConfig } from "./sap-config"
 import type { SdkSessionHost } from "./session-host"
@@ -76,6 +82,23 @@ export interface SessionConfigInput {
 	workspaceRoot?: string
 	/** Current mode (act/plan) */
 	mode?: Mode
+	/**
+	 * Resolved ApiConfiguration to build from instead of the global selection —
+	 * used when a session is pinned to its task's recorded configuration so a
+	 * rebuild keeps the chat's own provider/model.
+	 */
+	apiConfiguration?: ApiConfiguration
+	apiSelection?: TaskApiSelection
+}
+
+/** In-memory only. Connection secrets must never be written to task metadata. */
+export interface SessionApiSnapshot {
+	selection: TaskApiSelection
+	configuration: ApiConfiguration
+}
+
+export function getSessionApiSnapshot(config: unknown): SessionApiSnapshot | undefined {
+	return (config as (CoreSessionConfig & { apiSnapshot?: SessionApiSnapshot }) | undefined)?.apiSnapshot
 }
 
 /** Active session state tracked by the factory */
@@ -83,7 +106,8 @@ export interface ActiveSession {
 	/** The session ID */
 	sessionId: string
 	/** The config used to start the active session. */
-	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId">
+	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode }
+	apiSnapshot?: SessionApiSnapshot
 	/** The runtime host instance managing this session (VscodeSessionHost) */
 	sdkHost: SdkSessionHost
 	/** Unsubscribe function for session events */
@@ -340,6 +364,30 @@ function resolveCommittedRuntimeModel(
 	}
 }
 
+/**
+ * A chat pinned to a saved API configuration never runs `commitSelection`, so
+ * the profile's model metadata lives only on the mode-scoped `*Mode*ModelInfo`
+ * key of the resolved ApiConfiguration. Resolve it through the catalog store
+ * so user-authored fields (context window, max output tokens, prices, …)
+ * override the catalog while untouched fields still come from the catalog.
+ */
+function resolveAssignedProfileRuntimeModel(
+	providerId: string,
+	mode: Mode,
+	modelId: string,
+	apiConfig: ApiConfiguration | undefined,
+): ResolvedModelSelection | undefined {
+	if (!apiConfig) {
+		return undefined
+	}
+	try {
+		return resolveAssignedProfileModelSelection(parseProviderId(providerId), mode, modelId, apiConfig)
+	} catch (error) {
+		Logger.warn(`[SessionFactory] Failed to resolve profile model settings for provider=${providerId}:`, error)
+		return undefined
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Provider → API key field mapping
 // ---------------------------------------------------------------------------
@@ -470,6 +518,10 @@ export function getDefaultModelIdForProvider(providerId: string): string | undef
  * via ProviderSettingsManager (the single source of truth for credentials).
  */
 export function resolveApiKey(providerId: string, config: ApiConfiguration): string | undefined {
+	if (hasAssignedApiProfile(config)) {
+		const keyField = PROVIDER_API_KEY_MAP[providerId]
+		return keyField ? (config[keyField] as string | undefined) : undefined
+	}
 	const authHandler = getProviderAuthHandler(providerId)
 	if (authHandler) {
 		const keyField = PROVIDER_API_KEY_MAP[providerId]
@@ -635,6 +687,9 @@ export function resolveVertexProviderConfig(config: ApiConfiguration): Pick<Prov
  */
 export function resolveAzureProviderConfig(config: ApiConfiguration): Pick<ProviderSettings, "azure"> | undefined {
 	const apiVersion = config.azureApiVersion?.trim() || undefined
+	if (hasAssignedApiProfile(config)) {
+		return { azure: { apiVersion, useIdentity: config.azureIdentity } }
+	}
 	const useIdentity = typeof config.azureIdentity === "boolean" ? config.azureIdentity : undefined
 
 	let stored: ProviderSettings | undefined
@@ -730,6 +785,8 @@ export function resolveBaseUrl(providerId: string, config: ApiConfiguration): st
 			return fromState
 		}
 	}
+
+	if (hasAssignedApiProfile(config)) return undefined
 
 	// SDK-backed providers save their base URL in providers.json instead of
 	// legacy ApiConfiguration fields. Fall back to that store (mirroring
@@ -846,7 +903,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 
 	try {
 		const stateManager = StateManager.get()
-		apiConfig = stateManager.getApiConfiguration()
+		apiConfig = input.apiConfiguration ?? stateManager.getApiConfiguration(mode)
 
 		// Resolve the provider for the current mode. State written by older
 		// builds or other hosts may carry SDK catalog spellings (e.g.
@@ -953,14 +1010,21 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		apiKey = resolveApiKey(providerId, apiConfig)
 	}
 	apiKey = apiKey ?? ""
-	const committedRuntimeModel = resolveCommittedRuntimeModel(providerId, mode, modelId)
+	const profileAssigned = apiConfig !== undefined && hasAssignedApiProfile(apiConfig)
+	const committedRuntimeModel = profileAssigned
+		? resolveAssignedProfileRuntimeModel(providerId, mode, modelId, apiConfig)
+		: resolveCommittedRuntimeModel(providerId, mode, modelId)
 	const overriddenMaxTokens = committedRuntimeModel?.overrides?.maxTokens
 	const maxTokensPerTurn =
 		positiveFiniteNumber(overriddenMaxTokens) ??
 		(providerId === "openai" ? resolveOpenAiCompatibleMaxTokens(apiConfig, mode) : undefined)
 	const temperature = nonNegativeFiniteNumber(committedRuntimeModel?.overrides?.temperature)
-	const reasoningConfig =
-		providerId === "oca"
+	const profileEffort = mode === "plan" ? apiConfig?.planModeReasoningEffort : apiConfig?.actModeReasoningEffort
+	const reasoningConfig = profileAssigned
+		? isReasoningEffort(profileEffort)
+			? { reasoningEffort: profileEffort }
+			: {}
+		: providerId === "oca"
 			? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
 			: resolveProviderReasoningConfig(providerId)
 
@@ -986,10 +1050,9 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 			mode: mode === "plan" ? "plan" : "act",
 			providerId,
 			platform: process.platform,
-			// The extension never exposes switch_to_act_mode (unlike the CLI):
-			// matching the legacy extension, the user must flip the Plan/Act
-			// toggle themselves, so the plan contract must not tell the model to
-			// call a tool it does not have.
+			// The extension never exposes switch_to_act_mode (unlike the CLI).
+			// The flag is now a no-op: Ask mode never steers the model toward a
+			// mode switch regardless.
 			planModeSwitchTool: false,
 		})
 		Logger.log(`[SessionFactory] Built system prompt: ${systemPrompt.length} chars`)
@@ -1036,10 +1099,18 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		// (catalog/state base or user overrides). Pure fallback fabrications
 		// must not reach the runtime; the SDK's own resolution handles those.
 		const isPureFallbackModel = committedRuntimeModel?.modelInfoSource === "fallback" && !committedRuntimeModel.overrides
-		if (committedRuntimeModel && !isPureFallbackModel && !knownModels?.[modelId]) {
+		// A profile's model info is user-authored and never lands in the
+		// models.json registry, so it must overlay catalog entries too. The
+		// committed-selection path can rely on the registry already carrying
+		// stored overrides and only needs to inject models the catalog lacks.
+		const profileOverridesCatalog = profileAssigned && committedRuntimeModel?.overrides !== undefined
+		if (committedRuntimeModel && !isPureFallbackModel && (!knownModels?.[modelId] || profileOverridesCatalog)) {
 			knownModels = {
 				...(knownModels ?? {}),
-				[modelId]: toSdkModelInfo(committedRuntimeModel),
+				[modelId]: {
+					...(knownModels?.[modelId] ?? {}),
+					...toSdkModelInfo(committedRuntimeModel),
+				},
 			}
 		}
 	} catch (error) {
@@ -1062,8 +1133,22 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		...(azureProviderConfig ?? {}),
 		providerId: sdkProviderId,
 		modelId,
-		...(apiKey ? { apiKey } : {}),
-		...(baseUrl !== undefined ? { baseUrl } : {}),
+		...(apiKey || profileAssigned ? { apiKey: apiKey ?? "" } : {}),
+		...(profileAssigned ? { apiKeyEnv: [] } : {}),
+		...(providerId === "openai" && apiConfig?.openAiHeaders
+			? { headers: apiConfig.openAiHeaders }
+			: profileAssigned
+				? { headers: {} }
+				: {}),
+		...(baseUrl !== undefined || profileAssigned ? { baseUrl } : {}),
+		// OpenAI Compatible "Responses" API type: route through the native
+		// OpenAI Responses adapter while keeping base URL/key/model. Mirrors
+		// buildSdkProviderConfig in sdk-api-handler.ts.
+		...(providerId === "openai" && apiConfig?.openAiCompatibleApiType === "responses"
+			? { routingProviderId: "openai-native" }
+			: profileAssigned
+				? { routingProviderId: sdkProviderId }
+				: {}),
 		...(apiLine !== undefined ? { apiLine } : {}),
 		...(knownModels && Object.keys(knownModels).length > 0 ? { knownModels } : {}),
 		// Mirror the user's Max Output Tokens for consumers that build handlers
@@ -1074,6 +1159,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	}
 
 	const config: CoreSessionConfig = {
+		inheritProviderSettings: apiConfig ? !hasAssignedApiProfile(apiConfig) : true,
 		providerId: sdkProviderId,
 		modelId,
 		apiKey,
@@ -1090,7 +1176,14 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		checkpoint: {
 			enabled: enableCheckpoints,
 		},
-		enableSpawnAgent: false,
+		enableSpawnAgent: stateManager.getGlobalSettingsKey("subagentsEnabled") ?? true,
+		subagentSettings: {
+			maxConcurrent: stateManager.getGlobalSettingsKey("subagentsMaxConcurrent") ?? 0,
+			allowWrite: stateManager.getGlobalSettingsKey("subagentsAllowWrite") ?? true,
+			allowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands") ?? true,
+			allowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp") ?? true,
+			allowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb") ?? true,
+		},
 		enableAgentTeams: false,
 		...(useAutoCondense
 			? {
@@ -1149,6 +1242,8 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 export function buildStartSessionInput(config: CoreSessionConfig, input: SessionConfigInput): ClineCoreStartInput {
 	return {
 		config,
+		mode: input.mode,
+		sessionMetadata: { apiSelection: getSessionApiSnapshot(config)?.selection, taskMode: input.mode },
 		// Do NOT pass prompt here — start() should return immediately.
 		// The prompt is sent separately via core.send() after session creation.
 		prompt: undefined,

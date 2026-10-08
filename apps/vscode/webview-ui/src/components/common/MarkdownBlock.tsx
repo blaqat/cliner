@@ -15,6 +15,8 @@ import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { FileServiceClient, StateServiceClient } from "@/services/grpc-client"
 import { WithCopyButton } from "./CopyButton"
+import { LargeTextPreview } from "./LargeTextPreview"
+import { getTextPreview } from "./text-preview"
 import UnsafeImage from "./UnsafeImage"
 
 function parseMarkdownIntoBlocks(markdown: string): string[] {
@@ -412,6 +414,7 @@ const InlineCodeWithFileCheck: React.FC<ComponentProps<"code"> & { [key: string]
 }
 
 const MarkdownBlock = memo(({ markdown, compact, showCursor }: MarkdownBlockProps) => {
+	if (markdown && getTextPreview(markdown).truncated) return <LargeTextPreview source={markdown} />
 	return (
 		<div className="inline-markdown-block">
 			<span

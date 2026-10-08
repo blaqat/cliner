@@ -16,7 +16,9 @@ import {
 	NetworkIcon,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { openTask } from "@/components/inbox/sessionActions"
 import MarkdownBlock from "../common/MarkdownBlock"
+import { consumeSubagentExpand, onSubagentExpand } from "./subagentExpand"
 
 interface SubagentStatusRowProps {
 	message: ClineMessage
@@ -47,6 +49,7 @@ const statusIcon = (status: DisplayStatus) => {
 		case "failed":
 			return <CircleXIcon className="size-2 text-error shrink-0 mt-[1px]" />
 		case "cancelled":
+		case "stopped":
 			return <CircleSlashIcon className="size-2 text-foreground shrink-0 mt-[1px]" />
 		default:
 			return <BotIcon className="size-2 text-foreground/70 shrink-0 mt-[1px]" />
@@ -182,6 +185,28 @@ export default function SubagentStatusRow({ message, isLast, lastModifiedMessage
 	const [expandedPrompts, setExpandedPrompts] = useState<Record<number, boolean>>({})
 	const data = useMemo(() => parseSubagentRowData(message), [message])
 
+	// Threads-strip chips expand this row's matching subagent entry. The request
+	// persists until consumed, so a row that mounts later (scrolled into
+	// Virtuoso's rendered range by the chip click) still expands.
+	const messageTs = message.ts
+	useEffect(() => {
+		const applyExpand = (index: number) => {
+			setExpandedItems((prev) => ({ ...prev, [index]: true }))
+			setExpandedPrompts((prev) => ({ ...prev, [index]: true }))
+		}
+		const pending = consumeSubagentExpand(messageTs)
+		if (pending !== null) {
+			applyExpand(pending)
+		}
+		return onSubagentExpand((ts, index) => {
+			if (ts !== messageTs) {
+				return
+			}
+			consumeSubagentExpand(ts)
+			applyExpand(index)
+		})
+	}, [messageTs])
+
 	if (!data) {
 		return <div className="text-foreground opacity-80">Subagent status update unavailable.</div>
 	}
@@ -250,6 +275,15 @@ export default function SubagentStatusRow({ message, isLast, lastModifiedMessage
 								<div className="mt-1 text-[11px] opacity-70 min-w-0 whitespace-pre-wrap break-words">
 									<span>{statsText}</span>
 								</div>
+							)}
+							{entry.childSessionId && (
+								<button
+									aria-label={`Open subagent ${entry.prompt}`}
+									className="mt-1 text-[11px] text-link bg-transparent border-0 p-0 cursor-pointer"
+									onClick={() => void openTask(entry.childSessionId!)}
+									type="button">
+									Open thread
+								</button>
 							)}
 							{shouldShowStats && hasDetails && (
 								<button

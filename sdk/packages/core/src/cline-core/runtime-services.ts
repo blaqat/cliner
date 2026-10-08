@@ -4,6 +4,7 @@ import type {
 	RuntimeHost,
 	SessionConnectionRuntimeService,
 	SessionModelRuntimeService,
+	SessionSubagentRuntimeService,
 	SessionUsageRuntimeService,
 } from "../runtime/host/runtime-host";
 import {
@@ -29,7 +30,8 @@ export type RuntimeHostServiceExtensions = RuntimeHost &
 		PendingPromptsRuntimeService &
 			SessionUsageRuntimeService &
 			SessionConnectionRuntimeService &
-			SessionModelRuntimeService
+			SessionModelRuntimeService &
+			SessionSubagentRuntimeService
 	>;
 
 export function createClineCoreSettingsApi(

@@ -403,8 +403,11 @@ export function computeNewEditorContent(
 				`Invalid insert_line: ${input.insert_line}. insert_line must be a positive one-based boundary line in the range 1-${maxBoundaryLine}. Use ${maxBoundaryLine} to append at EOF.`,
 			)
 		}
-		lines.splice(input.insert_line - 1, 0, ...input.new_text.split(/\r\n|\n/))
-		return lines.join(eol)
+		const boundary = input.insert_line - 1
+		return lines
+			.slice(0, boundary)
+			.concat(input.new_text.split(/\r\n|\n/), lines.slice(boundary))
+			.join(eol)
 	}
 
 	if (editType === "create") {

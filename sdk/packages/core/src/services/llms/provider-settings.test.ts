@@ -2,6 +2,44 @@ import { describe, expect, it } from "vitest";
 import { safeParseSettings, toProviderConfig } from "./provider-settings";
 
 describe("provider settings", () => {
+	it("preserves compatible configuration when switching Responses back to chat", () => {
+		const settings = {
+			provider: "openai-compatible",
+			client: "openai" as const,
+			model: "custom-model",
+			baseUrl: "https://compatible.example/v1",
+			apiKey: "custom-key",
+			headers: { "X-Custom": "yes" },
+		};
+		const responses = toProviderConfig({
+			...settings,
+			protocol: "openai-responses",
+		});
+		expect(responses).toMatchObject({
+			providerId: settings.provider,
+			routingProviderId: "openai-native",
+			modelId: settings.model,
+			baseUrl: settings.baseUrl,
+			apiKey: settings.apiKey,
+			headers: settings.headers,
+		});
+		const chat = toProviderConfig({
+			...settings,
+			client: "openai-compatible",
+			protocol: "openai-chat",
+		});
+		expect(chat).not.toHaveProperty("routingProviderId");
+		expect(chat).toMatchObject({
+			modelId: settings.model,
+			baseUrl: settings.baseUrl,
+			apiKey: settings.apiKey,
+			headers: settings.headers,
+		});
+		expect(
+			toProviderConfig({ ...settings, protocol: "openai-chat" }),
+		).not.toHaveProperty("routingProviderId");
+	});
+
 	it("formats Cline OAuth access tokens for runtime API keys", () => {
 		const config = toProviderConfig({
 			provider: "cline",

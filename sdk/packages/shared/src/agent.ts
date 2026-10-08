@@ -206,6 +206,12 @@ export interface AgentTool<TInput = unknown, TOutput = unknown>
 	timeoutMs?: number;
 	retryable?: boolean;
 	maxRetries?: number;
+	/**
+	 * Host/tool-source metadata carried on the runtime tool object but never
+	 * sent to the model. Hooks and policy gates can inspect it (e.g. MCP tool
+	 * annotations such as `readOnlyHint`).
+	 */
+	metadata?: Record<string, unknown>;
 	execute: (
 		input: TInput,
 		context: AgentToolContext,

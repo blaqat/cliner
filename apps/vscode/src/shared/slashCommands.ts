@@ -40,4 +40,18 @@ export const BASE_SLASH_COMMANDS: SlashCommand[] = [
 ]
 
 // VS Code-only slash commands
-export const VSCODE_ONLY_COMMANDS: SlashCommand[] = []
+export const VSCODE_ONLY_COMMANDS: SlashCommand[] = [
+	// `/ask` and `/act` are intercepted by the webview composer and routed
+	// through the same RPC as the Ask/Act toggle, so they must not reach the
+	// model as literal text. Any text after the command is sent in the new mode.
+	{
+		name: "ask",
+		description: "Switch to Ask mode; any text after the command is sent in Ask mode",
+		section: "default",
+	},
+	{
+		name: "act",
+		description: "Switch to Act mode; any text after the command is sent in Act mode",
+		section: "default",
+	},
+]

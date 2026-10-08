@@ -30,14 +30,15 @@ function fileApprovalAsk(ts: number, path: string): ClineMessage {
 }
 
 function makeChatState(): ChatState {
-	const draft = { revision: 3, text: "", activeQuote: null, images: [] as string[], files: [] as string[] }
+	const draft = { revision: 3, text: "", quotes: [], images: [] as string[], files: [] as string[] }
 	return {
 		inputValue: draft.text,
-		activeQuote: draft.activeQuote,
+		quotes: draft.quotes,
 		selectedImages: draft.images,
 		selectedFiles: draft.files,
 		setInputValue: vi.fn(),
-		setActiveQuote: vi.fn(),
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		setSelectedImages: vi.fn(),
 		setSelectedFiles: vi.fn(),
 		getDraftSnapshot: vi.fn(() => draft),
@@ -118,13 +119,13 @@ describe("ActionButtons", () => {
 		const chatState = {
 			...makeChatState(),
 			inputValue: "unsent draft",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			selectedImages: ["image.png"],
 			selectedFiles: ["notes.md"],
 			getDraftSnapshot: vi.fn(() => ({
 				revision: 9,
 				text: "unsent draft",
-				activeQuote: "selected context",
+				quotes: [{ text: "selected context", note: "" }],
 				images: ["image.png"],
 				files: ["notes.md"],
 			})),
@@ -225,7 +226,7 @@ describe("ActionButtons", () => {
 		const draft = {
 			revision: 12,
 			text: "approval feedback",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: ["image.png"],
 			files: ["notes.md"],
 		}

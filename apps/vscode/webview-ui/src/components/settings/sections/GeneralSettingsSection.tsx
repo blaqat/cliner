@@ -1,6 +1,7 @@
-import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
+import { VSCodeCheckbox, VSCodeLink, VSCodeRadio, VSCodeRadioGroup } from "@vscode/webview-ui-toolkit/react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useMetaKeyDetection } from "@/utils/hooks"
 import PreferredLanguageSetting from "../PreferredLanguageSetting"
 import Section from "../Section"
 import { updateSetting } from "../utils/settingsHandlers"
@@ -10,13 +11,41 @@ interface GeneralSettingsSectionProps {
 }
 
 const GeneralSettingsSection = ({ renderSectionHeader }: GeneralSettingsSectionProps) => {
-	const { telemetrySetting, remoteConfigSettings } = useExtensionState()
+	const { telemetrySetting, remoteConfigSettings, enterSendsAs, platform } = useExtensionState()
+	const [, modKeyChar] = useMetaKeyDetection(platform)
+	const isMac = modKeyChar === "⌘"
 
 	return (
 		<div>
 			{renderSectionHeader("general")}
 			<Section>
 				<PreferredLanguageSetting />
+
+				<div className="mb-[5px]">
+					<label className="block font-medium mb-1" htmlFor="enter-sends-as">
+						While the agent is running, Enter sends as
+					</label>
+					<VSCodeRadioGroup
+						id="enter-sends-as"
+						onChange={(e: any) => {
+							const value = e.target?.value
+							if (value === "steer" || value === "interject") {
+								updateSetting("enterSendsAs", value)
+							}
+						}}
+						orientation="horizontal"
+						value={enterSendsAs ?? "steer"}>
+						<VSCodeRadio checked={(enterSendsAs ?? "steer") === "steer"} value="steer">
+							Steer
+						</VSCodeRadio>
+						<VSCodeRadio checked={enterSendsAs === "interject"} value="interject">
+							Interject
+						</VSCodeRadio>
+					</VSCodeRadioGroup>
+					<p className="text-sm mt-[5px] text-description">
+						{modKeyChar}+Enter does the other one. {isMac ? "⌥" : "Alt"}+Enter sends as an aside.
+					</p>
+				</div>
 
 				<div className="mb-[5px]">
 					<Tooltip>

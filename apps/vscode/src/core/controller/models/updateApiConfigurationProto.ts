@@ -8,11 +8,11 @@ import {
 	fromProtobufOpenAiCompatibleModelInfo,
 } from "@shared/proto-conversions/models/typeConversion"
 import { OpenaiReasoningEffort } from "@shared/storage/types"
+import type { ApiConfiguration } from "@/shared/api"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { clearOrganizationForClinePassProviderSelection } from "./handleClinePassProviderSelection"
 import { normalizeProviderSwitchModel } from "./providerSwitchNormalization"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "./taskApiModel"
 
 /**
  * Updates API configuration
@@ -130,6 +130,7 @@ export async function updateApiConfigurationProto(
 			geminiActModeThinkingLevel: protoApiConfiguration.geminiActModeThinkingLevel,
 			planModeReasoningEffort: protoApiConfiguration.planModeReasoningEffort as OpenaiReasoningEffort | undefined,
 			actModeReasoningEffort: protoApiConfiguration.actModeReasoningEffort as OpenaiReasoningEffort | undefined,
+			openAiCompatibleApiType: protoApiConfiguration.openAiCompatibleApiType as ApiConfiguration["openAiCompatibleApiType"],
 		}
 
 		const previousApiConfiguration = controller.stateManager.getApiConfiguration()
@@ -143,12 +144,6 @@ export async function updateApiConfigurationProto(
 		controller.stateManager.setApiConfiguration(normalizedApiConfiguration)
 		clearOrganizationForClinePassProviderSelection(controller, normalizedApiConfiguration)
 
-		// Update the task's API handler if there's an active task
-		if (controller.task) {
-			const currentMode = controller.stateManager.getGlobalSettingsKey("mode")
-			const modelId = resolveActiveModelIdFromApiConfiguration(normalizedApiConfiguration, currentMode)
-			controller.task.api = createTaskApiModelShim(modelId)
-		}
 		controller.handleApiConfigurationChanged(previousApiConfiguration, normalizedApiConfiguration)
 
 		// Post updated state to webview

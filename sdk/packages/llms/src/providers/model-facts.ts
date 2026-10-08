@@ -270,7 +270,21 @@ export function isQwenModel(options: {
 //   `@ai-sdk/openai` already does), delete that transform and this helper.
 const OPENAI_O_SERIES_MODEL_ID_PATTERN = /(^|[^a-z0-9])o[134](?=$|[^a-z0-9])/;
 const OPENAI_GPT5_FAMILY_MODEL_ID_PATTERN =
-	/(^|[^a-z0-9])gpt-?5(?=$|[^a-z0-9])/;
+	/(^|[^a-z0-9])gpt-?[5-9](?=$|[^a-z0-9])/;
+
+// GPT-5.1 and later accept `reasoning_effort: "none"`; GPT-5 and o-series
+// only go down to "minimal"/"low".
+const OPENAI_NONE_EFFORT_MODEL_ID_PATTERN =
+	/(^|[^a-z0-9])gpt-?(5\.[1-9]\d*|[6-9](\.\d+)?)(?=$|[^a-z0-9.])/;
+
+export function supportsOpenAINoneReasoningEffort(
+	modelId: string | undefined,
+): boolean {
+	const normalized = normalizeRoutingValue(modelId);
+	return normalized
+		? OPENAI_NONE_EFFORT_MODEL_ID_PATTERN.test(normalized)
+		: false;
+}
 
 export function isOpenAIReasoningEraModelId(
 	modelId: string | undefined,

@@ -36,7 +36,7 @@ const WORKSPACE_RESTORE_TOOLTIPS: Record<WorkspaceRestoreAvailability["state"], 
 }
 
 const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageTs, canRestoreWorkspace }) => {
-	const { navigateToSettings, enableCheckpointsSetting } = useExtensionState()
+	const { navigateToSettings, enableCheckpointsSetting, subagentView } = useExtensionState()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedText, setEditedText] = useState(text ?? "")
 	const [editedImages, setEditedImages] = useState(images ?? [])
@@ -156,11 +156,11 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 	return (
 		<div
 			className={`group relative p-2.5 my-1 text-badge-foreground rounded-xs ${
-				messageTs && !isEditing ? "cursor-pointer pr-8" : ""
+				messageTs && !isEditing && !subagentView ? "cursor-pointer pr-8" : ""
 			}`}
-			onClick={messageTs && !isEditing ? startEditing : undefined}
+			onClick={messageTs && !isEditing && !subagentView ? startEditing : undefined}
 			onKeyDown={
-				messageTs && !isEditing
+				messageTs && !isEditing && !subagentView
 					? (event) => {
 							if (event.key === "Enter" || event.key === " ") {
 								event.preventDefault()
@@ -169,15 +169,15 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 						}
 					: undefined
 			}
-			role={messageTs && !isEditing ? "button" : undefined}
+			role={messageTs && !isEditing && !subagentView ? "button" : undefined}
 			style={{
 				backgroundColor: "var(--vscode-badge-background)",
 				whiteSpace: "pre-line",
 				wordWrap: "break-word",
 			}}
-			tabIndex={messageTs && !isEditing ? 0 : undefined}
-			title={messageTs && !isEditing ? "Edit and regenerate from here" : undefined}>
-			{messageTs && !isEditing && (
+			tabIndex={messageTs && !isEditing && !subagentView ? 0 : undefined}
+			title={messageTs && !isEditing && !subagentView ? "Edit and regenerate from here" : undefined}>
+			{messageTs && !isEditing && !subagentView && (
 				<Tooltip>
 					<TooltipContent side="left">Edit and regenerate from here</TooltipContent>
 					<TooltipTrigger asChild>

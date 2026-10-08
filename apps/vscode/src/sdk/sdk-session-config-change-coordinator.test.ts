@@ -40,6 +40,13 @@ describe("SdkSessionConfigChangeCoordinator", () => {
 		expect(options.rebuilds.request).toHaveBeenCalledWith("checkpoints", expect.any(Function))
 	})
 
+	it("schedules subagent settings behind a running turn", () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession({ isRunning: true }) })
+		coordinator.handleSubagentSettingsChanged()
+		expect(options.sessions.replaceActiveSession).not.toHaveBeenCalled()
+		expect(options.rebuilds.request).toHaveBeenCalledWith("subagents", expect.any(Function))
+	})
+
 	it("does not replace a newer session that reused the same session ID", async () => {
 		const activeSession = makeActiveSession()
 		const newerSession = makeActiveSession({ isRunning: true })
@@ -142,7 +149,7 @@ describe("SdkSessionConfigChangeCoordinator", () => {
 		expect(options.sessions.replaceActiveSession).toHaveBeenCalledWith({
 			expectedSession: activeSession,
 			startInput: { prompt: "start" },
-			initialMessages: [{ role: "user", content: "hello" }],
+			loadInitialMessages: expect.any(Function),
 			disposeReason,
 		})
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
@@ -184,9 +191,9 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		} as unknown as StateManager,
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
-			replaceActiveSession: vi.fn().mockResolvedValue({
-				startResult: replacementStartResult,
-				sdkHost: replacementHost,
+			replaceActiveSession: vi.fn(async (input) => {
+				await input.loadInitialMessages?.()
+				return { startResult: replacementStartResult, sdkHost: replacementHost }
 			}),
 			endActiveSession: vi.fn().mockResolvedValue(undefined),
 			setRunning: vi.fn(),

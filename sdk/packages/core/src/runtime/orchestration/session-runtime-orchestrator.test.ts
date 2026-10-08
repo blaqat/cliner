@@ -1899,7 +1899,56 @@ describe("SessionRuntime real AgentRuntime smoke", () => {
 // external abort signal
 // ---------------------------------------------------------------------------
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
 describe("SessionRuntime external abort signal", () => {
+	it("settles a child awaiting approval when its parent aborts", async () => {
+		const parent = new AbortController();
+		const entered = deferred<void>();
+		const approval = deferred<{ approved: boolean }>();
+		const execute = vi.fn(async () => ({}));
+		let approvalSignal: AbortSignal | undefined;
+		const session = new SessionRuntime(
+			makeAgentConfig({
+				abortSignal: parent.signal,
+				tools: [{ name: "editor", description: "probe", inputSchema: { type: "object" }, execute }],
+				toolPolicies: { editor: { autoApprove: false } },
+				requestToolApproval: (request) => {
+					approvalSignal = request.signal;
+					entered.resolve();
+					return approval.promise;
+				},
+			}),
+			{
+				createAgentRuntimeImpl: (config) => createAgentRuntime({
+					...config,
+					model: {
+						async *stream() {
+							yield { type: "tool-call-delta", toolCallId: "write1", toolName: "editor", inputText: "{}" };
+							yield { type: "finish", reason: "tool-calls" };
+						},
+					},
+				}),
+			},
+		);
+		const run = session.run("write");
+		await entered.promise;
+		parent.abort("Task cancelled");
+		await expect(run).resolves.toMatchObject({ finishReason: "aborted" });
+		expect(approvalSignal?.aborted).toBe(true);
+		expect(execute).not.toHaveBeenCalled();
+		approval.resolve({ approved: true });
+		await session.shutdown();
+	});
+
 	it("observes the parent signal only while a run is active", async () => {
 		const controller = new AbortController();
 		const addEventListener = vi.spyOn(controller.signal, "addEventListener");

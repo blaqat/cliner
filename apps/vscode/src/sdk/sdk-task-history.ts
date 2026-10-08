@@ -4,7 +4,8 @@ import type { ClineCoreListHistoryOptions, SessionHistoryRecord } from "@cline/c
 import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
-import type { ClineMessage } from "@shared/ExtensionMessage"
+import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
+import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
@@ -30,6 +31,7 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
 	sessions: SdkSessionLifecycle
 	/**
@@ -91,6 +93,14 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 	return {
 		title: item.task,
 		isFavorited: item.isFavorited ?? false,
+		isSettled: item.isSettled ?? false,
+		settledAt: item.settledAt ?? 0,
+		// Frozen at the last real interaction; `ts` of a listed item already carries it,
+		// so settle/favorite/metadata rewrites keep the same value.
+		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
+		parentTaskId: item.parentTaskId ?? "",
+		forkedAtTs: item.forkedAtTs ?? 0,
+		subagentCount: item.subagentCount ?? 0,
 		size: item.size ?? 0,
 		totalCost: item.totalCost ?? 0,
 		tokensIn: item.tokensIn ?? 0,
@@ -98,6 +108,7 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheWrites: item.cacheWrites ?? 0,
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
+		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
 		legacyTask: item.isLegacy ?? false,
 	}
 }
@@ -149,7 +160,7 @@ function parseUserMessageMode(content: SdkMessage["content"]): "plan" | "act" | 
 	return undefined
 }
 
-function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDisplayMessage[] {
+export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDisplayMessage[] {
 	return messages.map((message): SdkDisplayMessage => {
 		if (message.role !== "user") {
 			return message
@@ -175,11 +186,24 @@ function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDisplayMe
 	})
 }
 
+/**
+ * Time of the chat's last real interaction. `updatedAt` is bumped by every
+ * write (settle, favorite, metadata edits), so prefer the persisted
+ * `lastActivityTs` and fall back to it only for chats that predate the field.
+ */
+export function sessionRecordActivityTs(item: SessionHistoryRecord): number {
+	return (
+		metadataNumber(item.metadata, "lastActivityTs") || dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt)
+	)
+}
+
 export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): HistoryItem {
 	const metadata = item.metadata
+	const lastActivityTs = sessionRecordActivityTs(item)
 	return {
 		id: item.sessionId,
-		ts: dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt),
+		ts: lastActivityTs,
+		lastActivityTs,
 		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
@@ -188,8 +212,21 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 		size: metadataNumber(metadata, "size"),
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
+		isSettled: metadataBoolean(metadata, "isSettled") ?? false,
+		settledAt: metadataNumber(metadata, "settledAt") || undefined,
+		parentTaskId: item.isSubagent
+			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
+			: metadataString(metadata, "parentTaskId"),
+		runtimeOwnerTaskId: item.isSubagent ? (item.parentSessionId ?? undefined) : undefined,
+		isSubagent: item.isSubagent || undefined,
+		agentId: item.agentId ?? undefined,
+		spawnToolCallId: metadataString(metadata, "spawnToolCallId"),
+		subagentAccess: metadataString(metadata, "subagentAccess") === "write" ? "write" : "read",
+		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
+		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
+		apiSelection: readTaskApiSelection(metadata?.apiSelection),
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
 		isLegacy:
 			metadataBoolean(metadata, "legacyTask") === true || metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -202,11 +239,15 @@ export class SdkTaskHistory {
 	private cachedHistoryHostRefCount = 0
 	private cachedHistoryHostIdleTimer?: NodeJS.Timeout
 	private metadataHistoryCache?: {
+		includeSubagents: boolean
 		records: SessionHistoryRecord[]
 		hostLimit: number
 		createdAt: number
 	}
 	private disposed = false
+	private readonly activityUnsettled = new Set<string>()
+	private readonly activityWrites = new Map<string, Promise<void>>()
+	private readonly subagentCountWrites = new Map<string, Promise<void>>()
 	private readonly cachedHistoryHostIdleMs = 30_000
 	private readonly metadataHistoryCacheTtlMs = 10_000
 
@@ -328,7 +369,7 @@ export class SdkTaskHistory {
 		await this.disposeCachedHistoryHost("controllerDispose")
 	}
 
-	private invalidateMetadataHistoryCache(): void {
+	invalidateMetadataHistoryCache(): void {
 		this.metadataHistoryCache = undefined
 	}
 
@@ -393,7 +434,12 @@ export class SdkTaskHistory {
 		const useCache = this.canUseMetadataHistoryCache(options)
 		const now = Date.now()
 		const cached = useCache ? this.metadataHistoryCache : undefined
-		if (cached && cached.hostLimit >= hostLimit && now - cached.createdAt < this.metadataHistoryCacheTtlMs) {
+		if (
+			cached &&
+			cached.includeSubagents === (options.includeSubagents === true) &&
+			cached.hostLimit >= hostLimit &&
+			now - cached.createdAt < this.metadataHistoryCacheTtlMs
+		) {
 			const result = cached.records.slice(offset, offset + limit)
 			return result
 		}
@@ -406,9 +452,10 @@ export class SdkTaskHistory {
 				...hostOptions,
 				limit: hostLimit || 10_000,
 				includeManifestFallback: true,
+				includeSubagents: options.includeSubagents === true,
 			}),
 		)
-		const visibleSdkHistory = sdkHistory.filter((item) => item.isSubagent !== true)
+		const visibleSdkHistory = options.includeSubagents ? sdkHistory : sdkHistory.filter((item) => !item.isSubagent)
 		const sdkIds = new Set(visibleSdkHistory.map((item) => item.sessionId))
 		const legacyHistory = this.readAllLegacyTaskHistory()
 			.filter(({ item }) => item.task && !sdkIds.has(item.id))
@@ -424,6 +471,7 @@ export class SdkTaskHistory {
 		const mergedHistory = [...visibleSdkHistory, ...legacyHistory].sort(compareSessionHistoryRecordsByRecencyDesc)
 		if (useCache) {
 			this.metadataHistoryCache = {
+				includeSubagents: options.includeSubagents === true,
 				records: mergedHistory,
 				hostLimit,
 				createdAt: Date.now(),
@@ -476,6 +524,26 @@ export class SdkTaskHistory {
 				cwd: sdkRecord?.cwd || sdkRecord?.workspaceRoot || undefined,
 			},
 		)
+		if (sdkRecord) {
+			const children = (await this.listHistory({ hydrate: false, includeSubagents: true })).filter(
+				(item) => item.isSubagent && sessionHistoryRecordToHistoryItem(item).parentTaskId === taskId,
+			)
+			for (const message of clineMessages) {
+				if (message.say !== "subagent" || !message.text) continue
+				try {
+					const status = JSON.parse(message.text) as ClineSaySubagentStatus
+					for (const entry of status.items ?? []) {
+						const child = entry.toolCallId
+							? children.find((record) => record.metadata?.spawnToolCallId === entry.toolCallId)
+							: undefined
+						if (child) entry.childSessionId = child.sessionId
+					}
+					message.text = JSON.stringify(status)
+				} catch {
+					/* Older status rows can still be opened through the thread strip. */
+				}
+			}
+		}
 		if (sdkRecord && legacyTask) {
 			return mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
 		}
@@ -521,6 +589,57 @@ export class SdkTaskHistory {
 		return sdkRecord?.status
 	}
 
+	async getTaskMode(taskId: string): Promise<"plan" | "act" | undefined> {
+		const record = await this.getSdkRecord(taskId)
+		const mode = record?.metadata?.taskMode
+		return mode === "plan" || mode === "act" ? mode : undefined
+	}
+
+	async setTaskMode(taskId: string, mode: "plan" | "act"): Promise<void> {
+		await this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (record) await host.update(taskId, { metadata: { ...record.metadata, taskMode: mode } })
+			})
+			this.invalidateMetadataHistoryCache()
+		})
+	}
+
+	/**
+	 * Persists the saved-configuration selection a task was last using (see
+	 * `TaskApiSelection`) so reopening the chat restores it. Reads it back via
+	 * `findHistoryItem().apiSelection` or `getTaskApiSelection`.
+	 */
+	private readonly selectionWrites = new Map<string, Promise<void>>()
+
+	setTaskApiSelection(taskId: string, selection: TaskApiSelection): Promise<void> {
+		const captured = { ...selection }
+		return this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (record) await host.update(taskId, { metadata: { ...record.metadata, apiSelection: captured } })
+			})
+			this.invalidateMetadataHistoryCache()
+		})
+	}
+
+	private serializeMetadataWrite(taskId: string, operation: () => Promise<void>): Promise<void> {
+		const previous = this.selectionWrites.get(taskId) ?? Promise.resolve()
+		const write = previous.catch(() => {}).then(operation)
+		this.selectionWrites.set(taskId, write)
+		void write
+			.finally(() => {
+				if (this.selectionWrites.get(taskId) === write) this.selectionWrites.delete(taskId)
+			})
+			.catch(() => {})
+		return write
+	}
+
+	async getTaskApiSelection(taskId: string): Promise<TaskApiSelection | undefined> {
+		const record = await this.getSdkRecord(taskId)
+		return readTaskApiSelection(record?.metadata?.apiSelection)
+	}
+
 	async isLegacyTask(taskId: string): Promise<boolean> {
 		const sdkRecord = await this.getSdkRecord(taskId)
 		if (sdkRecord) {
@@ -549,12 +668,19 @@ export class SdkTaskHistory {
 		return appendLegacyResumeWarning(fallbackMessages as { role: string; content: unknown }[])
 	}
 
-	private async updateSession(sessionId: string, item: HistoryItem): Promise<void> {
+	private updateSession(sessionId: string, item: HistoryItem): Promise<void> {
+		return this.serializeMetadataWrite(sessionId, () => this.performUpdateSession(sessionId, item))
+	}
+
+	private async performUpdateSession(sessionId: string, item: HistoryItem): Promise<void> {
 		const { metadata: writtenMetadata, updated } = await this.withHistoryHost(async (host) => {
 			const existing = await host.get(sessionId)
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// History reads may predate live picker changes. Only explicit selection
+				// writes may replace an existing authoritative selection.
+				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
 			}
 			if (item.size === undefined) {
 				const existingSize = existing?.metadata?.size
@@ -595,7 +721,54 @@ export class SdkTaskHistory {
 		await this.updateSession(item.id, item)
 	}
 
-	private async deleteSession(sessionId: string): Promise<void> {
+	/**
+	 * Persists the task's cumulative subagent count so settled/history inbox
+	 * rows keep showing a total. Writes are serialized per task and skipped
+	 * unless the count grew.
+	 */
+	async updateTaskSubagentCount(taskId: string, total: number): Promise<void> {
+		const pending = this.subagentCountWrites.get(taskId)
+		const write = (pending ?? Promise.resolve()).then(async () => {
+			const item = await this.findHistoryItem(taskId)
+			if (!item || (item.subagentCount ?? 0) >= total) return
+			await this.updateTaskHistoryItem({ ...item, subagentCount: total })
+		})
+		const tracked = write.finally(() => {
+			if (this.subagentCountWrites.get(taskId) === tracked) this.subagentCountWrites.delete(taskId)
+		})
+		this.subagentCountWrites.set(taskId, tracked)
+		return tracked
+	}
+
+	private async prepareSessionsDeletion(ids: string[]): Promise<void> {
+		const results = await Promise.allSettled(ids.map((id) => this.prepareSessionDeletion(id)))
+		for (const result of results) if (result.status === "rejected") throw result.reason
+	}
+
+	private async prepareSessionDeletion(sessionId: string): Promise<void> {
+		await this.options.beforeDeleteSession?.(sessionId)
+		await this.options.sessions.removeSession?.(sessionId)
+		await this.activityWrites.get(sessionId)
+		await this.subagentCountWrites.get(sessionId)
+	}
+
+	private async deleteSession(sessionId: string, prepared = false): Promise<void> {
+		if (!prepared) {
+			const release = this.options.sessions.beginTaskDeletion?.(sessionId)
+			try {
+				await this.prepareSessionDeletion(sessionId)
+				return await this.deleteSession(sessionId, true)
+			} finally {
+				release?.()
+			}
+		}
+		// Asides survive parent deletion as independent tasks, including favorites.
+		for (const record of await this.listHistory({ hydrate: false })) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.parentTaskId === sessionId && !item.isSubagent) {
+				await this.updateTaskHistoryItem({ ...item, parentTaskId: undefined, forkedAtTs: undefined })
+			}
+		}
 		const legacyTask = this.findLegacyTask(sessionId)
 		try {
 			await this.withHistoryHost(async (host) => {
@@ -616,7 +789,7 @@ export class SdkTaskHistory {
 	async findHistoryItem(taskId: string): Promise<HistoryItem | undefined> {
 		const sdkHistoryItem = await this.withHistoryHost(async (host) => {
 			const sdkRecord = await host.get(taskId)
-			if (!sdkRecord || sdkRecord.isSubagent === true) {
+			if (!sdkRecord) {
 				return undefined
 			}
 
@@ -633,39 +806,89 @@ export class SdkTaskHistory {
 	}
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
-		await this.deleteSession(id)
-		return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+		return this.deleteTasksFromState([id])
+	}
+
+	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
+		const releases = [...new Set(ids)].map((id) => this.options.sessions.beginTaskDeletion?.(id))
+		try {
+			await this.prepareSessionsDeletion(ids)
+			for (const id of ids) await this.deleteSession(id, true)
+			return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+		} finally {
+			for (const release of releases) release?.()
+		}
 	}
 
 	async deleteAllTaskHistory(options: { preserveFavorites?: boolean } = {}): Promise<number> {
-		const history = await this.listHistory({ hydrate: false })
-		const tasksToDelete = options.preserveFavorites
-			? history.filter(
-					(item) =>
-						!(
-							metadataBoolean(item.metadata, "isFavorited") ??
-							metadataBoolean(item.metadata, "is_favorited") ??
-							false
-						),
-				)
-			: history
+		const releaseHistory = this.options.sessions.beginHistoryDeletion?.()
+		const releases: Array<(() => void) | undefined> = []
+		try {
+			await this.options.sessions.waitForPendingStarts?.()
+			const history = await this.listHistory({ hydrate: false })
+			const tasksToDelete = options.preserveFavorites
+				? history.filter(
+						(item) =>
+							!(
+								metadataBoolean(item.metadata, "isFavorited") ??
+								metadataBoolean(item.metadata, "is_favorited") ??
+								false
+							),
+					)
+				: history
 
-		let deletedCount = 0
-		for (const item of tasksToDelete) {
-			try {
-				await this.deleteSession(item.sessionId)
-				deletedCount += 1
-			} catch (error) {
-				Logger.error(`[SdkTaskHistory] Failed to delete task history item: ${item.sessionId}`, error)
+			// Stop every targeted task before deleting any records.
+			for (const item of tasksToDelete) releases.push(this.options.sessions.beginTaskDeletion?.(item.sessionId))
+			await this.prepareSessionsDeletion(tasksToDelete.map((item) => item.sessionId))
+			let deletedCount = 0
+			for (const item of tasksToDelete) {
+				try {
+					await this.deleteSession(item.sessionId, true)
+					deletedCount += 1
+				} catch (error) {
+					Logger.error(`[SdkTaskHistory] Failed to delete task history item: ${item.sessionId}`, error)
+				}
 			}
-		}
 
-		return deletedCount
+			return deletedCount
+		} finally {
+			for (const release of releases) release?.()
+			releaseHistory?.()
+		}
 	}
 
 	async updateTaskHistory(item: HistoryItem): Promise<HistoryItem[]> {
 		await this.updateTaskHistoryItem(item)
 		return (await this.listHistory()).map(sessionHistoryRecordToHistoryItem)
+	}
+
+	async toggleTaskSettled(taskId: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		this.activityUnsettled.delete(taskId)
+		item.isSettled = !item.isSettled
+		item.settledAt = item.isSettled ? Date.now() : undefined
+		await this.updateTaskHistoryItem(item)
+	}
+
+	async markTaskActive(taskId: string): Promise<void> {
+		if (this.activityUnsettled.has(taskId)) return
+		const pending = this.activityWrites.get(taskId)
+		if (pending) return pending
+		const write = (async () => {
+			const item = await this.findHistoryItem(taskId)
+			if (!item) return
+			// First interaction of this activity window: stamp it, and unsettle if needed.
+			const now = Date.now()
+			await this.updateTaskHistoryItem(
+				item.isSettled
+					? { ...item, isSettled: false, settledAt: undefined, ts: now, lastActivityTs: now }
+					: { ...item, ts: now, lastActivityTs: now },
+			)
+			this.activityUnsettled.add(taskId)
+		})().finally(() => this.activityWrites.delete(taskId))
+		this.activityWrites.set(taskId, write)
+		return write
 	}
 
 	async updateTaskUsage(taskId: string | undefined, usage: TaskUsage): Promise<void> {
@@ -688,6 +911,9 @@ export class SdkTaskHistory {
 		historyItem.cacheWrites = (historyItem.cacheWrites || 0) + (usage.cacheWrites ?? 0)
 		historyItem.totalCost = (historyItem.totalCost || 0) + (usage.totalCost ?? 0)
 		historyItem.ts = Date.now()
+		historyItem.lastActivityTs = historyItem.ts
+		historyItem.isSettled = false
+		historyItem.settledAt = undefined
 
 		await this.updateTaskHistoryItem(historyItem)
 	}

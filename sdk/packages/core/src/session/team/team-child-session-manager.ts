@@ -151,6 +151,12 @@ export class TeamChildSessionManager {
 
 		const sessionId = makeSubSessionId(rootSessionId, input.agentId);
 		const existing = await this.adapter.getSession(sessionId);
+		const parent = await this.adapter.getSession(
+			makeSubSessionId(rootSessionId, input.parentAgentId),
+		);
+		const immediateParentSessionId = parent?.isSubagent
+			? parent.sessionId
+			: rootSessionId;
 		const startedAt = nowIso();
 		const artifactPaths = this.manifestStore.artifacts.subagentArtifactPaths(
 			sessionId,
@@ -179,6 +185,7 @@ export class TeamChildSessionManager {
 				startedAt,
 				...artifactPaths,
 			});
+			row.metadata = { ...row.metadata, immediateParentSessionId };
 			await this.adapter.upsertSession(row);
 			this.manifestStore.initializeMessagesFile(
 				row,
@@ -197,10 +204,13 @@ export class TeamChildSessionManager {
 			conversationId: input.conversationId,
 			prompt: existing.prompt ?? prompt ?? null,
 			metadata: resolveMetadataWithTitle({
-				metadata: withSessionHistoryOriginMetadata(existing.metadata, {
-					mode: "subagent",
-					version: readSessionHistoryOriginMetadata(root.metadata)?.version,
-				}),
+				metadata: withSessionHistoryOriginMetadata(
+					{ ...existing.metadata, immediateParentSessionId },
+					{
+						mode: "subagent",
+						version: readSessionHistoryOriginMetadata(root.metadata)?.version,
+					},
+				),
 				prompt: existing.prompt ?? prompt ?? null,
 			}),
 			expectedStatusLock: existing.statusLock,
@@ -377,6 +387,18 @@ export class TeamChildSessionManager {
 			rootSessionId,
 		});
 		if (!subSessionId) return;
+		const row = await this.adapter.getSession(subSessionId);
+		await this.adapter.updateSession({
+			sessionId: subSessionId,
+			metadata: {
+				...row?.metadata,
+				spawnToolCallId: context.toolCallId,
+				subagentAccess: context.input.access ?? "read",
+			},
+		});
+		await this.manifestStore.persistSessionMessages(subSessionId, [
+			{ role: "user", content: context.input.task },
+		]);
 		await this.applySubagentStatusBySessionId(subSessionId, "running");
 	}
 
@@ -392,12 +414,8 @@ export class TeamChildSessionManager {
 			rootSessionId,
 		});
 		if (!subSessionId) return;
-		if (context.error) {
-			await this.applySubagentStatusBySessionId(subSessionId, "failed");
-			return;
-		}
 		const persistedMessages = this.toPersistedMessages(
-			context.agentResult?.messages,
+			context.agentResult?.messages ?? context.messages,
 			context.agentResult,
 		);
 		if (persistedMessages) {
@@ -406,10 +424,18 @@ export class TeamChildSessionManager {
 				persistedMessages,
 			);
 		}
+		if (context.error) {
+			await this.applySubagentStatusBySessionId(subSessionId, "failed");
+			return;
+		}
 		const reason = context.result?.finishReason ?? "completed";
 		await this.applySubagentStatusBySessionId(
 			subSessionId,
-			reason === "aborted" ? "cancelled" : "completed",
+			reason === "aborted"
+				? "cancelled"
+				: reason === "error"
+					? "failed"
+					: "completed",
 		);
 	}
 

@@ -1,6 +1,13 @@
 import type { McpServer } from "@shared/mcp"
 import { describe, expect, it } from "vitest"
-import { getMatchingSlashCommands, getMcpPromptCommands, slashCommandRegex, validateSlashCommand } from "../slash-commands"
+import {
+	getMatchingSlashCommands,
+	getMcpPromptCommands,
+	parseModeSwitchCommand,
+	shouldShowSlashCommandsMenu,
+	slashCommandRegex,
+	validateSlashCommand,
+} from "../slash-commands"
 
 // Helper to create a mock MCP server
 function createMockMcpServer(overrides: Partial<McpServer> = {}): McpServer {
@@ -236,6 +243,102 @@ describe("slash-commands", () => {
 			const match = text.match(slashCommandRegex)
 			// Should not match because / is not preceded by whitespace or start
 			expect(match).toBeNull()
+		})
+	})
+
+	describe("/ask and /act mode-switch commands", () => {
+		it("offers /ask and /act in the slash menu", () => {
+			const names = getMatchingSlashCommands("").map((cmd) => cmd.name)
+			expect(names).toContain("ask")
+			expect(names).toContain("act")
+		})
+
+		it("validates /ask and /act as full commands", () => {
+			expect(validateSlashCommand("ask")).toBe("full")
+			expect(validateSlashCommand("act")).toBe("full")
+		})
+
+		it("filters both commands for the /a prefix", () => {
+			const names = getMatchingSlashCommands("a").map((cmd) => cmd.name)
+			expect(names).toContain("ask")
+			expect(names).toContain("act")
+		})
+	})
+
+	describe("parseModeSwitchCommand", () => {
+		it("parses a bare /ask as plan mode with no text", () => {
+			expect(parseModeSwitchCommand("/ask")).toEqual({ mode: "plan", rest: "" })
+		})
+
+		it("parses a bare /act as act mode with no text", () => {
+			expect(parseModeSwitchCommand("/act")).toEqual({ mode: "act", rest: "" })
+		})
+
+		it("returns the text after the command", () => {
+			expect(parseModeSwitchCommand("/act build the thing")).toEqual({ mode: "act", rest: "build the thing" })
+			expect(parseModeSwitchCommand("/ask   why is this slow?")).toEqual({ mode: "plan", rest: "why is this slow?" })
+		})
+
+		it("matches a standalone token anywhere in the text and removes it", () => {
+			expect(parseModeSwitchCommand("please /act on this")).toEqual({ mode: "act", rest: "please on this" })
+			expect(parseModeSwitchCommand("text\n/ask why")).toEqual({ mode: "plan", rest: "text why" })
+			expect(parseModeSwitchCommand("please review this /act")).toEqual({ mode: "act", rest: "please review this" })
+		})
+
+		it("lets the last mode command win when several appear", () => {
+			expect(parseModeSwitchCommand("/ask /act build it")).toEqual({ mode: "act", rest: "build it" })
+			expect(parseModeSwitchCommand("/act build /ask carefully")).toEqual({ mode: "plan", rest: "build carefully" })
+			expect(parseModeSwitchCommand("a /act b /ask c")).toEqual({ mode: "plan", rest: "a b c" })
+		})
+
+		it("collapses the whitespace a removed command leaves behind", () => {
+			expect(parseModeSwitchCommand("please  /act   build")).toEqual({ mode: "act", rest: "please build" })
+		})
+
+		it("preserves multi-line text after the command", () => {
+			expect(parseModeSwitchCommand("/act first\nsecond")).toEqual({ mode: "act", rest: "first\nsecond" })
+		})
+
+		it("matches case-insensitively", () => {
+			expect(parseModeSwitchCommand("/ACT go")).toEqual({ mode: "act", rest: "go" })
+		})
+
+		it("does not match a prefix of a longer word", () => {
+			expect(parseModeSwitchCommand("/activity today")).toBeNull()
+			expect(parseModeSwitchCommand("/asked about it")).toBeNull()
+			expect(parseModeSwitchCommand("run /actions now")).toBeNull()
+		})
+
+		it("does not match inside words or paths", () => {
+			expect(parseModeSwitchCommand("a/act")).toBeNull()
+			expect(parseModeSwitchCommand("foo/ask")).toBeNull()
+			expect(parseModeSwitchCommand("see http://example.com/ask now")).toBeNull()
+			expect(parseModeSwitchCommand("run foo/act it")).toBeNull()
+		})
+
+		it("does not match plain text or other commands", () => {
+			expect(parseModeSwitchCommand("")).toBeNull()
+			expect(parseModeSwitchCommand("hello")).toBeNull()
+			expect(parseModeSwitchCommand("/compact")).toBeNull()
+		})
+	})
+
+	describe("shouldShowSlashCommandsMenu", () => {
+		it("shows for a command typed at the cursor mid-message", () => {
+			expect(shouldShowSlashCommandsMenu("/compact now /re", "/compact now /re".length)).toBe(true)
+		})
+
+		it("still shows for the first command", () => {
+			expect(shouldShowSlashCommandsMenu("/re", 3)).toBe(true)
+		})
+
+		it("does not show when the slash is inside a word or path", () => {
+			expect(shouldShowSlashCommandsMenu("see foo/re", "see foo/re".length)).toBe(false)
+		})
+
+		it("does not show when whitespace follows the slash before the cursor", () => {
+			expect(shouldShowSlashCommandsMenu("/compact now /re tail", "/compact now /re".length)).toBe(true)
+			expect(shouldShowSlashCommandsMenu("text / tail", "text / ".length)).toBe(false)
 		})
 	})
 })

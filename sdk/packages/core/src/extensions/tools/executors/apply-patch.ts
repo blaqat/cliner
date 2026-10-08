@@ -6,6 +6,7 @@
  * wrapper form used by older prompts.
  */
 
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolContext } from "@cline/shared";
@@ -20,6 +21,12 @@ import {
 	PatchParser,
 	type PatchWarning,
 } from "./apply-patch-parser";
+import {
+	contentHash,
+	createFileExclusive,
+	throwIfAborted,
+	validateSnapshot,
+} from "./edit-validation";
 import {
 	detectLineEnding,
 	type LineEnding,
@@ -47,6 +54,9 @@ export interface ApplyPatchExecutorOptions {
 	 * @default "utf-8"
 	 */
 	encoding?: BufferEncoding;
+
+	/** Cancel parsing/matching before any filesystem mutation. */
+	signal?: AbortSignal;
 
 	/**
 	 * Restrict relative-path file operations to paths inside cwd.
@@ -183,12 +193,12 @@ function applyChunks(
 				`${filePath}: currentIndex ${currentIndex} > chunk.origIndex ${chunk.origIndex}`,
 			);
 		}
-		result.push(...lines.slice(currentIndex, chunk.origIndex));
-		result.push(...chunk.insLines);
+		for (let i = currentIndex; i < chunk.origIndex; i++) result.push(lines[i]);
+		for (const line of chunk.insLines) result.push(line);
 		currentIndex = chunk.origIndex + chunk.delLines.length;
 	}
 
-	result.push(...lines.slice(currentIndex));
+	for (let i = currentIndex; i < lines.length; i++) result.push(lines[i]);
 	return result.join("\n");
 }
 
@@ -200,6 +210,7 @@ interface LoadedFiles {
 	files: Record<string, string>;
 	/** Each file's own EOL, restored onto the output after chunks apply. */
 	eols: Record<string, LineEnding>;
+	snapshots: Record<string, string | undefined>;
 }
 
 async function loadFiles(
@@ -207,6 +218,7 @@ async function loadFiles(
 	cwd: string,
 	encoding: BufferEncoding,
 	restrictToCwd: boolean,
+	signal?: AbortSignal,
 ): Promise<LoadedFiles> {
 	const filesToLoad = extractFilesForOperations(lines, [
 		PATCH_MARKERS.UPDATE,
@@ -214,34 +226,48 @@ async function loadFiles(
 	]);
 	const files: Record<string, string> = {};
 	const eols: Record<string, LineEnding> = {};
+	const snapshots: Record<string, string | undefined> = {};
+	throwIfAborted(signal);
 
 	for (const filePath of filesToLoad) {
 		const absolutePath = resolveFilePath(cwd, filePath, restrictToCwd);
 		let fileContent: string;
 		try {
-			fileContent = await fs.readFile(absolutePath, encoding);
+			const bytes = await fs.readFile(absolutePath);
+			throwIfAborted(signal);
+			if (!(absolutePath in snapshots))
+				snapshots[absolutePath] = contentHash(bytes);
+			fileContent = bytes.toString(encoding);
 		} catch {
+			throwIfAborted(signal);
 			throw new DiffError(`File not found: ${filePath}`);
 		}
 		files[filePath] = fileContent.replace(/\r\n/g, "\n");
 		eols[filePath] = detectLineEnding(fileContent);
 	}
 
-	// ADD targets are loaded only when they already exist, so the parser's
-	// "File already exists" guard reflects the real filesystem instead of
-	// silently overwriting the file.
+	const addPaths = new Set(
+		extractFilesForOperations(lines, [PATCH_MARKERS.ADD]),
+	);
+	// Snapshot both new-file and move destinations, including their absence.
 	for (const filePath of extractFilesForOperations(lines, [
 		PATCH_MARKERS.ADD,
+		PATCH_MARKERS.MOVE,
 	])) {
 		const absolutePath = resolveFilePath(cwd, filePath, restrictToCwd);
 		try {
-			files[filePath] = await fs.readFile(absolutePath, encoding);
-		} catch {
-			// Missing file is the expected case for ADD.
+			const bytes = await fs.readFile(absolutePath);
+			throwIfAborted(signal);
+			if (!(absolutePath in snapshots))
+				snapshots[absolutePath] = contentHash(bytes);
+			if (addPaths.has(filePath)) files[filePath] = bytes.toString(encoding);
+		} catch (error) {
+			throwIfAborted(signal);
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			if (!(absolutePath in snapshots)) snapshots[absolutePath] = undefined;
 		}
 	}
-
-	return { files, eols };
+	return { files, eols, snapshots };
 }
 
 function patchToChanges(
@@ -313,53 +339,103 @@ function formatSkippedHunkFailure(warnings: readonly PatchWarning[]): string {
 	return lines.join("\n");
 }
 
-async function applyChanges(
+function applyChanges(
 	changes: Record<string, PatchFileChange>,
 	cwd: string,
 	encoding: BufferEncoding,
 	restrictToCwd: boolean,
-): Promise<string[]> {
+	snapshots: Record<string, string | undefined>,
+	signal?: AbortSignal,
+): string[] {
+	throwIfAborted(signal);
+	// Preserve the up-front validation, then narrow the external-process race
+	// with another check immediately before each mutation. General filesystems
+	// cannot atomically compare contents and replace/delete an existing file.
+	for (const [filePath, snapshot] of Object.entries(snapshots)) {
+		validateSnapshot(filePath, snapshot);
+	}
+	throwIfAborted(signal);
 	const touched: string[] = [];
-
+	const expected = { ...snapshots };
+	const operations: {
+		filePath: string;
+		absolutePath: string;
+		content?: string;
+		sourcePath?: string;
+	}[] = [];
 	for (const [filePath, change] of Object.entries(changes)) {
 		const sourceAbsPath = resolveFilePath(cwd, filePath, restrictToCwd);
-		switch (change.type) {
-			case PatchActionType.DELETE:
-				await fs.rm(sourceAbsPath, { force: true });
-				touched.push(`${filePath}: [deleted]`);
-				break;
-			case PatchActionType.ADD:
-				if (change.newContent === undefined) {
-					throw new DiffError(`Cannot create ${filePath} with no content`);
-				}
-				await fs.mkdir(path.dirname(sourceAbsPath), { recursive: true });
-				await fs.writeFile(sourceAbsPath, change.newContent, { encoding });
-				touched.push(filePath);
-				break;
-			case PatchActionType.UPDATE: {
-				if (change.newContent === undefined) {
-					throw new DiffError(
-						`UPDATE change for ${filePath} has no new content`,
-					);
-				}
-
-				if (change.movePath) {
-					const moveAbsPath = resolveFilePath(
-						cwd,
-						change.movePath,
-						restrictToCwd,
-					);
-					await fs.mkdir(path.dirname(moveAbsPath), { recursive: true });
-					await fs.writeFile(moveAbsPath, change.newContent, { encoding });
-					await fs.rm(sourceAbsPath, { force: true });
-					touched.push(`${filePath} -> ${change.movePath}`);
-				} else {
-					await fs.writeFile(sourceAbsPath, change.newContent, { encoding });
-					touched.push(filePath);
-				}
-				break;
-			}
+		if (
+			change.type !== PatchActionType.DELETE &&
+			change.newContent === undefined
+		) {
+			throw new DiffError(`Cannot write ${filePath} with no content`);
 		}
+		if (change.movePath) {
+			operations.push({
+				filePath: change.movePath,
+				absolutePath: resolveFilePath(cwd, change.movePath, restrictToCwd),
+				content: change.newContent,
+				sourcePath: sourceAbsPath,
+			});
+		}
+		operations.push({
+			filePath,
+			absolutePath: sourceAbsPath,
+			content:
+				change.movePath || change.type === PatchActionType.DELETE
+					? undefined
+					: change.newContent,
+		});
+	}
+	const completed: string[] = [];
+	const describeOperation = (operation: (typeof operations)[number]) =>
+		`${operation.filePath}: ${operation.content === undefined ? "deleted" : "written"}`;
+	try {
+		for (const operation of operations) {
+			const { absolutePath, content } = operation;
+			if (content === undefined) {
+				validateSnapshot(absolutePath, expected[absolutePath]);
+				fsSync.rmSync(absolutePath, { force: true });
+				expected[absolutePath] = undefined;
+			} else {
+				fsSync.mkdirSync(path.dirname(absolutePath), { recursive: true });
+				// A move must still have its original source before writing its
+				// destination, and gets another source check before the deletion.
+				if (operation.sourcePath)
+					validateSnapshot(
+						operation.sourcePath,
+						expected[operation.sourcePath],
+					);
+				validateSnapshot(absolutePath, expected[absolutePath]);
+				if (expected[absolutePath] === undefined) {
+					createFileExclusive(absolutePath, content, encoding);
+				} else {
+					fsSync.writeFileSync(absolutePath, content, { encoding });
+				}
+				expected[absolutePath] = contentHash(Buffer.from(content, encoding));
+			}
+			completed.push(describeOperation(operation));
+		}
+	} catch (error) {
+		throw new Error(
+			[
+				error instanceof Error ? error.message : String(error),
+				"Patch stopped before all operations completed.",
+				`Completed file operations:\n${completed.join("\n") || "(none)"}`,
+				`File operations not completed:\n${operations.slice(completed.length).map(describeOperation).join("\n")}`,
+			].join("\n"),
+			{ cause: error },
+		);
+	}
+	for (const [filePath, change] of Object.entries(changes)) {
+		touched.push(
+			change.movePath
+				? `${filePath} -> ${change.movePath}`
+				: change.type === PatchActionType.DELETE
+					? `${filePath}: [deleted]`
+					: filePath,
+		);
 	}
 
 	return touched;
@@ -371,26 +447,45 @@ async function applyChanges(
  * references. Exposed so hosts can preview a patch (e.g. in a diff editor)
  * before the executor applies it.
  */
-export async function computePatchChanges(
+async function preparePatchChanges(
 	patchText: string,
 	cwd: string,
 	options: ApplyPatchExecutorOptions = {},
-): Promise<{ changes: Record<string, PatchFileChange>; fuzz: number }> {
-	const { encoding = "utf-8", restrictToCwd = true } = options;
+): Promise<{
+	changes: Record<string, PatchFileChange>;
+	fuzz: number;
+	snapshots: Record<string, string | undefined>;
+}> {
+	const { encoding = "utf-8", restrictToCwd = true, signal } = options;
 	const normalizedInput = normalizePatchInput(patchText);
 	const loaded = await loadFiles(
 		normalizedInput.lines,
 		cwd,
 		encoding,
 		restrictToCwd,
+		signal,
 	);
-	const parser = new PatchParser(normalizedInput.lines, loaded.files);
-	const { patch, fuzz } = parser.parse();
+	const parser = new PatchParser(normalizedInput.lines, loaded.files, signal);
+	const { patch, fuzz } = await parser.parseAsync();
 	if (patch.warnings && patch.warnings.length > 0) {
 		throw new DiffError(formatSkippedHunkFailure(patch.warnings));
 	}
 
-	return { changes: patchToChanges(patch, loaded), fuzz };
+	throwIfAborted(signal);
+	return {
+		changes: patchToChanges(patch, loaded),
+		fuzz,
+		snapshots: loaded.snapshots,
+	};
+}
+
+export async function computePatchChanges(
+	patchText: string,
+	cwd: string,
+	options: ApplyPatchExecutorOptions = {},
+): Promise<{ changes: Record<string, PatchFileChange>; fuzz: number }> {
+	const { changes, fuzz } = await preparePatchChanges(patchText, cwd, options);
+	return { changes, fuzz };
 }
 
 /**
@@ -399,18 +494,31 @@ export async function computePatchChanges(
 export function createApplyPatchExecutor(
 	options: ApplyPatchExecutorOptions = {},
 ): ApplyPatchExecutor {
-	const { encoding = "utf-8", restrictToCwd = true } = options;
+	const { encoding = "utf-8", restrictToCwd = true, signal } = options;
 
 	return async (
 		input: ApplyPatchInput,
 		cwd: string,
-		_context: AgentToolContext,
+		context: AgentToolContext,
 	): Promise<string> => {
-		const { changes, fuzz } = await computePatchChanges(input.input, cwd, {
+		const patchSignal = context.signal ?? signal;
+		const { changes, fuzz, snapshots } = await preparePatchChanges(
+			input.input,
+			cwd,
+			{
+				encoding,
+				restrictToCwd,
+				signal: patchSignal,
+			},
+		);
+		const touched = applyChanges(
+			changes,
+			cwd,
 			encoding,
 			restrictToCwd,
-		});
-		const touched = await applyChanges(changes, cwd, encoding, restrictToCwd);
+			snapshots,
+			patchSignal,
+		);
 
 		const responseLines = [
 			"Successfully applied patch to the following files:",

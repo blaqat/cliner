@@ -1,3 +1,4 @@
+import { createAskModeMcpGateExtension } from "@cline/core"
 import type { AgentEvent } from "@cline/shared"
 import { describe, expect, it, vi } from "vitest"
 import { MessageTranslatorState, translateSessionEvent } from "./message-translator"
@@ -47,7 +48,15 @@ describe("SdkInteractionCoordinator", () => {
 		expect(JSON.parse(clineMessages[0].text || "{}")).toMatchObject({ tool: "readFile", path: "README.md" })
 		expect(listener).toHaveBeenCalledOnce()
 
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		expect(recordApprovedToolMessage).toHaveBeenCalledWith("tool-call", clineMessages[0].ts)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
@@ -76,7 +85,15 @@ describe("SdkInteractionCoordinator", () => {
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 		const approvalTs = task.messageStateHandler.getClineMessages()[0].ts
 
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 
 		const result = translateSessionEvent(
@@ -126,7 +143,15 @@ describe("SdkInteractionCoordinator", () => {
 		const clineMessages = task.messageStateHandler.getClineMessages()
 		expect(clineMessages[0]).toMatchObject({ type: "ask", ask: "command", text: "npm test" })
 
-		expect(coordinator.resolvePendingToolApproval("too risky", "noButtonClicked", ["image.png"], ["a.ts"])).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				"too risky",
+				"noButtonClicked",
+				["image.png"],
+				["a.ts"],
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		expect(recordApprovedToolMessage).not.toHaveBeenCalled()
 		const expectedReason = `${DEFAULT_TOOL_APPROVAL_DENIAL_REASON} The user provided the following feedback:\n<feedback>\ntoo risky\n</feedback>`
 		expect(recordDeniedToolApproval).toHaveBeenCalledWith("tool-call", "execute_command", expectedReason)
@@ -163,7 +188,15 @@ describe("SdkInteractionCoordinator", () => {
 		// Feedback typed into the approval row denies the edit; the model-facing reason must
 		// state the file is unchanged, or it will treat the feedback as iteration on an
 		// applied edit and target old_text at content that never landed on disk.
-		expect(coordinator.resolvePendingToolApproval("make them bigger", "noButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				"make them bigger",
+				"noButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		const result = await approvalPromise
 		expect(result.approved).toBe(false)
 		expect(result.reason).toContain("The file was NOT modified")
@@ -181,7 +214,15 @@ describe("SdkInteractionCoordinator", () => {
 		})
 		// Prior messages: ask #1 + the user_feedback say from the first denial.
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages().length).toBeGreaterThanOrEqual(3))
-		expect(coordinator.resolvePendingToolApproval(undefined, "noButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"noButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(secondApproval).resolves.toEqual({ approved: false, reason: EDIT_TOOL_APPROVAL_DENIAL_REASON })
 	})
 
@@ -208,11 +249,27 @@ describe("SdkInteractionCoordinator", () => {
 		})
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 
-		expect(coordinator.resolvePendingToolApproval("just give me an answer", "messageResponse")).toBe(false)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				"just give me an answer",
+				"messageResponse",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(false)
 		expect(recordDeniedToolApproval).not.toHaveBeenCalled()
 		expect(setTurnPhase).toHaveBeenLastCalledWith("awaiting_approval", task.messageStateHandler.getClineMessages()[0].ts)
 
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
 
@@ -237,7 +294,15 @@ describe("SdkInteractionCoordinator", () => {
 		})
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 
-		expect(coordinator.resolvePendingToolApproval(undefined, "noButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"noButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({
 			approved: false,
 			reason: DEFAULT_TOOL_APPROVAL_DENIAL_REASON,
@@ -350,7 +415,7 @@ describe("SdkInteractionCoordinator", () => {
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 
 		await new Promise((resolve) => setTimeout(resolve, 1))
-		expect(coordinator.resolvePendingAskQuestion("yes")).toBe(true)
+		expect(coordinator.resolvePendingAskQuestion("yes", coordinator.getPendingDecision()?.id)).toBe(true)
 		await expect(answerPromise).resolves.toBe("yes")
 		expect(task.messageStateHandler.getClineMessages()).toMatchObject([
 			{ type: "ask", ask: "followup" },
@@ -442,7 +507,15 @@ describe("SdkInteractionCoordinator", () => {
 
 		await expect(approvalPromise).resolves.toEqual({ approved: false, reason: "Task cancelled" })
 		expect(recordDeniedToolApproval).toHaveBeenCalledWith("tool-call", "read_files", "Task cancelled")
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(false)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(false)
 	})
 
 	it("awaits onToolApprovalAsk before emitting the approval ask", async () => {
@@ -481,7 +554,15 @@ describe("SdkInteractionCoordinator", () => {
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 		expect(onToolApprovalAsk).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "tool-call", toolName: "editor" }))
 
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
 
@@ -529,7 +610,355 @@ describe("SdkInteractionCoordinator", () => {
 		})
 
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
-		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
 		await expect(approvalPromise).resolves.toEqual({ approved: true })
+	})
+	it.each([true, false])("Ask MCP tools follow host MCP auto-approval=%s; read-only tools never ask", async (autoApprove) => {
+		const task = createTaskProxy("background-ask", vi.fn(), vi.fn())
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "background-ask",
+			getMode: () => "plan",
+			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+			shouldAutoApproveTool: () => autoApprove,
+		})
+		const gate = createAskModeMcpGateExtension().hooks!.beforeTool!
+		for (const readOnlyHint of [true, false, undefined]) {
+			const policy = (
+				gate({
+					tool: { name: "s__t", metadata: { mcp: { serverName: "s", toolName: "t", annotations: { readOnlyHint } } } },
+					snapshot: {},
+					toolCall: {},
+					input: {},
+				} as never) as { policy: { autoApprove: boolean; requireApproval?: boolean } } | undefined
+			)?.policy ?? { autoApprove: false }
+			const approval = coordinator.handleRequestToolApproval({
+				agentId: "child",
+				conversationId: "child-conversation",
+				iteration: 1,
+				toolCallId: `call-${readOnlyHint}`,
+				toolName: "s__t",
+				input: {},
+				policy,
+			})
+			if (readOnlyHint !== true && !autoApprove) {
+				await vi.waitFor(() =>
+					expect(task.messageStateHandler.getClineMessages().at(-1)).toMatchObject({ ask: "use_mcp_server" }),
+				)
+				expect(
+					coordinator.resolvePendingToolApproval(
+						undefined,
+						"yesButtonClicked",
+						undefined,
+						undefined,
+						coordinator.getPendingDecision()?.id,
+					),
+				).toBe(true)
+			}
+			await expect(approval).resolves.toEqual({ approved: true })
+		}
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(autoApprove ? 0 : 2)
+	})
+
+	it("queues concurrent child approvals on the owning background task and keeps it waiting", async () => {
+		const task = createTaskProxy("background", vi.fn(), vi.fn())
+		const focused = createTaskProxy("focused", vi.fn(), vi.fn())
+		const setTurnPhase = vi.fn()
+		const recordApprovedToolMessage = vi.fn()
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task, isFocused: () => false }),
+			getSessionId: () => "background",
+			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+			setTurnPhase,
+			recordApprovedToolMessage,
+		})
+		const approvals = [1, 2, 3].map((id) =>
+			coordinator.handleRequestToolApproval({
+				agentId: `child-${id}`,
+				conversationId: `child-conversation-${id}`,
+				iteration: 1,
+				toolCallId: `edit-${id}`,
+				toolName: "editor",
+				input: { path: `${id}.ts` },
+				policy: { autoApprove: false },
+			}),
+		)
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		expect(focused.messageStateHandler.getClineMessages()).toHaveLength(0)
+		for (let id = 1; id <= 2; id++) {
+			expect(
+				coordinator.resolvePendingToolApproval(
+					undefined,
+					"yesButtonClicked",
+					undefined,
+					undefined,
+					coordinator.getPendingDecision()?.id,
+				),
+			).toBe(true)
+			await expect(approvals[id - 1]).resolves.toEqual({ approved: true })
+			await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(id + 1))
+			expect(setTurnPhase).toHaveBeenLastCalledWith("awaiting_approval", expect.any(Number))
+		}
+		coordinator.clearPending("cancelled")
+		await expect(approvals[2]).resolves.toEqual({ approved: false, reason: "cancelled" })
+		expect(recordApprovedToolMessage.mock.calls.map((call) => call[0])).toEqual(["edit-1", "edit-2"])
+	})
+
+	it("settles queued approvals and does not emit a cancelled preview's ask", async () => {
+		const task = createTaskProxy("background", vi.fn(), vi.fn())
+		let release = () => {}
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "background",
+			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+			onToolApprovalAsk: () =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		})
+		const approvals = [1, 2].map((id) =>
+			coordinator.handleRequestToolApproval({
+				agentId: "child",
+				conversationId: "child-conversation",
+				iteration: 1,
+				toolCallId: `${id}`,
+				toolName: "editor",
+				input: {},
+				policy: { autoApprove: false },
+			}),
+		)
+		coordinator.clearPending("cancelled")
+		release()
+		expect(await Promise.all(approvals)).toEqual([
+			{ approved: false, reason: "cancelled" },
+			{ approved: false, reason: "cancelled" },
+		])
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
+	})
+})
+
+describe("child approval cancellation", () => {
+	it.each(["active", "queued", "preview"])("removes an aborted %s request and advances the queue", async (position) => {
+		const task = createTaskProxy("parent", vi.fn(), vi.fn())
+		const preview = Promise.withResolvers<void>()
+		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "parent",
+			postStateToWebview,
+			onToolApprovalAsk: (request) =>
+				position === "preview" && request.toolCallId === "first" ? preview.promise : Promise.resolve(),
+		})
+		const first = new AbortController()
+		const second = new AbortController()
+		const request = (id: string, signal: AbortSignal) =>
+			coordinator.handleRequestToolApproval({
+				agentId: id,
+				conversationId: id,
+				iteration: 1,
+				toolCallId: id,
+				toolName: "editor",
+				input: { path: id },
+				policy: { autoApprove: false },
+				signal,
+			})
+		const firstResult = request("first", first.signal)
+		const secondResult = request("second", second.signal)
+		if (position !== "preview") await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		const cancelled = position === "queued" ? second : first
+		cancelled.abort()
+		await expect(position === "queued" ? secondResult : firstResult).resolves.toMatchObject({ approved: false })
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		expect(task.messageStateHandler.getClineMessages()[0].text).toContain(position === "queued" ? "first" : "second")
+		preview.resolve()
+		await Promise.resolve()
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(1)
+		expect(
+			coordinator.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				coordinator.getPendingDecision()?.id,
+			),
+		).toBe(true)
+		await expect(position === "queued" ? firstResult : secondResult).resolves.toEqual({ approved: true })
+		expect(postStateToWebview).toHaveBeenCalled()
+	})
+})
+
+it("removes active and queued approvals on task deletion and accepts a new request", async () => {
+	const task = createTaskProxy("parent", vi.fn(), vi.fn())
+	const denied = vi.fn()
+	const coordinator = new SdkInteractionCoordinator({
+		messages: new SdkMessageCoordinator({ getTask: () => task }),
+		getSessionId: () => "parent",
+		postStateToWebview: vi.fn().mockResolvedValue(undefined),
+		recordDeniedToolApproval: denied,
+	})
+	const controllers = [new AbortController(), new AbortController()]
+	const request = (id: string, signal: AbortSignal) =>
+		coordinator.handleRequestToolApproval({
+			agentId: id,
+			conversationId: id,
+			iteration: 1,
+			toolCallId: id,
+			toolName: "editor",
+			input: {},
+			policy: { autoApprove: false },
+			signal,
+		})
+	const approvals = controllers.map((controller, index) => request(String(index), controller.signal))
+	await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+	coordinator.clearPending("Task deleted")
+	for (const approval of approvals) await expect(approval).resolves.toEqual({ approved: false, reason: "Task deleted" })
+	expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
+	const next = request("next", new AbortController().signal)
+	for (const controller of controllers) controller.abort()
+	await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+	expect(denied).toHaveBeenCalledTimes(2)
+	expect(
+		coordinator.resolvePendingToolApproval(
+			undefined,
+			"yesButtonClicked",
+			undefined,
+			undefined,
+			coordinator.getPendingDecision()?.id,
+		),
+	).toBe(true)
+	await expect(next).resolves.toEqual({ approved: true })
+})
+
+describe("child approval projection", () => {
+	it("exposes only the matching child decision while preserving the parent queue", async () => {
+		const task = createTaskProxy("parent", vi.fn(), vi.fn())
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "parent",
+			postStateToWebview: vi.fn(async () => {}),
+		})
+		const request = (agentId: string) => ({
+			agentId,
+			conversationId: agentId,
+			iteration: 1,
+			toolCallId: `call-${agentId}`,
+			toolName: "read_files",
+			input: { path: `${agentId}.ts` },
+			policy: { autoApprove: false },
+		})
+		const first = coordinator.handleRequestToolApproval(request("a"))
+		const second = coordinator.handleRequestToolApproval(request("b"))
+		await vi.waitFor(() => expect(coordinator.getPendingDecision("a")?.kind).toBe("approval"))
+		expect(coordinator.getPendingDecision("b")).toBeUndefined()
+		expect(coordinator.getPendingDecision("a")?.message).toEqual(task.messageStateHandler.getClineMessages()[0])
+		coordinator.resolvePendingToolApproval(
+			undefined,
+			"yesButtonClicked",
+			undefined,
+			undefined,
+			coordinator.getPendingDecision()?.id,
+		)
+		await expect(first).resolves.toEqual({ approved: true })
+		await vi.waitFor(() => expect(coordinator.getPendingDecision("b")?.kind).toBe("approval"))
+		expect(coordinator.getPendingDecision("a")).toBeUndefined()
+		coordinator.resolvePendingToolApproval(
+			undefined,
+			"noButtonClicked",
+			undefined,
+			undefined,
+			coordinator.getPendingDecision()?.id,
+		)
+		await expect(second).resolves.toMatchObject({ approved: false })
+		expect(coordinator.getPendingDecision("b")).toBeUndefined()
+	})
+})
+
+describe("decision identity and concurrent questions", () => {
+	const setup = (
+		onToolApprovalAsk?: (request: import("./sdk-interaction-coordinator").ToolApprovalRequest) => Promise<void>,
+	) => {
+		const task = createTaskProxy("parent", vi.fn(), vi.fn())
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "parent",
+			postStateToWebview: vi.fn(async () => {}),
+			onToolApprovalAsk,
+		})
+		return { task, coordinator }
+	}
+	const request = (agentId: string) => ({
+		agentId,
+		conversationId: agentId,
+		iteration: 1,
+		toolCallId: agentId,
+		toolName: "editor",
+		input: { path: agentId },
+		policy: { autoApprove: false },
+	})
+
+	it("never projects A onto B while B's preview waits, and rejects stale A clicks", async () => {
+		const preview = Promise.withResolvers<void>()
+		const { task, coordinator } = setup((request) => (request.agentId === "b" ? preview.promise : Promise.resolve()))
+		const first = coordinator.handleRequestToolApproval(request("a"))
+		const second = coordinator.handleRequestToolApproval(request("b"))
+		await vi.waitFor(() => expect(coordinator.getPendingDecision("a")).toBeDefined())
+		const a = coordinator.getPendingDecision("a")!
+		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked", undefined, undefined, a.id)).toBe(true)
+		await expect(first).resolves.toEqual({ approved: true })
+		expect(coordinator.getPendingDecision("a")).toBeUndefined()
+		expect(coordinator.getPendingDecision("b")).toBeUndefined()
+		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked", undefined, undefined, a.id)).toBe(false)
+		preview.resolve()
+		await vi.waitFor(() => expect(coordinator.getPendingDecision("b")).toBeDefined())
+		const b = coordinator.getPendingDecision("b")!
+		expect(b.id).not.toBe(a.id)
+		expect(b.message.text).toContain('"path":"b"')
+		expect(b.message).toEqual(task.messageStateHandler.getClineMessages().at(-1))
+		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked", undefined, undefined, a.id)).toBe(false)
+		expect(coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")).toBe(true)
+		await expect(second).resolves.toEqual({ approved: true })
+	})
+
+	it.each([
+		["a", "b"],
+		["b", "a"],
+	])("answers concurrent questions in order %s then %s", async (first, second) => {
+		const { coordinator } = setup()
+		const answers = {
+			a: coordinator.handleAskQuestion("Question A", [], { agentId: "a" }),
+			b: coordinator.handleAskQuestion("Question B", [], { agentId: "b" }),
+		}
+		for (const agent of [first, second] as ("a" | "b")[]) {
+			const decision = coordinator.getPendingDecision(agent)!
+			expect(decision.message.text).toContain(`Question ${agent.toUpperCase()}`)
+			expect(coordinator.resolvePendingAskQuestion(`Answer ${agent}`, decision.id)).toBe(true)
+			await expect(answers[agent]).resolves.toBe(`Answer ${agent}`)
+			expect(coordinator.getPendingDecision(agent)).toBeUndefined()
+			expect(coordinator.resolvePendingAskQuestion("stale", decision.id)).toBe(false)
+		}
+	})
+
+	it("settles an aborted waiting child without dropping its sibling, then clears the parent", async () => {
+		const { coordinator } = setup()
+		const abort = new AbortController()
+		const a = coordinator.handleAskQuestion("A", [], { agentId: "a", signal: abort.signal })
+		const b = coordinator.handleAskQuestion("B", [], { agentId: "b" })
+		const stale = coordinator.getPendingDecision("a")!.id
+		abort.abort()
+		await expect(a).resolves.toBe("")
+		expect(coordinator.getPendingDecision("a")).toBeUndefined()
+		expect(coordinator.getPendingDecision("b")).toBeDefined()
+		expect(coordinator.resolvePendingAskQuestion("stale", stale)).toBe(false)
+		coordinator.clearPending("Parent stopped")
+		await expect(b).resolves.toBe("")
+		expect(coordinator.getPendingDecision("b")).toBeUndefined()
 	})
 })

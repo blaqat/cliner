@@ -14,6 +14,7 @@ import { featureFlagsService } from "@/services/feature-flags"
 import { getDistinctId } from "@/services/logging/distinctId"
 import { getExtensionVariant } from "@/services/telemetry/rollout-metadata"
 import { getLatestAnnouncementId } from "@/utils/announcements"
+import { readApiConfigProfiles, readApiProfileAssignments } from "../models/apiProfiles"
 import { getClineOnboardingModels } from "../models/getClineOnboardingModels"
 
 /**
@@ -73,6 +74,8 @@ export async function getStateToPostToWebview(controller: {
 	const lastDismissedCliBannerVersion = stateManager.getGlobalStateKey("lastDismissedCliBannerVersion") || 0
 	const dismissedBanners = stateManager.getGlobalStateKey("dismissedBanners")
 	const showFeatureTips = stateManager.getGlobalSettingsKey("showFeatureTips")
+	const apiConfigProfiles = readApiConfigProfiles(stateManager)
+	const { askProfileId, actProfileId } = readApiProfileAssignments(stateManager)
 
 	const localClineRulesToggles = stateManager.getWorkspaceStateKey("localClineRulesToggles")
 	const localWindsurfRulesToggles = stateManager.getWorkspaceStateKey("localWindsurfRulesToggles")
@@ -125,6 +128,12 @@ export async function getStateToPostToWebview(controller: {
 		compactionStrategy,
 		webSearchEnabled,
 		subagentsEnabled,
+		subagentsMaxConcurrent: stateManager.getGlobalSettingsKey("subagentsMaxConcurrent"),
+		subagentsAllowWrite: stateManager.getGlobalSettingsKey("subagentsAllowWrite"),
+		subagentsAllowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands"),
+		subagentsAllowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp"),
+		subagentsAllowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb"),
+
 		userInfo,
 		mcpMarketplaceEnabled,
 		mcpDisplayMode,
@@ -154,6 +163,13 @@ export async function getStateToPostToWebview(controller: {
 		onboardingModels,
 		mcpResponsesCollapsed,
 		taskHistory: processedTaskHistory,
+		sessionStatuses: {},
+		subagentCounts: {},
+		enterSendsAs: stateManager.getGlobalSettingsKey("enterSendsAs") ?? "steer",
+		promptStash: stateManager.getGlobalStateKey("promptStash") ?? [],
+		apiConfigProfiles,
+		askProfileId,
+		actProfileId,
 		shouldShowAnnouncement,
 		favoritedModelIds,
 		backgroundCommandRunning: controller.backgroundCommandRunning ?? false,

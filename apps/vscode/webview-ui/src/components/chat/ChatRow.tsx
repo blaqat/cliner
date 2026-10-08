@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { findMatchingResourceOrTemplate } from "@/utils/mcp"
 import CodeAccordian, { cleanPathPrefix } from "../common/CodeAccordian"
+import AsideButton from "./AsideButton"
 import { CommandOutputContent, CommandOutputRow } from "./CommandOutputRow"
 import CompactionRow from "./CompactionRow"
 import { CompletionOutputRow } from "./CompletionOutputRow"
@@ -152,6 +153,7 @@ export const ChatRowContent = memo(
 		retryFailedRequest,
 	}: ChatRowContentProps) => {
 		const {
+			currentTaskItem,
 			backgroundEditEnabled,
 			mcpServers,
 			vscodeTerminalExecutionMode,
@@ -851,6 +853,7 @@ export const ChatRowContent = memo(
 						const hasText = !!message.text?.trim()
 						return (
 							<WithCopyButton
+								actions={<AsideButton messageTs={message.ts} />}
 								onMouseUp={handleMouseUp}
 								position="bottom-right"
 								ref={contentRef}
@@ -858,7 +861,11 @@ export const ChatRowContent = memo(
 								{hasText && (
 									<div className="flex items-center">
 										<div className={cn("flex-1 min-w-0 pl-1")}>
-											<MarkdownRow markdown={message.text} showCursor={false} />
+											<MarkdownRow
+												markdown={message.text}
+												showCursor={false}
+												streaming={message.partial === true}
+											/>
 										</div>
 									</div>
 								)}
@@ -910,12 +917,12 @@ export const ChatRowContent = memo(
 					case "user_feedback":
 						return (
 							<UserMessage
+								canRestoreWorkspace={canRestoreWorkspaceFromMessage(clineMessages, message.ts)}
 								files={message.files}
 								images={message.images}
 								messageTs={message.ts}
 								sendMessageFromChatRow={sendMessageFromChatRow}
 								text={message.text}
-								canRestoreWorkspace={canRestoreWorkspaceFromMessage(clineMessages, message.ts)}
 							/>
 						)
 					case "user_feedback_diff":
@@ -953,7 +960,10 @@ export const ChatRowContent = memo(
 
 						return (
 							<CompletionOutputRow
+								asideFromTs={message.ts}
+								contentRef={contentRef}
 								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
 								quoteButtonState={quoteButtonState}
 								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
 								text={text || ""}
@@ -961,8 +971,18 @@ export const ChatRowContent = memo(
 						)
 					}
 					case "plan_completion_result":
-						// Turn-final plan-mode response inferred at turn end (SDK path)
-						return <PlanCompletionOutputRow text={message.text || ""} />
+						// Turn-final Ask-mode (internal "plan") response inferred at turn end (SDK path)
+						return (
+							<PlanCompletionOutputRow
+								asideFromTs={message.ts}
+								contentRef={contentRef}
+								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
+								quoteButtonState={quoteButtonState}
+								showContinueInAct={isLast && mode === "plan" && message.partial !== true}
+								text={message.text || ""}
+							/>
+						)
 					case "shell_integration_warning":
 						return (
 							<div className="flex flex-col bg-warning/20 p-2 rounded-xs border border-error">
@@ -1060,7 +1080,9 @@ export const ChatRowContent = memo(
 							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
 							return (
 								<CompletionOutputRow
+									contentRef={contentRef}
 									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
 									quoteButtonState={quoteButtonState}
 									text={text || ""}
 								/>
@@ -1109,10 +1131,12 @@ export const ChatRowContent = memo(
 								</WithCopyButton>
 								<div className="pt-3">
 									<OptionsButtons
+										decisionId={message.decisionId}
 										inputValue={inputValue}
 										isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 										options={options}
 										selected={selected}
+										taskId={currentTaskItem?.id}
 									/>
 								</div>
 							</div>
@@ -1162,12 +1186,22 @@ export const ChatRowContent = memo(
 						}
 						return (
 							<div>
-								<PlanCompletionOutputRow text={response || message.text || ""} />
+								<PlanCompletionOutputRow
+									asideFromTs={message.ts}
+									contentRef={contentRef}
+									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
+									quoteButtonState={quoteButtonState}
+									showContinueInAct={isLast && mode === "plan" && message.partial !== true}
+									text={response || message.text || ""}
+								/>
 								<OptionsButtons
+									decisionId={message.decisionId}
 									inputValue={inputValue}
 									isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 									options={options}
 									selected={selected}
+									taskId={currentTaskItem?.id}
 								/>
 							</div>
 						)

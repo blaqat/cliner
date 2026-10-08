@@ -429,12 +429,21 @@ export class MessageTranslatorState {
 	private spawnAgentStatusTs: number | undefined
 	/** Counter for assigning index to new spawn_agent entries */
 	private spawnAgentNextIndex = 0
+	/**
+	 * Cumulative count of spawn_agent calls seen by this state. Unlike
+	 * spawnAgentEntries it is NOT cleared per-iteration, so it tracks the
+	 * task-level total the inbox shows for the session.
+	 */
+	private spawnAgentTotalCount = 0
 
 	/** Register a new spawn_agent call. Returns the entry for this call. */
-	addSpawnAgent(toolCallId: string, prompt: string): SubagentStatusItem {
+	addSpawnAgent(toolCallId: string, prompt: string, access?: "read" | "write"): SubagentStatusItem {
+		this.spawnAgentTotalCount += 1
 		const entry: SubagentStatusItem = {
 			index: ++this.spawnAgentNextIndex,
 			prompt,
+			access: access === "write" ? "write" : "read",
+			toolCallId,
 			status: "running",
 			toolCalls: 0,
 			inputTokens: 0,
@@ -458,6 +467,27 @@ export class MessageTranslatorState {
 		return this.spawnAgentEntries.size > 0
 	}
 
+	/** Total spawn_agent calls ever seen by this state (across iterations). */
+	getSpawnAgentTotalCount(): number {
+		return this.spawnAgentTotalCount
+	}
+
+	/** Tool call id of the tracked spawn_agent entry with the given 1-based index. */
+	getSpawnAgentToolCallId(index: number): string | undefined {
+		for (const [toolCallId, entry] of this.spawnAgentEntries) {
+			if (entry.index === index) return toolCallId
+		}
+		return undefined
+	}
+
+	/** Marks a running/pending entry as user-stopped; the content_end finalizer preserves it. */
+	markSpawnAgentStopped(toolCallId: string): boolean {
+		const entry = this.spawnAgentEntries.get(toolCallId)
+		if (!entry || (entry.status !== "running" && entry.status !== "pending")) return false
+		entry.status = "stopped"
+		return true
+	}
+
 	/** Whether any registered spawn_agent call has not finished yet. */
 	hasRunningSpawnAgents(): boolean {
 		return this.getSpawnAgentItems().some((entry) => entry.status === "running" || entry.status === "pending")
@@ -479,6 +509,11 @@ export class MessageTranslatorState {
 	/** Force the aggregated spawn-agent prompt row to update a known approval row. */
 	setSpawnAgentPromptsTs(ts: number): void {
 		this.spawnAgentPromptsTs = ts
+	}
+
+	/** The current status row's ts, without minting one. Used to match UI chip ids. */
+	getCurrentSpawnAgentStatusTs(): number | undefined {
+		return this.spawnAgentStatusTs
 	}
 
 	/** Get or create the stable timestamp for subagent status messages */
@@ -1197,12 +1232,14 @@ export function buildToolApprovalAskMessage(toolName: string, input: unknown, ts
 	if (toolName === "spawn_agent") {
 		const parsedInput = parseToolInput(input)
 		const taskPrompt = getStringField(parsedInput, "task") ?? ""
+		const access = parsedInput?.access === "write" ? ("write" as const) : ("read" as const)
 		return {
 			ts,
 			type: "ask",
 			ask: "use_subagents",
 			text: JSON.stringify({
 				prompts: [taskPrompt],
+				access: [access],
 			} satisfies ClineAskUseSubagents),
 			partial: false,
 		}
@@ -1410,16 +1447,18 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 					if (toolName === "spawn_agent") {
 						const parsedInput = parseToolInput(input)
 						const taskPrompt = getStringField(parsedInput, "task") ?? ""
+						const access = parsedInput?.access === "write" ? ("write" as const) : ("read" as const)
 						const callId = event.toolCallId ?? `spawn-${state.nextTs()}`
-						state.addSpawnAgent(callId, taskPrompt)
+						state.addSpawnAgent(callId, taskPrompt, access)
 						if (approvedToolMessageTs !== undefined) {
 							state.setSpawnAgentPromptsTs(approvedToolMessageTs)
 						}
 
 						// Emit the combined prompts list (replaces itself on each new spawn_agent)
-						const allPrompts = state.getSpawnAgentItems().map((e) => e.prompt)
+						const items = state.getSpawnAgentItems()
 						const approvalPayload: ClineAskUseSubagents = {
-							prompts: allPrompts,
+							prompts: items.map((e) => e.prompt),
+							access: items.map((e) => e.access ?? "read"),
 						}
 						messages.push({
 							ts: state.getSpawnAgentPromptsTs(),
@@ -1625,18 +1664,25 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 									if (typeof usage.outputTokens === "number") entry.outputTokens = usage.outputTokens
 								}
 							}
-							if (event.error) {
-								entry.status = "failed"
-								entry.error = event.error
-							} else {
-								entry.status = "completed"
+							// "stopped" survives: a user-stopped child still ends its tool
+							// call here (with an abort error), but its entry keeps the
+							// stopped status so the UI can distinguish it from a failure.
+							if (entry.status !== "stopped") {
+								if (event.error) {
+									entry.status = "failed"
+									entry.error = event.error
+								} else {
+									entry.status = "completed"
+								}
 							}
 						}
 
-						// Determine overall status — all done when every entry is completed/failed
+						// Determine overall status — all done when every entry is completed/failed/stopped
 						const items = state.getSpawnAgentItems()
-						const allDone = items.every((e) => e.status === "completed" || e.status === "failed")
-						const hasFailed = items.some((e) => e.status === "failed")
+						const allDone = items.every(
+							(e) => e.status === "completed" || e.status === "failed" || e.status === "stopped",
+						)
+						const hasFailed = items.some((e) => e.status === "failed" || e.status === "stopped")
 						const overallStatus: ClineSaySubagentStatus["status"] = allDone
 							? hasFailed
 								? "failed"
@@ -2052,7 +2098,11 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
  * both top-level session events (chunk, ended, status) and nested
  * agent events.
  */
-export function translateSessionEvent(event: CoreSessionEvent, state: MessageTranslatorState): TranslationResult {
+export function translateSessionEvent(
+	event: CoreSessionEvent,
+	state: MessageTranslatorState,
+	childAgentId?: string,
+): TranslationResult {
 	const result: TranslationResult = {
 		messages: [],
 		sessionEnded: false,
@@ -2086,11 +2136,14 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 			const isSpawnAgentToolEvent =
 				isToolLifecycleEvent && agentEvent.contentType === "tool" && agentEvent.toolName === "spawn_agent"
 
-			// Newer SDK events carry parentAgentId on sub-agent events. Older/local
-			// RuntimeEventAdapter output does not, so while spawn_agent calls are in
-			// flight we also suppress every non-spawn_agent event. This preserves the
-			// parent spawn_agent status updates while hiding sub-agent internals.
-			if (agentEvent.parentAgentId || (state.hasRunningSpawnAgents() && !isSpawnAgentToolEvent)) {
+			// Identified children have their own transcript. The fallback hides
+			// unidentified legacy child events while a spawn is running, but keeps
+			// identified parent events visible alongside parallel tool calls.
+			if (
+				childAgentId
+					? agentEvent.agentId !== childAgentId
+					: agentEvent.parentAgentId || (!agentEvent.agentId && state.hasRunningSpawnAgents() && !isSpawnAgentToolEvent)
+			) {
 				break
 			}
 
@@ -2148,28 +2201,11 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 				break
 			}
 
-			// Tool hook events — translate to hook_status messages
-			const payload = event.payload
-			const hookName = payload.hookEventName
-			const toolName = payload.toolName
-
-			if (hookName === "tool_call") {
-				result.messages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: "hook_status" as ClineSay,
-					text: toolName ? `Running ${toolName}...` : "Running tool...",
-					partial: false,
-				})
-			} else if (hookName === "tool_result") {
-				result.messages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: "hook_status" as ClineSay,
-					text: toolName ? `${toolName} completed` : "Tool completed",
-					partial: false,
-				})
-			}
+			// These are the SDK's internal tool lifecycle events (tool_call /
+			// tool_result), not user hook-file executions — the extension's
+			// hooks-adapter emits real hook_status rows itself. Translating them
+			// produced a "Running X... / X completed" hook row per tool call even
+			// with no hook scripts installed, so they are dropped entirely.
 			break
 		}
 
@@ -2211,6 +2247,7 @@ export function translateSessionEvent(event: CoreSessionEvent, state: MessageTra
 			break
 		}
 
+		case "subagent":
 		case "team_progress":
 		case "pending_prompts": {
 			// These are handled by the team/subagent system, not translated
@@ -2314,7 +2351,7 @@ function appendPersistedMetricsMessage(
 }
 
 function finalizePersistedToolUse(
-	toolUse: SdkToolUseBlock,
+	toolUse: SdkToolUseBlock & { sdkSourceIndex?: number },
 	state: MessageTranslatorState,
 	output?: unknown,
 	isError?: boolean,
@@ -2343,7 +2380,7 @@ function finalizePersistedToolUse(
 			error: isError ? extractToolOutputText(output) : undefined,
 		} as AgentEvent,
 		state,
-	)
+	).map((message) => ({ ...message, sdkToolCallId: toolUse.id, sdkMessageIndex: toolUse.sdkSourceIndex }))
 }
 
 export interface SdkMessagesToClineMessagesOptions {
@@ -2386,7 +2423,7 @@ export function sdkMessagesToClineMessages(
 		() => currentMode,
 		() => options?.cwd,
 	)
-	const pendingToolUses = new Map<string, SdkToolUseBlock>()
+	const pendingToolUses = new Map<string, SdkToolUseBlock & { sdkSourceIndex?: number }>()
 
 	const flushUnmatchedToolUses = () => {
 		for (const toolUse of pendingToolUses.values()) {
@@ -2424,131 +2461,150 @@ export function sdkMessagesToClineMessages(
 	}
 
 	for (const { message, sourceIndex } of projectSessionMessagesForDisplay(messages)) {
-		const sourceMessage = messages[sourceIndex]
-		if (resolveMessageDisplayRole(message) === "error") {
-			flushUnmatchedToolUses()
-			const text = typeof message.content === "string" ? message.content : textContentBlocksToText(message.content)
-			clineMessages.push(
-				...agentEventToMessages(
-					{ type: "error", error: new Error(text), recoverable: false, iteration: 0 } as AgentEvent,
-					state,
-				),
-			)
-			continue
-		}
-		if (message.role === "assistant") {
-			flushUnmatchedToolUses()
-
-			if (typeof message.content === "string") {
-				const text = message.content.trim()
-				if (text) {
-					clineMessages.push(
-						...agentEventToMessages({ type: "content_end", contentType: "text", text } as AgentEvent, state),
-					)
-				}
-				appendPersistedMetricsMessage(clineMessages, message, state)
+		const previousMessages = new Set(clineMessages)
+		try {
+			const sourceMessage = messages[sourceIndex]
+			if (resolveMessageDisplayRole(message) === "error") {
+				flushUnmatchedToolUses()
+				const text = typeof message.content === "string" ? message.content : textContentBlocksToText(message.content)
+				clineMessages.push(
+					...agentEventToMessages(
+						{ type: "error", error: new Error(text), recoverable: false, iteration: 0 } as AgentEvent,
+						state,
+					),
+				)
 				continue
 			}
+			if (message.role === "assistant") {
+				flushUnmatchedToolUses()
 
-			for (const [blockIndex, block] of message.content.entries()) {
-				switch (block.type) {
-					case "text":
-						if (block.text.trim()) {
-							clineMessages.push(
-								...agentEventToMessages(
-									{
-										type: "content_end",
-										contentType: "text",
-										text: block.text.trim(),
-									} as AgentEvent,
-									state,
-								),
-							)
-						}
-						break
-					case "thinking":
-						if (block.thinking.trim()) {
-							clineMessages.push(
-								...agentEventToMessages(
-									{
-										type: "content_end",
-										contentType: "reasoning",
-										reasoning: block.thinking.trim(),
-									} as AgentEvent,
-									state,
-								),
-							)
-						}
-						break
-					case "image":
-						if (block.data && block.mediaType.startsWith("image/")) {
+				if (typeof message.content === "string") {
+					const text = message.content.trim()
+					if (text) {
+						clineMessages.push(
+							...agentEventToMessages({ type: "content_end", contentType: "text", text } as AgentEvent, state),
+						)
+					}
+					appendPersistedMetricsMessage(clineMessages, message, state)
+					continue
+				}
+
+				for (const [blockIndex, block] of message.content.entries()) {
+					switch (block.type) {
+						case "text":
+							if (block.text.trim()) {
+								clineMessages.push(
+									...agentEventToMessages(
+										{
+											type: "content_end",
+											contentType: "text",
+											text: block.text.trim(),
+										} as AgentEvent,
+										state,
+									),
+								)
+							}
+							break
+						case "thinking":
+							if (block.thinking.trim()) {
+								clineMessages.push(
+									...agentEventToMessages(
+										{
+											type: "content_end",
+											contentType: "reasoning",
+											reasoning: block.thinking.trim(),
+										} as AgentEvent,
+										state,
+									),
+								)
+							}
+							break
+						case "image":
+							if (block.data && block.mediaType.startsWith("image/")) {
+								clineMessages.push(
+									...agentEventToMessages(
+										{
+											type: "content_end",
+											contentType: "media",
+											media: {
+												id: `${message.id ?? `history-${sourceIndex}`}:media:${blockIndex}`,
+												modality: "image",
+												mediaType: block.mediaType,
+												source: { type: "base64", data: block.data },
+											},
+										} as AgentEvent,
+										state,
+									),
+								)
+							}
+							break
+						case "media":
 							clineMessages.push(
 								...agentEventToMessages(
 									{
 										type: "content_end",
 										contentType: "media",
-										media: {
-											id: `${message.id ?? `history-${sourceIndex}`}:media:${blockIndex}`,
-											modality: "image",
-											mediaType: block.mediaType,
-											source: { type: "base64", data: block.data },
-										},
+										media: block.media,
 									} as AgentEvent,
 									state,
 								),
 							)
-						}
-						break
-					case "media":
-						clineMessages.push(
-							...agentEventToMessages(
-								{
-									type: "content_end",
-									contentType: "media",
-									media: block.media,
-								} as AgentEvent,
-								state,
-							),
-						)
-						break
-					case "tool_use":
-						// Tool activity after a text block means that text wasn't the
-						// turn-final response (also covers dangling tool_use blocks whose
-						// results never arrived — an aborted turn must not retag).
-						state.clearTurnFinalText()
-						pendingToolUses.set(block.id, block)
-						break
+							break
+						case "tool_use":
+							// Tool activity after a text block means that text wasn't the
+							// turn-final response (also covers dangling tool_use blocks whose
+							// results never arrived — an aborted turn must not retag).
+							state.clearTurnFinalText()
+							pendingToolUses.set(block.id, { ...block, sdkSourceIndex: sourceIndex })
+							break
+					}
 				}
+				appendPersistedMetricsMessage(clineMessages, message, state)
+				continue
 			}
-			appendPersistedMetricsMessage(clineMessages, message, state)
-			continue
-		}
 
-		// Runtime-injected hook context is not a user turn: reconstruct the hook
-		// status rows shown live and leave turn/mode state untouched, so the
-		// final turn's completion retag survives the injection.
-		const hookChips = extractPersistedHookContextChips(message)
-		if (hookChips.length > 0) {
-			for (const chip of hookChips) {
-				clineMessages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: "hook_status",
-					text: JSON.stringify(chip),
-					partial: false,
-				})
+			// Runtime-injected hook context is not a user turn: reconstruct the hook
+			// status rows shown live and leave turn/mode state untouched, so the
+			// final turn's completion retag survives the injection.
+			const hookChips = extractPersistedHookContextChips(message)
+			if (hookChips.length > 0) {
+				for (const chip of hookChips) {
+					clineMessages.push({
+						ts: state.nextTs(),
+						type: "say",
+						say: "hook_status",
+						text: JSON.stringify(chip),
+						partial: false,
+					})
+				}
+				continue
 			}
-			continue
-		}
 
-		if (typeof message.content === "string") {
-			const text = message.content.trim()
-			if (text) {
-				// User text marks a turn boundary: drop the preceding turn's outcome
-				// signals (its text is NOT retagged — see endFinalTurn) and pick up the mode
-				// of the NEW turn from this message's wrapper. Synthetic runtime prompts
-				// (task resumption, plan -> act auto-continue) still advance the turn/mode
-				// state but never had a visible bubble live, so don't emit one here either.
+			if (typeof message.content === "string") {
+				const text = message.content.trim()
+				if (text) {
+					// User text marks a turn boundary: drop the preceding turn's outcome
+					// signals (its text is NOT retagged — see endFinalTurn) and pick up the mode
+					// of the NEW turn from this message's wrapper. Synthetic runtime prompts
+					// (task resumption, plan -> act auto-continue) still advance the turn/mode
+					// state but never had a visible bubble live, so don't emit one here either.
+					state.clearTurnOutcome()
+					currentMode = sourceMessage.uiMode ?? currentMode
+					if (!isSyntheticSdkUserMessage(message)) {
+						clineMessages.push({
+							ts: state.nextTs(),
+							type: "say",
+							say: clineMessages.length === 0 ? "task" : "user_feedback",
+							text,
+							partial: false,
+						})
+					}
+				}
+				continue
+			}
+
+			const userText = textContentBlocksToText(message.content)
+			if (userText) {
 				state.clearTurnOutcome()
 				currentMode = sourceMessage.uiMode ?? currentMode
 				if (!isSyntheticSdkUserMessage(message)) {
@@ -2556,41 +2612,29 @@ export function sdkMessagesToClineMessages(
 						ts: state.nextTs(),
 						type: "say",
 						say: clineMessages.length === 0 ? "task" : "user_feedback",
-						text,
+						text: userText,
 						partial: false,
 					})
 				}
 			}
-			continue
-		}
 
-		const userText = textContentBlocksToText(message.content)
-		if (userText) {
-			state.clearTurnOutcome()
-			currentMode = sourceMessage.uiMode ?? currentMode
-			if (!isSyntheticSdkUserMessage(message)) {
-				clineMessages.push({
-					ts: state.nextTs(),
-					type: "say",
-					say: clineMessages.length === 0 ? "task" : "user_feedback",
-					text: userText,
-					partial: false,
-				})
+			for (const block of message.content) {
+				if (block.type !== "tool_result") {
+					continue
+				}
+
+				const toolUse = pendingToolUses.get(block.tool_use_id)
+				if (!toolUse) {
+					continue
+				}
+
+				pendingToolUses.delete(block.tool_use_id)
+				clineMessages.push(...finalizePersistedToolUse(toolUse, state, block.content, block.is_error))
 			}
-		}
-
-		for (const block of message.content) {
-			if (block.type !== "tool_result") {
-				continue
+		} finally {
+			for (const rendered of clineMessages) {
+				if (!previousMessages.has(rendered)) rendered.sdkMessageIndex = sourceIndex
 			}
-
-			const toolUse = pendingToolUses.get(block.tool_use_id)
-			if (!toolUse) {
-				continue
-			}
-
-			pendingToolUses.delete(block.tool_use_id)
-			clineMessages.push(...finalizePersistedToolUse(toolUse, state, block.content, block.is_error))
 		}
 	}
 

@@ -12,45 +12,44 @@ const WORKSPACE_CONFIGURATION_MARKER = "# Workspace Configuration";
  * and earlier messages tagged with the other mode. YOLO prompts omit these
  * instructions because they do not use the plan/act workflow.
  */
-export const MODE_TAG_INSTRUCTIONS = `# Plan / Act Modes
+export const MODE_TAG_INSTRUCTIONS = `# Ask / Act Modes
 
-User messages arrive wrapped in a <user_input mode="..."> tag. The mode attribute is the interaction mode the user was in when they sent that message: "plan" means plan-mode constraints applied (explore, analyze, and align on a plan -- no edits or state-changing commands), while "act" (or "yolo") means implementation was allowed. If the mode attribute changes between messages, the user switched modes -- the newest message's mode is what governs right now, regardless of what earlier messages allowed. A <mode_notice> block inside a message marks exactly when such a switch happened.`;
+User messages arrive wrapped in a <user_input mode="..."> tag. The mode attribute is the interaction mode the user was in when they sent that message: "plan" (labeled "Ask" in the UI) means ask-mode constraints applied (read-only investigation, direct answers -- no edits or state-changing commands), while "act" (or "yolo") means implementation was allowed. If the mode attribute changes between messages, the user switched modes -- the newest message's mode is what governs right now, regardless of what earlier messages allowed. A <mode_notice> block inside a message marks exactly when such a switch happened.`;
 
 /**
- * Plan-mode behavioral contract, appended when the session mode is "plan".
- * run_commands intentionally stays available in plan mode -- it is essential
- * for read-only investigation -- so the contract must spell out that it is
- * inspection-only there. Prompting is the first line of defense; the
- * plan-mode command-guard hook (registered by the core runtime builder for
- * plan-mode sessions) is the hard backstop that rejects file-editing
- * run_commands calls with a tool error before approval or execution.
+ * Ask-mode behavioral contract, appended when the session mode is "plan"
+ * (labeled "Ask" in hosts). Ask mode is read-only investigation: the model
+ * answers the user's question directly instead of producing a plan artifact
+ * or steering the user toward a mode switch. run_commands intentionally
+ * stays available -- it is essential for read-only investigation -- so the
+ * contract must spell out that it is inspection-only there. Prompting is the
+ * first line of defense; the plan-mode command-guard hook (registered by the
+ * core runtime builder for plan-mode sessions) is the hard backstop that
+ * rejects file-editing run_commands calls with a tool error before approval
+ * or execution.
  */
-const PLAN_MODE_INSTRUCTIONS_BASE = `# Plan Mode
+const ASK_MODE_INSTRUCTIONS_BASE = `# Ask Mode
 
-You are in Plan mode. Your role is to explore, analyze, and plan -- not to execute.
+You are in Ask mode. Your role is to answer the user's question directly -- investigate, explain, and advise, but do not change anything.
 
-- Read files, search the codebase, and gather context to understand the problem
-- Ask clarifying questions when requirements are ambiguous
-- Present your plan as a structured outline with clear steps
-- Explain tradeoffs between different approaches when they exist
+- Read files, search the codebase, inspect history, and gather whatever context you need to answer well
+- Answer the question directly; do not produce a plan artifact or a step-by-step implementation outline unless the user asks for one
 - Do NOT edit files, write code, run destructive commands, or make any changes
-- Do NOT implement anything -- focus on understanding and alignment first
+- Do NOT prompt the user to switch modes -- if the request requires changes, say so in your answer and let the user decide when to switch
 
-The run_commands tool remains available in plan mode strictly for read-only inspection -- listing files, searching (grep), reading configs, inspecting git history and diffs, checking tool versions, and the like. Never use it to change anything: no creating, modifying, or deleting files, no writing scripts that make changes, and no state-changing commands (installs, migrations, database or schema changes, container commands that mutate state, etc.). File-editing commands (rm/mv/cp, in-place edits like sed -i, output redirection to files outside /tmp, git commands that change the working tree, package installs) are hard-blocked in plan mode: they are not executed and return a tool error instead, so do not attempt them. If the task requires a mutation, put it in the plan; it happens only after the user switches to act mode.`;
+The run_commands tool remains available in Ask mode strictly for read-only inspection -- listing files, searching (grep), reading configs, inspecting git history and diffs, checking tool versions, and the like. Never use it to change anything: no creating, modifying, or deleting files, no writing scripts that make changes, and no state-changing commands (installs, migrations, database or schema changes, container commands that mutate state, etc.). File-editing commands (rm/mv/cp, in-place edits like sed -i, output redirection to files outside /tmp, git commands that change the working tree, package installs) are hard-blocked in Ask mode: they are not executed and return a tool error instead, so do not attempt them.`;
 
-export const PLAN_MODE_INSTRUCTIONS = `${PLAN_MODE_INSTRUCTIONS_BASE}
-
-Once the user has reviewed your plan and explicitly approved it in a follow-up message, use the switch_to_act_mode tool to switch to act mode and begin implementation. Calling switch_to_act_mode immediately starts execution, so never call it in the same turn you present a plan and never treat the original task request as approval -- end your turn after presenting the plan and wait for the user's response.`;
+export const ASK_MODE_INSTRUCTIONS = ASK_MODE_INSTRUCTIONS_BASE;
 
 /**
- * Plan-mode contract for hosts that do NOT expose the switch_to_act_mode tool
- * (the VS Code extension, matching the legacy extension's behavior). The model
- * must direct the user to flip the Plan/Act toggle instead of calling a tool
- * that does not exist in its toolset.
+ * @deprecated Ask mode has no switch-to-act contract. Kept as an alias for
+ * callers that still import the plan-mode names; both resolve to the same
+ * Ask-mode instructions.
  */
-export const PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH = `${PLAN_MODE_INSTRUCTIONS_BASE}
+export const PLAN_MODE_INSTRUCTIONS = ASK_MODE_INSTRUCTIONS;
 
-Once you have presented your plan, end your turn and wait for the user's response. You do NOT have the ability to switch to act mode yourself -- the user must do it manually with the Plan/Act toggle once they are satisfied with the plan. If the task requires tools that are only available in act mode, ask the user to "toggle to Act mode" (use those words).`;
+/** @deprecated See PLAN_MODE_INSTRUCTIONS. */
+export const PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH = ASK_MODE_INSTRUCTIONS;
 
 function redactRemoteUrlCredentials(remote: string): string {
 	const schemeEnd = remote.indexOf("://");
@@ -140,11 +139,9 @@ export interface ClineSystemPromptOptions
 	/** Provider ID — used to gate Cline-specific metadata injection */
 	providerId?: string;
 	/**
-	 * Whether the host exposes the switch_to_act_mode tool in plan mode.
-	 * Defaults to true (CLI behavior). Hosts that require the user to flip the
-	 * Plan/Act toggle themselves (the VS Code extension) set this to false so
-	 * the plan-mode contract directs the model to ask the user instead of
-	 * calling a tool that is not in its toolset.
+	 * @deprecated Ask mode no longer instructs the model to switch modes, so
+	 * this flag has no effect. Kept for backwards compatibility with existing
+	 * call sites.
 	 */
 	planModeSwitchTool?: boolean;
 }
@@ -161,7 +158,7 @@ export function buildClineSystemPrompt(
 		rules,
 		overridePrompt,
 		providerId,
-		planModeSwitchTool = true,
+		planModeSwitchTool: _planModeSwitchTool,
 	} = options;
 	const workspaceRoot = options.workspaceRoot ?? options.rootPath ?? "";
 	const isCline = isClineProvider(providerId || "");
@@ -188,11 +185,7 @@ export function buildClineSystemPrompt(
 	const effectiveRules = [
 		rules,
 		mode === "yolo" ? undefined : MODE_TAG_INSTRUCTIONS,
-		mode === "plan"
-			? planModeSwitchTool
-				? PLAN_MODE_INSTRUCTIONS
-				: PLAN_MODE_INSTRUCTIONS_MANUAL_SWITCH
-			: undefined,
+		mode === "plan" ? ASK_MODE_INSTRUCTIONS : undefined,
 	]
 		.filter(Boolean)
 		.join("\n\n");

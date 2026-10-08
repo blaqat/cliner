@@ -2421,7 +2421,10 @@ export class AgentRuntime {
 			};
 			if (policy.enabled === false) {
 				skipReason = `Tool "${toolCall.toolName}" is disabled by policy`;
-			} else if (policy.autoApprove === false) {
+			} else if (
+				policy.requireApproval === true ||
+				policy.autoApprove === false
+			) {
 				const approval = await this.requestToolApproval(
 					toolCall,
 					input,
@@ -2454,8 +2457,16 @@ export class AgentRuntime {
 				reason: `Tool "${toolCall.toolName}" requires approval but no approval callback is configured`,
 			};
 		}
+		const signal = this.abortController?.signal;
+		let onAbort: (() => void) | undefined;
 		try {
-			return await requestApproval({
+			this.throwIfAborted();
+			const cancelled = new Promise<ToolApprovalResult>((resolve) => {
+				onAbort = () => resolve({ approved: false, reason: "Agent run aborted" });
+				signal?.addEventListener("abort", onAbort, { once: true });
+			});
+			const approval = requestApproval({
+				signal,
 				sessionId:
 					this.config.sessionId?.trim() ||
 					this.config.conversationId?.trim() ||
@@ -2472,6 +2483,7 @@ export class AgentRuntime {
 				input,
 				policy,
 			});
+			return await Promise.race([approval, cancelled]);
 		} catch (error) {
 			return {
 				approved: false,
@@ -2479,12 +2491,15 @@ export class AgentRuntime {
 					error instanceof Error ? error.message : String(error)
 				}`,
 			};
+		} finally {
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
 		}
 	}
 
 	private async executePreparedTool(
 		prepared: PreparedToolExecution,
 	): Promise<AgentMessage> {
+		this.throwIfAborted();
 		const startedAt = new Date();
 		await this.emit({
 			type: "tool-started",
@@ -2493,6 +2508,7 @@ export class AgentRuntime {
 			toolCall: prepared.toolCall,
 		});
 
+		this.throwIfAborted();
 		let result: AgentToolResult;
 		if (prepared.skipReason) {
 			result = {

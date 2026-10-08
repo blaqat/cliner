@@ -3,6 +3,8 @@ import { FilePlus, FileText, FileX, SquareArrowOutUpRightIcon } from "lucide-rea
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { FileServiceClient } from "@/services/grpc-client"
+import { CopyButton } from "../common/CopyButton"
+import { getTextPreview } from "../common/text-preview"
 
 interface Patch {
 	action: string
@@ -37,13 +39,17 @@ interface DiffEditRowProps {
 }
 
 export const DiffEditRow = memo<DiffEditRowProps>(({ patch, path, isLoading, startLineNumbers }) => {
+	const preview = getTextPreview(patch)
 	const { parsedFiles, isStreaming } = useMemo(() => {
-		const parsed = parsePatch(patch, path)
+		const parsed = parsePatch(preview.text, path)
 		return {
 			parsedFiles: parsed.parsedFiles,
 			isStreaming: isLoading || parsed.isStreaming,
 		}
-	}, [patch, path, isLoading])
+	}, [preview.text, path, isLoading])
+	// Each hunk has its own card/header. Bound cards as well as characters/lines.
+	const visibleFiles = parsedFiles.slice(0, 20)
+	const truncated = preview.truncated || visibleFiles.length < parsedFiles.length
 
 	if (!path) {
 		return null
@@ -51,7 +57,23 @@ export const DiffEditRow = memo<DiffEditRowProps>(({ patch, path, isLoading, sta
 
 	return (
 		<div className="space-y-4 rounded-xs">
-			{parsedFiles.map((file, index) => (
+			{truncated && (
+				<div className="flex items-center gap-2 text-xs text-description">
+					<span>Large edit. Showing a partial preview; counts cover visible lines.</span>
+					<button
+						className="text-link"
+						onClick={() =>
+							FileServiceClient.openFileRelativePath(
+								StringRequest.create({ value: parsedFiles[0]?.path || path }),
+							).catch((error) => console.error("Failed to open file:", error))
+						}
+						type="button">
+						Open in editor
+					</button>
+					<CopyButton ariaLabel="Copy full patch" textToCopy={patch} />
+				</div>
+			)}
+			{visibleFiles.map((file, index) => (
 				<FileBlock
 					file={file}
 					isStreaming={isStreaming}

@@ -4,6 +4,7 @@ export const featureSettingControlId = (featureId: string) => `${featureSettingE
 export const SETTINGS_NAVIGATION_TARGETS = {
 	"api-config": { tabId: "api-config" },
 	features: { tabId: "features" },
+	subagents: { tabId: "subagents" },
 	checkpoints: {
 		tabId: "features",
 		elementId: featureSettingElementId("checkpoints"),

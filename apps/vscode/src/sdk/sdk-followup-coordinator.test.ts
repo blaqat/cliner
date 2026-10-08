@@ -15,6 +15,15 @@ describe("SdkFollowupCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("resumes a persisted answer with the hidden Act continuation prompt", async () => {
+		const { coordinator, options } = makeCoordinator({ task: makeTask("task-1") })
+		await coordinator.askResponse(undefined, undefined, undefined, undefined, undefined, "[ACT MODE] Implement the answer.")
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith(expect.objectContaining({ mode: "act" }))
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("[ACT MODE] Implement the answer.")
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+	})
+
 	it("resolves pending tool approvals without sending a follow-up", async () => {
 		const { coordinator, options } = makeCoordinator()
 		options.interactions.resolvePendingToolApproval.mockReturnValue(true)
@@ -24,6 +33,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"yes",
 			"yesButtonClicked",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -36,7 +46,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("answer")
 
-		expect(options.interactions.resolvePendingAskQuestion).toHaveBeenCalledWith("answer")
+		expect(options.interactions.resolvePendingAskQuestion).toHaveBeenCalledWith("answer", undefined)
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
 
@@ -46,7 +56,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("hello @file", ["image.png"], ["a.ts"])
 
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[
 				expect.objectContaining({
@@ -129,6 +139,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"do the next thing after this",
 			"messageResponse",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -251,6 +262,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"just give me an answer",
 			"messageResponse",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -445,7 +457,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 		expect(options.loadInitialMessages).not.toHaveBeenCalled()
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
 		const [sdkHost, sessionId, sentPrompt] = options.sessions.fireAndForgetSend.mock.calls[0]
 		expect(sdkHost).toBe(activeSession.sdkHost)
@@ -612,6 +624,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 		sessions: {
 			getActiveSession: vi.fn(() => input.activeSession),
+			markSendRunning: vi.fn(),
 			setRunning: vi.fn(),
 			fireAndForgetSend: vi.fn(),
 			startNewSession: vi.fn().mockResolvedValue({
@@ -654,6 +667,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		sessions: SdkFollowupCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
+			markSendRunning: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
 			startNewSession: ReturnType<typeof vi.fn>
@@ -725,3 +739,10 @@ function makeTask(taskId: string) {
 		taskState: {},
 	}
 }
+
+it("ignores a stale decision response instead of queuing or resuming a turn", async () => {
+	const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+	await coordinator.askResponse("stale", undefined, undefined, "yesButtonClicked", "awaiting_approval", undefined, "resolved-a")
+	expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+	expect(options.runExclusive).not.toHaveBeenCalled()
+})

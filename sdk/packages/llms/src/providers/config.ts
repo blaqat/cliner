@@ -72,6 +72,8 @@ export type ProviderCapability =
  * Authentication configuration
  */
 export interface AuthConfig {
+	/** Credential environment fallbacks; an empty list with an empty key disables fallback. */
+	apiKeyEnv?: readonly string[];
 	/** API key (most common) */
 	apiKey?: string;
 	/** OAuth access token */

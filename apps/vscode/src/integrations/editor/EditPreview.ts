@@ -77,6 +77,25 @@ const TYPE_MAX_FRAMES_PER_RUN = 35
 const MAX_ANIMATION_FRAMES = 200
 const MAX_ANIMATION_DURATION_MS = 5_000
 const MAX_ANIMATION_RETAINED_BYTES = 32 * 1024 * 1024
+const MAX_ANIMATED_CHARACTERS = 128 * 1024
+const MAX_ANIMATED_LINES = 3_000
+
+/** A linear scan used when diffing/animating would exceed the preview budget. */
+export function firstDifferingLine(left: string, right: string): number {
+	const length = Math.min(left.length, right.length)
+	let line = 0
+	let index = 0
+	while (index < length && left.charCodeAt(index) === right.charCodeAt(index)) {
+		if (left.charCodeAt(index) === 10) line++
+		index++
+	}
+	return left === right ? 0 : line
+}
+
+export function canAnimateEditPreview(left: string, right: string): boolean {
+	if (left.length + right.length > MAX_ANIMATED_CHARACTERS) return false
+	return left.split("\n").length <= MAX_ANIMATED_LINES && right.split("\n").length <= MAX_ANIMATED_LINES
+}
 
 /**
  * Builds the simulated streaming animation for an edit preview. The sweep covers the
@@ -86,9 +105,17 @@ const MAX_ANIMATION_RETAINED_BYTES = 32 * 1024 * 1024
  * edits get a slowdown at each hunk and the gaps between hunks zip.
  */
 export function buildEditPreviewAnimation(leftContent: string, rightContent: string): EditPreviewAnimation {
+	const immediate = (line: number): EditPreviewAnimation => ({
+		frames: [{ content: rightContent, activeLine: line, delayMs: 0, zip: true }],
+		firstChangedLine: line,
+	})
+	if (!canAnimateEditPreview(leftContent, rightContent)) {
+		return immediate(firstDifferingLine(leftContent, rightContent))
+	}
 	const newLines = rightContent.split("\n")
 	const originalLines = leftContent.split("\n")
 	const changed = changedNewLineFlags(leftContent, rightContent, newLines.length)
+	if (!changed) return immediate(firstDifferingLine(leftContent, rightContent))
 	const firstChangedLine = Math.max(0, changed.indexOf(true))
 	const renderImmediately = (): EditPreviewAnimation => ({
 		frames: [{ content: rightContent, activeLine: firstChangedLine, delayMs: 0, zip: true }],
@@ -194,10 +221,14 @@ function cumulativeLineLengths(lines: string[]): number[] {
  * sweep; the unchanged gaps between hunks zip). A pure deletion marks the line at
  * the deletion point so the sweep pauses where content disappeared.
  */
-function changedNewLineFlags(leftContent: string, rightContent: string, newLineCount: number): boolean[] {
+function changedNewLineFlags(leftContent: string, rightContent: string, newLineCount: number): boolean[] | undefined {
 	const flags: boolean[] = new Array(newLineCount).fill(false)
 	let index = 0
-	for (const part of diffLines(leftContent, rightContent)) {
+	// Myers' diff is quadratic for disjoint inputs. Bound edit-distance work before
+	// allocating any animation frames, including medium files under the size caps.
+	const parts = diffLines(leftContent, rightContent, { maxEditLength: 1_000 })
+	if (!parts) return undefined
+	for (const part of parts) {
 		const count = part.count ?? 0
 		if (part.added) {
 			for (let i = 0; i < count && index + i < newLineCount; i++) {

@@ -342,6 +342,7 @@
 	},
 	"scripts": {
 		"vscode:prepublish": "bun run package",
+		"package:fork": "node scripts/package-fork.mjs",
 		"compile": "bun run check-types && bun run lint && bun esbuild.mjs",
 		"compile-standalone": "bun run check-types && bun run lint && bun esbuild.mjs --standalone",
 		"postcompile-standalone": "node scripts/package-standalone.mjs",

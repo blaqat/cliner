@@ -11,6 +11,7 @@ const cancelTask = vi.fn().mockResolvedValue(undefined)
 const clearTask = vi.fn().mockResolvedValue(undefined)
 const condense = vi.fn().mockResolvedValue(undefined)
 const trackIntent = vi.fn().mockResolvedValue(undefined)
+const togglePlanActModeProto = vi.fn().mockResolvedValue({ value: false })
 
 vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
@@ -24,6 +25,9 @@ vi.mock("@/services/grpc-client", () => ({
 		condense: (req: unknown) => condense(req),
 		reportBug: vi.fn().mockResolvedValue(undefined),
 	},
+	StateServiceClient: {
+		togglePlanActModeProto: (req: unknown) => togglePlanActModeProto(req),
+	},
 	UiServiceClient: {
 		trackIntent: (req: unknown) => trackIntent(req),
 	},
@@ -34,6 +38,10 @@ vi.mock("@shared/proto/cline/task", () => ({
 	AskResponseRequest: { create: (x: unknown) => x },
 	NewTaskRequest: { create: (x: unknown) => x },
 }))
+vi.mock("@shared/proto/cline/state", () => ({
+	PlanActMode: { PLAN: 0, ACT: 1 },
+	TogglePlanActModeRequest: { create: (x: unknown) => x },
+}))
 vi.mock("@shared/proto/cline/ui", () => ({
 	IntentEvent: { create: (x: unknown) => x },
 }))
@@ -42,12 +50,14 @@ vi.mock("@shared/proto/cline/common", () => ({
 	StringRequest: { create: (x: unknown) => x },
 }))
 
-// useExtensionState supplies turnState (+ backgroundCommandRunning) to the hook.
+// useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
 let mockTurnState: TurnState | undefined
+let mockMode: "plan" | "act" = "act"
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		backgroundCommandRunning: false,
 		turnState: mockTurnState,
+		mode: mockMode,
 	}),
 }))
 
@@ -61,15 +71,16 @@ function makeChatState(messages: ClineMessage[], overrides: Partial<ChatState> =
 	const state = {
 		inputValue: "",
 		setInputValue: vi.fn(),
-		activeQuote: null,
-		setActiveQuote: vi.fn(),
+		quotes: [],
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		setIsTextAreaFocused: vi.fn(),
 		selectedImages: [],
 		setSelectedImages: vi.fn(),
 		selectedFiles: [],
 		setSelectedFiles: vi.fn(),
-		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", activeQuote: null, images: [], files: [] })),
+		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", quotes: [], images: [], files: [] })),
 		consumeDraftSnapshot: vi.fn(),
 		sendingDisabled: false,
 		setSendingDisabled: vi.fn(),
@@ -118,7 +129,10 @@ describe("useMessageHandlers — send routing", () => {
 		condense.mockResolvedValue(undefined)
 		trackIntent.mockReset()
 		trackIntent.mockResolvedValue(undefined)
+		togglePlanActModeProto.mockReset()
+		togglePlanActModeProto.mockResolvedValue({ value: false })
 		mockTurnState = undefined
+		mockMode = "act"
 	})
 
 	it("routes /compact to the condense RPC instead of sending it as a message", async () => {
@@ -188,6 +202,134 @@ describe("useMessageHandlers — send routing", () => {
 		)
 	})
 
+	it("routes a bare /act to the mode toggle RPC without sending a message", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledTimes(1)
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: undefined }) }),
+		)
+		expect(newTask).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(condense).not.toHaveBeenCalled()
+	})
+
+	it("routes a bare /ask to the mode toggle RPC with PLAN mode", async () => {
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/ask", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: 0 }))
+		expect(newTask).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+	})
+
+	it("sends text after /act via the toggle's chatContent so the host can consume it", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "awaiting_followup", seq: 7 }
+		togglePlanActModeProto.mockResolvedValue({ value: true })
+		const setInputValue = vi.fn()
+		const { result } = renderHook(() =>
+			useMessageHandlers(completedConversation, makeChatState(completedConversation, { setInputValue })),
+		)
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act build it", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: "build it" }) }),
+		)
+		// Host consumed the message as the mode-switch continuation — nothing is sent again.
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(newTask).not.toHaveBeenCalled()
+		expect(setInputValue).toHaveBeenCalledWith("")
+	})
+
+	it("sends the text as a normal follow-up when the mode switch does not consume it", async () => {
+		mockMode = "plan"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act build it", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: 1, chatContent: expect.objectContaining({ message: "build it" }) }),
+		)
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "messageResponse", text: "build it" }))
+		expect(askResponse).not.toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("/act") }))
+	})
+
+	it("starts a new task in Ask mode from the welcome screen with /ask <text>", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "idle", seq: 1 }
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/ask think about caching", [], [])
+		})
+
+		expect(togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: 0 }))
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ text: "think about caching" }))
+	})
+
+	it("sends text after /act normally when already in act mode", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act ship it", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "messageResponse", text: "ship it" }))
+	})
+
+	it("is a no-op for a bare /act when already in act mode", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const setInputValue = vi.fn()
+		const { result } = renderHook(() =>
+			useMessageHandlers(completedConversation, makeChatState(completedConversation, { setInputValue })),
+		)
+
+		await act(async () => {
+			await result.current.handleSendMessage("/act", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(newTask).not.toHaveBeenCalled()
+		expect(setInputValue).toHaveBeenCalledWith("")
+	})
+
+	it("does not treat /activity as a mode command", async () => {
+		mockMode = "act"
+		mockTurnState = { phase: "completed", seq: 7 }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+
+		await act(async () => {
+			await result.current.handleSendMessage("/activity is fine", [], [])
+		})
+
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({ responseType: "messageResponse", text: "/activity is fine" }),
+		)
+	})
+
 	it("after a completed turn (no clineAsk), Enter continues the conversation via askResponse — NOT newTask", async () => {
 		mockTurnState = { phase: "completed", seq: 7 }
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
@@ -224,7 +366,7 @@ describe("useMessageHandlers — send routing", () => {
 				}),
 		)
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -232,11 +374,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState(completedConversation, {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -261,7 +403,7 @@ describe("useMessageHandlers — send routing", () => {
 			}),
 		)
 		expect(setInputValue).toHaveBeenCalledWith("")
-		expect(setActiveQuote).toHaveBeenCalledWith(null)
+		expect(setQuotes).toHaveBeenCalledWith([])
 		expect(setSendingDisabled).toHaveBeenCalledWith(true)
 		expect(setSelectedImages).toHaveBeenCalledWith([])
 		expect(setSelectedFiles).toHaveBeenCalledWith([])
@@ -295,7 +437,7 @@ describe("useMessageHandlers — send routing", () => {
 		mockTurnState = { phase: "completed", seq: 7 }
 		const error = new Error("transport down")
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -303,11 +445,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState(completedConversation, {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -330,8 +472,8 @@ describe("useMessageHandlers — send routing", () => {
 		expect(caught).toBe(error)
 		expect(setInputValue).toHaveBeenNthCalledWith(1, "")
 		expect(setInputValue).toHaveBeenLastCalledWith("another question")
-		expect(setActiveQuote).toHaveBeenNthCalledWith(1, null)
-		expect(setActiveQuote).toHaveBeenLastCalledWith("selected context")
+		expect(setQuotes).toHaveBeenNthCalledWith(1, [])
+		expect(setQuotes).toHaveBeenLastCalledWith([{ text: "selected context", note: "" }])
 		expect(setSendingDisabled).toHaveBeenNthCalledWith(1, true)
 		expect(setSendingDisabled).toHaveBeenLastCalledWith(false)
 		expect(setSelectedImages).toHaveBeenNthCalledWith(1, [])
@@ -525,7 +667,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 4,
 			text: "try a different approach",
-			activeQuote: null,
+			quotes: [],
 			images: ["image.png"],
 			files: ["notes.txt"],
 		}
@@ -980,7 +1122,7 @@ describe("useMessageHandlers — send routing", () => {
 		mockTurnState = { phase: "idle", seq: 1 }
 		const error = new Error("transport down")
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSendingDisabled = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
@@ -988,11 +1130,11 @@ describe("useMessageHandlers — send routing", () => {
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
 		const chatState = makeChatState([], {
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			sendingDisabled: false,
 			enableButtons: true,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
 			setSendingDisabled,
 			setSelectedImages,
 			setSelectedFiles,
@@ -1022,8 +1164,8 @@ describe("useMessageHandlers — send routing", () => {
 		)
 		expect(setInputValue).toHaveBeenNthCalledWith(1, "")
 		expect(setInputValue).toHaveBeenLastCalledWith("brand new task")
-		expect(setActiveQuote).toHaveBeenNthCalledWith(1, null)
-		expect(setActiveQuote).toHaveBeenLastCalledWith("selected context")
+		expect(setQuotes).toHaveBeenNthCalledWith(1, [])
+		expect(setQuotes).toHaveBeenLastCalledWith([{ text: "selected context", note: "" }])
 		expect(setSendingDisabled).toHaveBeenNthCalledWith(1, true)
 		expect(setSendingDisabled).toHaveBeenLastCalledWith(false)
 		expect(setSelectedImages).toHaveBeenNthCalledWith(1, [])
@@ -1048,11 +1190,11 @@ describe("useMessageHandlers — send routing", () => {
 		]
 		const setPendingUserMessage = vi.fn()
 		const setPendingResponse = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const { result } = renderHook(() =>
 			useMessageHandlers(
 				streamingConversation,
-				makeChatState(streamingConversation, { setActiveQuote, setPendingUserMessage, setPendingResponse }),
+				makeChatState(streamingConversation, { setQuotes, setPendingUserMessage, setPendingResponse }),
 			),
 		)
 
@@ -1063,7 +1205,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(clearTask).toHaveBeenCalledTimes(1)
 		expect(setPendingUserMessage).toHaveBeenCalledWith(undefined)
 		expect(setPendingResponse).toHaveBeenCalledWith(undefined)
-		expect(setActiveQuote).toHaveBeenCalledWith(null)
+		expect(setQuotes).toHaveBeenCalledWith([])
 	})
 
 	it("does not clear a quote selected while New Task is pending", async () => {
@@ -1078,19 +1220,19 @@ describe("useMessageHandlers — send routing", () => {
 			const chatState = useChatState(newTaskConversation)
 			return { chatState, handlers: useMessageHandlers(newTaskConversation, chatState) }
 		})
-		act(() => result.current.chatState.setActiveQuote("old task quote"))
+		act(() => result.current.chatState.setQuotes([{ text: "old task quote", note: "" }]))
 
 		let action: Promise<void> | undefined
 		act(() => {
 			action = result.current.handlers.executeButtonAction({ type: "new_task" })
 		})
-		act(() => result.current.chatState.setActiveQuote("new draft quote"))
+		act(() => result.current.chatState.setQuotes([{ text: "new draft quote", note: "" }]))
 		await act(async () => {
 			resolveNewTask?.()
 			await action
 		})
 
-		expect(result.current.chatState.activeQuote).toBe("new draft quote")
+		expect(result.current.chatState.quotes).toEqual([{ text: "new draft quote", note: "" }])
 	})
 
 	it("retries a failed request without changing the unsent draft", async () => {
@@ -1100,13 +1242,13 @@ describe("useMessageHandlers — send routing", () => {
 			{ ts: 2, type: "ask", ask: "api_req_failed", text: "server error" },
 		]
 		const setInputValue = vi.fn()
-		const setActiveQuote = vi.fn()
+		const setQuotes = vi.fn()
 		const setSelectedImages = vi.fn()
 		const setSelectedFiles = vi.fn()
 		const draft = {
 			revision: 7,
 			text: "First paragraph.\n\nSecond paragraph.",
-			activeQuote: null,
+			quotes: [],
 			images: ["image.png"],
 			files: ["notes.md"],
 		}
@@ -1118,7 +1260,7 @@ describe("useMessageHandlers — send routing", () => {
 					selectedImages: draft.images,
 					selectedFiles: draft.files,
 					setInputValue,
-					setActiveQuote,
+					setQuotes,
 					setSelectedImages,
 					setSelectedFiles,
 				}),
@@ -1131,7 +1273,7 @@ describe("useMessageHandlers — send routing", () => {
 
 		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
 		expect(setInputValue).not.toHaveBeenCalled()
-		expect(setActiveQuote).not.toHaveBeenCalled()
+		expect(setQuotes).not.toHaveBeenCalled()
 		expect(setSelectedImages).not.toHaveBeenCalled()
 		expect(setSelectedFiles).not.toHaveBeenCalled()
 	})
@@ -1146,7 +1288,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 11,
 			text: "submitted feedback",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: ["old.png"],
 			files: ["old.md"],
 		}
@@ -1160,14 +1302,14 @@ describe("useMessageHandlers — send routing", () => {
 
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
-			text: `[context] \n>  ${draft.activeQuote} \n[/context] \n\n ${draft.text}`,
+			text: `> selected context\n\n${draft.text}`,
 			images: draft.images,
 			files: draft.files,
 		})
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 
-	it("does not submit a quote without message content", async () => {
+	it("submits quotes as feedback even without typed text", async () => {
 		mockTurnState = { phase: "awaiting_approval", anchorTs: 2, seq: 3 }
 		const approvalConversation: ClineMessage[] = [
 			{ ts: 1, type: "say", say: "task", text: "task" },
@@ -1177,7 +1319,7 @@ describe("useMessageHandlers — send routing", () => {
 		const draft = {
 			revision: 12,
 			text: "  ",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: [],
 			files: [],
 		}
@@ -1189,7 +1331,12 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.executeButtonAction({ type: "approve", draft })
 		})
 
-		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
+		expect(askResponse).toHaveBeenCalledWith({
+			responseType: "yesButtonClicked",
+			text: "> selected context",
+			images: [],
+			files: [],
+		})
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 
@@ -1208,4 +1355,24 @@ describe("useMessageHandlers — send routing", () => {
 		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ text: "should be sent", images: [], files: [] }))
 		expect(askResponse).not.toHaveBeenCalled()
 	})
+})
+
+it("submits the displayed approval id even when another ask appears later in the transcript", async () => {
+	askResponse.mockClear()
+	mockTurnState = { phase: "awaiting_approval", seq: 20, anchorTs: 10 }
+	const messages: ClineMessage[] = [
+		{ ts: 10, decisionId: "approval-a", type: "ask", ask: "tool", text: "{}" },
+		{ ts: 11, decisionId: "question-b", type: "ask", ask: "followup", text: "{}" },
+	]
+	const { result } = renderHook(() => useMessageHandlers(messages, makeChatState(messages)))
+	await act(async () => {
+		await result.current.executeButtonAction({
+			type: "approve",
+			draft: { revision: 0, text: "", quotes: [], images: [], files: [] },
+		})
+	})
+	expect(askResponse).toHaveBeenCalledWith(
+		expect.objectContaining({ decisionId: "approval-a", responseType: "yesButtonClicked" }),
+	)
+	mockTurnState = undefined
 })

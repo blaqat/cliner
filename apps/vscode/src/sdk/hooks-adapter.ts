@@ -1,14 +1,24 @@
 // Bridges Cline's file-based hook scripts into the SDK's runtime hooks.
 //
 // Runtime hooks use typed in-process lifecycle callbacks:
-//   TaskStart        -> beforeRun
-//   UserPromptSubmit -> beforeRun with the latest submitted user message
+//   TaskStart        -> beforeRun, only on the task's first-ever run (no
+//                       assistant history), once per task across rebuilds
+//   TaskResume       -> beforeRun of a session built by reopening a task
+//                       (options.taskResumed), once per resume
+//   UserPromptSubmit -> beforeRun, only when the run's tail message is a real
+//                       user prompt — never for tool-result continuations,
+//                       mode-switch auto-continues, synthetic resumption
+//                       prompts, or rebuild replays of an unanswered prompt
 //   PreToolUse       -> beforeTool
 //   PostToolUse      -> afterTool
 //   TaskComplete     -> afterRun when completed
 //   TaskCancel       -> afterRun when aborted
 //
-// Deferred hooks (NOT wired here): TaskResume, TaskError, SessionShutdown,
+// Status rows are emitted only for noteworthy outcomes: a hook that runs and
+// exits quietly (no cancel, error message, or context modification) leaves no
+// hook_status row.
+//
+// Deferred hooks (NOT wired here): TaskError, SessionShutdown,
 // PreCompact, Notification.
 
 import type {
@@ -24,8 +34,34 @@ import { Logger } from "@shared/services/Logger"
 import { HookFactory } from "@/core/hooks/hook-factory"
 import { getHooksEnabledSafe } from "@/core/hooks/hooks-utils"
 import type { StateManager } from "@/core/storage/StateManager"
+import { isSyntheticUserPrompt } from "./sdk-user-message-mapping"
 
 export type HookMessageEmitter = (message: ClineMessage) => void
+
+export interface BuildAgentHooksOptions {
+	/**
+	 * True when this session was started by resuming an existing task from
+	 * history (not a session rebuild). The first run of the session then fires
+	 * TaskResume instead of TaskStart.
+	 */
+	taskResumed?: boolean
+}
+
+// Process-wide per-task bookkeeping. Hook closures are rebuilt for every
+// session replacement (mode switch, MCP tool refresh, provider change), so
+// "once per task" state must live outside the closure to survive rebuilds.
+const taskStartFiredForTask = new Set<string>()
+// Indexes of the transcript tail user prompt that already got a
+// UserPromptSubmit dispatch, keyed by task id. A rebuild can re-run a turn
+// whose unanswered prompt is still the transcript tail; the index is stable
+// across rebuilds because the persisted transcript is replayed verbatim.
+const promptSubmitFiredIndexes = new Map<string, Set<number>>()
+
+/** Test-only: clears the process-wide once-per-task hook state. */
+export function resetHookFiringStateForTests(): void {
+	taskStartFiredForTask.clear()
+	promptSubmitFiredIndexes.clear()
+}
 
 function toStringRecord(input: unknown): Record<string, string> {
 	if (input == null || typeof input !== "object" || Array.isArray(input)) {
@@ -98,6 +134,41 @@ function latestUserPrompt(ctx: AgentRunLifecycleContext): string {
 	return ""
 }
 
+/**
+ * The run carries a fresh user prompt when the transcript tail is a real
+ * user message. The session orchestrator appends the submitted user message
+ * before the runtime starts, so the tail message at beforeRun is the run's
+ * own prompt. Internal continuation runs — tool-result continuations,
+ * auto-continue after a mode switch, queued non-user items, rebuild reruns —
+ * end in an assistant/tool/synthetic message instead.
+ */
+function tailUserPrompt(ctx: AgentRunLifecycleContext): { index: number; prompt: string } | undefined {
+	const index = ctx.snapshot.messages.length - 1
+	const message = ctx.snapshot.messages[index]
+	if (message?.role !== "user" || message.metadata?.displayRole === "system") {
+		return undefined
+	}
+	// Tool results and provider-executed tool output are user-role messages
+	// but not user input.
+	if (message.content.some((part) => part.type === "tool-result")) {
+		return undefined
+	}
+	const prompt = textFromMessageContent(message.content)
+	if (isSyntheticUserPrompt(prompt)) {
+		return undefined
+	}
+	return { index, prompt }
+}
+
+/**
+ * Quiet hooks — a script ran, succeeded, and produced no cancellation,
+ * error, or context — emit no status row. Only noteworthy outcomes
+ * (cancelled, failed, context-injecting completions) stay visible.
+ */
+function hookResultIsQuiet(result: { cancel?: boolean; errorMessage?: string; contextModification?: string }): boolean {
+	return !result.cancel && !result.errorMessage?.trim() && !result.contextModification?.trim()
+}
+
 function buildHookStatusMessage(opts: {
 	hookName: string
 	status: "running" | "completed" | "failed" | "cancelled"
@@ -121,24 +192,66 @@ export function buildAgentHooks(
 	stateManager: StateManager,
 	emitHookMessage?: HookMessageEmitter,
 	sessionWorkspaceRoot?: string,
+	options?: BuildAgentHooksOptions,
 ): AgentHooks {
 	const hooksEnabled = () => getHooksEnabledSafe(stateManager.getGlobalSettingsKey("hooksEnabled"))
 	// Session-scoped discovery: the session's root is not always among the
 	// window's workspace folders (e.g. the chat-workspace fallback when no
 	// folder is open), so the factory also scans this session's own workspace.
 	const createFactory = () => new HookFactory({ sessionWorkspaceRoot })
+	// TaskResume fires on the first run of a session built by reopening a task
+	// from history. Session rebuilds never carry this flag, so it cannot fire
+	// on a mode-switch/MCP/provider rebuild.
+	let taskResumePending = options?.taskResumed === true
 
 	return {
 		async beforeRun(ctx: AgentRunLifecycleContext): Promise<AgentRunStartResult | undefined> {
-			const taskStart = await runTaskStart(ctx, hooksEnabled, createFactory, emitHookMessage)
-			if (taskStart?.stop) {
-				return taskStart
+			const taskId = taskIdFromSnapshot(ctx.snapshot)
+			// A transcript with no assistant reply has never completed a turn:
+			// this run is the task's first. Reopened chats, mid-task rebuilds and
+			// later turns all carry assistant history, so TaskStart cannot
+			// re-fire for them.
+			const isFirstRunOfTask = !ctx.snapshot.messages.some((message) => message.role === "assistant")
+			const results: (AgentRunStartResult | undefined)[] = []
+
+			if (isFirstRunOfTask && !taskStartFiredForTask.has(taskId)) {
+				taskStartFiredForTask.add(taskId)
+				const taskStart = await runTaskStart(ctx, hooksEnabled, createFactory, emitHookMessage)
+				if (taskStart?.stop) {
+					return taskStart
+				}
+				results.push(taskStart)
 			}
-			const promptSubmit = await runUserPromptSubmit(ctx, hooksEnabled, createFactory, emitHookMessage)
-			if (promptSubmit?.stop) {
-				return promptSubmit
+
+			if (taskResumePending) {
+				taskResumePending = false
+				// A resumed task that never produced a reply gets TaskStart above;
+				// TaskResume is only for tasks returning with real history.
+				if (!isFirstRunOfTask) {
+					const taskResume = await runTaskResume(ctx, hooksEnabled, createFactory, emitHookMessage)
+					if (taskResume?.stop) {
+						return taskResume
+					}
+					results.push(taskResume)
+				}
 			}
-			const appendContext = [taskStart?.appendContext, promptSubmit?.appendContext]
+
+			const promptRun = tailUserPrompt(ctx)
+			if (promptRun) {
+				const fired = promptSubmitFiredIndexes.get(taskId) ?? new Set<number>()
+				if (!fired.has(promptRun.index)) {
+					fired.add(promptRun.index)
+					promptSubmitFiredIndexes.set(taskId, fired)
+					const promptSubmit = await runUserPromptSubmit(ctx, hooksEnabled, createFactory, emitHookMessage)
+					if (promptSubmit?.stop) {
+						return promptSubmit
+					}
+					results.push(promptSubmit)
+				}
+			}
+
+			const appendContext = results
+				.map((result) => result?.appendContext)
 				.filter((text): text is string => Boolean(text?.trim()))
 				.join("\n\n")
 			return appendContext ? { appendContext } : undefined
@@ -147,7 +260,6 @@ export function buildAgentHooks(
 		async beforeTool(
 			ctx: AgentBeforeToolContext,
 		): Promise<{ stop?: boolean; reason?: string; appendContext?: string } | undefined> {
-			let runningTs: number | undefined
 			try {
 				if (!hooksEnabled()) {
 					return undefined
@@ -161,10 +273,6 @@ export function buildAgentHooks(
 					return undefined
 				}
 
-				const runningMsg = buildHookStatusMessage({ hookName: "PreToolUse", toolName, status: "running" })
-				runningTs = runningMsg.ts
-				emitHookMessage?.(runningMsg)
-
 				const result = await runner.run({
 					taskId,
 					preToolUse: {
@@ -173,14 +281,15 @@ export function buildAgentHooks(
 					},
 				})
 
-				emitHookMessage?.(
-					buildHookStatusMessage({
-						hookName: "PreToolUse",
-						toolName,
-						status: result.cancel ? "cancelled" : "completed",
-						ts: runningTs,
-					}),
-				)
+				if (!hookResultIsQuiet(result)) {
+					emitHookMessage?.(
+						buildHookStatusMessage({
+							hookName: "PreToolUse",
+							toolName,
+							status: result.cancel ? "cancelled" : "completed",
+						}),
+					)
+				}
 				return mapStopOrContextResult(result)
 			} catch (error) {
 				emitHookMessage?.(
@@ -188,7 +297,6 @@ export function buildAgentHooks(
 						hookName: "PreToolUse",
 						toolName: ctx.toolCall.toolName,
 						status: "failed",
-						ts: runningTs,
 					}),
 				)
 				Logger.error("[HooksAdapter] beforeTool hook failed:", error)
@@ -199,7 +307,6 @@ export function buildAgentHooks(
 		async afterTool(
 			ctx: AgentAfterToolContext,
 		): Promise<{ stop?: boolean; reason?: string; appendContext?: string } | undefined> {
-			let runningTs: number | undefined
 			try {
 				if (!hooksEnabled()) {
 					return undefined
@@ -213,10 +320,6 @@ export function buildAgentHooks(
 					return undefined
 				}
 
-				const runningMsg = buildHookStatusMessage({ hookName: "PostToolUse", toolName, status: "running" })
-				runningTs = runningMsg.ts
-				emitHookMessage?.(runningMsg)
-
 				const result = await runner.run({
 					taskId,
 					postToolUse: {
@@ -228,14 +331,15 @@ export function buildAgentHooks(
 					},
 				})
 
-				emitHookMessage?.(
-					buildHookStatusMessage({
-						hookName: "PostToolUse",
-						toolName,
-						status: result.cancel ? "cancelled" : "completed",
-						ts: runningTs,
-					}),
-				)
+				if (!hookResultIsQuiet(result)) {
+					emitHookMessage?.(
+						buildHookStatusMessage({
+							hookName: "PostToolUse",
+							toolName,
+							status: result.cancel ? "cancelled" : "completed",
+						}),
+					)
+				}
 				return mapStopOrContextResult(result)
 			} catch (error) {
 				emitHookMessage?.(
@@ -243,7 +347,6 @@ export function buildAgentHooks(
 						hookName: "PostToolUse",
 						toolName: ctx.toolCall.toolName,
 						status: "failed",
-						ts: runningTs,
 					}),
 				)
 				Logger.error("[HooksAdapter] afterTool hook failed:", error)
@@ -253,7 +356,6 @@ export function buildAgentHooks(
 
 		async afterRun(ctx): Promise<void> {
 			let hookName: "TaskComplete" | "TaskCancel" | undefined
-			let runningTs: number | undefined
 			try {
 				if (!hooksEnabled()) {
 					return
@@ -276,41 +378,36 @@ export function buildAgentHooks(
 					return
 				}
 
-				const runningMsg = buildHookStatusMessage({ hookName, status: "running" })
-				runningTs = runningMsg.ts
-				emitHookMessage?.(runningMsg)
+				const result =
+					hookName === "TaskComplete"
+						? await runner.run({
+								taskId,
+								taskComplete: {
+									taskMetadata: {
+										taskId,
+										ulid: "",
+										initialTask: "",
+										result: ctx.result.outputText,
+									},
+								},
+							})
+						: await runner.run({
+								taskId,
+								taskCancel: {
+									taskMetadata: {
+										taskId,
+										ulid: "",
+										initialTask: "",
+										completionStatus: "cancelled",
+									},
+								},
+							})
 
-				if (hookName === "TaskComplete") {
-					await runner.run({
-						taskId,
-						taskComplete: {
-							taskMetadata: {
-								taskId,
-								ulid: "",
-								initialTask: "",
-								result: ctx.result.outputText,
-							},
-						},
-					})
-				} else {
-					await runner.run({
-						taskId,
-						taskCancel: {
-							taskMetadata: {
-								taskId,
-								ulid: "",
-								initialTask: "",
-								completionStatus: "cancelled",
-							},
-						},
-					})
+				if (!hookResultIsQuiet(result)) {
+					emitHookMessage?.(buildHookStatusMessage({ hookName, status: result.cancel ? "cancelled" : "completed" }))
 				}
-
-				emitHookMessage?.(buildHookStatusMessage({ hookName, status: "completed", ts: runningTs }))
 			} catch (error) {
-				emitHookMessage?.(
-					buildHookStatusMessage({ hookName: hookName ?? "TaskComplete", status: "failed", ts: runningTs }),
-				)
+				emitHookMessage?.(buildHookStatusMessage({ hookName: hookName ?? "TaskComplete", status: "failed" }))
 				Logger.error("[HooksAdapter] afterRun hook failed:", error)
 			}
 		},
@@ -323,7 +420,6 @@ async function runTaskStart(
 	createFactory: () => HookFactory,
 	emitHookMessage?: HookMessageEmitter,
 ): Promise<AgentRunStartResult | undefined> {
-	let runningTs: number | undefined
 	try {
 		if (!hooksEnabled()) {
 			return undefined
@@ -336,10 +432,6 @@ async function runTaskStart(
 			return undefined
 		}
 
-		const runningMsg = buildHookStatusMessage({ hookName: "TaskStart", status: "running" })
-		runningTs = runningMsg.ts
-		emitHookMessage?.(runningMsg)
-
 		const result = await runner.run({
 			taskId,
 			taskStart: {
@@ -351,17 +443,64 @@ async function runTaskStart(
 			},
 		})
 
-		emitHookMessage?.(
-			buildHookStatusMessage({
-				hookName: "TaskStart",
-				status: result.cancel ? "cancelled" : "completed",
-				ts: runningTs,
-			}),
-		)
+		if (!hookResultIsQuiet(result)) {
+			emitHookMessage?.(
+				buildHookStatusMessage({
+					hookName: "TaskStart",
+					status: result.cancel ? "cancelled" : "completed",
+				}),
+			)
+		}
 		return mapStopOrContextResult(result)
 	} catch (error) {
-		emitHookMessage?.(buildHookStatusMessage({ hookName: "TaskStart", status: "failed", ts: runningTs }))
+		emitHookMessage?.(buildHookStatusMessage({ hookName: "TaskStart", status: "failed" }))
 		Logger.error("[HooksAdapter] beforeRun (TaskStart) hook failed:", error)
+		return undefined
+	}
+}
+
+async function runTaskResume(
+	ctx: AgentRunLifecycleContext,
+	hooksEnabled: () => boolean,
+	createFactory: () => HookFactory,
+	emitHookMessage?: HookMessageEmitter,
+): Promise<AgentRunStartResult | undefined> {
+	try {
+		if (!hooksEnabled()) {
+			return undefined
+		}
+
+		const taskId = taskIdFromSnapshot(ctx.snapshot)
+		const factory = createFactory()
+		const runner = await factory.create("TaskResume", taskId)
+		if (runner.isNoOp) {
+			return undefined
+		}
+
+		const result = await runner.run({
+			taskId,
+			taskResume: {
+				taskMetadata: {
+					taskId,
+					ulid: "",
+					initialTask: latestUserPrompt(ctx),
+				},
+				previousState: {},
+			},
+		})
+
+		if (!hookResultIsQuiet(result)) {
+			emitHookMessage?.(
+				buildHookStatusMessage({
+					hookName: "TaskResume",
+					status: result.cancel ? "cancelled" : "completed",
+				}),
+			)
+		}
+		return mapStopOrContextResult(result)
+	} catch (error) {
+		emitHookMessage?.(buildHookStatusMessage({ hookName: "TaskResume", status: "failed" }))
+		Logger.error("[HooksAdapter] beforeRun (TaskResume) hook failed:", error)
 		return undefined
 	}
 }
@@ -372,7 +511,6 @@ async function runUserPromptSubmit(
 	createFactory: () => HookFactory,
 	emitHookMessage?: HookMessageEmitter,
 ): Promise<AgentRunStartResult | undefined> {
-	let runningTs: number | undefined
 	try {
 		if (!hooksEnabled()) {
 			return undefined
@@ -385,10 +523,6 @@ async function runUserPromptSubmit(
 			return undefined
 		}
 
-		const runningMsg = buildHookStatusMessage({ hookName: "UserPromptSubmit", status: "running" })
-		runningTs = runningMsg.ts
-		emitHookMessage?.(runningMsg)
-
 		const result = await runner.run({
 			taskId,
 			userPromptSubmit: {
@@ -397,16 +531,17 @@ async function runUserPromptSubmit(
 			},
 		})
 
-		emitHookMessage?.(
-			buildHookStatusMessage({
-				hookName: "UserPromptSubmit",
-				status: result.cancel ? "cancelled" : "completed",
-				ts: runningTs,
-			}),
-		)
+		if (!hookResultIsQuiet(result)) {
+			emitHookMessage?.(
+				buildHookStatusMessage({
+					hookName: "UserPromptSubmit",
+					status: result.cancel ? "cancelled" : "completed",
+				}),
+			)
+		}
 		return mapStopOrContextResult(result)
 	} catch (error) {
-		emitHookMessage?.(buildHookStatusMessage({ hookName: "UserPromptSubmit", status: "failed", ts: runningTs }))
+		emitHookMessage?.(buildHookStatusMessage({ hookName: "UserPromptSubmit", status: "failed" }))
 		Logger.error("[HooksAdapter] beforeRun (UserPromptSubmit) hook failed:", error)
 		return undefined
 	}

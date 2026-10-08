@@ -1,9 +1,13 @@
-import { memo, useEffect } from "react"
-import { useRemark } from "react-remark"
+import type React from "react"
+import { memo, useMemo } from "react"
+import { useRemarkSync as renderRemarkSync } from "react-remark"
 import rehypeHighlight, { Options } from "rehype-highlight"
 import styled from "styled-components"
+import type { Node } from "unist"
 import { visit } from "unist-util-visit"
 import "./codeblock-parser.css"
+import { LargeTextPreview } from "./LargeTextPreview"
+import { getTextPreview } from "./text-preview"
 
 export const CODE_BLOCK_BG_COLOR = "var(--vscode-editor-background, --vscode-sideBar-background, rgb(30 30 30))"
 
@@ -113,38 +117,56 @@ const StyledPre = styled.pre<{ theme: any }>`
 			.join("")}
 `
 
-const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
-	const [reactContent, setMarkdownSource] = useRemark({
-		remarkPlugins: [
-			() => {
-				return (tree) => {
-					visit(tree, "code", (node: any) => {
-						if (!node.lang) {
-							node.lang = "javascript"
-						} else if (node.lang.includes(".")) {
-							// if the language is a file, get the extension
-							node.lang = node.lang.split(".").slice(-1)[0]
-						}
-					})
-				}
-			},
-		],
-		rehypePlugins: [
-			rehypeHighlight as any,
-			{
-				// languages: {},
-			} as Options,
-		],
-		rehypeReactOptions: {
-			components: {
-				pre: ({ node, ...preProps }: any) => <StyledPre {...preProps} />,
-			},
-		},
-	})
+// Fenced code without a language highlights as JavaScript; a file name as the language uses its extension.
+const remarkCodeLanguage = () => {
+	return (tree: Node) => {
+		visit(tree, "code", (node: any) => {
+			if (!node.lang) {
+				node.lang = "javascript"
+			} else if (node.lang.includes(".")) {
+				// if the language is a file, get the extension
+				node.lang = node.lang.split(".").slice(-1)[0]
+			}
+		})
+	}
+}
 
-	useEffect(() => {
-		setMarkdownSource(source || "")
-	}, [source, setMarkdownSource])
+const REMARK_OPTIONS = {
+	remarkPlugins: [remarkCodeLanguage],
+	rehypePlugins: [
+		rehypeHighlight as any,
+		{
+			// languages: {},
+		} as Options,
+	],
+	rehypeReactOptions: {
+		components: {
+			pre: ({ node, ...preProps }: any) => <StyledPre {...preProps} />,
+		},
+	},
+}
+
+// Rendered synchronously so a block has its final height on the first paint. The async renderer
+// mounted every block empty and filled it a tick later, so each time the chat list re-mounted a
+// code/diff/output row (scrolling it back into view) the row shrank and grew again, and the
+// list's scroll position jumped to compensate while the user was scrolling.
+export function renderCodeBlockContent(source: string): React.ReactNode {
+	const preview = getTextPreview(source)
+	if (preview.truncated) return <pre>{preview.text}</pre>
+	try {
+		return renderRemarkSync(source, REMARK_OPTIONS)
+	} catch (error) {
+		console.warn("Code block render failed:", error)
+		return <pre>{source}</pre>
+	}
+}
+
+const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
+	const preview = getTextPreview(source || "")
+	const reactContent = useMemo(
+		() => (preview.truncated ? null : renderCodeBlockContent(preview.text)),
+		[preview.text, preview.truncated],
+	)
 
 	return (
 		<div
@@ -154,7 +176,7 @@ const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
 				backgroundColor: CODE_BLOCK_BG_COLOR,
 			}}>
 			<StyledMarkdown className="ph-no-capture markdown" forceWrap={forceWrap}>
-				{reactContent}
+				{preview.truncated ? <LargeTextPreview source={source || ""} /> : reactContent}
 			</StyledMarkdown>
 		</div>
 	)

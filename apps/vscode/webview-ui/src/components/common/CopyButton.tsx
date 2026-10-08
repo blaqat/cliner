@@ -20,6 +20,8 @@ interface WithCopyButtonProps {
 	copyButtonClassname?: string
 	onMouseUp?: (event: React.MouseEvent<HTMLDivElement>) => void
 	ariaLabel?: string
+	/** Extra hover actions rendered before the copy button. */
+	actions?: React.ReactNode
 }
 
 const COPIED_TIMEOUT = 1500
@@ -77,6 +79,7 @@ export const WithCopyButton = forwardRef<HTMLDivElement, WithCopyButtonProps>(
 			copyButtonClassname,
 			onMouseUp,
 			ariaLabel,
+			actions,
 			...props
 		},
 		ref,
@@ -88,10 +91,11 @@ export const WithCopyButton = forwardRef<HTMLDivElement, WithCopyButtonProps>(
 				{hasCopyFunctionality && (
 					<div
 						className={cn(
-							"absolute opacity-0 group-hover:opacity-100 transition-opacity",
+							"absolute flex items-center opacity-0 group-hover:opacity-100 transition-opacity",
 							POSITION_CLASSES[position],
 							copyButtonClassname,
 						)}>
+						{actions}
 						<CopyButton ariaLabel={ariaLabel} onCopy={onCopy} textToCopy={textToCopy} />
 					</div>
 				)}

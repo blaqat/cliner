@@ -286,6 +286,14 @@ message Settings {
   optional OpenRouterModelInfo plan_mode_cline_pass_model_info = 184;
   optional string act_mode_cline_pass_model_id = 185;
   optional OpenRouterModelInfo act_mode_cline_pass_model_info = 186;
+  optional string open_ai_compatible_api_type = 187;
+  optional string enter_sends_as = 188;
+  optional string open_telemetry_traces_exporter = 189;
+  optional int32 subagents_max_concurrent = 190;
+  optional bool subagents_allow_write = 191;
+  optional bool subagents_allow_commands = 192;
+  optional bool subagents_allow_mcp = 193;
+  optional bool subagents_allow_web = 194;
 }
 
 message State {
@@ -429,6 +437,13 @@ message UpdateSettingsRequest {
   optional bool show_feature_tips = 42;
   optional string compaction_strategy = 44;
   optional bool web_search_enabled = 45;
+  optional string enter_sends_as = 46;
+  optional PromptStash prompt_stash = 47;
+  optional int32 subagents_max_concurrent = 48;
+  optional bool subagents_allow_write = 49;
+  optional bool subagents_allow_commands = 50;
+  optional bool subagents_allow_mcp = 51;
+  optional bool subagents_allow_web = 52;
 }
 
 message UpdateTerminalConnectionTimeoutRequest {
@@ -486,4 +501,19 @@ message TestConnectionResult {
   bool success = 1;
   optional string message = 2;
   optional string error = 3;
+}
+
+message PromptQuote {
+  string text = 1;
+  string note = 2;
+}
+message PromptStashEntry {
+  string id = 1;
+  string text = 2;
+  repeated PromptQuote quotes = 3;
+  int64 ts = 4;
+  optional string task_id = 5;
+}
+message PromptStash {
+  repeated PromptStashEntry entries = 1;
 }

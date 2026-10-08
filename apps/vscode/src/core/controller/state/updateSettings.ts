@@ -5,6 +5,7 @@ import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-
 import { OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { ClineEnv } from "@/config"
+import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
 import { Logger } from "@/shared/services/Logger"
 import { telemetryService } from "../../../services/telemetry"
@@ -22,6 +23,12 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
  */
 export async function updateSettings(controller: Controller, request: UpdateSettingsRequest): Promise<Empty> {
 	try {
+		if (request.enterSendsAs !== undefined) {
+			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
+			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)
+		}
+		if (request.promptStash !== undefined) controller.stateManager.setGlobalState("promptStash", request.promptStash.entries)
+
 		if (request.clineEnv !== undefined && request.clineEnv !== "") {
 			ClineEnv.setEnvironment(request.clineEnv)
 			await accountLogoutClicked(controller, Empty.create())
@@ -41,6 +48,8 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 					: undefined,
 				planModeReasoningEffort: protoApiConfiguration.planModeReasoningEffort as OpenaiReasoningEffort | undefined,
 				actModeReasoningEffort: protoApiConfiguration.actModeReasoningEffort as OpenaiReasoningEffort | undefined,
+				openAiCompatibleApiType:
+					protoApiConfiguration.openAiCompatibleApiType as ApiConfiguration["openAiCompatibleApiType"],
 			}
 
 			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
@@ -158,6 +167,28 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			if (wasEnabled !== isEnabled) {
 				telemetryService.captureSubagentToggle(isEnabled)
 			}
+		}
+
+		for (const key of ["subagentsAllowWrite", "subagentsAllowCommands", "subagentsAllowMcp", "subagentsAllowWeb"] as const) {
+			if (request[key] !== undefined) controller.stateManager.setGlobalState(key, request[key])
+		}
+		if (request.subagentsMaxConcurrent !== undefined) {
+			if (!Number.isInteger(request.subagentsMaxConcurrent) || request.subagentsMaxConcurrent < 0) {
+				throw new Error("Maximum concurrent subagents must be a nonnegative integer; use 0 for unlimited.")
+			}
+			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
+		}
+		if (
+			[
+				request.subagentsEnabled,
+				request.subagentsMaxConcurrent,
+				request.subagentsAllowWrite,
+				request.subagentsAllowCommands,
+				request.subagentsAllowMcp,
+				request.subagentsAllowWeb,
+			].some((value) => value !== undefined)
+		) {
+			controller.handleSubagentSettingsChanged()
 		}
 
 		// Update auto-condense setting

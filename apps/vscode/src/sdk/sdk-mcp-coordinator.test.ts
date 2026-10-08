@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { StateManager } from "@/core/storage/StateManager"
 import { SdkMcpCoordinator, type SdkMcpCoordinatorOptions } from "./sdk-mcp-coordinator"
+import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 
 vi.mock("@/shared/services/Logger", () => ({
 	Logger: {
@@ -30,7 +31,7 @@ describe("SdkMcpCoordinator", () => {
 		coordinator.handleToolListChanged()
 
 		expect(options.sessions.replaceActiveSession).not.toHaveBeenCalled()
-		expect(options.rebuilds.request).toHaveBeenCalledWith("mcpTools", expect.any(Function))
+		expect(options.rebuilds.request).toHaveBeenCalledWith("mcpTools", expect.any(Function), "old-session")
 	})
 
 	it("restarts immediately when MCP tools change while the active session is idle", async () => {
@@ -63,8 +64,9 @@ describe("SdkMcpCoordinator", () => {
 		expect(options.sessions.replaceActiveSession).toHaveBeenCalledWith({
 			expectedSession: activeSession,
 			startInput: { prompt: "start" },
-			initialMessages: [{ role: "user", content: "hello" }],
+			loadInitialMessages: expect.any(Function),
 			disposeReason: "mcpToolRestart",
+			onReplaced: expect.any(Function),
 		})
 		// Success is silent: only a status transition back to idle, no chat
 		// message or completion banner.
@@ -74,6 +76,109 @@ describe("SdkMcpCoordinator", () => {
 		})
 		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("fans out to retained sessions and consumes each rebuild notice once", async () => {
+		const a = makeActiveSession()
+		const b = { ...makeActiveSession({ isRunning: true }), sessionId: "background" }
+		const { coordinator, options } = makeCoordinator({ activeSession: a })
+		options.sessions.getSessions = () =>
+			new Map([
+				[a.sessionId, a],
+				[b.sessionId, b],
+			]) as never
+		options.sessions.getSession = (id) => (id === a.sessionId ? a : b) as never
+		options.rebuilds.request = vi.fn()
+		coordinator.handleToolListChanged()
+		expect(options.rebuilds.request).toHaveBeenCalledWith("mcpTools", expect.any(Function), "background")
+		await coordinator.restartSessionForMcpTools("background")
+		expect(options.sessions.replaceActiveSession).toHaveBeenCalledWith(expect.objectContaining({ expectedSession: b }))
+		expect(coordinator.consumeMcpChangeNotice("new-session")).toContain("MCP tools changed")
+		expect(coordinator.consumeMcpChangeNotice("new-session")).toBeUndefined()
+	})
+
+	it("rebuilds focused and background sessions only once their queues are idle", async () => {
+		const a = { ...makeActiveSession({ isRunning: true }), queuedPromptCount: 1 }
+		const b = { ...makeActiveSession({ isRunning: true }), sessionId: "background", queuedPromptCount: 0 }
+		const { coordinator, options } = makeCoordinator({ activeSession: a })
+		options.sessions.getSessions = () =>
+			new Map([
+				[a.sessionId, a],
+				[b.sessionId, b],
+			]) as never
+		options.sessions.getSession = (id) => (id === a.sessionId ? a : b) as never
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: options.sessions })
+		options.rebuilds = scheduler
+		coordinator.handleToolListChanged()
+		scheduler.sessionBecameIdle()
+		expect(options.sessions.replaceActiveSession).not.toHaveBeenCalled()
+		b.isRunning = false
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(options.sessions.replaceActiveSession).toHaveBeenCalledTimes(1))
+		a.isRunning = false
+		scheduler.sessionBecameIdle()
+		expect(options.sessions.replaceActiveSession).toHaveBeenCalledTimes(1)
+		a.queuedPromptCount = 0
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(options.sessions.replaceActiveSession).toHaveBeenCalledTimes(2))
+	})
+
+	it.each([false, true])("retries at the next idle boundary and warns once, persistent=%s", async (persistent) => {
+		const a = { ...makeActiveSession(), queuedPromptCount: 0 }
+		const { coordinator, options } = makeCoordinator({ activeSession: a })
+		options.sessions.getSession = () => a as never
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: options.sessions })
+		options.rebuilds = scheduler
+		if (persistent) options.sessionConfigBuilder.build.mockRejectedValue(new Error("failure"))
+		else options.sessionConfigBuilder.build.mockRejectedValueOnce(new Error("failure"))
+		coordinator.handleToolListChanged()
+		await vi.waitFor(() => expect(options.messages.appendAndEmit).toHaveBeenCalledTimes(1))
+		coordinator.sessionBecameIdle()
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(options.sessionConfigBuilder.build).toHaveBeenCalledTimes(2))
+		expect(options.messages.appendAndEmit).toHaveBeenCalledTimes(1)
+		if (!persistent)
+			await vi.waitFor(() => expect(coordinator.consumeMcpChangeNotice("new-session")).toContain("MCP tools changed"))
+	})
+
+	it("preserves an idle boundary reached while a failed rebuild is still reporting", async () => {
+		const a = { ...makeActiveSession(), queuedPromptCount: 0 }
+		const { coordinator, options } = makeCoordinator({ activeSession: a })
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: options.sessions })
+		options.rebuilds = scheduler
+		const report = Promise.withResolvers<void>()
+		options.postStateToWebview.mockReturnValueOnce(report.promise)
+		options.sessionConfigBuilder.build.mockRejectedValueOnce(new Error("failure"))
+		coordinator.handleToolListChanged()
+		await vi.waitFor(() => expect(options.messages.appendAndEmit).toHaveBeenCalledOnce())
+		coordinator.sessionBecameIdle()
+		scheduler.sessionBecameIdle()
+		report.resolve()
+		await vi.waitFor(() => expect(options.sessions.replaceActiveSession).toHaveBeenCalledOnce())
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledTimes(2)
+	})
+
+	it("describes added and removed servers in the next turn notice", async () => {
+		const a = makeActiveSession({ isRunning: true })
+		const { options } = makeCoordinator({ activeSession: a })
+		let snapshot: Record<string, string[]> = { old: ["read"] }
+		options.getToolSnapshot = () => snapshot
+		const coordinator = new SdkMcpCoordinator(options)
+		snapshot = { docs: ["search", "fetch"] }
+		coordinator.handleToolListChanged()
+		await coordinator.restartSessionForMcpTools()
+		const notice = coordinator.consumeMcpChangeNotice("new-session")
+		expect(notice).toContain("added server docs (tools search, fetch)")
+		expect(notice).toContain("removed server old")
+		expect(coordinator.consumeMcpChangeNotice("new-session")).toBeUndefined()
+	})
+
+	it("clears pending MCP work when a retained session is removed", async () => {
+		const a = makeActiveSession({ isRunning: true })
+		const { coordinator } = makeCoordinator({ activeSession: a })
+		coordinator.handleToolListChanged()
+		coordinator.forgetSession(a.sessionId)
+		expect(coordinator.consumeMcpChangeNotice(a.sessionId)).toBeUndefined()
 	})
 
 	it("emits an error message when restart fails", async () => {
@@ -91,7 +196,7 @@ describe("SdkMcpCoordinator", () => {
 					text: "Failed to reload MCP tools: boom. MCP tools may be outdated.",
 				}),
 			],
-			{ type: "status", payload: { sessionId: "old-session", status: "error" } },
+			{ type: "status", payload: { sessionId: "old-session", status: "idle" } },
 		)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
@@ -110,9 +215,10 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		} as unknown as StateManager,
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
-			replaceActiveSession: vi.fn().mockResolvedValue({
-				startResult: { sessionId: "new-session" },
-				sdkHost: { send: vi.fn() },
+			replaceActiveSession: vi.fn(async (input) => {
+				await input.loadInitialMessages?.()
+				input.onReplaced?.("new-session")
+				return { startResult: { sessionId: "new-session" }, sdkHost: { send: vi.fn() } }
 			}),
 		},
 		messages: {
@@ -127,9 +233,9 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		buildStartSessionInput: vi.fn(() => ({ prompt: "start" })),
 		postStateToWebview: vi.fn().mockResolvedValue(undefined),
 		rebuilds: {
-			request: vi.fn((_reason: string, rebuild: () => Promise<void>) => {
+			request: vi.fn((_reason: string, rebuild: (context: { isCurrent: () => boolean }) => Promise<void>) => {
 				if (!activeSession?.isRunning) {
-					void rebuild()
+					void rebuild({ isCurrent: () => true })
 				}
 			}),
 		},

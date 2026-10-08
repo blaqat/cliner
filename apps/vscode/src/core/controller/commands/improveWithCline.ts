@@ -35,7 +35,13 @@ export async function improveWithCline(
 
 	// Send: notebooks go to existing task if available, non-notebooks always create new task
 	if (notebookContext && controller.task) {
-		await controller.task.handleWebviewAskResponse("messageResponse", prompt)
+		await controller.task.handleWebviewAskResponse(
+			"messageResponse",
+			prompt,
+			undefined,
+			undefined,
+			controller.getPendingDecisionId("messageResponse"),
+		)
 	} else {
 		await controller.initTask(prompt)
 	}

@@ -11,6 +11,7 @@ import { wrapLanguageModel } from "ai";
 import { ensureFetch, resolveApiKey } from "../http";
 import { splitToolImagesMiddleware } from "../middleware/split-tool-images";
 import { isOpenAIReasoningEraModelId } from "../model-facts";
+import { withHttpErrorContext } from "./http-error-context";
 import type { ProviderFactoryResult } from "./types";
 
 type FetchInput = Parameters<typeof fetch>[0];
@@ -232,7 +233,13 @@ export async function createOpenAICompatibleProviderModule(
 	// authoritative error and is surfaced to the user as-is. This keeps
 	// `llms` unopinionated about which providers do or don't need a key.
 	const apiKey = await resolveApiKey(config);
-	const fetch = createAzureApiVersionFetch(config);
+	const azureFetch = createAzureApiVersionFetch(config);
+	// Custom OpenAI Compatible endpoints get the status and endpoint appended
+	// to errors; catalog providers keep their exact fetch.
+	const fetch =
+		context.provider.id === "openai-compatible"
+			? withHttpErrorContext(azureFetch)
+			: azureFetch;
 	const onResponseError = readResponseErrorHandler(config);
 	const providerFetch = onResponseError
 		? createResponseErrorFetch({

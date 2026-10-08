@@ -2405,6 +2405,7 @@ describe("AgentRuntime", () => {
 		expect(result.outputText).toBe("approval handled");
 		expect(executeTool).not.toHaveBeenCalled();
 		expect(requestToolApproval).toHaveBeenCalledWith({
+			signal: expect.any(AbortSignal),
 			sessionId: "session_test",
 			agentId: "agent_test",
 			conversationId: "conversation_test",
@@ -2472,6 +2473,7 @@ describe("AgentRuntime", () => {
 		expect(result.outputText).toBe("live policy handled");
 		expect(executeTool).not.toHaveBeenCalled();
 		expect(requestToolApproval).toHaveBeenCalledWith({
+			signal: expect.any(AbortSignal),
 			sessionId: "session_test",
 			agentId: "agent_test",
 			conversationId: "conversation_test",
@@ -2480,6 +2482,76 @@ describe("AgentRuntime", () => {
 			toolName: "echo",
 			input: { text: "hi" },
 			policy: { autoApprove: false },
+		});
+	});
+
+	it("requires approval when a mandatory hook policy also has autoApprove=true", async () => {
+		const executeTool = vi.fn(async () => ({ echoed: "hi" }));
+		const requestToolApproval = vi.fn(async () => ({
+			approved: false,
+			reason: "live policy denied.",
+		}));
+		const model = new ScriptedModel([
+			() => [
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_live_policy",
+					toolName: "echo",
+					inputText: '{"text":"hi"}',
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+			(request) => {
+				const toolMessage = request.messages.at(-1) as AgentMessage;
+				expect(toolMessage.role).toBe("tool");
+				expect(toolMessage.content[0]).toMatchObject({
+					type: "tool-result",
+					isError: true,
+					output: { error: `live policy denied. -- ${TOOL_REJECTION_SUFFIX}` },
+				});
+				return [
+					{ type: "text-delta", text: "live policy handled" },
+					{ type: "finish", reason: "stop" },
+				];
+			},
+		]);
+		const runtime = new AgentRuntime({
+			sessionId: "session_test",
+			agentId: "agent_test",
+			conversationId: "conversation_test",
+			model,
+			tools: [
+				{
+					name: "echo",
+					description: "Echo input text",
+					inputSchema: { type: "object" },
+					execute: executeTool,
+				},
+			],
+			toolPolicies: { "*": { autoApprove: true } },
+			hooks: {
+				beforeTool: () => ({
+					policy: { autoApprove: true, requireApproval: true },
+				}),
+			},
+			requestToolApproval,
+		});
+
+		const result = await runtime.run("Start");
+
+		expect(result.status).toBe("completed");
+		expect(result.outputText).toBe("live policy handled");
+		expect(executeTool).not.toHaveBeenCalled();
+		expect(requestToolApproval).toHaveBeenCalledWith({
+			signal: expect.any(AbortSignal),
+			sessionId: "session_test",
+			agentId: "agent_test",
+			conversationId: "conversation_test",
+			iteration: 1,
+			toolCallId: "call_live_policy",
+			toolName: "echo",
+			input: { text: "hi" },
+			policy: { autoApprove: true, requireApproval: true },
 		});
 	});
 
@@ -4533,5 +4605,55 @@ describe("AgentRuntime sdk.error reporting", () => {
 			operation: "agent.run",
 			finishReason: "content-filter",
 		});
+	});
+});
+
+describe("approval cancellation", () => {
+	it.each([
+		"pending",
+		"approved",
+	])("aborts a run with a %s approval without executing the tool", async (timing) => {
+		const entered = Promise.withResolvers<void>();
+		const approval = Promise.withResolvers<{ approved: boolean }>();
+		const execute = vi.fn(async () => ({}));
+		let signal: AbortSignal | undefined;
+		const runtime = new AgentRuntime({
+			agentId: "child",
+			conversationId: "child-conversation",
+			model: new ScriptedModel([
+				() => [
+					{
+						type: "tool-call-delta",
+						toolCallId: "write1",
+						toolName: "editor",
+						inputText: "{}",
+					},
+					{ type: "finish", reason: "tool-calls" },
+				],
+			]),
+			tools: [
+				{
+					name: "editor",
+					description: "probe",
+					inputSchema: { type: "object" },
+					execute,
+				},
+			],
+			toolPolicies: { editor: { autoApprove: false } },
+			requestToolApproval: (request) => {
+				signal = request.signal;
+				entered.resolve();
+				return approval.promise;
+			},
+		});
+		const run = runtime.run("probe");
+		await entered.promise;
+		if (timing === "approved") approval.resolve({ approved: true });
+		runtime.abort("Stop child");
+		const result = await run;
+		expect(result.status).toBe("aborted");
+		expect(signal?.aborted).toBe(true);
+		expect(execute).not.toHaveBeenCalled();
+		approval.resolve({ approved: true });
 	});
 });

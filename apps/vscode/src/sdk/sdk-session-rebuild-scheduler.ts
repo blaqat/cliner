@@ -1,10 +1,10 @@
 import { Logger } from "@/shared/services/Logger"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 
-export type SessionRebuildReason = "provider" | "mcpTools" | "terminalExecutionMode" | "checkpoints"
+export type SessionRebuildReason = "provider" | "mcpTools" | "terminalExecutionMode" | "checkpoints" | "subagents"
 
 export interface SdkSessionRebuildSchedulerOptions {
-	sessions: Pick<SdkSessionLifecycle, "getActiveSession">
+	sessions: Pick<SdkSessionLifecycle, "getActiveSession"> & Partial<Pick<SdkSessionLifecycle, "getSession">>
 }
 
 /**
@@ -29,13 +29,15 @@ export interface SessionRebuildContext {
 interface ScheduledRebuild {
 	run: (context: SessionRebuildContext) => Promise<void>
 	generation: number
+	sessionId?: string
+	background: boolean
 }
 
 /** Serializes passive session rebuilds and drains them only while the session is idle (see isIdle). */
 export class SdkSessionRebuildScheduler {
-	private readonly pending = new Map<SessionRebuildReason, ScheduledRebuild>()
+	private readonly pending = new Map<string, ScheduledRebuild>()
 	private drainInFlight: Promise<void> | undefined
-	private readonly latestGeneration = new Map<SessionRebuildReason, number>()
+	private readonly latestGeneration = new Map<string, number>()
 
 	constructor(private readonly options: SdkSessionRebuildSchedulerOptions) {}
 
@@ -44,10 +46,13 @@ export class SdkSessionRebuildScheduler {
 	 * rebuild for the same reason that is already running is superseded: its
 	 * context.isCurrent() turns false and this request runs after it.
 	 */
-	request(reason: SessionRebuildReason, run: (context: SessionRebuildContext) => Promise<void>): void {
-		const generation = (this.latestGeneration.get(reason) ?? 0) + 1
-		this.latestGeneration.set(reason, generation)
-		this.pending.set(reason, { run, generation })
+	request(reason: SessionRebuildReason, run: (context: SessionRebuildContext) => Promise<void>, sessionId?: string): void {
+		const background = sessionId !== undefined
+		sessionId ??= this.options.sessions.getActiveSession()?.sessionId
+		const key = `${sessionId ?? "focused"}:${reason}`
+		const generation = (this.latestGeneration.get(key) ?? 0) + 1
+		this.latestGeneration.set(key, generation)
+		this.pending.set(key, { run, generation, sessionId, background })
 		this.drainIfIdle()
 	}
 
@@ -71,54 +76,51 @@ export class SdkSessionRebuildScheduler {
 		}
 	}
 
-	/**
-	 * Moves the displayed task at the session-rebuild consistency boundary.
-	 * Queued rebuilds belong to the outgoing session, so the transition drops
-	 * them before ending that session. Rebuilds requested during the transition
-	 * remain queued until the new task view is complete.
-	 */
+	/** Focus transitions preserve rebuilds belonging to retained sessions. */
 	async runTaskTransition<T>(operation: () => Promise<T>): Promise<T> {
-		return this.runExclusive(async () => {
-			this.pending.clear()
-			return operation()
-		})
+		return this.runExclusive(operation)
+	}
+
+	forgetSession(sessionId: string): void {
+		for (const key of this.latestGeneration.keys()) {
+			if (!key.startsWith(`${sessionId}:`)) continue
+			this.pending.delete(key)
+			this.latestGeneration.delete(key)
+		}
 	}
 
 	sessionBecameIdle(): void {
 		this.drainIfIdle()
 	}
 
+	private sessionFor(rebuild: ScheduledRebuild) {
+		const focused = this.options.sessions.getActiveSession()
+		if (!rebuild.sessionId) return focused
+		if (!rebuild.background) return focused?.sessionId === rebuild.sessionId ? focused : undefined
+		return (
+			this.options.sessions.getSession?.(rebuild.sessionId) ??
+			(focused?.sessionId === rebuild.sessionId ? focused : undefined)
+		)
+	}
+
+	private nextIdleRebuild() {
+		return [...this.pending.entries()].find(([, rebuild]) => isIdle(this.sessionFor(rebuild)))
+	}
+
 	private drainIfIdle(): void {
-		if (this.drainInFlight || this.pending.size === 0 || !isIdle(this.options.sessions.getActiveSession())) {
-			return
-		}
-
+		if (this.drainInFlight || !this.nextIdleRebuild()) return
 		const drain = async (): Promise<void> => {
-			while (this.pending.size > 0) {
-				const activeSession = this.options.sessions.getActiveSession()
-				if (!activeSession) {
-					this.pending.clear()
-					return
-				}
-				if (!isIdle(activeSession)) {
-					return
-				}
-
-				const next = this.pending.entries().next().value
-				if (!next) {
-					return
-				}
-				const [reason, rebuild] = next
-				this.pending.delete(reason)
-
+			let next: ReturnType<SdkSessionRebuildScheduler["nextIdleRebuild"]>
+			while ((next = this.nextIdleRebuild())) {
+				const [key, rebuild] = next
+				this.pending.delete(key)
 				try {
-					await rebuild.run({ isCurrent: () => rebuild.generation === this.latestGeneration.get(reason) })
+					await rebuild.run({ isCurrent: () => rebuild.generation === this.latestGeneration.get(key) })
 				} catch (error) {
-					Logger.error(`[SdkController] Failed scheduled ${reason} session rebuild:`, error)
+					Logger.error(`[SdkController] Failed scheduled ${key} session rebuild:`, error)
 				}
 			}
 		}
-
 		this.drainInFlight = drain().finally(() => {
 			this.drainInFlight = undefined
 			this.drainIfIdle()

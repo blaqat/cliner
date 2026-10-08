@@ -9,6 +9,7 @@ export type SessionEventListener = (messages: ClineMessage[], event: CoreSession
 
 export interface SdkMessageCoordinatorOptions {
 	getTask: () => TaskProxy | undefined
+	isFocused?: () => boolean
 	/**
 	 * The process-wide id/seq/epoch authority. When provided, every message flowing to the
 	 * webview is stamped with a fresh `seq` and the current `epoch` so the webview can merge
@@ -95,6 +96,11 @@ export class SdkMessageCoordinator {
 		task.messageStateHandler.replaceMessages(messages)
 	}
 
+	removeMessage(messageTs: number): void {
+		const messages = this.options.getTask()?.messageStateHandler.getClineMessages()
+		if (messages) this.replaceMessages(messages.filter((message) => message.ts !== messageTs))
+	}
+
 	appendAndEmit(messages: ClineMessage[], event: CoreSessionEvent): void {
 		this.appendMessages(messages)
 		this.emitSessionEvents(messages, event)
@@ -102,7 +108,7 @@ export class SdkMessageCoordinator {
 
 	emitHookMessage(message: ClineMessage): void {
 		this.appendMessages([message])
-		pushMessageToWebview(message).catch(() => {})
+		if (this.options.isFocused?.() !== false) pushMessageToWebview(message).catch(() => {})
 	}
 
 	/**

@@ -69,7 +69,7 @@ export type PendingPrompt = {
 	id: string;
 	prompt: string;
 	mode?: CoreAgentMode;
-	delivery: "queue" | "steer";
+	delivery: "queue" | "steer" | "interject";
 	userImages?: string[];
 	userFiles?: string[];
 };

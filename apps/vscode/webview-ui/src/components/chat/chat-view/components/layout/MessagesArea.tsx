@@ -10,10 +10,14 @@ import { useThinkingLoaderRow } from "../../hooks/useThinkingLoaderRow"
 import type { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 import { isPendingResponseUnconfirmed } from "../../utils/pendingResponse"
 import { createMessageRenderer } from "../messages/MessageRenderer"
+import { MiniMap } from "./MiniMap"
 
 // Sentinel ts for the synthetic "Thinking..." placeholder row. Not a real message; ignored when
 // deriving scroll triggers from the tail of the rendered list.
 const WAITING_ROW_TS = Number.MIN_SAFE_INTEGER
+
+// How long after a row first appears it still counts as new (covers its insert animation).
+const ROW_IN_WINDOW_MS = 400
 
 // Synthetic placeholder rendered while waiting for the model with no visible rows streaming.
 const WAITING_ROW: ClineMessage = {
@@ -31,6 +35,7 @@ interface MessagesAreaProps {
 	scrollBehavior: ScrollBehavior
 	chatState: ChatState
 	messageHandlers: MessageHandlers
+	onSetQuote?: (text: string) => void
 }
 
 /**
@@ -44,6 +49,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 	scrollBehavior,
 	chatState,
 	messageHandlers,
+	onSetQuote,
 }) => {
 	const { clineMessages, turnState } = useExtensionState()
 	const lastRawMessage = useMemo(() => clineMessages.at(-1), [clineMessages])
@@ -53,11 +59,12 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 		scrollContainerRef,
 		toggleRowExpansion,
 		handleRowHeightChange,
-		setIsAtBottom,
+		handleAtBottomStateChange,
 		disableAutoScrollRef,
 		handleRangeChanged,
 		scrolledPastUserMessage,
 		scrollToMessage,
+		scrollToIndex,
 		scrollToBottomSmooth,
 		scrollToBottomAuto,
 		handleLastRowContentChange,
@@ -78,7 +85,8 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 		}
 	}, [scrollToMessage, scrolledPastUserMessageIndex])
 
-	const { expandedRows, inputValue, setActiveQuote } = chatState
+	const { expandedRows, inputValue } = chatState
+	const addQuote = onSetQuote ?? chatState.addQuote
 	const lastVisibleRow = useMemo(() => groupedMessages.at(-1), [groupedMessages])
 	const lastVisibleMessage = useMemo(() => {
 		const lastRow = lastVisibleRow
@@ -164,6 +172,33 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 		}
 	}, [turnState?.phase, scrollToBottomSmooth, disableAutoScrollRef])
 
+	// Rows present when a task's list first renders are history; only rows that appear
+	// afterwards animate in. The first-seen time keeps the animation from replaying when
+	// Virtuoso remounts a row that was scrolled out and back.
+	const rowFirstSeenRef = useRef<{ taskTs: number; seen: Map<number, number> } | null>(null)
+	if (rowFirstSeenRef.current?.taskTs !== task.ts) {
+		rowFirstSeenRef.current = { taskTs: task.ts, seen: new Map() }
+		for (const row of displayedGroupedMessages) {
+			const message = Array.isArray(row) ? row[0] : row
+			if (message) {
+				rowFirstSeenRef.current.seen.set(message.ts, 0)
+			}
+		}
+	}
+	const isNewRow = useCallback((ts: number) => {
+		const seen = rowFirstSeenRef.current?.seen
+		if (!seen || ts === WAITING_ROW_TS) {
+			return false
+		}
+		const now = Date.now()
+		const firstSeen = seen.get(ts)
+		if (firstSeen === undefined) {
+			seen.set(ts, now)
+			return true
+		}
+		return firstSeen > 0 && now - firstSeen < ROW_IN_WINDOW_MS
+	}, [])
+
 	const itemContent = useMemo(
 		() =>
 			createMessageRenderer(
@@ -173,10 +208,11 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				toggleRowExpansion,
 				handleRowHeightChange,
 				handleLastRowContentChange,
-				setActiveQuote,
+				addQuote,
 				inputValue,
 				messageHandlers,
 				false,
+				isNewRow,
 			),
 		[
 			displayedGroupedMessages,
@@ -185,9 +221,10 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 			toggleRowExpansion,
 			handleRowHeightChange,
 			handleLastRowContentChange,
-			setActiveQuote,
+			addQuote,
 			inputValue,
 			messageHandlers,
+			isNewRow,
 		],
 	)
 
@@ -214,7 +251,9 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				/>
 			</div>
 
-			<div className="grow flex relative" ref={scrollContainerRef}>
+			{/* min-h-0: without it this flex item grows to the minimap's full content height, which
+			    stretches Virtuoso past the clipped viewport so its bottom rows can't be scrolled to. */}
+			<div className="grow min-h-0 flex relative" ref={scrollContainerRef}>
 				{/* Empty-list fast path: paint the loader immediately without waiting for the
 				    virtualized list's initial measure/render cycle. Mirrors the in-list row's
 				    markup (MessageRenderer wrapper + ChatRow) so the swap to a real row later
@@ -231,19 +270,14 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 							onCancelCommand={() => messageHandlers.executeButtonAction({ type: "cancel" })}
 							onHeightChange={handleRowHeightChange}
 							onLastRowContentChange={handleLastRowContentChange}
-							onSetQuote={setActiveQuote}
+							onSetQuote={addQuote}
 							onToggleExpand={toggleRowExpansion}
 							sendMessageFromChatRow={messageHandlers.handleSendMessage}
 						/>
 					</div>
 				)}
 				<Virtuoso
-					atBottomStateChange={(isAtBottom) => {
-						setIsAtBottom(isAtBottom)
-						if (isAtBottom) {
-							disableAutoScrollRef.current = false
-						}
-					}}
+					atBottomStateChange={handleAtBottomStateChange}
 					atBottomThreshold={10} // trick to make sure virtuoso re-renders when task changes, and we use initialTopMostItemIndex to start at the bottom
 					className="scrollable grow overflow-y-scroll"
 					components={virtuosoComponents}
@@ -263,6 +297,16 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 						msOverflowStyle: "none", // IE/Edge
 						overflowAnchor: "none", // prevent scroll jump when content expands
 					}}
+				/>
+				<MiniMap
+					autoScrollDisabledRef={disableAutoScrollRef}
+					listKey={task.ts}
+					messages={modifiedMessages}
+					onJump={scrollToIndex}
+					rows={groupedMessages}
+					scrollContainerRef={scrollContainerRef}
+					task={task}
+					turnActive={turnState?.phase === "streaming"}
 				/>
 			</div>
 		</div>

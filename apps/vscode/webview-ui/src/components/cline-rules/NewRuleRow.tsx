@@ -15,6 +15,7 @@ interface NewRuleRowProps {
 }
 
 const HOOK_TYPES = [
+	{ name: "McpServerStart", description: "Executes before connecting an MCP server" },
 	{ name: "TaskStart", description: "Executes when a new task begins" },
 	{ name: "TaskResume", description: "Executes when a task is resumed" },
 	{ name: "TaskCancel", description: "Executes when a task is cancelled" },

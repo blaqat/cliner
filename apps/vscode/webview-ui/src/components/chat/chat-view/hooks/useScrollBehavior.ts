@@ -8,6 +8,61 @@ import { ScrollBehavior } from "../types/chatTypes"
 // Height of the sticky user message header (padding + content)
 const STICKY_HEADER_HEIGHT = 32
 
+// A minimap jump counts as finished once the list has not scrolled for this long.
+const JUMP_SETTLE_MS = 200
+
+// The Virtuoso scroller inside the chat container, or the closest scrollable fallback.
+function findScrollableElement(scrollContainer: HTMLElement): HTMLElement {
+	const virtuosoScroller = scrollContainer.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement
+	if (virtuosoScroller) {
+		return virtuosoScroller
+	}
+	const scrollable = scrollContainer.querySelector(".scrollable") as HTMLElement
+	return scrollable || scrollContainer
+}
+
+/** Which way the user is moving the chat: "up" reads history, "down" heads back to the live end. */
+export type ScrollIntent = "up" | "down"
+
+export function scrollIntentFromWheel(deltaY: number): ScrollIntent | null {
+	if (deltaY < 0) {
+		return "up"
+	}
+	return deltaY > 0 ? "down" : null
+}
+
+const KEY_INTENTS: Record<string, ScrollIntent> = {
+	ArrowUp: "up",
+	PageUp: "up",
+	Home: "up",
+	ArrowDown: "down",
+	PageDown: "down",
+	End: "down",
+}
+
+export function scrollIntentFromKey(key: string, shiftKey = false): ScrollIntent | null {
+	if (key === " ") {
+		return shiftKey ? "up" : "down"
+	}
+	return KEY_INTENTS[key] ?? null
+}
+
+/**
+ * Whether reaching the bottom resumes auto-follow. Not after the user's last gesture scrolled up:
+ * the bottom can still be reached without them going there (a smooth scroll-to-bottom finishing,
+ * or rows shrinking under the viewport), and resuming then pulls them back as output streams.
+ */
+export function shouldResumeFollowAtBottom(lastIntent: ScrollIntent | null): boolean {
+	return lastIntent !== "up"
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+	return (
+		target instanceof HTMLElement &&
+		(target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")
+	)
+}
+
 /**
  * Custom hook for managing scroll behavior
  * Handles auto-scrolling, manual scrolling, and scroll-to-message functionality
@@ -25,15 +80,28 @@ export function useScrollBehavior(
 	setPendingScrollToMessage: React.Dispatch<React.SetStateAction<number | null>>
 	scrolledPastUserMessage: ClineMessage | null
 	handleRangeChanged: (range: ListRange) => void
+	handleAtBottomStateChange: (atBottom: boolean) => void
 } {
 	// Refs
 	const virtuosoRef = useRef<VirtuosoHandle>(null)
 	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const disableAutoScrollRef = useRef(false)
 	const layoutSettleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const jumpSettleCleanupRef = useRef<(() => void) | null>(null)
+	// The direction of the user's latest scroll gesture (wheel, keys, touch) in the chat.
+	const lastScrollIntentRef = useRef<ScrollIntent | null>(null)
 
 	// State
-	const [isAtBottom, setIsAtBottom] = useState(false)
+	const [isAtBottom, setIsAtBottomState] = useState(false)
+	// Mirrors Virtuoso's at-bottom state for callbacks that run outside render.
+	const isAtBottomRef = useRef(isAtBottom)
+	isAtBottomRef.current = isAtBottom
+	const setIsAtBottom = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
+		if (typeof value === "boolean") {
+			isAtBottomRef.current = value
+		}
+		setIsAtBottomState(value)
+	}, [])
 	const [pendingScrollToMessage, setPendingScrollToMessage] = useState<number | null>(null)
 	const [scrolledPastUserMessage, setScrolledPastUserMessage] = useState<ClineMessage | null>(null)
 
@@ -99,21 +167,18 @@ export function useScrollBehavior(
 		}
 
 		// The scrollable element is the Virtuoso scroller or a child with overflow
-		const findScrollableElement = () => {
-			// Try finding the Virtuoso scroller
-			const virtuosoScroller = scrollContainer.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement
-			if (virtuosoScroller) {
-				return virtuosoScroller
-			}
-			// Fallback to the first child with scrollable class
-			const scrollable = scrollContainer.querySelector(".scrollable") as HTMLElement
-			return scrollable || scrollContainer
-		}
+		const scrollableElement = findScrollableElement(scrollContainer)
 
-		const scrollableElement = findScrollableElement()
-
+		// Measure at most once per frame: reading layout on every scroll event forces a reflow per
+		// event, which makes scrolling past large rows stutter.
+		let frame = 0
 		const handleScroll = () => {
-			checkScrolledPastUserMessage()
+			if (!frame) {
+				frame = requestAnimationFrame(() => {
+					frame = 0
+					checkScrolledPastUserMessage()
+				})
+			}
 		}
 
 		scrollableElement.addEventListener("scroll", handleScroll, { passive: true })
@@ -123,6 +188,9 @@ export function useScrollBehavior(
 
 		return () => {
 			scrollableElement.removeEventListener("scroll", handleScroll)
+			if (frame) {
+				cancelAnimationFrame(frame)
+			}
 		}
 	}, [checkScrolledPastUserMessage])
 
@@ -212,6 +280,46 @@ export function useScrollBehavior(
 		[messages, visibleMessages, groupedMessages],
 	)
 
+	// Jump to a row of the rendered list (minimap). Leaves room for the sticky user header
+	// except at the very top, and stops auto-scroll so the jump isn't undone by streaming.
+	// Follow resumes only once the viewport is at the bottom: atBottomStateChange covers
+	// reaching it later, and the settle check covers a jump that lands there (or never leaves
+	// it), where Virtuoso reports no state change.
+	const scrollToIndex = useCallback((groupIndex: number) => {
+		disableAutoScrollRef.current = true
+		lastScrollIntentRef.current = null
+		jumpSettleCleanupRef.current?.()
+		requestAnimationFrame(() => {
+			virtuosoRef.current?.scrollToIndex({
+				index: groupIndex,
+				align: "start",
+				behavior: "smooth",
+				offset: groupIndex === 0 ? 0 : -STICKY_HEADER_HEIGHT,
+			})
+		})
+
+		const scrollContainer = scrollContainerRef.current
+		const scroller = scrollContainer ? findScrollableElement(scrollContainer) : undefined
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const cleanup = () => {
+			clearTimeout(timer)
+			scroller?.removeEventListener("scroll", restartTimer)
+			jumpSettleCleanupRef.current = null
+		}
+		function restartTimer() {
+			clearTimeout(timer)
+			timer = setTimeout(() => {
+				cleanup()
+				if (isAtBottomRef.current) {
+					disableAutoScrollRef.current = false
+				}
+			}, JUMP_SETTLE_MS)
+		}
+		scroller?.addEventListener("scroll", restartTimer, { passive: true })
+		restartTimer()
+		jumpSettleCleanupRef.current = cleanup
+	}, [])
+
 	// scroll when user toggles certain rows
 	const toggleRowExpansion = useCallback(
 		(ts: number, options?: { preserveAutoScroll?: boolean }) => {
@@ -295,6 +403,7 @@ export function useScrollBehavior(
 	}, [keepPinnedToBottomAfterLayout])
 
 	useEffect(() => clearLayoutSettleScrollTimers, [clearLayoutSettleScrollTimers])
+	useEffect(() => () => jumpSettleCleanupRef.current?.(), [])
 
 	useEffect(() => {
 		if (!disableAutoScrollRef.current) {
@@ -319,16 +428,96 @@ export function useScrollBehavior(
 		}
 	}, [pendingScrollToMessage, groupedMessages, scrollToMessage])
 
-	const handleWheel = useCallback((event: Event) => {
-		const wheelEvent = event as WheelEvent
-		if (wheelEvent.deltaY && wheelEvent.deltaY < 0) {
-			if (scrollContainerRef.current?.contains(wheelEvent.target as Node)) {
-				// user scrolled up
-				disableAutoScrollRef.current = true
+	// Virtuoso reports the viewport reaching or leaving the bottom.
+	const handleAtBottomStateChange = useCallback(
+		(atBottom: boolean) => {
+			setIsAtBottom(atBottom)
+			if (atBottom && shouldResumeFollowAtBottom(lastScrollIntentRef.current)) {
+				disableAutoScrollRef.current = false
 			}
+		},
+		[setIsAtBottom],
+	)
+
+	// Scrolling up stops auto-follow (and cancels a pending minimap-jump resume). Scrolling down
+	// while already at the bottom resumes it, since Virtuoso reports no at-bottom change there.
+	const handleUserScrollIntent = useCallback((intent: ScrollIntent | null) => {
+		if (!intent) {
+			return
+		}
+		lastScrollIntentRef.current = intent
+		if (intent === "up") {
+			disableAutoScrollRef.current = true
+			jumpSettleCleanupRef.current?.()
+		} else if (isAtBottomRef.current) {
+			disableAutoScrollRef.current = false
 		}
 	}, [])
+
+	const isInChat = useCallback((target: EventTarget | null) => {
+		return target instanceof Node && !!scrollContainerRef.current?.contains(target)
+	}, [])
+
+	const handleWheel = useCallback(
+		(event: Event) => {
+			const wheelEvent = event as WheelEvent
+			if (isInChat(wheelEvent.target)) {
+				handleUserScrollIntent(scrollIntentFromWheel(wheelEvent.deltaY))
+			}
+		},
+		[isInChat, handleUserScrollIntent],
+	)
 	useEvent("wheel", handleWheel, window, { passive: true }) // passive improves scrolling performance
+
+	// Keyboard scrolling goes to the chat when focus is in it or on the page itself (after
+	// clicking message text), never while typing in an input.
+	const handleKeyDown = useCallback(
+		(event: Event) => {
+			const keyEvent = event as KeyboardEvent
+			const target = keyEvent.target
+			if (
+				keyEvent.defaultPrevented ||
+				keyEvent.altKey ||
+				keyEvent.ctrlKey ||
+				keyEvent.metaKey ||
+				isEditableTarget(target)
+			) {
+				return
+			}
+			// Space on a focused button activates it rather than scrolling.
+			if (keyEvent.key === " " && target instanceof Element && target.closest("button, a, [role='button']")) {
+				return
+			}
+			if (isInChat(target) || target === document.body || target === document.documentElement) {
+				handleUserScrollIntent(scrollIntentFromKey(keyEvent.key, keyEvent.shiftKey))
+			}
+		},
+		[isInChat, handleUserScrollIntent],
+	)
+	useEvent("keydown", handleKeyDown, window)
+
+	// A finger moving down the screen scrolls the content up.
+	const touchYRef = useRef<number | null>(null)
+	const handleTouchStart = useCallback(
+		(event: Event) => {
+			const touchEvent = event as TouchEvent
+			touchYRef.current = isInChat(touchEvent.target) ? (touchEvent.touches[0]?.clientY ?? null) : null
+		},
+		[isInChat],
+	)
+	const handleTouchMove = useCallback(
+		(event: Event) => {
+			const y = (event as TouchEvent).touches[0]?.clientY
+			if (touchYRef.current === null || y === undefined) {
+				return
+			}
+			handleUserScrollIntent(scrollIntentFromWheel(touchYRef.current - y))
+			touchYRef.current = y
+		},
+		[handleUserScrollIntent],
+	)
+	useEvent("touchstart", handleTouchStart, window, { passive: true })
+	useEvent("touchmove", handleTouchMove, window, { passive: true })
 
 	return {
 		virtuosoRef,
@@ -337,6 +526,7 @@ export function useScrollBehavior(
 		scrollToBottomSmooth,
 		scrollToBottomAuto,
 		scrollToMessage,
+		scrollToIndex,
 		toggleRowExpansion,
 		handleRowHeightChange,
 		handleLastRowContentChange,
@@ -346,5 +536,6 @@ export function useScrollBehavior(
 		setPendingScrollToMessage,
 		scrolledPastUserMessage,
 		handleRangeChanged,
+		handleAtBottomStateChange,
 	}
 }

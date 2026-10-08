@@ -18,6 +18,7 @@ describe("McpHub connect failure", () => {
 		sandbox = sinon.createSandbox()
 		sandbox.stub(StateManager, "get").returns({
 			getRemoteConfigSettings: () => ({}),
+			getGlobalSettingsKey: () => false,
 		} as unknown as StateManager)
 	})
 

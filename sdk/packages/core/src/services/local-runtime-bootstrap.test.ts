@@ -88,6 +88,51 @@ describe("prepareLocalRuntimeBootstrap", () => {
 		});
 	});
 
+	it("ignores stored provider credentials and headers for isolated sessions", async () => {
+		const { prepareLocalRuntimeBootstrap } = await import(
+			"./local-runtime-bootstrap"
+		);
+		const manager = createProviderSettingsManager({
+			provider: "openai-compatible",
+			apiKey: "stored-secret",
+			baseUrl: "https://stored/v1",
+			headers: { Authorization: "stored-header" },
+			azure: { apiVersion: "stored-version" },
+		});
+		const bootstrap = await prepareLocalRuntimeBootstrap({
+			input: {
+				config: {
+					...createStartInput().config,
+					providerId: "openai-compatible",
+					modelId: "profile-model",
+					apiKey: "",
+					inheritProviderSettings: false,
+					providerConfig: {
+						providerId: "openai-compatible",
+						modelId: "profile-model",
+						apiKey: "",
+						baseUrl: "https://profile/v1",
+						headers: {},
+					},
+				},
+			},
+			sessionId: "isolated",
+			providerSettingsManager: manager as never,
+			defaultTelemetry: undefined,
+			defaultToolPolicies: undefined,
+			onPluginEvent: () => {},
+			onTeamEvent: () => {},
+			createSpawnTool,
+			readSessionMetadata: async () => undefined,
+			writeSessionMetadata: async () => {},
+		});
+		expect(manager.getProviderSettings).not.toHaveBeenCalled();
+		expect(bootstrap.providerConfig.apiKey).toBe("");
+		expect(bootstrap.providerConfig.baseUrl).toBe("https://profile/v1");
+		expect(bootstrap.providerConfig.headers?.Authorization).toBeUndefined();
+		expect(bootstrap.providerConfig.azure).toBeUndefined();
+	});
+
 	it("discovers user Agent Plugins on the execution host and ignores workspace packages", async () => {
 		const root = realpathSync(
 			mkdtempSync(join(tmpdir(), "core-agent-plugin-bootstrap-")),
@@ -330,7 +375,7 @@ describe("prepareLocalRuntimeBootstrap", () => {
 		expect(bootstrap.config.systemPrompt).toContain(
 			"Only inspect the execution host.",
 		);
-		expect(bootstrap.config.systemPrompt).toContain("# Plan Mode");
+		expect(bootstrap.config.systemPrompt).toContain("# Ask Mode");
 		expect(bootstrap.runtimeBuilderInput.config.systemPrompt).toBe(
 			bootstrap.config.systemPrompt,
 		);

@@ -1,5 +1,7 @@
 import type { QueuedPrompt } from "@shared/ExtensionMessage"
 import { StringRequest } from "@shared/proto/cline/common"
+import { InterjectPromptRequest } from "@shared/proto/cline/task"
+import { ZapIcon } from "lucide-react"
 import { useState } from "react"
 import { TaskServiceClient } from "@/services/grpc-client"
 
@@ -53,6 +55,23 @@ export function QueuedPrompts({ items = [] }: QueuedPromptsProps) {
 			})
 	}
 
+	// Interject now: pull the prompt out of the queue, then stop the current turn and send it.
+	const interjectQueuedPrompt = (item: QueuedPrompt) => {
+		setCancellingIds((current) => new Set(current).add(item.id))
+		TaskServiceClient.cancelQueuedPrompt(StringRequest.create({ value: item.id }))
+			.then(() => TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: item.prompt })))
+			.catch((error) => {
+				console.error("Failed to interject queued prompt:", error)
+			})
+			.finally(() => {
+				setCancellingIds((current) => {
+					const next = new Set(current)
+					next.delete(item.id)
+					return next
+				})
+			})
+	}
+
 	return (
 		<div className="mx-3 mt-2.5 mb-2.5 rounded-xs border border-editor-group-border bg-code/70 px-2.5 py-2 shadow-xs">
 			<div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-description">
@@ -85,6 +104,20 @@ export function QueuedPrompts({ items = [] }: QueuedPromptsProps) {
 									{attachments}
 								</span>
 							)}
+							<button
+								aria-label="Interject now"
+								className="-my-1.5 flex size-5 shrink-0 items-center justify-center rounded-[3px] text-description hover:bg-toolbar-hover-background hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+								// The queue only exposes an attachment count, so prompts with attachments can't be re-sent here.
+								disabled={isCancelling || item.attachmentCount > 0}
+								onClick={() => interjectQueuedPrompt(item)}
+								title={
+									item.attachmentCount > 0
+										? "Interject now is unavailable for messages with attachments"
+										: "Interject now: stop the current turn and send this message"
+								}
+								type="button">
+								<ZapIcon aria-hidden="true" size={12} />
+							</button>
 							<button
 								aria-label="Cancel queued message"
 								className="-my-1.5 flex size-5 shrink-0 items-center justify-center rounded-[3px] text-description hover:bg-toolbar-hover-background hover:text-foreground disabled:pointer-events-none disabled:opacity-50"

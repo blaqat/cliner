@@ -13,6 +13,7 @@ import { type ApiConfiguration, type ApiProvider, type ModelInfo, openAiModelInf
 import { Logger } from "@shared/services/Logger"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import { isSecretKey, isSettingsKey, type SecretKey, type SettingsKey } from "@shared/storage/state-keys"
+import { hasAssignedApiProfile, resolveApiConfigurationForMode } from "@/core/controller/models/apiProfiles"
 import { StateManager } from "@/core/storage/StateManager"
 import { getProviderSettingsManager } from "../provider-migration"
 import type {
@@ -487,6 +488,36 @@ export function resolveRuntimeModelSelection(providerId: ProviderId, modelId: st
 	return resolveSelection({ providerId, modelId })
 }
 
+/**
+ * Saved-configuration (profile) model metadata. The profile editor stores the
+ * user's model settings on a mode-scoped `*Mode*ModelInfo` key, rewritten to
+ * the target mode's prefix when the profile is assigned. Unlike the picker's
+ * snapshot on the same key — committed base metadata that only hints dynamic
+ * catalog reads or feeds a one-time models.json migration — a profile's copy
+ * is user-authored and must win over catalog values, so it resolves as
+ * overrides on top of the catalog/stored base. Fields the user never changed
+ * (values matching the safe defaults) stay absent from the overrides so
+ * catalog metadata still fills them in.
+ */
+export function resolveAssignedProfileModelSelection(
+	providerId: ProviderId,
+	mode: Mode,
+	modelId: string,
+	apiConfiguration: ApiConfiguration,
+): ResolvedModelSelection | undefined {
+	const modelInfoKey = getModelInfoKey(providerId, mode)
+	const snapshot = modelInfoKey ? apiConfiguration[modelInfoKey] : undefined
+	if (!isModelInfo(snapshot)) {
+		return undefined
+	}
+	const profileOverrides = legacyModelInfoToOverrides(snapshot, fallbackModelInfo(modelId))
+	return resolveSelection({
+		providerId,
+		modelId,
+		overrides: profileOverrides ? { ...readModelOverrides(providerId, modelId), ...profileOverrides } : undefined,
+	})
+}
+
 function readSelectionFromProviderSettings(providerId: ProviderId): ResolvedModelSelection | undefined {
 	const modelId = readProviderSettingsModelId(providerId)
 	if (!modelId) {
@@ -889,7 +920,7 @@ function readStateModelInfoHint(providerId: ProviderId, mode: Mode, modelId: str
 }
 
 function readSelectionFromState(providerId: ProviderId, mode: Mode): ResolvedModelSelection | undefined {
-	const apiConfiguration = StateManager.get().getApiConfiguration()
+	const apiConfiguration = resolveApiConfigurationForMode(StateManager.get().getApiConfiguration(), mode)
 	const modelId = apiConfiguration[getModelIdKey(providerId, mode)]
 	const modelInfoKey = getModelInfoKey(providerId, mode)
 	const rememberedSelection = selectionMemory.get(memoryKey(providerId, mode))
@@ -898,6 +929,15 @@ function readSelectionFromState(providerId: ProviderId, mode: Mode): ResolvedMod
 		const modelInfo = apiConfiguration[modelInfoKey]
 		if (typeof modelId !== "string" || modelId.length === 0) {
 			return readSelectionFromProviderSettings(providerId)
+		}
+		// When a saved API configuration is assigned, its mode-scoped model info
+		// is user-authored and must apply as overrides — it is neither a picker
+		// base snapshot nor legacy data to migrate into models.json.
+		if (hasAssignedApiProfile(apiConfiguration)) {
+			const profileSelection = resolveAssignedProfileModelSelection(providerId, mode, modelId, apiConfiguration)
+			if (profileSelection) {
+				return profileSelection
+			}
 		}
 		// The mode-specific model id alone identifies the selection; the state
 		// modelInfo snapshot is optional input for legacy migration and, for

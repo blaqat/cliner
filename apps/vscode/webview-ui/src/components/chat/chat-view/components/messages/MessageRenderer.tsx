@@ -18,10 +18,20 @@ interface MessageRendererProps {
 	onToggleExpand: (ts: number, options?: { preserveAutoScroll?: boolean }) => void
 	onHeightChange: (isTaller: boolean) => void
 	onLastRowContentChange: () => void
-	onSetQuote: (quote: string | null) => void
+	onSetQuote: (quote: string) => void
 	inputValue: string
 	messageHandlers: MessageHandlers
 	footerActive: boolean
+	isNewRow?: (ts: number) => boolean
+}
+
+// Conversation rows that fade/slide in when inserted. Reasoning/loader rows are left out so
+// the "Thinking..." placeholder can hand off to the real row without a visible flash.
+const ANIMATED_SAY_TYPES = new Set(["user_feedback", "text", "completion_result", "plan_completion_result", "error"])
+const ANIMATED_ASK_TYPES = new Set(["plan_mode_respond", "followup", "completion_result"])
+
+function isAnimatedRow(message: ClineMessage): boolean {
+	return message.type === "say" ? ANIMATED_SAY_TYPES.has(message.say ?? "") : ANIMATED_ASK_TYPES.has(message.ask ?? "")
 }
 
 /**
@@ -41,6 +51,7 @@ const MessageRenderer: React.FC<MessageRendererProps> = ({
 	inputValue,
 	messageHandlers,
 	footerActive,
+	isNewRow,
 }) => {
 	const { mode } = useExtensionState()
 
@@ -95,6 +106,7 @@ const MessageRenderer: React.FC<MessageRendererProps> = ({
 		<div
 			className={cn({
 				"pb-2.5": isLastMessage && !footerActive,
+				"animate-row-in": isAnimatedRow(messageOrGroup) && isNewRow?.(messageOrGroup.ts),
 			})}
 			data-message-ts={messageOrGroup.ts}>
 			<ChatRow
@@ -130,10 +142,11 @@ export const createMessageRenderer = (
 	onToggleExpand: (ts: number, options?: { preserveAutoScroll?: boolean }) => void,
 	onHeightChange: (isTaller: boolean) => void,
 	onLastRowContentChange: () => void,
-	onSetQuote: (quote: string | null) => void,
+	onSetQuote: (quote: string) => void,
 	inputValue: string,
 	messageHandlers: MessageHandlers,
 	footerActive: boolean,
+	isNewRow?: (ts: number) => boolean,
 ) => {
 	return (index: number, messageOrGroup: ClineMessage | ClineMessage[]) => (
 		<MessageRenderer
@@ -142,6 +155,7 @@ export const createMessageRenderer = (
 			groupedMessages={groupedMessages}
 			index={index}
 			inputValue={inputValue}
+			isNewRow={isNewRow}
 			messageHandlers={messageHandlers}
 			messageOrGroup={messageOrGroup}
 			modifiedMessages={modifiedMessages}

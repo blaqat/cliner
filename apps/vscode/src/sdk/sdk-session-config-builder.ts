@@ -1,4 +1,9 @@
 import type { CoreSessionConfig } from "@cline/core"
+import {
+	captureTaskApiSelection,
+	cloneApiProfileConfiguration,
+	resolveApiConfigurationForTaskSelection,
+} from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { buildSessionConfig, type SessionConfigInput } from "./cline-session-factory"
 import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
@@ -10,17 +15,30 @@ export interface SdkSessionConfigBuilderOptions {
 }
 
 /**
- * Unlike the CLI interactive runtime, plan-mode sessions do NOT expose a
- * switch_to_act_mode tool: matching the legacy extension, the model cannot
- * switch modes itself and must ask the user to flip the Plan/Act toggle. The
- * plan-mode system prompt (planModeSwitchTool: false in the session factory)
- * carries the matching instructions.
+ * Ask-mode sessions (internal mode value "plan") get the shared read-only
+ * investigation contract; the mode never instructs the model to switch modes
+ * or produce a plan artifact.
  */
 export class SdkSessionConfigBuilder {
 	constructor(private readonly options: SdkSessionConfigBuilderOptions) {}
 
 	async build(input: SessionConfigInput): Promise<Awaited<ReturnType<typeof buildSessionConfig>>> {
-		const config = await buildSessionConfig(input)
+		// Capture both before the builder's first await. Focus changes cannot split
+		// the picker selection from the credentials/model used to build the session.
+		const selection = structuredClone(input.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
+		const configuration = cloneApiProfileConfiguration(
+			input.apiConfiguration ??
+				resolveApiConfigurationForTaskSelection(
+					this.options.stateManager,
+					this.options.stateManager.getApiConfiguration(input.mode ?? "act"),
+					input.mode ?? "act",
+					selection,
+				),
+		)
+		const snapshot = { selection, configuration: structuredClone(configuration) }
+		const config = Object.assign(await buildSessionConfig({ ...input, apiConfiguration: configuration }), {
+			apiSnapshot: snapshot,
+		})
 		if (this.options.onConsecutiveMistakeLimitReached) {
 			config.onConsecutiveMistakeLimitReached = this.options.onConsecutiveMistakeLimitReached
 		}

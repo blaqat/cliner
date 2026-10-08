@@ -14,6 +14,11 @@ const mocks = vi.hoisted(() => {
 		version: 1,
 		providers: {},
 	}
+	let apiConfigurationWrapper: ((config: MockApiConfiguration) => MockApiConfiguration) | undefined
+	function readApiConfiguration(): MockApiConfiguration {
+		const config = { ...apiConfiguration }
+		return apiConfigurationWrapper ? apiConfigurationWrapper(config) : config
+	}
 	const saveProviderSettings = vi.fn(
 		(settings: Record<string, unknown>, _options?: { setLastUsed?: boolean; tokenSource?: string }) => {
 			const provider = settings.provider
@@ -31,7 +36,13 @@ const mocks = vi.hoisted(() => {
 			providerSettingsById = {}
 			generatedModelsByProvider = {}
 			modelsFile = { version: 1, providers: {} }
+			apiConfigurationWrapper = undefined
 			saveProviderSettings.mockClear()
+		},
+		// Wrap the ApiConfiguration returned by getApiConfiguration — used to hand
+		// back a profile-marked snapshot (snapshotApiProfileConfiguration).
+		setApiConfigurationWrapper(wrapper: ((config: MockApiConfiguration) => MockApiConfiguration) | undefined): void {
+			apiConfigurationWrapper = wrapper
 		},
 		setApiConfiguration(value: MockApiConfiguration): void {
 			apiConfiguration = { ...value }
@@ -48,9 +59,7 @@ const mocks = vi.hoisted(() => {
 		getSavedProviderSettings(providerId: string): Record<string, unknown> | undefined {
 			return providerSettingsById[providerId]
 		},
-		getApiConfiguration(): MockApiConfiguration {
-			return { ...apiConfiguration }
-		},
+		getApiConfiguration: readApiConfiguration,
 		getSaveProviderSettingsMock(): typeof saveProviderSettings {
 			return saveProviderSettings
 		},
@@ -62,7 +71,7 @@ const mocks = vi.hoisted(() => {
 		},
 		getStateManager() {
 			return {
-				getApiConfiguration: () => ({ ...apiConfiguration }),
+				getApiConfiguration: readApiConfiguration,
 				getGlobalSettingsKey: (key: keyof MockApiConfiguration) => apiConfiguration[key],
 				setSecret: (key: keyof MockApiConfiguration, value: unknown) => {
 					apiConfiguration = { ...apiConfiguration, [key]: value }
@@ -1238,5 +1247,183 @@ describe("createProviderConfigStore", () => {
 		// The entry written by the extension must satisfy the real schema that
 		// the SDK's writeModelsFileSync enforces.
 		expect(() => StoredModelEntrySchema.parse(entry)).not.toThrow()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Saved API configurations (profiles): the profile editor stores user-authored
+// model metadata on the mode-scoped *ModeOpenAiModelInfo key. Under an
+// assigned profile that data resolves as overrides — over catalog and stored
+// models.json values — rather than as picker base metadata or a migration.
+// ---------------------------------------------------------------------------
+
+describe("assigned profile model info", () => {
+	beforeEach(() => {
+		mocks.reset()
+	})
+
+	const profileStoreFor = (state: Record<string, unknown>) =>
+		({
+			getGlobalStateKey: (key: string) => state[key],
+			listSecretStorageKeys: () => [],
+			getSecretForKey: () => undefined,
+		}) as never
+
+	const useProfileConfiguration = async (state: Record<string, unknown>) => {
+		const { snapshotApiProfileConfiguration } = await import("@/core/controller/models/apiProfiles")
+		mocks.setApiConfigurationWrapper(
+			(legacy) => snapshotApiProfileConfiguration(profileStoreFor(state), legacy, "act") as typeof legacy,
+		)
+	}
+
+	it("resolves the profile's context window and max tokens as overrides", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		await useProfileConfiguration({
+			apiConfigProfiles: [
+				{
+					id: "cfg",
+					name: "Custom",
+					provider: "openai",
+					modelId: "custom-reasoner",
+					options: {
+						planModeOpenAiModelInfo: {
+							...openAiModelInfoSafeDefaults,
+							contextWindow: 64_000,
+							maxTokens: 2_048,
+						},
+					},
+				},
+			],
+			askProfileId: "cfg",
+			actProfileId: "cfg",
+		})
+
+		const act = store.readSelection(providerId, "act")
+		expect(act?.modelId).toBe("custom-reasoner")
+		expect(act?.modelInfo.contextWindow).toBe(64_000)
+		expect(act?.modelInfo.maxTokens).toBe(2_048)
+		expect(act?.overrides).toMatchObject({ contextWindow: 64_000, maxTokens: 2_048 })
+
+		// Ask mode reads the same saved configuration through its own prefix.
+		const plan = store.readSelection(providerId, "plan")
+		expect(plan?.modelInfo.contextWindow).toBe(64_000)
+		expect(plan?.modelInfo.maxTokens).toBe(2_048)
+	})
+
+	it("layers profile overrides over a catalog base instead of replacing it", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		mocks.setGeneratedModels("openai-compatible", {
+			"custom-reasoner": {
+				...modelInfoA,
+				capabilities: ["images", "tools", "prompt-cache"],
+			},
+		})
+		await useProfileConfiguration({
+			apiConfigProfiles: [
+				{
+					id: "cfg",
+					name: "Custom",
+					provider: "openai",
+					modelId: "custom-reasoner",
+					options: {
+						planModeOpenAiModelInfo: {
+							...openAiModelInfoSafeDefaults,
+							contextWindow: 64_000,
+						},
+					},
+				},
+			],
+			actProfileId: "cfg",
+		})
+
+		const selection = store.readSelection(providerId, "act")
+
+		expect(selection?.modelInfo.contextWindow).toBe(64_000)
+		expect(selection?.modelInfo.maxTokens).toBe(modelInfoA.maxTokens)
+		expect(selection?.modelInfoSource).toBe("catalog")
+	})
+
+	it("does not migrate profile model info into models.json", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		await useProfileConfiguration({
+			apiConfigProfiles: [
+				{
+					id: "cfg",
+					name: "Custom",
+					provider: "openai",
+					modelId: "custom-reasoner",
+					options: {
+						planModeOpenAiModelInfo: {
+							...openAiModelInfoSafeDefaults,
+							contextWindow: 64_000,
+						},
+					},
+				},
+			],
+			actProfileId: "cfg",
+		})
+
+		expect(store.readSelection(providerId, "act")?.modelInfo.contextWindow).toBe(64_000)
+		expect(mocks.getModelsFile().providers["openai-compatible"]).toBeUndefined()
+	})
+
+	it("keeps models.json overrides beneath profile-authored fields", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		mocks.setModelsFile({
+			version: 1,
+			providers: {
+				"openai-compatible": {
+					models: {
+						"custom-reasoner": { contextWindow: 32_000, temperature: 0.4 },
+					},
+				},
+			},
+		})
+		await useProfileConfiguration({
+			apiConfigProfiles: [
+				{
+					id: "cfg",
+					name: "Custom",
+					provider: "openai",
+					modelId: "custom-reasoner",
+					options: {
+						planModeOpenAiModelInfo: {
+							...openAiModelInfoSafeDefaults,
+							contextWindow: 64_000,
+						},
+					},
+				},
+			],
+			actProfileId: "cfg",
+		})
+
+		const selection = store.readSelection(providerId, "act")
+
+		expect(selection?.modelInfo.contextWindow).toBe(64_000)
+		expect(selection?.modelInfo.temperature).toBe(0.4)
+	})
+
+	it("falls back to the regular resolution when the profile stores no model info", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		mocks.setGeneratedModels("openai-compatible", { "catalog-model": modelInfoA })
+		await useProfileConfiguration({
+			apiConfigProfiles: [{ id: "cfg", name: "Custom", provider: "openai", modelId: "catalog-model" }],
+			actProfileId: "cfg",
+		})
+
+		const selection = store.readSelection(providerId, "act")
+
+		expect(selection?.modelInfo.contextWindow).toBe(modelInfoA.contextWindow)
+		expect(selection?.overrides).toBeUndefined()
 	})
 })

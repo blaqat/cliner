@@ -65,6 +65,73 @@ service ModelsService {
   rpc writeProviderConfig(WriteProviderConfigRequest) returns (ProviderConfigResponse);
   // Commits a mode-specific model ID with optional user-authored metadata overrides
   rpc commitModelSelection(CommitModelSelectionRequest) returns (Empty);
+  // Lists saved API configuration profiles and the per-mode assignments
+  rpc listApiProfiles(EmptyRequest) returns (ListApiProfilesResponse);
+  // Creates or updates a saved API configuration profile (incl. secrets)
+  rpc saveApiProfile(SaveApiProfileRequest) returns (SaveApiProfileResponse);
+  // Deletes a saved API configuration profile and its stored secrets
+  rpc deleteApiProfile(DeleteApiProfileRequest) returns (Empty);
+  // Writes a profile's provider/model/options/secrets into a mode's keys
+  rpc assignApiProfile(AssignApiProfileRequest) returns (Empty);
+}
+
+// A saved API configuration: one provider + one model. Secrets are stored in
+// secret storage under `profile:<id>:<secretKey>`; only the key names are
+// exposed over the wire.
+message ApiConfigProfile {
+  string id = 1;
+  string name = 2;
+  string provider = 3; // ApiProvider id (legacy spelling, e.g. "openai")
+  string model_id = 4;
+  // "chat" or "responses"; empty means the provider default ("chat").
+  string open_ai_compatible_api_type = 5;
+  // JSON object of non-secret ApiHandlerOptions captured for this profile.
+  string options_json = 6;
+  // Names of the secret fields stored under `profile:<id>:*`.
+  repeated string secret_keys = 7;
+  // none/empty uses the provider default; otherwise low, medium, high or xhigh.
+  string reasoning_effort = 8;
+}
+
+message ListApiProfilesResponse {
+  repeated ApiConfigProfile profiles = 1;
+  string ask_profile_id = 2;
+  string act_profile_id = 3;
+}
+
+message SaveApiProfileRequest {
+  Metadata metadata = 1;
+  // Empty => create a new profile; otherwise updates the matching profile.
+  string id = 2;
+  string name = 3;
+  string provider = 4;
+  string model_id = 5;
+  string open_ai_compatible_api_type = 6;
+  string options_json = 7;
+  // Secret field name (e.g. "apiKey", "openAiApiKey") -> value. Each entry is
+  // stored under `profile:<id>:<key>`; an empty value deletes the key.
+  map<string, string> secrets = 8;
+  string reasoning_effort = 9;
+}
+
+message SaveApiProfileResponse {
+  ApiConfigProfile profile = 1;
+}
+
+message DeleteApiProfileRequest {
+  Metadata metadata = 1;
+  string id = 2;
+}
+
+message AssignApiProfileRequest {
+  Metadata metadata = 1;
+  string mode = 2; // "plan" (Ask) or "act"
+  string profile_id = 3;
+  bool chat_override = 4; // Composer only; false retains the Settings assignment behavior.
+  optional string reasoning_effort = 5;
+  bool reset_to_default = 6;
+  optional bool next_message_only = 7; // Arm before choosing a configuration or effort.
+  optional string task_id = 8; // Empty means the home draft; fences delayed picker requests.
 }
 
 // List of VS Code LM models
@@ -443,6 +510,7 @@ message ModelsApiOptions {
   optional string aihubmix_base_url = 42;
   optional string aihubmix_app_code = 43;
   optional bool azure_identity = 44;
+  optional string open_ai_compatible_api_type = 45; // "chat" | "responses"
 
   // Plan mode configurations
   optional string plan_mode_api_provider = 100;
@@ -756,6 +824,7 @@ message ModelsApiConfiguration {
   optional string nous_research_api_key = 85;
   optional bool azure_identity = 86;
   optional string wandb_api_key = 87;
+  optional string open_ai_compatible_api_type = 88; // "chat" | "responses"
 
   // Plan mode configurations
   optional string plan_mode_api_provider = 100;

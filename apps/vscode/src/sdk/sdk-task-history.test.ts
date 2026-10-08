@@ -7,7 +7,7 @@ import type { TelemetryService } from "@/services/telemetry/TelemetryService"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import { historyItemToSessionMetadata, SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 vi.mock("@/core/storage/disk", () => ({
@@ -91,6 +91,116 @@ describe("SdkTaskHistory", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+	})
+
+	it("round trips settle and aside metadata", () => {
+		const item = makeHistoryItem("aside", { isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("aside", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+	})
+
+	it("round trips the persisted subagent count", () => {
+		const item = makeHistoryItem("task", { subagentCount: 3 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.subagentCount).toBe(3)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).subagentCount).toBeUndefined()
+	})
+
+	it("round trips the task's last-used API selection", () => {
+		const apiSelection = {
+			askProfileId: "ask-1",
+			actProfileId: "act-1",
+			planModeReasoningEffort: "low" as const,
+			actModeReasoningEffort: "high" as const,
+		}
+		const item = makeHistoryItem("task", { apiSelection })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.apiSelection).toEqual(apiSelection)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).apiSelection).toBeUndefined()
+	})
+
+	it("serializes selection writes and preserves the latest selection across stale history updates", async () => {
+		const { history, getSession, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const firstGet = getSession.getMockImplementation()!
+		getSession.mockImplementationOnce(async (id) => {
+			await gate
+			return firstGet(id)
+		})
+		const first = history.setTaskApiSelection("task-1", { actProfileId: "P" })
+		const second = history.setTaskApiSelection("task-1", { actProfileId: "Q" })
+		await vi.waitFor(() => expect(getSession).toHaveBeenCalledOnce())
+		expect(updateSession).not.toHaveBeenCalled()
+		release()
+		await Promise.all([first, second])
+		await history.updateTaskHistoryItem(makeHistoryItem("task-1", { apiSelection: { actProfileId: "P" } }))
+		expect(await history.getTaskApiSelection("task-1")).toEqual({ actProfileId: "Q" })
+	})
+
+	it("persists and reads back a task's API selection via setTaskApiSelection", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1")])
+		await history.setTaskApiSelection("task-1", { actProfileId: "act-1", actModeReasoningEffort: "medium" })
+		expect((await history.findHistoryItem("task-1"))?.apiSelection).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+		expect(await history.getTaskApiSelection("task-1")).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+	})
+
+	it("persists a growing subagent count and skips non-growth writes", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 2 })
+		const writes = updateSession.mock.calls.length
+		await history.updateTaskSubagentCount("task-1", 1)
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.updateTaskSubagentCount("task-1", 3)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 3 })
+	})
+
+	it("toggles settle and automatically clears it on activity", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		await history.toggleTaskSettled("task-1")
+		expect((await history.findHistoryItem("task-1"))?.isSettled).toBe(true)
+		expect((await history.findHistoryItem("task-1"))?.settledAt).toBeGreaterThan(0)
+		await history.markTaskActive("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
+		const writes = updateSession.mock.calls.length
+		await history.markTaskActive("task-1")
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.toggleTaskSettled("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
+	})
+
+	it("keeps last-activity time when settling and only bumps it on activity", async () => {
+		const { history } = makeHistory([
+			makeSessionRecord("task-1", { updatedAt: "2026-01-02T00:00:00.000Z", metadata: { lastActivityTs: 1234 } }),
+			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z" }),
+		])
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ ts: 1234, lastActivityTs: 1234, isSettled: true })
+		// Chats from before the field existed freeze their previous updatedAt on settle.
+		await history.toggleTaskSettled("old-1")
+		const frozen = Date.parse("2026-01-03T00:00:00.000Z")
+		expect(await history.findHistoryItem("old-1")).toMatchObject({ ts: frozen, lastActivityTs: frozen })
+		await history.toggleTaskSettled("old-1")
+		expect((await history.findHistoryItem("old-1"))?.ts).toBe(frozen)
+		await history.markTaskActive("task-1")
+		expect((await history.findHistoryItem("task-1"))?.ts).toBeGreaterThan(1234)
 	})
 
 	it("maps SDK session history records to legacy history items", () => {
@@ -382,6 +492,72 @@ describe("SdkTaskHistory", () => {
 		expect(result.map((item) => item.sessionId)).toEqual(["root"])
 	})
 
+	it("reopens a saved child report with its parent, spawn identity, reasoning, and full completion", async () => {
+		const child = makeSessionRecord("root__agent", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "agent",
+			prompt: "Report on the SDK",
+			status: "completed",
+			metadata: { spawnToolCallId: "spawn-a", subagentAccess: "read" },
+		})
+		const { history, readMessages } = makeHistory([makeSessionRecord("root"), child])
+		expect((await history.listHistory({ includeSubagents: true })).map((item) => item.sessionId)).toContain("root__agent")
+		await expect(history.findHistoryItem("root__agent")).resolves.toMatchObject({
+			id: "root__agent",
+			isSubagent: true,
+			parentTaskId: "root",
+			agentId: "agent",
+			spawnToolCallId: "spawn-a",
+		})
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "Report on the SDK" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Read the source" },
+					{ type: "text", text: "# Full report\n\n```ts\nconst a = 1\n```" },
+				],
+			},
+		] as never)
+		const messages = await history.getClineMessages("root__agent")
+		expect(messages).toContainEqual(expect.objectContaining({ say: "task", text: "Report on the SDK" }))
+		expect(messages).toContainEqual(expect.objectContaining({ say: "reasoning", text: "Read the source" }))
+		expect(messages).toContainEqual(
+			expect.objectContaining({ say: "completion_result", text: "# Full report\n\n```ts\nconst a = 1\n```" }),
+		)
+	})
+
+	it("restores nested spawn links from a subagent transcript on reopen", async () => {
+		const root = makeSessionRecord("root")
+		const a = makeSessionRecord("root__a", { isSubagent: true, parentSessionId: "root", agentId: "a" })
+		const b = makeSessionRecord("root__b", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "b",
+			metadata: { immediateParentSessionId: a.sessionId, spawnToolCallId: "spawn-b" },
+		})
+		const { history, readMessages } = makeHistory([root, a, b])
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "A" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "spawn-b", name: "spawn_agent", input: { task: "B" } }] },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "spawn-b", content: JSON.stringify({ text: "B report" }) }],
+			},
+		] as never)
+		const messages = await history.getClineMessages(a.sessionId)
+		const status = messages.find((message) => message.say === "subagent")
+		expect(status).toBeDefined()
+		expect(JSON.parse(status!.text!).items).toContainEqual(
+			expect.objectContaining({ childSessionId: b.sessionId, toolCallId: "spawn-b" }),
+		)
+		await expect(history.findHistoryItem(b.sessionId)).resolves.toMatchObject({
+			parentTaskId: a.sessionId,
+			runtimeOwnerTaskId: root.sessionId,
+		})
+	})
+
 	it("finds a task from SDK history", async () => {
 		const record = makeSessionRecord("task-1")
 		const { history } = makeHistory([record])
@@ -524,6 +700,59 @@ describe("SdkTaskHistory", () => {
 		expect(result?.size).toBeUndefined()
 		expect(getFolderSize.loose).toHaveBeenCalledTimes(1)
 		expect(updateSession).not.toHaveBeenCalled()
+	})
+
+	it("awaits live task teardown before deleting persistence and orphans its aside", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("parent"),
+			makeSessionRecord("aside", { metadata: { parentTaskId: "parent", forkedAtTs: 42 } }),
+		])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTaskFromState("parent")
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledWith("parent"))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect((await history.findHistoryItem("aside"))?.parentTaskId).toBeUndefined()
+		expect((await history.findHistoryItem("aside"))?.forkedAtTs).toBeUndefined()
+	})
+
+	it("stops all selected sessions before deleting any of a multi-task selection", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([makeSessionRecord("a"), makeSessionRecord("b")])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTasksFromState(["a", "b"])
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledTimes(2))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect(deleteSession).toHaveBeenCalledTimes(2)
+	})
+
+	it("stops every deleted task before deleting all history while preserving favorites", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("a"),
+			makeSessionRecord("b"),
+			makeSessionRecord("favorite", { metadata: { isFavorited: true } }),
+		])
+		expect(await history.deleteAllTaskHistory({ preserveFavorites: true })).toBe(2)
+		expect(removeSession.mock.calls).toEqual([["a"], ["b"]])
+		for (let index = 0; index < 2; index++) {
+			expect(removeSession.mock.invocationCallOrder[index]).toBeLessThan(deleteSession.mock.invocationCallOrder[index])
+		}
+		expect(await history.deleteAllTaskHistory()).toBe(1)
+		expect(removeSession).toHaveBeenLastCalledWith("favorite")
 	})
 
 	it("deletes SDK sessions", async () => {
@@ -972,7 +1201,9 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 		update: updateSession,
 		delete: deleteSession,
 	} as unknown as VscodeSessionHost
+	const removeSession = vi.fn().mockResolvedValue(undefined)
 	const sessions = {
+		removeSession,
 		getActiveSession: () => ({ sdkHost: host }),
 	} as unknown as SdkSessionLifecycle
 	const history = new SdkTaskHistory({
@@ -984,6 +1215,7 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 
 	return {
 		history,
+		removeSession,
 		getSession,
 		listHistory,
 		updateSession,
@@ -992,3 +1224,21 @@ function makeHistory(records: SessionHistoryRecord[], telemetry?: TelemetryServi
 		startSession,
 	}
 }
+
+it("reopens a nested child with its immediate parent and separate runtime owner", () => {
+	const record = makeSessionRecord("root__b", {
+		sessionId: "root__b",
+		parentSessionId: "root",
+		isSubagent: true,
+		agentId: "b",
+		prompt: "B",
+		startedAt: "2026-10-01T00:00:00Z",
+		metadata: { immediateParentSessionId: "root__a", spawnToolCallId: "spawn-b" },
+	})
+	expect(sessionHistoryRecordToHistoryItem(record)).toMatchObject({
+		id: "root__b",
+		parentTaskId: "root__a",
+		runtimeOwnerTaskId: "root",
+		spawnToolCallId: "spawn-b",
+	})
+})

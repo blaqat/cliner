@@ -4,6 +4,7 @@ import {
 	hasRegisteredHandler,
 	MODEL_COLLECTIONS_BY_PROVIDER_ID,
 	normalizeProviderId,
+	resolveProviderRegistrationSync,
 	toGatewayModelCapabilities,
 } from "@cline/llms";
 import type {
@@ -232,7 +233,7 @@ export function createAgentModelFromConfig(
 		);
 	}
 
-	return createGateway({
+	const gateway = createGateway({
 		// Forward the host-provided fetch so inference honors proxy/CA config on
 		// JetBrains and CLI, where the global fetch is not proxy-aware. Without
 		// this the agent loop falls back to bare global fetch and corporate
@@ -257,7 +258,24 @@ export function createAgentModelFromConfig(
 		logger,
 		telemetry:
 			telemetry ?? config.telemetry ?? config.extensionContext?.telemetry,
-	}).createAgentModel(
+	});
+	// Honor `routingProviderId` (e.g. OpenAI Compatible routed to openai-native
+	// for the Responses API); the built-in registration alone would always use
+	// the source provider's transport.
+	const routingProviderId = normalizedProviderConfig.routingProviderId;
+	if (
+		routingProviderId &&
+		normalizeProviderId(routingProviderId) !==
+			normalizeProviderId(normalizedProviderConfig.providerId)
+	) {
+		const registration = resolveProviderRegistrationSync(
+			normalizedProviderConfig,
+		);
+		if (registration) {
+			gateway.registerProvider(registration);
+		}
+	}
+	return gateway.createAgentModel(
 		{
 			providerId: normalizedProviderConfig.providerId,
 			modelId: normalizedProviderConfig.modelId,
