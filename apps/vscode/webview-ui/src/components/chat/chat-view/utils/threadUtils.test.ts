@@ -145,6 +145,12 @@ describe("buildSubagentLineage", () => {
 	const grandchild = item("c", 5, { isSubagent: true, parentTaskId: "b", task: "grandchild" })
 	const history = [root, a, sibling, b, grandchild]
 
+	it("includes cache reads and writes once in child totals", () => {
+		const child = { ...a, tokensIn: 100, tokensOut: 20, cacheReads: 850, cacheWrites: 50, totalCost: 0.002 }
+		const lineage = buildSubagentLineage(root, [root, child], {}, [])
+		expect(lineage?.children[0]).toMatchObject({ tokens: 1020, cost: 0.002 })
+	})
+
 	it("shows the root with its direct children only (no grandchildren)", () => {
 		const lineage = buildSubagentLineage(root, history, { a: "running" }, [])
 		expect(lineage?.parent).toBeUndefined()

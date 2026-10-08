@@ -226,7 +226,7 @@ export function buildSubagentLineage(
 		access: child.subagentAccess ?? "read",
 		parentTaskId: focused.id,
 		toolCalls: child.subagentToolCalls,
-		tokens: child.tokensIn + child.tokensOut,
+		tokens: child.tokensIn + child.tokensOut + (child.cacheReads ?? 0) + (child.cacheWrites ?? 0),
 		cost: child.totalCost,
 	}))
 	const ownMessages = focused.forkedAtTs ? messages.filter((message) => message.ts > (focused.forkedAtTs ?? 0)) : messages

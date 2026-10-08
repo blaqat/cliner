@@ -69,6 +69,9 @@ export interface SubAgentEndContext {
 	input: SpawnAgentInput;
 	result?: SpawnAgentOutput;
 	agentResult?: AgentResult;
+	/** Accumulated usage and tool starts, including runs that throw. */
+	usage?: AgentResult["usage"];
+	toolCalls?: number;
 	error?: Error;
 }
 
@@ -179,6 +182,7 @@ export function createSpawnAgentTool(
 				? AbortSignal.any([context.signal, abortController.signal])
 				: abortController.signal;
 			let messagesWrite = Promise.resolve();
+			const usage: AgentResult["usage"] = { inputTokens: 0, outputTokens: 0 };
 			const progress = {
 				toolCalls: 0,
 				inputTokens: 0,
@@ -211,9 +215,19 @@ export function createSpawnAgentTool(
 						progress.latestToolCall = event.toolName ?? "";
 						context.emitUpdate?.({ ...progress });
 					} else if (event.type === "usage") {
+						usage.inputTokens = event.totalInputTokens;
+						usage.outputTokens = event.totalOutputTokens;
+						usage.cacheReadTokens =
+							event.totalCacheReadTokens ??
+							(usage.cacheReadTokens ?? 0) + (event.cacheReadTokens ?? 0);
+						usage.cacheWriteTokens =
+							event.totalCacheWriteTokens ??
+							(usage.cacheWriteTokens ?? 0) + (event.cacheWriteTokens ?? 0);
+						usage.totalCost =
+							event.totalCost ?? (usage.totalCost ?? 0) + (event.cost ?? 0);
 						progress.inputTokens = event.totalInputTokens;
 						progress.outputTokens = event.totalOutputTokens;
-						progress.totalCost = event.totalCost ?? progress.totalCost;
+						progress.totalCost = usage.totalCost;
 						context.emitUpdate?.({ ...progress });
 					}
 					if (event.type === "iteration_end" && config.onSubAgentMessages) {
@@ -286,7 +300,10 @@ export function createSpawnAgentTool(
 					text: stoppedByUserText(""),
 					iterations: 0,
 					finishReason: "aborted",
-					usage: { inputTokens: 0, outputTokens: 0 },
+					usage: {
+						inputTokens: usage.inputTokens,
+						outputTokens: usage.outputTokens,
+					},
 				};
 			} else {
 				error = toError(runError);
@@ -302,7 +319,9 @@ export function createSpawnAgentTool(
 						toolCallId,
 						input,
 						...(output ? { result: output } : { error }),
-						...(result && output ? { agentResult: result } : {}),
+						...(result ? { agentResult: result } : {}),
+						usage: result?.usage ?? usage,
+						toolCalls: result?.toolCalls?.length ?? progress.toolCalls,
 						messages: subAgent.getMessages(),
 					});
 				} catch {
