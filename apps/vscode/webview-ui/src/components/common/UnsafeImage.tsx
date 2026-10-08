@@ -1,6 +1,7 @@
 import type { ComponentProps } from "react"
 import React, { useState } from "react"
 import { Button } from "@/components/ui/button"
+import { CHAT_IMAGE_MAX_HEIGHT } from "./imageSizing"
 
 type UnsafeImageProps = ComponentProps<"img">
 
@@ -33,7 +34,14 @@ const UnsafeImage: React.FC<UnsafeImageProps> = ({ src = "", alt = "", ...imgPro
 		)
 	}
 
-	return <img alt={alt} src={src} {...imgProps} />
+	return (
+		<img
+			alt={alt}
+			src={src}
+			{...imgProps}
+			style={{ maxWidth: "100%", maxHeight: CHAT_IMAGE_MAX_HEIGHT, objectFit: "contain", ...imgProps.style }}
+		/>
+	)
 }
 
 export default UnsafeImage

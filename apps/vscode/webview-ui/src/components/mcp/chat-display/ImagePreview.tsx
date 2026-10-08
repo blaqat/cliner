@@ -2,6 +2,7 @@ import { StringRequest } from "@shared/proto/cline/common"
 import DOMPurify from "dompurify"
 import React from "react"
 import ChatErrorBoundary from "@/components/chat/ChatErrorBoundary"
+import { CHAT_IMAGE_MAX_HEIGHT } from "@/components/common/imageSizing"
 import { FileServiceClient, WebServiceClient } from "@/services/grpc-client"
 import { checkIfImageUrl, formatUrlForOpening, getSafeHostname } from "./utils/mcpRichUtil"
 
@@ -285,8 +286,10 @@ class ImagePreview extends React.Component<
 						aria-label={`SVG from ${getSafeHostname(url)}`}
 						data={DOMPurify.sanitize(url)}
 						style={{
+							display: "block",
 							width: "100%",
 							height: "auto",
+							maxHeight: CHAT_IMAGE_MAX_HEIGHT,
 							borderRadius: "4px",
 						}}
 						type="image/svg+xml">
@@ -295,8 +298,12 @@ class ImagePreview extends React.Component<
 							alt={`SVG from ${getSafeHostname(url)}`}
 							src={DOMPurify.sanitize(url)}
 							style={{
-								width: "100%",
+								display: "block",
+								width: "auto",
 								height: "auto",
+								maxWidth: "100%",
+								maxHeight: CHAT_IMAGE_MAX_HEIGHT,
+								objectFit: "contain",
 								borderRadius: "4px",
 							}}
 						/>
@@ -307,8 +314,12 @@ class ImagePreview extends React.Component<
 						loading="eager"
 						src={DOMPurify.sanitize(url)}
 						style={{
-							width: "100%",
+							display: "block",
+							width: "auto",
 							height: "auto",
+							maxWidth: "100%",
+							maxHeight: CHAT_IMAGE_MAX_HEIGHT,
+							objectFit: "contain",
 							borderRadius: "4px",
 						}}
 					/>
