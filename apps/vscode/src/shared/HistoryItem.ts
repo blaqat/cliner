@@ -7,6 +7,7 @@ export type HistoryItem = {
 	task: string
 	tokensIn: number
 	tokensOut: number
+	subagentToolCalls?: number
 	cacheWrites?: number
 	cacheReads?: number
 	totalCost: number

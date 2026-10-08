@@ -87,6 +87,13 @@ export interface ExtensionState {
 	preferredLanguage?: string
 	mode: Mode
 	clineMessages: ClineMessage[]
+	/** Actionable child decisions belonging to the focused thread's runtime. */
+	pendingSubagentDecisions?: {
+		taskId: string
+		name: string
+		kind: "approval" | "question"
+		message: ClineMessage
+	}[]
 	checkpointRestoreInput?: {
 		text: string
 		images?: string[]
@@ -221,6 +228,8 @@ export interface QueuedPrompt {
 
 export interface ClineMessage {
 	decisionId?: string
+	subagentTaskId?: string
+	subagentName?: string
 	/** Index in the persisted SDK transcript, for conversation-only forks. */
 	sdkMessageIndex?: number
 	sdkToolCallId?: string

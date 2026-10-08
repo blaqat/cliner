@@ -1391,9 +1391,18 @@ export class SessionRuntime {
 	}
 
 	private emitLegacyEvent(event: AgentEvent): void {
+		// The legacy adapter only translates content. Stamp the session identity
+		// here, including notices/errors emitted outside the adapter, so child
+		// events cannot be mistaken for their parent's stream.
+		const identifiedEvent: AgentEvent = {
+			...event,
+			agentId: this.agentId,
+			conversationId: this.getConversationId(),
+			parentAgentId: this.parentAgentId,
+		};
 		for (const listener of this.listeners) {
 			try {
-				listener(event);
+				listener(identifiedEvent);
 			} catch (error) {
 				this.logger?.error?.("SessionRuntime event listener threw", {
 					agentId: this.agentId,

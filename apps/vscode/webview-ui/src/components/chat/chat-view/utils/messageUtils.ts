@@ -582,6 +582,14 @@ export function groupLowStakesTools(groupedMessages: (ClineMessage | ClineMessag
 		const message = item
 		const messageType = message.say
 		const isLast = i === groupedMessages.length - 1
+		// Child decisions can be followed by sibling progress while still
+		// waiting. Keep their named controls outside collapsed tool groups.
+		if (message.type === "ask" && message.subagentTaskId && message.decisionId) {
+			commitToolGroup()
+			flushPending()
+			result.push(message)
+			continue
+		}
 
 		// Low-stakes tool - absorb pending and add to group
 		if (isLowStakesTool(message)) {

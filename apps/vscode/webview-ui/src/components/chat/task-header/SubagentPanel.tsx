@@ -1,3 +1,4 @@
+import type { ClineMessage } from "@shared/ExtensionMessage"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
 	buildSubagentLineage,
@@ -12,6 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
+import { SubagentDecisionControls } from "../SubagentDecisionControls"
 import { HeaderIconButton } from "./HeaderIconButton"
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
@@ -68,9 +70,10 @@ interface LineageRowViewProps {
 	stopFailed?: boolean
 	onOpen?: () => void
 	onStop?: () => void
+	decisionMessage?: ClineMessage
 }
 
-const LineageRowView = ({ row, relation, stopping, stopFailed, onOpen, onStop }: LineageRowViewProps) => {
+const LineageRowView = ({ row, relation, stopping, stopFailed, onOpen, onStop, decisionMessage }: LineageRowViewProps) => {
 	const label = stopping ? "stopping…" : stopFailed ? "couldn't stop" : STATUS_LABEL[row.status]
 	return (
 		<div
@@ -115,6 +118,7 @@ const LineageRowView = ({ row, relation, stopping, stopFailed, onOpen, onStop }:
 					{relation === "parent" ? "parent" : label}
 				</span>
 			</button>
+			{decisionMessage && <SubagentDecisionControls compact key={decisionMessage.decisionId} message={decisionMessage} />}
 			{onStop && (
 				<Tooltip>
 					<TooltipContent className="px-2 py-1" side="left">
@@ -149,6 +153,7 @@ interface SubagentPanelButtonProps {
  */
 export const SubagentPanelButton = ({ onOpenPreview }: SubagentPanelButtonProps) => {
 	const lineage = useSubagentLineage()
+	const { pendingSubagentDecisions } = useExtensionState()
 	const [open, setOpen] = useState(false)
 	// Rows with a Stop request in flight or sent but not yet reflected in their
 	// status, and rows whose last Stop failed (retryable).
@@ -312,15 +317,23 @@ export const SubagentPanelButton = ({ onOpenPreview }: SubagentPanelButtonProps)
 					{parent && <LineageRowView onOpen={() => openRow(parent)} relation="parent" row={parent} stopping={false} />}
 					<LineageRowView relation="current" row={current} stopping={false} />
 					{children.map((row) => (
-						<LineageRowView
-							key={row.id}
-							onOpen={canOpen(row) ? () => openRow(row) : undefined}
-							onStop={isStoppable(row) ? () => stop([row]) : undefined}
-							relation="child"
-							row={row}
-							stopFailed={failedIds.has(row.id)}
-							stopping={stoppingIds.has(row.id)}
-						/>
+						<div key={row.id}>
+							<LineageRowView
+								decisionMessage={pendingSubagentDecisions?.find((pending) => pending.taskId === row.id)?.message}
+								onOpen={canOpen(row) ? () => openRow(row) : undefined}
+								onStop={isStoppable(row) ? () => stop([row]) : undefined}
+								relation="child"
+								row={row}
+								stopFailed={failedIds.has(row.id)}
+								stopping={stoppingIds.has(row.id)}
+							/>
+							{row.tokens || row.toolCalls ? (
+								<div className="pl-7 pb-1 text-[10px] text-description" data-testid="lineage-usage">
+									{row.toolCalls ?? 0} tools · {(row.tokens ?? 0).toLocaleString()} tokens · $
+									{(row.cost ?? 0).toFixed(4)}
+								</div>
+							) : null}
+						</div>
 					))}
 					{children.length === 0 && (
 						<div className="px-5 py-1 text-[11px] text-description">No subagents from this thread.</div>

@@ -400,6 +400,30 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
 	})
 
+	it("opens an unpersisted child even when the history read would reject", async () => {
+		const { options } = makeCoordinator({ hasHistoryItem: false })
+		const child = {
+			id: "parent__child",
+			ts: 5,
+			task: "Child",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			isSubagent: true,
+			parentTaskId: "parent",
+		}
+		options.taskHistory.findHistoryItem.mockRejectedValue(new Error("History unavailable"))
+		const focusLiveTask = vi.fn(() => true)
+		const coordinator = new SdkTaskControlCoordinator({
+			...options,
+			focusLiveTask,
+			getLiveTaskItem: (id) => (id === child.id ? child : undefined),
+		})
+		expect(await coordinator.showTaskWithId(child.id)).toEqual(child)
+		expect(focusLiveTask).toHaveBeenCalledWith(child.id, child)
+		expect(options.taskHistory.findHistoryItem).not.toHaveBeenCalled()
+	})
+
 	it("does not show a task that is missing from history", async () => {
 		const { coordinator, options } = makeCoordinator({ hasHistoryItem: false })
 

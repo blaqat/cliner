@@ -25,8 +25,8 @@ export interface SdkInteractionCoordinatorOptions {
 	postStateToWebview: () => Promise<void>
 	getMode?: () => "plan" | "act"
 	shouldAutoApproveTool?: (request: ToolApprovalRequest) => boolean
-	recordApprovedToolMessage?: (toolCallId: string, messageTs: number) => void
-	recordDeniedToolApproval?: (toolCallId: string, toolName: string, reason: string) => void
+	recordApprovedToolMessage?: (toolCallId: string, messageTs: number, agentId: string) => void
+	recordDeniedToolApproval?: (toolCallId: string, toolName: string, reason: string, agentId: string) => void
 	/**
 	 * The process-wide id/seq/epoch authority, shared with the message translator. Optional so
 	 * existing tests that don't need cross-generator id uniqueness keep working; when omitted a
@@ -70,14 +70,34 @@ export class SdkInteractionCoordinator {
 		| undefined
 	private toolApprovalQueue: { request: ToolApprovalRequest; resolve: ApprovalResolver }[] = []
 
-	getPendingDecision(agentId?: string): { id: string; message: ClineMessage; kind: "approval" | "question" } | undefined {
+	getPendingDecisions(): { id: string; agentId?: string; message: ClineMessage; kind: "approval" | "question" }[] {
 		const approval = this.pendingApproval
-		if (approval && (agentId === undefined || approval.request.agentId === agentId))
-			return { id: approval.id, message: approval.message, kind: "approval" }
-		const question = [...this.pendingQuestions.values()]
-			.reverse()
-			.find((pending) => agentId === undefined || pending.agentId === agentId)
-		return question ? { id: question.id, message: question.message, kind: "question" } : undefined
+		return [
+			...(approval
+				? [{ id: approval.id, agentId: approval.request.agentId, message: approval.message, kind: "approval" as const }]
+				: []),
+			...[...this.pendingQuestions.values()].map((question) => ({
+				id: question.id,
+				agentId: question.agentId,
+				message: question.message,
+				kind: "question" as const,
+			})),
+		]
+	}
+
+	getPendingDecision(agentId?: string): ReturnType<SdkInteractionCoordinator["getPendingDecisions"]>[number] | undefined {
+		const decisions = this.getPendingDecisions().filter((pending) => agentId === undefined || pending.agentId === agentId)
+		// Keep the legacy projection: the active approval wins; otherwise the
+		// most recently displayed question receives an id-less response.
+		return decisions.find((pending) => pending.kind === "approval") ?? decisions.at(-1)
+	}
+
+	hasPendingDecisionForAgent(agentId: string): boolean {
+		return (
+			!!this.getPendingDecision(agentId) ||
+			this.preparingApproval?.request.agentId === agentId ||
+			this.toolApprovalQueue.some((pending) => pending.request.agentId === agentId)
+		)
 	}
 
 	hasPendingDecision(id: string): boolean {
@@ -144,6 +164,7 @@ export class SdkInteractionCoordinator {
 
 			request.signal?.addEventListener("abort", onAbort, { once: true })
 			this.toolApprovalQueue.push({ request, resolve: settle })
+			void this.options.postStateToWebview()
 			if (request.signal?.aborted) onAbort()
 			else if (!this.pendingApproval && !this.preparingApproval) void this.showNextToolApproval()
 		})
@@ -243,7 +264,7 @@ export class SdkInteractionCoordinator {
 		const approved = responseType === "yesButtonClicked"
 		Logger.log(`[SdkController] Resolving pending tool approval: approved=${approved} (responseType=${responseType})`)
 		if (approved && pendingMessage) {
-			this.options.recordApprovedToolMessage?.(pendingMessage.toolCallId, pendingMessage.messageTs)
+			this.options.recordApprovedToolMessage?.(pendingMessage.toolCallId, pendingMessage.messageTs, request.agentId)
 		}
 
 		// Approved or rejected by approval controls, the agent resumes its turn and returns to streaming.
@@ -269,7 +290,12 @@ export class SdkInteractionCoordinator {
 			})
 		}
 		if (!approved && pendingMessage) {
-			this.options.recordDeniedToolApproval?.(pendingMessage.toolCallId, pendingMessage.toolName, denialReason)
+			this.options.recordDeniedToolApproval?.(
+				pendingMessage.toolCallId,
+				pendingMessage.toolName,
+				denialReason,
+				request.agentId,
+			)
 		}
 		resolve({
 			approved,
@@ -319,7 +345,12 @@ export class SdkInteractionCoordinator {
 			this.pendingApproval = undefined
 		}
 		for (const pending of approvals) {
-			this.options.recordDeniedToolApproval?.(pending.request.toolCallId, pending.request.toolName, reason)
+			this.options.recordDeniedToolApproval?.(
+				pending.request.toolCallId,
+				pending.request.toolName,
+				reason,
+				pending.request.agentId,
+			)
 			pending.resolve({ approved: false, reason })
 		}
 		let clearedQuestion = false

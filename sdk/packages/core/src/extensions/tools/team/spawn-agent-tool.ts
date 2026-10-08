@@ -179,6 +179,13 @@ export function createSpawnAgentTool(
 				? AbortSignal.any([context.signal, abortController.signal])
 				: abortController.signal;
 			let messagesWrite = Promise.resolve();
+			const progress = {
+				toolCalls: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				totalCost: 0,
+				latestToolCall: "",
+			};
 			const subAgent = createDelegatedAgent({
 				kind: "subagent",
 				prompt: input.systemPrompt,
@@ -199,6 +206,16 @@ export function createSpawnAgentTool(
 				abortSignal,
 				onEvent: (event) => {
 					config.onSubAgentEvent?.(event);
+					if (event.type === "content_start" && event.contentType === "tool") {
+						progress.toolCalls++;
+						progress.latestToolCall = event.toolName ?? "";
+						context.emitUpdate?.({ ...progress });
+					} else if (event.type === "usage") {
+						progress.inputTokens = event.totalInputTokens;
+						progress.outputTokens = event.totalOutputTokens;
+						progress.totalCost = event.totalCost ?? progress.totalCost;
+						context.emitUpdate?.({ ...progress });
+					}
 					if (event.type === "iteration_end" && config.onSubAgentMessages) {
 						const messages = structuredClone(subAgent.getMessages());
 						messagesWrite = messagesWrite

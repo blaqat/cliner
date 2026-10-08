@@ -172,6 +172,9 @@ export interface LineageRow {
 	previewOnly?: boolean
 	/** Task that spawned this row (the id to pass to stopSubagent). */
 	parentTaskId?: string
+	toolCalls?: number
+	tokens?: number
+	cost?: number
 }
 
 export interface SubagentLineage {
@@ -222,6 +225,9 @@ export function buildSubagentLineage(
 		status: statusFor(statuses, child.id),
 		access: child.subagentAccess ?? "read",
 		parentTaskId: focused.id,
+		toolCalls: child.subagentToolCalls,
+		tokens: child.tokensIn + child.tokensOut,
+		cost: child.totalCost,
 	}))
 	const ownMessages = focused.forkedAtTs ? messages.filter((message) => message.ts > (focused.forkedAtTs ?? 0)) : messages
 	for (const subagent of collectSubagents(ownMessages)) {
