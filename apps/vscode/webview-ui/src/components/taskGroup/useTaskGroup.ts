@@ -55,6 +55,8 @@ export function taskGroupDetailsFromProto(response: GetTaskGroupResponse): TaskG
 			title: thread.title || undefined,
 			task: thread.task,
 			ts: thread.ts,
+			// Older hosts don't send a start time; last activity is the best guess.
+			startedTs: thread.startedTs || thread.ts,
 			parentTaskId: thread.parentTaskId,
 			isSubagent: thread.isSubagent,
 			read: thread.read,

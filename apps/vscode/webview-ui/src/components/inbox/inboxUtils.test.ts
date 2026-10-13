@@ -8,6 +8,7 @@ import {
 	EXPANDED_TASK_GROUPS_EVENT,
 	expandTaskGroupInInbox,
 	formatAge,
+	type InboxSettledEntry,
 	readExpandedTaskGroups,
 	writeExpandedTaskGroups,
 } from "./inboxUtils"
@@ -18,6 +19,9 @@ const MIN = 60_000
 function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): HistoryItem {
 	return { id, ts, task: `task ${id}`, tokensIn: 0, tokensOut: 0, totalCost: 0, ...extra }
 }
+
+/** A settled entry's id: the thread id, or `group:<id>` for a settled task. */
+const settledId = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.id : `group:${entry.row.group.id}`)
 
 describe("buildInbox", () => {
 	it("puts unsettled chats on top by recency and settled chats below by last activity (not settle time)", () => {
@@ -31,8 +35,8 @@ describe("buildInbox", () => {
 		const { active, settled, hiddenCount } = buildInbox(history, {})
 
 		expect(active.map((row) => row.item.id)).toEqual(["new", "old"])
-		expect(settled.map((row) => row.item.id)).toEqual(["s2", "s1"])
-		expect(settled.every((row) => row.settled)).toBe(true)
+		expect(settled.map(settledId)).toEqual(["s2", "s1"])
+		expect(settled.every((entry) => entry.kind === "thread" && entry.row.settled)).toBe(true)
 		expect(hiddenCount).toBe(0)
 	})
 
@@ -96,8 +100,8 @@ describe("buildInbox", () => {
 
 		const { settled } = buildInbox(history, {})
 
-		expect(settled.map((row) => row.item.id)).toEqual(["s2", "s1"])
-		expect(settled.find((row) => row.item.id === "s1")?.activityTs).toBe(NOW - 2 * MIN)
+		expect(settled.map(settledId)).toEqual(["s2", "s1"])
+		expect(settled.find((entry) => settledId(entry) === "s1")?.row.activityTs).toBe(NOW - 2 * MIN)
 	})
 
 	it("reads subagent counts from live state, falling back to the persisted total", () => {
@@ -111,7 +115,7 @@ describe("buildInbox", () => {
 
 		const liveRow = active.find((row) => row.item.id === "live")
 		expect(liveRow).toMatchObject({ subagentCount: 4, liveSubagentCount: 2 })
-		expect(settled[0]).toMatchObject({ subagentCount: 3, liveSubagentCount: 0 })
+		expect(settled[0].row).toMatchObject({ subagentCount: 3, liveSubagentCount: 0 })
 		expect(active.find((row) => row.item.id === "none")).toMatchObject({ subagentCount: 0, liveSubagentCount: 0 })
 	})
 
@@ -258,6 +262,50 @@ describe("buildInbox task groups", () => {
 		expect(groups[0].members.map((row) => row.item.id)).toEqual(["m1", "m2"])
 	})
 
+	it("lists a task as active only while a member thread is unsettled", () => {
+		const history = [
+			item("open", NOW - 10 * MIN, { taskGroupId: "live" }),
+			item("closed", NOW - 5 * MIN, { taskGroupId: "live", isSettled: true }),
+			item("done1", NOW - 30 * MIN, { taskGroupId: "done", isSettled: true }),
+			item("done2", NOW - 40 * MIN, { taskGroupId: "done", isSettled: true }),
+		]
+
+		const { groups, settled, settledTotal } = buildInbox(history, {}, undefined, {
+			taskGroups: [group("live", 0), group("done", 0), group("empty", NOW - 60 * MIN)],
+		})
+
+		expect(groups.map((row) => row.group.id)).toEqual(["live"])
+		expect(settled.map(settledId)).toEqual(["group:done", "group:empty"])
+		expect(settledTotal).toBe(2)
+		const done = settled[0]
+		expect(done.kind === "group" && done.row.members.map((row) => row.item.id)).toEqual(["done1", "done2"])
+	})
+
+	it("keeps a task with a running thread active even if the thread's settled flag lags", () => {
+		const history = [item("t", NOW - MIN, { taskGroupId: "g", isSettled: true })]
+
+		const running = buildInbox(history, { t: "running" }, undefined, { taskGroups: [group("g", 0)] })
+		expect(running.groups.map((row) => row.group.id)).toEqual(["g"])
+		expect(running.settled).toHaveLength(0)
+	})
+
+	it("orders settled tasks among settled threads by newest member activity, else the task's update time", () => {
+		const history = [
+			item("s-new", NOW - 5 * MIN, { isSettled: true }),
+			item("member", NOW - 15 * MIN, { taskGroupId: "g", isSettled: true }),
+			item("s-mid", NOW - 25 * MIN, { isSettled: true }),
+			item("s-old", NOW - 50 * MIN, { isSettled: true }),
+		]
+
+		const { settled, settledTotal } = buildInbox(history, {}, undefined, {
+			taskGroups: [group("g", NOW - 90 * MIN), group("empty", NOW - 40 * MIN)],
+			settledLimit: 4,
+		})
+
+		expect(settled.map(settledId)).toEqual(["s-new", "group:g", "s-mid", "group:empty"])
+		expect(settledTotal).toBe(5)
+	})
+
 	it("keeps threads filed into an unknown (deleted) group at the top level", () => {
 		const { groups, active } = buildInbox([item("t", NOW, { taskGroupId: "gone" })], {}, undefined, { taskGroups: [] })
 
@@ -316,9 +364,14 @@ describe("buildInbox task groups", () => {
 	})
 
 	it("falls back to the group's update time when it has no threads", () => {
-		const { groups } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
+		const { groups, settled } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
 
-		expect(groups[0]).toMatchObject({ activityTs: NOW - 3 * MIN, members: [], runningCount: 0 })
+		// An empty task has nothing in progress, so it is listed under Settled.
+		expect(groups).toHaveLength(0)
+		expect(settled[0]).toMatchObject({
+			kind: "group",
+			row: { activityTs: NOW - 3 * MIN, members: [], runningCount: 0 },
+		})
 	})
 
 	it("counts members with work in progress, including busy subthreads", () => {

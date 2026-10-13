@@ -233,6 +233,11 @@ export function sessionRecordActivityTs(item: SessionHistoryRecord): number {
 	)
 }
 
+/** When the session was created; records without a start time fall back to last activity. */
+export function sessionRecordStartedTs(item: SessionHistoryRecord): number {
+	return dateStringToTimestamp(item.startedAt) || sessionRecordActivityTs(item)
+}
+
 export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): HistoryItem {
 	const metadata = item.metadata
 	const lastActivityTs = sessionRecordActivityTs(item)

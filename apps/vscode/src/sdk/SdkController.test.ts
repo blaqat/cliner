@@ -425,6 +425,57 @@ describe("SDK remote-config coordination", () => {
 		expect(state.sessionStatuses["bg-1"]).toBe("running")
 	})
 
+	it("files a just-started thread into its task before its record persists", async () => {
+		// Core writes the session record (with taskGroupId metadata) only when the
+		// first send lands. Until then the synthesized rows must carry the task, or
+		// the breadcrumb, composer pill and inbox show "no task" until it streams.
+		const controller = Object.create(SdkController.prototype)
+		const focused = createTaskProxy("fg-1", vi.fn(), vi.fn())
+		focused.messageStateHandler.addMessages([{ ts: 41, type: "say", say: "task", text: "focused work" }])
+		const bgTask = createTaskProxy("bg-1", vi.fn(), vi.fn())
+		bgTask.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "quiet work" }])
+		const bgSession = {
+			sessionId: "bg-1",
+			isRunning: true,
+			startConfig: { modelId: "bg-model" },
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		const liveSessions = new Map([["bg-1", bgSession]])
+		Object.assign(controller, {
+			lastKnownWorkspaceRoot: "/workspace",
+			focusedTask: focused,
+			taskSessions: new Map<string, unknown>([
+				["fg-1", { task: focused, taskGroupId: "group-1" }],
+				["bg-1", { task: bgTask, taskGroupId: "group-2" }],
+			]),
+			stateManager: {
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			backgroundCommandRunning: false,
+			backgroundCommandTaskId: undefined,
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { listHistory: async () => [] },
+			sessions: {
+				getActiveSession: () => undefined,
+				getSessions: () => liveSessions,
+				getSession: (id: string) => liveSessions.get(id),
+				sessionStatuses: { "fg-1": "running", "bg-1": "running" },
+				subagentCounts: {},
+			},
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+
+		const state = await controller.getStateToPostToWebview()
+
+		expect(state.currentTaskItem).toMatchObject({ id: "fg-1", task: "focused work", taskGroupId: "group-1" })
+		expect(state.taskHistory.find((item: { id: string }) => item.id === "bg-1")).toMatchObject({ taskGroupId: "group-2" })
+	})
+
 	it("waits for initial remote config before resuming an existing task", async () => {
 		const events: string[] = []
 		const controller = {

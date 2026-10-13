@@ -161,10 +161,12 @@ interface TaskGroupRowViewProps {
 	onToggle: () => void
 	onOpen?: (taskGroupId: string) => void
 	animateLayout: boolean
+	/** Listed under Settled: every thread is settled, or it has none. */
+	settled?: boolean
 }
 
 /** A task group row: chevron, title + tags, thread count, newest activity, running count. */
-const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout }: TaskGroupRowViewProps) => {
+const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout, settled = false }: TaskGroupRowViewProps) => {
 	const { group, members, activityTs, runningCount } = row
 	const preview = members.slice(0, GROUP_PREVIEW_COUNT)
 	const older = members.length - preview.length
@@ -176,7 +178,9 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout 
 				className={cn(
 					"group grid h-11 grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden rounded-xs border border-transparent px-2 cursor-pointer animate-row-in motion-reduce:animate-none",
 					"hover:bg-list-hover hover:border-editor-group-border focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					settled && "opacity-55 hover:opacity-90",
 				)}
+				data-settled={settled || undefined}
 				data-testid="inbox-task-group-row"
 				onClick={open}
 				onKeyDown={(event) => {
@@ -222,7 +226,9 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout 
 					</div>
 				</div>
 				<div className="flex flex-col items-end gap-0.5">
-					<span className="text-[10px] text-description">{formatAge(activityTs, now)}</span>
+					<span className="text-[10px] text-description">
+						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
+					</span>
 					{runningCount > 0 && (
 						<span className="text-[10px] text-link" data-testid="inbox-task-group-running">
 							{runningCount} running
@@ -269,7 +275,8 @@ interface InboxListProps {
 }
 
 /**
- * Home inbox: active (unsettled) chats on top by recency, settled chats below.
+ * Home inbox: active (unsettled) chats and tasks on top by recency; settled
+ * chats and fully settled (or empty) tasks below.
  * Status comes from the host's live `sessionStatuses`; asides are folded into
  * their parent's subthread count.
  */
@@ -376,9 +383,27 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 								key="settled-rows"
 								style={{ overflow: "hidden" }}
 								transition={{ duration: 0.18, ease: "easeOut" }}>
-								{settled.map((row) => (
-									<InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />
-								))}
+								{settled.map((entry) =>
+									entry.kind === "group" ? (
+										<TaskGroupRowView
+											animateLayout={!reduceMotion}
+											expanded={expandedGroups.has(entry.row.group.id)}
+											key={`group:${entry.row.group.id}`}
+											now={now}
+											onOpen={onOpenTaskGroup}
+											onToggle={() => toggleGroup(entry.row.group.id)}
+											row={entry.row}
+											settled
+										/>
+									) : (
+										<InboxRowView
+											animateLayout={!reduceMotion}
+											key={entry.row.item.id}
+											now={now}
+											row={entry.row}
+										/>
+									),
+								)}
 								{(settledTotal > settled.length || settledLimit > DEFAULT_SETTLED_LIMIT) && (
 									<div className="flex gap-3 px-2 py-1">
 										{settledTotal > settled.length && (

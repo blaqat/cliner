@@ -40,12 +40,16 @@ export interface InboxTaskGroupRow {
 	runningCount: number
 }
 
+/** A row in the Settled section: a settled thread, or a task whose threads are all settled (or has none). */
+export type InboxSettledEntry = { kind: "thread"; row: InboxRow } | { kind: "group"; row: InboxTaskGroupRow }
+
 export interface InboxGroups {
-	/** Task groups, newest activity first. Shown above the unfiled active rows. */
+	/** Task groups with unsettled threads, newest activity first. Shown above the unfiled active rows. */
 	groups: InboxTaskGroupRow[]
 	active: InboxRow[]
-	settled: InboxRow[]
-	/** All settled chats, including those cut by the settled limit. */
+	/** Settled threads and settled tasks, newest activity first. */
+	settled: InboxSettledEntry[]
+	/** All settled entries, including those cut by the settled limit. */
 	settledTotal: number
 	/** Active rows cut by the active limit; the list links to the full history when non-zero. */
 	hiddenCount: number
@@ -68,9 +72,12 @@ export function isRowWorking(row: InboxRow): boolean {
  * Groups task history for the home inbox. Asides are folded into their parent's
  * subthread count instead of being top-level rows (unless the parent is gone or
  * the aside is filed in a different task than the parent).
- * Threads filed into a known task group move under that group's row.
+ * Threads filed into a known task group move under that group's row. A group
+ * is active while any member has unsettled or in-progress work; groups whose
+ * members are all settled (or that have none) sit in the settled list.
  * Active (unsettled) rows sort by last activity including subthreads; settled
- * rows by their own last activity; groups by their newest member.
+ * rows by their own last activity; groups by their newest member (or their own
+ * update time when empty).
  */
 export function buildInbox(
 	history: readonly HistoryItem[],
@@ -152,7 +159,7 @@ export function buildInbox(
 		if (members) members.push(row)
 		else unfiled.push(row)
 	}
-	const groups = taskGroups
+	const allGroups = taskGroups
 		.map((group) => {
 			const members = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
 			return {
@@ -164,8 +171,15 @@ export function buildInbox(
 		})
 		.sort((a, b) => b.activityTs - a.activityTs)
 
+	const isGroupSettled = (row: InboxTaskGroupRow) => row.members.every((member) => member.settled && !isRowWorking(member))
+	const groups = allGroups.filter((row) => !isGroupSettled(row))
+
 	const active = unfiled.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
-	const settled = unfiled.filter((row) => row.settled).sort((a, b) => b.item.ts - a.item.ts)
+	const settledTs = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.ts : entry.row.activityTs)
+	const settled: InboxSettledEntry[] = [
+		...unfiled.filter((row) => row.settled).map((row) => ({ kind: "thread" as const, row })),
+		...allGroups.filter(isGroupSettled).map((row) => ({ kind: "group" as const, row })),
+	].sort((a, b) => settledTs(b) - settledTs(a))
 
 	return {
 		groups,

@@ -34,6 +34,45 @@ const INPUT_CLASS =
 	"min-w-0 rounded-xs border border-(--vscode-focusBorder) bg-input-background px-1.5 text-input-foreground outline-none placeholder:text-input-placeholder"
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+
+export interface TimelineEntry {
+	thread: TaskGroupThreadRow
+	/** 0 for a thread, 1+ for a subthread (aside) nested under a listed parent. */
+	depth: number
+}
+
+/**
+ * The task's story: threads oldest-created first, each followed by its
+ * subthreads (also oldest first). Subagents belong to their root thread and
+ * aren't listed; a subthread whose parent isn't listed here is a thread.
+ */
+export function orderTimeline(threads: readonly TaskGroupThreadRow[]): TimelineEntry[] {
+	const listed = threads.filter((thread) => !thread.isSubagent)
+	const ids = new Set(listed.map((thread) => thread.threadId))
+	const byStart = (a: TaskGroupThreadRow, b: TaskGroupThreadRow) => a.startedTs - b.startedTs || a.ts - b.ts
+	const children = new Map<string, TaskGroupThreadRow[]>()
+	const roots: TaskGroupThreadRow[] = []
+	for (const thread of listed) {
+		const parent = thread.parentTaskId
+		if (parent && parent !== thread.threadId && ids.has(parent)) {
+			children.set(parent, [...(children.get(parent) ?? []), thread])
+		} else {
+			roots.push(thread)
+		}
+	}
+	const entries: TimelineEntry[] = []
+	const seen = new Set<string>()
+	const visit = (thread: TaskGroupThreadRow, depth: number) => {
+		if (seen.has(thread.threadId)) return
+		seen.add(thread.threadId)
+		entries.push({ thread, depth })
+		for (const child of (children.get(thread.threadId) ?? []).sort(byStart)) visit(child, depth + 1)
+	}
+	for (const thread of roots.sort(byStart)) visit(thread, 0)
+	// A parent cycle has no root; list what's left rather than dropping it.
+	for (const thread of [...listed].sort(byStart)) visit(thread, 0)
+	return entries
+}
 const sameTag = (a: Pick<TaskTag, "kind" | "value">, b: Pick<TaskTag, "kind" | "value">) =>
 	a.kind === b.kind && a.value.toLowerCase() === b.value.toLowerCase()
 
@@ -44,8 +83,8 @@ interface TaskGroupViewProps {
 
 /**
  * The task (group) page in the sidebar: title, tags and branch hint, a grid of
- * the newest notes, and the thread timeline. The chat composer below it starts
- * new threads in this task.
+ * the newest notes, and the thread timeline (oldest first, like a story). The
+ * chat composer below it starts new threads in this task.
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
 	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, sessionStatuses } = useExtensionState()
@@ -64,11 +103,8 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	}, [taskGroupId])
 
 	const notes = useMemo(() => [...(details?.notes ?? [])].sort((a, b) => b.updatedAt - a.updatedAt), [details?.notes])
-	// Subagents belong to their root thread; the timeline lists threads and subthreads.
-	const threads = useMemo(
-		() => (details?.threads ?? []).filter((thread) => !thread.isSubagent).sort((a, b) => b.ts - a.ts),
-		[details?.threads],
-	)
+	const timeline = useMemo(() => orderTimeline(details?.threads ?? []), [details?.threads])
+	const threadCount = timeline.length
 	const noteNames = useMemo(() => new Map(notes.map((note) => [note.slug, note.name])), [notes])
 
 	if (missing) {
@@ -166,7 +202,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					data-testid="task-group-delete-confirm"
 					role="alert">
 					<span className="min-w-0 flex-1">
-						Delete this task? Its {plural(threads.length, "thread")} stay, just unfiled. Notes are deleted.
+						Delete this task? Its {plural(threadCount, "thread")} stay, just unfiled. Notes are deleted.
 					</span>
 					<Button onClick={deleteGroup} size="xs" variant="danger">
 						Delete
@@ -198,7 +234,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							</>
 						)}
 						<span className="ml-auto shrink-0 text-[11px] text-description" data-testid="task-group-counts">
-							{plural(threads.length, "thread")} · {plural(notes.length, "note")}
+							{plural(threadCount, "thread")} · {plural(notes.length, "note")}
 						</span>
 					</div>
 					<div className="mt-1.5 flex flex-wrap items-center gap-1">
@@ -295,13 +331,15 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							</span>
 						</span>
 					</div>
-					{threads.length === 0 ? (
+					{timeline.length === 0 ? (
 						<div className="px-2 pb-1 text-xs text-description">No threads yet. Start one below.</div>
 					) : (
 						<ol className="m-0 list-none p-0" data-testid="task-group-timeline">
-							{threads.map((thread) => (
+							{timeline.map(({ thread, depth }, index) => (
 								<TimelineRow
+									first={index === 0}
 									key={thread.threadId}
+									last={index === timeline.length - 1}
 									noteNames={noteNames}
 									now={now}
 									onOpen={() => {
@@ -309,6 +347,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 										void openTask(thread.threadId)
 									}}
 									status={statusFor(sessionStatuses, thread.threadId)}
+									subthread={depth > 0}
 									thread={thread}
 								/>
 							))}
@@ -401,36 +440,75 @@ function NoteCard({ note, onOpen }: { note: NotebookNoteMeta; onOpen: () => void
 	)
 }
 
+/** Connector geometry: the spine runs down the node column; node centers sit on the title line. */
+const SPINE_CLASS = "pointer-events-none absolute left-[15.5px] w-px bg-description/35"
+
+/**
+ * One timeline entry. The spine is drawn per row (above and below the node,
+ * never past the first or last one) so it reads as one continuous line; a
+ * subthread branches off it with an elbow into a smaller node.
+ */
 function TimelineRow({
 	thread,
 	status,
 	noteNames,
 	now,
 	onOpen,
+	first,
+	last,
+	subthread,
 }: {
 	thread: TaskGroupThreadRow
 	status: ReturnType<typeof statusFor>
 	noteNames: Map<string, string>
 	now: number
 	onOpen: () => void
+	first: boolean
+	last: boolean
+	subthread: boolean
 }) {
 	const title = threadRowTitle(thread)
+	const started = formatAge(thread.startedTs, now)
+	const active = formatAge(thread.ts, now)
+	const describeAge = (age: string) => (age === "now" ? "just now" : `${age} ago`)
 	return (
-		<li>
+		<li className="relative" data-subthread={subthread || undefined} data-testid="task-group-timeline-entry">
 			<button
-				className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,1fr)] gap-x-2 rounded-xs border border-transparent bg-transparent px-2 py-1 text-left hover:border-editor-group-border hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+				className={cn(
+					"relative grid w-full cursor-pointer gap-x-2 rounded-xs border border-transparent bg-transparent px-2 py-1 text-left transition-colors duration-150 hover:border-editor-group-border hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) motion-reduce:transition-none",
+					subthread ? "grid-cols-[28px_minmax(0,1fr)]" : "grid-cols-[14px_minmax(0,1fr)]",
+				)}
 				data-testid="task-group-timeline-row"
 				onClick={onOpen}
+				title={`Started ${describeAge(started)} · last active ${describeAge(active)}`}
 				type="button">
-				<span className="flex h-5 items-center justify-center">
-					<SessionStatusIcon status={status} />
+				<span className={cn("flex h-5 items-center", subthread ? "justify-end" : "justify-center")}>
+					<span className="flex w-3 items-center justify-center" data-testid="task-group-timeline-node">
+						<SessionStatusIcon
+							className={
+								subthread
+									? status === "running"
+										? "size-2.5"
+										: "size-1.5"
+									: status === "running"
+										? "size-3"
+										: "size-2.5"
+							}
+							status={status}
+						/>
+					</span>
 				</span>
 				<span className="flex min-w-0 items-center gap-1.5">
-					<span className="ph-no-capture min-w-0 flex-1 truncate text-[13px] text-foreground" title={title}>
-						{thread.parentTaskId && "↳ "}
+					<span
+						className={cn(
+							"ph-no-capture min-w-0 flex-1 truncate text-foreground",
+							subthread ? "text-[12px]" : "text-[13px]",
+						)}
+						title={title}>
+						{subthread && <span className="sr-only">Subthread: </span>}
 						{title}
 					</span>
-					<span className="shrink-0 text-[10.5px] text-description">{formatAge(thread.ts, now)}</span>
+					<span className="shrink-0 text-[10.5px] text-description">{started}</span>
 				</span>
 				{(thread.wrote.length > 0 || thread.read.length > 0) && (
 					<span className="col-start-2 mt-0.5 flex min-w-0 flex-wrap gap-1">
@@ -443,6 +521,22 @@ function TimelineRow({
 					</span>
 				)}
 			</button>
+			{/* After the button so a hovered row's background doesn't hide the line. */}
+			{subthread ? (
+				<>
+					{/* Elbow from the spine into the subthread's node. */}
+					<span
+						aria-hidden
+						className="pointer-events-none absolute top-0 left-[15.5px] h-[15.5px] w-[9.5px] rounded-bl-[5px] border-b border-l border-description/35"
+					/>
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[15px] bottom-0")} />}
+				</>
+			) : (
+				<>
+					{!first && <span aria-hidden className={cn(SPINE_CLASS, "top-0 h-[8px]")} />}
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[22px] bottom-0")} />}
+				</>
+			)}
 		</li>
 	)
 }
