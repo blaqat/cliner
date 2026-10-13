@@ -104,6 +104,15 @@ describe("NotebookChangesRow", () => {
 		expect(onOpenTaskGroup).toHaveBeenCalledWith("g1")
 	})
 
+	it("Open task on the summary opens the task page in the sidebar by default", () => {
+		const navigateToTaskGroup = vi.fn()
+		const applied = notebookMessage(10, { ...payload, status: "applied" })
+		mocks.state = { clineMessages: [applied], navigateToTaskGroup } as typeof mocks.state
+		render(<NotebookChangesRow message={applied} />)
+		fireEvent.click(screen.getByRole("button", { name: "Open task" }))
+		expect(navigateToTaskGroup).toHaveBeenCalledWith("g1")
+	})
+
 	it("keeps the card and shows an error when Apply fails", async () => {
 		mocks.apply.mockRejectedValueOnce(new Error("offline"))
 		render(<NotebookChangesRow message={notebookMessage(10)} />)

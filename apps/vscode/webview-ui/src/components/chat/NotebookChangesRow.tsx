@@ -53,7 +53,7 @@ export function WroteNoteChip({ name }: { name: string }) {
 
 interface NotebookChangesRowProps {
 	message: ClineMessage
-	/** TODO(task-notebook phase 5): pass the task page navigation once it exists. */
+	/** Opens the task page; defaults to the sidebar task page navigation. */
 	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
@@ -63,7 +63,8 @@ interface NotebookChangesRowProps {
  * "superseded" line, and resolved ones to a one-line summary.
  */
 export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChangesRowProps) {
-	const { clineMessages } = useExtensionState()
+	const { clineMessages, navigateToTaskGroup } = useExtensionState()
+	const openTaskGroup = onOpenTaskGroup ?? navigateToTaskGroup
 	const payload = useMemo(() => parseNotebookChangesPayload(message.text), [message.text])
 	const isNewest = useMemo(() => {
 		for (let i = clineMessages.length - 1; i >= 0; i--) {
@@ -87,7 +88,7 @@ export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChanges
 							: payload.changes
 						: []
 				}
-				onOpenTask={() => onOpenTaskGroup?.(payload.taskGroupId)}
+				onOpenTask={() => openTaskGroup?.(payload.taskGroupId)}
 				status={status}
 			/>
 		)
