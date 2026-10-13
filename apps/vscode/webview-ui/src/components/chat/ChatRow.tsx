@@ -9,6 +9,7 @@ import {
 	ClineSayTool,
 	COMPLETION_RESULT_CHANGES_FLAG,
 } from "@shared/ExtensionMessage"
+import { parseHtmlRenderRef } from "@shared/htmlRender"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { Mode } from "@shared/storage/types"
 import deepEqual from "fast-deep-equal"
@@ -56,6 +57,7 @@ import { DiffEditRow } from "./DiffEditRow"
 import ErrorRow from "./ErrorRow"
 import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
+import { HtmlRenderRow } from "./HtmlRenderRow"
 import { MarkdownRow } from "./MarkdownRow"
 import NewTaskPreview from "./NewTaskPreview"
 import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
@@ -1062,6 +1064,10 @@ export const ChatRowContent = memo(
 						return <InvisibleSpacer /> // task_progress messages should be displayed in TaskHeader only, not in chat
 					case "compaction":
 						return <CompactionRow message={message} />
+					case "html_render": {
+						const htmlRef = parseHtmlRenderRef(message.text)
+						return htmlRef ? <HtmlRenderRow htmlRef={htmlRef} /> : <InvisibleSpacer />
+					}
 					default:
 						return (
 							<div>

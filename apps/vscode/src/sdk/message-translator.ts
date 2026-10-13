@@ -1,3 +1,4 @@
+import { HTML_RENDER_TOOL, parseHtmlRenderRef } from "@/shared/htmlRender"
 // Replaces classic message streaming from src/core/task/index.ts (see origin/main)
 //
 // Translates SDK session events into ClineMessage[] for webview consumption.
@@ -1644,6 +1645,20 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 					// it produces no transcript row of its own, so its content_end is a no-op.
 					if (toolName === "ask_question" || toolName === "ask_followup_question") {
 						break
+					}
+
+					if (toolName === HTML_RENDER_TOOL && !event.error) {
+						const ref = parseHtmlRenderRef(extractToolOutputText(event.output))
+						if (ref) {
+							messages.push({
+								ts: state.clearStreamingTool(),
+								type: "say",
+								say: "html_render",
+								text: JSON.stringify(ref),
+								partial: false,
+							})
+							break
+						}
 					}
 
 					// spawn_agent → finalize the subagent entry and emit

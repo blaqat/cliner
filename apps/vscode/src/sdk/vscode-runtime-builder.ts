@@ -4,6 +4,7 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
 import { Logger } from "@/shared/services/Logger"
+import { createHtmlRenderTools } from "./html-render-tools"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { createVscodeRunCommandsTool, VSCODE_FOREGROUND_RUN_COMMANDS_TIMEOUT_MS } from "./vscode-run-commands-tool"
 
@@ -90,7 +91,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// No completion tool is exposed: the agent simply ends its turn with a text
 	// response, and the turn-end inference in message-translator.ts styles that
 	// final text as the completion feedback row.
-	const tools: AgentTool[] = [...mcpTools.flat()]
+	const tools: AgentTool[] = [...mcpTools.flat(), ...createHtmlRenderTools()]
 
 	// Add the custom run_commands tool when a terminal manager is available.
 	// This replaces the SDK's built-in run_commands, which is suppressed via

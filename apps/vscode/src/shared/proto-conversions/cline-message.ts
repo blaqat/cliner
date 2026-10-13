@@ -71,6 +71,7 @@ function convertClineSayToProtoEnum(say: AppClineSay | undefined): ClineSay | un
 	}
 
 	const mapping: Record<AppClineSay, ClineSay> = {
+		html_render: ClineSay.HTML_RENDER,
 		task: ClineSay.TASK,
 		error: ClineSay.ERROR,
 		api_req_started: ClineSay.API_REQ_STARTED,
@@ -122,6 +123,7 @@ function convertProtoEnumToClineSay(say: ClineSay): AppClineSay | undefined {
 	}
 
 	const mapping: Record<Exclude<ClineSay, ClineSay.UNRECOGNIZED>, AppClineSay> = {
+		[ClineSay.HTML_RENDER]: "html_render",
 		[ClineSay.TASK]: "task",
 		[ClineSay.ERROR]: "error",
 		[ClineSay.API_REQ_STARTED]: "api_req_started",

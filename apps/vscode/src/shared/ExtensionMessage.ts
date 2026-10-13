@@ -285,6 +285,7 @@ export type ClineAsk =
 	| "use_subagents"
 
 export type ClineSay =
+	| "html_render"
 	| "task"
 	| "error"
 	| "api_req_started"

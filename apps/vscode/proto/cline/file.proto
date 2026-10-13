@@ -10,6 +10,7 @@ option java_package = "bot.cline.proto";
 
 // Service for file-related operations
 service FileService {
+  rpc getHtmlRender(GetHtmlRenderRequest) returns (GetHtmlRenderResponse);
   // Copies text to clipboard
   rpc copyToClipboard(StringRequest) returns (Empty);
 
@@ -343,4 +344,12 @@ message DeleteSkillRequest {
   Metadata metadata = 1;
   string skill_path = 2; // Path to the skill directory
   bool is_global = 3; // Whether this is a global or workspace skill
+}
+
+message GetHtmlRenderRequest {
+  Metadata metadata = 1;
+  string attachment_id = 2;
+}
+message GetHtmlRenderResponse {
+  string html = 1;
 }
