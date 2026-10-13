@@ -42,6 +42,54 @@ describe("buildInbox", () => {
 		expect(root?.liveSubthreadCount).toBe(1)
 	})
 
+	it("sorts an active row by its newest descendant ts, not the parent's own", () => {
+		const history = [
+			item("stale", NOW - 60 * MIN),
+			item("aside", NOW - 2 * MIN, { parentTaskId: "stale" }),
+			item("fresh", NOW - 10 * MIN),
+		]
+
+		const { active } = buildInbox(history, {})
+
+		expect(active.map((row) => row.item.id)).toEqual(["stale", "fresh"])
+		expect(active[0].activityTs).toBe(NOW - 2 * MIN)
+		expect(active[1].activityTs).toBe(NOW - 10 * MIN)
+	})
+
+	it("rolls asides of asides into the top-level activity time", () => {
+		const history = [
+			item("root", NOW - 60 * MIN),
+			item("aside", NOW - 30 * MIN, { parentTaskId: "root" }),
+			item("nested", NOW - MIN, { parentTaskId: "aside" }),
+		]
+
+		const { active } = buildInbox(history, {})
+
+		expect(active.map((row) => row.item.id)).toEqual(["root"])
+		expect(active[0].activityTs).toBe(NOW - MIN)
+	})
+
+	it("rolls subagent activity into the parent's activity time", () => {
+		const history = [item("root", NOW - 60 * MIN), item("agent", NOW - MIN, { isSubagent: true, parentTaskId: "root" })]
+
+		const { active } = buildInbox(history, {})
+
+		expect(active[0].activityTs).toBe(NOW - MIN)
+	})
+
+	it("keeps settled rows sorted by their own ts even when a subthread is newer", () => {
+		const history = [
+			item("s1", NOW - 50 * MIN, { isSettled: true, settledAt: NOW - MIN }),
+			item("aside", NOW - 2 * MIN, { parentTaskId: "s1" }),
+			item("s2", NOW - 20 * MIN, { isSettled: true, settledAt: NOW - 2 * MIN }),
+		]
+
+		const { settled } = buildInbox(history, {})
+
+		expect(settled.map((row) => row.item.id)).toEqual(["s2", "s1"])
+		expect(settled.find((row) => row.item.id === "s1")?.activityTs).toBe(NOW - 2 * MIN)
+	})
+
 	it("reads subagent counts from live state, falling back to the persisted total", () => {
 		const history = [
 			item("live", NOW - 5 * MIN),
@@ -141,6 +189,7 @@ describe("inbox helpers", () => {
 	it("describes the latest activity per status", () => {
 		const row = (status: "running" | "waiting" | "done" | "error", settled = false) => ({
 			item: item("t", NOW - MIN, { settledAt: NOW - 3 * MIN }),
+			activityTs: NOW - MIN,
 			status,
 			settled,
 			subthreadCount: 0,
@@ -153,5 +202,27 @@ describe("inbox helpers", () => {
 		expect(describeActivity(row("waiting"), NOW)).toBe("Waiting for you")
 		expect(describeActivity(row("error"), NOW)).toBe("Stopped with an error")
 		expect(describeActivity(row("done", true), NOW)).toBe("Last active 1m ago")
+		expect(describeActivity({ ...row("done", true), activityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
+	})
+
+	it("says a subthread is working when the parent is idle but a descendant is live", () => {
+		const row = (liveSubthreadCount: number, liveSubagentCount = 0) => ({
+			item: item("t", NOW - MIN),
+			activityTs: NOW - MIN,
+			status: "done" as const,
+			settled: false,
+			subthreadCount: liveSubthreadCount,
+			liveSubthreadCount,
+			subagentCount: liveSubagentCount,
+			liveSubagentCount,
+			attentionSubagentCount: 0,
+		})
+		expect(describeActivity(row(1), NOW)).toBe("Working… in subthread")
+		expect(describeActivity(row(0, 1), NOW)).toBe("Working… in subthread")
+		expect(describeActivity({ ...row(1), status: "running" }, NOW)).toBe("Working…")
+		// A parent that needs the user still says so while a subthread works.
+		expect(describeActivity({ ...row(1), status: "waiting" }, NOW)).toBe("Waiting for you")
+		expect(describeActivity({ ...row(1), status: "error" }, NOW)).toBe("Stopped with an error")
+		expect(describeActivity(row(0), NOW)).toBe("Done")
 	})
 })

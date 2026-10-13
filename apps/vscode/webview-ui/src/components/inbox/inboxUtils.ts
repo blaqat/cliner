@@ -12,6 +12,8 @@ export const SETTLED_PAGE_SIZE = 25
 
 export interface InboxRow {
 	item: HistoryItem
+	/** Effective last-active time: the item's ts or the newest descendant's (asides and subagents). */
+	activityTs: number
 	status: SessionStatus
 	settled: boolean
 	/** Asides forked from this task (history items whose parentTaskId is this task). */
@@ -46,7 +48,8 @@ function isLive(status: SessionStatus): boolean {
 /**
  * Groups task history for the home inbox. Asides are folded into their parent's
  * subthread count instead of being top-level rows (unless the parent is gone).
- * Active (unsettled) rows sort by recency; settled rows by when they were settled.
+ * Active (unsettled) rows sort by last activity including subthreads; settled
+ * rows by their own last activity.
  */
 export function buildInbox(
 	history: readonly HistoryItem[],
@@ -79,9 +82,21 @@ export function buildInbox(
 				agents.push(child)
 				pending.push(...(childrenByParent.get(child.id) ?? []).filter((nested) => nested.isSubagent))
 			}
+			// Last active counts every descendant — asides, asides of asides, and
+			// subagents — so a busy subthread keeps the parent fresh.
+			let activityTs = item.ts
+			const visited = new Set([item.id])
+			const descendants = [...allChildren]
+			for (const child of descendants) {
+				if (visited.has(child.id)) continue
+				visited.add(child.id)
+				if (child.ts > activityTs) activityTs = child.ts
+				descendants.push(...(childrenByParent.get(child.id) ?? []))
+			}
 			const counts = subagentCounts?.[item.id]
 			return {
 				item,
+				activityTs,
 				status: statusFor(statuses, item.id),
 				// A live session is never shown as settled, even if the history flag lags.
 				settled: !!item.isSettled && !isLive(statusFor(statuses, item.id)),
@@ -97,7 +112,7 @@ export function buildInbox(
 			}
 		})
 
-	const active = rows.filter((row) => !row.settled).sort((a, b) => b.item.ts - a.item.ts)
+	const active = rows.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
 	const settled = rows.filter((row) => row.settled).sort((a, b) => b.item.ts - a.item.ts)
 
 	return {
@@ -145,7 +160,7 @@ export function formatStamp(ts: number, now: number): string {
 /** Second line of an inbox row. */
 export function describeActivity(row: InboxRow, now: number): string {
 	if (row.settled) {
-		const age = formatAge(row.item.ts, now)
+		const age = formatAge(row.activityTs, now)
 		return age === "now" ? "Last active just now" : `Last active ${age} ago`
 	}
 	switch (row.status) {
@@ -155,7 +170,8 @@ export function describeActivity(row: InboxRow, now: number): string {
 			return "Waiting for you"
 		case "error":
 			return "Stopped with an error"
-		default:
-			return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
 	}
+	// An idle parent with a busy subthread still has work happening.
+	if (row.liveSubthreadCount > 0 || row.liveSubagentCount > 0) return "Working… in subthread"
+	return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
 }

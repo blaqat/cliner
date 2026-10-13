@@ -75,6 +75,26 @@ describe("InboxList", () => {
 		expect(screen.getByTitle("1 aside").querySelector(".codicon-repo-forked")).not.toBeNull()
 	})
 
+	it("ages a row by its newest subthread, not the parent's own ts", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW - 3 * 60 * 60_000),
+			item("aside", NOW - 5 * 60_000, { parentTaskId: "parent" }),
+		]
+		mocks.state.sessionStatuses = {}
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const [row] = screen.getAllByTestId("inbox-row")
+		expect(row).toHaveTextContent("5m")
+		expect(row).not.toHaveTextContent("3h")
+	})
+
+	it("shows subthread work on an idle parent", () => {
+		mocks.state.sessionStatuses = { run: "done", aside: "running" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		expect(screen.getAllByTestId("inbox-row")[0]).toHaveTextContent("Working… in subthread")
+	})
+
 	it("turns the subagent count yellow when a child needs the user", () => {
 		mocks.state.taskHistory = [
 			item("parent", NOW),
