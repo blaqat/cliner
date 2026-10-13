@@ -2,6 +2,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import type { SearchHistoryResult } from "@shared/proto/cline/task_group"
 import type { TaskGroupSummary, TaskTag } from "@shared/task-groups"
 import Fuse from "fuse.js"
+import { effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
 
 export type SearchResultKind = "task" | "thread" | "note" | "message"
 export type SearchFilter = "all" | "tasks" | "threads" | "notes" | "messages"
@@ -68,17 +69,23 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 	)
 
 	// Subagents open through their parent; only user-facing threads are listed.
-	const threads = history.filter((item) => !item.isSubagent)
+	// Threads match on their task's tags too; the row keeps only the thread's own.
+	const threads = history
+		.filter((item) => !item.isSubagent)
+		.map((item) => ({
+			item,
+			effectiveTags: effectiveThreadTags(item, history, taskGroups).map(({ tag }) => ({ value: tag.value })),
+		}))
 	const threadFuse = new Fuse(threads, {
 		...FUSE_OPTIONS,
 		keys: [
-			{ name: "title", weight: 2 },
-			{ name: "task", weight: 1 },
-			{ name: "tags.value", weight: 2 },
+			{ name: "item.title", weight: 2 },
+			{ name: "item.task", weight: 1 },
+			{ name: "effectiveTags.value", weight: 2 },
 		],
 	})
 	const threadRows = threadFuse.search(trimmed).map(
-		({ item, score }): SearchRow => ({
+		({ item: { item }, score }): SearchRow => ({
 			kind: "thread",
 			id: item.id,
 			title: titleOf(item),

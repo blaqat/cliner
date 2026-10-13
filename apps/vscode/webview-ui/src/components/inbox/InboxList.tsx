@@ -1,7 +1,7 @@
-import type { TaskTag } from "@shared/task-groups"
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { type EffectiveTag, effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
@@ -48,6 +48,8 @@ interface InboxRowViewProps {
 	row: InboxRow
 	now: number
 	animateLayout: boolean
+	/** Tags to show: own plus the task's. Rows under a task row pass only their own. */
+	tags: readonly EffectiveTag[]
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
@@ -55,20 +57,26 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 /** Most tag chips a row shows before folding the rest into "+N". */
 const ROW_TAG_LIMIT = 2
 
-/** A row's first tags as small chips, the rest as "+N" (all of them in its tooltip). */
-const RowTagChips = ({ tags }: { tags: readonly TaskTag[] }) => {
+/** A row's first tags as small chips (inherited ones muted), the rest as "+N" (all of them in its tooltip). */
+const RowTagChips = ({ tags }: { tags: readonly EffectiveTag[] }) => {
 	if (!tags.length) return null
 	const hidden = tags.slice(ROW_TAG_LIMIT)
 	return (
 		<>
-			{tags.slice(0, ROW_TAG_LIMIT).map((tag) => (
-				<TaskTagChip className="max-w-24" key={`${tag.kind}:${tag.value}`} kind={tag.kind} value={tag.value} />
+			{tags.slice(0, ROW_TAG_LIMIT).map(({ tag, inherited, taskTitle }) => (
+				<TaskTagChip
+					className="max-w-24"
+					inheritedFrom={inherited ? (taskTitle ?? "task") : undefined}
+					key={`${tag.kind}:${tag.value}`}
+					kind={tag.kind}
+					value={tag.value}
+				/>
 			))}
 			{hidden.length > 0 && (
 				<span
 					className="shrink-0 text-[10.5px] text-description"
 					data-testid="row-tag-overflow"
-					title={hidden.map((tag) => tag.value).join(", ")}>
+					title={hidden.map((entry) => entry.tag.value).join(", ")}>
 					+{hidden.length}
 				</span>
 			)}
@@ -76,7 +84,7 @@ const RowTagChips = ({ tags }: { tags: readonly TaskTag[] }) => {
 	)
 }
 
-const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
+const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 	const {
 		item,
 		activityTs,
@@ -124,7 +132,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 			<div className="min-w-0">
 				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
 				<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs" data-testid="inbox-row-detail">
-					<RowTagChips tags={item.tags ?? []} />
+					<RowTagChips tags={tags} />
 					<span
 						className={cn(
 							"min-w-0 truncate",
@@ -244,7 +252,7 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						<span className="ph-no-capture truncate font-medium">{group.title}</span>
 					</div>
 					<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs text-description">
-						<RowTagChips tags={group.tags} />
+						<RowTagChips tags={group.tags.map((tag) => ({ tag, inherited: false }))} />
 						<span className="shrink-0 whitespace-nowrap">
 							{group.tags.length > 0 && "· "}
 							{plural(members.length, "thread")}
@@ -265,7 +273,14 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 			{expanded && (
 				<div className="ml-3.5 border-l border-editor-group-border pl-1" data-testid="inbox-task-group-members">
 					{preview.map((member) => (
-						<InboxRowView animateLayout={animateLayout} key={member.item.id} now={now} row={member} />
+						<InboxRowView
+							animateLayout={animateLayout}
+							key={member.item.id}
+							now={now}
+							row={member}
+							// The task row above already shows the task's tags, so members list only their own.
+							tags={(member.item.tags ?? []).map((tag) => ({ tag, inherited: false }))}
+						/>
 					))}
 					<div className="flex h-6 items-center gap-2 px-2 text-xs text-description">
 						{older > 0 ? <span>＋{older} older</span> : members.length === 0 && <span>No threads yet</span>}
@@ -376,7 +391,15 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 				/>
 			))}
 			{active.length > 0 ? (
-				active.map((row) => <InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />)
+				active.map((row) => (
+					<InboxRowView
+						animateLayout={!reduceMotion}
+						key={row.item.id}
+						now={now}
+						row={row}
+						tags={effectiveThreadTags(row.item, taskHistory, taskGroups)}
+					/>
+				))
 			) : groups.length > 0 ? null : (
 				<div className="px-2 py-1.5 text-xs text-description">Nothing active.</div>
 			)}
@@ -427,6 +450,7 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 											key={entry.row.item.id}
 											now={now}
 											row={entry.row}
+											tags={effectiveThreadTags(entry.row.item, taskHistory, taskGroups)}
 										/>
 									),
 								)}

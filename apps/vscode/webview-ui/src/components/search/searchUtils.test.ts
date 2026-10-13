@@ -57,6 +57,19 @@ describe("searchLocal", () => {
 		expect(rows.find((r) => r.id === "t2")?.title).toBe("PROJ-482 follow-up")
 	})
 
+	it("matches a thread on its task's tags but keeps only its own tags on the row", () => {
+		const groups = [group("g1", "Export", { tags: [{ kind: "ticket", value: "PROJ-482", source: "user" }] })]
+		const history = [
+			item("in", "alpha", { taskGroupId: "g1", tags: [{ kind: "label", value: "own", source: "user" }] }),
+			item("out", "beta"),
+		]
+
+		const rows = searchLocal("PROJ-482", groups, history).filter((r) => r.kind === "thread")
+
+		expect(rows.map((r) => r.id)).toEqual(["in"])
+		expect(rows[0].tags).toEqual([{ kind: "label", value: "own", source: "user" }])
+	})
+
 	it("returns nothing for a blank query", () => {
 		expect(searchLocal("  ", [group("g", "x")], [item("t", "x")])).toEqual([])
 	})

@@ -27,22 +27,37 @@ interface TaskTagChipProps {
 	onRemove?: () => void
 	/** Hides the × until the chip is hovered or focused. */
 	revealRemove?: boolean
+	/** Title of the task this tag comes from: renders it muted with a task icon and a tooltip. */
+	inheritedFrom?: string
 	className?: string
 }
 
 /** Compact tag pill for task groups and threads: ticket, branch or label. */
-export const TaskTagChip = ({ kind, value, detected, onAdd, onRemove, revealRemove, className }: TaskTagChipProps) => {
+export const TaskTagChip = ({
+	kind,
+	value,
+	detected,
+	onAdd,
+	onRemove,
+	revealRemove,
+	inheritedFrom,
+	className,
+}: TaskTagChipProps) => {
 	const style = KIND_STYLE[kind]
 	const classes = cn(
 		"inline-flex h-4 max-w-40 shrink-0 items-center gap-0.5 rounded-full border px-1.5 text-[10.5px] leading-none whitespace-nowrap",
 		style.className,
 		(detected || onAdd) && "border-dashed bg-transparent",
 		revealRemove && "group/chip",
+		inheritedFrom !== undefined && "opacity-70",
 		className,
 	)
 	const content = (
 		<>
 			{onAdd && <span aria-hidden>＋</span>}
+			{inheritedFrom !== undefined && (
+				<span aria-hidden className="codicon codicon-tasklist text-[10px]!" data-testid="inherited-tag-icon" />
+			)}
 			<span aria-hidden className={`codicon codicon-${style.icon} text-[10px]!`} />
 			<span className="truncate">{value}</span>
 		</>
@@ -60,7 +75,12 @@ export const TaskTagChip = ({ kind, value, detected, onAdd, onRemove, revealRemo
 		)
 	}
 	return (
-		<span className={classes} data-kind={kind} data-testid="task-tag-chip" title={value}>
+		<span
+			className={classes}
+			data-inherited={inheritedFrom !== undefined || undefined}
+			data-kind={kind}
+			data-testid="task-tag-chip"
+			title={inheritedFrom !== undefined ? `From task ${inheritedFrom}` : value}>
 			{content}
 			{onRemove && (
 				<button

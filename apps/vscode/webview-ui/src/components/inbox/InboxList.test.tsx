@@ -333,7 +333,16 @@ describe("InboxList thread tags", () => {
 				}),
 			],
 			sessionStatuses: {},
-			taskGroups: [{ id: "tg", title: "Group", tags: [], createdAt: 0, updatedAt: 0, noteCount: 0 }],
+			taskGroups: [
+				{
+					id: "tg",
+					title: "Group",
+					tags: [{ kind: "ticket", value: "PROJ-9", source: "user" }],
+					createdAt: 0,
+					updatedAt: 0,
+					noteCount: 0,
+				},
+			],
 		}
 	})
 
@@ -352,11 +361,12 @@ describe("InboxList thread tags", () => {
 		expect(within(plain).queryByTestId("task-tag-chip")).toBeNull()
 	})
 
-	it("shows tags on expanded task member rows", () => {
+	it("lists only a member's own tags under its task row, which already shows the task's", () => {
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 		fireEvent.click(screen.getByRole("button", { name: "Expand Group" }))
 
 		const members = screen.getByTestId("inbox-task-group-members")
 		expect(within(members).getByTestId("task-tag-chip")).toHaveTextContent("spike")
+		expect(within(screen.getByTestId("inbox-task-group-row")).getByTestId("task-tag-chip")).toHaveTextContent("PROJ-9")
 	})
 })
