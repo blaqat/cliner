@@ -1,6 +1,6 @@
 import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
@@ -13,9 +13,8 @@ import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
-import { parseTagInput } from "./NewTaskGroupSheet"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
-import { TaskTagChip } from "./TaskTagChip"
+import { sameTag, TaskTagEditor } from "./TaskTagEditor"
 import { formatNoteSize, openNote, requestNewNoteForm, threadRowTitle, useTaskGroup } from "./useTaskGroup"
 
 /** How many notes the notebook preview grid shows. */
@@ -73,8 +72,6 @@ export function orderTimeline(threads: readonly TaskGroupThreadRow[]): TimelineE
 	for (const thread of [...listed].sort(byStart)) visit(thread, 0)
 	return entries
 }
-const sameTag = (a: Pick<TaskTag, "kind" | "value">, b: Pick<TaskTag, "kind" | "value">) =>
-	a.kind === b.kind && a.value.toLowerCase() === b.value.toLowerCase()
 
 interface TaskGroupViewProps {
 	taskGroupId: string
@@ -92,7 +89,6 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
 	const [renaming, setRenaming] = useState(false)
-	const [addingTag, setAddingTag] = useState(false)
 
 	// The composer below starts threads in this task, however many are sent.
 	useEffect(() => {
@@ -237,32 +233,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							{plural(threadCount, "thread")} · {plural(notes.length, "note")}
 						</span>
 					</div>
-					<div className="mt-1.5 flex flex-wrap items-center gap-1">
-						{group.tags.map((tag) => (
-							<TaskTagChip
-								key={`${tag.kind}:${tag.value}`}
-								kind={tag.kind}
-								onRemove={() => removeTag(tag)}
-								value={tag.value}
-							/>
-						))}
-						{addingTag ? (
-							<TagInput
-								onDone={(text) => {
-									setAddingTag(false)
-									const parsed = parseTagInput(text)
-									if (parsed) addTag(parsed)
-								}}
-							/>
-						) : (
-							<button
-								className="inline-flex h-4 cursor-pointer items-center rounded-full border border-dashed border-description/50 bg-transparent px-1.5 text-[10.5px] leading-none text-description hover:text-foreground"
-								onClick={() => setAddingTag(true)}
-								type="button">
-								＋ tag
-							</button>
-						)}
-					</div>
+					<TaskTagEditor className="mt-1.5" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
 				</div>
 				{!branchLinked && currentBranch && (
 					<div
@@ -386,38 +357,6 @@ function RenameInput({ initial, onSave, onCancel }: { initial: string; onSave: (
 					finish(false)
 				}
 			}}
-			value={draft}
-		/>
-	)
-}
-
-function TagInput({ onDone }: { onDone: (text: string) => void }) {
-	const [draft, setDraft] = useState("")
-	const settledRef = useRef(false)
-	const finish = (text: string) => {
-		if (settledRef.current) return
-		settledRef.current = true
-		onDone(text)
-	}
-	const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-		if (event.key === "Enter") {
-			event.preventDefault()
-			finish(draft)
-		} else if (event.key === "Escape") {
-			event.preventDefault()
-			event.stopPropagation()
-			finish("")
-		}
-	}
-	return (
-		<input
-			aria-label="New tag"
-			autoFocus
-			className={cn(INPUT_CLASS, "h-4.5 w-36 text-[11px]")}
-			onBlur={() => finish(draft)}
-			onChange={(event) => setDraft(event.target.value)}
-			onKeyDown={onKeyDown}
-			placeholder="ticket, branch or label…"
 			value={draft}
 		/>
 	)

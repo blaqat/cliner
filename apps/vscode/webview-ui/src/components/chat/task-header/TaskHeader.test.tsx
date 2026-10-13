@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 	exportTaskWithId: vi.fn(),
 	showTaskWithId: vi.fn(),
 	renameTask: vi.fn(),
+	setThreadTags: vi.fn(),
 	resize: undefined as ((width: number) => void) | undefined,
 	openImage: vi.fn(),
 	openFile: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/services/grpc-client", () => ({
 		exportTaskWithId: (request: unknown) => mocks.exportTaskWithId(request),
 		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
 		renameTask: (request: unknown) => mocks.renameTask(request),
+		setThreadTags: (request: unknown) => mocks.setThreadTags(request),
 		stopSubagent: vi.fn(),
 	},
 	FileServiceClient: {
@@ -63,6 +65,7 @@ describe("TaskHeader", () => {
 		mocks.deleteTasksWithIds.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.renameTask.mockReset().mockResolvedValue({})
+		mocks.setThreadTags.mockReset().mockResolvedValue({})
 		const current = item("t1")
 		mocks.state = {
 			currentTaskItem: current,
@@ -292,6 +295,112 @@ describe("TaskHeader", () => {
 			fireEvent.change(screen.getByTestId("crumb-rename-input"), { target: { value: "Auth refresh" } })
 			fireEvent.keyDown(screen.getByTestId("crumb-rename-input"), { key: "Enter" })
 			await waitFor(() => expect(screen.getByTestId("task-header-title-text")).toHaveTextContent(firstMessage))
+		})
+	})
+
+	describe("thread tags", () => {
+		const chipTexts = () =>
+			within(screen.getByTestId("thread-tag-row"))
+				.queryAllByTestId("task-tag-chip")
+				.map((chip) => chip.textContent)
+		const withTags = (extra: Partial<HistoryItem>) => {
+			const current = item("t1", extra)
+			mocks.state = { ...mocks.state, currentTaskItem: current, taskHistory: [current] }
+		}
+
+		it("shows the thread's tags under the header", () => {
+			withTags({ tags: [{ kind: "ticket", value: "PROJ-482", source: "auto" }] })
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			expect(chipTexts()).toEqual(["PROJ-482×"])
+			expect(screen.getByRole("button", { name: "＋ tag" })).toBeInTheDocument()
+		})
+
+		it("shows only the quiet ＋ tag affordance without tags", () => {
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			expect(chipTexts()).toEqual([])
+			expect(screen.getByTestId("thread-tag-row")).toHaveClass("opacity-60")
+			expect(screen.getByRole("button", { name: "＋ tag" })).toBeInTheDocument()
+		})
+
+		it("adds a typed tag: ticket keys become tickets, other text labels", async () => {
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			fireEvent.click(screen.getByRole("button", { name: "＋ tag" }))
+			fireEvent.change(screen.getByLabelText("New tag"), { target: { value: "PROJ-490" } })
+			fireEvent.keyDown(screen.getByLabelText("New tag"), { key: "Enter" })
+			expect(chipTexts()).toEqual(["PROJ-490×"])
+			expect(mocks.setThreadTags).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					taskId: "t1",
+					tags: [{ kind: "ticket", value: "PROJ-490", source: "user" }],
+					dismissedAutoTags: [],
+				}),
+			)
+
+			fireEvent.click(screen.getByRole("button", { name: "＋ tag" }))
+			fireEvent.change(screen.getByLabelText("New tag"), { target: { value: "backend" } })
+			fireEvent.keyDown(screen.getByLabelText("New tag"), { key: "Enter" })
+			await waitFor(() =>
+				expect(mocks.setThreadTags.mock.lastCall?.[0].tags).toEqual([
+					{ kind: "ticket", value: "PROJ-490", source: "user" },
+					{ kind: "label", value: "backend", source: "user" },
+				]),
+			)
+		})
+
+		it("removing an auto tag dismisses it; removing a user tag doesn't", () => {
+			withTags({
+				tags: [
+					{ kind: "ticket", value: "PROJ-482", source: "auto" },
+					{ kind: "label", value: "invoices", source: "user" },
+				],
+				dismissedAutoTags: ["PROJ-1"],
+			})
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			fireEvent.click(screen.getByRole("button", { name: "Remove tag PROJ-482" }))
+			expect(chipTexts()).toEqual(["invoices×"])
+			expect(mocks.setThreadTags).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					tags: [{ kind: "label", value: "invoices", source: "user" }],
+					dismissedAutoTags: ["PROJ-1", "PROJ-482"],
+				}),
+			)
+
+			fireEvent.click(screen.getByRole("button", { name: "Remove tag invoices" }))
+			expect(mocks.setThreadTags.mock.lastCall?.[0].dismissedAutoTags).toEqual(["PROJ-1", "PROJ-482"])
+		})
+
+		it("suggests the current branch until it's tagged; one click links it", () => {
+			mocks.state.currentBranch = "feat/export"
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			fireEvent.click(screen.getByRole("button", { name: "Add branch tag feat/export" }))
+			expect(chipTexts()).toEqual(["feat/export×"])
+			expect(screen.queryByRole("button", { name: "Add branch tag feat/export" })).toBeNull()
+			expect(mocks.setThreadTags).toHaveBeenLastCalledWith(
+				expect.objectContaining({ tags: [{ kind: "branch", value: "feat/export", source: "user" }] }),
+			)
+		})
+
+		it("doesn't suggest a branch that's already tagged", () => {
+			mocks.state.currentBranch = "feat/export"
+			withTags({ tags: [{ kind: "branch", value: "feat/export", source: "user" }] })
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			expect(screen.queryByRole("button", { name: "Add branch tag feat/export" })).toBeNull()
+		})
+
+		it("rolls the tags back when the save fails", async () => {
+			mocks.setThreadTags.mockRejectedValue(new Error("nope"))
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			withTags({ tags: [{ kind: "label", value: "invoices", source: "user" }] })
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			fireEvent.click(screen.getByRole("button", { name: "Remove tag invoices" }))
+			expect(chipTexts()).toEqual([])
+			await waitFor(() => expect(chipTexts()).toEqual(["invoices×"]))
+		})
+
+		it("has no tag row on read-only subagent threads", () => {
+			withTags({ isSubagent: true, parentTaskId: "p" })
+			render(<TaskHeader onClose={vi.fn()} task={task} />)
+			expect(screen.queryByTestId("thread-tag-row")).toBeNull()
 		})
 	})
 })
