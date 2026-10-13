@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	findFileEditingCommand,
 	formatPlanModeBlockedCommandError,
+	requiresPlanModeCommandApproval,
 } from "./command-guard";
 
 /** Convenience: true when the guard blocks the command. */
@@ -89,9 +90,7 @@ describe("findFileEditingCommand — read-only commands pass", () => {
 	});
 
 	it("does not flag heredoc bodies fed to read-only commands", () => {
-		const command = ["python3 <<'EOF'", "x = 10", "print(x > 5)", "EOF"].join(
-			"\n",
-		);
+		const command = ["cat <<'EOF'", "x = 10", "print(x > 5)", "EOF"].join("\n");
 		expect(blocks(command)).toBe(false);
 	});
 
@@ -368,6 +367,156 @@ describe("findFileEditingCommand — structured commands", () => {
 		expect(
 			findFileEditingCommand({ command: "grep", args: [">", "file.txt"] }),
 		).toBeUndefined();
+	});
+});
+
+describe("Ask-mode command guard gaps", () => {
+	it.each([
+		'bash -c "touch file"',
+		"sh -lc 'rm file'",
+		"zsh -c 'echo x > file'",
+		"dash -c 'mv a b'",
+		"fish -c 'cp a b'",
+		"eval 'mkdir dir'",
+		"eval -- 'touch file'",
+		"bash -cl 'touch file'",
+		'eval "touch" "file"',
+		"bash -c \"sh -c 'touch file'\"",
+		"sudo bash -c 'git reset --hard'",
+		"find . -exec sh -c 'rm file' \\;",
+	])("recursively blocks shell code: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it("fails closed when shell recursion exceeds the inspection limit", () => {
+		let command = "ls";
+		for (let i = 0; i < 5; i++) command = `bash -c ${JSON.stringify(command)}`;
+		expect(findFileEditingCommand(command)).toContain("inspection limit");
+	});
+
+	it.each([
+		"python -c \"open('file', 'w').write('x')\"",
+		'python3 -c "print(1)"',
+		"node -e \"require('fs').writeFileSync('file', 'x')\"",
+		'node --eval="console.log(1)"',
+		'node -p "1+1"',
+		'bun -e "console.log(1)"',
+		'deno eval "console.log(1)"',
+		'ruby -e \'File.write("file", "x")\'',
+		"perl -e 'print 1'",
+		"php -r 'echo 1;'",
+		"python3 <<'EOF'\nopen('file', 'w')\nEOF",
+		"bash <<'EOF'\ntouch file\nEOF",
+	])("blocks all inline interpreter code: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it.each([
+		"prettier --write src",
+		"prettier -w src",
+		"biome check --write src",
+		"biome format --fix src",
+		"biome lint --apply src",
+		"eslint --fix src",
+		"ruff check --fix src",
+		"ruff format src",
+		"black src",
+		"isort src",
+		"gofmt -w file.go",
+		"goimports -w file.go",
+		"rustfmt file.rs",
+		"cargo fmt",
+		"dprint fmt",
+		"clang-format -i file.cpp",
+		"npx prettier --write src",
+		"bunx biome check --write src",
+		"pnpm dlx eslint --fix src",
+		"yarn dlx prettier -w src",
+		"npx --yes --package prettier prettier --write src",
+		"bunx @biomejs/biome@2 check --write src",
+	])("blocks formatter writes: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it.each([
+		"bash -c 'git status'",
+		"eval 'ls | head'",
+		'echo "bash -c touch file"',
+		'rg "python -c" src',
+		"prettier --check src",
+		"biome check src",
+		"eslint src",
+		"ruff check src",
+		"ruff format --check src",
+		"ruff format --diff src",
+		"black --check src",
+		"isort --check-only src",
+		"gofmt file.go",
+		"goimports file.go",
+		"rustfmt --check file.rs",
+		"rustfmt --emit stdout file.rs",
+		"cargo fmt -- --check",
+		"dprint check",
+		"clang-format file.cpp",
+		"npx prettier --check src",
+		"cat file | tee /tmp/x",
+		"node -c file.js",
+		'git --git-dir "/repo/.git" --work-tree /repo status',
+	])("allows read-only cases: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+	});
+
+	it.each([
+		"git -C /repo reset --hard",
+		"git --git-dir /repo/.git reset --hard",
+		"git --work-tree /repo --namespace name restore file",
+		"git --git-dir=/repo/.git add file",
+		"git --config-env user.name=NAME --super-prefix /repo/ commit -m x",
+	])("skips git global options: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it.each([
+		"bun run check-types",
+		"npm run check",
+		"pnpm run check",
+		"yarn run check",
+		"bun --cwd /repo run check",
+		"npm --prefix /repo run check",
+		"make check",
+		"just check",
+		"task check",
+		"bash -c 'bun run check-types'",
+		"eval 'make check'",
+		"find . -exec just check \\;",
+	])("requires approval without blocking package scripts: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(true);
+	});
+
+	it("inspects structured shell argv recursively and requires script approval", () => {
+		expect(
+			findFileEditingCommand({ command: "bash", args: ["-c", "touch file"] }),
+		).toBe("`touch`");
+		expect(
+			findFileEditingCommand({
+				command: "node",
+				args: ["-e", "console.log(1)"],
+			}),
+		).toContain("inline code");
+		expect(
+			requiresPlanModeCommandApproval({
+				command: "bun",
+				args: ["run", "check-types"],
+			}),
+		).toBe(true);
+		expect(
+			findFileEditingCommand({ command: "bun", args: ["run", "check-types"] }),
+		).toBeUndefined();
+		expect(requiresPlanModeCommandApproval("git status")).toBe(false);
+		expect(requiresPlanModeCommandApproval('echo "bun run check-types"')).toBe(
+			false,
+		);
 	});
 });
 

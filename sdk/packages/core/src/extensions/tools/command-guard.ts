@@ -3,18 +3,16 @@
  *
  * Plan mode keeps run_commands available for read-only investigation, but
  * models (especially weaker ones) use it to edit files anyway. When the plan
- * preset sets `blockFileEditingCommands`, createShellTool checks each command
- * against this blacklist before executing and returns a tool error instead of
- * running anything that looks like a file modification.
+ * runtime installs the command-guard extension, its beforeTool hook checks
+ * each command against this blacklist before approval or execution.
  *
  * This is a simple blacklist, not a shell interpreter. Commands are lightly
  * preprocessed (quoted text, heredoc bodies, escapes, and comments are masked
  * so they cannot false-positive), split on shell separators, and the leading
  * command word of each part is compared against the lists below; output
- * redirection to files is also rejected. It will not catch every possible
- * mutation (e.g. `python -c "open(..., 'w')"` or commands hidden inside a
- * quoted `bash -c` string) — it exists to stop the common ways models edit
- * files from the shell, and entries are easy to add.
+ * redirection to files is also rejected. Shell/eval scripts are inspected
+ * recursively, inline interpreter code is rejected, and opaque package
+ * scripts require approval. This remains a blacklist, not a shell sandbox.
  */
 
 import type { StructuredCommandInput } from "./schemas";
@@ -256,10 +254,10 @@ function normalizeCommandName(word: string): string {
 /**
  * Mask the parts of a command string that are data rather than commands, so
  * the blacklist scan below cannot false-positive on them: heredoc bodies are
- * dropped, and special characters inside quotes / behind backslash escapes /
- * after a comment marker are replaced with "_".
+ * dropped, quoted/escaped argv is replaced with placeholders, and comments
+ * are removed. Placeholders are restored after splitting shell operators.
  */
-function maskNonCommandText(command: string): string {
+function maskNonCommandText(command: string, quotedText: string[]): string {
 	// Drop heredoc bodies (everything between `<<DELIM` and the DELIM line).
 	const lines = command.split("\n");
 	const kept: string[] = [];
@@ -285,20 +283,32 @@ function maskNonCommandText(command: string): string {
 			// Arithmetic expansion ($((3 > 2))) holds comparisons, not
 			// commands or redirections.
 			.replace(/\$\(\([\s\S]*?\)\)/g, "_")
+			// Preserve quoted argv for shell -c/eval inspection without treating
+			// separators in ordinary quoted data as shell operators.
+			.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (span) => {
+				const value =
+					span[0] === "'"
+						? span.slice(1, -1)
+						: span.slice(1, -1).replace(/\\(["\\$`\n])/g, "$1");
+				quotedText.push(value);
+				return `__guard_quote_${quotedText.length - 1}__`;
+			})
 			// Backslash-escaped characters are literal text.
-			.replace(/\\./g, "_")
-			// Special characters inside quotes are literal text; spaces are
-			// masked too so a quoted span stays a single token.
-			.replace(/"[^"]*"|'[^']*'/g, (span) =>
-				span.replace(/[\s<>|;&$()`#\\]/g, "_"),
-			)
+			.replace(/\\(.)/g, (_, char) => {
+				quotedText.push(char);
+				return `__guard_quote_${quotedText.length - 1}__`;
+			})
 			// Comments.
 			.replace(/(?:^|\s)#.*$/gm, " ")
 	);
 }
 
 /** Check one command's tokens (command word + args) against the blacklist. */
-function checkTokens(tokens: string[]): string | undefined {
+function checkTokens(
+	tokens: string[],
+	approval = false,
+	depth = 0,
+): string | undefined {
 	let index = 0;
 	while (
 		index < tokens.length &&
@@ -326,8 +336,117 @@ function checkTokens(tokens: string[]): string | undefined {
 		return undefined;
 	}
 
-	const name = normalizeCommandName(tokens[index]);
-	const args = tokens.slice(index + 1);
+	let name = normalizeCommandName(tokens[index]);
+	let args = tokens.slice(index + 1);
+	// Package executors can hide formatter/fixer command names.
+	if (
+		name === "npx" ||
+		name === "bunx" ||
+		((name === "pnpm" || name === "yarn") && args[0] === "dlx")
+	) {
+		if (args[0] === "dlx") args = args.slice(1);
+		const cursor = skipOptions(
+			args,
+			new Set(["-p", "--package", "--cache", "--registry"]),
+		);
+		name = normalizeCommandName(args[cursor] ?? "").replace(/@[^@]*$/, "");
+		args = args.slice(cursor + 1);
+	}
+
+	if (
+		new Set(["bash", "sh", "zsh", "dash", "fish"]).has(name) ||
+		name === "eval"
+	) {
+		if (args.some((arg) => arg.startsWith("<<")))
+			return `\`${name}\` (inline code)`;
+		const scriptIndex = args.findIndex((arg) =>
+			/^-[A-Za-z]*c[A-Za-z]*$/.test(arg),
+		);
+		const script =
+			name === "eval"
+				? (args[0] === "--" ? args.slice(1) : args).join(" ")
+				: scriptIndex >= 0
+					? args[scriptIndex + 1]
+					: undefined;
+		if (script !== undefined) {
+			if (depth >= 4) return "nested shell code (inspection limit)";
+			return inspectCommand(script, approval, depth + 1);
+		}
+	}
+
+	// Inline code can import arbitrary write APIs or launch subprocesses.
+	// Blocking all of it avoids pretending a write-API regex is a sandbox.
+	const inlineFlag = /^-[ep]/;
+	if (
+		(/^python[\d.]*$/.test(name) && args.some((arg) => /^-c/.test(arg))) ||
+		(["node", "bun"].includes(name) &&
+			args.some(
+				(arg) => inlineFlag.test(arg) || /^--(eval|print)(=|$)/.test(arg),
+			)) ||
+		(["ruby", "perl"].includes(name) &&
+			args.some((arg) => /^-[A-Za-z]*e/.test(arg))) ||
+		(name === "php" && args.some((arg) => /^-r/.test(arg))) ||
+		(name === "deno" && args.includes("eval")) ||
+		((/^python[\d.]*$/.test(name) ||
+			["node", "bun", "deno", "ruby", "perl", "php"].includes(name)) &&
+			args.some((arg) => arg.startsWith("<<")))
+	) {
+		return `\`${name}\` (inline code)`;
+	}
+
+	const hasFlag = (flags: string[]) =>
+		args.some((arg) =>
+			flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+		);
+	const writes =
+		(name === "prettier" && hasFlag(["--write", "-w"])) ||
+		(name === "biome" &&
+			args.some((arg) => ["check", "format", "lint"].includes(arg)) &&
+			hasFlag(["--write", "--fix", "--apply"])) ||
+		(name === "eslint" && hasFlag(["--fix"]) && !hasFlag(["--fix-dry-run"])) ||
+		(name === "ruff" &&
+			(hasFlag(["--fix"]) ||
+				(args.includes("format") && !hasFlag(["--check", "--diff"])))) ||
+		(["black", "isort"].includes(name) &&
+			!hasFlag(["--check", "--check-only", "--diff"])) ||
+		(["gofmt", "goimports"].includes(name) && hasFlag(["-w"])) ||
+		(name === "rustfmt" &&
+			!hasFlag(["--check"]) &&
+			!args.some(
+				(arg, i) =>
+					arg === "--emit=stdout" ||
+					(arg === "--emit" && args[i + 1] === "stdout"),
+			)) ||
+		(name === "cargo" && args.includes("fmt") && !hasFlag(["--check"])) ||
+		(name === "dprint" && args.includes("fmt") && !hasFlag(["--diff"])) ||
+		(name === "clang-format" && hasFlag(["-i"]));
+	if (writes && !hasFlag(["--help", "-h", "--version"]))
+		return `\`${name}\` (formatter writes files)`;
+
+	if (approval) {
+		const cursor = skipOptions(
+			args,
+			new Set([
+				"-C",
+				"--cwd",
+				"--dir",
+				"--prefix",
+				"-w",
+				"--workspace",
+				"-F",
+				"--filter",
+			]),
+		);
+		const subcommand = args[cursor];
+		if (
+			(["npm", "pnpm", "yarn", "bun"].includes(name) &&
+				["run", "run-script", "test"].includes(subcommand)) ||
+			(["make", "gmake", "just", "task"].includes(name) &&
+				!hasFlag(["--help", "-h", "--version"]))
+		) {
+			return `\`${name}\` (package script)`;
+		}
+	}
 
 	// `| tee /tmp/log` is the documented way to capture output; only file
 	// arguments outside tmp are a mutation.
@@ -353,10 +472,10 @@ function checkTokens(tokens: string[]): string | undefined {
 		}
 		// First non-option arg is the subcommand; `git -c k=v` / `git -C dir`
 		// take a value, so skip that too.
-		let cursor = 0;
-		while (cursor < args.length && args[cursor].startsWith("-")) {
-			cursor += name === "git" && /^-[cC]$/.test(args[cursor]) ? 2 : 1;
-		}
+		const cursor = skipOptions(
+			args,
+			name === "git" ? GIT_VALUE_OPTIONS : new Set(),
+		);
 		const subcommand = args[cursor]?.toLowerCase();
 		if (subcommand && subcommands.has(subcommand)) {
 			const next = args[cursor + 1]?.toLowerCase();
@@ -460,7 +579,7 @@ function checkTokens(tokens: string[]): string | undefined {
 			) {
 				tail.push(args[cursor]);
 			}
-			const nested = checkTokens(tail);
+			const nested = checkTokens(tail, approval, depth);
 			if (nested) {
 				return nested;
 			}
@@ -479,13 +598,56 @@ function checkTokens(tokens: string[]): string | undefined {
 export function findFileEditingCommand(
 	command: string | StructuredCommandInput,
 ): string | undefined {
+	return inspectCommand(command);
+}
+
+/** Check after the mutation blacklist; opaque scripts need approval even with terminal auto-approval. */
+export function requiresPlanModeCommandApproval(
+	command: string | StructuredCommandInput,
+): boolean {
+	return inspectCommand(command, true) !== undefined;
+}
+
+const GIT_VALUE_OPTIONS = new Set([
+	"-c",
+	"-C",
+	"--git-dir",
+	"--work-tree",
+	"--namespace",
+	"--config-env",
+	"--super-prefix",
+]);
+
+function skipOptions(args: string[], valueOptions: Set<string>): number {
+	let cursor = 0;
+	while (cursor < args.length && args[cursor].startsWith("-")) {
+		cursor += valueOptions.has(args[cursor]) ? 2 : 1;
+	}
+	return cursor;
+}
+
+function inspectCommand(
+	command: string | StructuredCommandInput,
+	approval = false,
+	depth = 0,
+): string | undefined {
 	if (typeof command !== "string") {
 		// Structured argv is executed without shell parsing, so only the
 		// executable and argv matter (a ">" argument is a literal string).
-		return checkTokens([command.command, ...(command.args ?? [])]);
+		return checkTokens(
+			[command.command, ...(command.args ?? [])],
+			approval,
+			depth,
+		);
 	}
 
-	const masked = maskNonCommandText(command);
+	const quotedText: string[] = [];
+	const masked = maskNonCommandText(command, quotedText);
+	const restoreQuotes = (word: string) =>
+		word.replace(
+			/__guard_quote_(\d+)__/g,
+			(_, index) => quotedText[Number(index)],
+		);
 
 	// Output redirection to a file (`>`, `>>`, `&>`), allowing /dev sinks,
 	// fd duplication (`2>&1`, `>&2`), and /tmp output capture.
@@ -493,14 +655,18 @@ export function findFileEditingCommand(
 		/(?:^|[^<>])(?:>{1,2}|&>{1,2})\s*([^\s;&|<>()]+)/g,
 	);
 	for (const redirect of redirects) {
-		if (!isAllowedRedirectTarget(redirect[1])) {
+		if (!isAllowedRedirectTarget(restoreQuotes(redirect[1]))) {
 			return `output redirection (\`> ${redirect[1]}\`)`;
 		}
 	}
 
 	// Check the command word of every simple command in the string.
 	for (const segment of masked.split(/[\n;|&()`]+/)) {
-		const blocked = checkTokens(segment.trim().split(/\s+/).filter(Boolean));
+		const blocked = checkTokens(
+			segment.trim().split(/\s+/).filter(Boolean).map(restoreQuotes),
+			approval,
+			depth,
+		);
 		if (blocked) {
 			return blocked;
 		}
