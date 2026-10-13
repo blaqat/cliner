@@ -159,7 +159,54 @@ export function buildThreadItems(
 }
 
 export function asideTitle(item: HistoryItem): string {
-	return item.task.replace(ASIDE_PREFIX, "") || "Aside"
+	return item.title?.trim() || item.task.replace(ASIDE_PREFIX, "") || "Aside"
+}
+
+/** Display name for any thread: the user-set title, else its first message (asides drop their prefix). */
+export function threadTitle(item: HistoryItem): string {
+	return item.title?.trim() || (item.isSubagent ? item.task : asideTitleOrTask(item))
+}
+
+export interface ThreadPathItem {
+	id: string
+	title: string
+	/** Aside or subagent, shown with a `↳` prefix. */
+	sub: boolean
+}
+
+export interface ThreadPath {
+	/** Task (group) the root thread belongs to; asides and subagents inherit it. */
+	taskGroupId?: string
+	/** Root first, ending with the focused thread. */
+	threads: ThreadPathItem[]
+}
+
+/**
+ * Every level above the focused thread, walking `parentTaskId` through asides
+ * and subagents up to the root. A parent missing from the (possibly lagging)
+ * history still gets a placeholder level, and the walk stops there.
+ */
+export function buildThreadPath(focused: HistoryItem | undefined, history: readonly HistoryItem[]): ThreadPath {
+	if (!focused) {
+		return { threads: [] }
+	}
+	const byId = new Map(history.map((item) => [item.id, item]))
+	const threads: ThreadPathItem[] = [{ id: focused.id, title: threadTitle(focused), sub: !!focused.parentTaskId }]
+	let taskGroupId = focused.taskGroupId
+	let node = focused
+	const seen = new Set([focused.id])
+	while (node.parentTaskId && !seen.has(node.parentTaskId)) {
+		const parent = byId.get(node.parentTaskId)
+		if (!parent) {
+			threads.unshift({ id: node.parentTaskId, title: "Parent", sub: false })
+			break
+		}
+		seen.add(parent.id)
+		threads.unshift({ id: parent.id, title: threadTitle(parent), sub: !!parent.parentTaskId })
+		taskGroupId = parent.taskGroupId ?? taskGroupId
+		node = parent
+	}
+	return { taskGroupId: taskGroupId || undefined, threads }
 }
 
 export interface LineageRow {
@@ -249,7 +296,7 @@ export function buildSubagentLineage(
 }
 
 function asideTitleOrTask(item: HistoryItem): string {
-	return item.parentTaskId ? asideTitle(item) : item.task
+	return item.parentTaskId ? asideTitle(item) : item.title?.trim() || item.task
 }
 
 /** A child that needs the user (approval or question pending). */

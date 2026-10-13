@@ -270,7 +270,7 @@ const HistoryView = ({ onDone }: HistoryViewProps) => {
 
 	const fuse = useMemo(() => {
 		return new Fuse(tasks, {
-			keys: ["task"],
+			keys: ["title", "task"],
 			threshold: 0.6,
 			shouldSort: true,
 			isCaseSensitive: false,

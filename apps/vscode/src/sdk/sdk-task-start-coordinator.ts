@@ -88,7 +88,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean },
+		options?: { background?: boolean; taskGroupId?: string },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -148,7 +148,11 @@ export class SdkTaskStartCoordinator {
 				mode,
 			})
 
-			startInput.sessionMetadata = { ...startInput.sessionMetadata, apiSelection }
+			startInput.sessionMetadata = {
+				...startInput.sessionMetadata,
+				apiSelection,
+				...(options?.taskGroupId ? { taskGroupId: options.taskGroupId } : {}),
+			}
 			// Focused starts install the task proxy as the current view; background
 			// starts park it in the per-task context so its transcript and turn state
 			// accumulate offscreen and the chat appears in the inbox as running.
@@ -181,6 +185,7 @@ export class SdkTaskStartCoordinator {
 			const newHistoryItem = {
 				...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
 				apiSelection,
+				taskGroupId: options?.taskGroupId,
 			}
 			await this.options.taskHistory.updateTaskHistoryItem(newHistoryItem)
 			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)

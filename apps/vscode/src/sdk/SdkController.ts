@@ -4,6 +4,7 @@
 // Controller but delegates session lifecycle (initTask, askResponse,
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
+import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
@@ -34,7 +35,9 @@ import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
+import type { NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
+import chokidar, { type FSWatcher } from "chokidar"
 import {
 	captureTaskApiSelection,
 	readApiConfigProfiles,
@@ -49,6 +52,7 @@ import { StateManager } from "@/core/storage/StateManager"
 import { WorkspaceRootManager } from "@/core/workspace/WorkspaceRootManager"
 import { HostProvider } from "@/hosts/host-provider"
 import { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
+import { openFile as openFileIntegration } from "@/integrations/misc/open-file"
 import { ExtensionRegistryInfo } from "@/registry"
 import { OcaAuthService } from "@/services/auth/oca/OcaAuthService"
 import { UrlContentFetcher } from "@/services/browser/UrlContentFetcher"
@@ -59,6 +63,7 @@ import type { ClineExtensionContext } from "@/shared/cline"
 import { ShowMessageRequest, ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { isClineManagedProvider } from "@/shared/utils/cline"
+import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
@@ -113,6 +118,8 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { NotebookStore } from "./task-groups/notebook-store"
+import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
 import { TurnStateTracker } from "./turn-state-tracker"
@@ -340,6 +347,16 @@ export class Controller {
 	private userInstructionService?: Promise<UserInstructionConfigService>
 	private userInstructionServiceRoot?: string
 	private isDisposed = false
+
+	// Task-group ("Tasks") storage under ~/.cline/data/task-groups — deliberately
+	// outside data/sessions and data/tasks, which the SDK owns and other Cline
+	// installs share. The watcher refreshes webview state when notes/groups
+	// change on disk (hand edits, or another install writing to ~/.cline).
+	private readonly taskGroupStore = new TaskGroupStore()
+	private readonly notebookStore = new NotebookStore()
+	private taskGroupsWatcher?: FSWatcher
+	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
+	private currentBranchCache?: { cwd: string; branch: string; at: number }
 
 	// Synchronous snapshot of getWorkspaceRoot()'s latest result, for the message
 	// translator (which runs synchronously and relativizes the tool paths shown in
@@ -680,6 +697,7 @@ export class Controller {
 			// never overlap live-session ids.
 			getMinter: () => this.messageTranslatorState.getMinter(),
 		})
+		void this.ensureTaskGroupsWatcher()
 		this.mode = new SdkModeCoordinator({
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
@@ -1392,6 +1410,7 @@ export class Controller {
 		this.taskSessions.clear()
 		await this.sessions.dispose("SdkController.dispose")
 		await this.taskHistory.dispose()
+		await this.taskGroupsWatcher?.close()
 		this.mcpHub?.dispose?.()
 		this.messages.dispose()
 		await this.sdkTelemetry.dispose()
@@ -2118,9 +2137,14 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean },
+		options?: { background?: boolean; taskGroupId?: string },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
+		// A stale pill pick (group deleted between selection and send) starts unfiled.
+		if (options?.taskGroupId && !(await this.taskGroupStore.getGroup(options.taskGroupId))) {
+			Logger.warn(`[SdkController] initTask: unknown taskGroupId ${options.taskGroupId}, starting unfiled`)
+			options = { ...options, taskGroupId: undefined }
+		}
 		// A new task is starting — the agent is about to stream.
 		return options
 			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
@@ -3127,6 +3151,8 @@ export class Controller {
 						taskMode: "plan",
 						parentTaskId: taskId,
 						forkedAtTs: messageTs,
+						// Asides stay in their parent's task group.
+						taskGroupId: parent.taskGroupId ?? "",
 					},
 				})
 				newId = startResult.sessionId
@@ -3135,6 +3161,7 @@ export class Controller {
 					apiSelection,
 					parentTaskId: taskId,
 					forkedAtTs: messageTs,
+					taskGroupId: parent.taskGroupId,
 				}
 				await this.taskHistory.updateTaskHistoryItem(item)
 				const context = this.getTaskSessionContext(newId)
@@ -3157,6 +3184,202 @@ export class Controller {
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
 		await this.taskHistory.toggleTaskSettled(taskId)
+		await this.postStateToWebview()
+	}
+
+	/** Sets (or clears, when empty) the thread's user-set title. */
+	async renameTask(taskId: string, title: string): Promise<void> {
+		await this.taskHistory.renameTask(taskId, title)
+		await this.postStateToWebview()
+	}
+
+	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
+	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
+		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
+		await this.postStateToWebview()
+	}
+
+	// ---- Task groups ----
+
+	/**
+	 * Watch ~/.cline/data/task-groups so on-disk changes — hand-edited notes or
+	 * writes from another Cline install sharing ~/.cline — refresh webview
+	 * state (taskGroups list, note chips) the same way the user-instruction
+	 * watcher picks up .clinerules edits.
+	 */
+	private async ensureTaskGroupsWatcher(): Promise<void> {
+		if (this.isDisposed || this.taskGroupsWatcher) {
+			return
+		}
+		try {
+			const rootDir = taskGroupsRootDir()
+			await fs.mkdir(rootDir, { recursive: true })
+			this.taskGroupsWatcher = chokidar.watch(rootDir, { ignoreInitial: true })
+			this.taskGroupsWatcher.on("all", () => {
+				this.taskGroupsSummaryCache = undefined
+				void this.postStateToWebview()
+			})
+		} catch (error) {
+			Logger.warn("[SdkController] Failed to watch task-groups dir:", error)
+		}
+	}
+
+	/** Group summaries for ExtensionState, cached briefly — state posts run on a 50ms debounce. */
+	async listTaskGroups(): Promise<TaskGroupSummary[]> {
+		const cached = this.taskGroupsSummaryCache
+		if (cached && Date.now() - cached.at < 2000) {
+			return cached.summaries
+		}
+		const summaries = await this.taskGroupStore.listGroupSummaries()
+		this.taskGroupsSummaryCache = { summaries, at: Date.now() }
+		return summaries
+	}
+
+	/**
+	 * Current git branch for ExtensionState, cached briefly to keep state posts
+	 * cheap. Uses the last-known workspace root snapshot rather than awaiting
+	 * the host — fine for the "link current branch" hint, which only matters
+	 * when a real workspace is open.
+	 */
+	private async resolveCurrentBranch(): Promise<string | undefined> {
+		const cwd = this.lastKnownWorkspaceRoot
+		if (!cwd) {
+			return undefined
+		}
+		const cached = this.currentBranchCache
+		if (cached && cached.cwd === cwd && Date.now() - cached.at < 5000) {
+			return cached.branch || undefined
+		}
+		const branch = await getCurrentBranch(cwd)
+		this.currentBranchCache = { cwd, branch, at: Date.now() }
+		return branch || undefined
+	}
+
+	/**
+	 * The effective group of a thread: stored `taskGroupId` for normal threads
+	 * and asides; subagents belong to their root thread's group (derived, never
+	 * stored on the subagent record).
+	 */
+	private effectiveTaskGroupId(item: HistoryItem, byId: Map<string, HistoryItem>): string | undefined {
+		let current: HistoryItem | undefined = item
+		const seen = new Set<string>()
+		while (current && !seen.has(current.id)) {
+			seen.add(current.id)
+			if (!current.isSubagent) {
+				return current.taskGroupId
+			}
+			current = byId.get(current.runtimeOwnerTaskId ?? current.parentTaskId ?? "")
+		}
+		return undefined
+	}
+
+	/** Group detail: summary + note metas + member-thread timeline (newest first). */
+	async getTaskGroup(
+		id: string,
+	): Promise<{ group: TaskGroupSummary; notes: NotebookNoteMeta[]; threads: TaskGroupThreadRow[] } | undefined> {
+		const [group, notes, activity] = await Promise.all([
+			this.taskGroupStore.getGroup(id),
+			this.notebookStore.listNotes(id),
+			this.notebookStore.summarizeActivity(id),
+		])
+		if (!group) {
+			return undefined
+		}
+		const historyItems = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(historyItems.map((item) => [item.id, item]))
+		const threads: TaskGroupThreadRow[] = historyItems
+			.filter((item) => this.effectiveTaskGroupId(item, byId) === id)
+			.map((item) => ({
+				threadId: item.id,
+				title: item.title,
+				task: item.task,
+				ts: item.ts,
+				parentTaskId: item.parentTaskId,
+				isSubagent: item.isSubagent ?? false,
+				read: activity.get(item.id)?.read ?? [],
+				wrote: activity.get(item.id)?.wrote ?? [],
+			}))
+		return { group: { ...group, noteCount: notes.length }, notes, threads }
+	}
+
+	async createTaskGroup(input: { title: string; tags: TaskTag[]; threadId?: string }): Promise<string> {
+		const group = await this.taskGroupStore.createGroup(input)
+		if (input.threadId) {
+			await this.taskHistory.setTaskGroup(input.threadId, group.id)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return group.id
+	}
+
+	async updateTaskGroup(id: string, update: { title?: string; tags?: TaskTag[] }): Promise<TaskGroupSummary> {
+		const group = await this.taskGroupStore.updateGroup(id, update)
+		if (!group) {
+			throw new Error(`Task group not found: ${id}`)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return { ...group, noteCount: await this.taskGroupStore.noteCount(id) }
+	}
+
+	/** Deleting a task unfiles its threads; it never deletes threads. */
+	async deleteTaskGroup(id: string): Promise<void> {
+		const records = await this.taskHistory.listHistory({ hydrate: false })
+		for (const record of records) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.taskGroupId === id) {
+				await this.taskHistory.setTaskGroup(item.id, undefined)
+			}
+		}
+		await this.taskGroupStore.deleteGroup(id)
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	/** Files a thread into a task group (empty taskGroupId unfiles it). */
+	async setThreadTaskGroup(threadId: string, taskGroupId: string): Promise<void> {
+		if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		await this.taskHistory.setTaskGroup(threadId, taskGroupId || undefined)
+		await this.postStateToWebview()
+	}
+
+	/** Creates a note file in the group's notebook; returns its absolute path. */
+	async createNote(taskGroupId: string, name: string, description: string): Promise<string> {
+		if (!(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		const note = await this.notebookStore.createNote(taskGroupId, { name, description })
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return note.path
+	}
+
+	async openNote(taskGroupId: string, slug: string): Promise<void> {
+		const filePath = this.notebookStore.notePath(taskGroupId, slug)
+		if (!existsSync(filePath)) {
+			throw new Error(`Note not found: ${slug}`)
+		}
+		await openFileIntegration(filePath)
+	}
+
+	async applyNotebookChanges(
+		threadId: string,
+		items: { slug: string; include: boolean; editedContent?: string }[],
+	): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		await this.notebookStore.applyPendingChanges(threadId, items, {
+			threadTitle: item?.title ?? item?.task ?? "",
+		})
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	async discardNotebookChanges(threadId: string): Promise<void> {
+		await this.notebookStore.discardPendingChanges(threadId)
 		await this.postStateToWebview()
 	}
 
@@ -3571,6 +3794,14 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				taskHistory: processedTaskHistory,
+				// Optional-called: unit tests drive getStateToPostToWebview with
+				// partial controller stubs that don't carry these members.
+				taskGroups:
+					(await this.listTaskGroups?.().catch((error) => {
+						Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
+						return undefined
+					})) ?? [],
+				currentBranch: await this.resolveCurrentBranch?.().catch(() => undefined),
 				turnState:
 					childTurn ??
 					(decision

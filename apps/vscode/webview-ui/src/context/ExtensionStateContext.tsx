@@ -282,6 +282,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		enterSendsAs: "steer",
 		promptStash: [],
 		taskHistory: [],
+		taskGroups: [],
 		shouldShowAnnouncement: false,
 		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
 		browserSettings: DEFAULT_BROWSER_SETTINGS,
