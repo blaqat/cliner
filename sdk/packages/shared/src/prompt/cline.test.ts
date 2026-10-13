@@ -67,6 +67,18 @@ describe("buildClineSystemPrompt mode instructions", () => {
 		expect(ASK_MODE_INSTRUCTIONS).toContain("read-only");
 	});
 
+	it("starts Ask mode with an absolute file mutation prohibition", () => {
+		expect(ASK_MODE_INSTRUCTIONS).toMatch(
+			/^# Ask Mode\n\nDo not create, modify, move or delete any file, by any means/,
+		);
+		expect(ASK_MODE_INSTRUCTIONS).toContain(
+			"python -c / node -e, shell -c strings, heredocs",
+		);
+		expect(ASK_MODE_INSTRUCTIONS).toContain(
+			"show the patch in your reply and stop",
+		);
+	});
+
 	it("never instructs the model to produce a plan or prompt a mode switch", () => {
 		const prompt = buildClineSystemPrompt({ ...BASE_OPTIONS, mode: "plan" });
 		expect(prompt).toContain("# Ask Mode");

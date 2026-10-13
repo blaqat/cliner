@@ -136,6 +136,43 @@ describe("plan-mode command-guard extension", () => {
 		expect(result).toBeUndefined();
 	});
 
+	it.each([
+		"bun run check-types",
+		"npm run test",
+		"make check",
+		"bash -c 'just check'",
+	])("routes %s through the existing approval policy instead of skipping execution", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result).toEqual({
+			policy: { autoApprove: false, requireApproval: true },
+		});
+	});
+
+	it("checks the whole batch for blocked commands before requiring approval", async () => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", {
+				commands: ["bun run check-types", "npx prettier --write src"],
+			}),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+	});
+
+	it("does not block or request approval for the future notebook host tool", async () => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("notebook", {
+				action: "write",
+				content: "bun run check-types; rm file",
+			}),
+		);
+		expect(result).toBeUndefined();
+	});
+
 	it("lets the tool report its own error for unparseable input", async () => {
 		const extension = createPlanModeCommandGuardExtension();
 		const result = await runBeforeTool(

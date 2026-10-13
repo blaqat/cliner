@@ -127,6 +127,47 @@ describe("createSessionSpawnTool sub-agent access", () => {
 		expect(names).not.toContain("editor");
 	});
 
+	it("keeps Ask command blocking and script approvals in a spawned child", async () => {
+		const requestToolApproval = vi.fn(async () => ({ approved: false }));
+		await childToolNames(
+			makeConfig({ mode: "plan" }),
+			{ access: "write" },
+			requestToolApproval,
+		);
+		const child = agentConstructorSpy.mock.calls.at(-1)![0];
+		const guard = child.extensions.find(
+			(extension: { name: string }) =>
+				extension.name === "core.plan-mode-command-guard",
+		);
+		const context = {
+			tool: { name: "run_commands" },
+			snapshot: {},
+			toolCall: { toolCallId: "shell" },
+		};
+		expect(
+			guard.hooks.beforeTool({
+				...context,
+				input: { commands: ['bash -c "touch file"'] },
+			}),
+		).toMatchObject({ skip: true });
+		expect(
+			guard.hooks.beforeTool({
+				...context,
+				input: { commands: ["bun run check-types"] },
+			}),
+		).toEqual({
+			policy: { autoApprove: false, requireApproval: true },
+		});
+		await child.requestToolApproval({
+			sessionId: "child",
+			toolName: "run_commands",
+		});
+		expect(requestToolApproval).toHaveBeenCalledWith({
+			sessionId: "root-1",
+			toolName: "run_commands",
+		});
+	});
+
 	it("intersects the access preset with the parent's tool policies", async () => {
 		const names = await childToolNames(
 			makeConfig({
