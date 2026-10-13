@@ -57,7 +57,10 @@ export interface TaskGroupThreadRow {
 	threadId: string
 	title?: string
 	task: string
+	/** Last activity. */
 	ts: number
+	/** When the thread was created; the timeline reads in this order. */
+	startedTs: number
 	parentTaskId?: string
 	isSubagent: boolean
 	read: string[]

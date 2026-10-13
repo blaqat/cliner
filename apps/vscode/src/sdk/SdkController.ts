@@ -114,7 +114,12 @@ import { SdkSessionHistoryLoader } from "./sdk-session-history-loader"
 import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem, sessionRecordActivityTs } from "./sdk-task-history"
+import {
+	SdkTaskHistory,
+	sessionHistoryRecordToHistoryItem,
+	sessionRecordActivityTs,
+	sessionRecordStartedTs,
+} from "./sdk-task-history"
 import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 import { createVscodeSdkTelemetryHandle, type VscodeSdkTelemetryHandle } from "./sdk-telemetry"
 import { isToolAutoApproved } from "./sdk-tool-policies"
@@ -206,6 +211,12 @@ interface TaskSessionContext {
 	events: SdkSessionEventCoordinator
 	mode: "plan" | "act"
 	cancelled: boolean
+	/**
+	 * The task group a new thread was started in. Core persists the session
+	 * record (with its `taskGroupId` metadata) only when the first send lands,
+	 * so until then the synthesized history row reads the group from here.
+	 */
+	taskGroupId?: string
 	/**
 	 * The saved-configuration selection this task was last using (per mode).
 	 * Sessions pin to it so switching chats never rewrites a running chat's
@@ -961,6 +972,9 @@ export class Controller {
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
 				this.recordTaskApiSelection(taskId, selection)
+			},
+			recordTaskGroup: (taskId, taskGroupId) => {
+				this.getTaskSessionContext(taskId).taskGroupId = taskGroupId
 			},
 			postStateToWebview: () => this.postStateToWebview(),
 		})
@@ -1731,6 +1745,7 @@ export class Controller {
 			totalCost: 0,
 			modelId: session.startConfig?.modelId ?? taskProxy?.api?.getModel?.().id,
 			cwdOnTaskInitialization: this.lastKnownWorkspaceRoot,
+			taskGroupId: context?.taskGroupId,
 		}
 	}
 
@@ -3386,7 +3401,7 @@ export class Controller {
 		return undefined
 	}
 
-	/** Group detail: summary + note metas + member-thread timeline (newest first). */
+	/** Group detail: summary + note metas + member threads (the webview orders the timeline). */
 	async getTaskGroup(
 		id: string,
 	): Promise<{ group: TaskGroupSummary; notes: NotebookNoteMeta[]; threads: TaskGroupThreadRow[] } | undefined> {
@@ -3398,9 +3413,9 @@ export class Controller {
 		if (!group) {
 			return undefined
 		}
-		const historyItems = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
-			sessionHistoryRecordToHistoryItem,
-		)
+		const records = await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })
+		const startedTs = new Map(records.map((record) => [record.sessionId, sessionRecordStartedTs(record)]))
+		const historyItems = records.map(sessionHistoryRecordToHistoryItem)
 		const byId = new Map(historyItems.map((item) => [item.id, item]))
 		const threads: TaskGroupThreadRow[] = historyItems
 			.filter((item) => this.effectiveTaskGroupId(item, byId) === id)
@@ -3409,6 +3424,7 @@ export class Controller {
 				title: item.title,
 				task: item.task,
 				ts: item.ts,
+				startedTs: startedTs.get(item.id) ?? item.ts,
 				parentTaskId: item.parentTaskId,
 				isSubagent: item.isSubagent ?? false,
 				read: activity.get(item.id)?.read ?? [],
@@ -3843,6 +3859,7 @@ export class Controller {
 						totalCost: 0,
 						modelId: snapshotTask.api?.getModel?.().id,
 						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
+						taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
 					})
 				}
 			}

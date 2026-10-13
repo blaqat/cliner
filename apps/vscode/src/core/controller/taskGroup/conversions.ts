@@ -69,6 +69,7 @@ export function taskGroupThreadToProto(row: TaskGroupThreadRow): ProtoTaskGroupT
 		title: row.title ?? "",
 		task: row.task,
 		ts: row.ts,
+		startedTs: row.startedTs,
 		parentTaskId: row.parentTaskId,
 		isSubagent: row.isSubagent,
 		read: row.read,

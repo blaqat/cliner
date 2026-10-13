@@ -76,6 +76,12 @@ export interface SdkTaskStartCoordinatorOptions {
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
+	/**
+	 * Remembers the task group a new thread starts in. Core writes the session
+	 * record only when the first send lands, so the history row synthesized for
+	 * the live session needs the group before then.
+	 */
+	recordTaskGroup?: (taskId: string, taskGroupId: string) => void
 	postStateToWebview: () => Promise<void>
 }
 
@@ -159,6 +165,8 @@ export class SdkTaskStartCoordinator {
 			context = background ? this.options.createTaskContext?.(taskSessionId) : undefined
 			if (background && !context) throw new Error("Background task contexts are unavailable")
 			const task = context?.task ?? this.createAndSetTask(taskSessionId)
+			// Before the first state post, so the thread shows in its task right away.
+			if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit"> = context?.messages ?? this.options.messages
 			this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
 
@@ -180,6 +188,7 @@ export class SdkTaskStartCoordinator {
 				)
 				task.taskId = startResult.sessionId
 				taskSessionId = startResult.sessionId
+				if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 			}
 
 			const newHistoryItem = {

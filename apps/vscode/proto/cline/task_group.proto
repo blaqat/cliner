@@ -98,6 +98,7 @@ message TaskGroupThread {
   bool is_subagent = 6;
   repeated string read = 7;
   repeated string wrote = 8;
+  int64 started_ts = 9; // when the thread was created (ts is last activity)
 }
 
 message GetTaskGroupRequest {

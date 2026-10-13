@@ -269,12 +269,45 @@ describe("InboxList task groups", () => {
 		expect(mocks.showTaskWithId).toHaveBeenCalled()
 	})
 
-	it("shows an empty group with No threads yet when expanded", () => {
+	it("lists an empty group under Settled, with No threads yet when expanded", () => {
 		mocks.state.taskHistory = []
 		localStorage.setItem("inbox.expandedTaskGroups", JSON.stringify(["g"]))
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
-		expect(screen.getByTestId("inbox-task-group-row")).toHaveTextContent("0 threads")
+		const row = screen.getByTestId("inbox-task-group-row")
+		expect(row).toHaveTextContent("0 threads")
+		expect(row).toHaveAttribute("data-settled", "true")
+		expect(isAfter(row, screen.getByRole("button", { name: "Collapse settled chats" }))).toBe(true)
 		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("No threads yet")
 	})
+
+	it("moves a group whose threads are all settled to Settled, where it still expands and opens", () => {
+		mocks.state.taskHistory = [
+			item("m1", NOW - 2 * 60_000, { taskGroupId: "g", task: "Implement steps", isSettled: true }),
+			item("m2", NOW - 60 * 60_000, { taskGroupId: "g", task: "Dev plan", isSettled: true }),
+			item("loose", NOW - 30 * 60_000, { task: "Loose thread" }),
+			item("old", NOW - 90 * 60_000, { task: "Old settled", isSettled: true }),
+		]
+		mocks.state.sessionStatuses = {}
+		const onOpenTaskGroup = vi.fn()
+		render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
+
+		const settledHeader = screen.getByRole("button", { name: "Collapse settled chats" })
+		expect(settledHeader).toHaveTextContent("Settled2")
+		const row = screen.getByTestId("inbox-task-group-row")
+		expect(isAfter(row, settledHeader)).toBe(true)
+		// Newest activity first: the task (2m) above the older settled thread.
+		expect(isAfter(screen.getByText("Old settled"), row)).toBe(true)
+		expect(screen.queryByTestId("inbox-task-group-running")).not.toBeInTheDocument()
+
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("Implement steps")
+		fireEvent.click(screen.getByRole("button", { name: "Open task ›" }))
+		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
+	})
 })
+
+/** `node` comes after `other` in document order. */
+function isAfter(node: Element, other: Element): boolean {
+	return !!(other.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+}
