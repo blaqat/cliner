@@ -1,7 +1,7 @@
 import { GetTaskGroupResponse } from "@shared/proto/cline/task_group"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { getComposerTaskGroup, setComposerTaskGroup } from "./composerTaskGroup"
+import { getComposerPageTaskGroup, getComposerTaskGroup, setComposerTaskGroup } from "./composerTaskGroup"
 import { TaskGroupView } from "./TaskGroupView"
 import { consumeNewNoteRequest } from "./useTaskGroup"
 
@@ -134,9 +134,11 @@ describe("TaskGroupView", () => {
 	it("fixes the composer's task pill to this task while open", async () => {
 		const { unmount } = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
 		await screen.findByTestId("task-group-title")
-		expect(getComposerTaskGroup()).toBe("g1")
-		unmount()
+		expect(getComposerPageTaskGroup()).toBe("g1")
+		// The page scope isn't the clearable pill pick, so sends can't drop it.
 		expect(getComposerTaskGroup()).toBeUndefined()
+		unmount()
+		expect(getComposerPageTaskGroup()).toBeUndefined()
 	})
 
 	it("shows the 4 newest notes in the grid and opens a note on click", async () => {

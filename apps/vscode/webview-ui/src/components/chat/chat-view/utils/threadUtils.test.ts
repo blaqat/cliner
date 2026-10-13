@@ -213,7 +213,8 @@ describe("buildSubagentLineage", () => {
 
 describe("buildThreadPath", () => {
 	const root = item("root", 1, { task: "Implement steps 1–2", taskGroupId: "g1" })
-	const aside = item("aside", 2, { task: "Aside: Fix migration test", parentTaskId: "root" })
+	// Asides own their membership (copied from the parent when forked).
+	const aside = item("aside", 2, { task: "Aside: Fix migration test", parentTaskId: "root", taskGroupId: "g1" })
 	const agent = item("agent", 3, { task: "explore schema", parentTaskId: "aside", isSubagent: true })
 
 	it("walks asides and subagents up to the root, root first", () => {
@@ -227,6 +228,22 @@ describe("buildThreadPath", () => {
 		})
 	})
 
+	it("uses an aside's own task, not its parent's", () => {
+		const moved = { ...aside, taskGroupId: "g2" }
+		expect(buildThreadPath(moved, [root, moved]).taskGroupId).toBe("g2")
+		const unfiled = { ...aside, taskGroupId: undefined }
+		expect(buildThreadPath(unfiled, [root, unfiled]).taskGroupId).toBeUndefined()
+	})
+
+	it("gives a subagent the task of the nearest non-subagent above it", () => {
+		const moved = { ...aside, taskGroupId: "g2" }
+		const nested = item("nested", 4, { task: "dig deeper", parentTaskId: "agent", isSubagent: true })
+		expect(buildThreadPath(agent, [root, moved, agent]).taskGroupId).toBe("g2")
+		expect(buildThreadPath(nested, [root, moved, agent, nested]).taskGroupId).toBe("g2")
+		const rootAgent = item("ra", 5, { task: "scan", parentTaskId: "root", isSubagent: true })
+		expect(buildThreadPath(rootAgent, [root, rootAgent]).taskGroupId).toBe("g1")
+	})
+
 	it("prefers user-set titles", () => {
 		const titled = { ...root, title: "Steps 1–2" }
 		expect(buildThreadPath(aside, [titled, aside]).threads[0].title).toBe("Steps 1–2")
@@ -236,7 +253,7 @@ describe("buildThreadPath", () => {
 
 	it("keeps a placeholder for a parent missing from history and stops there", () => {
 		expect(buildThreadPath(aside, [aside])).toEqual({
-			taskGroupId: undefined,
+			taskGroupId: "g1",
 			threads: [
 				{ id: "root", title: "Parent", sub: false },
 				{ id: "aside", title: "Fix migration test", sub: true },

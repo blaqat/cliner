@@ -1,4 +1,5 @@
 import { TaskGroupSummary, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
+import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import { Controller } from ".."
 import { protoToTaskTag, taskGroupSummaryToProto } from "./conversions"
 
@@ -9,6 +10,7 @@ import { protoToTaskTag, taskGroupSummaryToProto } from "./conversions"
  * @returns TaskGroupSummary of the updated group
  */
 export async function updateTaskGroup(controller: Controller, request: UpdateTaskGroupRequest): Promise<TaskGroupSummary> {
+	validateTaskGroupIdentifier(request.id, "id")
 	if (!request.id) {
 		throw new Error("id is required")
 	}

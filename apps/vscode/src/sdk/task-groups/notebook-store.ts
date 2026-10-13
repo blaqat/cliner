@@ -1,9 +1,16 @@
+import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
 import type { NotebookActivity, NotebookChange, NotebookNoteMeta } from "@shared/task-groups"
 import * as yaml from "js-yaml"
 import { Logger } from "@/shared/services/Logger"
-import { taskGroupPaths, taskGroupsRootDir, writeFileAtomic } from "./task-group-store"
+import { taskGroupPaths, taskGroupsRootDir, validateTaskGroupIdentifier, writeFileAtomic } from "./task-group-store"
+
+export interface PendingNotebookChanges {
+	groupId: string
+	revision: string
+	changes: NotebookChange[]
+}
 
 type NoteUpdatedBy = NotebookNoteMeta["updatedBy"]
 
@@ -14,6 +21,7 @@ export function slugifyNoteName(name: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
+		.slice(0, 128)
 }
 
 function parseUpdatedBy(raw: unknown): NoteUpdatedBy {
@@ -78,11 +86,12 @@ function parseActivityLine(line: string): NotebookActivity | undefined {
  */
 export class NotebookStore {
 	private readonly noteIndexes = new Map<string, NotebookNoteMeta[]>()
-	private readonly stageWrites = new Map<string, Promise<void>>()
+	private readonly pendingWrites = new Map<string, Promise<unknown>>()
 
 	constructor(private readonly rootDir: string = taskGroupsRootDir()) {}
 
 	getNoteIndex(groupId: string): NotebookNoteMeta[] {
+		validateTaskGroupIdentifier(groupId, "groupId")
 		return this.noteIndexes.get(groupId) ?? []
 	}
 
@@ -105,6 +114,11 @@ export class NotebookStore {
 		const notes: NotebookNoteMeta[] = []
 		for (const file of files) {
 			const slug = file.slice(0, -".md".length)
+			try {
+				validateTaskGroupIdentifier(slug, "slug")
+			} catch {
+				continue
+			}
 			const note = await this.readNoteMeta(groupId, slug)
 			if (note) notes.push({ ...note, readers: readerCounts.get(slug) ?? 0 })
 		}
@@ -119,6 +133,8 @@ export class NotebookStore {
 		slug: string,
 		readerThreadId: string,
 	): Promise<{ name: string; content: string } | undefined> {
+		taskGroupPaths(this.rootDir, groupId).noteFile(slug)
+		validateTaskGroupIdentifier(readerThreadId, "threadId")
 		const staged = (await this.readPending(groupId, rootThreadId))?.find((change) => change.slug === slug)
 		if (staged) {
 			if (staged.op === "delete") return undefined
@@ -139,6 +155,7 @@ export class NotebookStore {
 		threadId?: string,
 	): Promise<{ meta: NotebookNoteMeta; content: string } | undefined> {
 		const filePath = taskGroupPaths(this.rootDir, groupId).noteFile(slug)
+		if (threadId !== undefined) validateTaskGroupIdentifier(threadId, "threadId")
 		try {
 			const raw = await fs.readFile(filePath, "utf8")
 			const meta = await this.readNoteMeta(groupId, slug, raw)
@@ -162,8 +179,6 @@ export class NotebookStore {
 	async createNote(groupId: string, input: { name: string; description: string }): Promise<{ slug: string; path: string }> {
 		const paths = taskGroupPaths(this.rootDir, groupId)
 		await fs.mkdir(paths.notebookDir, { recursive: true })
-		const slug = await this.uniqueSlug(groupId, input.name)
-		const filePath = paths.noteFile(slug)
 		const content = serializeNote({
 			name: input.name.trim(),
 			description: input.description.trim(),
@@ -171,8 +186,8 @@ export class NotebookStore {
 			updatedBy: { kind: "user" },
 			body: "",
 		})
-		await writeFileAtomic(filePath, content)
-		return { slug, path: filePath }
+		const slug = await this.createExclusive(groupId, slugifyNoteName(input.name) || "note", content)
+		return { slug, path: paths.noteFile(slug) }
 	}
 
 	notePath(groupId: string, slug: string): string {
@@ -186,17 +201,20 @@ export class NotebookStore {
 	 * change for the same slug: a `create` stays a `create` on later writes,
 	 * and a `create` followed by a `delete` cancels out entirely.
 	 */
-	async stageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
-		const key = `${groupId}/${threadId}`
-		const write = (this.stageWrites.get(key) ?? Promise.resolve())
-			.catch(() => {})
-			.then(() => this.performStageChange(groupId, threadId, change))
-		this.stageWrites.set(key, write)
+	private async serializePending<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+		validateTaskGroupIdentifier(threadId, "threadId")
+		const write = (this.pendingWrites.get(threadId) ?? Promise.resolve()).catch(() => {}).then(operation)
+		this.pendingWrites.set(threadId, write)
 		try {
-			await write
+			return await write
 		} finally {
-			if (this.stageWrites.get(key) === write) this.stageWrites.delete(key)
+			if (this.pendingWrites.get(threadId) === write) this.pendingWrites.delete(threadId)
 		}
+	}
+
+	async stageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
+		taskGroupPaths(this.rootDir, groupId).noteFile(change.slug)
+		return this.serializePending(threadId, () => this.performStageChange(groupId, threadId, change))
 	}
 
 	private async performStageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
@@ -223,94 +241,146 @@ export class NotebookStore {
 			return
 		}
 		await fs.mkdir(taskGroupPaths(this.rootDir, groupId).pendingDir, { recursive: true })
-		await writeFileAtomic(pendingPath, `${JSON.stringify(pending, null, 2)}\n`)
+		await this.writePending(groupId, threadId, pending)
+	}
+
+	private async writePending(groupId: string, threadId: string, changes: NotebookChange[]): Promise<void> {
+		const paths = taskGroupPaths(this.rootDir, groupId)
+		if (!changes.length) {
+			await fs.rm(paths.pendingFile(threadId), { force: true })
+			return
+		}
+		await fs.mkdir(paths.pendingDir, { recursive: true })
+		await writeFileAtomic(paths.pendingFile(threadId), `${JSON.stringify({ revision: randomUUID(), changes }, null, 2)}\n`)
 	}
 
 	async readPending(groupId: string, threadId: string): Promise<NotebookChange[] | undefined> {
+		return (await this.readPendingReview(groupId, threadId))?.changes
+	}
+
+	async readPendingReview(groupId: string, threadId: string): Promise<PendingNotebookChanges | undefined> {
 		const pendingPath = taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		try {
-			const raw = JSON.parse(await fs.readFile(pendingPath, "utf8"))
-			if (!Array.isArray(raw)) return undefined
-			return raw.filter(
-				(entry): entry is NotebookChange =>
-					typeof entry === "object" &&
-					entry !== null &&
-					["create", "update", "delete"].includes((entry as NotebookChange).op) &&
-					typeof (entry as NotebookChange).slug === "string" &&
-					typeof (entry as NotebookChange).name === "string",
-			)
+			const text = await fs.readFile(pendingPath, "utf8")
+			const raw = JSON.parse(text)
+			// Old pending arrays remain reviewable with a stable content revision.
+			const changes = Array.isArray(raw) ? raw : raw.changes
+			const revision = Array.isArray(raw) ? createHash("sha256").update(text).digest("hex") : raw.revision
+			if (!Array.isArray(changes) || typeof revision !== "string" || !revision) return undefined
+			for (const entry of changes) {
+				if (!entry || !["create", "update", "delete"].includes(entry.op) || typeof entry.name !== "string")
+					return undefined
+				validateTaskGroupIdentifier(entry.slug, "slug")
+			}
+			return { groupId, revision, changes }
 		} catch {
 			return undefined
 		}
 	}
 
-	/**
-	 * Finds the staged-changes file for a thread across all groups — apply and
-	 * discard are keyed by threadId only, and the thread's group membership can
-	 * change while changes sit pending.
-	 */
-	async findPending(threadId: string): Promise<{ groupId: string; changes: NotebookChange[] } | undefined> {
+	async listPending(threadId: string): Promise<PendingNotebookChanges[]> {
+		validateTaskGroupIdentifier(threadId, "threadId")
 		let groupIds: string[]
 		try {
 			groupIds = await fs.readdir(this.rootDir)
 		} catch {
-			return undefined
+			return []
 		}
+		const pending: PendingNotebookChanges[] = []
 		for (const groupId of groupIds) {
-			const changes = await this.readPending(groupId, threadId)
-			if (changes !== undefined) {
-				return { groupId, changes }
+			try {
+				validateTaskGroupIdentifier(groupId, "groupId")
+			} catch {
+				continue
 			}
+			const review = await this.readPendingReview(groupId, threadId)
+			if (review?.changes.length) pending.push(review)
 		}
-		return undefined
+		return pending
 	}
 
-	/**
-	 * Applies a thread's staged changes. `items` selects which staged changes
-	 * to apply (by slug, `include`) and can carry the user's inline edits
-	 * (`editedContent`); staged changes without a matching item are skipped.
-	 * The pending file is removed either way — review happens once.
-	 */
+	/** Compatibility lookup; review actions always address a specific group and revision. */
+	async findPending(threadId: string): Promise<PendingNotebookChanges | undefined> {
+		return (await this.listPending(threadId))[0]
+	}
+
+	private async requireRevision(groupId: string, threadId: string, revision: string): Promise<PendingNotebookChanges> {
+		const pending = await this.readPendingReview(groupId, threadId)
+		if (!revision || !pending || pending.revision !== revision) {
+			throw new Error("Notebook changes have changed since this review. Use the newest review card.")
+		}
+		return pending
+	}
+
 	async applyPendingChanges(
+		groupId: string,
 		threadId: string,
+		revision: string,
 		items: { slug: string; include: boolean; editedContent?: string }[],
 		options?: { threadTitle?: string },
 	): Promise<NotebookChange[]> {
-		const pending = await this.findPending(threadId)
-		if (!pending) return []
-		const { groupId, changes } = pending
-		const applied: NotebookChange[] = []
-		try {
-			for (const change of changes) {
-				const item = items.find((entry) => entry.slug === change.slug)
-				if (!item?.include) continue
-				await this.applyChange(groupId, change, item.editedContent, {
-					kind: "thread",
+		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
+		for (const item of items) validateTaskGroupIdentifier(item.slug, "slug")
+		return this.serializePending(threadId, async () => {
+			const { changes } = await this.requireRevision(groupId, threadId, revision)
+			const applied: NotebookChange[] = []
+			const completed = new Set<string>()
+			try {
+				for (const change of changes) {
+					const item = items.find((entry) => entry.slug === change.slug)
+					if (!item?.include) continue
+					const slug = await this.applyChange(groupId, change, item.editedContent, {
+						kind: "thread",
+						threadId,
+						threadTitle: options?.threadTitle ?? "",
+					})
+					completed.add(change.slug)
+					applied.push({
+						...change,
+						slug,
+						...(item.editedContent !== undefined && change.op !== "delete" ? { content: item.editedContent } : {}),
+					})
+					await this.appendActivity(groupId, { ts: Date.now(), threadId, kind: "write", slug })
+				}
+			} catch (error) {
+				// Preserve failed and unprocessed work, including the user's inline edits.
+				await this.writePending(
+					groupId,
 					threadId,
-					threadTitle: options?.threadTitle ?? "",
-				})
-				applied.push(
-					item.editedContent !== undefined && change.op !== "delete"
-						? { ...change, content: item.editedContent }
-						: change,
+					changes
+						.filter((change) => !completed.has(change.slug))
+						.map((change) => {
+							const item = items.find((entry) => entry.slug === change.slug)
+							return item?.editedContent !== undefined && change.op !== "delete"
+								? { ...change, content: item.editedContent }
+								: change
+						}),
 				)
-				await this.appendActivity(groupId, { ts: Date.now(), threadId, kind: "write", slug: change.slug })
+				throw error
 			}
-		} finally {
-			await fs.rm(taskGroupPaths(this.rootDir, groupId).pendingFile(threadId), { force: true })
-		}
-		return applied
+			// Only successful operations leave pending; unchecked work stays reviewable.
+			await this.writePending(
+				groupId,
+				threadId,
+				changes.filter((change) => !completed.has(change.slug)),
+			)
+			return applied
+		})
 	}
 
-	async discardPendingChanges(threadId: string): Promise<void> {
-		const pending = await this.findPending(threadId)
-		if (!pending) return
-		await fs.rm(taskGroupPaths(this.rootDir, pending.groupId).pendingFile(threadId), { force: true })
+	async discardPendingChanges(groupId: string, threadId: string, revision: string): Promise<void> {
+		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
+		return this.serializePending(threadId, async () => {
+			await this.requireRevision(groupId, threadId, revision)
+			await this.writePending(groupId, threadId, [])
+		})
 	}
 
 	// ---- Activity log ----
 
 	async appendActivity(groupId: string, activity: NotebookActivity): Promise<void> {
+		validateTaskGroupIdentifier(activity.threadId, "threadId")
+		validateTaskGroupIdentifier(activity.slug, "slug")
 		const paths = taskGroupPaths(this.rootDir, groupId)
 		try {
 			await fs.mkdir(paths.dir, { recursive: true })
@@ -376,12 +446,12 @@ export class NotebookStore {
 		change: NotebookChange,
 		editedContent: string | undefined,
 		updatedBy: NoteUpdatedBy,
-	): Promise<void> {
+	): Promise<string> {
 		const paths = taskGroupPaths(this.rootDir, groupId)
 		const filePath = paths.noteFile(change.slug)
 		if (change.op === "delete") {
 			await fs.rm(filePath, { force: true })
-			return
+			return change.slug
 		}
 		// `baseUpdatedAt` records which on-disk revision the agent based the
 		// change on; apply wins unconditionally because the user already
@@ -390,16 +460,10 @@ export class NotebookStore {
 		const body = editedContent ?? change.content ?? (existing !== undefined ? parseYamlFrontmatter(existing).body : "")
 		const name = change.name.trim() || change.slug
 		await fs.mkdir(paths.notebookDir, { recursive: true })
-		await writeFileAtomic(
-			filePath,
-			serializeNote({
-				name,
-				description: change.description,
-				updatedAt: Date.now(),
-				updatedBy,
-				body,
-			}),
-		)
+		const content = serializeNote({ name, description: change.description, updatedAt: Date.now(), updatedBy, body })
+		if (change.op === "create") return this.createExclusive(groupId, change.slug, content)
+		await writeFileAtomic(filePath, content)
+		return change.slug
 	}
 
 	private async readNoteMeta(groupId: string, slug: string, rawOverride?: string): Promise<NotebookNoteMeta | undefined> {
@@ -417,8 +481,8 @@ export class NotebookStore {
 				name: typeof data.name === "string" && data.name ? data.name : slug,
 				description: typeof data.description === "string" ? data.description : "",
 				size: stat.size,
-				updatedAt: updated,
-				updatedBy: parseUpdatedBy(data.updatedBy),
+				updatedAt: stat.mtimeMs > updated + 2000 ? stat.mtimeMs : updated,
+				updatedBy: stat.mtimeMs > updated + 2000 ? { kind: "user" } : parseUpdatedBy(data.updatedBy),
 				readers: 0,
 			}
 		} catch (error) {
@@ -429,16 +493,26 @@ export class NotebookStore {
 		}
 	}
 
-	private async uniqueSlug(groupId: string, name: string): Promise<string> {
+	private async createExclusive(groupId: string, base: string, content: string): Promise<string> {
 		const paths = taskGroupPaths(this.rootDir, groupId)
-		const base = slugifyNoteName(name) || "note"
-		let slug = base
-		for (let i = 2; ; i++) {
+		validateTaskGroupIdentifier(base, "slug")
+		for (let i = 1; ; i++) {
+			const suffix = i === 1 ? "" : `-${i}`
+			const slug = `${base.slice(0, 128 - suffix.length)}${suffix}`
 			try {
-				await fs.access(paths.noteFile(slug))
-				slug = `${base}-${i}`
-			} catch {
+				const filePath = paths.noteFile(slug)
+				const handle = await fs.open(filePath, "wx")
+				try {
+					await handle.writeFile(content, "utf8")
+				} catch (error) {
+					await fs.rm(filePath, { force: true })
+					throw error
+				} finally {
+					await handle.close()
+				}
 				return slug
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
 			}
 		}
 	}

@@ -96,6 +96,22 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 			this.disposables,
 		)
 
+		vscode.window.onDidChangeWindowState(
+			(state) => {
+				if (state.focused) void this.controller.refreshCurrentBranch().catch(() => {})
+			},
+			null,
+			this.disposables,
+		)
+		vscode.workspace.onDidChangeWorkspaceFolders(
+			() => {
+				void this.controller.refreshCurrentBranch().catch(() => {})
+			},
+			null,
+			this.disposables,
+		)
+		void this.controller.refreshCurrentBranch().catch(() => {})
+
 		// Listen for when the view is disposed. This happens when the user moves the
 		// view between the primary and secondary sidebars: VS Code destroys the old
 		// WebviewView and calls resolveWebviewView again on this same provider with a

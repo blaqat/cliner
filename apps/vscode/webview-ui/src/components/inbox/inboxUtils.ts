@@ -66,7 +66,8 @@ export function isRowWorking(row: InboxRow): boolean {
 
 /**
  * Groups task history for the home inbox. Asides are folded into their parent's
- * subthread count instead of being top-level rows (unless the parent is gone).
+ * subthread count instead of being top-level rows (unless the parent is gone or
+ * the aside is filed in a different task than the parent).
  * Threads filed into a known task group move under that group's row.
  * Active (unsettled) rows sort by last activity including subthreads; settled
  * rows by their own last activity; groups by their newest member.
@@ -82,10 +83,18 @@ export function buildInbox(
 	}: { activeLimit?: number; settledLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
-	const ids = new Set(valid.map((item) => item.id))
+	const byId = new Map(valid.map((item) => [item.id, item]))
+	// Asides own their task membership. One moved to another task (or out of its
+	// parent's) is listed as its own row there instead of under the parent, so it
+	// shows wherever its breadcrumb says it lives. Subagents always nest.
+	const nests = (item: HistoryItem): boolean => {
+		const parent = item.parentTaskId ? byId.get(item.parentTaskId) : undefined
+		if (!parent) return false
+		return !!item.isSubagent || (item.taskGroupId || undefined) === (parent.taskGroupId || undefined)
+	}
 	const childrenByParent = new Map<string, HistoryItem[]>()
 	for (const item of valid) {
-		if (item.parentTaskId && ids.has(item.parentTaskId)) {
+		if (item.parentTaskId && nests(item)) {
 			const siblings = childrenByParent.get(item.parentTaskId) ?? []
 			siblings.push(item)
 			childrenByParent.set(item.parentTaskId, siblings)
@@ -93,7 +102,7 @@ export function buildInbox(
 	}
 
 	const rows: InboxRow[] = valid
-		.filter((item) => !item.parentTaskId || !ids.has(item.parentTaskId))
+		.filter((item) => !nests(item))
 		.map((item) => {
 			const allChildren = childrenByParent.get(item.id) ?? []
 			const children = allChildren.filter((child) => !child.isSubagent)

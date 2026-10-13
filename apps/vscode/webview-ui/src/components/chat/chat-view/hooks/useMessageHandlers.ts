@@ -4,7 +4,7 @@ import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state
 import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
-import { getComposerTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
+import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
@@ -340,7 +340,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						text: messageToSend,
 						images,
 						files,
-						taskGroupId: getComposerTaskGroup(),
+						taskGroupId: getComposerSendTaskGroup(),
 					})
 					clearSentMessageState()
 					trackPromptSubmitted(false)
@@ -713,7 +713,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						images,
 						files,
 						runInBackground: true,
-						taskGroupId: getComposerTaskGroup(),
+						taskGroupId: getComposerSendTaskGroup(),
 					}),
 				).then(() => setComposerTaskGroup(undefined)),
 			).catch((error) => console.error("Failed to start background task:", error))

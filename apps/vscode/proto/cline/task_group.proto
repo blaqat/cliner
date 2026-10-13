@@ -169,11 +169,15 @@ message ApplyNotebookChangesRequest {
   Metadata metadata = 1;
   string thread_id = 2;
   repeated NotebookChangeItem items = 3;
+  string revision = 4;
+  string task_group_id = 5;
 }
 
 message DiscardNotebookChangesRequest {
   Metadata metadata = 1;
   string thread_id = 2;
+  string revision = 3;
+  string task_group_id = 4;
 }
 
 message SearchHistoryRequest {

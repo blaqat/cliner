@@ -15,16 +15,14 @@ export async function resolveNotebookOwner(
 	findThread: (id: string) => Promise<HistoryItem | undefined>,
 ): Promise<{ rootThreadId: string; taskGroupId?: string }> {
 	let current = item
-	let taskGroupId = item.isSubagent ? undefined : item.taskGroupId
 	const seen = new Set<string>([item.id])
-	while (true) {
+	while (current.isSubagent) {
 		const parentId = current.runtimeOwnerTaskId ?? current.parentTaskId
 		if (!parentId || seen.has(parentId)) break
 		seen.add(parentId)
 		const parent = await findThread(parentId)
 		if (!parent) break
 		current = parent
-		if (!current.isSubagent) taskGroupId ??= current.taskGroupId
 	}
-	return { rootThreadId: current.id, taskGroupId }
+	return { rootThreadId: current.id, taskGroupId: current.isSubagent ? undefined : current.taskGroupId }
 }

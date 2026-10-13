@@ -164,6 +164,46 @@ describe("SdkTaskHistory", () => {
 		expect(malformed.taskGroupId).toBeUndefined()
 	})
 
+	it("serializes owned metadata changes against stale activity and usage snapshots", async () => {
+		const { history, getSession } = makeHistory([
+			makeSessionRecord("task-1", {
+				metadata: {
+					threadTitle: "Old",
+					taskGroupId: "A",
+					tags: [],
+					dismissedAutoTags: [],
+				},
+			}),
+		])
+		const stale = (await history.findHistoryItem("task-1"))!
+		await Promise.all([
+			history.setTaskGroup("task-1", "B"),
+			history.renameTask("task-1", "New"),
+			history.setThreadTags("task-1", [{ kind: "label", value: "keep", source: "user" }], ["PROJ-1"]),
+			history.updateTaskHistoryItem({ ...stale, tokensIn: 42, lastActivityTs: 1234 }),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "New",
+			taskGroupId: "B",
+			tags: [{ kind: "label", value: "keep", source: "user" }],
+			dismissedAutoTags: ["PROJ-1"],
+			tokensIn: 42,
+		})
+		await Promise.all([
+			history.setTaskGroup("task-1", undefined),
+			history.renameTask("task-1", ""),
+			history.setThreadTags("task-1", [], ["PROJ-2"]),
+			history.addAutoTicketTags("task-1", "PROJ-2 PROJ-3"),
+			history.updateTaskHistoryItem(stale),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "",
+			taskGroupId: "",
+			tags: [{ kind: "ticket", value: "PROJ-3", source: "auto" }],
+			dismissedAutoTags: ["PROJ-2"],
+		})
+	})
+
 	it("adds auto ticket tags from a user message, skipping existing and dismissed ones", async () => {
 		const { history, updateSession } = makeHistory([
 			makeSessionRecord("task-1", {
@@ -884,6 +924,7 @@ describe("SdkTaskHistory", () => {
 			{ role: "assistant", content: "Done" },
 		] as never)
 		const payload = {
+			revision: "r1",
 			taskGroupId: "group",
 			threadId: "root",
 			status: "pending",

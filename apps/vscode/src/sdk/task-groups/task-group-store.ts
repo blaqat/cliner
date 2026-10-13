@@ -15,17 +15,41 @@ export function taskGroupsRootDir(): string {
 	return path.join(resolveClineDataDir(), "task-groups")
 }
 
+/** Identifiers are single path components, never paths or traversal segments. */
+export function validateTaskGroupIdentifier(value: string, label = "identifier"): void {
+	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) || value.includes("..")) {
+		throw new Error(`Invalid ${label}: expected a safe, non-empty identifier`)
+	}
+}
+
+function insideTaskGroupsRoot(rootDir: string, ...parts: string[]): string {
+	const root = path.resolve(rootDir)
+	const resolved = path.resolve(root, ...parts)
+	const relative = path.relative(root, resolved)
+	if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+		throw new Error("Task-group path escapes the task-groups root")
+	}
+	return resolved
+}
+
 /** Layout of a single group's directory under the task-groups root. */
 export function taskGroupPaths(rootDir: string, groupId: string) {
-	const dir = path.join(rootDir, groupId)
+	validateTaskGroupIdentifier(groupId, "groupId")
+	const resolve = (...parts: string[]) => insideTaskGroupsRoot(rootDir, groupId, ...parts)
 	return {
-		dir,
-		groupFile: path.join(dir, "group.json"),
-		notebookDir: path.join(dir, "notebook"),
-		noteFile: (slug: string) => path.join(dir, "notebook", `${slug}.md`),
-		pendingDir: path.join(dir, "pending"),
-		pendingFile: (threadId: string) => path.join(dir, "pending", `${threadId}.json`),
-		activityFile: path.join(dir, "activity.jsonl"),
+		dir: resolve(),
+		groupFile: resolve("group.json"),
+		notebookDir: resolve("notebook"),
+		noteFile: (slug: string) => {
+			validateTaskGroupIdentifier(slug, "slug")
+			return resolve("notebook", `${slug}.md`)
+		},
+		pendingDir: resolve("pending"),
+		pendingFile: (threadId: string) => {
+			validateTaskGroupIdentifier(threadId, "threadId")
+			return resolve("pending", `${threadId}.json`)
+		},
+		activityFile: resolve("activity.jsonl"),
 	}
 }
 
@@ -81,6 +105,11 @@ export class TaskGroupStore {
 		}
 		const groups: TaskGroup[] = []
 		for (const entry of entries) {
+			try {
+				validateTaskGroupIdentifier(entry, "groupId")
+			} catch {
+				continue
+			}
 			const group = await this.getGroup(entry)
 			if (group) groups.push(group)
 		}
@@ -88,7 +117,7 @@ export class TaskGroupStore {
 	}
 
 	async getGroup(id: string): Promise<TaskGroup | undefined> {
-		if (!id) return undefined
+		validateTaskGroupIdentifier(id, "groupId")
 		try {
 			const raw = await fs.readFile(taskGroupPaths(this.rootDir, id).groupFile, "utf8")
 			return parseTaskGroup(JSON.parse(raw))
@@ -140,6 +169,7 @@ export class TaskGroupStore {
 
 	/** noteCount for TaskGroupSummary: number of notes in the group's notebook. */
 	async noteCount(id: string): Promise<number> {
+		validateTaskGroupIdentifier(id, "groupId")
 		try {
 			const entries = await fs.readdir(taskGroupPaths(this.rootDir, id).notebookDir)
 			return entries.filter((entry) => entry.endsWith(".md")).length

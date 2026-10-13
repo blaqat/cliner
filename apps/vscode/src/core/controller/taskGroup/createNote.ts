@@ -1,4 +1,5 @@
 import { CreateNoteRequest, CreateNoteResponse } from "@shared/proto/cline/task_group"
+import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import { Controller } from ".."
 
 /**
@@ -8,6 +9,7 @@ import { Controller } from ".."
  * @returns CreateNoteResponse with the absolute path of the created note file
  */
 export async function createNote(controller: Controller, request: CreateNoteRequest): Promise<CreateNoteResponse> {
+	validateTaskGroupIdentifier(request.taskGroupId, "taskGroupId")
 	if (!request.taskGroupId) {
 		throw new Error("taskGroupId is required")
 	}

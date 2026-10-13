@@ -282,6 +282,39 @@ describe("buildInbox task groups", () => {
 		expect(groups[0].members.map((row) => row.item.id)).toEqual(["a1"])
 	})
 
+	it("lists an aside filed in another task as a member of that task, not under its parent", () => {
+		const history = [
+			item("parent", NOW - 60 * MIN, { taskGroupId: "a" }),
+			item("same", NOW - 30 * MIN, { parentTaskId: "parent", taskGroupId: "a" }),
+			item("moved", NOW - MIN, { parentTaskId: "parent", taskGroupId: "b" }),
+			item("agent", NOW, { parentTaskId: "moved", isSubagent: true }),
+		]
+
+		const { groups, active } = buildInbox(history, { agent: "running" }, undefined, {
+			taskGroups: [group("a", 0), group("b", 0)],
+		})
+
+		const byId = new Map(groups.map((row) => [row.group.id, row]))
+		expect(byId.get("a")?.members.map((row) => row.item.id)).toEqual(["parent"])
+		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 1, activityTs: NOW - 30 * MIN })
+		// The moved aside keeps its own subagents and counts toward its own task.
+		expect(byId.get("b")?.members.map((row) => row.item.id)).toEqual(["moved"])
+		expect(byId.get("b")).toMatchObject({ runningCount: 1, activityTs: NOW })
+		expect(active).toHaveLength(0)
+	})
+
+	it("lists an aside taken out of its parent's task as an unfiled row", () => {
+		const history = [
+			item("parent", NOW - 60 * MIN, { taskGroupId: "a" }),
+			item("aside", NOW - MIN, { parentTaskId: "parent" }),
+		]
+
+		const { groups, active } = buildInbox(history, {}, undefined, { taskGroups: [group("a", 0)] })
+
+		expect(groups[0].members[0]).toMatchObject({ subthreadCount: 0, activityTs: NOW - 60 * MIN })
+		expect(active.map((row) => row.item.id)).toEqual(["aside"])
+	})
+
 	it("falls back to the group's update time when it has no threads", () => {
 		const { groups } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
 
@@ -292,7 +325,7 @@ describe("buildInbox task groups", () => {
 		const history = [
 			item("run", NOW, { taskGroupId: "g" }),
 			item("idle", NOW, { taskGroupId: "g" }),
-			item("aside", NOW, { parentTaskId: "idle" }),
+			item("aside", NOW, { parentTaskId: "idle", taskGroupId: "g" }),
 			item("done", NOW, { taskGroupId: "g" }),
 		]
 

@@ -121,4 +121,21 @@ describe("TaskGroupStore", () => {
 		const missing = new TaskGroupStore(path.join(rootDir, "does-not-exist"))
 		expect(await missing.listGroups()).toEqual([])
 	})
+	it.each([
+		"..",
+		"/",
+		"\\",
+		"/tmp/absolute",
+		"C:\\absolute",
+		"",
+	])("rejects unsafe group identifiers %j before any fs operation", async (bad) => {
+		const read = vi.spyOn(fs, "readFile")
+		const remove = vi.spyOn(fs, "rm")
+		await expect(store.deleteGroup(bad)).rejects.toThrow("Invalid")
+		await expect(store.getGroup(bad)).rejects.toThrow("Invalid")
+		await expect(store.noteCount(bad)).rejects.toThrow("Invalid")
+		expect(() => taskGroupPaths(rootDir, bad)).toThrow("Invalid")
+		expect(read).not.toHaveBeenCalled()
+		expect(remove).not.toHaveBeenCalled()
+	})
 })

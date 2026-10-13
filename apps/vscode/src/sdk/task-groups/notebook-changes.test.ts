@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 import { mergeNotebookChangesMessages, notebookChangesMessage, restoreNotebookChanges } from "./notebook-changes"
 
 const payload: NotebookChangesPayload = {
+	revision: "r1",
 	taskGroupId: "group",
 	threadId: "root",
 	status: "pending",
@@ -28,14 +29,19 @@ describe("notebook changes message protocol", () => {
 		const older = notebookChangesMessage(payload, 1)
 		const latest = notebookChangesMessage(payload, 2)
 		const changes = [{ ...payload.changes[0], content: "Current pending" }]
-		const restored = restoreNotebookChanges([older, latest], "root", { groupId: "group", changes }, () => 3)
+		const restored = restoreNotebookChanges([older, latest], "root", [{ groupId: "group", revision: "r1", changes }], () => 3)
 		expect(restored[0]).toBe(older)
 		expect(restored[1].ts).toBe(2)
 		expect(JSON.parse(restored[1].text!)).toEqual({ ...payload, changes })
 	})
 
 	it("recovers pending work without a saved card and settles a stale pending card", () => {
-		const restored = restoreNotebookChanges([], "root", { groupId: "group", changes: payload.changes }, () => 3)
+		const restored = restoreNotebookChanges(
+			[],
+			"root",
+			[{ groupId: "group", revision: "r1", changes: payload.changes }],
+			() => 3,
+		)
 		expect(JSON.parse(restored[0].text!)).toEqual(payload)
 		expect(JSON.parse(restoreNotebookChanges(restored, "root", undefined, () => 4)[0].text!).status).toBe("discarded")
 	})
@@ -55,5 +61,26 @@ describe("notebook changes message protocol", () => {
 		expect(merged.map((message) => message.say)).toEqual(["task", "completion_result", "notebook_changes", "user_feedback"])
 		expect(merged.map((message) => message.ts)).toEqual([11, 12, 13, 14])
 		expect(restoreNotebookChanges(merged, "root", undefined, () => ++id)).toEqual(merged)
+	})
+	it("restores one independent card per pending group", () => {
+		let ts = 0
+		const restored = restoreNotebookChanges(
+			[],
+			"root",
+			[
+				{ groupId: "group", revision: "r1", changes: payload.changes },
+				{ groupId: "other", revision: "r2", changes: payload.changes },
+			],
+			() => ++ts,
+		)
+		expect(restored.map((message) => JSON.parse(message.text!).taskGroupId)).toEqual(["group", "other"])
+		const next = restoreNotebookChanges(
+			restored,
+			"root",
+			[{ groupId: "group", revision: "r3", changes: payload.changes }],
+			() => ++ts,
+		)
+		expect(JSON.parse(next[0].text!).revision).toBe("r3")
+		expect(JSON.parse(next[1].text!).status).toBe("discarded")
 	})
 })

@@ -1,5 +1,6 @@
 import { Empty } from "@shared/proto/cline/common"
 import { OpenNoteRequest } from "@shared/proto/cline/task_group"
+import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import { Controller } from ".."
 
 /**
@@ -9,6 +10,8 @@ import { Controller } from ".."
  * @returns Empty response
  */
 export async function openNote(controller: Controller, request: OpenNoteRequest): Promise<Empty> {
+	validateTaskGroupIdentifier(request.taskGroupId, "taskGroupId")
+	validateTaskGroupIdentifier(request.slug, "slug")
 	if (!request.taskGroupId) {
 		throw new Error("taskGroupId is required")
 	}

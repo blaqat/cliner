@@ -211,7 +211,8 @@ describe("TaskHeader", () => {
 
 	describe("breadcrumb", () => {
 		const root = item("root", { task: "Implement steps 1–2", taskGroupId: "g1" })
-		const aside = item("aside", { task: "Aside: Fix migration test", parentTaskId: "root" })
+		// Asides own their task membership (copied from the parent when forked).
+		const aside = item("aside", { task: "Aside: Fix migration test", parentTaskId: "root", taskGroupId: "g1" })
 		const nested = () => {
 			mocks.state = {
 				...mocks.state,

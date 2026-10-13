@@ -38,6 +38,27 @@ async function writeSession(
 	return filePath
 }
 
+/** Writes `<taskGroupsDir>/<groupId>/notebook/<slug>.md` with fixed frontmatter. */
+async function writeNote(
+	taskGroupsDir: string,
+	groupId: string,
+	slug: string,
+	note: { name: string; description: string; body: string; updated: string },
+): Promise<void> {
+	const dir = path.join(taskGroupsDir, groupId, "notebook")
+	await fs.mkdir(dir, { recursive: true })
+	const filePath = path.join(dir, `${slug}.md`)
+	await fs.writeFile(
+		filePath,
+		`---\nname: ${note.name}\ndescription: ${note.description}\nupdated: ${note.updated}\n---\n\n${note.body}\n`,
+		"utf8",
+	)
+	// readNoteMeta trusts frontmatter `updated` only when the file mtime isn't
+	// newer (hand edits bump mtime) — pin the mtime to the same instant.
+	const mtime = new Date(note.updated)
+	await fs.utimes(filePath, mtime, mtime)
+}
+
 describe("HistorySearcher", () => {
 	let rootDir: string
 	let sessionsDir: string
@@ -146,6 +167,47 @@ describe("HistorySearcher", () => {
 			expect(hits.map((h) => h.threadId)).toEqual(["good"])
 		})
 
+		it("skips message files larger than the per-file byte cap", async () => {
+			const capped = new HistorySearcher({ sessionsDir, taskGroupsDir, maxFileBytes: 512 })
+			await writeSession(sessionsDir, "big", [textMessage("user", `needle ${"x".repeat(600)}`, 100)])
+			await writeSession(sessionsDir, "small", [textMessage("user", "needle", 100)])
+
+			const hits = await capped.search({ query: "needle", kind: "messages" })
+			expect(hits.map((h) => h.threadId)).toEqual(["small"])
+		})
+
+		it("evicts least-recently-used cache entries once the byte budget is exceeded", async () => {
+			// One byte of budget: each cached file evicts every older entry.
+			const tight = new HistorySearcher({ sessionsDir, taskGroupsDir, maxCacheBytes: 1 })
+			await writeSession(sessionsDir, "s1", [textMessage("user", "alpha needle", 100)], { mtimeMs: 1000 })
+			const s2 = await writeSession(sessionsDir, "s2", [textMessage("user", "bravo needle", 200)], { mtimeMs: 2000 })
+			expect(await tight.search({ query: "needle", kind: "messages" })).toHaveLength(2)
+
+			// s2 was evicted when s1 was cached, so rewriting it with same-length
+			// content at the same mtime is re-read instead of served stale.
+			const original = await fs.readFile(s2, "utf8")
+			const updated = original.replace("bravo", "omega")
+			expect(updated.length).toBe(original.length)
+			await fs.writeFile(s2, updated, "utf8")
+			const mtime = new Date(2000)
+			await fs.utimes(s2, mtime, mtime)
+
+			const hits = await tight.search({ query: "needle", kind: "messages" })
+			expect(hits.find((h) => h.threadId === "s2")?.snippet).toContain("omega")
+		})
+
+		it("stops scanning when a newer request cancels it", async () => {
+			await writeSession(sessionsDir, "s1", [textMessage("user", "needle", 100)], { mtimeMs: 1000 })
+			await writeSession(sessionsDir, "s2", [textMessage("user", "needle", 200)], { mtimeMs: 2000 })
+			await writeSession(sessionsDir, "s3", [textMessage("user", "needle", 300)], { mtimeMs: 3000 })
+
+			// isCancelled is checked once between scan phases and once per file;
+			// allow the phase check plus the newest file, then cancel.
+			let calls = 0
+			const hits = await searcher.search({ query: "needle", kind: "messages", isCancelled: () => ++calls > 2 })
+			expect(hits.map((h) => h.threadId)).toEqual(["s3"])
+		})
+
 		it("invalidates the file cache when mtime or size changes", async () => {
 			const filePath = await writeSession(sessionsDir, "s1", [textMessage("user", "alpha needle", 100)], {
 				mtimeMs: 10_000,
@@ -185,6 +247,38 @@ describe("HistorySearcher", () => {
 			expect(hits[0].title).toBe("Dev Plan")
 			expect(hits[0].taskGroupId).toBe(group.id)
 			expect(hits[0].snippet).toContain("checklist")
+		})
+
+		it("matches note names and descriptions and ranks them above body hits", async () => {
+			const groups = new TaskGroupStore(taskGroupsDir)
+			const group = await groups.createGroup({ title: "g" })
+			// The body hit is the newest note, so a pure recency sort would rank
+			// it first.
+			await writeNote(taskGroupsDir, group.id, "name-hit", {
+				name: "Needle plans",
+				description: "deploy steps",
+				body: "unrelated body",
+				updated: "2026-01-20T00:00:00.000Z",
+			})
+			await writeNote(taskGroupsDir, group.id, "desc-hit", {
+				name: "other",
+				description: "needle in the description",
+				body: "",
+				updated: "2026-01-10T00:00:00.000Z",
+			})
+			await writeNote(taskGroupsDir, group.id, "body-hit", {
+				name: "misc",
+				description: "",
+				body: "the needle is only in the body",
+				updated: "2026-02-01T00:00:00.000Z",
+			})
+
+			const hits = await searcher.search({ query: "needle", kind: "notes" })
+			expect(hits.map((h) => h.id)).toEqual(["name-hit", "desc-hit", "body-hit"])
+			// Meta hits surface the description as their snippet.
+			expect(hits[0].snippet).toBe("deploy steps")
+			expect(hits[1].snippet).toBe("needle in the description")
+			expect(hits[2].snippet).toContain("needle is only in the body")
 		})
 	})
 

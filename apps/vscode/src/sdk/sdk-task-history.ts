@@ -609,10 +609,23 @@ export class SdkTaskHistory {
 				if (!record) return
 				const metadata = { ...record.metadata }
 				const saved = Array.isArray(metadata.notebookChangesMessages) ? metadata.notebookChangesMessages : []
-				const status = JSON.parse(message.text ?? "{}").status
+				const payload = JSON.parse(message.text ?? "{}")
+				const status = payload.status
 				if (message.sdkMessageIndex === undefined)
 					message.sdkMessageIndex = (await readCurrentMessages(host, taskId)).length - 1
-				metadata.notebookChangesMessages = status === "pending" ? [...saved, message] : [...saved.slice(0, -1), message]
+				const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
+					try {
+						const previous = JSON.parse(entry.text ?? "{}")
+						return previous.taskGroupId === payload.taskGroupId && previous.revision === payload.revision
+					} catch {
+						return false
+					}
+				})
+				const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
+				metadata.notebookChangesMessages =
+					status !== "pending" && index >= 0
+						? saved.map((entry, i) => (i === index ? message : entry))
+						: [...saved, message]
 				await host.update(taskId, { metadata })
 			}),
 		)
@@ -747,6 +760,13 @@ export class SdkTaskHistory {
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// User-owned fields are changed only by their dedicated operations.
+				...Object.fromEntries(
+					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags"].map((key) => [
+						key,
+						existing?.metadata?.[key] ?? (key === "tags" || key === "dismissedAutoTags" ? [] : ""),
+					]),
+				),
 				// History reads may predate live picker changes. Only explicit selection
 				// writes may replace an existing authoritative selection.
 				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
@@ -940,39 +960,50 @@ export class SdkTaskHistory {
 		await this.updateTaskHistoryItem(item)
 	}
 
-	/** Sets (or clears, when empty) the thread's user-set title. */
+	private updateOwnedMetadata(
+		taskId: string,
+		update: (metadata: Record<string, unknown>) => Record<string, unknown> | undefined,
+	): Promise<void> {
+		return this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (!record) return
+				const patch = update(record.metadata ?? {})
+				if (patch) await host.update(taskId, { metadata: { ...record.metadata, ...patch } })
+			})
+			this.invalidateMetadataHistoryCache()
+		})
+	}
+
 	async renameTask(taskId: string, title: string): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		await this.updateTaskHistoryItem({ ...item, title: title.trim() || undefined })
+		await this.updateOwnedMetadata(taskId, () => ({ threadTitle: title.trim() }))
 	}
 
-	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		await this.updateTaskHistoryItem({ ...item, tags, dismissedAutoTags })
+		const capturedTags = tags.map((tag) => ({ ...tag }))
+		const capturedDismissed = [...dismissedAutoTags]
+		await this.updateOwnedMetadata(taskId, () => ({ tags: capturedTags, dismissedAutoTags: capturedDismissed }))
 	}
 
-	/** Files a thread into a task group (or unfiles it when empty/undefined). */
 	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		await this.updateTaskHistoryItem({ ...item, taskGroupId: taskGroupId || undefined })
+		await this.updateOwnedMetadata(taskId, () => ({ taskGroupId: taskGroupId || "" }))
 	}
 
-	/**
-	 * Adds `source: "auto"` ticket tags for ticket keys/URLs in a user message,
-	 * skipping ones already tagged or dismissed. Returns whether tags changed.
-	 */
 	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {
 		const detected = extractTicketTags(text)
 		if (!detected.length) return false
-		const item = await this.findHistoryItem(taskId)
-		const tags = item && mergeAutoTicketTags(item.tags, detected, item.dismissedAutoTags)
-		if (!item || !tags) return false
-		await this.updateTaskHistoryItem({ ...item, tags })
-		return true
+		let changed = false
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const tags = mergeAutoTicketTags(
+				metadataTaskTags(metadata, "tags"),
+				detected,
+				metadataStringArray(metadata, "dismissedAutoTags"),
+			)
+			if (!tags) return undefined
+			changed = true
+			return { tags }
+		})
+		return changed
 	}
 
 	async markTaskActive(taskId: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { CreateTaskGroupRequest, CreateTaskGroupResponse } from "@shared/proto/cline/task_group"
+import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import { Controller } from ".."
 import { protoToTaskTag } from "./conversions"
 
@@ -12,6 +13,7 @@ export async function createTaskGroup(controller: Controller, request: CreateTas
 	if (!request.title.trim()) {
 		throw new Error("title is required")
 	}
+	if (request.threadId !== undefined) validateTaskGroupIdentifier(request.threadId, "threadId")
 	const id = await controller.createTaskGroup({
 		title: request.title,
 		tags: request.tags.map(protoToTaskTag),

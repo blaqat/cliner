@@ -6,6 +6,7 @@ import { expandTaskGroupInInbox } from "@/components/inbox/inboxUtils"
 import {
 	setComposerTaskGroup,
 	setComposerTaskSheetOpen,
+	useComposerPageTaskGroup,
 	useComposerTaskGroup,
 	useComposerTaskSheetOpen,
 } from "@/components/taskGroup/composerTaskGroup"
@@ -36,6 +37,7 @@ interface TaskGroupPickerProps {
 const TaskGroupPicker = ({ onOpenTaskGroup }: TaskGroupPickerProps) => {
 	const { currentTaskItem, taskGroups } = useExtensionState()
 	const pendingId = useComposerTaskGroup()
+	const pageId = useComposerPageTaskGroup()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState("")
 	const threadId = currentTaskItem?.id
@@ -53,6 +55,21 @@ const TaskGroupPicker = ({ onOpenTaskGroup }: TaskGroupPickerProps) => {
 	// Subagent threads belong to their root thread's task; they can't move on their own.
 	if (currentTaskItem?.isSubagent) {
 		return null
+	}
+	// On a task page, new threads always go into that task: the pill is fixed.
+	if (!threadId && pageId) {
+		const title = groups.find((group) => group.id === pageId)?.title ?? "This task"
+		return (
+			<span
+				aria-label={`Task: ${title}`}
+				className="flex h-4.5 min-w-[18px] max-w-36 shrink items-center gap-1 overflow-hidden rounded-full border border-(--vscode-charts-purple)/50 bg-(--vscode-charts-purple)/15 px-1 text-[11px] leading-none whitespace-nowrap text-foreground"
+				data-fixed="true"
+				data-testid="task-group-picker"
+				title={`New threads here go into ${title}`}>
+				<span aria-hidden className="codicon codicon-tasklist text-[11px]! text-(--vscode-charts-purple)" />
+				<span className="truncate">{title}</span>
+			</span>
+		)
 	}
 
 	const pick = (id: string | undefined) => {

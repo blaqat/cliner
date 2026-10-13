@@ -128,6 +128,7 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
 import { HistorySearcher } from "./task-groups/history-search"
 import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
 import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
@@ -368,8 +369,17 @@ export class Controller {
 	private readonly taskGroupStore = new TaskGroupStore()
 	private readonly notebookStore = new NotebookStore()
 	private readonly historySearcher = new HistorySearcher()
+	// Bumped per search kind on every searchHistory call so an in-flight scan for
+	// a superseded request can notice and return early. Keyed by kind because the
+	// search view runs its notes and messages searches in parallel.
+	private readonly historySearchGenerations = new Map<string, number>()
 	private taskGroupsWatcher?: FSWatcher
 	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
+	private readonly currentBranchWatcher = new CurrentBranchWatcher(() => {
+		void this.refreshCurrentBranch().catch(() => {})
+	})
+	private branchRefresh?: Promise<void>
+	private branchRefreshRequested = false
 	private currentBranchCache?: { cwd: string; branch: string; at: number }
 
 	// Synchronous snapshot of getWorkspaceRoot()'s latest result, for the message
@@ -681,7 +691,7 @@ export class Controller {
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
 			resolveNotebookChanges: async (id, messages) =>
-				restoreNotebookChanges(messages, id, await this.notebookStore.findPending(id), () =>
+				restoreNotebookChanges(messages, id, await this.notebookStore.listPending(id), () =>
 					this.messageTranslatorState.nextTs(),
 				),
 			beforeDeleteSession: async (id) => {
@@ -1432,6 +1442,7 @@ export class Controller {
 		await this.sessions.dispose("SdkController.dispose")
 		await this.taskHistory.dispose()
 		await this.taskGroupsWatcher?.close()
+		await this.currentBranchWatcher.dispose()
 		this.mcpHub?.dispose?.()
 		this.messages.dispose()
 		await this.sdkTelemetry.dispose()
@@ -1875,12 +1886,14 @@ export class Controller {
 			const workspaceRoot = paths?.find((workspacePath) => workspacePath.trim().length > 0)
 			if (workspaceRoot) {
 				this.lastKnownWorkspaceRoot = workspaceRoot
+				void this.currentBranchWatcher.setRoot(workspaceRoot).catch(() => {})
 				return workspaceRoot
 			}
 		} catch (error) {
 			Logger.warn("[SdkController] Failed to get workspace paths, using the no-workspace fallback:", error)
 		}
 		this.lastKnownWorkspaceRoot = await this.getNoWorkspaceFallback()
+		void this.currentBranchWatcher.setRoot(this.lastKnownWorkspaceRoot).catch(() => {})
 		return this.lastKnownWorkspaceRoot
 	}
 
@@ -2850,7 +2863,7 @@ export class Controller {
 		}
 		const context = this.taskSessions.get(taskId)
 		if (context && this.task?.taskId === taskId) {
-			const pending = await this.notebookStore.findPending(taskId)
+			const pending = await this.notebookStore.listPending(taskId)
 			if (this.task?.taskId === taskId) {
 				const current = context.task.messageStateHandler.getClineMessages()
 				context.messages.replaceMessages(
@@ -3293,6 +3306,32 @@ export class Controller {
 		return summaries
 	}
 
+	/** Focus and HEAD events bypass the short state-post cache and post only changes. */
+	async refreshCurrentBranch(): Promise<void> {
+		if (this.isDisposed) return
+		if (this.branchRefresh) {
+			this.branchRefreshRequested = true
+			return this.branchRefresh
+		}
+		const refresh = (async () => {
+			do {
+				this.branchRefreshRequested = false
+				const cwd = await this.getWorkspaceRoot()
+				const previous = this.currentBranchCache
+				const branch = await getCurrentBranch(cwd)
+				if (this.isDisposed) return
+				this.currentBranchCache = { cwd, branch, at: Date.now() }
+				if (previous?.cwd !== cwd || previous?.branch !== branch) await this.postStateToWebview()
+			} while (this.branchRefreshRequested && !this.isDisposed)
+		})()
+		this.branchRefresh = refresh
+		try {
+			await refresh
+		} finally {
+			if (this.branchRefresh === refresh) this.branchRefresh = undefined
+		}
+	}
+
 	/**
 	 * Current git branch for ExtensionState, cached briefly to keep state posts
 	 * cheap. Uses the last-known workspace root snapshot rather than awaiting
@@ -3433,22 +3472,37 @@ export class Controller {
 
 	async applyNotebookChanges(
 		threadId: string,
+		taskGroupId: string,
+		revision: string,
 		items: { slug: string; include: boolean; editedContent?: string }[],
 	): Promise<void> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
-		const pending = await this.notebookStore.findPending(threadId)
-		const applied = await this.notebookStore.applyPendingChanges(threadId, items, {
-			threadTitle: item?.title ?? item?.task ?? "",
-		})
-		if (pending) await this.finishNotebookChanges(threadId, pending.groupId, "applied", applied)
+		try {
+			const applied = await this.notebookStore.applyPendingChanges(taskGroupId, threadId, revision, items, {
+				threadTitle: item?.title ?? item?.task ?? "",
+			})
+			await this.finishNotebookChanges(threadId, taskGroupId, revision, "applied", applied)
+			await this.emitNotebookChanges(threadId)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
 	}
 
-	async discardNotebookChanges(threadId: string): Promise<void> {
-		const pending = await this.notebookStore.findPending(threadId)
-		await this.notebookStore.discardPendingChanges(threadId)
-		if (pending) await this.finishNotebookChanges(threadId, pending.groupId, "discarded", pending.changes)
+	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string): Promise<void> {
+		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
+		try {
+			await this.notebookStore.discardPendingChanges(taskGroupId, threadId, revision)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
+		if (pending) await this.finishNotebookChanges(threadId, taskGroupId, revision, "discarded", pending.changes)
+		await this.emitNotebookChanges(threadId)
 		await this.postStateToWebview()
 	}
 
@@ -3458,6 +3512,9 @@ export class Controller {
 	 * no results here.
 	 */
 	async searchHistory(input: { query: string; kind?: string; limit?: number }): Promise<HistorySearchHit[]> {
+		const kind = input.kind ?? "all"
+		const generation = (this.historySearchGenerations.get(kind) ?? 0) + 1
+		this.historySearchGenerations.set(kind, generation)
 		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
 			sessionHistoryRecordToHistoryItem,
 		)
@@ -3468,7 +3525,11 @@ export class Controller {
 			ts: item.ts,
 			taskGroupId: this.effectiveTaskGroupId(item, byId),
 		}))
-		return this.historySearcher.search({ ...input, threads })
+		return this.historySearcher.search({
+			...input,
+			threads,
+			isCancelled: () => this.historySearchGenerations.get(kind) !== generation,
+		})
 	}
 
 	private async resolveTaskNotebook(
@@ -3502,28 +3563,32 @@ export class Controller {
 		const rootThreadId = item
 			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
 			: threadId
-		const pending = await this.notebookStore.findPending(rootThreadId)
-		if (!pending?.changes.length) return
+		const reviews = await this.notebookStore.listPending(rootThreadId)
+		if (!reviews.length) return
 		const context = this.getTaskSessionContext(rootThreadId)
 		if (!context.task.messageStateHandler.getClineMessages().length) {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
 		}
-		const message = notebookChangesMessage(
-			{
-				taskGroupId: pending.groupId,
-				threadId: rootThreadId,
-				status: "pending",
-				changes: pending.changes,
-			},
-			context.translator.nextTs(),
-		)
-		context.messages.emitHookMessage(message)
-		await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
+		for (const pending of reviews) {
+			const message = notebookChangesMessage(
+				{
+					revision: pending.revision,
+					taskGroupId: pending.groupId,
+					threadId: rootThreadId,
+					status: "pending",
+					changes: pending.changes,
+				},
+				context.translator.nextTs(),
+			)
+			context.messages.emitHookMessage(message)
+			await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
+		}
 	}
 
 	private async finishNotebookChanges(
 		threadId: string,
 		taskGroupId: string,
+		revision: string,
 		status: "applied" | "discarded",
 		changes: NotebookChange[],
 	): Promise<void> {
@@ -3531,11 +3596,12 @@ export class Controller {
 		if (!context.task.messageStateHandler.getClineMessages().length) {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(threadId))
 		}
-		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages())
+		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), taskGroupId, revision)
 		const message = notebookChangesMessage(
 			{
 				taskGroupId,
 				threadId,
+				revision,
 				status,
 				changes,
 				...(status === "applied" ? { appliedSlugs: changes.map((change) => change.slug) } : {}),

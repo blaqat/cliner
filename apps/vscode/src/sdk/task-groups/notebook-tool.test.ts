@@ -58,7 +58,9 @@ describe("task notebook agent tool", () => {
 		expect(await store.readNote(group.id, "dev-plan")).toBeUndefined()
 		expect(await tool.execute({ action: "read", name: "dev-plan" }, context)).toBe("Draft")
 		const applied = await store.applyPendingChanges(
+			group.id,
 			"root",
+			(await store.readPendingReview(group.id, "root"))!.revision,
 			[{ slug: "dev-plan", include: true, editedContent: "Reviewed" }],
 			{ threadTitle: "Title" },
 		)
@@ -77,19 +79,19 @@ describe("task notebook agent tool", () => {
 		expect(await store.readPending(group.id, "root")).toBeUndefined()
 	})
 
-	it("subagents and nested asides stage into their root thread without losing parallel changes", async () => {
+	it("subagents stage into their owning aside without losing parallel changes", async () => {
 		const threads = new Map([
 			["root", { id: "root", taskGroupId: group.id }],
 			["aside", { id: "aside", parentTaskId: "root", taskGroupId: group.id }],
 			["child", { id: "child", isSubagent: true, runtimeOwnerTaskId: "aside", parentTaskId: "aside" }],
 		])
 		const owner = await resolveNotebookOwner(threads.get("child") as never, async (id) => threads.get(id) as never)
-		expect(owner).toEqual({ rootThreadId: "root", taskGroupId: group.id })
+		expect(owner).toEqual({ rootThreadId: "aside", taskGroupId: group.id })
 		const tool = await createNotebookTool({ group, threadId: "child", rootThreadId: owner.rootThreadId, store })
 		await Promise.all(["First", "Second"].map((name) => tool.execute({ action: "write", name, content: name }, context)))
-		expect(await store.readPending(group.id, "root")).toHaveLength(2)
+		expect(await store.readPending(group.id, "aside")).toHaveLength(2)
 		expect(await store.readPending(group.id, "child")).toBeUndefined()
-		await expect(fs.access(taskGroupPaths(root, group.id).pendingFile("root"))).resolves.toBeUndefined()
+		await expect(fs.access(taskGroupPaths(root, group.id).pendingFile("aside"))).resolves.toBeUndefined()
 	})
 
 	it("stages deletion and cancels a newly created note when deleted", async () => {
@@ -98,7 +100,7 @@ describe("task notebook agent tool", () => {
 		await tool.execute({ action: "delete", name: "existing" }, context)
 		expect(await store.readNote(group.id, "existing")).toBeDefined()
 		expect(await tool.execute({ action: "read", name: "existing" }, context)).toEqual({ error: "Note not found: existing" })
-		await store.discardPendingChanges("root")
+		await store.discardPendingChanges(group.id, "root", (await store.readPendingReview(group.id, "root"))!.revision)
 		await tool.execute({ action: "write", name: "New", content: "Draft" }, context)
 		await tool.execute({ action: "delete", name: "new" }, context)
 		expect(await store.readPending(group.id, "root")).toBeUndefined()
@@ -114,5 +116,32 @@ describe("task notebook agent tool", () => {
 			'Use <task_note name="Dev &quot;plan&quot;">\nDraft\n</task_note>, #unknown and owner/repo#123. <task_note name="Dev &quot;plan&quot;">\nDraft\n</task_note>',
 		)
 		expect(await store.listActivity(group.id)).toHaveLength(1)
+	})
+	it("an unfiled aside under a grouped parent has no notebook ownership", async () => {
+		const aside = { id: "aside", parentTaskId: "root" }
+		const find = async () => ({ id: "root", taskGroupId: group.id }) as never
+		expect(await resolveNotebookOwner(aside as never, find)).toEqual({ rootThreadId: "aside", taskGroupId: undefined })
+		expect(
+			await resolveNotebookOwner(
+				{ id: "child", isSubagent: true, parentTaskId: "aside" } as never,
+				async () => aside as never,
+			),
+		).toEqual({ rootThreadId: "aside", taskGroupId: undefined })
+	})
+
+	it("an aside moved to B stages and expands mentions under its own id in B", async () => {
+		const other = await new TaskGroupStore(root).createGroup({ title: "B" })
+		const aside = { id: "aside", parentTaskId: "root", taskGroupId: other.id }
+		const owner = await resolveNotebookOwner(aside as never, async () => ({ id: "root", taskGroupId: group.id }) as never)
+		expect(owner).toEqual({ rootThreadId: "aside", taskGroupId: other.id })
+		const tool = await createNotebookTool({ group: other, threadId: "aside", rootThreadId: owner.rootThreadId, store })
+		await tool.execute({ action: "write", name: "Plan", content: "B plan" }, context)
+		expect(await store.readPending(other.id, "aside")).toHaveLength(1)
+		expect(await store.readPending(group.id, "root")).toBeUndefined()
+		expect(
+			await expandTaskNoteMentions("Use #plan", (slug) =>
+				store.readThreadNote(other.id, owner.rootThreadId, slug, "aside"),
+			),
+		).toContain("B plan")
 	})
 })
