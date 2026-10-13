@@ -237,6 +237,19 @@ interface ClineAuthRetry {
 	hasConversation: boolean
 }
 
+/**
+ * Edits and checkpoint restores start a new session for the same thread; carry
+ * over what the user set on it (name, task, tags) so the replacement keeps them.
+ */
+function threadIdentityMetadata(item: HistoryItem | undefined): Record<string, unknown> {
+	return {
+		...(item?.title ? { threadTitle: item.title } : {}),
+		...(item?.taskGroupId ? { taskGroupId: item.taskGroupId } : {}),
+		...(item?.tags?.length ? { tags: item.tags } : {}),
+		...(item?.dismissedAutoTags?.length ? { dismissedAutoTags: item.dismissedAutoTags } : {}),
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -2518,6 +2531,7 @@ export class Controller {
 					apiSelection: getSessionApiSnapshot(config)?.selection,
 					title: historyTitle,
 					modelId: config.modelId,
+					...threadIdentityMetadata(historyItem),
 					...(checkpointRunCount
 						? { checkpoint: createRestoredCheckpointMetadata(sessionRecord, checkpointRunCount) }
 						: {}),
@@ -2644,6 +2658,7 @@ export class Controller {
 			return
 		}
 
+		const historyItem = config ? await this.taskHistory.findHistoryItem(currentTask.taskId).catch(() => undefined) : undefined
 		const startInput = config
 			? {
 					...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
@@ -2651,6 +2666,7 @@ export class Controller {
 						apiSelection: getSessionApiSnapshot(config)?.selection,
 						title: historyTitle,
 						modelId: config.modelId,
+						...threadIdentityMetadata(historyItem),
 					},
 				}
 			: undefined

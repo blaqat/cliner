@@ -934,6 +934,8 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					}
+					// The thread's first message renders like every later user message.
+					case "task":
 					case "user_feedback":
 						return (
 							<UserMessage

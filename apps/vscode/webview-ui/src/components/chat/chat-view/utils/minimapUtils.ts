@@ -90,8 +90,8 @@ function indexRows(rows: readonly (ClineMessage | ClineMessage[])[]): Map<number
 
 /**
  * One minimap square per user message, each followed by one square for the agent's reply
- * to that turn. The task prompt (rendered in the header, not the list) is the first user
- * square. Everything the agent produced between two user messages (tool groups, reasoning,
+ * to that turn. The task prompt (the list's first row, kept out of `messages`) is the first
+ * user square. Everything the agent produced between two user messages (tool groups, reasoning,
  * partial text) collapses into the reply square, which jumps to the turn's last rendered
  * row and previews its latest agent text.
  *
@@ -111,10 +111,13 @@ export function getMinimapItems(
 	turnActive?: boolean,
 ): MinimapItem[] {
 	const items: MinimapItem[] = []
+	const rowByTs = indexRows(rows)
 	if (task) {
+		// The task prompt is the list's first row.
+		const index = rowByTs.get(task.ts) ?? 0
 		items.push({
-			index: 0,
-			startIndex: -1,
+			index,
+			startIndex: index,
 			ts: task.ts,
 			role: "user",
 			kind: "user",
@@ -123,7 +126,6 @@ export function getMinimapItems(
 		})
 	}
 
-	const rowByTs = indexRows(rows)
 	// Nearest rendered row at or after message `from`.
 	const nextRenderedRow = (from: number): number | undefined => {
 		for (let i = from; i < messages.length; i++) {

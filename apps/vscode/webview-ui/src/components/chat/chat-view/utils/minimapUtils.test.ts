@@ -11,9 +11,10 @@ const say = (ts: number, sayType: ClineMessage["say"], text?: string, partial?: 
 	partial,
 })
 
-// Rows that render every message: the transcript is just the rows flattened.
+// Rows that render every message: the transcript is just the rows flattened. As in ChatView,
+// the task prompt renders as the first row but stays out of the transcript.
 const fromRows = (rows: (ClineMessage | ClineMessage[])[], task?: ClineMessage): MinimapItem[] =>
-	getMinimapItems(rows.flat(), rows, task)
+	getMinimapItems(rows.flat(), task ? [task, ...rows] : rows, task)
 
 const fromRowsWith = (rows: (ClineMessage | ClineMessage[])[], turnActive: boolean): MinimapItem[] =>
 	getMinimapItems(rows.flat(), rows, undefined, turnActive)
@@ -37,10 +38,10 @@ describe("getMinimapItems", () => {
 		const items = fromRows(rows, say(1, "task", "Fix the bug"))
 		expect(items.map((item) => item.role)).toEqual(["user", "agent", "user", "agent"])
 		expect(items).toEqual([
-			{ index: 0, startIndex: -1, ts: 1, role: "user", kind: "user", snippet: "Fix the bug", streaming: false },
-			{ index: 3, startIndex: 0, ts: 6, role: "agent", kind: "completion", snippet: "Turn one done", streaming: false },
-			{ index: 4, startIndex: 4, ts: 7, role: "user", kind: "user", snippet: "What does this do?", streaming: false },
-			{ index: 7, startIndex: 5, ts: 10, role: "agent", kind: "answer", snippet: "Here is the answer", streaming: false },
+			{ index: 0, startIndex: 0, ts: 1, role: "user", kind: "user", snippet: "Fix the bug", streaming: false },
+			{ index: 4, startIndex: 1, ts: 6, role: "agent", kind: "completion", snippet: "Turn one done", streaming: false },
+			{ index: 5, startIndex: 5, ts: 7, role: "user", kind: "user", snippet: "What does this do?", streaming: false },
+			{ index: 8, startIndex: 6, ts: 10, role: "agent", kind: "answer", snippet: "Here is the answer", streaming: false },
 		])
 	})
 
@@ -169,10 +170,12 @@ describe("getCurrentMinimapItem", () => {
 	)
 
 	it("picks the square whose turn covers the top row", () => {
-		expect(getCurrentMinimapItem(items, 0)?.ts).toBe(3)
+		// Row 0 is the task prompt's bubble.
+		expect(getCurrentMinimapItem(items, 0)?.ts).toBe(1)
 		expect(getCurrentMinimapItem(items, 1)?.ts).toBe(3)
-		expect(getCurrentMinimapItem(items, 2)?.ts).toBe(4)
-		expect(getCurrentMinimapItem(items, 3)?.ts).toBe(6)
+		expect(getCurrentMinimapItem(items, 2)?.ts).toBe(3)
+		expect(getCurrentMinimapItem(items, 3)?.ts).toBe(4)
+		expect(getCurrentMinimapItem(items, 4)?.ts).toBe(6)
 		expect(getCurrentMinimapItem(items, 99)?.ts).toBe(6)
 	})
 
@@ -184,7 +187,7 @@ describe("getCurrentMinimapItem", () => {
 			const current = getCurrentMinimapItem(fromRows(rows, say(1, "task", "t")), Number.MAX_SAFE_INTEGER)
 			keys.push(current && minimapItemKey(current))
 		}
-		expect(new Set(keys)).toEqual(new Set(["agent:2"]))
+		expect(new Set(keys)).toEqual(new Set(["agent:3"]))
 	})
 
 	it("falls back to the first item", () => {

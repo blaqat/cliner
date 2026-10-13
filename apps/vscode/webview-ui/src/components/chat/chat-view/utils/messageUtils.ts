@@ -110,6 +110,19 @@ export function canRestoreWorkspaceFromMessage(messages: ClineMessage[], message
 	return isVisibleCheckpointUserMessage(messages[index]) && !isCheckpointAnswerMessage(messages, index)
 }
 
+/** A message rendered as a user bubble: the thread's first message or a later user message. */
+export function isUserBubbleMessage(message: ClineMessage): boolean {
+	return isVisibleCheckpointUserMessage(message)
+}
+
+/**
+ * Prepends the thread's first message (`say: "task"`) to the visible list, so it renders as the
+ * first user bubble. Kept out of the combine/metrics pipeline, which runs on the messages after it.
+ */
+export function withTaskMessage(task: ClineMessage | undefined, visibleMessages: ClineMessage[]): ClineMessage[] {
+	return task?.type === "say" && task.say === "task" ? [task, ...visibleMessages] : visibleMessages
+}
+
 /**
  * Filter messages that should be visible in the chat
  */

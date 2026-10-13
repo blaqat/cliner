@@ -34,6 +34,7 @@ import {
 	useMessageHandlers,
 	useScrollBehavior,
 	WelcomeSection,
+	withTaskMessage,
 } from "./chat-view"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
 import {
@@ -360,9 +361,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		}
 	}, [isHidden, sendingDisabled, enableButtons])
 
-	const visibleMessages = useMemo(() => {
-		return filterVisibleMessages(modifiedMessages)
-	}, [modifiedMessages])
+	// The first message renders as the conversation's first user bubble. It joins the list only
+	// after combining, so it never reaches the metrics/combine helpers above.
+	const visibleMessages = useMemo(
+		() => withTaskMessage(task, filterVisibleMessages(modifiedMessages)),
+		[task, modifiedMessages],
+	)
 
 	const groupedMessages = useMemo(() => {
 		return groupLowStakesTools(groupMessages(visibleMessages))
