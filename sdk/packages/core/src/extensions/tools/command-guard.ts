@@ -775,9 +775,12 @@ function checkWrappedCommand(
 		if (!tail.length || [":::", "::::"].includes(tail[0])) {
 			return "`parallel` (input-driven code)";
 		}
-		// Parallel also accepts the entire command template as one quoted word.
-		if (/\s/.test(tail[0]))
-			return inspectCommand(tail[0], approval, depth, true);
+		// Parallel joins every word before the first input separator with spaces
+		// and runs the result through a shell, so a template may be one quoted
+		// word or split across several. Inspect the joined template.
+		const end = tail.findIndex((arg) => /^::::?\+?$/.test(arg));
+		const template = (end === -1 ? tail : tail.slice(0, end)).join(" ");
+		return inspectCommand(template, approval, depth, true);
 	}
 	const blocked = checkTokens(tail, approval, depth, inputDriven);
 	if (blocked || !unknownOption) return blocked;

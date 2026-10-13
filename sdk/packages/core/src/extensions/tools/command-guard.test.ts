@@ -452,6 +452,9 @@ describe("Ask-mode command guard gaps", () => {
 		"parallel python3 -c {}",
 		"parallel node -e {}",
 		"parallel ::: 'touch /tmp/example'",
+		"parallel 'env FOO=bar' sh -c {} ::: 'touch /tmp/example'",
+		"parallel 'nice' 'sh -c' {} ::: 'touch /tmp/example'",
+		"parallel 'env FOO=bar' 'sh' '-c {}' :::: inputs.txt",
 	])("blocks runtime code supplied by input-driven wrappers: %s", (command) => {
 		expect(blocks(command)).toBe(true);
 	});
@@ -466,6 +469,7 @@ describe("Ask-mode command guard gaps", () => {
 		"find . -exec bun run {} \\;",
 		"parallel --jobs 2 bun run {}",
 		"parallel 'bun run {}' ::: check-types",
+		"parallel 'env FOO=bar' bun run {} ::: check-types",
 	])("requires approval for input-driven package-script runners: %s", (command) => {
 		expect(blocks(command)).toBe(false);
 		expect(requiresPlanModeCommandApproval(command)).toBe(true);
@@ -479,6 +483,7 @@ describe("Ask-mode command guard gaps", () => {
 		"find . -name x -execdir cat {} +",
 		"parallel --jobs 2 grep foo ::: a b",
 		"parallel 'cat {}' ::: a b",
+		"parallel 'grep -n' foo {} ::: a b",
 	])("allows input-driven read-only commands without approval: %s", (command) => {
 		expect(blocks(command)).toBe(false);
 		expect(requiresPlanModeCommandApproval(command)).toBe(false);
