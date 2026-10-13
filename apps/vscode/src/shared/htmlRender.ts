@@ -1,5 +1,4 @@
 export const HTML_RENDER_TOOL = "html_render"
-export const HTML_PREVIEW_TOOL = "html_preview"
 export interface HtmlRenderRef {
 	attachmentId: string
 	title: string

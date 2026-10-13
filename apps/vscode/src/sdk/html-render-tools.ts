@@ -1,9 +1,9 @@
 import type { AgentTool } from "@cline/shared"
-import { HTML_MAX_CHARS, previewHtml, renderHtml } from "@/services/html-render/HtmlRenderService"
-import { HTML_PREVIEW_TOOL, HTML_RENDER_TOOL } from "@/shared/htmlRender"
+import { HTML_MAX_CHARS, renderHtml } from "@/services/html-render/HtmlRenderService"
+import { HTML_RENDER_TOOL } from "@/shared/htmlRender"
 
 const guidance =
-	"Use self-contained HTML with inline CSS and JavaScript. Theme variables: --background, --foreground, --muted, --muted-foreground, --card, --border, --accent, --accent-foreground, --primary, --chart-1 through --chart-5, --font-sans, --font-mono. Use fluid content without a page-wide background or outer card. Never use 100vh; give charts fixed pixel heights. Absolute local image paths are inlined. Call html_preview before html_render, then html_render before your final answer."
+	"Use self-contained HTML with inline CSS and JavaScript. Theme variables: --background, --foreground, --muted, --muted-foreground, --card, --border, --accent, --accent-foreground, --primary, --chart-1 through --chart-5, --font-sans, --font-mono. Use fluid content without a page-wide background or outer card. Never use 100vh; give charts fixed pixel heights. Absolute local image paths are inlined. Pick height to fit the content (it is a cap; taller content scrolls inside the frame). Call html_render before your final answer. Inline on* handlers work; fetch() and other network requests from the page are blocked."
 function input(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object")
 	return value as Record<string, unknown>
@@ -20,45 +20,6 @@ function dimension(value: unknown, fallback: number, min: number, max: number): 
 }
 export function createHtmlRenderTools(): AgentTool[] {
 	return [
-		{
-			name: HTML_PREVIEW_TOOL,
-			description: `Inspect a headless Chromium screenshot and console diagnostics before publishing HTML. ${guidance}`,
-			inputSchema: {
-				type: "object",
-				properties: {
-					html: { type: "string", maxLength: HTML_MAX_CHARS },
-					width: { type: "number", minimum: 240, maximum: 1600, default: 728 },
-					appearance: { type: "string", enum: ["dark", "light"], default: "dark" },
-				},
-				required: ["html"],
-				additionalProperties: false,
-			},
-			timeoutMs: 21_000,
-			retryable: false,
-			metadata: { readOnlyHint: true, idempotentHint: true },
-			async execute(value, context) {
-				const request = input(value)
-				if (request.appearance !== undefined && request.appearance !== "dark" && request.appearance !== "light")
-					throw new Error("appearance must be dark or light")
-				const result = await previewHtml(
-					html(request.html),
-					dimension(request.width, 728, 240, 1600),
-					request.appearance === "light" ? "light" : "dark",
-					context.signal,
-				)
-				if (context.metadata?.modelSupportsImages !== true)
-					return [
-						{
-							type: "text",
-							text: JSON.stringify({ ...result.metadata, error: "Current model does not support image input" }),
-						},
-					]
-				return [
-					{ type: "text", text: JSON.stringify(result.metadata) },
-					{ type: "image", data: result.data, mediaType: "image/png" },
-				]
-			},
-		},
 		{
 			name: HTML_RENDER_TOOL,
 			description: `Publish an interactive HTML page above your reply. Each call creates a new attachment; this is non-idempotent. ${guidance} The page is shown to the reader; do not announce or restate it in your final answer.`,

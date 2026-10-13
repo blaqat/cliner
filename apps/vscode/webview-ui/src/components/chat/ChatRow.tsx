@@ -50,6 +50,7 @@ import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { findMatchingResourceOrTemplate } from "@/utils/mcp"
 import CodeAccordian, { cleanPathPrefix } from "../common/CodeAccordian"
 import AsideButton from "./AsideButton"
+import ChatErrorBoundary from "./ChatErrorBoundary"
 import { CommandOutputContent, CommandOutputRow } from "./CommandOutputRow"
 import CompactionRow from "./CompactionRow"
 import { CompletionOutputRow } from "./CompletionOutputRow"
@@ -1066,7 +1067,13 @@ export const ChatRowContent = memo(
 						return <CompactionRow message={message} />
 					case "html_render": {
 						const htmlRef = parseHtmlRenderRef(message.text)
-						return htmlRef ? <HtmlRenderRow htmlRef={htmlRef} /> : <InvisibleSpacer />
+						return htmlRef ? (
+							<ChatErrorBoundary errorTitle="Something went wrong displaying this page">
+								<HtmlRenderRow htmlRef={htmlRef} />
+							</ChatErrorBoundary>
+						) : (
+							<InvisibleSpacer />
+						)
 					}
 					default:
 						return (
