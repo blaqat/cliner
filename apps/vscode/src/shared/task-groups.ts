@@ -62,3 +62,26 @@ export interface TaskGroupThreadRow {
 	read: string[]
 	wrote: string[]
 }
+
+/**
+ * Thread context supplied to server-side history search: `title` is the
+ * resolved display title (`HistoryItem.title || task`) and `taskGroupId` the
+ * effective group (a subagent inherits its root thread's group).
+ */
+export interface HistorySearchThread {
+	id: string
+	title: string
+	ts: number
+	taskGroupId?: string
+}
+
+/** One server-side history-search hit; maps 1:1 onto proto SearchHistoryResult. */
+export interface HistorySearchHit {
+	kind: "note" | "message"
+	id: string
+	title: string
+	snippet: string
+	ts: number
+	taskGroupId?: string
+	threadId?: string
+}

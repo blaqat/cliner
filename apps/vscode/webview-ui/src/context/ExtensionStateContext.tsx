@@ -80,6 +80,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showHistory: boolean
 	showAccount: boolean
 	showWorktrees: boolean
+	/** The task (group) page or its notebook, shown in the sidebar in place of chat/home. */
+	taskGroupView: TaskGroupViewState | null
 	showAnnouncement: boolean
 	expandTaskHeader: boolean
 
@@ -132,6 +134,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	navigateToHistory: () => void
 	navigateToAccount: () => void
 	navigateToWorktrees: () => void
+	/** Opens a task group's page (or its notebook) in the sidebar. */
+	navigateToTaskGroup: (id: string, page?: TaskGroupPage) => void
 	navigateToChat: () => void
 
 	// Hide functions
@@ -139,12 +143,19 @@ export interface ExtensionStateContextType extends ExtensionState {
 	hideHistory: () => void
 	hideAccount: () => void
 	hideWorktrees: () => void
+	hideTaskGroupView: () => void
 	hideAnnouncement: () => void
 	closeMarketplaceView: () => void
 	closeMcpView: () => void
 
 	// Event callbacks
 	onRelinquishControl: (callback: () => void) => () => void
+}
+
+export type TaskGroupPage = "home" | "notebook"
+export interface TaskGroupViewState {
+	id: string
+	page: TaskGroupPage
 }
 
 export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
@@ -162,6 +173,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showHistory, setShowHistory] = useState(false)
 	const [showAccount, setShowAccount] = useState(false)
 	const [showWorktrees, setShowWorktrees] = useState(false)
+	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 
 	// Helper for MCP view
@@ -182,6 +194,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const hideHistory = useCallback(() => setShowHistory(false), [setShowHistory])
 	const hideAccount = useCallback(() => setShowAccount(false), [setShowAccount])
 	const hideWorktrees = useCallback(() => setShowWorktrees(false), [setShowWorktrees])
+	const hideTaskGroupView = useCallback(() => setTaskGroupView(null), [])
 	const hideAnnouncement = useCallback(() => setShowAnnouncement(false), [setShowAnnouncement])
 
 	// Navigation functions
@@ -264,6 +277,19 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowWorktrees(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
+	const navigateToTaskGroup = useCallback(
+		(id: string, page: TaskGroupPage = "home") => {
+			closeMarketplaceView()
+			setShowSettings(false)
+			closeMcpView()
+			setShowHistory(false)
+			setShowAccount(false)
+			setShowWorktrees(false)
+			setTaskGroupView({ id, page })
+		},
+		[closeMarketplaceView, closeMcpView],
+	)
+
 	const navigateToChat = useCallback(() => {
 		closeMarketplaceView()
 		setShowSettings(false)
@@ -271,6 +297,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
 	const [state, setState] = useState<ExtensionState>({
@@ -917,6 +944,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showHistory,
 		showAccount,
 		showWorktrees,
+		taskGroupView,
 		showAnnouncement,
 		globalClineRulesToggles: state.globalClineRulesToggles || {},
 		localClineRulesToggles: state.localClineRulesToggles || {},
@@ -937,6 +965,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToHistory,
 		navigateToAccount,
 		navigateToWorktrees,
+		navigateToTaskGroup,
 		navigateToChat,
 
 		// Hide functions
@@ -944,6 +973,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		hideHistory,
 		hideAccount,
 		hideWorktrees,
+		hideTaskGroupView,
 		hideAnnouncement,
 		closeMarketplaceView,
 		setShowAnnouncement,

@@ -35,7 +35,15 @@ import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
-import type { NotebookChange, NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import type {
+	HistorySearchHit,
+	HistorySearchThread,
+	NotebookChange,
+	NotebookNoteMeta,
+	TaskGroupSummary,
+	TaskGroupThreadRow,
+	TaskTag,
+} from "@shared/task-groups"
 import { extractTicketTags } from "@shared/ticket-tags"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import chokidar, { type FSWatcher } from "chokidar"
@@ -120,6 +128,7 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { HistorySearcher } from "./task-groups/history-search"
 import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
 import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
 import { NotebookStore } from "./task-groups/notebook-store"
@@ -358,6 +367,7 @@ export class Controller {
 	// change on disk (hand edits, or another install writing to ~/.cline).
 	private readonly taskGroupStore = new TaskGroupStore()
 	private readonly notebookStore = new NotebookStore()
+	private readonly historySearcher = new HistorySearcher()
 	private taskGroupsWatcher?: FSWatcher
 	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
 	private currentBranchCache?: { cwd: string; branch: string; at: number }
@@ -3440,6 +3450,25 @@ export class Controller {
 		await this.notebookStore.discardPendingChanges(threadId)
 		if (pending) await this.finishNotebookChanges(threadId, pending.groupId, "discarded", pending.changes)
 		await this.postStateToWebview()
+	}
+
+	/**
+	 * Server-side history search: note bodies and session message text.
+	 * Task/thread rows are fuzzy-matched client-side, so those kinds return
+	 * no results here.
+	 */
+	async searchHistory(input: { query: string; kind?: string; limit?: number }): Promise<HistorySearchHit[]> {
+		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(items.map((item) => [item.id, item]))
+		const threads: HistorySearchThread[] = items.map((item) => ({
+			id: item.id,
+			title: item.title || item.task,
+			ts: item.ts,
+			taskGroupId: this.effectiveTaskGroupId(item, byId),
+		}))
+		return this.historySearcher.search({ ...input, threads })
 	}
 
 	private async resolveTaskNotebook(

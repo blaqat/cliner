@@ -6,9 +6,14 @@ import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
 import { openTask } from "@/components/inbox/sessionActions"
+import { SearchView } from "@/components/search/SearchView"
+import { NotebookView } from "@/components/taskGroup/NotebookView"
+import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
+import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
+import { cn } from "@/lib/utils"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { Navbar } from "../menu/Navbar"
 // Import utilities and hooks from the new structure
@@ -66,6 +71,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		turnState,
 		subagentView,
 		currentTaskItem,
+		taskGroupView,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -419,21 +425,40 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		}, 50)
 	}, [queuedPromptCount, taskTs, scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef])
 
-	// TODO(task-notebook phase 5): navigate to the task page in the sidebar.
-	const openTaskGroup = useCallback((_taskGroupId: string) => {}, [])
-	// TODO(task-notebook phase 6): open the search view with the query.
-	const openSearch = useCallback((_query: string) => {}, [])
+	// Home's search view, carrying over what was typed in the search bar. null = closed.
+	const [searchQuery, setSearchQuery] = useState<string | null>(null)
+	const openSearch = useCallback((query: string) => setSearchQuery(query), [])
+	const closeSearch = useCallback(() => setSearchQuery(null), [])
+	const showSearch = !task && searchQuery !== null
+	// Opening a thread from anywhere leaves search; coming home lands on home, not stale results.
+	useEffect(() => {
+		if (taskTs !== undefined) setSearchQuery(null)
+	}, [taskTs])
+
+	// The task (group) page replaces chat/home in the sidebar.
+	const openTaskGroup = useTaskGroupPageNavigation({
+		taskTs,
+		closeThread: messageHandlers.handleTaskCloseButtonClick,
+		onPageOpen: closeSearch,
+	})
 
 	const placeholderText = useMemo(() => {
+		if (taskGroupView && !task) return "New thread in this task…"
 		const text = task ? "Type a message..." : "Type your task here..."
 		return text
-	}, [task])
+	}, [task, taskGroupView])
 
 	return (
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-				{subagentView && currentTaskItem ? (
+				{taskGroupView ? (
+					taskGroupView.page === "notebook" ? (
+						<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+					) : (
+						<TaskGroupView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+					)
+				) : subagentView && currentTaskItem ? (
 					<SubagentThreadHeader
 						item={currentTaskItem}
 						onOpenSubagentPreview={openSubagentDetails}
@@ -446,6 +471,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						onOpenTaskGroup={openTaskGroup}
 						task={task}
 					/>
+				) : showSearch ? (
+					<SearchView initialQuery={searchQuery ?? ""} onClose={closeSearch} />
 				) : (
 					<WelcomeSection
 						hideAnnouncement={hideAnnouncement}
@@ -459,8 +486,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
-				{task && !subagentView && <ThreadStrip />}
-				{task && (
+				{task && !subagentView && !taskGroupView && <ThreadStrip />}
+				{task && !taskGroupView && (
 					<MessagesArea
 						chatState={chatState}
 						groupedMessages={groupedMessages}
@@ -480,7 +507,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 					/>
 				)}
 			</div>
-			<footer className="bg-(--vscode-sidebar-background) flex flex-col" style={{ gridRow: "2" }}>
+			<footer
+				className={cn(
+					"bg-(--vscode-sidebar-background) flex flex-col",
+					(showSearch || taskGroupView?.page === "notebook") && "hidden",
+				)}
+				style={{ gridRow: "2" }}>
 				{(!subagentView || subagentView.pendingDecision === "approval") && (
 					<ActionButtons
 						chatState={chatState}

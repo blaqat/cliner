@@ -1,11 +1,12 @@
 import {
 	NotebookNoteUpdatedBy,
 	NotebookNoteMeta as ProtoNotebookNoteMeta,
+	SearchHistoryResult as ProtoSearchHistoryResult,
 	TaskGroupSummary as ProtoTaskGroupSummary,
 	TaskGroupThread as ProtoTaskGroupThread,
 	TaskTag as ProtoTaskTag,
 } from "@shared/proto/cline/task_group"
-import type { NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import type { HistorySearchHit, NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
 
 /** proto TaskTag (plain strings) -> shared TaskTag (literal unions), coercing unknown values. */
 export function protoToTaskTag(tag: ProtoTaskTag): TaskTag {
@@ -47,6 +48,18 @@ export function notebookNoteMetaToProto(note: NotebookNoteMeta): ProtoNotebookNo
 					})
 				: NotebookNoteUpdatedBy.create({ kind: "user" }),
 		readers: note.readers,
+	})
+}
+
+export function historySearchHitToProto(hit: HistorySearchHit): ProtoSearchHistoryResult {
+	return ProtoSearchHistoryResult.create({
+		kind: hit.kind,
+		id: hit.id,
+		title: hit.title,
+		snippet: hit.snippet,
+		ts: hit.ts,
+		taskGroupId: hit.taskGroupId ?? "",
+		threadId: hit.threadId ?? "",
 	})
 }
 

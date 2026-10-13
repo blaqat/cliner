@@ -20,7 +20,7 @@ export function parseNotebookTool(tool: unknown): NotebookToolInfo | null {
 }
 
 /** A note this thread read: neutral dashed chip with an eye, matching the task page timeline. */
-function ReadNoteChip({ name }: { name: string }) {
+export function ReadNoteChip({ name }: { name: string }) {
 	return (
 		<span className="inline-flex max-w-40 min-w-0 items-center gap-1 rounded-xs border border-dashed border-description/60 px-1.5 text-[11px] leading-4 text-description">
 			<i aria-hidden className="codicon codicon-eye text-[10px]!" />

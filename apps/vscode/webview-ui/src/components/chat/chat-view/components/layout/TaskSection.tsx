@@ -8,7 +8,7 @@ interface TaskSectionProps {
 	task: ClineMessage
 	messageHandlers: MessageHandlers
 	onOpenSubagentPreview?: (row: LineageRow) => void
-	/** Opens the task page from the breadcrumb. TODO(task-notebook phase 5): wire to the task page navigation. */
+	/** Opens the task page from the breadcrumb. */
 	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
