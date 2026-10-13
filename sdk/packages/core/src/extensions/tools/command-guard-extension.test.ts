@@ -158,6 +158,9 @@ describe("plan-mode command-guard extension", () => {
 		"bash -c 'just check'",
 		"env -u HOME bun run build",
 		"xargs -I ARG bun run check-types",
+		"xargs -J % bun run %",
+		"find . -exec bun run {} \\;",
+		"parallel bun run {}",
 		"timeout -s TERM 10 bun run check-types",
 		'echo "$(bun run check-types)"',
 		"cat <<EOF\n$(bun run check-types)\nEOF",
@@ -169,6 +172,38 @@ describe("plan-mode command-guard extension", () => {
 		expect(result).toEqual({
 			policy: { autoApprove: false, requireApproval: true },
 		});
+	});
+
+	it.each([
+		'printf "touch /tmp/example" | xargs -I {} sh -c {}',
+		"xargs sh -c",
+		"xargs -J % eval %",
+		"xargs -I {} python3 -c {}",
+		"xargs -I {} node -e {}",
+		"find . -exec sh -c {} \\;",
+		"find . -execdir node -e {} \\;",
+		"parallel sh -c {}",
+		"parallel 'sh -c {}' ::: 'touch /tmp/example'",
+	])("rejects input-driven code before requesting approval: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+	});
+
+	it.each([
+		"xargs grep foo",
+		"xargs cat",
+		"find . -name x -exec cat {} \\;",
+		"parallel cat {}",
+	])("allows plain input-driven readers: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result).toBeUndefined();
 	});
 
 	it.each([

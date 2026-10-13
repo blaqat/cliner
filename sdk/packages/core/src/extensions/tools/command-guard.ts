@@ -196,6 +196,7 @@ const WRAPPERS = new Set([
 	"stdbuf",
 	"timeout",
 	"xargs",
+	"parallel",
 	"exec",
 	"caffeinate",
 ]);
@@ -214,6 +215,7 @@ const WRAPPER_VALUE_OPTIONS: Record<string, Set<string>> = {
 	]),
 	xargs: new Set([
 		"-I",
+		"-J",
 		"-i",
 		"-n",
 		"-P",
@@ -233,6 +235,20 @@ const WRAPPER_VALUE_OPTIONS: Record<string, Set<string>> = {
 		"--eof",
 		"--arg-file",
 		"--process-slot-var",
+	]),
+	parallel: new Set([
+		"-j",
+		"--jobs",
+		"-I",
+		"--replace",
+		"-a",
+		"--arg-file",
+		"--colsep",
+		"--arg-sep",
+		"--delay",
+		"--header",
+		"-S",
+		"--sshlogin",
 	]),
 	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
 	nice: new Set(["-n", "--adjustment"]),
@@ -292,6 +308,23 @@ const WRAPPER_FLAGS: Record<string, Set<string>> = {
 		"--exit",
 		"-o",
 		"--open-tty",
+	]),
+	parallel: new Set([
+		"-0",
+		"--null",
+		"-k",
+		"--keep-order",
+		"--bar",
+		"--eta",
+		"--pipe",
+		"--pipepart",
+		"--dry-run",
+		"--will-cite",
+		"--quote",
+		"--ungroup",
+		"--line-buffer",
+		"--link",
+		"--xapply",
 	]),
 	timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
 	nice: new Set(),
@@ -663,7 +696,9 @@ function checkWrappedCommand(
 	args: string[],
 	approval: boolean,
 	depth: number,
+	inputDriven: boolean,
 ): string | undefined {
+	inputDriven ||= name === "xargs" || name === "parallel";
 	const valueOptions = WRAPPER_VALUE_OPTIONS[name] ?? new Set<string>();
 	const flags = WRAPPER_FLAGS[name];
 	let cursor = 0;
@@ -704,6 +739,7 @@ function checkWrappedCommand(
 						args.slice(cursor),
 						approval,
 						depth,
+						inputDriven,
 					);
 				}
 			} else if (!flags?.has(longOption)) unknownOption = true;
@@ -719,6 +755,7 @@ function checkWrappedCommand(
 						args.slice(cursor),
 						approval,
 						depth,
+						inputDriven,
 					);
 				}
 				break;
@@ -733,7 +770,16 @@ function checkWrappedCommand(
 	}
 	if (name === "nice" && /^\+\d+$/.test(args[cursor] ?? "")) cursor += 1;
 	if (name === "timeout") cursor += 1; // DURATION follows the options.
-	const blocked = checkTokens(args.slice(cursor), approval, depth);
+	const tail = args.slice(cursor);
+	if (name === "parallel") {
+		if (!tail.length || [":::", "::::"].includes(tail[0])) {
+			return "`parallel` (input-driven code)";
+		}
+		// Parallel also accepts the entire command template as one quoted word.
+		if (/\s/.test(tail[0]))
+			return inspectCommand(tail[0], approval, depth, true);
+	}
+	const blocked = checkTokens(tail, approval, depth, inputDriven);
 	if (blocked || !unknownOption) return blocked;
 
 	// An unknown option may consume the token we mistook for the executable.
@@ -741,7 +787,12 @@ function checkWrappedCommand(
 	for (let index = 0; index < args.length; index += 1) {
 		const candidate = normalizeCommandName(args[index]);
 		if (isInspectableExecutable(candidate)) {
-			const nested = checkTokens(args.slice(index), approval, depth);
+			const nested = checkTokens(
+				args.slice(index),
+				approval,
+				depth,
+				inputDriven,
+			);
 			if (nested) return nested;
 			if (
 				SHELL_COMMANDS.has(candidate) ||
@@ -763,11 +814,17 @@ function checkEnvSplitString(
 	args: string[],
 	approval: boolean,
 	depth: number,
+	inputDriven: boolean,
 ): string | undefined {
 	if (depth >= 4) return "nested shell code (inspection limit)";
 	// env inserts split-string words back into its own argv, before the tail.
 	const tail = args.map((arg) => `'${arg.replace(/'/g, "'\\''")}'`).join(" ");
-	return inspectCommand(`env ${value} ${tail}`, approval, depth + 1);
+	return inspectCommand(
+		`env ${value} ${tail}`,
+		approval,
+		depth + 1,
+		inputDriven,
+	);
 }
 
 /** Check one command's tokens (command word + args) against the blacklist. */
@@ -775,6 +832,7 @@ function checkTokens(
 	tokens: string[],
 	approval = false,
 	depth = 0,
+	inputDriven = false,
 ): string | undefined {
 	let index = 0;
 	while (
@@ -790,7 +848,10 @@ function checkTokens(
 	let name = normalizeCommandName(tokens[index]);
 	let args = tokens.slice(index + 1);
 	if (WRAPPERS.has(name))
-		return checkWrappedCommand(name, args, approval, depth);
+		return checkWrappedCommand(name, args, approval, depth, inputDriven);
+	if (approval && inputDriven && PACKAGE_RUNNERS.has(name)) {
+		return `\`${name}\` (input-driven package script)`;
+	}
 	// Package executors can hide formatter/fixer command names.
 	if (
 		name === "npx" ||
@@ -820,8 +881,12 @@ function checkTokens(
 					: undefined;
 		if (script !== undefined) {
 			if (depth >= 4) return "nested shell code (inspection limit)";
-			return inspectCommand(script, approval, depth + 1);
+			const blocked = inspectCommand(script, approval, depth + 1);
+			if (blocked) return blocked;
 		}
+		// Input can supply the script, replace any part of it, or reach eval
+		// through positional parameters. Its runtime contents are unavailable.
+		if (inputDriven) return `\`${name}\` (input-driven code)`;
 	}
 
 	// Inline code can import arbitrary write APIs or launch subprocesses.
@@ -842,6 +907,13 @@ function checkTokens(
 			args.some((arg) => arg.startsWith("<<")))
 	) {
 		return `\`${name}\` (inline code)`;
+	}
+	if (
+		inputDriven &&
+		(/^python[\d.]*$/.test(name) ||
+			(INTERPRETER_COMMANDS.has(name) && name !== "bun"))
+	) {
+		return `\`${name}\` (input-driven code)`;
 	}
 
 	const hasFlag = (flags: string[]) =>
@@ -1029,7 +1101,12 @@ function checkTokens(
 			) {
 				tail.push(args[cursor]);
 			}
-			const nested = checkTokens(tail, approval, depth);
+			const nested = checkTokens(
+				tail,
+				approval,
+				depth,
+				inputDriven || tail.some((arg) => arg.includes("{}")),
+			);
 			if (nested) {
 				return nested;
 			}
@@ -1080,6 +1157,7 @@ function inspectCommand(
 	command: string | StructuredCommandInput,
 	approval = false,
 	depth = 0,
+	inputDriven = false,
 ): string | undefined {
 	if (typeof command !== "string") {
 		// Structured argv is executed without shell parsing, so only the
@@ -1088,6 +1166,7 @@ function inspectCommand(
 			[command.command, ...(command.args ?? [])],
 			approval,
 			depth,
+			inputDriven,
 		);
 	}
 
@@ -1122,6 +1201,7 @@ function inspectCommand(
 			segment.trim().split(/\s+/).filter(Boolean).map(restoreQuotes),
 			approval,
 			depth,
+			inputDriven,
 		);
 		if (blocked) {
 			return blocked;

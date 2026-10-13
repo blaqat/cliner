@@ -420,7 +420,77 @@ describe("Ask-mode command guard gaps", () => {
 	it("does not consume a formatter as an optional xargs replacement value", () => {
 		expect(blocks("xargs -i prettier --write src")).toBe(true);
 		expect(blocks("xargs --replace prettier --write src")).toBe(true);
-		expect(blocks("xargs -i sh -c 'git status'")).toBe(false);
+		expect(blocks("xargs -i sh -c 'git status'")).toBe(true);
+	});
+
+	it.each([
+		'printf "touch /tmp/example" | xargs -I {} sh -c {}',
+		"xargs sh -c",
+		"xargs sh",
+		"xargs -J % sh -c %",
+		"xargs --replace=CODE bash -c CODE",
+		"xargs -I CODE eval CODE",
+		"xargs -I CODE env -u HOME timeout 10 sh -c CODE",
+		"xargs -J % env -S 'sh -c %'",
+		"xargs -I CODE python3 -c CODE",
+		"xargs -I CODE node -e CODE",
+		"xargs -I CODE bun -e CODE",
+		"xargs -I CODE deno eval CODE",
+		"xargs -I CODE ruby -e CODE",
+		"xargs -I CODE perl -e CODE",
+		"xargs -I CODE php -r CODE",
+		"xargs -I CODE node CODE",
+		"find . -exec sh -c {} \\;",
+		"find . -execdir bash -c {} +",
+		"find . -exec sh -c 'eval \"$1\"' _ {} \\;",
+		"find . -exec eval {} \\;",
+		"find . -exec python3 -c {} \\;",
+		"find . -execdir node -e {} \\;",
+		"parallel --jobs 2 sh -c {}",
+		"parallel 'sh -c {}' ::: 'touch /tmp/example'",
+		"parallel eval {}",
+		"parallel python3 -c {}",
+		"parallel node -e {}",
+		"parallel ::: 'touch /tmp/example'",
+	])("blocks runtime code supplied by input-driven wrappers: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it.each([
+		"xargs bun run",
+		"xargs -J % bun run %",
+		"xargs -I {} npm run {}",
+		"xargs -I {} make {}",
+		"xargs -I {} npx {}",
+		"xargs -I {} bunx {}",
+		"find . -exec bun run {} \\;",
+		"parallel --jobs 2 bun run {}",
+		"parallel 'bun run {}' ::: check-types",
+	])("requires approval for input-driven package-script runners: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(true);
+	});
+
+	it.each([
+		"xargs grep foo",
+		"xargs cat",
+		"xargs -J % cat %",
+		"find . -name x -exec cat {} \\;",
+		"find . -name x -execdir cat {} +",
+		"parallel --jobs 2 grep foo ::: a b",
+		"parallel 'cat {}' ::: a b",
+	])("allows input-driven read-only commands without approval: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(false);
+	});
+
+	it("blocks input-driven code in structured argv", () => {
+		expect(
+			findFileEditingCommand({
+				command: "xargs",
+				args: ["-I", "{}", "sh", "-c", "{}"],
+			}),
+		).toBeDefined();
 	});
 
 	it.each([
