@@ -7,9 +7,9 @@
  * each command against this blacklist before approval or execution.
  *
  * This is a simple blacklist, not a shell interpreter. Commands are lightly
- * preprocessed (quoted text, heredoc bodies, escapes, and comments are masked
- * so they cannot false-positive), split on shell separators, and the leading
- * command word of each part is compared against the lists below; output
+ * preprocessed (executable substitutions are inspected before literal quoted
+ * text, heredoc bodies, escapes, and comments are masked), split on shell
+ * separators, and the leading command word is compared against the lists; output
  * redirection to files is also rejected. Shell/eval scripts are inspected
  * recursively, inline interpreter code is rejected, and opaque package
  * scripts require approval. This remains a blacklist, not a shell sandbox.
@@ -196,7 +196,201 @@ const WRAPPERS = new Set([
 	"stdbuf",
 	"timeout",
 	"xargs",
+	"exec",
+	"caffeinate",
 ]);
+
+/** Value-taking options must consume their argv, including attached values. */
+const WRAPPER_VALUE_OPTIONS: Record<string, Set<string>> = {
+	env: new Set([
+		"-u",
+		"--unset",
+		"-C",
+		"--chdir",
+		"-S",
+		"--split-string",
+		"-a",
+		"--argv0",
+	]),
+	xargs: new Set([
+		"-I",
+		"-i",
+		"-n",
+		"-P",
+		"-L",
+		"-l",
+		"-s",
+		"-d",
+		"-E",
+		"-e",
+		"-a",
+		"--replace",
+		"--max-args",
+		"--max-procs",
+		"--max-lines",
+		"--max-chars",
+		"--delimiter",
+		"--eof",
+		"--arg-file",
+		"--process-slot-var",
+	]),
+	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+	nice: new Set(["-n", "--adjustment"]),
+	stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+	exec: new Set(["-a"]),
+	sudo: new Set([
+		"-u",
+		"--user",
+		"-g",
+		"--group",
+		"-h",
+		"--host",
+		"-p",
+		"--prompt",
+		"-C",
+		"--close-from",
+		"-T",
+		"--command-timeout",
+		"-R",
+		"--chroot",
+		"-D",
+		"--chdir",
+		"-a",
+		"--auth-type",
+		"-U",
+		"--other-user",
+		"-r",
+		"--role",
+		"-t",
+		"--type",
+	]),
+	doas: new Set(["-u", "-C"]),
+	time: new Set(["-f", "--format", "-o", "--output"]),
+	caffeinate: new Set(["-t", "-w"]),
+};
+
+const WRAPPER_FLAGS: Record<string, Set<string>> = {
+	env: new Set([
+		"-",
+		"-i",
+		"--ignore-environment",
+		"-0",
+		"--null",
+		"-v",
+		"--debug",
+	]),
+	xargs: new Set([
+		"-0",
+		"--null",
+		"-t",
+		"--verbose",
+		"-r",
+		"--no-run-if-empty",
+		"-p",
+		"--interactive",
+		"-x",
+		"--exit",
+		"-o",
+		"--open-tty",
+	]),
+	timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
+	nice: new Set(),
+	stdbuf: new Set(),
+	command: new Set(["-p", "-v", "-V"]),
+	builtin: new Set(),
+	exec: new Set(["-c", "-l"]),
+	nohup: new Set(),
+	sudo: new Set([
+		"-A",
+		"--askpass",
+		"-b",
+		"--background",
+		"-E",
+		"--preserve-env",
+		"-H",
+		"--set-home",
+		"-i",
+		"--login",
+		"-K",
+		"--remove-timestamp",
+		"-k",
+		"--reset-timestamp",
+		"-l",
+		"--list",
+		"-n",
+		"--non-interactive",
+		"-P",
+		"--preserve-groups",
+		"-S",
+		"--stdin",
+		"-s",
+		"--shell",
+		"-V",
+		"--version",
+		"-v",
+		"--validate",
+	]),
+	doas: new Set(["-L", "-n", "-s"]),
+	time: new Set([
+		"-p",
+		"--portability",
+		"-a",
+		"--append",
+		"-v",
+		"--verbose",
+		"-l",
+	]),
+	caffeinate: new Set(["-d", "-i", "-m", "-s", "-u"]),
+};
+
+const SHELL_COMMANDS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
+const INTERPRETER_COMMANDS = new Set([
+	"node",
+	"bun",
+	"deno",
+	"ruby",
+	"perl",
+	"php",
+]);
+const PACKAGE_RUNNERS = new Set([
+	"npm",
+	"pnpm",
+	"yarn",
+	"bun",
+	"npx",
+	"bunx",
+	"make",
+	"gmake",
+	"just",
+	"task",
+]);
+const FORMATTER_COMMANDS = new Set([
+	"prettier",
+	"biome",
+	"eslint",
+	"ruff",
+	"black",
+	"isort",
+	"gofmt",
+	"goimports",
+	"rustfmt",
+	"dprint",
+	"clang-format",
+]);
+
+function isInspectableExecutable(name: string): boolean {
+	return (
+		WRAPPERS.has(name) ||
+		BLOCKED_COMMANDS.has(name) ||
+		BLOCKED_SUBCOMMANDS[name] !== undefined ||
+		SHELL_COMMANDS.has(name) ||
+		name === "eval" ||
+		/^python[\d.]*$/.test(name) ||
+		INTERPRETER_COMMANDS.has(name) ||
+		PACKAGE_RUNNERS.has(name) ||
+		FORMATTER_COMMANDS.has(name)
+	);
+}
 
 /** Shell reserved words that can precede the command word. */
 const RESERVED_WORDS = new Set([
@@ -251,56 +445,329 @@ function normalizeCommandName(word: string): string {
 	return base.toLowerCase().replace(/\.exe$/, "");
 }
 
-/**
- * Mask the parts of a command string that are data rather than commands, so
- * the blacklist scan below cannot false-positive on them: heredoc bodies are
- * dropped, quoted/escaped argv is replaced with placeholders, and comments
- * are removed. Placeholders are restored after splitting shell operators.
- */
-function maskNonCommandText(command: string, quotedText: string[]): string {
-	// Drop heredoc bodies (everything between `<<DELIM` and the DELIM line).
-	const lines = command.split("\n");
-	const kept: string[] = [];
-	let heredocDelimiter: string | undefined;
-	for (const line of lines) {
-		if (heredocDelimiter !== undefined) {
-			if (line.replace(/^\t+/, "") === heredocDelimiter) {
-				heredocDelimiter = undefined;
+interface Heredoc {
+	delimiter: string;
+	literal: boolean;
+	stripTabs: boolean;
+	length: number;
+}
+
+function readHeredoc(command: string, cursor: number): Heredoc | undefined {
+	if (command[cursor - 1] === "<" || command[cursor + 2] === "<")
+		return undefined;
+	const match = command
+		.slice(cursor)
+		.match(/^<<(-?)[ \t]*((?:'[^']*'|"[^"]*"|\\.|[^\s;|&<>()'"\\])+)/);
+	if (!match) return undefined;
+	return {
+		delimiter: match[2].replace(
+			/'([^']*)'|"([^"]*)"|\\(.)/g,
+			(_, single, double, escaped) => single ?? double ?? escaped,
+		),
+		literal: /['"\\]/.test(match[2]),
+		stripTabs: match[1] === "-",
+		length: match[0].length,
+	};
+}
+
+/** Heredoc text cannot terminate the surrounding command substitution. */
+function skipHeredocBodies(
+	command: string,
+	cursor: number,
+	heredocs: Heredoc[],
+	inspectBody?: (body: string) => void,
+): number {
+	for (const heredoc of heredocs) {
+		const start = cursor;
+		while (cursor < command.length) {
+			const newline = command.indexOf("\n", cursor);
+			const end = newline < 0 ? command.length : newline;
+			const line = command.slice(cursor, end);
+			if (
+				(heredoc.stripTabs ? line.replace(/^\t+/, "") : line) ===
+				heredoc.delimiter
+			) {
+				if (!heredoc.literal) inspectBody?.(command.slice(start, cursor));
+				cursor = end + 1;
+				break;
 			}
-			continue;
-		}
-		kept.push(line);
-		const heredoc = line.match(
-			/(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))/,
-		);
-		if (heredoc) {
-			heredocDelimiter = heredoc[1] ?? heredoc[2] ?? heredoc[3];
+			cursor = end;
+			if (newline < 0) {
+				if (!heredoc.literal) inspectBody?.(command.slice(start));
+				break;
+			}
+			cursor += 1;
 		}
 	}
-	return (
-		kept
-			.join("\n")
-			// Arithmetic expansion ($((3 > 2))) holds comparisons, not
-			// commands or redirections.
-			.replace(/\$\(\([\s\S]*?\)\)/g, "_")
-			// Preserve quoted argv for shell -c/eval inspection without treating
-			// separators in ordinary quoted data as shell operators.
-			.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (span) => {
-				const value =
-					span[0] === "'"
-						? span.slice(1, -1)
-						: span.slice(1, -1).replace(/\\(["\\$`\n])/g, "$1");
-				quotedText.push(value);
-				return `__guard_quote_${quotedText.length - 1}__`;
-			})
-			// Backslash-escaped characters are literal text.
-			.replace(/\\(.)/g, (_, char) => {
-				quotedText.push(char);
-				return `__guard_quote_${quotedText.length - 1}__`;
-			})
-			// Comments.
-			.replace(/(?:^|\s)#.*$/gm, " ")
-	);
+	heredocs.length = 0;
+	return cursor;
+}
+
+/** Find the closing delimiter without mistaking quoted/nested parentheses for it. */
+function substitutionEnd(command: string, start: number): number {
+	const backtick = command[start] === "`";
+	let parentheses = 1;
+	let quote = "";
+	const heredocs: Heredoc[] = [];
+	for (
+		let cursor = start + (backtick ? 1 : 2);
+		cursor < command.length;
+		cursor += 1
+	) {
+		const char = command[cursor];
+		if (char === "\\" && quote !== "'") {
+			cursor += 1;
+			continue;
+		}
+		if (backtick && char === "`") return cursor;
+		if (quote === "'") {
+			if (char === "'") quote = "";
+			continue;
+		}
+		if (command.startsWith("$(", cursor) || char === "`") {
+			cursor = substitutionEnd(command, cursor);
+			continue;
+		}
+		if (char === '"' || (!quote && char === "'")) {
+			quote = quote ? "" : char;
+			continue;
+		}
+		if (!quote && !backtick) {
+			if (char === "#" && /[\s;|&()]/.test(command[cursor - 1])) {
+				const newline = command.indexOf("\n", cursor);
+				if (newline < 0) return command.length;
+				cursor = newline - 1;
+				continue;
+			}
+			if (command.startsWith("<<", cursor)) {
+				const heredoc = readHeredoc(command, cursor);
+				if (heredoc) {
+					heredocs.push(heredoc);
+					cursor += heredoc.length - 1;
+					continue;
+				}
+			}
+			if (char === "\n" && heredocs.length) {
+				cursor = skipHeredocBodies(command, cursor + 1, heredocs) - 1;
+				continue;
+			}
+			if (char === "(") parentheses += 1;
+			if (char === ")" && --parentheses === 0) return cursor;
+		}
+	}
+	return command.length;
+}
+
+/** Extract expansions that execute even when their surrounding text is data. */
+function maskNonCommandText(
+	command: string,
+	quotedText: string[],
+	substitutions: string[],
+	heredocBody = false,
+): string {
+	const placeholder = (value: string) => {
+		quotedText.push(value);
+		return `__guard_quote_${quotedText.length - 1}__`;
+	};
+	const heredocs: Heredoc[] = [];
+	let masked = "";
+	for (let cursor = 0; cursor < command.length; ) {
+		const char = command[cursor];
+		if (char === "\\") {
+			if (command[cursor + 1] !== "\n")
+				masked += placeholder(command[cursor + 1] ?? "");
+			cursor += 2;
+			continue;
+		}
+		if (
+			!heredocBody &&
+			char === "#" &&
+			(cursor === 0 || /[\s;|&()]/.test(command[cursor - 1]))
+		) {
+			const end = command.indexOf("\n", cursor);
+			cursor = end < 0 ? command.length : end;
+			continue;
+		}
+		if (
+			command.startsWith("$(", cursor) ||
+			char === "`" ||
+			(!heredocBody &&
+				(command.startsWith("<(", cursor) || command.startsWith(">(", cursor)))
+		) {
+			const end = substitutionEnd(command, cursor);
+			const body = command.slice(cursor + (char === "`" ? 1 : 2), end);
+			if (command.startsWith("$((", cursor)) {
+				// Arithmetic itself is data, but it can contain command substitutions.
+				maskNonCommandText(body, quotedText, substitutions, true);
+			} else {
+				substitutions.push(
+					char === "`" ? body.replace(/\\([\\$`])/g, "$1") : body,
+				);
+			}
+			masked += placeholder(command.slice(cursor, end + 1));
+			cursor = end + 1;
+			continue;
+		}
+		if (!heredocBody && (char === "'" || char === '"')) {
+			const start = cursor++;
+			while (cursor < command.length && command[cursor] !== char) {
+				if (char === '"' && command[cursor] === "\\") {
+					cursor += 2;
+				} else if (
+					char === '"' &&
+					(command.startsWith("$(", cursor) || command[cursor] === "`")
+				) {
+					const end = substitutionEnd(command, cursor);
+					maskNonCommandText(
+						command.slice(cursor, end + 1),
+						quotedText,
+						substitutions,
+						true,
+					);
+					cursor = end + 1;
+				} else {
+					cursor += 1;
+				}
+			}
+			const value = command.slice(start + 1, cursor);
+			masked += placeholder(
+				char === "'"
+					? value
+					: value.replace(/\\\n/g, "").replace(/\\(["\\$`])/g, "$1"),
+			);
+			cursor += 1;
+			continue;
+		}
+		if (!heredocBody && command.startsWith("<<", cursor)) {
+			const heredoc = readHeredoc(command, cursor);
+			if (heredoc) {
+				heredocs.push(heredoc);
+				masked += `<<${placeholder(heredoc.delimiter)}`;
+				cursor += heredoc.length;
+				continue;
+			}
+		}
+		masked += char;
+		cursor += 1;
+		if (char === "\n" && heredocs.length) {
+			cursor = skipHeredocBodies(command, cursor, heredocs, (body) => {
+				maskNonCommandText(body, quotedText, substitutions, true);
+			});
+		}
+	}
+	return masked;
+}
+
+function checkWrappedCommand(
+	name: string,
+	args: string[],
+	approval: boolean,
+	depth: number,
+): string | undefined {
+	const valueOptions = WRAPPER_VALUE_OPTIONS[name] ?? new Set<string>();
+	const flags = WRAPPER_FLAGS[name];
+	let cursor = 0;
+	let unknownOption = false;
+	const optionValue = (option: string, attached: string) => {
+		if (attached) return attached;
+		// xargs has optional replacement/eof/line-count values. Do not consume
+		// a following executable as the value of one of these options.
+		if (
+			name === "xargs" &&
+			["-i", "-l", "-e", "--replace", "--max-lines", "--eof"].includes(
+				option,
+			) &&
+			(args[cursor]?.startsWith("-") ||
+				isInspectableExecutable(normalizeCommandName(args[cursor] ?? "")))
+		)
+			return undefined;
+		return args[cursor++];
+	};
+	while (cursor < args.length && args[cursor].startsWith("-")) {
+		const option = args[cursor++];
+		if (option === "--") break;
+		if (name === "nice" && /^-\d+$/.test(option)) continue;
+		if (["--help", "--version"].includes(option)) continue;
+		const longOption = option.split("=")[0];
+		if (option.startsWith("--")) {
+			if (valueOptions.has(longOption)) {
+				const value = option.includes("=")
+					? option.slice(option.indexOf("=") + 1)
+					: optionValue(longOption, "");
+				if (
+					name === "env" &&
+					longOption === "--split-string" &&
+					value !== undefined
+				) {
+					return checkEnvSplitString(
+						value,
+						args.slice(cursor),
+						approval,
+						depth,
+					);
+				}
+			} else if (!flags?.has(longOption)) unknownOption = true;
+			continue;
+		}
+		for (let letter = 1; letter < option.length; letter += 1) {
+			const shortOption = `-${option[letter]}`;
+			if (valueOptions.has(shortOption)) {
+				const value = optionValue(shortOption, option.slice(letter + 1));
+				if (name === "env" && shortOption === "-S" && value !== undefined) {
+					return checkEnvSplitString(
+						value,
+						args.slice(cursor),
+						approval,
+						depth,
+					);
+				}
+				break;
+			}
+			if (!flags?.has(shortOption)) unknownOption = true;
+		}
+	}
+	if (name === "env") {
+		while (cursor < args.length && ENV_ASSIGNMENT.test(args[cursor]))
+			cursor += 1;
+		if (args[cursor] === "--") cursor += 1;
+	}
+	if (name === "nice" && /^\+\d+$/.test(args[cursor] ?? "")) cursor += 1;
+	if (name === "timeout") cursor += 1; // DURATION follows the options.
+	const blocked = checkTokens(args.slice(cursor), approval, depth);
+	if (blocked || !unknownOption) return blocked;
+
+	// An unknown option may consume the token we mistook for the executable.
+	// Inspect plausible executables in the remaining argv instead of trusting it.
+	for (let index = 0; index < args.length; index += 1) {
+		const candidate = normalizeCommandName(args[index]);
+		if (isInspectableExecutable(candidate)) {
+			const nested = checkTokens(args.slice(index), approval, depth);
+			if (nested) return nested;
+			if (
+				SHELL_COMMANDS.has(candidate) ||
+				candidate === "eval" ||
+				/^python[\d.]*$/.test(candidate) ||
+				(INTERPRETER_COMMANDS.has(candidate) && candidate !== "bun")
+			) {
+				return `\`${candidate}\` (unknown wrapper option)`;
+			}
+			if (approval && PACKAGE_RUNNERS.has(candidate))
+				return `\`${candidate}\` (unknown wrapper option)`;
+		}
+	}
+	return undefined;
+}
+
+function checkEnvSplitString(
+	value: string,
+	args: string[],
+	approval: boolean,
+	depth: number,
+): string | undefined {
+	if (depth >= 4) return "nested shell code (inspection limit)";
+	// env inserts split-string words back into its own argv, before the tail.
+	const tail = args.map((arg) => `'${arg.replace(/'/g, "'\\''")}'`).join(" ");
+	return inspectCommand(`env ${value} ${tail}`, approval, depth + 1);
 }
 
 /** Check one command's tokens (command word + args) against the blacklist. */
@@ -316,28 +783,14 @@ function checkTokens(
 	) {
 		index += 1;
 	}
-	// Skip wrappers (sudo, env, xargs, timeout 30, ...) and their options.
-	while (
-		index < tokens.length &&
-		WRAPPERS.has(normalizeCommandName(tokens[index]))
-	) {
-		index += 1;
-		while (
-			index < tokens.length &&
-			(tokens[index].startsWith("-") ||
-				tokens[index] === "{}" ||
-				ENV_ASSIGNMENT.test(tokens[index]) ||
-				/^\d+[smhd]?$/.test(tokens[index]))
-		) {
-			index += 1;
-		}
-	}
 	if (index >= tokens.length) {
 		return undefined;
 	}
 
 	let name = normalizeCommandName(tokens[index]);
 	let args = tokens.slice(index + 1);
+	if (WRAPPERS.has(name))
+		return checkWrappedCommand(name, args, approval, depth);
 	// Package executors can hide formatter/fixer command names.
 	if (
 		name === "npx" ||
@@ -353,10 +806,7 @@ function checkTokens(
 		args = args.slice(cursor + 1);
 	}
 
-	if (
-		new Set(["bash", "sh", "zsh", "dash", "fish"]).has(name) ||
-		name === "eval"
-	) {
+	if (SHELL_COMMANDS.has(name) || name === "eval") {
 		if (args.some((arg) => arg.startsWith("<<")))
 			return `\`${name}\` (inline code)`;
 		const scriptIndex = args.findIndex((arg) =>
@@ -642,7 +1092,13 @@ function inspectCommand(
 	}
 
 	const quotedText: string[] = [];
-	const masked = maskNonCommandText(command, quotedText);
+	const substitutions: string[] = [];
+	const masked = maskNonCommandText(command, quotedText, substitutions);
+	for (const substitution of substitutions) {
+		if (depth >= 4) return "nested shell code (inspection limit)";
+		const nested = inspectCommand(substitution, approval, depth + 1);
+		if (nested) return nested;
+	}
 	const restoreQuotes = (word: string) =>
 		word.replace(
 			/__guard_quote_(\d+)__/g,

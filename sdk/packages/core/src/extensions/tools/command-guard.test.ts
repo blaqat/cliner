@@ -372,6 +372,150 @@ describe("findFileEditingCommand — structured commands", () => {
 
 describe("Ask-mode command guard gaps", () => {
 	it.each([
+		'env -u HOME sh -c "touch file"',
+		'env --unset HOME sh -c "touch file"',
+		'env -C /tmp --unset=HOME FOO=bar sh -c "touch file"',
+		'env --chdir=/tmp -i -- sh -c "touch file"',
+		"env -S 'sh -c \"touch file\"'",
+		"env --split-string='sh -c \"touch file\"'",
+		'env -S "sh -c" "touch file"',
+		'xargs -I ARG sh -c "touch file"',
+		'xargs -IARG sh -c "touch file"',
+		'xargs -i sh -c "touch file"',
+		'xargs --replace sh -c "touch file"',
+		'xargs -i ARG -n 1 -P 2 -L 1 -s 1024 -d : -E STOP -a /tmp/list sh -c "touch file"',
+		'xargs --replace=ARG --max-args 1 --max-procs=2 --max-lines 1 --max-chars=1024 --delimiter : --eof STOP --arg-file /tmp/list sh -c "touch file"',
+		'timeout -s TERM 10 sh -c "touch file"',
+		'timeout --signal=TERM -k 1s 0.5m sh -c "touch file"',
+		'nice -n 10 sh -c "touch file"',
+		'nice -10 sh -c "touch file"',
+		'nice +10 sh -c "touch file"',
+		'nice --adjustment=10 nohup sh -c "touch file"',
+		'stdbuf -i 0 -o L -e 0 sh -c "touch file"',
+		'stdbuf --input=0 --output L --error=0 sh -c "touch file"',
+		'command -p builtin exec -a label sh -c "touch file"',
+		'sudo -u root -g wheel -h host -p prompt -C 3 -T 10 -R /tmp -D /tmp sh -c "touch file"',
+		'sudo --user=root --group wheel --host=host --prompt prompt --chdir=/tmp sh -c "touch file"',
+		'doas -u root -C /tmp/doas.conf sh -c "touch file"',
+		'time -f format sh -c "touch file"',
+		'caffeinate -di -t 10 -w 123 sh -c "touch file"',
+	])("consumes wrapper option values before blocking the executable: %s", (command) => {
+		expect(findFileEditingCommand(command)).toBe("`touch`");
+	});
+
+	it.each([
+		"env -u HOME bun run build",
+		"env -S 'bun run build'",
+		"env --chdir /tmp -i FOO=bar -- bun run check-types",
+		"xargs -I ARG bun run check-types",
+		"xargs -i bun run check-types",
+		"xargs --replace bun run check-types",
+		"timeout -s TERM -k 2s 10 bun run check-types",
+		"sudo -u root nice -n 10 bun run check-types",
+	])("requires approval for package scripts behind wrapper options: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(true);
+	});
+
+	it("does not consume a formatter as an optional xargs replacement value", () => {
+		expect(blocks("xargs -i prettier --write src")).toBe(true);
+		expect(blocks("xargs --replace prettier --write src")).toBe(true);
+		expect(blocks("xargs -i sh -c 'git status'")).toBe(false);
+	});
+
+	it.each([
+		'env --unknown VALUE sh -c "touch file"',
+		'xargs --unknown VALUE node -e "console.log(1)"',
+		'timeout --unknown VALUE 10 sh -c "touch file"',
+	])("does not trust an executable after unknown wrapper options: %s", (command) => {
+		expect(blocks(command)).toBe(true);
+	});
+
+	it("requires package approval after unknown wrapper options", () => {
+		const command = "env --unknown VALUE bun run build";
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(true);
+	});
+
+	it.each([
+		'echo "$(touch file)"',
+		'echo "`touch file`"',
+		'echo "$(echo "$(touch file)")"',
+		'echo "$(touch "file with spaces")"',
+		"echo \"$(printf '%s' 'literal )'; touch file)\"",
+		"echo $((1 + $(touch file)))",
+		'echo "$(echo ok # literal )\ntouch file)"',
+		"echo \"$(cat <<'EOF'\n)\nEOF\ntouch file\n)\"",
+		"cat <<'FIRST' <<SECOND\n$(echo literal)\nFIRST\n$(touch file)\nSECOND",
+		"cat <<EOF\n$(touch file)\nEOF",
+		"cat <<EOF\n'$(touch file)'\nEOF",
+		"cat <<EOF\n`touch file`\nEOF",
+		"cat <<-EOF\n\t$(touch file)\n\tEOF",
+		"cat <(touch file)",
+		"cat >(touch file)",
+	])("blocks executable substitutions before masking text: %s", (command) => {
+		expect(findFileEditingCommand(command)).toBe("`touch`");
+	});
+
+	it.each([
+		'echo "$(bun run check-types)"',
+		'echo "`bun run check-types`"',
+		"cat <<EOF\n$(bun run check-types)\nEOF",
+		"cat <(bun run check-types)",
+		"cat >(bun run check-types)",
+	])("requires approval for package scripts in executable substitutions: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(true);
+	});
+
+	it.each([
+		"git -C x log",
+		"rg foo",
+		"cat file",
+		"cat file | tee /tmp/x",
+		'echo "$HOME"',
+		"echo '$(touch file)'",
+		"echo '`touch file`'",
+		'echo "\\$(touch file)"',
+		'echo "\\`touch file\\`"',
+		"cat <<'EOF'\n$(touch file) `touch file`\nEOF",
+		'cat <<"EOF"\n$(touch file) `touch file`\nEOF',
+		"cat <<\\EOF\n$(touch file)\nEOF",
+		"cat <<E'OF'\n$(touch file)\nEOF",
+		"cat <<< '$(touch file)'",
+		'echo "<(touch file) >(touch file)"',
+		"cat <<EOF\n<(touch file) >(touch file)\nEOF",
+		"cat <<EOF\n\\$(touch file) \\`touch file\\`\nEOF",
+		"echo ok # $(touch file)",
+		'echo "$(git -C x log)"',
+		"env -u HOME cat file",
+		"xargs -I ARG cat ARG",
+		"timeout -s TERM 10 rg foo",
+		"env -S 'cat file'",
+	])("preserves literal text and read-only commands without approval: %s", (command) => {
+		expect(blocks(command)).toBe(false);
+		expect(requiresPlanModeCommandApproval(command)).toBe(false);
+	});
+
+	it("unwraps structured wrapper argv without executing literal substitutions", () => {
+		expect(
+			findFileEditingCommand({
+				command: "env",
+				args: ["-u", "HOME", "sh", "-c", "touch file"],
+			}),
+		).toBe("`touch`");
+		expect(
+			requiresPlanModeCommandApproval({
+				command: "env",
+				args: ["-u", "HOME", "bun", "run", "build"],
+			}),
+		).toBe(true);
+		expect(
+			findFileEditingCommand({ command: "echo", args: ["$(touch file)"] }),
+		).toBeUndefined();
+	});
+
+	it.each([
 		'bash -c "touch file"',
 		"sh -lc 'rm file'",
 		"zsh -c 'echo x > file'",

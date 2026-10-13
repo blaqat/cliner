@@ -72,9 +72,16 @@ describe("plan-mode command-guard extension", () => {
 	it("allows notebook reads and staged writes/deletes without command approval", async () => {
 		const extension = createPlanModeCommandGuardExtension();
 		for (const action of ["read", "write", "delete"]) {
-			expect(await runBeforeTool(extension, makeContext("notebook", {
-				action, name: "dev-plan", content: "notes",
-			}))).toBeUndefined();
+			expect(
+				await runBeforeTool(
+					extension,
+					makeContext("notebook", {
+						action,
+						name: "dev-plan",
+						content: "notes",
+					}),
+				),
+			).toBeUndefined();
 		}
 	});
 	it("declares the hooks capability under a stable name", () => {
@@ -149,6 +156,11 @@ describe("plan-mode command-guard extension", () => {
 		"npm run test",
 		"make check",
 		"bash -c 'just check'",
+		"env -u HOME bun run build",
+		"xargs -I ARG bun run check-types",
+		"timeout -s TERM 10 bun run check-types",
+		'echo "$(bun run check-types)"',
+		"cat <<EOF\n$(bun run check-types)\nEOF",
 	])("routes %s through the existing approval policy instead of skipping execution", async (command) => {
 		const result = await runBeforeTool(
 			createPlanModeCommandGuardExtension(),
@@ -157,6 +169,25 @@ describe("plan-mode command-guard extension", () => {
 		expect(result).toEqual({
 			policy: { autoApprove: false, requireApproval: true },
 		});
+	});
+
+	it.each([
+		'env -u HOME sh -c "touch file"',
+		'xargs -I ARG sh -c "touch file"',
+		'timeout -s TERM 10 sh -c "touch file"',
+		'echo "$(touch file)"',
+		'echo "`touch file`"',
+		"cat <<EOF\n$(touch file)\nEOF",
+		"cat <(touch file)",
+		"cat >(touch file)",
+	])("blocks wrapper and substitution bypasses before approval: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+		expect(result?.reason).toContain("`touch`");
 	});
 
 	it("checks the whole batch for blocked commands before requiring approval", async () => {
