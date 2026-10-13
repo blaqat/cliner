@@ -280,6 +280,117 @@ describe("HistorySearcher", () => {
 			expect(hits[1].snippet).toBe("needle in the description")
 			expect(hits[2].snippet).toContain("needle is only in the body")
 		})
+
+		it("an already-cancelled search reads no note files or the activity log", async () => {
+			const groups = new TaskGroupStore(taskGroupsDir)
+			const group = await groups.createGroup({ title: "g" })
+			await writeNote(taskGroupsDir, group.id, "a-note", {
+				name: "alpha",
+				description: "",
+				body: "needle",
+				updated: "2026-01-01T00:00:00.000Z",
+			})
+			await fs.writeFile(
+				path.join(taskGroupsDir, group.id, "activity.jsonl"),
+				'{"ts":1,"threadId":"t","kind":"read","slug":"a-note"}\n',
+				"utf8",
+			)
+
+			const readSpy = vi.spyOn(fs, "readFile")
+			try {
+				const hits = await searcher.search({ query: "needle", kind: "notes", isCancelled: () => true })
+				expect(hits).toEqual([])
+				const readPaths = readSpy.mock.calls.map(([filePath]) => String(filePath))
+				const noteReads = readPaths.filter(
+					(filePath) => filePath.includes(`${path.sep}notebook${path.sep}`) || filePath.endsWith("activity.jsonl"),
+				)
+				expect(noteReads).toEqual([])
+			} finally {
+				readSpy.mockRestore()
+			}
+		})
+
+		it("stops reading note files between files once cancelled", async () => {
+			const groups = new TaskGroupStore(taskGroupsDir)
+			const group = await groups.createGroup({ title: "g" })
+			await writeNote(taskGroupsDir, group.id, "a-note", {
+				name: "alpha",
+				description: "",
+				body: "needle",
+				updated: "2026-01-01T00:00:00.000Z",
+			})
+			await writeNote(taskGroupsDir, group.id, "b-note", {
+				name: "bravo",
+				description: "",
+				body: "needle",
+				updated: "2026-01-02T00:00:00.000Z",
+			})
+
+			const readSpy = vi.spyOn(fs, "readFile")
+			try {
+				// Allow the group check plus the newest note (b-note), then cancel:
+				// the older a-note's body is never read.
+				let calls = 0
+				await searcher.search({ query: "needle", kind: "notes", isCancelled: () => ++calls > 2 })
+				const readPaths = readSpy.mock.calls.map(([filePath]) => String(filePath))
+				expect(readPaths.some((filePath) => filePath.endsWith("a-note.md"))).toBe(false)
+			} finally {
+				readSpy.mockRestore()
+			}
+		})
+
+		it("skips note files larger than the per-file byte cap", async () => {
+			const capped = new HistorySearcher({ sessionsDir, taskGroupsDir, maxFileBytes: 512 })
+			const groups = new TaskGroupStore(taskGroupsDir)
+			const group = await groups.createGroup({ title: "g" })
+			// The oversized note matches on its name too: the cap skips it
+			// entirely, before any read.
+			await writeNote(taskGroupsDir, group.id, "big", {
+				name: "needle",
+				description: "",
+				body: `needle ${"x".repeat(600)}`,
+				updated: "2026-01-01T00:00:00.000Z",
+			})
+			await writeNote(taskGroupsDir, group.id, "small", {
+				name: "misc",
+				description: "",
+				body: "needle",
+				updated: "2026-01-02T00:00:00.000Z",
+			})
+
+			const hits = await capped.search({ query: "needle", kind: "notes" })
+			expect(hits.map((h) => h.id)).toEqual(["small"])
+		})
+
+		it("serves note parses from the size-bounded cache until mtime or size changes", async () => {
+			const groups = new TaskGroupStore(taskGroupsDir)
+			const group = await groups.createGroup({ title: "g" })
+			await writeNote(taskGroupsDir, group.id, "cached", {
+				name: "misc",
+				description: "",
+				body: "alpha needle",
+				updated: "2026-01-01T00:00:00.000Z",
+			})
+			const filePath = path.join(taskGroupsDir, group.id, "notebook", "cached.md")
+			expect(await searcher.search({ query: "needle", kind: "notes" })).toHaveLength(1)
+
+			// Same size + same mtime keeps serving the cached parse.
+			const original = await fs.readFile(filePath, "utf8")
+			const updated = original.replace("alpha", "omega")
+			expect(updated.length).toBe(original.length)
+			await fs.writeFile(filePath, updated, "utf8")
+			const mtime = new Date("2026-01-01T00:00:00.000Z")
+			await fs.utimes(filePath, mtime, mtime)
+
+			const stale = await searcher.search({ query: "needle", kind: "notes" })
+			expect(stale).toHaveLength(1)
+			expect(stale[0].snippet).toContain("alpha")
+
+			// A changed mtime re-parses.
+			await fs.utimes(filePath, mtime, new Date("2026-02-01T00:00:00.000Z"))
+			const fresh = await searcher.search({ query: "needle", kind: "notes" })
+			expect(fresh[0].snippet).toContain("omega")
+		})
 	})
 
 	describe("kinds and ranking", () => {

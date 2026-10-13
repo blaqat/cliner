@@ -32,6 +32,11 @@ export interface SearchRow {
 // Server matches are exact substrings in bodies. They rank below a close title
 // or tag match but above a loose fuzzy one; ties go to the newest.
 const SERVER_SCORE: Record<SearchResultKind, number> = { task: 0.2, thread: 0.2, note: 0.25, message: 0.35 }
+// Note hits arrive already ranked (name/description before body, each bucket
+// newest-first). A tiny per-ordinal step preserves that order through the
+// score-then-recency sort while staying well below the message score — the
+// server caps results, so the total drift stays under 0.03.
+const NOTE_RANK_STEP = 1e-4
 
 // Tight enough that the list doesn't fill with one-letter coincidences.
 const FUSE_OPTIONS = {
@@ -90,6 +95,7 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 
 /** Converts `searchHistory` results into rows. */
 export function fromServerResults(results: SearchHistoryResult[]): SearchRow[] {
+	let noteRank = 0
 	return results.flatMap((result): SearchRow[] => {
 		const kind = result.kind as SearchResultKind
 		if (!(kind in SERVER_SCORE) || !result.id) return []
@@ -102,7 +108,7 @@ export function fromServerResults(results: SearchHistoryResult[]): SearchRow[] {
 				ts: Number(result.ts) || 0,
 				taskGroupId: result.taskGroupId || undefined,
 				threadId: result.threadId || undefined,
-				score: SERVER_SCORE[kind],
+				score: kind === "note" ? SERVER_SCORE.note + noteRank++ * NOTE_RANK_STEP : SERVER_SCORE[kind],
 			},
 		]
 	})

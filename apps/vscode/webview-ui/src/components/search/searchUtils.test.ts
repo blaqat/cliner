@@ -89,6 +89,25 @@ describe("mergeResults", () => {
 		expect(merged[0].tags).toHaveLength(1)
 	})
 
+	it("keeps the server's rank order for notes instead of re-sorting by recency", () => {
+		// The server returns name/description hits before body hits. The newer
+		// note here is the body hit, so a recency sort would flip them.
+		const server = fromServerResults([
+			{
+				kind: "note",
+				id: "name-hit",
+				title: "Needle plans",
+				snippet: "deploy steps",
+				ts: 100,
+				taskGroupId: "g",
+				threadId: "",
+			},
+			{ kind: "note", id: "body-hit", title: "misc", snippet: "…needle…", ts: 999, taskGroupId: "g", threadId: "" },
+		])
+		const merged = mergeResults([], server)
+		expect(merged.map((r) => r.id)).toEqual(["name-hit", "body-hit"])
+	})
+
 	it("drops unknown kinds and empty ids from server results", () => {
 		const rows = fromServerResults([
 			{ kind: "message", id: "m", title: "T", snippet: "s", ts: 3, taskGroupId: "", threadId: "t" },

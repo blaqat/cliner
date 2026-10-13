@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { setComposerPageTaskGroup } from "@/components/taskGroup/composerTaskGroup"
+import { setComposerPageTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import ChatTextArea from "./ChatTextArea"
 import { clearNoteMentionCache, findNoteMention, insertNoteMention, matchNotes } from "./noteMentions"
 
@@ -106,7 +106,10 @@ describe("ChatTextArea #note mentions", () => {
 	})
 
 	afterEach(() => {
-		act(() => setComposerPageTaskGroup(undefined))
+		act(() => {
+			setComposerPageTaskGroup(undefined)
+			setComposerTaskGroup(undefined)
+		})
 	})
 
 	it("lists the task's notes on #, filters as you type, and Enter inserts the slug", async () => {
@@ -171,6 +174,33 @@ describe("ChatTextArea #note mentions", () => {
 		const textarea = await renderInThread()
 		await type(textarea, "#")
 		expect(screen.getByTestId("note-mention-menu")).toHaveTextContent("Export plan")
+	})
+
+	it("uses the home composer's pending task pill pick", async () => {
+		mocks.state.currentTaskItem = undefined
+		const textarea = await renderInThread()
+		await type(textarea, "#")
+		expect(screen.queryByTestId("note-mention-menu")).not.toBeInTheDocument()
+
+		act(() => setComposerTaskGroup("g1"))
+		await type(textarea, "")
+		await type(textarea, "#")
+		expect(screen.getByTestId("note-mention-menu")).toHaveTextContent("Export plan")
+		expect(mocks.getTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
+	})
+
+	it("does not select a note on Enter/Tab/arrows while IME composing", async () => {
+		const textarea = await renderInThread()
+		await type(textarea, "#")
+		fireEvent.keyDown(textarea, { key: "Enter", isComposing: true, keyCode: 229 })
+		fireEvent.keyDown(textarea, { key: "Tab", isComposing: true, keyCode: 229 })
+		fireEvent.keyDown(textarea, { key: "ArrowDown", isComposing: true, keyCode: 229 })
+		fireEvent.keyDown(textarea, { key: "Escape", isComposing: true, keyCode: 229 })
+		expect(textarea.value).toBe("#")
+		expect(screen.getByTestId("note-mention-menu")).toBeInTheDocument()
+
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(textarea.value).toBe("#ticket-brief ")
 	})
 })
 

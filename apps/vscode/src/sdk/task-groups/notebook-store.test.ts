@@ -297,6 +297,120 @@ describe("NotebookStore", () => {
 		expect(await store.readPending(groupId, "thread")).toEqual([{ ...change, op: "update", content: "v2" }])
 	})
 
+	it.each(["apply", "discard"])("preserves another store's stage while %s holds the pending lock", async (action) => {
+		const otherStore = new NotebookStore(rootDir)
+		await store.createNote(groupId, { name: "Plan", description: "" })
+		const change: NotebookChange = { op: "update", slug: "plan", name: "Plan", description: "", content: "v1" }
+		await store.stageChange(groupId, "thread", change)
+		const review = (await store.readPendingReview(groupId, "thread"))!
+		let resume!: () => void
+		let entered!: () => void
+		const paused = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const released = new Promise<void>((resolve) => {
+			resume = resolve
+		})
+		const originalWrite = fs.writeFile.bind(fs)
+		const originalRemove = fs.rm.bind(fs)
+		vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+			if (action === "apply" && String(args[0]).includes("plan.md.tmp-")) {
+				entered()
+				await released
+			}
+			return originalWrite(...args)
+		})
+		vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+			if (action === "discard" && args[0] === paths().pendingFile("thread")) {
+				entered()
+				await released
+			}
+			return originalRemove(...args)
+		})
+		const finish =
+			action === "apply"
+				? store.applyPendingChanges(groupId, "thread", review.revision, [{ slug: "plan", include: true }])
+				: store.discardPendingChanges(groupId, "thread", review.revision)
+		await paused
+		let attempted!: () => void
+		const attempt = new Promise<void>((resolve) => {
+			attempted = resolve
+		})
+		const originalOpen = fs.open.bind(fs)
+		const lockPath = path.join(paths().pendingDir, "thread.lock")
+		vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+			if (args[0] === lockPath && args[1] === "wx") attempted()
+			return originalOpen(...args)
+		})
+		let staged = false
+		const nextChange: NotebookChange = { ...change, op: "update", content: "v2" }
+		const stage = otherStore.stageChange(groupId, "thread", nextChange).then(() => {
+			staged = true
+			attempted()
+		})
+		try {
+			await attempt
+			expect(staged).toBe(false)
+			expect((await otherStore.readPendingReview(groupId, "thread"))?.revision).toBe(review.revision)
+		} finally {
+			resume()
+			await Promise.all([finish, stage])
+		}
+		expect(await store.readPending(groupId, "thread")).toEqual([nextChange])
+		if (action === "apply") expect((await store.readNote(groupId, "plan"))?.content).toBe("v1")
+		await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
+	it.each(["dead owner", "incomplete owner"])("recovers a stale pending lock with %s", async (owner) => {
+		await fs.mkdir(paths().pendingDir, { recursive: true })
+		const lockPath = path.join(paths().pendingDir, "thread.lock")
+		await fs.writeFile(lockPath, owner === "dead owner" ? JSON.stringify({ pid: 2147483647, timestamp: Date.now() }) : "")
+		if (owner === "incomplete owner") {
+			const staleAt = new Date(Date.now() - 31_000)
+			await fs.utimes(lockPath, staleAt, staleAt)
+		}
+		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "draft" }
+		await Promise.all([
+			store.stageChange(groupId, "thread", change),
+			new NotebookStore(rootDir).stageChange(groupId, "thread", { ...change, slug: "other" }),
+		])
+		expect((await store.readPending(groupId, "thread"))?.map((entry) => entry.slug).sort()).toEqual(["other", "plan"])
+		await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
+	it("waits for a live owner even when the pending lock is older than the timeout", async () => {
+		await fs.mkdir(paths().pendingDir, { recursive: true })
+		const lockPath = path.join(paths().pendingDir, "thread.lock")
+		const staleAt = new Date(Date.now() - 31_000)
+		const owner = JSON.stringify({ pid: process.pid, timestamp: staleAt.getTime() })
+		await fs.writeFile(lockPath, owner)
+		await fs.utimes(lockPath, staleAt, staleAt)
+		let checked!: () => void
+		const checkedOwner = new Promise<void>((resolve) => {
+			checked = resolve
+		})
+		const originalKill = process.kill.bind(process)
+		vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			const result = originalKill(pid, signal)
+			checked()
+			return result
+		})
+		let staged = false
+		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "draft" }
+		const stage = store.stageChange(groupId, "thread", change).then(() => {
+			staged = true
+		})
+		try {
+			await checkedOwner
+			expect(await fs.readFile(lockPath, "utf8")).toBe(owner)
+			expect(staged).toBe(false)
+		} finally {
+			await fs.rm(lockPath)
+			await stage
+		}
+		expect(await store.readPending(groupId, "thread")).toEqual([change])
+	})
+
 	it("retains failed and unprocessed changes after a mocked write failure and retries", async () => {
 		for (const slug of ["a", "b", "c"]) {
 			await store.createNote(groupId, { name: slug, description: "" })
@@ -316,6 +430,7 @@ describe("NotebookStore", () => {
 		})
 		const items = ["a", "b", "c"].map((slug) => ({ slug, include: true, editedContent: `edited ${slug}` }))
 		await expect(store.applyPendingChanges(groupId, "thread", review.revision, items)).rejects.toThrow("disk full")
+		await expect(fs.stat(path.join(paths().pendingDir, "thread.lock"))).rejects.toMatchObject({ code: "ENOENT" })
 		const remaining = (await store.readPendingReview(groupId, "thread"))!
 		expect(remaining.revision).not.toBe(review.revision)
 		expect(remaining.changes.map((change) => [change.slug, change.content])).toEqual([
