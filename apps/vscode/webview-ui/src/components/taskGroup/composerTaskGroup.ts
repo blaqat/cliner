@@ -27,6 +27,30 @@ export function useComposerTaskGroup(): string | undefined {
 	return useSyncExternalStore(subscribe, getComposerTaskGroup)
 }
 
+// The task page whose composer is showing. While set, every new thread from the
+// composer (foreground or background) is filed into it and the pill is fixed to
+// it. Unlike the pending pick it isn't cleared by sends, only when the page closes.
+let pageTaskGroupId: string | undefined
+
+export function getComposerPageTaskGroup(): string | undefined {
+	return pageTaskGroupId
+}
+
+export function setComposerPageTaskGroup(id: string | undefined): void {
+	if (pageTaskGroupId === id) return
+	pageTaskGroupId = id
+	for (const listener of listeners) listener()
+}
+
+export function useComposerPageTaskGroup(): string | undefined {
+	return useSyncExternalStore(subscribe, getComposerPageTaskGroup)
+}
+
+/** The task a new thread sent from the composer is filed into. */
+export function getComposerSendTaskGroup(): string | undefined {
+	return pageTaskGroupId ?? pendingTaskGroupId
+}
+
 // The task pill's new-task sheet. Kept outside the pill so the sheet survives
 // the pill unmounting (it moves into the composer's "…" menu when narrow).
 let sheetOpen = false

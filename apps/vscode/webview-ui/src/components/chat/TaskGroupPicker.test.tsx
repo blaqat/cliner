@@ -1,7 +1,12 @@
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { getComposerTaskGroup, setComposerTaskGroup, setComposerTaskSheetOpen } from "@/components/taskGroup/composerTaskGroup"
+import {
+	getComposerTaskGroup,
+	setComposerPageTaskGroup,
+	setComposerTaskGroup,
+	setComposerTaskSheetOpen,
+} from "@/components/taskGroup/composerTaskGroup"
 import TaskGroupPicker, { ComposerTaskGroupSheet } from "./TaskGroupPicker"
 
 const mocks = vi.hoisted(() => ({
@@ -49,8 +54,19 @@ describe("TaskGroupPicker", () => {
 		mocks.state = { taskGroups: GROUPS, currentTaskItem: undefined }
 		act(() => {
 			setComposerTaskGroup(undefined)
+			setComposerPageTaskGroup(undefined)
 			setComposerTaskSheetOpen(false)
 		})
+	})
+
+	it("on a task page, the pill is fixed to that task and can't be changed", () => {
+		act(() => setComposerPageTaskGroup("sso"))
+		render(<TaskGroupPicker />)
+		const pill = screen.getByTestId("task-group-picker")
+		expect(pill).toHaveTextContent("SSO redirect loop")
+		expect(pill.tagName).not.toBe("BUTTON")
+		fireEvent.click(pill)
+		expect(screen.queryByTestId("task-group-menu")).not.toBeInTheDocument()
 	})
 
 	it("shows No task by default and lists recent tasks newest first with their first tag", () => {

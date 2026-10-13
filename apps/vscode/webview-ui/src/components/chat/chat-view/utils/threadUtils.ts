@@ -175,7 +175,10 @@ export interface ThreadPathItem {
 }
 
 export interface ThreadPath {
-	/** Task (group) the root thread belongs to; asides and subagents inherit it. */
+	/**
+	 * Task (group) the focused thread belongs to. Main threads and asides own their
+	 * membership; subagents take it from the nearest non-subagent above them.
+	 */
 	taskGroupId?: string
 	/** Root first, ending with the focused thread. */
 	threads: ThreadPathItem[]
@@ -193,6 +196,8 @@ export function buildThreadPath(focused: HistoryItem | undefined, history: reado
 	const byId = new Map(history.map((item) => [item.id, item]))
 	const threads: ThreadPathItem[] = [{ id: focused.id, title: threadTitle(focused), sub: !!focused.parentTaskId }]
 	let taskGroupId = focused.taskGroupId
+	// Membership is settled once a non-subagent thread is reached.
+	let owned = !focused.isSubagent
 	let node = focused
 	const seen = new Set([focused.id])
 	while (node.parentTaskId && !seen.has(node.parentTaskId)) {
@@ -203,7 +208,10 @@ export function buildThreadPath(focused: HistoryItem | undefined, history: reado
 		}
 		seen.add(parent.id)
 		threads.unshift({ id: parent.id, title: threadTitle(parent), sub: !!parent.parentTaskId })
-		taskGroupId = parent.taskGroupId ?? taskGroupId
+		if (!owned) {
+			taskGroupId = parent.taskGroupId ?? taskGroupId
+			owned = !parent.isSubagent
+		}
 		node = parent
 	}
 	return { taskGroupId: taskGroupId || undefined, threads }

@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
-import { getComposerTaskGroup, setComposerTaskGroup } from "./composerTaskGroup"
+import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
 import { parseTagInput } from "./NewTaskGroupSheet"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { TaskTagChip } from "./TaskTagChip"
@@ -55,11 +55,11 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const [renaming, setRenaming] = useState(false)
 	const [addingTag, setAddingTag] = useState(false)
 
-	// The composer below starts threads in this task.
+	// The composer below starts threads in this task, however many are sent.
 	useEffect(() => {
-		setComposerTaskGroup(taskGroupId)
+		setComposerPageTaskGroup(taskGroupId)
 		return () => {
-			if (getComposerTaskGroup() === taskGroupId) setComposerTaskGroup(undefined)
+			if (getComposerPageTaskGroup() === taskGroupId) setComposerPageTaskGroup(undefined)
 		}
 	}, [taskGroupId])
 

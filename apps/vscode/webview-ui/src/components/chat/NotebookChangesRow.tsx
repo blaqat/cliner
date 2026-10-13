@@ -29,7 +29,14 @@ export function parseNotebookChangesPayload(text: string | undefined): NotebookC
 		const appliedSlugs = Array.isArray(parsed.appliedSlugs)
 			? parsed.appliedSlugs.filter((slug): slug is string => typeof slug === "string")
 			: undefined
-		return { taskGroupId: parsed.taskGroupId, threadId: parsed.threadId, status, changes, appliedSlugs }
+		return {
+			revision: typeof parsed.revision === "string" ? parsed.revision : "",
+			taskGroupId: parsed.taskGroupId,
+			threadId: parsed.threadId,
+			status,
+			changes,
+			appliedSlugs,
+		}
 	} catch {
 		return null
 	}
@@ -59,26 +66,31 @@ interface NotebookChangesRowProps {
 
 /**
  * Wrap-up card for notebook changes staged during a thread. Only the newest
- * card in the thread is interactive; older pending ones collapse to a
+ * card for each group in the thread is interactive; older pending ones collapse to a
  * "superseded" line, and resolved ones to a one-line summary.
  */
 export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChangesRowProps) {
-	const { clineMessages, navigateToTaskGroup } = useExtensionState()
+	const { clineMessages, navigateToTaskGroup, taskGroups } = useExtensionState()
 	const openTaskGroup = onOpenTaskGroup ?? navigateToTaskGroup
 	const payload = useMemo(() => parseNotebookChangesPayload(message.text), [message.text])
 	const isNewest = useMemo(() => {
 		for (let i = clineMessages.length - 1; i >= 0; i--) {
-			if (clineMessages[i].say === "notebook_changes") return clineMessages[i].ts === message.ts
+			if (clineMessages[i].say === "notebook_changes") {
+				const candidate = parseNotebookChangesPayload(clineMessages[i].text)
+				if (candidate?.taskGroupId === payload?.taskGroupId && candidate?.threadId === payload?.threadId)
+					return clineMessages[i].ts === message.ts
+			}
 		}
 		return true
-	}, [clineMessages, message.ts])
+	}, [clineMessages, message.ts, payload?.taskGroupId, payload?.threadId])
 	// Shown right after Apply/Discard succeeds, until the backend rewrites the message status.
+	const [rowError, setRowError] = useState<string | null>(null)
 	const [resolved, setResolved] = useState<Pick<NotebookChangesPayload, "status" | "appliedSlugs"> | null>(null)
 
 	if (!payload) return null
-	const status = resolved?.status ?? payload.status
+	const status = payload.status === "pending" ? (resolved?.status ?? payload.status) : payload.status
 	if (status !== "pending") {
-		const appliedSlugs = resolved?.appliedSlugs ?? payload.appliedSlugs
+		const appliedSlugs = payload.status === "pending" ? resolved?.appliedSlugs : payload.appliedSlugs
 		return (
 			<NotebookSummaryRow
 				changes={
@@ -98,10 +110,23 @@ export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChanges
 			<div className="flex items-center gap-1.5 text-xs text-description" data-testid="notebook-changes-superseded">
 				<i aria-hidden className="codicon codicon-book" />
 				<span>Notebook changes superseded by a later review</span>
+				{rowError && (
+					<span className="text-error" role="alert">
+						{rowError}
+					</span>
+				)}
 			</div>
 		)
 	}
-	return <NotebookChangesCard onResolved={setResolved} payload={payload} />
+	return (
+		<NotebookChangesCard
+			key={`${payload.taskGroupId}/${payload.revision}`}
+			onError={setRowError}
+			onResolved={setResolved}
+			payload={payload}
+			taskGroupTitle={taskGroups?.find((group) => group.id === payload.taskGroupId)?.title}
+		/>
+	)
 }
 
 function NotebookSummaryRow({
@@ -139,10 +164,14 @@ function NotebookSummaryRow({
 
 function NotebookChangesCard({
 	payload,
+	taskGroupTitle,
 	onResolved,
+	onError,
 }: {
 	payload: NotebookChangesPayload
+	taskGroupTitle?: string
 	onResolved: (resolved: Pick<NotebookChangesPayload, "status" | "appliedSlugs">) => void
+	onError: (error: string | null) => void
 }) {
 	const [included, setIncluded] = useState<Record<string, boolean>>(() =>
 		Object.fromEntries(payload.changes.map((change) => [change.slug, true])),
@@ -156,10 +185,13 @@ function NotebookChangesCard({
 	const apply = async () => {
 		setSending(true)
 		setError(null)
+		onError(null)
 		try {
 			await TaskGroupServiceClient.applyNotebookChanges(
 				ApplyNotebookChangesRequest.create({
 					threadId: payload.threadId,
+					taskGroupId: payload.taskGroupId,
+					revision: payload.revision,
 					items: payload.changes.map((change) => ({
 						slug: change.slug,
 						include: !!included[change.slug],
@@ -174,8 +206,10 @@ function NotebookChangesCard({
 				status: "applied",
 				appliedSlugs: payload.changes.filter((change) => included[change.slug]).map((change) => change.slug),
 			})
-		} catch {
-			setError("Couldn't apply the changes. Try again.")
+		} catch (error) {
+			const message = `Couldn't apply the changes. ${error instanceof Error ? error.message : "Try again."}`
+			setError(message)
+			onError(message)
 		} finally {
 			setSending(false)
 		}
@@ -184,13 +218,20 @@ function NotebookChangesCard({
 	const discard = async () => {
 		setSending(true)
 		setError(null)
+		onError(null)
 		try {
 			await TaskGroupServiceClient.discardNotebookChanges(
-				DiscardNotebookChangesRequest.create({ threadId: payload.threadId }),
+				DiscardNotebookChangesRequest.create({
+					threadId: payload.threadId,
+					taskGroupId: payload.taskGroupId,
+					revision: payload.revision,
+				}),
 			)
 			onResolved({ status: "discarded" })
-		} catch {
-			setError("Couldn't discard the changes. Try again.")
+		} catch (error) {
+			const message = `Couldn't discard the changes. ${error instanceof Error ? error.message : "Try again."}`
+			setError(message)
+			onError(message)
 		} finally {
 			setSending(false)
 		}
@@ -205,6 +246,7 @@ function NotebookChangesCard({
 				<span className="flex-1 font-semibold">Notebook changes · {payload.changes.length}</span>
 			</div>
 			<div className="mb-1 text-[11px] text-description">
+				{taskGroupTitle && <span>For {taskGroupTitle}. </span>}
 				Staged while the thread ran. Nothing is written until you apply.
 			</div>
 			{payload.changes.map((change) => {

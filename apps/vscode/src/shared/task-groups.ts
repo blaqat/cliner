@@ -44,6 +44,7 @@ export interface NotebookActivity {
 }
 
 export interface NotebookChangesPayload {
+	revision: string
 	taskGroupId: string
 	threadId: string
 	status: "pending" | "applied" | "discarded"

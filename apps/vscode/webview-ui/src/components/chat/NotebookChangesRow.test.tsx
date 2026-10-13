@@ -15,6 +15,7 @@ vi.mock("@/services/grpc-client", () => ({
 }))
 
 const payload: NotebookChangesPayload = {
+	revision: "r1",
 	taskGroupId: "g1",
 	threadId: "t1",
 	status: "pending",
@@ -93,6 +94,8 @@ describe("NotebookChangesRow", () => {
 		await waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1))
 		expect(mocks.apply.mock.calls[0][0]).toMatchObject({
 			threadId: "t1",
+			taskGroupId: "g1",
+			revision: "r1",
 			items: [
 				{ slug: "ticket-brief", include: true, editedContent: undefined },
 				{ slug: "decisions", include: true, editedContent: "- CSV only\n- 10k row cap" },
@@ -124,9 +127,63 @@ describe("NotebookChangesRow", () => {
 	it("Discard all calls discardNotebookChanges for the thread", async () => {
 		render(<NotebookChangesRow message={notebookMessage(10)} />)
 		fireEvent.click(screen.getByRole("button", { name: "Discard all" }))
-		await waitFor(() => expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t1" })))
+		await waitFor(() =>
+			expect(mocks.discard).toHaveBeenCalledWith(
+				expect.objectContaining({ threadId: "t1", taskGroupId: "g1", revision: "r1" }),
+			),
+		)
 		expect(await screen.findByText("Discarded notebook changes")).toBeInTheDocument()
 		expect(mocks.apply).not.toHaveBeenCalled()
+	})
+
+	it.each(["Apply 3", "Discard all"])("shows the stale revision error inline for %s", async (button) => {
+		const error = new Error("Notebook changes have changed since this review. Use the newest review card.")
+		mocks.apply.mockRejectedValueOnce(error)
+		mocks.discard.mockRejectedValueOnce(error)
+		render(<NotebookChangesRow message={notebookMessage(10)} />)
+		fireEvent.click(screen.getByRole("button", { name: button }))
+		expect(await screen.findByRole("alert")).toHaveTextContent("Use the newest review card")
+		expect(screen.getByRole("button", { name: button })).toBeEnabled()
+	})
+
+	it("keeps the newest review per group interactive", () => {
+		mocks.state = { clineMessages: [notebookMessage(10), notebookMessage(20, { ...payload, taskGroupId: "g2" })] }
+		render(<NotebookChangesRow message={notebookMessage(10)} />)
+		expect(screen.getByRole("button", { name: "Apply 3" })).toBeEnabled()
+	})
+
+	it("keeps a stale error visible when the server publishes the newest card before rejecting Apply", async () => {
+		let reject!: (error: Error) => void
+		mocks.apply.mockReturnValueOnce(
+			new Promise((_resolve, rejectPromise) => {
+				reject = rejectPromise
+			}),
+		)
+		const { rerender } = render(<NotebookChangesRow message={notebookMessage(10)} />)
+		fireEvent.click(screen.getByRole("button", { name: "Apply 3" }))
+		mocks.state = { clineMessages: [notebookMessage(10), notebookMessage(20, { ...payload, revision: "r2" })] }
+		rerender(<NotebookChangesRow message={notebookMessage(10)} />)
+		reject(new Error("Use the newest review card."))
+		expect(await screen.findByRole("alert")).toHaveTextContent("Use the newest review card")
+		expect(screen.getByTestId("notebook-changes-superseded")).toBeInTheDocument()
+	})
+
+	it("uses server summary slugs after Apply reserves a different filename", async () => {
+		const { rerender } = render(<NotebookChangesRow message={notebookMessage(10)} />)
+		fireEvent.click(screen.getByRole("button", { name: "Apply 3" }))
+		await screen.findByText("Applied 3 notebook changes")
+		rerender(
+			<NotebookChangesRow
+				message={notebookMessage(10, {
+					...payload,
+					status: "applied",
+					appliedSlugs: ["ticket-brief-2"],
+					changes: [{ ...payload.changes[0], slug: "ticket-brief-2" }],
+				})}
+			/>,
+		)
+		expect(screen.getByTestId("notebook-changes-summary")).toHaveTextContent("Ticket brief")
+		expect(screen.getByText("Applied 1 notebook change")).toBeInTheDocument()
 	})
 
 	it("renders older pending cards as superseded", () => {

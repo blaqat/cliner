@@ -172,6 +172,23 @@ describe("SearchView", () => {
 		expect(screen.queryByText("Stale thread")).not.toBeInTheDocument()
 	})
 
+	it("hides the previous query's server rows as soon as the input changes, keeping the spinner", async () => {
+		const { container } = render(<SearchView initialQuery="PROJ-482" onClose={vi.fn()} />)
+		await flushDebounce()
+		expect(screen.getByText("Ticket brief")).toBeInTheDocument()
+
+		fireEvent.change(screen.getByTestId("search-input"), { target: { value: "PROJ-48" } })
+
+		// Before the debounce fires, the old note/message rows are gone; local matches stay.
+		expect(screen.queryByText("Ticket brief")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("search-hit")).not.toBeInTheDocument()
+		expect(screen.getByText("Bulk invoice export")).toBeInTheDocument()
+		expect(container.querySelector(".codicon-loading")).toBeInTheDocument()
+
+		await flushDebounce()
+		expect(screen.getByText("Ticket brief")).toBeInTheDocument()
+	})
+
 	it("offers Add to task on a loose thread whose tag matches a task", async () => {
 		render(<SearchView initialQuery="PROJ-482" onClose={vi.fn()} />)
 		await flushDebounce()

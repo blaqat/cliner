@@ -82,7 +82,8 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 	const { taskHistory, taskGroups, navigateToTaskGroup } = useExtensionState()
 	const [query, setQuery] = useState(initialQuery)
 	const [filter, setFilter] = useState<SearchFilter>("all")
-	const [serverRows, setServerRows] = useState<SearchRow[]>([])
+	// Tagged with the (trimmed) query they answered, so rows from an older query never show.
+	const [server, setServer] = useState<{ query: string; rows: SearchRow[] }>({ query: "", rows: [] })
 	const [searching, setSearching] = useState(false)
 	// Threads filed from this view, so the row flips to "Added ✓" before state round-trips.
 	const [added, setAdded] = useState<Record<string, string>>({})
@@ -100,7 +101,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		const request = ++requestRef.current
 		const trimmed = query.trim()
 		if (!trimmed) {
-			setServerRows([])
+			setServer({ query: "", rows: [] })
 			setSearching(false)
 			return
 		}
@@ -108,7 +109,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		const timer = setTimeout(() => {
 			fetchServerRows(trimmed).then((rows) => {
 				if (request !== requestRef.current) return
-				setServerRows(rows)
+				setServer({ query: trimmed, rows })
 				setSearching(false)
 			})
 		}, SEARCH_DEBOUNCE_MS)
@@ -118,8 +119,11 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 	const groups = taskGroups ?? []
 	const groupsById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups])
 	const localRows = useMemo(() => searchLocal(query, groups, taskHistory ?? []), [query, groups, taskHistory])
-	// Server rows belong to the query they were fetched for; hide them once it's cleared.
-	const rows = useMemo(() => mergeResults(localRows, query.trim() ? serverRows : []), [localRows, serverRows, query])
+	// Server rows belong to the query they were fetched for; hide them as soon as the input differs.
+	const rows = useMemo(
+		() => mergeResults(localRows, query.trim() && server.query === query.trim() ? server.rows : []),
+		[localRows, server, query],
+	)
 	const counts = useMemo(() => countByKind(rows), [rows])
 	const visible = useMemo(() => filterRows(rows, filter), [rows, filter])
 

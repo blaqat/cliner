@@ -1,4 +1,5 @@
 import { GetTaskGroupRequest, GetTaskGroupResponse } from "@shared/proto/cline/task_group"
+import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import { Controller } from ".."
 import { notebookNoteMetaToProto, taskGroupSummaryToProto, taskGroupThreadToProto } from "./conversions"
 
@@ -9,6 +10,7 @@ import { notebookNoteMetaToProto, taskGroupSummaryToProto, taskGroupThreadToProt
  * @returns GetTaskGroupResponse with the group, its notes, and member threads
  */
 export async function getTaskGroup(controller: Controller, request: GetTaskGroupRequest): Promise<GetTaskGroupResponse> {
+	validateTaskGroupIdentifier(request.id, "id")
 	if (!request.id) {
 		throw new Error("id is required")
 	}

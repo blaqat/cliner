@@ -61,7 +61,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	}),
 }))
 
-import { getComposerTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
+import { getComposerTaskGroup, setComposerPageTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import type { ChatState } from "../types/chatTypes"
 import { useChatState } from "./useChatState"
 import { useMessageHandlers } from "./useMessageHandlers"
@@ -1384,6 +1384,34 @@ describe("useMessageHandlers — task pill", () => {
 		newTask.mockResolvedValue(undefined)
 		mockTurnState = { phase: "idle", seq: 1 }
 		setComposerTaskGroup(undefined)
+		setComposerPageTaskGroup(undefined)
+	})
+
+	it("on a task page, every background send is filed into the page's task", async () => {
+		setComposerPageTaskGroup("group-page")
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendInBackground("first", [], [])
+		})
+		await act(async () => {
+			await result.current.handleSendInBackground("second", [], [])
+		})
+
+		expect(newTask).toHaveBeenCalledTimes(2)
+		expect(newTask).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "first", taskGroupId: "group-page" }))
+		expect(newTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "second", taskGroupId: "group-page" }))
+	})
+
+	it("on a task page, a foreground send is filed into the page's task", async () => {
+		setComposerPageTaskGroup("group-page")
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("hello", [], [])
+		})
+
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "group-page" }))
 	})
 
 	it("files a new thread into the task picked with the pill, then clears the pick", async () => {
