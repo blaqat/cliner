@@ -1,8 +1,7 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
-import Thumbnails from "@/components/common/Thumbnails"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -12,7 +11,6 @@ import { TaskServiceClient } from "@/services/grpc-client"
 import { getEnvironmentColor } from "@/utils/environmentColors"
 import { Breadcrumb, type Crumb } from "./Breadcrumb"
 import { HeaderIconButton } from "./HeaderIconButton"
-import { highlightText } from "./Highlights"
 import { SubagentPanelButton } from "./SubagentPanel"
 import TaskWorkingDirectoryBadge from "./TaskWorkingDirectoryBadge"
 
@@ -39,20 +37,17 @@ const MENU_ITEM_CLASS =
 /**
  * One compact row: the breadcrumb path to this thread (home, task, ancestor
  * threads, then the renamable current title) and codicon actions — subagents,
- * settle, delete, close — with less frequent actions, including the full first
- * message, behind "…". Context, tokens and cost live in the composer.
+ * settle, delete, close — with less frequent actions behind "…". The first
+ * message itself is the first bubble of the chat. Context, tokens and cost live
+ * in the composer.
  */
 const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
 	const { currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
 		useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
-	const [expanded, setExpanded] = useState(false)
 	// Shown until the saved title comes back through history.
 	const [pendingTitle, setPendingTitle] = useState<string>()
-	const rootRef = useRef<HTMLDivElement>(null)
-	const moreRef = useRef<HTMLButtonElement>(null)
-	const panelRef = useRef<HTMLDivElement>(null)
 
 	const taskId = currentTaskItem?.id
 	const settled = !!currentTaskItem?.isSettled
@@ -106,27 +101,6 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 		[taskId],
 	)
 
-	// The expanded first message closes on Esc or a click outside the header.
-	useEffect(() => {
-		if (!expanded) return
-		panelRef.current?.focus({ preventScroll: true })
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return
-			event.stopPropagation()
-			setExpanded(false)
-			moreRef.current?.focus()
-		}
-		const onPointerDown = (event: PointerEvent) => {
-			if (!rootRef.current?.contains(event.target as Node)) setExpanded(false)
-		}
-		document.addEventListener("keydown", onKeyDown, true)
-		document.addEventListener("pointerdown", onPointerDown)
-		return () => {
-			document.removeEventListener("keydown", onKeyDown, true)
-			document.removeEventListener("pointerdown", onPointerDown)
-		}
-	}, [expanded])
-
 	const copyFirstMessage = useCallback(() => {
 		if (!task.text) return
 		void navigator.clipboard.writeText(task.text).then(() => {
@@ -136,7 +110,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 	}, [task.text])
 
 	return (
-		<div className="px-4 pt-2 pb-1" ref={rootRef}>
+		<div className="px-4 pt-2 pb-1">
 			<div
 				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-header"
@@ -180,30 +154,10 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					/>
 					<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 						<PopoverTrigger asChild>
-							<HeaderIconButton icon="ellipsis" label="More actions" ref={moreRef} />
+							<HeaderIconButton icon="ellipsis" label="More actions" />
 						</PopoverTrigger>
 						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
 							<div className="flex flex-col" role="menu">
-								<button
-									aria-controls="task-header-first-message"
-									aria-expanded={expanded}
-									className={MENU_ITEM_CLASS}
-									disabled={!task.text && imageCount + fileCount === 0}
-									onClick={() => {
-										setMenuOpen(false)
-										setExpanded((value) => !value)
-									}}
-									role="menuitem"
-									type="button">
-									<span
-										aria-hidden
-										className={cn(
-											"codicon text-[13px]",
-											expanded ? "codicon-chevron-up" : "codicon-chevron-down",
-										)}
-									/>
-									{expanded ? "Hide first message" : "Show first message"}
-								</button>
 								<button
 									className={MENU_ITEM_CLASS}
 									disabled={!task.text}
@@ -258,25 +212,6 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					/>
 				</div>
 			</div>
-			{expanded && (
-				<div
-					aria-label="First message"
-					className="mt-1 max-h-[40vh] overflow-y-auto rounded-xs border border-editor-group-border bg-(--vscode-editor-background) p-2 outline-none animate-in fade-in-0 slide-in-from-top-1 motion-reduce:animate-none"
-					data-testid="task-header-first-message"
-					id="task-header-first-message"
-					ref={panelRef}
-					role="region"
-					tabIndex={-1}>
-					<div
-						className="ph-no-capture whitespace-pre-wrap break-words text-[13px]"
-						data-testid="task-header-full-text">
-						{highlightText(task.text, false)}
-					</div>
-					{(imageCount > 0 || fileCount > 0) && (
-						<Thumbnails className="mt-2" files={task.files ?? []} images={task.images ?? []} />
-					)}
-				</div>
-			)}
 		</div>
 	)
 }

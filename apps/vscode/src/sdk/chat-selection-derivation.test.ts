@@ -78,7 +78,15 @@ describe("derived chat configuration", () => {
 				startNewSession: start,
 				restoreActiveSession: start,
 			},
-			taskHistory: { findHistoryItem: async () => ({ apiSelection: selection }) },
+			taskHistory: {
+				findHistoryItem: async () => ({
+					apiSelection: selection,
+					title: "Renamed",
+					taskGroupId: "g1",
+					tags: [{ kind: "ticket", value: "PROJ-1", source: "auto" }],
+					dismissedAutoTags: ["PROJ-2"],
+				}),
+			},
 			getWorkspaceRoot: async () => "/workspace",
 			resolveContextMentions: async (text: string) => text,
 			interactions: { clearPending: vi.fn() },
@@ -96,6 +104,13 @@ describe("derived chat configuration", () => {
 		expect(derived.config.providerId).toBe("anthropic")
 		expect(derived.config.modelId).toBe("q-model")
 		expect(derived.sessionMetadata.apiSelection).toEqual(selection)
+		// The replacement session keeps the thread's name, task and tags.
+		expect(derived.sessionMetadata).toMatchObject({
+			threadTitle: "Renamed",
+			taskGroupId: "g1",
+			tags: [{ kind: "ticket", value: "PROJ-1", source: "auto" }],
+			dismissedAutoTags: ["PROJ-2"],
+		})
 	})
 
 	it("inherits the source selection when creating an aside in Ask mode", async () => {

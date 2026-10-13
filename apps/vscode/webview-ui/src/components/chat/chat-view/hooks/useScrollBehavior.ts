@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import { ScrollBehavior } from "../types/chatTypes"
+import { isUserBubbleMessage } from "../utils/messageUtils"
 
 // Height of the sticky user message header (padding + content)
 const STICKY_HEADER_HEIGHT = 32
@@ -105,9 +106,9 @@ export function useScrollBehavior(
 	const [pendingScrollToMessage, setPendingScrollToMessage] = useState<number | null>(null)
 	const [scrolledPastUserMessage, setScrolledPastUserMessage] = useState<ClineMessage | null>(null)
 
-	// Find all user feedback messages
+	// Find all user messages, including the thread's first message
 	const userFeedbackMessages = useMemo(() => {
-		return visibleMessages.filter((msg) => msg.say === "user_feedback")
+		return visibleMessages.filter(isUserBubbleMessage)
 	}, [visibleMessages])
 
 	// Track scroll position to detect which user message has been scrolled past
@@ -261,8 +262,7 @@ export function useScrollBehavior(
 				disableAutoScrollRef.current = true
 
 				// Check if this is the first user feedback message (no sticky header would show when scrolling to it)
-				const isFirstUserMessage =
-					groupIndex === 0 || !visibleMessages.slice(0, visibleIndex).some((msg) => msg.say === "user_feedback")
+				const isFirstUserMessage = groupIndex === 0 || !visibleMessages.slice(0, visibleIndex).some(isUserBubbleMessage)
 
 				const stickyHeaderOffset = isFirstUserMessage ? 0 : STICKY_HEADER_HEIGHT
 

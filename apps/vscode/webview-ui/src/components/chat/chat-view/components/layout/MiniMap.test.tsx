@@ -17,7 +17,9 @@ const ROW_HEIGHT = 100
 
 // A stand-in for Virtuoso's scroller: one [data-index] element per row, laid out ROW_HEIGHT
 // apart and shifted by `scrollTop`, so the minimap can measure the row at the viewport top.
-function setup(rows: ClineMessage[], turnActive: boolean) {
+// As in ChatView, the task prompt is the first rendered row but not part of `messages`.
+function setup(messages: ClineMessage[], turnActive: boolean) {
+	const rows = [task, ...messages]
 	const container = document.createElement("div")
 	const scroller = document.createElement("div")
 	scroller.dataset.virtuosoScroller = "true"
@@ -43,10 +45,10 @@ function setup(rows: ClineMessage[], turnActive: boolean) {
 	const autoScrollDisabledRef = createRef<boolean>() as { current: boolean }
 	autoScrollDisabledRef.current = false
 	const props = { listKey: 1, onJump: vi.fn(), scrollContainerRef, autoScrollDisabledRef, task }
-	const view = render(<MiniMap {...props} messages={rows} rows={rows} turnActive={turnActive} />)
+	const view = render(<MiniMap {...props} messages={messages} rows={rows} turnActive={turnActive} />)
 	const rerender = (next: ClineMessage[], active: boolean) => {
-		renderRows(next.length)
-		view.rerender(<MiniMap {...props} messages={next} rows={next} turnActive={active} />)
+		renderRows(next.length + 1)
+		view.rerender(<MiniMap {...props} messages={next} rows={[task, ...next]} turnActive={active} />)
 	}
 	const scrollTo = async (scrollTop: number) => {
 		layout.scrollTop = scrollTop
@@ -65,7 +67,7 @@ describe("MiniMap", () => {
 	})
 
 	it("keeps the streaming reply steadily current while auto-follow scrolls and rows grow", async () => {
-		// Rows: [0] reply, [1] user, [2..] the streaming reply.
+		// Rows: [0] task, [1] reply, [2] user, [3..] the streaming reply.
 		let rows = [say(2, "text", "Earlier reply"), say(3, "user_feedback", "go"), say(4, "text", "Work", true)]
 		const { rerender, scrollTo } = setup(rows, true)
 		const live = squares().at(-1)
@@ -90,14 +92,17 @@ describe("MiniMap", () => {
 	it("follows the viewport once the user scrolls away from the live end", async () => {
 		const rows = [say(2, "text", "Earlier reply"), say(3, "user_feedback", "go"), say(4, "text", "Work", true)]
 		const { autoScrollDisabledRef, scrollTo } = setup(rows, true)
-		const [, firstReply, user, live] = squares()
+		const [first, firstReply, user, live] = squares()
 
 		autoScrollDisabledRef.current = true
+		// The first message's bubble is the top row.
 		await scrollTo(0)
-		expect(current()).toBe(firstReply)
+		expect(current()).toBe(first)
 		await scrollTo(100)
-		expect(current()).toBe(user)
+		expect(current()).toBe(firstReply)
 		await scrollTo(200)
+		expect(current()).toBe(user)
+		await scrollTo(300)
 		expect(current()).toBe(live)
 
 		// Back at the live end: pinned again regardless of which row is on top.

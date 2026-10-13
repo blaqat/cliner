@@ -45,11 +45,6 @@ const item = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
 const firstMessage = "Refactor the auth middleware so tokens refresh in the background and add tests for the expiry path"
 const task: ClineMessage = { ts: 1, type: "say", say: "task", text: firstMessage, images: ["data:a"], files: ["/a.ts", "/b.ts"] }
 
-const openFirstMessage = () => {
-	fireEvent.click(screen.getByRole("button", { name: "More actions" }))
-	fireEvent.click(screen.getByRole("menuitem", { name: /Show first message/ }))
-}
-
 describe("TaskHeader", () => {
 	beforeEach(() => {
 		vi.stubGlobal(
@@ -91,7 +86,6 @@ describe("TaskHeader", () => {
 		const title = screen.getByTestId("task-header-title-text")
 		expect(title).toHaveTextContent(firstMessage)
 		expect(title).toHaveClass("truncate")
-		expect(screen.queryByTestId("task-header-first-message")).toBeNull()
 		expect(screen.getByTestId("task-header")).not.toHaveTextContent(/\$0\.42|Tokens|Context|Cache/)
 	})
 
@@ -108,51 +102,14 @@ describe("TaskHeader", () => {
 		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Auth refresh")
 	})
 
-	it("expands the full first message with openable attachments from the menu", () => {
-		mocks.openImage.mockReset().mockResolvedValue({})
-		mocks.openFile.mockReset().mockResolvedValue({})
-		const longMessage = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n")
-		mocks.state = { ...mocks.state, currentTaskItem: item("t1", { task: "Auth refresh" }) }
-		render(<TaskHeader onClose={vi.fn()} task={{ ...task, text: longMessage }} />)
-
-		openFirstMessage()
-
-		const panel = screen.getByTestId("task-header-first-message")
-		expect(panel).toHaveClass("overflow-y-auto")
-		expect(panel).toHaveFocus()
-		// Full text, not clamped.
-		const full = screen.getByTestId("task-header-full-text")
-		expect(full.textContent).toBe(longMessage)
-		expect(full.className).not.toMatch(/line-clamp/)
-
-		fireEvent.click(screen.getByAltText("Thumbnail image-1"))
-		expect(mocks.openImage).toHaveBeenCalledWith(expect.objectContaining({ value: "data:a" }))
-		fireEvent.click(screen.getByText("a.ts"))
-		expect(mocks.openFile).toHaveBeenCalledWith(expect.objectContaining({ value: "/a.ts" }))
-		// Clicks inside the panel keep it open.
-		fireEvent.pointerDown(full)
-		expect(screen.getByTestId("task-header-first-message")).toBeInTheDocument()
+	it("leaves the first message to the chat: the menu only copies it", () => {
+		mocks.state = { ...mocks.state, currentTaskItem: item("t1", { task: "Auth refresh", title: "Token refresh" }) }
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
 
 		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
-		fireEvent.click(screen.getByRole("menuitem", { name: /Hide first message/ }))
-		expect(screen.queryByTestId("task-header-first-message")).toBeNull()
-	})
-
-	it("closes the expanded first message on Escape and on an outside click", () => {
-		render(
-			<div>
-				<TaskHeader onClose={vi.fn()} task={task} />
-				<button type="button">outside</button>
-			</div>,
-		)
-		openFirstMessage()
-		fireEvent.keyDown(screen.getByTestId("task-header-first-message"), { key: "Escape" })
-		expect(screen.queryByTestId("task-header-first-message")).toBeNull()
-		expect(screen.getByRole("button", { name: "More actions" })).toHaveFocus()
-
-		openFirstMessage()
-		fireEvent.pointerDown(screen.getByRole("button", { name: "outside" }))
-		expect(screen.queryByTestId("task-header-first-message")).toBeNull()
+		const items = within(screen.getByRole("menu")).getAllByRole("menuitem")
+		expect(items.map((row) => row.textContent)).toEqual(["Copy first message"])
+		expect(screen.queryByText(firstMessage)).toBeNull()
 	})
 
 	it("settles through toggleTaskSettled and returns home; unsettle stays", async () => {
