@@ -1,11 +1,11 @@
 import type { TaskTag } from "@shared/task-groups"
 import { type KeyboardEvent, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import { type EffectiveTag, sameTag } from "./effectiveThreadTags"
 import { parseTagInput } from "./NewTaskGroupSheet"
 import { TaskTagChip } from "./TaskTagChip"
 
-export const sameTag = (a: Pick<TaskTag, "kind" | "value">, b: Pick<TaskTag, "kind" | "value">) =>
-	a.kind === b.kind && a.value.toLowerCase() === b.value.toLowerCase()
+export { sameTag }
 
 /** True when `branch` is set and not already one of `tags`. */
 export const shouldSuggestBranch = (tags: readonly TaskTag[], branch: string | undefined): branch is string =>
@@ -13,6 +13,8 @@ export const shouldSuggestBranch = (tags: readonly TaskTag[], branch: string | u
 
 interface TaskTagEditorProps {
 	tags: readonly TaskTag[]
+	/** The task's tags, shown first and muted; they can't be removed here. */
+	inheritedTags?: readonly EffectiveTag[]
 	onAdd: (tag: Pick<TaskTag, "kind" | "value">) => void
 	onRemove: (tag: TaskTag) => void
 	/** Shown as a dashed "＋ ⎇ branch" chip when it isn't tagged yet. */
@@ -30,6 +32,7 @@ interface TaskTagEditorProps {
  */
 export const TaskTagEditor = ({
 	tags,
+	inheritedTags,
 	onAdd,
 	onRemove,
 	suggestedBranch,
@@ -40,6 +43,14 @@ export const TaskTagEditor = ({
 	const [adding, setAdding] = useState(false)
 	return (
 		<div className={cn("flex min-w-0 flex-wrap items-center gap-1", className)} data-testid={testId}>
+			{inheritedTags?.map(({ tag, taskTitle }) => (
+				<TaskTagChip
+					inheritedFrom={taskTitle ?? "task"}
+					key={`inherited:${tag.kind}:${tag.value}`}
+					kind={tag.kind}
+					value={tag.value}
+				/>
+			))}
 			{tags.map((tag) => (
 				<TaskTagChip
 					key={`${tag.kind}:${tag.value}`}
@@ -65,7 +76,7 @@ export const TaskTagEditor = ({
 					＋ tag
 				</button>
 			)}
-			{shouldSuggestBranch(tags, suggestedBranch) && (
+			{shouldSuggestBranch([...tags, ...(inheritedTags?.map((entry) => entry.tag) ?? [])], suggestedBranch) && (
 				<TaskTagChip
 					kind="branch"
 					onAdd={() => onAdd({ kind: "branch", value: suggestedBranch })}

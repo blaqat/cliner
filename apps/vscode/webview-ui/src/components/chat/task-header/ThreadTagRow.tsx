@@ -1,8 +1,10 @@
 import type { HistoryItem } from "@shared/HistoryItem"
 import { SetThreadTagsRequest } from "@shared/proto/cline/task"
 import type { TaskTag } from "@shared/task-groups"
-import { useEffect, useRef, useState } from "react"
-import { sameTag, TaskTagEditor } from "@/components/taskGroup/TaskTagEditor"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { effectiveThreadTags, sameTag } from "@/components/taskGroup/effectiveThreadTags"
+import { TaskTagEditor } from "@/components/taskGroup/TaskTagEditor"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
 
@@ -17,11 +19,16 @@ interface ThreadTagRowProps {
 }
 
 /**
- * The thread's tags under the header: chips with × (removing an auto tag
+ * The thread's tags under the header: the task's tags first (muted, no ×), then chips with × (removing an auto tag
  * dismisses it so detection won't re-add it), "＋ tag" and a suggested current
  * branch. Edits show at once and roll back if the save fails.
  */
 export const ThreadTagRow = ({ item, currentBranch }: ThreadTagRowProps) => {
+	const { taskHistory, taskGroups } = useExtensionState()
+	const inheritedTags = useMemo(
+		() => effectiveThreadTags(item, taskHistory, taskGroups).filter((entry) => entry.inherited),
+		[item, taskHistory, taskGroups],
+	)
 	// Shown until the save settles; the saved tags then come back through history.
 	const [pending, setPending] = useState<ThreadTags>()
 	const latestRequest = useRef(0)
@@ -68,9 +75,11 @@ export const ThreadTagRow = ({ item, currentBranch }: ThreadTagRowProps) => {
 				"mt-1 px-0.5",
 				// Without tags the affordances stay quiet until the row is hovered or focused.
 				!current.tags.length &&
+					!inheritedTags.length &&
 					"opacity-60 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 motion-reduce:transition-none",
 			)}
 			data-testid="thread-tag-row"
+			inheritedTags={inheritedTags}
 			onAdd={add}
 			onRemove={remove}
 			revealRemove
