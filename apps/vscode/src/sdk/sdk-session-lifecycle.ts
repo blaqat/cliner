@@ -25,6 +25,7 @@ type ApplyPatchExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost
 type ReadFileExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost.create>[0]["readFileExecutor"]>
 
 export interface SdkSessionLifecycleOptions {
+	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
 	mcpHub: McpHub
 	requestToolApproval: RequestToolApprovalHandler
 	askQuestion: AskQuestionHandler
@@ -664,6 +665,7 @@ export class SdkSessionLifecycle {
 
 	private createHost(): Promise<SdkSessionHost> {
 		return VscodeSessionHost.create({
+			resolveNotebook: this.options.resolveNotebook,
 			mcpHub: this.options.mcpHub,
 			requestToolApproval: this.options.requestToolApproval,
 			askQuestion: this.options.askQuestion,

@@ -419,6 +419,11 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		}, 50)
 	}, [queuedPromptCount, taskTs, scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef])
 
+	// TODO(task-notebook phase 5): navigate to the task page in the sidebar.
+	const openTaskGroup = useCallback((_taskGroupId: string) => {}, [])
+	// TODO(task-notebook phase 6): open the search view with the query.
+	const openSearch = useCallback((_query: string) => {}, [])
+
 	const placeholderText = useMemo(() => {
 		const text = task ? "Type a message..." : "Type your task here..."
 		return text
@@ -435,10 +440,17 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						view={subagentView}
 					/>
 				) : task ? (
-					<TaskSection messageHandlers={messageHandlers} onOpenSubagentPreview={openSubagentDetails} task={task} />
+					<TaskSection
+						messageHandlers={messageHandlers}
+						onOpenSubagentPreview={openSubagentDetails}
+						onOpenTaskGroup={openTaskGroup}
+						task={task}
+					/>
 				) : (
 					<WelcomeSection
 						hideAnnouncement={hideAnnouncement}
+						onOpenSearch={openSearch}
+						onOpenTaskGroup={openTaskGroup}
 						shouldShowQuickWins={shouldShowQuickWins}
 						showAnnouncement={showAnnouncement}
 						showHistoryView={showHistoryView}
@@ -485,6 +497,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						chatState={chatState}
 						lastApiReqTotalTokens={lastApiReqTotalTokens}
 						messageHandlers={messageHandlers}
+						onOpenTaskGroup={openTaskGroup}
 						placeholderText={placeholderText}
 						scrollBehavior={scrollBehavior}
 						selectFilesAndImages={selectFilesAndImages}

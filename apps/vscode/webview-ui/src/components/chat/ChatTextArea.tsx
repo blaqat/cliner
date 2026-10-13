@@ -44,6 +44,7 @@ import {
 	validateSlashCommand,
 } from "@/utils/slash-commands"
 import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
+import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
 import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
@@ -54,6 +55,7 @@ import PickerOverflowMenu from "./composer/PickerOverflowMenu"
 import PromptStashButton from "./PromptStashButton"
 import ReasoningEffortPicker, { modelHasReasoning } from "./ReasoningEffortPicker"
 import ServersToggleModal from "./ServersToggleModal"
+import TaskGroupPicker, { ComposerTaskGroupSheet } from "./TaskGroupPicker"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
 
@@ -118,6 +120,8 @@ export interface ChatTextAreaProps {
 		hasCompactNudge: boolean
 		render: (layout: ComposerRowLayout) => React.ReactNode
 	}
+	/** Opens a task group's page (the task pill's "Open task"). */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 interface GitCommit {
@@ -291,6 +295,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			enterSendsAs = "steer",
 			onSendAs,
 			usageIndicator,
+			onOpenTaskGroup,
 		},
 		ref,
 	) => {
@@ -1538,6 +1543,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		})
 
 		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
+		const taskGroupPicker = <TaskGroupPicker onOpenTaskGroup={onOpenTaskGroup} />
 		const effortPicker = (
 			<ReasoningEffortPicker
 				defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
@@ -1805,6 +1811,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						</span>
 					</div>
 				)}
+				<DetectedTicketChips text={inputValue} />
+				<ComposerTaskGroupSheet draftText={inputValue} />
 				<div
 					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
 					data-collapse-pickers={rowLayout.collapsePickers}
@@ -1853,6 +1861,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<ClineRulesToggleModal />
 
 						{!rowLayout.collapseConfig && (
+							<span className="flex min-w-[18px] shrink" data-shrink="">
+								{taskGroupPicker}
+							</span>
+						)}
+
+						{!rowLayout.collapseConfig && (
 							<span className="flex min-w-14" data-shrink="">
 								{configPicker}
 							</span>
@@ -1860,6 +1874,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 						{rowLayout.collapsePickers ? (
 							<PickerOverflowMenu>
+								{rowLayout.collapseConfig && taskGroupPicker}
 								{rowLayout.collapseConfig && configPicker}
 								{effortPicker}
 								<ApprovalsMenu />

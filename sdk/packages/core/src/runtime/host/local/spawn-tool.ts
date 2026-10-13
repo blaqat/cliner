@@ -264,6 +264,16 @@ export function createSessionSpawnTool(
 			allowedNames.add("editor");
 			allowedNames.add("apply_patch");
 		}
+		for (const tool of available) {
+			const hostAccess = tool.metadata?.subagentAccess;
+			if (
+				config.enableTools &&
+				(hostAccess === "read" ||
+					(hostAccess === "write" && access === "write"))
+			) {
+				allowedNames.add(tool.name);
+			}
+		}
 		const childTools = available
 			.filter((tool) => {
 				const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];

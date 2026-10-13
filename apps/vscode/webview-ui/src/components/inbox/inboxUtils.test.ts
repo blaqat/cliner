@@ -1,6 +1,16 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { describe, expect, it } from "vitest"
-import { buildInbox, countBackgroundRunning, describeActivity, formatAge } from "./inboxUtils"
+import type { TaskGroupSummary } from "@shared/task-groups"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	buildInbox,
+	countBackgroundRunning,
+	describeActivity,
+	EXPANDED_TASK_GROUPS_EVENT,
+	expandTaskGroupInInbox,
+	formatAge,
+	readExpandedTaskGroups,
+	writeExpandedTaskGroups,
+} from "./inboxUtils"
 
 const NOW = Date.UTC(2026, 8, 30, 12, 0, 0)
 const MIN = 60_000
@@ -224,5 +234,116 @@ describe("inbox helpers", () => {
 		expect(describeActivity({ ...row(1), status: "waiting" }, NOW)).toBe("Waiting for you")
 		expect(describeActivity({ ...row(1), status: "error" }, NOW)).toBe("Stopped with an error")
 		expect(describeActivity(row(0), NOW)).toBe("Done")
+	})
+})
+
+function group(id: string, updatedAt: number, extra: Partial<TaskGroupSummary> = {}): TaskGroupSummary {
+	return { id, title: `group ${id}`, tags: [], createdAt: updatedAt, updatedAt, noteCount: 0, ...extra }
+}
+
+describe("buildInbox task groups", () => {
+	it("moves member threads under their group and out of the top level", () => {
+		const history = [
+			item("loose", NOW - 5 * MIN),
+			item("m1", NOW - 10 * MIN, { taskGroupId: "g" }),
+			item("m2", NOW - 20 * MIN, { taskGroupId: "g", isSettled: true, settledAt: NOW - MIN }),
+		]
+
+		const { groups, active, settled, settledTotal } = buildInbox(history, {}, undefined, { taskGroups: [group("g", 0)] })
+
+		expect(active.map((row) => row.item.id)).toEqual(["loose"])
+		expect(settled).toHaveLength(0)
+		expect(settledTotal).toBe(0)
+		expect(groups).toHaveLength(1)
+		expect(groups[0].members.map((row) => row.item.id)).toEqual(["m1", "m2"])
+	})
+
+	it("keeps threads filed into an unknown (deleted) group at the top level", () => {
+		const { groups, active } = buildInbox([item("t", NOW, { taskGroupId: "gone" })], {}, undefined, { taskGroups: [] })
+
+		expect(groups).toHaveLength(0)
+		expect(active.map((row) => row.item.id)).toEqual(["t"])
+	})
+
+	it("uses the newest member activity (including subthreads) for the group and sorts groups by it", () => {
+		const history = [
+			item("a1", NOW - 60 * MIN, { taskGroupId: "a" }),
+			item("aside", NOW - MIN, { parentTaskId: "a1", taskGroupId: "a" }),
+			item("b1", NOW - 10 * MIN, { taskGroupId: "b" }),
+		]
+
+		const { groups } = buildInbox(history, {}, undefined, {
+			taskGroups: [group("b", NOW - 100 * MIN), group("a", NOW - 100 * MIN)],
+		})
+
+		expect(groups.map((row) => row.group.id)).toEqual(["a", "b"])
+		expect(groups[0].activityTs).toBe(NOW - MIN)
+		// The aside folds into its parent; it isn't a member row of its own.
+		expect(groups[0].members.map((row) => row.item.id)).toEqual(["a1"])
+	})
+
+	it("falls back to the group's update time when it has no threads", () => {
+		const { groups } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
+
+		expect(groups[0]).toMatchObject({ activityTs: NOW - 3 * MIN, members: [], runningCount: 0 })
+	})
+
+	it("counts members with work in progress, including busy subthreads", () => {
+		const history = [
+			item("run", NOW, { taskGroupId: "g" }),
+			item("idle", NOW, { taskGroupId: "g" }),
+			item("aside", NOW, { parentTaskId: "idle" }),
+			item("done", NOW, { taskGroupId: "g" }),
+		]
+
+		const { groups } = buildInbox(history, { run: "running", aside: "running" }, undefined, { taskGroups: [group("g", 0)] })
+
+		expect(groups[0].runningCount).toBe(2)
+	})
+
+	it("applies the active limit to unfiled rows only", () => {
+		const history = [item("m", NOW, { taskGroupId: "g" }), item("x", NOW - MIN), item("y", NOW - 2 * MIN)]
+
+		const { active, hiddenCount, groups } = buildInbox(history, {}, undefined, {
+			activeLimit: 1,
+			taskGroups: [group("g", 0)],
+		})
+
+		expect(active.map((row) => row.item.id)).toEqual(["x"])
+		expect(hiddenCount).toBe(1)
+		expect(groups[0].members).toHaveLength(1)
+	})
+})
+
+describe("expanded task groups", () => {
+	beforeEach(() => {
+		const store = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => store.get(key) ?? null,
+			setItem: (key: string, value: string) => void store.set(key, value),
+		})
+	})
+
+	it("starts collapsed and round-trips the expanded set", () => {
+		expect(readExpandedTaskGroups().size).toBe(0)
+		writeExpandedTaskGroups(new Set(["a", "b"]))
+		expect([...readExpandedTaskGroups()]).toEqual(["a", "b"])
+	})
+
+	it("ignores malformed storage", () => {
+		localStorage.setItem("inbox.expandedTaskGroups", "{not json")
+		expect(readExpandedTaskGroups().size).toBe(0)
+		localStorage.setItem("inbox.expandedTaskGroups", JSON.stringify(["ok", 3]))
+		expect([...readExpandedTaskGroups()]).toEqual(["ok"])
+	})
+
+	it("expandTaskGroupInInbox persists the id and notifies the inbox", () => {
+		let notified = 0
+		const listener = () => notified++
+		window.addEventListener(EXPANDED_TASK_GROUPS_EVENT, listener)
+		expandTaskGroupInInbox("new")
+		window.removeEventListener(EXPANDED_TASK_GROUPS_EVENT, listener)
+		expect(readExpandedTaskGroups().has("new")).toBe(true)
+		expect(notified).toBe(1)
 	})
 })

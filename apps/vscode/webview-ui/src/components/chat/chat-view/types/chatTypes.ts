@@ -147,4 +147,8 @@ export interface WelcomeSectionProps {
 	version: string
 	taskHistory: any[]
 	shouldShowQuickWins: boolean
+	/** Opens the search view from the home search bar. */
+	onOpenSearch: (query: string) => void
+	/** Opens a task group's page from an inbox group row. */
+	onOpenTaskGroup: (taskGroupId: string) => void
 }

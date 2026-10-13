@@ -58,6 +58,8 @@ import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
 import { MarkdownRow } from "./MarkdownRow"
 import NewTaskPreview from "./NewTaskPreview"
+import { NotebookChangesRow } from "./NotebookChangesRow"
+import { NotebookToolRow, parseNotebookTool } from "./NotebookToolRow"
 import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
 import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
@@ -416,6 +418,11 @@ export const ChatRowContent = memo(
 					title={title}
 				/>
 			)
+
+			const notebookTool = parseNotebookTool(tool)
+			if (notebookTool) {
+				return <NotebookToolRow info={notebookTool} />
+			}
 
 			switch (tool.tool) {
 				case "editedExistingFile":
@@ -1062,6 +1069,8 @@ export const ChatRowContent = memo(
 						return <InvisibleSpacer /> // task_progress messages should be displayed in TaskHeader only, not in chat
 					case "compaction":
 						return <CompactionRow message={message} />
+					case "notebook_changes":
+						return <NotebookChangesRow message={message} />
 					default:
 						return (
 							<div>

@@ -327,6 +327,7 @@ export type ClineSay =
 	| "subagent_usage"
 	| "conditional_rules_applied"
 	| "compaction" // context compaction progress/result divider
+	| "notebook_changes"
 
 export interface ClineSayTool {
 	tool:
@@ -342,6 +343,9 @@ export interface ClineSayTool {
 		| "webSearch"
 		| "summarizeTask"
 		| "useSkill"
+		| "notebook"
+	action?: "read" | "write" | "delete"
+	name?: string
 	path?: string
 	diff?: string
 	content?: string

@@ -1,5 +1,6 @@
 import type { ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import type { TaskGroupSummary } from "@shared/task-groups"
 
 export type SessionStatus = ExtensionState["sessionStatuses"][string]
 export type SessionStatuses = ExtensionState["sessionStatuses"]
@@ -28,7 +29,20 @@ export interface InboxRow {
 	attentionSubagentCount: number
 }
 
+/** A task group ("Task" in the UI) row: its member threads leave the top level. */
+export interface InboxTaskGroupRow {
+	group: TaskGroupSummary
+	/** Member thread rows (settled included), newest activity first. */
+	members: InboxRow[]
+	/** Newest member activity; the group's own update time when it has no threads. */
+	activityTs: number
+	/** Members with work in progress (the thread itself or one of its subthreads/subagents). */
+	runningCount: number
+}
+
 export interface InboxGroups {
+	/** Task groups, newest activity first. Shown above the unfiled active rows. */
+	groups: InboxTaskGroupRow[]
 	active: InboxRow[]
 	settled: InboxRow[]
 	/** All settled chats, including those cut by the settled limit. */
@@ -45,17 +59,27 @@ function isLive(status: SessionStatus): boolean {
 	return status === "running" || status === "waiting"
 }
 
+/** The thread or one of its subthreads/subagents is working right now. */
+export function isRowWorking(row: InboxRow): boolean {
+	return row.status === "running" || row.liveSubthreadCount > 0 || row.liveSubagentCount > 0
+}
+
 /**
  * Groups task history for the home inbox. Asides are folded into their parent's
  * subthread count instead of being top-level rows (unless the parent is gone).
+ * Threads filed into a known task group move under that group's row.
  * Active (unsettled) rows sort by last activity including subthreads; settled
- * rows by their own last activity.
+ * rows by their own last activity; groups by their newest member.
  */
 export function buildInbox(
 	history: readonly HistoryItem[],
 	statuses: SessionStatuses | undefined,
 	subagentCounts?: SubagentCounts,
-	{ activeLimit = DEFAULT_ACTIVE_LIMIT, settledLimit = DEFAULT_SETTLED_LIMIT } = {},
+	{
+		activeLimit = DEFAULT_ACTIVE_LIMIT,
+		settledLimit = DEFAULT_SETTLED_LIMIT,
+		taskGroups = [],
+	}: { activeLimit?: number; settledLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
 	const ids = new Set(valid.map((item) => item.id))
@@ -112,10 +136,30 @@ export function buildInbox(
 			}
 		})
 
-	const active = rows.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
-	const settled = rows.filter((row) => row.settled).sort((a, b) => b.item.ts - a.item.ts)
+	const membersByGroup = new Map<string, InboxRow[]>(taskGroups.map((group) => [group.id, []]))
+	const unfiled: InboxRow[] = []
+	for (const row of rows) {
+		const members = row.item.taskGroupId ? membersByGroup.get(row.item.taskGroupId) : undefined
+		if (members) members.push(row)
+		else unfiled.push(row)
+	}
+	const groups = taskGroups
+		.map((group) => {
+			const members = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
+			return {
+				group,
+				members,
+				activityTs: members[0]?.activityTs ?? group.updatedAt,
+				runningCount: members.filter(isRowWorking).length,
+			}
+		})
+		.sort((a, b) => b.activityTs - a.activityTs)
+
+	const active = unfiled.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
+	const settled = unfiled.filter((row) => row.settled).sort((a, b) => b.item.ts - a.item.ts)
 
 	return {
+		groups,
 		active: active.slice(0, activeLimit),
 		settled: settled.slice(0, settledLimit),
 		settledTotal: settled.length,
@@ -174,4 +218,35 @@ export function describeActivity(row: InboxRow, now: number): string {
 	// An idle parent with a busy subthread still has work happening.
 	if (row.liveSubthreadCount > 0 || row.liveSubagentCount > 0) return "Working… in subthread"
 	return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
+}
+
+/** Member threads an expanded group row shows; the rest collapse into "＋N older". */
+export const GROUP_PREVIEW_COUNT = 2
+
+const EXPANDED_TASK_GROUPS_KEY = "inbox.expandedTaskGroups"
+/** Fired on window when another component expands a group (e.g. right after creating it). */
+export const EXPANDED_TASK_GROUPS_EVENT = "inbox:expandedTaskGroups"
+
+/** Task groups the user expanded on home. Groups start collapsed. */
+export function readExpandedTaskGroups(): Set<string> {
+	try {
+		const ids: unknown = JSON.parse(localStorage.getItem(EXPANDED_TASK_GROUPS_KEY) ?? "[]")
+		return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [])
+	} catch {
+		return new Set()
+	}
+}
+
+export function writeExpandedTaskGroups(ids: ReadonlySet<string>): void {
+	try {
+		localStorage.setItem(EXPANDED_TASK_GROUPS_KEY, JSON.stringify([...ids]))
+	} catch {
+		// Persistence is best-effort; the toggle still works for this session.
+	}
+}
+
+/** Expands a group row on home (persisted) and tells a mounted inbox to pick it up. */
+export function expandTaskGroupInInbox(id: string): void {
+	writeExpandedTaskGroups(new Set([...readExpandedTaskGroups(), id]))
+	window.dispatchEvent(new Event(EXPANDED_TASK_GROUPS_EVENT))
 }

@@ -29,6 +29,8 @@ interface InputSectionProps {
 		totalCost: number
 	}
 	lastApiReqTotalTokens?: number
+	/** Opens a task group's page (the task pill's "Open task"). */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 /**
@@ -43,6 +45,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	selectFilesAndImages,
 	apiMetrics,
 	lastApiReqTotalTokens,
+	onOpenTaskGroup,
 }) => {
 	const {
 		quotes,
@@ -154,6 +157,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 					scrollToBottomAuto()
 				}
 			}}
+			onOpenTaskGroup={onOpenTaskGroup}
 			onRestoreStash={handleRestoreStash}
 			onSelectFilesAndImages={selectFilesAndImages}
 			onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}

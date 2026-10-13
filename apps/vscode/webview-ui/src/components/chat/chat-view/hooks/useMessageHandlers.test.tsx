@@ -61,6 +61,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	}),
 }))
 
+import { getComposerTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import type { ChatState } from "../types/chatTypes"
 import { useChatState } from "./useChatState"
 import { useMessageHandlers } from "./useMessageHandlers"
@@ -1375,4 +1376,47 @@ it("submits the displayed approval id even when another ask appears later in the
 		expect.objectContaining({ decisionId: "approval-a", responseType: "yesButtonClicked" }),
 	)
 	mockTurnState = undefined
+})
+
+describe("useMessageHandlers — task pill", () => {
+	beforeEach(() => {
+		newTask.mockReset()
+		newTask.mockResolvedValue(undefined)
+		mockTurnState = { phase: "idle", seq: 1 }
+		setComposerTaskGroup(undefined)
+	})
+
+	it("files a new thread into the task picked with the pill, then clears the pick", async () => {
+		setComposerTaskGroup("group-1")
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("Look into PROJ-1", [], [])
+		})
+
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ text: "Look into PROJ-1", taskGroupId: "group-1" }))
+		expect(getComposerTaskGroup()).toBeUndefined()
+	})
+
+	it("keeps the pick when starting the thread fails", async () => {
+		setComposerTaskGroup("group-1")
+		newTask.mockRejectedValueOnce(new Error("boom"))
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("hello", [], []).catch(() => {})
+		})
+
+		expect(getComposerTaskGroup()).toBe("group-1")
+	})
+
+	it("starts unfiled when no task is picked", async () => {
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+
+		await act(async () => {
+			await result.current.handleSendMessage("hello", [], [])
+		})
+
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: undefined }))
+	})
 })

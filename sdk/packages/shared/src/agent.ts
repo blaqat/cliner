@@ -210,6 +210,8 @@ export interface AgentTool<TInput = unknown, TOutput = unknown>
 	 * Host/tool-source metadata carried on the runtime tool object but never
 	 * sent to the model. Hooks and policy gates can inspect it (e.g. MCP tool
 	 * annotations such as `readOnlyHint`).
+	 * `subagentAccess: "read" | "write"` opts a host tool into session-spawned
+	 * subagents at that access level, subject to parent policies and disables.
 	 */
 	metadata?: Record<string, unknown>;
 	execute: (

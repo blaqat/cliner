@@ -43,6 +43,14 @@ export interface NotebookActivity {
 	slug: string
 }
 
+export interface NotebookChangesPayload {
+	taskGroupId: string
+	threadId: string
+	status: "pending" | "applied" | "discarded"
+	changes: NotebookChange[]
+	appliedSlugs?: string[]
+}
+
 /** A thread row in a task group's timeline (newest first). read/wrote are note slugs from the activity log. */
 export interface TaskGroupThreadRow {
 	threadId: string

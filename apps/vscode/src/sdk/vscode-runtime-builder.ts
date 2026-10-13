@@ -5,6 +5,8 @@ import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
 import { Logger } from "@/shared/services/Logger"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
+import type { TaskNotebookContext } from "./task-groups/notebook-context"
+import { createNotebookTool } from "./task-groups/notebook-tool"
 import { createVscodeRunCommandsTool, VSCODE_FOREGROUND_RUN_COMMANDS_TIMEOUT_MS } from "./vscode-run-commands-tool"
 
 interface McpToolDescriptor {
@@ -51,6 +53,7 @@ export class McpHubToolProvider {
 }
 
 export interface VscodeExtraToolsOptions {
+	notebook?: TaskNotebookContext
 	cwd?: string
 	/**
 	 * Lazy factory for the VscodeTerminalManager.
@@ -91,6 +94,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// response, and the turn-end inference in message-translator.ts styles that
 	// final text as the completion feedback row.
 	const tools: AgentTool[] = [...mcpTools.flat()]
+	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
 
 	// Add the custom run_commands tool when a terminal manager is available.
 	// This replaces the SDK's built-in run_commands, which is suppressed via

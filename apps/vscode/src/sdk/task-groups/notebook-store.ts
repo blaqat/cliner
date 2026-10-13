@@ -77,7 +77,18 @@ function parseActivityLine(line: string): NotebookActivity | undefined {
  * the timeline's note chips and reader counts.
  */
 export class NotebookStore {
+	private readonly noteIndexes = new Map<string, NotebookNoteMeta[]>()
+	private readonly stageWrites = new Map<string, Promise<void>>()
+
 	constructor(private readonly rootDir: string = taskGroupsRootDir()) {}
+
+	getNoteIndex(groupId: string): NotebookNoteMeta[] {
+		return this.noteIndexes.get(groupId) ?? []
+	}
+
+	async refreshNoteIndexes(): Promise<void> {
+		await Promise.all([...this.noteIndexes.keys()].map((groupId) => this.listNotes(groupId)))
+	}
 
 	// ---- Notes ----
 
@@ -87,6 +98,7 @@ export class NotebookStore {
 		try {
 			files = (await fs.readdir(paths.notebookDir)).filter((file) => file.endsWith(".md"))
 		} catch {
+			this.noteIndexes.set(groupId, [])
 			return []
 		}
 		const readerCounts = await this.readerCounts(groupId)
@@ -96,7 +108,25 @@ export class NotebookStore {
 			const note = await this.readNoteMeta(groupId, slug)
 			if (note) notes.push({ ...note, readers: readerCounts.get(slug) ?? 0 })
 		}
-		return notes.sort((a, b) => b.updatedAt - a.updatedAt)
+		notes.sort((a, b) => b.updatedAt - a.updatedAt)
+		this.noteIndexes.set(groupId, notes)
+		return notes
+	}
+
+	async readThreadNote(
+		groupId: string,
+		rootThreadId: string,
+		slug: string,
+		readerThreadId: string,
+	): Promise<{ name: string; content: string } | undefined> {
+		const staged = (await this.readPending(groupId, rootThreadId))?.find((change) => change.slug === slug)
+		if (staged) {
+			if (staged.op === "delete") return undefined
+			await this.appendActivity(groupId, { ts: Date.now(), threadId: readerThreadId, kind: "read", slug })
+			return { name: staged.name, content: staged.content ?? "" }
+		}
+		const note = await this.readNote(groupId, slug, readerThreadId)
+		return note ? { name: note.meta.name, content: note.content } : undefined
 	}
 
 	/**
@@ -157,6 +187,19 @@ export class NotebookStore {
 	 * and a `create` followed by a `delete` cancels out entirely.
 	 */
 	async stageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
+		const key = `${groupId}/${threadId}`
+		const write = (this.stageWrites.get(key) ?? Promise.resolve())
+			.catch(() => {})
+			.then(() => this.performStageChange(groupId, threadId, change))
+		this.stageWrites.set(key, write)
+		try {
+			await write
+		} finally {
+			if (this.stageWrites.get(key) === write) this.stageWrites.delete(key)
+		}
+	}
+
+	private async performStageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
 		const pending = (await this.readPending(groupId, threadId)) ?? []
 		const index = pending.findIndex((entry) => entry.slug === change.slug)
 		if (index === -1) {
@@ -246,7 +289,11 @@ export class NotebookStore {
 					threadId,
 					threadTitle: options?.threadTitle ?? "",
 				})
-				applied.push(change)
+				applied.push(
+					item.editedContent !== undefined && change.op !== "delete"
+						? { ...change, content: item.editedContent }
+						: change,
+				)
 				await this.appendActivity(groupId, { ts: Date.now(), threadId, kind: "write", slug: change.slug })
 			}
 		} finally {
