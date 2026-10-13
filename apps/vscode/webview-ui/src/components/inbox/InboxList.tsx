@@ -48,6 +48,7 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	const {
 		item,
+		activityTs,
 		status,
 		settled,
 		subthreadCount,
@@ -56,7 +57,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 		liveSubagentCount,
 		attentionSubagentCount,
 	} = row
-	const time = settled ? formatStamp(item.ts, now) : formatAge(item.ts, now)
+	const time = settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)
 	const activity = describeActivity(row, now)
 	const subagentTitle = [
 		plural(subagentCount, "subagent"),
