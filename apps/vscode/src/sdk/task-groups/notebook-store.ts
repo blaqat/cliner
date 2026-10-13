@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
+import { setTimeout as delay } from "node:timers/promises"
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
 import type { NotebookActivity, NotebookChange, NotebookNoteMeta } from "@shared/task-groups"
 import * as yaml from "js-yaml"
@@ -13,6 +14,59 @@ export interface PendingNotebookChanges {
 }
 
 type NoteUpdatedBy = NotebookNoteMeta["updatedBy"]
+
+const PENDING_LOCK_TIMEOUT_MS = 30_000
+
+async function pendingLockIsStale(lockPath: string): Promise<boolean> {
+	let raw: string
+	let modifiedAt: number
+	try {
+		raw = await fs.readFile(lockPath, "utf8")
+		modifiedAt = (await fs.stat(lockPath)).mtimeMs
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+		throw error
+	}
+	try {
+		const { pid } = JSON.parse(raw)
+		if (Number.isSafeInteger(pid) && pid > 0) {
+			try {
+				process.kill(pid, 0)
+				return false
+			} catch (error) {
+				// EPERM also means the owner exists. Never expire a live writer.
+				return (error as NodeJS.ErrnoException).code === "ESRCH"
+			}
+		}
+	} catch {
+		// A process can die between exclusive creation and writing its owner.
+	}
+	return Date.now() - modifiedAt > PENDING_LOCK_TIMEOUT_MS
+}
+
+async function recoverPendingLock(lockPath: string): Promise<void> {
+	// Serialize stale cleanup too: two waiters must not unlink each other's
+	// newly acquired lock after both observed the same dead owner.
+	const recoveryPath = `${lockPath}.recovery`
+	try {
+		await fs.mkdir(recoveryPath)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+		try {
+			if (Date.now() - (await fs.stat(recoveryPath)).mtimeMs > PENDING_LOCK_TIMEOUT_MS) {
+				await fs.rmdir(recoveryPath)
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		return
+	}
+	try {
+		if (await pendingLockIsStale(lockPath)) await fs.rm(lockPath, { force: true })
+	} finally {
+		await fs.rmdir(recoveryPath)
+	}
+}
 
 /** Kebab-case the note name; the slug is the note's `<slug>.md` filename. */
 export function slugifyNoteName(name: string): string {
@@ -201,9 +255,11 @@ export class NotebookStore {
 	 * change for the same slug: a `create` stays a `create` on later writes,
 	 * and a `create` followed by a `delete` cancels out entirely.
 	 */
-	private async serializePending<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+	private async serializePending<T>(groupId: string, threadId: string, operation: () => Promise<T>): Promise<T> {
 		validateTaskGroupIdentifier(threadId, "threadId")
-		const write = (this.pendingWrites.get(threadId) ?? Promise.resolve()).catch(() => {}).then(operation)
+		const write = (this.pendingWrites.get(threadId) ?? Promise.resolve())
+			.catch(() => {})
+			.then(() => this.withPendingLock(groupId, threadId, operation))
 		this.pendingWrites.set(threadId, write)
 		try {
 			return await write
@@ -212,9 +268,40 @@ export class NotebookStore {
 		}
 	}
 
+	private async withPendingLock<T>(groupId: string, threadId: string, operation: () => Promise<T>): Promise<T> {
+		const paths = taskGroupPaths(this.rootDir, groupId)
+		const lockPath = paths.pendingFile(threadId).replace(/\.json$/, ".lock")
+		await fs.mkdir(paths.pendingDir, { recursive: true })
+		const startedAt = Date.now()
+		while (true) {
+			let handle: Awaited<ReturnType<typeof fs.open>>
+			try {
+				handle = await fs.open(lockPath, "wx")
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+				await recoverPendingLock(lockPath)
+				if (Date.now() - startedAt >= PENDING_LOCK_TIMEOUT_MS) {
+					throw new Error("Notebook changes are busy in another window. Try again.")
+				}
+				await delay(10 + Math.floor(Math.random() * 20))
+				continue
+			}
+			try {
+				await handle.writeFile(JSON.stringify({ pid: process.pid, timestamp: Date.now() }))
+				return await operation()
+			} finally {
+				try {
+					await handle.close()
+				} finally {
+					await fs.rm(lockPath, { force: true })
+				}
+			}
+		}
+	}
+
 	async stageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
 		taskGroupPaths(this.rootDir, groupId).noteFile(change.slug)
-		return this.serializePending(threadId, () => this.performStageChange(groupId, threadId, change))
+		return this.serializePending(groupId, threadId, () => this.performStageChange(groupId, threadId, change))
 	}
 
 	private async performStageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
@@ -321,7 +408,7 @@ export class NotebookStore {
 	): Promise<NotebookChange[]> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		for (const item of items) validateTaskGroupIdentifier(item.slug, "slug")
-		return this.serializePending(threadId, async () => {
+		return this.serializePending(groupId, threadId, async () => {
 			const { changes } = await this.requireRevision(groupId, threadId, revision)
 			const applied: NotebookChange[] = []
 			const completed = new Set<string>()
@@ -370,7 +457,7 @@ export class NotebookStore {
 
 	async discardPendingChanges(groupId: string, threadId: string, revision: string): Promise<void> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
-		return this.serializePending(threadId, async () => {
+		return this.serializePending(groupId, threadId, async () => {
 			await this.requireRevision(groupId, threadId, revision)
 			await this.writePending(groupId, threadId, [])
 		})

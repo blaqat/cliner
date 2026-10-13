@@ -46,9 +46,24 @@ export function useComposerPageTaskGroup(): string | undefined {
 	return useSyncExternalStore(subscribe, getComposerPageTaskGroup)
 }
 
+/**
+ * One precedence for "which task does this composer belong to": the task page,
+ * then the pill's pending pick, then the open thread's own task (if any).
+ */
+export function resolveComposerTaskGroup(threadTaskGroupId?: string): string | undefined {
+	return pageTaskGroupId ?? pendingTaskGroupId ?? threadTaskGroupId
+}
+
 /** The task a new thread sent from the composer is filed into. */
 export function getComposerSendTaskGroup(): string | undefined {
-	return pageTaskGroupId ?? pendingTaskGroupId
+	return resolveComposerTaskGroup()
+}
+
+/** Reactive {@link resolveComposerTaskGroup}. */
+export function useResolvedComposerTaskGroup(threadTaskGroupId?: string): string | undefined {
+	const page = useComposerPageTaskGroup()
+	const pending = useComposerTaskGroup()
+	return page ?? pending ?? threadTaskGroupId
 }
 
 // The task pill's new-task sheet. Kept outside the pill so the sheet survives

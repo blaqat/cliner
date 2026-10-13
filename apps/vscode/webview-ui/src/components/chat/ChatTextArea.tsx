@@ -44,7 +44,7 @@ import {
 	validateSlashCommand,
 } from "@/utils/slash-commands"
 import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
-import { useComposerPageTaskGroup } from "../taskGroup/composerTaskGroup"
+import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
 import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
@@ -347,10 +347,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
 		// `#note` mentions: the task this composer's thread (or task page) belongs to.
-		const pageTaskGroupId = useComposerPageTaskGroup()
-		const noteTaskGroupId = currentTaskItem
-			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
-			: pageTaskGroupId
+		const noteTaskGroupId = useResolvedComposerTaskGroup(
+			currentTaskItem ? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId : undefined,
+		)
 		const noteMention = useMemo(
 			() => (noteTaskGroupId ? findNoteMention(inputValue, cursorPosition) : undefined),
 			[noteTaskGroupId, inputValue, cursorPosition],
@@ -615,7 +614,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					return
 				}
 
-				if (showNoteMentionMenu && noteMention) {
+				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
+				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
+
+				if (showNoteMentionMenu && noteMention && !isComposing) {
 					if (event.key === "Escape") {
 						event.preventDefault()
 						setDismissedNoteMentionAt(noteMention.start)
@@ -745,8 +747,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
-				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
-				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
 				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
 				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
 					if (onStash()) {

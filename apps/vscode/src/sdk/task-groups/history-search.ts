@@ -3,9 +3,8 @@ import path from "node:path"
 import { formatDisplayUserInput } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
-import type { HistorySearchHit, HistorySearchThread, NotebookNoteMeta } from "@shared/task-groups"
+import type { HistorySearchHit, HistorySearchThread } from "@shared/task-groups"
 import { Logger } from "@/shared/services/Logger"
-import { NotebookStore } from "./notebook-store"
 import { TaskGroupStore, taskGroupPaths, taskGroupsRootDir } from "./task-group-store"
 
 const DEFAULT_LIMIT = 50
@@ -205,13 +204,39 @@ function parseSessionManifestTitle(raw: string): string | undefined {
  * undefined. Both hits display the description — a window around the match
  * for description hits, the head of it for name hits.
  */
-function noteMetaSnippet(note: NotebookNoteMeta, pattern: RegExp): string | undefined {
+function noteMetaSnippet(note: { name: string; description: string }, pattern: RegExp): string | undefined {
 	const description = collapseWhitespace(note.description)
 	if (note.name.search(pattern) !== -1) {
 		return searchSnippet(description, 0)
 	}
 	const matchIndex = description.search(pattern)
 	return matchIndex === -1 ? undefined : searchSnippet(description, matchIndex)
+}
+
+interface SearchableNote {
+	name: string
+	description: string
+	/** Frontmatter `updated` in ms since epoch, or 0 when absent/invalid. */
+	updated: number
+	/** Collapsed markdown body. */
+	body: string
+}
+
+/**
+ * Extracts a note's searchable text from `<slug>.md`: frontmatter
+ * name/description plus the collapsed markdown body. Parsed through the
+ * size-capped file cache, so oversized notes are never read and unchanged
+ * notes are not re-parsed between searches.
+ */
+function parseSearchableNote(raw: string): SearchableNote {
+	const { data, body } = parseYamlFrontmatter(raw)
+	const updated = typeof data.updated === "string" ? Date.parse(data.updated) : Number.NaN
+	return {
+		name: typeof data.name === "string" ? data.name : "",
+		description: typeof data.description === "string" ? data.description : "",
+		updated: Number.isFinite(updated) ? updated : 0,
+		body: collapseWhitespace(body),
+	}
 }
 
 export interface HistorySearchOptions {
@@ -234,14 +259,12 @@ export class HistorySearcher {
 	private readonly sessionsDir: string
 	private readonly taskGroupsDir: string
 	private readonly taskGroupStore: TaskGroupStore
-	private readonly notebookStore: NotebookStore
 	private readonly fileCache: ParsedFileCache
 
 	constructor(options: HistorySearchOptions = {}) {
 		this.sessionsDir = options.sessionsDir ?? resolveSessionDataDir()
 		this.taskGroupsDir = options.taskGroupsDir ?? taskGroupsRootDir()
 		this.taskGroupStore = new TaskGroupStore(this.taskGroupsDir)
-		this.notebookStore = new NotebookStore(this.taskGroupsDir)
 		this.fileCache = new ParsedFileCache(
 			options.maxCacheEntries ?? MAX_CACHE_ENTRIES,
 			options.maxCacheBytes ?? MAX_CACHE_BYTES,
@@ -292,42 +315,66 @@ export class HistorySearcher {
 		const bodyHits: HistorySearchHit[] = []
 		let scanned = 0
 		for (const group of await this.taskGroupStore.listGroups()) {
-			for (const note of await this.notebookStore.listNotes(group.id)) {
+			if (isCancelled() || (metaHits.length >= limit && bodyHits.length >= limit)) break
+			// Enumerate with readdir + stat only: name, description and body all
+			// come from the bounded parse cache below, and search needs no reader
+			// counts, so a cancelled scan never reads a note file or the group's
+			// activity log.
+			const paths = taskGroupPaths(this.taskGroupsDir, group.id)
+			const names = await fs.readdir(paths.notebookDir).catch(() => [] as string[])
+			const notes: { slug: string; path: string; mtimeMs: number }[] = []
+			for (const name of names) {
+				if (!name.endsWith(".md")) continue
+				const slug = name.slice(0, -".md".length)
+				let filePath: string
+				try {
+					filePath = paths.noteFile(slug)
+				} catch {
+					continue
+				}
+				const stat = await fs.stat(filePath).catch(() => undefined)
+				if (stat?.isFile()) notes.push({ slug, path: filePath, mtimeMs: stat.mtimeMs })
+				if (notes.length > 0 && notes.length % FILES_PER_YIELD === 0) await yieldToEventLoop()
+			}
+			// Newest first, so a hit limit keeps the most recent matches.
+			notes.sort((a, b) => b.mtimeMs - a.mtimeMs)
+			for (const note of notes) {
 				if (isCancelled()) {
 					return [...metaHits, ...bodyHits]
 				}
 				if (++scanned % FILES_PER_YIELD === 0) await yieldToEventLoop()
-				// Name and description come from the note meta already in memory,
-				// so they stay cheap to check even once the body budget is spent —
-				// a late name match isn't crowded out by earlier body hits.
-				const metaSnippet = noteMetaSnippet(note, pattern)
+				// Files over the per-file cap are stat'ed but never read (the
+				// cache returns no value for them).
+				const parsed = await this.fileCache.read(note.path, parseSearchableNote)
+				const value = parsed?.value
+				if (!value) continue
+				const title = value.name || note.slug
+				// Same updatedAt rule as NotebookStore.readNoteMeta: the frontmatter
+				// timestamp wins unless the file mtime is newer (hand edits).
+				const ts = parsed.mtimeMs > value.updated + 2000 ? parsed.mtimeMs : value.updated || parsed.mtimeMs
+				const metaSnippet = noteMetaSnippet({ name: title, description: value.description }, pattern)
 				if (metaSnippet !== undefined) {
 					if (metaHits.length < limit) {
 						metaHits.push({
 							kind: "note",
 							id: note.slug,
-							title: note.name,
+							title,
 							snippet: metaSnippet,
-							ts: note.updatedAt,
+							ts,
 							taskGroupId: group.id,
 						})
 					}
 					continue
 				}
 				if (metaHits.length + bodyHits.length >= limit) continue
-				const file = await this.fileCache.read(taskGroupPaths(this.taskGroupsDir, group.id).noteFile(note.slug), (raw) =>
-					collapseWhitespace(parseYamlFrontmatter(raw).body),
-				)
-				const body = file?.value
-				if (!body) continue
-				const matchIndex = body.search(pattern)
+				const matchIndex = value.body.search(pattern)
 				if (matchIndex === -1) continue
 				bodyHits.push({
 					kind: "note",
 					id: note.slug,
-					title: note.name,
-					snippet: searchSnippet(body, matchIndex),
-					ts: note.updatedAt,
+					title,
+					snippet: searchSnippet(value.body, matchIndex),
+					ts,
 					taskGroupId: group.id,
 				})
 			}
