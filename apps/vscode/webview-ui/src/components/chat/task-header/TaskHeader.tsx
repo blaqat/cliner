@@ -13,6 +13,7 @@ import { Breadcrumb, type Crumb } from "./Breadcrumb"
 import { HeaderIconButton } from "./HeaderIconButton"
 import { SubagentPanelButton } from "./SubagentPanel"
 import TaskWorkingDirectoryBadge from "./TaskWorkingDirectoryBadge"
+import { ThreadTagRow } from "./ThreadTagRow"
 
 const IS_DEV = process.env.IS_DEV === "true"
 
@@ -39,10 +40,10 @@ const MENU_ITEM_CLASS =
  * threads, then the renamable current title) and codicon actions — subagents,
  * settle, delete, close — with less frequent actions behind "…". The first
  * message itself is the first bubble of the chat. Context, tokens and cost live
- * in the composer.
+ * in the composer. The thread's tags sit on a compact line below.
  */
 const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
-	const { currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
+	const { currentBranch, currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
 		useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
@@ -212,6 +213,10 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					/>
 				</div>
 			</div>
+			{/* Subagent threads are read-only, so they get no tag row. */}
+			{currentTaskItem && !currentTaskItem.isSubagent && (
+				<ThreadTagRow currentBranch={currentBranch} item={currentTaskItem} />
+			)}
 		</div>
 	)
 }

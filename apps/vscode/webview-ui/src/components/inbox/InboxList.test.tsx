@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import InboxList from "./InboxList"
 
@@ -311,3 +311,52 @@ describe("InboxList task groups", () => {
 function isAfter(node: Element, other: Element): boolean {
 	return !!(other.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
 }
+
+describe("InboxList thread tags", () => {
+	beforeEach(() => {
+		mocks.state = {
+			taskHistory: [
+				item("tagged", NOW - 60_000, {
+					task: "Tagged thread",
+					tags: [
+						{ kind: "ticket", value: "PROJ-482", source: "auto" },
+						{ kind: "branch", value: "feat/export", source: "user" },
+						{ kind: "label", value: "invoices", source: "user" },
+						{ kind: "label", value: "backend", source: "user" },
+					],
+				}),
+				item("plain", NOW - 120_000, { task: "Plain thread" }),
+				item("member", NOW - 30_000, {
+					taskGroupId: "tg",
+					task: "Member thread",
+					tags: [{ kind: "label", value: "spike", source: "user" }],
+				}),
+			],
+			sessionStatuses: {},
+			taskGroups: [{ id: "tg", title: "Group", tags: [], createdAt: 0, updatedAt: 0, noteCount: 0 }],
+		}
+	})
+
+	it("shows up to two tag chips plus +N on a thread row, and none on an untagged row", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const [tagged, plain] = screen.getAllByTestId("inbox-row")
+		const chips = within(tagged).getAllByTestId("task-tag-chip")
+		expect(chips.map((chip) => chip.textContent)).toEqual(["PROJ-482", "feat/export"])
+		const overflow = within(tagged).getByTestId("row-tag-overflow")
+		expect(overflow).toHaveTextContent("+2")
+		expect(overflow).toHaveAttribute("title", "invoices, backend")
+		// Tags share the activity line, so the row keeps its fixed height.
+		expect(within(tagged).getByTestId("inbox-row-detail")).toHaveTextContent("Done")
+		expect(tagged).toHaveClass("h-11")
+		expect(within(plain).queryByTestId("task-tag-chip")).toBeNull()
+	})
+
+	it("shows tags on expanded task member rows", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Group" }))
+
+		const members = screen.getByTestId("inbox-task-group-members")
+		expect(within(members).getByTestId("task-tag-chip")).toHaveTextContent("spike")
+	})
+})

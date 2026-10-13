@@ -1,3 +1,4 @@
+import type { TaskTag } from "@shared/task-groups"
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
@@ -51,6 +52,30 @@ interface InboxRowViewProps {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
+/** Most tag chips a row shows before folding the rest into "+N". */
+const ROW_TAG_LIMIT = 2
+
+/** A row's first tags as small chips, the rest as "+N" (all of them in its tooltip). */
+const RowTagChips = ({ tags }: { tags: readonly TaskTag[] }) => {
+	if (!tags.length) return null
+	const hidden = tags.slice(ROW_TAG_LIMIT)
+	return (
+		<>
+			{tags.slice(0, ROW_TAG_LIMIT).map((tag) => (
+				<TaskTagChip className="max-w-24" key={`${tag.kind}:${tag.value}`} kind={tag.kind} value={tag.value} />
+			))}
+			{hidden.length > 0 && (
+				<span
+					className="shrink-0 text-[10.5px] text-description"
+					data-testid="row-tag-overflow"
+					title={hidden.map((tag) => tag.value).join(", ")}>
+					+{hidden.length}
+				</span>
+			)}
+		</>
+	)
+}
+
 const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	const {
 		item,
@@ -98,14 +123,17 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 			</div>
 			<div className="min-w-0">
 				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
-				<div
-					className={cn(
-						"truncate text-xs",
-						status === "running" && !settled
-							? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description"
-							: "text-description",
-					)}>
-					{activity}
+				<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs" data-testid="inbox-row-detail">
+					<RowTagChips tags={item.tags ?? []} />
+					<span
+						className={cn(
+							"min-w-0 truncate",
+							status === "running" && !settled
+								? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description"
+								: "text-description",
+						)}>
+						{activity}
+					</span>
 				</div>
 			</div>
 			<div className="flex items-center gap-2">
@@ -216,9 +244,7 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						<span className="ph-no-capture truncate font-medium">{group.title}</span>
 					</div>
 					<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs text-description">
-						{group.tags.map((tag) => (
-							<TaskTagChip key={`${tag.kind}:${tag.value}`} kind={tag.kind} value={tag.value} />
-						))}
+						<RowTagChips tags={group.tags} />
 						<span className="shrink-0 whitespace-nowrap">
 							{group.tags.length > 0 && "· "}
 							{plural(members.length, "thread")}
