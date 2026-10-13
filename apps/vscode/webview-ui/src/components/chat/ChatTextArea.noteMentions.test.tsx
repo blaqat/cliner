@@ -189,6 +189,15 @@ describe("ChatTextArea #note mentions", () => {
 		expect(mocks.getTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
 	})
 
+	it("uses an open thread's own task over a leftover pill pick", async () => {
+		mocks.state.currentTaskItem = { id: "t2", ts: 1, task: "Loose" }
+		act(() => setComposerTaskGroup("g1"))
+		const textarea = await renderInThread()
+		await type(textarea, "#")
+		expect(screen.queryByTestId("note-mention-menu")).not.toBeInTheDocument()
+		expect(mocks.getTaskGroup).not.toHaveBeenCalled()
+	})
+
 	it("does not select a note on Enter/Tab/arrows while IME composing", async () => {
 		const textarea = await renderInThread()
 		await type(textarea, "#")

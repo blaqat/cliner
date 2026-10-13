@@ -347,9 +347,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
 		// `#note` mentions: the task this composer's thread (or task page) belongs to.
-		const noteTaskGroupId = useResolvedComposerTaskGroup(
-			currentTaskItem ? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId : undefined,
-		)
+		// An open thread's notes are the ones its mentions expand against, even when
+		// it's in no task; the page/pill selection only applies to new threads.
+		const composerTaskGroupId = useResolvedComposerTaskGroup()
+		const noteTaskGroupId = currentTaskItem
+			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
+			: composerTaskGroupId
 		const noteMention = useMemo(
 			() => (noteTaskGroupId ? findNoteMention(inputValue, cursorPosition) : undefined),
 			[noteTaskGroupId, inputValue, cursorPosition],

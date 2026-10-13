@@ -324,6 +324,7 @@ export class HistorySearcher {
 			const names = await fs.readdir(paths.notebookDir).catch(() => [] as string[])
 			const notes: { slug: string; path: string; mtimeMs: number }[] = []
 			for (const name of names) {
+				if (isCancelled()) return [...metaHits, ...bodyHits]
 				if (!name.endsWith(".md")) continue
 				const slug = name.slice(0, -".md".length)
 				let filePath: string
