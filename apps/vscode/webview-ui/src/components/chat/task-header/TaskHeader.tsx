@@ -1,15 +1,16 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
-import React, { useCallback, useEffect, useRef, useState } from "react"
-import type { LineageRow } from "@/components/chat/chat-view/utils/threadUtils"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
 import Thumbnails from "@/components/common/Thumbnails"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
-import { toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { getEnvironmentColor } from "@/utils/environmentColors"
+import { Breadcrumb, type Crumb } from "./Breadcrumb"
 import { HeaderIconButton } from "./HeaderIconButton"
 import { highlightText } from "./Highlights"
 import { SubagentPanelButton } from "./SubagentPanel"
@@ -23,6 +24,8 @@ interface TaskHeaderProps {
 	onClose: () => void
 	/** Opens a transcript-only subagent from the panel by scrolling to its status row. */
 	onOpenSubagentPreview?: (row: LineageRow) => void
+	/** Opens the task (group) page from its crumb. */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 /** Title for the header: the thread's title, else the first user message. */
@@ -34,26 +37,74 @@ const MENU_ITEM_CLASS =
 	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
 
 /**
- * One compact row: the thread title (click to expand the full first message
- * with its attachments) and
- * codicon actions — subagents, settle, delete, close — with less frequent
- * actions behind "…". Context, tokens and cost live in the composer.
+ * One compact row: the breadcrumb path to this thread (home, task, ancestor
+ * threads, then the renamable current title) and codicon actions — subagents,
+ * settle, delete, close — with less frequent actions, including the full first
+ * message, behind "…". Context, tokens and cost live in the composer.
  */
-const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview }) => {
-	const { currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory } = useExtensionState()
+const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
+	const { currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
+		useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
 	const [expanded, setExpanded] = useState(false)
+	// Shown until the saved title comes back through history.
+	const [pendingTitle, setPendingTitle] = useState<string>()
 	const rootRef = useRef<HTMLDivElement>(null)
-	const titleRef = useRef<HTMLButtonElement>(null)
+	const moreRef = useRef<HTMLButtonElement>(null)
 	const panelRef = useRef<HTMLDivElement>(null)
 
 	const taskId = currentTaskItem?.id
 	const settled = !!currentTaskItem?.isSettled
-	const title = headerTitle(currentTaskItem?.task, task.text)
+	const savedTitle = currentTaskItem?.title
+	const title = headerTitle(
+		pendingTitle ?? savedTitle,
+		(currentTaskItem?.task && threadTitle({ ...currentTaskItem, title: undefined })) || task.text,
+	)
 	const imageCount = task.images?.length ?? 0
 	const fileCount = task.files?.length ?? 0
 	const backgroundRunning = countBackgroundRunning(sessionStatuses, taskId, taskHistory)
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the pending title clears once the saved one (or the thread) changes
+	useEffect(() => setPendingTitle(undefined), [taskId, savedTitle])
+
+	const crumbs = useMemo((): Crumb[] => {
+		const path = buildThreadPath(currentTaskItem, taskHistory ?? [])
+		const ancestors = path.threads.slice(0, -1)
+		const groupId = path.taskGroupId
+		return [
+			{ id: "home", kind: "home", label: "Home", onSelect: onClose },
+			...(groupId
+				? [
+						{
+							id: `task:${groupId}`,
+							kind: "task" as const,
+							label: taskGroups?.find((group) => group.id === groupId)?.title ?? "Task",
+							onSelect: () => onOpenTaskGroup?.(groupId),
+						},
+					]
+				: []),
+			...ancestors.map((thread) => ({
+				id: thread.id,
+				kind: "thread" as const,
+				label: thread.title,
+				sub: thread.sub,
+				onSelect: () => void openTask(thread.id),
+			})),
+			{ id: taskId ?? "current", kind: "thread", label: title, sub: !!currentTaskItem?.parentTaskId },
+		]
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup])
+
+	const rename = useCallback(
+		(next: string) => {
+			if (!taskId) return
+			setPendingTitle(next)
+			void renameTask(taskId, next).then((ok) => {
+				if (!ok) setPendingTitle(undefined)
+			})
+		},
+		[taskId],
+	)
 
 	// The expanded first message closes on Esc or a click outside the header.
 	useEffect(() => {
@@ -63,7 +114,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 			if (event.key !== "Escape") return
 			event.stopPropagation()
 			setExpanded(false)
-			titleRef.current?.focus()
+			moreRef.current?.focus()
 		}
 		const onPointerDown = (event: PointerEvent) => {
 			if (!rootRef.current?.contains(event.target as Node)) setExpanded(false)
@@ -87,29 +138,10 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 	return (
 		<div className="px-4 pt-2 pb-1" ref={rootRef}>
 			<div
-				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-2 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
+				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-header"
 				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
-				<button
-					aria-controls="task-header-first-message"
-					aria-expanded={expanded}
-					className="ph-no-capture flex min-w-0 flex-1 items-center gap-1 border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-foreground cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-					data-testid="task-header-title"
-					onClick={() => setExpanded((value) => !value)}
-					ref={titleRef}
-					title={expanded ? "Hide first message" : "Show first message"}
-					type="button">
-					<span className="min-w-0 truncate" data-testid="task-header-title-text">
-						{title}
-					</span>
-					<span
-						aria-hidden
-						className={cn(
-							"codicon codicon-chevron-down shrink-0 text-[12px] text-description transition-transform duration-150 motion-reduce:transition-none",
-							expanded && "rotate-180",
-						)}
-					/>
-				</button>
+				<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
 				{(imageCount > 0 || fileCount > 0) && (
 					<span
 						aria-label={`${imageCount + fileCount} attachment${imageCount + fileCount === 1 ? "" : "s"}`}
@@ -148,10 +180,30 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					/>
 					<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 						<PopoverTrigger asChild>
-							<HeaderIconButton icon="ellipsis" label="More actions" />
+							<HeaderIconButton icon="ellipsis" label="More actions" ref={moreRef} />
 						</PopoverTrigger>
 						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
 							<div className="flex flex-col" role="menu">
+								<button
+									aria-controls="task-header-first-message"
+									aria-expanded={expanded}
+									className={MENU_ITEM_CLASS}
+									disabled={!task.text && imageCount + fileCount === 0}
+									onClick={() => {
+										setMenuOpen(false)
+										setExpanded((value) => !value)
+									}}
+									role="menuitem"
+									type="button">
+									<span
+										aria-hidden
+										className={cn(
+											"codicon text-[13px]",
+											expanded ? "codicon-chevron-up" : "codicon-chevron-down",
+										)}
+									/>
+									{expanded ? "Hide first message" : "Show first message"}
+								</button>
 								<button
 									className={MENU_ITEM_CLASS}
 									disabled={!task.text}

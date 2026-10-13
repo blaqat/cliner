@@ -1,5 +1,5 @@
 import { StringRequest } from "@shared/proto/cline/common"
-import { StopSubagentRequest, TaskSettledRequest } from "@shared/proto/cline/task"
+import { RenameTaskRequest, StopSubagentRequest, TaskSettledRequest } from "@shared/proto/cline/task"
 import { TaskServiceClient } from "@/services/grpc-client"
 
 /** Focuses a task (history or live session) without stopping the one that was focused. */
@@ -7,6 +7,17 @@ export function openTask(taskId: string): Promise<void> {
 	return TaskServiceClient.showTaskWithId(StringRequest.create({ value: taskId })).then(
 		() => undefined,
 		(error) => console.error("Error showing task:", error),
+	)
+}
+
+/** Sets a thread's user-facing title; an empty title restores the first-message default. Resolves false on failure. */
+export function renameTask(taskId: string, title: string): Promise<boolean> {
+	return TaskServiceClient.renameTask(RenameTaskRequest.create({ taskId, title })).then(
+		() => true,
+		(error) => {
+			console.error("Failed to rename task:", error)
+			return false
+		},
 	)
 }
 

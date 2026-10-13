@@ -17,6 +17,7 @@ import { ClineMessageModelInfo } from "./messages"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
+import type { TaskGroupSummary } from "./task-groups"
 import { UserInfo } from "./UserInfo"
 // webview will hold state
 export interface ExtensionMessage {
@@ -133,6 +134,10 @@ export interface ExtensionState {
 	environment?: Environment
 	shouldShowAnnouncement: boolean
 	taskHistory: HistoryItem[]
+	/** Task groups ("Tasks" in the UI) with note counts, from ~/.cline/data/task-groups. */
+	taskGroups: TaskGroupSummary[]
+	/** Current git branch of the workspace ("" outside a repo / detached HEAD). */
+	currentBranch?: string
 	telemetrySetting: TelemetrySetting
 	shellIntegrationTimeout: number
 	terminalReuseEnabled?: boolean

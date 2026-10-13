@@ -91,7 +91,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 				<SessionStatusIcon settled={settled} status={status} />
 			</div>
 			<div className="min-w-0">
-				<div className="ph-no-capture truncate text-sm text-foreground">{item.task}</div>
+				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
 				<div
 					className={cn(
 						"truncate text-xs",
@@ -129,7 +129,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 						{time}
 					</span>
 					<button
-						aria-label={settled ? `Unsettle ${item.task}` : `Settle ${item.task}`}
+						aria-label={settled ? `Unsettle ${item.title || item.task}` : `Settle ${item.title || item.task}`}
 						className={cn(
 							"absolute right-0 top-0 flex h-4.5 items-center gap-1 whitespace-nowrap rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[10px] text-button-secondary-foreground",
 							"opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 hover:bg-button-secondary-background-hover motion-reduce:transition-none",

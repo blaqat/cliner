@@ -7,6 +7,7 @@ import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import type { TaskTag } from "@shared/task-groups"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
@@ -66,6 +67,31 @@ function metadataString(metadata: SessionHistoryRecord["metadata"] | undefined, 
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
 }
 
+function metadataStringArray(metadata: SessionHistoryRecord["metadata"] | undefined, key: string): string[] | undefined {
+	const value = metadata?.[key]
+	if (!Array.isArray(value)) {
+		return undefined
+	}
+	return value.filter((entry): entry is string => typeof entry === "string")
+}
+
+function metadataTaskTags(metadata: SessionHistoryRecord["metadata"] | undefined, key: string): TaskTag[] | undefined {
+	const value = metadata?.[key]
+	if (!Array.isArray(value)) {
+		return undefined
+	}
+	return value.filter(
+		(entry): entry is TaskTag =>
+			typeof entry === "object" &&
+			entry !== null &&
+			((entry as TaskTag).kind === "ticket" ||
+				(entry as TaskTag).kind === "branch" ||
+				(entry as TaskTag).kind === "label") &&
+			typeof (entry as TaskTag).value === "string" &&
+			((entry as TaskTag).source === "user" || (entry as TaskTag).source === "auto"),
+	)
+}
+
 function dateStringToTimestamp(value: string | null | undefined): number {
 	if (!value) {
 		return 0
@@ -109,6 +135,12 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
 		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
+		// The user-set thread title persists as "threadTitle": metadata "title"
+		// already carries the first-message task text.
+		threadTitle: item.title ?? "",
+		taskGroupId: item.taskGroupId ?? "",
+		tags: item.tags ?? [],
+		dismissedAutoTags: item.dismissedAutoTags ?? [],
 		legacyTask: item.isLegacy ?? false,
 	}
 }
@@ -228,6 +260,10 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
 		apiSelection: readTaskApiSelection(metadata?.apiSelection),
+		title: metadataString(metadata, "threadTitle"),
+		taskGroupId: metadataString(metadata, "taskGroupId"),
+		tags: metadataTaskTags(metadata, "tags"),
+		dismissedAutoTags: metadataStringArray(metadata, "dismissedAutoTags"),
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
 		isLegacy:
 			metadataBoolean(metadata, "legacyTask") === true || metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -874,6 +910,27 @@ export class SdkTaskHistory {
 		item.isSettled = !item.isSettled
 		item.settledAt = item.isSettled ? Date.now() : undefined
 		await this.updateTaskHistoryItem(item)
+	}
+
+	/** Sets (or clears, when empty) the thread's user-set title. */
+	async renameTask(taskId: string, title: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateTaskHistoryItem({ ...item, title: title.trim() || undefined })
+	}
+
+	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
+	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateTaskHistoryItem({ ...item, tags, dismissedAutoTags })
+	}
+
+	/** Files a thread into a task group (or unfiles it when empty/undefined). */
+	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateTaskHistoryItem({ ...item, taskGroupId: taskGroupId || undefined })
 	}
 
 	async markTaskActive(taskId: string): Promise<void> {

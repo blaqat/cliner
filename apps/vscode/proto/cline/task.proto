@@ -4,6 +4,7 @@ package cline;
 
 import "cline/common.proto";
 import "cline/state.proto";
+import "cline/task_group.proto";
 
 option go_package = "github.com/cline/grpc-go/cline";
 option java_multiple_files = true;
@@ -49,6 +50,10 @@ service TaskService {
   rpc executeQuickWin(ExecuteQuickWinRequest) returns (Empty);
   // Deletes all task history
   rpc deleteAllTaskHistory(EmptyRequest) returns (DeleteAllTaskHistoryCount);
+  // Renames a thread (user-set title; the default stays the first message)
+  rpc renameTask(RenameTaskRequest) returns (Empty);
+  // Replaces a thread's tags and records auto tags the user dismissed
+  rpc setThreadTags(SetThreadTagsRequest) returns (Empty);
 }
 
 // Request message for creating a new task
@@ -60,6 +65,8 @@ message NewTaskRequest {
   optional Settings task_settings = 5;
   // Starts the task without focusing it (home composer "start in background").
   bool run_in_background = 6;
+  // Files the new thread into this task group ("Task" in the UI).
+  optional string task_group_id = 7;
 }
 
 // Request message for toggling task favorite status
@@ -185,4 +192,21 @@ message ExecuteQuickWinRequest {
 // Results returned when deleting all task history
 message DeleteAllTaskHistoryCount {
   int32 tasks_deleted = 1;
+}
+
+// Request for renaming a thread (user-set title; empty clears it back to the
+// first-message default)
+message RenameTaskRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  string title = 3;
+}
+
+// Request for replacing a thread's tags wholesale
+message SetThreadTagsRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  repeated TaskTag tags = 3;
+  // Auto tag values the user removed; prevents re-adding them on later scans.
+  repeated string dismissed_auto_tags = 4;
 }

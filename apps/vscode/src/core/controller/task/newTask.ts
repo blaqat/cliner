@@ -71,6 +71,7 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 
 	const taskId = await controller.initTask(request.text, request.images, request.files, undefined, filteredTaskSettings, {
 		background: request.runInBackground,
+		taskGroupId: request.taskGroupId || undefined,
 	})
 	return String.create({ value: taskId || "" })
 }

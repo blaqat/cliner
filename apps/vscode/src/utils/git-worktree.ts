@@ -264,6 +264,21 @@ export async function deleteWorktree(cwd: string, path: string, force: boolean =
 }
 
 /**
+ * Current branch of the repo containing `cwd` ("" outside a repo or on a
+ * detached HEAD). A lightweight alternative to getAvailableBranches for
+ * callers that only need the checked-out branch.
+ */
+export async function getCurrentBranch(cwd: string): Promise<string> {
+	try {
+		const git = simpleGit(cwd)
+		const branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim()
+		return branch === "HEAD" ? "" : branch
+	} catch (_error) {
+		return ""
+	}
+}
+
+/**
  * Get available branches for creating worktrees
  */
 export async function getAvailableBranches(cwd: string): Promise<BranchInfo> {

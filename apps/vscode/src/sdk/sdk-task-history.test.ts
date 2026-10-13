@@ -125,6 +125,45 @@ describe("SdkTaskHistory", () => {
 		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).apiSelection).toBeUndefined()
 	})
 
+	it("round trips thread title, task group, tags and dismissed auto tags", () => {
+		const item = makeHistoryItem("task", {
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: [
+				{ kind: "ticket", value: "PROJ-482", source: "auto" },
+				{ kind: "branch", value: "feat/x", source: "user" },
+			],
+			dismissedAutoTags: ["OLD-1"],
+		})
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: item.tags,
+			dismissedAutoTags: ["OLD-1"],
+		})
+		// The user-set title must not leak into `task` (the first-message default).
+		expect(result.task).not.toBe("Renamed thread")
+	})
+
+	it("returns undefined task-group fields when unset or malformed", () => {
+		const unset = sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} }))
+		expect(unset.title).toBeUndefined()
+		expect(unset.taskGroupId).toBeUndefined()
+		expect(unset.tags).toBeUndefined()
+		expect(unset.dismissedAutoTags).toBeUndefined()
+
+		const malformed = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("bad", {
+				metadata: { tags: [{ kind: "bogus", value: "x", source: "user" }], taskGroupId: 42 },
+			}),
+		)
+		expect(malformed.tags).toEqual([])
+		expect(malformed.taskGroupId).toBeUndefined()
+	})
+
 	it("serializes selection writes and preserves the latest selection across stale history updates", async () => {
 		const { history, getSession, updateSession } = makeHistory([makeSessionRecord("task-1")])
 		let release!: () => void
