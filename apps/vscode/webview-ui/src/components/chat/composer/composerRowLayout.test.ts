@@ -54,7 +54,9 @@ describe("composerRowLayout", () => {
 
 	it("needs less room on the home composer, which has no meter", () => {
 		const home = { hasUsage: false, hasCost: false, hasCompactNudge: false, hasEffort: true }
-		expect(composerRowLayout(320, home).collapsePickers).toBe(false)
+		// 340, not 320, since the task pill joined the row.
+		expect(composerRowLayout(340, home).collapsePickers).toBe(false)
+		expect(composerRowLayout(340, WIDEST).collapsePickers).toBe(true)
 	})
 
 	it("falls back to the most collapsed row when nothing fits", () => {

@@ -145,6 +145,7 @@ export class SdkInteractionCoordinator {
 
 	async handleRequestToolApproval(request: ToolApprovalRequest): Promise<{ approved: boolean; reason?: string }> {
 		if (request.signal?.aborted) return { approved: false, reason: "Agent run aborted" }
+		if (request.toolName === "notebook") return { approved: true }
 		if (
 			request.policy.requireApproval !== true &&
 			(request.policy.autoApprove === true || this.options.shouldAutoApproveTool?.(request) === true)

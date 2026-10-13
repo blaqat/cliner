@@ -45,9 +45,11 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import { getDistinctId } from "@/services/logging/distinctId"
 import type { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
+import { appendTaskNotebookPrompt } from "./cline-session-factory"
 import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-telemetry"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
+import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
 import { getEffectiveTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 
@@ -83,6 +85,7 @@ export interface VscodeSessionHostOptions {
 	readFileExecutor?: ToolExecutors["readFile"]
 	/** Per-tool approval policies derived from the user's auto-approval settings. */
 	toolPolicies?: Record<string, ToolPolicy>
+	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
 	/** Shared SDK telemetry service owned by SdkController. */
 	telemetry?: ITelemetryService
 	/** Resolves once the applicable remote config is ready for a new SDK session. */
@@ -154,7 +157,9 @@ export class VscodeSessionHost implements SdkSessionHost {
 				? await remoteConfigIntegration.applyToStartSessionInput(input)
 				: input
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
+			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
+				notebook,
 				cwd: inputWithRemoteConfig.config.cwd,
 				getTerminalManager: options.getTerminalManager,
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
@@ -162,11 +167,15 @@ export class VscodeSessionHost implements SdkSessionHost {
 			})
 			const config: ClineCoreStartInput["config"] = {
 				...inputWithRemoteConfig.config,
+				...(notebook
+					? { systemPrompt: appendTaskNotebookPrompt(inputWithRemoteConfig.config.systemPrompt ?? "", notebook.group) }
+					: {}),
 				telemetry: inputWithRemoteConfig.config.telemetry ?? options.telemetry,
 				extraTools: [...(inputWithRemoteConfig.config.extraTools ?? []), ...extraTools],
 			}
 			return {
 				...inputWithRemoteConfig,
+				toolPolicies: { ...inputWithRemoteConfig.toolPolicies, notebook: { enabled: true, autoApprove: true } },
 				source: inputWithRemoteConfig.source ?? "vscode",
 				// The extension runs file hooks through its own hooks adapter
 				// (status chips, hooksEnabled setting, HookFactory discovery).

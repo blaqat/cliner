@@ -35,7 +35,8 @@ import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
-import type { NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import type { NotebookChange, NotebookNoteMeta, TaskGroupSummary, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import { extractTicketTags } from "@shared/ticket-tags"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import chokidar, { type FSWatcher } from "chokidar"
 import {
@@ -46,6 +47,7 @@ import {
 } from "@/core/controller/models/apiProfiles"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
+import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
 import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
 import { StateManager } from "@/core/storage/StateManager"
@@ -118,6 +120,8 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
+import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
 import { NotebookStore } from "./task-groups/notebook-store"
 import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
@@ -510,6 +514,7 @@ export class Controller {
 			},
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
 			requestToolApproval: async (request) =>
 				this.getTaskSessionContext(
 					this.sessions.getSession(request.sessionId)
@@ -665,6 +670,10 @@ export class Controller {
 		})
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
+			resolveNotebookChanges: async (id, messages) =>
+				restoreNotebookChanges(messages, id, await this.notebookStore.findPending(id), () =>
+					this.messageTranslatorState.nextTs(),
+				),
 			beforeDeleteSession: async (id) => {
 				await this.sessionRebuilds.runExclusive(async () => {
 					const context = this.taskSessions.get(id)
@@ -774,6 +783,7 @@ export class Controller {
 			rebuilds: this.sessionRebuilds,
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
+			getMessages: (id) => this.getTaskSessionContext(id).messages,
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -906,7 +916,7 @@ export class Controller {
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			loadInitialMessages: (reader, taskId) => this.sessionHistory.loadInitialMessages(reader, taskId),
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, id) => this.resolveContextMentions(text, id),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
@@ -1336,6 +1346,7 @@ export class Controller {
 
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
 			mcpHub: this.mcpHub,
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
@@ -1614,6 +1625,7 @@ export class Controller {
 			},
 		})
 		const events = new SdkSessionEventCoordinator({
+			onTurnComplete: () => this.emitNotebookChanges(id),
 			sessionId: id,
 			messageTranslatorState: translator,
 			sessions: this.sessions,
@@ -1803,12 +1815,13 @@ export class Controller {
 	 * and does not understand the webview's `@/path` format or special
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
-	private async resolveContextMentions(text: string): Promise<string> {
+	private async resolveContextMentions(text: string, threadId = this.task?.taskId): Promise<string> {
 		const withCommands = await this.resolveSlashCommands(text)
+		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return withCommands
+			return this.resolveTaskNoteMentions(withCommands, threadId)
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -1817,13 +1830,21 @@ export class Controller {
 			const cwd = await this.getWorkspaceRoot()
 			const urlContentFetcher = new UrlContentFetcher()
 			const workspaceManager = await this.ensureWorkspaceManager()
-			const resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
+			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
-			return resolved
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
-			return withCommands
 		}
+		return this.resolveTaskNoteMentions(resolved, threadId)
+	}
+
+	private async resolveTaskNoteMentions(text: string, threadId?: string): Promise<string> {
+		if (!threadId || !text.includes("#")) return text
+		const notebook = await this.resolveTaskNotebook(threadId)
+		if (!notebook) return text
+		return expandTaskNoteMentions(text, (slug) =>
+			notebook.store.readThreadNote(notebook.group.id, notebook.rootThreadId, slug, threadId),
+		)
 	}
 
 	// ---- Workspace root resolution ----
@@ -2146,9 +2167,20 @@ export class Controller {
 			options = { ...options, taskGroupId: undefined }
 		}
 		// A new task is starting — the agent is about to stream.
-		return options
+		const taskId = await (options
 			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
-			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
+			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
+		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
+		return taskId
+	}
+
+	/** Tags the thread with ticket keys/URLs found in a user message (regex only). Best-effort. */
+	private async autoTagThread(taskId: string, text: string | undefined): Promise<void> {
+		try {
+			if (await this.taskHistory.addAutoTicketTags(taskId, text)) await this.postStateToWebview()
+		} catch (error) {
+			Logger.warn(`[SdkController] Failed to auto-tag thread ${taskId}:`, error)
+		}
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
@@ -2331,6 +2363,7 @@ export class Controller {
 
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
 		const turnStateBefore = this.turnStateTracker.get()
@@ -2805,6 +2838,17 @@ export class Controller {
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
 		}
+		const context = this.taskSessions.get(taskId)
+		if (context && this.task?.taskId === taskId) {
+			const pending = await this.notebookStore.findPending(taskId)
+			if (this.task?.taskId === taskId) {
+				const current = context.task.messageStateHandler.getClineMessages()
+				context.messages.replaceMessages(
+					restoreNotebookChanges(current, taskId, pending, () => context.translator.nextTs()),
+				)
+				await this.postStateToWebview()
+			}
+		}
 		return historyItemToTaskResponse(historyItem)
 	}
 
@@ -3140,6 +3184,7 @@ export class Controller {
 					parent.apiSelection ??
 					captureTaskApiSelection(this.stateManager)
 				const config = await this.sessionConfigBuilder.build({ cwd, mode: "plan", apiSelection })
+				config.sessionId = createSessionId()
 				const input = buildStartSessionInput(config, { cwd, mode: "plan" })
 				this.sessions.assertTaskAvailable(taskId)
 				const { startResult } = await this.sessions.startNewSession({
@@ -3217,6 +3262,9 @@ export class Controller {
 			this.taskGroupsWatcher = chokidar.watch(rootDir, { ignoreInitial: true })
 			this.taskGroupsWatcher.on("all", () => {
 				this.taskGroupsSummaryCache = undefined
+				void this.notebookStore
+					.refreshNoteIndexes()
+					.catch((error) => Logger.warn("Failed to refresh notebook index", error))
 				void this.postStateToWebview()
 			})
 		} catch (error) {
@@ -3308,6 +3356,7 @@ export class Controller {
 		const group = await this.taskGroupStore.createGroup(input)
 		if (input.threadId) {
 			await this.taskHistory.setTaskGroup(input.threadId, group.id)
+			this.sessionConfigChanges.handleTaskGroupChanged(input.threadId)
 		}
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
@@ -3331,9 +3380,14 @@ export class Controller {
 			const item = sessionHistoryRecordToHistoryItem(record)
 			if (item.taskGroupId === id) {
 				await this.taskHistory.setTaskGroup(item.id, undefined)
+				this.sessionConfigChanges.handleTaskGroupChanged(item.id)
 			}
 		}
 		await this.taskGroupStore.deleteGroup(id)
+		for (const record of records) {
+			if (sessionHistoryRecordToHistoryItem(record).taskGroupId === id)
+				this.sessionConfigChanges.handleTaskGroupChanged(record.sessionId)
+		}
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
 	}
@@ -3344,6 +3398,7 @@ export class Controller {
 			throw new Error(`Task group not found: ${taskGroupId}`)
 		}
 		await this.taskHistory.setTaskGroup(threadId, taskGroupId || undefined)
+		this.sessionConfigChanges.handleTaskGroupChanged(threadId)
 		await this.postStateToWebview()
 	}
 
@@ -3371,16 +3426,96 @@ export class Controller {
 		items: { slug: string; include: boolean; editedContent?: string }[],
 	): Promise<void> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
-		await this.notebookStore.applyPendingChanges(threadId, items, {
+		const pending = await this.notebookStore.findPending(threadId)
+		const applied = await this.notebookStore.applyPendingChanges(threadId, items, {
 			threadTitle: item?.title ?? item?.task ?? "",
 		})
+		if (pending) await this.finishNotebookChanges(threadId, pending.groupId, "applied", applied)
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
 	}
 
 	async discardNotebookChanges(threadId: string): Promise<void> {
+		const pending = await this.notebookStore.findPending(threadId)
 		await this.notebookStore.discardPendingChanges(threadId)
+		if (pending) await this.finishNotebookChanges(threadId, pending.groupId, "discarded", pending.changes)
 		await this.postStateToWebview()
+	}
+
+	private async resolveTaskNotebook(
+		threadId?: string,
+		metadata?: Record<string, unknown>,
+	): Promise<TaskNotebookContext | undefined> {
+		if (!threadId) return undefined
+		const item = (await this.taskHistory.findHistoryItem(threadId)) ?? {
+			...createHistoryItemFromSession(threadId, ""),
+			taskGroupId: typeof metadata?.taskGroupId === "string" ? metadata.taskGroupId : undefined,
+			parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : undefined,
+			runtimeOwnerTaskId: typeof metadata?.runtimeOwnerTaskId === "string" ? metadata.runtimeOwnerTaskId : undefined,
+			isSubagent: metadata?.isSubagent === true,
+		}
+		const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+		if (!owner.taskGroupId) return undefined
+		const group = await this.taskGroupStore.getGroup(owner.taskGroupId)
+		if (!group) return undefined
+		return {
+			group,
+			threadId,
+			rootThreadId: owner.rootThreadId,
+			store: this.notebookStore,
+			resolveReaderThreadId: (agentId) =>
+				Array.from(this.subagentThreads.values()).find((child) => child.agentId === agentId)?.id ?? threadId,
+		}
+	}
+
+	private async emitNotebookChanges(threadId: string): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		const rootThreadId = item
+			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
+			: threadId
+		const pending = await this.notebookStore.findPending(rootThreadId)
+		if (!pending?.changes.length) return
+		const context = this.getTaskSessionContext(rootThreadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
+		}
+		const message = notebookChangesMessage(
+			{
+				taskGroupId: pending.groupId,
+				threadId: rootThreadId,
+				status: "pending",
+				changes: pending.changes,
+			},
+			context.translator.nextTs(),
+		)
+		context.messages.emitHookMessage(message)
+		await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
+	}
+
+	private async finishNotebookChanges(
+		threadId: string,
+		taskGroupId: string,
+		status: "applied" | "discarded",
+		changes: NotebookChange[],
+	): Promise<void> {
+		const context = this.getTaskSessionContext(threadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(threadId))
+		}
+		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages())
+		const message = notebookChangesMessage(
+			{
+				taskGroupId,
+				threadId,
+				status,
+				changes,
+				...(status === "applied" ? { appliedSlugs: changes.map((change) => change.slug) } : {}),
+			},
+			latest?.ts ?? context.translator.nextTs(),
+		)
+		message.sdkMessageIndex = latest?.sdkMessageIndex
+		context.messages.emitHookMessage(message)
+		await this.taskHistory.saveNotebookChangesMessage(threadId, message)
 	}
 
 	/**
@@ -3456,6 +3591,7 @@ export class Controller {
 			const resolved = await this.resolveContextMentions(text)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
+			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
 			this.messageTranslatorState.reset()
 			this.messageTranslatorState.clearTurnOutcome()
 			this.sessions.assertTaskAvailable(task.taskId)

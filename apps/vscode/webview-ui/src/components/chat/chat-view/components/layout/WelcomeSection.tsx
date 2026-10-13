@@ -11,6 +11,7 @@ import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiC
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import HomeHeader from "@/components/welcome/HomeHeader"
+import { HomeSearchBar } from "@/components/welcome/HomeSearchBar"
 import { SuggestedTasks } from "@/components/welcome/SuggestedTasks"
 import CreateWorktreeModal from "@/components/worktrees/CreateWorktreeModal"
 import { useClineAuth } from "@/context/ClineAuthContext"
@@ -36,6 +37,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 	version,
 	taskHistory,
 	shouldShowQuickWins,
+	onOpenSearch,
+	onOpenTaskGroup,
 }) => {
 	const { lastDismissedInfoBannerVersion, lastDismissedCliBannerVersion, lastDismissedModelBannerVersion, dismissedBanners } =
 		useExtensionState()
@@ -72,6 +75,7 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 		worktreesEnabled,
 		banners,
 		welcomeBanners,
+		taskGroups,
 	} = useExtensionState()
 	const { handleFieldsChange } = useApiConfigurationHandlers()
 	const { isClinePassEnabled, isUsingClinePass, openSubscribePage, switchToClinePassProvider } = useClinePassPromo()
@@ -325,8 +329,11 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 				<HomeHeader shouldShowQuickWins={shouldShowQuickWins} />
 				{!showWhatsNewModal && (
 					<>
+						<HomeSearchBar onOpenSearch={onOpenSearch} />
 						<BannerCarousel banners={activeBanners} />
-						{!shouldShowQuickWins && taskHistory.length > 0 && <InboxList showHistoryView={showHistoryView} />}
+						{!shouldShowQuickWins && (taskHistory.length > 0 || taskGroups?.length > 0) && (
+							<InboxList onOpenTaskGroup={onOpenTaskGroup} showHistoryView={showHistoryView} />
+						)}
 						{/* Quick launch worktree button */}
 						{isGitRepo && worktreesEnabled?.featureFlag && worktreesEnabled?.user && (
 							<div className="flex flex-col items-center gap-3 mt-2 mb-4 px-5">

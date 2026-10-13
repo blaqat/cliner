@@ -69,6 +69,14 @@ async function runBeforeTool(
 }
 
 describe("plan-mode command-guard extension", () => {
+	it("allows notebook reads and staged writes/deletes without command approval", async () => {
+		const extension = createPlanModeCommandGuardExtension();
+		for (const action of ["read", "write", "delete"]) {
+			expect(await runBeforeTool(extension, makeContext("notebook", {
+				action, name: "dev-plan", content: "notes",
+			}))).toBeUndefined();
+		}
+	});
 	it("declares the hooks capability under a stable name", () => {
 		const extension = createPlanModeCommandGuardExtension();
 		expect(extension.name).toBe(PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME);

@@ -14,6 +14,27 @@ vi.mock("@/shared/services/Logger", () => ({
 describe("SdkSessionConfigChangeCoordinator", () => {
 	beforeEach(() => vi.clearAllMocks())
 
+	it("schedules membership changes for the owning thread and rebuilds without moving focus", async () => {
+		const session = makeActiveSession({ isRunning: true })
+		const { coordinator, options, runScheduledRebuild } = makeCoordinator({ activeSession: session })
+		const getSession = vi.fn(() => session)
+		const replaceSession = vi.fn(async (input) => {
+			await input.loadInitialMessages()
+			return { startResult: { sessionId: session.sessionId }, sdkHost: session.sdkHost }
+		})
+		Object.assign(options.sessions, { getSession, replaceSession })
+		coordinator.handleTaskGroupChanged("old-session")
+		expect(options.rebuilds.request).toHaveBeenCalledWith("taskGroup", expect.any(Function), "old-session")
+		expect(replaceSession).not.toHaveBeenCalled()
+		session.isRunning = false
+		await runScheduledRebuild()
+		expect(replaceSession).toHaveBeenCalledWith(
+			expect.objectContaining({ expectedSession: session, disposeReason: "taskGroupChange" }),
+		)
+		expect(options.sessions.replaceActiveSession).not.toHaveBeenCalled()
+		expect(options.loadInitialMessages).toHaveBeenCalledWith(session.sdkHost, "old-session")
+	})
+
 	it("does nothing when a session setting did not change", () => {
 		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
 

@@ -19,6 +19,45 @@ describe("SdkSessionEventCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("emits notebook review after final response and only once across done/ended events", async () => {
+		const { coordinator, options, event } = makeCoordinator({
+			translation: {
+				messages: [{ ts: 1, type: "say", say: "completion_result", text: "Done" }],
+				sessionEnded: false,
+				turnComplete: true,
+			},
+		})
+		const order: string[] = []
+		options.messages.appendAndEmit.mockImplementation(() => order.push("response"))
+		const onTurnComplete = vi.fn(async () => {
+			order.push("notebook")
+		})
+		Object.assign(options, { onTurnComplete })
+		await coordinator.handleSessionEvent(event)
+		await coordinator.handleSessionEvent(event)
+		expect(order.slice(0, 2)).toEqual(["response", "notebook"])
+		expect(onTurnComplete).toHaveBeenCalledOnce()
+	})
+
+	it("settles the old turn before notebook I/O so it cannot mark a queued turn idle", async () => {
+		const { coordinator, options, event } = makeCoordinator({
+			translation: { messages: [], sessionEnded: false, turnComplete: true },
+		})
+		let finishReview: (() => void) | undefined
+		Object.assign(options, {
+			onTurnComplete: () =>
+				new Promise<void>((resolve) => {
+					finishReview = resolve
+				}),
+		})
+		const completion = coordinator.handleSessionEvent(event)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
+		options.sessions.setRunning.mockClear()
+		finishReview?.()
+		await completion
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+	})
+
 	it("translates and emits session messages, then posts state", async () => {
 		const message: ClineMessage = { ts: 1, type: "say", say: "text", text: "hello" }
 		const { coordinator, options, event } = makeCoordinator({

@@ -14,7 +14,9 @@ export function buildToolPolicies(
 	_settings: AutoApprovalSettings,
 	mcpHub?: McpHub,
 ): Record<string, { enabled?: boolean; autoApprove?: boolean }> {
-	const policies: Record<string, { enabled?: boolean; autoApprove?: boolean }> = {}
+	const policies: Record<string, { enabled?: boolean; autoApprove?: boolean }> = {
+		notebook: { enabled: true, autoApprove: true },
+	}
 
 	const set = (tools: string[]) => {
 		for (const tool of tools) {
@@ -46,6 +48,7 @@ export function buildToolPolicies(
  * an SDK session was created before the toggle changed.
  */
 export function isToolAutoApproved(toolName: string, settings: AutoApprovalSettings): boolean {
+	if (toolName === "notebook") return true
 	if (isReadTool(toolName)) {
 		return !!settings.actions.readFiles
 	}

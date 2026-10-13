@@ -8,6 +8,7 @@ import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profile
 import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskTag } from "@shared/task-groups"
+import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
@@ -21,6 +22,8 @@ import {
 import type { MessageIdMinter } from "./message-id-minter"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
+import { readCurrentMessages } from "./session-host"
+import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 export interface TaskUsage {
@@ -32,6 +35,7 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	resolveNotebookChanges?: (taskId: string, messages: ClineMessage[]) => Promise<ClineMessage[]>
 	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
 	sessions: SdkSessionLifecycle
@@ -585,10 +589,34 @@ export class SdkTaskHistory {
 				}
 			}
 		}
-		if (sdkRecord && legacyTask) {
-			return mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
-		}
-		return clineMessages
+		const projectedMessages =
+			sdkRecord && legacyTask
+				? mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
+				: clineMessages
+		let nextId = Math.max(0, ...projectedMessages.map((message) => message.ts))
+		const messages = mergeNotebookChangesMessages(
+			projectedMessages,
+			sdkRecord?.metadata?.notebookChangesMessages,
+			() => this.options.getMinter?.().nextId() ?? ++nextId,
+		)
+		return this.options.resolveNotebookChanges?.(taskId, messages) ?? messages
+	}
+
+	async saveNotebookChangesMessage(taskId: string, message: ClineMessage): Promise<void> {
+		await this.serializeMetadataWrite(taskId, () =>
+			this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (!record) return
+				const metadata = { ...record.metadata }
+				const saved = Array.isArray(metadata.notebookChangesMessages) ? metadata.notebookChangesMessages : []
+				const status = JSON.parse(message.text ?? "{}").status
+				if (message.sdkMessageIndex === undefined)
+					message.sdkMessageIndex = (await readCurrentMessages(host, taskId)).length - 1
+				metadata.notebookChangesMessages = status === "pending" ? [...saved, message] : [...saved.slice(0, -1), message]
+				await host.update(taskId, { metadata })
+			}),
+		)
+		this.invalidateMetadataHistoryCache()
 	}
 
 	/**
@@ -931,6 +959,20 @@ export class SdkTaskHistory {
 		const item = await this.findHistoryItem(taskId)
 		if (!item) return
 		await this.updateTaskHistoryItem({ ...item, taskGroupId: taskGroupId || undefined })
+	}
+
+	/**
+	 * Adds `source: "auto"` ticket tags for ticket keys/URLs in a user message,
+	 * skipping ones already tagged or dismissed. Returns whether tags changed.
+	 */
+	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {
+		const detected = extractTicketTags(text)
+		if (!detected.length) return false
+		const item = await this.findHistoryItem(taskId)
+		const tags = item && mergeAutoTicketTags(item.tags, detected, item.dismissedAutoTags)
+		if (!item || !tags) return false
+		await this.updateTaskHistoryItem({ ...item, tags })
+		return true
 	}
 
 	async markTaskActive(taskId: string): Promise<void> {

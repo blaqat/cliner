@@ -16,6 +16,31 @@ vi.mock("@core/storage/disk", () => ({
 }))
 
 describe("SdkInteractionCoordinator", () => {
+	it("allows notebook staging in Ask mode without posting an approval", async () => {
+		const task = createTaskProxy("root", vi.fn(), vi.fn())
+		const postStateToWebview = vi.fn()
+		const coordinator = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => "root",
+			getMode: () => "plan",
+			postStateToWebview,
+		})
+		for (const action of ["read", "write", "delete"]) {
+			await expect(
+				coordinator.handleRequestToolApproval({
+					agentId: "agent",
+					conversationId: "root",
+					iteration: 1,
+					toolCallId: `note-${action}`,
+					toolName: "notebook",
+					input: { action, name: "plan", content: "Notes" },
+					policy: { autoApprove: false },
+				}),
+			).resolves.toEqual({ approved: true })
+		}
+		expect(postStateToWebview).not.toHaveBeenCalled()
+		expect(task.messageStateHandler.getClineMessages()).toEqual([])
+	})
 	it("emits a tool approval ask and resolves approval from askResponse state", async () => {
 		const task = createTaskProxy("session-123", vi.fn(), vi.fn())
 		const messages = new SdkMessageCoordinator({ getTask: () => task })

@@ -101,6 +101,48 @@ async function childToolNames(
 }
 
 describe("createSessionSpawnTool sub-agent access", () => {
+	it("inherits declared host tools at the requested access level and respects parent disables", async () => {
+		const notebook = {
+			name: "notebook",
+			metadata: { subagentAccess: "read" },
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const writer = {
+			name: "host_writer",
+			metadata: { subagentAccess: "write" },
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const hidden = {
+			name: "host_private",
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const config = makeConfig({
+			mode: "act",
+			extraTools: [notebook, writer, hidden],
+		});
+		const readers = await childToolNames(config, { access: "read" });
+		expect(readers).toContain("notebook");
+		expect(readers).not.toContain("host_writer");
+		expect(readers).not.toContain("host_private");
+		expect(await childToolNames(config, { access: "write" })).toEqual(
+			expect.arrayContaining(["notebook", "host_writer"]),
+		);
+		expect(
+			await childToolNames({ ...config, mode: "plan" }, { access: "write" }),
+		).not.toContain("host_writer");
+		expect(
+			await childToolNames(
+				{ ...config, toolPolicies: { notebook: { enabled: false } } },
+				{ access: "read" },
+			),
+		).not.toContain("notebook");
+		expect(
+			await childToolNames(
+				{ ...config, enableTools: false },
+				{ access: "read" },
+			),
+		).not.toContain("notebook");
+	});
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});

@@ -65,7 +65,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
 	loadInitialMessages: (reader: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, threadId?: string) => Promise<string>
 	isClineManagedProviderActive: () => boolean
 	emitClineAuthError: (task?: string) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
@@ -193,7 +193,7 @@ export class SdkTaskStartCoordinator {
 
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
-				const resolvedTask = await this.options.resolveContextMentions(prompt || "")
+				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId)
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -240,6 +240,7 @@ export class SdkTaskStartCoordinator {
 			})
 
 			const tempManager = await this.options.createTempSessionHost()
+			if (historyItem.taskGroupId) config.sessionId = createSessionId()
 			const initialMessages = await this.options.loadInitialMessages(tempManager, taskId)
 			await tempManager.dispose("readMessages")
 

@@ -61,6 +61,36 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		mockCreateVscodeExtraTools.mockReset().mockResolvedValue([])
 	})
 
+	it("adds the notebook tool context and task prompt only for grouped sessions, including Ask mode", async () => {
+		const notebook = {
+			group: {
+				id: "group",
+				title: "Fix",
+				tags: [{ kind: "ticket", value: "PROJ-1", source: "user" }],
+				createdAt: 1,
+				updatedAt: 1,
+			},
+			threadId: "root",
+			rootThreadId: "root",
+			store: {},
+		}
+		const resolveNotebook = vi.fn().mockResolvedValueOnce(notebook).mockResolvedValueOnce(undefined)
+		const host = await VscodeSessionHost.create({ mcpHub: {} as never, resolveNotebook })
+		await host.start({ ...gitStartInput, mode: "plan" })
+		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ notebook }))
+		expect(mockInnerStart.mock.calls[0][0].config.systemPrompt).toContain(
+			'# Task notebook\n\nThis thread is part of the task "Fix" (PROJ-1).',
+		)
+		expect(mockInnerStart.mock.calls[0][0].toolPolicies.notebook).toEqual({ enabled: true, autoApprove: true })
+		await host.start(gitStartInput)
+		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ notebook: undefined }),
+		)
+		expect(mockInnerStart.mock.calls[1][0].config.systemPrompt).toBe("test")
+		await host.dispose()
+	})
+
 	it("passes shared telemetry to Core and injects it into session config", async () => {
 		const telemetry = makeTelemetry()
 		const host = await VscodeSessionHost.create({ mcpHub: {} as never, telemetry })
