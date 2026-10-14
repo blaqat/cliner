@@ -43,10 +43,15 @@ export interface InboxTaskGroupRow {
 /** A row in the Settled section: a settled thread, or a task whose threads are all settled (or has none). */
 export type InboxSettledEntry = { kind: "thread"; row: InboxRow } | { kind: "group"; row: InboxTaskGroupRow }
 
+/** A row in either inbox section: a thread or a task. */
+export type InboxEntry = InboxSettledEntry
+
 export interface InboxGroups {
-	/** Task groups with unsettled threads, newest activity first. Shown above the unfiled active rows. */
+	/** Task groups with unsettled threads, newest activity first. */
 	groups: InboxTaskGroupRow[]
 	active: InboxRow[]
+	/** Active tasks and threads interleaved by last activity, as the Active section shows them. */
+	activeEntries: InboxEntry[]
 	/** Settled threads and settled tasks, newest activity first. */
 	settled: InboxSettledEntry[]
 	/** All settled entries, including those cut by the settled limit. */
@@ -181,9 +186,16 @@ export function buildInbox(
 		...allGroups.filter(isGroupSettled).map((row) => ({ kind: "group" as const, row })),
 	].sort((a, b) => settledTs(b) - settledTs(a))
 
+	const shownActive = active.slice(0, activeLimit)
+	const activeEntries: InboxEntry[] = [
+		...groups.map((row) => ({ kind: "group" as const, row })),
+		...shownActive.map((row) => ({ kind: "thread" as const, row })),
+	].sort((a, b) => b.row.activityTs - a.row.activityTs)
+
 	return {
 		groups,
-		active: active.slice(0, activeLimit),
+		active: shownActive,
+		activeEntries,
 		settled: settled.slice(0, settledLimit),
 		settledTotal: settled.length,
 		hiddenCount: Math.max(0, active.length - activeLimit),

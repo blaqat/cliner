@@ -327,7 +327,7 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
 	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
 	const [expandedGroups, setExpandedGroups] = useState(readExpandedTaskGroups)
-	const { groups, active, settled, settledTotal, hiddenCount } = useMemo(
+	const { activeEntries, settled, settledTotal, hiddenCount } = useMemo(
 		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit, taskGroups }),
 		[taskHistory, sessionStatuses, subagentCounts, settledLimit, taskGroups],
 	)
@@ -356,7 +356,7 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 		})
 	}, [])
 
-	if (groups.length === 0 && active.length === 0 && settledTotal === 0) {
+	if (activeEntries.length === 0 && settledTotal === 0) {
 		return null
 	}
 
@@ -369,7 +369,7 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 		<div className="shrink-0 px-3" data-testid="inbox-list">
 			<div className={sectionClass}>
 				<span>Active</span>
-				<span className="opacity-70">{groups.length + active.length}</span>
+				<span className="opacity-70">{activeEntries.length}</span>
 				<button
 					aria-label="View all history"
 					className="ml-auto flex items-center gap-0.5 border-0 bg-transparent p-0 text-[10.5px] normal-case tracking-normal text-description hover:text-foreground cursor-pointer"
@@ -379,28 +379,29 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 					<span className="codicon codicon-chevron-right text-[12px]" />
 				</button>
 			</div>
-			{groups.map((row) => (
-				<TaskGroupRowView
-					animateLayout={!reduceMotion}
-					expanded={expandedGroups.has(row.group.id)}
-					key={row.group.id}
-					now={now}
-					onOpen={onOpenTaskGroup}
-					onToggle={() => toggleGroup(row.group.id)}
-					row={row}
-				/>
-			))}
-			{active.length > 0 ? (
-				active.map((row) => (
-					<InboxRowView
-						animateLayout={!reduceMotion}
-						key={row.item.id}
-						now={now}
-						row={row}
-						tags={effectiveThreadTags(row.item, taskHistory, taskGroups)}
-					/>
-				))
-			) : groups.length > 0 ? null : (
+			{activeEntries.length > 0 ? (
+				activeEntries.map((entry) =>
+					entry.kind === "group" ? (
+						<TaskGroupRowView
+							animateLayout={!reduceMotion}
+							expanded={expandedGroups.has(entry.row.group.id)}
+							key={`group:${entry.row.group.id}`}
+							now={now}
+							onOpen={onOpenTaskGroup}
+							onToggle={() => toggleGroup(entry.row.group.id)}
+							row={entry.row}
+						/>
+					) : (
+						<InboxRowView
+							animateLayout={!reduceMotion}
+							key={entry.row.item.id}
+							now={now}
+							row={entry.row}
+							tags={effectiveThreadTags(entry.row.item, taskHistory, taskGroups)}
+						/>
+					),
+				)
+			) : (
 				<div className="px-2 py-1.5 text-xs text-description">Nothing active.</div>
 			)}
 			{settledTotal > 0 && (

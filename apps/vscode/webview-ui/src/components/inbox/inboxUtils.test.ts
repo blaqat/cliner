@@ -387,6 +387,16 @@ describe("buildInbox task groups", () => {
 		expect(groups[0].runningCount).toBe(2)
 	})
 
+	it("interleaves active tasks and threads by last activity instead of pinning tasks on top", () => {
+		const history = [
+			item("newThread", NOW - 1 * MIN),
+			item("member", NOW - 30 * MIN, { taskGroupId: "g" }),
+			item("oldThread", NOW - 60 * MIN),
+		]
+		const { activeEntries } = buildInbox(history, {}, undefined, { taskGroups: [group("g", 0)] })
+		expect(activeEntries.map(settledId)).toEqual(["newThread", "group:g", "oldThread"])
+	})
+
 	it("applies the active limit to unfiled rows only", () => {
 		const history = [item("m", NOW, { taskGroupId: "g" }), item("x", NOW - MIN), item("y", NOW - 2 * MIN)]
 
