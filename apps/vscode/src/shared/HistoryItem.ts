@@ -1,4 +1,5 @@
 import type { TaskApiSelection } from "./api-profiles"
+import type { TaskTag } from "./task-groups"
 
 export type HistoryItem = {
 	id: string
@@ -7,6 +8,7 @@ export type HistoryItem = {
 	task: string
 	tokensIn: number
 	tokensOut: number
+	subagentToolCalls?: number
 	cacheWrites?: number
 	cacheReads?: number
 	totalCost: number
@@ -44,5 +46,13 @@ export type HistoryItem = {
 	 * chat restores it instead of the current global selection.
 	 */
 	apiSelection?: TaskApiSelection
+	/** User-set thread title; when absent the UI falls back to `task` (the first message). */
+	title?: string
+	/** Task group ("Task" in the UI) this thread is filed under. */
+	taskGroupId?: string
+	/** Thread-level tags: auto-detected tickets plus user-added tags. */
+	tags?: TaskTag[]
+	/** Auto tags the user removed; prevents re-adding them on later scans. */
+	dismissedAutoTags?: string[]
 	isLegacy?: boolean
 }

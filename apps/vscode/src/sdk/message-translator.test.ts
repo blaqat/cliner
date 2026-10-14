@@ -3081,6 +3081,27 @@ describe("translateSessionEvent — run_commands bare array/string input (ENG-18
 // ---------------------------------------------------------------------------
 
 describe("sdkToolToClineSayTool — fetch_web_content and skills (S6-39, S6-40)", () => {
+	it.each(["read", "write", "delete"])("preserves notebook %s inputs for the compact tool row", (action) => {
+		const state = new MessageTranslatorState()
+		const { messages } = translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "root",
+					event: {
+						type: "content_start",
+						contentType: "tool",
+						toolName: "notebook",
+						toolCallId: "note-call",
+						input: { action, name: "Dev plan", content: "Private body" },
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+		expect(JSON.parse(messages[0].text ?? "{}")).toMatchObject({ tool: "notebook", action, name: "Dev plan" })
+		expect(messages[0].text).not.toContain("Private body")
+	})
 	it("S6-39: fetch_web_content extracts URL from SDK requests array", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {

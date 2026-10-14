@@ -4,6 +4,7 @@
 // Controller but delegates session lifecycle (initTask, askResponse,
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
+import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
@@ -34,7 +35,18 @@ import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
+import type {
+	HistorySearchHit,
+	HistorySearchThread,
+	NotebookChange,
+	NotebookNoteMeta,
+	TaskGroupSummary,
+	TaskGroupThreadRow,
+	TaskTag,
+} from "@shared/task-groups"
+import { extractTicketTags } from "@shared/ticket-tags"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
+import chokidar, { type FSWatcher } from "chokidar"
 import {
 	captureTaskApiSelection,
 	readApiConfigProfiles,
@@ -43,12 +55,14 @@ import {
 } from "@/core/controller/models/apiProfiles"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
+import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
 import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
 import { StateManager } from "@/core/storage/StateManager"
 import { WorkspaceRootManager } from "@/core/workspace/WorkspaceRootManager"
 import { HostProvider } from "@/hosts/host-provider"
 import { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
+import { openFile as openFileIntegration } from "@/integrations/misc/open-file"
 import { ExtensionRegistryInfo } from "@/registry"
 import { OcaAuthService } from "@/services/auth/oca/OcaAuthService"
 import { UrlContentFetcher } from "@/services/browser/UrlContentFetcher"
@@ -59,6 +73,7 @@ import type { ClineExtensionContext } from "@/shared/cline"
 import { ShowMessageRequest, ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { isClineManagedProvider } from "@/shared/utils/cline"
+import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
@@ -99,7 +114,12 @@ import { SdkSessionHistoryLoader } from "./sdk-session-history-loader"
 import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem, sessionRecordActivityTs } from "./sdk-task-history"
+import {
+	SdkTaskHistory,
+	sessionHistoryRecordToHistoryItem,
+	sessionRecordActivityTs,
+	sessionRecordStartedTs,
+} from "./sdk-task-history"
 import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 import { createVscodeSdkTelemetryHandle, type VscodeSdkTelemetryHandle } from "./sdk-telemetry"
 import { isToolAutoApproved } from "./sdk-tool-policies"
@@ -113,6 +133,12 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
+import { HistorySearcher } from "./task-groups/history-search"
+import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
+import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
+import { NotebookStore } from "./task-groups/notebook-store"
+import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
 import { TurnStateTracker } from "./turn-state-tracker"
@@ -186,6 +212,12 @@ interface TaskSessionContext {
 	mode: "plan" | "act"
 	cancelled: boolean
 	/**
+	 * The task group a new thread was started in. Core persists the session
+	 * record (with its `taskGroupId` metadata) only when the first send lands,
+	 * so until then the synthesized history row reads the group from here.
+	 */
+	taskGroupId?: string
+	/**
 	 * The saved-configuration selection this task was last using (per mode).
 	 * Sessions pin to it so switching chats never rewrites a running chat's
 	 * provider/model without changing the settings defaults.
@@ -214,6 +246,19 @@ interface ClineAuthRetry {
 	 * failed before its session was created.
 	 */
 	hasConversation: boolean
+}
+
+/**
+ * Edits and checkpoint restores start a new session for the same thread; carry
+ * over what the user set on it (name, task, tags) so the replacement keeps them.
+ */
+function threadIdentityMetadata(item: HistoryItem | undefined): Record<string, unknown> {
+	return {
+		...(item?.title ? { threadTitle: item.title } : {}),
+		...(item?.taskGroupId ? { taskGroupId: item.taskGroupId } : {}),
+		...(item?.tags?.length ? { tags: item.tags } : {}),
+		...(item?.dismissedAutoTags?.length ? { dismissedAutoTags: item.dismissedAutoTags } : {}),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +385,26 @@ export class Controller {
 	private userInstructionService?: Promise<UserInstructionConfigService>
 	private userInstructionServiceRoot?: string
 	private isDisposed = false
+
+	// Task-group ("Tasks") storage under ~/.cline/data/task-groups — deliberately
+	// outside data/sessions and data/tasks, which the SDK owns and other Cline
+	// installs share. The watcher refreshes webview state when notes/groups
+	// change on disk (hand edits, or another install writing to ~/.cline).
+	private readonly taskGroupStore = new TaskGroupStore()
+	private readonly notebookStore = new NotebookStore()
+	private readonly historySearcher = new HistorySearcher()
+	// Bumped per search kind on every searchHistory call so an in-flight scan for
+	// a superseded request can notice and return early. Keyed by kind because the
+	// search view runs its notes and messages searches in parallel.
+	private readonly historySearchGenerations = new Map<string, number>()
+	private taskGroupsWatcher?: FSWatcher
+	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
+	private readonly currentBranchWatcher = new CurrentBranchWatcher(() => {
+		void this.refreshCurrentBranch().catch(() => {})
+	})
+	private branchRefresh?: Promise<void>
+	private branchRefreshRequested = false
+	private currentBranchCache?: { cwd: string; branch: string; at: number }
 
 	// Synchronous snapshot of getWorkspaceRoot()'s latest result, for the message
 	// translator (which runs synchronously and relativizes the tool paths shown in
@@ -493,6 +558,7 @@ export class Controller {
 			},
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
 			requestToolApproval: async (request) =>
 				this.getTaskSessionContext(
 					this.sessions.getSession(request.sessionId)
@@ -648,6 +714,10 @@ export class Controller {
 		})
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
+			resolveNotebookChanges: async (id, messages) =>
+				restoreNotebookChanges(messages, id, await this.notebookStore.listPending(id), () =>
+					this.messageTranslatorState.nextTs(),
+				),
 			beforeDeleteSession: async (id) => {
 				await this.sessionRebuilds.runExclusive(async () => {
 					const context = this.taskSessions.get(id)
@@ -680,6 +750,7 @@ export class Controller {
 			// never overlap live-session ids.
 			getMinter: () => this.messageTranslatorState.getMinter(),
 		})
+		void this.ensureTaskGroupsWatcher()
 		this.mode = new SdkModeCoordinator({
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
@@ -756,6 +827,7 @@ export class Controller {
 			rebuilds: this.sessionRebuilds,
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
+			getMessages: (id) => this.getTaskSessionContext(id).messages,
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -888,7 +960,7 @@ export class Controller {
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			loadInitialMessages: (reader, taskId) => this.sessionHistory.loadInitialMessages(reader, taskId),
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, id) => this.resolveContextMentions(text, id),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
@@ -900,6 +972,9 @@ export class Controller {
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
 				this.recordTaskApiSelection(taskId, selection)
+			},
+			recordTaskGroup: (taskId, taskGroupId) => {
+				this.getTaskSessionContext(taskId).taskGroupId = taskGroupId
 			},
 			postStateToWebview: () => this.postStateToWebview(),
 		})
@@ -1318,6 +1393,7 @@ export class Controller {
 
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
 			mcpHub: this.mcpHub,
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
@@ -1392,6 +1468,8 @@ export class Controller {
 		this.taskSessions.clear()
 		await this.sessions.dispose("SdkController.dispose")
 		await this.taskHistory.dispose()
+		await this.taskGroupsWatcher?.close()
+		await this.currentBranchWatcher.dispose()
 		this.mcpHub?.dispose?.()
 		this.messages.dispose()
 		await this.sdkTelemetry.dispose()
@@ -1442,9 +1520,12 @@ export class Controller {
 				id: payload.childSessionId,
 				ts: existing?.ts ?? Date.now(),
 				task: payload.prompt,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
+				tokensIn: existing?.tokensIn ?? 0,
+				tokensOut: existing?.tokensOut ?? 0,
+				totalCost: existing?.totalCost ?? 0,
+				cacheReads: existing?.cacheReads ?? 0,
+				cacheWrites: existing?.cacheWrites ?? 0,
+				subagentToolCalls: existing?.subagentToolCalls ?? 0,
 				isSubagent: true,
 				parentTaskId,
 				runtimeOwnerTaskId: payload.sessionId,
@@ -1484,6 +1565,15 @@ export class Controller {
 		if (!child) return true
 		const context = this.getTaskSessionContext(child.id)
 		const result = translateSessionEvent(event, context.translator, child.agentId)
+		if (event.payload.event.type === "content_start" && event.payload.event.contentType === "tool")
+			child.subagentToolCalls = (child.subagentToolCalls ?? 0) + 1
+		if (result.usage) {
+			child.tokensIn += result.usage.tokensIn
+			child.tokensOut += result.usage.tokensOut
+			child.totalCost = (child.totalCost ?? 0) + (result.usage.totalCost ?? 0)
+			child.cacheReads = (child.cacheReads ?? 0) + (result.usage.cacheReads ?? 0)
+			child.cacheWrites = (child.cacheWrites ?? 0) + (result.usage.cacheWrites ?? 0)
+		}
 		context.messages.appendAndEmit(result.messages, { ...event, payload: { ...event.payload, sessionId: child.id } })
 		if (result.turnComplete) context.turn.set(context.translator.wasErrorSeen() ? "error" : "completed")
 		void this.postStateToWebview()
@@ -1543,7 +1633,14 @@ export class Controller {
 				const child = Array.from(this.subagentThreads?.values() ?? []).find(
 					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
 				)
-				if (child) this.getTaskSessionContext(child.id).messages.appendMessages([{ ...message }])
+				if (child) {
+					message.subagentTaskId = child.id
+					message.subagentName = child.task
+					this.getTaskSessionContext(child.id).messages.appendAndEmit([{ ...message }], {
+						type: "status",
+						payload: { sessionId: child.id, status: "running" },
+					})
+				}
 			},
 			getSessionId: () => id,
 			getMode: () => context.mode,
@@ -1555,19 +1652,19 @@ export class Controller {
 				this.task?.taskId === id
 					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input)
 					: Promise.resolve(),
-			recordApprovedToolMessage: (callId, ts) => {
-				translator.recordApprovedToolMessageTs(callId, ts)
-				for (const child of this.subagentThreads?.values() ?? []) {
-					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
-						this.taskSessions.get(child.id)?.translator.recordApprovedToolMessageTs(callId, ts)
-				}
+			recordApprovedToolMessage: (callId, ts, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordApprovedToolMessageTs(callId, ts)
 			},
-			recordDeniedToolApproval: (callId, name, reason) => {
-				translator.recordDeniedToolApproval(callId, name, reason)
-				for (const child of this.subagentThreads?.values() ?? []) {
-					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) === id)
-						this.taskSessions.get(child.id)?.translator.recordDeniedToolApproval(callId, name, reason)
-				}
+			recordDeniedToolApproval: (callId, name, reason, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordDeniedToolApproval(callId, name, reason)
 				void this.diffEdits.discardPreview(callId)
 			},
 			shouldAutoApproveTool: (request) => {
@@ -1576,6 +1673,7 @@ export class Controller {
 			},
 		})
 		const events = new SdkSessionEventCoordinator({
+			onTurnComplete: () => this.emitNotebookChanges(id),
 			sessionId: id,
 			messageTranslatorState: translator,
 			sessions: this.sessions,
@@ -1647,6 +1745,7 @@ export class Controller {
 			totalCost: 0,
 			modelId: session.startConfig?.modelId ?? taskProxy?.api?.getModel?.().id,
 			cwdOnTaskInitialization: this.lastKnownWorkspaceRoot,
+			taskGroupId: context?.taskGroupId,
 		}
 	}
 
@@ -1765,12 +1864,13 @@ export class Controller {
 	 * and does not understand the webview's `@/path` format or special
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
-	private async resolveContextMentions(text: string): Promise<string> {
+	private async resolveContextMentions(text: string, threadId = this.task?.taskId): Promise<string> {
 		const withCommands = await this.resolveSlashCommands(text)
+		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return withCommands
+			return this.resolveTaskNoteMentions(withCommands, threadId)
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -1779,13 +1879,21 @@ export class Controller {
 			const cwd = await this.getWorkspaceRoot()
 			const urlContentFetcher = new UrlContentFetcher()
 			const workspaceManager = await this.ensureWorkspaceManager()
-			const resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
+			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
-			return resolved
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
-			return withCommands
 		}
+		return this.resolveTaskNoteMentions(resolved, threadId)
+	}
+
+	private async resolveTaskNoteMentions(text: string, threadId?: string): Promise<string> {
+		if (!threadId || !text.includes("#")) return text
+		const notebook = await this.resolveTaskNotebook(threadId)
+		if (!notebook) return text
+		return expandTaskNoteMentions(text, (slug) =>
+			notebook.store.readThreadNote(notebook.group.id, notebook.rootThreadId, slug, threadId),
+		)
 	}
 
 	// ---- Workspace root resolution ----
@@ -1806,12 +1914,14 @@ export class Controller {
 			const workspaceRoot = paths?.find((workspacePath) => workspacePath.trim().length > 0)
 			if (workspaceRoot) {
 				this.lastKnownWorkspaceRoot = workspaceRoot
+				void this.currentBranchWatcher.setRoot(workspaceRoot).catch(() => {})
 				return workspaceRoot
 			}
 		} catch (error) {
 			Logger.warn("[SdkController] Failed to get workspace paths, using the no-workspace fallback:", error)
 		}
 		this.lastKnownWorkspaceRoot = await this.getNoWorkspaceFallback()
+		void this.currentBranchWatcher.setRoot(this.lastKnownWorkspaceRoot).catch(() => {})
 		return this.lastKnownWorkspaceRoot
 	}
 
@@ -2099,13 +2209,29 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean },
+		options?: { background?: boolean; taskGroupId?: string },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
+		// A stale pill pick (group deleted between selection and send) starts unfiled.
+		if (options?.taskGroupId && !(await this.taskGroupStore.getGroup(options.taskGroupId))) {
+			Logger.warn(`[SdkController] initTask: unknown taskGroupId ${options.taskGroupId}, starting unfiled`)
+			options = { ...options, taskGroupId: undefined }
+		}
 		// A new task is starting — the agent is about to stream.
-		return options
+		const taskId = await (options
 			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
-			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
+			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
+		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
+		return taskId
+	}
+
+	/** Tags the thread with ticket keys/URLs found in a user message (regex only). Best-effort. */
+	private async autoTagThread(taskId: string, text: string | undefined): Promise<void> {
+		try {
+			if (await this.taskHistory.addAutoTicketTags(taskId, text)) await this.postStateToWebview()
+		} catch (error) {
+			Logger.warn(`[SdkController] Failed to auto-tag thread ${taskId}:`, error)
+		}
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
@@ -2211,6 +2337,36 @@ export class Controller {
 	 */
 	async askResponse(prompt?: string, images?: string[], files?: string[], decisionId?: string): Promise<void> {
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
+		const ownerInteractions = ownerId ? this.taskSessions?.get(ownerId)?.interactions : undefined
+		const childDecision = ownerInteractions?.getPendingDecisions?.().find((pending) => {
+			if (decisionId ? pending.id !== decisionId : pending.id !== ownerInteractions.getPendingDecision()?.id) return false
+			return Array.from(this.subagentThreads?.values() ?? []).some(
+				(item) =>
+					(item.runtimeOwnerTaskId ?? item.parentTaskId) === ownerId &&
+					item.agentId === pending.agentId &&
+					(!child || item.id === child.id || item.parentTaskId === child.id),
+			)
+		})
+		const decisionResponseType = this.task?.taskState?.askResponse
+		if (
+			childDecision &&
+			(childDecision.kind === "question"
+				? decisionResponseType === "messageResponse"
+				: decisionResponseType === "yesButtonClicked" || decisionResponseType === "noButtonClicked")
+		) {
+			const responseType = decisionResponseType
+			if (
+				childDecision.kind === "approval" &&
+				(responseType === "yesButtonClicked" || responseType === "noButtonClicked")
+			) {
+				ownerInteractions!.resolvePendingToolApproval(prompt, responseType, images, files, childDecision.id)
+			} else if (childDecision.kind === "question" && responseType === "messageResponse") {
+				ownerInteractions!.resolvePendingAskQuestion(prompt, childDecision.id)
+			}
+			await this.postStateToWebview()
+			return
+		}
 		if (child) {
 			const parent = this.taskSessions.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
 			const decision = parent?.interactions.getPendingDecision(child.agentId ?? "")
@@ -2258,6 +2414,7 @@ export class Controller {
 
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
 		const turnStateBefore = this.turnStateTracker.get()
@@ -2389,6 +2546,7 @@ export class Controller {
 					apiSelection: getSessionApiSnapshot(config)?.selection,
 					title: historyTitle,
 					modelId: config.modelId,
+					...threadIdentityMetadata(historyItem),
 					...(checkpointRunCount
 						? { checkpoint: createRestoredCheckpointMetadata(sessionRecord, checkpointRunCount) }
 						: {}),
@@ -2515,6 +2673,7 @@ export class Controller {
 			return
 		}
 
+		const historyItem = config ? await this.taskHistory.findHistoryItem(currentTask.taskId).catch(() => undefined) : undefined
 		const startInput = config
 			? {
 					...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
@@ -2522,6 +2681,7 @@ export class Controller {
 						apiSelection: getSessionApiSnapshot(config)?.selection,
 						title: historyTitle,
 						modelId: config.modelId,
+						...threadIdentityMetadata(historyItem),
 					},
 				}
 			: undefined
@@ -2731,6 +2891,17 @@ export class Controller {
 		const historyItem = await this.taskControl.showTaskWithId(taskId)
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
+		}
+		const context = this.taskSessions.get(taskId)
+		if (context && this.task?.taskId === taskId) {
+			const pending = await this.notebookStore.listPending(taskId)
+			if (this.task?.taskId === taskId) {
+				const current = context.task.messageStateHandler.getClineMessages()
+				context.messages.replaceMessages(
+					restoreNotebookChanges(current, taskId, pending, () => context.translator.nextTs()),
+				)
+				await this.postStateToWebview()
+			}
 		}
 		return historyItemToTaskResponse(historyItem)
 	}
@@ -3067,6 +3238,7 @@ export class Controller {
 					parent.apiSelection ??
 					captureTaskApiSelection(this.stateManager)
 				const config = await this.sessionConfigBuilder.build({ cwd, mode: "plan", apiSelection })
+				config.sessionId = createSessionId()
 				const input = buildStartSessionInput(config, { cwd, mode: "plan" })
 				this.sessions.assertTaskAvailable(taskId)
 				const { startResult } = await this.sessions.startNewSession({
@@ -3078,6 +3250,8 @@ export class Controller {
 						taskMode: "plan",
 						parentTaskId: taskId,
 						forkedAtTs: messageTs,
+						// Asides stay in their parent's task group.
+						taskGroupId: parent.taskGroupId ?? "",
 					},
 				})
 				newId = startResult.sessionId
@@ -3086,6 +3260,7 @@ export class Controller {
 					apiSelection,
 					parentTaskId: taskId,
 					forkedAtTs: messageTs,
+					taskGroupId: parent.taskGroupId,
 				}
 				await this.taskHistory.updateTaskHistoryItem(item)
 				const context = this.getTaskSessionContext(newId)
@@ -3109,6 +3284,365 @@ export class Controller {
 	async toggleTaskSettled(taskId: string): Promise<void> {
 		await this.taskHistory.toggleTaskSettled(taskId)
 		await this.postStateToWebview()
+	}
+
+	/** Sets (or clears, when empty) the thread's user-set title. */
+	async renameTask(taskId: string, title: string): Promise<void> {
+		await this.taskHistory.renameTask(taskId, title)
+		await this.postStateToWebview()
+	}
+
+	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
+	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
+		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
+		await this.postStateToWebview()
+	}
+
+	// ---- Task groups ----
+
+	/**
+	 * Watch ~/.cline/data/task-groups so on-disk changes — hand-edited notes or
+	 * writes from another Cline install sharing ~/.cline — refresh webview
+	 * state (taskGroups list, note chips) the same way the user-instruction
+	 * watcher picks up .clinerules edits.
+	 */
+	private async ensureTaskGroupsWatcher(): Promise<void> {
+		if (this.isDisposed || this.taskGroupsWatcher) {
+			return
+		}
+		try {
+			const rootDir = taskGroupsRootDir()
+			await fs.mkdir(rootDir, { recursive: true })
+			this.taskGroupsWatcher = chokidar.watch(rootDir, { ignoreInitial: true })
+			this.taskGroupsWatcher.on("all", () => {
+				this.taskGroupsSummaryCache = undefined
+				void this.notebookStore
+					.refreshNoteIndexes()
+					.catch((error) => Logger.warn("Failed to refresh notebook index", error))
+				void this.postStateToWebview()
+			})
+		} catch (error) {
+			Logger.warn("[SdkController] Failed to watch task-groups dir:", error)
+		}
+	}
+
+	/** Group summaries for ExtensionState, cached briefly — state posts run on a 50ms debounce. */
+	async listTaskGroups(): Promise<TaskGroupSummary[]> {
+		const cached = this.taskGroupsSummaryCache
+		if (cached && Date.now() - cached.at < 2000) {
+			return cached.summaries
+		}
+		const summaries = await this.taskGroupStore.listGroupSummaries()
+		this.taskGroupsSummaryCache = { summaries, at: Date.now() }
+		return summaries
+	}
+
+	/** Focus and HEAD events bypass the short state-post cache and post only changes. */
+	async refreshCurrentBranch(): Promise<void> {
+		if (this.isDisposed) return
+		if (this.branchRefresh) {
+			this.branchRefreshRequested = true
+			return this.branchRefresh
+		}
+		const refresh = (async () => {
+			do {
+				this.branchRefreshRequested = false
+				const cwd = await this.getWorkspaceRoot()
+				const previous = this.currentBranchCache
+				const branch = await getCurrentBranch(cwd)
+				if (this.isDisposed) return
+				this.currentBranchCache = { cwd, branch, at: Date.now() }
+				if (previous?.cwd !== cwd || previous?.branch !== branch) await this.postStateToWebview()
+			} while (this.branchRefreshRequested && !this.isDisposed)
+		})()
+		this.branchRefresh = refresh
+		try {
+			await refresh
+		} finally {
+			if (this.branchRefresh === refresh) this.branchRefresh = undefined
+		}
+	}
+
+	/**
+	 * Current git branch for ExtensionState, cached briefly to keep state posts
+	 * cheap. Uses the last-known workspace root snapshot rather than awaiting
+	 * the host — fine for the "link current branch" hint, which only matters
+	 * when a real workspace is open.
+	 */
+	private async resolveCurrentBranch(): Promise<string | undefined> {
+		const cwd = this.lastKnownWorkspaceRoot
+		if (!cwd) {
+			return undefined
+		}
+		const cached = this.currentBranchCache
+		if (cached && cached.cwd === cwd && Date.now() - cached.at < 5000) {
+			return cached.branch || undefined
+		}
+		const branch = await getCurrentBranch(cwd)
+		this.currentBranchCache = { cwd, branch, at: Date.now() }
+		return branch || undefined
+	}
+
+	/**
+	 * The effective group of a thread: stored `taskGroupId` for normal threads
+	 * and asides; subagents belong to their root thread's group (derived, never
+	 * stored on the subagent record).
+	 */
+	private effectiveTaskGroupId(item: HistoryItem, byId: Map<string, HistoryItem>): string | undefined {
+		let current: HistoryItem | undefined = item
+		const seen = new Set<string>()
+		while (current && !seen.has(current.id)) {
+			seen.add(current.id)
+			if (!current.isSubagent) {
+				return current.taskGroupId
+			}
+			current = byId.get(current.runtimeOwnerTaskId ?? current.parentTaskId ?? "")
+		}
+		return undefined
+	}
+
+	/** Group detail: summary + note metas + member threads (the webview orders the timeline). */
+	async getTaskGroup(
+		id: string,
+	): Promise<{ group: TaskGroupSummary; notes: NotebookNoteMeta[]; threads: TaskGroupThreadRow[] } | undefined> {
+		const [group, notes, activity] = await Promise.all([
+			this.taskGroupStore.getGroup(id),
+			this.notebookStore.listNotes(id),
+			this.notebookStore.summarizeActivity(id),
+		])
+		if (!group) {
+			return undefined
+		}
+		const records = await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })
+		const startedTs = new Map(records.map((record) => [record.sessionId, sessionRecordStartedTs(record)]))
+		const historyItems = records.map(sessionHistoryRecordToHistoryItem)
+		const byId = new Map(historyItems.map((item) => [item.id, item]))
+		const threads: TaskGroupThreadRow[] = historyItems
+			.filter((item) => this.effectiveTaskGroupId(item, byId) === id)
+			.map((item) => ({
+				threadId: item.id,
+				title: item.title,
+				task: item.task,
+				ts: item.ts,
+				startedTs: startedTs.get(item.id) ?? item.ts,
+				parentTaskId: item.parentTaskId,
+				isSubagent: item.isSubagent ?? false,
+				read: activity.get(item.id)?.read ?? [],
+				wrote: activity.get(item.id)?.wrote ?? [],
+			}))
+		return { group: { ...group, noteCount: notes.length }, notes, threads }
+	}
+
+	async createTaskGroup(input: { title: string; tags: TaskTag[]; threadId?: string }): Promise<string> {
+		const group = await this.taskGroupStore.createGroup(input)
+		if (input.threadId) {
+			await this.taskHistory.setTaskGroup(input.threadId, group.id)
+			this.sessionConfigChanges.handleTaskGroupChanged(input.threadId)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return group.id
+	}
+
+	async updateTaskGroup(id: string, update: { title?: string; tags?: TaskTag[] }): Promise<TaskGroupSummary> {
+		const group = await this.taskGroupStore.updateGroup(id, update)
+		if (!group) {
+			throw new Error(`Task group not found: ${id}`)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return { ...group, noteCount: await this.taskGroupStore.noteCount(id) }
+	}
+
+	/** Deleting a task unfiles its threads; it never deletes threads. */
+	async deleteTaskGroup(id: string): Promise<void> {
+		const records = await this.taskHistory.listHistory({ hydrate: false })
+		for (const record of records) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.taskGroupId === id) {
+				await this.taskHistory.setTaskGroup(item.id, undefined)
+				this.sessionConfigChanges.handleTaskGroupChanged(item.id)
+			}
+		}
+		await this.taskGroupStore.deleteGroup(id)
+		for (const record of records) {
+			if (sessionHistoryRecordToHistoryItem(record).taskGroupId === id)
+				this.sessionConfigChanges.handleTaskGroupChanged(record.sessionId)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	/** Files a thread into a task group (empty taskGroupId unfiles it). */
+	async setThreadTaskGroup(threadId: string, taskGroupId: string): Promise<void> {
+		if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		await this.taskHistory.setTaskGroup(threadId, taskGroupId || undefined)
+		this.sessionConfigChanges.handleTaskGroupChanged(threadId)
+		await this.postStateToWebview()
+	}
+
+	/** Creates a note file in the group's notebook; returns its absolute path. */
+	async createNote(taskGroupId: string, name: string, description: string): Promise<string> {
+		if (!(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		const note = await this.notebookStore.createNote(taskGroupId, { name, description })
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return note.path
+	}
+
+	async openNote(taskGroupId: string, slug: string): Promise<void> {
+		const filePath = this.notebookStore.notePath(taskGroupId, slug)
+		if (!existsSync(filePath)) {
+			throw new Error(`Note not found: ${slug}`)
+		}
+		await openFileIntegration(filePath)
+	}
+
+	async applyNotebookChanges(
+		threadId: string,
+		taskGroupId: string,
+		revision: string,
+		items: { slug: string; include: boolean; editedContent?: string }[],
+	): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		try {
+			const applied = await this.notebookStore.applyPendingChanges(taskGroupId, threadId, revision, items, {
+				threadTitle: item?.title ?? item?.task ?? "",
+			})
+			await this.finishNotebookChanges(threadId, taskGroupId, revision, "applied", applied)
+			await this.emitNotebookChanges(threadId)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string): Promise<void> {
+		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
+		try {
+			await this.notebookStore.discardPendingChanges(taskGroupId, threadId, revision)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
+		if (pending) await this.finishNotebookChanges(threadId, taskGroupId, revision, "discarded", pending.changes)
+		await this.emitNotebookChanges(threadId)
+		await this.postStateToWebview()
+	}
+
+	/**
+	 * Server-side history search: note bodies and session message text.
+	 * Task/thread rows are fuzzy-matched client-side, so those kinds return
+	 * no results here.
+	 */
+	async searchHistory(input: { query: string; kind?: string; limit?: number }): Promise<HistorySearchHit[]> {
+		const kind = input.kind ?? "all"
+		const generation = (this.historySearchGenerations.get(kind) ?? 0) + 1
+		this.historySearchGenerations.set(kind, generation)
+		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(items.map((item) => [item.id, item]))
+		const threads: HistorySearchThread[] = items.map((item) => ({
+			id: item.id,
+			title: item.title || item.task,
+			ts: item.ts,
+			taskGroupId: this.effectiveTaskGroupId(item, byId),
+		}))
+		return this.historySearcher.search({
+			...input,
+			threads,
+			isCancelled: () => this.historySearchGenerations.get(kind) !== generation,
+		})
+	}
+
+	private async resolveTaskNotebook(
+		threadId?: string,
+		metadata?: Record<string, unknown>,
+	): Promise<TaskNotebookContext | undefined> {
+		if (!threadId) return undefined
+		const item = (await this.taskHistory.findHistoryItem(threadId)) ?? {
+			...createHistoryItemFromSession(threadId, ""),
+			taskGroupId: typeof metadata?.taskGroupId === "string" ? metadata.taskGroupId : undefined,
+			parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : undefined,
+			runtimeOwnerTaskId: typeof metadata?.runtimeOwnerTaskId === "string" ? metadata.runtimeOwnerTaskId : undefined,
+			isSubagent: metadata?.isSubagent === true,
+		}
+		const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+		if (!owner.taskGroupId) return undefined
+		const group = await this.taskGroupStore.getGroup(owner.taskGroupId)
+		if (!group) return undefined
+		return {
+			group,
+			threadId,
+			rootThreadId: owner.rootThreadId,
+			store: this.notebookStore,
+			resolveReaderThreadId: (agentId) =>
+				Array.from(this.subagentThreads.values()).find((child) => child.agentId === agentId)?.id ?? threadId,
+		}
+	}
+
+	private async emitNotebookChanges(threadId: string): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		const rootThreadId = item
+			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
+			: threadId
+		const reviews = await this.notebookStore.listPending(rootThreadId)
+		if (!reviews.length) return
+		const context = this.getTaskSessionContext(rootThreadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
+		}
+		for (const pending of reviews) {
+			const message = notebookChangesMessage(
+				{
+					revision: pending.revision,
+					taskGroupId: pending.groupId,
+					threadId: rootThreadId,
+					status: "pending",
+					changes: pending.changes,
+				},
+				context.translator.nextTs(),
+			)
+			context.messages.emitHookMessage(message)
+			await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
+		}
+	}
+
+	private async finishNotebookChanges(
+		threadId: string,
+		taskGroupId: string,
+		revision: string,
+		status: "applied" | "discarded",
+		changes: NotebookChange[],
+	): Promise<void> {
+		const context = this.getTaskSessionContext(threadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(threadId))
+		}
+		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), taskGroupId, revision)
+		const message = notebookChangesMessage(
+			{
+				taskGroupId,
+				threadId,
+				revision,
+				status,
+				changes,
+				...(status === "applied" ? { appliedSlugs: changes.map((change) => change.slug) } : {}),
+			},
+			latest?.ts ?? context.translator.nextTs(),
+		)
+		message.sdkMessageIndex = latest?.sdkMessageIndex
+		context.messages.emitHookMessage(message)
+		await this.taskHistory.saveNotebookChangesMessage(threadId, message)
 	}
 
 	/**
@@ -3184,6 +3718,7 @@ export class Controller {
 			const resolved = await this.resolveContextMentions(text)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
+			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
 			this.messageTranslatorState.reset()
 			this.messageTranslatorState.clearTurnOutcome()
 			this.sessions.assertTaskAvailable(task.taskId)
@@ -3324,6 +3859,7 @@ export class Controller {
 						totalCost: 0,
 						modelId: snapshotTask.api?.getModel?.().id,
 						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
+						taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
 					})
 				}
 			}
@@ -3425,17 +3961,39 @@ export class Controller {
 					)
 				: undefined
 			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
+			const focusedOwner = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : snapshotTask?.taskId
+			const ownerInteractions = focusedOwner ? this.taskSessions.get(focusedOwner)?.interactions : undefined
 			const decision = child
 				? this.taskSessions
 						.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
 						?.interactions.getPendingDecision(child.agentId ?? "")
-				: undefined
+				: ownerInteractions?.getPendingDecision?.()
+			const pendingSubagentDecisions: NonNullable<ExtensionState["pendingSubagentDecisions"]> = []
+			for (const pending of ownerInteractions?.getPendingDecisions?.() ?? []) {
+				const item = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) =>
+						(item.runtimeOwnerTaskId ?? item.parentTaskId) === focusedOwner &&
+						item.agentId === pending.agentId &&
+						(!child || item.id === child.id || item.parentTaskId === child.id),
+				)
+				if (item)
+					pendingSubagentDecisions.push({
+						taskId: item.id,
+						name: item.task,
+						kind: pending.kind,
+						message: pending.message,
+					})
+			}
 			const childDecisionStatuses = Object.fromEntries(
 				Array.from(this.subagentThreads?.values() ?? [])
-					.filter((item) =>
-						this.taskSessions
-							.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
-							?.interactions.getPendingDecision(item.agentId ?? ""),
+					.filter(
+						(item) =>
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.hasPendingDecisionForAgent?.(item.agentId ?? "") ||
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.getPendingDecision(item.agentId ?? ""),
 					)
 					.map((item) => [item.id, "waiting" as const]),
 			)
@@ -3477,12 +4035,13 @@ export class Controller {
 							subagentView: {
 								parentTaskId: child.parentTaskId!,
 								agentId: child.agentId!,
-								status: decision ? ("waiting" as const) : childStatus!,
+								status: decision || childDecisionStatuses[child.id] ? ("waiting" as const) : childStatus!,
 								pendingDecision: decision?.kind,
 							},
 						}
 					: { subagentView: null }),
 				focusedSessionModels,
+				pendingSubagentDecisions,
 				composerApiSelection: pickerSelection,
 				composerNextMessageOnly: snapshotTask
 					? !!this.taskSessions.get(snapshotTask.taskId)?.nextMessageSelection
@@ -3499,7 +4058,23 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				taskHistory: processedTaskHistory,
-				turnState: childTurn ?? this.turnStateTracker.get(),
+				// Optional-called: unit tests drive getStateToPostToWebview with
+				// partial controller stubs that don't carry these members.
+				taskGroups:
+					(await this.listTaskGroups?.().catch((error) => {
+						Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
+						return undefined
+					})) ?? [],
+				currentBranch: await this.resolveCurrentBranch?.().catch(() => undefined),
+				turnState:
+					childTurn ??
+					(decision
+						? {
+								phase: decision.kind === "approval" ? "awaiting_approval" : "awaiting_followup",
+								anchorTs: decision.message.ts,
+								seq: minter.nextSeq(),
+							}
+						: this.turnStateTracker.get()),
 				queuedPrompts,
 				sessionStatuses: {
 					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),

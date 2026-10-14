@@ -874,6 +874,15 @@ function sdkToolToClineSayTool(toolName: string, input?: unknown): ClineSayTool 
 			}
 		}
 
+		case "notebook": {
+			const action = getStringField(parsedInput, "action")
+			return {
+				tool: "notebook",
+				action: action === "write" || action === "delete" ? action : "read",
+				name: getStringField(parsedInput, "name") ?? "",
+			}
+		}
+
 		default: {
 			// MCP tools and unknown tools — pass through with the raw tool name.
 			const filePath =

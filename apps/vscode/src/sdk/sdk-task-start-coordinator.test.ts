@@ -78,7 +78,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.postStateToWebview.mock.invocationCallOrder[0]).toBeLessThan(
 			options.sessions.startNewSession.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			sessionId,
@@ -130,6 +130,33 @@ describe("SdkTaskStartCoordinator", () => {
 			[],
 		)
 		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("records the new thread's task group before the first state post", async () => {
+		// Core persists the session record (and its taskGroupId) only when the first
+		// send lands; the synthesized history row the early state post ships must
+		// already know the task, or the thread shows as "no task" until it streams.
+		const { options } = makeCoordinator()
+		const recordTaskGroup = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, recordTaskGroup })
+
+		const sessionId = await coordinator.initTask("in a task", [], [], undefined, undefined, { taskGroupId: "group-1" })
+
+		expect(recordTaskGroup).toHaveBeenCalledWith(sessionId, "group-1")
+		expect(recordTaskGroup.mock.invocationCallOrder[0]).toBeLessThan(options.postStateToWebview.mock.invocationCallOrder[0])
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ id: sessionId, taskGroupId: "group-1" }),
+		)
+	})
+
+	it("does not record a task group for an unfiled thread", async () => {
+		const { options } = makeCoordinator()
+		const recordTaskGroup = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, recordTaskGroup })
+
+		await coordinator.initTask("unfiled")
+
+		expect(recordTaskGroup).not.toHaveBeenCalled()
 	})
 
 	it("applies the home draft once, then starts the next chat from Settings defaults", async () => {

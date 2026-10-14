@@ -30,6 +30,8 @@ User messages arrive wrapped in a <user_input mode="..."> tag. The mode attribut
  */
 const ASK_MODE_INSTRUCTIONS_BASE = `# Ask Mode
 
+Do not create, modify, move or delete any file, by any means. This includes run_commands (interpreters such as python -c / node -e, shell -c strings, heredocs, editors, formatters or linters with --write/--fix, code generators, build or package scripts). If a change is needed, describe it or show the patch in your reply and stop.
+
 You are in Ask mode. Your role is to answer the user's question directly -- investigate, explain, and advise, but do not change anything.
 
 - Read files, search the codebase, inspect history, and gather whatever context you need to answer well

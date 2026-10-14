@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
-import { memo, useCallback, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { type EffectiveTag, effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
+import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
 import { cn } from "@/lib/utils"
@@ -8,10 +10,15 @@ import {
 	buildInbox,
 	DEFAULT_SETTLED_LIMIT,
 	describeActivity,
+	EXPANDED_TASK_GROUPS_EVENT,
 	formatAge,
 	formatStamp,
+	GROUP_PREVIEW_COUNT,
 	type InboxRow,
+	type InboxTaskGroupRow,
+	readExpandedTaskGroups,
 	SETTLED_PAGE_SIZE,
+	writeExpandedTaskGroups,
 } from "./inboxUtils"
 import { SessionStatusIcon } from "./SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "./sessionActions"
@@ -41,13 +48,46 @@ interface InboxRowViewProps {
 	row: InboxRow
 	now: number
 	animateLayout: boolean
+	/** Tags to show: own plus the task's. Rows under a task row pass only their own. */
+	tags: readonly EffectiveTag[]
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
-const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
+/** Most tag chips a row shows before folding the rest into "+N". */
+const ROW_TAG_LIMIT = 2
+
+/** A row's first tags as small chips (inherited ones muted), the rest as "+N" (all of them in its tooltip). */
+const RowTagChips = ({ tags }: { tags: readonly EffectiveTag[] }) => {
+	if (!tags.length) return null
+	const hidden = tags.slice(ROW_TAG_LIMIT)
+	return (
+		<>
+			{tags.slice(0, ROW_TAG_LIMIT).map(({ tag, inherited, taskTitle }) => (
+				<TaskTagChip
+					className="max-w-24"
+					inheritedFrom={inherited ? (taskTitle ?? "task") : undefined}
+					key={`${tag.kind}:${tag.value}`}
+					kind={tag.kind}
+					value={tag.value}
+				/>
+			))}
+			{hidden.length > 0 && (
+				<span
+					className="shrink-0 text-[10.5px] text-description"
+					data-testid="row-tag-overflow"
+					title={hidden.map((entry) => entry.tag.value).join(", ")}>
+					+{hidden.length}
+				</span>
+			)}
+		</>
+	)
+}
+
+const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 	const {
 		item,
+		activityTs,
 		status,
 		settled,
 		subthreadCount,
@@ -56,7 +96,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 		liveSubagentCount,
 		attentionSubagentCount,
 	} = row
-	const time = settled ? formatStamp(item.ts, now) : formatAge(item.ts, now)
+	const time = settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)
 	const activity = describeActivity(row, now)
 	const subagentTitle = [
 		plural(subagentCount, "subagent"),
@@ -90,15 +130,18 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 				<SessionStatusIcon settled={settled} status={status} />
 			</div>
 			<div className="min-w-0">
-				<div className="ph-no-capture truncate text-sm text-foreground">{item.task}</div>
-				<div
-					className={cn(
-						"truncate text-xs",
-						status === "running" && !settled
-							? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description"
-							: "text-description",
-					)}>
-					{activity}
+				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
+				<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs" data-testid="inbox-row-detail">
+					<RowTagChips tags={tags} />
+					<span
+						className={cn(
+							"min-w-0 truncate",
+							status === "running" && !settled
+								? "animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description"
+								: "text-description",
+						)}>
+						{activity}
+					</span>
 				</div>
 			</div>
 			<div className="flex items-center gap-2">
@@ -128,7 +171,7 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 						{time}
 					</span>
 					<button
-						aria-label={settled ? `Unsettle ${item.task}` : `Settle ${item.task}`}
+						aria-label={settled ? `Unsettle ${item.title || item.task}` : `Settle ${item.title || item.task}`}
 						className={cn(
 							"absolute right-0 top-0 flex h-4.5 items-center gap-1 whitespace-nowrap rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[10px] text-button-secondary-foreground",
 							"opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 hover:bg-button-secondary-background-hover motion-reduce:transition-none",
@@ -147,6 +190,113 @@ const InboxRowView = ({ row, now, animateLayout }: InboxRowViewProps) => {
 	)
 }
 
+interface TaskGroupRowViewProps {
+	row: InboxTaskGroupRow
+	now: number
+	expanded: boolean
+	onToggle: () => void
+	onOpen?: (taskGroupId: string) => void
+	animateLayout: boolean
+	/** Listed under Settled: every thread is settled, or it has none. */
+	settled?: boolean
+}
+
+/** A task group row: chevron, title + tags, thread count, newest activity, running count. */
+const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout, settled = false }: TaskGroupRowViewProps) => {
+	const { group, members, activityTs, runningCount } = row
+	const preview = members.slice(0, GROUP_PREVIEW_COUNT)
+	const older = members.length - preview.length
+	const open = () => onOpen?.(group.id)
+
+	return (
+		<div data-testid="inbox-task-group">
+			<div
+				className={cn(
+					"group grid h-11 grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden rounded-xs border border-transparent px-2 cursor-pointer animate-row-in motion-reduce:animate-none",
+					"hover:bg-list-hover hover:border-editor-group-border focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					settled && "opacity-55 hover:opacity-90",
+				)}
+				data-settled={settled || undefined}
+				data-testid="inbox-task-group-row"
+				onClick={open}
+				onKeyDown={(event) => {
+					if (event.key === "Enter" || event.key === " ") {
+						event.preventDefault()
+						open()
+					}
+				}}
+				role="button"
+				tabIndex={0}>
+				<button
+					aria-expanded={expanded}
+					aria-label={`${expanded ? "Collapse" : "Expand"} ${group.title}`}
+					className="flex h-5 w-3.5 cursor-pointer items-center justify-center self-start border-0 bg-transparent p-0 pt-1.5 text-description hover:text-foreground"
+					onClick={(event) => {
+						event.stopPropagation()
+						onToggle()
+					}}
+					type="button">
+					<span
+						className={cn(
+							"codicon codicon-chevron-down text-[12px] transition-transform duration-150 motion-reduce:transition-none",
+							!expanded && "-rotate-90",
+						)}
+					/>
+				</button>
+				<div className="min-w-0">
+					<div className="flex min-w-0 items-center gap-1 text-sm text-foreground">
+						<span
+							aria-hidden
+							className="codicon codicon-tasklist shrink-0 text-[12px]! text-(--vscode-charts-purple)"
+						/>
+						<span className="ph-no-capture truncate font-medium">{group.title}</span>
+					</div>
+					<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs text-description">
+						<RowTagChips tags={group.tags.map((tag) => ({ tag, inherited: false }))} />
+						<span className="shrink-0 whitespace-nowrap">
+							{group.tags.length > 0 && "· "}
+							{plural(members.length, "thread")}
+						</span>
+					</div>
+				</div>
+				<div className="flex flex-col items-end gap-0.5">
+					<span className="text-[10px] text-description">
+						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
+					</span>
+					{runningCount > 0 && (
+						<span className="text-[10px] text-link" data-testid="inbox-task-group-running">
+							{runningCount} running
+						</span>
+					)}
+				</div>
+			</div>
+			{expanded && (
+				<div className="ml-3.5 border-l border-editor-group-border pl-1" data-testid="inbox-task-group-members">
+					{preview.map((member) => (
+						<InboxRowView
+							animateLayout={animateLayout}
+							key={member.item.id}
+							now={now}
+							row={member}
+							// The task row above already shows the task's tags, so members list only their own.
+							tags={(member.item.tags ?? []).map((tag) => ({ tag, inherited: false }))}
+						/>
+					))}
+					<div className="flex h-6 items-center gap-2 px-2 text-xs text-description">
+						{older > 0 ? <span>＋{older} older</span> : members.length === 0 && <span>No threads yet</span>}
+						<button
+							className="ml-auto cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
+							onClick={open}
+							type="button">
+							Open task ›
+						</button>
+					</div>
+				</div>
+			)}
+		</div>
+	)
+}
+
 const SETTLED_COLLAPSED_KEY = "inbox.settledCollapsed"
 
 function readCollapsed(): boolean {
@@ -159,24 +309,42 @@ function readCollapsed(): boolean {
 
 interface InboxListProps {
 	showHistoryView: () => void
+	/** Opens a task group's page (group row click and "Open task ›"). */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 	/** Clock override for tests. */
 	now?: number
 }
 
 /**
- * Home inbox: active (unsettled) chats on top by recency, settled chats below.
+ * Home inbox: active (unsettled) chats and tasks on top by recency; settled
+ * chats and fully settled (or empty) tasks below.
  * Status comes from the host's live `sessionStatuses`; asides are folded into
  * their parent's subthread count.
  */
-const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
-	const { taskHistory, sessionStatuses, subagentCounts } = useExtensionState()
+const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: InboxListProps) => {
+	const { taskHistory, sessionStatuses, subagentCounts, taskGroups } = useExtensionState()
 	const reduceMotion = useReducedMotionPreference()
 	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
 	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
-	const { active, settled, settledTotal, hiddenCount } = useMemo(
-		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit }),
-		[taskHistory, sessionStatuses, subagentCounts, settledLimit],
+	const [expandedGroups, setExpandedGroups] = useState(readExpandedTaskGroups)
+	const { activeEntries, settled, settledTotal, hiddenCount } = useMemo(
+		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit, taskGroups }),
+		[taskHistory, sessionStatuses, subagentCounts, settledLimit, taskGroups],
 	)
+	// A group created elsewhere (the new-task sheet) opens expanded.
+	useEffect(() => {
+		const sync = () => setExpandedGroups(readExpandedTaskGroups())
+		window.addEventListener(EXPANDED_TASK_GROUPS_EVENT, sync)
+		return () => window.removeEventListener(EXPANDED_TASK_GROUPS_EVENT, sync)
+	}, [])
+	const toggleGroup = useCallback((id: string) => {
+		setExpandedGroups((current) => {
+			const next = new Set(current)
+			if (!next.delete(id)) next.add(id)
+			writeExpandedTaskGroups(next)
+			return next
+		})
+	}, [])
 	const toggleSettledCollapsed = useCallback(() => {
 		setSettledCollapsed((collapsed) => {
 			try {
@@ -188,7 +356,7 @@ const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 		})
 	}, [])
 
-	if (active.length === 0 && settledTotal === 0) {
+	if (activeEntries.length === 0 && settledTotal === 0) {
 		return null
 	}
 
@@ -201,7 +369,7 @@ const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 		<div className="shrink-0 px-3" data-testid="inbox-list">
 			<div className={sectionClass}>
 				<span>Active</span>
-				<span className="opacity-70">{active.length}</span>
+				<span className="opacity-70">{activeEntries.length}</span>
 				<button
 					aria-label="View all history"
 					className="ml-auto flex items-center gap-0.5 border-0 bg-transparent p-0 text-[10.5px] normal-case tracking-normal text-description hover:text-foreground cursor-pointer"
@@ -211,8 +379,28 @@ const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 					<span className="codicon codicon-chevron-right text-[12px]" />
 				</button>
 			</div>
-			{active.length > 0 ? (
-				active.map((row) => <InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />)
+			{activeEntries.length > 0 ? (
+				activeEntries.map((entry) =>
+					entry.kind === "group" ? (
+						<TaskGroupRowView
+							animateLayout={!reduceMotion}
+							expanded={expandedGroups.has(entry.row.group.id)}
+							key={`group:${entry.row.group.id}`}
+							now={now}
+							onOpen={onOpenTaskGroup}
+							onToggle={() => toggleGroup(entry.row.group.id)}
+							row={entry.row}
+						/>
+					) : (
+						<InboxRowView
+							animateLayout={!reduceMotion}
+							key={entry.row.item.id}
+							now={now}
+							row={entry.row}
+							tags={effectiveThreadTags(entry.row.item, taskHistory, taskGroups)}
+						/>
+					),
+				)
 			) : (
 				<div className="px-2 py-1.5 text-xs text-description">Nothing active.</div>
 			)}
@@ -245,9 +433,28 @@ const InboxList = ({ showHistoryView, now = Date.now() }: InboxListProps) => {
 								key="settled-rows"
 								style={{ overflow: "hidden" }}
 								transition={{ duration: 0.18, ease: "easeOut" }}>
-								{settled.map((row) => (
-									<InboxRowView animateLayout={!reduceMotion} key={row.item.id} now={now} row={row} />
-								))}
+								{settled.map((entry) =>
+									entry.kind === "group" ? (
+										<TaskGroupRowView
+											animateLayout={!reduceMotion}
+											expanded={expandedGroups.has(entry.row.group.id)}
+											key={`group:${entry.row.group.id}`}
+											now={now}
+											onOpen={onOpenTaskGroup}
+											onToggle={() => toggleGroup(entry.row.group.id)}
+											row={entry.row}
+											settled
+										/>
+									) : (
+										<InboxRowView
+											animateLayout={!reduceMotion}
+											key={entry.row.item.id}
+											now={now}
+											row={entry.row}
+											tags={effectiveThreadTags(entry.row.item, taskHistory, taskGroups)}
+										/>
+									),
+								)}
 								{(settledTotal > settled.length || settledLimit > DEFAULT_SETTLED_LIMIT) && (
 									<div className="flex gap-3 px-2 py-1">
 										{settledTotal > settled.length && (

@@ -8,17 +8,20 @@ interface TaskSectionProps {
 	task: ClineMessage
 	messageHandlers: MessageHandlers
 	onOpenSubagentPreview?: (row: LineageRow) => void
+	/** Opens the task page from the breadcrumb. */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 /**
  * Task section shown when there's an active task
  * Includes the task header and manages task-specific UI
  */
-export const TaskSection: React.FC<TaskSectionProps> = ({ task, messageHandlers, onOpenSubagentPreview }) => {
+export const TaskSection: React.FC<TaskSectionProps> = ({ task, messageHandlers, onOpenSubagentPreview, onOpenTaskGroup }) => {
 	return (
 		<TaskHeader
 			onClose={messageHandlers.handleTaskCloseButtonClick}
 			onOpenSubagentPreview={onOpenSubagentPreview}
+			onOpenTaskGroup={onOpenTaskGroup}
 			task={task}
 		/>
 	)

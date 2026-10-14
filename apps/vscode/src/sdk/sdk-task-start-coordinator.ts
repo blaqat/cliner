@@ -65,7 +65,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
 	loadInitialMessages: (reader: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, threadId?: string) => Promise<string>
 	isClineManagedProviderActive: () => boolean
 	emitClineAuthError: (task?: string) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
@@ -76,6 +76,12 @@ export interface SdkTaskStartCoordinatorOptions {
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
+	/**
+	 * Remembers the task group a new thread starts in. Core writes the session
+	 * record only when the first send lands, so the history row synthesized for
+	 * the live session needs the group before then.
+	 */
+	recordTaskGroup?: (taskId: string, taskGroupId: string) => void
 	postStateToWebview: () => Promise<void>
 }
 
@@ -88,7 +94,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean },
+		options?: { background?: boolean; taskGroupId?: string },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -148,13 +154,19 @@ export class SdkTaskStartCoordinator {
 				mode,
 			})
 
-			startInput.sessionMetadata = { ...startInput.sessionMetadata, apiSelection }
+			startInput.sessionMetadata = {
+				...startInput.sessionMetadata,
+				apiSelection,
+				...(options?.taskGroupId ? { taskGroupId: options.taskGroupId } : {}),
+			}
 			// Focused starts install the task proxy as the current view; background
 			// starts park it in the per-task context so its transcript and turn state
 			// accumulate offscreen and the chat appears in the inbox as running.
 			context = background ? this.options.createTaskContext?.(taskSessionId) : undefined
 			if (background && !context) throw new Error("Background task contexts are unavailable")
 			const task = context?.task ?? this.createAndSetTask(taskSessionId)
+			// Before the first state post, so the thread shows in its task right away.
+			if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit"> = context?.messages ?? this.options.messages
 			this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
 
@@ -176,11 +188,13 @@ export class SdkTaskStartCoordinator {
 				)
 				task.taskId = startResult.sessionId
 				taskSessionId = startResult.sessionId
+				if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 			}
 
 			const newHistoryItem = {
 				...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
 				apiSelection,
+				taskGroupId: options?.taskGroupId,
 			}
 			await this.options.taskHistory.updateTaskHistoryItem(newHistoryItem)
 			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
@@ -188,7 +202,7 @@ export class SdkTaskStartCoordinator {
 
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
-				const resolvedTask = await this.options.resolveContextMentions(prompt || "")
+				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId)
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -235,6 +249,7 @@ export class SdkTaskStartCoordinator {
 			})
 
 			const tempManager = await this.options.createTempSessionHost()
+			if (historyItem.taskGroupId) config.sessionId = createSessionId()
 			const initialMessages = await this.options.loadInitialMessages(tempManager, taskId)
 			await tempManager.dispose("readMessages")
 

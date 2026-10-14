@@ -1042,6 +1042,14 @@ resolution also lives in core and is reused by the helper and desktop startup.
 The primary shell probe allows 5 seconds for slow profiles; a fallback shell
 gets half that budget, bounding the combined wait to 7.5 seconds.
 
+### Session-spawned host tools
+
+Session-spawned subagents inherit host tools that declare `metadata.subagentAccess`.
+The value `"read"` allows the tool in both reader and writer subagents. The value
+`"write"` allows it only in writer subagents. Parent tool policies, global disables,
+and the session's `enableTools` still apply. Hosts use this declaration for tools
+such as notebook staging, which reader subagents can use without changing workspace files.
+
 ### Configured subagent approvals
 
 Configured subagents execute their available tools without inheriting the parent

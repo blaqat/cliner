@@ -7,6 +7,8 @@ import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import type { TaskTag } from "@shared/task-groups"
+import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
@@ -20,6 +22,8 @@ import {
 import type { MessageIdMinter } from "./message-id-minter"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
+import { readCurrentMessages } from "./session-host"
+import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 export interface TaskUsage {
@@ -31,6 +35,7 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	resolveNotebookChanges?: (taskId: string, messages: ClineMessage[]) => Promise<ClineMessage[]>
 	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
 	sessions: SdkSessionLifecycle
@@ -64,6 +69,31 @@ function metadataBoolean(metadata: SessionHistoryRecord["metadata"] | undefined,
 function metadataString(metadata: SessionHistoryRecord["metadata"] | undefined, key: string): string | undefined {
 	const value = metadata?.[key]
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function metadataStringArray(metadata: SessionHistoryRecord["metadata"] | undefined, key: string): string[] | undefined {
+	const value = metadata?.[key]
+	if (!Array.isArray(value)) {
+		return undefined
+	}
+	return value.filter((entry): entry is string => typeof entry === "string")
+}
+
+function metadataTaskTags(metadata: SessionHistoryRecord["metadata"] | undefined, key: string): TaskTag[] | undefined {
+	const value = metadata?.[key]
+	if (!Array.isArray(value)) {
+		return undefined
+	}
+	return value.filter(
+		(entry): entry is TaskTag =>
+			typeof entry === "object" &&
+			entry !== null &&
+			((entry as TaskTag).kind === "ticket" ||
+				(entry as TaskTag).kind === "branch" ||
+				(entry as TaskTag).kind === "label") &&
+			typeof (entry as TaskTag).value === "string" &&
+			((entry as TaskTag).source === "user" || (entry as TaskTag).source === "auto"),
+	)
 }
 
 function dateStringToTimestamp(value: string | null | undefined): number {
@@ -109,6 +139,12 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
 		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
+		// The user-set thread title persists as "threadTitle": metadata "title"
+		// already carries the first-message task text.
+		threadTitle: item.title ?? "",
+		taskGroupId: item.taskGroupId ?? "",
+		tags: item.tags ?? [],
+		dismissedAutoTags: item.dismissedAutoTags ?? [],
 		legacyTask: item.isLegacy ?? false,
 	}
 }
@@ -197,6 +233,11 @@ export function sessionRecordActivityTs(item: SessionHistoryRecord): number {
 	)
 }
 
+/** When the session was created; records without a start time fall back to last activity. */
+export function sessionRecordStartedTs(item: SessionHistoryRecord): number {
+	return dateStringToTimestamp(item.startedAt) || sessionRecordActivityTs(item)
+}
+
 export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): HistoryItem {
 	const metadata = item.metadata
 	const lastActivityTs = sessionRecordActivityTs(item)
@@ -207,6 +248,7 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
+		subagentToolCalls: metadataNumber(metadata, "subagentToolCalls"),
 		cacheWrites: metadataNumber(metadata, "cacheWrites") ?? 0,
 		cacheReads: metadataNumber(metadata, "cacheReads") ?? 0,
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
@@ -227,6 +269,10 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
 		apiSelection: readTaskApiSelection(metadata?.apiSelection),
+		title: metadataString(metadata, "threadTitle"),
+		taskGroupId: metadataString(metadata, "taskGroupId"),
+		tags: metadataTaskTags(metadata, "tags"),
+		dismissedAutoTags: metadataStringArray(metadata, "dismissedAutoTags"),
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
 		isLegacy:
 			metadataBoolean(metadata, "legacyTask") === true || metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -285,7 +331,11 @@ export class SdkTaskHistory {
 	}
 
 	private getActiveHistoryHost(): VscodeSessionHost | undefined {
-		const sdkHost = this.options.sessions.getActiveSession()?.sdkHost
+		// Focusing a child changes the view, not the runtime owner. Reuse a
+		// retained host when that view has no top-level active session.
+		const sdkHost =
+			this.options.sessions.getActiveSession()?.sdkHost ??
+			this.options.sessions.getSessions?.().values().next().value?.sdkHost
 		if (sdkHost && "listHistory" in sdkHost) {
 			return sdkHost as VscodeSessionHost
 		}
@@ -544,10 +594,47 @@ export class SdkTaskHistory {
 				}
 			}
 		}
-		if (sdkRecord && legacyTask) {
-			return mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
-		}
-		return clineMessages
+		const projectedMessages =
+			sdkRecord && legacyTask
+				? mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
+				: clineMessages
+		let nextId = Math.max(0, ...projectedMessages.map((message) => message.ts))
+		const messages = mergeNotebookChangesMessages(
+			projectedMessages,
+			sdkRecord?.metadata?.notebookChangesMessages,
+			() => this.options.getMinter?.().nextId() ?? ++nextId,
+		)
+		return this.options.resolveNotebookChanges?.(taskId, messages) ?? messages
+	}
+
+	async saveNotebookChangesMessage(taskId: string, message: ClineMessage): Promise<void> {
+		await this.serializeMetadataWrite(taskId, () =>
+			this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (!record) return
+				const metadata = { ...record.metadata }
+				const saved = Array.isArray(metadata.notebookChangesMessages) ? metadata.notebookChangesMessages : []
+				const payload = JSON.parse(message.text ?? "{}")
+				const status = payload.status
+				if (message.sdkMessageIndex === undefined)
+					message.sdkMessageIndex = (await readCurrentMessages(host, taskId)).length - 1
+				const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
+					try {
+						const previous = JSON.parse(entry.text ?? "{}")
+						return previous.taskGroupId === payload.taskGroupId && previous.revision === payload.revision
+					} catch {
+						return false
+					}
+				})
+				const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
+				metadata.notebookChangesMessages =
+					status !== "pending" && index >= 0
+						? saved.map((entry, i) => (i === index ? message : entry))
+						: [...saved, message]
+				await host.update(taskId, { metadata })
+			}),
+		)
+		this.invalidateMetadataHistoryCache()
 	}
 
 	/**
@@ -678,6 +765,13 @@ export class SdkTaskHistory {
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// User-owned fields are changed only by their dedicated operations.
+				...Object.fromEntries(
+					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags"].map((key) => [
+						key,
+						existing?.metadata?.[key] ?? (key === "tags" || key === "dismissedAutoTags" ? [] : ""),
+					]),
+				),
 				// History reads may predate live picker changes. Only explicit selection
 				// writes may replace an existing authoritative selection.
 				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
@@ -869,6 +963,52 @@ export class SdkTaskHistory {
 		item.isSettled = !item.isSettled
 		item.settledAt = item.isSettled ? Date.now() : undefined
 		await this.updateTaskHistoryItem(item)
+	}
+
+	private updateOwnedMetadata(
+		taskId: string,
+		update: (metadata: Record<string, unknown>) => Record<string, unknown> | undefined,
+	): Promise<void> {
+		return this.serializeMetadataWrite(taskId, async () => {
+			await this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (!record) return
+				const patch = update(record.metadata ?? {})
+				if (patch) await host.update(taskId, { metadata: { ...record.metadata, ...patch } })
+			})
+			this.invalidateMetadataHistoryCache()
+		})
+	}
+
+	async renameTask(taskId: string, title: string): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({ threadTitle: title.trim() }))
+	}
+
+	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
+		const capturedTags = tags.map((tag) => ({ ...tag }))
+		const capturedDismissed = [...dismissedAutoTags]
+		await this.updateOwnedMetadata(taskId, () => ({ tags: capturedTags, dismissedAutoTags: capturedDismissed }))
+	}
+
+	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({ taskGroupId: taskGroupId || "" }))
+	}
+
+	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {
+		const detected = extractTicketTags(text)
+		if (!detected.length) return false
+		let changed = false
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const tags = mergeAutoTicketTags(
+				metadataTaskTags(metadata, "tags"),
+				detected,
+				metadataStringArray(metadata, "dismissedAutoTags"),
+			)
+			if (!tags) return undefined
+			changed = true
+			return { tags }
+		})
+		return changed
 	}
 
 	async markTaskActive(taskId: string): Promise<void> {

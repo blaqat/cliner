@@ -6,10 +6,12 @@ import { SubagentPanelButton } from "./SubagentPanel"
 
 const mocks = vi.hoisted(() => ({
 	openTask: vi.fn(),
+	askResponse: vi.fn(),
 	stopSubagent: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/components/inbox/sessionActions", () => ({ openTask: mocks.openTask, stopSubagent: mocks.stopSubagent }))
+vi.mock("@/services/grpc-client", () => ({ TaskServiceClient: { askResponse: mocks.askResponse } }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 
 const item = (id: string, ts: number, extra: Partial<HistoryItem> = {}): HistoryItem => ({
@@ -70,6 +72,28 @@ describe("SubagentPanelButton", () => {
 		rerender(<SubagentPanelButton />)
 		expect(screen.getByTestId("subagents-button")).toHaveAttribute("data-attention", "true")
 		expect(screen.getByTestId("subagents-badge").className).toContain("bg-warning")
+	})
+
+	it("opens waiting live children and offers the active approval beside progress totals", async () => {
+		mocks.askResponse.mockResolvedValue({})
+		const message = { ts: 1, type: "ask", ask: "tool", decisionId: "a-approval" }
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: { a: "waiting", b: "waiting" },
+			taskHistory: [root, { ...a, subagentToolCalls: 2, tokensIn: 100, tokensOut: 20, totalCost: 0.002 }, b],
+			pendingSubagentDecisions: [{ taskId: a.id, name: a.task, kind: "approval", message }],
+		}
+		render(<SubagentPanelButton />)
+		openPanel()
+		expect(screen.getByTestId("lineage-usage")).toHaveTextContent("2 tools · 120 tokens · $0.0020")
+		fireEvent.click(screen.getByRole("button", { name: `Approve ${a.task}` }))
+		await waitFor(() =>
+			expect(mocks.askResponse).toHaveBeenCalledWith(
+				expect.objectContaining({ taskId: root.id, decisionId: "a-approval", responseType: "yesButtonClicked" }),
+			),
+		)
+		fireEvent.click(screen.getByRole("button", { name: `Open ${b.task}` }))
+		expect(mocks.openTask).toHaveBeenCalledWith(b.id)
 	})
 
 	it("lists the current thread and its direct children only from the root", () => {

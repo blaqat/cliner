@@ -13,6 +13,8 @@
  * a blocked call is rejected up front: the user is never asked to approve a
  * command that would only fail, and the model receives the plan-mode error
  * as the tool result (`skip`, not `stop`, so the run continues).
+ * Opaque package scripts instead override the tool policy to require the
+ * existing host approval callback, regardless of terminal auto-approval.
  */
 
 import type {
@@ -25,6 +27,7 @@ import { capturePlanModeCommandBlocked } from "../../services/telemetry/core-eve
 import {
 	findFileEditingCommand,
 	formatPlanModeBlockedCommandError,
+	requiresPlanModeCommandApproval,
 } from "./command-guard";
 import { DefaultToolNames } from "./constants";
 import { normalizeRunCommandsInput } from "./helpers";
@@ -72,6 +75,10 @@ export function createPlanModeCommandGuardExtension(
 					reason: formatPlanModeBlockedCommandError(blocked),
 				};
 			}
+		}
+
+		if (commands.some(requiresPlanModeCommandApproval)) {
+			return { policy: { autoApprove: false, requireApproval: true } };
 		}
 
 		return undefined;

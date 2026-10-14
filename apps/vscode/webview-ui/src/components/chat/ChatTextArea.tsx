@@ -44,16 +44,22 @@ import {
 	validateSlashCommand,
 } from "@/utils/slash-commands"
 import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
+import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
+import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
 import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
+import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import ApprovalsMenu from "./composer/ApprovalsMenu"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
 import PickerOverflowMenu from "./composer/PickerOverflowMenu"
+import NoteMentionMenu from "./NoteMentionMenu"
+import { findNoteMention, insertNoteMention, matchNotes, type NoteMentionOption, useTaskNotes } from "./noteMentions"
 import PromptStashButton from "./PromptStashButton"
 import ReasoningEffortPicker, { modelHasReasoning } from "./ReasoningEffortPicker"
 import ServersToggleModal from "./ServersToggleModal"
+import TaskGroupPicker, { ComposerTaskGroupSheet } from "./TaskGroupPicker"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
 
@@ -118,6 +124,8 @@ export interface ChatTextAreaProps {
 		hasCompactNudge: boolean
 		render: (layout: ComposerRowLayout) => React.ReactNode
 	}
+	/** Opens a task group's page (the task pill's "Open task"). */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 interface GitCommit {
@@ -291,6 +299,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			enterSendsAs = "steer",
 			onSendAs,
 			usageIndicator,
+			onOpenTaskGroup,
 		},
 		ref,
 	) => {
@@ -305,6 +314,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			remoteConfigSettings,
 			navigateToSettingsModelPicker,
 			mcpServers,
+			currentTaskItem,
+			taskHistory,
+			taskGroups,
 		} = useExtensionState()
 		const [isTextAreaFocused, setIsTextAreaFocused] = useState(false)
 		const [isDraggingOver, setIsDraggingOver] = useState(false)
@@ -333,6 +345,47 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const bottomRowRef = useRef<HTMLDivElement>(null)
 
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
+
+		// `#note` mentions: the task this composer's thread (or task page) belongs to.
+		// An open thread's notes are the ones its mentions expand against, even when
+		// it's in no task; the page/pill selection only applies to new threads.
+		const composerTaskGroupId = useResolvedComposerTaskGroup()
+		const noteTaskGroupId = currentTaskItem
+			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
+			: composerTaskGroupId
+		const noteMention = useMemo(
+			() => (noteTaskGroupId ? findNoteMention(inputValue, cursorPosition) : undefined),
+			[noteTaskGroupId, inputValue, cursorPosition],
+		)
+		const [dismissedNoteMentionAt, setDismissedNoteMentionAt] = useState<number>()
+		const [selectedNoteIndex, setSelectedNoteIndex] = useState(0)
+		const taskNotes = useTaskNotes(
+			noteMention ? noteTaskGroupId : undefined,
+			taskGroups?.find((group) => group.id === noteTaskGroupId)?.noteCount,
+		)
+		const noteMatches = useMemo(() => (noteMention ? matchNotes(taskNotes, noteMention.query) : []), [taskNotes, noteMention])
+		const showNoteMentionMenu =
+			!!noteMention &&
+			noteMention.start !== dismissedNoteMentionAt &&
+			noteMatches.length > 0 &&
+			isTextAreaFocused &&
+			!showSlashCommandsMenu &&
+			!showContextMenu
+		useEffect(() => {
+			if (!noteMention) setDismissedNoteMentionAt(undefined)
+			setSelectedNoteIndex(0)
+		}, [noteMention?.start, noteMention?.query])
+
+		const handleNoteMentionSelect = useCallback(
+			(note: NoteMentionOption) => {
+				if (!noteMention) return
+				const next = insertNoteMention(inputValue, cursorPosition, noteMention.start, note.slug)
+				setInputValue(next.value)
+				setCursorPosition(next.cursor)
+				setIntendedCursorPosition(next.cursor)
+			},
+			[noteMention, inputValue, cursorPosition, setInputValue],
+		)
 		const [modeSwitchFlash, setModeSwitchFlash] = useState(false)
 		const [pendingInsertions, setPendingInsertions] = useState<string[]>([])
 		const _shiftHoldTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -564,6 +617,29 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					return
 				}
 
+				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
+				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
+
+				if (showNoteMentionMenu && noteMention && !isComposing) {
+					if (event.key === "Escape") {
+						event.preventDefault()
+						setDismissedNoteMentionAt(noteMention.start)
+						return
+					}
+					if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+						event.preventDefault()
+						const direction = event.key === "ArrowUp" ? -1 : 1
+						setSelectedNoteIndex((index) => (index + direction + noteMatches.length) % noteMatches.length)
+						return
+					}
+					const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+					if ((event.key === "Enter" || event.key === "Tab") && plain) {
+						event.preventDefault()
+						handleNoteMentionSelect(noteMatches[Math.min(selectedNoteIndex, noteMatches.length - 1)])
+						return
+					}
+				}
+
 				if (showSlashCommandsMenu) {
 					if (event.key === "Escape") {
 						setShowSlashCommandsMenu(false)
@@ -674,8 +750,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
-				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
-				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
 				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
 				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
 					if (onStash()) {
@@ -793,6 +867,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				isHome,
 				enterSendsAs,
 				onSendAs,
+				showNoteMentionMenu,
+				noteMention,
+				noteMatches,
+				selectedNoteIndex,
+				handleNoteMentionSelect,
 			],
 		)
 
@@ -1538,6 +1617,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		})
 
 		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
+		const taskGroupPicker = <TaskGroupPicker onOpenTaskGroup={onOpenTaskGroup} />
 		const effortPicker = (
 			<ReasoningEffortPicker
 				defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
@@ -1581,6 +1661,15 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								setSelectedIndex={setSelectedSlashCommandsIndex}
 							/>
 						</div>
+					)}
+
+					{showNoteMentionMenu && (
+						<NoteMentionMenu
+							notes={noteMatches}
+							onSelect={handleNoteMentionSelect}
+							selectedIndex={selectedNoteIndex}
+							setSelectedIndex={setSelectedNoteIndex}
+						/>
 					)}
 
 					{showContextMenu && (
@@ -1805,6 +1894,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						</span>
 					</div>
 				)}
+				<DetectedTicketChips text={inputValue} />
+				<ComposerTaskGroupSheet draftText={inputValue} />
 				<div
 					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
 					data-collapse-pickers={rowLayout.collapsePickers}
@@ -1853,6 +1944,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<ClineRulesToggleModal />
 
 						{!rowLayout.collapseConfig && (
+							<span className="flex min-w-[18px] shrink" data-shrink="">
+								{taskGroupPicker}
+							</span>
+						)}
+
+						{!rowLayout.collapseConfig && (
 							<span className="flex min-w-14" data-shrink="">
 								{configPicker}
 							</span>
@@ -1860,6 +1957,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 						{rowLayout.collapsePickers ? (
 							<PickerOverflowMenu>
+								{rowLayout.collapseConfig && taskGroupPicker}
 								{rowLayout.collapseConfig && configPicker}
 								{effortPicker}
 								<ApprovalsMenu />

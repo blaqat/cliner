@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import InboxList from "./InboxList"
 
@@ -73,6 +73,26 @@ describe("InboxList", () => {
 		expect(subagents.querySelector(".codicon-type-hierarchy-sub")).not.toBeNull()
 		expect(subagents).toHaveAttribute("data-tone", "idle")
 		expect(screen.getByTitle("1 aside").querySelector(".codicon-repo-forked")).not.toBeNull()
+	})
+
+	it("ages a row by its newest subthread, not the parent's own ts", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW - 3 * 60 * 60_000),
+			item("aside", NOW - 5 * 60_000, { parentTaskId: "parent" }),
+		]
+		mocks.state.sessionStatuses = {}
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const [row] = screen.getAllByTestId("inbox-row")
+		expect(row).toHaveTextContent("5m")
+		expect(row).not.toHaveTextContent("3h")
+	})
+
+	it("shows subthread work on an idle parent", () => {
+		mocks.state.sessionStatuses = { run: "done", aside: "running" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		expect(screen.getAllByTestId("inbox-row")[0]).toHaveTextContent("Working… in subthread")
 	})
 
 	it("turns the subagent count yellow when a child needs the user", () => {
@@ -170,5 +190,183 @@ describe("InboxList", () => {
 		render(<InboxList now={NOW} showHistoryView={showHistoryView} />)
 		fireEvent.click(screen.getByRole("button", { name: "View all history" }))
 		expect(showHistoryView).toHaveBeenCalled()
+	})
+})
+
+describe("InboxList task groups", () => {
+	beforeEach(() => {
+		const store = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => store.get(key) ?? null,
+			setItem: (key: string, value: string) => void store.set(key, value),
+		})
+		mocks.showTaskWithId.mockReset().mockResolvedValue({})
+		mocks.state = {
+			taskHistory: [
+				item("m1", NOW - 2 * 60_000, { taskGroupId: "g", task: "Implement steps" }),
+				item("m2", NOW - 60 * 60_000, { taskGroupId: "g", task: "Dev plan" }),
+				item("m3", NOW - 120 * 60_000, { taskGroupId: "g", task: "Refine ticket" }),
+				item("m4", NOW - 180 * 60_000, { taskGroupId: "g", task: "Research" }),
+				item("loose", NOW - 30 * 60_000, { task: "Loose thread" }),
+			],
+			sessionStatuses: { m1: "running" },
+			taskGroups: [
+				{
+					id: "g",
+					title: "Bulk invoice export",
+					tags: [{ kind: "ticket", value: "PROJ-482", source: "user" }],
+					createdAt: 0,
+					updatedAt: 0,
+					noteCount: 0,
+				},
+			],
+		}
+	})
+
+	it("shows a collapsed group row with tags, thread count, age and running count", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const row = screen.getByTestId("inbox-task-group-row")
+		expect(row).toHaveTextContent("Bulk invoice export")
+		expect(row).toHaveTextContent("PROJ-482")
+		expect(row).toHaveTextContent("4 threads")
+		expect(row).toHaveTextContent("2m")
+		expect(screen.getByTestId("inbox-task-group-running")).toHaveTextContent("1 running")
+		// Members stay out of the top level; only the loose thread is a row.
+		expect(screen.getAllByTestId("inbox-row").map((el) => el.textContent)).toEqual([expect.stringContaining("Loose thread")])
+	})
+
+	it("expands to the two newest members plus an older count, and remembers it", () => {
+		const { unmount } = render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+
+		const members = screen.getByTestId("inbox-task-group-members")
+		expect(members).toHaveTextContent("Implement steps")
+		expect(members).toHaveTextContent("Dev plan")
+		expect(members).not.toHaveTextContent("Refine ticket")
+		expect(members).toHaveTextContent("＋2 older")
+		unmount()
+
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		expect(screen.getByRole("button", { name: "Collapse Bulk invoice export" })).toHaveAttribute("aria-expanded", "true")
+		fireEvent.click(screen.getByRole("button", { name: "Collapse Bulk invoice export" }))
+		expect(screen.queryByTestId("inbox-task-group-members")).not.toBeInTheDocument()
+	})
+
+	it("opens the task from the row and from Open task ›, and opens member threads", () => {
+		const onOpenTaskGroup = vi.fn()
+		render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
+
+		fireEvent.click(screen.getByTestId("inbox-task-group-row"))
+		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
+
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		expect(onOpenTaskGroup).toHaveBeenCalledTimes(1)
+		fireEvent.click(screen.getByRole("button", { name: "Open task ›" }))
+		expect(onOpenTaskGroup).toHaveBeenCalledTimes(2)
+
+		fireEvent.click(screen.getByText("Implement steps"))
+		expect(mocks.showTaskWithId).toHaveBeenCalled()
+	})
+
+	it("lists an empty group under Settled, with No threads yet when expanded", () => {
+		mocks.state.taskHistory = []
+		localStorage.setItem("inbox.expandedTaskGroups", JSON.stringify(["g"]))
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const row = screen.getByTestId("inbox-task-group-row")
+		expect(row).toHaveTextContent("0 threads")
+		expect(row).toHaveAttribute("data-settled", "true")
+		expect(isAfter(row, screen.getByRole("button", { name: "Collapse settled chats" }))).toBe(true)
+		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("No threads yet")
+	})
+
+	it("moves a group whose threads are all settled to Settled, where it still expands and opens", () => {
+		mocks.state.taskHistory = [
+			item("m1", NOW - 2 * 60_000, { taskGroupId: "g", task: "Implement steps", isSettled: true }),
+			item("m2", NOW - 60 * 60_000, { taskGroupId: "g", task: "Dev plan", isSettled: true }),
+			item("loose", NOW - 30 * 60_000, { task: "Loose thread" }),
+			item("old", NOW - 90 * 60_000, { task: "Old settled", isSettled: true }),
+		]
+		mocks.state.sessionStatuses = {}
+		const onOpenTaskGroup = vi.fn()
+		render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
+
+		const settledHeader = screen.getByRole("button", { name: "Collapse settled chats" })
+		expect(settledHeader).toHaveTextContent("Settled2")
+		const row = screen.getByTestId("inbox-task-group-row")
+		expect(isAfter(row, settledHeader)).toBe(true)
+		// Newest activity first: the task (2m) above the older settled thread.
+		expect(isAfter(screen.getByText("Old settled"), row)).toBe(true)
+		expect(screen.queryByTestId("inbox-task-group-running")).not.toBeInTheDocument()
+
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("Implement steps")
+		fireEvent.click(screen.getByRole("button", { name: "Open task ›" }))
+		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
+	})
+})
+
+/** `node` comes after `other` in document order. */
+function isAfter(node: Element, other: Element): boolean {
+	return !!(other.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+}
+
+describe("InboxList thread tags", () => {
+	beforeEach(() => {
+		mocks.state = {
+			taskHistory: [
+				item("tagged", NOW - 60_000, {
+					task: "Tagged thread",
+					tags: [
+						{ kind: "ticket", value: "PROJ-482", source: "auto" },
+						{ kind: "branch", value: "feat/export", source: "user" },
+						{ kind: "label", value: "invoices", source: "user" },
+						{ kind: "label", value: "backend", source: "user" },
+					],
+				}),
+				item("plain", NOW - 120_000, { task: "Plain thread" }),
+				item("member", NOW - 30_000, {
+					taskGroupId: "tg",
+					task: "Member thread",
+					tags: [{ kind: "label", value: "spike", source: "user" }],
+				}),
+			],
+			sessionStatuses: {},
+			taskGroups: [
+				{
+					id: "tg",
+					title: "Group",
+					tags: [{ kind: "ticket", value: "PROJ-9", source: "user" }],
+					createdAt: 0,
+					updatedAt: 0,
+					noteCount: 0,
+				},
+			],
+		}
+	})
+
+	it("shows up to two tag chips plus +N on a thread row, and none on an untagged row", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const [tagged, plain] = screen.getAllByTestId("inbox-row")
+		const chips = within(tagged).getAllByTestId("task-tag-chip")
+		expect(chips.map((chip) => chip.textContent)).toEqual(["PROJ-482", "feat/export"])
+		const overflow = within(tagged).getByTestId("row-tag-overflow")
+		expect(overflow).toHaveTextContent("+2")
+		expect(overflow).toHaveAttribute("title", "invoices, backend")
+		// Tags share the activity line, so the row keeps its fixed height.
+		expect(within(tagged).getByTestId("inbox-row-detail")).toHaveTextContent("Done")
+		expect(tagged).toHaveClass("h-11")
+		expect(within(plain).queryByTestId("task-tag-chip")).toBeNull()
+	})
+
+	it("lists only a member's own tags under its task row, which already shows the task's", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Group" }))
+
+		const members = screen.getByTestId("inbox-task-group-members")
+		expect(within(members).getByTestId("task-tag-chip")).toHaveTextContent("spike")
+		expect(within(screen.getByTestId("inbox-task-group-row")).getByTestId("task-tag-chip")).toHaveTextContent("PROJ-9")
 	})
 })

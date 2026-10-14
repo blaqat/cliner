@@ -4,6 +4,7 @@ import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state
 import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
+import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
@@ -339,6 +340,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						text: messageToSend,
 						images,
 						files,
+						taskGroupId: getComposerSendTaskGroup(),
 					})
 					clearSentMessageState()
 					trackPromptSubmitted(false)
@@ -358,6 +360,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						restorePendingMessageState()
 						throw error
 					}
+					// The task pill's pick applied to this thread; the next new thread starts unfiled.
+					setComposerTaskGroup(undefined)
 					messageSent = true
 				} else if (turnState?.phase === "awaiting_approval") {
 					await sendAskResponseWithPendingState(
@@ -703,9 +707,15 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	const handleSendInBackground = useCallback(
 		async (text: string, images: string[], files: string[]) => {
 			await sendDraftVia(text, images, files, (message) =>
-				TaskServiceClient.newTask(NewTaskRequest.create({ text: message, images, files, runInBackground: true })).then(
-					() => undefined,
-				),
+				TaskServiceClient.newTask(
+					NewTaskRequest.create({
+						text: message,
+						images,
+						files,
+						runInBackground: true,
+						taskGroupId: getComposerSendTaskGroup(),
+					}),
+				).then(() => setComposerTaskGroup(undefined)),
 			).catch((error) => console.error("Failed to start background task:", error))
 		},
 		[sendDraftVia],

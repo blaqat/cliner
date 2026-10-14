@@ -1,0 +1,205 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// Task groups ("Tasks" in the UI): named groups of threads with a shared
+// notebook. Named TaskGroup internally because `task*` already means a single
+// chat/session everywhere else.
+service TaskGroupService {
+  // Lists all task groups with note counts
+  rpc listTaskGroups(EmptyRequest) returns (TaskGroupSummaryList);
+  // Gets a task group with its notes and thread timeline
+  rpc getTaskGroup(GetTaskGroupRequest) returns (GetTaskGroupResponse);
+  // Creates a task group; when thread_id is set the thread is filed into it
+  rpc createTaskGroup(CreateTaskGroupRequest) returns (CreateTaskGroupResponse);
+  // Renames a task group and/or replaces its tags
+  rpc updateTaskGroup(UpdateTaskGroupRequest) returns (TaskGroupSummary);
+  // Deletes a task group; member threads are unfiled, never deleted
+  rpc deleteTaskGroup(DeleteTaskGroupRequest) returns (Empty);
+  // Moves a thread into a task group; empty task_group_id unfiles it
+  rpc setThreadTaskGroup(SetThreadTaskGroupRequest) returns (Empty);
+  // Creates a notebook note and returns its absolute file path
+  rpc createNote(CreateNoteRequest) returns (CreateNoteResponse);
+  // Opens a notebook note file in the editor
+  rpc openNote(OpenNoteRequest) returns (Empty);
+  // Applies staged notebook changes for a thread
+  rpc applyNotebookChanges(ApplyNotebookChangesRequest) returns (Empty);
+  // Discards staged notebook changes for a thread
+  rpc discardNotebookChanges(DiscardNotebookChangesRequest) returns (Empty);
+  // Searches history across tasks, threads, notes and messages
+  rpc searchHistory(SearchHistoryRequest) returns (SearchHistoryResponse);
+}
+
+// A tag on a task group or thread. kind is "ticket" | "branch" | "label";
+// source is "user" | "auto".
+message TaskTag {
+  string kind = 1;
+  string value = 2;
+  string source = 3;
+}
+
+message TaskTagList {
+  repeated TaskTag tags = 1;
+}
+
+message TaskGroup {
+  string id = 1;
+  string title = 2;
+  repeated TaskTag tags = 3;
+  int64 created_at = 4;
+  int64 updated_at = 5;
+}
+
+message TaskGroupSummary {
+  string id = 1;
+  string title = 2;
+  repeated TaskTag tags = 3;
+  int64 created_at = 4;
+  int64 updated_at = 5;
+  int32 note_count = 6;
+}
+
+message TaskGroupSummaryList {
+  repeated TaskGroupSummary task_groups = 1;
+}
+
+// Who last wrote a note: "user" for manual edits, or "thread" with the
+// thread's id and title.
+message NotebookNoteUpdatedBy {
+  string kind = 1; // "user" | "thread"
+  string thread_id = 2;
+  string thread_title = 3;
+}
+
+message NotebookNoteMeta {
+  string slug = 1;
+  string name = 2;
+  string description = 3;
+  int64 size = 4;
+  int64 updated_at = 5;
+  optional NotebookNoteUpdatedBy updated_by = 6;
+  int32 readers = 7; // distinct threads that read it (from the activity log)
+}
+
+// A thread row in a task group's timeline, newest first. read/wrote are the
+// note slugs the thread touched (from the activity log).
+message TaskGroupThread {
+  string thread_id = 1;
+  string title = 2; // user-set title (empty = fall back to task)
+  string task = 3; // first message
+  int64 ts = 4;
+  optional string parent_task_id = 5;
+  bool is_subagent = 6;
+  repeated string read = 7;
+  repeated string wrote = 8;
+  int64 started_ts = 9; // when the thread was created (ts is last activity)
+}
+
+message GetTaskGroupRequest {
+  Metadata metadata = 1;
+  string id = 2;
+}
+
+message GetTaskGroupResponse {
+  TaskGroupSummary group = 1;
+  repeated NotebookNoteMeta notes = 2;
+  repeated TaskGroupThread threads = 3;
+}
+
+message CreateTaskGroupRequest {
+  Metadata metadata = 1;
+  string title = 2;
+  repeated TaskTag tags = 3;
+  optional string thread_id = 4; // when set, files this thread into the new group
+}
+
+message CreateTaskGroupResponse {
+  string id = 1;
+}
+
+message UpdateTaskGroupRequest {
+  Metadata metadata = 1;
+  string id = 2;
+  optional string title = 3;
+  // When set, replaces the group's tags wholesale (including with an empty list).
+  optional TaskTagList tags = 4;
+}
+
+message DeleteTaskGroupRequest {
+  Metadata metadata = 1;
+  string id = 2;
+}
+
+message SetThreadTaskGroupRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  string task_group_id = 3; // empty unfiles the thread
+}
+
+message CreateNoteRequest {
+  Metadata metadata = 1;
+  string task_group_id = 2;
+  string name = 3;
+  string description = 4;
+}
+
+message CreateNoteResponse {
+  string path = 1; // absolute path of the created note file
+}
+
+message OpenNoteRequest {
+  Metadata metadata = 1;
+  string task_group_id = 2;
+  string slug = 3;
+}
+
+// One staged notebook change the user chose to apply or skip.
+message NotebookChangeItem {
+  string slug = 1;
+  bool include = 2;
+  optional string edited_content = 3;
+}
+
+message ApplyNotebookChangesRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  repeated NotebookChangeItem items = 3;
+  string revision = 4;
+  string task_group_id = 5;
+}
+
+message DiscardNotebookChangesRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  string revision = 3;
+  string task_group_id = 4;
+}
+
+message SearchHistoryRequest {
+  Metadata metadata = 1;
+  string query = 2;
+  string kind = 3; // "all" | "tasks" | "threads" | "notes" | "messages"
+  int32 limit = 4;
+}
+
+// One ranked search result. kind is "task" | "thread" | "note" | "message".
+// For message results, thread_id identifies the containing thread.
+message SearchHistoryResult {
+  string kind = 1;
+  string id = 2;
+  string title = 3;
+  string snippet = 4;
+  int64 ts = 5;
+  string task_group_id = 6;
+  string thread_id = 7;
+}
+
+message SearchHistoryResponse {
+  repeated SearchHistoryResult results = 1;
+}

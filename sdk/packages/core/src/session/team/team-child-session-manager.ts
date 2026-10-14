@@ -424,6 +424,32 @@ export class TeamChildSessionManager {
 				persistedMessages,
 			);
 		}
+		// History listings do not hydrate transcripts. Store the child's totals
+		// beside its lineage so the host can show them after reload as well.
+		const row = await this.adapter.getSession(subSessionId);
+		const usage: AgentResult["usage"] | undefined =
+			context.agentResult?.usage ?? context.usage ?? context.result?.usage;
+		if (usage) {
+			await this.adapter.updateSession({
+				sessionId: subSessionId,
+				metadata: {
+					...row?.metadata,
+					// Match the host's disjoint input/cache buckets.
+					tokensIn: Math.max(
+						0,
+						usage.inputTokens -
+							(usage.cacheReadTokens ?? 0) -
+							(usage.cacheWriteTokens ?? 0),
+					),
+					tokensOut: usage.outputTokens,
+					totalCost: usage.totalCost ?? 0,
+					cacheReads: usage.cacheReadTokens ?? 0,
+					cacheWrites: usage.cacheWriteTokens ?? 0,
+					subagentToolCalls:
+						context.agentResult?.toolCalls.length ?? context.toolCalls ?? 0,
+				},
+			});
+		}
 		if (context.error) {
 			await this.applySubagentStatusBySessionId(subSessionId, "failed");
 			return;

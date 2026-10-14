@@ -425,6 +425,57 @@ describe("SDK remote-config coordination", () => {
 		expect(state.sessionStatuses["bg-1"]).toBe("running")
 	})
 
+	it("files a just-started thread into its task before its record persists", async () => {
+		// Core writes the session record (with taskGroupId metadata) only when the
+		// first send lands. Until then the synthesized rows must carry the task, or
+		// the breadcrumb, composer pill and inbox show "no task" until it streams.
+		const controller = Object.create(SdkController.prototype)
+		const focused = createTaskProxy("fg-1", vi.fn(), vi.fn())
+		focused.messageStateHandler.addMessages([{ ts: 41, type: "say", say: "task", text: "focused work" }])
+		const bgTask = createTaskProxy("bg-1", vi.fn(), vi.fn())
+		bgTask.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "quiet work" }])
+		const bgSession = {
+			sessionId: "bg-1",
+			isRunning: true,
+			startConfig: { modelId: "bg-model" },
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		const liveSessions = new Map([["bg-1", bgSession]])
+		Object.assign(controller, {
+			lastKnownWorkspaceRoot: "/workspace",
+			focusedTask: focused,
+			taskSessions: new Map<string, unknown>([
+				["fg-1", { task: focused, taskGroupId: "group-1" }],
+				["bg-1", { task: bgTask, taskGroupId: "group-2" }],
+			]),
+			stateManager: {
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			backgroundCommandRunning: false,
+			backgroundCommandTaskId: undefined,
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { listHistory: async () => [] },
+			sessions: {
+				getActiveSession: () => undefined,
+				getSessions: () => liveSessions,
+				getSession: (id: string) => liveSessions.get(id),
+				sessionStatuses: { "fg-1": "running", "bg-1": "running" },
+				subagentCounts: {},
+			},
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+
+		const state = await controller.getStateToPostToWebview()
+
+		expect(state.currentTaskItem).toMatchObject({ id: "fg-1", task: "focused work", taskGroupId: "group-1" })
+		expect(state.taskHistory.find((item: { id: string }) => item.id === "bg-1")).toMatchObject({ taskGroupId: "group-2" })
+	})
+
 	it("waits for initial remote config before resuming an existing task", async () => {
 		const events: string[] = []
 		const controller = {
@@ -1710,4 +1761,100 @@ it("marks live descendants stopped with a clear status when their root runtime i
 	])
 	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root__b", "error")
 	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root", "done")
+})
+
+describe("task notebook fix round", () => {
+	it("uses an aside's own group in timeline and history search, including when unfiled", () => {
+		const controller = Object.create(SdkController.prototype)
+		const parent = { id: "parent", taskGroupId: "A" }
+		const aside = { id: "aside", parentTaskId: "parent" }
+		const child = { id: "child", isSubagent: true, runtimeOwnerTaskId: "aside" }
+		const byId = new Map([parent, aside, child].map((item) => [item.id, item]))
+		expect(controller.effectiveTaskGroupId(aside, byId)).toBeUndefined()
+		expect(controller.effectiveTaskGroupId(child, byId)).toBeUndefined()
+		byId.set("aside", { ...aside, taskGroupId: "B" } as typeof aside)
+		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBe("B")
+		expect(controller.effectiveTaskGroupId(child, byId)).toBe("B")
+	})
+
+	it("emits a review card for every pending group owned by an aside", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const aside = { id: "aside", parentTaskId: "parent", taskGroupId: "B" }
+		const reviews = ["A", "B"].map((groupId) => ({
+			groupId,
+			revision: `r-${groupId}`,
+			changes: [{ op: "create", slug: "plan", name: "Plan", description: "", content: groupId }],
+		}))
+		controller.taskHistory = { findHistoryItem: vi.fn(async () => aside), saveNotebookChangesMessage: vi.fn() }
+		controller.notebookStore = { listPending: vi.fn(async () => reviews) }
+		let ts = 10
+		const emitHookMessage = vi.fn()
+		controller.getTaskSessionContext = vi.fn(() => ({
+			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }] } },
+			messages: { emitHookMessage },
+			translator: { nextTs: () => ++ts },
+		}))
+		await controller.emitNotebookChanges("aside")
+		expect(controller.notebookStore.listPending).toHaveBeenCalledWith("aside")
+		expect(emitHookMessage.mock.calls.map(([message]) => JSON.parse(message.text))).toEqual(
+			reviews.map((review) => ({
+				taskGroupId: review.groupId,
+				revision: review.revision,
+				threadId: "aside",
+				status: "pending",
+				changes: review.changes,
+			})),
+		)
+	})
+
+	it("refreshes branch on focus or HEAD events and posts only changes", async () => {
+		const git = await import("@/utils/git-worktree")
+		const getBranch = vi.spyOn(git, "getCurrentBranch").mockResolvedValue("new-branch")
+		try {
+			const controller = Object.create(SdkController.prototype)
+			controller.getWorkspaceRoot = vi.fn(async () => "/workspace")
+			controller.currentBranchCache = { cwd: "/workspace", branch: "old-branch", at: Date.now() }
+			controller.postStateToWebview = vi.fn()
+			await controller.refreshCurrentBranch()
+			expect(controller.currentBranchCache.branch).toBe("new-branch")
+			expect(controller.postStateToWebview).toHaveBeenCalledTimes(1)
+			await controller.refreshCurrentBranch()
+			expect(getBranch).toHaveBeenCalledTimes(2)
+			expect(controller.postStateToWebview).toHaveBeenCalledTimes(1)
+			controller.isDisposed = true
+			await controller.refreshCurrentBranch()
+			expect(getBranch).toHaveBeenCalledTimes(2)
+		} finally {
+			getBranch.mockRestore()
+		}
+	})
+})
+
+it("resolves only the addressed notebook group and revision when another group's card is newer", async () => {
+	const controller = Object.create(SdkController.prototype)
+	const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "Reviewed" }]
+	const messages = ["A", "B"].map((taskGroupId, index) => ({
+		ts: index + 1,
+		type: "say",
+		say: "notebook_changes",
+		sdkMessageIndex: 10,
+		text: JSON.stringify({ taskGroupId, threadId: "thread", revision: `r-${taskGroupId}`, status: "pending", changes }),
+	}))
+	const emitHookMessage = vi.fn()
+	controller.taskHistory = { saveNotebookChangesMessage: vi.fn() }
+	controller.getTaskSessionContext = vi.fn(() => ({
+		task: { messageStateHandler: { getClineMessages: () => messages } },
+		messages: { emitHookMessage },
+		translator: { nextTs: () => 3 },
+	}))
+	await controller.finishNotebookChanges("thread", "A", "r-A", "applied", changes)
+	const resolved = emitHookMessage.mock.calls[0][0]
+	expect(resolved.ts).toBe(1)
+	expect(JSON.parse(resolved.text)).toMatchObject({
+		taskGroupId: "A",
+		revision: "r-A",
+		status: "applied",
+		appliedSlugs: ["plan"],
+	})
+	expect(JSON.parse(messages[1].text).status).toBe("pending")
 })

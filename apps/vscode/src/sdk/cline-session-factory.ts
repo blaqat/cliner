@@ -37,6 +37,7 @@ import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import { Logger } from "@shared/services/Logger"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
+import type { TaskGroup } from "@shared/task-groups"
 import { reasoningEffortFromThinkingBudget } from "@shared/utils/reasoning-support"
 import { stringifyVsCodeLmModelSelector } from "@shared/vsCodeSelectorUtils"
 import { StateManager } from "@/core/storage/StateManager"
@@ -63,6 +64,11 @@ import type { SdkSessionHost } from "./session-host"
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export function appendTaskNotebookPrompt(systemPrompt: string, group: TaskGroup): string {
+	const tags = group.tags.map((tag) => tag.value).join(", ")
+	return `${systemPrompt}\n\n# Task notebook\n\nThis thread is part of the task "${group.title}"${tags ? ` (${tags})` : ""}. Notes from earlier threads are listed in the notebook tool. Read a relevant note before redoing research it covers. When you learn something later threads of this task will need (ticket details, decisions, plans, code locations), write or update a note. Writes are staged for the user to review.`
+}
 
 /** Configuration for creating a new session */
 export interface SessionConfigInput {

@@ -188,9 +188,11 @@ export class SdkTaskControlCoordinator {
 			return true
 		}
 
-		let historyItem: HistoryItem | undefined
+		// A live child already has a transcript and lineage record. History can
+		// lag, or fail while its first checkpoint is being written.
+		let historyItem = this.options.getLiveTaskItem?.(taskId)
 		try {
-			historyItem = await this.options.taskHistory.findHistoryItem(taskId)
+			historyItem ??= await this.options.taskHistory.findHistoryItem(taskId)
 		} catch (error) {
 			Logger.error(`[SdkController] Failed to look up task in history: ${taskId}`, error)
 			return undefined

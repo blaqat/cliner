@@ -125,6 +125,105 @@ describe("SdkTaskHistory", () => {
 		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).apiSelection).toBeUndefined()
 	})
 
+	it("round trips thread title, task group, tags and dismissed auto tags", () => {
+		const item = makeHistoryItem("task", {
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: [
+				{ kind: "ticket", value: "PROJ-482", source: "auto" },
+				{ kind: "branch", value: "feat/x", source: "user" },
+			],
+			dismissedAutoTags: ["OLD-1"],
+		})
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: item.tags,
+			dismissedAutoTags: ["OLD-1"],
+		})
+		// The user-set title must not leak into `task` (the first-message default).
+		expect(result.task).not.toBe("Renamed thread")
+	})
+
+	it("returns undefined task-group fields when unset or malformed", () => {
+		const unset = sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} }))
+		expect(unset.title).toBeUndefined()
+		expect(unset.taskGroupId).toBeUndefined()
+		expect(unset.tags).toBeUndefined()
+		expect(unset.dismissedAutoTags).toBeUndefined()
+
+		const malformed = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("bad", {
+				metadata: { tags: [{ kind: "bogus", value: "x", source: "user" }], taskGroupId: 42 },
+			}),
+		)
+		expect(malformed.tags).toEqual([])
+		expect(malformed.taskGroupId).toBeUndefined()
+	})
+
+	it("serializes owned metadata changes against stale activity and usage snapshots", async () => {
+		const { history, getSession } = makeHistory([
+			makeSessionRecord("task-1", {
+				metadata: {
+					threadTitle: "Old",
+					taskGroupId: "A",
+					tags: [],
+					dismissedAutoTags: [],
+				},
+			}),
+		])
+		const stale = (await history.findHistoryItem("task-1"))!
+		await Promise.all([
+			history.setTaskGroup("task-1", "B"),
+			history.renameTask("task-1", "New"),
+			history.setThreadTags("task-1", [{ kind: "label", value: "keep", source: "user" }], ["PROJ-1"]),
+			history.updateTaskHistoryItem({ ...stale, tokensIn: 42, lastActivityTs: 1234 }),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "New",
+			taskGroupId: "B",
+			tags: [{ kind: "label", value: "keep", source: "user" }],
+			dismissedAutoTags: ["PROJ-1"],
+			tokensIn: 42,
+		})
+		await Promise.all([
+			history.setTaskGroup("task-1", undefined),
+			history.renameTask("task-1", ""),
+			history.setThreadTags("task-1", [], ["PROJ-2"]),
+			history.addAutoTicketTags("task-1", "PROJ-2 PROJ-3"),
+			history.updateTaskHistoryItem(stale),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "",
+			taskGroupId: "",
+			tags: [{ kind: "ticket", value: "PROJ-3", source: "auto" }],
+			dismissedAutoTags: ["PROJ-2"],
+		})
+	})
+
+	it("adds auto ticket tags from a user message, skipping existing and dismissed ones", async () => {
+		const { history, updateSession } = makeHistory([
+			makeSessionRecord("task-1", {
+				metadata: {
+					tags: [{ kind: "ticket", value: "PROJ-1", source: "user" }],
+					dismissedAutoTags: ["PROJ-3"],
+				},
+			}),
+		])
+		expect(await history.addAutoTicketTags("task-1", "Fix PROJ-1, PROJ-2 and PROJ-3")).toBe(true)
+		expect((await history.findHistoryItem("task-1"))?.tags).toEqual([
+			{ kind: "ticket", value: "PROJ-1", source: "user" },
+			{ kind: "ticket", value: "PROJ-2", source: "auto" },
+		])
+		updateSession.mockClear()
+		expect(await history.addAutoTicketTags("task-1", "PROJ-2 again, no ticket here")).toBe(false)
+		expect(await history.addAutoTicketTags("task-1", "plain message")).toBe(false)
+		expect(updateSession).not.toHaveBeenCalled()
+	})
+
 	it("serializes selection writes and preserves the latest selection across stale history updates", async () => {
 		const { history, getSession, updateSession } = makeHistory([makeSessionRecord("task-1")])
 		let release!: () => void
@@ -814,6 +913,44 @@ describe("SdkTaskHistory", () => {
 		expect(readUiMessages).toHaveBeenCalledWith("legacy-task", undefined)
 		expect(messages).toEqual(legacyStateReaderMock.uiMessages)
 		expect(startSession).not.toHaveBeenCalled()
+	})
+
+	it("persists review cards and updates the newest summary in place across reopen", async () => {
+		const { history, readMessages, getSession } = makeHistory([
+			makeSessionRecord("root", { metadata: { threadTitle: "Title", taskGroupId: "group" } }),
+		])
+		readMessages.mockResolvedValue([
+			{ role: "user", content: "First" },
+			{ role: "assistant", content: "Done" },
+		] as never)
+		const payload = {
+			revision: "r1",
+			taskGroupId: "group",
+			threadId: "root",
+			status: "pending",
+			changes: [{ op: "create", slug: "plan", name: "Plan", description: "", content: "Draft" }],
+		}
+		await history.saveNotebookChangesMessage("root", {
+			ts: 1,
+			type: "say",
+			say: "notebook_changes",
+			text: JSON.stringify(payload),
+		})
+		const reopened = await history.getClineMessages("root")
+		const card = reopened.find((message) => message.say === "notebook_changes")!
+		expect(reopened.at(-1)).toBe(card)
+		expect(new Set(reopened.map((message) => message.ts)).size).toBe(reopened.length)
+		expect(card.sdkMessageIndex).toBe(1)
+		await history.saveNotebookChangesMessage("root", {
+			...card,
+			text: JSON.stringify({ ...payload, status: "applied", appliedSlugs: ["plan"] }),
+		})
+		const saved = (await getSession("root"))!.metadata!
+		expect(saved.threadTitle).toBe("Title")
+		expect(saved.taskGroupId).toBe("group")
+		expect(saved.notebookChangesMessages).toHaveLength(1)
+		const restored = await history.getClineMessages("root")
+		expect(JSON.parse(restored.find((message) => message.say === "notebook_changes")!.text!).status).toBe("applied")
 	})
 
 	it("adds a tool warning to legacy initial messages when resuming", async () => {

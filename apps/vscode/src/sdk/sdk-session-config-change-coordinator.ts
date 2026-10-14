@@ -15,6 +15,7 @@ type InitialMessages = StartInput["initialMessages"]
 type SessionConfig = Awaited<ReturnType<SdkSessionConfigBuilder["build"]>>
 
 export interface SdkSessionConfigChangeCoordinatorOptions {
+	getMessages?: (sessionId: string) => SdkMessageCoordinator
 	stateManager: StateManager
 	sessions: SdkSessionLifecycle
 	messages: SdkMessageCoordinator
@@ -35,6 +36,18 @@ interface RebuildDetails {
 
 export class SdkSessionConfigChangeCoordinator {
 	constructor(private readonly options: SdkSessionConfigChangeCoordinatorOptions) {}
+
+	handleTaskGroupChanged(threadId: string): void {
+		this.requestRebuild(
+			{
+				reason: "taskGroup",
+				description: "task notebook membership",
+				disposeReason: "taskGroupChange",
+				failureMessage: "Failed to reload the task notebook. Reopen the thread to retry.",
+			},
+			threadId,
+		)
+	}
 
 	handleTerminalExecutionModeChanged(previous: VscodeTerminalExecutionMode, next: VscodeTerminalExecutionMode): void {
 		if (previous === next) {
@@ -69,31 +82,38 @@ export class SdkSessionConfigChangeCoordinator {
 		})
 	}
 
-	private requestRebuild(details: RebuildDetails): void {
+	private requestRebuild(details: RebuildDetails, sessionId?: string): void {
 		Logger.log(`[SdkController] Session configuration changed: ${details.description}`)
 
-		const activeSession = this.options.sessions.getActiveSession()
+		const activeSession = sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()
 		if (!activeSession) {
 			Logger.log("[SdkController] No active session - configuration will be picked up on next initTask")
 			return
 		}
 
-		this.options.rebuilds.request(details.reason, (context) => this.restartSession(details, context))
+		this.scheduleRestart(details, sessionId)
 	}
 
-	private async restartSession(details: RebuildDetails, context: SessionRebuildContext): Promise<void> {
-		const activeSession = this.options.sessions.getActiveSession()
+	private scheduleRestart(details: RebuildDetails, sessionId?: string): void {
+		const run = (context: SessionRebuildContext) => this.restartSession(details, context, sessionId)
+		if (sessionId) this.options.rebuilds.request(details.reason, run, sessionId)
+		else this.options.rebuilds.request(details.reason, run)
+	}
+
+	private async restartSession(details: RebuildDetails, context: SessionRebuildContext, sessionId?: string): Promise<void> {
+		const activeSession = sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()
 		if (!activeSession) {
 			return
 		}
 
 		const { sdkHost: oldManager, sessionId: oldSessionId } = activeSession
+		const messages = this.options.getMessages?.(oldSessionId) ?? this.options.messages
 		const terminalMode = getEffectiveTerminalExecutionMode(
 			this.options.stateManager.getGlobalStateKey("vscodeTerminalExecutionMode"),
 		)
 		Logger.log(`[SdkController] Restarting session ${oldSessionId} for ${details.description}; terminal mode ${terminalMode}`)
 
-		this.options.messages.emitSessionEvents([], {
+		messages.emitSessionEvents([], {
 			type: "status",
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
@@ -119,7 +139,9 @@ export class SdkSessionConfigChangeCoordinator {
 
 			// Rebuilds may preserve the session ID, so identity is the only reliable
 			// way to detect that another path replaced this session while we awaited.
-			const currentSession = this.options.sessions.getActiveSession()
+			const currentSession = sessionId
+				? this.options.sessions.getSession(sessionId)
+				: this.options.sessions.getActiveSession()
 			if (!currentSession) {
 				Logger.log(`[SdkController] Active session ended during configuration restart (was ${oldSessionId}); aborting`)
 				return
@@ -136,12 +158,15 @@ export class SdkSessionConfigChangeCoordinator {
 				Logger.log(
 					`[SdkController] Active session changed or received a prompt during configuration restart (was ${oldSessionId}); deferring`,
 				)
-				this.options.rebuilds.request(details.reason, (nextContext) => this.restartSession(details, nextContext))
+				this.scheduleRestart(details, sessionId)
 				return
 			}
 
 			// Admission closes before the replacement reads the current history.
-			const restartResult = await this.options.sessions.replaceActiveSession({
+			const replaceSession = sessionId
+				? this.options.sessions.replaceSession.bind(this.options.sessions)
+				: this.options.sessions.replaceActiveSession.bind(this.options.sessions)
+			const restartResult = await replaceSession({
 				expectedSession: activeSession,
 				startInput,
 				loadInitialMessages: async () =>
@@ -149,19 +174,23 @@ export class SdkSessionConfigChangeCoordinator {
 				disposeReason: details.disposeReason,
 			})
 			if (!restartResult) {
-				if (context.isCurrent() && this.options.sessions.getActiveSession() === activeSession)
-					this.options.rebuilds.request(details.reason, (nextContext) => this.restartSession(details, nextContext))
+				if (
+					context.isCurrent() &&
+					(sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()) ===
+						activeSession
+				)
+					this.scheduleRestart(details, sessionId)
 				return
 			}
 
-			const { startResult, sdkHost } = restartResult
+			const { startResult } = restartResult
 			if (startResult.sessionId !== oldSessionId) {
 				Logger.warn(
 					`[SdkController] Configuration restart returned a new session ID (${startResult.sessionId}); preserving task ID ${oldSessionId} for UI continuity`,
 				)
 			}
 
-			this.options.messages.emitSessionEvents([], {
+			messages.emitSessionEvents([], {
 				type: "status",
 				payload: { sessionId: startResult.sessionId, status: "idle" },
 			})
@@ -180,7 +209,7 @@ export class SdkSessionConfigChangeCoordinator {
 				text: `${details.failureMessage} ${error instanceof Error ? error.message : String(error)}`,
 				partial: false,
 			}
-			this.options.messages.appendAndEmit([errorMessage], {
+			messages.appendAndEmit([errorMessage], {
 				type: "status",
 				payload: { sessionId: oldSessionId, status: "error" },
 			})

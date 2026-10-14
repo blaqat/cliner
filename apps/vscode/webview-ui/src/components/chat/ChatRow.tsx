@@ -39,6 +39,7 @@ import { canRestoreWorkspaceFromMessage } from "@/components/chat/chat-view/util
 import { OptionsButtons } from "@/components/chat/OptionsButtons"
 import { WithCopyButton } from "@/components/common/CopyButton"
 import Thumbnails from "@/components/common/Thumbnails"
+import { openTask } from "@/components/inbox/sessionActions"
 import McpResponseDisplay from "@/components/mcp/chat-display/McpResponseDisplay"
 import McpResourceRow from "@/components/mcp/configuration/tabs/installed/server-row/McpResourceRow"
 import McpToolRow from "@/components/mcp/configuration/tabs/installed/server-row/McpToolRow"
@@ -57,11 +58,14 @@ import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
 import { MarkdownRow } from "./MarkdownRow"
 import NewTaskPreview from "./NewTaskPreview"
+import { NotebookChangesRow } from "./NotebookChangesRow"
+import { NotebookToolRow, parseNotebookTool } from "./NotebookToolRow"
 import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
 import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
+import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
 import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
@@ -109,7 +113,18 @@ const ChatRow = memo(
 
 		const [chatrow, { height }] = useSize(
 			<div className="relative pt-2.5 px-4">
+				{message.subagentName && (
+					<button
+						className="mb-1 border-0 bg-transparent p-0 text-[11px] text-link cursor-pointer hover:underline"
+						onClick={() => message.subagentTaskId && void openTask(message.subagentTaskId)}
+						type="button">
+						Subagent: {message.subagentName}
+					</button>
+				)}
 				<ChatRowContent {...props} />
+				{message.subagentTaskId && message.decisionId && (
+					<SubagentDecisionControls key={message.decisionId} message={message} />
+				)}
 			</div>,
 		)
 
@@ -403,6 +418,11 @@ export const ChatRowContent = memo(
 					title={title}
 				/>
 			)
+
+			const notebookTool = parseNotebookTool(tool)
+			if (notebookTool) {
+				return <NotebookToolRow info={notebookTool} />
+			}
 
 			switch (tool.tool) {
 				case "editedExistingFile":
@@ -876,7 +896,7 @@ export const ChatRowContent = memo(
 									<div className={cn("flex flex-col gap-2", hasText && "mt-2")}>
 										{message.media.map((media) => (
 											<GeneratedMediaContent
-												className="max-h-96 max-w-full rounded-sm"
+												className="max-h-70 w-auto max-w-full rounded-sm object-contain"
 												key={media.id}
 												media={media}
 											/>
@@ -914,6 +934,8 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					}
+					// The thread's first message renders like every later user message.
+					case "task":
 					case "user_feedback":
 						return (
 							<UserMessage
@@ -1049,6 +1071,8 @@ export const ChatRowContent = memo(
 						return <InvisibleSpacer /> // task_progress messages should be displayed in TaskHeader only, not in chat
 					case "compaction":
 						return <CompactionRow message={message} />
+					case "notebook_changes":
+						return <NotebookChangesRow message={message} />
 					default:
 						return (
 							<div>

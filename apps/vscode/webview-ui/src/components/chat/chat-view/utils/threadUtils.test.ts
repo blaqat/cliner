@@ -1,7 +1,15 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { describe, expect, it } from "vitest"
-import { buildSubagentLineage, buildThreadItems, collectSubagents, isStoppable, needsAttention } from "./threadUtils"
+import {
+	buildSubagentLineage,
+	buildThreadItems,
+	buildThreadPath,
+	collectSubagents,
+	isStoppable,
+	needsAttention,
+	threadTitle,
+} from "./threadUtils"
 
 function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): HistoryItem {
 	return { id, ts, task: `task ${id}`, tokensIn: 0, tokensOut: 0, totalCost: 0, ...extra }
@@ -145,6 +153,12 @@ describe("buildSubagentLineage", () => {
 	const grandchild = item("c", 5, { isSubagent: true, parentTaskId: "b", task: "grandchild" })
 	const history = [root, a, sibling, b, grandchild]
 
+	it("includes cache reads and writes once in child totals", () => {
+		const child = { ...a, tokensIn: 100, tokensOut: 20, cacheReads: 850, cacheWrites: 50, totalCost: 0.002 }
+		const lineage = buildSubagentLineage(root, [root, child], {}, [])
+		expect(lineage?.children[0]).toMatchObject({ tokens: 1020, cost: 0.002 })
+	})
+
 	it("shows the root with its direct children only (no grandchildren)", () => {
 		const lineage = buildSubagentLineage(root, history, { a: "running" }, [])
 		expect(lineage?.parent).toBeUndefined()
@@ -194,5 +208,67 @@ describe("buildSubagentLineage", () => {
 
 	it("is undefined without a focused task", () => {
 		expect(buildSubagentLineage(undefined, history, {}, [])).toBeUndefined()
+	})
+})
+
+describe("buildThreadPath", () => {
+	const root = item("root", 1, { task: "Implement steps 1–2", taskGroupId: "g1" })
+	// Asides own their membership (copied from the parent when forked).
+	const aside = item("aside", 2, { task: "Aside: Fix migration test", parentTaskId: "root", taskGroupId: "g1" })
+	const agent = item("agent", 3, { task: "explore schema", parentTaskId: "aside", isSubagent: true })
+
+	it("walks asides and subagents up to the root, root first", () => {
+		expect(buildThreadPath(agent, [root, aside, agent])).toEqual({
+			taskGroupId: "g1",
+			threads: [
+				{ id: "root", title: "Implement steps 1–2", sub: false },
+				{ id: "aside", title: "Fix migration test", sub: true },
+				{ id: "agent", title: "explore schema", sub: true },
+			],
+		})
+	})
+
+	it("uses an aside's own task, not its parent's", () => {
+		const moved = { ...aside, taskGroupId: "g2" }
+		expect(buildThreadPath(moved, [root, moved]).taskGroupId).toBe("g2")
+		const unfiled = { ...aside, taskGroupId: undefined }
+		expect(buildThreadPath(unfiled, [root, unfiled]).taskGroupId).toBeUndefined()
+	})
+
+	it("gives a subagent the task of the nearest non-subagent above it", () => {
+		const moved = { ...aside, taskGroupId: "g2" }
+		const nested = item("nested", 4, { task: "dig deeper", parentTaskId: "agent", isSubagent: true })
+		expect(buildThreadPath(agent, [root, moved, agent]).taskGroupId).toBe("g2")
+		expect(buildThreadPath(nested, [root, moved, agent, nested]).taskGroupId).toBe("g2")
+		const rootAgent = item("ra", 5, { task: "scan", parentTaskId: "root", isSubagent: true })
+		expect(buildThreadPath(rootAgent, [root, rootAgent]).taskGroupId).toBe("g1")
+	})
+
+	it("prefers user-set titles", () => {
+		const titled = { ...root, title: "Steps 1–2" }
+		expect(buildThreadPath(aside, [titled, aside]).threads[0].title).toBe("Steps 1–2")
+		expect(threadTitle({ ...aside, title: "Migration" })).toBe("Migration")
+		expect(threadTitle({ ...aside, title: "  " })).toBe("Fix migration test")
+	})
+
+	it("keeps a placeholder for a parent missing from history and stops there", () => {
+		expect(buildThreadPath(aside, [aside])).toEqual({
+			taskGroupId: "g1",
+			threads: [
+				{ id: "root", title: "Parent", sub: false },
+				{ id: "aside", title: "Fix migration test", sub: true },
+			],
+		})
+	})
+
+	it("is a single level for a top-level thread, and empty without one", () => {
+		expect(buildThreadPath(root, [root]).threads).toHaveLength(1)
+		expect(buildThreadPath(undefined, [root])).toEqual({ threads: [] })
+	})
+
+	it("survives a parent cycle", () => {
+		const a = item("a", 1, { parentTaskId: "b" })
+		const b = item("b", 2, { parentTaskId: "a" })
+		expect(buildThreadPath(a, [a, b]).threads.map((thread) => thread.id)).toEqual(["b", "a"])
 	})
 })

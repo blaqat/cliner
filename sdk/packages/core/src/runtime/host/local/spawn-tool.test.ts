@@ -101,6 +101,48 @@ async function childToolNames(
 }
 
 describe("createSessionSpawnTool sub-agent access", () => {
+	it("inherits declared host tools at the requested access level and respects parent disables", async () => {
+		const notebook = {
+			name: "notebook",
+			metadata: { subagentAccess: "read" },
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const writer = {
+			name: "host_writer",
+			metadata: { subagentAccess: "write" },
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const hidden = {
+			name: "host_private",
+			execute: vi.fn(),
+		} as unknown as AgentTool;
+		const config = makeConfig({
+			mode: "act",
+			extraTools: [notebook, writer, hidden],
+		});
+		const readers = await childToolNames(config, { access: "read" });
+		expect(readers).toContain("notebook");
+		expect(readers).not.toContain("host_writer");
+		expect(readers).not.toContain("host_private");
+		expect(await childToolNames(config, { access: "write" })).toEqual(
+			expect.arrayContaining(["notebook", "host_writer"]),
+		);
+		expect(
+			await childToolNames({ ...config, mode: "plan" }, { access: "write" }),
+		).not.toContain("host_writer");
+		expect(
+			await childToolNames(
+				{ ...config, toolPolicies: { notebook: { enabled: false } } },
+				{ access: "read" },
+			),
+		).not.toContain("notebook");
+		expect(
+			await childToolNames(
+				{ ...config, enableTools: false },
+				{ access: "read" },
+			),
+		).not.toContain("notebook");
+	});
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -125,6 +167,47 @@ describe("createSessionSpawnTool sub-agent access", () => {
 		});
 		expect(names).toContain("read_files");
 		expect(names).not.toContain("editor");
+	});
+
+	it("keeps Ask command blocking and script approvals in a spawned child", async () => {
+		const requestToolApproval = vi.fn(async () => ({ approved: false }));
+		await childToolNames(
+			makeConfig({ mode: "plan" }),
+			{ access: "write" },
+			requestToolApproval,
+		);
+		const child = agentConstructorSpy.mock.calls.at(-1)![0];
+		const guard = child.extensions.find(
+			(extension: { name: string }) =>
+				extension.name === "core.plan-mode-command-guard",
+		);
+		const context = {
+			tool: { name: "run_commands" },
+			snapshot: {},
+			toolCall: { toolCallId: "shell" },
+		};
+		expect(
+			guard.hooks.beforeTool({
+				...context,
+				input: { commands: ['bash -c "touch file"'] },
+			}),
+		).toMatchObject({ skip: true });
+		expect(
+			guard.hooks.beforeTool({
+				...context,
+				input: { commands: ["bun run check-types"] },
+			}),
+		).toEqual({
+			policy: { autoApprove: false, requireApproval: true },
+		});
+		await child.requestToolApproval({
+			sessionId: "child",
+			toolName: "run_commands",
+		});
+		expect(requestToolApproval).toHaveBeenCalledWith({
+			sessionId: "root-1",
+			toolName: "run_commands",
+		});
 	});
 
 	it("intersects the access preset with the parent's tool policies", async () => {

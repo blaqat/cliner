@@ -20,6 +20,7 @@ function normalizeModelId(modelId: string): string {
 type AgentFailureTelemetry = Pick<ProviderFailureTelemetry, "sessionId" | "error" | "errorType"> | undefined
 
 export interface SdkSessionEventCoordinatorOptions {
+	onTurnComplete?: () => Promise<void>
 	messageTranslatorState: MessageTranslatorState
 	sessions: SdkSessionLifecycle
 	messages: SdkMessageCoordinator
@@ -47,6 +48,7 @@ export interface SdkSessionEventCoordinatorOptions {
 }
 
 export class SdkSessionEventCoordinator {
+	private notebookTurnCompleteHandled = false
 	private readonly translateSessionEvent: (event: CoreSessionEvent, state: MessageTranslatorState) => TranslationResult
 
 	constructor(private readonly options: SdkSessionEventCoordinatorOptions) {
@@ -75,6 +77,9 @@ export class SdkSessionEventCoordinator {
 
 		if (event.type === "pending_prompt_submitted") this.options.onTurnStarted?.()
 		const result = this.translateSessionEvent(event, this.options.messageTranslatorState)
+		if (event.type === "pending_prompt_submitted" || result.messages.some((message) => message.say === "api_req_started")) {
+			this.notebookTurnCompleteHandled = false
+		}
 		if (result.messages.length > 0)
 			void this.options.taskHistory
 				.markTaskActive?.(activeSession.sessionId)
@@ -112,6 +117,13 @@ export class SdkSessionEventCoordinator {
 
 		if (result.messages.length > 0) {
 			this.options.messages.appendAndEmit(result.messages, event)
+		}
+		let notebookReview: Promise<void> | undefined
+		if (result.turnComplete && activeSession.isRunning && !this.notebookTurnCompleteHandled) {
+			this.notebookTurnCompleteHandled = true
+			notebookReview = this.options.onTurnComplete?.().catch((error) => {
+				Logger.warn("Failed to emit notebook changes at turn end", error)
+			})
 		}
 
 		if (activeSession) {
@@ -168,6 +180,9 @@ export class SdkSessionEventCoordinator {
 		// Per-task subagent tally for the inbox. Tracked for every live session
 		// (focused or background) from the session's own translator state.
 		const subagentCountsChanged = this.updateSubagentCounts(activeSession.sessionId, activeSession.isRunning)
+		// Settle the finished turn before notebook I/O yields: Core can start a
+		// queued turn during that await, and the old turn must not mark it idle.
+		await notebookReview
 
 		// Post state when there are messages to ship OR when the turn ended. A clean turn end's
 		// `done` event carries no transcript message, yet the authoritative phase just changed to

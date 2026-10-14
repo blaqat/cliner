@@ -98,7 +98,7 @@ const HistoryViewItem = ({
 				}}>
 				<div className="flex items-center gap-2">
 					<div className="line-clamp-1 overflow-hidden break-words whitespace-pre-wrap flex-1 min-w-0">
-						<span className="ph-no-capture">{item.task}</span>
+						<span className="ph-no-capture">{item.title || item.task}</span>
 					</div>
 					{item.isLegacy && (
 						<span className="text-xs uppercase rounded px-1.5 py-0.5 bg-accent/20 text-description flex-shrink-0">

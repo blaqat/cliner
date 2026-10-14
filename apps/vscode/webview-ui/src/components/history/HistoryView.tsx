@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/u
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { formatSize } from "@/utils/format"
+import { mergeHighlightRegions } from "@/utils/highlight"
 import ViewHeader from "../common/ViewHeader"
 import HistoryViewItem from "./HistoryViewItem"
 
@@ -270,7 +271,7 @@ const HistoryView = ({ onDone }: HistoryViewProps) => {
 
 	const fuse = useMemo(() => {
 		return new Fuse(tasks, {
-			keys: ["task"],
+			keys: ["title", "task"],
 			threshold: 0.6,
 			shouldSort: true,
 			isCaseSensitive: false,
@@ -564,31 +565,7 @@ export const highlight = (fuseSearchResult: FuseResult<any>[], highlightClassNam
 		obj[pathValue[i]] = value
 	}
 
-	// Function to merge overlapping regions
-	const mergeRegions = (regions: [number, number][]): [number, number][] => {
-		if (regions.length === 0) {
-			return regions
-		}
-
-		// Sort regions by start index
-		regions.sort((a, b) => a[0] - b[0])
-
-		const merged: [number, number][] = [regions[0]]
-
-		for (let i = 1; i < regions.length; i++) {
-			const last = merged[merged.length - 1]
-			const current = regions[i]
-
-			if (current[0] <= last[1] + 1) {
-				// Overlapping or adjacent regions
-				last[1] = Math.max(last[1], current[1])
-			} else {
-				merged.push(current)
-			}
-		}
-
-		return merged
-	}
+	const mergeRegions = mergeHighlightRegions
 
 	const generateHighlightedText = (inputText: string, regions: [number, number][] = []) => {
 		if (regions.length === 0) {

@@ -27,7 +27,7 @@ interface MiniMapProps {
 	messages: ClineMessage[]
 	/** The rendered (grouped) list: jump targets index into it. */
 	rows: (ClineMessage | ClineMessage[])[]
-	/** The task prompt: rendered in the header, shown as the first user square. */
+	/** The task prompt: the first rendered row, shown as the first user square. */
 	task?: ClineMessage
 	/** Changes when the list remounts (task switch), so the scroll listener re-attaches. */
 	listKey: number

@@ -1,19 +1,19 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
-import React, { useCallback, useEffect, useRef, useState } from "react"
-import type { LineageRow } from "@/components/chat/chat-view/utils/threadUtils"
-import Thumbnails from "@/components/common/Thumbnails"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
+import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
-import { toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { getEnvironmentColor } from "@/utils/environmentColors"
+import { Breadcrumb, type Crumb } from "./Breadcrumb"
 import { HeaderIconButton } from "./HeaderIconButton"
-import { highlightText } from "./Highlights"
 import { SubagentPanelButton } from "./SubagentPanel"
 import TaskWorkingDirectoryBadge from "./TaskWorkingDirectoryBadge"
+import { ThreadTagRow } from "./ThreadTagRow"
 
 const IS_DEV = process.env.IS_DEV === "true"
 
@@ -23,6 +23,8 @@ interface TaskHeaderProps {
 	onClose: () => void
 	/** Opens a transcript-only subagent from the panel by scrolling to its status row. */
 	onOpenSubagentPreview?: (row: LineageRow) => void
+	/** Opens the task (group) page from its crumb. */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
 /** Title for the header: the thread's title, else the first user message. */
@@ -34,47 +36,71 @@ const MENU_ITEM_CLASS =
 	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
 
 /**
- * One compact row: the thread title (click to expand the full first message
- * with its attachments) and
- * codicon actions — subagents, settle, delete, close — with less frequent
- * actions behind "…". Context, tokens and cost live in the composer.
+ * One compact row: the breadcrumb path to this thread (home, task, ancestor
+ * threads, then the renamable current title) and codicon actions — subagents,
+ * settle, delete, close — with less frequent actions behind "…". The first
+ * message itself is the first bubble of the chat. Context, tokens and cost live
+ * in the composer. The thread's tags sit on a compact line below.
  */
-const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview }) => {
-	const { currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory } = useExtensionState()
+const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
+	const { currentBranch, currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
+		useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
-	const [expanded, setExpanded] = useState(false)
-	const rootRef = useRef<HTMLDivElement>(null)
-	const titleRef = useRef<HTMLButtonElement>(null)
-	const panelRef = useRef<HTMLDivElement>(null)
+	// Shown until the saved title comes back through history.
+	const [pendingTitle, setPendingTitle] = useState<string>()
 
 	const taskId = currentTaskItem?.id
 	const settled = !!currentTaskItem?.isSettled
-	const title = headerTitle(currentTaskItem?.task, task.text)
+	const savedTitle = currentTaskItem?.title
+	const title = headerTitle(
+		pendingTitle ?? savedTitle,
+		(currentTaskItem?.task && threadTitle({ ...currentTaskItem, title: undefined })) || task.text,
+	)
 	const imageCount = task.images?.length ?? 0
 	const fileCount = task.files?.length ?? 0
 	const backgroundRunning = countBackgroundRunning(sessionStatuses, taskId, taskHistory)
 
-	// The expanded first message closes on Esc or a click outside the header.
-	useEffect(() => {
-		if (!expanded) return
-		panelRef.current?.focus({ preventScroll: true })
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return
-			event.stopPropagation()
-			setExpanded(false)
-			titleRef.current?.focus()
-		}
-		const onPointerDown = (event: PointerEvent) => {
-			if (!rootRef.current?.contains(event.target as Node)) setExpanded(false)
-		}
-		document.addEventListener("keydown", onKeyDown, true)
-		document.addEventListener("pointerdown", onPointerDown)
-		return () => {
-			document.removeEventListener("keydown", onKeyDown, true)
-			document.removeEventListener("pointerdown", onPointerDown)
-		}
-	}, [expanded])
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the pending title clears once the saved one (or the thread) changes
+	useEffect(() => setPendingTitle(undefined), [taskId, savedTitle])
+
+	const crumbs = useMemo((): Crumb[] => {
+		const path = buildThreadPath(currentTaskItem, taskHistory ?? [])
+		const ancestors = path.threads.slice(0, -1)
+		const groupId = path.taskGroupId
+		return [
+			{ id: "home", kind: "home", label: "Home", onSelect: onClose },
+			...(groupId
+				? [
+						{
+							id: `task:${groupId}`,
+							kind: "task" as const,
+							label: taskGroups?.find((group) => group.id === groupId)?.title ?? "Task",
+							onSelect: () => onOpenTaskGroup?.(groupId),
+						},
+					]
+				: []),
+			...ancestors.map((thread) => ({
+				id: thread.id,
+				kind: "thread" as const,
+				label: thread.title,
+				sub: thread.sub,
+				onSelect: () => void openTask(thread.id),
+			})),
+			{ id: taskId ?? "current", kind: "thread", label: title, sub: !!currentTaskItem?.parentTaskId },
+		]
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup])
+
+	const rename = useCallback(
+		(next: string) => {
+			if (!taskId) return
+			setPendingTitle(next)
+			void renameTask(taskId, next).then((ok) => {
+				if (!ok) setPendingTitle(undefined)
+			})
+		},
+		[taskId],
+	)
 
 	const copyFirstMessage = useCallback(() => {
 		if (!task.text) return
@@ -85,31 +111,12 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 	}, [task.text])
 
 	return (
-		<div className="px-4 pt-2 pb-1" ref={rootRef}>
+		<div className="px-4 pt-2 pb-1">
 			<div
-				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-2 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
+				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-header"
 				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
-				<button
-					aria-controls="task-header-first-message"
-					aria-expanded={expanded}
-					className="ph-no-capture flex min-w-0 flex-1 items-center gap-1 border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-foreground cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-					data-testid="task-header-title"
-					onClick={() => setExpanded((value) => !value)}
-					ref={titleRef}
-					title={expanded ? "Hide first message" : "Show first message"}
-					type="button">
-					<span className="min-w-0 truncate" data-testid="task-header-title-text">
-						{title}
-					</span>
-					<span
-						aria-hidden
-						className={cn(
-							"codicon codicon-chevron-down shrink-0 text-[12px] text-description transition-transform duration-150 motion-reduce:transition-none",
-							expanded && "rotate-180",
-						)}
-					/>
-				</button>
+				<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
 				{(imageCount > 0 || fileCount > 0) && (
 					<span
 						aria-label={`${imageCount + fileCount} attachment${imageCount + fileCount === 1 ? "" : "s"}`}
@@ -206,24 +213,9 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					/>
 				</div>
 			</div>
-			{expanded && (
-				<div
-					aria-label="First message"
-					className="mt-1 max-h-[40vh] overflow-y-auto rounded-xs border border-editor-group-border bg-(--vscode-editor-background) p-2 outline-none animate-in fade-in-0 slide-in-from-top-1 motion-reduce:animate-none"
-					data-testid="task-header-first-message"
-					id="task-header-first-message"
-					ref={panelRef}
-					role="region"
-					tabIndex={-1}>
-					<div
-						className="ph-no-capture whitespace-pre-wrap break-words text-[13px]"
-						data-testid="task-header-full-text">
-						{highlightText(task.text, false)}
-					</div>
-					{(imageCount > 0 || fileCount > 0) && (
-						<Thumbnails className="mt-2" files={task.files ?? []} images={task.images ?? []} />
-					)}
-				</div>
+			{/* Subagent threads are read-only, so they get no tag row. */}
+			{currentTaskItem && !currentTaskItem.isSubagent && (
+				<ThreadTagRow currentBranch={currentBranch} item={currentTaskItem} />
 			)}
 		</div>
 	)

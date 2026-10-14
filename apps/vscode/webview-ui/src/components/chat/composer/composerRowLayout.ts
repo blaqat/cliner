@@ -11,7 +11,7 @@ export interface ComposerRowLayout {
 	inlineCompactNudge: boolean
 	/** Effort and approvals fold into one "…" menu. */
 	collapsePickers: boolean
-	/** Last, the configuration picker joins them, rather than shrinking to its chevron. */
+	/** Last, the task pill and configuration picker join them, rather than shrinking to their chevrons. */
 	collapseConfig: boolean
 }
 
@@ -45,6 +45,8 @@ export const COMPOSER_ROW_WIDTHS = {
 	groupGap: 4,
 	/** @, +, MCP servers and rules, together. */
 	icons: 74,
+	/** The task pill at its truncated minimum (just ◇). It joins the "…" menu with the config picker. */
+	taskPill: 18,
 	configMin: 56,
 	effortMin: 44,
 	approvals: 28,
@@ -62,6 +64,7 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 	const w = COMPOSER_ROW_WIDTHS
 	const pickers = [
 		w.icons,
+		layout.collapseConfig ? 0 : w.taskPill,
 		layout.collapseConfig ? 0 : w.configMin,
 		!layout.collapsePickers && content.hasEffort ? w.effortMin : 0,
 		layout.collapsePickers ? 0 : w.approvals,

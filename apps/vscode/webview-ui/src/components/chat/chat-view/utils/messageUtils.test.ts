@@ -111,6 +111,23 @@ describe("canRestoreWorkspaceFromMessage", () => {
 })
 
 describe("groupLowStakesTools", () => {
+	it("keeps a child's read approval visible while sibling progress follows it", () => {
+		const approval: ClineMessage = {
+			...createToolMessage(1, "readFile"),
+			type: "ask",
+			ask: "tool",
+			say: undefined,
+			subagentTaskId: "child-a",
+			decisionId: "approval-a",
+		}
+		const grouped = groupLowStakesTools([
+			approval,
+			createToolMessage(2, "readFile"),
+			createTextMessage(3, "Sibling is working"),
+		])
+		expect(grouped[0]).toBe(approval)
+		expect(isToolGroup(grouped[0])).toBe(false)
+	})
 	it("keeps text that arrives after a low-stakes tool group by finalizing the group first", () => {
 		const grouped = groupLowStakesTools([
 			createTextMessage(1, "Initial text"),
