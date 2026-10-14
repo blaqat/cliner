@@ -28,10 +28,15 @@ interface NewTaskGroupSheetProps {
 
 const sameValue = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
-/** A typed tag: a lone ticket key or issue URL is a ticket, anything else a label. */
+/**
+ * A typed tag: `branch:name` (or `⎇ name`) is a branch, a lone ticket key or
+ * issue URL is a ticket, anything else a label.
+ */
 export function parseTagInput(text: string): Pick<TaskTag, "kind" | "value"> | undefined {
 	const value = text.trim()
 	if (!value) return undefined
+	const branch = /^(?:branch:|⎇)\s*(.*)$/i.exec(value)?.[1]?.trim()
+	if (branch !== undefined) return branch ? { kind: "branch", value: branch } : undefined
 	const tickets = extractTicketTags(value)
 	if (tickets.length === 1 && (sameValue(tickets[0], value) || /^https?:\/\//.test(value))) {
 		return { kind: "ticket", value: tickets[0] }
@@ -168,7 +173,7 @@ export const NewTaskGroupSheet = ({
 							onBlur={commitDraft}
 							onChange={(event) => setTagDraft(event.target.value)}
 							onKeyDown={onTagKeyDown}
-							placeholder={tags.length ? "" : "ticket, branch or label…"}
+							placeholder={tags.length ? "" : "ticket, label or branch:name…"}
 							value={tagDraft}
 						/>
 					</div>

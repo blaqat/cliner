@@ -113,7 +113,7 @@ function TagInput({ onDone }: { onDone: (text: string) => void }) {
 			onBlur={() => finish(draft)}
 			onChange={(event) => setDraft(event.target.value)}
 			onKeyDown={onKeyDown}
-			placeholder="ticket, branch or label…"
+			placeholder="ticket, label or branch:name…"
 			value={draft}
 		/>
 	)

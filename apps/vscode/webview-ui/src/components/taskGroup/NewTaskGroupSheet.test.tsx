@@ -31,6 +31,14 @@ describe("parseTagInput", () => {
 		expect(parseTagInput("backend")).toEqual({ kind: "label", value: "backend" })
 		expect(parseTagInput("  ")).toBeUndefined()
 	})
+
+	it("reads branch:name and ⎇ name as branch tags", () => {
+		expect(parseTagInput("branch:feature/foo")).toEqual({ kind: "branch", value: "feature/foo" })
+		expect(parseTagInput(" Branch: PROJ-1-fix ")).toEqual({ kind: "branch", value: "PROJ-1-fix" })
+		expect(parseTagInput("⎇ main")).toEqual({ kind: "branch", value: "main" })
+		expect(parseTagInput("branch:")).toBeUndefined()
+		expect(parseTagInput("branches")).toEqual({ kind: "label", value: "branches" })
+	})
 })
 
 describe("NewTaskGroupSheet", () => {
