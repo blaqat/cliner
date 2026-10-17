@@ -11,6 +11,12 @@ option java_multiple_files = true;
 option java_package = "bot.cline.proto";
 
 service TaskService {
+  // JSON payloads use shared/Walkthrough.ts; all anchors resolve on the host.
+  rpc getChangeWalkthrough(StringRequest) returns (String);
+  rpc generateChangeWalkthrough(StringRequest) returns (String);
+  rpc openWalkthroughDiff(StringRequest) returns (Empty);
+  rpc revertWalkthroughChange(StringRequest) returns (String);
+  rpc sendWalkthroughNotes(StringRequest) returns (Empty);
   // Cancels the currently running task
   rpc cancelTask(EmptyRequest) returns (Empty);
   // Cancels a queued prompt by ID

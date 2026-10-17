@@ -15,6 +15,7 @@ import {
 	ensureChatWorkspace,
 	findCheckpointForRun,
 	getProviderAuthStorageId,
+	getUserRunSpan,
 	type PreparedRemoteConfigCoreIntegration,
 	readSessionCheckpointHistory,
 	resolveDefaultMcpSettingsPath,
@@ -49,6 +50,7 @@ import type {
 } from "@shared/task-groups"
 import type { ThreadWorktreeSettings, WorktreeActionResult } from "@shared/thread-worktrees"
 import { extractTicketTags } from "@shared/ticket-tags"
+import type { WalkthroughScope } from "@shared/Walkthrough"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import chokidar, { type FSWatcher } from "chokidar"
 import { refreshClineRulesToggles } from "@/core/context/instructions/user-instructions/cline-rules"
@@ -67,6 +69,7 @@ import {
 	ensureAgentSkillsDirectoryExists,
 	ensureMcpServersDirectoryExists,
 	ensureRulesDirectoryExists,
+	ensureTaskDirectoryExists,
 	ensureWorkflowsDirectoryExists,
 } from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
@@ -82,6 +85,8 @@ import { UrlContentFetcher } from "@/services/browser/UrlContentFetcher"
 import { ClineError } from "@/services/error/ClineError"
 import { McpHub } from "@/services/mcp/McpHub"
 import { telemetryService } from "@/services/telemetry"
+import { type CollectionInput, readEdits } from "@/services/walkthrough/collection"
+import { recordToolEdits } from "@/services/walkthrough/recording"
 import type { ClineExtensionContext } from "@/shared/cline"
 import { ShowMessageRequest, ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
@@ -605,8 +610,30 @@ export class Controller {
 						context.sessionId ??
 						(await this.resolveTaskSessionId(context.conversationId ?? "")),
 				).interactions.handleAskQuestion(question, options, context),
-			editorExecutor: (input, cwd, context) => this.diffEdits.executeEditorTool(input, cwd, context),
-			applyPatchExecutor: (input, cwd, context) => this.diffEdits.executeApplyPatchTool(input, cwd, context),
+			editorExecutor: (input, cwd, context) =>
+				recordToolEdits(
+					async () =>
+						ensureTaskDirectoryExists(
+							context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+						),
+					input,
+					cwd,
+					context,
+					() => this.diffEdits.executeEditorTool(input, cwd, context),
+					(error) => Logger.warn(`[Walkthrough] Edit recording failed: ${error}`),
+				),
+			applyPatchExecutor: (input, cwd, context) =>
+				recordToolEdits(
+					async () =>
+						ensureTaskDirectoryExists(
+							context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+						),
+					input,
+					cwd,
+					context,
+					() => this.diffEdits.executeApplyPatchTool(input, cwd, context),
+					(error) => Logger.warn(`[Walkthrough] Edit recording failed: ${error}`),
+				),
 			// The SDK's built-in reader resolves relative paths against the extension
 			// host's process.cwd() (usually "/"); resolve them against the workspace instead.
 			readFileExecutor: createWorkspaceFileReadExecutor(
@@ -2988,6 +3015,34 @@ export class Controller {
 			sessionId: restored.sessionId,
 		}
 		await this.postStateToWebview()
+	}
+
+	async getWalkthroughCollectionInput(taskId: string, scope: WalkthroughScope): Promise<CollectionInput> {
+		if (this.task?.taskId !== taskId) throw new Error("Open the requested thread first")
+		let temporaryHost: VscodeSessionHost | undefined
+		const host =
+			this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
+		try {
+			const [session, messages, workspace, edits] = await Promise.all([
+				host.get(taskId),
+				readCurrentMessages(host, taskId),
+				HostProvider.workspace.getWorkspacePaths({}),
+				ensureTaskDirectoryExists(taskId).then(readEdits),
+			])
+			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
+			return {
+				taskId,
+				scope,
+				messages,
+				runSpans: messages.map(getUserRunSpan),
+				edits,
+				roots: [...new Set([cwd, ...workspace.paths])],
+				checkpointRoot: cwd,
+				checkpoints: readSessionCheckpointHistory(session),
+			}
+		} finally {
+			await temporaryHost?.dispose("walkthroughCollection")
+		}
 	}
 
 	/**

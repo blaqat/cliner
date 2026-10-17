@@ -529,4 +529,4 @@ export async function loginOpenAICodex(): Promise<OAuthCredentials> {
 	return {}
 }
 
-export { resolveMessageDisplayRole } from "../../../../sdk/packages/core/src/session/user-run-messages"
+export { getUserRunSpan, resolveMessageDisplayRole } from "../../../../sdk/packages/core/src/session/user-run-messages"
