@@ -2,7 +2,6 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import AboutSection from "./AboutSection"
-import { PICTURE_KEYS } from "./about/AboutPictures"
 import { buildShortcuts, FEATURE_GROUPS, IMPROVEMENT_GROUPS, UPSTREAM_CLINE_VERSION } from "./about/aboutContent"
 import { RELEASE_NOTES } from "./about/releaseNotes"
 
@@ -47,7 +46,7 @@ describe("AboutSection", () => {
 		expect(screen.getByText(/⌘ shortcuts use Ctrl on Windows and Linux/)).toBeTruthy()
 	})
 
-	it("renders every feature group with its pictures", () => {
+	it("renders every feature group as plain bullets", () => {
 		renderAbout()
 		expect(FEATURE_GROUPS.map((g) => g.title)).toEqual(
 			expect.arrayContaining([
@@ -61,7 +60,7 @@ describe("AboutSection", () => {
 				"Configurations",
 				"Composer",
 				"Toasts & Back",
-				"Profiles",
+				"Models & Profiles",
 				"Terminal environment",
 				"Worktrees",
 				"Change walkthrough",
@@ -75,23 +74,22 @@ describe("AboutSection", () => {
 			const rows = within(section).getAllByRole("listitem")
 			expect(rows).toHaveLength(group.items.length)
 			group.items.forEach((item, index) => {
-				expect(within(rows[index]).getByText(item.text)).toBeTruthy()
-				expect(item.pictures.length).toBeGreaterThan(0)
-				expect(within(rows[index]).getAllByRole("img")).toHaveLength(item.pictures.length)
-				for (const picture of item.pictures) {
-					expect(within(rows[index]).getByTestId(`about-picture-${picture}`)).toBeTruthy()
-				}
+				expect(within(rows[index]).getByText(item)).toBeTruthy()
 			})
 		}
 	})
 
-	it("has a picture for every key used in the feature list, with no Show me links", () => {
+	it("shows no pictures and describes Models and Profiles", () => {
 		renderAbout()
-		const used = FEATURE_GROUPS.flatMap((g) => g.items.flatMap((i) => i.pictures))
-		for (const key of used) {
-			expect(PICTURE_KEYS).toContain(key)
-		}
-		expect(screen.queryByText("Show me")).toBeNull()
+		const features = within(screen.getByTestId("about-features"))
+		expect(features.queryAllByRole("img")).toHaveLength(0)
+		expect(features.queryByText("Show me")).toBeNull()
+		expect(
+			features.getByText(
+				"Models page for saved configurations, plus Profiles: a model and an effort under a name, used for new threads (Ask/Act), subagents and text generation",
+			),
+		).toBeTruthy()
+		expect(features.queryByText(/Profiles page/)).toBeNull()
 	})
 
 	it("mentions Azure on the Responses endpoint and the Scripts line", () => {

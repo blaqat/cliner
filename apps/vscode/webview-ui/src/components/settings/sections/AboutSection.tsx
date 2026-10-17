@@ -5,7 +5,6 @@ import { usePlatform } from "@/context/PlatformContext"
 import { cn } from "@/lib/utils"
 import { detectMetaKeyChar, detectOS } from "@/utils/platformUtils"
 import Section from "../Section"
-import { AboutPicture } from "./about/AboutPictures"
 import { buildShortcuts, FEATURE_GROUPS, IMPROVEMENT_GROUPS, UPSTREAM_CLINE_VERSION } from "./about/aboutContent"
 import { RELEASE_NOTES } from "./about/releaseNotes"
 
@@ -54,32 +53,22 @@ const Disclosure = ({
 	)
 }
 
-const GroupTitle = ({ children }: { children: ReactNode }) => <h3 className="mt-3 mb-1 text-[13px] font-semibold">{children}</h3>
+const GroupTitle = ({ children }: { children: ReactNode }) => <h3 className="mt-2 mb-1 text-md font-semibold">{children}</h3>
+
+const BulletList = ({ items }: { items: string[] }) => (
+	<ul className="m-0 flex list-disc flex-col gap-1 pl-5 text-sm text-description">
+		{items.map((item) => (
+			<li key={item}>{item}</li>
+		))}
+	</ul>
+)
 
 const FeaturesTab = () => (
 	<div className="flex flex-col" data-testid="about-features">
 		{FEATURE_GROUPS.map((group) => (
 			<section data-testid={`about-group-${group.id}`} key={group.id}>
 				<GroupTitle>{group.title}</GroupTitle>
-				<ul className="m-0 list-none p-0">
-					{group.items.map((item) => (
-						<li
-							className="flex flex-wrap items-start gap-x-2.5 gap-y-1 border-b border-dashed border-editor-group-border py-1.5 last:border-b-0"
-							key={item.text}>
-							<span className="min-w-[10rem] flex-1 pt-0.5 text-xs text-description">
-								<span aria-hidden className="mr-1.5 opacity-60">
-									•
-								</span>
-								{item.text}
-							</span>
-							<span className="flex shrink-0 gap-1 max-[360px]:ml-3">
-								{item.pictures.map((picture) => (
-									<AboutPicture key={picture} name={picture} />
-								))}
-							</span>
-						</li>
-					))}
-				</ul>
+				<BulletList items={group.items} />
 			</section>
 		))}
 	</div>
@@ -90,16 +79,7 @@ const ImprovementsTab = () => (
 		{IMPROVEMENT_GROUPS.map((group) => (
 			<section data-testid={`about-fixes-${group.id}`} key={group.id}>
 				<GroupTitle>{group.title}</GroupTitle>
-				<ul className="m-0 flex list-none flex-col gap-1 p-0">
-					{group.items.map((item) => (
-						<li className="text-xs text-description" key={item}>
-							<span aria-hidden className="mr-1.5 opacity-60">
-								•
-							</span>
-							{item}
-						</li>
-					))}
-				</ul>
+				<BulletList items={group.items} />
 			</section>
 		))}
 	</div>
@@ -164,7 +144,7 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 
 					<section data-testid="about-shortcuts">
 						<GroupTitle>Shortcuts</GroupTitle>
-						<table className="w-full border-collapse text-xs">
+						<table className="w-full border-collapse text-sm">
 							<tbody>
 								{shortcuts.map((row) => (
 									<tr
@@ -183,9 +163,7 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 					</section>
 
 					<section>
-						<Disclosure
-							testId="about-whats-new"
-							title={<h3 className="m-0 text-[13px] font-semibold">What's new</h3>}>
+						<Disclosure testId="about-whats-new" title={<h3 className="m-0 text-md font-semibold">What's new</h3>}>
 							<div className="flex flex-col gap-0.5 pl-3">
 								{RELEASE_NOTES.map((release, index) => (
 									<Disclosure
@@ -193,14 +171,14 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 										key={release.version}
 										testId={`about-release-${release.version}`}
 										title={
-											<span className="text-xs">
+											<span className="text-sm">
 												<b>{`v${release.version}`}</b>
 												{release.date && <span className="ml-2 text-description">{release.date}</span>}
 											</span>
 										}>
 										<ul className="m-0 mb-1 list-none p-0 pl-4">
 											{release.notes.map((note) => (
-												<li className="text-xs text-description" key={note}>
+												<li className="text-sm text-description" key={note}>
 													<span aria-hidden className="mr-1.5 opacity-60">
 														•
 													</span>
@@ -214,7 +192,7 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 						</Disclosure>
 					</section>
 
-					<h3 className="mt-2 text-[13px] font-semibold">Community & Support</h3>
+					<h3 className="mt-2 text-md font-semibold">Community & Support</h3>
 					<p className="m-0">
 						<VSCodeLink href="https://x.com/cline">X</VSCodeLink>
 						{" • "}
@@ -223,7 +201,7 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 						<VSCodeLink href="https://www.reddit.com/r/cline/"> r/cline</VSCodeLink>
 					</p>
 
-					<h3 className="text-[13px] font-semibold">Development</h3>
+					<h3 className="text-md font-semibold">Development</h3>
 					<p className="m-0">
 						<VSCodeLink href="https://github.com/cline/cline">GitHub</VSCodeLink>
 						{" • "}
@@ -235,7 +213,7 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 						</VSCodeLink>
 					</p>
 
-					<h3 className="text-[13px] font-semibold">Resources</h3>
+					<h3 className="text-md font-semibold">Resources</h3>
 					<p className="m-0">
 						<VSCodeLink href="https://docs.cline.bot/">Documentation</VSCodeLink>
 						{" • "}

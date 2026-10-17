@@ -1,59 +1,12 @@
-// Copy for Settings > About. Edit the lists here; AboutPictures.tsx draws the pictures.
+// Copy for Settings > About. Edit the lists here; plain bullet lists.
 
 /** Upstream Cline release this fork is based on. Bump when rebasing onto a newer Cline. */
 export const UPSTREAM_CLINE_VERSION = "4.1.22"
 
-export type PictureKey =
-	| "inbox"
-	| "bg"
-	| "interject"
-	| "strip"
-	| "quote"
-	| "task"
-	| "note"
-	| "review"
-	| "hist"
-	| "convert"
-	| "wrap"
-	| "xnote"
-	| "thread"
-	| "link"
-	| "tags"
-	| "branch"
-	| "ghost"
-	| "search"
-	| "sub"
-	| "subacc"
-	| "askcmd"
-	| "askguard"
-	| "cfg"
-	| "pill"
-	| "azure"
-	| "plus"
-	| "where"
-	| "ring"
-	| "wf"
-	| "toast"
-	| "back"
-	| "aa"
-	| "usedby"
-	| "env"
-	| "wt"
-	| "wtmenu"
-	| "walk"
-	| "walknote"
-	| "script"
-	| "mcp"
-
-export interface FeatureItem {
-	text: string
-	pictures: PictureKey[]
-}
-
 export interface FeatureGroup {
 	id: string
 	title: string
-	items: FeatureItem[]
+	items: string[]
 }
 
 export const FEATURE_GROUPS: FeatureGroup[] = [
@@ -61,143 +14,123 @@ export const FEATURE_GROUPS: FeatureGroup[] = [
 		id: "threads",
 		title: "Threads & inbox",
 		items: [
-			{ text: "Home inbox: Active and Settled; tasks and threads by last activity", pictures: ["inbox"] },
-			{ text: "Background chats: closing a running chat keeps it running", pictures: ["bg"] },
-			{ text: "Settle, asides, and interject into a running turn", pictures: ["interject"] },
-			{ text: "Threads strip and a minimap of turns", pictures: ["strip"] },
-			{ text: "Quote any message text into the composer", pictures: ["quote"] },
+			"Home inbox: Active and Settled; tasks and threads by last activity",
+			"Background chats: closing a running chat keeps it running",
+			"Settle, asides, and interject into a running turn",
+			"Threads strip and a minimap of turns",
+			"Quote any message text into the composer",
 		],
 	},
 	{
 		id: "tasks",
 		title: "Tasks & notebook",
 		items: [
-			{ text: "Tasks group threads; a task page with its threads and notes", pictures: ["task"] },
-			{ text: "Notes shared by every thread in a task; # mentions a note", pictures: ["note"] },
-			{
-				text: "Agent note edits arrive as a unified review; edit pending notes, Accept all or Discard all",
-				pictures: ["review"],
-			},
-			{ text: "Note history: compare any version with the current one", pictures: ["hist"] },
-			{ text: "Convert a note to a rule, skill or workflow", pictures: ["convert"] },
-			{ text: "Wrap-up review when a task settles", pictures: ["wrap"] },
+			"Tasks group threads; a task page with its threads and notes",
+			"Notes shared by every thread in a task; # mentions a note",
+			"Agent note edits arrive as a unified review; edit pending notes, Accept all or Discard all",
+			"Note history: compare any version with the current one",
+			"Convert a note to a rule, skill or workflow",
+			"Wrap-up review when a task settles",
 		],
 	},
 	{
 		id: "references",
 		title: "References",
 		items: [
-			{ text: "# mentions notes from any task", pictures: ["xnote"] },
-			{ text: "thread: mentions any thread, including other tasks", pictures: ["thread"] },
-			{ text: "Copy a message link; pasting it becomes a quote chip", pictures: ["link"] },
+			"# mentions notes from any task",
+			"thread: mentions any thread, including other tasks",
+			"Copy a message link; pasting it becomes a quote chip",
 		],
 	},
 	{
 		id: "tags",
 		title: "Tags",
 		items: [
-			{ text: "Ticket, branch and label tags on tasks and threads", pictures: ["tags"] },
-			{ text: "Type branch:name; threads inherit their task's tags", pictures: ["branch"] },
-			{ text: "Suggests the task for your checked-out branch", pictures: ["ghost"] },
+			"Ticket, branch and label tags on tasks and threads",
+			"Type branch:name; threads inherit their task's tags",
+			"Suggests the task for your checked-out branch",
 		],
 	},
 	{
 		id: "search",
 		title: "Search",
-		items: [{ text: "⌘K / Ctrl+K across threads, tasks, notes and messages", pictures: ["search"] }],
+		items: ["⌘K / Ctrl+K across threads, tasks, notes and messages"],
 	},
 	{
 		id: "subagents",
 		title: "Subagents",
-		items: [
-			{
-				text: "Open as full thread views with live progress; access levels, approvals, interject and Stop",
-				pictures: ["sub", "subacc"],
-			},
-		],
+		items: ["Open as full thread views with live progress; access levels, approvals, interject and Stop"],
 	},
 	{
 		id: "ask",
 		title: "Ask mode",
-		items: [
-			{ text: "/ask and /act anywhere in a message", pictures: ["askcmd"] },
-			{ text: "Ask mode can't write files, even through the terminal", pictures: ["askguard"] },
-		],
+		items: ["/ask and /act anywhere in a message", "Ask mode can't write files, even through the terminal"],
 	},
 	{
 		id: "configurations",
 		title: "Configurations",
 		items: [
-			{ text: "Saved configurations with a provider allowlist and a default effort", pictures: ["cfg"] },
-			{ text: "Model and effort in the composer are per-chat; reopened chats restore theirs", pictures: ["pill"] },
-			{
-				text: "Azure: newer models that need the Responses endpoint work, with the updated OpenAI Compatible form",
-				pictures: ["azure"],
-			},
+			"Saved configurations with a provider allowlist and a default effort",
+			"Model and effort in the composer are per-chat; reopened chats restore theirs",
+			"Azure: newer models that need the Responses endpoint work, with the updated OpenAI Compatible form",
 		],
 	},
 	{
 		id: "composer",
 		title: "Composer",
 		items: [
-			{ text: "＋ menu: @ mentions, files, MCP servers, rules, workflows and scripts", pictures: ["plus"] },
-			{ text: "Where pill: task, workspace and worktree in one place", pictures: ["where"] },
-			{ text: "Context ring with cost and approvals", pictures: ["ring"] },
-			{ text: "Workflows expand anywhere in a message", pictures: ["wf"] },
+			"＋ menu: @ mentions, files, MCP servers, rules, workflows and scripts",
+			"Where pill: task, workspace and worktree in one place",
+			"Context ring with cost and approvals",
+			"Workflows expand anywhere in a message",
 		],
 	},
 	{
 		id: "navigation",
 		title: "Toasts & Back",
 		items: [
-			{ text: "Toasts when a background thread finishes or needs input", pictures: ["toast"] },
-			{ text: "Back remembers where you were; long-press for the history", pictures: ["back"] },
+			"Toasts when a background thread finishes or needs input",
+			"Back remembers where you were; long-press for the history",
 		],
 	},
 	{
 		id: "profiles",
-		title: "Profiles",
+		title: "Models & Profiles",
 		items: [
-			{ text: "One page for profiles and Ask/Act defaults, with an optional separate Ask profile", pictures: ["aa"] },
-			{ text: "Pick a profile for subagents, walkthrough Generate and thread titles", pictures: ["usedby"] },
+			"Models page for saved configurations, plus Profiles: a model and an effort under a name, used for new threads (Ask/Act), subagents and text generation",
 		],
 	},
 	{
 		id: "terminal",
 		title: "Terminal environment",
-		items: [
-			{
-				text: "Global and workspace variables, a .env file and PATH entries for every command Cline runs",
-				pictures: ["env"],
-			},
-		],
+		items: ["Global and workspace variables, a .env file and PATH entries for every command Cline runs"],
 	},
 	{
 		id: "worktrees",
 		title: "Worktrees",
 		items: [
-			{ text: "Run a thread in its own git or mm worktree; toggle it in the where pill", pictures: ["wt"] },
-			{ text: "Bring here, Undo, Take over and Remove from the breadcrumb ⋯ menu", pictures: ["wtmenu"] },
+			"Run a thread in its own git or mm worktree; toggle it in the where pill",
+			"Bring here, Undo, Take over and Remove from the breadcrumb ⋯ menu",
 		],
 	},
 	{
 		id: "walkthrough",
 		title: "Change walkthrough",
 		items: [
-			{ text: "A guided tour of a thread's changes: chapters and collapsible hunks", pictures: ["walk"] },
-			{ text: "Check off stops, add notes, and send them back to the thread", pictures: ["walknote"] },
+			"A guided tour of a thread's changes: chapters and collapsible hunks",
+			"Check off stops, add notes, and send them back to the thread",
 		],
 	},
 	{
 		// Scripts are built in parallel with this page; keep this line in sync with what ships.
 		id: "scripts",
 		title: "Scripts",
-		items: [{ text: "Saved commands with typed options, run by you or the agent", pictures: ["script"] }],
+		items: ["Saved commands with typed options, run by you or the agent"],
 	},
 	{
 		id: "mcp",
 		title: "MCP & hooks",
-		items: [{ text: "McpServerStart hooks; open chats pick up MCP changes", pictures: ["mcp"] }],
+		items: ["McpServerStart hooks; open chats pick up MCP changes"],
 	},
 ]
 
