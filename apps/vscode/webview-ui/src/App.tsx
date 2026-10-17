@@ -8,6 +8,7 @@ import McpView from "./components/mcp/configuration/McpConfigurationView"
 import { openClinePassSubscriptionIfPending } from "./components/onboarding/clinePassSubscribe"
 import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
+import { ThreadToasts } from "./components/toasts/ThreadToasts"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
 import { useExtensionState } from "./context/ExtensionStateContext"
@@ -77,7 +78,8 @@ const AppContent = () => {
 	}
 
 	return (
-		<div className="flex h-screen w-full flex-col">
+		<div className="relative flex h-screen w-full flex-col">
+			<ThreadToasts />
 			{showSettings && <SettingsView navigationRequest={settingsNavigationRequest} onDone={hideSettings} />}
 			{showHistory && <HistoryView onDone={hideHistory} />}
 			{showMarketplace && <MarketplaceView initialType={mcpTab ? "mcp" : undefined} onDone={closeMarketplaceView} />}

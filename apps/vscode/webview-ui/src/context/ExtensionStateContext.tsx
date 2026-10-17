@@ -84,6 +84,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	taskGroupView: TaskGroupViewState | null
 	showAnnouncement: boolean
 	expandTaskHeader: boolean
+	/** Whether the VS Code window has focus (pushed by the host; true until told otherwise). */
+	windowFocused: boolean
 
 	// Setters
 	setShowAnnouncement: (value: boolean) => void
@@ -175,6 +177,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showWorktrees, setShowWorktrees] = useState(false)
 	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
+	const [windowFocused, setWindowFocused] = useState(true)
 
 	// Helper for MCP view
 	const closeMcpView = useCallback(() => {
@@ -467,6 +470,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const accountButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const settingsButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const worktreesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
+	const windowFocusSubscriptionRef = useRef<(() => void) | null>(null)
 	const partialMessageUnsubscribeRef = useRef<(() => void) | null>(null)
 	const openRouterModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const liteLlmModelsUnsubscribeRef = useRef<(() => void) | null>(null)
@@ -667,6 +671,14 @@ export const ExtensionStateContextProvider: React.FC<{
 			},
 		)
 
+		windowFocusSubscriptionRef.current = UiServiceClient.subscribeToWindowFocus(EmptyRequest.create({}), {
+			onResponse: (response) => setWindowFocused(!!response.value),
+			onError: (error: any) => {
+				console.error("Error in window focus subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Subscribe to partial message events
 		partialMessageUnsubscribeRef.current = UiServiceClient.subscribeToPartialMessage(EmptyRequest.create({}), {
 			onResponse: (protoMessage: any) => {
@@ -811,6 +823,8 @@ export const ExtensionStateContextProvider: React.FC<{
 				settingsButtonClickedSubscriptionRef.current()
 				settingsButtonClickedSubscriptionRef.current = null
 			}
+			windowFocusSubscriptionRef.current?.()
+			windowFocusSubscriptionRef.current = null
 			if (worktreesButtonClickedSubscriptionRef.current) {
 				worktreesButtonClickedSubscriptionRef.current()
 				worktreesButtonClickedSubscriptionRef.current = null
@@ -943,6 +957,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showSettings,
 		settingsNavigationRequest,
 		settingsInitialModelTab,
+		windowFocused,
 		showHistory,
 		showAccount,
 		showWorktrees,

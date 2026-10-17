@@ -5,6 +5,7 @@ import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@sha
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
+import { noteThreadStopped } from "@/components/toasts/threadToastRules"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
@@ -29,6 +30,9 @@ function isCompactionCommand(text: string): boolean {
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
 	const { backgroundCommandRunning, turnState, currentTaskItem, mode } = useExtensionState()
+	// Read at cancel time so a stop never counts as a finished thread for toasts.
+	const currentTaskItemIdRef = useRef(currentTaskItem?.id)
+	currentTaskItemIdRef.current = currentTaskItem?.id
 	const {
 		setInputValue,
 		quotes,
@@ -625,6 +629,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								console.error("Failed to cancel background command:", err),
 							)
 						}
+						noteThreadStopped(currentTaskItemIdRef.current)
 						await TaskServiceClient.cancelTask(EmptyRequest.create({}))
 					} finally {
 						cancelInFlightRef.current = false

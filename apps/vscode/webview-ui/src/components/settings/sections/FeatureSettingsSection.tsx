@@ -1,10 +1,12 @@
 import { UpdateSettingsRequest } from "@shared/proto/cline/state"
-import { memo, type ReactNode } from "react"
+import { memo, type ReactNode, useState } from "react"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { DEFAULT_TOAST_SECONDS } from "../../toasts/threadToastRules"
 import Section from "../Section"
 import { featureSettingControlId, featureSettingElementId } from "../settingsTargets"
 import { updateSetting } from "../utils/settingsHandlers"
@@ -154,7 +156,13 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 		worktreesEnabled,
 		backgroundEditEnabled,
 		showFeatureTips,
+		threadToastsEnabled,
+		threadToastSeconds,
 	} = useExtensionState()
+	// The duration field commits on blur, like other number settings.
+	const [toastSecondsDraft, setToastSecondsDraft] = useState<string>()
+	const toastsOn = threadToastsEnabled !== false
+	const storedToastSeconds = String(threadToastSeconds ?? DEFAULT_TOAST_SECONDS)
 
 	// State lookup for mapped features
 	const featureState: Record<string, boolean | undefined> = {
@@ -236,6 +244,47 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 									onChange={(checked) => updateSetting(feature.settingKey, checked)}
 								/>
 							))}
+						</div>
+					</div>
+				</div>
+
+				{/* Notifications */}
+				<div>
+					<div className="text-xs font-medium text-foreground/80 uppercase tracking-wider mb-3">Notifications</div>
+					<div
+						className="relative p-3 pt-0 my-3 rounded-md border border-editor-widget-border/50"
+						id="notification-features">
+						<FeatureRow
+							checked={toastsOn}
+							description="When a thread you're not viewing finishes or needs input (an approval or a question). Needs-input toasts stay until handled."
+							id="thread-toasts"
+							label="In-app Toasts"
+							onChange={(checked) => updateSetting("threadToastsEnabled", checked)}
+						/>
+						<div className="space-y-2 pb-3 px-1">
+							<Label className="text-sm font-medium text-foreground" htmlFor="thread-toast-seconds">
+								Completion toast duration (seconds)
+							</Label>
+							<Input
+								data-testid="thread-toast-seconds"
+								disabled={!toastsOn}
+								id="thread-toast-seconds"
+								min={1}
+								onBlur={() => {
+									const seconds = Number((toastSecondsDraft ?? storedToastSeconds).trim())
+									if (Number.isInteger(seconds) && seconds >= 1 && seconds !== threadToastSeconds) {
+										updateSetting("threadToastSeconds", seconds)
+									}
+									setToastSecondsDraft(undefined)
+								}}
+								onChange={(event) => setToastSecondsDraft(event.target.value)}
+								step={1}
+								type="number"
+								value={toastSecondsDraft ?? storedToastSeconds}
+							/>
+							<p className="text-xs text-muted-foreground">
+								Hovering pauses it. While VS Code is in the background, the timer waits until you come back.
+							</p>
 						</div>
 					</div>
 				</div>
