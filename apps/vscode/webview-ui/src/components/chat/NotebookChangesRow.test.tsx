@@ -56,7 +56,7 @@ describe("NotebookChangesRow", () => {
 		expect(screen.getByText("−old")).toBeInTheDocument()
 		expect(screen.getByText("+new")).toBeInTheDocument()
 		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "⋯ 3 lines" }))
+		fireEvent.click(screen.getByRole("button", { name: "Show 3 unchanged lines" }))
 		expect(screen.getByText("one")).toBeInTheDocument()
 	})
 	it("Edit opens the host editor with the exact review revision", async () => {

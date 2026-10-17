@@ -2,9 +2,13 @@ import { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { NotebookDiffLine, NotebookNoteMeta, NotebookVersion } from "@shared/task-groups"
 import { useCallback, useEffect, useState } from "react"
 import { Breadcrumb } from "@/components/chat/task-header/Breadcrumb"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
 import MarkdownBlock from "@/components/common/MarkdownBlock"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { NotebookDiff } from "./NotebookDiff"
 import { openNote } from "./useTaskGroup"
@@ -66,34 +70,40 @@ export function NotebookNoteView({
 	return (
 		<div className="flex flex-1 flex-col overflow-hidden" data-testid="notebook-note-view">
 			<div className="px-4 pt-2 pb-1">
-				<Breadcrumb
-					crumbs={[
-						{ id: "home", kind: "home", label: "Home", onSelect: hideTaskGroupView },
-						{
-							id: taskGroupId,
-							kind: "task",
-							label: taskTitle,
-							onSelect: () => navigateToTaskGroup(taskGroupId, "home"),
-						},
-						{
-							id: note.slug,
-							kind: "thread",
-							label: note.name,
-							onSelect: history ? () => setHistory(false) : undefined,
-						},
-						...(history ? [{ id: "history", kind: "thread" as const, label: "History" }] : []),
-					]}
-				/>
+				<div
+					className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
+					data-testid="notebook-note-header">
+					<Breadcrumb
+						crumbs={[
+							{ id: "home", kind: "home", label: "Home", onSelect: hideTaskGroupView },
+							{
+								id: taskGroupId,
+								kind: "task",
+								label: taskTitle,
+								onSelect: () => navigateToTaskGroup(taskGroupId, "home"),
+							},
+							{
+								id: note.slug,
+								kind: "thread",
+								label: note.name,
+								onSelect: history ? () => setHistory(false) : undefined,
+							},
+							...(history ? [{ id: "history", kind: "thread" as const, label: "History" }] : []),
+						]}
+					/>
+				</div>
 			</div>
 			<div className="flex-1 overflow-y-auto px-4 py-2 text-xs">
 				<div className="mb-3 flex items-center gap-2">
 					<Button onClick={onBack} size="xs" variant="secondary">
+						<span aria-hidden className="codicon codicon-arrow-left text-[11px]!" />
 						Notebook
 					</Button>
-					<span className="flex-1 font-semibold">{note.name}</span>
+					<h2 className="ph-no-capture m-0 min-w-0 flex-1 truncate text-[14px] font-semibold">{note.name}</h2>
 					{!history && (
 						<>
 							<Button onClick={() => openNote(taskGroupId, note.slug)} size="xs" variant="secondary">
+								<span aria-hidden className="codicon codicon-go-to-file text-[11px]!" />
 								Open in editor
 							</Button>
 							<Button
@@ -103,6 +113,7 @@ export function NotebookNoteView({
 								}}
 								size="xs"
 								variant="secondary">
+								<span aria-hidden className="codicon codicon-history text-[11px]!" />
 								History
 							</Button>
 						</>
@@ -114,13 +125,13 @@ export function NotebookNoteView({
 						<div className="mb-3 rounded-xs border border-editor-group-border p-1">
 							{[...(data?.versions ?? [])].reverse().map((entry, i, versions) => (
 								<button
-									className="block w-full cursor-pointer rounded-xs border-0 bg-transparent px-2 py-2 text-left text-foreground hover:bg-list-hover"
+									aria-pressed={selected === entry.id}
+									className={cn(
+										"block w-full cursor-pointer rounded-xs border-0 bg-transparent px-2 py-1.5 text-left text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)",
+										selected === entry.id && "bg-selection text-selection-foreground hover:bg-selection",
+									)}
 									key={entry.id}
 									onClick={() => setSelected(entry.id)}
-									style={{
-										background:
-											selected === entry.id ? "var(--vscode-list-activeSelectionBackground)" : undefined,
-									}}
 									type="button">
 									<div>
 										{i === 0
@@ -129,7 +140,7 @@ export function NotebookNoteView({
 												? "Original"
 												: `Version ${versions.length - i}`}
 									</div>
-									<div className="text-[11px] text-description">
+									<div className={cn("text-[11px]", selected === entry.id ? "opacity-80" : "text-description")}>
 										{new Date(entry.ts).toLocaleString()} · {entry.by}
 									</div>
 								</button>
@@ -160,17 +171,17 @@ export function NotebookNoteView({
 					<>
 						<MarkdownBlock markdown={current?.content ?? ""} />
 						{data?.conversions.map((link) => (
-							<button
-								className="mt-2 block cursor-pointer border-0 bg-transparent p-0 text-link hover:underline"
+							<LinkButton
+								className="mt-2 flex items-center gap-1"
 								key={link.path}
 								onClick={() =>
 									void run(async () => {
 										await call("open_conversion", { versionId: link.path })
 									})
-								}
-								type="button">
+								}>
+								<span aria-hidden className="codicon codicon-link-external text-[11px]!" />
 								Converted to {link.kind} › {link.path}
-							</button>
+							</LinkButton>
 						))}
 						<div className="mt-4 border-t border-editor-group-border pt-3">
 							{!converting ? (
@@ -189,10 +200,10 @@ export function NotebookNoteView({
 									</Button>
 								</div>
 							) : (
-								<div className="rounded-xs border border-editor-group-border p-2">
-									<div className="mb-2 font-semibold">Convert to {kind}</div>
-									<div className="mb-2 flex items-center gap-2">
-										<span>Where</span>
+								<div className="rounded-xs border border-editor-group-border bg-code p-3">
+									<div className="mb-2 text-[13px] font-semibold">Convert to {kind}</div>
+									<div className="mb-2 flex items-center gap-1.5">
+										<span className="mr-1 font-medium">Where</span>
 										{[false, true].map((global) => (
 											<Button
 												key={String(global)}
@@ -207,22 +218,28 @@ export function NotebookNoteView({
 										))}
 									</div>
 									{kind === "skill" && (
-										<label className="mb-2 block">
-											Description · decides when it loads
-											<input
+										<div className="mb-2 space-y-1">
+											<label className="block font-medium" htmlFor="notebook-skill-description">
+												Description
+											</label>
+											<p className="m-0 text-description">Decides when the skill loads.</p>
+											<Input
 												aria-label="Skill description"
-												className="mt-1 w-full border border-input-border bg-input-background p-1 text-input-foreground"
+												className="text-xs"
+												id="notebook-skill-description"
 												onChange={(event) => {
 													setDescription(event.target.value)
 													setPreview(undefined)
 												}}
 												value={description}
 											/>
-										</label>
+										</div>
 									)}
 									{preview && (
 										<div className="my-2">
-											<div className="mb-1 break-all text-description">{preview.path}</div>
+											<div className="ph-no-capture mb-1 break-all font-mono text-[11px] text-description">
+												{preview.path}
+											</div>
 											<NotebookDiff lines={[{ kind: "add", text: preview.content }]} />
 										</div>
 									)}
@@ -267,9 +284,9 @@ export function NotebookNoteView({
 					</>
 				)}
 				{error && (
-					<div className="mt-2 text-error" role="alert">
+					<InlineNotice className="mt-2" tone="error">
 						{error}
-					</div>
+					</InlineNotice>
 				)}
 			</div>
 		</div>

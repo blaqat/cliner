@@ -2,6 +2,8 @@ import type { ClineMessage } from "@shared/ExtensionMessage"
 import { ApplyNotebookChangesRequest, DiscardNotebookChangesRequest, NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { NotebookChange, NotebookChangesPayload } from "@shared/task-groups"
 import { useMemo, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
 import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -143,18 +145,15 @@ function NotebookSummaryRow({
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
 			data-testid="notebook-changes-summary">
-			<i aria-hidden className="codicon codicon-book text-[var(--vscode-charts-purple)]" />
+			<i aria-hidden className="codicon codicon-book text-(--vscode-charts-purple)" />
 			<span>{label}</span>
 			{changes.map((change) => (
 				<WroteNoteChip key={change.slug} name={change.name} />
 			))}
 			<span className="flex-1" />
-			<button
-				className="cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
-				onClick={onOpenTask}
-				type="button">
+			<LinkButton className="text-[11px]" onClick={onOpenTask}>
 				Open task
-			</button>
+			</LinkButton>
 		</div>
 	)
 }
@@ -250,7 +249,7 @@ function NotebookChangesCard({
 				className="rounded-xs border border-editor-group-border bg-code p-2.5 text-xs"
 				data-testid="notebook-changes-card">
 				<div className="mb-1 flex items-center gap-1.5">
-					<i aria-hidden className="codicon codicon-book text-[var(--vscode-charts-purple)]" />
+					<i aria-hidden className="codicon codicon-book text-(--vscode-charts-purple)" />
 					<span className="flex-1 font-semibold">Notebook changes · {payload.changes.length}</span>
 					<span className="text-description">from this thread</span>
 				</div>
@@ -259,9 +258,9 @@ function NotebookChangesCard({
 					<div className="border-t border-editor-group-border py-2" key={change.slug}>
 						<div className="mb-1 flex items-center gap-2">
 							<span className="flex-1 font-semibold">{change.name}</span>
-							{change.editedByUser && <span className="text-success">edited by you</span>}
+							{change.editedByUser && <span className="text-[11px] text-success">edited by you</span>}
 							{change.op !== "update" && (
-								<span className="text-description">{change.op === "create" ? "new" : "delete"}</span>
+								<span className="text-[11px] text-description">{change.op === "create" ? "new" : "delete"}</span>
 							)}
 							{change.op !== "delete" && (
 								<Button
@@ -276,38 +275,41 @@ function NotebookChangesCard({
 						</div>
 						<NotebookDiff lines={change.diff ?? []} />
 						{change.draft && (
-							<div
-								className="mt-1 flex flex-wrap items-center gap-2 rounded-xs border border-[var(--vscode-inputValidation-warningBorder)] bg-[var(--vscode-inputValidation-warningBackground)] px-2 py-1"
+							<InlineNotice
+								actions={
+									<>
+										<Button
+											aria-label={`Retry saving your edit to ${change.name}`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "retry_draft")}
+											size="xs"
+											variant="secondary">
+											Retry
+										</Button>
+										<Button
+											aria-label={`Reload your draft of ${change.name} in the editor`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "reload_draft")}
+											size="xs"
+											variant="secondary">
+											Reload
+										</Button>
+										<Button
+											aria-label={`Discard your draft of ${change.name}`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "discard_draft")}
+											size="xs"
+											variant="secondary">
+											Discard draft
+										</Button>
+									</>
+								}
+								className="mt-1"
 								data-testid="notebook-draft-notice"
-								role="alert">
-								<span className="min-w-0 flex-1">
-									Your edit wasn't applied: {change.draft.reason}. Your text is kept as a draft.
-								</span>
-								<Button
-									aria-label={`Retry saving your edit to ${change.name}`}
-									disabled={sending}
-									onClick={() => void action(change.slug, "retry_draft")}
-									size="xs"
-									variant="secondary">
-									Retry
-								</Button>
-								<Button
-									aria-label={`Reload your draft of ${change.name} in the editor`}
-									disabled={sending}
-									onClick={() => void action(change.slug, "reload_draft")}
-									size="xs"
-									variant="secondary">
-									Reload
-								</Button>
-								<Button
-									aria-label={`Discard your draft of ${change.name}`}
-									disabled={sending}
-									onClick={() => void action(change.slug, "discard_draft")}
-									size="xs"
-									variant="secondary">
-									Discard draft
-								</Button>
-							</div>
+								role="alert"
+								tone="warning">
+								Your edit wasn't applied: {change.draft.reason}. Your text is kept as a draft.
+							</InlineNotice>
 						)}
 						{change.replacedUserVersion && (
 							<div className="mt-1 flex items-center gap-2 text-description">
@@ -332,9 +334,9 @@ function NotebookChangesCard({
 					</Button>
 				</div>
 				{error && (
-					<div className="mt-1 text-error" role="alert">
+					<InlineNotice className="mt-2" tone="error">
 						{error}
-					</div>
+					</InlineNotice>
 				)}
 			</div>
 			<NotebookUserEdits changes={payload.changes} />
@@ -348,8 +350,9 @@ function NotebookUserEdits({ changes }: { changes: NotebookChange[] }) {
 			{changes
 				.filter((change) => change.editedByUser || change.replacedUserVersion)
 				.map((change) => (
-					<div className="py-1 text-[11px] text-description" key={change.slug}>
-						✎ You edited {change.name}
+					<div className="flex items-center gap-1 py-1 text-[11px] text-description" key={change.slug}>
+						<span aria-hidden className="codicon codicon-edit text-[11px]!" />
+						You edited {change.name}
 					</div>
 				))}
 		</>

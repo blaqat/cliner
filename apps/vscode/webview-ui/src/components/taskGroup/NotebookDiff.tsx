@@ -10,11 +10,13 @@ export function NotebookDiff({ lines }: { lines: NotebookDiffLine[] }) {
 			{lines.map((line, index) =>
 				line.kind === "collapsed" && !expanded.has(index) ? (
 					<button
-						className="block w-full cursor-pointer border-0 bg-code text-description hover:text-link"
+						aria-label={`Show ${line.text.split("\n").length} unchanged lines`}
+						className="flex w-full cursor-pointer items-center justify-center gap-1 border-0 bg-code py-0.5 text-description hover:bg-list-hover hover:text-foreground"
 						key={index}
 						onClick={() => setExpanded(new Set([...expanded, index]))}
 						type="button">
-						⋯ {line.text.split("\n").length} lines
+						<span aria-hidden className="codicon codicon-unfold text-[11px]!" />
+						{line.text.split("\n").length} lines
 					</button>
 				) : (
 					<pre
