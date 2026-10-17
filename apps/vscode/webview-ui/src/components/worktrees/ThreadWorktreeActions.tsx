@@ -1,15 +1,22 @@
 import { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { cn } from "@/lib/utils"
 import { threadWorktreeAction, useWorktree } from "./useWorktree"
 
 export function WorktreeBadge({ threadId }: { threadId?: string }) {
 	const { state } = useWorktree(threadId)
 	return state?.mapping ? (
-		<span aria-label="Thread runs in a worktree" className="text-description" role="img" title={state.mapping.cwd}>
-			⑂
-		</span>
+		<span
+			aria-label="Thread runs in a worktree"
+			className="codicon codicon-repo-forked shrink-0 text-[12px]! text-description"
+			role="img"
+			title={state.mapping.cwd}
+		/>
 	) : null
 }
 
+/** The thread header ⋯ menu's worktree section: the branch, then the worktree actions. */
 export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 	const { state, refresh, error } = useWorktree(threadId)
 	const [message, setMessage] = useState<string>()
@@ -31,49 +38,59 @@ export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 		}
 	}
 	if (!state?.mapping) return null
+	const actions: [action: string, label: string, icon: string][] = [
+		["open", "Open in new window", "empty-window"],
+		["bring", "Bring here", "arrow-down"],
+		["undo", "Undo bring-in", "discard"],
+		["takeOver", "Take over branch", "git-branch"],
+		["remove", confirmRemove ? "Remove and discard changes" : "Remove worktree", "trash"],
+	]
 	return (
-		<div className="border-b border-(--vscode-panel-border) pb-1 mb-1">
-			<div className="px-2 py-1 text-xs text-description break-all">⑂ {state.mapping.branch}</div>
-			{[
-				["open", "Open in new window"],
-				["bring", "Bring here"],
-				["undo", "Undo bring-in"],
-				["takeOver", "Take over branch"],
-				["remove", confirmRemove ? "Remove and discard changes" : "Remove worktree"],
-			].map(([action, label]) => (
+		<div>
+			<div className={cn(MENU_HEADING_CLASS, "flex items-center gap-1 normal-case tracking-normal")}>
+				<span aria-hidden className="codicon codicon-repo-forked text-[11px]!" />
+				<span className="ph-no-capture min-w-0 truncate font-mono">{state.mapping.branch}</span>
+			</div>
+			{actions.map(([action, label, icon]) => (
 				<button
-					className="block w-full text-left border-0 rounded-xs bg-transparent text-foreground px-2 py-1 text-xs hover:bg-list-hover disabled:opacity-50"
+					className={cn(MENU_ITEM_CLASS, action === "remove" && confirmRemove && "text-error")}
 					disabled={busy}
 					key={action}
 					onClick={() => void act(action)}
 					role="menuitem"
 					type="button">
+					<span aria-hidden className={cn(MENU_ICON_CLASS, `codicon-${icon}`)} />
 					{label}
 				</button>
 			))}
 			{confirmRemove && (
 				<button
-					className="text-xs px-2"
+					className={MENU_ITEM_CLASS}
 					onClick={() => {
 						setConfirmRemove(false)
 						setMessage(undefined)
 					}}
+					role="menuitem"
 					type="button">
+					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-close")} />
 					Cancel removal
 				</button>
 			)}
-			{(message || error) && (
-				<p className="text-xs px-2 break-words" role="status">
+			{(message || error || conflicts.length > 0) && (
+				<InlineNotice className="mx-1 my-1" role="status" tone={confirmRemove || conflicts.length ? "warning" : "info"}>
 					{message || error}
-				</p>
+					{conflicts.length > 0 && (
+						<ul className="m-0 mt-1 list-none p-0 font-mono text-[11px]">
+							{conflicts.map((file) => (
+								<li className="break-all" key={file}>
+									Conflict: {file}
+								</li>
+							))}
+						</ul>
+					)}
+				</InlineNotice>
 			)}
-			{conflicts.length > 0 && (
-				<ul className="text-xs px-4">
-					{conflicts.map((file) => (
-						<li key={file}>Conflict: {file}</li>
-					))}
-				</ul>
-			)}
+			<div className={MENU_SEPARATOR_CLASS} />
 		</div>
 	)
 }

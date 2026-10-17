@@ -1,7 +1,14 @@
 import type { ThreadWorktreeSettings } from "@shared/thread-worktrees"
+import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { FeatureField, FeatureGroup, FeatureRow } from "@/components/settings/sections/FeatureRow"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { threadWorktreeAction, useWorktree } from "./useWorktree"
 
+/** The Worktrees group in Settings → Features: mode, mm paths, the per-workspace switch and cleanup. */
 export function WorktreeSettings() {
 	const { state, refresh, error } = useWorktree()
 	const [draft, setDraft] = useState<ThreadWorktreeSettings>()
@@ -21,131 +28,144 @@ export function WorktreeSettings() {
 			setBusy(false)
 		}
 	}
-	if (!state || !settings) return error ? <p role="alert">{error}</p> : null
+	if (!state || !settings) return error ? <InlineNotice tone="error">{error}</InlineNotice> : null
+	const confirming = Object.keys(warnings).length > 0
 	return (
-		<section aria-label="Worktrees" className="my-3 p-3 space-y-3 border border-editor-widget-border/50 rounded-md">
-			<h3 className="m-0 text-sm">Worktrees</h3>
-			<label className="flex items-center gap-2">
-				Mode
-				<select
-					aria-label="Worktrees mode"
-					className="bg-(--vscode-dropdown-background) text-foreground"
+		<FeatureGroup aria-label="Worktrees" id="worktree-features" title="Worktrees">
+			<FeatureField
+				description="Workspaces with .mmrc use mm automatically. In other workspaces, mm mode uses Git worktrees. New threads start in your workspace."
+				htmlFor="worktrees-mode"
+				label="Mode">
+				<Select
 					disabled={busy}
-					onChange={(event) => setDraft({ ...settings, mode: event.target.value as ThreadWorktreeSettings["mode"] })}
+					onValueChange={(mode) => setDraft({ ...settings, mode: mode as ThreadWorktreeSettings["mode"] })}
 					value={settings.mode}>
-					<option value="off">Off</option>
-					<option value="git">Git worktree</option>
-					<option value="mm">mm</option>
-				</select>
-			</label>
+					<SelectTrigger aria-label="Worktrees mode" className="w-full" id="worktrees-mode">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="off">Off</SelectItem>
+						<SelectItem value="git">Git worktree</SelectItem>
+						<SelectItem value="mm">mm</SelectItem>
+					</SelectContent>
+				</Select>
+			</FeatureField>
 			{(settings.mode === "mm" || state.availability.hasMmrc) && (
 				<>
-					<label className="block text-xs">
-						mm.js
-						<input
+					<FeatureField className="pt-0" htmlFor="worktrees-mm-path" label="Path to mm.js">
+						<Input
 							aria-label="Path to mm.js"
-							className="block w-full bg-input-background text-input-foreground"
+							id="worktrees-mm-path"
 							onChange={(e) => setDraft({ ...settings, mmPath: e.target.value })}
+							placeholder="/path/to/mm.js"
 							value={settings.mmPath}
 						/>
-					</label>
-					<label className="block text-xs">
-						node
-						<input
+					</FeatureField>
+					<FeatureField className="pt-0" htmlFor="worktrees-node-path" label="Path to node">
+						<Input
 							aria-label="Path to node"
-							className="block w-full bg-input-background text-input-foreground"
+							id="worktrees-node-path"
 							onChange={(e) => setDraft({ ...settings, nodePath: e.target.value })}
+							placeholder="node"
 							value={settings.nodePath}
 						/>
-					</label>
+					</FeatureField>
 				</>
 			)}
 			{draft && (
-				<button
-					disabled={busy}
-					onClick={() =>
-						void run(async () => {
-							await threadWorktreeAction("configure", "", draft)
-							setDraft(undefined)
-						})
-					}
-					type="button">
-					Save worktree settings
-				</button>
-			)}
-			<p className="text-xs text-description m-0">
-				Workspaces with .mmrc use mm automatically. In other workspaces, mm mode uses Git worktrees. New threads start in
-				your workspace.
-			</p>
-			<label className="flex gap-2 text-xs">
-				<input
-					checked={state.availability.workspaceOff}
-					disabled={busy}
-					onChange={(event) =>
-						void run(async () => {
-							await threadWorktreeAction("workspaceOff", "", { disabled: event.target.checked })
-						})
-					}
-					type="checkbox"
-				/>
-				Off for this workspace
-			</label>
-			{state.availability.reason && <p className="text-xs text-description">{state.availability.reason}</p>}
-			<div className="text-xs">{state.settled.length} settled worktrees</div>
-			{state.settled.map((mapping) => (
-				<div key={mapping.threadId}>
-					<label className="flex items-start gap-2 text-xs">
-						<input
-							checked={selected.includes(mapping.threadId)}
-							disabled={busy}
-							onChange={(event) =>
-								setSelected(
-									event.target.checked
-										? [...selected, mapping.threadId]
-										: selected.filter((id) => id !== mapping.threadId),
-								)
-							}
-							type="checkbox"
-						/>
-						<span className="break-all">
-							{mapping.branch}
-							<span className="block text-description">
-								{mapping.transferredDiff ? "Brought in / taken over" : "Never brought in"}
-							</span>
-						</span>
-					</label>
-					{warnings[mapping.threadId] && (
-						<p className="text-xs" role="alert">
-							{warnings[mapping.threadId]}
-						</p>
-					)}
+				<div className="flex justify-end px-1 pb-3">
+					<Button
+						disabled={busy}
+						onClick={() =>
+							void run(async () => {
+								await threadWorktreeAction("configure", "", draft)
+								setDraft(undefined)
+							})
+						}
+						size="sm">
+						Save worktree settings
+					</Button>
 				</div>
-			))}
-			{selected.length > 0 && (
-				<button
-					disabled={busy}
-					onClick={() =>
-						void run(async () => {
-							const nextWarnings: Record<string, string> = {}
-							for (const id of selected) {
-								const result = await threadWorktreeAction("remove", id, undefined, !!warnings[id])
-								if (result.warning) nextWarnings[id] = result.warning
+			)}
+			<FeatureRow
+				checked={state.availability.workspaceOff}
+				description={
+					<>
+						New threads in this workspace never start in a worktree.
+						{state.availability.reason && <span className="mt-1 block">{state.availability.reason}</span>}
+					</>
+				}
+				disabled={busy}
+				id="worktrees-workspace-off"
+				label="Off for this workspace"
+				onChange={(disabled) =>
+					void run(async () => {
+						await threadWorktreeAction("workspaceOff", "", { disabled })
+					})
+				}
+			/>
+			<div className="space-y-2 py-3 px-1" data-testid="worktrees-settled">
+				<div className="text-sm font-medium text-foreground">{state.settled.length} settled worktrees</div>
+				{state.settled.length === 0 ? (
+					<p className="m-0 text-xs text-description">Worktrees of settled threads show up here for cleanup.</p>
+				) : (
+					<div className="flex flex-col gap-1">
+						{state.settled.map((mapping) => (
+							<div key={mapping.threadId}>
+								<VSCodeCheckbox
+									checked={selected.includes(mapping.threadId)}
+									disabled={busy}
+									onChange={(event) => {
+										const checked = (event.target as HTMLInputElement).checked
+										setSelected((current) =>
+											checked
+												? current.includes(mapping.threadId)
+													? current
+													: [...current, mapping.threadId]
+												: current.filter((id) => id !== mapping.threadId),
+										)
+									}}>
+									<span className="ph-no-capture break-all font-mono text-xs">{mapping.branch}</span>
+									<span className="block text-xs text-description">
+										{mapping.transferredDiff ? "Brought in / taken over" : "Never brought in"}
+									</span>
+								</VSCodeCheckbox>
+								{warnings[mapping.threadId] && (
+									<InlineNotice className="mt-1" tone="warning">
+										{warnings[mapping.threadId]}
+									</InlineNotice>
+								)}
+							</div>
+						))}
+					</div>
+				)}
+				{selected.length > 0 && (
+					<div className="flex justify-end">
+						<Button
+							disabled={busy}
+							onClick={() =>
+								void run(async () => {
+									const nextWarnings: Record<string, string> = {}
+									for (const id of selected) {
+										const result = await threadWorktreeAction("remove", id, undefined, !!warnings[id])
+										if (result.warning) nextWarnings[id] = result.warning
+									}
+									setWarnings(nextWarnings)
+									setSelected(Object.keys(nextWarnings))
+								})
 							}
-							setWarnings(nextWarnings)
-							setSelected(Object.keys(nextWarnings))
-						})
-					}
-					type="button">
-					{Object.keys(warnings).length
-						? "Confirm removal of selected worktrees"
-						: `Remove ${selected.length} selected`}
-				</button>
-			)}
+							size="sm"
+							variant={confirming ? "danger" : "secondary"}>
+							{confirming ? "Confirm removal of selected worktrees" : `Remove ${selected.length} selected`}
+						</Button>
+					</div>
+				)}
+			</div>
 			{(message || error) && (
-				<p className="text-xs" role="alert">
+				<InlineNotice className="mb-3" tone="error">
 					{message || error}
-				</p>
+				</InlineNotice>
 			)}
-		</section>
+		</FeatureGroup>
 	)
 }

@@ -39,7 +39,7 @@ it("lets a new thread opt in, and the pill badge and send path follow the draft"
 			<WorktreeBadgeSlot />
 		</>,
 	)
-	const toggle = await screen.findByRole("checkbox", { name: /Run in worktree/ })
+	const toggle = await screen.findByRole("menuitemcheckbox", { name: /Run in worktree/ })
 	await waitFor(() => expect(toggle).not.toBeDisabled())
 	expect(screen.queryByLabelText("runs in a worktree")).toBeNull()
 	fireEvent.click(toggle)
@@ -63,5 +63,5 @@ it("shows where an existing thread runs instead of a toggle", async () => {
 	}
 	render(<WorktreeToggleSlot threadId="t1" />)
 	expect(await screen.findByText("cline/t1")).toBeInTheDocument()
-	expect(screen.queryByRole("checkbox")).toBeNull()
+	expect(screen.queryByRole("menuitemcheckbox")).toBeNull()
 })

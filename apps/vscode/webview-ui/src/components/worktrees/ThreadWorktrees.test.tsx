@@ -12,6 +12,17 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 vi.mock("@/services/grpc-client", () => ({
 	WorktreeServiceClient: { threadWorktreeAction: (request: unknown) => mocks.action(request) },
 }))
+vi.mock("@vscode/webview-ui-toolkit/react", () => ({
+	VSCodeCheckbox: ({ children, checked, disabled, onChange }: any) => (
+		<label>
+			<input checked={checked} disabled={disabled} onChange={onChange} type="checkbox" />
+			{children}
+		</label>
+	),
+}))
+// Radix Select measures and captures the pointer; jsdom has neither.
+Element.prototype.hasPointerCapture ??= () => false
+Element.prototype.scrollIntoView ??= () => {}
 const mapping: ThreadWorktree = {
 	threadId: "thread",
 	mode: "git",
@@ -35,7 +46,7 @@ beforeEach(() => {
 })
 it("starts unchecked and updates the shared draft without a modal", async () => {
 	render(<WorktreeToggle />)
-	const toggle = screen.getByRole("checkbox", { name: "Run in worktree" })
+	const toggle = screen.getByRole("menuitemcheckbox", { name: "Run in worktree" })
 	await waitFor(() => expect(toggle).not.toBeDisabled())
 	expect(toggle).not.toBeChecked()
 	fireEvent.click(toggle)
@@ -46,7 +57,7 @@ it("shows mode availability and the reason isolation is unavailable", async () =
 	mocks.state.availability = { ...mocks.state.availability, mode: "mm", available: false, reason: "Set the path to mm.js" }
 	render(<WorktreeToggle />)
 	expect(await screen.findByText("Set the path to mm.js")).toBeVisible()
-	expect(screen.getByRole("checkbox")).toBeDisabled()
+	expect(screen.getByRole("menuitemcheckbox")).toBeDisabled()
 })
 it("renders the worktree badge and asks inline before discarding untransferred changes", async () => {
 	mocks.state.mapping = mapping
@@ -89,8 +100,9 @@ it("saves mode and paths and provides selective settled-worktree cleanup", async
 	mocks.state.settled = [mapping, { ...mapping, threadId: "keep", branch: "cline/keep" }]
 	render(<WorktreeSettings />)
 	expect(await screen.findByText("2 settled worktrees")).toBeVisible()
-	fireEvent.change(screen.getByLabelText("Worktrees mode"), { target: { value: "mm" } })
-	fireEvent.change(screen.getByLabelText("Path to mm.js"), { target: { value: "/tools/mm.js" } })
+	fireEvent.keyDown(screen.getByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
+	fireEvent.keyDown(await screen.findByRole("option", { name: "mm" }), { key: "Enter" })
+	fireEvent.change(await screen.findByLabelText("Path to mm.js"), { target: { value: "/tools/mm.js" } })
 	fireEvent.click(screen.getByText("Save worktree settings"))
 	await waitFor(() =>
 		expect(mocks.action).toHaveBeenCalledWith(
