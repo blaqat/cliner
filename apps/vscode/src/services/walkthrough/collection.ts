@@ -1,14 +1,30 @@
 import { execFile as execFileCallback } from "node:child_process"
-import { appendFile, lstat, readFile, realpath, unlink, writeFile } from "node:fs/promises"
+import { appendFile, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import type { Message, MessageWithMetadata } from "@cline/shared"
 import type { ChangeWalkthrough, WalkthroughScope } from "@shared/Walkthrough"
 import { applyPatch, reversePatch, structuredPatch } from "diff"
+import { Logger } from "@/shared/services/Logger"
 import { type ContentChange, type EditTurn, fallback, hash } from "./engine"
 
 const execFile = promisify(execFileCallback)
 const MAX_FILE = 2 * 1024 * 1024
+const MAX_WARNING = 200
+
+/**
+ * An error whose message is safe to show in the webview: short, and free of
+ * absolute host paths. Any other error is logged host-side and replaced by a
+ * generic message when it would reach the webview.
+ */
+export class ReviewError extends Error {}
+
+/** Logs the raw error host-side and returns a bounded warning for the webview. */
+export function warningFor(label: string, error: unknown): string {
+	Logger.warn(`[walkthrough] ${label}`, error)
+	const detail = error instanceof ReviewError ? error.message : "could not be read (details are in the extension log)"
+	return `${label}: ${detail}`.slice(0, MAX_WARNING)
+}
 export async function git(cwd: string, args: string[]): Promise<string> {
 	return (await execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 })).stdout
 }
@@ -16,7 +32,7 @@ export async function git(cwd: string, args: string[]): Promise<string> {
 export async function readDisk(filePath: string): Promise<{ text: string; exists: boolean }> {
 	try {
 		const stat = await lstat(filePath)
-		if (!stat.isFile() || stat.size > MAX_FILE) throw new Error(`Cannot review non-file or file over 2 MiB: ${filePath}`)
+		if (!stat.isFile() || stat.size > MAX_FILE) throw new ReviewError("Cannot review a non-file or a file over 2 MiB")
 		return { text: await readFile(filePath, "utf8"), exists: true }
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { text: "", exists: false }
@@ -89,10 +105,19 @@ export function transcriptTurns(messages: Message[], runSpans: number[]): { turn
 	return { turns, toolTurns }
 }
 
+/** Workspace-relative (or module-prefixed) label for a warning; never an absolute path. */
+function relativeLabel(filePath: string, roots: string[], fallbackLabel: string): string {
+	try {
+		return modulePath(filePath, roots)
+	} catch {
+		return fallbackLabel
+	}
+}
+
 /** Root basenames are disambiguated deterministically when two modules have the same name. */
 export function modulePath(filePath: string, roots: string[]): string {
 	const root = [...roots].sort((a, b) => b.length - a.length).find((r) => filePath === r || filePath.startsWith(r + path.sep))
-	if (!root) throw new Error(`File is outside the thread workspace: ${filePath}`)
+	if (!root) throw new ReviewError("File is outside the thread workspace")
 	const relative = path.relative(root, filePath).split(path.sep).join("/")
 	const name = path.basename(root)
 	const duplicates = roots.filter((r) => path.basename(r) === name)
@@ -116,10 +141,10 @@ async function snapshot(root: string, ref: string, file: string): Promise<{ text
 	for (const tree of [ref, `${ref}^3`]) {
 		try {
 			const text = await git(root, ["show", `${tree}:${file}`])
-			if (text.length > MAX_FILE) throw new Error(`Checkpoint file exceeds 2 MiB: ${file}`)
+			if (text.length > MAX_FILE) throw new ReviewError(`Checkpoint file exceeds 2 MiB: ${file}`)
 			return { text, exists: true }
 		} catch (error) {
-			if ((error as Error).message.startsWith("Checkpoint file")) throw error
+			if (error instanceof ReviewError) throw error
 		}
 	}
 	return { text: "", exists: false }
@@ -172,7 +197,7 @@ export async function changesBetween(
 					afterExists: after.exists,
 				})
 		} catch (error) {
-			warnings.push(`${modulePath(path.resolve(root, file), roots)}: ${(error as Error).message}`)
+			warnings.push(warningFor(relativeLabel(path.resolve(root, file), roots, file), error))
 		}
 	}
 	return changes
@@ -208,7 +233,7 @@ export async function collect(
 				existing.afterExists = edit.afterExists
 			} else turn.changes.push({ ...edit, path: displayPath, turnId: turn.id })
 		} catch (error) {
-			warnings.push((error as Error).message)
+			warnings.push(warningFor("Recorded edit", error))
 		}
 	}
 	const checkpoints = [...input.checkpoints].sort((a, b) => a.runCount - b.runCount)
@@ -242,7 +267,7 @@ export async function collect(
 				warnings.push("Earlier edits were recovered from checkpoints; their turn messages are unavailable.")
 			}
 		} catch (error) {
-			warnings.push(`Earlier edits: ${(error as Error).message}`)
+			warnings.push(warningFor("Earlier edits", error))
 		}
 	}
 	for (const [index, turn] of turns.entries()) {
@@ -266,7 +291,7 @@ export async function collect(
 				} else turn.changes.push({ ...change, turnId: turn.id })
 			}
 		} catch (error) {
-			warnings.push(`${turn.id}: ${(error as Error).message}`)
+			warnings.push(warningFor(turn.id, error))
 		}
 	}
 
@@ -276,7 +301,7 @@ export async function collect(
 			try {
 				changes.push(...(await changesBetween(root, roots, "HEAD", undefined, warnings)))
 			} catch (error) {
-				warnings.push(`${path.basename(root)}: ${(error as Error).message}`)
+				warnings.push(warningFor(path.basename(root), error))
 			}
 		}
 		return { walk: fallback(input.taskId, input.scope, turns, changes, warnings), turns, changes }
@@ -309,33 +334,121 @@ export async function collect(
 				warnings.push(`${change.path}: changed after the recorded edit; showing current file contents.`)
 			changes.push({ ...change, after: disk.text, afterExists: disk.exists })
 		} catch (error) {
-			warnings.push((error as Error).message)
+			warnings.push(warningFor(change.path, error))
 		}
 	}
 	return { walk: fallback(input.taskId, input.scope, selected, changes, warnings), turns: selected, changes }
 }
 
-/** Reverts only an unchanged reviewed snapshot; later edits always require a refresh. */
-export async function revertChange(change: ContentChange, walk: ChangeWalkthrough, hunkId?: string): Promise<void> {
-	const current = await readDisk(change.filePath)
-	if (current.text !== change.after || current.exists !== change.afterExists)
-		throw new Error("File changed since this walkthrough. Refresh before reverting.")
-	if (current.text.includes("\0") || change.before.includes("\0")) throw new Error("Binary changes cannot be reverted here")
-	let restored = change.before
-	if (hunkId) {
-		const hunk = walk.hunks.find((h) => h.id === hunkId && h.fileId === hash([change.filePath, change.turnId]).slice(0, 24))
-		if (!hunk || hunk.synthetic) throw new Error("Unknown or non-text hunk")
-		const patch = structuredPatch(change.path, change.path, change.before, change.after, "", "", { context: 3 })
-		const part = patch.hunks.find((p) => p.oldStart === hunk.oldStart && p.newStart === hunk.newStart)
-		if (!part) throw new Error("Hunk is no longer available")
-		const result = applyPatch(current.text, reversePatch({ ...patch, hunks: [part] }), { fuzzFactor: 0 })
-		if (result === false) throw new Error("Cannot apply the reverse hunk safely")
-		restored = result
+let revertQueue: Promise<unknown> = Promise.resolve()
+
+/** Test seam: runs after the pre-write checks and right before the final re-read and write. */
+export interface RevertHooks {
+	beforeWrite?: () => Promise<void>
+}
+
+const STALE_FILE = "File changed since this walkthrough. Refresh before reverting."
+
+async function isInside(candidate: string, root: string): Promise<boolean> {
+	return candidate === root || candidate.startsWith(root + path.sep)
+}
+
+/**
+ * The directory must resolve (through symlinks) to a place inside one of the
+ * workspace roots. A missing directory is judged by its nearest existing
+ * ancestor, so a deleted directory can be recreated but a symlinked one can
+ * never lead the write outside the workspace.
+ */
+async function assertDirectoryInWorkspace(directory: string, roots: string[]): Promise<void> {
+	let ancestor = directory
+	for (;;) {
+		try {
+			await lstat(ancestor)
+			break
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			const parent = path.dirname(ancestor)
+			if (parent === ancestor) throw new ReviewError("Cannot revert outside the thread workspace")
+			ancestor = parent
+		}
 	}
-	// Resolve the parent too: an in-workspace symlink must not write outside the root.
-	if ((await realpath(path.dirname(change.filePath))) !== path.dirname(change.filePath))
-		throw new Error("Cannot revert through a symlinked directory")
-	if (!change.beforeExists && (!hunkId || restored === "")) {
-		if (current.exists) await unlink(change.filePath)
-	} else await writeFile(change.filePath, restored, "utf8")
+	let resolved: string
+	try {
+		resolved = await realpath(ancestor)
+	} catch (error) {
+		// A dangling symlink exists for lstat but cannot be resolved.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT")
+			throw new ReviewError("Cannot revert through a symlinked directory")
+		throw error
+	}
+	for (const root of roots) {
+		const realRoot = await realpath(root).catch(() => undefined)
+		if (realRoot && (await isInside(resolved, realRoot))) return
+	}
+	throw new ReviewError("Cannot revert outside the thread workspace")
+}
+
+/**
+ * Reverts only an unchanged reviewed snapshot; later edits always require a
+ * refresh. Reverts run one at a time, and the file is read again right before
+ * the write so a change made after the first check is refused, not overwritten.
+ */
+export function revertChange(
+	change: ContentChange,
+	walk: ChangeWalkthrough,
+	hunkId: string | undefined,
+	roots: string[],
+	hooks: RevertHooks = {},
+): Promise<void> {
+	const run = revertQueue.then(() => performRevert(change, walk, hunkId, roots, hooks))
+	revertQueue = run.catch(() => undefined)
+	return run
+}
+
+async function performRevert(
+	change: ContentChange,
+	walk: ChangeWalkthrough,
+	hunkId: string | undefined,
+	roots: string[],
+	hooks: RevertHooks,
+): Promise<void> {
+	try {
+		const unchanged = (disk: { text: string; exists: boolean }) =>
+			disk.text === change.after && disk.exists === change.afterExists
+		const current = await readDisk(change.filePath)
+		if (!unchanged(current)) throw new ReviewError(STALE_FILE)
+		if (current.text.includes("\0") || change.before.includes("\0"))
+			throw new ReviewError("Binary changes cannot be reverted here")
+		let restored = change.before
+		if (hunkId) {
+			const hunk = walk.hunks.find(
+				(h) => h.id === hunkId && h.fileId === hash([change.filePath, change.turnId]).slice(0, 24),
+			)
+			if (!hunk || hunk.synthetic) throw new ReviewError("Unknown or non-text hunk")
+			const patch = structuredPatch(change.path, change.path, change.before, change.after, "", "", { context: 3 })
+			const part = patch.hunks.find((p) => p.oldStart === hunk.oldStart && p.newStart === hunk.newStart)
+			if (!part) throw new ReviewError("Hunk is no longer available")
+			const result = applyPatch(current.text, reversePatch({ ...patch, hunks: [part] }), { fuzzFactor: 0 })
+			if (result === false) throw new ReviewError("Cannot apply the reverse hunk safely")
+			restored = result
+		}
+		const removing = !change.beforeExists && (!hunkId || restored === "")
+		const directory = path.dirname(change.filePath)
+		if (!removing) {
+			await assertDirectoryInWorkspace(directory, roots)
+			await mkdir(directory, { recursive: true })
+			// Creating directories must not have walked through a symlink either.
+			await assertDirectoryInWorkspace(directory, roots)
+		}
+		await hooks.beforeWrite?.()
+		// Compare-and-write: the check above can be stale by now.
+		if (!unchanged(await readDisk(change.filePath))) throw new ReviewError(STALE_FILE)
+		if (removing) {
+			if (current.exists) await unlink(change.filePath)
+		} else await writeFile(change.filePath, restored, "utf8")
+	} catch (error) {
+		if (error instanceof ReviewError) throw error
+		Logger.warn(`[walkthrough] Revert of ${change.filePath} failed`, error)
+		throw new ReviewError(`Could not revert ${change.path}`)
+	}
 }

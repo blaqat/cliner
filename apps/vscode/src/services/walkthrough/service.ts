@@ -6,7 +6,7 @@ import { apiConfigurationForProfileId, readApiConfigProfiles } from "@/core/cont
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { HostProvider } from "@/hosts/host-provider"
 import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
-import { collect, revertChange } from "./collection"
+import { collect, gitRoots, revertChange } from "./collection"
 import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput } from "./engine"
 
 /** The profile Generate used last (Settings › Profiles › Used by › Walkthrough Generate). */
@@ -155,7 +155,8 @@ export class WalkthroughService {
 	async revert(request: WalkthroughRequest): Promise<ChangeWalkthrough> {
 		if (request.confirmed !== true) throw new Error("Confirm this revert inline first")
 		const { walk, changes } = await this.reviewed(request)
-		await revertChange(this.findChange(request, walk, changes), walk, request.hunkId)
+		const input = await this.controller.getWalkthroughCollectionInput(request.taskId, request.scope)
+		await revertChange(this.findChange(request, walk, changes), walk, request.hunkId, await gitRoots(input.roots))
 		this.documents.delete(this.key(request))
 		return this.get(request)
 	}

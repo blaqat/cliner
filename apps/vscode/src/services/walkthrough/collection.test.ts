@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Message } from "@cline/shared"
@@ -303,11 +303,11 @@ describe("walkthrough collection", () => {
 		const walk = fallback("task", "git", [], [change])
 		expect(walk.hunks).toHaveLength(2)
 		await writeFile(filePath, after)
-		await revertChange(change, walk, "h1")
+		await revertChange(change, walk, "h1", [root])
 		const restored = await readFile(filePath, "utf8")
 		expect(restored).toContain("line 1\n")
 		expect(restored).toContain("second edit\n")
-		await expect(revertChange(change, walk, "h2")).rejects.toThrow("File changed")
+		await expect(revertChange(change, walk, "h2", [root])).rejects.toThrow("File changed")
 	})
 	it("removes a newly created file and restores a deleted file", async () => {
 		const root = await repo("repo"),
@@ -321,11 +321,149 @@ describe("walkthrough collection", () => {
 			afterExists: true,
 		}
 		await writeFile(filePath, created.after)
-		await revertChange(created, fallback("task", "git", [], [created]))
+		await revertChange(created, fallback("task", "git", [], [created]), undefined, [root])
 		await expect(readFile(filePath)).rejects.toMatchObject({ code: "ENOENT" })
 		const deleted = { ...created, before: "restore\n", after: "", beforeExists: true, afterExists: false }
-		await revertChange(deleted, fallback("task", "git", [], [deleted]))
+		await revertChange(deleted, fallback("task", "git", [], [deleted]), undefined, [root])
 		expect(await readFile(filePath, "utf8")).toBe("restore\n")
+	})
+	describe("revert safety", () => {
+		const wholeFile = (filePath: string, before: string, after: string): ContentChange => ({
+			filePath,
+			path: "a.ts",
+			before,
+			after,
+			beforeExists: true,
+			afterExists: true,
+		})
+		it("serializes reverts, so a second revert of the same file is refused", async () => {
+			const root = await repo("repo"),
+				filePath = path.join(root, "a.ts")
+			const change = wholeFile(filePath, "old\n", "new\n")
+			const walk = fallback("task", "git", [], [change])
+			await writeFile(filePath, "new\n")
+			const results = await Promise.allSettled([
+				revertChange(change, walk, undefined, [root]),
+				revertChange(change, walk, undefined, [root]),
+			])
+			expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"])
+			expect(await readFile(filePath, "utf8")).toBe("old\n")
+		})
+		it("refuses and keeps a write that lands after the first check", async () => {
+			const root = await repo("repo"),
+				filePath = path.join(root, "a.ts")
+			const change = wholeFile(filePath, "old\n", "new\n")
+			await writeFile(filePath, "new\n")
+			await expect(
+				revertChange(change, fallback("task", "git", [], [change]), undefined, [root], {
+					beforeWrite: () => writeFile(filePath, "someone else\n"),
+				}),
+			).rejects.toThrow("File changed")
+			expect(await readFile(filePath, "utf8")).toBe("someone else\n")
+		})
+		it("keeps working after a failed revert", async () => {
+			const root = await repo("repo"),
+				filePath = path.join(root, "a.ts")
+			const change = wholeFile(filePath, "old\n", "new\n")
+			await writeFile(filePath, "different\n")
+			await expect(revertChange(change, fallback("task", "git", [], [change]), undefined, [root])).rejects.toThrow()
+			await writeFile(filePath, "new\n")
+			await revertChange(change, fallback("task", "git", [], [change]), undefined, [root])
+			expect(await readFile(filePath, "utf8")).toBe("old\n")
+		})
+		it("recreates a deleted parent directory when restoring a deleted file", async () => {
+			const root = await repo("repo"),
+				filePath = path.join(root, "gone", "deep", "b.ts")
+			const deleted: ContentChange = {
+				filePath,
+				path: "gone/deep/b.ts",
+				before: "restore\n",
+				after: "",
+				beforeExists: true,
+				afterExists: false,
+			}
+			await revertChange(deleted, fallback("task", "git", [], [deleted]), undefined, [root])
+			expect(await readFile(filePath, "utf8")).toBe("restore\n")
+		})
+		it("refuses to restore through a symlink that leads outside the workspace", async () => {
+			const root = await repo("repo")
+			const outside = path.join(directory, "outside")
+			await mkdir(outside)
+			await symlink(outside, path.join(root, "link"))
+			const filePath = path.join(root, "link", "missing", "c.ts")
+			const deleted: ContentChange = {
+				filePath,
+				path: "link/missing/c.ts",
+				before: "restore\n",
+				after: "",
+				beforeExists: true,
+				afterExists: false,
+			}
+			await expect(revertChange(deleted, fallback("task", "git", [], [deleted]), undefined, [root])).rejects.toThrow(
+				"outside the thread workspace",
+			)
+			await expect(readFile(path.join(outside, "missing", "c.ts"))).rejects.toMatchObject({ code: "ENOENT" })
+		})
+		it("does not leak absolute paths in revert errors", async () => {
+			const root = await repo("repo"),
+				filePath = path.join(root, "a.ts", "nested", "x.ts")
+			const deleted: ContentChange = {
+				filePath,
+				path: "a.ts/nested/x.ts",
+				before: "restore\n",
+				after: "",
+				beforeExists: true,
+				afterExists: false,
+			}
+			// a.ts is a file, so the parent cannot be created.
+			const error = await revertChange(deleted, fallback("task", "git", [], [deleted]), undefined, [root]).catch((e) => e)
+			expect(String(error.message)).not.toContain(directory)
+		})
+	})
+	it("keeps absolute host paths out of collection warnings", async () => {
+		const root = await repo("repo")
+		await writeFile(path.join(root, "large.bin"), "x".repeat(2 * 1024 * 1024 + 1))
+		const outsideFile = path.join(directory, "elsewhere.ts")
+		const result = await collect({
+			taskId: "task",
+			scope: "git",
+			roots: [root, path.join(directory, "not-a-repo")],
+			checkpointRoot: root,
+			messages: [],
+			runSpans: [],
+			edits: [],
+			checkpoints: [],
+		})
+		expect(result.walk.warnings.length).toBeGreaterThan(0)
+		for (const warning of result.walk.warnings) {
+			expect(warning).not.toContain(directory)
+			expect(warning.length).toBeLessThanOrEqual(200)
+		}
+		const recorded = await collect({
+			taskId: "task",
+			scope: "thread",
+			roots: [root],
+			checkpointRoot: root,
+			messages: [
+				{ role: "user", content: "go" },
+				{ role: "assistant", content: [{ type: "tool_use", id: "edit", name: "editor", input: {} }] },
+			],
+			runSpans: [1, 0],
+			edits: [
+				{
+					filePath: outsideFile,
+					before: "",
+					after: "x",
+					beforeExists: false,
+					afterExists: true,
+					toolCallId: "edit",
+					runId: "run",
+				},
+			],
+			checkpoints: [],
+		})
+		expect(recorded.walk.warnings.join(" ")).toContain("outside the thread workspace")
+		expect(recorded.walk.warnings.join(" ")).not.toContain(directory)
 	})
 	it("preserves CRLF and missing final newlines when reversing a hunk", async () => {
 		const root = await repo("repo"),
@@ -336,7 +474,7 @@ describe("walkthrough collection", () => {
 		]) {
 			const change: ContentChange = { filePath, path: "a.ts", before, after, beforeExists: true, afterExists: true }
 			await writeFile(filePath, after)
-			await revertChange(change, fallback("task", "git", [], [change]), "h1")
+			await revertChange(change, fallback("task", "git", [], [change]), "h1", [root])
 			expect(await readFile(filePath, "utf8")).toBe(before)
 		}
 	})
