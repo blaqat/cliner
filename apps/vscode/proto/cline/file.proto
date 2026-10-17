@@ -93,6 +93,18 @@ service FileService {
 
   // Deletes an existing skill directory
   rpc deleteSkillFile(DeleteSkillRequest) returns (SkillsToggles);
+
+  // Lists saved scripts (global and workspace) with their on/off state and declared options
+  rpc refreshScripts(EmptyRequest) returns (RefreshedScripts);
+
+  // Toggles a script on or off
+  rpc toggleScript(ToggleScriptRequest) returns (RefreshedScripts);
+
+  // Creates a script from a template and opens it in the editor
+  rpc createScriptFile(CreateScriptRequest) returns (RefreshedScripts);
+
+  // Changes a script's approval level in its frontmatter
+  rpc setScriptApproval(SetScriptApprovalRequest) returns (RefreshedScripts);
 }
 
 // Response for refreshRules operation
@@ -343,4 +355,55 @@ message DeleteSkillRequest {
   Metadata metadata = 1;
   string skill_path = 2; // Path to the skill directory
   bool is_global = 3; // Whether this is a global or workspace skill
+}
+
+// One declared option of a script
+message ScriptOptionInfo {
+  string name = 1;
+  string kind = 2; // "flag" | "text" | "choice"
+  bool required = 3;
+  string description = 4;
+  repeated string choices = 5; // Resolved choices (including modules from .mmrc)
+  bool has_default = 6;
+  string default_value = 7; // "true"/"false" for flags
+  string choices_from = 8; // "mmrc" when the choices come from the workspace's .mmrc
+}
+
+// Script information structure
+message ScriptInfo {
+  string name = 1;
+  string description = 2; // When to use it
+  string path = 3; // Full path to the script's Markdown file
+  bool enabled = 4;
+  string approval = 5; // "always_ask" | "ask_in_ask_mode" | "always_allow"
+  repeated ScriptOptionInfo options = 6;
+  repeated string errors = 7; // Validation errors; an invalid script is listed but never offered to the agent
+}
+
+// Response for refreshScripts and the script mutations
+message RefreshedScripts {
+  repeated ScriptInfo global_scripts = 1;
+  repeated ScriptInfo workspace_scripts = 2;
+}
+
+// Request to toggle a script
+message ToggleScriptRequest {
+  Metadata metadata = 1;
+  string script_path = 2;
+  bool is_global = 3;
+  bool enabled = 4;
+}
+
+// Request to create a script
+message CreateScriptRequest {
+  Metadata metadata = 1;
+  string script_name = 2;
+  bool is_global = 3;
+}
+
+// Request to change a script's approval level
+message SetScriptApprovalRequest {
+  Metadata metadata = 1;
+  string script_path = 2;
+  string approval = 3;
 }
