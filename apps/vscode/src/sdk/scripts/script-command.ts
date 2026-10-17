@@ -67,7 +67,7 @@ function referencedNames(parts: TemplatePart[]): { name: string; value: boolean 
 
 /** Check included and omitted sections, so neither branch can splice shell words. */
 function validateShellContexts(parts: TemplatePart[]): string[] {
-	type State = { quote: string; escaped: boolean; boundary: boolean; value: boolean }
+	type State = { quote: string; escaped: boolean; boundary: boolean; value: boolean; previous: string }
 	const errors: string[] = []
 	const walk = (list: TemplatePart[], initial: State[]): State[] => {
 		let states = initial
@@ -96,9 +96,14 @@ function validateShellContexts(parts: TemplatePart[]): string[] {
 					errors.push("Placeholders are not supported with shell substitutions, comments or heredocs")
 				for (const char of part.text) {
 					const separator = /[\s;|&()<>]/.test(char)
+					if ((state.previous === "$" && /['"({[]/.test(char)) || (state.previous === "<" && char === "<"))
+						errors.push("Placeholders are not supported with shell substitutions, extended quotes or heredocs")
+					state.previous = !state.quote && !state.escaped ? char : ""
 					if (state.value && !separator) errors.push("A placeholder must end at a shell word boundary")
 					state.value = false
 					if (state.escaped) {
+						if (char === "\n" || char === "\r")
+							errors.push("Placeholders are not supported with shell line continuations")
 						state.escaped = false
 						state.boundary = false
 						continue
@@ -125,7 +130,7 @@ function validateShellContexts(parts: TemplatePart[]): string[] {
 		return states
 	}
 	if (referencedNames(parts).some((reference) => reference.value))
-		walk(parts, [{ quote: "", escaped: false, boundary: true, value: false }])
+		walk(parts, [{ quote: "", escaped: false, boundary: true, value: false, previous: "" }])
 	return errors
 }
 
