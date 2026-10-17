@@ -194,10 +194,8 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 										testId={`about-release-${release.version}`}
 										title={
 											<span className="text-xs">
-												<b>{release.upcoming ? release.version : `v${release.version}`}</b>
-												<span className="ml-2 text-description">
-													{release.upcoming ? "upcoming" : release.date}
-												</span>
+												<b>{`v${release.version}`}</b>
+												{release.date && <span className="ml-2 text-description">{release.date}</span>}
 											</span>
 										}>
 										<ul className="m-0 mb-1 list-none p-0 pl-4">

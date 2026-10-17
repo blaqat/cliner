@@ -155,6 +155,6 @@ describe("AboutSection", () => {
 		expect(screen.queryByText(older.notes[0])).toBeNull()
 		fireEvent.click(within(screen.getByTestId(`about-release-${older.version}`)).getByRole("button"))
 		expect(screen.getByText(older.notes[0])).toBeTruthy()
-		expect(screen.getByText("upcoming")).toBeTruthy()
+		expect(screen.queryByText(/upcoming|next release/i)).toBeNull()
 	})
 })
