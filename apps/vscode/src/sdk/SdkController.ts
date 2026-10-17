@@ -94,6 +94,7 @@ import { isClineManagedProvider } from "@/shared/utils/cline"
 import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
+import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
@@ -426,7 +427,14 @@ export class Controller {
 		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
 		getLogDir: () => path.join(HostProvider.get().globalStorageFsPath, "script-logs"),
 		// The same environment every other command Cline runs gets (settings + .env + PATH).
-		resolveEnv: async (cwd) => (await resolveConfiguredTerminalEnv(StateManager.get(), { cwd })).env,
+		// Same .env base as commands and the settings preview (the workspace root, not the script's cwd).
+		resolveEnv: async (cwd) =>
+			(
+				await resolveConfiguredTerminalEnv(StateManager.get(), {
+					cwd,
+					workspaceRoot: await getTerminalEnvWorkspaceRoot(cwd),
+				})
+			).env,
 	})
 	private readonly notebookStore = new NotebookStore()
 	private readonly notebookEditors: { dispose(): void }[] = []
