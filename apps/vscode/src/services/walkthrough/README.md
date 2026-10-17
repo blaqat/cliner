@@ -1,6 +1,6 @@
 # Walkthrough backend contract
 
-`src/shared/Walkthrough.ts` defines the JSON contract shared with the webview. The minimal page is `webview-ui/src/components/walkthrough/WalkthroughView.tsx`. Thread actions open it with `navigateToWalkthrough()`. Navigation history records `{ kind: "walkthrough", id: taskId }`.
+`src/shared/Walkthrough.ts` defines the JSON contract shared with the webview. The page is `webview-ui/src/components/walkthrough/WalkthroughView.tsx`; review marks and notes persist in webview localStorage per task, scope and fingerprint (`reviewState.ts`). Thread actions open it with `navigateToWalkthrough()`. Navigation history records `{ kind: "walkthrough", id: taskId }`.
 
 ```ts
 type WalkthroughScope = "thread" | "last_turn" | "git"
