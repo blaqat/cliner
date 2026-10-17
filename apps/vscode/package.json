@@ -250,6 +250,12 @@
 				"win": "ctrl+'",
 				"linux": "ctrl+'",
 				"when": "!editorHasSelection"
+			},
+			{
+				"command": "cline.searchShortcut",
+				"key": "ctrl+k",
+				"mac": "cmd+k",
+				"when": "focusedView == claude-dev.SidebarProvider"
 			}
 		],
 		"menus": {

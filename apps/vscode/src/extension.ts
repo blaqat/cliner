@@ -145,6 +145,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(commands.HistoryButton, () => sendHistoryButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.AccountButton, () => sendAccountButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.WorktreesButton, () => sendWorktreesButtonClickedEvent()))
+	// ⌘K / Ctrl+K is VS Code's chord prefix (⌘K Z, ⌘K W, …). The webview handles the
+	// key itself (focus search); this binding only claims it while the Cline view is
+	// focused, so the forwarded keydown doesn't start a chord that eats the next key.
+	context.subscriptions.push(vscode.commands.registerCommand(commands.SearchShortcut, () => {}))
 
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider))
 
