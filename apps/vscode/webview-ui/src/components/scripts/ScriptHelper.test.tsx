@@ -32,7 +32,7 @@ describe("ScriptHelper", () => {
 	it("is ready once required options are set", () => {
 		renderHelper("module:api filter:slow")
 		expect(screen.getByTestId("script-helper-status")).toHaveTextContent("Ready. Enter runs it.")
-		expect(screen.getByTestId("script-option-module")).toHaveTextContent("✓ api")
+		expect(screen.getByTestId("script-option-module").querySelector(".codicon-check")?.nextSibling).toHaveTextContent("api")
 	})
 
 	it("reports a bad choice or unknown option", () => {

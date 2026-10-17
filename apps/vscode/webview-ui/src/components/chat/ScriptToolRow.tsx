@@ -2,6 +2,9 @@ import type { ClineMessage } from "@shared/ExtensionMessage"
 import { StringRequest } from "@shared/proto/cline/common"
 import { AskResponseRequest } from "@shared/proto/cline/task"
 import { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
+import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { FileServiceClient, TaskServiceClient } from "@/services/grpc-client"
@@ -110,7 +113,7 @@ export function ScriptToolRow({ info, asking, message }: { info: ScriptToolInfo;
 					<span className="ph-no-capture font-mono font-medium">{info.name}</span>
 					{info.options.map(([name, value]) => (
 						<span
-							className="inline-flex items-center gap-1 rounded-full border border-editor-group-border px-1.5 text-[11px] leading-4"
+							className="inline-flex items-center gap-1 rounded-full border border-solid border-editor-group-border px-1.5 text-[11px] leading-4"
 							key={name}>
 							<span className="text-description">{name}</span>
 							{value !== true && <span className="ph-no-capture">{String(value)}</span>}
@@ -118,54 +121,48 @@ export function ScriptToolRow({ info, asking, message }: { info: ScriptToolInfo;
 					))}
 				</div>
 				{asking && info.command && (
-					<div className="mt-2 text-xs">
-						<div>Unreviewed script</div>
-						<pre className="whitespace-pre-wrap">{info.command}</pre>
-						<div>Runs in: {info.cwd}</div>
+					<InlineNotice className="mt-2" tone="warning">
+						<div className="font-medium">Unreviewed script</div>
+						<pre className="ph-no-capture m-0 my-1 whitespace-pre-wrap font-mono text-[11px]">{info.command}</pre>
+						<div className="text-description">Runs in: {info.cwd}</div>
 						{active && (
-							<div className="mt-2 flex gap-2">
-								<button disabled={sending} onClick={() => void respond(false)} type="button">
+							<div className="mt-2 flex gap-1.5">
+								<Button disabled={sending} onClick={() => void respond(false)} size="xs" variant="secondary">
 									Run once
-								</button>
-								<button disabled={sending} onClick={() => void respond(true)} type="button">
+								</Button>
+								<Button disabled={sending} onClick={() => void respond(true)} size="xs" variant="secondary">
 									Trust this version
-								</button>
+								</Button>
 							</div>
 						)}
-						{error && <div role="alert">{error}</div>}
-					</div>
+						{error && (
+							<div className="mt-1 text-error" role="alert">
+								{error}
+							</div>
+						)}
+					</InlineNotice>
 				)}
 				{outcome && (
 					<div className="mt-1.5 text-xs" data-testid="script-outcome">
 						<div className="flex items-center gap-2">
-							<span
-								className={cn(
-									"flex items-center gap-1",
-									outcome.ok ? "text-(--vscode-charts-green)" : "text-(--vscode-errorForeground)",
-								)}>
+							<span className={cn("flex items-center gap-1", outcome.ok ? "text-success" : "text-error")}>
 								<span aria-hidden className={cn("codicon", outcome.ok ? "codicon-check" : "codicon-error")} />
 								{outcome.status}
 							</span>
 							{outcome.output && (
-								<button
-									aria-expanded={showOutput}
-									className="cursor-pointer border-0 bg-transparent p-0 text-(--vscode-textLink-foreground) hover:underline"
-									onClick={() => setShowOutput((shown) => !shown)}
-									type="button">
+								<LinkButton aria-expanded={showOutput} onClick={() => setShowOutput((shown) => !shown)}>
 									{showOutput ? "Hide output" : "Show output"}
-								</button>
+								</LinkButton>
 							)}
 							{outcome.logPath && (
-								<button
-									className="cursor-pointer border-0 bg-transparent p-0 text-(--vscode-textLink-foreground) hover:underline"
+								<LinkButton
 									onClick={() =>
 										FileServiceClient.openFile(StringRequest.create({ value: outcome.logPath })).catch(
 											(err) => console.error("Failed to open script log:", err),
 										)
-									}
-									type="button">
+									}>
 									Open log
-								</button>
+								</LinkButton>
 							)}
 						</div>
 						{showOutput && outcome.output && (

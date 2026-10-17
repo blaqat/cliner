@@ -3,6 +3,8 @@ import { SetScriptApprovalRequest, ToggleScriptRequest } from "@shared/proto/cli
 import { SCRIPT_APPROVAL_LABELS, SCRIPT_APPROVALS, type ScriptApproval } from "@shared/scripts"
 import React, { useState } from "react"
 import NewRuleRow from "@/components/cline-rules/NewRuleRow"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { applyScriptsResponse, type ScriptEntry, useScripts } from "@/hooks/useScripts"
 import { cn } from "@/lib/utils"
@@ -15,9 +17,9 @@ const APPROVAL_HINTS: Record<ScriptApproval, string> = {
 }
 
 const APPROVAL_STYLES: Record<ScriptApproval, string> = {
-	always_ask: "border-(--vscode-editorWarning-foreground)/50 text-(--vscode-editorWarning-foreground)",
-	ask_in_ask_mode: "border-(--vscode-focusBorder)/50 text-(--vscode-textLink-foreground)",
-	always_allow: "border-(--vscode-charts-green)/50 text-(--vscode-charts-green)",
+	always_ask: "border-warning/50 text-warning",
+	ask_in_ask_mode: "border-link/50 text-link",
+	always_allow: "border-success/50 text-success",
 }
 
 function openScript(path: string) {
@@ -60,7 +62,7 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 			<div className="flex items-center gap-2">
 				<span aria-hidden className="codicon codicon-play shrink-0 text-[11px]! text-description" />
 				<button
-					className="min-w-0 flex-1 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-mono text-sm text-foreground hover:underline"
+					className="ph-no-capture min-w-0 flex-1 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-mono text-sm text-foreground hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 					onClick={() => openScript(script.path)}
 					title={`Open ${script.path}`}
 					type="button">
@@ -69,7 +71,7 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 				{script.approval !== "" && (
 					<button
 						className={cn(
-							"shrink-0 cursor-pointer rounded-full border bg-transparent px-2 py-0 text-[10.5px] leading-4",
+							"shrink-0 cursor-pointer rounded-full border border-solid bg-transparent px-2 py-0 text-[11px] leading-4 hover:bg-list-hover",
 							APPROVAL_STYLES[script.approval],
 						)}
 						data-testid={`script-approval-${script.name}`}
@@ -80,13 +82,14 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 					</button>
 				)}
 				{onUse && !invalid && script.enabled && (
-					<button
-						className="shrink-0 cursor-pointer rounded-xs border border-(--vscode-button-border,transparent) bg-button-secondary-background px-1.5 text-[11px] text-button-secondary-foreground hover:bg-button-secondary-hover"
+					<Button
+						className="shrink-0"
 						data-testid={`script-use-${script.name}`}
 						onClick={() => onUse(script.name)}
-						type="button">
+						size="xs"
+						variant="secondary">
 						Use
-					</button>
+					</Button>
 				)}
 				<Switch
 					aria-label={`${script.enabled ? "Disable" : "Enable"} ${script.name}`}
@@ -94,34 +97,39 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 					onClick={toggle}
 				/>
 			</div>
+			{script.description && <div className="mt-0.5 pl-5 text-xs text-description">{script.description}</div>}
 			{!invalid && !script.trusted && (
-				<div className="mt-1 pl-5 text-xs text-description">
-					<span>Unreviewed</span>
-					<pre className="whitespace-pre-wrap">{script.command}</pre>
-					<div>Runs in: {script.cwd}</div>
-					<button
-						onClick={() =>
-							FileServiceClient.setScriptApproval(
-								SetScriptApprovalRequest.create({
-									scriptPath: script.path,
-									fingerprint: script.fingerprint,
-									trustOnly: true,
-								}),
-							)
-								.then(applyScriptsResponse)
-								.catch((err) => setError(err.message ?? String(err)))
-						}
-						type="button">
-						Trust this version
-					</button>
-				</div>
+				<InlineNotice
+					actions={
+						<Button
+							onClick={() =>
+								FileServiceClient.setScriptApproval(
+									SetScriptApprovalRequest.create({
+										scriptPath: script.path,
+										fingerprint: script.fingerprint,
+										trustOnly: true,
+									}),
+								)
+									.then(applyScriptsResponse)
+									.catch((err) => setError(err.message ?? String(err)))
+							}
+							size="xs"
+							variant="secondary">
+							Trust this version
+						</Button>
+					}
+					className="mt-1.5 ml-5"
+					tone="warning">
+					<span className="font-medium">Unreviewed</span>
+					<pre className="ph-no-capture m-0 my-1 whitespace-pre-wrap font-mono text-[11px]">{script.command}</pre>
+					<div className="text-description">Runs in: {script.cwd}</div>
+				</InlineNotice>
 			)}
 			{error && (
-				<div className="mt-1 pl-5 text-xs text-error" role="alert">
+				<InlineNotice className="mt-1.5 ml-5" tone="error">
 					{error}
-				</div>
+				</InlineNotice>
 			)}
-			{script.description && <div className="mt-0.5 pl-5 text-xs text-description">{script.description}</div>}
 			{invalid && (
 				<ul className="m-0 mt-1 list-none pl-5 text-xs text-error" data-testid={`script-errors-${script.name}`}>
 					{script.errors.map((error) => (
