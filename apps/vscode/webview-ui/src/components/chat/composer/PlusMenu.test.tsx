@@ -181,19 +181,39 @@ describe("PlusMenu", () => {
 		expect(screen.getByTestId("rules-panel")).toBeInTheDocument()
 	})
 
-	it("closes on Escape, from the menu and from a panel", () => {
+	it("closes on Escape from the list", () => {
 		renderMenu()
 		openMenu()
 		fireEvent.keyDown(screen.getByTestId("plus-menu"), { key: "Escape" })
 		expect(screen.queryByTestId("plus-menu")).not.toBeInTheDocument()
+	})
 
+	it.each([
+		["mcp", "mcp-servers-panel"],
+		["rules", "rules-panel"],
+	])("Escape in the %s panel goes back to the list, and a second Escape closes", (view, panelId) => {
+		renderMenu()
 		openMenu()
-		fireEvent.click(screen.getByTestId("plus-menu-mcp"))
-		fireEvent.keyDown(screen.getByTestId("mcp-servers-panel"), { key: "Escape" })
+		fireEvent.click(screen.getByTestId(`plus-menu-${view}`))
+		fireEvent.keyDown(screen.getByTestId(panelId), { key: "Escape" })
+
+		expect(screen.queryByTestId(panelId)).not.toBeInTheDocument()
+		expect(screen.getByTestId("plus-menu")).toBeInTheDocument()
+		expect(screen.getByTestId(`plus-menu-${view}`)).toHaveFocus()
+
+		fireEvent.keyDown(document.activeElement as Element, { key: "Escape" })
 		expect(screen.queryByTestId("plus-menu")).not.toBeInTheDocument()
-		// Reopening starts at the menu, not the last panel.
+		// Reopening starts at the list, not the last panel.
 		openMenu()
 		expect(screen.getByTestId("plus-menu-mention")).toBeInTheDocument()
+	})
+
+	it("Back returns focus to the panel's row", () => {
+		renderMenu()
+		openMenu()
+		fireEvent.click(screen.getByTestId("plus-menu-rules"))
+		fireEvent.click(screen.getByTestId("plus-menu-back"))
+		expect(screen.getByTestId("plus-menu-rules")).toHaveFocus()
 	})
 
 	it("shows Scripts once the slot is filled, opening its panel inline", () => {

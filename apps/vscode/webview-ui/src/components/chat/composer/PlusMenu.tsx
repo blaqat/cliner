@@ -1,7 +1,7 @@
 import type { ClineRulesToggles } from "@shared/cline-rules"
 import { PlusIcon } from "lucide-react"
 import type React from "react"
-import { memo, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import ClineRulesPanel from "@/components/cline-rules/ClineRulesPanel"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -56,6 +56,19 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 	const [view, setView] = useState<PlusMenuView>("menu")
 	// Actions that hand focus to the input must not have it pulled back to the ＋ on close.
 	const keepFocusRef = useRef(false)
+	const menuRef = useRef<HTMLDivElement>(null)
+	// The panel just left, so its row gets focus back in the list.
+	const returnToRef = useRef<PlusMenuView | null>(null)
+	useEffect(() => {
+		if (view === "menu" && returnToRef.current) {
+			menuRef.current?.querySelector<HTMLElement>(`[data-testid="plus-menu-${returnToRef.current}"]`)?.focus()
+			returnToRef.current = null
+		}
+	}, [view])
+	const backToMenu = () => {
+		returnToRef.current = view
+		setView("menu")
+	}
 	const serversOn = (mcpServers ?? []).filter((server) => !server.disabled).length
 	const rulesOn = countOn(
 		globalClineRulesToggles,
@@ -137,9 +150,16 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 						keepFocusRef.current = false
 					}
 				}}
+				onEscapeKeyDown={(event) => {
+					// Escape in a panel steps back to the list; a second one closes the menu.
+					if (view !== "menu") {
+						event.preventDefault()
+						backToMenu()
+					}
+				}}
 				side="top">
 				{view === "menu" ? (
-					<div aria-label="Add to message" onKeyDown={handleMenuKeyDown} role="menu">
+					<div aria-label="Add to message" onKeyDown={handleMenuKeyDown} ref={menuRef} role="menu">
 						{row({
 							icon: "@",
 							label: "Mention a file, folder or problem",
@@ -194,7 +214,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 								autoFocus
 								className="flex size-5 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 								data-testid="plus-menu-back"
-								onClick={() => setView("menu")}
+								onClick={backToMenu}
 								type="button">
 								<span aria-hidden className="codicon codicon-arrow-left text-[12px]!" />
 							</button>
