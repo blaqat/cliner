@@ -32,13 +32,13 @@ export interface ScriptRunResult {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal escape sequences
 const ANSI_REGEX = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/g
 
-function killTree(pid: number | undefined): void {
+function killTree(pid: number | undefined, signal: "SIGTERM" | "SIGKILL"): void {
 	if (!pid) return
 	try {
 		if (process.platform === "win32") {
-			spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" })
+			spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" }).on("error", () => {})
 		} else {
-			process.kill(-pid, "SIGTERM")
+			process.kill(-pid, signal)
 		}
 	} catch {
 		// Already gone.
@@ -76,6 +76,8 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 		let timedOut = false
 		let aborted = false
 		let settled = false
+		let stopping = false
+		let forceTimer: ReturnType<typeof setTimeout> | undefined
 		const child = spawn(options.command, {
 			shell: true,
 			cwd: options.cwd,
@@ -89,6 +91,9 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 			if (settled) return
 			settled = true
 			clearTimeout(timer)
+			clearTimeout(forceTimer)
+			child.stdout?.destroy()
+			child.stderr?.destroy()
 			options.signal?.removeEventListener("abort", onAbort)
 			for (const rest of [pendingByStream.stdout, pendingByStream.stderr]) if (rest) pushLine(rest)
 			if (spawnError) pushLine(`Failed to start: ${spawnError.message}`)
@@ -104,19 +109,31 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 				})
 			})
 		}
+		const stop = () => {
+			if (settled || stopping) return
+			stopping = true
+			killTree(child.pid, "SIGTERM")
+			forceTimer = setTimeout(() => {
+				killTree(child.pid, "SIGKILL")
+				// A descendant may keep inherited pipes open even after the shell exits.
+				finish(null, "SIGKILL")
+			}, 3000)
+		}
 		const timer = setTimeout(() => {
 			timedOut = true
-			killTree(child.pid)
+			stop()
 		}, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
 		const onAbort = () => {
 			aborted = true
-			killTree(child.pid)
+			stop()
 		}
 		options.signal?.addEventListener("abort", onAbort, { once: true })
 		if (options.signal?.aborted) onAbort()
 		child.stdout?.on("data", onData("stdout"))
 		child.stderr?.on("data", onData("stderr"))
 		child.on("error", (error) => finish(null, undefined, error))
-		child.on("close", (code, signal) => finish(code, signal ?? undefined))
+		child.on("close", (code, signal) => {
+			if (!stopping) finish(code, signal ?? undefined)
+		})
 	})
 }
