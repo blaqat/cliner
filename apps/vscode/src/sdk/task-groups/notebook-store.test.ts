@@ -107,6 +107,52 @@ describe("NotebookStore", () => {
 		expect((await store.history(groupId, note.slug))[0].id).toBe(versions[0].id)
 	})
 
+	it("keeps a reviewable tombstone when the agent deletes a pending note the user edited", async () => {
+		const create = { op: "create", slug: "plan", name: "Plan", description: "", content: "agent draft" } as const
+		await store.stageChange(groupId, "thread", create)
+		const first = (await store.readPendingReview(groupId, "thread"))!
+		await store.editPending(groupId, "thread", first.revision, "plan", "my precious text")
+		await store.stageChange(groupId, "thread", { ...create, op: "delete", content: undefined })
+		const review = (await store.readPendingReview(groupId, "thread"))!
+		const tombstone = review.changes[0]
+		expect(tombstone).toMatchObject({ op: "delete", slug: "plan" })
+		const diffed = (await store.reviewDiffs(review, "thread")).changes[0]
+		expect(JSON.stringify(diffed.diff)).toContain("my precious text")
+		// History works with no saved note, and Restore re-creates the pending note.
+		expect((await store.history(groupId, "plan")).find((v) => v.id === tombstone.replacedUserVersion)?.content).toBe(
+			"my precious text",
+		)
+		await store.editPending(groupId, "thread", review.revision, "plan", "my precious text")
+		expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({ op: "create", content: "my precious text" })
+	})
+
+	it("a tombstone the agent re-writes stays a create and still offers Restore", async () => {
+		const create = { op: "create", slug: "plan", name: "Plan", description: "", content: "agent draft" } as const
+		await store.stageChange(groupId, "thread", create)
+		const first = (await store.readPendingReview(groupId, "thread"))!
+		await store.editPending(groupId, "thread", first.revision, "plan", "user text")
+		await store.stageChange(groupId, "thread", { ...create, op: "delete", content: undefined })
+		await store.stageChange(groupId, "thread", { ...create, content: "fresh" })
+		expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({
+			op: "create",
+			content: "fresh",
+			replacedUserVersion: expect.any(String),
+		})
+	})
+
+	it("accepting a tombstone leaves the user's text in history, and history restores without a saved note", async () => {
+		const create = { op: "create", slug: "plan", name: "Plan", description: "", content: "agent draft" } as const
+		await store.stageChange(groupId, "thread", create)
+		const first = (await store.readPendingReview(groupId, "thread"))!
+		await store.editPending(groupId, "thread", first.revision, "plan", "user text")
+		await store.stageChange(groupId, "thread", { ...create, op: "delete", content: undefined })
+		await apply("thread", [{ slug: "plan", include: true }])
+		expect(await store.readNote(groupId, "plan")).toBeUndefined()
+		const version = (await store.history(groupId, "plan")).find((entry) => entry.content === "user text")!
+		await store.restoreVersion(groupId, "plan", version.id)
+		expect((await store.readNote(groupId, "plan"))?.content).toBe("user text")
+	})
+
 	describe("slugifyNoteName", () => {
 		it("kebab-cases names", () => {
 			expect(slugifyNoteName("Dev Plan")).toBe("dev-plan")

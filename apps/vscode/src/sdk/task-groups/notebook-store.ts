@@ -326,13 +326,27 @@ export class NotebookStore {
 				const version = await this.recordVersion(groupId, prev.slug, prev.content ?? "", "you edited")
 				change = { ...change, replacedUserVersion: version.id }
 			} else if (prev.replacedUserVersion) change = { ...change, replacedUserVersion: prev.replacedUserVersion }
-			if (prev.op === "create" && change.op === "delete") {
+			if (prev.op === "create" && change.op === "delete" && prev.editedByUser) {
+				// The user's edits to a not-yet-saved note must stay reviewable: keep a
+				// delete tombstone (diff + Restore via replacedUserVersion) instead of cancelling.
+				pending[index] = { ...change, op: "delete" }
+			} else if (prev.op === "create" && change.op === "delete") {
 				await this.settleDraft(groupId, threadId, change.slug)
 				pending.splice(index, 1)
 			} else {
 				pending[index] = {
 					...change,
-					op: prev.op === "create" ? "create" : change.op === "create" ? "update" : change.op,
+					op:
+						prev.op === "create"
+							? "create"
+							: prev.op === "delete" && change.op !== "delete"
+								? // A tombstone for a note that never existed re-creates it.
+									(await this.readNote(groupId, change.slug))
+									? "update"
+									: "create"
+								: change.op === "create"
+									? "update"
+									: change.op,
 				}
 			}
 		}
@@ -390,12 +404,20 @@ export class NotebookStore {
 					...change,
 					...(drafts[change.slug] ? { draft: { ts: drafts[change.slug].ts, reason: drafts[change.slug].reason } } : {}),
 					diff: notebookDiff(
-						(await this.readNote(review.groupId, change.slug))?.content ?? "",
+						(await this.readNote(review.groupId, change.slug))?.content ??
+							(await this.tombstonedContent(review.groupId, change)) ??
+							"",
 						change.op === "delete" ? "" : (change.content ?? ""),
 					),
 				})),
 			),
 		}
+	}
+
+	/** What a delete tombstone for a never-saved note removed: the user's last edit, from history. */
+	private async tombstonedContent(groupId: string, change: NotebookChange): Promise<string | undefined> {
+		if (change.op !== "delete" || !change.replacedUserVersion) return undefined
+		return (await this.history(groupId, change.slug)).find((version) => version.id === change.replacedUserVersion)?.content
 	}
 
 	async listPending(threadId: string): Promise<PendingNotebookChanges[]> {
@@ -565,11 +587,24 @@ export class NotebookStore {
 		const version = (await this.history(groupId, slug)).find((version) => version.id === versionId)
 		if (!version) throw new Error("Version no longer available")
 		const note = await this.readNote(groupId, slug)
-		if (!note) throw new Error("Note no longer exists")
 		await this.captureSavedVersion(groupId, slug)
+		// History outlives the note (a never-saved or deleted note still has versions), so restoring recreates it.
+		const meta = note?.meta ?? {
+			name: slug,
+			description: "",
+			updatedAt: 0,
+			updatedBy: { kind: "user" as const },
+		}
+		await fs.mkdir(taskGroupPaths(this.rootDir, groupId).notebookDir, { recursive: true })
 		await writeFileAtomic(
 			this.notePath(groupId, slug),
-			serializeNote({ ...note.meta, body: version.content, updatedAt: Date.now(), updatedBy: { kind: "user" } }),
+			serializeNote({
+				name: meta.name,
+				description: meta.description,
+				body: version.content,
+				updatedAt: Date.now(),
+				updatedBy: { kind: "user" },
+			}),
 		)
 		await this.recordVersion(groupId, slug, version.content, "restored by you")
 	}

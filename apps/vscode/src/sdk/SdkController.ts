@@ -3966,15 +3966,16 @@ export class Controller {
 			return {}
 		}
 		const note = await this.notebookStore.readNote(groupId, slug)
-		if (!note) throw new Error("Note no longer exists")
 		if (input.action === "history") {
+			// History outlives the saved note (never-saved, deleted or tombstoned notes keep their versions).
 			await this.notebookStore.captureSavedVersion(groupId, slug)
 			const versions = await this.notebookStore.history(groupId, slug)
 			return {
-				versions: versions.map((version) => ({ ...version, diff: notebookDiff(version.content, note.content) })),
+				versions: versions.map((version) => ({ ...version, diff: notebookDiff(version.content, note?.content ?? "") })),
 				conversions: await this.notebookStore.conversions(groupId, slug),
 			}
 		}
+		if (!note) throw new Error("Note no longer exists")
 		if (input.action === "open_conversion") {
 			const links = await this.notebookStore.conversions(groupId, slug)
 			const link = links.find((link) => link.path === input.versionId)
