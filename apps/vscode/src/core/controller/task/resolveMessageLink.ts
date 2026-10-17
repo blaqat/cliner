@@ -11,6 +11,9 @@ export async function resolveMessageLink(controller: Controller, request: Resolv
 	if (!request.threadId) {
 		throw new Error("thread_id is required")
 	}
-	const info = await controller.resolveMessageLink(request.threadId, request.messageIndex)
+	const info = await controller.resolveMessageLink(request.threadId, request.messageIndex, {
+		toolCallId: request.toolCallId,
+		block: request.block,
+	})
 	return MessageLinkInfo.create(info)
 }

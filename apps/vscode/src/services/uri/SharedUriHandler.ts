@@ -51,7 +51,10 @@ export class SharedUriHandler {
 				return false
 			}
 			try {
-				await visibleWebview.controller.openMessageLink(link.threadId, link.messageIndex)
+				await visibleWebview.controller.openMessageLink(link.threadId, link.messageIndex, {
+					toolCallId: link.toolCallId,
+					block: link.block,
+				})
 				return true
 			} catch (error) {
 				Logger.error("SharedUriHandler: Failed to open message link:", error)

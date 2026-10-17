@@ -38,6 +38,7 @@ import {
 	withTaskMessage,
 } from "./chat-view"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
+import { findOpenMessageIndex } from "./chat-view/utils/openMessageUtils"
 import {
 	hasPendingMessageConfirmation,
 	isPendingResponseUnconfirmed,
@@ -385,10 +386,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		if (!openMessageTarget || currentTaskItem?.id !== openMessageTarget.threadId) {
 			return
 		}
-		let index = displayMessages.findIndex((m) => m.sdkMessageIndex === openMessageTarget.messageIndex)
-		if (index < 0 && openMessageTarget.text) {
-			index = displayMessages.findIndex((m) => m.text === openMessageTarget.text)
-		}
+		const index = findOpenMessageIndex(displayMessages, openMessageTarget)
 		if (index < 0) {
 			return // thread still loading — retry on the next messages update
 		}

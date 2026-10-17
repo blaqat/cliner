@@ -9,11 +9,38 @@
  */
 export const MESSAGE_LINK_PATH_PREFIX = "/thread/"
 
-export function buildMessageLink(extensionId: string, threadId: string, messageIndex: number): string {
-	return `vscode://${extensionId}${MESSAGE_LINK_PATH_PREFIX}${encodeURIComponent(threadId)}?m=${messageIndex}`
+/**
+ * Optional row anchor inside the transcript message. One SDK message can render
+ * as several rows, and completion-tool rows (`attempt_completion` /
+ * `submit_and_exit`) come from tool input, not text blocks:
+ * - `toolCallId` (`t`): the tool call the row was rendered from.
+ * - `block` (`b`): the ordinal of the row among the message's rendered text rows.
+ * Links without either (the original format) still parse and resolve to the
+ * whole message.
+ */
+export interface MessageLinkAnchor {
+	toolCallId?: string
+	block?: number
 }
 
-export interface ParsedMessageLink {
+export function buildMessageLink(
+	extensionId: string,
+	threadId: string,
+	messageIndex: number,
+	anchor: MessageLinkAnchor = {},
+): string {
+	return `vscode://${extensionId}${buildMessageLinkPath(threadId, messageIndex, anchor)}`
+}
+
+/** The path + query part of a message link (what the host's callback-URL builder wants). */
+export function buildMessageLinkPath(threadId: string, messageIndex: number, anchor: MessageLinkAnchor = {}): string {
+	let path = `${MESSAGE_LINK_PATH_PREFIX}${encodeURIComponent(threadId)}?m=${messageIndex}`
+	if (anchor.toolCallId) path += `&t=${encodeURIComponent(anchor.toolCallId)}`
+	else if (anchor.block !== undefined) path += `&b=${anchor.block}`
+	return path
+}
+
+export interface ParsedMessageLink extends MessageLinkAnchor {
 	threadId: string
 	messageIndex: number
 }
@@ -44,5 +71,8 @@ export function parseMessageLink(url: string): ParsedMessageLink | undefined {
 	if (!threadId || !/^\d+$/.test(rawIndex) || !Number.isSafeInteger(messageIndex)) {
 		return undefined
 	}
-	return { threadId, messageIndex }
+	const toolCallId = parsed.searchParams.get("t") || undefined
+	const rawBlock = parsed.searchParams.get("b") ?? ""
+	const block = /^\d+$/.test(rawBlock) && Number.isSafeInteger(Number(rawBlock)) ? Number(rawBlock) : undefined
+	return { threadId, messageIndex, ...(toolCallId ? { toolCallId } : {}), ...(block !== undefined ? { block } : {}) }
 }

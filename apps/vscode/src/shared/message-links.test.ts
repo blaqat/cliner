@@ -38,3 +38,20 @@ describe("message links", () => {
 		expect(parseMessageLink(input)).toBeUndefined()
 	})
 })
+
+describe("message link anchors", () => {
+	it("round-trips a tool-call anchor and a block anchor", () => {
+		const tool = buildMessageLink("saoudrizwan.cliner", "t1", 7, { toolCallId: "call_a/b" })
+		expect(tool).toContain("&t=call_a%2Fb")
+		expect(parseMessageLink(tool)).toEqual({ threadId: "t1", messageIndex: 7, toolCallId: "call_a/b" })
+		const block = buildMessageLink("saoudrizwan.cliner", "t1", 7, { block: 2 })
+		expect(block).toBe("vscode://saoudrizwan.cliner/thread/t1?m=7&b=2")
+		expect(parseMessageLink(block)).toEqual({ threadId: "t1", messageIndex: 7, block: 2 })
+	})
+
+	it("keeps parsing old links without an anchor and ignores a malformed block", () => {
+		expect(parseMessageLink("vscode://x/thread/t1?m=3")).toEqual({ threadId: "t1", messageIndex: 3 })
+		expect(parseMessageLink("vscode://x/thread/t1?m=3&b=-1")).toEqual({ threadId: "t1", messageIndex: 3 })
+		expect(parseMessageLink("vscode://x/thread/t1?m=3&b=0")).toEqual({ threadId: "t1", messageIndex: 3, block: 0 })
+	})
+})

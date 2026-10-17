@@ -1,3 +1,4 @@
+import type { ParsedMessageLink } from "@shared/message-links"
 import { ResolveMessageLinkRequest } from "@shared/proto/cline/task"
 import React, { useCallback, useEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
@@ -149,11 +150,16 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	// message's text — "You · <thread>" attribution when the host resolves it.
 	// Unresolvable links fall back to inserting the URL literally.
 	const handlePasteMessageLink = useCallback(
-		(link: { threadId: string; messageIndex: number }, rawUrl: string) => {
+		(link: ParsedMessageLink, rawUrl: string) => {
 			const insertRawUrl = () =>
 				setInputValue((current) => current + (current && !current.endsWith(" ") ? " " : "") + rawUrl + " ")
 			TaskServiceClient.resolveMessageLink(
-				ResolveMessageLinkRequest.create({ threadId: link.threadId, messageIndex: link.messageIndex }),
+				ResolveMessageLinkRequest.create({
+					threadId: link.threadId,
+					messageIndex: link.messageIndex,
+					toolCallId: link.toolCallId,
+					block: link.block,
+				}),
 			)
 				.then((info) => {
 					if (info.text) {

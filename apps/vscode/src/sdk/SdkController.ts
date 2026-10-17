@@ -31,7 +31,7 @@ import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { MESSAGE_LINK_PATH_PREFIX } from "@shared/message-links"
+import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
@@ -98,6 +98,7 @@ import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
+import { findMessageLinkTarget, resolveLinkedMessageText } from "./message-link-anchor"
 import { MessageTranslatorState, reshapeErrorForWebview, translateSessionEvent } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
 import type { Disposable, ProviderCatalog, ProviderConfigChange, ProviderConfigStore } from "./model-catalog/contracts"
@@ -110,7 +111,7 @@ import {
 	ProviderFailureTelemetryTurnGate,
 } from "./provider-failure-telemetry"
 import { RemoteConfigRefreshCoordinator } from "./remote-config-refresh-coordinator"
-import { buildAsideConversation, findSdkMessageAnchor } from "./sdk-aside-conversation"
+import { buildAsideConversation } from "./sdk-aside-conversation"
 import {
 	findVisibleCheckpointUserMessageByRun,
 	getCheckpointRunCountForMessage,
@@ -159,7 +160,6 @@ import { createNotebookConversion, type NotebookConversionKind, notebookConversi
 import { notebookDiff } from "./task-groups/notebook-diff"
 import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
 import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
-import { sdkMessageText } from "./task-groups/thread-transcript"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
@@ -3616,8 +3616,9 @@ export class Controller {
 
 	/**
 	 * Builds the vscode:// link for "Copy link" on a rendered row: the row's
-	 * minted ts is resolved back to the stable SDK transcript index so the link
-	 * survives reloads.
+	 * minted ts is resolved back to the stable SDK transcript index (plus a
+	 * tool-call / text-row anchor) so the link survives reloads and resolves to
+	 * exactly what the row renders.
 	 */
 	async buildMessageLink(threadId: string, messageTs: number): Promise<string> {
 		const parent = await this.taskHistory.findHistoryItem(threadId)
@@ -3625,49 +3626,41 @@ export class Controller {
 			this.taskSessions.get(threadId)?.task.messageStateHandler.getClineMessages() ??
 			(await this.taskHistory.getClineMessages(threadId))
 		const raw = await this.taskHistory.readSessionMessages(threadId)
-		const { sourceIndex } = findSdkMessageAnchor(raw, visible, messageTs, parent?.cwdOnTaskInitialization)
-		if (sourceIndex === undefined) {
+		const { messageIndex, anchor } = findMessageLinkTarget(raw, visible, messageTs, parent?.cwdOnTaskInitialization)
+		if (messageIndex === undefined) {
 			throw new Error("That message has no transcript position to link to yet")
 		}
-		const path = `${MESSAGE_LINK_PATH_PREFIX}${encodeURIComponent(threadId)}?m=${sourceIndex}`
-		return HostProvider.get().getCallbackUrl(path)
+		return HostProvider.get().getCallbackUrl(buildMessageLinkPath(threadId, messageIndex, anchor))
 	}
 
 	/**
 	 * Resolves a message link for the composer's paste -> quote chip. Returns
-	 * the single referenced message's text (never the thread) plus attribution.
+	 * the single referenced row's text (never the thread) plus attribution.
 	 */
 	async resolveMessageLink(
 		threadId: string,
 		messageIndex: number,
+		anchor: MessageLinkAnchor = {},
 	): Promise<{ threadId: string; messageIndex: number; threadTitle: string; author: string; text: string }> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
 		const threadTitle = item ? item.title || item.task : ""
 		const raw = await this.taskHistory.readSessionMessages(threadId).catch(() => [])
-		const message = raw[messageIndex]
-		if (!message) {
+		const resolved = resolveLinkedMessageText(raw, messageIndex, anchor, item?.cwdOnTaskInitialization)
+		if (!resolved) {
 			return { threadId, messageIndex, threadTitle, author: "", text: "" }
 		}
-		const role = message.role === "user" ? "user" : "assistant"
-		const text = sdkMessageText(message.content)
-		return {
-			threadId,
-			messageIndex,
-			threadTitle,
-			author: role,
-			text: role === "user" ? formatDisplayUserInput(text) : text,
-		}
+		return { threadId, messageIndex, threadTitle, author: resolved.role, text: resolved.text }
 	}
 
 	/**
 	 * Opens a vscode:// message deep link: shows the target thread, then tells
 	 * the webview which message to scroll to and briefly flash.
 	 */
-	async openMessageLink(threadId: string, messageIndex: number): Promise<void> {
-		const info = await this.resolveMessageLink(threadId, messageIndex)
+	async openMessageLink(threadId: string, messageIndex: number, anchor: MessageLinkAnchor = {}): Promise<void> {
+		const info = await this.resolveMessageLink(threadId, messageIndex, anchor)
 		await this.showTaskWithId(threadId)
 		const { sendOpenMessageEvent } = await import("@/core/controller/ui/subscribeToOpenMessage")
-		await sendOpenMessageEvent(threadId, messageIndex, info.text)
+		await sendOpenMessageEvent(threadId, messageIndex, info.text, anchor)
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {

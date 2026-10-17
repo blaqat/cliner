@@ -158,7 +158,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 
 	// Message deep links: set when a vscode:// link opens a thread; the chat
 	// view scrolls to the message, flashes it, then clears this.
-	openMessageTarget?: { threadId: string; messageIndex: number; text: string }
+	openMessageTarget?: { threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number }
 	clearOpenMessageTarget: () => void
 }
 
@@ -502,7 +502,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const relinquishControlUnsubscribeRef = useRef<(() => void) | null>(null)
 	const openMessageUnsubscribeRef = useRef<(() => void) | null>(null)
 	const [openMessageTarget, setOpenMessageTarget] = useState<
-		{ threadId: string; messageIndex: number; text: string } | undefined
+		{ threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number } | undefined
 	>(undefined)
 	const clearOpenMessageTarget = useCallback(() => setOpenMessageTarget(undefined), [])
 
@@ -830,6 +830,8 @@ export const ExtensionStateContextProvider: React.FC<{
 						threadId: event.threadId,
 						messageIndex: event.messageIndex,
 						text: event.text ?? "",
+						toolCallId: event.toolCallId || undefined,
+						block: event.block ?? undefined,
 					})
 				}
 			},

@@ -30,10 +30,15 @@ export async function subscribeToOpenMessage(
 /**
  * Send an openMessage event to all active subscribers
  */
-export async function sendOpenMessageEvent(threadId: string, messageIndex: number, text: string): Promise<void> {
+export async function sendOpenMessageEvent(
+	threadId: string,
+	messageIndex: number,
+	text: string,
+	anchor: { toolCallId?: string; block?: number } = {},
+): Promise<void> {
 	const promises = Array.from(openMessageSubscriptions).map(async (responseStream) => {
 		try {
-			const event: OpenMessageEvent = { threadId, messageIndex, text }
+			const event: OpenMessageEvent = { threadId, messageIndex, text, toolCallId: anchor.toolCallId, block: anchor.block }
 			await responseStream(event, false)
 		} catch (error) {
 			Logger.error("Error sending openMessage event:", error)
