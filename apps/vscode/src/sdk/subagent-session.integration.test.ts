@@ -124,9 +124,12 @@ describe("subagents through the real parent session", () => {
 				diffEdits: { openForApproval: async () => {}, discardPreview: async () => {} },
 				stateManager: {
 					getGlobalSettingsKey: (key: string) => (key === "autoApprovalSettings" ? settings : mode),
+					getGlobalStateKey: () => undefined,
+					getWorkspaceStateKey: () => undefined,
 					getRemoteConfigSettings: () => ({}),
 					setGlobalState: () => {},
 				},
+				notebookStore: { listPending: async () => [] },
 				ensureWorkspaceManager: async () => undefined,
 				getWorkspaceRoot: async () => dir,
 				postStateToWebview: async () => {},

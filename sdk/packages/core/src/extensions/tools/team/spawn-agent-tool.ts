@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
 	createDelegatedAgent,
 	type DelegatedAgentConfigProvider,
+	type DelegatedAgentConnectionConfig,
 } from "./delegated-agent";
 
 type AgentExtension = NonNullable<AgentConfig["extensions"]>[number];
@@ -37,6 +38,18 @@ export const SpawnAgentInputSchema = z.object({
 		.optional()
 		.describe(
 			'Tool access for the sub-agent: "read" (default) gives it read-only investigation tools; "write" gives it the full editing toolset. Choose "write" only when the task requires the sub-agent to modify files. A write request is downgraded to read when the parent is in a read-only mode, and the child never receives tools the parent lacks.',
+		),
+	profile: z
+		.string()
+		.optional()
+		.describe(
+			'Name of a configured sub-agent model profile to run on. Only usable when sub-agent profiles are enabled and only with the names listed in the tool description (or "parent" to inherit this thread\'s model). Omit to use the configured default sub-agent profile, or the parent model when no default is set.',
+		),
+	reasoningEffort: z
+		.string()
+		.optional()
+		.describe(
+			'Reasoning effort for the sub-agent\'s model ("none", "minimal", "low", "medium", "high", "xhigh" or "max"). Only used when sub-agent profiles are enabled; overrides the profile\'s and the configured default effort.',
 		),
 });
 
@@ -90,6 +103,14 @@ export interface SpawnAgentToolConfig {
 	configProvider: DelegatedAgentConfigProvider;
 	defaultMaxIterations?: number;
 	subAgentTools?: AgentTool[];
+	/**
+	 * Per-call model/connection overrides resolved from the spawn input
+	 * (e.g. a named sub-agent profile). Applied over the delegated agent's
+	 * inherited connection config; keys left undefined keep parent values.
+	 */
+	resolveConnectionOverrides?: (
+		input: SpawnAgentInput,
+	) => Partial<DelegatedAgentConnectionConfig> | undefined;
 	createSubAgentExtensions?: (input: SpawnAgentInput) => AgentExtension[];
 	createSubAgentTools?: (
 		input: SpawnAgentInput,
@@ -199,10 +220,15 @@ export function createSpawnAgentTool(
 						const runtime = config.configProvider.getRuntimeConfig();
 						return {
 							...runtime,
+							...config.resolveConnectionOverrides?.(input),
 							extensions:
 								config.createSubAgentExtensions?.(input) ?? runtime.extensions,
 						};
 					},
+					getConnectionConfig: () => ({
+						...config.configProvider.getConnectionConfig(),
+						...config.resolveConnectionOverrides?.(input),
+					}),
 				},
 				tools,
 				maxIterations: config.defaultMaxIterations,

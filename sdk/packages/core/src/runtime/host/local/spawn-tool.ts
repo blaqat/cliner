@@ -1,3 +1,4 @@
+import { REASONING_LEVELS } from "@cline/shared";
 import type {
 	AgentEvent,
 	AgentTool,
@@ -18,6 +19,7 @@ import {
 	PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME,
 } from "../../../extensions/tools/command-guard-extension";
 import type {
+	DelegatedAgentConnectionConfig,
 	SpawnAgentInput,
 	SubAgentEndContext,
 	SubAgentStartContext,
@@ -205,6 +207,162 @@ export function createSessionSubAgentLifecycleCallbacks(
 	};
 }
 
+/** Reserved spawn_agent `profile` value: run the child on the parent's own model. */
+export const INHERIT_SUBAGENT_PROFILE = "parent";
+
+export interface SubagentProfileSelection {
+	/** Connection overrides merged over the inherited config. Empty/absent means inherit. */
+	overrides?: Partial<DelegatedAgentConnectionConfig>;
+	/** The profile display name applied (for the UI chip); undefined means inherit. */
+	profileName?: string;
+	/** The immutable id of the applied profile; "parent" or undefined means inherit. */
+	profileId?: string;
+	/** The effort applied after input > profile > default resolution. */
+	reasoningEffort?: string;
+	/** Set when the requested profile/effort is not usable — return it as the tool error. */
+	error?: string;
+}
+
+const REASONING_LEVEL_SET = new Set<string>(REASONING_LEVELS);
+
+const displayProfileName = (
+	settings: CoreSessionConfig["subagentSettings"],
+	id: string,
+): string => settings?.profileNames?.[id]?.trim() || id;
+
+/** `Name (id)`, the form shown to the model so duplicate names stay distinguishable. */
+const describeProfile = (
+	settings: CoreSessionConfig["subagentSettings"],
+	id: string,
+): string =>
+	id === INHERIT_SUBAGENT_PROFILE
+		? `"${id}"`
+		: `${displayProfileName(settings, id)} (${id})`;
+
+type ProfileRefResolution = { id: string } | { error: string };
+
+/**
+ * Map a spawn_agent `profile` value to an allowed profile id. Ids are the
+ * authority; a display name is accepted only when exactly one configured
+ * profile carries it, so a duplicate name can never select (or borrow the
+ * credentials of) a profile other than the one the user allowed.
+ */
+function resolveProfileRef(
+	requested: string,
+	settings: CoreSessionConfig["subagentSettings"],
+): ProfileRefResolution {
+	const allowed = settings?.allowedProfiles ?? [];
+	const listAllowed = () =>
+		allowed.map((id) => describeProfile(settings, id)).join(", ") || "(none)";
+	const notAllowed = {
+		error: `Sub-agent profile "${requested}" is not allowed. Allowed profiles: ${listAllowed()}.`,
+	};
+	if (allowed.includes(requested)) return { id: requested };
+	const profiles = settings?.profiles ?? {};
+	// An id that exists but is not allowed must not be reachable by any route.
+	if (requested in profiles) return notAllowed;
+	const named = Object.keys(profiles).filter(
+		(id) => displayProfileName(settings, id) === requested,
+	);
+	if (named.length === 0) return notAllowed;
+	const candidates = named.filter((id) => allowed.includes(id));
+	if (candidates.length === 0) return notAllowed;
+	if (named.length > 1) {
+		return {
+			error: `Sub-agent profile name "${requested}" is ambiguous. Pass the profile id: ${candidates.map((id) => describeProfile(settings, id)).join(", ")}.`,
+		};
+	}
+	return { id: candidates[0] as string };
+}
+
+/**
+ * Resolve a spawn_agent call's `profile`/`reasoningEffort` params against the
+ * session's configured sub-agent profiles. Profiles only apply when the host
+ * enabled them (a non-empty `profiles` map); any use while disabled, an
+ * unlisted name, or an unknown effort value produces a descriptive error the
+ * model can self-correct from.
+ */
+export function selectSubagentProfile(
+	input: Pick<SpawnAgentInput, "profile" | "reasoningEffort">,
+	settings: CoreSessionConfig["subagentSettings"],
+): SubagentProfileSelection {
+	const profiles = settings?.profiles;
+	const enabled = !!profiles && Object.keys(profiles).length > 0;
+	const requested = input.profile?.trim();
+	if (!enabled) {
+		if (requested || input.reasoningEffort !== undefined) {
+			return {
+				error:
+					"Sub-agent model profiles are not enabled, so `profile` and `reasoningEffort` cannot be used. Omit them to inherit this thread's model.",
+			};
+		}
+		return {};
+	}
+	const effort = input.reasoningEffort?.trim();
+	if (effort !== undefined && !REASONING_LEVEL_SET.has(effort)) {
+		return {
+			error: `Invalid reasoningEffort "${input.reasoningEffort}". Allowed values: ${REASONING_LEVELS.join(", ")}.`,
+		};
+	}
+	// "none" asks for no reasoning: strip any inherited effort rather than
+	// forwarding a value ReasoningEffort excludes.
+	const effortOverrides = (
+		value: string | undefined,
+	): Partial<DelegatedAgentConnectionConfig> =>
+		value === undefined
+			? {}
+			: value === "none"
+				? { thinking: false, reasoningEffort: undefined }
+				: { reasoningEffort: value as DelegatedAgentConnectionConfig["reasoningEffort"] };
+	// "none" only counts when the call asked for it — a stored profile/default
+	// "none" is just the provider default and must not force thinking off.
+	const resolveEffort = (connectionEffort?: string) => {
+		const resolved = effort ?? connectionEffort ?? settings?.defaultReasoningEffort;
+		return resolved === "none" && effort !== "none" ? undefined : resolved;
+	};
+	if (requested) {
+		const resolution = resolveProfileRef(requested, settings);
+		if ("error" in resolution) return { error: resolution.error };
+		const id = resolution.id;
+		if (id === INHERIT_SUBAGENT_PROFILE) {
+			const resolvedEffort = resolveEffort();
+			return {
+				profileName: id,
+				profileId: id,
+				reasoningEffort: resolvedEffort,
+				overrides: effortOverrides(resolvedEffort),
+			};
+		}
+		const connection = profiles?.[id];
+		if (!connection) {
+			return {
+				error: `Sub-agent profile "${describeProfile(settings, id)}" is allowed but not configured.`,
+			};
+		}
+		const resolvedEffort = resolveEffort(connection.reasoningEffort);
+		return {
+			profileName: displayProfileName(settings, id),
+			profileId: id,
+			reasoningEffort: resolvedEffort,
+			overrides: { ...connection, ...effortOverrides(resolvedEffort) },
+		};
+	}
+	// No profile requested: the configured default applies when it resolves,
+	// otherwise the child inherits the parent's connection.
+	const defaultId = settings?.defaultProfile;
+	const connection = defaultId ? profiles?.[defaultId] : undefined;
+	const resolvedEffort = resolveEffort(connection?.reasoningEffort);
+	return {
+		profileName: connection && defaultId ? displayProfileName(settings, defaultId) : undefined,
+		profileId: connection ? defaultId : undefined,
+		reasoningEffort: resolvedEffort,
+		overrides: {
+			...(connection ?? {}),
+			...effortOverrides(resolvedEffort),
+		},
+	};
+}
+
 export function createSessionSpawnTool(
 	deps: SpawnToolDeps,
 	config: CoreSessionConfig,
@@ -306,7 +464,18 @@ export function createSessionSpawnTool(
 		);
 	};
 
+	// Profile params only exist for the model when the host enabled sub-agent
+	// profiles; stripping them from the schema keeps disabled sessions honest.
+	const profilesEnabled =
+		!!settings.profiles && Object.keys(settings.profiles).length > 0;
+	const allowedProfileIds = settings.allowedProfiles ?? [];
+	const allowedProfileList =
+		allowedProfileIds.map((id) => describeProfile(settings, id)).join(", ") ||
+		"(none)";
+
 	const spawnTool = createSpawnAgentTool({
+		resolveConnectionOverrides: (input) =>
+			selectSubagentProfile(input, settings).overrides,
 		configProvider: {
 			getRuntimeConfig: () =>
 				deps
@@ -391,8 +560,27 @@ export function createSessionSpawnTool(
 			),
 		...lifecycle,
 	}) as AgentTool;
+	const inputSchema = structuredClone(spawnTool.inputSchema) as {
+		properties?: Record<string, Record<string, unknown>>;
+	};
+	const profileSchema = inputSchema.properties?.profile;
+	let description = spawnTool.description;
+	if (profilesEnabled) {
+		if (profileSchema) {
+			profileSchema.enum = allowedProfileIds;
+			profileSchema.description = `Sub-agent model profile id to run on. Allowed profiles (name (id)): ${allowedProfileList}. Pass the id; a name is accepted only when it is unique. Omit to use the configured default, or "parent" to inherit your model.`;
+		}
+		description = `${spawnTool.description} Sub-agent model profiles are enabled: you may pass profile (an id from: ${allowedProfileList}) and reasoningEffort (${REASONING_LEVELS.join(", ")}) to control the sub-agent's model.${settings.defaultProfile ? ` Omitting profile uses the default ${describeProfile(settings, settings.defaultProfile)}.` : ""}`;
+	} else {
+		if (inputSchema.properties) {
+			delete inputSchema.properties.profile;
+			delete inputSchema.properties.reasoningEffort;
+		}
+	}
 	return {
 		...spawnTool,
+		description,
+		inputSchema,
 		execute: async (rawInput, context) => {
 			const input = rawInput as SpawnAgentInput;
 			if (input.access === "write" && settings.allowWrite === false) {
@@ -400,6 +588,10 @@ export function createSessionSpawnTool(
 					error:
 						"Write subagents are disabled in Subagents settings. Use access=read.",
 				};
+			}
+			const selection = selectSubagentProfile(input, settings);
+			if (selection.error) {
+				return { error: selection.error };
 			}
 			const active = activeCounts.get(rootSessionId) ?? 0;
 			const limit = settings.maxConcurrent ?? 0;
@@ -411,6 +603,14 @@ export function createSessionSpawnTool(
 			// Reserve before any await, so parallel calls cannot race the limit.
 			activeCounts.set(rootSessionId, active + 1);
 			try {
+				// Surface the resolved model on the subagent row; the translator
+				// attaches these fields to the matching spawn_agent entry.
+				if (selection.profileName || selection.reasoningEffort) {
+					context.emitUpdate?.({
+						profile: selection.profileName,
+						reasoningEffort: selection.reasoningEffort,
+					});
+				}
 				return await spawnTool.execute(input, context);
 			} finally {
 				const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;

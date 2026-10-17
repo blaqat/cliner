@@ -54,6 +54,7 @@ import { AuthService, LogoutReason } from "./sdk/auth-service"
 import { telemetryService } from "./services/telemetry"
 import type { RolloutBundleActivation } from "./services/telemetry/rollout-metadata"
 import { LG_TASK_URI_PATH, SharedUriHandler, TASK_URI_PATH } from "./services/uri/SharedUriHandler"
+import { MESSAGE_LINK_PATH_PREFIX } from "./shared/message-links"
 import { ShowMessageType } from "./shared/proto/host/window"
 import { fileExistsAtPath } from "./utils/fs"
 
@@ -145,6 +146,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(commands.HistoryButton, () => sendHistoryButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.AccountButton, () => sendAccountButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.WorktreesButton, () => sendWorktreesButtonClickedEvent()))
+	// ⌘K / Ctrl+K is VS Code's chord prefix (⌘K Z, ⌘K W, …). The webview handles the
+	// key itself (focus search); this binding only claims it while the Cline view is
+	// focused, so the forwarded keydown doesn't start a chord that eats the next key.
+	context.subscriptions.push(vscode.commands.registerCommand(commands.SearchShortcut, () => {}))
 
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider))
 
@@ -158,7 +163,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	const handleUri = async (uri: vscode.Uri) => {
 		const url = decodeURIComponent(uri.toString())
 		const uriPath = getUriPath(url)
-		const isTaskUri = uriPath === TASK_URI_PATH || uriPath === LG_TASK_URI_PATH
+		const isTaskUri =
+			uriPath === TASK_URI_PATH || uriPath === LG_TASK_URI_PATH || (uriPath ?? "").startsWith(MESSAGE_LINK_PATH_PREFIX)
 
 		if (isTaskUri) {
 			await openClineSidebarForTaskUri()

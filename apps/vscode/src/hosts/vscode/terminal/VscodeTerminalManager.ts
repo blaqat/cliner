@@ -320,7 +320,12 @@ export class VscodeTerminalManager {
 	 * settings change does not switch shells under an in-flight tool call.
 	 * The returned terminal is reserved until runCommand() takes ownership.
 	 */
-	async getOrCreateTerminal(cwd: string, profileId: string = this.defaultTerminalProfile): Promise<ITerminalInfo> {
+	async getOrCreateTerminal(
+		cwd: string,
+		profileId: string = this.defaultTerminalProfile,
+		env?: Record<string, string>,
+		envFingerprint?: string,
+	): Promise<ITerminalInfo> {
 		// A fallback terminal becomes cleanup-eligible when its unobserved-command
 		// outcome is emitted. Dispose the snapshot of eligible terminals before
 		// selecting a terminal for this acquisition.
@@ -341,6 +346,11 @@ export class VscodeTerminalManager {
 			}
 			// Check if effective shell path matches current configuration
 			if (VscodeTerminalManager.effectiveShellPath(t.shellPath) !== effectiveExpected) {
+				return false
+			}
+			// A terminal created before the env settings changed is stale —
+			// it cannot adopt new variables, so only reuse an exact match.
+			if (t.envFingerprint !== envFingerprint) {
 				return false
 			}
 			const terminalCwd = t.terminal.shellIntegration?.cwd // one of cline's commands could have changed the cwd of the terminal
@@ -365,7 +375,10 @@ export class VscodeTerminalManager {
 		// If no non-busy terminal in the current working dir exists and terminal reuse is enabled, try to find any non-busy terminal regardless of CWD
 		if (this.terminalReuseEnabled) {
 			const availableTerminal = terminals.find(
-				(t) => !t.busy && VscodeTerminalManager.effectiveShellPath(t.shellPath) === effectiveExpected,
+				(t) =>
+					!t.busy &&
+					t.envFingerprint === envFingerprint &&
+					VscodeTerminalManager.effectiveShellPath(t.shellPath) === effectiveExpected,
 			)
 			if (availableTerminal) {
 				availableTerminal.busy = true
@@ -439,7 +452,7 @@ export class VscodeTerminalManager {
 		}
 
 		// If all terminals are busy or don't match shell profile, create a new one with the configured shell
-		const newTerminalInfo = TerminalRegistry.createTerminal(cwd, expectedShellPath)
+		const newTerminalInfo = TerminalRegistry.createTerminal(cwd, expectedShellPath, env, envFingerprint)
 		newTerminalInfo.busy = true
 		this.terminalIds.add(newTerminalInfo.id)
 		// Cast to ITerminalInfo for interface compatibility

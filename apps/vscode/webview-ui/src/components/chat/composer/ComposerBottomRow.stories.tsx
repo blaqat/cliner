@@ -5,9 +5,10 @@ import ChatTextArea from "../ChatTextArea"
 import { ContextUsageIndicator } from "./ContextUsageIndicator"
 
 /**
- * The composer's bottom row at sidebar widths, with the widest content: a long configuration name,
- * a reasoning-effort label, approvals, the chat cost and the 85% Compact pill. Used to check that
- * the row collapses in order and never wraps or overlaps: the play function checks real bounds.
+ * The composer's bottom row at sidebar widths, with the widest content: ＋, the where pill, a long
+ * configuration name with its effort, the chat cost, the 85% Compact pill, approvals and Ask/Act.
+ * Used to check that the pills truncate and the meter's extras hide in order, never wrapping or
+ * overlapping: the play function checks real bounds.
  */
 const meta: Meta<typeof ChatTextArea> = {
 	title: "Views/Components/ComposerBottomRow",

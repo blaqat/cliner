@@ -6,7 +6,7 @@ import type {
 	RestoreResult,
 	StartSessionResult,
 } from "@cline/core"
-import { formatModeSwitchNotice, type ModeSwitchNotice } from "@cline/shared"
+import { createSessionId, formatModeSwitchNotice, type ModeSwitchNotice } from "@cline/shared"
 import { StateManager } from "@/core/storage/StateManager"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import { McpHub } from "@/services/mcp/McpHub"
@@ -25,7 +25,14 @@ type ApplyPatchExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost
 type ReadFileExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost.create>[0]["readFileExecutor"]>
 
 export interface SdkSessionLifecycleOptions {
+	resolveSessionWorkspace?: (id: string, cwd?: string) => Promise<string | undefined>
+	consumeWorkspaceNotice?: (id: string) => string | undefined
+	acquireSessionLease?: (id: string) => Promise<() => Promise<void>>
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
+	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's mentioned-thread allow-list. */
+	resolveThreadTranscript?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveThreadTranscript"]
+	/** Adds the `script` tool for saved scripts. */
+	resolveScripts?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveScripts"]
 	mcpHub: McpHub
 	requestToolApproval: RequestToolApprovalHandler
 	askQuestion: AskQuestionHandler
@@ -69,10 +76,103 @@ export interface SdkSessionLifecycleOptions {
 	onDidBecomeIdle?: () => void
 	onSessionReplaced?: (sessionId: string) => void
 	onSessionRemoved?: (sessionId: string) => void
-	prepareStartInput?: (input: Parameters<VscodeSessionHost["start"]>[0]) => Parameters<VscodeSessionHost["start"]>[0]
+	prepareStartInput?: (
+		input: Parameters<VscodeSessionHost["start"]>[0],
+	) => Parameters<VscodeSessionHost["start"]>[0] | Promise<Parameters<VscodeSessionHost["start"]>[0]>
 }
 
 export class SdkSessionLifecycle {
+	private readonly startInputs = new Map<string, Parameters<VscodeSessionHost["start"]>[0]>()
+	private readonly refreshingWorkspaces = new Map<string, Promise<void>>()
+	private async refreshWorkspace(id: string): Promise<void> {
+		const pending = this.refreshingWorkspaces.get(id)
+		if (pending) {
+			const session = this.liveSessions.get(id)
+			const generation = this.turnGenerations.get(id)
+			try {
+				await pending
+				return
+			} catch (error) {
+				if (!isAbortError(error) || this.liveSessions.get(id) !== session || this.turnGenerations.get(id) !== generation)
+					throw error
+				return this.refreshWorkspace(id)
+			}
+		}
+		const refresh = (async () => {
+			const session = this.liveSessions.get(id)
+			const input = this.startInputs.get(id)
+			const generation = this.turnGenerations.get(id)
+			const assertCurrent = () => {
+				this.assertTaskAvailable(id)
+				if (this.liveSessions.get(id) !== session || this.turnGenerations.get(id) !== generation) {
+					const error = new Error("Workspace refresh aborted")
+					error.name = "AbortError"
+					throw error
+				}
+			}
+			if (!session || !input) return
+			const cwd = await this.options.resolveSessionWorkspace?.(id, session.startConfig?.cwd)
+			if (!cwd || cwd === session.startConfig?.cwd) return
+			const initialMessages = await (session.sdkHost.readLiveMessages?.(id) ?? session.sdkHost.readMessages(id))
+			const updated = { ...input, initialMessages, config: { ...input.config, cwd, workspaceRoot: cwd } }
+			const prepared = (await this.options.prepareStartInput?.(updated)) ?? updated
+			assertCurrent()
+			await session.sdkHost.stop(id)
+			assertCurrent()
+			session.startResult = await session.sdkHost.start(prepared)
+			this.startInputs.set(id, prepared)
+			if (session.startConfig) session.startConfig = { ...session.startConfig, cwd, workspaceRoot: cwd }
+		})()
+		this.refreshingWorkspaces.set(id, refresh)
+		const starts = this.pendingStarts.get(id) ?? new Set<Promise<unknown>>()
+		starts.add(refresh)
+		this.pendingStarts.set(id, starts)
+		try {
+			await refresh
+		} finally {
+			if (this.refreshingWorkspaces.get(id) === refresh) this.refreshingWorkspaces.delete(id)
+			starts.delete(refresh)
+			if (!starts.size) this.pendingStarts.delete(id)
+			this.releaseIdleLease(id)
+		}
+	}
+	private readonly releasingLeases = new Map<string, Promise<void>>()
+	private readonly leases = new Map<string, Promise<() => Promise<void>>>()
+	private ensureLease(id: string): Promise<unknown> {
+		if (!this.options.acquireSessionLease) return Promise.resolve()
+		let pending = this.leases.get(id)
+		if (!pending) {
+			pending = (this.releasingLeases.get(id) ?? Promise.resolve()).then(() => this.options.acquireSessionLease!(id))
+			this.leases.set(id, pending)
+			void pending.catch(() => {
+				if (this.leases.get(id) === pending) this.leases.delete(id)
+			})
+		}
+		return pending
+	}
+	private releaseLease(id: string): Promise<void> {
+		const pending = this.leases.get(id)
+		this.leases.delete(id)
+		if (!pending) return this.releasingLeases.get(id) ?? Promise.resolve()
+		const releasing = pending
+			.then((release) => release())
+			.finally(() => {
+				if (this.releasingLeases.get(id) === releasing) this.releasingLeases.delete(id)
+			})
+		this.releasingLeases.set(id, releasing)
+		return releasing
+	}
+
+	private releaseIdleLease(id: string) {
+		const session = this.liveSessions.get(id)
+		if (
+			this.refreshingWorkspaces.has(id) ||
+			this.pendingStarts.has(id) ||
+			(session && (session.isRunning || session.queuedPromptCount))
+		)
+			return
+		void this.releaseLease(id).catch((error) => Logger.warn("[Worktree] Could not release session lease", error))
+	}
 	private readonly replacements = new Map<string, Promise<string>>()
 	private readonly heldSends = new Map<string, Set<() => void>>()
 	private readonly replacementHosts = new Set<SdkSessionHost>()
@@ -185,6 +285,7 @@ export class SdkSessionLifecycle {
 		if (isRunning) {
 			this.turnGenerations.set(activeSession.sessionId, (this.turnGenerations.get(activeSession.sessionId) ?? 0) + 1)
 		} else {
+			this.releaseIdleLease(activeSession.sessionId)
 			this.options.onDidBecomeIdle?.()
 			void this.pruneIdleSessions()
 		}
@@ -198,6 +299,7 @@ export class SdkSessionLifecycle {
 		}
 		activeSession.queuedPromptCount = count
 		if (count === 0 && !activeSession.isRunning) {
+			this.releaseIdleLease(activeSession.sessionId)
 			this.options.onDidBecomeIdle?.()
 		}
 	}
@@ -256,6 +358,8 @@ export class SdkSessionLifecycle {
 
 		await activeSession.sdkHost.updateSessionModel(activeSession.sessionId, modelId)
 		if (activeSession.startConfig) activeSession.startConfig.modelId = modelId
+		const input = this.startInputs.get(activeSession.sessionId)
+		if (input?.config) input.config.modelId = modelId
 		return true
 	}
 
@@ -263,9 +367,20 @@ export class SdkSessionLifecycle {
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
 		options?: { focus?: boolean },
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
+		if (this.options.acquireSessionLease && !startInput.config?.sessionId) {
+			startInput = { ...startInput, config: { ...startInput.config, sessionId: createSessionId() } }
+		}
 		const id = startInput.config?.sessionId?.trim()
 		this.assertTaskAvailable(id)
-		const starting = this.performStartNewSession(startInput, options)
+		const starting = (async () => {
+			if (id) await this.ensureLease(id)
+			try {
+				return await this.performStartNewSession(startInput, options)
+			} catch (error) {
+				if (id) this.releaseIdleLease(id)
+				throw error
+			}
+		})()
 		const key = id ?? ""
 		const starts = this.pendingStarts.get(key) ?? new Set<Promise<unknown>>()
 		starts.add(starting)
@@ -275,6 +390,7 @@ export class SdkSessionLifecycle {
 		} finally {
 			starts.delete(starting)
 			if (!starts.size) this.pendingStarts.delete(key)
+			if (id) this.releaseIdleLease(id)
 		}
 	}
 
@@ -282,7 +398,7 @@ export class SdkSessionLifecycle {
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
 		options?: { focus?: boolean },
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
-		startInput = this.options.prepareStartInput?.(startInput) ?? startInput
+		startInput = (await this.options.prepareStartInput?.(startInput)) ?? startInput
 		// A new task leaves other tasks alive. Only a same-id replacement stops first.
 		const replacementId = startInput.config?.sessionId?.trim()
 		if (replacementId && this.liveSessions.has(replacementId)) {
@@ -315,6 +431,8 @@ export class SdkSessionLifecycle {
 				? {
 						providerId: startInput.config.providerId,
 						modelId: startInput.config.modelId,
+						cwd: startInput.config.cwd,
+						workspaceRoot: startInput.config.workspaceRoot,
 						mode: startInput.mode === "plan" ? "plan" : "act",
 					}
 				: undefined,
@@ -325,6 +443,7 @@ export class SdkSessionLifecycle {
 			queuedPromptCount: 0,
 		}
 
+		this.startInputs.set(startResult.sessionId, startInput)
 		this.liveSessions.set(startResult.sessionId, this.activeSession)
 		this.setStatus(startResult.sessionId, "running")
 		// Register first so deletion can stop a start that crossed an awaited host.start.
@@ -380,7 +499,8 @@ export class SdkSessionLifecycle {
 		let sdkHost: SdkSessionHost | undefined
 		let installed = false
 		try {
-			const input = this.options.prepareStartInput?.(options.startInput) ?? options.startInput
+			await this.ensureLease(old.sessionId)
+			const input = (await this.options.prepareStartInput?.(options.startInput)) ?? options.startInput
 			const initialMessages = options.loadInitialMessages ? await options.loadInitialMessages() : options.initialMessages
 			sdkHost = await this.createHost()
 			const idle = () =>
@@ -411,6 +531,8 @@ export class SdkSessionLifecycle {
 					? {
 							providerId: input.config.providerId,
 							modelId: input.config.modelId,
+							cwd: input.config.cwd,
+							workspaceRoot: input.config.workspaceRoot,
 							mode: input.mode === "plan" ? "plan" : "act",
 						}
 					: undefined,
@@ -425,6 +547,7 @@ export class SdkSessionLifecycle {
 				queuedPromptCount: 0,
 			}
 			this.liveSessions.delete(old.sessionId)
+			this.startInputs.set(startResult.sessionId, input)
 			this.liveSessions.set(startResult.sessionId, replacement)
 			this.replacementHosts.add(sdkHost)
 			liveId = startResult.sessionId
@@ -445,6 +568,7 @@ export class SdkSessionLifecycle {
 					.dispose("replacement abandoned")
 					.catch((error) => Logger.warn("[SdkController] Failed to dispose replacement", error))
 			this.replacements.delete(old.sessionId)
+			this.releaseIdleLease(liveId)
 			release(liveId)
 		}
 	}
@@ -474,6 +598,8 @@ export class SdkSessionLifecycle {
 				? {
 						providerId: input.start.config.providerId,
 						modelId: input.start.config.modelId,
+						cwd: input.start.config.cwd,
+						workspaceRoot: input.start.config.workspaceRoot,
 						mode:
 							input.start.mode === "plan" || input.start.mode === "act"
 								? input.start.mode
@@ -504,6 +630,8 @@ export class SdkSessionLifecycle {
 			[...this.liveSessions.values()].map((session) => this.trackSessionStop(session.sdkHost, session.sessionId, reason)),
 		)
 		this.liveSessions.clear()
+		this.startInputs.clear()
+		await Promise.all([...this.leases.keys()].map((id) => this.releaseLease(id)))
 		this.turnGenerations.clear()
 		this.activeSession = undefined
 
@@ -542,6 +670,7 @@ export class SdkSessionLifecycle {
 			}
 			delete this.sessionStatuses[taskId]
 			delete this.subagentCounts[taskId]
+			this.startInputs.delete(taskId)
 			this.options.onSessionRemoved?.(taskId)
 		} finally {
 			release()
@@ -576,6 +705,7 @@ export class SdkSessionLifecycle {
 			this.liveSessions.delete(session.sessionId)
 			this.turnGenerations.delete(session.sessionId)
 			this.safeUnsubscribe(session, "idle session limit")
+			this.startInputs.delete(session.sessionId)
 			this.options.onSessionRemoved?.(session.sessionId)
 			await this.trackSessionStop(session.sdkHost, session.sessionId, "idle session limit")
 		}
@@ -632,6 +762,7 @@ export class SdkSessionLifecycle {
 						.dispose(reason)
 						.catch((error) => Logger.warn("[SdkController] Failed to dispose unused replacement host", error))
 				}
+				if (!this.liveSessions.has(sessionId) && !this.pendingStarts.has(sessionId)) await this.releaseLease(sessionId)
 				const elapsed = Date.now() - startedAt
 				if (elapsed > 250) {
 					Logger.log(`[SdkController] SDK session ${sessionId} stopped in ${elapsed}ms (${reason})`)
@@ -666,6 +797,8 @@ export class SdkSessionLifecycle {
 	private createHost(): Promise<SdkSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: this.options.resolveNotebook,
+			resolveThreadTranscript: this.options.resolveThreadTranscript,
+			resolveScripts: this.options.resolveScripts,
 			mcpHub: this.options.mcpHub,
 			requestToolApproval: this.options.requestToolApproval,
 			askQuestion: this.options.askQuestion,
@@ -788,14 +921,32 @@ export class SdkSessionLifecycle {
 			.filter(Boolean)
 			.join("\n")
 		this.options.onSendStart?.(sessionId, delivery)
-		sdkHost
-			.send({
+		const send = () =>
+			sdkHost.send({
 				sessionId,
-				prompt: noticedPrompt,
+				prompt: [this.options.consumeWorkspaceNotice?.(sessionId), noticedPrompt].filter(Boolean).join("\n"),
 				userImages: images,
 				userFiles: files,
 				delivery,
 			})
+		const sending = this.options.acquireSessionLease
+			? this.ensureLease(sessionId).then(async () => {
+					if (isSuperseded("lease acquisition")) {
+						const error = new Error("Submission aborted")
+						error.name = "AbortError"
+						throw error
+					}
+					await this.refreshWorkspace(sessionId)
+					this.assertTaskAvailable(sessionId)
+					if (isSuperseded("workspace refresh")) {
+						const error = new Error("Submission aborted")
+						error.name = "AbortError"
+						throw error
+					}
+					return send()
+				})
+			: send()
+		sending
 			.then(async () => {
 				if (delivery === "queue" || delivery === "steer" || delivery === "interject") {
 					Logger.log(`[SdkController] Message queued for session: ${sessionId}`)
@@ -811,6 +962,8 @@ export class SdkSessionLifecycle {
 			.catch(async (error: unknown) => {
 				if (isAbortError(error)) {
 					Logger.debug(`[SdkController] Agent turn aborted (expected): ${sessionId}`)
+					if (!isSuperseded("abort")) this.setRunning(false, sessionId)
+					this.releaseIdleLease(sessionId)
 					return
 				}
 				if (isSuperseded("failure")) {

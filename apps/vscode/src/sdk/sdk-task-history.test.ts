@@ -936,6 +936,18 @@ describe("SdkTaskHistory", () => {
 			say: "notebook_changes",
 			text: JSON.stringify(payload),
 		})
+		await history.saveNotebookChangesMessage("root", {
+			ts: 1,
+			type: "say",
+			say: "notebook_changes",
+			text: JSON.stringify({
+				...payload,
+				revision: "r2",
+				changes: [{ ...payload.changes[0], content: "User draft", editedByUser: true }],
+			}),
+		})
+		payload.revision = "r2"
+		expect((await getSession("root"))?.metadata?.notebookChangesMessages).toHaveLength(1)
 		const reopened = await history.getClineMessages("root")
 		const card = reopened.find((message) => message.say === "notebook_changes")!
 		expect(reopened.at(-1)).toBe(card)

@@ -78,13 +78,34 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.postStateToWebview.mock.invocationCallOrder[0]).toBeLessThan(
 			options.sessions.startNewSession.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId)
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId, undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			sessionId,
 			"resolved: hello @file",
 			["image.png"],
 			["a.ts"],
+		)
+	})
+
+	it("overrides SDK cwd and workspace root and persists the isolate cwd", async () => {
+		const { options } = makeCoordinator()
+		const prepareWorkspace = vi.fn().mockResolvedValue("/isolate")
+		options.sessionConfigBuilder.build.mockImplementation(async (input) => ({
+			providerId: "anthropic",
+			modelId: "model",
+			apiKey: "key",
+			cwd: input.cwd,
+			workspaceRoot: input.workspaceRoot ?? input.cwd,
+		}))
+		const coordinator = new SdkTaskStartCoordinator({ ...options, prepareWorkspace })
+		const id = await coordinator.initTask("isolate me", undefined, undefined, undefined, undefined, { runInWorktree: true })
+		expect(prepareWorkspace).toHaveBeenCalledWith(id, "isolate me", "/workspace", true)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ cwd: "/isolate", workspaceRoot: "/isolate" }) }),
+		)
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ cwdOnTaskInitialization: "/isolate" }),
 		)
 	})
 
@@ -231,7 +252,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})
@@ -242,7 +263,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs clinepass auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})

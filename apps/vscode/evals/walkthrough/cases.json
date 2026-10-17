@@ -1,0 +1,309 @@
+[
+  {
+    "id": "small",
+    "concepts": [
+      "timeout",
+      "cancel"
+    ],
+    "files": [
+      {
+        "path": "request.ts",
+        "before": "export const timeout = 30000\nexport const cancelOnClose = false\n",
+        "after": "export const timeout = 90000\nexport const cancelOnClose = true\n"
+      }
+    ]
+  },
+  {
+    "id": "focused",
+    "concepts": [
+      "duplicate",
+      "submission"
+    ],
+    "files": [
+      {
+        "path": "submit.ts",
+        "before": "export async function submit(send) {\n  await send()\n}\n",
+        "after": "let submitting = false\nexport async function submit(send) {\n  if (submitting) return\n  submitting = true\n  try { await send() } finally { submitting = false }\n}\n"
+      },
+      {
+        "path": "submit.test.ts",
+        "before": "test(\"submission\", async () => { await submit(send) })\n",
+        "after": "test(\"duplicate submission\", async () => {\n  await Promise.all([submit(send), submit(send)])\n  expect(send).toHaveBeenCalledTimes(1)\n})\n"
+      },
+      {
+        "path": "form.tsx",
+        "before": "<button onClick={submit}>Send</button>\n",
+        "after": "<button disabled={submitting} onClick={submit}>Send</button>\n"
+      }
+    ]
+  },
+  {
+    "id": "medium",
+    "concepts": [
+      "cache",
+      "fingerprint"
+    ],
+    "files": [
+      {
+        "path": "cache/module0.ts",
+        "before": "export const module0 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module0 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module1.ts",
+        "before": "export const module1 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module1 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module2.ts",
+        "before": "export const module2 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module2 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module3.ts",
+        "before": "export const module3 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module3 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module4.ts",
+        "before": "export const module4 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module4 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module5.ts",
+        "before": "export const module5 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module5 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module6.ts",
+        "before": "export const module6 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module6 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module7.ts",
+        "before": "export const module7 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module7 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module8.ts",
+        "before": "export const module8 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module8 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      },
+      {
+        "path": "cache/module9.ts",
+        "before": "export const module9 = { ttl: 0, key: (diff) => diff.path }\n",
+        "after": "export const module9 = { ttl: 60000, key: (diff) => diff.fingerprint }\n"
+      }
+    ]
+  },
+  {
+    "id": "large",
+    "concepts": [
+      "notes",
+      "thread",
+      "hunk"
+    ],
+    "files": [
+      {
+        "path": "review/feature0.ts",
+        "before": "export function feature0(notes) { return notes.map(send) }\n",
+        "after": "export function feature0(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature1.ts",
+        "before": "export function feature1(notes) { return notes.map(send) }\n",
+        "after": "export function feature1(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature2.ts",
+        "before": "export function feature2(notes) { return notes.map(send) }\n",
+        "after": "export function feature2(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature3.ts",
+        "before": "export function feature3(notes) { return notes.map(send) }\n",
+        "after": "export function feature3(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature4.ts",
+        "before": "export function feature4(notes) { return notes.map(send) }\n",
+        "after": "export function feature4(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature5.ts",
+        "before": "export function feature5(notes) { return notes.map(send) }\n",
+        "after": "export function feature5(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature6.ts",
+        "before": "export function feature6(notes) { return notes.map(send) }\n",
+        "after": "export function feature6(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature7.ts",
+        "before": "export function feature7(notes) { return notes.map(send) }\n",
+        "after": "export function feature7(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature8.ts",
+        "before": "export function feature8(notes) { return notes.map(send) }\n",
+        "after": "export function feature8(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature9.ts",
+        "before": "export function feature9(notes) { return notes.map(send) }\n",
+        "after": "export function feature9(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature10.ts",
+        "before": "export function feature10(notes) { return notes.map(send) }\n",
+        "after": "export function feature10(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature11.ts",
+        "before": "export function feature11(notes) { return notes.map(send) }\n",
+        "after": "export function feature11(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature12.ts",
+        "before": "export function feature12(notes) { return notes.map(send) }\n",
+        "after": "export function feature12(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature13.ts",
+        "before": "export function feature13(notes) { return notes.map(send) }\n",
+        "after": "export function feature13(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature14.ts",
+        "before": "export function feature14(notes) { return notes.map(send) }\n",
+        "after": "export function feature14(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature15.ts",
+        "before": "export function feature15(notes) { return notes.map(send) }\n",
+        "after": "export function feature15(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature16.ts",
+        "before": "export function feature16(notes) { return notes.map(send) }\n",
+        "after": "export function feature16(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature17.ts",
+        "before": "export function feature17(notes) { return notes.map(send) }\n",
+        "after": "export function feature17(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature18.ts",
+        "before": "export function feature18(notes) { return notes.map(send) }\n",
+        "after": "export function feature18(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature19.ts",
+        "before": "export function feature19(notes) { return notes.map(send) }\n",
+        "after": "export function feature19(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature20.ts",
+        "before": "export function feature20(notes) { return notes.map(send) }\n",
+        "after": "export function feature20(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature21.ts",
+        "before": "export function feature21(notes) { return notes.map(send) }\n",
+        "after": "export function feature21(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature22.ts",
+        "before": "export function feature22(notes) { return notes.map(send) }\n",
+        "after": "export function feature22(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature23.ts",
+        "before": "export function feature23(notes) { return notes.map(send) }\n",
+        "after": "export function feature23(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature24.ts",
+        "before": "export function feature24(notes) { return notes.map(send) }\n",
+        "after": "export function feature24(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature25.ts",
+        "before": "export function feature25(notes) { return notes.map(send) }\n",
+        "after": "export function feature25(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature26.ts",
+        "before": "export function feature26(notes) { return notes.map(send) }\n",
+        "after": "export function feature26(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature27.ts",
+        "before": "export function feature27(notes) { return notes.map(send) }\n",
+        "after": "export function feature27(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature28.ts",
+        "before": "export function feature28(notes) { return notes.map(send) }\n",
+        "after": "export function feature28(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature29.ts",
+        "before": "export function feature29(notes) { return notes.map(send) }\n",
+        "after": "export function feature29(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature30.ts",
+        "before": "export function feature30(notes) { return notes.map(send) }\n",
+        "after": "export function feature30(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature31.ts",
+        "before": "export function feature31(notes) { return notes.map(send) }\n",
+        "after": "export function feature31(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature32.ts",
+        "before": "export function feature32(notes) { return notes.map(send) }\n",
+        "after": "export function feature32(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature33.ts",
+        "before": "export function feature33(notes) { return notes.map(send) }\n",
+        "after": "export function feature33(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature34.ts",
+        "before": "export function feature34(notes) { return notes.map(send) }\n",
+        "after": "export function feature34(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature35.ts",
+        "before": "export function feature35(notes) { return notes.map(send) }\n",
+        "after": "export function feature35(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature36.ts",
+        "before": "export function feature36(notes) { return notes.map(send) }\n",
+        "after": "export function feature36(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature37.ts",
+        "before": "export function feature37(notes) { return notes.map(send) }\n",
+        "after": "export function feature37(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature38.ts",
+        "before": "export function feature38(notes) { return notes.map(send) }\n",
+        "after": "export function feature38(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      },
+      {
+        "path": "review/feature39.ts",
+        "before": "export function feature39(notes) { return notes.map(send) }\n",
+        "after": "export function feature39(notes) {\n  const message = notes.map(quoteHunks).join(\"\\n\\n\")\n  return sendToThread(message)\n}\n"
+      }
+    ]
+  }
+]

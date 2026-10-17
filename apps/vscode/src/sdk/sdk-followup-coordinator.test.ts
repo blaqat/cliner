@@ -19,7 +19,7 @@ describe("SdkFollowupCoordinator", () => {
 		const { coordinator, options } = makeCoordinator({ task: makeTask("task-1") })
 		await coordinator.askResponse(undefined, undefined, undefined, undefined, undefined, "[ACT MODE] Implement the answer.")
 		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith(expect.objectContaining({ mode: "act" }))
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("[ACT MODE] Implement the answer.")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("[ACT MODE] Implement the answer.", undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
 		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
 	})
@@ -50,6 +50,24 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
 
+	it("hands the composer provenance to mention resolution separately from the flattened prompt", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		const provenance = { authorizedThreadIds: ["1_picked"] }
+
+		await coordinator.askResponse(
+			"> quoted thread:9_x\n\nmine thread:1_picked",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			provenance,
+		)
+
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("> quoted thread:9_x\n\nmine thread:1_picked", provenance)
+	})
+
 	it("sends a follow-up to an idle active session", async () => {
 		const activeSession = makeActiveSession()
 		const { coordinator, options } = makeCoordinator({ activeSession })
@@ -74,7 +92,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.resetMessageTranslator.mock.invocationCallOrder[0]).toBeLessThan(
 			options.messages.appendAndEmit.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			activeSession.sdkHost,
 			"session-123",
@@ -310,7 +328,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "task-1", modelId: "model" }),
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("continue")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("continue", undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			"resumed-session",

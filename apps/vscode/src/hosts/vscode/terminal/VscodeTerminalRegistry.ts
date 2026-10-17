@@ -7,6 +7,8 @@ export interface TerminalInfo {
 	lastCommand: string
 	id: number
 	shellPath?: string
+	/** Fingerprint of the configured env the terminal was created with. */
+	envFingerprint?: string
 	lastActive: number
 	pendingCwdChange?: string
 	cwdResolved?: {
@@ -22,13 +24,21 @@ export class TerminalRegistry {
 	private static terminalsPendingCleanup = new Map<number, TerminalInfo>()
 	private static nextTerminalId = 1
 
-	static createTerminal(cwd?: string | vscode.Uri | undefined, shellPath?: string): TerminalInfo {
+	static createTerminal(
+		cwd?: string | vscode.Uri | undefined,
+		shellPath?: string,
+		env?: Record<string, string>,
+		envFingerprint?: string,
+	): TerminalInfo {
 		const terminalOptions: vscode.TerminalOptions = {
 			cwd,
 			name: "Cline",
 			iconPath: new vscode.ThemeIcon("cline-icon"),
 			env: {
 				CLINE_ACTIVE: "true",
+				// Configured terminal environment (settings + .env merge);
+				// values are applied here and never logged.
+				...env,
 				// Override $SHELL to match the selected shell profile so that
 				// child processes (make, npm scripts, etc.) that read $SHELL
 				// see the correct value instead of the user's login shell.
@@ -49,6 +59,7 @@ export class TerminalRegistry {
 			lastCommand: "",
 			id: TerminalRegistry.nextTerminalId,
 			shellPath,
+			envFingerprint,
 			lastActive: Date.now(),
 		}
 		TerminalRegistry.terminals.push(newInfo)

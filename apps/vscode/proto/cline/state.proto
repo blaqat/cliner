@@ -37,6 +37,8 @@ service StateService {
   rpc refreshRemoteConfig(EmptyRequest) returns (Empty);
   rpc testOtelConnection(EmptyRequest) returns (TestConnectionResult);
   rpc testPromptUploading(EmptyRequest) returns (TestConnectionResult);
+  rpc resolveTerminalEnvironment(EmptyRequest) returns (TerminalEnvironmentResolution);
+  rpc revealTerminalEnvironment(BooleanRequest) returns (TerminalEnvironmentValues);
 }
 
 message AutoApprovalActions {
@@ -294,6 +296,9 @@ message Settings {
   optional bool subagents_allow_commands = 192;
   optional bool subagents_allow_mcp = 193;
   optional bool subagents_allow_web = 194;
+  optional bool thread_toasts_enabled = 195;
+  optional int32 thread_toast_seconds = 196;
+  optional string global_script_toggles = 197;
 }
 
 message State {
@@ -345,6 +350,7 @@ message ChatContent {
   optional string message = 1;
   repeated string images = 2;
   repeated string files = 3;
+  optional ComposerProvenance provenance = 4;
 }
 
 message ResetStateRequest {
@@ -444,6 +450,63 @@ message UpdateSettingsRequest {
   optional bool subagents_allow_commands = 50;
   optional bool subagents_allow_mcp = 51;
   optional bool subagents_allow_web = 52;
+  optional bool thread_toasts_enabled = 53;
+  optional int32 thread_toast_seconds = 54;
+  optional bool subagent_profiles_enabled = 55;
+  optional string subagent_default_profile_id = 56;
+  optional string subagent_reasoning_effort = 57;
+  optional StringList subagent_allowed_profile_ids = 58;
+  optional bool thread_titles_enabled = 59;
+  optional string thread_titles_profile_id = 60;
+  optional string walkthrough_generate_profile_id = 61;
+  optional TerminalEnvironmentUpdate terminal_environment = 62;
+}
+
+// Presence-detectable string list — a bare `repeated` field cannot tell
+// "field not sent" from "sent empty", so lists that must not be clobbered by
+// unrelated settings updates travel wrapped like this.
+message StringList {
+  repeated string values = 1;
+}
+
+// A granular patch to the terminal environment settings of one scope. Each
+// field names only what changed, so quick consecutive edits (blur-save then
+// Remove) apply in order on the server instead of racing whole-scope
+// snapshots. `workspace` selects where they are stored: per-workspace state
+// (true, never written to the repo) or global settings (false).
+message TerminalEnvironmentUpdate {
+  reserved 2, 4;
+  reserved "variables", "path_entries";
+  optional bool workspace = 1;
+  // Variables to create or overwrite. A value equal to the "unchanged"
+  // sentinel is ignored so a masked placeholder can never replace a secret.
+  map<string, string> set_variables = 5;
+  repeated string remove_variables = 6;
+  // Present means set (an empty string clears the .env path).
+  optional string env_file_path = 3;
+  repeated string add_path_entries = 7;
+  repeated string remove_path_entries = 8;
+}
+
+// Real variable values for one scope, returned only by the explicit reveal
+// call. Ordinary webview state carries names with masked placeholders.
+message TerminalEnvironmentValues {
+  map<string, string> variables = 1;
+}
+
+// One variable in the resolved terminal environment. Values are never
+// returned — the settings UI only shows where each name came from.
+message TerminalEnvironmentVariable {
+  string name = 1;
+  // "process" | "env_file" | "global" | "workspace" — the winning source.
+  string source = 2;
+  // The losing source when a higher-precedence scope overrode the same name.
+  optional string overridden_source = 3;
+}
+
+message TerminalEnvironmentResolution {
+  repeated TerminalEnvironmentVariable variables = 1;
+  optional string error = 2;
 }
 
 message UpdateTerminalConnectionTimeoutRequest {
@@ -506,6 +569,8 @@ message TestConnectionResult {
 message PromptQuote {
   string text = 1;
   string note = 2;
+  // Attribution of a pasted message-link quote, e.g. "You · Dev plan".
+  optional string source = 3;
 }
 message PromptStashEntry {
   string id = 1;

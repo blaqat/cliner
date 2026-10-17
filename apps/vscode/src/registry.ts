@@ -23,6 +23,7 @@ const ClineCommands = {
 	ExplainCode: prefix + ".explainCode",
 	ImproveCode: prefix + ".improveCode",
 	FocusChatInput: prefix + ".focusChatInput",
+	SearchShortcut: prefix + ".searchShortcut",
 	Walkthrough: prefix + ".openWalkthrough",
 	GenerateCommit: prefix + ".generateGitCommitMessage",
 	AbortCommit: prefix + ".abortGitCommitMessage",

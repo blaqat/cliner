@@ -5,14 +5,20 @@
 import { ClineAsk, ClineMessage } from "@shared/ExtensionMessage"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import type { ButtonActionType, SubmittingButtonActionType } from "../shared/buttonConfig"
+import type { DraftAuthorization } from "../utils/composerProvenance"
 
 /** A passage quoted from the conversation, with an optional note typed under it. */
 export interface QuoteDraft {
 	text: string
 	note: string
+	/**
+	 * Optional attribution shown on the chip and prepended to the sent quote,
+	 * e.g. "You · Dev plan" for a pasted message link.
+	 */
+	source?: string
 }
 
-export interface DraftSnapshot {
+export interface DraftSnapshot extends DraftAuthorization {
 	revision: number
 	text: string
 	quotes: QuoteDraft[]
@@ -56,6 +62,12 @@ export interface ChatState {
 	selectedFiles: string[]
 	setSelectedFiles: React.Dispatch<React.SetStateAction<string[]>>
 	getDraftSnapshot: () => DraftSnapshot
+	/** Records a thread the user picked from the `thread:` mention menu; ignored unless its token is in the text. */
+	authorizeThread: (threadId: string) => void
+	/** Records the script run the user typed or picked in the composer (undefined when none). */
+	setScriptRun: (scriptRun: DraftAuthorization["scriptRun"]) => void
+	/** Puts back the explicit grants of a draft whose send failed and was restored. */
+	restoreAuthorization: (auth: DraftAuthorization) => void
 	consumeDraftSnapshot: (draft: DraftSnapshot) => void
 	sendingDisabled: boolean
 	setSendingDisabled: React.Dispatch<React.SetStateAction<boolean>>

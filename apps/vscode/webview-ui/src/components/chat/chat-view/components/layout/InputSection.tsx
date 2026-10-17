@@ -1,3 +1,5 @@
+import type { ParsedMessageLink } from "@shared/message-links"
+import { ResolveMessageLinkRequest } from "@shared/proto/cline/task"
 import React, { useCallback, useEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
 import { ContextUsageIndicator, useComposerContextUsage } from "@/components/chat/composer/ContextUsageIndicator"
@@ -10,6 +12,7 @@ import {
 } from "@/components/chat/composer/contextUsage"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { TaskServiceClient } from "@/services/grpc-client"
 import { usePromptStash } from "../../hooks/usePromptStash"
 import { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 
@@ -143,6 +146,39 @@ export const InputSection: React.FC<InputSectionProps> = ({
 		[promptStash, inputValue, quotes, setInputValue, setQuotes, focusComposer],
 	)
 
+	// A pasted vscode:// message link becomes a quote chip holding only that
+	// message's text — "You · <thread>" attribution when the host resolves it.
+	// Unresolvable links fall back to inserting the URL literally.
+	const handlePasteMessageLink = useCallback(
+		(link: ParsedMessageLink, rawUrl: string) => {
+			const insertRawUrl = () =>
+				setInputValue((current) => current + (current && !current.endsWith(" ") ? " " : "") + rawUrl + " ")
+			TaskServiceClient.resolveMessageLink(
+				ResolveMessageLinkRequest.create({
+					threadId: link.threadId,
+					messageIndex: link.messageIndex,
+					toolCallId: link.toolCallId,
+					block: link.block,
+				}),
+			)
+				.then((info) => {
+					if (info.text) {
+						const who = info.author === "user" ? "You" : "Cline"
+						const source = info.threadTitle ? `${who} · ${info.threadTitle}` : who
+						setQuotes((current) => [...current, { text: info.text, note: "", source }])
+						focusComposer()
+					} else {
+						insertRawUrl()
+					}
+				})
+				.catch((error) => {
+					console.error("Failed to resolve message link:", error)
+					insertRawUrl()
+				})
+		},
+		[setInputValue, setQuotes, focusComposer],
+	)
+
 	return (
 		<ChatTextArea
 			enterSendsAs={enterSendsAs}
@@ -158,11 +194,14 @@ export const InputSection: React.FC<InputSectionProps> = ({
 				}
 			}}
 			onOpenTaskGroup={onOpenTaskGroup}
+			onPasteMessageLink={handlePasteMessageLink}
 			onRestoreStash={handleRestoreStash}
+			onScriptRun={chatState.setScriptRun}
 			onSelectFilesAndImages={selectFilesAndImages}
 			onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}
 			onSendAs={handleSendAs}
 			onStash={handleStash}
+			onThreadPicked={chatState.authorizeThread}
 			placeholderText={isRunning ? runningPlaceholder : placeholderText}
 			quoteTags={
 				quotes.length > 0 ? (

@@ -332,6 +332,15 @@ export function hasAssignedApiProfile(configuration: ApiConfiguration): boolean 
 	return profileConfigurations.has(configuration)
 }
 
+/** Resolve a standalone feature's explicit profile without changing Ask/Act assignments. */
+export function apiConfigurationForProfileId(store: ApiProfileStore, id: string, mode: Mode): ApiConfiguration {
+	const profile = readApiConfigProfiles(store).find((entry) => entry.id === id)
+	if (!profile) throw new Error(`No saved configuration with id "${id}"`)
+	const configuration = buildApiConfigurationFromProfile(profile, readProfileSecrets(store, id), mode) as ApiConfiguration
+	profileConfigurations.add(configuration)
+	return configuration
+}
+
 const modeSnapshots = new WeakMap<ApiConfiguration, Record<Mode, ApiConfiguration>>()
 
 /** Clone a resolved connection without losing its profile-owned semantics. */

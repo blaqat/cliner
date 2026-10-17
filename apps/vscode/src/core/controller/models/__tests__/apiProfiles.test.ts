@@ -4,9 +4,11 @@ import { ALLOWED_API_PROVIDERS, isAllowedApiProvider, toAllowedApiProvider } fro
 import { isSecretKey } from "@shared/storage/state-keys"
 import {
 	type ApiProfileStore,
+	apiConfigurationForProfileId,
 	assignApiConfigProfile,
 	deleteApiConfigProfile,
 	ensureApiConfigProfiles,
+	hasAssignedApiProfile,
 	listProfileSecretKeys,
 	profileSecretStorageKey,
 	readApiConfigProfiles,
@@ -52,6 +54,28 @@ function createStore(config: Partial<ApiConfiguration> = {}) {
 }
 
 describe("provider allowlist", () => {
+	it("resolves an explicit feature profile with isolated credentials without changing mode defaults", () => {
+		const { store, globalState } = createStore()
+		const chat = upsertApiConfigProfile(store, {
+			name: "Chat",
+			provider: "openai",
+			modelId: "chat-model",
+			secrets: { openAiApiKey: "chat-key" },
+		})
+		const review = upsertApiConfigProfile(store, {
+			name: "Review",
+			provider: "anthropic",
+			modelId: "review-model",
+			secrets: { apiKey: "review-key" },
+		})
+		const config = apiConfigurationForProfileId(store, review.id, "act")
+		expect(config.actModeApiProvider).toBe("anthropic")
+		expect(config.apiKey).toBe("review-key")
+		expect(config.openAiApiKey).toBeUndefined()
+		expect(hasAssignedApiProfile(config)).toBe(true)
+		expect(globalState.actProfileId).toBe(chat.id)
+	})
+
 	it("keeps allowed providers", () => {
 		for (const provider of ALLOWED_API_PROVIDERS) {
 			expect(toAllowedApiProvider(provider)).toBe(provider)

@@ -31,7 +31,7 @@ const PREVIEW_OPEN_TIMEOUT_MS = 5_000
 
 export interface SdkDiffEditCoordinatorOptions {
 	/** Workspace root used to resolve relative tool paths. */
-	getCwd: () => Promise<string>
+	getCwd: (sessionId?: string) => Promise<string>
 	/** When Background Edit is enabled, edits apply headlessly with no preview. */
 	isBackgroundEditEnabled: () => boolean
 	/** Injectable for tests. Defaults to the host-registered factory. */
@@ -94,15 +94,15 @@ export class SdkDiffEditCoordinator {
 	 * user decides while looking at the actual change. Never throws; on any failure the
 	 * approval flow proceeds without a preview and the executor still applies the edit.
 	 */
-	async openForApproval(toolCallId: string, toolName: string, input: unknown): Promise<void> {
+	async openForApproval(toolCallId: string, toolName: string, input: unknown, sessionId?: string): Promise<void> {
 		if (this.options.isBackgroundEditEnabled() || this.sessions.has(toolCallId)) {
 			return
 		}
 		try {
 			if (toolName === "editor") {
-				await this.openEditorPreview(toolCallId, input as EditFileInput)
+				await this.openEditorPreview(toolCallId, input as EditFileInput, await this.options.getCwd(sessionId))
 			} else if (toolName === "apply_patch") {
-				await this.openPatchPreview(toolCallId, input as ApplyPatchInput)
+				await this.openPatchPreview(toolCallId, input as ApplyPatchInput, await this.options.getCwd(sessionId))
 			}
 		} catch (error) {
 			Logger.warn(`[SdkDiffEditCoordinator] Failed to open diff preview for ${toolName}: ${error}`)
@@ -123,7 +123,7 @@ export class SdkDiffEditCoordinator {
 				// Auto-approved (or hook-approved) edit: no preview was opened at approval
 				// time, so show one now. Best-effort — never blocks the edit.
 				try {
-					await this.openEditorPreview(toolCallId, input)
+					await this.openEditorPreview(toolCallId, input, cwd)
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve preview: ${error}`)
 				}
@@ -159,7 +159,7 @@ export class SdkDiffEditCoordinator {
 				await this.discardPreview(toolCallId)
 			} else if (!this.options.isBackgroundEditEnabled()) {
 				try {
-					await this.openPatchPreview(toolCallId, input)
+					await this.openPatchPreview(toolCallId, input, cwd)
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve patch preview: ${error}`)
 				}
@@ -241,11 +241,10 @@ export class SdkDiffEditCoordinator {
 		}
 	}
 
-	private async openEditorPreview(toolCallId: string, input: EditFileInput): Promise<void> {
+	private async openEditorPreview(toolCallId: string, input: EditFileInput, cwd: string): Promise<void> {
 		if (typeof input?.path !== "string" || input.path.length === 0 || typeof input.new_text !== "string") {
 			throw new Error("editor input missing path or new_text")
 		}
-		const cwd = await this.options.getCwd()
 		const absolutePath = resolveEditPath(cwd, input.path)
 		let originalContent: string | undefined
 		try {
@@ -270,11 +269,10 @@ export class SdkDiffEditCoordinator {
 		})
 	}
 
-	private async openPatchPreview(toolCallId: string, input: ApplyPatchInput): Promise<void> {
+	private async openPatchPreview(toolCallId: string, input: ApplyPatchInput, cwd: string): Promise<void> {
 		if (typeof input?.input !== "string" || input.input.length === 0) {
 			return
 		}
-		const cwd = await this.options.getCwd()
 		const { changes } = await computePatchChanges(input.input, cwd)
 		// Preview the first file the patch creates or updates. Multi-file patches are
 		// uncommon; any remaining files apply without a preview.

@@ -95,3 +95,23 @@ enum DiagnosticSeverity {
   DIAGNOSTIC_INFORMATION = 2;
   DIAGNOSTIC_HINT = 3;
 }
+
+// A saved script the user explicitly ran from the composer (typed `/name options`
+// or picked it from a menu). Only this marker lets a message grant a one-run
+// approval; prompt text alone never does.
+message ScriptInvocation {
+  string name = 1;
+  // Text and choice option values, by option name.
+  map<string, string> values = 2;
+  // Flag options the user turned on.
+  map<string, bool> flags = 3;
+}
+
+// What the user explicitly did in the composer for one message. The host
+// authorizes exactly this and never derives authorization from message text
+// (quote chips, "Add to Cline" insertions, restored drafts, expanded notes).
+message ComposerProvenance {
+  // Thread ids picked from the thread: mention menu whose token is still in the text.
+  repeated string authorized_thread_ids = 1;
+  optional ScriptInvocation script_invocation = 2;
+}

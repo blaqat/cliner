@@ -4,6 +4,38 @@ import { sdkMessagesToClineMessages } from "./message-translator"
 import { sanitizeSdkUserMessagesForDisplay } from "./sdk-task-history"
 import type { SdkInitialMessages } from "./session-host"
 
+/**
+ * Maps a rendered row (identified by its minted `ts`) back to the SDK
+ * transcript index it came from. `sdkMessageIndex` covers rows rendered from
+ * the persisted transcript; live rows mint ids per process, so they are
+ * matched against a fresh projection by text + say type + occurrence ordinal —
+ * the same fallback buildAsideConversation uses.
+ */
+export function findSdkMessageAnchor(
+	messages: SdkInitialMessages,
+	visibleMessages: ClineMessage[],
+	messageTs: number,
+	cwd?: string,
+): { sourceIndex?: number; toolCallId?: string; targetIndex: number } {
+	const targetIndex = visibleMessages.findIndex((message) => message.ts === messageTs)
+	if (targetIndex < 0) return { targetIndex }
+	const target = visibleMessages[targetIndex]
+	if (target.sdkMessageIndex !== undefined) {
+		return { sourceIndex: target.sdkMessageIndex, toolCallId: target.sdkToolCallId, targetIndex }
+	}
+	// Live rows have process-local ids. Match their occurrence in the persisted projection.
+	const matches = (message: ClineMessage) =>
+		(message.text === target.text || (target.partial && !!target.text && message.text?.startsWith(target.text))) &&
+		((message.say ?? message.ask) === (target.say ?? target.ask) ||
+			["text", "completion_result", "plan_completion_result", "plan_mode_respond"].includes(
+				message.say ?? message.ask ?? "",
+			))
+	const ordinal = visibleMessages.slice(0, targetIndex + 1).filter(matches).length - 1
+	const projected = sdkMessagesToClineMessages(sanitizeSdkUserMessagesForDisplay(messages), undefined, { cwd })
+	const projectedTarget = projected.filter(matches)[Math.max(0, ordinal)]
+	return { sourceIndex: projectedTarget?.sdkMessageIndex, toolCallId: projectedTarget?.sdkToolCallId, targetIndex }
+}
+
 /** Copies the native transcript, preserving tool pairs and attachment blocks. */
 export function buildAsideConversation(
 	messages: SdkInitialMessages,
@@ -11,25 +43,9 @@ export function buildAsideConversation(
 	messageTs: number,
 	cwd?: string,
 ): SdkInitialMessages {
-	const targetIndex = visibleMessages.findIndex((message) => message.ts === messageTs)
+	const { sourceIndex, toolCallId, targetIndex } = findSdkMessageAnchor(messages, visibleMessages, messageTs, cwd)
 	if (targetIndex < 0) throw new Error("Aside message not found")
 	const target = visibleMessages[targetIndex]
-	let sourceIndex = target.sdkMessageIndex
-	let toolCallId = target.sdkToolCallId
-	if (sourceIndex === undefined) {
-		// Live rows have process-local ids. Match their occurrence in the persisted projection.
-		const matches = (message: ClineMessage) =>
-			(message.text === target.text || (target.partial && !!target.text && message.text?.startsWith(target.text))) &&
-			((message.say ?? message.ask) === (target.say ?? target.ask) ||
-				["text", "completion_result", "plan_completion_result", "plan_mode_respond"].includes(
-					message.say ?? message.ask ?? "",
-				))
-		const ordinal = visibleMessages.slice(0, targetIndex + 1).filter(matches).length - 1
-		const projected = sdkMessagesToClineMessages(sanitizeSdkUserMessagesForDisplay(messages), undefined, { cwd })
-		const projectedTarget = projected.filter(matches)[Math.max(0, ordinal)]
-		sourceIndex = projectedTarget?.sdkMessageIndex
-		toolCallId = projectedTarget?.sdkToolCallId
-	}
 	if (sourceIndex === undefined && !target.text) {
 		const previous = visibleMessages
 			.slice(0, targetIndex)

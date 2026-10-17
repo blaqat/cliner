@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => {
 				}
 				return undefined
 			}),
+			getGlobalStateKey: vi.fn((_key: string): unknown => undefined),
 			setGlobalStateBatch: vi.fn(),
 			setGlobalState: vi.fn(),
 			setSecret: vi.fn(),

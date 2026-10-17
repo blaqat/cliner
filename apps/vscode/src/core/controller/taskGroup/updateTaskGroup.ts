@@ -4,7 +4,7 @@ import { Controller } from ".."
 import { protoToTaskTag, taskGroupSummaryToProto } from "./conversions"
 
 /**
- * Renames a task group and/or replaces its tags.
+ * Renames a task group, replaces its tags and/or sets its branch-suggestion dismissal.
  * @param controller The controller instance
  * @param request The request with the group id and fields to update
  * @returns TaskGroupSummary of the updated group
@@ -17,6 +17,7 @@ export async function updateTaskGroup(controller: Controller, request: UpdateTas
 	const group = await controller.updateTaskGroup(request.id, {
 		title: request.title,
 		tags: request.tags ? request.tags.tags.map(protoToTaskTag) : undefined,
+		branchSuggestionDismissed: request.branchSuggestionDismissed,
 	})
 	return taskGroupSummaryToProto(group)
 }

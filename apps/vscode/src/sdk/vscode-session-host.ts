@@ -47,9 +47,11 @@ import type { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import { appendTaskNotebookPrompt } from "./cline-session-factory"
 import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-telemetry"
+import type { ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
+import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
 import { getEffectiveTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 
@@ -86,6 +88,10 @@ export interface VscodeSessionHostOptions {
 	/** Per-tool approval policies derived from the user's auto-approval settings. */
 	toolPolicies?: Record<string, ToolPolicy>
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
+	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
+	resolveThreadTranscript?: (input: ClineCoreStartInput) => Promise<ThreadTranscriptToolsContext | undefined>
+	/** Adds the `script` tool (saved scripts); its approvals are decided per script by the interaction coordinator. */
+	resolveScripts?: (input: ClineCoreStartInput) => ScriptToolContext | undefined
 	/** Shared SDK telemetry service owned by SdkController. */
 	telemetry?: ITelemetryService
 	/** Resolves once the applicable remote config is ready for a new SDK session. */
@@ -158,8 +164,12 @@ export class VscodeSessionHost implements SdkSessionHost {
 				: input
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
 			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
+			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
+			const scripts = options.resolveScripts?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
+				threadTranscript,
+				scripts,
 				cwd: inputWithRemoteConfig.config.cwd,
 				getTerminalManager: options.getTerminalManager,
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
@@ -170,12 +180,44 @@ export class VscodeSessionHost implements SdkSessionHost {
 				...(notebook
 					? { systemPrompt: appendTaskNotebookPrompt(inputWithRemoteConfig.config.systemPrompt ?? "", notebook.group) }
 					: {}),
+				hooks: notebook
+					? {
+							...inputWithRemoteConfig.config.hooks,
+							beforeRun: async (context) => {
+								const result = await inputWithRemoteConfig.config.hooks?.beforeRun?.(context)
+								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								return {
+									...result,
+									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
+								}
+							},
+							beforeTool: async (context) => {
+								const result = await inputWithRemoteConfig.config.hooks?.beforeTool?.(context)
+								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								return {
+									...result,
+									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
+								}
+							},
+						}
+					: inputWithRemoteConfig.config.hooks,
 				telemetry: inputWithRemoteConfig.config.telemetry ?? options.telemetry,
 				extraTools: [...(inputWithRemoteConfig.config.extraTools ?? []), ...extraTools],
 			}
 			return {
 				...inputWithRemoteConfig,
-				toolPolicies: { ...inputWithRemoteConfig.toolPolicies, notebook: { enabled: true, autoApprove: true } },
+				toolPolicies: {
+					...inputWithRemoteConfig.toolPolicies,
+					notebook: { enabled: true, autoApprove: true },
+					// Read-only transcript access is auto-approved in every mode (Ask
+					// included): the allow-list itself is the guard — only thread ids
+					// the user mentioned are ever readable.
+					grep_threads: { enabled: true, autoApprove: true },
+					read_thread: { enabled: true, autoApprove: true },
+					// Always routed through requestToolApproval: the interaction coordinator applies the
+					// script's own approval level (and Ask/Act mode) instead of the global toggles.
+					...(scripts ? { script: { enabled: true, autoApprove: false } } : {}),
+				},
 				source: inputWithRemoteConfig.source ?? "vscode",
 				// The extension runs file hooks through its own hooks adapter
 				// (status chips, hooksEnabled setting, HookFactory discovery).

@@ -107,12 +107,86 @@ describe("ApiProfilesPanel", () => {
 		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 	})
 
-	it("lists cards with provider · model · API type and mode badges", () => {
+	it("lists cards with provider · model · API type and no extra chips", () => {
 		render(<ApiProfilesPanel />)
 		expect(screen.getByText("OpenAI Compatible · qwen · Responses")).toBeTruthy()
 		expect(screen.getByText("Anthropic · claude-x")).toBeTruthy()
-		expect(screen.getByText("Ask")).toBeTruthy()
-		expect(screen.getByText("Act")).toBeTruthy()
+		// Cards show nothing extra — usage lives in the pickers below, not as badges.
+		expect(card("Claude").parentElement?.querySelectorAll("span.rounded-full").length).toBe(0)
+		expect(card("Local").parentElement?.querySelectorAll("span.rounded-full").length).toBe(0)
+	})
+
+	it("shows separate Ask and Act pickers when the switch is on and keeps their assignments", async () => {
+		render(<ApiProfilesPanel />)
+		expect(screen.getByLabelText("Ask configuration")).toBeTruthy()
+		expect(screen.getByLabelText("Act configuration")).toBeTruthy()
+		// The switch is already on via state; turning it off converges both modes onto the Act profile.
+		fireEvent.click(screen.getByRole("switch", { name: "Different profile for Ask and Act" }))
+		await waitFor(() =>
+			expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ planActSeparateModelsSetting: false })),
+		)
+		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalled())
+		const calls = mocks.assignApiProfile.mock.calls.map((call) => call[0])
+		expect(calls).toContainEqual(expect.objectContaining({ mode: "plan", profileId: "b" }))
+		expect(calls).toContainEqual(expect.objectContaining({ mode: "act", profileId: "b" }))
+	})
+
+	it("shows one Default picker when Ask and Act share a profile", async () => {
+		mocks.state = { ...mocks.state, planActSeparateModelsSetting: false, actProfileId: "b", askProfileId: "b" }
+		render(<ApiProfilesPanel />)
+		expect(screen.queryByLabelText("Ask configuration")).toBeNull()
+		const picker = screen.getByLabelText("Default configuration") as HTMLSelectElement
+		expect(picker.value).toBe("b")
+		fireEvent.change(picker, { target: { value: "a" } })
+		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalledTimes(2))
+		const calls = mocks.assignApiProfile.mock.calls.map((call) => call[0])
+		expect(calls).toContainEqual(expect.objectContaining({ mode: "plan", profileId: "a" }))
+		expect(calls).toContainEqual(expect.objectContaining({ mode: "act", profileId: "a" }))
+	})
+
+	it("turning the switch on stores planActSeparateModelsSetting", async () => {
+		mocks.state = { ...mocks.state, planActSeparateModelsSetting: false, actProfileId: "b", askProfileId: "b" }
+		render(<ApiProfilesPanel />)
+		fireEvent.click(screen.getByRole("switch", { name: "Different profile for Ask and Act" }))
+		await waitFor(() =>
+			expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ planActSeparateModelsSetting: true })),
+		)
+	})
+
+	describe("Used by", () => {
+		it("keeps thread titles and subagent profiles off by default and hides their options", () => {
+			render(<ApiProfilesPanel />)
+			expect(screen.getByRole("switch", { name: "Name new threads automatically" }).getAttribute("aria-checked")).toBe(
+				"false",
+			)
+			expect(screen.queryByLabelText("Thread title profile")).toBeNull()
+			expect(screen.queryByLabelText("Subagent default profile")).toBeNull()
+		})
+
+		it("turns thread titles on through the setting and then offers a profile", async () => {
+			render(<ApiProfilesPanel />)
+			fireEvent.click(screen.getByRole("switch", { name: "Name new threads automatically" }))
+			await waitFor(() =>
+				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ threadTitlesEnabled: true })),
+			)
+		})
+
+		it("shows the subagent profile pickers when enabled and stores the choice", async () => {
+			mocks.state = { ...mocks.state, subagentProfilesEnabled: true }
+			render(<ApiProfilesPanel />)
+			fireEvent.change(screen.getByLabelText("Subagent default profile"), { target: { value: "b" } })
+			await waitFor(() =>
+				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ subagentDefaultProfileId: "b" })),
+			)
+		})
+
+		it("remembers the walkthrough Generate profile", async () => {
+			render(<ApiProfilesPanel />)
+			fireEvent.change(screen.getByLabelText("Walkthrough Generate profile"), { target: { value: "a" } })
+			await waitFor(() =>
+				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ walkthroughGenerateProfileId: "a" })),
+			)
+		})
 	})
 
 	it("assigns a configuration to a mode", async () => {

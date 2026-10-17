@@ -1,3 +1,4 @@
+import { normalizeProvenance } from "@shared/composer-provenance"
 import { String } from "@shared/proto/cline/common"
 import { PlanActMode } from "@shared/proto/cline/state"
 import { NewTaskRequest } from "@shared/proto/cline/task"
@@ -71,7 +72,9 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 
 	const taskId = await controller.initTask(request.text, request.images, request.files, undefined, filteredTaskSettings, {
 		background: request.runInBackground,
+		runInWorktree: request.runInWorktree,
 		taskGroupId: request.taskGroupId || undefined,
+		provenance: normalizeProvenance(request.provenance),
 	})
 	return String.create({ value: taskId || "" })
 }

@@ -5,6 +5,7 @@ import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { ThreadWorktreeActions, WorktreeBadge } from "@/components/worktrees/ThreadWorktreeActions"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
@@ -43,8 +44,17 @@ const MENU_ITEM_CLASS =
  * in the composer. The thread's tags sit on a compact line below.
  */
 const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
-	const { currentBranch, currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
-		useExtensionState()
+	const {
+		navigateToWalkthrough,
+		currentBranch,
+		currentTaskItem,
+		environment,
+		workspaceRoots,
+		platform,
+		sessionStatuses,
+		taskHistory,
+		taskGroups,
+	} = useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
 	// Shown until the saved title comes back through history.
@@ -117,6 +127,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 				data-testid="task-header"
 				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
 				<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
+				<WorktreeBadge threadId={taskId} />
 				{(imageCount > 0 || fileCount > 0) && (
 					<span
 						aria-label={`${imageCount + fileCount} attachment${imageCount + fileCount === 1 ? "" : "s"}`}
@@ -159,6 +170,19 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 						</PopoverTrigger>
 						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
 							<div className="flex flex-col" role="menu">
+								{taskId && <ThreadWorktreeActions threadId={taskId} />}
+								<button
+									className={MENU_ITEM_CLASS}
+									disabled={!taskId}
+									onClick={() => {
+										setMenuOpen(false)
+										navigateToWalkthrough()
+									}}
+									role="menuitem"
+									type="button">
+									<span aria-hidden className="codicon codicon-diff text-[13px]" />
+									Walkthrough
+								</button>
 								<button
 									className={MENU_ITEM_CLASS}
 									disabled={!task.text}

@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
 	getTaskGroup: vi.fn(),
 	createNote: vi.fn(),
 	openNote: vi.fn(),
+	notebookAction: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/services/grpc-client", () => ({
 	TaskGroupServiceClient: {
+		notebookAction: (request: unknown) => mocks.notebookAction(request),
 		getTaskGroup: (request: unknown) => mocks.getTaskGroup(request),
 		createNote: (request: unknown) => mocks.createNote(request),
 		openNote: (request: unknown) => mocks.openNote(request),
@@ -73,6 +75,12 @@ describe("NotebookView", () => {
 		mocks.getTaskGroup.mockReset().mockResolvedValue(FIXTURE)
 		mocks.createNote.mockReset().mockResolvedValue({ path: "/home/u/.cline/data/task-groups/g1/notebook/open-questions.md" })
 		mocks.openNote.mockReset().mockResolvedValue({})
+		mocks.notebookAction.mockReset().mockResolvedValue({
+			json: JSON.stringify({
+				versions: [{ id: "v1", ts: 1, content: "# Saved note", by: "you", diff: [] }],
+				conversions: [],
+			}),
+		})
 		mocks.state = { taskGroups: [], hideTaskGroupView: vi.fn(), navigateToTaskGroup: vi.fn() }
 	})
 
@@ -104,9 +112,12 @@ describe("NotebookView", () => {
 		expect(screen.getByText("No notes match.")).toBeInTheDocument()
 	})
 
-	it("opens a note's file on click", async () => {
+	it("opens a note page with editor and history actions", async () => {
 		await renderView()
 		fireEvent.click(screen.getAllByTestId("notebook-note-row")[2])
+		await screen.findByText("Saved note")
+		expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Open in editor" }))
 		expect(mocks.openNote).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", slug: "ticket-brief" }))
 	})
 

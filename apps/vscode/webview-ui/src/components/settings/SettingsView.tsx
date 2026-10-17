@@ -22,6 +22,7 @@ import { StateServiceClient } from "@/services/grpc-client"
 import { isAdminOrOwner } from "../account/helpers"
 import { Tab, TabContent, TabList, TabTrigger } from "../common/Tab"
 import ViewHeader from "../common/ViewHeader"
+import { useNavigationHistory } from "../navigation/NavigationHistoryContext"
 import SectionHeader from "./SectionHeader"
 import SettingsTargetHighlight from "./SettingsTargetHighlight"
 import AboutSection from "./sections/AboutSection"
@@ -50,9 +51,9 @@ interface SettingsTab {
 const SETTINGS_TABS: SettingsTab[] = [
 	{
 		id: "api-config",
-		name: "API Configuration",
-		tooltipText: "API Configuration",
-		headerText: "API Configuration",
+		name: "Profiles",
+		tooltipText: "Profiles",
+		headerText: "Profiles",
 		icon: SlidersHorizontal,
 	},
 	{
@@ -201,6 +202,11 @@ const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 			console.error("Failed to reset state:", error)
 		}
 	}, [])
+
+	// Back history records settings sections as places.
+	const reportSettingsSection = useNavigationHistory()?.reportSettingsSection
+	useEffect(() => reportSettingsSection?.(activeTab), [reportSettingsSection, activeTab])
+	useEffect(() => () => reportSettingsSection?.(undefined), [reportSettingsSection])
 
 	// Update active tab and restart target emphasis for every navigation request.
 	useEffect(() => {

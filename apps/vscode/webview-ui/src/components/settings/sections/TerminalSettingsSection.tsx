@@ -5,6 +5,7 @@ import { PlatformType } from "@/config/platform.config"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { StateServiceClient } from "../../../services/grpc-client"
+import TerminalEnvironmentEditor from "../environment/TerminalEnvironmentEditor"
 import Section from "../Section"
 import { updateSetting } from "../utils/settingsHandlers"
 
@@ -171,6 +172,7 @@ const TerminalSettingsSection: React.FC<TerminalSettingsSectionProps> = ({ rende
 							Select the default terminal Cline will use. 'Default' uses your VSCode global setting.
 						</p>
 					</div>
+					<TerminalEnvironmentEditor />
 					<div className="mt-5 p-3 bg-(--vscode-textBlockQuote-background) rounded border border-(--vscode-textBlockQuote-border)">
 						<p className="text-[13px] m-0">
 							<strong>Having terminal issues?</strong> Check our{" "}

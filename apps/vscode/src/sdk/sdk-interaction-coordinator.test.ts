@@ -47,15 +47,18 @@ describe("SdkInteractionCoordinator", () => {
 		const listener = vi.fn()
 		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		const recordApprovedToolMessage = vi.fn()
+		const getCwd = vi.fn((id?: string) => (id === "calling-session" ? "/calling" : "/focused"))
 		const coordinator = new SdkInteractionCoordinator({
 			messages,
 			getSessionId: () => "session-123",
 			postStateToWebview,
 			recordApprovedToolMessage,
+			getCwd,
 		})
 		messages.onSessionEvent(listener)
 
 		const approvalPromise = coordinator.handleRequestToolApproval({
+			sessionId: "calling-session",
 			agentId: "agent",
 			conversationId: "conversation",
 			iteration: 1,
@@ -72,6 +75,7 @@ describe("SdkInteractionCoordinator", () => {
 		expect(clineMessages[0].ask).toBe("tool")
 		expect(JSON.parse(clineMessages[0].text || "{}")).toMatchObject({ tool: "readFile", path: "README.md" })
 		expect(listener).toHaveBeenCalledOnce()
+		expect(getCwd).toHaveBeenCalledWith("calling-session")
 
 		expect(
 			coordinator.resolvePendingToolApproval(

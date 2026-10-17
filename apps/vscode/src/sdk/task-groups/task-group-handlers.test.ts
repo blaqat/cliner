@@ -63,4 +63,25 @@ describe("task group RPC validation", () => {
 		await discardNotebookChanges(controller as never, { threadId: "thread", taskGroupId: "group", revision: "r2" } as never)
 		expect(controller.discardNotebookChanges).toHaveBeenCalledWith("thread", "group", "r2")
 	})
+
+	it("forwards the branch-suggestion dismissal on updateTaskGroup", async () => {
+		const controller = {
+			updateTaskGroup: vi.fn().mockResolvedValue({
+				id: "group",
+				title: "T",
+				tags: [],
+				createdAt: 0,
+				updatedAt: 0,
+				noteCount: 0,
+				branchSuggestionDismissed: true,
+			}),
+		}
+		const result = await updateTaskGroup(controller as never, { id: "group", branchSuggestionDismissed: true } as never)
+		expect(controller.updateTaskGroup).toHaveBeenCalledWith("group", {
+			title: undefined,
+			tags: undefined,
+			branchSuggestionDismissed: true,
+		})
+		expect(result.branchSuggestionDismissed).toBe(true)
+	})
 })

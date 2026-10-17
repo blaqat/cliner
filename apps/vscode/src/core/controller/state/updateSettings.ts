@@ -2,8 +2,9 @@ import { setCompactionStrategyGlobally, setModelToolEnabledGlobally } from "@cli
 import { Empty } from "@shared/proto/cline/common"
 import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsRequest } from "@shared/proto/cline/state"
 import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
-import { OpenaiReasoningEffort } from "@shared/storage/types"
+import { isOpenaiReasoningEffort, OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
+import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
@@ -178,6 +179,63 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			}
 			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
 		}
+
+		// Sub-agent model profiles ("Used by" on the Profiles page). The
+		// allowlist is stored as profile ids; "parent" is the inherit option.
+		if (request.subagentProfilesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("subagentProfilesEnabled", request.subagentProfilesEnabled)
+		}
+		if (request.subagentDefaultProfileId !== undefined) {
+			controller.stateManager.setGlobalState("subagentDefaultProfileId", request.subagentDefaultProfileId || undefined)
+		}
+		if (request.subagentReasoningEffort !== undefined) {
+			const effort = request.subagentReasoningEffort || "none"
+			if (!isOpenaiReasoningEffort(effort)) {
+				throw new Error(`Invalid subagent reasoning effort: ${request.subagentReasoningEffort}`)
+			}
+			// "none" is the provider default — it means no configured override.
+			controller.stateManager.setGlobalState("subagentReasoningEffort", effort === "none" ? undefined : effort)
+		}
+		if (request.subagentAllowedProfileIds !== undefined) {
+			controller.stateManager.setGlobalState("subagentAllowedProfileIds", request.subagentAllowedProfileIds.values)
+		}
+		if (request.threadTitlesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesEnabled", request.threadTitlesEnabled)
+		}
+		if (request.threadTitlesProfileId !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesProfileId", request.threadTitlesProfileId || undefined)
+		}
+		if (request.walkthroughGenerateProfileId !== undefined) {
+			controller.stateManager.setGlobalState(
+				"walkthroughGenerateProfileId",
+				request.walkthroughGenerateProfileId || undefined,
+			)
+		}
+
+		// Terminal environment arrives as a granular patch for one scope, applied
+		// to the freshest stored value so back-to-back edits cannot clobber each
+		// other. Workspace scope lives in per-workspace state so machine-local
+		// values stay out of the repo. Values are never logged.
+		if (request.terminalEnvironment !== undefined) {
+			const patch = request.terminalEnvironment
+			const isWorkspace = !!patch.workspace
+			const current = isWorkspace
+				? controller.stateManager.getWorkspaceStateKey("terminalEnvironment")
+				: controller.stateManager.getGlobalStateKey("terminalEnvironment")
+			const env = applyTerminalEnvironmentPatch(current, {
+				setVariables: patch.setVariables,
+				removeVariables: patch.removeVariables,
+				envFilePath: patch.envFilePath,
+				addPathEntries: patch.addPathEntries,
+				removePathEntries: patch.removePathEntries,
+			})
+			if (isWorkspace) {
+				controller.stateManager.setWorkspaceState("terminalEnvironment", env)
+			} else {
+				controller.stateManager.setGlobalState("terminalEnvironment", env)
+			}
+		}
+
 		if (
 			[
 				request.subagentsEnabled,
@@ -186,6 +244,10 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 				request.subagentsAllowCommands,
 				request.subagentsAllowMcp,
 				request.subagentsAllowWeb,
+				request.subagentProfilesEnabled,
+				request.subagentDefaultProfileId,
+				request.subagentReasoningEffort,
+				request.subagentAllowedProfileIds,
 			].some((value) => value !== undefined)
 		) {
 			controller.handleSubagentSettingsChanged()
@@ -291,6 +353,16 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 
 		if (request.showFeatureTips !== undefined) {
 			controller.stateManager.setGlobalState("showFeatureTips", request.showFeatureTips)
+		}
+
+		if (request.threadToastsEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadToastsEnabled", request.threadToastsEnabled)
+		}
+		if (request.threadToastSeconds !== undefined) {
+			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
+				throw new Error("Toast duration must be a whole number of seconds, at least 1.")
+			}
+			controller.stateManager.setGlobalState("threadToastSeconds", request.threadToastSeconds)
 		}
 
 		// Post updated state to webview

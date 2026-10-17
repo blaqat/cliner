@@ -57,6 +57,7 @@ import ErrorRow from "./ErrorRow"
 import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
 import { MarkdownRow } from "./MarkdownRow"
+import MessageLinkButton from "./MessageLinkButton"
 import NewTaskPreview from "./NewTaskPreview"
 import { NotebookChangesRow } from "./NotebookChangesRow"
 import { NotebookToolRow, parseNotebookTool } from "./NotebookToolRow"
@@ -64,6 +65,7 @@ import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
 import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
+import { parseScriptTool, ScriptToolRow } from "./ScriptToolRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
 import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
@@ -176,6 +178,7 @@ export const ChatRowContent = memo(
 			showFeatureTips,
 			enableCheckpointsSetting,
 			turnState,
+			navigateToWalkthrough,
 		} = useExtensionState()
 		const [quoteButtonState, setQuoteButtonState] = useState<QuoteButtonState>({
 			visible: false,
@@ -422,6 +425,10 @@ export const ChatRowContent = memo(
 			const notebookTool = parseNotebookTool(tool)
 			if (notebookTool) {
 				return <NotebookToolRow info={notebookTool} />
+			}
+			const scriptTool = parseScriptTool(tool)
+			if (scriptTool) {
+				return <ScriptToolRow asking={message.type === "ask"} info={scriptTool} message={message} />
 			}
 
 			switch (tool.tool) {
@@ -873,7 +880,12 @@ export const ChatRowContent = memo(
 						const hasText = !!message.text?.trim()
 						return (
 							<WithCopyButton
-								actions={<AsideButton messageTs={message.ts} />}
+								actions={
+									<>
+										<AsideButton messageTs={message.ts} />
+										<MessageLinkButton messageTs={message.ts} />
+									</>
+								}
 								onMouseUp={handleMouseUp}
 								position="bottom-right"
 								ref={contentRef}
@@ -986,6 +998,7 @@ export const ChatRowContent = memo(
 								contentRef={contentRef}
 								handleQuoteClick={handleQuoteClick}
 								onMouseUp={handleMouseUp}
+								onOpenWalkthrough={currentTaskItem?.isSubagent ? undefined : navigateToWalkthrough}
 								quoteButtonState={quoteButtonState}
 								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
 								text={text || ""}
@@ -1137,6 +1150,7 @@ export const ChatRowContent = memo(
 									</div>
 								)}
 								<WithCopyButton
+									actions={<MessageLinkButton messageTs={message.ts} />}
 									className="pt-1"
 									onMouseUp={handleMouseUp}
 									position="bottom-right"

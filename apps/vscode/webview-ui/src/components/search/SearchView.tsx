@@ -3,6 +3,7 @@ import type { TaskGroupSummary } from "@shared/task-groups"
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
 import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -116,6 +117,10 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		return () => clearTimeout(timer)
 	}, [query])
 
+	// Back to search reopens it with the last query.
+	const reportSearch = useNavigationHistory()?.reportSearch
+	useEffect(() => reportSearch?.(true, query), [reportSearch, query])
+
 	const groups = taskGroups ?? []
 	const groupsById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups])
 	const localRows = useMemo(() => searchLocal(query, groups, taskHistory ?? []), [query, groups, taskHistory])
@@ -152,7 +157,8 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 				return
 			case "thread":
 			case "message":
-				onClose()
+				// ChatView leaves search once the thread opens; closing first would
+				// flash home and record it as a stop in Back's history.
 				openTask(row.threadId ?? row.id)
 		}
 	}

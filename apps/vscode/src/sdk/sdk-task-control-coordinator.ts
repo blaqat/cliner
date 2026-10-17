@@ -1,3 +1,4 @@
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { Logger } from "@/shared/services/Logger"
@@ -15,7 +16,13 @@ export interface SdkTaskControlCoordinatorOptions {
 	taskHistory: SdkTaskHistory
 	getTask: () => TaskProxy | undefined
 	setTask: (task: TaskProxy | undefined) => void
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+	onAskResponse: (
+		text?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		provenance?: ComposerProvenance,
+	) => Promise<void>
 	resetMessageTranslator: () => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "runTaskTransition">
@@ -245,8 +252,8 @@ export class SdkTaskControlCoordinator {
 
 				const task = createTaskProxy(
 					taskId,
-					(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-						this.options.onAskResponse(text, images, files, decisionId),
+					(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+						this.options.onAskResponse(text, images, files, decisionId, provenance),
 					() => this.cancelTask(),
 				)
 				if (cleanedMessages.length > 0) {

@@ -8,6 +8,7 @@ import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import { buildToolApprovalDenialReason } from "./tool-approval-denial"
 
 export interface ToolApprovalRequest {
+	sessionId?: string
 	signal?: AbortSignal
 	agentId: string
 	conversationId: string
@@ -25,6 +26,19 @@ export interface SdkInteractionCoordinatorOptions {
 	postStateToWebview: () => Promise<void>
 	getMode?: () => "plan" | "act"
 	shouldAutoApproveTool?: (request: ToolApprovalRequest) => boolean
+	/**
+	 * Per-script approval for the `script` tool (by script, mode and user-typed runs), which
+	 * the global auto-approval toggles never govern. "allow" runs it without asking.
+	 */
+	prepareScriptApproval?: (
+		request: ToolApprovalRequest,
+		mode: "plan" | "act",
+	) => Promise<{
+		decision: "allow" | "ask" | "reject"
+		review?: { scriptCommand: string; scriptCwd: string; scriptFingerprint: string }
+	}>
+	completeScriptApproval?: (request: ToolApprovalRequest, approved: boolean, trust: boolean) => Promise<void>
+	decideScriptApproval?: (input: unknown, mode: "plan" | "act") => Promise<"allow" | "ask" | "reject">
 	recordApprovedToolMessage?: (toolCallId: string, messageTs: number, agentId: string) => void
 	recordDeniedToolApproval?: (toolCallId: string, toolName: string, reason: string, agentId: string) => void
 	/**
@@ -49,7 +63,7 @@ export interface SdkInteractionCoordinatorOptions {
 	 * The task's working directory, used to relativize the absolute filesystem paths
 	 * shown in tool-approval asks (display only). Optional for tests.
 	 */
-	getCwd?: () => string | undefined
+	getCwd?: (sessionId?: string) => string | undefined
 }
 
 type ApprovalResolver = (result: { approved: boolean; reason?: string }) => void
@@ -68,7 +82,7 @@ export class SdkInteractionCoordinator {
 	private pendingApproval:
 		| { id: string; request: ToolApprovalRequest; message: ClineMessage; resolve: ApprovalResolver }
 		| undefined
-	private toolApprovalQueue: { request: ToolApprovalRequest; resolve: ApprovalResolver }[] = []
+	private toolApprovalQueue: { request: ToolApprovalRequest; resolve: ApprovalResolver; review?: Record<string, string> }[] = []
 
 	getPendingDecisions(): { id: string; agentId?: string; message: ClineMessage; kind: "approval" | "question" }[] {
 		const approval = this.pendingApproval
@@ -146,7 +160,26 @@ export class SdkInteractionCoordinator {
 	async handleRequestToolApproval(request: ToolApprovalRequest): Promise<{ approved: boolean; reason?: string }> {
 		if (request.signal?.aborted) return { approved: false, reason: "Agent run aborted" }
 		if (request.toolName === "notebook") return { approved: true }
+		const scriptPreparation =
+			request.toolName === "script"
+				? await this.options.prepareScriptApproval?.(request, this.options.getMode?.() ?? "act")
+				: undefined
+		const scriptDecision =
+			scriptPreparation?.decision ??
+			(request.toolName === "script" && this.options.decideScriptApproval
+				? await this.options.decideScriptApproval(request.input, this.options.getMode?.() ?? "act")
+				: undefined)
+		if (scriptDecision === "reject")
+			return {
+				approved: false,
+				reason: "Script definition changed or run is invalid. Review the current script and its options, then run again.",
+			}
+		if (scriptDecision === "allow") {
+			Logger.log("[SdkController] Allowing script run per its approval setting")
+			return { approved: true }
+		}
 		if (
+			scriptDecision === undefined &&
 			request.policy.requireApproval !== true &&
 			(request.policy.autoApprove === true || this.options.shouldAutoApproveTool?.(request) === true)
 		) {
@@ -159,12 +192,26 @@ export class SdkInteractionCoordinator {
 				request.signal?.removeEventListener("abort", onAbort)
 				resolve(result)
 			}
+			const resolveApproval = (result: { approved: boolean; reason?: string }) => {
+				if (request.toolName !== "script" || !this.options.completeScriptApproval) {
+					settle(result)
+					return
+				}
+				void this.options.completeScriptApproval(request, result.approved, result.reason === "trust-script-version").then(
+					() => settle({ approved: result.approved, ...(!result.approved ? { reason: result.reason } : {}) }),
+					(error) => settle({ approved: false, reason: String(error.message ?? error) }),
+				)
+			}
 			const onAbort = () => {
-				this.clearPending("Agent run aborted", request.agentId, settle)
+				this.clearPending("Agent run aborted", request.agentId, resolveApproval)
 			}
 
 			request.signal?.addEventListener("abort", onAbort, { once: true })
-			this.toolApprovalQueue.push({ request, resolve: settle })
+			this.toolApprovalQueue.push({
+				request,
+				resolve: resolveApproval,
+				...(scriptPreparation?.review ? { review: scriptPreparation.review } : {}),
+			})
 			void this.options.postStateToWebview()
 			if (request.signal?.aborted) onAbort()
 			else if (!this.pendingApproval && !this.preparingApproval) void this.showNextToolApproval()
@@ -188,8 +235,10 @@ export class SdkInteractionCoordinator {
 			request.toolName,
 			request.input,
 			this.nextMessageTs(),
-			this.options.getCwd?.(),
+			this.options.getCwd?.(request.sessionId),
 		)
+		if (pending.review)
+			toolAskMessage.text = JSON.stringify({ ...JSON.parse(toolAskMessage.text ?? "{}"), ...pending.review })
 		const id = String(toolAskMessage.ts)
 		toolAskMessage.decisionId = id
 		this.pendingApproval = { id, request, message: toolAskMessage, resolve }
@@ -300,7 +349,7 @@ export class SdkInteractionCoordinator {
 		}
 		resolve({
 			approved,
-			...(approved ? {} : { reason: denialReason }),
+			...(approved ? (prompt === "trust-script-version" ? { reason: prompt } : {}) : { reason: denialReason }),
 		})
 		if (this.toolApprovalQueue.length > 0) void this.showNextToolApproval()
 		return true

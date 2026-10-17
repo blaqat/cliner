@@ -2,6 +2,7 @@ import { getProviderAuthStorageId } from "@cline/core"
 import { createModeSwitchNoticeTracker, type ModeSwitchNotice, type ModeSwitchNoticeTracker } from "@cline/shared"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
+import { type ComposerProvenance, normalizeProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import { resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
@@ -67,7 +68,7 @@ export interface SdkModeCoordinatorOptions {
 	 * Approve/Reject buttons wired to an approval that was already denied.
 	 */
 	setTurnPhase: (phase: TurnPhase, anchorTs?: number) => void
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, provenance?: ComposerProvenance) => Promise<string>
 	/**
 	 * Called right before an auto-continue send kicks off a new turn. Mirrors
 	 * initTask/askResponse: moves the turn phase to "streaming" (footer shows
@@ -160,6 +161,7 @@ export class SdkModeCoordinator {
 			const continuationSent = await this.rebuildSessionForMode(modeToSwitchTo, {
 				autoContinue,
 				userContinuationPrompt: autoContinue ? userPrompt : undefined,
+				userProvenance: autoContinue ? normalizeProvenance(chatContent?.provenance) : undefined,
 				userImages: autoContinue ? userImages : undefined,
 				userFiles: autoContinue ? userFiles : undefined,
 			})
@@ -190,6 +192,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		} = {},
@@ -202,6 +206,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		},
@@ -335,7 +341,9 @@ export class SdkModeCoordinator {
 				this.options.onAutoContinueStarting()
 				// Resolve mentions before echoing so a resolution failure cannot
 				// leave an echoed-but-never-sent user message in the transcript.
-				const prompt = userPrompt ? await this.options.resolveContextMentions(userPrompt) : ACT_MODE_CONTINUATION_PROMPT
+				const prompt = userPrompt
+					? await this.options.resolveContextMentions(userPrompt, options.userProvenance)
+					: ACT_MODE_CONTINUATION_PROMPT
 				if (userPrompt || userImages?.length || userFiles?.length) {
 					const userMessage: ClineMessage = {
 						ts: Date.now(),

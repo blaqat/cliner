@@ -1,5 +1,5 @@
 import type { ExtensionState, TurnState } from "@shared/ExtensionMessage"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FULL_COMPOSER_ROW } from "@/components/chat/composer/composerRowLayout"
@@ -23,8 +23,10 @@ vi.mock("@/components/chat/composer/useFocusedChatModel", () => ({
 }))
 vi.mock("@/hooks/useProviderUsageCostDisplay", () => ({ useProviderUsageCostDisplay: () => "show" }))
 
+const resolveMessageLink = vi.fn()
 vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
+	TaskServiceClient: { resolveMessageLink: (request: unknown) => resolveMessageLink(request) },
 }))
 
 vi.mock("@/components/chat/ChatTextArea", () => ({
@@ -37,35 +39,55 @@ vi.mock("@/components/chat/ChatTextArea", () => ({
 			onRestoreStash?: (id: string) => void
 			stashEntries?: { id: string; text: string }[]
 			quoteTags?: React.ReactNode
+			onPasteMessageLink?: (link: { threadId: string; messageIndex: number }, rawUrl: string) => void
 			usageIndicator?: { render: (layout: typeof FULL_COMPOSER_ROW) => React.ReactNode }
 		}
-	>(({ sendingDisabled, onSend, onStash, onRestoreStash, stashEntries = [], quoteTags, usageIndicator }, ref) => (
-		<>
-			{quoteTags}
-			{usageIndicator?.render(FULL_COMPOSER_ROW)}
-			<button onClick={() => onStash?.()} type="button">
-				Stash
-			</button>
-			{stashEntries.map((entry) => (
-				<button key={entry.id} onClick={() => onRestoreStash?.(entry.id)} type="button">
-					{`Restore ${entry.text}`}
+	>(
+		(
+			{
+				sendingDisabled,
+				onSend,
+				onStash,
+				onRestoreStash,
+				stashEntries = [],
+				quoteTags,
+				usageIndicator,
+				onPasteMessageLink,
+			},
+			ref,
+		) => (
+			<>
+				{quoteTags}
+				<button
+					onClick={() => onPasteMessageLink?.({ threadId: "t9", messageIndex: 4 }, "vscode://x/thread/t9?m=4")}
+					type="button">
+					Paste link
 				</button>
-			))}
-			<textarea
-				aria-label="composer"
-				disabled={sendingDisabled}
-				onKeyDown={(event) => {
-					if (event.key === "Enter" && !sendingDisabled) {
-						onSend()
-					}
-				}}
-				ref={ref}
-			/>
-			<button disabled={sendingDisabled} onClick={onSend} type="button">
-				Send
-			</button>
-		</>
-	)),
+				{usageIndicator?.render(FULL_COMPOSER_ROW)}
+				<button onClick={() => onStash?.()} type="button">
+					Stash
+				</button>
+				{stashEntries.map((entry) => (
+					<button key={entry.id} onClick={() => onRestoreStash?.(entry.id)} type="button">
+						{`Restore ${entry.text}`}
+					</button>
+				))}
+				<textarea
+					aria-label="composer"
+					disabled={sendingDisabled}
+					onKeyDown={(event) => {
+						if (event.key === "Enter" && !sendingDisabled) {
+							onSend()
+						}
+					}}
+					ref={ref}
+				/>
+				<button disabled={sendingDisabled} onClick={onSend} type="button">
+					Send
+				</button>
+			</>
+		),
+	),
 }))
 
 function makeChatState(overrides: Partial<ChatState> = {}): ChatState {
@@ -400,6 +422,49 @@ describe("InputSection", () => {
 			expect(setInputValue).toHaveBeenLastCalledWith("draft")
 			expect(setQuotes).toHaveBeenLastCalledWith(quotes)
 			expect(screen.queryByRole("button", { name: "Restore draft" })).toBeNull()
+		})
+	})
+
+	describe("pasted message links", () => {
+		const renderWith = (chatState: ChatState) =>
+			render(
+				<InputSection
+					chatState={chatState}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+
+		it("becomes a quote chip holding only that message, attributed to its author and thread", async () => {
+			resolveMessageLink.mockResolvedValue({ author: "user", threadTitle: "Dev plan", text: "Cap exports at 10k rows" })
+			const setQuotes = vi.fn()
+			const setInputValue = vi.fn()
+			renderWith(makeChatState({ setQuotes, setInputValue }))
+
+			fireEvent.click(screen.getByRole("button", { name: "Paste link" }))
+
+			await waitFor(() => expect(setQuotes).toHaveBeenCalled())
+			expect(resolveMessageLink).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t9", messageIndex: 4 }))
+			const update = setQuotes.mock.calls[0][0] as (current: unknown[]) => unknown[]
+			expect(update([])).toEqual([{ text: "Cap exports at 10k rows", note: "", source: "You · Dev plan" }])
+			expect(setInputValue).not.toHaveBeenCalled()
+		})
+
+		it("falls back to the literal URL when the message can't be resolved", async () => {
+			resolveMessageLink.mockResolvedValue({ author: "", threadTitle: "", text: "" })
+			const setQuotes = vi.fn()
+			const setInputValue = vi.fn()
+			renderWith(makeChatState({ setQuotes, setInputValue }))
+
+			fireEvent.click(screen.getByRole("button", { name: "Paste link" }))
+
+			await waitFor(() => expect(setInputValue).toHaveBeenCalled())
+			expect(setQuotes).not.toHaveBeenCalled()
+			const update = setInputValue.mock.calls[0][0] as (current: string) => string
+			expect(update("see")).toBe("see vscode://x/thread/t9?m=4 ")
 		})
 	})
 })

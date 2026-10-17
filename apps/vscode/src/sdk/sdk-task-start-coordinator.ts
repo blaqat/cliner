@@ -2,6 +2,7 @@ import { getProviderAuthStorageId } from "@cline/core"
 import { createSessionId } from "@cline/shared"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { Settings } from "@shared/storage/state-keys"
@@ -60,14 +61,20 @@ export interface SdkTaskStartCoordinatorOptions {
 		task: TaskProxy
 		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
 	}
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+	onAskResponse: (
+		text?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		provenance?: ComposerProvenance,
+	) => Promise<void>
 	onCancelTask: () => Promise<void>
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
 	loadInitialMessages: (reader: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
-	resolveContextMentions: (text: string, threadId?: string) => Promise<string>
+	resolveContextMentions: (text: string, threadId?: string, provenance?: ComposerProvenance) => Promise<string>
 	isClineManagedProviderActive: () => boolean
-	emitClineAuthError: (task?: string) => void
+	emitClineAuthError: (task?: string, provenance?: ComposerProvenance) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
 	/**
 	 * Pins the current global per-mode selection onto the new task's session
@@ -75,6 +82,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	 * the configuration it was started with.
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
+	prepareWorkspace?: (id: string, title: string, workspace: string, enabled?: boolean) => Promise<string>
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
 	/**
 	 * Remembers the task group a new thread starts in. Core writes the session
@@ -94,7 +102,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -107,7 +115,7 @@ export class SdkTaskStartCoordinator {
 			// task-settings overlay drop, no clearing of what the user is looking at.
 			if (!background) await this.options.clearTask()
 
-			const cwd = await this.options.getWorkspaceRoot()
+			let cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
 			const apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
@@ -134,11 +142,36 @@ export class SdkTaskStartCoordinator {
 				)
 				// No task/session id exists yet, so this preflight auth UI path is
 				// intentionally not recorded as task-joinable provider error telemetry.
-				this.options.emitClineAuthError(prompt)
+				this.options.emitClineAuthError(prompt, options?.provenance)
 				return undefined
 			}
 
 			taskSessionId = config.sessionId?.trim() || createSessionId()
+			if (this.options.prepareWorkspace) {
+				const isolatedCwd = await this.options.prepareWorkspace(
+					taskSessionId,
+					prompt ?? "thread",
+					cwd,
+					options?.runInWorktree,
+				)
+				if (isolatedCwd !== cwd) {
+					cwd = isolatedCwd
+					Object.assign(
+						config,
+						await this.options.sessionConfigBuilder.build({
+							prompt,
+							images,
+							files,
+							historyItem,
+							taskSettings,
+							cwd,
+							workspaceRoot: cwd,
+							mode,
+							apiSelection,
+						}),
+					)
+				}
+			}
 			const configWithSessionId = {
 				...config,
 				sessionId: taskSessionId,
@@ -202,7 +235,7 @@ export class SdkTaskStartCoordinator {
 
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
-				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId)
+				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.provenance)
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -278,8 +311,8 @@ export class SdkTaskStartCoordinator {
 	private createAndSetTask(sessionId: string): TaskProxy {
 		const task = createTaskProxy(
 			sessionId,
-			(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-				this.options.onAskResponse(text, images, files, decisionId),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+				this.options.onAskResponse(text, images, files, decisionId, provenance),
 			() => this.options.onCancelTask(),
 		)
 		this.options.setTask(task)

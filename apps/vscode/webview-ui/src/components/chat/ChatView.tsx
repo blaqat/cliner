@@ -6,6 +6,7 @@ import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
 import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { SearchView } from "@/components/search/SearchView"
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
@@ -37,6 +38,7 @@ import {
 	withTaskMessage,
 } from "./chat-view"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
+import { findOpenMessageIndex } from "./chat-view/utils/openMessageUtils"
 import {
 	hasPendingMessageConfirmation,
 	isPendingResponseUnconfirmed,
@@ -376,6 +378,35 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
+	// A vscode:// message deep link: scroll to the message once its thread is
+	// loaded, then briefly flash the row. Matched by the stable transcript
+	// index; the message text is the fallback for unindexed rows.
+	const { openMessageTarget, clearOpenMessageTarget } = useExtensionState()
+	useEffect(() => {
+		if (!openMessageTarget || currentTaskItem?.id !== openMessageTarget.threadId) {
+			return
+		}
+		const index = findOpenMessageIndex(displayMessages, openMessageTarget)
+		if (index < 0) {
+			return // thread still loading — retry on the next messages update
+		}
+		const ts = displayMessages[index].ts
+		scrollBehavior.scrollToMessage(index)
+		clearOpenMessageTarget()
+		// Flash once the row is rendered (Virtuoso mounts it after the scroll).
+		// No effect cleanup for this timer: clearing the target re-runs the effect,
+		// which would cancel the flash before the row mounts. It stops itself.
+		let tries = 0
+		const flash = setInterval(() => {
+			const el = scrollBehavior.scrollContainerRef.current?.querySelector<HTMLElement>(`[data-message-ts="${ts}"]`)
+			if (el || ++tries > 20) {
+				clearInterval(flash)
+				el?.classList.add("message-link-flash")
+				setTimeout(() => el?.classList.remove("message-link-flash"), 1800)
+			}
+		}, 100)
+	}, [openMessageTarget, currentTaskItem?.id, displayMessages, scrollBehavior, clearOpenMessageTarget])
+
 	// A transcript-only subagent row in the header's subagent panel scrolls the
 	// transcript to that subagent's status row and expands its details there.
 	const openSubagentDetails = useCallback(
@@ -434,6 +465,16 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const openSearch = useCallback((query: string) => setSearchQuery(query), [])
 	const closeSearch = useCallback(() => setSearchQuery(null), [])
 	const showSearch = !task && searchQuery !== null
+	// Back history needs ChatView's thread and search state; lend it the controls.
+	const navigation = useNavigationHistory()
+	const registerChatNavigation = navigation?.registerChat
+	const reportSearch = navigation?.reportSearch
+	const closeThread = messageHandlers.handleTaskCloseButtonClick
+	useEffect(
+		() => registerChatNavigation?.({ closeThread: () => void closeThread(), openSearch, closeSearch }),
+		[registerChatNavigation, closeThread, openSearch, closeSearch],
+	)
+	useEffect(() => reportSearch?.(showSearch), [reportSearch, showSearch])
 	// Opening a thread from anywhere leaves search; coming home lands on home, not stale results.
 	useEffect(() => {
 		if (taskTs !== undefined) setSearchQuery(null)
