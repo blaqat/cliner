@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { type AgentTool, createTool } from "@cline/shared"
 import { formatTypedOptions, SCRIPT_APPROVAL_LABELS } from "@shared/scripts"
+import { readScriptToolInput } from "./script-approval"
 import { resolveScriptRun } from "./script-command"
 import type { ScriptDefinition } from "./script-file"
 import { runScriptCommand, SCRIPT_OUTPUT_TAIL_LINES, type ScriptRunResult } from "./script-runner"
@@ -142,7 +143,7 @@ export function createScriptTool(context: ScriptToolContext): AgentTool {
 		execute: async (input, toolContext) => {
 			try {
 				if (input?.action !== "load" && input?.action !== "run") return { error: 'action must be "load" or "run".' }
-				const name = typeof input.name === "string" ? input.name.trim().replace(/^\//, "") : ""
+				const name = readScriptToolInput(input)?.name ?? ""
 				const script = await context.store.find(name)
 				if (!script) {
 					const known = (await context.store.listEnabled()).map((entry) => entry.name).join(", ") || "none"

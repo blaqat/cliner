@@ -87,6 +87,10 @@ describe("decideScriptApproval", () => {
 		expect(await decide("allow-always", "act")).toBe("allow")
 	})
 
+	it.each(["/ask-always", " ask-always "])("normalizes %s before checking approval", async (name) => {
+		expect(await decide(name, "act")).toBe("ask")
+	})
+
 	it("never asks to load notes", async () => {
 		expect(await decide("ask-always", "plan", {}, "load")).toBe("allow")
 	})

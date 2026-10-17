@@ -66,7 +66,7 @@ export function readScriptToolInput(
 	if (!action || typeof record.name !== "string") return undefined
 	const options =
 		typeof record.options === "object" && record.options !== null ? (record.options as Record<string, unknown>) : undefined
-	return { action, name: record.name, options }
+	return { action, name: record.name.trim().replace(/^\//, ""), options }
 }
 
 export interface ScriptApprovalContext {
