@@ -26,7 +26,11 @@ vi.mock("fs", async (importOriginal) => ({
 
 vi.mock("@/core/storage/StateManager", () => ({
 	StateManager: {
-		get: () => ({ getGlobalSettingsKey: mocks.getGlobalSettingsKey }),
+		get: () => ({
+			getGlobalSettingsKey: mocks.getGlobalSettingsKey,
+			getGlobalStateKey: () => undefined,
+			getWorkspaceStateKey: () => undefined,
+		}),
 	},
 }))
 
@@ -145,7 +149,7 @@ describe("createVscodeRunCommandsTool", () => {
 			{ commands: ["Write-Output 'ok'"] },
 			{ agentId: "agent-1", conversationId: "conversation-1", iteration: 1 },
 		)
-		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-legacy")
+		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-legacy", {}, "{}")
 
 		const nextDescription = tool.description
 		expect(nextDescription).toContain("PowerShell (pwsh.exe)")
@@ -156,7 +160,7 @@ describe("createVscodeRunCommandsTool", () => {
 			{ commands: ["Write-Output 'ok'"] },
 			{ agentId: "agent-1", conversationId: "conversation-1", iteration: 2 },
 		)
-		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-7")
+		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-7", {}, "{}")
 	})
 })
 
@@ -371,7 +375,7 @@ describe("executeForeground", () => {
 
 		await executeForeground("echo ok", "/workspace", terminalManager, 1000, undefined, undefined, "wsl-bash")
 
-		expect(getOrCreateTerminal).toHaveBeenCalledWith("/workspace", "wsl-bash")
+		expect(getOrCreateTerminal).toHaveBeenCalledWith("/workspace", "wsl-bash", {}, "{}")
 	})
 
 	it("throws CommandExitError with the exit code on non-zero exit", async () => {

@@ -34,6 +34,7 @@ import {
 } from "@/integrations/terminal/types"
 import { Logger } from "@/shared/services/Logger"
 import { getShellForProfile } from "@/utils/shell"
+import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { describeBackgroundFailure } from "./background-failure"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { isStandaloneHost } from "./vscode-terminal-execution-mode"
@@ -282,7 +283,12 @@ export async function executeForeground(
 	}
 
 	try {
-		const terminalPromise = terminalManager.getOrCreateTerminal(cwd, terminalProfileId)
+		// The configured terminal environment (settings + .env merge) applies at
+		// terminal creation; a changed env produces a fresh terminal because
+		// the fingerprint is part of the reuse match.
+		const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), { cwd })
+		const envFingerprint = JSON.stringify(resolvedEnv.overrides)
+		const terminalPromise = terminalManager.getOrCreateTerminal(cwd, terminalProfileId, resolvedEnv.overrides, envFingerprint)
 		const startDetached = (terminalInfo: Awaited<typeof terminalPromise>, log: DetachedCommandLog): void => {
 			try {
 				const process = terminalManager.runCommand(terminalInfo, terminalCommand)
@@ -560,22 +566,26 @@ function createVscodeShellExecutor(options: VscodeRunCommandsToolOptions, state:
 		const { profileId, shell } = state.snapshot
 
 		if (executionMode === "backgroundExec") {
-			// Background path — use SDK's createShellExecutor.
-			// Recreate the executor if the shell has changed
-			if (!bgExecutor || bgExecutorShell !== shell) {
-				bgExecutorShell = shell
+			// Background path — use SDK's createShellExecutor. The configured
+			// terminal environment is baked into the executor, so the cache key
+			// covers both the shell and the resolved env fingerprint.
+			const commandDir = commandCwd || cwd
+			const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), { cwd: commandDir })
+			const executorKey = `${shell}${JSON.stringify(resolvedEnv.overrides)}`
+			if (!bgExecutor || bgExecutorShell !== executorKey) {
+				bgExecutorShell = executorKey
 				bgExecutor = createShellExecutor({
 					shell,
 					// Set SHELL env to match the shell we're spawning so child
 					// processes see the correct value instead of the inherited parent's.
-					env: { SHELL: shell },
+					env: { ...resolvedEnv.overrides, SHELL: shell },
 				})
 				Logger.log(`[VscodeRunCommands] Background executor using shell: ${shell}`)
 			}
 			// Record execution outcomes so background mode is comparable with
 			// foreground mode in the same task.terminal_execution event.
 			try {
-				const result = await bgExecutor(command, commandCwd || cwd, context)
+				const result = await bgExecutor(command, commandDir, context)
 				telemetryService.captureTerminalExecution(true, terminalType, "child_process", {
 					exitCode: 0,
 					terminalExecutionMode: "backgroundExec",
