@@ -198,6 +198,10 @@ export interface ExtensionState {
 	optOutOfRemoteConfig?: boolean
 	remoteConfigAvailable?: boolean
 	showFeatureTips?: boolean
+	/** In-app toasts when a background thread finishes or needs input. */
+	threadToastsEnabled?: boolean
+	/** How long a completion toast stays, in seconds. */
+	threadToastSeconds?: number
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	openAiCodexIsAuthenticated?: boolean

@@ -294,6 +294,8 @@ message Settings {
   optional bool subagents_allow_commands = 192;
   optional bool subagents_allow_mcp = 193;
   optional bool subagents_allow_web = 194;
+  optional bool thread_toasts_enabled = 195;
+  optional int32 thread_toast_seconds = 196;
 }
 
 message State {
@@ -444,6 +446,8 @@ message UpdateSettingsRequest {
   optional bool subagents_allow_commands = 50;
   optional bool subagents_allow_mcp = 51;
   optional bool subagents_allow_web = 52;
+  optional bool thread_toasts_enabled = 53;
+  optional int32 thread_toast_seconds = 54;
 }
 
 message UpdateTerminalConnectionTimeoutRequest {

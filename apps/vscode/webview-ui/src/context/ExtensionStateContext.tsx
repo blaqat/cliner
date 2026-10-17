@@ -359,6 +359,8 @@ export const ExtensionStateContextProvider: React.FC<{
 		lastDismissedCliBannerVersion: 0,
 		backgroundEditEnabled: false,
 		showFeatureTips: false,
+		threadToastsEnabled: true,
+		threadToastSeconds: 5,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
 		apiConfigProfiles: [],

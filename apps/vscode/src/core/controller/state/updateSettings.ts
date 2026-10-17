@@ -293,6 +293,16 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			controller.stateManager.setGlobalState("showFeatureTips", request.showFeatureTips)
 		}
 
+		if (request.threadToastsEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadToastsEnabled", request.threadToastsEnabled)
+		}
+		if (request.threadToastSeconds !== undefined) {
+			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
+				throw new Error("Toast duration must be a whole number of seconds, at least 1.")
+			}
+			controller.stateManager.setGlobalState("threadToastSeconds", request.threadToastSeconds)
+		}
+
 		// Post updated state to webview
 		await controller.postStateToWebview()
 

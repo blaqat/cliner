@@ -197,6 +197,8 @@ export async function getStateToPostToWebview(controller: {
 		optOutOfRemoteConfig: stateManager.getGlobalSettingsKey("optOutOfRemoteConfig"),
 		remoteConfigAvailable: controller.isRemoteConfigAvailable ?? false,
 		showFeatureTips,
+		threadToastsEnabled: stateManager.getGlobalSettingsKey("threadToastsEnabled"),
+		threadToastSeconds: stateManager.getGlobalSettingsKey("threadToastSeconds"),
 		banners,
 		welcomeBanners,
 		openAiCodexIsAuthenticated,

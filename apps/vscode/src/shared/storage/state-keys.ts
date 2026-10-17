@@ -303,6 +303,8 @@ const USER_SETTINGS_FIELDS = {
 	backgroundEditEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },
 	showFeatureTips: { default: false as boolean },
+	threadToastsEnabled: { default: true as boolean },
+	threadToastSeconds: { default: 5 as number },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },

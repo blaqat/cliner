@@ -308,4 +308,7 @@ service UiService {
 
   // Tracks intent signals before task creation or first model activity
   rpc trackIntent(IntentEvent) returns (Empty);
+
+  // Subscribe to VS Code window focus changes; sends the current state first
+  rpc subscribeToWindowFocus(EmptyRequest) returns (stream Boolean);
 }
