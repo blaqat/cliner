@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { CheckpointsServiceClient, TaskServiceClient } from "@/services/grpc-client"
+import MessageLinkButton from "./MessageLinkButton"
 import { highlightText } from "./task-header/Highlights"
 
 interface UserMessageProps {
@@ -156,7 +157,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 	return (
 		<div
 			className={`group relative p-2.5 my-1 text-badge-foreground rounded-xs ${
-				messageTs && !isEditing && !subagentView ? "cursor-pointer pr-8" : ""
+				messageTs && !isEditing && !subagentView ? "cursor-pointer pr-12" : ""
 			}`}
 			onClick={messageTs && !isEditing && !subagentView ? startEditing : undefined}
 			onKeyDown={
@@ -178,21 +179,31 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 			tabIndex={messageTs && !isEditing && !subagentView ? 0 : undefined}
 			title={messageTs && !isEditing && !subagentView ? "Edit and regenerate from here" : undefined}>
 			{messageTs && !isEditing && !subagentView && (
-				<Tooltip>
-					<TooltipContent side="left">Edit and regenerate from here</TooltipContent>
-					<TooltipTrigger asChild>
-						<button
-							aria-label="Edit and regenerate from this message"
-							className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-1"
-							onClick={(event) => {
-								event.stopPropagation()
-								startEditing()
-							}}
-							type="button">
-							<i className="codicon codicon-edit" />
-						</button>
-					</TooltipTrigger>
-				</Tooltip>
+				<>
+					<Tooltip>
+						<TooltipContent side="left">Copy link to this message</TooltipContent>
+						<TooltipTrigger asChild>
+							<span className="absolute right-7 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 text-badge-foreground">
+								<MessageLinkButton messageTs={messageTs} />
+							</span>
+						</TooltipTrigger>
+					</Tooltip>
+					<Tooltip>
+						<TooltipContent side="left">Edit and regenerate from here</TooltipContent>
+						<TooltipTrigger asChild>
+							<button
+								aria-label="Edit and regenerate from this message"
+								className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-1"
+								onClick={(event) => {
+									event.stopPropagation()
+									startEditing()
+								}}
+								type="button">
+								<i className="codicon codicon-edit" />
+							</button>
+						</TooltipTrigger>
+					</Tooltip>
+				</>
 			)}
 			{isEditing ? (
 				<div className="flex flex-col gap-2" onKeyDown={handleEditingKeyDown}>

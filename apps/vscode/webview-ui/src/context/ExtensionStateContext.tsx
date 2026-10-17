@@ -152,6 +152,11 @@ export interface ExtensionStateContextType extends ExtensionState {
 
 	// Event callbacks
 	onRelinquishControl: (callback: () => void) => () => void
+
+	// Message deep links: set when a vscode:// link opens a thread; the chat
+	// view scrolls to the message, flashes it, then clears this.
+	openMessageTarget?: { threadId: string; messageIndex: number; text: string }
+	clearOpenMessageTarget: () => void
 }
 
 export type TaskGroupPage = "home" | "notebook"
@@ -476,6 +481,11 @@ export const ExtensionStateContextProvider: React.FC<{
 	const liteLlmModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const workspaceUpdatesUnsubscribeRef = useRef<(() => void) | null>(null)
 	const relinquishControlUnsubscribeRef = useRef<(() => void) | null>(null)
+	const openMessageUnsubscribeRef = useRef<(() => void) | null>(null)
+	const [openMessageTarget, setOpenMessageTarget] = useState<
+		{ threadId: string; messageIndex: number; text: string } | undefined
+	>(undefined)
+	const clearOpenMessageTarget = useCallback(() => setOpenMessageTarget(undefined), [])
 
 	// Add ref for callbacks
 	const relinquishControlCallbacks = useRef<Set<() => void>>(new Set())
@@ -793,6 +803,23 @@ export const ExtensionStateContextProvider: React.FC<{
 			onComplete: () => {},
 		})
 
+		// Subscribe to message deep-link events (vscode://…/thread/<id>?m=<index>)
+		openMessageUnsubscribeRef.current = UiServiceClient.subscribeToOpenMessage(EmptyRequest.create({}), {
+			onResponse: (event: any) => {
+				if (event?.threadId) {
+					setOpenMessageTarget({
+						threadId: event.threadId,
+						messageIndex: event.messageIndex,
+						text: event.text ?? "",
+					})
+				}
+			},
+			onError: (error: any) => {
+				console.error("Error in openMessage subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Clean up subscriptions when component unmounts
 		return () => {
 			if (stateSubscriptionRef.current) {
@@ -848,6 +875,10 @@ export const ExtensionStateContextProvider: React.FC<{
 			if (relinquishControlUnsubscribeRef.current) {
 				relinquishControlUnsubscribeRef.current()
 				relinquishControlUnsubscribeRef.current = null
+			}
+			if (openMessageUnsubscribeRef.current) {
+				openMessageUnsubscribeRef.current()
+				openMessageUnsubscribeRef.current = null
 			}
 			if (mcpServersSubscriptionRef.current) {
 				mcpServersSubscriptionRef.current()
@@ -984,6 +1015,10 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToWorktrees,
 		navigateToTaskGroup,
 		navigateToChat,
+
+		// Message deep links
+		openMessageTarget,
+		clearOpenMessageTarget,
 
 		// Hide functions
 		hideSettings,

@@ -10,6 +10,11 @@ import type { ButtonActionType, SubmittingButtonActionType } from "../shared/but
 export interface QuoteDraft {
 	text: string
 	note: string
+	/**
+	 * Optional attribution shown on the chip and prepended to the sent quote,
+	 * e.g. "You · Dev plan" for a pasted message link.
+	 */
+	source?: string
 }
 
 export interface DraftSnapshot {

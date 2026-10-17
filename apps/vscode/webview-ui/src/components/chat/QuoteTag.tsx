@@ -66,6 +66,11 @@ export const QuoteTag = memo(({ quote, autoOpen, onRemove, onNoteChange, onDone,
 								ref={triggerRef}
 								type="button">
 								<QuoteIcon aria-hidden className="shrink-0 text-description" size={11} />
+								{quote.source && (
+									<span className="shrink-0 font-medium text-description" data-testid="quote-tag-source">
+										{quote.source}:
+									</span>
+								)}
 								<span className="truncate" data-testid="quote-tag-excerpt">
 									{excerpt}
 								</span>

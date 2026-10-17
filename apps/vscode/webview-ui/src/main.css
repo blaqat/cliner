@@ -313,3 +313,30 @@ body.vscode-reduce-motion [data-slot="select-content"].menu-rise[data-state="ope
 		transform: scaleX(0);
 	}
 }
+
+/* A message deep link's target row: brief highlight after the scroll lands. */
+@keyframes message-link-flash {
+	0% {
+		background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 179, 8, 0.35));
+		box-shadow: 0 0 0 2px var(--vscode-focusBorder, rgba(234, 179, 8, 0.5));
+	}
+	100% {
+		background-color: transparent;
+		box-shadow: 0 0 0 2px transparent;
+	}
+}
+
+.message-link-flash {
+	animation: message-link-flash 1.6s ease-out;
+	border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.message-link-flash {
+		animation: none !important;
+	}
+}
+
+body.vscode-reduce-motion .message-link-flash {
+	animation: none !important;
+}

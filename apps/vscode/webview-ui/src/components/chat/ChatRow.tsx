@@ -57,6 +57,7 @@ import ErrorRow from "./ErrorRow"
 import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
 import { MarkdownRow } from "./MarkdownRow"
+import MessageLinkButton from "./MessageLinkButton"
 import NewTaskPreview from "./NewTaskPreview"
 import { NotebookChangesRow } from "./NotebookChangesRow"
 import { NotebookToolRow, parseNotebookTool } from "./NotebookToolRow"
@@ -873,7 +874,12 @@ export const ChatRowContent = memo(
 						const hasText = !!message.text?.trim()
 						return (
 							<WithCopyButton
-								actions={<AsideButton messageTs={message.ts} />}
+								actions={
+									<>
+										<AsideButton messageTs={message.ts} />
+										<MessageLinkButton messageTs={message.ts} />
+									</>
+								}
 								onMouseUp={handleMouseUp}
 								position="bottom-right"
 								ref={contentRef}
@@ -1137,6 +1143,7 @@ export const ChatRowContent = memo(
 									</div>
 								)}
 								<WithCopyButton
+									actions={<MessageLinkButton messageTs={message.ts} />}
 									className="pt-1"
 									onMouseUp={handleMouseUp}
 									position="bottom-right"

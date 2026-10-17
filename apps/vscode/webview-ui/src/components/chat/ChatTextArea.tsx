@@ -1,4 +1,5 @@
 import { mentionRegex, mentionRegexGlobal } from "@shared/context-mentions"
+import { type ParsedMessageLink, parseMessageLink } from "@shared/message-links"
 import { StringRequest } from "@shared/proto/cline/common"
 import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared/proto/cline/file"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
@@ -54,8 +55,17 @@ import ModelEffortPill from "./composer/ModelEffortPill"
 import PlusMenu from "./composer/PlusMenu"
 import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import NoteMentionMenu from "./NoteMentionMenu"
-import { findNoteMention, insertNoteMention, matchNotes, type NoteMentionOption, useTaskNotes } from "./noteMentions"
+import {
+	findNoteMention,
+	groupNotesToOptions,
+	insertNoteMention,
+	matchNotes,
+	type NoteMentionOption,
+	useAllNotes,
+} from "./noteMentions"
 import PromptStashButton from "./PromptStashButton"
+import ThreadMentionMenu from "./ThreadMentionMenu"
+import { findThreadMention, insertThreadMention, type ThreadMentionOption, useThreadMentionMatches } from "./threadMentions"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
 
@@ -122,6 +132,8 @@ export interface ChatTextAreaProps {
 	}
 	/** Opens a task group's page (the task pill's "Open task"). */
 	onOpenTaskGroup?: (taskGroupId: string) => void
+	/** A vscode:// message link was pasted — becomes a quote chip instead of raw text. */
+	onPasteMessageLink?: (link: ParsedMessageLink, rawUrl: string) => void
 }
 
 interface GitCommit {
@@ -286,6 +298,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			onSendAs,
 			usageIndicator,
 			onOpenTaskGroup,
+			onPasteMessageLink,
 		},
 		ref,
 	) => {
@@ -332,23 +345,19 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
-		// `#note` mentions: the task this composer's thread (or task page) belongs to.
-		// An open thread's notes are the ones its mentions expand against, even when
-		// it's in no task; the page/pill selection only applies to new threads.
+		// `#note` mentions search every task's notes; the task this composer's
+		// thread (or task page) belongs to ranks first and inserts bare `#slug`.
+		// Picks from other tasks insert `#<group>/<slug>` so the host can resolve
+		// them against that task's notebook.
 		const composerTaskGroupId = useResolvedComposerTaskGroup()
 		const noteTaskGroupId = currentTaskItem
 			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
 			: composerTaskGroupId
-		const noteMention = useMemo(
-			() => (noteTaskGroupId ? findNoteMention(inputValue, cursorPosition) : undefined),
-			[noteTaskGroupId, inputValue, cursorPosition],
-		)
+		const noteMention = useMemo(() => findNoteMention(inputValue, cursorPosition), [inputValue, cursorPosition])
 		const [dismissedNoteMentionAt, setDismissedNoteMentionAt] = useState<number>()
 		const [selectedNoteIndex, setSelectedNoteIndex] = useState(0)
-		const taskNotes = useTaskNotes(
-			noteMention ? noteTaskGroupId : undefined,
-			taskGroups?.find((group) => group.id === noteTaskGroupId)?.noteCount,
-		)
+		const noteGroups = useAllNotes(noteMention ? taskGroups : undefined)
+		const taskNotes = useMemo(() => groupNotesToOptions(noteGroups, noteTaskGroupId), [noteGroups, noteTaskGroupId])
 		const noteMatches = useMemo(() => (noteMention ? matchNotes(taskNotes, noteMention.query) : []), [taskNotes, noteMention])
 		const showNoteMentionMenu =
 			!!noteMention &&
@@ -365,12 +374,52 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const handleNoteMentionSelect = useCallback(
 			(note: NoteMentionOption) => {
 				if (!noteMention) return
-				const next = insertNoteMention(inputValue, cursorPosition, noteMention.start, note.slug)
+				const next = insertNoteMention(inputValue, cursorPosition, noteMention.start, note.insertText ?? `#${note.slug}`)
 				setInputValue(next.value)
 				setCursorPosition(next.cursor)
 				setIntendedCursorPosition(next.cursor)
 			},
 			[noteMention, inputValue, cursorPosition, setInputValue],
+		)
+
+		// `thread:` mentions pick any thread from any task; the mention sends the
+		// agent the thread's title + id and unlocks its transcript tools for this
+		// conversation.
+		const threadMention = useMemo(() => findThreadMention(inputValue, cursorPosition), [inputValue, cursorPosition])
+		const [dismissedThreadMentionAt, setDismissedThreadMentionAt] = useState<number>()
+		const [selectedThreadIndex, setSelectedThreadIndex] = useState(0)
+		const taskGroupTitleById = useMemo(
+			() => new Map((taskGroups ?? []).map((group) => [group.id, group.title])),
+			[taskGroups],
+		)
+		const activeThreadMention = threadMention && threadMention.start !== dismissedThreadMentionAt ? threadMention : undefined
+		const threadMatches = useThreadMentionMatches(
+			taskHistory,
+			taskGroupTitleById,
+			currentTaskItem?.id,
+			activeThreadMention?.query ?? null,
+		)
+		const showThreadMentionMenu =
+			!!activeThreadMention &&
+			threadMatches.length > 0 &&
+			isTextAreaFocused &&
+			!showSlashCommandsMenu &&
+			!showContextMenu &&
+			!showNoteMentionMenu
+		useEffect(() => {
+			if (!threadMention) setDismissedThreadMentionAt(undefined)
+			setSelectedThreadIndex(0)
+		}, [threadMention?.start, threadMention?.query])
+
+		const handleThreadMentionSelect = useCallback(
+			(thread: ThreadMentionOption) => {
+				if (!threadMention) return
+				const next = insertThreadMention(inputValue, cursorPosition, threadMention.start, thread.id)
+				setInputValue(next.value)
+				setCursorPosition(next.cursor)
+				setIntendedCursorPosition(next.cursor)
+			},
+			[threadMention, inputValue, cursorPosition, setInputValue],
 		)
 		const [modeSwitchFlash, setModeSwitchFlash] = useState(false)
 		const [pendingInsertions, setPendingInsertions] = useState<string[]>([])
@@ -622,6 +671,26 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					if ((event.key === "Enter" || event.key === "Tab") && plain) {
 						event.preventDefault()
 						handleNoteMentionSelect(noteMatches[Math.min(selectedNoteIndex, noteMatches.length - 1)])
+						return
+					}
+				}
+
+				if (showThreadMentionMenu && activeThreadMention && !isComposing) {
+					if (event.key === "Escape") {
+						event.preventDefault()
+						setDismissedThreadMentionAt(activeThreadMention.start)
+						return
+					}
+					if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+						event.preventDefault()
+						const direction = event.key === "ArrowUp" ? -1 : 1
+						setSelectedThreadIndex((index) => (index + direction + threadMatches.length) % threadMatches.length)
+						return
+					}
+					const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+					if ((event.key === "Enter" || event.key === "Tab") && plain) {
+						event.preventDefault()
+						handleThreadMentionSelect(threadMatches[Math.min(selectedThreadIndex, threadMatches.length - 1)])
 						return
 					}
 				}
@@ -1033,6 +1102,14 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				const items = e.clipboardData.items
 
 				const pastedText = e.clipboardData.getData("text")
+				// A message deep link becomes a quote chip carrying just that message.
+				const messageLink = parseMessageLink(pastedText.trim())
+				if (messageLink) {
+					e.preventDefault()
+					setShowContextMenu(false)
+					onPasteMessageLink?.(messageLink, pastedText.trim())
+					return
+				}
 				// Check if the pasted content is a URL, add space after so user can easily delete if they don't want it
 				const urlRegex = /^\S+:\/\/\S+$/
 				if (urlRegex.test(pastedText.trim())) {
@@ -1121,6 +1198,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				setInputValue,
 				inputValue,
 				showDimensionErrorMessage,
+				onPasteMessageLink,
 			],
 		)
 
@@ -1642,6 +1720,15 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							onSelect={handleNoteMentionSelect}
 							selectedIndex={selectedNoteIndex}
 							setSelectedIndex={setSelectedNoteIndex}
+						/>
+					)}
+
+					{showThreadMentionMenu && (
+						<ThreadMentionMenu
+							onSelect={handleThreadMentionSelect}
+							selectedIndex={selectedThreadIndex}
+							setSelectedIndex={setSelectedThreadIndex}
+							threads={threadMatches}
 						/>
 					)}
 

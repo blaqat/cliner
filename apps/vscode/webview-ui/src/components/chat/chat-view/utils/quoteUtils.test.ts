@@ -18,4 +18,11 @@ describe("formatMessageWithQuotes", () => {
 	it("prefixes every line of a multi-line quote", () => {
 		expect(formatMessageWithQuotes("", [{ text: "line one\nline two", note: "" }])).toBe("> line one\n> line two")
 	})
+
+	it("attributes a quote to its source and carries only that quoted message", () => {
+		const text = formatMessageWithQuotes("Is this still true?", [
+			{ text: "Cap exports at 10k rows", note: "", source: "You · Dev plan" },
+		])
+		expect(text).toBe("> **You · Dev plan**\n> Cap exports at 10k rows\n\nIs this still true?")
+	})
 })

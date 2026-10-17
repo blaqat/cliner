@@ -7,6 +7,7 @@ import SuccessButton from "../common/SuccessButton"
 import AsideButton from "./AsideButton"
 import { QuoteButtonState } from "./ChatRow"
 import { MarkdownRow } from "./MarkdownRow"
+import MessageLinkButton from "./MessageLinkButton"
 import QuoteButton from "./QuoteButton"
 
 interface CompletionOutputRowProps {
@@ -87,6 +88,7 @@ export const CompletionOutputRow = memo(
 					<span className="text-xs font-medium uppercase tracking-wider text-success/70">Completed</span>
 					<div className="flex items-center">
 						{asideFromTs !== undefined && <AsideButton className="text-success/70" messageTs={asideFromTs} />}
+						{asideFromTs !== undefined && <MessageLinkButton className="text-success/70" messageTs={asideFromTs} />}
 						<CopyButton ariaLabel="Copy response" className="text-success/70" textToCopy={text} />
 					</div>
 				</div>

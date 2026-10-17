@@ -377,6 +377,38 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
+	// A vscode:// message deep link: scroll to the message once its thread is
+	// loaded, then briefly flash the row. Matched by the stable transcript
+	// index; the message text is the fallback for unindexed rows.
+	const { openMessageTarget, clearOpenMessageTarget } = useExtensionState()
+	useEffect(() => {
+		if (!openMessageTarget || currentTaskItem?.id !== openMessageTarget.threadId) {
+			return
+		}
+		let index = displayMessages.findIndex((m) => m.sdkMessageIndex === openMessageTarget.messageIndex)
+		if (index < 0 && openMessageTarget.text) {
+			index = displayMessages.findIndex((m) => m.text === openMessageTarget.text)
+		}
+		if (index < 0) {
+			return // thread still loading — retry on the next messages update
+		}
+		const ts = displayMessages[index].ts
+		scrollBehavior.scrollToMessage(index)
+		clearOpenMessageTarget()
+		// Flash once the row is rendered (Virtuoso mounts it after the scroll).
+		// No effect cleanup for this timer: clearing the target re-runs the effect,
+		// which would cancel the flash before the row mounts. It stops itself.
+		let tries = 0
+		const flash = setInterval(() => {
+			const el = scrollBehavior.scrollContainerRef.current?.querySelector<HTMLElement>(`[data-message-ts="${ts}"]`)
+			if (el || ++tries > 20) {
+				clearInterval(flash)
+				el?.classList.add("message-link-flash")
+				setTimeout(() => el?.classList.remove("message-link-flash"), 1800)
+			}
+		}, 100)
+	}, [openMessageTarget, currentTaskItem?.id, displayMessages, scrollBehavior, clearOpenMessageTarget])
+
 	// A transcript-only subagent row in the header's subagent panel scrolls the
 	// transcript to that subagent's status row and expands its details there.
 	const openSubagentDetails = useCallback(
