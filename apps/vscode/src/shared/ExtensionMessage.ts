@@ -14,6 +14,7 @@ import { ClineRulesToggles } from "./cline-rules"
 import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
 import { ClineMessageModelInfo } from "./messages"
+import type { ModelProfile } from "./model-profiles"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
@@ -185,10 +186,14 @@ export interface ExtensionState {
 	subagentsAllowCommands?: boolean
 	subagentsAllowMcp?: boolean
 	subagentsAllowWeb?: boolean
-	/** "Used by" profile settings (Profiles page). */
+	/** Named profiles (configuration + effort) and what uses them (Profiles page). */
+	profiles?: ModelProfile[]
+	threadDefaultProfileId?: string
+	threadSeparateAskActProfiles?: boolean
+	threadAskProfileId?: string
+	threadActProfileId?: string
 	subagentProfilesEnabled?: boolean
 	subagentDefaultProfileId?: string
-	subagentReasoningEffort?: string
 	subagentAllowedProfileIds?: string[]
 	threadTitlesEnabled?: boolean
 	threadTitlesProfileId?: string

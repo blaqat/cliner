@@ -21,6 +21,7 @@ import { FSWatcher } from "chokidar"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
+import { ensureModelProfiles } from "../controller/models/modelProfiles"
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
@@ -113,6 +114,7 @@ export class StateManager {
 
 			StateManager.instance.isInitialized = true
 			ensureApiConfigProfiles(StateManager.instance)
+			ensureModelProfiles(StateManager.instance)
 
 			await AgentConfigLoader.getInstance().ready()
 		} catch (error) {

@@ -260,6 +260,11 @@ export function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId:
 	if (next.length === 0) {
 		throw new Error("Cannot delete the last saved configuration. Create another configuration first.")
 	}
+	// Profiles point at configurations by id; deleting one would orphan them.
+	const usedBy = (stateManager.getGlobalStateKey("profiles") ?? []).filter((p) => p.configurationId === profileId)
+	if (usedBy.length > 0) {
+		throw new Error(`Used by ${usedBy.map((p) => `"${p.name}"`).join(", ")}. Change those profiles first.`)
+	}
 	deleteProfileSecrets(stateManager, profileId)
 	stateManager.setGlobalStateBatch({ apiConfigProfiles: next })
 	ensureApiConfigProfiles(stateManager)

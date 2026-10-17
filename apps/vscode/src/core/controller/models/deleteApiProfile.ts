@@ -3,10 +3,12 @@ import type { DeleteApiProfileRequest } from "@shared/proto/cline/models"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { deleteApiConfigProfile } from "./apiProfiles"
+import { applyThreadDefaultProfiles } from "./modelProfiles"
 
 /**
  * Deletes a saved API configuration profile and its stored secrets, and
- * replaces per-mode assignments pointing at it. Rejects the last profile.
+ * replaces per-mode assignments pointing at it. Rejects the last profile
+ * and any configuration a named profile runs on.
  */
 export async function deleteApiProfile(controller: Controller, request: DeleteApiProfileRequest): Promise<Empty> {
 	try {
@@ -18,6 +20,9 @@ export async function deleteApiProfile(controller: Controller, request: DeleteAp
 		if (!deleteApiConfigProfile(controller.stateManager, id)) {
 			throw new Error(`No saved configuration with id "${id}"`)
 		}
+		// A mode left running the deleted configuration was repaired to a
+		// fallback; put it back on its Thread default profile.
+		applyThreadDefaultProfiles(controller.stateManager)
 		controller.handleApiConfigurationChanged?.(previous, controller.stateManager.getApiConfiguration())
 		await controller.postStateToWebview()
 		return Empty.create()

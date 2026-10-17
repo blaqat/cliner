@@ -460,6 +460,26 @@ message UpdateSettingsRequest {
   optional string thread_titles_profile_id = 60;
   optional string walkthrough_generate_profile_id = 61;
   optional TerminalEnvironmentUpdate terminal_environment = 62;
+  // Profiles page: the whole profile list, and the Thread defaults.
+  optional ModelProfileList profiles = 63;
+  optional string thread_default_profile_id = 64;
+  optional bool thread_separate_ask_act_profiles = 65;
+  optional string thread_ask_profile_id = 66;
+  optional string thread_act_profile_id = 67;
+}
+
+// A named profile: a saved model configuration run at a reasoning effort.
+// An empty id creates a new profile.
+message ModelProfile {
+  string id = 1;
+  string name = 2;
+  string configuration_id = 3;
+  optional string reasoning_effort = 4;
+}
+
+// Presence-detectable list, like StringList.
+message ModelProfileList {
+  repeated ModelProfile values = 1;
 }
 
 // Presence-detectable string list — a bare `repeated` field cannot tell

@@ -13,6 +13,7 @@ import { telemetryService } from "../../../services/telemetry"
 import { BrowserSettings as SharedBrowserSettings } from "../../../shared/BrowserSettings"
 import { Controller } from ".."
 import { accountLogoutClicked } from "../account/accountLogoutClicked"
+import { applyThreadDefaultProfiles, findModelProfile, saveModelProfiles } from "../models/modelProfiles"
 import { normalizeProviderSwitchModel } from "../models/providerSwitchNormalization"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "../models/taskApiModel"
 
@@ -180,8 +181,41 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
 		}
 
-		// Sub-agent model profiles ("Used by" on the Profiles page). The
-		// allowlist is stored as profile ids; "parent" is the inherit option.
+		// Profiles page: the profile list and the Thread defaults. Defaults are
+		// applied onto the per-mode selection new threads start from.
+		const profilesChanged = request.profiles !== undefined
+		const threadDefaultsChanged = [
+			request.threadDefaultProfileId,
+			request.threadSeparateAskActProfiles,
+			request.threadAskProfileId,
+			request.threadActProfileId,
+		].some((value) => value !== undefined)
+		if (profilesChanged) {
+			saveModelProfiles(controller.stateManager, request.profiles?.values ?? [])
+		}
+		for (const key of ["threadDefaultProfileId", "threadAskProfileId", "threadActProfileId"] as const) {
+			const id = request[key]
+			if (id === undefined) continue
+			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
+			controller.stateManager.setGlobalState(key, id || undefined)
+		}
+		if (request.threadSeparateAskActProfiles !== undefined) {
+			controller.stateManager.setGlobalState("threadSeparateAskActProfiles", request.threadSeparateAskActProfiles)
+		}
+		if (profilesChanged || threadDefaultsChanged) {
+			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
+			if (applyThreadDefaultProfiles(controller.stateManager)) {
+				const nextApiConfiguration = controller.stateManager.getApiConfiguration()
+				controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration)
+			}
+		}
+
+		// Features that run on a profile. Ids are profile ids; "parent" in
+		// the allowlist is the inherit option.
+		for (const key of ["subagentDefaultProfileId", "threadTitlesProfileId", "walkthroughGenerateProfileId"] as const) {
+			const id = request[key]
+			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
+		}
 		if (request.subagentProfilesEnabled !== undefined) {
 			controller.stateManager.setGlobalState("subagentProfilesEnabled", request.subagentProfilesEnabled)
 		}
@@ -248,6 +282,7 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 				request.subagentDefaultProfileId,
 				request.subagentReasoningEffort,
 				request.subagentAllowedProfileIds,
+				request.profiles,
 			].some((value) => value !== undefined)
 		) {
 			controller.handleSubagentSettingsChanged()

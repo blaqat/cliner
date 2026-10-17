@@ -14,6 +14,7 @@ import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusC
 import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_MCP_DISPLAY_MODE, McpDisplayMode } from "@shared/McpDisplayMode"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
+import type { ModelProfile } from "@shared/model-profiles"
 import { GlobalInstructionsFile } from "@shared/remote-config/schema"
 import { Mode } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -113,10 +114,20 @@ const GLOBAL_STATE_FIELDS = {
 	apiConfigProfiles: { default: [] as ApiConfigProfile[] },
 	askProfileId: { default: undefined as string | undefined },
 	actProfileId: { default: undefined as string | undefined },
-	// Features that run on a saved API configuration ("Used by" on the
-	// Profiles page). Ids refer to apiConfigProfiles entries; "parent" in
-	// subagentAllowedProfileIds means the agent may also inherit the
-	// thread's own model.
+	// Named profiles (configuration + effort) on the Profiles page. Unset
+	// until the one-time migration from configuration-based settings runs.
+	profiles: { default: undefined as ModelProfile[] | undefined },
+	// Thread defaults: one profile for both modes unless the switch is on.
+	// They are applied to askProfileId/actProfileId + mode efforts so new
+	// threads start on them.
+	threadDefaultProfileId: { default: undefined as string | undefined },
+	threadSeparateAskActProfiles: { default: false as boolean },
+	threadAskProfileId: { default: undefined as string | undefined },
+	threadActProfileId: { default: undefined as string | undefined },
+	// Features that run on a profile. Ids refer to `profiles` entries;
+	// "parent" in subagentAllowedProfileIds means the agent may also inherit
+	// the thread's own model. subagentReasoningEffort is legacy (profiles
+	// carry their effort) and no longer read.
 	subagentProfilesEnabled: { default: false as boolean },
 	subagentDefaultProfileId: { default: undefined as string | undefined },
 	subagentReasoningEffort: { default: undefined as string | undefined },
