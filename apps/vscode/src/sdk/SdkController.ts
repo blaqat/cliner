@@ -64,7 +64,7 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
-import { expandThreadMentions } from "@/core/mentions/thread-mentions"
+import { expandThreadMentions, extractThreadMentionIds } from "@/core/mentions/thread-mentions"
 import {
 	ensureAgentSkillsDirectoryExists,
 	ensureMcpServersDirectoryExists,
@@ -1950,12 +1950,15 @@ export class Controller {
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
 	private async resolveContextMentions(text: string, threadId = this.task?.taskId): Promise<string> {
+		// Only thread ids in the user's own input may authorize transcript
+		// access; text expanded from notes, files or workflows never does.
+		const typedThreadIds = new Set(extractThreadMentionIds(text))
 		const withCommands = await this.resolveSlashCommands(text)
 		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return this.resolveReferenceMentions(withCommands, threadId)
+			return this.resolveReferenceMentions(withCommands, threadId, typedThreadIds)
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -1972,12 +1975,16 @@ export class Controller {
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
 		}
-		return this.resolveReferenceMentions(resolved, threadId)
+		return this.resolveReferenceMentions(resolved, threadId, typedThreadIds)
 	}
 
-	private async resolveReferenceMentions(text: string, threadId?: string): Promise<string> {
+	private async resolveReferenceMentions(
+		text: string,
+		threadId: string | undefined,
+		typedThreadIds: ReadonlySet<string>,
+	): Promise<string> {
 		const withNotes = await this.resolveTaskNoteMentions(text, threadId)
-		return this.resolveThreadMentions(withNotes, threadId)
+		return this.resolveThreadMentions(withNotes, threadId, typedThreadIds)
 	}
 
 	/**
@@ -2023,13 +2030,21 @@ export class Controller {
 	 * title (never its transcript) and adds the thread to this conversation's
 	 * allow-list so the grep_threads/read_thread tools can open it.
 	 */
-	private async resolveThreadMentions(text: string, threadId?: string): Promise<string> {
-		if (!text.includes("thread:")) return text
-		const { text: resolved, threadIds } = await expandThreadMentions(text, async (id) => {
-			const item = await this.taskHistory.findHistoryItem(id)
-			if (!item) return undefined
-			return { id: item.id, title: item.title || item.task }
-		})
+	private async resolveThreadMentions(
+		text: string,
+		threadId: string | undefined,
+		typedThreadIds: ReadonlySet<string>,
+	): Promise<string> {
+		if (typedThreadIds.size === 0 || !text.includes("thread:")) return text
+		const { text: resolved, threadIds } = await expandThreadMentions(
+			text,
+			async (id) => {
+				const item = await this.taskHistory.findHistoryItem(id)
+				if (!item) return undefined
+				return { id: item.id, title: item.title || item.task }
+			},
+			typedThreadIds,
+		)
 		if (threadId && threadIds.length > 0) {
 			const owner = await this.resolveAllowListOwner(threadId)
 			this.rememberThreadReferences(owner, threadIds)

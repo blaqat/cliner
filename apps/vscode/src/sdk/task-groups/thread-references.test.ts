@@ -1,7 +1,7 @@
 import type { AgentToolContext } from "@cline/shared"
 import { describe, expect, it } from "vitest"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
-import { expandThreadMentions } from "@/core/mentions/thread-mentions"
+import { expandThreadMentions, extractThreadMentionIds } from "@/core/mentions/thread-mentions"
 import {
 	clineMessagesToTranscript,
 	grepTranscript,
@@ -45,6 +45,30 @@ describe("thread: mentions", () => {
 		const result = await expandThreadMentions(text, resolve)
 		expect(result.threadIds).toEqual([])
 		expect(result.text).toBe(text)
+	})
+})
+
+describe("thread: authorization comes from the user's original input", () => {
+	const resolve = async (id: string) => ({ id, title: `Title ${id}` })
+
+	it("does not authorize or expand thread: mentions that came from an expanded note", async () => {
+		const original = "Use #sso-loop please. Also check thread:1_typed"
+		const typed = new Set(extractThreadMentionIds(original))
+		const expandedNotes = await expandTaskNoteMentions(original, async () => ({
+			name: "SSO",
+			content: "see thread:9_secret for details",
+		}))
+		const result = await expandThreadMentions(expandedNotes, resolve, typed)
+		expect(result.threadIds).toEqual(["1_typed"])
+		expect(result.text).toContain("thread:9_secret")
+		expect(result.text).not.toContain('id="9_secret"')
+	})
+
+	it("authorizes nothing when the user typed no thread mention", async () => {
+		const typed = new Set(extractThreadMentionIds("just #note"))
+		const result = await expandThreadMentions("<file>thread:9_secret</file>", resolve, typed)
+		expect(result.threadIds).toEqual([])
+		expect(result.text).toBe("<file>thread:9_secret</file>")
 	})
 })
 
