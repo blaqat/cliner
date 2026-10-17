@@ -35,6 +35,7 @@ import {
 import { Logger } from "@/shared/services/Logger"
 import { getShellForProfile } from "@/utils/shell"
 import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
+import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { describeBackgroundFailure } from "./background-failure"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { isStandaloneHost } from "./vscode-terminal-execution-mode"
@@ -286,7 +287,10 @@ export async function executeForeground(
 		// The configured terminal environment (settings + .env merge) applies at
 		// terminal creation; a changed env produces a fresh terminal because
 		// the fingerprint is part of the reuse match.
-		const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), { cwd })
+		const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), {
+			cwd,
+			workspaceRoot: await getTerminalEnvWorkspaceRoot(cwd),
+		})
 		const envFingerprint = JSON.stringify(resolvedEnv.overrides)
 		const terminalPromise = terminalManager.getOrCreateTerminal(cwd, terminalProfileId, resolvedEnv.overrides, envFingerprint)
 		const startDetached = (terminalInfo: Awaited<typeof terminalPromise>, log: DetachedCommandLog): void => {
@@ -570,7 +574,11 @@ function createVscodeShellExecutor(options: VscodeRunCommandsToolOptions, state:
 			// terminal environment is baked into the executor, so the cache key
 			// covers both the shell and the resolved env fingerprint.
 			const commandDir = commandCwd || cwd
-			const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), { cwd: commandDir })
+			// .env paths resolve against the workspace root, never the command's cwd.
+			const resolvedEnv = await resolveConfiguredTerminalEnv(StateManager.get(), {
+				cwd: commandDir,
+				workspaceRoot: await getTerminalEnvWorkspaceRoot(cwd),
+			})
 			const executorKey = `${shell}${JSON.stringify(resolvedEnv.overrides)}`
 			if (!bgExecutor || bgExecutorShell !== executorKey) {
 				bgExecutorShell = executorKey

@@ -2,7 +2,7 @@ import { promises as fs } from "fs"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { parseEnvFile, resolveTerminalEnv } from "./terminal-env"
+import { parseEnvFile, resolveEnvFilePath, resolveTerminalEnv } from "./terminal-env"
 
 let tempDir: string
 
@@ -91,5 +91,44 @@ describe("resolveTerminalEnv", () => {
 		})
 		expect(resolved.env.REL).toBe("yes")
 		expect(resolved.sources.REL).toEqual({ source: "env_file" })
+	})
+
+	it("resolves relative workspace .env paths against the workspace root, not the command cwd", async () => {
+		const commandDir = path.join(tempDir, "packages", "app")
+		await fs.mkdir(commandDir, { recursive: true })
+		await fs.writeFile(path.join(tempDir, "root.env"), "FROM_ROOT=yes")
+		await fs.writeFile(path.join(commandDir, "root.env"), "FROM_ROOT=wrong")
+		const resolved = await resolveTerminalEnv({
+			baseEnv: {},
+			cwd: commandDir,
+			workspaceRoot: tempDir,
+			workspace: { envFilePath: "root.env" },
+		})
+		expect(resolved.env.FROM_ROOT).toBe("yes")
+	})
+
+	it("does not resolve a relative global .env path against anything", async () => {
+		await fs.writeFile(path.join(tempDir, "g.env"), "G=1")
+		const resolved = await resolveTerminalEnv({
+			baseEnv: {},
+			cwd: tempDir,
+			workspaceRoot: tempDir,
+			global: { envFilePath: "g.env" },
+		})
+		expect(resolved.env.G).toBeUndefined()
+	})
+
+	it("reads absolute and ~-relative global .env paths", async () => {
+		await fs.writeFile(path.join(tempDir, "abs.env"), "ABS=1")
+		const resolved = await resolveTerminalEnv({
+			baseEnv: {},
+			workspaceRoot: "/unrelated",
+			global: { envFilePath: path.join(tempDir, "abs.env") },
+		})
+		expect(resolved.env.ABS).toBe("1")
+		expect(resolveEnvFilePath("~/x/.env", "global", "/ws")).toBe(path.join(os.homedir(), "x/.env"))
+		expect(resolveEnvFilePath("~", "workspace", "/ws")).toBe(os.homedir())
+		expect(resolveEnvFilePath(".env", "global", "/ws")).toBeUndefined()
+		expect(resolveEnvFilePath(".env", "workspace", "/ws")).toBe(path.resolve("/ws", ".env"))
 	})
 })

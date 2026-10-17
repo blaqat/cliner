@@ -1,5 +1,6 @@
 import * as proto from "@/shared/proto"
 import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
+import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { Controller } from "../index"
 
 /**
@@ -12,7 +13,9 @@ export async function resolveTerminalEnvironment(
 	_request: proto.cline.EmptyRequest,
 ): Promise<proto.cline.TerminalEnvironmentResolution> {
 	const cwd = await controller.getWorkspaceRoot()
-	const resolved = await resolveConfiguredTerminalEnv(controller.stateManager, { cwd })
+	// Same base command execution uses, so the preview matches what runs.
+	const workspaceRoot = await getTerminalEnvWorkspaceRoot(cwd)
+	const resolved = await resolveConfiguredTerminalEnv(controller.stateManager, { cwd, workspaceRoot })
 	const variables = Object.entries(resolved.sources)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([name, info]) =>

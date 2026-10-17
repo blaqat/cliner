@@ -1,5 +1,6 @@
 import type { TerminalEnvironmentSettings, TerminalEnvironmentSource } from "@shared/terminal-environment"
 import { promises as fs } from "fs"
+import * as os from "os"
 import * as path from "path"
 
 /**
@@ -34,7 +35,12 @@ export interface TerminalEnvResolveOptions {
 	workspace?: TerminalEnvironmentSettings
 	/** Defaults to process.env. */
 	baseEnv?: NodeJS.ProcessEnv
-	/** Used to resolve relative .env paths. Defaults to process.cwd(). */
+	/**
+	 * Stable base for relative workspace-scope .env paths: the workspace root,
+	 * not the directory a particular command runs in. Falls back to `cwd`.
+	 */
+	workspaceRoot?: string
+	/** Fallback base when `workspaceRoot` is not given. Defaults to process.cwd(). */
 	cwd?: string
 }
 
@@ -58,16 +64,37 @@ export function parseEnvFile(content: string): Record<string, string> {
 	return vars
 }
 
+/**
+ * Where a configured .env path points. Workspace-scope paths may be relative
+ * to the workspace root; global-scope paths must be absolute or `~`-relative
+ * (a relative global path has no stable base, so it resolves to nothing).
+ * The settings preview and command execution both go through this.
+ */
+export function resolveEnvFilePath(
+	filePath: string | undefined,
+	scope: "global" | "workspace",
+	workspaceRoot: string,
+): string | undefined {
+	const value = filePath?.trim()
+	if (!value) return undefined
+	if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
+		return path.join(os.homedir(), value.slice(1))
+	}
+	if (path.isAbsolute(value)) return value
+	if (scope === "global") return undefined
+	return path.resolve(workspaceRoot, value)
+}
+
 async function readEnvFile(
 	filePath: string | undefined,
-	cwd: string,
-	source: TerminalEnvironmentSource,
+	scope: "global" | "workspace",
+	workspaceRoot: string,
 	layers: Array<{ vars: Record<string, string>; source: TerminalEnvironmentSource }>,
 ): Promise<void> {
-	if (!filePath?.trim()) return
-	const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)
+	const resolved = resolveEnvFilePath(filePath, scope, workspaceRoot)
+	if (!resolved) return
 	try {
-		layers.push({ vars: parseEnvFile(await fs.readFile(resolved, "utf8")), source })
+		layers.push({ vars: parseEnvFile(await fs.readFile(resolved, "utf8")), source: "env_file" })
 	} catch {
 		// Missing/unreadable .env files are non-fatal: commands still run with
 		// the remaining layers, and the path stays visible in settings.
@@ -82,12 +109,12 @@ export interface TerminalEnvStore {
 
 export async function resolveTerminalEnv(options: TerminalEnvResolveOptions): Promise<ResolvedTerminalEnv> {
 	const baseEnv = options.baseEnv ?? process.env
-	const cwd = options.cwd ?? process.cwd()
+	const workspaceRoot = options.workspaceRoot ?? options.cwd ?? process.cwd()
 	const layers: Array<{ vars: Record<string, string>; source: TerminalEnvironmentSource }> = [
 		{ vars: baseEnv as Record<string, string>, source: "process" },
 	]
-	await readEnvFile(options.global?.envFilePath, cwd, "env_file", layers)
-	await readEnvFile(options.workspace?.envFilePath, cwd, "env_file", layers)
+	await readEnvFile(options.global?.envFilePath, "global", workspaceRoot, layers)
+	await readEnvFile(options.workspace?.envFilePath, "workspace", workspaceRoot, layers)
 	if (options.global?.variables) layers.push({ vars: options.global.variables, source: "global" })
 	if (options.workspace?.variables) layers.push({ vars: options.workspace.variables, source: "workspace" })
 
