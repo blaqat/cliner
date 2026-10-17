@@ -52,21 +52,53 @@ export function hasContent(record: ReviewRecord | undefined): boolean {
 	)
 }
 
+/** Store key for notes a Regenerate could not place on the new layout of the same changes. */
+export const previousLayoutKey = (fingerprint: string) => `${fingerprint}#previous-layout`
+
 /** What a moved-away fingerprint still holds, for the "Changes moved" banner. */
 export function summarizeStale(store: ReviewStore, fingerprint: string): { notes: number; reviewed: number } {
 	let notes = 0
 	let reviewed = 0
 	for (const [key, record] of Object.entries(store)) {
-		if (key === fingerprint || !hasContent(record)) continue
+		if (key === fingerprint || key === previousLayoutKey(fingerprint) || !hasContent(record)) continue
 		notes += (record.overallNote?.trim() ? 1 : 0) + filled(record.fallback?.notes) + filled(record.generated?.notes)
 		reviewed += marked(record.fallback?.reviewed) + marked(record.generated?.reviewed)
 	}
 	return { notes, reviewed }
 }
 
-/** Keeps only the current fingerprint's record: what Refresh does once the user accepts the new changes. */
+/**
+ * Keeps only the current fingerprint's record: what Refresh does once the user
+ * accepts the new changes. Notes a Regenerate could not place on the current
+ * changes survive until the user recovers or discards them.
+ */
 export function dropStale(store: ReviewStore, fingerprint: string): ReviewStore {
-	return store[fingerprint] ? { [fingerprint]: store[fingerprint] } : {}
+	const kept: ReviewStore = {}
+	if (store[fingerprint]) kept[fingerprint] = store[fingerprint]
+	const pending = previousLayoutKey(fingerprint)
+	if (store[pending]) kept[pending] = store[pending]
+	return kept
+}
+
+/** The notes (with their old stop titles) left behind by Regenerate for the current changes. */
+export function unplacedNotes(store: ReviewStore, fingerprint: string): string[] {
+	return Object.values(store[previousLayoutKey(fingerprint)]?.generated?.notes ?? {}).filter((note) => note.trim())
+}
+
+/** Appends the unplaced notes to the overall note and clears them. */
+export function recoverUnplacedNotes(store: ReviewStore, fingerprint: string): ReviewStore {
+	const notes = unplacedNotes(store, fingerprint)
+	const { [previousLayoutKey(fingerprint)]: _removed, ...rest } = store
+	if (!notes.length) return rest
+	const record = rest[fingerprint] ?? {}
+	const overallNote = [record.overallNote?.trim(), ...notes].filter(Boolean).join("\n\n")
+	return { ...rest, [fingerprint]: { ...record, overallNote } }
+}
+
+/** Explicitly discards the unplaced notes. */
+export function discardUnplacedNotes(store: ReviewStore, fingerprint: string): ReviewStore {
+	const { [previousLayoutKey(fingerprint)]: _removed, ...rest } = store
+	return rest
 }
 
 export function stopReviewFor(store: ReviewStore, walk: ChangeWalkthrough): StopReview {
@@ -74,6 +106,51 @@ export function stopReviewFor(store: ReviewStore, walk: ChangeWalkthrough): Stop
 }
 
 const allStops = (walk: ChangeWalkthrough) => [...walk.chapters.flatMap((chapter) => chapter.stops), ...walk.support]
+
+const sameSet = (a: string[], b: string[]) => a.length > 0 && a.length === b.length && a.every((id) => b.includes(id))
+
+/**
+ * Regenerate replaces the generated layout of the same changes with a new one
+ * whose stop ids mean different stops. Notes and marks follow their stop when the
+ * new layout has a stop over the same hunks, or with the same title, or one that
+ * contains all of the old stop's hunks (notes only). A note that fits none stays
+ * in a "previous layout" record the banner offers to recover or discard; it is
+ * never dropped silently.
+ */
+export function migrateRegeneratedReview(store: ReviewStore, before: ChangeWalkthrough, after: ChangeWalkthrough): ReviewStore {
+	const old = store[before.fingerprint]?.generated
+	if (!old || before.source !== "generated" || before.fingerprint !== after.fingerprint) return store
+	const target = allStops(after)
+	const moved: StopReview = { notes: {}, reviewed: {} }
+	const unplaced: Record<string, string> = {}
+	for (const stop of allStops(before)) {
+		const note = old.notes[stop.id]?.trim() ? old.notes[stop.id].trim() : undefined
+		const reviewed = !!old.reviewed[stop.id]
+		if (!note && !reviewed) continue
+		const same =
+			target.find((candidate) => sameSet(candidate.hunkIds, stop.hunkIds)) ??
+			target.find((candidate) => candidate.title === stop.title)
+		const container =
+			same ??
+			(note ? target.find((c) => stop.hunkIds.length > 0 && stop.hunkIds.every((id) => c.hunkIds.includes(id))) : undefined)
+		if (!container) {
+			if (note) unplaced[stop.id] = `${stop.title}: ${note}`
+			continue
+		}
+		if (note) moved.notes[container.id] = [moved.notes[container.id], note].filter(Boolean).join("\n\n")
+		if (reviewed && same) moved.reviewed[container.id] = true
+	}
+	const next: ReviewStore = { ...store }
+	const pendingKey = previousLayoutKey(after.fingerprint)
+	next[after.fingerprint] = { ...next[after.fingerprint], generated: moved }
+	if (Object.keys(unplaced).length) {
+		const existing = next[pendingKey]?.generated?.notes ?? {}
+		const prefix = Object.keys(existing).length
+		const added = Object.fromEntries(Object.entries(unplaced).map(([id, note]) => [`${prefix}:${id}`, note]))
+		next[pendingKey] = { generated: { notes: { ...existing, ...added }, reviewed: {} } }
+	}
+	return next
+}
 
 /**
  * After the user's own revert the diff (and fingerprint) changes. Notes and marks

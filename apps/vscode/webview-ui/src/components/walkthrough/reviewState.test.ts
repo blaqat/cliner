@@ -1,6 +1,18 @@
 import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { describe, expect, it } from "vitest"
-import { carryOverReview, dropStale, hasContent, notesToSend, type ReviewStore, summarizeStale } from "./reviewState"
+import {
+	carryOverReview,
+	discardUnplacedNotes,
+	dropStale,
+	hasContent,
+	migrateRegeneratedReview,
+	notesToSend,
+	previousLayoutKey,
+	type ReviewStore,
+	recoverUnplacedNotes,
+	summarizeStale,
+	unplacedNotes,
+} from "./reviewState"
 import { patchToDiffLines, splitInlineCode, supportSummary } from "./walkthroughUtils"
 
 const walk = (fingerprint: string, stops: [string, string][], source: ChangeWalkthrough["source"] = "fallback") =>
@@ -58,6 +70,55 @@ describe("review state", () => {
 		)
 		expect(lost.f2).toEqual({ overallNote: "o", fallback: { notes: {}, reviewed: {} } })
 		expect(lost.f1).toEqual({ overallNote: undefined, fallback: { notes: { s2: "lost" }, reviewed: {} } })
+	})
+})
+
+describe("regenerated layouts", () => {
+	const layout = (stops: [string, string, string[]][]) =>
+		({
+			...walk("f", [], "generated"),
+			chapters: [{ id: "c", title: "C", stops: stops.map(([id, title, hunkIds]) => ({ id, title, prose: "", hunkIds })) }],
+		}) as ChangeWalkthrough
+	const before = layout([
+		["s1", "Parser", ["h1", "h2"]],
+		["s2", "Cache", ["h3"]],
+		["s3", "Docs", ["h4"]],
+		["s4", "Lost", ["h9"]],
+	])
+
+	it("moves notes by hunk set, then title, then containing stop, and keeps the rest as unplaced", () => {
+		const after = layout([
+			["n1", "Input checks", ["h1", "h2"]],
+			["n2", "Cache", ["h7"]],
+			["n3", "Everything else", ["h4", "h5"]],
+		])
+		const store: ReviewStore = {
+			f: {
+				generated: {
+					notes: { s1: "a", s2: "b", s3: "c", s4: "d" },
+					reviewed: { s1: true, s3: true },
+				},
+			},
+		}
+		const next = migrateRegeneratedReview(store, before, after)
+		expect(next.f.generated).toEqual({ notes: { n1: "a", n2: "b", n3: "c" }, reviewed: { n1: true } })
+		expect(unplacedNotes(next, "f")).toEqual(["Lost: d"])
+		expect(summarizeStale(next, "f")).toEqual({ notes: 0, reviewed: 0 })
+	})
+
+	it("keeps unplaced notes through Refresh until recovered or discarded", () => {
+		const store: ReviewStore = { f: { generated: { notes: { s4: "d" }, reviewed: {} } } }
+		const next = migrateRegeneratedReview(store, before, layout([["n1", "New", ["h1"]]]))
+		expect(dropStale(next, "f")[previousLayoutKey("f")]).toBeDefined()
+		expect(discardUnplacedNotes(next, "f")[previousLayoutKey("f")]).toBeUndefined()
+		expect(recoverUnplacedNotes(next, "f").f.overallNote).toBe("Lost: d")
+		expect(recoverUnplacedNotes(next, "f")[previousLayoutKey("f")]).toBeUndefined()
+	})
+
+	it("leaves the store alone when the layout is not generated or the changes moved", () => {
+		const store: ReviewStore = { f: { generated: { notes: { s1: "a" }, reviewed: {} } } }
+		expect(migrateRegeneratedReview(store, { ...before, fingerprint: "other" }, before)).toBe(store)
+		expect(migrateRegeneratedReview(store, { ...before, source: "fallback" }, before)).toBe(store)
 	})
 })
 

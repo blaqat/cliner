@@ -331,6 +331,67 @@ describe("WalkthroughView", () => {
 		expect(sent(mocks.generate, 1)).toMatchObject({ profileId: "fast", regenerate: true })
 	})
 
+	describe("Regenerate with unsent notes", () => {
+		const layoutB: ChangeWalkthrough = {
+			...fixture,
+			source: "generated",
+			profileId: "fast",
+			chapters: [
+				{
+					id: "g1",
+					title: "Pipeline",
+					stops: [
+						{ id: "n1", title: "Export pipeline", prose: "", hunkIds: ["h1", "h2"] },
+						{ id: "n2", title: "Banner", prose: "", hunkIds: ["h4"] },
+					],
+				},
+			],
+		}
+		async function regenerateWithNotes() {
+			await renderPage()
+			fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
+			await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated"))
+			for (const [title, note] of [
+				["Stop the request waiting", "Keep this note"],
+				["Cap at 10k rows", "Where did this go"],
+			]) {
+				const card = stop(title)
+				fireEvent.click(within(card).getByRole("button", { name: "✎ Add note" }))
+				fireEvent.change(within(card).getByLabelText(`Note on ${title}`), { target: { value: note } })
+				fireEvent.click(within(card).getByRole("button", { name: "Done" }))
+			}
+			mocks.generate.mockResolvedValueOnce(response(layoutB))
+			fireEvent.click(screen.getByRole("button", { name: /Regenerate$/ }))
+			await screen.findByText("Export pipeline")
+		}
+		const stored = () => JSON.parse(localStorage.getItem(reviewStorageKey("task", "thread")) ?? "{}")
+
+		it("moves notes to the stop over the same hunks and offers the ones that fit nowhere", async () => {
+			await regenerateWithNotes()
+			expect(within(stop("Export pipeline")).getByText("Keep this note")).toBeVisible()
+			expect(screen.getByTestId("walkthrough-unplaced")).toHaveTextContent("1 note from the previous layout")
+			expect(JSON.stringify(stored())).toContain("Cap at 10k rows: Where did this go")
+		})
+
+		it("recovers unplaced notes into the overall note", async () => {
+			await regenerateWithNotes()
+			fireEvent.click(
+				within(screen.getByTestId("walkthrough-unplaced")).getByRole("button", { name: "Add to overall note" }),
+			)
+			expect(screen.queryByTestId("walkthrough-unplaced")).toBeNull()
+			expect(stored()["diff-1"].overallNote).toBe("Cap at 10k rows: Where did this go")
+		})
+
+		it("drops unplaced notes only when discarded", async () => {
+			await regenerateWithNotes()
+			fireEvent.click(screen.getByRole("button", { name: /Regenerate$/ }))
+			expect(screen.getByTestId("walkthrough-unplaced")).toBeVisible()
+			fireEvent.click(within(screen.getByTestId("walkthrough-unplaced")).getByRole("button", { name: "Discard" }))
+			expect(screen.queryByTestId("walkthrough-unplaced")).toBeNull()
+			expect(JSON.stringify(stored())).not.toContain("Where did this go")
+		})
+	})
+
 	it("shows Generate failures inline and keeps the free walkthrough", async () => {
 		mocks.generate.mockRejectedValue(new Error("Choose a saved API profile for Generate"))
 		await renderPage()

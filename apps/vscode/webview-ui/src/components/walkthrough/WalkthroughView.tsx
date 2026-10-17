@@ -13,15 +13,19 @@ import { TaskServiceClient } from "@/services/grpc-client"
 import { GenerateControl } from "./GenerateControl"
 import {
 	carryOverReview,
+	discardUnplacedNotes,
 	dropStale,
 	loadReviewStore,
+	migrateRegeneratedReview,
 	notesToSend,
 	type ReviewRecord,
 	type ReviewStore,
+	recoverUnplacedNotes,
 	type StopReview,
 	saveReviewStore,
 	stopReviewFor,
 	summarizeStale,
+	unplacedNotes,
 } from "./reviewState"
 import { InlineCodeProse, LINK_BUTTON_CLASS, NoteEditor, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
 import { supportSummary } from "./walkthroughUtils"
@@ -82,6 +86,9 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const [overallOpen, setOverallOpen] = useState(false)
 	const [menuOpen, setMenuOpen] = useState(false)
 	const sequence = useRef(0)
+	// Generate finishes long after it starts; it must merge into the latest notes, not a stale render's.
+	const storeRef = useRef(store)
+	storeRef.current = store
 
 	const profiles = apiConfigProfiles ?? []
 	const profileId =
@@ -96,6 +103,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 
 	const persist = useCallback(
 		(next: ReviewStore) => {
+			storeRef.current = next
 			saveReviewStore(taskId, scope, next)
 			setStore(next)
 		},
@@ -182,9 +190,9 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 				),
 			)
 			if (id !== sequence.current) return
-			// A regenerated layout reuses stop ids for different stops, so its marks start over.
-			if (regenerate && store[next.fingerprint]?.generated)
-				persist({ ...store, [next.fingerprint]: { ...store[next.fingerprint], generated: undefined } })
+			// A regenerated layout reuses stop ids for different stops: notes follow their
+			// stop where one matches, and the rest wait in the banner (never dropped).
+			if (regenerate) persist(migrateRegeneratedReview(storeRef.current, walk, next))
 			setWalk(next)
 			setMoved(false)
 		} catch (err) {
@@ -287,6 +295,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const supportHunks = walk?.support.reduce((sum, stop) => sum + stop.hunkIds.length, 0) ?? 0
 	const stale = walk ? summarizeStale(store, walk.fingerprint) : { notes: 0, reviewed: 0 }
 	const showMoved = moved || stale.notes + stale.reviewed > 0
+	const unplaced = walk ? unplacedNotes(store, walk.fingerprint) : []
 	const generatedBy = walk?.profileId ? profiles.find((p) => p.id === walk.profileId)?.name : undefined
 	let stopNumber = 0
 
@@ -419,6 +428,31 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 							type="button">
 							Dismiss
 						</button>
+					</div>
+				)}
+				{walk && unplaced.length > 0 && (
+					<div
+						className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xs border border-solid border-(--vscode-inputValidation-warningBorder) bg-input-warning-background px-2 py-1.5 text-input-warning-foreground"
+						data-testid="walkthrough-unplaced"
+						role="status">
+						<span aria-hidden className="codicon codicon-warning text-[12px]!" />
+						<span className="min-w-0 flex-1">
+							{plural(unplaced.length, "note")} from the previous layout did not fit a new stop.
+						</span>
+						<Button
+							disabled={busy}
+							onClick={() => persist(recoverUnplacedNotes(store, walk.fingerprint))}
+							size="xs"
+							variant="secondary">
+							Add to overall note
+						</Button>
+						<Button
+							disabled={busy}
+							onClick={() => persist(discardUnplacedNotes(store, walk.fingerprint))}
+							size="xs"
+							variant="secondary">
+							Discard
+						</Button>
 					</div>
 				)}
 				{walk && showMoved && (
