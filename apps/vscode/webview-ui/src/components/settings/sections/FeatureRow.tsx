@@ -97,22 +97,27 @@ export const FeatureField = ({
 	</div>
 )
 
-/** A Features group: the small uppercase heading and the bordered card holding its rows. */
+/** A Features group: the small uppercase heading, an optional one-line description and the bordered card holding its rows. */
 export const FeatureGroup = ({
 	title,
 	id,
+	description,
 	children,
 	className,
 	"aria-label": ariaLabel,
 }: {
 	title: string
 	id: string
+	description?: ReactNode
 	children: ReactNode
 	className?: string
 	"aria-label"?: string
 }) => (
 	<div>
-		<div className="text-xs font-medium text-foreground/80 uppercase tracking-wider mb-3">{title}</div>
+		<div className={cn("text-xs font-medium text-foreground/80 uppercase tracking-wider", description ? "mb-1" : "mb-3")}>
+			{title}
+		</div>
+		{description && <p className="m-0 mb-3 text-xs text-description">{description}</p>}
 		<section
 			aria-label={ariaLabel}
 			className={cn("relative p-3 pt-0 my-3 rounded-md border border-editor-widget-border/50", className)}

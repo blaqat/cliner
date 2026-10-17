@@ -3,10 +3,11 @@ import { ModelProfile as ProtoModelProfile, UpdateSettingsRequest } from "@share
 import { OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort } from "@shared/storage/types"
 import { VSCodeButton, VSCodeCheckbox, VSCodeDropdown, VSCodeOption, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import { useState } from "react"
-import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { StateServiceClient } from "@/services/grpc-client"
 import { formatReasoningEffort, Hint, Label } from "../apiProfiles/ApiProfileEditor"
+import { FeatureField, FeatureGroup, FeatureRow } from "../sections/FeatureRow"
 import { updateSetting } from "../utils/settingsHandlers"
 
 /** Reserved id in subagentAllowedProfileIds: the agent may inherit the thread's model. */
@@ -26,35 +27,43 @@ interface ProfileDraft {
 const updateSettings = (request: Partial<UpdateSettingsRequest>) =>
 	StateServiceClient.updateSettings(UpdateSettingsRequest.create(request))
 
+/** Radix Select items cannot use "", so the inherit option ("Same as thread") goes through this value. */
+const INHERIT_VALUE = "__same_as_thread__"
+
 interface ProfilePickerProps {
 	label: string
 	ariaLabel: string
 	value: string
 	profiles: ModelProfile[]
 	onPick: (profileId: string) => void
+	description?: string
 	/** Extra option shown first (e.g. "Same as thread") stored as the empty string. */
 	inheritLabel?: string
 }
 
-const ProfilePicker = ({ label, ariaLabel, value, profiles, onPick, inheritLabel }: ProfilePickerProps) => (
-	<div className="flex items-center gap-2">
-		<span className="w-36 text-sm shrink-0">{label}</span>
-		<VSCodeDropdown
-			aria-label={ariaLabel}
-			className="flex-1"
-			key={`${value}:${profiles.map((p) => p.id).join(",")}`}
-			onChange={(e) => onPick((e.target as HTMLSelectElement).value)}
-			value={value}>
-			{inheritLabel !== undefined && <VSCodeOption value="">{inheritLabel}</VSCodeOption>}
-			{profiles.map((profile) => (
-				<VSCodeOption key={profile.id} value={profile.id}>
-					{profile.name}
-				</VSCodeOption>
-			))}
-			{!value && inheritLabel === undefined && <VSCodeOption value="">Choose…</VSCodeOption>}
-		</VSCodeDropdown>
-	</div>
-)
+/** A labelled profile select, laid out like the other settings fields. */
+const ProfilePicker = ({ label, ariaLabel, value, profiles, onPick, description, inheritLabel }: ProfilePickerProps) => {
+	const id = `profile-picker-${ariaLabel.toLowerCase().replace(/\W+/g, "-")}`
+	return (
+		<FeatureField className="pt-0" description={description} htmlFor={id} label={label}>
+			<Select
+				onValueChange={(next) => onPick(next === INHERIT_VALUE ? "" : next)}
+				value={value || (inheritLabel !== undefined ? INHERIT_VALUE : "")}>
+				<SelectTrigger aria-label={ariaLabel} className="w-full" id={id}>
+					<SelectValue placeholder="Choose a profile" />
+				</SelectTrigger>
+				<SelectContent>
+					{inheritLabel !== undefined && <SelectItem value={INHERIT_VALUE}>{inheritLabel}</SelectItem>}
+					{profiles.map((profile) => (
+						<SelectItem key={profile.id} value={profile.id}>
+							{profile.name}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</FeatureField>
+	)
+}
 
 interface ProfileEditorProps {
 	draft: ProfileDraft
@@ -177,16 +186,20 @@ const ThreadSection = ({ profiles }: { profiles: ModelProfile[] }) => {
 	}
 
 	return (
-		<div>
-			<div className="font-medium mb-2">Thread</div>
-			<div className="flex items-center gap-2 mb-2">
-				<Switch checked={separate} id="thread-separate-profiles" onCheckedChange={setSeparate} />
-				<label className="text-sm" htmlFor="thread-separate-profiles">
-					Different profile for Ask and Act
-				</label>
-			</div>
+		<FeatureGroup
+			aria-label="Thread"
+			description="New threads start on this profile's model and effort. Change them per chat in the composer."
+			id="profiles-thread"
+			title="Thread">
+			<FeatureRow
+				checked={separate}
+				description="Ask and Act each start on their own profile."
+				id="thread-separate-profiles"
+				label="Different profile for Ask and Act"
+				onChange={setSeparate}
+			/>
 			{separate ? (
-				<div className="flex flex-col gap-2">
+				<>
 					<ProfilePicker
 						ariaLabel="Ask default profile"
 						label="Ask"
@@ -201,18 +214,17 @@ const ThreadSection = ({ profiles }: { profiles: ModelProfile[] }) => {
 						profiles={profiles}
 						value={threadActProfileId ?? defaultId}
 					/>
-				</div>
+				</>
 			) : (
 				<ProfilePicker
 					ariaLabel="Thread default profile"
-					label="Default"
+					label="Default profile"
 					onPick={(id) => id && updateSetting("threadDefaultProfileId", id)}
 					profiles={profiles}
 					value={defaultId}
 				/>
 			)}
-			<Hint>New threads start on this model and effort. Change them per chat in the composer.</Hint>
-		</div>
+		</FeatureGroup>
 	)
 }
 
@@ -228,30 +240,33 @@ const SubagentsSection = ({ profiles }: { profiles: ModelProfile[] }) => {
 	}
 
 	return (
-		<div>
-			<div className="font-medium mb-2">Subagents</div>
-			<div className="flex items-center gap-2">
-				<Switch
-					checked={enabled}
-					id="subagent-profiles-enabled"
-					onCheckedChange={(value) => updateSetting("subagentProfilesEnabled", value)}
-				/>
-				<label className="text-sm" htmlFor="subagent-profiles-enabled">
-					Let subagents use profiles
-				</label>
-			</div>
+		<FeatureGroup
+			aria-label="Subagents"
+			description="Which profiles spawned agents may run on. Permissions and concurrency are in the Subagents tab."
+			id="profiles-subagents"
+			title="Subagents">
+			<FeatureRow
+				checked={enabled}
+				description="Off: subagents run on the thread's model and effort."
+				id="subagent-profiles-enabled"
+				label="Let subagents use profiles"
+				onChange={(value) => updateSetting("subagentProfilesEnabled", value)}
+			/>
 			{enabled && (
-				<div className="mt-2 flex flex-col gap-2">
+				<>
 					<ProfilePicker
 						ariaLabel="Subagent default profile"
+						description="Used when the agent doesn't ask for a profile."
 						inheritLabel="Same as thread"
-						label="Default"
+						label="Default profile"
 						onPick={(id) => updateSetting("subagentDefaultProfileId", id)}
 						profiles={profiles}
 						value={state.subagentDefaultProfileId ?? ""}
 					/>
-					<div>
-						<div className="text-sm mb-1">Agent may choose</div>
+					<FeatureField
+						className="pt-0"
+						description="Profiles the agent may pick when it spawns a subagent."
+						label="Agent may choose">
 						<div className="flex flex-col gap-1">
 							<VSCodeCheckbox
 								checked={allowedIds.includes(INHERIT_PROFILE_ID)}
@@ -267,11 +282,10 @@ const SubagentsSection = ({ profiles }: { profiles: ModelProfile[] }) => {
 								</VSCodeCheckbox>
 							))}
 						</div>
-					</div>
-				</div>
+					</FeatureField>
+				</>
 			)}
-			<Hint>Subagent permissions and concurrency live in the Subagents tab.</Hint>
-		</div>
+		</FeatureGroup>
 	)
 }
 
@@ -280,46 +294,37 @@ const TextGenerationSection = ({ profiles }: { profiles: ModelProfile[] }) => {
 	const state = useExtensionState()
 	const titlesEnabled = state.threadTitlesEnabled ?? false
 	return (
-		<div>
-			<div className="font-medium mb-2">Text generation</div>
-			<div className="flex flex-col gap-4">
-				<div>
-					<ProfilePicker
-						ariaLabel="Walkthrough Generate profile"
-						label="Walkthrough Generate"
-						onPick={(id) => id && updateSetting("walkthroughGenerateProfileId", id)}
-						profiles={profiles}
-						value={state.walkthroughGenerateProfileId ?? ""}
-					/>
-					<Hint>Remembers the last profile used to write a walkthrough.</Hint>
-				</div>
-				<div>
-					<div className="flex items-center gap-2">
-						<Switch
-							checked={titlesEnabled}
-							id="thread-titles-enabled"
-							onCheckedChange={(value) => updateSetting("threadTitlesEnabled", value)}
-						/>
-						<label className="text-sm" htmlFor="thread-titles-enabled">
-							Name new threads automatically
-						</label>
-					</div>
-					<Hint>Generates a short title after the first message, once per thread. Costs a model call.</Hint>
-					{titlesEnabled && (
-						<div className="mt-2">
-							<ProfilePicker
-								ariaLabel="Thread title profile"
-								inheritLabel="Same as thread"
-								label="Thread titles"
-								onPick={(id) => updateSetting("threadTitlesProfileId", id)}
-								profiles={profiles}
-								value={state.threadTitlesProfileId ?? ""}
-							/>
-						</div>
-					)}
-				</div>
-			</div>
-		</div>
+		<FeatureGroup
+			aria-label="Text generation"
+			description="One-off model calls that run on a profile, only when used."
+			id="profiles-text-generation"
+			title="Text generation">
+			<ProfilePicker
+				ariaLabel="Walkthrough Generate profile"
+				description="Remembers the last profile used to write a walkthrough."
+				label="Walkthrough Generate"
+				onPick={(id) => id && updateSetting("walkthroughGenerateProfileId", id)}
+				profiles={profiles}
+				value={state.walkthroughGenerateProfileId ?? ""}
+			/>
+			<FeatureRow
+				checked={titlesEnabled}
+				description="Generates a short title after the first message, once per thread. Costs a model call."
+				id="thread-titles-enabled"
+				label="Name new threads automatically"
+				onChange={(value) => updateSetting("threadTitlesEnabled", value)}
+			/>
+			{titlesEnabled && (
+				<ProfilePicker
+					ariaLabel="Thread title profile"
+					inheritLabel="Same as thread"
+					label="Thread titles"
+					onPick={(id) => updateSetting("threadTitlesProfileId", id)}
+					profiles={profiles}
+					value={state.threadTitlesProfileId ?? ""}
+				/>
+			)}
+		</FeatureGroup>
 	)
 }
 
@@ -436,9 +441,11 @@ const ProfilesPanel = () => {
 				</div>
 			</div>
 
-			<ThreadSection profiles={profiles} />
-			<SubagentsSection profiles={profiles} />
-			<TextGenerationSection profiles={profiles} />
+			<div className="flex flex-col gap-3">
+				<ThreadSection profiles={profiles} />
+				<SubagentsSection profiles={profiles} />
+				<TextGenerationSection profiles={profiles} />
+			</div>
 		</div>
 	)
 }

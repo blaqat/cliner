@@ -45,6 +45,17 @@ const profiles = [
 	{ id: "deep", name: "Deep", configurationId: "cfg-claude", reasoningEffort: "xhigh" },
 ]
 
+// Radix Select measures and captures the pointer; jsdom has neither.
+Element.prototype.hasPointerCapture ??= () => false
+Element.prototype.scrollIntoView ??= () => {}
+
+/** Picks an option in one of the section's profile selects. */
+const pick = async (name: string, option: string) => {
+	fireEvent.keyDown(screen.getByRole("combobox", { name }), { key: "Enter" })
+	fireEvent.keyDown(await screen.findByRole("option", { name: option }), { key: "Enter" })
+}
+const selected = (name: string) => screen.getByRole("combobox", { name }).textContent
+
 /** The last updateSettings request. */
 const lastRequest = () => mocks.updateSettings.mock.calls.at(-1)?.[0]
 const card = (name: string) => screen.getAllByText(name).find((el) => el.tagName === "B") as HTMLElement
@@ -62,11 +73,12 @@ describe("ProfilesPanel", () => {
 	})
 
 	it("lists profiles with their model and effort, then the Thread, Subagents and Text generation sections", () => {
-		const { container } = render(<ProfilesPanel />)
+		render(<ProfilesPanel />)
 		expect(screen.getByText("Local · Low")).toBeTruthy()
 		expect(screen.getByText("Claude · Xhigh")).toBeTruthy()
-		const headings = Array.from(container.querySelectorAll(".font-medium.mb-2")).map((el) => el.textContent)
-		expect(headings).toEqual(["Thread", "Subagents", "Text generation"])
+		// Laid out like the stock settings groups: heading, description, a bordered card of fields.
+		const groups = screen.getAllByRole("region").map((el) => el.getAttribute("aria-label"))
+		expect(groups).toEqual(["Thread", "Subagents", "Text generation"])
 		expect(screen.queryByText(/Used by/)).toBeNull()
 	})
 
@@ -116,13 +128,13 @@ describe("ProfilesPanel", () => {
 			expect(screen.getByRole("switch", { name: "Different profile for Ask and Act" }).getAttribute("aria-checked")).toBe(
 				"false",
 			)
-			expect((screen.getByLabelText("Thread default profile") as HTMLSelectElement).value).toBe("fast")
-			expect(screen.queryByLabelText("Ask default profile")).toBeNull()
+			expect(selected("Thread default profile")).toBe("Fast")
+			expect(screen.queryByRole("combobox", { name: "Ask default profile" })).toBeNull()
 		})
 
 		it("sets the shared default", async () => {
 			render(<ProfilesPanel />)
-			fireEvent.change(screen.getByLabelText("Thread default profile"), { target: { value: "deep" } })
+			await pick("Thread default profile", "Deep")
 			await waitFor(() => expect(lastRequest()).toMatchObject({ threadDefaultProfileId: "deep" }))
 		})
 
@@ -146,9 +158,9 @@ describe("ProfilesPanel", () => {
 				threadActProfileId: "fast",
 			}
 			render(<ProfilesPanel />)
-			expect((screen.getByLabelText("Ask default profile") as HTMLSelectElement).value).toBe("deep")
-			expect((screen.getByLabelText("Act default profile") as HTMLSelectElement).value).toBe("fast")
-			fireEvent.change(screen.getByLabelText("Ask default profile"), { target: { value: "fast" } })
+			expect(selected("Ask default profile")).toBe("Deep")
+			expect(selected("Act default profile")).toBe("Fast")
+			await pick("Ask default profile", "Fast")
 			await waitFor(() => expect(lastRequest()).toMatchObject({ threadAskProfileId: "fast" }))
 			fireEvent.click(screen.getByRole("switch", { name: "Different profile for Ask and Act" }))
 			await waitFor(() =>
@@ -160,7 +172,8 @@ describe("ProfilesPanel", () => {
 	it("Subagents: toggle, default profile and allowed profiles", async () => {
 		mocks.state = { ...mocks.state, subagentProfilesEnabled: true, subagentAllowedProfileIds: ["parent"] }
 		render(<ProfilesPanel />)
-		fireEvent.change(screen.getByLabelText("Subagent default profile"), { target: { value: "deep" } })
+		expect(selected("Subagent default profile")).toBe("Same as thread")
+		await pick("Subagent default profile", "Deep")
 		await waitFor(() => expect(lastRequest()).toMatchObject({ subagentDefaultProfileId: "deep" }))
 		fireEvent.click(screen.getAllByText("Deep").find((el) => el.tagName === "LABEL") as HTMLElement)
 		await waitFor(() => expect(lastRequest()).toMatchObject({ subagentAllowedProfileIds: { values: ["parent", "deep"] } }))
@@ -170,10 +183,10 @@ describe("ProfilesPanel", () => {
 
 	it("Text generation: walkthrough profile and thread titles (off by default)", async () => {
 		render(<ProfilesPanel />)
-		expect((screen.getByLabelText("Walkthrough Generate profile") as HTMLSelectElement).value).toBe("")
-		fireEvent.change(screen.getByLabelText("Walkthrough Generate profile"), { target: { value: "deep" } })
+		expect(selected("Walkthrough Generate profile")).toBe("Choose a profile")
+		await pick("Walkthrough Generate profile", "Deep")
 		await waitFor(() => expect(lastRequest()).toMatchObject({ walkthroughGenerateProfileId: "deep" }))
-		expect(screen.queryByLabelText("Thread title profile")).toBeNull()
+		expect(screen.queryByRole("combobox", { name: "Thread title profile" })).toBeNull()
 		fireEvent.click(screen.getByRole("switch", { name: "Name new threads automatically" }))
 		await waitFor(() => expect(lastRequest()).toMatchObject({ threadTitlesEnabled: true }))
 	})
