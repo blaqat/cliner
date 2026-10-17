@@ -41,8 +41,5 @@ export function handleMenuKeyDown(event: React.KeyboardEvent<HTMLElement>) {
 	items[next]?.focus()
 }
 
-/** Shared row style for the composer's menus. */
-export const MENU_ROW_CLASS =
-	"flex h-6 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-xs border-0 bg-transparent px-2 text-left text-xs text-menu-foreground hover:bg-list-hover focus-visible:bg-list-hover focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-
-export const MENU_HEADING_CLASS = "px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-description"
+/** Shared row and heading styles for the composer's menus (the same as every other popover menu). */
+export { MENU_HEADING_CLASS, MENU_ITEM_CLASS as MENU_ROW_CLASS } from "@/components/common/menuStyles"

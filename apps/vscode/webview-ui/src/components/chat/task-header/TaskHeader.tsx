@@ -2,6 +2,7 @@ import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -32,9 +33,6 @@ interface TaskHeaderProps {
 export function headerTitle(title: string | undefined, firstMessage: string | undefined): string {
 	return (title?.trim() || firstMessage?.trim() || "New task").replace(/\s+/g, " ")
 }
-
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
 
 /**
  * One compact row: the breadcrumb path to this thread (home, task, ancestor

@@ -1,15 +1,13 @@
 import * as PopoverPrimitive from "@radix-ui/react-popover"
 import { useEffect, useRef, useState } from "react"
 import { HEADER_ICON_BUTTON_CLASS, HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { useNavigationHistory } from "./NavigationHistoryContext"
 import { shouldNameBack } from "./navHistory"
 
 const LONG_PRESS_MS = 450
-
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full min-w-0 items-center gap-1.5 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 
 interface BackButtonProps {
 	/** Ids of the breadcrumbs on screen; Back names its target only when it isn't one of them. */

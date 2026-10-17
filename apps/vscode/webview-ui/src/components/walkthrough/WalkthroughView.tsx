@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildThreadPath } from "@/components/chat/chat-view/utils/threadUtils"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -40,9 +41,6 @@ const SCOPES: { scope: WalkthroughScope; label: string }[] = [
 	{ scope: "last_turn", label: "Last turn" },
 	{ scope: "git", label: "Whole git diff" },
 ]
-
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full items-center gap-1.5 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent"
 
 // While the page is open, the agent may keep editing; re-check the diff after activity settles.
 const RECHECK_DELAY_MS = 1200

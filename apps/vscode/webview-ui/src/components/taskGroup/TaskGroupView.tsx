@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { formatAge, statusFor } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask } from "@/components/inbox/sessionActions"
@@ -19,9 +20,6 @@ import { formatNoteSize, openNote, requestNewNoteForm, threadRowTitle, useTaskGr
 
 /** How many notes the notebook preview grid shows. */
 const NOTE_PREVIEW_COUNT = 4
-
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 
 const SECTION_HEADER_CLASS =
 	"flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-description"
