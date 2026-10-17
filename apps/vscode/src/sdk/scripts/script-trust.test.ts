@@ -25,7 +25,7 @@ describe.skipIf(process.platform === "win32")("script trust and approval binding
 	})
 	const execute = (req: ToolApprovalRequest) => host.createTool(root).execute(req.input, req as AgentToolContext)
 	beforeEach(async () => {
-		root = await fs.mkdtemp(path.join(os.tmpdir(), "script-trust-"))
+		root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "script-trust-")))
 		file = path.join(root, "deploy.md")
 		host = new ScriptsHost({
 			getGlobalDir: () => root,
@@ -121,5 +121,50 @@ describe.skipIf(process.platform === "win32")("script trust and approval binding
 		expect(await execute(req)).toContain("succeeded")
 		expect(await fs.readFile(path.join(folder, "result"), "utf8")).toBe("approved")
 		await expect(fs.stat(path.join(root, "result"))).rejects.toThrow()
+	})
+
+	describe("approved working directory", () => {
+		it("binds the canonical path, so retargeting a symlink after approval cannot move the run", async () => {
+			const approved = path.join(root, "approved")
+			const elsewhere = path.join(root, "elsewhere")
+			const link = path.join(root, "link")
+			await fs.mkdir(approved)
+			await fs.mkdir(elsewhere)
+			await fs.symlink(approved, link)
+			await write("printf ran > result", "cwd: link\n")
+			const req = request()
+			expect(await host.prepareApproval(req, "act", "thread")).toMatchObject({
+				decision: "ask",
+				review: { scriptCwd: approved },
+			})
+			await host.completeApproval(req, true, false)
+			await fs.rm(link)
+			await fs.symlink(elsewhere, link)
+			expect(await execute(req)).toContain("succeeded")
+			expect(await fs.readFile(path.join(approved, "result"), "utf8")).toBe("ran")
+			await expect(fs.stat(path.join(elsewhere, "result"))).rejects.toThrow()
+		})
+
+		it("refuses to run when the approved directory was replaced by another one", async () => {
+			const approved = path.join(root, "approved")
+			await fs.mkdir(approved)
+			await write("printf ran > result", "cwd: approved\n")
+			const req = request()
+			await host.prepareApproval(req, "act", "thread")
+			await host.completeApproval(req, true, false)
+			// Same pathname, different directory: dev/ino no longer match.
+			await fs.rename(approved, path.join(root, "moved"))
+			await fs.mkdir(approved)
+			expect(await execute(req)).toMatchObject({ error: expect.stringContaining("working directory changed") })
+			await expect(fs.stat(path.join(approved, "result"))).rejects.toThrow()
+		})
+
+		it("shows the canonical path in the review for a symlinked directory", async () => {
+			const approved = path.join(root, "approved")
+			await fs.mkdir(approved)
+			await fs.symlink(approved, path.join(root, "link"))
+			await write("printf ran > result", "cwd: link\n")
+			expect(await host.prepareApproval(request(), "act", "thread")).toMatchObject({ review: { scriptCwd: approved } })
+		})
 	})
 })

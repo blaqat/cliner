@@ -5,7 +5,14 @@ import { decideScriptApproval, readScriptToolInput, type ScriptApprovalDecision,
 import { resolveScriptRun } from "./script-command"
 import type { ScriptDefinition } from "./script-file"
 import { ScriptStore, type ScriptStoreDeps } from "./script-store"
-import { buildScriptInvocationInstruction, createScriptTool, resolveScriptCwd, type ScriptToolContext } from "./script-tool"
+import {
+	buildScriptInvocationInstruction,
+	createScriptTool,
+	resolveScriptCwdIdentity,
+	type ScriptCwd,
+	type ScriptToolContext,
+	verifyScriptCwd,
+} from "./script-tool"
 import { scriptFingerprint } from "./script-trust"
 
 export interface ScriptsHostDeps extends ScriptStoreDeps {
@@ -21,7 +28,7 @@ export class ScriptsHost {
 	readonly grants = new ScriptRunGrants()
 	private readonly approvals = new Map<
 		string,
-		{ script?: ScriptDefinition; input: unknown; approved: boolean; expires: number; cwd?: string }
+		{ script?: ScriptDefinition; input: unknown; approved: boolean; expires: number; cwd?: ScriptCwd }
 	>()
 	private approvalKey(context: Pick<AgentToolContext, "agentId" | "toolCallId" | "conversationId">): string {
 		return `${context.conversationId}|${context.agentId}|${context.toolCallId}`
@@ -41,7 +48,7 @@ export class ScriptsHost {
 		const decision = script
 			? await decideScriptApproval({ store: this.store, grants: this.grants }, request.input, mode, threadId, script)
 			: ("reject" as const)
-		const cwd = script ? await resolveScriptCwd(script, workspaceRoot) : undefined
+		const cwd = script ? await resolveScriptCwdIdentity(script, workspaceRoot) : undefined
 		this.approvals.set(this.approvalKey(request), {
 			cwd,
 			script,
@@ -56,7 +63,7 @@ export class ScriptsHost {
 				? {
 						review: {
 							scriptCommand: script.command,
-							scriptCwd: cwd!,
+							scriptCwd: cwd!.path,
 							scriptFingerprint: scriptFingerprint(script),
 						},
 					}
@@ -94,7 +101,7 @@ export class ScriptsHost {
 		const expected = resolveScriptRun(entry.script, original?.options)
 		if (request?.name !== entry.script.name || !run.ok || !expected.ok || run.command !== expected.command)
 			throw new Error("Script options changed after approval. Request approval again.")
-		return { script: entry.script, cwd: entry.cwd }
+		return { script: entry.script, cwd: await verifyScriptCwd(entry.cwd) }
 	}
 
 	constructor(private readonly deps: ScriptsHostDeps) {

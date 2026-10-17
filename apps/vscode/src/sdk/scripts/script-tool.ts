@@ -60,14 +60,47 @@ export function describeScript(script: ScriptDefinition): string {
 	return lines.join("\n")
 }
 
-export async function resolveScriptCwd(script: ScriptDefinition, workspaceRoot: string): Promise<string> {
+/** A script's working directory as approved: the canonical path plus the directory's identity. */
+export interface ScriptCwd {
+	path: string
+	dev: bigint
+	ino: bigint
+}
+
+async function canonicalDirectory(candidate: string): Promise<ScriptCwd | undefined> {
+	try {
+		const real = await fs.realpath(candidate)
+		const stat = await fs.stat(real, { bigint: true })
+		return stat.isDirectory() ? { path: real, dev: stat.dev, ino: stat.ino } : undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Resolves the script's cwd to its canonical path (symlinks followed) and records the directory's
+ * dev/ino, so an approval binds to the directory the user reviewed, not to a pathname that a
+ * symlink retarget could point somewhere else.
+ */
+export async function resolveScriptCwdIdentity(script: ScriptDefinition, workspaceRoot: string): Promise<ScriptCwd> {
 	let cwd = script.cwd?.trim()
-	if (!cwd) return workspaceRoot
-	if (cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("~\\")) cwd = path.join(os.homedir(), cwd.slice(1))
-	const resolved = path.resolve(workspaceRoot, cwd)
-	const stat = await fs.stat(resolved).catch(() => undefined)
-	if (!stat?.isDirectory()) throw new Error(`The script's cwd does not exist: ${resolved}`)
-	return resolved
+	if (cwd === "~" || cwd?.startsWith("~/") || cwd?.startsWith("~\\")) cwd = path.join(os.homedir(), cwd.slice(1))
+	const resolved = cwd ? path.resolve(workspaceRoot, cwd) : workspaceRoot
+	const identity = await canonicalDirectory(resolved)
+	if (!identity) throw new Error(`The script's cwd does not exist: ${resolved}`)
+	return identity
+}
+
+export async function resolveScriptCwd(script: ScriptDefinition, workspaceRoot: string): Promise<string> {
+	return (await resolveScriptCwdIdentity(script, workspaceRoot)).path
+}
+
+/** Re-checks an approved cwd right before running: same canonical path and same directory. */
+export async function verifyScriptCwd(approved: ScriptCwd): Promise<string> {
+	const current = await canonicalDirectory(approved.path)
+	if (!current || current.path !== approved.path || current.dev !== approved.dev || current.ino !== approved.ino)
+		throw new Error("The script's working directory changed after approval. Request approval again.")
+	return current.path
 }
 
 async function pruneLogs(logDir: string): Promise<void> {
