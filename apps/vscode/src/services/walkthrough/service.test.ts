@@ -171,7 +171,7 @@ describe("walkthrough service", () => {
 		const walk = await host.get(request)
 		await host.sendNotes({ ...request, fingerprint: walk.fingerprint, stopNotes: { s1: "Explain." } })
 		expect(askResponse.mock.calls[0][0]).toContain("thread:9_secret")
-		// (images, files) only: no typedText argument.
+		// (images, files) only: no provenance argument.
 		expect(askResponseArgs).toEqual([[], []])
 	})
 	it("opens a host-resolved diff and rejects unknown file IDs", async () => {

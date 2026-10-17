@@ -2,6 +2,7 @@ import { getProviderAuthStorageId } from "@cline/core"
 import { createSessionId } from "@cline/shared"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { Settings } from "@shared/storage/state-keys"
@@ -60,14 +61,20 @@ export interface SdkTaskStartCoordinatorOptions {
 		task: TaskProxy
 		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
 	}
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) => Promise<void>
+	onAskResponse: (
+		text?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		provenance?: ComposerProvenance,
+	) => Promise<void>
 	onCancelTask: () => Promise<void>
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
 	loadInitialMessages: (reader: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
-	resolveContextMentions: (text: string, threadId?: string, typedText?: string) => Promise<string>
+	resolveContextMentions: (text: string, threadId?: string, provenance?: ComposerProvenance) => Promise<string>
 	isClineManagedProviderActive: () => boolean
-	emitClineAuthError: (task?: string, typedText?: string) => void
+	emitClineAuthError: (task?: string, provenance?: ComposerProvenance) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
 	/**
 	 * Pins the current global per-mode selection onto the new task's session
@@ -95,7 +102,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; typedText?: string },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -135,7 +142,7 @@ export class SdkTaskStartCoordinator {
 				)
 				// No task/session id exists yet, so this preflight auth UI path is
 				// intentionally not recorded as task-joinable provider error telemetry.
-				this.options.emitClineAuthError(prompt, options?.typedText)
+				this.options.emitClineAuthError(prompt, options?.provenance)
 				return undefined
 			}
 
@@ -228,7 +235,7 @@ export class SdkTaskStartCoordinator {
 
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
-				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.typedText)
+				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.provenance)
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -304,8 +311,8 @@ export class SdkTaskStartCoordinator {
 	private createAndSetTask(sessionId: string): TaskProxy {
 		const task = createTaskProxy(
 			sessionId,
-			(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
-				this.options.onAskResponse(text, images, files, decisionId, typedText),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+				this.options.onAskResponse(text, images, files, decisionId, provenance),
 			() => this.options.onCancelTask(),
 		)
 		this.options.setTask(task)

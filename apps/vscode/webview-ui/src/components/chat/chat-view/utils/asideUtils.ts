@@ -1,5 +1,5 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
-import { StringRequest } from "@shared/proto/cline/common"
+import { type ComposerProvenance, StringRequest } from "@shared/proto/cline/common"
 import { AskResponseRequest, ForkTaskAtRequest } from "@shared/proto/cline/task"
 import { TaskServiceClient } from "@/services/grpc-client"
 
@@ -11,8 +11,8 @@ export interface AsideRequest {
 	text?: string
 	images?: string[]
 	files?: string[]
-	/** The part of `text` the user typed (no quote chips). */
-	typedText?: string
+	/** What the user explicitly picked or ran in the composer for `text`. */
+	provenance?: ComposerProvenance
 }
 
 /** The message an Alt+Enter aside forks from: the latest one in the transcript. */
@@ -31,13 +31,13 @@ export async function startAside({
 	text = "",
 	images = [],
 	files = [],
-	typedText = "",
+	provenance,
 }: AsideRequest): Promise<string> {
 	const { value: asideId } = await TaskServiceClient.forkTaskAt(ForkTaskAtRequest.create({ taskId, messageTs }))
 	await TaskServiceClient.showTaskWithId(StringRequest.create({ value: asideId }))
 	if (text.trim() || images.length > 0 || files.length > 0) {
 		await TaskServiceClient.askResponse(
-			AskResponseRequest.create({ responseType: "messageResponse", text: text.trim(), images, files, typedText }),
+			AskResponseRequest.create({ responseType: "messageResponse", text: text.trim(), images, files, provenance }),
 		)
 	}
 	return asideId

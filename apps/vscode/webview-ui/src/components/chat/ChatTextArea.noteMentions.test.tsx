@@ -77,6 +77,7 @@ const ALL_NOTES_RESPONSE = {
 
 const onSend = vi.fn()
 const onPasteMessageLink = vi.fn()
+const onThreadPicked = vi.fn()
 
 const Harness = () => {
 	const [value, setValue] = useState("")
@@ -86,6 +87,7 @@ const Harness = () => {
 			onPasteMessageLink={onPasteMessageLink}
 			onSelectFilesAndImages={vi.fn()}
 			onSend={onSend}
+			onThreadPicked={onThreadPicked}
 			placeholderText="Type a message"
 			selectedFiles={[]}
 			selectedImages={[]}
@@ -253,6 +255,7 @@ describe("ChatTextArea thread: mentions and message-link paste", () => {
 	beforeEach(() => {
 		onSend.mockReset()
 		onPasteMessageLink.mockReset()
+		onThreadPicked.mockReset()
 		mocks.state = {
 			currentTaskItem: { id: "t1", taskGroupId: "g1", ts: 1, task: "Implement" },
 			taskHistory: [
@@ -279,6 +282,14 @@ describe("ChatTextArea thread: mentions and message-link paste", () => {
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		expect(textarea.value).toBe("what about thread:t2 ")
 		expect(onSend).not.toHaveBeenCalled()
+		// Picking from the menu is the explicit action that authorizes the thread.
+		expect(onThreadPicked).toHaveBeenCalledWith("t2")
+	})
+
+	it("does not report a thread that was typed out by hand", async () => {
+		const textarea = await renderInThread()
+		await type(textarea, "what about thread:t2 ")
+		expect(onThreadPicked).not.toHaveBeenCalled()
 	})
 
 	it("turns a pasted message link into onPasteMessageLink instead of text", async () => {

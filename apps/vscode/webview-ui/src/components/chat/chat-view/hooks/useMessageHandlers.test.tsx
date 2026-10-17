@@ -12,6 +12,9 @@ const clearTask = vi.fn().mockResolvedValue(undefined)
 const condense = vi.fn().mockResolvedValue(undefined)
 const trackIntent = vi.fn().mockResolvedValue(undefined)
 const togglePlanActModeProto = vi.fn().mockResolvedValue({ value: false })
+const interjectPrompt = vi.fn().mockResolvedValue(undefined)
+const forkTaskAt = vi.fn().mockResolvedValue({ value: "aside-1" })
+const showTaskWithId = vi.fn().mockResolvedValue(undefined)
 
 vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
@@ -20,6 +23,9 @@ vi.mock("@/services/grpc-client", () => ({
 		cancelBackgroundCommand: (req: unknown) => cancelBackgroundCommand(req),
 		cancelTask: (req: unknown) => cancelTask(req),
 		clearTask: (req: unknown) => clearTask(req),
+		interjectPrompt: (req: unknown) => interjectPrompt(req),
+		forkTaskAt: (req: unknown) => forkTaskAt(req),
+		showTaskWithId: (req: unknown) => showTaskWithId(req),
 	},
 	SlashServiceClient: {
 		condense: (req: unknown) => condense(req),
@@ -37,6 +43,8 @@ vi.mock("@/services/grpc-client", () => ({
 vi.mock("@shared/proto/cline/task", () => ({
 	AskResponseRequest: { create: (x: unknown) => x },
 	NewTaskRequest: { create: (x: unknown) => x },
+	InterjectPromptRequest: { create: (x: unknown) => x },
+	ForkTaskAtRequest: { create: (x: unknown) => x },
 }))
 vi.mock("@shared/proto/cline/state", () => ({
 	PlanActMode: { PLAN: 0, ACT: 1 },
@@ -48,6 +56,8 @@ vi.mock("@shared/proto/cline/ui", () => ({
 vi.mock("@shared/proto/cline/common", () => ({
 	EmptyRequest: { create: (x: unknown) => x },
 	StringRequest: { create: (x: unknown) => x },
+	ComposerProvenance: { create: (x: unknown) => x },
+	ScriptInvocation: { create: (x: unknown) => x },
 }))
 
 // useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
@@ -81,7 +91,10 @@ function makeChatState(messages: ClineMessage[], overrides: Partial<ChatState> =
 		setSelectedImages: vi.fn(),
 		selectedFiles: [],
 		setSelectedFiles: vi.fn(),
-		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", quotes: [], images: [], files: [] })),
+		getDraftSnapshot: vi.fn(() => ({ revision: 0, text: "", quotes: [], images: [], files: [], authorizedThreadIds: [] })),
+		authorizeThread: vi.fn(),
+		setScriptRun: vi.fn(),
+		restoreAuthorization: vi.fn(),
 		consumeDraftSnapshot: vi.fn(),
 		sendingDisabled: false,
 		setSendingDisabled: vi.fn(),
@@ -671,6 +684,7 @@ describe("useMessageHandlers — send routing", () => {
 			quotes: [],
 			images: ["image.png"],
 			files: ["notes.txt"],
+			authorizedThreadIds: [],
 		}
 		const { result } = renderHook(() =>
 			useMessageHandlers(
@@ -691,7 +705,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "messageResponse",
 			text: "try a different approach",
-			typedText: "try a different approach",
+			provenance: undefined,
 			images: ["image.png"],
 			files: ["notes.txt"],
 		})
@@ -1293,6 +1307,7 @@ describe("useMessageHandlers — send routing", () => {
 			quotes: [{ text: "selected context", note: "" }],
 			images: ["old.png"],
 			files: ["old.md"],
+			authorizedThreadIds: [],
 		}
 		const { result } = renderHook(() =>
 			useMessageHandlers(approvalConversation, makeChatState(approvalConversation, { consumeDraftSnapshot })),
@@ -1305,7 +1320,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
 			text: `> selected context\n\n${draft.text}`,
-			typedText: draft.text.trim(),
+			provenance: undefined,
 			images: draft.images,
 			files: draft.files,
 		})
@@ -1325,6 +1340,7 @@ describe("useMessageHandlers — send routing", () => {
 			quotes: [{ text: "selected context", note: "" }],
 			images: [],
 			files: [],
+			authorizedThreadIds: [],
 		}
 		const { result } = renderHook(() =>
 			useMessageHandlers(approvalConversation, makeChatState(approvalConversation, { consumeDraftSnapshot })),
@@ -1337,7 +1353,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
 			text: "> selected context",
-			typedText: "",
+			provenance: undefined,
 			images: [],
 			files: [],
 		})
@@ -1452,38 +1468,191 @@ describe("useMessageHandlers — task pill", () => {
 	})
 })
 
-describe("useMessageHandlers — typed text for thread authorization", () => {
+describe("useMessageHandlers — explicit composer provenance", () => {
 	beforeEach(() => {
-		newTask.mockClear()
-		askResponse.mockClear()
+		newTask.mockReset().mockResolvedValue(undefined)
+		askResponse.mockReset().mockResolvedValue(undefined)
+		interjectPrompt.mockReset().mockResolvedValue(undefined)
+		forkTaskAt.mockReset().mockResolvedValue({ value: "aside-1" })
+		showTaskWithId.mockReset().mockResolvedValue(undefined)
+		togglePlanActModeProto.mockReset().mockResolvedValue({ value: false })
 		mockTurnState = { phase: "completed", seq: 1 } as TurnState
 	})
 
-	it("sends only the composer text as typedText when a quote chip contains thread:<id>", async () => {
-		const chatState = makeChatState(completedConversation, {
-			quotes: [{ text: "see thread:9_secret", note: "a note" }],
+	const PICKED = { authorizedThreadIds: ["1_picked"] }
+
+	// The real chat state, so picks are tracked and pruned the way the composer does it.
+	function composer(messages: ClineMessage[]) {
+		return renderHook(() => {
+			const chatState = useChatState(messages)
+			return { chatState, handlers: useMessageHandlers(messages, chatState) }
 		})
-		const { result } = renderHook(() => useMessageHandlers(completedConversation, chatState))
-
-		await act(async () => {
-			await result.current.handleSendMessage("  what about this?  ", [], [])
+	}
+	function typeAndPick(view: ReturnType<typeof composer>, text: string, ...picked: string[]) {
+		act(() => view.result.current.chatState.setInputValue(text))
+		for (const id of picked) act(() => view.result.current.chatState.authorizeThread(id))
+	}
+	const send = (view: ReturnType<typeof composer>, text = view.result.current.chatState.inputValue) =>
+		act(async () => {
+			await view.result.current.handlers.handleSendMessage(text, [], [])
 		})
 
-		const request = askResponse.mock.calls[0][0]
-		expect(request.text).toContain("thread:9_secret")
-		expect(request.typedText).toBe("what about this?")
-	})
-
-	it("keeps quotes out of typedText for a new task", async () => {
-		const chatState = makeChatState([], { quotes: [{ text: "thread:9_secret", note: "" }] })
-		const { result } = renderHook(() => useMessageHandlers([], chatState))
-
-		await act(async () => {
-			await result.current.handleSendMessage("compare with thread:1_mine", [], [])
-		})
+	it("sends only the picked thread id with a new task, never ids found in quote chips", async () => {
+		const view = composer([])
+		typeAndPick(view, "compare with thread:1_picked and thread:2_typed", "1_picked")
+		act(() => view.result.current.chatState.setQuotes([{ text: "see thread:9_secret", note: "" }]))
+		await send(view)
 
 		const request = newTask.mock.calls[0][0]
 		expect(request.text).toContain("thread:9_secret")
-		expect(request.typedText).toBe("compare with thread:1_mine")
+		expect(request.provenance).toEqual({ ...PICKED, scriptInvocation: undefined })
+	})
+
+	it("sends no provenance for thread text that was typed or inserted without picking it", async () => {
+		const view = composer([])
+		// Add to Cline / a restored draft writes text straight into the draft.
+		typeAndPick(view, "from the editor: thread:9_secret")
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("drops a pick when its token is deleted from the text", async () => {
+		const view = composer([])
+		typeAndPick(view, "compare with thread:1_picked", "1_picked")
+		act(() => view.result.current.chatState.setInputValue("compare with nothing"))
+		act(() => view.result.current.chatState.setInputValue("compare with thread:1_picked"))
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("drops a pick when its token is edited into a different id", async () => {
+		const view = composer([])
+		typeAndPick(view, "compare with thread:1_picked", "1_picked")
+		act(() => view.result.current.chatState.setInputValue("compare with thread:1_pickedX"))
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("ignores a pick whose token is not in the text", async () => {
+		const view = composer([])
+		typeAndPick(view, "nothing mentioned", "1_picked")
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("forwards the pick on a normal follow-up in a conversation", async () => {
+		const view = composer(completedConversation)
+		typeAndPick(view, "what about thread:1_picked?", "1_picked")
+		await send(view)
+		expect(askResponse.mock.calls[0][0]).toMatchObject({ responseType: "messageResponse", provenance: PICKED })
+	})
+
+	it("forwards the pick when answering an ask", async () => {
+		mockTurnState = { phase: "awaiting_followup", seq: 1 } as TurnState
+		const asking: ClineMessage[] = [
+			{ ts: 1, type: "say", say: "text", text: "task" },
+			{ ts: 2, type: "ask", ask: "followup", text: "which one?" },
+		]
+		const view = composer(asking)
+		typeAndPick(view, "use thread:1_picked", "1_picked")
+		await send(view)
+		expect(askResponse.mock.calls[0][0]).toMatchObject({ responseType: "messageResponse", provenance: PICKED })
+	})
+
+	it("forwards the pick when rejecting with feedback", async () => {
+		mockTurnState = { phase: "awaiting_approval", seq: 1 } as TurnState
+		const approval: ClineMessage[] = [
+			{ ts: 1, type: "say", say: "text", text: "task" },
+			{ ts: 2, type: "ask", ask: "tool", text: JSON.stringify({ tool: "newFileCreated", path: "a.md" }) },
+		]
+		const view = composer(approval)
+		typeAndPick(view, "no, see thread:1_picked", "1_picked")
+		const draft = view.result.current.chatState.getDraftSnapshot()
+		await act(async () => {
+			await view.result.current.handlers.executeButtonAction({ type: "reject", draft })
+		})
+		expect(askResponse.mock.calls[0][0]).toMatchObject({ responseType: "noButtonClicked", provenance: PICKED })
+	})
+
+	it("forwards the pick when interjecting", async () => {
+		const view = composer(completedConversation)
+		typeAndPick(view, "stop, see thread:1_picked", "1_picked")
+		await act(async () => {
+			await view.result.current.handlers.handleInterject(view.result.current.chatState.inputValue, [], [])
+		})
+		expect(interjectPrompt.mock.calls[0][0]).toMatchObject({ provenance: PICKED })
+	})
+
+	it("forwards the pick when sending in the background", async () => {
+		const view = composer([])
+		typeAndPick(view, "go look at thread:1_picked", "1_picked")
+		await act(async () => {
+			await view.result.current.handlers.handleSendInBackground(view.result.current.chatState.inputValue, [], [])
+		})
+		expect(newTask.mock.calls[0][0]).toMatchObject({ runInBackground: true, provenance: PICKED })
+	})
+
+	it("forwards the pick when starting an aside", async () => {
+		const view = composer(completedConversation)
+		typeAndPick(view, "side question about thread:1_picked", "1_picked")
+		await act(async () => {
+			await view.result.current.handlers.handleAside(view.result.current.chatState.inputValue, [], [], 2)
+		})
+		expect(askResponse.mock.calls[0][0]).toMatchObject({ provenance: PICKED })
+	})
+
+	it("forwards the pick through a /ask or /act mode switch", async () => {
+		mockMode = "act"
+		const view = composer(completedConversation)
+		typeAndPick(view, "/ask look at thread:1_picked", "1_picked")
+		await send(view)
+		expect(togglePlanActModeProto.mock.calls[0][0].chatContent.provenance).toEqual(PICKED)
+		mockMode = "act"
+	})
+
+	it("sends a chat row's text without the composer's picks", async () => {
+		const view = composer(completedConversation)
+		typeAndPick(view, "draft with thread:1_picked", "1_picked")
+		await send(view, "an option button's text")
+		expect(askResponse.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("keeps the pick when a failed send restores the draft", async () => {
+		const view = composer(completedConversation)
+		typeAndPick(view, "what about thread:1_picked?", "1_picked")
+		askResponse.mockRejectedValueOnce(new Error("boom"))
+		await act(async () => {
+			await view.result.current.handlers.handleSendMessage(view.result.current.chatState.inputValue, [], []).catch(() => {})
+		})
+		expect(view.result.current.chatState.inputValue).toBe("what about thread:1_picked?")
+		await send(view)
+		expect(askResponse.mock.calls[1][0].provenance).toEqual(PICKED)
+	})
+
+	it("sends the script marker only when the composer recorded a script run for the draft", async () => {
+		const view = composer([])
+		act(() => view.result.current.chatState.setInputValue("/deploy env:prod"))
+		act(() => view.result.current.chatState.setScriptRun({ name: "deploy", values: { env: "prod", dry: true } }))
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toEqual({
+			authorizedThreadIds: [],
+			scriptInvocation: { name: "deploy", values: { env: "prod" }, flags: { dry: true } },
+		})
+	})
+
+	it("sends no script marker for script text that arrived without the composer recording a run", async () => {
+		const view = composer([])
+		act(() => view.result.current.chatState.setInputValue("/deploy env:prod"))
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	it("drops the script marker once the draft no longer starts with the script", async () => {
+		const view = composer([])
+		act(() => view.result.current.chatState.setInputValue("/deploy env:prod"))
+		act(() => view.result.current.chatState.setScriptRun({ name: "deploy", values: { env: "prod" } }))
+		act(() => view.result.current.chatState.setInputValue("please /deploy env:prod"))
+		await send(view)
+		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
 	})
 })

@@ -1,5 +1,7 @@
 import type { AgentToolContext } from "@cline/shared"
-import { parseTypedOptions, splitScriptInvocation } from "@shared/scripts"
+import type { ComposerProvenance } from "@shared/composer-provenance"
+import { scriptInvocationValues } from "@shared/composer-provenance"
+import { parseTypedOptions, type ScriptValues, splitScriptInvocation } from "@shared/scripts"
 import type { ToolApprovalRequest } from "../sdk-interaction-coordinator"
 import { decideScriptApproval, readScriptToolInput, type ScriptApprovalDecision, ScriptRunGrants } from "./script-approval"
 import { resolveScriptRun } from "./script-command"
@@ -129,11 +131,18 @@ export class ScriptsHost {
 
 	/**
 	 * A message that starts with `/<script> options…` becomes an instruction to run that
-	 * script with exactly those values, and the user's typing counts as approval for that
-	 * one run. Returns undefined when the text isn't a valid script invocation, so it falls
+	 * script with exactly those values. Only when the composer marked the message as an
+	 * explicit script run (`marker`, matching the text) does the user's invocation also
+	 * count as approval for that one run; the same text from a task-creation URI, a
+	 * generated prompt or an expansion still expands but goes through normal approval.
+	 * Returns undefined when the text isn't a valid script invocation, so it falls
 	 * through to normal slash-command handling.
 	 */
-	async expandInvocation(text: string, threadId: string): Promise<string | undefined> {
+	async expandInvocation(
+		text: string,
+		threadId: string,
+		marker?: ComposerProvenance["scriptInvocation"],
+	): Promise<string | undefined> {
 		const invocation = splitScriptInvocation(text)
 		if (!invocation) return undefined
 		const script = await this.store.find(invocation.name)
@@ -142,8 +151,18 @@ export class ScriptsHost {
 		if (parsed.issues.length > 0 || parsed.missing.length > 0) return undefined
 		const resolved = resolveScriptRun(script, parsed.values)
 		if (!resolved.ok) return undefined
-		if (await this.store.trust.isTrusted(script))
-			this.grants.grant(threadId, script.name, resolved.values, scriptFingerprint(script))
-		return buildScriptInvocationInstruction(script, resolved.values, invocation.note)
+		const explicit =
+			marker?.name === script.name && canonicalValues(scriptInvocationValues(marker)) === canonicalValues(parsed.values)
+		const granted = explicit && (await this.store.trust.isTrusted(script))
+		if (granted) this.grants.grant(threadId, script.name, resolved.values, scriptFingerprint(script))
+		return buildScriptInvocationInstruction(script, resolved.values, invocation.note, granted)
 	}
+}
+
+function canonicalValues(values: ScriptValues): string {
+	return JSON.stringify(
+		Object.keys(values)
+			.sort()
+			.map((key) => [key, values[key]]),
+	)
 }

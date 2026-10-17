@@ -22,26 +22,3 @@ export function formatMessageWithQuotes(text: string, quotes: readonly QuoteDraf
 	}
 	return parts.join("\n\n")
 }
-
-/**
- * The lines of an edited message that the user added or changed. A sent
- * message holds quote chips and walkthrough hunks as plain lines, so an edit
- * can only count text that differs from the original as typed by the user.
- */
-export function addedLines(original: string, edited: string): string {
-	const remaining = new Map<string, number>()
-	for (const line of original.split("\n")) {
-		remaining.set(line, (remaining.get(line) ?? 0) + 1)
-	}
-	return edited
-		.split("\n")
-		.filter((line) => {
-			const count = remaining.get(line) ?? 0
-			if (count > 0) {
-				remaining.set(line, count - 1)
-				return false
-			}
-			return true
-		})
-		.join("\n")
-}

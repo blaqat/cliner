@@ -11,11 +11,6 @@ export type ThreadMentionResolver = (id: string) => Promise<ThreadMentionResolut
 // the pattern is lenient: unmatched ids simply stay literal text.
 const THREAD_MENTION_PATTERN = /(?<![\w/@#.])thread:([0-9A-Za-z_-]+)/g
 
-/** Raw ids of every `thread:<id>` mention in `text`, in order of appearance. */
-export function extractThreadMentionIds(text: string): string[] {
-	return [...new Set([...text.matchAll(THREAD_MENTION_PATTERN)].map((match) => match[1]))]
-}
-
 function escapeAttr(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
@@ -27,23 +22,24 @@ function escapeAttr(value: string): string {
  * conversation's transcript allow-list (the grep_threads/read_thread tools
  * refuse any id not in it).
  *
- * `typedIds` (from {@link extractThreadMentionIds} on the user's original
- * composer input) limits which mentions may expand and authorize. Text pulled
- * in by note/file/slash-command expansion can contain `thread:<id>` too, but
- * only the user's own typing or picking grants transcript access, so those
- * mentions stay literal.
+ * `authorizedIds` (the ids the user explicitly picked from the composer's
+ * `thread:` menu) limits which mentions may expand and authorize. Text pulled
+ * in by note/file/slash-command expansion, quote chips or "Add to Cline" can
+ * contain `thread:<id>` too, but only an explicit pick grants transcript
+ * access, so those mentions stay literal. Without the set every mention
+ * expands (callers that already vetted the text).
  */
 export async function expandThreadMentions(
 	text: string,
 	resolve: ThreadMentionResolver,
-	typedIds?: ReadonlySet<string>,
+	authorizedIds?: ReadonlySet<string>,
 ): Promise<{ text: string; threadIds: string[] }> {
 	const resolutions = new Map<string, string>()
 	const threadIds: string[] = []
 	for (const match of text.matchAll(THREAD_MENTION_PATTERN)) {
 		const key = match[0]
 		if (resolutions.has(key)) continue
-		if (typedIds && !typedIds.has(match[1])) continue
+		if (authorizedIds && !authorizedIds.has(match[1])) continue
 		const thread = await resolve(match[1])
 		if (!thread) continue
 		threadIds.push(thread.id)

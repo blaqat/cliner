@@ -78,10 +78,8 @@ message NewTaskRequest {
   // Files the new thread into this task group ("Task" in the UI).
   optional string task_group_id = 7;
   optional bool run_in_worktree = 20;
-  // The text the user typed in the composer, without quote chips, link
-  // quotes or other generated context. Thread authorization comes only from
-  // this field.
-  string typed_text = 21;
+  // Explicit composer actions for this message (see ComposerProvenance).
+  ComposerProvenance provenance = 21;
 }
 
 // Request message for toggling task favorite status
@@ -107,8 +105,7 @@ message InterjectPromptRequest {
   string text = 2;
   repeated string images = 3;
   repeated string files = 4;
-  // Composer-typed text only (see NewTaskRequest.typed_text).
-  string typed_text = 5;
+  ComposerProvenance provenance = 5;
 }
 
 message StopSubagentRequest {
@@ -191,8 +188,7 @@ message AskResponseRequest {
   repeated string files = 5;
   string decision_id = 6;
   string task_id = 7;
-  // Composer-typed text only (see NewTaskRequest.typed_text).
-  string typed_text = 8;
+  ComposerProvenance provenance = 8;
 }
 
 // Request for editing a past user message and regenerating the conversation after it
@@ -203,8 +199,8 @@ message EditMessageAndRegenerateRequest {
   repeated string images = 4;
   repeated string files = 5;
   bool restore_workspace = 6;
-  // Lines of the edit the user added or changed (see NewTaskRequest.typed_text).
-  string typed_text = 7;
+  // Explicit composer actions for this edit (see ComposerProvenance).
+  ComposerProvenance provenance = 7;
 }
 
 // Request for executing a quick win task

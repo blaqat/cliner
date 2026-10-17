@@ -1,4 +1,4 @@
-import { completeTypedOptions, isTypedOptionsComplete } from "@shared/scripts"
+import { completeTypedOptions, isTypedOptionsComplete, parseTypedOptions, type ScriptValues } from "@shared/scripts"
 import type { ScriptEntry } from "@/hooks/useScripts"
 
 /** A composer draft that starts with `/script-name ` followed by typed options. */
@@ -37,4 +37,16 @@ export function completeScriptInput(input: ScriptInput): { text: string; cursor:
 	const next = completeTypedOptions(input.optionsText, input.script.options)
 	if (next === input.optionsText) return null
 	return { text: `${input.prefix}${next}${input.suffix}`, cursor: input.prefix.length + next.length }
+}
+
+/**
+ * The script run a draft asks for: the script and the option values the helper strip shows.
+ * Undefined unless the draft is a complete, valid invocation, the same one the host expands.
+ */
+export function scriptRunOf(text: string, scripts: readonly ScriptEntry[]): { name: string; values: ScriptValues } | undefined {
+	const input = matchScriptInput(text, scripts)
+	if (!input) return undefined
+	const parsed = parseTypedOptions(input.optionsText, input.script.options, { final: true })
+	if (parsed.issues.length > 0 || parsed.missing.length > 0) return undefined
+	return { name: input.script.name, values: parsed.values }
 }

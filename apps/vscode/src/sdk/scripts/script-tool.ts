@@ -222,17 +222,23 @@ export function createScriptTool(context: ScriptToolContext): AgentTool {
 	return tool as AgentTool
 }
 
-/** The instruction a composer-typed script becomes: run exactly this, already approved by the user. */
+/**
+ * The instruction a composer-typed script becomes. `approved` is true only when the composer
+ * marked the message as the user's explicit run, which counts as approval for this one run.
+ */
 export function buildScriptInvocationInstruction(
 	script: ScriptDefinition,
 	values: Record<string, string | boolean>,
 	note: string,
+	approved: boolean,
 ): string {
 	const typed = formatTypedOptions(script.options, values)
 	const lines = [
 		`The user ran the saved script "${script.name}"${typed ? ` with: ${typed}` : " with no options"}.`,
 		`Run it now with the script tool, using exactly these values and no others: ${JSON.stringify({ action: "run", name: script.name, options: values })}.`,
-		"The user asked for this run explicitly, so it needs no further approval. Do not run it with different options or run other scripts for this request.",
+		approved
+			? "The user asked for this run explicitly, so it needs no further approval. Do not run it with different options or run other scripts for this request."
+			: "It follows the script's normal approval, so the user may be asked to approve it first. Do not run it with different options or run other scripts for this request.",
 		"Then report the outcome briefly.",
 	]
 	if (note) lines.push(`\nNote from the user: ${note}`)

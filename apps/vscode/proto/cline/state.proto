@@ -350,8 +350,7 @@ message ChatContent {
   optional string message = 1;
   repeated string images = 2;
   repeated string files = 3;
-  // Composer-typed text only (see NewTaskRequest.typed_text).
-  optional string typed_message = 4;
+  optional ComposerProvenance provenance = 4;
 }
 
 message ResetStateRequest {

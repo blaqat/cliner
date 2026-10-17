@@ -3,6 +3,7 @@ import { type ParsedMessageLink, parseMessageLink } from "@shared/message-links"
 import { StringRequest } from "@shared/proto/cline/common"
 import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared/proto/cline/file"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
+import type { ScriptValues } from "@shared/scripts"
 import { type SlashCommand } from "@shared/slashCommands"
 import { Mode } from "@shared/storage/types"
 import { SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
@@ -16,7 +17,7 @@ import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
 import ScriptHelper from "@/components/scripts/ScriptHelper"
 import ScriptsPanel from "@/components/scripts/ScriptsPanel"
-import { completeScriptInput, isScriptInputSendable, matchScriptInput } from "@/components/scripts/scriptInput"
+import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -101,6 +102,10 @@ export interface ChatTextAreaProps {
 	/** Quote chips shown in one row at the top of the input box. */
 	quoteTags?: React.ReactNode
 	setInputValue: (value: string) => void
+	/** The user picked this thread from the `thread:` mention menu (its token was just inserted). */
+	onThreadPicked?: (threadId: string) => void
+	/** The script run the draft holds after a user edit: set when it starts with a runnable `/script options`. */
+	onScriptRun?: (scriptRun: { name: string; values: ScriptValues } | undefined) => void
 	sendingDisabled: boolean
 	placeholderText: string
 	selectedFiles: string[]
@@ -278,7 +283,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
 		{
 			inputValue,
-			setInputValue,
+			setInputValue: setDraftInputValue,
+			onThreadPicked,
+			onScriptRun,
 			sendingDisabled,
 			placeholderText,
 			selectedFiles,
@@ -346,6 +353,16 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			[usable],
 		)
 		const scriptInput = useMemo(() => matchScriptInput(inputValue, usable), [inputValue, usable])
+		// Every edit made through this composer (typing, menu picks, the helper strip) is the user's own,
+		// so a draft that now starts with a runnable script is a script run the user asked for. Text
+		// that arrives another way (Add to Cline, restored drafts) never reaches here.
+		const setInputValue = useCallback(
+			(value: string) => {
+				setDraftInputValue(value)
+				onScriptRun?.(scriptRunOf(value, usable))
+			},
+			[setDraftInputValue, onScriptRun, usable],
+		)
 		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput)
 		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
 		const slashAtMessageStart = useMemo(() => {
@@ -453,10 +470,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				if (!threadMention) return
 				const next = insertThreadMention(inputValue, cursorPosition, threadMention.start, thread.id)
 				setInputValue(next.value)
+				onThreadPicked?.(thread.id)
 				setCursorPosition(next.cursor)
 				setIntendedCursorPosition(next.cursor)
 			},
-			[threadMention, inputValue, cursorPosition, setInputValue],
+			[threadMention, inputValue, cursorPosition, setInputValue, onThreadPicked],
 		)
 		const [modeSwitchFlash, setModeSwitchFlash] = useState(false)
 		const [pendingInsertions, setPendingInsertions] = useState<string[]>([])

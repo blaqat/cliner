@@ -50,3 +50,50 @@ describe("useChatState draft snapshots", () => {
 		expect(result.current.inputValue).toBe("same text")
 	})
 })
+
+describe("useChatState explicit composer grants", () => {
+	it("records a picked thread only while its token is in the text", () => {
+		const { result } = renderHook(() => useChatState([]))
+		act(() => result.current.setInputValue("see thread:1_a"))
+		act(() => result.current.authorizeThread("1_a"))
+		act(() => result.current.authorizeThread("2_never_inserted"))
+		expect(result.current.getDraftSnapshot().authorizedThreadIds).toEqual(["1_a"])
+
+		act(() => result.current.setInputValue("see it"))
+		expect(result.current.getDraftSnapshot().authorizedThreadIds).toEqual([])
+		// Typing the token back by hand does not bring the pick back.
+		act(() => result.current.setInputValue("see thread:1_a"))
+		expect(result.current.getDraftSnapshot().authorizedThreadIds).toEqual([])
+	})
+
+	it("clears picks and the script run when the draft is consumed", () => {
+		const { result } = renderHook(() => useChatState([]))
+		act(() => result.current.setInputValue("/deploy env:prod thread:1_a"))
+		act(() => result.current.authorizeThread("1_a"))
+		act(() => result.current.setScriptRun({ name: "deploy", values: { env: "prod" } }))
+		act(() => result.current.consumeDraftSnapshot(result.current.getDraftSnapshot()))
+		expect(result.current.getDraftSnapshot().authorizedThreadIds).toEqual([])
+		expect(result.current.getDraftSnapshot().scriptRun).toBeUndefined()
+	})
+
+	it("drops the script run when the script prefix is edited away", () => {
+		const { result } = renderHook(() => useChatState([]))
+		act(() => result.current.setInputValue("/deploy env:prod"))
+		act(() => result.current.setScriptRun({ name: "deploy", values: { env: "prod" } }))
+		act(() => result.current.setInputValue("/deploy env:prod\nnote"))
+		expect(result.current.getDraftSnapshot().scriptRun).toBeDefined()
+		act(() => result.current.setInputValue("/deployx env:prod"))
+		expect(result.current.getDraftSnapshot().scriptRun).toBeUndefined()
+	})
+
+	it("restores the grants of a draft whose send failed", () => {
+		const { result } = renderHook(() => useChatState([]))
+		act(() => result.current.setInputValue("see thread:1_a"))
+		act(() => result.current.authorizeThread("1_a"))
+		const grants = result.current.getDraftSnapshot()
+		act(() => result.current.setInputValue(""))
+		act(() => result.current.setInputValue("see thread:1_a"))
+		act(() => result.current.restoreAuthorization(grants))
+		expect(result.current.getDraftSnapshot().authorizedThreadIds).toEqual(["1_a"])
+	})
+})

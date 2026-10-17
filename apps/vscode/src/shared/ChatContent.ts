@@ -1,7 +1,9 @@
+import type { ComposerProvenance } from "./composer-provenance"
+
 export interface ChatContent {
 	message?: string
 	images?: string[]
 	files?: string[]
-	/** The part of `message` the user typed (no quote chips or generated context). */
-	typedMessage?: string
+	/** What the user explicitly picked or ran in the composer for `message`. */
+	provenance?: ComposerProvenance
 }

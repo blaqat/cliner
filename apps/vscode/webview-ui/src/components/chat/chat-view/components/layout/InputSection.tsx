@@ -196,10 +196,12 @@ export const InputSection: React.FC<InputSectionProps> = ({
 			onOpenTaskGroup={onOpenTaskGroup}
 			onPasteMessageLink={handlePasteMessageLink}
 			onRestoreStash={handleRestoreStash}
+			onScriptRun={chatState.setScriptRun}
 			onSelectFilesAndImages={selectFilesAndImages}
 			onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}
 			onSendAs={handleSendAs}
 			onStash={handleStash}
+			onThreadPicked={chatState.authorizeThread}
 			placeholderText={isRunning ? runningPlaceholder : placeholderText}
 			quoteTags={
 				quotes.length > 0 ? (

@@ -1,5 +1,5 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
-import { EmptyRequest, StringRequest } from "@shared/proto/cline/common"
+import { type ComposerProvenance, EmptyRequest, StringRequest } from "@shared/proto/cline/common"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
@@ -13,6 +13,7 @@ import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
 import { latestMessageTs, startAside } from "../utils/asideUtils"
+import { type DraftAuthorization, toComposerProvenance } from "../utils/composerProvenance"
 import { formatMessageWithQuotes } from "../utils/quoteUtils"
 
 // `/compact` and its aliases `/smol` and `/newtask` run a real SDK manual
@@ -60,6 +61,18 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			})
 		},
 		[currentTaskItem?.id, displayedAsk],
+	)
+	// The composer's explicit grants (thread picks, a typed script run) apply only to the
+	// composer's own text. A send of other text, such as a chat row's option button, carries none.
+	const composerGrants = useCallback(
+		(text: string, snapshot = chatState.getDraftSnapshot()) => {
+			const applies = snapshot.text === text
+			const auth: DraftAuthorization | undefined = applies
+				? { authorizedThreadIds: snapshot.authorizedThreadIds ?? [], scriptRun: snapshot.scriptRun }
+				: undefined
+			return { auth, provenance: auth ? toComposerProvenance(snapshot.text, auth) : undefined }
+		},
+		[chatState],
 	)
 	const cancelInFlightRef = useRef(false)
 	const pendingResponseIdRef = useRef(0)
@@ -130,9 +143,11 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				messageToSend = modeCommand.rest
 			}
 
-			// Only this part is the user's own typing; quote chips are added below and
-			// must never authorize thread references.
-			const typedText = messageToSend
+			// What the user explicitly picked or ran in the composer; read before the draft is
+			// cleared. Quote chips and other generated text never carry any.
+			const { auth: sentAuth, provenance } = recoveryDraft
+				? composerGrants(recoveryDraft.text, recoveryDraft)
+				: composerGrants(text)
 
 			const hasContent =
 				messageToSend || submittedQuotes.length > 0 || submittedImages.length > 0 || submittedFiles.length > 0
@@ -158,7 +173,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								mode: modeCommand.mode === "act" ? PlanActMode.ACT : PlanActMode.PLAN,
 								chatContent: {
 									message: hasContent ? messageToSend : undefined,
-									typedMessage: typedText,
+									provenance,
 									images: submittedImages,
 									files: submittedFiles,
 								},
@@ -245,6 +260,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					setSelectedImages(images)
 					setSelectedFiles(files)
 					setEnableButtons(enableButtons)
+					if (sentAuth) chatState.restoreAuthorization(sentAuth)
 				}
 				const beginPendingResponse = (pendingMessage?: ClineMessage) => {
 					const id = ++pendingResponseIdRef.current
@@ -312,7 +328,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					const request = createAskResponse({
 						responseType: "messageResponse",
 						text: messageToSend,
-						typedText,
+						provenance,
 						images: submittedImages,
 						files: submittedFiles,
 					})
@@ -349,7 +365,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				if (messages.length === 0) {
 					const request = NewTaskRequest.create({
 						text: messageToSend,
-						typedText,
+						provenance,
 						images,
 						files,
 						taskGroupId: getComposerSendTaskGroup(),
@@ -382,7 +398,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						createAskResponse({
 							responseType: "noButtonClicked",
 							text: messageToSend,
-							typedText,
+							provenance,
 							images,
 							files,
 						}),
@@ -400,7 +416,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							createAskResponse({
 								responseType: "yesButtonClicked",
 								text: messageToSend,
-								typedText,
+								provenance,
 								images,
 								files,
 							}),
@@ -437,7 +453,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 									createAskResponse({
 										responseType: "messageResponse",
 										text: messageToSend,
-										typedText,
+										provenance,
 										images,
 										files,
 									}),
@@ -474,7 +490,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							createAskResponse({
 								responseType: "messageResponse",
 								text: messageToSend,
-								typedText,
+								provenance,
 								images,
 								files,
 							}),
@@ -499,6 +515,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		},
 		[
 			createAskResponse,
+			composerGrants,
 			messages,
 			clineAsk,
 			turnState,
@@ -596,7 +613,13 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					await TaskServiceClient.askResponse(
 						createAskResponse(
 							hasContent
-								? { responseType, text, typedText: trimmedText, images: draft.images, files: draft.files }
+								? {
+										responseType,
+										text,
+										provenance: composerGrants(draft.text, draft).provenance,
+										images: draft.images,
+										files: draft.files,
+									}
 								: { responseType },
 						),
 					)
@@ -679,6 +702,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		},
 		[
 			createAskResponse,
+			composerGrants,
 			clineAsk,
 			lastMessage,
 			startNewTask,
@@ -699,21 +723,24 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			text: string,
 			images: string[],
 			files: string[],
-			send: (message: string, typedText: string) => Promise<unknown>,
+			send: (message: string, provenance: ComposerProvenance | undefined) => Promise<unknown>,
 		) => {
 			const message = quotes.length > 0 ? formatMessageWithQuotes(text, quotes) : text.trim()
 			if (!message && images.length === 0 && files.length === 0) {
 				return false
 			}
+			// Read the grants before the draft is cleared below.
+			const { auth, provenance } = composerGrants(text)
 			const sentQuotes = quotes
 			setInputValue("")
 			setQuotes([])
 			setSelectedImages([])
 			setSelectedFiles([])
 			try {
-				await send(message, text.trim())
+				await send(message, provenance)
 			} catch (error) {
 				setInputValue(text)
+				if (auth) chatState.restoreAuthorization(auth)
 				setQuotes(sentQuotes)
 				setSelectedImages(images)
 				setSelectedFiles(files)
@@ -724,7 +751,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[quotes, setInputValue, setQuotes, setSelectedImages, setSelectedFiles, chatState],
+		[quotes, composerGrants, setInputValue, setQuotes, setSelectedImages, setSelectedFiles, chatState],
 	)
 
 	// Background start (home composer Ctrl/Cmd+Enter): the draft becomes a NEW chat
@@ -732,11 +759,11 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	// the inbox Active list via the normal state post.
 	const handleSendInBackground = useCallback(
 		async (text: string, images: string[], files: string[]) => {
-			await sendDraftVia(text, images, files, (message, typedText) =>
+			await sendDraftVia(text, images, files, (message, provenance) =>
 				TaskServiceClient.newTask(
 					NewTaskRequest.create({
 						text: message,
-						typedText,
+						provenance,
 						images,
 						files,
 						runInBackground: true,
@@ -755,8 +782,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	// Interject: stop the focused task's current turn and send the draft as the next turn.
 	const handleInterject = useCallback(
 		async (text: string, images: string[], files: string[]) => {
-			await sendDraftVia(text, images, files, (message, typedText) =>
-				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, typedText, images, files })),
+			await sendDraftVia(text, images, files, (message, provenance) =>
+				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, provenance, images, files })),
 			).catch((error) => console.error("Failed to interject:", error))
 		},
 		[sendDraftVia],
@@ -772,8 +799,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				return
 			}
 			const hasDraft = !!text.trim() || quotes.length > 0 || images.length > 0 || files.length > 0
-			const open = (message: string, typedText?: string) =>
-				startAside({ taskId, messageTs, text: message, typedText, images, files })
+			const open = (message: string, provenance?: ComposerProvenance) =>
+				startAside({ taskId, messageTs, text: message, provenance, images, files })
 			if (!hasDraft) {
 				await open("").catch((error) => console.error("Failed to start aside:", error))
 				return

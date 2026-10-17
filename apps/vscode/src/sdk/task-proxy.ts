@@ -1,3 +1,4 @@
+import type { ComposerProvenance } from "@shared/composer-provenance"
 // Replaces classic src/core/task/index.ts task object (see origin/main)
 //
 // When handlers call controller.task.handleWebviewAskResponse(), controller.task.ulid,
@@ -29,7 +30,7 @@ export interface TaskProxy {
 		files?: string[],
 		decisionId?: string,
 		/** What the user typed in the composer; the only text that can authorize thread references. */
-		typedText?: string,
+		provenance?: ComposerProvenance,
 	) => Promise<void>
 	/** Abort the running task */
 	abortTask: () => Promise<void>
@@ -163,7 +164,7 @@ export type AskResponseCallback = (
 	images?: string[],
 	files?: string[],
 	decisionId?: string,
-	typedText?: string,
+	provenance?: ComposerProvenance,
 ) => Promise<void>
 
 /**
@@ -220,7 +221,7 @@ export function createTaskProxy(
 			images?: string[],
 			files?: string[],
 			decisionId?: string,
-			typedText?: string,
+			provenance?: ComposerProvenance,
 		): Promise<void> {
 			// Store the response type in task state (some handlers check this)
 			state.askResponse = askResponse
@@ -230,17 +231,17 @@ export function createTaskProxy(
 				case "noButtonClicked":
 					// For approval responses, we just send an empty continuation
 					// The SDK handles approval differently than the classic Task
-					await onAskResponse(text, images, files, decisionId, typedText)
+					await onAskResponse(text, images, files, decisionId, provenance)
 					break
 
 				case "messageResponse":
 					// User sent a follow-up message
-					await onAskResponse(text, images, files, decisionId, typedText)
+					await onAskResponse(text, images, files, decisionId, provenance)
 					break
 
 				default:
 					Logger.warn(`[TaskProxy] Unhandled askResponse type: ${askResponse}`)
-					await onAskResponse(text, images, files, decisionId, typedText)
+					await onAskResponse(text, images, files, decisionId, provenance)
 					break
 			}
 		},

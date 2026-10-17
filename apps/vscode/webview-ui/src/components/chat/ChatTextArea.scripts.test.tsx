@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { resetScriptsForTest } from "@/hooks/useScripts"
 import ChatTextArea from "./ChatTextArea"
 
-const mocks = vi.hoisted(() => ({ refreshScripts: vi.fn() }))
+const mocks = vi.hoisted(() => ({ refreshScripts: vi.fn(), onScriptRun: vi.fn() }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
@@ -88,6 +88,7 @@ function Harness({ initial = "", onSend }: { initial?: string; onSend: () => voi
 	return (
 		<ChatTextArea
 			inputValue={value}
+			onScriptRun={mocks.onScriptRun}
 			onSelectFilesAndImages={vi.fn()}
 			onSend={onSend}
 			placeholderText="Type a message"
@@ -121,6 +122,7 @@ function type(textarea: HTMLTextAreaElement, value: string) {
 describe("ChatTextArea scripts", () => {
 	beforeEach(() => {
 		resetScriptsForTest()
+		mocks.onScriptRun.mockReset()
 		mocks.refreshScripts.mockReset().mockResolvedValue(scriptsResponse())
 		vi.stubGlobal(
 			"ResizeObserver",
@@ -160,6 +162,31 @@ describe("ChatTextArea scripts", () => {
 		expect(helper).toHaveTextContent("test-module")
 		expect(screen.getByTestId("script-option-module")).toHaveTextContent("required")
 		expect(screen.getByTestId("script-option-watch")).toHaveTextContent("optional")
+	})
+
+	it("reports a typed script run only once it is complete and valid", async () => {
+		const { textarea } = await renderComposer()
+		type(textarea, "/test-module ")
+		expect(mocks.onScriptRun).toHaveBeenLastCalledWith(undefined)
+		type(textarea, "/test-module module:api watch")
+		expect(mocks.onScriptRun).toHaveBeenLastCalledWith({ name: "test-module", values: { module: "api", watch: true } })
+		type(textarea, "please /test-module module:api")
+		expect(mocks.onScriptRun).toHaveBeenLastCalledWith(undefined)
+	})
+
+	it("reports the script run when the user picks the script from the menu", async () => {
+		const { textarea } = await renderComposer()
+		type(textarea, "/no-")
+		await screen.findByTestId("slash-commands-menu")
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		await waitFor(() => expect(textarea.value).toBe("/no-options "))
+		expect(mocks.onScriptRun).toHaveBeenLastCalledWith({ name: "no-options", values: {} })
+	})
+
+	it("does not report a run for a draft the user never edited", async () => {
+		await renderComposer("/test-module module:api")
+		await screen.findByTestId("script-helper")
+		expect(mocks.onScriptRun).not.toHaveBeenCalled()
 	})
 
 	it("does not show the helper for ordinary messages", async () => {

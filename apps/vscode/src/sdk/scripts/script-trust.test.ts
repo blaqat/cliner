@@ -94,7 +94,7 @@ describe.skipIf(process.platform === "win32")("script trust and approval binding
 	})
 	it("binds typed grants to the definition and refuses workspace shadowing", async () => {
 		await host.store.trust.trust((await host.store.find("deploy"))!)
-		await host.expandInvocation("/deploy", "thread")
+		await host.expandInvocation("/deploy", "thread", { name: "deploy" })
 		await fs.mkdir(path.join(root, ".clinerules", "scripts"), { recursive: true })
 		await fs.writeFile(path.join(root, ".clinerules", "scripts", "deploy.md"), await fs.readFile(file))
 		expect(await host.prepareApproval(request(), "act", "thread")).toMatchObject({ decision: "reject" })

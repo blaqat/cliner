@@ -50,21 +50,22 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	})
 
-	it("hands the composer-typed text to mention resolution separately from the flattened prompt", async () => {
+	it("hands the composer provenance to mention resolution separately from the flattened prompt", async () => {
 		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		const provenance = { authorizedThreadIds: ["1_picked"] }
 
 		await coordinator.askResponse(
-			"> quoted thread:9_x\n\nmine",
+			"> quoted thread:9_x\n\nmine thread:1_picked",
 			undefined,
 			undefined,
 			undefined,
 			undefined,
 			undefined,
 			undefined,
-			"mine",
+			provenance,
 		)
 
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("> quoted thread:9_x\n\nmine", "mine")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("> quoted thread:9_x\n\nmine thread:1_picked", provenance)
 	})
 
 	it("sends a follow-up to an idle active session", async () => {

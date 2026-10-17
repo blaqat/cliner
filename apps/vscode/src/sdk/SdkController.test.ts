@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { TaskApiSelection } from "@shared/api-profiles"
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import { describe, expect, it, vi } from "vitest"
 import { telemetryService } from "@/services/telemetry"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -355,7 +356,7 @@ describe("SDK remote-config coordination", () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("yesButtonClicked")
 			expect(controller.initTask).toHaveBeenCalledWith("original prompt", undefined, undefined, undefined, undefined, {
-				typedText: undefined,
+				provenance: undefined,
 			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
@@ -364,7 +365,7 @@ describe("SDK remote-config coordination", () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "revised prompt", ["img"])
 			expect(controller.initTask).toHaveBeenCalledWith("revised prompt", ["img"], undefined, undefined, undefined, {
-				typedText: undefined,
+				provenance: undefined,
 			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
@@ -373,7 +374,7 @@ describe("SDK remote-config coordination", () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "  ", ["img"])
 			expect(controller.initTask).toHaveBeenCalledWith("original prompt", ["img"], undefined, undefined, undefined, {
-				typedText: undefined,
+				provenance: undefined,
 			})
 		})
 
@@ -1959,17 +1960,17 @@ describe("thread reference authorization", () => {
 		}
 		return controller
 	}
-	const resolve = (controller: object, text: string, typedText?: string) =>
+	const resolve = (controller: object, text: string, provenance?: ComposerProvenance) =>
 		Reflect.get(SdkController.prototype, "resolveContextMentions").call(
 			controller,
 			text,
 			undefined,
-			typedText,
+			provenance,
 		) as Promise<string>
 
 	it("never authorizes a thread id that only appears in a walkthrough note's hunk", async () => {
 		const controller = referenceController()
-		// What WalkthroughService.sendNotes sends: quoted hunks, no typed composer text.
+		// What WalkthroughService.sendNotes sends: quoted hunks, no composer provenance.
 		const notes = "> src/a.ts\n> +see thread:9_secret for details\n\nPlease explain this."
 		expect(await resolve(controller, notes)).toBe(notes)
 		expect(controller.referencedThreads.size).toBe(0)
@@ -1979,16 +1980,37 @@ describe("thread reference authorization", () => {
 	it("never authorizes a thread id that only appears in a quote chip", async () => {
 		const controller = referenceController()
 		const message = "> **Assistant**\n> the old plan lives in thread:9_secret\n\nWhat do you think?"
-		expect(await resolve(controller, message, "What do you think?")).toBe(message)
+		expect(await resolve(controller, message, { authorizedThreadIds: [] })).toBe(message)
 		expect(controller.referencedThreads.size).toBe(0)
 	})
 
-	it("authorizes only the thread ids typed next to quoted content", async () => {
+	it("authorizes only the thread ids the user picked, not other thread: text in the message", async () => {
 		const controller = referenceController()
-		const message = "> quoted thread:9_secret\n\ncompare with thread:1_typed"
-		const resolved = await resolve(controller, message, "compare with thread:1_typed")
-		expect(resolved).toContain('<thread_reference id="1_typed"')
+		const message = "> quoted thread:9_secret\n\ncompare with thread:1_picked"
+		const resolved = await resolve(controller, message, { authorizedThreadIds: ["1_picked"] })
+		expect(resolved).toContain('<thread_reference id="1_picked"')
 		expect(resolved).toContain("quoted thread:9_secret")
-		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_typed"])
+		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_picked"])
+	})
+
+	it("ignores thread: text that Add to Cline or a restored draft put in the composer when nothing was picked", async () => {
+		const controller = referenceController()
+		const message = "from the editor: thread:9_secret"
+		expect(await resolve(controller, message, undefined)).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+
+	it("authorizes a picked thread that exists even when its token is not in the final text", async () => {
+		const controller = referenceController()
+		expect(await resolve(controller, "no token here", { authorizedThreadIds: ["1_picked"] })).toBe("no token here")
+		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_picked"])
+	})
+
+	it("does not authorize a picked id that is not a known thread", async () => {
+		const controller = referenceController()
+		controller.taskHistory.findHistoryItem = vi.fn(async () => undefined)
+		const message = "see thread:7_gone"
+		expect(await resolve(controller, message, { authorizedThreadIds: ["7_gone"] })).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
 	})
 })

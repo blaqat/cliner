@@ -4,6 +4,7 @@
 // Controller but delegates session lifecycle (initTask, askResponse,
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
+
 import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -28,6 +29,7 @@ import type { ApiConfiguration } from "@shared/api"
 import { type TaskApiSelection, taskApiSelectionsEqual } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
+import { authorizedThreadIds, type ComposerProvenance, normalizeProvenance } from "@shared/composer-provenance"
 import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
@@ -64,7 +66,7 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
-import { expandThreadMentions, extractThreadMentionIds } from "@/core/mentions/thread-mentions"
+import { expandThreadMentions } from "@/core/mentions/thread-mentions"
 import {
 	ensureAgentSkillsDirectoryExists,
 	ensureMcpServersDirectoryExists,
@@ -267,8 +269,8 @@ interface TaskSessionContext {
 interface ClineAuthRetry {
 	task: TaskProxy
 	prompt: string
-	/** What the user typed in the composer for `prompt`; only it can authorize thread references. */
-	typedText?: string
+	/** What the user explicitly picked or ran in the composer for `prompt`. */
+	provenance?: ComposerProvenance
 	/**
 	 * The error was shown on a task that already had a conversation, such as
 	 * a failed edit or checkpoint restore, rather than on a new task that
@@ -894,7 +896,7 @@ export class Controller {
 					undefined,
 					ACT_MODE_CONTINUATION_PROMPT,
 					undefined,
-					content?.typedMessage,
+					normalizeProvenance(content?.provenance),
 				)
 				return this.task?.taskId === id && this.sessions.getSession(id)?.isRunning === true
 			},
@@ -917,7 +919,7 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 			getTurnPhase: () => this.turnStateTracker.currentPhase,
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
-			resolveContextMentions: (text, typedText) => this.resolveContextMentions(text, undefined, typedText),
+			resolveContextMentions: (text, provenance) => this.resolveContextMentions(text, undefined, provenance),
 			rebuilds: this.sessionRebuilds,
 			onAutoContinueStarting: () => {
 				this.turnStateTracker.set("streaming")
@@ -1004,7 +1006,7 @@ export class Controller {
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: (sessionHost, taskId) => this.sessionHistory.loadInitialMessages(sessionHost, taskId),
 			buildStartSessionInput,
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, provenance) => this.resolveContextMentions(text, undefined, provenance),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: () => this.emitClineAuthErrorWithTelemetry(),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
@@ -1033,8 +1035,8 @@ export class Controller {
 			setTask: (task) => {
 				this.task = task
 			},
-			onAskResponse: (text, images, files, decisionId, typedText) =>
-				this.askResponse(text, images, files, decisionId, typedText),
+			onAskResponse: (text, images, files, decisionId, provenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			// Bump the epoch synchronously before abort so straggler events from the cancelled
 			// turn carry the old epoch and are dropped by the webview. The resumable phase is set
@@ -1079,15 +1081,15 @@ export class Controller {
 				this.task = task
 			},
 			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
-			onAskResponse: (text, images, files, decisionId, typedText) =>
-				this.askResponse(text, images, files, decisionId, typedText),
+			onAskResponse: (text, images, files, decisionId, provenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			onCancelTask: () => this.cancelTask(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			loadInitialMessages: (reader, taskId) => this.sessionHistory.loadInitialMessages(reader, taskId),
-			resolveContextMentions: (text, id, typedText) => this.resolveContextMentions(text, id, typedText),
+			resolveContextMentions: (text, id, provenance) => this.resolveContextMentions(text, id, provenance),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
-			emitClineAuthError: (task, typedText) => this.emitClineAuthErrorWithTelemetry(task, undefined, typedText),
+			emitClineAuthError: (task, provenance) => this.emitClineAuthErrorWithTelemetry(task, undefined, provenance),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
 			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
 				const enabled = runInWorktree === true
@@ -1844,7 +1846,8 @@ export class Controller {
 				task ??
 				createTaskProxy(
 					id,
-					(text, images, files, decisionId, typedText) => this.askResponse(text, images, files, decisionId, typedText),
+					(text, images, files, decisionId, provenance) =>
+						this.askResponse(text, images, files, decisionId, provenance),
 					() => this.cancelTask(),
 				),
 			translator,
@@ -1952,13 +1955,17 @@ export class Controller {
 	 * and honors the user's workflow enable/disable toggles. Returns the input
 	 * unchanged if no known command matches or expansion fails.
 	 */
-	private async resolveSlashCommands(text: string, threadId?: string): Promise<string> {
+	private async resolveSlashCommands(text: string, threadId?: string, provenance?: ComposerProvenance): Promise<string> {
 		if (this.isDisposed) {
 			return text
 		}
 		try {
 			// `/script-name option:value` runs a saved script; it wins over a workflow of the same name.
-			const scriptRun = threadId ? await this.scripts.expandInvocation(text, threadId) : undefined
+			// Only the composer's script marker grants a one-run approval; the same text from anywhere
+			// else still expands but goes through normal approval.
+			const scriptRun = threadId
+				? await this.scripts.expandInvocation(text, threadId, provenance?.scriptInvocation)
+				: undefined
 			if (scriptRun) {
 				return scriptRun
 			}
@@ -2016,18 +2023,23 @@ export class Controller {
 	 * and does not understand the webview's `@/path` format or special
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
-	private async resolveContextMentions(text: string, threadId = this.task?.taskId, typedText?: string): Promise<string> {
-		// Only thread ids in what the user typed in the composer may authorize
-		// transcript access. `typedText` arrives separately from `text`, which also
-		// holds quote chips, walkthrough hunks and expanded notes/files/workflows;
-		// callers without it (host-built prompts) authorize nothing.
-		const typedThreadIds = new Set(extractThreadMentionIds(typedText ?? ""))
-		const withCommands = await this.resolveSlashCommands(text, threadId)
+	private async resolveContextMentions(
+		text: string,
+		threadId = this.task?.taskId,
+		provenance?: ComposerProvenance,
+	): Promise<string> {
+		// Only what the user explicitly did in the composer (`provenance`) authorizes
+		// transcript access or a one-run script grant. `text` also holds quote chips,
+		// walkthrough hunks, "Add to Cline" insertions and expanded notes/files/workflows,
+		// so nothing is inferred from it; callers without provenance (host-built
+		// prompts, task-creation URIs) authorize nothing.
+		const authorizedThreads = authorizedThreadIds(provenance)
+		const withCommands = await this.resolveSlashCommands(text, threadId, provenance)
 		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return this.resolveReferenceMentions(withCommands, threadId, typedThreadIds)
+			return this.resolveReferenceMentions(withCommands, threadId, authorizedThreads)
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -2047,16 +2059,16 @@ export class Controller {
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
 		}
-		return this.resolveReferenceMentions(resolved, threadId, typedThreadIds)
+		return this.resolveReferenceMentions(resolved, threadId, authorizedThreads)
 	}
 
 	private async resolveReferenceMentions(
 		text: string,
 		threadId: string | undefined,
-		typedThreadIds: ReadonlySet<string>,
+		authorizedThreads: ReadonlySet<string>,
 	): Promise<string> {
 		const withNotes = await this.resolveTaskNoteMentions(text, threadId)
-		return this.resolveThreadMentions(withNotes, threadId, typedThreadIds)
+		return this.resolveThreadMentions(withNotes, threadId, authorizedThreads)
 	}
 
 	/**
@@ -2098,29 +2110,30 @@ export class Controller {
 	}
 
 	/**
-	 * `thread:<id>` mentions from the composer: expands to the thread's id and
-	 * title (never its transcript) and adds the thread to this conversation's
-	 * allow-list so the grep_threads/read_thread tools can open it.
+	 * Threads the user picked from the composer's `thread:` menu. Each picked
+	 * thread joins this conversation's allow-list so the grep_threads/read_thread
+	 * tools can open it, and its `thread:<id>` token expands to the thread's id
+	 * and title (never its transcript). Nothing is derived from the text: a
+	 * `thread:<id>` that was not picked stays literal and authorizes nothing.
 	 */
 	private async resolveThreadMentions(
 		text: string,
 		threadId: string | undefined,
-		typedThreadIds: ReadonlySet<string>,
+		authorizedThreads: ReadonlySet<string>,
 	): Promise<string> {
-		if (typedThreadIds.size === 0 || !text.includes("thread:")) return text
-		const { text: resolved, threadIds } = await expandThreadMentions(
-			text,
-			async (id) => {
-				const item = await this.taskHistory.findHistoryItem(id)
-				if (!item) return undefined
-				return { id: item.id, title: item.title || item.task }
-			},
-			typedThreadIds,
-		)
-		if (threadId && threadIds.length > 0) {
-			const owner = await this.resolveAllowListOwner(threadId)
-			this.rememberThreadReferences(owner, threadIds)
+		if (authorizedThreads.size === 0) return text
+		const known = new Map<string, { id: string; title: string } | undefined>()
+		for (const id of authorizedThreads) {
+			const item = await this.taskHistory.findHistoryItem(id)
+			known.set(id, item ? { id: item.id, title: item.title || item.task } : undefined)
 		}
+		const resolvedIds = [...known.values()].filter((thread) => thread !== undefined).map((thread) => thread.id)
+		if (threadId && resolvedIds.length > 0) {
+			const owner = await this.resolveAllowListOwner(threadId)
+			this.rememberThreadReferences(owner, resolvedIds)
+		}
+		if (!text.includes("thread:")) return text
+		const { text: resolved } = await expandThreadMentions(text, async (id) => known.get(id), authorizedThreads)
 		return resolved
 	}
 
@@ -2339,8 +2352,8 @@ export class Controller {
 		})
 	}
 
-	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string, typedText?: string): void {
-		this.emitClineAuthError(task, typedText)
+	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string, provenance?: ComposerProvenance): void {
+		this.emitClineAuthError(task, provenance)
 		this.captureProviderFailure({
 			sessionId: sessionId ?? this.task?.taskId,
 			error: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE,
@@ -2360,19 +2373,19 @@ export class Controller {
 	 *   2. say:'api_req_started' – opens the API request row
 	 *   3. ask:'api_req_failed'  – ClineError JSON → ErrorRow renders auth UI
 	 */
-	private emitClineAuthError(task?: string, typedText?: string): void {
+	private emitClineAuthError(task?: string, provenance?: ComposerProvenance): void {
 		const ts = Date.now()
 		const hasConversation = this.task !== undefined
 		if (!this.task) {
 			this.task = createTaskProxy(
 				`auth-error-${ts}`,
-				(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
-					this.askResponse(text, images, files, decisionId, typedText),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+					this.askResponse(text, images, files, decisionId, provenance),
 				() => this.cancelTask(),
 			)
 		}
 		this.pendingClineAuthRetry =
-			task === undefined ? undefined : { task: this.task, prompt: task, typedText, hasConversation }
+			task === undefined ? undefined : { task: this.task, prompt: task, provenance, hasConversation }
 
 		const clineError = new ClineError(
 			{ message: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE, status: 401 },
@@ -2561,7 +2574,7 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; typedText?: string },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A stale pill pick (group deleted between selection and send) starts unfiled.
@@ -2721,7 +2734,7 @@ export class Controller {
 		images?: string[],
 		files?: string[],
 		decisionId?: string,
-		typedText?: string,
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
 		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
@@ -2787,7 +2800,7 @@ export class Controller {
 		if (retry && retry.task === this.task) {
 			const askResponse = this.task.taskState.askResponse
 			if (askResponse === "yesButtonClicked") {
-				await this.initTask(retry.prompt, images, files, undefined, undefined, { typedText: retry.typedText })
+				await this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance })
 				return
 			}
 			// A task that failed before it had a session has nothing to
@@ -2795,8 +2808,8 @@ export class Controller {
 			// attachments but no text, the original prompt is kept.
 			if (askResponse === "messageResponse" && !retry.hasConversation) {
 				await (prompt?.trim()
-					? this.initTask(prompt, images, files, undefined, undefined, { typedText })
-					: this.initTask(retry.prompt, images, files, undefined, undefined, { typedText: retry.typedText }))
+					? this.initTask(prompt, images, files, undefined, undefined, { provenance })
+					: this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance }))
 				return
 			}
 		}
@@ -2831,7 +2844,7 @@ export class Controller {
 			turnStateBefore.phase,
 			undefined,
 			decisionId,
-			typedText,
+			provenance,
 		)
 	}
 
@@ -2841,7 +2854,7 @@ export class Controller {
 		images?: string[]
 		files?: string[]
 		restoreWorkspace?: boolean
-		typedText?: string
+		provenance?: ComposerProvenance
 	}): Promise<void> {
 		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const editedText = input.text.trim()
@@ -2929,7 +2942,7 @@ export class Controller {
 				return
 			}
 
-			const resolvedPrompt = await this.resolveContextMentions(editedText, undefined, input.typedText)
+			const resolvedPrompt = await this.resolveContextMentions(editedText, undefined, input.provenance)
 			const startInput = {
 				...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 				initialMessages,
@@ -2977,8 +2990,8 @@ export class Controller {
 
 			const task = createTaskProxy(
 				startResult.sessionId,
-				(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
-					this.askResponse(text, images, files, decisionId, typedText),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+					this.askResponse(text, images, files, decisionId, provenance),
 				() => this.cancelTask(),
 			)
 			this.task = task
@@ -3104,8 +3117,8 @@ export class Controller {
 
 		const task = createTaskProxy(
 			restored.sessionId,
-			(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
-				this.askResponse(text, images, files, decisionId, typedText),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			() => this.cancelTask(),
 		)
 		this.task = task
@@ -4305,7 +4318,7 @@ export class Controller {
 		return true
 	}
 
-	async interjectPrompt(text: string, images?: string[], files?: string[], typedText?: string): Promise<void> {
+	async interjectPrompt(text: string, images?: string[], files?: string[], provenance?: ComposerProvenance): Promise<void> {
 		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		if (!text.trim() && !images?.length && !files?.length) throw new Error("Interject requires content")
@@ -4313,7 +4326,7 @@ export class Controller {
 		if (!task) throw new Error("No focused task")
 		const active = this.sessions.getActiveSession()
 		if (active) {
-			const resolved = await this.resolveContextMentions(text, undefined, typedText)
+			const resolved = await this.resolveContextMentions(text, undefined, provenance)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
 			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
@@ -4329,7 +4342,7 @@ export class Controller {
 		await this.taskControl.cancelTask(false)
 		if (this.task !== task) throw new Error("Focused task changed during interject")
 		this.turnStateTracker.set("idle")
-		await this.askResponse(text, images, files, undefined, typedText)
+		await this.askResponse(text, images, files, undefined, provenance)
 	}
 
 	async toggleTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {

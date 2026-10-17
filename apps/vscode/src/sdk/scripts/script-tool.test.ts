@@ -248,11 +248,32 @@ describe("buildScriptInvocationInstruction", () => {
 			},
 			{ module: "api", watch: true },
 			"then summarise failures",
+			true,
 		)
 		expect(text).toContain('ran the saved script "test-module" with: module:api watch')
 		expect(text).toContain('{"action":"run","name":"test-module","options":{"module":"api","watch":true}}')
 		expect(text).toContain("needs no further approval")
 		expect(text).toContain("Note from the user: then summarise failures")
 		expect(text).not.toContain("bun test")
+	})
+
+	it("does not claim approval when the composer did not mark the run", () => {
+		const text = buildScriptInvocationInstruction(
+			{
+				name: "deploy",
+				description: "d",
+				command: "deploy.sh",
+				approval: "always_ask",
+				options: [],
+				notes: "",
+				filePath: "/x.md",
+				scope: "global",
+			},
+			{},
+			"",
+			false,
+		)
+		expect(text).not.toContain("needs no further approval")
+		expect(text).toContain("normal approval")
 	})
 })

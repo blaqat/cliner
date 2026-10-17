@@ -124,10 +124,35 @@ describe("script approvals through the interaction coordinator", () => {
 
 	it("accepts a run the user typed into the composer, once", async () => {
 		await writeScript("deploy", "always_ask")
-		const instruction = await host.expandInvocation("/deploy env:prod", "thread-1")
+		const instruction = await host.expandInvocation("/deploy env:prod", "thread-1", {
+			name: "deploy",
+			values: { env: "prod" },
+		})
 		expect(instruction).toContain('{"action":"run","name":"deploy","options":{"env":"prod"}}')
+		expect(instruction).toContain("needs no further approval")
 		const { request, task } = makeCoordinator("plan")
 		await expect(request()).resolves.toEqual({ approved: true })
+		void request()
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+	})
+
+	it("expands the same text without a composer marker but still asks for approval", async () => {
+		await writeScript("deploy", "always_ask")
+		// What a task-creation URI, a host-generated prompt or an expanded note produces: no marker.
+		const instruction = await host.expandInvocation("/deploy env:prod", "thread-1")
+		expect(instruction).toContain('{"action":"run","name":"deploy","options":{"env":"prod"}}')
+		expect(instruction).not.toContain("needs no further approval")
+		const { request, task } = makeCoordinator("plan")
+		void request()
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+	})
+
+	it("grants nothing when the marker names another script or other values than the text", async () => {
+		await writeScript("deploy", "always_ask")
+		await host.expandInvocation("/deploy env:prod", "thread-1", { name: "other", values: { env: "prod" } })
+		await host.expandInvocation("/deploy env:prod", "thread-1", { name: "deploy", values: { env: "dev" } })
+		await host.expandInvocation("/deploy env:prod", "thread-1", { name: "deploy" })
+		const { request, task } = makeCoordinator("plan")
 		void request()
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 	})
@@ -161,7 +186,7 @@ describe("script approvals through the interaction coordinator", () => {
 
 	it("does not let a typed run approve different values", async () => {
 		await writeScript("deploy", "always_ask")
-		await host.expandInvocation("/deploy env:dev", "thread-1")
+		await host.expandInvocation("/deploy env:dev", "thread-1", { name: "deploy", values: { env: "dev" } })
 		const { request, task } = makeCoordinator("act")
 		void request({ action: "run", name: "deploy", options: { env: "prod" } })
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
