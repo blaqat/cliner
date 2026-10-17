@@ -206,6 +206,7 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 					endIndex: message.conversationHistoryDeletedRange[1],
 				}
 			: undefined,
+		sdkMessageIndex: message.sdkMessageIndex,
 		// Additional optional fields for specific ask/say types
 		sayTool: undefined,
 		sayBrowserAction: undefined,
@@ -290,6 +291,12 @@ export function convertProtoToClineMessage(protoMessage: ProtoClineMessage): App
 	}
 	if (protoMessage.epoch && protoMessage.epoch !== 0) {
 		message.epoch = protoMessage.epoch
+	}
+
+	// Stable transcript index for message deep links. Optional field — 0 is a
+	// real index, so check presence, not truthiness.
+	if (protoMessage.sdkMessageIndex !== undefined) {
+		message.sdkMessageIndex = protoMessage.sdkMessageIndex
 	}
 
 	return message

@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import { WebviewProvider } from "@/core/webview"
 import { writeLgWebhookConfig, writeLgWebhookHooks } from "@/services/lg-cns-integration/webhook-hooks"
+import { MESSAGE_LINK_PATH_PREFIX, parseMessageLink } from "@/shared/message-links"
 import { Logger } from "@/shared/services/Logger"
 
 export const TASK_URI_PATH = "/task"
@@ -38,6 +39,24 @@ export class SharedUriHandler {
 		if (!visibleWebview) {
 			Logger.warn("SharedUriHandler: No visible webview found")
 			return false
+		}
+
+		// Message deep links: vscode://<ext>/thread/<id>?m=<index> — also
+		// reachable via the HTTP callback server, so match on the path rather
+		// than the scheme.
+		if (path.startsWith(MESSAGE_LINK_PATH_PREFIX)) {
+			const link = parseMessageLink(`vscode://x${path}${parsedUrl.search}`)
+			if (!link) {
+				Logger.warn(`SharedUriHandler: Malformed message link: ${path}${parsedUrl.search}`)
+				return false
+			}
+			try {
+				await visibleWebview.controller.openMessageLink(link.threadId, link.messageIndex)
+				return true
+			} catch (error) {
+				Logger.error("SharedUriHandler: Failed to open message link:", error)
+				return false
+			}
 		}
 
 		try {

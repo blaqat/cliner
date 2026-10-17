@@ -36,6 +36,8 @@ service TaskGroupService {
   rpc notebookAction(NotebookActionRequest) returns (NotebookActionResponse);
   // Searches history across tasks, threads, notes and messages
   rpc searchHistory(SearchHistoryRequest) returns (SearchHistoryResponse);
+  // Lists notebook notes across every task group (the composer's `#` menu)
+  rpc listAllNotes(EmptyRequest) returns (AllTaskNotes);
 }
 
 // A tag on a task group or thread. kind is "ticket" | "branch" | "label";
@@ -227,4 +229,16 @@ message NotebookActionRequest {
 
 message NotebookActionResponse {
   string json = 1;
+}
+
+// One task group's notebook notes, carrying the group title so the `#` menu
+// can label notes from other tasks without another lookup.
+message TaskGroupNotes {
+  string task_group_id = 1;
+  string task_group_title = 2;
+  repeated NotebookNoteMeta notes = 3;
+}
+
+message AllTaskNotes {
+  repeated TaskGroupNotes groups = 1;
 }

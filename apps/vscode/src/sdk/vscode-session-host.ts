@@ -50,6 +50,7 @@ import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-teleme
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
+import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
 import { getEffectiveTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 
@@ -86,6 +87,8 @@ export interface VscodeSessionHostOptions {
 	/** Per-tool approval policies derived from the user's auto-approval settings. */
 	toolPolicies?: Record<string, ToolPolicy>
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
+	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
+	resolveThreadTranscript?: (input: ClineCoreStartInput) => Promise<ThreadTranscriptToolsContext | undefined>
 	/** Shared SDK telemetry service owned by SdkController. */
 	telemetry?: ITelemetryService
 	/** Resolves once the applicable remote config is ready for a new SDK session. */
@@ -158,8 +161,10 @@ export class VscodeSessionHost implements SdkSessionHost {
 				: input
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
 			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
+			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
+				threadTranscript,
 				cwd: inputWithRemoteConfig.config.cwd,
 				getTerminalManager: options.getTerminalManager,
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
@@ -196,7 +201,15 @@ export class VscodeSessionHost implements SdkSessionHost {
 			}
 			return {
 				...inputWithRemoteConfig,
-				toolPolicies: { ...inputWithRemoteConfig.toolPolicies, notebook: { enabled: true, autoApprove: true } },
+				toolPolicies: {
+					...inputWithRemoteConfig.toolPolicies,
+					notebook: { enabled: true, autoApprove: true },
+					// Read-only transcript access is auto-approved in every mode (Ask
+					// included): the allow-list itself is the guard — only thread ids
+					// the user mentioned are ever readable.
+					grep_threads: { enabled: true, autoApprove: true },
+					read_thread: { enabled: true, autoApprove: true },
+				},
 				source: inputWithRemoteConfig.source ?? "vscode",
 				// The extension runs file hooks through its own hooks adapter
 				// (status chips, hooksEnabled setting, HookFactory discovery).

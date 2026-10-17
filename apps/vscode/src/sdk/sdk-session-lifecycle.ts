@@ -26,6 +26,8 @@ type ReadFileExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost.c
 
 export interface SdkSessionLifecycleOptions {
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
+	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's mentioned-thread allow-list. */
+	resolveThreadTranscript?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveThreadTranscript"]
 	mcpHub: McpHub
 	requestToolApproval: RequestToolApprovalHandler
 	askQuestion: AskQuestionHandler
@@ -674,6 +676,7 @@ export class SdkSessionLifecycle {
 	private createHost(): Promise<SdkSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: this.options.resolveNotebook,
+			resolveThreadTranscript: this.options.resolveThreadTranscript,
 			mcpHub: this.options.mcpHub,
 			requestToolApproval: this.options.requestToolApproval,
 			askQuestion: this.options.askQuestion,

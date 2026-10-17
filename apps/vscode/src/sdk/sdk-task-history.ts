@@ -24,6 +24,7 @@ import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { readCurrentMessages } from "./session-host"
 import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
+import { clineMessagesToTranscript, sdkMessagesToTranscript, type TranscriptEntry } from "./task-groups/thread-transcript"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 export interface TaskUsage {
@@ -768,9 +769,10 @@ export class SdkTaskHistory {
 				...historyItemToSessionMetadata(item, existing?.model),
 				// User-owned fields are changed only by their dedicated operations.
 				...Object.fromEntries(
-					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags"].map((key) => [
+					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags", "referencedThreadIds"].map((key) => [
 						key,
-						existing?.metadata?.[key] ?? (key === "tags" || key === "dismissedAutoTags" ? [] : ""),
+						existing?.metadata?.[key] ??
+							(key === "tags" || key === "dismissedAutoTags" || key === "referencedThreadIds" ? [] : ""),
 					]),
 				),
 				// History reads may predate live picker changes. Only explicit selection
@@ -993,6 +995,50 @@ export class SdkTaskHistory {
 
 	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
 		await this.updateOwnedMetadata(taskId, () => ({ taskGroupId: taskGroupId || "" }))
+	}
+
+	/**
+	 * Records thread ids the user referenced via `thread:` mentions in this
+	 * conversation. The transcript tools (grep_threads/read_thread) refuse any
+	 * id not on this list — persisted so access survives session rebuilds.
+	 */
+	async addReferencedThreads(taskId: string, threadIds: string[]): Promise<void> {
+		const captured = [...new Set(threadIds)]
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const existing = metadataStringArray(metadata, "referencedThreadIds") ?? []
+			const next = [...new Set([...existing, ...captured])]
+			return next.length === existing.length ? undefined : { referencedThreadIds: next }
+		})
+	}
+
+	/** Thread ids the user has mentioned in this conversation (durable allow-list). */
+	async getReferencedThreads(taskId: string): Promise<string[]> {
+		const record = await this.getSdkRecord(taskId).catch(() => undefined)
+		return metadataStringArray(record?.metadata, "referencedThreadIds") ?? []
+	}
+
+	/**
+	 * A thread's transcript as numbered user/assistant entries for the
+	 * thread_transcript tools: live messages when the session is resident, the
+	 * persisted transcript otherwise, ui_messages for pre-SDK tasks.
+	 */
+	async readSessionTranscript(taskId: string): Promise<TranscriptEntry[]> {
+		const sdkRecord = await this.getSdkRecord(taskId)
+		const legacyTask = this.findLegacyTask(taskId)
+		if (!sdkRecord) {
+			return legacyTask ? clineMessagesToTranscript(readUiMessages(taskId, legacyTask.dataDir)) : []
+		}
+		const sdkMessages = await this.readSessionMessages(taskId)
+		return sdkMessagesToTranscript(sdkMessages)
+	}
+
+	/**
+	 * The thread's raw SDK transcript (live messages when resident, persisted
+	 * otherwise), unfiltered — indexes are positions in the session's messages
+	 * array, matching ClineMessage.sdkMessageIndex and message-link anchors.
+	 */
+	async readSessionMessages(taskId: string): Promise<SdkMessage[]> {
+		return (await this.withHistoryHost((host) => readCurrentMessages(host, taskId))) as SdkMessage[]
 	}
 
 	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {

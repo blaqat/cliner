@@ -30,6 +30,7 @@ import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { MESSAGE_LINK_PATH_PREFIX } from "@shared/message-links"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
@@ -61,6 +62,7 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
+import { expandThreadMentions } from "@/core/mentions/thread-mentions"
 import {
 	ensureAgentSkillsDirectoryExists,
 	ensureMcpServersDirectoryExists,
@@ -103,7 +105,7 @@ import {
 	ProviderFailureTelemetryTurnGate,
 } from "./provider-failure-telemetry"
 import { RemoteConfigRefreshCoordinator } from "./remote-config-refresh-coordinator"
-import { buildAsideConversation } from "./sdk-aside-conversation"
+import { buildAsideConversation, findSdkMessageAnchor } from "./sdk-aside-conversation"
 import {
 	findVisibleCheckpointUserMessageByRun,
 	getCheckpointRunCountForMessage,
@@ -150,8 +152,10 @@ import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookCh
 import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookConversion, type NotebookConversionKind, notebookConversion } from "./task-groups/notebook-convert"
 import { notebookDiff } from "./task-groups/notebook-diff"
-import { NotebookStore } from "./task-groups/notebook-store"
+import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
 import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
+import { sdkMessageText } from "./task-groups/thread-transcript"
+import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
 import { TurnStateTracker } from "./turn-state-tracker"
@@ -414,6 +418,10 @@ export class Controller {
 	private readonly historySearchGenerations = new Map<string, number>()
 	private taskGroupsWatcher?: FSWatcher
 	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
+	// User-mentioned `thread:` ids per conversation (owner thread id), kept in
+	// memory for immediate access and mirrored into the thread's session
+	// metadata so the transcript-tool allow-list survives session rebuilds.
+	private readonly referencedThreads = new Map<string, Set<string>>()
 	private readonly currentBranchWatcher = new CurrentBranchWatcher(() => {
 		void this.refreshCurrentBranch().catch(() => {})
 	})
@@ -582,6 +590,7 @@ export class Controller {
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			requestToolApproval: async (request) =>
 				this.getTaskSessionContext(
 					this.sessions.getSession(request.sessionId)
@@ -1440,6 +1449,7 @@ export class Controller {
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			mcpHub: this.mcpHub,
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
@@ -1917,7 +1927,7 @@ export class Controller {
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return this.resolveTaskNoteMentions(withCommands, threadId)
+			return this.resolveReferenceMentions(withCommands, threadId)
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -1934,16 +1944,125 @@ export class Controller {
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
 		}
-		return this.resolveTaskNoteMentions(resolved, threadId)
+		return this.resolveReferenceMentions(resolved, threadId)
 	}
 
+	private async resolveReferenceMentions(text: string, threadId?: string): Promise<string> {
+		const withNotes = await this.resolveTaskNoteMentions(text, threadId)
+		return this.resolveThreadMentions(withNotes, threadId)
+	}
+
+	/**
+	 * `#slug` and cross-task `#<group>/<slug>` mentions. The current task's
+	 * notebook resolves first (including staged-but-uncommitted changes);
+	 * every other task group is searched after it, most recently updated
+	 * first. `<group>` is a group id or its slugified title.
+	 */
 	private async resolveTaskNoteMentions(text: string, threadId?: string): Promise<string> {
-		if (!threadId || !text.includes("#")) return text
-		const notebook = await this.resolveTaskNotebook(threadId)
-		if (!notebook) return text
-		return expandTaskNoteMentions(text, (slug) =>
-			notebook.store.readThreadNote(notebook.group.id, notebook.rootThreadId, slug, threadId),
-		)
+		if (!text.includes("#")) return text
+		const notebook = threadId ? await this.resolveTaskNotebook(threadId) : undefined
+		const otherGroups = (await this.taskGroupStore.listGroups()).filter((group) => group.id !== notebook?.group.id)
+		if (!notebook && otherGroups.length === 0) return text
+		const orderedGroups = notebook ? [notebook.group, ...otherGroups] : otherGroups
+		return expandTaskNoteMentions(text, async (slug, qualifier) => {
+			// A qualified mention tries its group first, then falls back to the
+			// global search so a renamed task still resolves.
+			const candidates = qualifier
+				? [
+						...orderedGroups.filter((group) => group.id === qualifier || slugifyNoteName(group.title) === qualifier),
+						...orderedGroups,
+					]
+				: orderedGroups
+			for (const group of candidates) {
+				const note =
+					group.id === notebook?.group.id
+						? await notebook!.store.readThreadNote(group.id, notebook!.rootThreadId, slug, threadId!)
+						: await this.notebookStore.readNote(group.id, slug, threadId)
+				if (!note) continue
+				const name = "meta" in note ? note.meta.name : note.name
+				return {
+					name,
+					content: note.content,
+					taskTitle: group.id !== notebook?.group.id ? group.title : undefined,
+				}
+			}
+			return undefined
+		})
+	}
+
+	/**
+	 * `thread:<id>` mentions from the composer: expands to the thread's id and
+	 * title (never its transcript) and adds the thread to this conversation's
+	 * allow-list so the grep_threads/read_thread tools can open it.
+	 */
+	private async resolveThreadMentions(text: string, threadId?: string): Promise<string> {
+		if (!text.includes("thread:")) return text
+		const { text: resolved, threadIds } = await expandThreadMentions(text, async (id) => {
+			const item = await this.taskHistory.findHistoryItem(id)
+			if (!item) return undefined
+			return { id: item.id, title: item.title || item.task }
+		})
+		if (threadId && threadIds.length > 0) {
+			const owner = await this.resolveAllowListOwner(threadId)
+			this.rememberThreadReferences(owner, threadIds)
+		}
+		return resolved
+	}
+
+	/**
+	 * The thread that owns a conversation's thread-reference allow-list: the
+	 * user-facing thread itself, or the root thread for subagent sessions.
+	 */
+	private async resolveAllowListOwner(threadId: string): Promise<string> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item) return threadId
+		const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+		return owner.rootThreadId
+	}
+
+	private rememberThreadReferences(ownerThreadId: string, threadIds: string[]): void {
+		let allowed = this.referencedThreads.get(ownerThreadId)
+		if (!allowed) {
+			allowed = new Set()
+			this.referencedThreads.set(ownerThreadId, allowed)
+		}
+		for (const id of threadIds) allowed.add(id)
+		void this.taskHistory.addReferencedThreads(ownerThreadId, threadIds).catch((error) => {
+			Logger.warn("[SdkController] Failed to persist referenced threads:", error)
+		})
+	}
+
+	private async isThreadReferenced(ownerThreadId: string, threadId: string): Promise<boolean> {
+		if (this.referencedThreads.get(ownerThreadId)?.has(threadId)) return true
+		return (await this.taskHistory.getReferencedThreads(ownerThreadId)).includes(threadId)
+	}
+
+	/**
+	 * Context for the grep_threads/read_thread host tools. The allow-list is
+	 * scoped to the user-facing thread that owns the calling session — a
+	 * subagent inherits its owning thread's mentioned references.
+	 */
+	private async resolveThreadTranscriptContext(input: {
+		config: { sessionId?: string }
+	}): Promise<ThreadTranscriptToolsContext | undefined> {
+		const sessionId = input.config.sessionId
+		if (!sessionId) return undefined
+		return {
+			resolveOwnerThreadId: (toolContext) => this.resolveAllowListOwner(toolContext.sessionId ?? sessionId),
+			isThreadAllowed: (ownerThreadId, threadId) => this.isThreadReferenced(ownerThreadId, threadId),
+			listAllowedThreads: async (ownerThreadId) => {
+				const persisted = await this.taskHistory.getReferencedThreads(ownerThreadId)
+				const ids = [...new Set([...(this.referencedThreads.get(ownerThreadId) ?? []), ...persisted])]
+				const threads = await Promise.all(
+					ids.map(async (id) => {
+						const item = await this.taskHistory.findHistoryItem(id)
+						return item ? { id, title: item.title || item.task } : undefined
+					}),
+				)
+				return threads.filter((thread): thread is { id: string; title: string } => thread !== undefined)
+			},
+			readTranscript: (threadId) => this.taskHistory.readSessionTranscript(threadId),
+		}
 	}
 
 	// ---- Workspace root resolution ----
@@ -3206,6 +3325,8 @@ export class Controller {
 				cacheReads: metadataNumber(metadata, "cacheReads") ?? 0,
 				modelId: item.model || metadataString(metadata, "modelId") || "",
 				apiProvider: item.provider ?? "",
+				title: metadataString(metadata, "threadTitle") ?? "",
+				taskGroupId: metadataString(metadata, "taskGroupId") ?? "",
 				isLegacy:
 					metadataBoolean(metadata, "legacyTask") === true ||
 					metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -3235,6 +3356,8 @@ export class Controller {
 					cacheReads: 0,
 					modelId: this.task.api?.getModel?.().id ?? "",
 					apiProvider: "",
+					title: "",
+					taskGroupId: (await this.taskHistory.findHistoryItem(this.task.taskId))?.taskGroupId ?? "",
 					isLegacy: false,
 				})
 			}
@@ -3395,6 +3518,64 @@ export class Controller {
 		return newId
 	}
 
+	// ---- Message deep links ----
+
+	/**
+	 * Builds the vscode:// link for "Copy link" on a rendered row: the row's
+	 * minted ts is resolved back to the stable SDK transcript index so the link
+	 * survives reloads.
+	 */
+	async buildMessageLink(threadId: string, messageTs: number): Promise<string> {
+		const parent = await this.taskHistory.findHistoryItem(threadId)
+		const visible =
+			this.taskSessions.get(threadId)?.task.messageStateHandler.getClineMessages() ??
+			(await this.taskHistory.getClineMessages(threadId))
+		const raw = await this.taskHistory.readSessionMessages(threadId)
+		const { sourceIndex } = findSdkMessageAnchor(raw, visible, messageTs, parent?.cwdOnTaskInitialization)
+		if (sourceIndex === undefined) {
+			throw new Error("That message has no transcript position to link to yet")
+		}
+		const path = `${MESSAGE_LINK_PATH_PREFIX}${encodeURIComponent(threadId)}?m=${sourceIndex}`
+		return HostProvider.get().getCallbackUrl(path)
+	}
+
+	/**
+	 * Resolves a message link for the composer's paste -> quote chip. Returns
+	 * the single referenced message's text (never the thread) plus attribution.
+	 */
+	async resolveMessageLink(
+		threadId: string,
+		messageIndex: number,
+	): Promise<{ threadId: string; messageIndex: number; threadTitle: string; author: string; text: string }> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		const threadTitle = item ? item.title || item.task : ""
+		const raw = await this.taskHistory.readSessionMessages(threadId).catch(() => [])
+		const message = raw[messageIndex]
+		if (!message) {
+			return { threadId, messageIndex, threadTitle, author: "", text: "" }
+		}
+		const role = message.role === "user" ? "user" : "assistant"
+		const text = sdkMessageText(message.content)
+		return {
+			threadId,
+			messageIndex,
+			threadTitle,
+			author: role,
+			text: role === "user" ? formatDisplayUserInput(text) : text,
+		}
+	}
+
+	/**
+	 * Opens a vscode:// message deep link: shows the target thread, then tells
+	 * the webview which message to scroll to and briefly flash.
+	 */
+	async openMessageLink(threadId: string, messageIndex: number): Promise<void> {
+		const info = await this.resolveMessageLink(threadId, messageIndex)
+		await this.showTaskWithId(threadId)
+		const { sendOpenMessageEvent } = await import("@/core/controller/ui/subscribeToOpenMessage")
+		await sendOpenMessageEvent(threadId, messageIndex, info.text)
+	}
+
 	async toggleTaskSettled(taskId: string): Promise<void> {
 		await this.taskHistory.toggleTaskSettled(taskId)
 		await this.postStateToWebview()
@@ -3455,6 +3636,18 @@ export class Controller {
 		const summaries = await this.taskGroupStore.listGroupSummaries()
 		this.taskGroupsSummaryCache = { summaries, at: Date.now() }
 		return summaries
+	}
+
+	/** Notes across every task group (the composer's `#` menu); groups ordered by recency. */
+	async listAllNotes(): Promise<{ taskGroupId: string; taskGroupTitle: string; notes: NotebookNoteMeta[] }[]> {
+		const groups = await this.taskGroupStore.listGroupSummaries()
+		return Promise.all(
+			groups.map(async (group) => ({
+				taskGroupId: group.id,
+				taskGroupTitle: group.title,
+				notes: await this.notebookStore.listNotes(group.id),
+			})),
+		)
 	}
 
 	/** Focus and HEAD events bypass the short state-post cache and post only changes. */
