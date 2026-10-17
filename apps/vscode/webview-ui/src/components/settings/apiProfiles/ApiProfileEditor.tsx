@@ -23,8 +23,8 @@ import {
 interface ApiProfileEditorProps {
 	draft: ProfileDraft
 	onChange: (draft: ProfileDraft) => void
-	/** Modes ("Ask"/"Act") currently using this configuration. */
-	assignedModes: string[]
+	/** Names of profiles running on this configuration (it cannot be deleted while used). */
+	usedBy: string[]
 	isSaving?: boolean
 	error?: string
 	/** When omitted (e.g. onboarding) the back-to-list breadcrumb is hidden. */
@@ -34,13 +34,16 @@ interface ApiProfileEditorProps {
 	onDelete?: () => void
 }
 
-const Label = ({ htmlFor, children }: { htmlFor?: string; children: React.ReactNode }) => (
+export const Label = ({ htmlFor, children }: { htmlFor?: string; children: React.ReactNode }) => (
 	<label className="block font-medium mb-1" htmlFor={htmlFor}>
 		{children}
 	</label>
 )
 
-const Hint = ({ children }: { children: React.ReactNode }) => (
+export const formatReasoningEffort = (effort: string) =>
+	effort === "none" ? "None / provider default" : effort.charAt(0).toUpperCase() + effort.slice(1)
+
+export const Hint = ({ children }: { children: React.ReactNode }) => (
 	<p className="text-xs mt-1 text-(--vscode-descriptionForeground)">{children}</p>
 )
 
@@ -385,7 +388,7 @@ const ProviderFields = ({ draft, onChange }: { draft: ProfileDraft; onChange: (d
 const ApiProfileEditor = ({
 	draft,
 	onChange,
-	assignedModes,
+	usedBy,
 	isSaving,
 	error,
 	onBack,
@@ -394,7 +397,7 @@ const ApiProfileEditor = ({
 	onDelete,
 }: ApiProfileEditorProps) => {
 	const [touched, setTouched] = useState(false)
-	const isAssigned = assignedModes.length > 0
+	const isAssigned = usedBy.length > 0
 	const isNew = !draft.id
 	const nameMissing = !draft.name.trim()
 	const modelMissing = !draft.modelId.trim()
@@ -459,11 +462,11 @@ const ApiProfileEditor = ({
 					value={draft.reasoningEffort}>
 					{OPENAI_REASONING_EFFORT_OPTIONS.map((effort) => (
 						<VSCodeOption key={effort} value={effort}>
-							{effort === "none" ? "None / provider default" : effort.charAt(0).toUpperCase() + effort.slice(1)}
+							{formatReasoningEffort(effort)}
 						</VSCodeOption>
 					))}
 				</VSCodeDropdown>
-				<Hint>Applied when assigned to Ask or Act. Saving preserves the current chat's effort.</Hint>
+				<Hint>Applied when picked in the composer. Saving preserves the current chat's effort.</Hint>
 			</div>
 
 			{error && <p className="text-xs text-(--vscode-errorForeground)">{error}</p>}
@@ -491,7 +494,9 @@ const ApiProfileEditor = ({
 					</VSCodeButton>
 				)}
 			</div>
-			{isAssigned && !isNew && <Hint>Used by {assignedModes.join(" + ")}. Assign another configuration to delete it.</Hint>}
+			{isAssigned && !isNew && (
+				<Hint>Used by {usedBy.map((name) => `"${name}"`).join(", ")}. Change those profiles to delete it.</Hint>
+			)}
 		</div>
 	)
 }

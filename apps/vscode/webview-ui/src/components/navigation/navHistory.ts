@@ -100,7 +100,8 @@ export function shouldNameBack(target: NavLocation | undefined, crumbIds: readon
 }
 
 const SETTINGS_SECTION_NAMES: Record<string, string> = {
-	"api-config": "API Configuration",
+	"api-config": "Models",
+	profiles: "Profiles",
 	features: "Features",
 	subagents: "Subagents",
 	terminal: "Terminal",

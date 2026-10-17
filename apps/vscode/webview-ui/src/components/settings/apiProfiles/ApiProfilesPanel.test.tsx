@@ -65,7 +65,8 @@ describe("ApiProfilesPanel", () => {
 			apiConfigProfiles: profiles,
 			askProfileId: "a",
 			actProfileId: "b",
-			planActSeparateModelsSetting: true,
+			// Named profiles (Settings › Profiles) running on configuration "a".
+			profiles: [{ id: "p1", name: "Deep review", configurationId: "a", reasoningEffort: "high" }],
 		}
 		mocks.listApiProfiles.mockResolvedValue({
 			profiles: [
@@ -107,105 +108,26 @@ describe("ApiProfilesPanel", () => {
 		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 	})
 
-	it("lists cards with provider · model · API type and no extra chips", () => {
+	it("lists cards with provider · model · API type and no Ask/Act assignment", () => {
 		render(<ApiProfilesPanel />)
 		expect(screen.getByText("OpenAI Compatible · qwen · Responses")).toBeTruthy()
 		expect(screen.getByText("Anthropic · claude-x")).toBeTruthy()
-		// Cards show nothing extra — usage lives in the pickers below, not as badges.
-		expect(card("Claude").parentElement?.querySelectorAll("span.rounded-full").length).toBe(0)
-		expect(card("Local").parentElement?.querySelectorAll("span.rounded-full").length).toBe(0)
-	})
-
-	it("shows separate Ask and Act pickers when the switch is on and keeps their assignments", async () => {
-		render(<ApiProfilesPanel />)
-		expect(screen.getByLabelText("Ask configuration")).toBeTruthy()
-		expect(screen.getByLabelText("Act configuration")).toBeTruthy()
-		// The switch is already on via state; turning it off converges both modes onto the Act profile.
-		fireEvent.click(screen.getByRole("switch", { name: "Different profile for Ask and Act" }))
-		await waitFor(() =>
-			expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ planActSeparateModelsSetting: false })),
-		)
-		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalled())
-		const calls = mocks.assignApiProfile.mock.calls.map((call) => call[0])
-		expect(calls).toContainEqual(expect.objectContaining({ mode: "plan", profileId: "b" }))
-		expect(calls).toContainEqual(expect.objectContaining({ mode: "act", profileId: "b" }))
-	})
-
-	it("shows one Default picker when Ask and Act share a profile", async () => {
-		mocks.state = { ...mocks.state, planActSeparateModelsSetting: false, actProfileId: "b", askProfileId: "b" }
-		render(<ApiProfilesPanel />)
+		expect(screen.getByText("API Configurations")).toBeTruthy()
+		// Ask/Act defaults live on the Profiles page now.
 		expect(screen.queryByLabelText("Ask configuration")).toBeNull()
-		const picker = screen.getByLabelText("Default configuration") as HTMLSelectElement
-		expect(picker.value).toBe("b")
-		fireEvent.change(picker, { target: { value: "a" } })
-		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalledTimes(2))
-		const calls = mocks.assignApiProfile.mock.calls.map((call) => call[0])
-		expect(calls).toContainEqual(expect.objectContaining({ mode: "plan", profileId: "a" }))
-		expect(calls).toContainEqual(expect.objectContaining({ mode: "act", profileId: "a" }))
+		expect(screen.queryByText("Ask")).toBeNull()
+		expect(screen.queryByText("Act")).toBeNull()
 	})
 
-	it("turning the switch on stores planActSeparateModelsSetting", async () => {
-		mocks.state = { ...mocks.state, planActSeparateModelsSetting: false, actProfileId: "b", askProfileId: "b" }
-		render(<ApiProfilesPanel />)
-		fireEvent.click(screen.getByRole("switch", { name: "Different profile for Ask and Act" }))
-		await waitFor(() =>
-			expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ planActSeparateModelsSetting: true })),
-		)
-	})
-
-	describe("Used by", () => {
-		it("keeps thread titles and subagent profiles off by default and hides their options", () => {
-			render(<ApiProfilesPanel />)
-			expect(screen.getByRole("switch", { name: "Name new threads automatically" }).getAttribute("aria-checked")).toBe(
-				"false",
-			)
-			expect(screen.queryByLabelText("Thread title profile")).toBeNull()
-			expect(screen.queryByLabelText("Subagent default profile")).toBeNull()
-		})
-
-		it("turns thread titles on through the setting and then offers a profile", async () => {
-			render(<ApiProfilesPanel />)
-			fireEvent.click(screen.getByRole("switch", { name: "Name new threads automatically" }))
-			await waitFor(() =>
-				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ threadTitlesEnabled: true })),
-			)
-		})
-
-		it("shows the subagent profile pickers when enabled and stores the choice", async () => {
-			mocks.state = { ...mocks.state, subagentProfilesEnabled: true }
-			render(<ApiProfilesPanel />)
-			fireEvent.change(screen.getByLabelText("Subagent default profile"), { target: { value: "b" } })
-			await waitFor(() =>
-				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ subagentDefaultProfileId: "b" })),
-			)
-		})
-
-		it("remembers the walkthrough Generate profile", async () => {
-			render(<ApiProfilesPanel />)
-			fireEvent.change(screen.getByLabelText("Walkthrough Generate profile"), { target: { value: "a" } })
-			await waitFor(() =>
-				expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ walkthroughGenerateProfileId: "a" })),
-			)
-		})
-	})
-
-	it("assigns a configuration to a mode", async () => {
-		render(<ApiProfilesPanel />)
-		fireEvent.change(screen.getByLabelText("Ask configuration"), { target: { value: "b" } })
-		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalled())
-		expect(mocks.assignApiProfile.mock.calls[0][0]).toMatchObject({ mode: "plan", profileId: "b" })
-	})
-
-	it("disables Delete for an assigned configuration and explains why", async () => {
+	it("disables Delete for a configuration a profile runs on and explains why", async () => {
 		render(<ApiProfilesPanel />)
 		fireEvent.click(card("Claude"))
 		await screen.findByText("Configurations")
 		expect((screen.getByText("Delete") as HTMLButtonElement).disabled).toBe(true)
-		expect(screen.getByText(/Used by Ask/)).toBeTruthy()
+		expect(screen.getByText(/Used by "Deep review"/)).toBeTruthy()
 	})
 
-	it("deletes an unassigned configuration", async () => {
-		mocks.state = { ...mocks.state, actProfileId: "a" }
+	it("deletes a configuration no profile uses, even if a mode currently runs it", async () => {
 		render(<ApiProfilesPanel />)
 		fireEvent.click(card("Local"))
 		await screen.findByText("Configurations")
@@ -255,7 +177,7 @@ describe("ApiProfilesPanel", () => {
 describe("ApiProfileEditor default effort", () => {
 	it.each(ALLOWED_API_PROVIDERS)("offers the bottom-bar effort options for %s", (provider) => {
 		const onChange = vi.fn()
-		render(<ApiProfileEditor assignedModes={[]} draft={newProfileDraft(provider)} onChange={onChange} onSave={vi.fn()} />)
+		render(<ApiProfileEditor draft={newProfileDraft(provider)} onChange={onChange} onSave={vi.fn()} usedBy={[]} />)
 		const selector = screen.getByLabelText("Default reasoning effort") as HTMLSelectElement
 		expect(Array.from(selector.options).map((option) => option.value)).toEqual(OPENAI_REASONING_EFFORT_OPTIONS)
 		expect(selector.value).toBe("none")

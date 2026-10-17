@@ -8,6 +8,7 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
+import { describeProfile } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -61,6 +62,7 @@ const ChapterHeader = ({ title }: { title: string }) => (
 export default function WalkthroughView({ taskId, onDone }: { taskId: string; onDone: () => void }) {
 	const {
 		apiConfigProfiles,
+		profiles: namedProfiles,
 		walkthroughGenerateProfileId,
 		currentTaskItem,
 		taskHistory,
@@ -89,7 +91,24 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const storeRef = useRef(store)
 	storeRef.current = store
 
-	const profiles = apiConfigProfiles ?? []
+	// Generate runs on a profile (Settings › Profiles): its model at its effort.
+	const profiles = useMemo(
+		() =>
+			(namedProfiles ?? []).map((profile) => {
+				const configuration = apiConfigProfiles?.find((c) => c.id === profile.configurationId)
+				return {
+					id: profile.id,
+					name: profile.name,
+					description: [
+						configuration ? describeProfile(configuration) : "Missing model",
+						profile.reasoningEffort && `${profile.reasoningEffort} effort`,
+					]
+						.filter(Boolean)
+						.join(" · "),
+				}
+			}),
+		[namedProfiles, apiConfigProfiles],
+	)
 	const profileId =
 		pickedProfileId ??
 		(profiles.some((p) => p.id === walkthroughGenerateProfileId) ? walkthroughGenerateProfileId : undefined)
@@ -389,7 +408,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 						disabled={!walk || !walk.hunks.length || busy || moved}
 						generating={generating}
 						onGenerate={() => void generate()}
-						onOpenProfiles={() => navigateToSettings("api-config")}
+						onOpenProfiles={() => navigateToSettings("profiles")}
 						onPickProfile={setPickedProfileId}
 						profileId={profileId}
 						profiles={profiles}

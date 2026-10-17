@@ -1,14 +1,19 @@
-import type { ApiConfigProfile } from "@shared/api-profiles"
 import { useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_HEADING_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
-import { describeProfile } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 
+/** A profile as the ▾ menu shows it: name over its model and effort. */
+export interface GenerateProfileOption {
+	id: string
+	name: string
+	description: string
+}
+
 interface GenerateControlProps {
-	profiles: ApiConfigProfile[]
+	profiles: GenerateProfileOption[]
 	profileId: string | undefined
 	onPickProfile: (profileId: string) => void
 	/** The document shown is already generated, so the button regenerates. */
@@ -38,7 +43,7 @@ export function GenerateControl({
 	if (!profiles.length)
 		return (
 			<LinkButton className="text-[11px]" onClick={onOpenProfiles}>
-				Add an API profile to Generate
+				Add a profile to Generate
 			</LinkButton>
 		)
 	return (
@@ -90,7 +95,7 @@ export function GenerateControl({
 									/>
 									<span className="min-w-0 flex-1">
 										<span className="block truncate">{p.name}</span>
-										<span className="block truncate text-[11px] text-description">{describeProfile(p)}</span>
+										<span className="block truncate text-[11px] text-description">{p.description}</span>
 									</span>
 								</button>
 							))}

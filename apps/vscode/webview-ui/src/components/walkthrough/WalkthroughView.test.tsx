@@ -83,8 +83,13 @@ const stop = (title: string) => screen.getByRole("article", { name: title })
 
 const baseState = () => ({
 	apiConfigProfiles: [
-		{ id: "fast", name: "Fast", provider: "anthropic", modelId: "haiku" },
-		{ id: "deep", name: "Deep", provider: "anthropic", modelId: "opus" },
+		{ id: "cfg-haiku", name: "Haiku", provider: "anthropic", modelId: "haiku" },
+		{ id: "cfg-opus", name: "Opus", provider: "anthropic", modelId: "opus" },
+	],
+	// Generate picks named profiles (Settings › Profiles), not configurations.
+	profiles: [
+		{ id: "fast", name: "Fast", configurationId: "cfg-haiku" },
+		{ id: "deep", name: "Deep", configurationId: "cfg-opus", reasoningEffort: "high" },
 	],
 	walkthroughGenerateProfileId: "deep",
 	currentTaskItem: { id: "task", ts: 1, task: "Implement steps", title: "Implement steps 1–2", taskGroupId: "group" },
@@ -317,6 +322,8 @@ describe("WalkthroughView", () => {
 		expect(screen.getByTestId("walkthrough-generate-cost")).toHaveTextContent("One call to Deep · only when you click")
 
 		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
+		// Each profile shows its model and effort under its name.
+		expect(await screen.findByRole("menuitemradio", { name: /Deep.*Anthropic · opus · high effort/ })).toBeTruthy()
 		fireEvent.click(await screen.findByRole("menuitemradio", { name: /Fast/ }))
 		expect(mocks.generate).not.toHaveBeenCalled()
 		expect(screen.getByTestId("walkthrough-generate-cost")).toHaveTextContent("One call to Fast")
@@ -393,10 +400,10 @@ describe("WalkthroughView", () => {
 	})
 
 	it("shows Generate failures inline and keeps the free walkthrough", async () => {
-		mocks.generate.mockRejectedValue(new Error("Choose a saved API profile for Generate"))
+		mocks.generate.mockRejectedValue(new Error("Choose a profile for Generate"))
 		await renderPage()
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
-		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a saved API profile for Generate")
+		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a profile for Generate")
 		expect(sent(mocks.generate).profileId).toBe("deep")
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
 	})
