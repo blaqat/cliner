@@ -5,6 +5,8 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  * once they reach their minimum, secondary items collapse one at a time, in this order.
  */
 export interface ComposerRowLayout {
+	/** The "Add to ⎇ task?" branch suggestion beside the task pill. Hidden first; it is only a suggestion. */
+	showBranchChip: boolean
 	/** The chat cost next to the context ring. Hidden first; it stays in the ring's details. */
 	showCost: boolean
 	/** The "Compact" pill at high usage. Next to go; Compact stays in the ring's details. */
@@ -21,14 +23,17 @@ export interface ComposerRowContent {
 	hasCost: boolean
 	hasCompactNudge: boolean
 	hasEffort: boolean
+	/** A branch suggestion is on offer (absent: it needs no room). */
+	hasBranchChip?: boolean
 }
 
 const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
-	{ showCost: true, inlineCompactNudge: true, collapsePickers: false, collapseConfig: false },
-	{ showCost: false, inlineCompactNudge: true, collapsePickers: false, collapseConfig: false },
-	{ showCost: false, inlineCompactNudge: false, collapsePickers: false, collapseConfig: false },
-	{ showCost: false, inlineCompactNudge: false, collapsePickers: true, collapseConfig: false },
-	{ showCost: false, inlineCompactNudge: false, collapsePickers: true, collapseConfig: true },
+	{ showBranchChip: true, showCost: true, inlineCompactNudge: true, collapsePickers: false, collapseConfig: false },
+	{ showBranchChip: false, showCost: true, inlineCompactNudge: true, collapsePickers: false, collapseConfig: false },
+	{ showBranchChip: false, showCost: false, inlineCompactNudge: true, collapsePickers: false, collapseConfig: false },
+	{ showBranchChip: false, showCost: false, inlineCompactNudge: false, collapsePickers: false, collapseConfig: false },
+	{ showBranchChip: false, showCost: false, inlineCompactNudge: false, collapsePickers: true, collapseConfig: false },
+	{ showBranchChip: false, showCost: false, inlineCompactNudge: false, collapsePickers: true, collapseConfig: true },
 ]
 
 export const FULL_COMPOSER_ROW = LAYOUT_STEPS[0]
@@ -48,6 +53,8 @@ export const COMPOSER_ROW_WIDTHS = {
 	/** The task pill at its truncated minimum (just ◇). It joins the "…" menu with the config picker. */
 	taskPill: 18,
 	configMin: 56,
+	/** The branch suggestion at its truncated minimum ("Add to ⎇ Bu…?" and ✕). */
+	branchChipMin: 90,
 	effortMin: 44,
 	approvals: 28,
 	overflow: 21,
@@ -66,6 +73,7 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		w.icons,
 		layout.collapseConfig ? 0 : w.taskPill,
 		layout.collapseConfig ? 0 : w.configMin,
+		content.hasBranchChip && layout.showBranchChip ? w.branchChipMin : 0,
 		!layout.collapsePickers && content.hasEffort ? w.effortMin : 0,
 		layout.collapsePickers ? 0 : w.approvals,
 		layout.collapsePickers ? w.overflow : 0,
@@ -110,10 +118,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number | un
 /** `composerRowLayout` driven by the row element's measured width. */
 export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
 	const width = useElementWidth(ref)
-	const { hasUsage, hasCost, hasCompactNudge, hasEffort } = content
+	const { hasUsage, hasCost, hasCompactNudge, hasEffort, hasBranchChip } = content
 	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
 	return useMemo(
-		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge, hasEffort }),
-		[width, hasUsage, hasCost, hasCompactNudge, hasEffort],
+		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge, hasEffort, hasBranchChip }),
+		[width, hasUsage, hasCost, hasCompactNudge, hasEffort, hasBranchChip],
 	)
 }

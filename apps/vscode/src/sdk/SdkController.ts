@@ -3444,7 +3444,10 @@ export class Controller {
 		return group.id
 	}
 
-	async updateTaskGroup(id: string, update: { title?: string; tags?: TaskTag[] }): Promise<TaskGroupSummary> {
+	async updateTaskGroup(
+		id: string,
+		update: { title?: string; tags?: TaskTag[]; branchSuggestionDismissed?: boolean },
+	): Promise<TaskGroupSummary> {
 		const group = await this.taskGroupStore.updateGroup(id, update)
 		if (!group) {
 			throw new Error(`Task group not found: ${id}`)

@@ -18,7 +18,7 @@ service TaskGroupService {
   rpc getTaskGroup(GetTaskGroupRequest) returns (GetTaskGroupResponse);
   // Creates a task group; when thread_id is set the thread is filed into it
   rpc createTaskGroup(CreateTaskGroupRequest) returns (CreateTaskGroupResponse);
-  // Renames a task group and/or replaces its tags
+  // Renames a task group, replaces its tags and/or sets its branch-suggestion dismissal
   rpc updateTaskGroup(UpdateTaskGroupRequest) returns (TaskGroupSummary);
   // Deletes a task group; member threads are unfiled, never deleted
   rpc deleteTaskGroup(DeleteTaskGroupRequest) returns (Empty);
@@ -54,6 +54,7 @@ message TaskGroup {
   repeated TaskTag tags = 3;
   int64 created_at = 4;
   int64 updated_at = 5;
+  bool branch_suggestion_dismissed = 6;
 }
 
 message TaskGroupSummary {
@@ -63,6 +64,8 @@ message TaskGroupSummary {
   int64 created_at = 4;
   int64 updated_at = 5;
   int32 note_count = 6;
+  // The user dismissed the composer's branch -> task suggestion for this task.
+  bool branch_suggestion_dismissed = 7;
 }
 
 message TaskGroupSummaryList {
@@ -129,6 +132,9 @@ message UpdateTaskGroupRequest {
   optional string title = 3;
   // When set, replaces the group's tags wholesale (including with an empty list).
   optional TaskTagList tags = 4;
+  // Sets or clears the dismissed flag of the composer's branch -> task suggestion.
+  // Does not change the group's updated_at.
+  optional bool branch_suggestion_dismissed = 5;
 }
 
 message DeleteTaskGroupRequest {

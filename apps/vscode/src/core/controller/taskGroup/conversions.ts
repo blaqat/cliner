@@ -29,6 +29,7 @@ export function taskGroupSummaryToProto(group: TaskGroupSummary): ProtoTaskGroup
 		createdAt: group.createdAt,
 		updatedAt: group.updatedAt,
 		noteCount: group.noteCount,
+		branchSuggestionDismissed: group.branchSuggestionDismissed ?? false,
 	})
 }
 

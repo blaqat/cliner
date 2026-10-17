@@ -14,6 +14,8 @@ export interface TaskGroup {
 	tags: TaskTag[]
 	createdAt: number
 	updatedAt: number
+	/** The user dismissed the composer's "Add to this task?" branch suggestion for this task. */
+	branchSuggestionDismissed?: boolean
 }
 export interface TaskGroupSummary extends TaskGroup {
 	noteCount: number

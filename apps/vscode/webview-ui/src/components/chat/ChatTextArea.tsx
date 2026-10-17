@@ -46,6 +46,7 @@ import {
 import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
 import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
+import { BranchTaskSuggestion, useBranchTaskSuggestion } from "./BranchTaskSuggestion"
 import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
@@ -1609,11 +1610,13 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", metaKeyChar)
 			.replace(/.$/, (match) => match.toUpperCase())
 
+		const branchSuggestion = useBranchTaskSuggestion()
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
+			hasBranchChip: !!branchSuggestion,
 		})
 
 		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
@@ -1948,6 +1951,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								{taskGroupPicker}
 							</span>
 						)}
+
+						{/* Hidden (not collapsed into the "…" menu) when narrow: it's only a suggestion. */}
+						{!rowLayout.collapseConfig && rowLayout.showBranchChip && <BranchTaskSuggestion />}
 
 						{!rowLayout.collapseConfig && (
 							<span className="flex min-w-14" data-shrink="">

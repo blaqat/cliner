@@ -61,10 +61,24 @@ describe("composerRowLayout", () => {
 
 	it("falls back to the most collapsed row when nothing fits", () => {
 		expect(composerRowLayout(120, WIDEST)).toEqual({
+			showBranchChip: false,
 			showCost: false,
 			inlineCompactNudge: false,
 			collapsePickers: true,
 			collapseConfig: true,
 		})
+	})
+
+	it("drops the branch suggestion first, before anything else collapses", () => {
+		const withChip = { ...WIDEST, hasBranchChip: true }
+		const full = composerRowMinWidth(withChip, FULL_COMPOSER_ROW)
+		expect(composerRowLayout(full, withChip)).toEqual(FULL_COMPOSER_ROW)
+		expect(composerRowLayout(full - 1, withChip)).toMatchObject({
+			showBranchChip: false,
+			showCost: true,
+			collapsePickers: false,
+		})
+		// No suggestion on offer: it costs nothing.
+		expect(composerRowMinWidth(WIDEST, FULL_COMPOSER_ROW)).toBeLessThan(full)
 	})
 })

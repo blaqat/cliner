@@ -85,6 +85,7 @@ function parseTaskGroup(raw: unknown): TaskGroup | undefined {
 		tags,
 		createdAt: typeof group.createdAt === "number" ? group.createdAt : 0,
 		updatedAt: typeof group.updatedAt === "number" ? group.updatedAt : 0,
+		...(group.branchSuggestionDismissed === true ? { branchSuggestionDismissed: true } : {}),
 	}
 }
 
@@ -143,14 +144,21 @@ export class TaskGroupStore {
 		return group
 	}
 
-	async updateGroup(id: string, update: { title?: string; tags?: TaskTag[] }): Promise<TaskGroup | undefined> {
+	async updateGroup(
+		id: string,
+		update: { title?: string; tags?: TaskTag[]; branchSuggestionDismissed?: boolean },
+	): Promise<TaskGroup | undefined> {
 		const group = await this.getGroup(id)
 		if (!group) return undefined
+		const { branchSuggestionDismissed: _previous, ...rest } = group
+		const dismissed = update.branchSuggestionDismissed ?? group.branchSuggestionDismissed
 		const next: TaskGroup = {
-			...group,
+			...rest,
 			title: update.title !== undefined ? update.title.trim() : group.title,
 			tags: update.tags ?? group.tags,
-			updatedAt: Date.now(),
+			// Dismissing a suggestion is not activity: it must not reorder "most recently updated".
+			updatedAt: update.title !== undefined || update.tags !== undefined ? Date.now() : group.updatedAt,
+			...(dismissed ? { branchSuggestionDismissed: true } : {}),
 		}
 		await this.writeGroup(next)
 		return next
