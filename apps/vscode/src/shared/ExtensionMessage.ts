@@ -56,7 +56,13 @@ export interface ExtensionState {
 	 */
 	subagentCounts: Record<string, { total: number; live: number }>
 	enterSendsAs: "steer" | "interject"
-	promptStash: { id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }[]
+	promptStash: {
+		id: string
+		text: string
+		quotes: { text: string; note: string; source?: string }[]
+		ts: number
+		taskId?: string
+	}[]
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined

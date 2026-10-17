@@ -568,6 +568,8 @@ message TestConnectionResult {
 message PromptQuote {
   string text = 1;
   string note = 2;
+  // Attribution of a pasted message-link quote, e.g. "You · Dev plan".
+  optional string source = 3;
 }
 message PromptStashEntry {
   string id = 1;
