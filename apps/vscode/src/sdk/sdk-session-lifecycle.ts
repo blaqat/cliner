@@ -86,7 +86,18 @@ export class SdkSessionLifecycle {
 	private readonly refreshingWorkspaces = new Map<string, Promise<void>>()
 	private async refreshWorkspace(id: string): Promise<void> {
 		const pending = this.refreshingWorkspaces.get(id)
-		if (pending) return pending
+		if (pending) {
+			const session = this.liveSessions.get(id)
+			const generation = this.turnGenerations.get(id)
+			try {
+				await pending
+				return
+			} catch (error) {
+				if (!isAbortError(error) || this.liveSessions.get(id) !== session || this.turnGenerations.get(id) !== generation)
+					throw error
+				return this.refreshWorkspace(id)
+			}
+		}
 		const refresh = (async () => {
 			const session = this.liveSessions.get(id)
 			const input = this.startInputs.get(id)
@@ -122,6 +133,7 @@ export class SdkSessionLifecycle {
 			if (this.refreshingWorkspaces.get(id) === refresh) this.refreshingWorkspaces.delete(id)
 			starts.delete(refresh)
 			if (!starts.size) this.pendingStarts.delete(id)
+			this.releaseIdleLease(id)
 		}
 	}
 	private readonly releasingLeases = new Map<string, Promise<void>>()
@@ -153,7 +165,12 @@ export class SdkSessionLifecycle {
 
 	private releaseIdleLease(id: string) {
 		const session = this.liveSessions.get(id)
-		if (this.refreshingWorkspaces.has(id) || (session && (session.isRunning || session.queuedPromptCount))) return
+		if (
+			this.refreshingWorkspaces.has(id) ||
+			this.pendingStarts.has(id) ||
+			(session && (session.isRunning || session.queuedPromptCount))
+		)
+			return
 		void this.releaseLease(id).catch((error) => Logger.warn("[Worktree] Could not release session lease", error))
 	}
 	private readonly replacements = new Map<string, Promise<string>>()
@@ -373,6 +390,7 @@ export class SdkSessionLifecycle {
 		} finally {
 			starts.delete(starting)
 			if (!starts.size) this.pendingStarts.delete(key)
+			if (id) this.releaseIdleLease(id)
 		}
 	}
 
@@ -913,6 +931,11 @@ export class SdkSessionLifecycle {
 			})
 		const sending = this.options.acquireSessionLease
 			? this.ensureLease(sessionId).then(async () => {
+					if (isSuperseded("lease acquisition")) {
+						const error = new Error("Submission aborted")
+						error.name = "AbortError"
+						throw error
+					}
 					await this.refreshWorkspace(sessionId)
 					this.assertTaskAvailable(sessionId)
 					if (isSuperseded("workspace refresh")) {
@@ -939,6 +962,8 @@ export class SdkSessionLifecycle {
 			.catch(async (error: unknown) => {
 				if (isAbortError(error)) {
 					Logger.debug(`[SdkController] Agent turn aborted (expected): ${sessionId}`)
+					if (!isSuperseded("abort")) this.setRunning(false, sessionId)
+					this.releaseIdleLease(sessionId)
 					return
 				}
 				if (isSuperseded("failure")) {

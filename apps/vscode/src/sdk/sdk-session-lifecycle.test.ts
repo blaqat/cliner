@@ -1418,3 +1418,73 @@ it("cancels a workspace rebuild before it can restart a retired runtime", async 
 	expect(host.send).not.toHaveBeenCalled()
 	await lifecycle.dispose()
 })
+
+for (const successor of [false, true]) {
+	it(`cleans up a cancelled workspace refresh without releasing a successor lease: ${successor}`, async () => {
+		const history = Promise.withResolvers<never[]>()
+		const readMessages = vi.fn().mockReturnValueOnce(history.promise).mockResolvedValue([])
+		const host = makeSdkHost({ readMessages })
+		mockCreateSessionHost.mockResolvedValueOnce(host)
+		const release = vi.fn(async () => {})
+		const acquireSessionLease = vi.fn(async () => release)
+		const lifecycle = makeLifecycle({ acquireSessionLease, resolveSessionWorkspace: async () => "/original-workspace" })
+		await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+		lifecycle.setRunning(false)
+		await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+		lifecycle.fireAndForgetSend(host as never, "session-123", "cancelled")
+		await vi.waitFor(() => expect(readMessages).toHaveBeenCalledOnce())
+		lifecycle.cancelHeldSends("session-123")
+		lifecycle.setRunning(false)
+		const pendingSend = Promise.withResolvers<void>()
+		if (successor) {
+			host.send.mockReturnValueOnce(pendingSend.promise)
+			lifecycle.fireAndForgetSend(host as never, "session-123", "successor")
+		}
+		history.resolve([])
+		if (successor) {
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+			expect(release).toHaveBeenCalledOnce()
+			pendingSend.resolve()
+		}
+		await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+		expect(lifecycle.getSession("session-123")?.isRunning).toBe(false)
+		await lifecycle.dispose()
+	})
+}
+
+it("releases the lease when an otherwise current submission aborts", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({ acquireSessionLease: async () => release })
+	await lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)
+	const aborted = new Error("Submission aborted")
+	aborted.name = "AbortError"
+	host.send.mockRejectedValueOnce(aborted)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	expect(lifecycle.getSession("session-123")?.isRunning).toBe(false)
+	await lifecycle.dispose()
+})
+
+it("does not refresh a cancelled submission after delayed lease admission", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const admission = Promise.withResolvers<() => Promise<void>>()
+	const acquireSessionLease = vi.fn().mockResolvedValueOnce(release).mockReturnValueOnce(admission.promise)
+	const resolveSessionWorkspace = vi.fn(async () => "/original-workspace")
+	const lifecycle = makeLifecycle({ acquireSessionLease, resolveSessionWorkspace })
+	await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+	lifecycle.setRunning(false)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	lifecycle.fireAndForgetSend(host as never, "session-123", "cancelled")
+	await vi.waitFor(() => expect(acquireSessionLease).toHaveBeenCalledTimes(2))
+	lifecycle.cancelHeldSends("session-123")
+	lifecycle.setRunning(false)
+	admission.resolve(release)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+	expect(resolveSessionWorkspace).not.toHaveBeenCalled()
+	expect(host.send).not.toHaveBeenCalled()
+	await lifecycle.dispose()
+})
