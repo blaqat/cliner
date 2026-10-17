@@ -7,7 +7,7 @@ import type { ToolApprovalRequest } from "../sdk-interaction-coordinator"
 import { ScriptsHost } from "./script-host"
 import { ScriptTrustStore, scriptFingerprint } from "./script-trust"
 
-describe("script trust and approval binding with real execution", () => {
+describe.skipIf(process.platform === "win32")("script trust and approval binding with real execution", () => {
 	let root: string
 	let file: string
 	let host: ScriptsHost

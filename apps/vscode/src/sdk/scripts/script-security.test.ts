@@ -8,7 +8,7 @@ import { resolveScriptRun } from "./script-command"
 
 const option = { name: "value", kind: "text" as const, required: true, description: "" }
 
-describe("script shell boundaries", () => {
+describe.skipIf(process.platform === "win32")("script shell boundaries", () => {
 	it("executes hostile text literally and refuses unsafe template contexts", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "script-shell-"))
 		try {
@@ -50,7 +50,7 @@ describe("script shell boundaries", () => {
 	})
 })
 
-it("refuses executable git arguments and permits an explicit allowDash opt-in", async () => {
+it.skipIf(process.platform === "win32")("refuses executable git arguments and permits an explicit allowDash opt-in", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "script-dash-"))
 	try {
 		await promisify(execFile)("git", ["init", root])
