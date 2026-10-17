@@ -3023,20 +3023,24 @@ export class Controller {
 		const host =
 			this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
 		try {
-			const [session, messages, workspace, edits] = await Promise.all([
+			const [session, messages, workspace, edits, worktree] = await Promise.all([
 				host.get(taskId),
 				readCurrentMessages(host, taskId),
 				HostProvider.workspace.getWorkspacePaths({}),
 				ensureTaskDirectoryExists(taskId).then(readEdits),
+				this.threadWorktrees.get(taskId),
 			])
 			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
+			// An isolated thread's changes live only in its worktree (one per module with mm), not
+			// in the user's own workspace folders.
+			const rootPaths = worktree ? worktree.modules.map((module) => module.path) : workspace.paths
 			return {
 				taskId,
 				scope,
 				messages,
 				runSpans: messages.map(getUserRunSpan),
 				edits,
-				roots: [...new Set([cwd, ...workspace.paths])],
+				roots: [...new Set([cwd, ...rootPaths])],
 				checkpointRoot: cwd,
 				checkpoints: readSessionCheckpointHistory(session),
 			}

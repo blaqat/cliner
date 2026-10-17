@@ -9,9 +9,16 @@ import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
 import { collect, revertChange } from "./collection"
 import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput } from "./engine"
 
-/** Step 6 integration point. Read its remembered Generate profile here when merged. */
-export function readRememberedWalkthroughProfileId(_controller: Controller): string | undefined {
-	return undefined
+/** The profile Generate used last (Settings › Profiles › Used by › Walkthrough Generate). */
+export function readRememberedWalkthroughProfileId(controller: Controller): string | undefined {
+	return controller.stateManager.getGlobalStateKey("walkthroughGenerateProfileId") || undefined
+}
+
+/** Generate remembers whichever profile it ran with, so the ▾ starts there next time. */
+function rememberWalkthroughProfileId(controller: Controller, profileId: string): void {
+	if (readRememberedWalkthroughProfileId(controller) === profileId) return
+	controller.stateManager.setGlobalState("walkthroughGenerateProfileId", profileId)
+	void controller.postStateToWebview()
 }
 
 const services = new WeakMap<Controller, WalkthroughService>()
@@ -95,6 +102,7 @@ export class WalkthroughService {
 						)
 						const result = { ...normalized, profileId: profile.id, cacheHit: true }
 						this.documents.set(this.key(request), result)
+						rememberWalkthroughProfileId(this.controller, profile.id)
 						return result
 					}
 				} catch (error) {
@@ -113,6 +121,7 @@ export class WalkthroughService {
 			await mkdir(directory, { recursive: true })
 			await writeFile(cacheFile, JSON.stringify(result), "utf8")
 			this.documents.set(this.key(request), result)
+			rememberWalkthroughProfileId(this.controller, profile.id)
 			return result
 		} finally {
 			this.generating = false

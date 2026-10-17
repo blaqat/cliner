@@ -11,6 +11,7 @@ let directory = ""
 let requests = 0
 let input: CollectionInput
 let rejectGeneration = false
+const remembered: { id?: string } = {}
 const profile = {
 	id: "chosen",
 	name: "Chosen",
@@ -63,6 +64,7 @@ beforeEach(async () => {
 	directory = await realpath(await mkdtemp(path.join(tmpdir(), "walkthrough-service-")))
 	requests = 0
 	rejectGeneration = false
+	remembered.id = undefined
 	askResponse.mockClear()
 	openMultiFileDiff.mockClear()
 	await git(directory, ["init", "-q"])
@@ -105,10 +107,15 @@ function service() {
 			},
 		},
 		stateManager: {
-			getGlobalStateKey: (key: string) => (key === "apiConfigProfiles" ? [profile] : undefined),
+			getGlobalStateKey: (key: string) =>
+				key === "apiConfigProfiles" ? [profile] : key === "walkthroughGenerateProfileId" ? remembered.id : undefined,
+			setGlobalState: (key: string, value: string) => {
+				if (key === "walkthroughGenerateProfileId") remembered.id = value
+			},
 			listSecretStorageKeys: () => ["profile:chosen:openAiApiKey"],
 			getSecretForKey: () => "test-credential",
 		},
+		postStateToWebview: async () => {},
 		getWalkthroughCollectionInput: async (_taskId: string, scope: CollectionInput["scope"]) => ({ ...input, scope }),
 		askResponse,
 	} as unknown as Controller)
@@ -134,6 +141,11 @@ describe("walkthrough service", () => {
 		expect(requests).toBe(1)
 		await host.generate({ ...request, profileId: "chosen", regenerate: true })
 		expect(requests).toBe(2)
+	})
+	it("remembers the profile of a successful Generate and falls back to it", async () => {
+		await service().generate({ ...request, profileId: "chosen" })
+		expect(remembered.id).toBe("chosen")
+		expect((await service().generate(request)).profileId).toBe("chosen")
 	})
 	it("sends one normal user message quoting the host's stops and hunks", async () => {
 		const host = service()
@@ -184,6 +196,7 @@ describe("walkthrough service", () => {
 		const host = service()
 		rejectGeneration = true
 		await expect(host.generate({ ...request, profileId: "chosen" })).rejects.toThrow("Provider failed")
+		expect(remembered.id).toBeUndefined()
 		expect((await host.get(request)).source).toBe("fallback")
 		expect(requests).toBe(1)
 	})
