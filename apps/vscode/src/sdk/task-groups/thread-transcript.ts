@@ -136,7 +136,9 @@ export function grepTranscript(
 
 /**
  * Inclusive `start`..`end` slice over transcript ordinals, capped in message
- * count and characters so one call can't flood the context.
+ * count so one call can't flood the context. Character limits are applied
+ * afterwards by {@link pageTranscriptText}, so an oversized message stays
+ * readable in pages instead of being dropped.
  */
 export function sliceTranscript(
 	entries: readonly TranscriptEntry[],
@@ -150,16 +152,37 @@ export function sliceTranscript(
 	}
 	const inRange = entries.filter((entry) => entry.index >= lo && entry.index <= hi)
 	const slice = inRange.slice(0, TRANSCRIPT_READ_MAX_MESSAGES)
-	let truncated = inRange.length > slice.length
-	let chars = 0
-	const kept: TranscriptEntry[] = []
-	for (const entry of slice) {
-		chars += entry.text.length
-		if (chars > TRANSCRIPT_READ_MAX_CHARS) {
-			truncated = true
-			break
-		}
-		kept.push(entry)
+	return { entries: slice, truncated: inRange.length > slice.length }
+}
+
+/** The text read_thread pages over: each message as `#<n> <role>: <text>`, blank-line separated. */
+export function formatTranscriptEntries(entries: readonly TranscriptEntry[]): string {
+	return entries.map((entry) => `#${entry.index} ${entry.role}: ${entry.text}`).join("\n\n")
+}
+
+export interface TranscriptTextPage {
+	text: string
+	/** Character offset of `text` within the full text. */
+	offset: number
+	/** Total characters in the full text. */
+	total: number
+	/** Offset to pass to continue, when the page does not reach the end. */
+	nextOffset?: number
+}
+
+/**
+ * Character window over `text`. `offset`/`limit` are in characters (UTF-16
+ * code units as JS counts them); a window never splits a surrogate pair.
+ */
+export function pageTranscriptText(text: string, offset: number, limit: number = TRANSCRIPT_READ_MAX_CHARS): TranscriptTextPage {
+	const size = Math.min(Math.max(1, Math.trunc(limit)), TRANSCRIPT_READ_MAX_CHARS)
+	const isLowSurrogate = (index: number) => {
+		const code = text.charCodeAt(index)
+		return code >= 0xdc00 && code <= 0xdfff
 	}
-	return { entries: kept, truncated }
+	let from = Math.min(Math.max(0, Math.trunc(offset)), text.length)
+	if (from > 0 && from < text.length && isLowSurrogate(from)) from -= 1
+	let to = Math.min(text.length, from + size)
+	if (to < text.length && to > from + 1 && isLowSurrogate(to)) to -= 1
+	return { text: text.slice(from, to), offset: from, total: text.length, ...(to < text.length ? { nextOffset: to } : {}) }
 }

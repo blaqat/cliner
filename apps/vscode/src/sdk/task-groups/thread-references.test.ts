@@ -171,7 +171,7 @@ describe("grep_threads / read_thread tools", () => {
 
 	it("greps all mentioned threads when no thread_id is given", async () => {
 		const { grep } = await makeTools()
-		const out = await grep.execute({ pattern: "callback|redirect_uri" }, toolContext("owner"))
+		const out = await grep.execute({ pattern: "callback|redirect_uri", regex: true }, toolContext("owner"))
 		expect(out).toContain("2 hit(s) in 1 thread(s)")
 		expect(out).toContain("Repro on staging #1  The callback uses http:// behind the LB")
 		expect(out).toContain("Repro on staging #3  redirect_uri mismatch -> loop")
@@ -210,6 +210,70 @@ describe("grep_threads / read_thread tools", () => {
 		expect(out).not.toContain("#3")
 	})
 
+	it("treats the pattern as a literal substring unless regex is requested", async () => {
+		const { grep } = await makeTools()
+		// Regex metacharacters and alternation are plain text by default.
+		expect(await grep.execute({ pattern: "callback|redirect_uri" }, toolContext("owner"))).toContain("No hits")
+		expect(await grep.execute({ pattern: "(" }, toolContext("owner"))).toContain("No hits")
+		expect(await grep.execute({ pattern: "http://" }, toolContext("owner"))).toContain("Repro on staging #1")
+		expect(await grep.execute({ pattern: "-> LOOP" }, toolContext("owner"))).toContain("#3  redirect_uri mismatch -> loop")
+	})
+
+	it("stops a catastrophically backtracking regex instead of freezing", async () => {
+		transcripts.evil = entries([["user", `${"a".repeat(40)}!`]])
+		allow.owner.push("evil")
+		titles.evil = "Evil"
+		const { grep } = await makeTools()
+		const started = Date.now()
+		const result = await grep.execute({ pattern: "^(a+)+$", regex: true, thread_id: "evil" }, toolContext("owner"))
+		expect(Date.now() - started).toBeLessThan(10_000)
+		expect(result).toMatchObject({ error: expect.stringContaining("took longer") })
+		// The same text is harmless as a literal search.
+		expect(await grep.execute({ pattern: "^(a+)+$", thread_id: "evil" }, toolContext("owner"))).toContain("No hits")
+		allow.owner.pop()
+	}, 20_000)
+
+	it("describes literal-by-default and the regex time limit", async () => {
+		const { grep } = await makeTools()
+		expect(grep.description).toContain("plain substring")
+		expect(grep.description).toContain("regex=true")
+		expect(grep.description).toContain("time limit")
+	})
+
+	it("pages an oversized message by characters with a continuation hint", async () => {
+		const huge = "word ".repeat(30_000) // 150k chars in one message
+		transcripts.huge = entries([
+			["user", "short"],
+			["assistant", huge],
+		])
+		allow.owner.push("huge")
+		titles.huge = "Huge"
+		const { read } = await makeTools()
+		const seen: string[] = []
+		let offset = 0
+		for (let page = 0; page < 10; page++) {
+			const out = (await read.execute({ thread_id: "huge", start: 1, end: 1, offset }, toolContext("owner"))) as string
+			const [header, ...rest] = out.split("\n")
+			const hint = out.match(/offset=(\d+) to continue/)
+			expect(header).toContain("messages 1–1 of 1")
+			seen.push(rest.join("\n").replace(/\n… more text.*$/s, ""))
+			if (!hint) break
+			offset = Number(hint[1])
+		}
+		expect(seen.length).toBeGreaterThan(3)
+		expect(seen.join("")).toBe(`#1 assistant: ${huge}`)
+		allow.owner.pop()
+	})
+
+	it("honours limit and rejects an offset past the end", async () => {
+		const { read } = await makeTools()
+		const out = (await read.execute({ thread_id: "allowed", limit: 20 }, toolContext("owner"))) as string
+		expect(out).toContain("offset=20 to continue")
+		expect(await read.execute({ thread_id: "allowed", offset: 99_999 }, toolContext("owner"))).toMatchObject({
+			error: expect.stringContaining("past the end"),
+		})
+	})
+
 	it("reports bad ranges and bad patterns as errors", async () => {
 		const { grep, read } = await makeTools()
 		expect(await read.execute({ thread_id: "allowed", start: 3, end: 1 }, toolContext("owner"))).toMatchObject({
@@ -218,7 +282,7 @@ describe("grep_threads / read_thread tools", () => {
 		expect(await read.execute({ thread_id: "allowed", start: 50, end: 60 }, toolContext("owner"))).toMatchObject({
 			error: expect.stringContaining("No messages in range"),
 		})
-		expect(await grep.execute({ pattern: "(" }, toolContext("owner"))).toMatchObject({
+		expect(await grep.execute({ pattern: "(", regex: true }, toolContext("owner"))).toMatchObject({
 			error: expect.stringContaining("Invalid regex"),
 		})
 	})
