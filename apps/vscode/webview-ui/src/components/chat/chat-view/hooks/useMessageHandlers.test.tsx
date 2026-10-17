@@ -691,6 +691,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "messageResponse",
 			text: "try a different approach",
+			typedText: "try a different approach",
 			images: ["image.png"],
 			files: ["notes.txt"],
 		})
@@ -1304,6 +1305,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
 			text: `> selected context\n\n${draft.text}`,
+			typedText: draft.text.trim(),
 			images: draft.images,
 			files: draft.files,
 		})
@@ -1335,6 +1337,7 @@ describe("useMessageHandlers — send routing", () => {
 		expect(askResponse).toHaveBeenCalledWith({
 			responseType: "yesButtonClicked",
 			text: "> selected context",
+			typedText: "",
 			images: [],
 			files: [],
 		})
@@ -1446,5 +1449,41 @@ describe("useMessageHandlers — task pill", () => {
 		})
 
 		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: undefined }))
+	})
+})
+
+describe("useMessageHandlers — typed text for thread authorization", () => {
+	beforeEach(() => {
+		newTask.mockClear()
+		askResponse.mockClear()
+		mockTurnState = { phase: "completed", seq: 1 } as TurnState
+	})
+
+	it("sends only the composer text as typedText when a quote chip contains thread:<id>", async () => {
+		const chatState = makeChatState(completedConversation, {
+			quotes: [{ text: "see thread:9_secret", note: "a note" }],
+		})
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, chatState))
+
+		await act(async () => {
+			await result.current.handleSendMessage("  what about this?  ", [], [])
+		})
+
+		const request = askResponse.mock.calls[0][0]
+		expect(request.text).toContain("thread:9_secret")
+		expect(request.typedText).toBe("what about this?")
+	})
+
+	it("keeps quotes out of typedText for a new task", async () => {
+		const chatState = makeChatState([], { quotes: [{ text: "thread:9_secret", note: "" }] })
+		const { result } = renderHook(() => useMessageHandlers([], chatState))
+
+		await act(async () => {
+			await result.current.handleSendMessage("compare with thread:1_mine", [], [])
+		})
+
+		const request = newTask.mock.calls[0][0]
+		expect(request.text).toContain("thread:9_secret")
+		expect(request.typedText).toBe("compare with thread:1_mine")
 	})
 })

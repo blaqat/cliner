@@ -130,6 +130,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				messageToSend = modeCommand.rest
 			}
 
+			// Only this part is the user's own typing; quote chips are added below and
+			// must never authorize thread references.
+			const typedText = messageToSend
+
 			const hasContent =
 				messageToSend || submittedQuotes.length > 0 || submittedImages.length > 0 || submittedFiles.length > 0
 
@@ -154,6 +158,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								mode: modeCommand.mode === "act" ? PlanActMode.ACT : PlanActMode.PLAN,
 								chatContent: {
 									message: hasContent ? messageToSend : undefined,
+									typedMessage: typedText,
 									images: submittedImages,
 									files: submittedFiles,
 								},
@@ -307,6 +312,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					const request = createAskResponse({
 						responseType: "messageResponse",
 						text: messageToSend,
+						typedText,
 						images: submittedImages,
 						files: submittedFiles,
 					})
@@ -343,6 +349,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				if (messages.length === 0) {
 					const request = NewTaskRequest.create({
 						text: messageToSend,
+						typedText,
 						images,
 						files,
 						taskGroupId: getComposerSendTaskGroup(),
@@ -375,6 +382,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						createAskResponse({
 							responseType: "noButtonClicked",
 							text: messageToSend,
+							typedText,
 							images,
 							files,
 						}),
@@ -392,6 +400,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							createAskResponse({
 								responseType: "yesButtonClicked",
 								text: messageToSend,
+								typedText,
 								images,
 								files,
 							}),
@@ -428,6 +437,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 									createAskResponse({
 										responseType: "messageResponse",
 										text: messageToSend,
+										typedText,
 										images,
 										files,
 									}),
@@ -464,6 +474,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							createAskResponse({
 								responseType: "messageResponse",
 								text: messageToSend,
+								typedText,
 								images,
 								files,
 							}),
@@ -584,7 +595,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					const responseType = invocation.type === "reject" ? "noButtonClicked" : "yesButtonClicked"
 					await TaskServiceClient.askResponse(
 						createAskResponse(
-							hasContent ? { responseType, text, images: draft.images, files: draft.files } : { responseType },
+							hasContent
+								? { responseType, text, typedText: trimmedText, images: draft.images, files: draft.files }
+								: { responseType },
 						),
 					)
 					chatState.consumeDraftSnapshot(draft)
@@ -682,7 +695,12 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 
 	// Sends the draft through `send`, clearing the composer first and restoring it if the send fails.
 	const sendDraftVia = useCallback(
-		async (text: string, images: string[], files: string[], send: (message: string) => Promise<unknown>) => {
+		async (
+			text: string,
+			images: string[],
+			files: string[],
+			send: (message: string, typedText: string) => Promise<unknown>,
+		) => {
 			const message = quotes.length > 0 ? formatMessageWithQuotes(text, quotes) : text.trim()
 			if (!message && images.length === 0 && files.length === 0) {
 				return false
@@ -693,7 +711,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			setSelectedImages([])
 			setSelectedFiles([])
 			try {
-				await send(message)
+				await send(message, text.trim())
 			} catch (error) {
 				setInputValue(text)
 				setQuotes(sentQuotes)
@@ -714,10 +732,11 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	// the inbox Active list via the normal state post.
 	const handleSendInBackground = useCallback(
 		async (text: string, images: string[], files: string[]) => {
-			await sendDraftVia(text, images, files, (message) =>
+			await sendDraftVia(text, images, files, (message, typedText) =>
 				TaskServiceClient.newTask(
 					NewTaskRequest.create({
 						text: message,
+						typedText,
 						images,
 						files,
 						runInBackground: true,
@@ -736,8 +755,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	// Interject: stop the focused task's current turn and send the draft as the next turn.
 	const handleInterject = useCallback(
 		async (text: string, images: string[], files: string[]) => {
-			await sendDraftVia(text, images, files, (message) =>
-				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, images, files })),
+			await sendDraftVia(text, images, files, (message, typedText) =>
+				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, typedText, images, files })),
 			).catch((error) => console.error("Failed to interject:", error))
 		},
 		[sendDraftVia],
@@ -753,7 +772,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				return
 			}
 			const hasDraft = !!text.trim() || quotes.length > 0 || images.length > 0 || files.length > 0
-			const open = (message: string) => startAside({ taskId, messageTs, text: message, images, files })
+			const open = (message: string, typedText?: string) =>
+				startAside({ taskId, messageTs, text: message, typedText, images, files })
 			if (!hasDraft) {
 				await open("").catch((error) => console.error("Failed to start aside:", error))
 				return

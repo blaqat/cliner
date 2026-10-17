@@ -60,14 +60,14 @@ export interface SdkTaskStartCoordinatorOptions {
 		task: TaskProxy
 		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
 	}
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) => Promise<void>
 	onCancelTask: () => Promise<void>
 	getWorkspaceRoot: () => Promise<string>
 	createTempSessionHost: () => Promise<SdkSessionHost>
 	loadInitialMessages: (reader: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
-	resolveContextMentions: (text: string, threadId?: string) => Promise<string>
+	resolveContextMentions: (text: string, threadId?: string, typedText?: string) => Promise<string>
 	isClineManagedProviderActive: () => boolean
-	emitClineAuthError: (task?: string) => void
+	emitClineAuthError: (task?: string, typedText?: string) => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
 	/**
 	 * Pins the current global per-mode selection onto the new task's session
@@ -95,7 +95,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; typedText?: string },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -135,7 +135,7 @@ export class SdkTaskStartCoordinator {
 				)
 				// No task/session id exists yet, so this preflight auth UI path is
 				// intentionally not recorded as task-joinable provider error telemetry.
-				this.options.emitClineAuthError(prompt)
+				this.options.emitClineAuthError(prompt, options?.typedText)
 				return undefined
 			}
 
@@ -228,7 +228,7 @@ export class SdkTaskStartCoordinator {
 
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
-				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId)
+				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.typedText)
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -304,8 +304,8 @@ export class SdkTaskStartCoordinator {
 	private createAndSetTask(sessionId: string): TaskProxy {
 		const task = createTaskProxy(
 			sessionId,
-			(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-				this.options.onAskResponse(text, images, files, decisionId),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
+				this.options.onAskResponse(text, images, files, decisionId, typedText),
 			() => this.options.onCancelTask(),
 		)
 		this.options.setTask(task)

@@ -15,7 +15,7 @@ export interface SdkTaskControlCoordinatorOptions {
 	taskHistory: SdkTaskHistory
 	getTask: () => TaskProxy | undefined
 	setTask: (task: TaskProxy | undefined) => void
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) => Promise<void>
 	resetMessageTranslator: () => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "runTaskTransition">
@@ -245,8 +245,8 @@ export class SdkTaskControlCoordinator {
 
 				const task = createTaskProxy(
 					taskId,
-					(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-						this.options.onAskResponse(text, images, files, decisionId),
+					(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
+						this.options.onAskResponse(text, images, files, decisionId, typedText),
 					() => this.cancelTask(),
 				)
 				if (cleanedMessages.length > 0) {

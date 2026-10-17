@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { CheckpointsServiceClient, TaskServiceClient } from "@/services/grpc-client"
+import { addedLines } from "./chat-view/utils/quoteUtils"
 import MessageLinkButton from "./MessageLinkButton"
 import { highlightText } from "./task-header/Highlights"
 
@@ -125,6 +126,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					text: editedText,
 					images: editedImages,
 					files: editedFiles,
+					typedText: addedLines(text ?? "", editedText),
 					restoreWorkspace,
 				}),
 			)

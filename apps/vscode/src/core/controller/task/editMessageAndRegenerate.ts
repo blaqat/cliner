@@ -15,6 +15,7 @@ export async function editMessageAndRegenerate(controller: Controller, request: 
 			images: request.images,
 			files: request.files,
 			restoreWorkspace: request.restoreWorkspace,
+			typedText: request.typedText || undefined,
 		})
 		return Empty.create({})
 	} catch (error) {

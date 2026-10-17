@@ -42,6 +42,7 @@ export async function askResponse(controller: Controller, request: AskResponseRe
 			request.images,
 			request.files,
 			request.decisionId,
+			request.typedText || undefined,
 		)
 
 		return Empty.create()

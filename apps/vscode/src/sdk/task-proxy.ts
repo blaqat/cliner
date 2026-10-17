@@ -28,6 +28,8 @@ export interface TaskProxy {
 		images?: string[],
 		files?: string[],
 		decisionId?: string,
+		/** What the user typed in the composer; the only text that can authorize thread references. */
+		typedText?: string,
 	) => Promise<void>
 	/** Abort the running task */
 	abortTask: () => Promise<void>
@@ -156,7 +158,13 @@ interface TaskProxyState {
 /**
  * Callback type for delegating ask responses to the controller.
  */
-export type AskResponseCallback = (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+export type AskResponseCallback = (
+	text?: string,
+	images?: string[],
+	files?: string[],
+	decisionId?: string,
+	typedText?: string,
+) => Promise<void>
 
 /**
  * Callback type for delegating task cancellation to the controller.
@@ -212,6 +220,7 @@ export function createTaskProxy(
 			images?: string[],
 			files?: string[],
 			decisionId?: string,
+			typedText?: string,
 		): Promise<void> {
 			// Store the response type in task state (some handlers check this)
 			state.askResponse = askResponse
@@ -221,17 +230,17 @@ export function createTaskProxy(
 				case "noButtonClicked":
 					// For approval responses, we just send an empty continuation
 					// The SDK handles approval differently than the classic Task
-					await onAskResponse(text, images, files, decisionId)
+					await onAskResponse(text, images, files, decisionId, typedText)
 					break
 
 				case "messageResponse":
 					// User sent a follow-up message
-					await onAskResponse(text, images, files, decisionId)
+					await onAskResponse(text, images, files, decisionId, typedText)
 					break
 
 				default:
 					Logger.warn(`[TaskProxy] Unhandled askResponse type: ${askResponse}`)
-					await onAskResponse(text, images, files, decisionId)
+					await onAskResponse(text, images, files, decisionId, typedText)
 					break
 			}
 		},

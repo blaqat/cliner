@@ -73,6 +73,7 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 		background: request.runInBackground,
 		runInWorktree: request.runInWorktree,
 		taskGroupId: request.taskGroupId || undefined,
+		typedText: request.typedText || undefined,
 	})
 	return String.create({ value: taskId || "" })
 }

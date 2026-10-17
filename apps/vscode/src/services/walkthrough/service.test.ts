@@ -20,6 +20,7 @@ const profile = {
 	options: { openAiBaseUrl: "http://example.invalid" },
 }
 const askResponse = mock(async (_text: string) => {})
+let askResponseArgs: unknown[] = []
 const openMultiFileDiff = mock(async (_input: unknown) => ({}))
 mock.module("@/core/storage/disk", () => ({ ensureTaskDirectoryExists: async () => directory }))
 mock.module("@/hosts/host-provider", () => ({ HostProvider: { diff: { openMultiFileDiff } } }))
@@ -101,7 +102,8 @@ function service() {
 	return new WalkthroughService({
 		task: {
 			taskId: "task",
-			handleWebviewAskResponse: async (type: string, text: string) => {
+			handleWebviewAskResponse: async (type: string, text: string, ...rest: unknown[]) => {
+				askResponseArgs = rest
 				expect(type).toBe("messageResponse")
 				await askResponse(text)
 			},
@@ -161,6 +163,16 @@ describe("walkthrough service", () => {
 		expect(askResponse.mock.calls[0][0]).toContain("> +new")
 		expect(askResponse.mock.calls[0][0]).toEndWith("Add tests.")
 		expect(requests).toBe(0)
+	})
+	it("sends no composer-typed text, so thread: ids inside quoted hunks never authorize", async () => {
+		await writeFile(path.join(directory, "a.ts"), "see thread:9_secret\n")
+		input.edits[0].after = "see thread:9_secret\n"
+		const host = service()
+		const walk = await host.get(request)
+		await host.sendNotes({ ...request, fingerprint: walk.fingerprint, stopNotes: { s1: "Explain." } })
+		expect(askResponse.mock.calls[0][0]).toContain("thread:9_secret")
+		// (images, files) only: no typedText argument.
+		expect(askResponseArgs).toEqual([[], []])
 	})
 	it("opens a host-resolved diff and rejects unknown file IDs", async () => {
 		const host = service()

@@ -71,7 +71,13 @@ const GLOBAL_STATE_FIELDS = {
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },
 	promptStash: {
-		default: [] as Array<{ id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }>,
+		default: [] as Array<{
+			id: string
+			text: string
+			quotes: { text: string; note: string; source?: string }[]
+			ts: number
+			taskId?: string
+		}>,
 	},
 	taskHistory: { default: [] as HistoryItem[], isAsync: true },
 	userInfo: { default: undefined as UserInfo | undefined },

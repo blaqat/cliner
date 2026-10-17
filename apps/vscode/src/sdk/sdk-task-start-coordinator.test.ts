@@ -78,7 +78,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.postStateToWebview.mock.invocationCallOrder[0]).toBeLessThan(
 			options.sessions.startNewSession.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId)
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId, undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			sessionId,
@@ -252,7 +252,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})
@@ -263,7 +263,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs clinepass auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})

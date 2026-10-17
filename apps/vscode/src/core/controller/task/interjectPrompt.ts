@@ -3,6 +3,6 @@ import type { InterjectPromptRequest } from "@shared/proto/cline/task"
 import type { Controller } from ".."
 
 export async function interjectPrompt(controller: Controller, request: InterjectPromptRequest): Promise<Empty> {
-	await controller.interjectPrompt(request.text, request.images, request.files)
+	await controller.interjectPrompt(request.text, request.images, request.files, request.typedText || undefined)
 	return Empty.create({})
 }

@@ -354,21 +354,27 @@ describe("SDK remote-config coordination", () => {
 		it("restarts a new task with the original prompt when Retry is clicked", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("yesButtonClicked")
-			expect(controller.initTask).toHaveBeenCalledWith("original prompt", undefined, undefined)
+			expect(controller.initTask).toHaveBeenCalledWith("original prompt", undefined, undefined, undefined, undefined, {
+				typedText: undefined,
+			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
 
 		it("restarts a new task with a revised prompt submitted from the composer", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "revised prompt", ["img"])
-			expect(controller.initTask).toHaveBeenCalledWith("revised prompt", ["img"], undefined)
+			expect(controller.initTask).toHaveBeenCalledWith("revised prompt", ["img"], undefined, undefined, undefined, {
+				typedText: undefined,
+			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
 
 		it("keeps the original prompt when the revised submission has attachments but no text", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "  ", ["img"])
-			expect(controller.initTask).toHaveBeenCalledWith("original prompt", ["img"], undefined)
+			expect(controller.initTask).toHaveBeenCalledWith("original prompt", ["img"], undefined, undefined, undefined, {
+				typedText: undefined,
+			})
 		})
 
 		it("continues an existing conversation with a message submitted from the composer", async () => {
@@ -382,6 +388,7 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"messageResponse",
 				"error",
+				undefined,
 				undefined,
 				undefined,
 			)
@@ -402,6 +409,7 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"yesButtonClicked",
 				"error",
+				undefined,
 				undefined,
 				undefined,
 			)
@@ -706,7 +714,7 @@ describe("interject ordering", () => {
 		releaseAbort()
 		await sending
 		expect(order).toEqual(["abort", "send"])
-		expect(controller.askResponse).toHaveBeenCalledWith("Now", ["image"], ["file"])
+		expect(controller.askResponse).toHaveBeenCalledWith("Now", ["image"], ["file"], undefined, undefined)
 	})
 })
 
@@ -1937,3 +1945,50 @@ for (const mode of ["git", "mm"] as const) {
 		}
 	}, 60_000)
 }
+
+describe("thread reference authorization", () => {
+	function referenceController() {
+		const controller = Object.create(SdkController.prototype)
+		Object.defineProperty(controller, "task", { value: { taskId: "current" } })
+		controller.referencedThreads = new Map<string, Set<string>>()
+		controller.resolveSlashCommands = async (text: string) => text
+		controller.resolveAllowListOwner = async (id: string) => id
+		controller.taskHistory = {
+			findHistoryItem: vi.fn(async (id: string) => ({ id, title: `Title ${id}`, task: id })),
+			addReferencedThreads: vi.fn(async () => {}),
+		}
+		return controller
+	}
+	const resolve = (controller: object, text: string, typedText?: string) =>
+		Reflect.get(SdkController.prototype, "resolveContextMentions").call(
+			controller,
+			text,
+			undefined,
+			typedText,
+		) as Promise<string>
+
+	it("never authorizes a thread id that only appears in a walkthrough note's hunk", async () => {
+		const controller = referenceController()
+		// What WalkthroughService.sendNotes sends: quoted hunks, no typed composer text.
+		const notes = "> src/a.ts\n> +see thread:9_secret for details\n\nPlease explain this."
+		expect(await resolve(controller, notes)).toBe(notes)
+		expect(controller.referencedThreads.size).toBe(0)
+		expect(controller.taskHistory.addReferencedThreads).not.toHaveBeenCalled()
+	})
+
+	it("never authorizes a thread id that only appears in a quote chip", async () => {
+		const controller = referenceController()
+		const message = "> **Assistant**\n> the old plan lives in thread:9_secret\n\nWhat do you think?"
+		expect(await resolve(controller, message, "What do you think?")).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+
+	it("authorizes only the thread ids typed next to quoted content", async () => {
+		const controller = referenceController()
+		const message = "> quoted thread:9_secret\n\ncompare with thread:1_typed"
+		const resolved = await resolve(controller, message, "compare with thread:1_typed")
+		expect(resolved).toContain('<thread_reference id="1_typed"')
+		expect(resolved).toContain("quoted thread:9_secret")
+		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_typed"])
+	})
+})

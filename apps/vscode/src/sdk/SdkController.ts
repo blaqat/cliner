@@ -267,6 +267,8 @@ interface TaskSessionContext {
 interface ClineAuthRetry {
 	task: TaskProxy
 	prompt: string
+	/** What the user typed in the composer for `prompt`; only it can authorize thread references. */
+	typedText?: string
 	/**
 	 * The error was shown on a task that already had a conversation, such as
 	 * a failed edit or checkpoint restore, rather than on a new task that
@@ -891,6 +893,8 @@ export class Controller {
 					undefined,
 					undefined,
 					ACT_MODE_CONTINUATION_PROMPT,
+					undefined,
+					content?.typedMessage,
 				)
 				return this.task?.taskId === id && this.sessions.getSession(id)?.isRunning === true
 			},
@@ -913,7 +917,7 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 			getTurnPhase: () => this.turnStateTracker.currentPhase,
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, typedText) => this.resolveContextMentions(text, undefined, typedText),
 			rebuilds: this.sessionRebuilds,
 			onAutoContinueStarting: () => {
 				this.turnStateTracker.set("streaming")
@@ -1029,7 +1033,8 @@ export class Controller {
 			setTask: (task) => {
 				this.task = task
 			},
-			onAskResponse: (text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
+			onAskResponse: (text, images, files, decisionId, typedText) =>
+				this.askResponse(text, images, files, decisionId, typedText),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			// Bump the epoch synchronously before abort so straggler events from the cancelled
 			// turn carry the old epoch and are dropped by the webview. The resumable phase is set
@@ -1074,14 +1079,15 @@ export class Controller {
 				this.task = task
 			},
 			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
-			onAskResponse: (text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
+			onAskResponse: (text, images, files, decisionId, typedText) =>
+				this.askResponse(text, images, files, decisionId, typedText),
 			onCancelTask: () => this.cancelTask(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			loadInitialMessages: (reader, taskId) => this.sessionHistory.loadInitialMessages(reader, taskId),
-			resolveContextMentions: (text, id) => this.resolveContextMentions(text, id),
+			resolveContextMentions: (text, id, typedText) => this.resolveContextMentions(text, id, typedText),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
-			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
+			emitClineAuthError: (task, typedText) => this.emitClineAuthErrorWithTelemetry(task, undefined, typedText),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
 			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
 				const enabled = runInWorktree === true
@@ -1838,7 +1844,7 @@ export class Controller {
 				task ??
 				createTaskProxy(
 					id,
-					(text, images, files, decisionId) => this.askResponse(text, images, files, decisionId),
+					(text, images, files, decisionId, typedText) => this.askResponse(text, images, files, decisionId, typedText),
 					() => this.cancelTask(),
 				),
 			translator,
@@ -2010,10 +2016,12 @@ export class Controller {
 	 * and does not understand the webview's `@/path` format or special
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
-	private async resolveContextMentions(text: string, threadId = this.task?.taskId): Promise<string> {
-		// Only thread ids in the user's own input may authorize transcript
-		// access; text expanded from notes, files or workflows never does.
-		const typedThreadIds = new Set(extractThreadMentionIds(text))
+	private async resolveContextMentions(text: string, threadId = this.task?.taskId, typedText?: string): Promise<string> {
+		// Only thread ids in what the user typed in the composer may authorize
+		// transcript access. `typedText` arrives separately from `text`, which also
+		// holds quote chips, walkthrough hunks and expanded notes/files/workflows;
+		// callers without it (host-built prompts) authorize nothing.
+		const typedThreadIds = new Set(extractThreadMentionIds(typedText ?? ""))
 		const withCommands = await this.resolveSlashCommands(text, threadId)
 		let resolved = withCommands
 
@@ -2331,8 +2339,8 @@ export class Controller {
 		})
 	}
 
-	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string): void {
-		this.emitClineAuthError(task)
+	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string, typedText?: string): void {
+		this.emitClineAuthError(task, typedText)
 		this.captureProviderFailure({
 			sessionId: sessionId ?? this.task?.taskId,
 			error: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE,
@@ -2352,18 +2360,19 @@ export class Controller {
 	 *   2. say:'api_req_started' – opens the API request row
 	 *   3. ask:'api_req_failed'  – ClineError JSON → ErrorRow renders auth UI
 	 */
-	private emitClineAuthError(task?: string): void {
+	private emitClineAuthError(task?: string, typedText?: string): void {
 		const ts = Date.now()
 		const hasConversation = this.task !== undefined
 		if (!this.task) {
 			this.task = createTaskProxy(
 				`auth-error-${ts}`,
-				(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-					this.askResponse(text, images, files, decisionId),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
+					this.askResponse(text, images, files, decisionId, typedText),
 				() => this.cancelTask(),
 			)
 		}
-		this.pendingClineAuthRetry = task === undefined ? undefined : { task: this.task, prompt: task, hasConversation }
+		this.pendingClineAuthRetry =
+			task === undefined ? undefined : { task: this.task, prompt: task, typedText, hasConversation }
 
 		const clineError = new ClineError(
 			{ message: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE, status: 401 },
@@ -2552,7 +2561,7 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; typedText?: string },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A stale pill pick (group deleted between selection and send) starts unfiled.
@@ -2707,7 +2716,13 @@ export class Controller {
 	 * subscription. We do NOT await the send — the gRPC handler needs to
 	 * return immediately so the webview stays responsive.
 	 */
-	async askResponse(prompt?: string, images?: string[], files?: string[], decisionId?: string): Promise<void> {
+	async askResponse(
+		prompt?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		typedText?: string,
+	): Promise<void> {
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
 		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
 		const ownerInteractions = ownerId ? this.taskSessions?.get(ownerId)?.interactions : undefined
@@ -2772,14 +2787,16 @@ export class Controller {
 		if (retry && retry.task === this.task) {
 			const askResponse = this.task.taskState.askResponse
 			if (askResponse === "yesButtonClicked") {
-				await this.initTask(retry.prompt, images, files)
+				await this.initTask(retry.prompt, images, files, undefined, undefined, { typedText: retry.typedText })
 				return
 			}
 			// A task that failed before it had a session has nothing to
 			// continue, so a prompt typed in the composer starts it again. With
 			// attachments but no text, the original prompt is kept.
 			if (askResponse === "messageResponse" && !retry.hasConversation) {
-				await this.initTask(prompt?.trim() ? prompt : retry.prompt, images, files)
+				await (prompt?.trim()
+					? this.initTask(prompt, images, files, undefined, undefined, { typedText })
+					: this.initTask(retry.prompt, images, files, undefined, undefined, { typedText: retry.typedText }))
 				return
 			}
 		}
@@ -2814,6 +2831,7 @@ export class Controller {
 			turnStateBefore.phase,
 			undefined,
 			decisionId,
+			typedText,
 		)
 	}
 
@@ -2823,6 +2841,7 @@ export class Controller {
 		images?: string[]
 		files?: string[]
 		restoreWorkspace?: boolean
+		typedText?: string
 	}): Promise<void> {
 		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const editedText = input.text.trim()
@@ -2910,7 +2929,7 @@ export class Controller {
 				return
 			}
 
-			const resolvedPrompt = await this.resolveContextMentions(editedText)
+			const resolvedPrompt = await this.resolveContextMentions(editedText, undefined, input.typedText)
 			const startInput = {
 				...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 				initialMessages,
@@ -2958,8 +2977,8 @@ export class Controller {
 
 			const task = createTaskProxy(
 				startResult.sessionId,
-				(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-					this.askResponse(text, images, files, decisionId),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
+					this.askResponse(text, images, files, decisionId, typedText),
 				() => this.cancelTask(),
 			)
 			this.task = task
@@ -3085,8 +3104,8 @@ export class Controller {
 
 		const task = createTaskProxy(
 			restored.sessionId,
-			(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-				this.askResponse(text, images, files, decisionId),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, typedText?: string) =>
+				this.askResponse(text, images, files, decisionId, typedText),
 			() => this.cancelTask(),
 		)
 		this.task = task
@@ -4286,7 +4305,7 @@ export class Controller {
 		return true
 	}
 
-	async interjectPrompt(text: string, images?: string[], files?: string[]): Promise<void> {
+	async interjectPrompt(text: string, images?: string[], files?: string[], typedText?: string): Promise<void> {
 		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		if (!text.trim() && !images?.length && !files?.length) throw new Error("Interject requires content")
@@ -4294,7 +4313,7 @@ export class Controller {
 		if (!task) throw new Error("No focused task")
 		const active = this.sessions.getActiveSession()
 		if (active) {
-			const resolved = await this.resolveContextMentions(text)
+			const resolved = await this.resolveContextMentions(text, undefined, typedText)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
 			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
@@ -4310,7 +4329,7 @@ export class Controller {
 		await this.taskControl.cancelTask(false)
 		if (this.task !== task) throw new Error("Focused task changed during interject")
 		this.turnStateTracker.set("idle")
-		await this.askResponse(text, images, files)
+		await this.askResponse(text, images, files, undefined, typedText)
 	}
 
 	async toggleTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {

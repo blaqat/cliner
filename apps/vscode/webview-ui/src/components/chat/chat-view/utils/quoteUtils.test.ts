@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatMessageWithQuotes } from "./quoteUtils"
+import { addedLines, formatMessageWithQuotes } from "./quoteUtils"
 
 describe("formatMessageWithQuotes", () => {
 	it("returns the trimmed text when there are no quotes", () => {
@@ -24,5 +24,16 @@ describe("formatMessageWithQuotes", () => {
 			{ text: "Cap exports at 10k rows", note: "", source: "You · Dev plan" },
 		])
 		expect(text).toBe("> **You · Dev plan**\n> Cap exports at 10k rows\n\nIs this still true?")
+	})
+})
+
+describe("addedLines", () => {
+	it("keeps only the lines an edit added or changed", () => {
+		const original = "> quoted thread:9_secret\n\nold line"
+		expect(addedLines(original, "> quoted thread:9_secret\n\nnew line thread:1_mine")).toBe("new line thread:1_mine")
+	})
+
+	it("counts a repeated line again once it appears more often than in the original", () => {
+		expect(addedLines("a", "a\na")).toBe("a")
 	})
 })
