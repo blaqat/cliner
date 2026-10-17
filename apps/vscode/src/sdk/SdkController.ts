@@ -163,7 +163,7 @@ import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-stor
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
-import { maybeGenerateThreadTitle } from "./thread-title"
+import { maybeGenerateThreadTitle, type ThreadTitleSource } from "./thread-title"
 import { TurnStateTracker } from "./turn-state-tracker"
 import { createWorkspaceFileReadExecutor } from "./vscode-file-read-executor"
 import { VscodeSessionHost } from "./vscode-session-host"
@@ -2498,11 +2498,20 @@ export class Controller {
 		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
 		// Thread titles run once per new thread (never for resumed ones) when
 		// the feature is enabled; failures are logged inside and never block.
-		if (taskId && !historyItem && prompt?.trim()) void this.generateThreadTitle(taskId, prompt)
+		if (taskId && !historyItem && prompt?.trim()) {
+			// Captured now, from what the new thread actually started with
+			// (composer profile/effort overrides and mode included).
+			const context = this.taskSessions.get(taskId)
+			const globalMode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+			void this.generateThreadTitle(taskId, prompt, {
+				mode: context?.mode ?? globalMode,
+				selection: context?.apiSelection ? structuredClone(context.apiSelection) : undefined,
+			})
+		}
 		return taskId
 	}
 
-	private async generateThreadTitle(taskId: string, prompt: string): Promise<void> {
+	private async generateThreadTitle(taskId: string, prompt: string, thread: ThreadTitleSource): Promise<void> {
 		await maybeGenerateThreadTitle(
 			{
 				store: this.stateManager,
@@ -2515,6 +2524,7 @@ export class Controller {
 			},
 			taskId,
 			prompt,
+			thread,
 		)
 	}
 

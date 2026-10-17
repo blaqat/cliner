@@ -1,10 +1,13 @@
 import type { ApiConfiguration } from "@shared/api"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { Logger } from "@shared/services/Logger"
+import type { Mode } from "@shared/storage/types"
 import {
 	type ApiProfileStore,
 	buildApiConfigurationFromProfile,
 	readApiConfigProfiles,
 	readProfileSecrets,
+	resolveApiConfigurationForTaskSelection,
 } from "@/core/controller/models/apiProfiles"
 import { buildApiHandler } from "./sdk-api-handler"
 
@@ -37,18 +40,54 @@ export function sanitizeThreadTitle(raw: string): string {
 	return cleaned.split(/\s+/).filter(Boolean).slice(0, THREAD_TITLE_MAX_WORDS).join(" ")
 }
 
-/** Chosen profile merged over the thread's own config; falls back to it. */
-function resolveTitleApiConfiguration(store: ApiProfileStore): ApiConfiguration {
-	const configuration = store.getApiConfiguration()
-	const profileId = store.getGlobalStateKey("threadTitlesProfileId")
-	if (!profileId) return configuration
-	const profile = readApiConfigProfiles(store).find((candidate) => candidate.id === profileId)
-	if (!profile) return configuration
-	const secrets = readProfileSecrets(store, profile.id)
-	return { ...configuration, ...buildApiConfigurationFromProfile(profile, secrets, "act", false) }
+/**
+ * The configuration and mode the thread itself started with: the profile and
+ * effort pinned to it (composer overrides included) in the mode it runs in.
+ * Title generation for "Same as thread" must use this, never whatever the
+ * global Act configuration happens to be.
+ */
+export interface ThreadTitleSource {
+	mode: Mode
+	selection?: TaskApiSelection
 }
 
-export async function maybeGenerateThreadTitle(deps: ThreadTitleDeps, taskId: string, firstMessage: string): Promise<void> {
+/** Chosen profile, else the thread's own captured configuration and mode. */
+function resolveTitleApiConfiguration(
+	store: ApiProfileStore,
+	thread: ThreadTitleSource | undefined,
+): { configuration: ApiConfiguration; mode: Mode } {
+	const profileId = store.getGlobalStateKey("threadTitlesProfileId")
+	const profile = profileId ? readApiConfigProfiles(store).find((candidate) => candidate.id === profileId) : undefined
+	if (profile) {
+		const secrets = readProfileSecrets(store, profile.id)
+		return {
+			configuration: {
+				...store.getApiConfiguration(),
+				...buildApiConfigurationFromProfile(profile, secrets, "act", false),
+			},
+			mode: "act",
+		}
+	}
+	if (thread) {
+		return {
+			configuration: resolveApiConfigurationForTaskSelection(
+				store,
+				store.getApiConfiguration(),
+				thread.mode,
+				thread.selection,
+			),
+			mode: thread.mode,
+		}
+	}
+	return { configuration: store.getApiConfiguration(), mode: "act" }
+}
+
+export async function maybeGenerateThreadTitle(
+	deps: ThreadTitleDeps,
+	taskId: string,
+	firstMessage: string,
+	thread?: ThreadTitleSource,
+): Promise<void> {
 	const { store, applyTitle, getTitleState } = deps
 	if (store.getGlobalStateKey("threadTitlesEnabled") !== true) return
 	const message = firstMessage.trim()
@@ -58,7 +97,8 @@ export async function maybeGenerateThreadTitle(deps: ThreadTitleDeps, taskId: st
 		// must not even spend the tokens.
 		const titleState = await getTitleState(taskId)
 		if (titleState.hasTitle || titleState.generated) return
-		const handler = buildApiHandler(resolveTitleApiConfiguration(store), "act", { disableReasoning: true })
+		const { configuration, mode } = resolveTitleApiConfiguration(store, thread)
+		const handler = buildApiHandler(configuration, mode, { disableReasoning: true })
 		const stream = handler.createMessage(SYSTEM_PROMPT, [
 			{ role: "user", content: `Name this conversation:\n\n${message.slice(0, MAX_PROMPT_CHARS)}` },
 		])

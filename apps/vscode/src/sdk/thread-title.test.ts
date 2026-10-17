@@ -90,6 +90,85 @@ describe("maybeGenerateThreadTitle", () => {
 	})
 })
 
+describe("maybeGenerateThreadTitle with the thread's captured configuration", () => {
+	const profiles = [
+		{ id: "ask-a", name: "Ask A", provider: "anthropic", modelId: "ask-model" },
+		{ id: "act-a", name: "Act A", provider: "anthropic", modelId: "act-model" },
+		{ id: "composer", name: "Composer pick", provider: "openai-native", modelId: "composer-model" },
+		{ id: "titles", name: "Titles", provider: "anthropic", modelId: "titles-model" },
+	]
+
+	function makeThreadStore(settings: Record<string, unknown>) {
+		const state: Record<string, unknown> = {
+			apiConfigProfiles: profiles,
+			askProfileId: "ask-a",
+			actProfileId: "act-a",
+			...settings,
+		}
+		return {
+			getGlobalStateKey: (key: string) => state[key],
+			getApiConfiguration: () => ({
+				planModeApiProvider: "anthropic",
+				planModeApiModelId: "ask-model",
+				actModeApiProvider: "anthropic",
+				actModeApiModelId: "act-model",
+			}),
+			getSecretForKey: vi.fn(() => undefined),
+			listSecretStorageKeys: vi.fn(() => []),
+		}
+	}
+
+	function run(settings: Record<string, unknown>, thread: Parameters<typeof maybeGenerateThreadTitle>[3]) {
+		const deps: ThreadTitleDeps = {
+			store: makeThreadStore({ threadTitlesEnabled: true, ...settings }) as never,
+			getTitleState: vi.fn(async () => ({ hasTitle: false, generated: false })),
+			applyTitle: vi.fn(async () => true),
+		}
+		return maybeGenerateThreadTitle(deps, "t1", "name this", thread).then(() => mocks.buildApiHandler.mock.calls[0])
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		mocks.buildApiHandler.mockReturnValue({ createMessage: mocks.createMessage })
+		mocks.createMessage.mockReturnValue(streamOf("A title"))
+	})
+
+	it("uses the thread's pinned profile and mode, including a composer override", async () => {
+		const [configuration, mode] = await run(
+			{},
+			{ mode: "act", selection: { askProfileId: "ask-a", actProfileId: "composer" } },
+		)
+		expect(mode).toBe("act")
+		expect(configuration).toMatchObject({ actModeApiProvider: "openai-native" })
+		expect(Object.values(configuration)).toContain("composer-model")
+	})
+
+	it("uses the thread's mode, not Act, when the thread started in Ask", async () => {
+		const [configuration, mode] = await run(
+			{},
+			{ mode: "plan", selection: { askProfileId: "composer", actProfileId: "act-a" } },
+		)
+		expect(mode).toBe("plan")
+		expect(configuration).toMatchObject({ planModeApiProvider: "openai-native" })
+		expect(Object.values(configuration)).toContain("composer-model")
+	})
+
+	it("an explicit title profile still wins over the thread's configuration", async () => {
+		const [configuration, mode] = await run(
+			{ threadTitlesProfileId: "titles" },
+			{ mode: "plan", selection: { askProfileId: "composer" } },
+		)
+		expect(mode).toBe("act")
+		expect(configuration).toMatchObject({ actModeApiProvider: "anthropic", actModeApiModelId: "titles-model" })
+	})
+
+	it("is unaffected by later changes to the global selection", async () => {
+		// Global Act now points elsewhere; the thread pinned its own profile.
+		const [configuration] = await run({ actProfileId: "composer" }, { mode: "act", selection: { actProfileId: "act-a" } })
+		expect(configuration).toMatchObject({ actModeApiProvider: "anthropic", actModeApiModelId: "act-model" })
+	})
+})
+
 describe("sanitizeThreadTitle", () => {
 	it("takes the first line, strips formatting and caps at 8 words", () => {
 		expect(sanitizeThreadTitle('"Fix the flaky login redirect test in auth today now."\nignored')).toBe(
