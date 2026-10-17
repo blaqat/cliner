@@ -7,6 +7,7 @@
 import { isModelToolEnabledGlobally, readCompactionStrategyGlobally } from "@cline/core"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
 import type { ExtensionState, Platform } from "@shared/ExtensionMessage"
+import { maskTerminalEnvironmentScope } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo } from "@/registry"
 import { BannerService } from "@/services/banner/BannerService"
@@ -140,9 +141,10 @@ export async function getStateToPostToWebview(controller: {
 		threadTitlesEnabled: stateManager.getGlobalStateKey("threadTitlesEnabled"),
 		threadTitlesProfileId: stateManager.getGlobalStateKey("threadTitlesProfileId"),
 		walkthroughGenerateProfileId: stateManager.getGlobalStateKey("walkthroughGenerateProfileId"),
+		// Names + masked placeholders only; values come from revealTerminalEnvironment.
 		terminalEnvironment: {
-			global: stateManager.getGlobalStateKey("terminalEnvironment") ?? {},
-			workspace: stateManager.getWorkspaceStateKey("terminalEnvironment") ?? {},
+			global: maskTerminalEnvironmentScope(stateManager.getGlobalStateKey("terminalEnvironment")),
+			workspace: maskTerminalEnvironmentScope(stateManager.getWorkspaceStateKey("terminalEnvironment")),
 		},
 
 		userInfo,

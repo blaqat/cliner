@@ -4,6 +4,7 @@ import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsReque
 import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
 import { isOpenaiReasoningEffort, OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
+import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
@@ -211,15 +212,24 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			)
 		}
 
-		// Terminal environment replaces one scope wholesale; workspace scope
-		// lives in per-workspace state so machine-local values stay out of the repo.
+		// Terminal environment arrives as a granular patch for one scope, applied
+		// to the freshest stored value so back-to-back edits cannot clobber each
+		// other. Workspace scope lives in per-workspace state so machine-local
+		// values stay out of the repo. Values are never logged.
 		if (request.terminalEnvironment !== undefined) {
-			const env = {
-				variables: request.terminalEnvironment.variables ?? {},
-				envFilePath: request.terminalEnvironment.envFilePath || undefined,
-				pathEntries: request.terminalEnvironment.pathEntries ?? [],
-			}
-			if (request.terminalEnvironment.workspace) {
+			const patch = request.terminalEnvironment
+			const isWorkspace = !!patch.workspace
+			const current = isWorkspace
+				? controller.stateManager.getWorkspaceStateKey("terminalEnvironment")
+				: controller.stateManager.getGlobalStateKey("terminalEnvironment")
+			const env = applyTerminalEnvironmentPatch(current, {
+				setVariables: patch.setVariables,
+				removeVariables: patch.removeVariables,
+				envFilePath: patch.envFilePath,
+				addPathEntries: patch.addPathEntries,
+				removePathEntries: patch.removePathEntries,
+			})
+			if (isWorkspace) {
 				controller.stateManager.setWorkspaceState("terminalEnvironment", env)
 			} else {
 				controller.stateManager.setGlobalState("terminalEnvironment", env)

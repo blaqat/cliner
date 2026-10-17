@@ -1,9 +1,9 @@
-import { EmptyRequest } from "@shared/proto/cline/common"
+import { BooleanRequest, EmptyRequest } from "@shared/proto/cline/common"
 import type { TerminalEnvironmentResolution, TerminalEnvironmentVariable } from "@shared/proto/cline/state"
-import type { TerminalEnvironmentSettings } from "@shared/terminal-environment"
+import { globalEnvFilePathProblem, type TerminalEnvironmentWebviewScope } from "@shared/terminal-environment"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import { Eye, EyeOff, Plus, X } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { StateServiceClient } from "@/services/grpc-client"
 import { updateSetting } from "../utils/settingsHandlers"
@@ -12,8 +12,15 @@ import { updateSetting } from "../utils/settingsHandlers"
  * Terminal environment editor (Profiles → Used by is profiles; this lives in
  * Terminal settings). Two scopes: global applies everywhere, workspace
  * overrides per project and is stored in workspace state — never in the repo.
- * Values are masked behind one eye toggle and .env files are read at command
- * time only: their contents are never shown or stored here.
+ *
+ * Webview state carries only variable names (values are masked placeholders).
+ * The eye toggle fetches the real values of the visible scope through an
+ * explicit reveal RPC; they live only in this component's state and are
+ * dropped when hidden or when the scope changes. Every edit is a granular
+ * patch (set/remove one variable, set the .env path, add/remove one PATH
+ * entry), so quick consecutive edits compose on the server instead of racing
+ * whole-scope snapshots. .env files are read at command time only: their
+ * contents are never shown or stored here.
  */
 
 type EnvScope = "global" | "workspace"
@@ -25,11 +32,13 @@ const SOURCE_LABELS: Record<string, string> = {
 	workspace: "workspace",
 }
 
-function scopeVariables(scope: TerminalEnvironmentSettings | undefined): Record<string, string> {
-	return scope?.variables ?? {}
+const MASK_PLACEHOLDER = "••••••••"
+
+function scopeVariableNames(scope: TerminalEnvironmentWebviewScope | undefined): string[] {
+	return Object.keys(scope?.variables ?? {})
 }
 
-function scopePathEntries(scope: TerminalEnvironmentSettings | undefined): string[] {
+function scopePathEntries(scope: TerminalEnvironmentWebviewScope | undefined): string[] {
 	return scope?.pathEntries ?? []
 }
 
@@ -38,10 +47,33 @@ interface RowDraft {
 	value: string
 }
 
+/** Send a granular patch for one scope; omitted fields stay as stored. */
+function patchEnvironment(
+	scope: EnvScope,
+	patch: {
+		setVariables?: Record<string, string>
+		removeVariables?: string[]
+		envFilePath?: string
+		addPathEntries?: string[]
+		removePathEntries?: string[]
+	},
+) {
+	updateSetting("terminalEnvironment", {
+		workspace: scope === "workspace",
+		setVariables: patch.setVariables ?? {},
+		removeVariables: patch.removeVariables ?? [],
+		envFilePath: patch.envFilePath,
+		addPathEntries: patch.addPathEntries ?? [],
+		removePathEntries: patch.removePathEntries ?? [],
+	})
+}
+
 function TerminalEnvironmentEditor() {
 	const { terminalEnvironment } = useExtensionState()
 	const [scope, setScope] = useState<EnvScope>("global")
-	const [revealed, setRevealed] = useState(false)
+	// Real values of the visible scope, present only while revealed.
+	const [revealedValues, setRevealedValues] = useState<Record<string, string> | undefined>(undefined)
+	const [revealing, setRevealing] = useState(false)
 	// value edits pending blur, keyed "scope:name"
 	const [valueEdits, setValueEdits] = useState<Record<string, string>>({})
 	const [newRows, setNewRows] = useState<Record<EnvScope, RowDraft>>({
@@ -52,26 +84,50 @@ function TerminalEnvironmentEditor() {
 	const [envPathEdit, setEnvPathEdit] = useState<string | undefined>(undefined)
 	const [resolved, setResolved] = useState<TerminalEnvironmentVariable[] | undefined>(undefined)
 
+	const revealed = revealedValues !== undefined
 	const stored = scope === "global" ? terminalEnvironment?.global : terminalEnvironment?.workspace
-	const variables = scopeVariables(stored)
+	const variableNames = scopeVariableNames(stored)
 	const pathEntries = scopePathEntries(stored)
 	const storedEnvFilePath = stored?.envFilePath ?? ""
+	const envPathValue = envPathEdit ?? storedEnvFilePath
+	const envPathProblem = scope === "global" ? globalEnvFilePathProblem(envPathValue) : undefined
 
-	const commit = (patch: Partial<TerminalEnvironmentSettings>) => {
-		updateSetting("terminalEnvironment", {
-			workspace: scope === "workspace",
-			variables: patch.variables ?? variables,
-			envFilePath: patch.envFilePath !== undefined ? patch.envFilePath : storedEnvFilePath,
-			pathEntries: patch.pathEntries ?? pathEntries,
-		})
+	const patch = (next: Parameters<typeof patchEnvironment>[1]) => {
+		patchEnvironment(scope, next)
 		// Stored values changed; the resolved preview may be stale.
 		setResolved(undefined)
 	}
 
-	const commitVariables = (next: Record<string, string>) => commit({ variables: next })
+	const hideValues = () => setRevealedValues(undefined)
+
+	const toggleReveal = async () => {
+		if (revealed) {
+			hideValues()
+			return
+		}
+		setRevealing(true)
+		try {
+			const response = await StateServiceClient.revealTerminalEnvironment(
+				BooleanRequest.create({ value: scope === "workspace" }),
+			)
+			setRevealedValues({ ...(response.variables ?? {}) })
+		} catch (error) {
+			console.error("Failed to reveal terminal environment values:", error)
+		} finally {
+			setRevealing(false)
+		}
+	}
+
+	const switchScope = (next: EnvScope) => {
+		if (next === scope) return
+		// Revealed values belong to one scope; never carry them across.
+		hideValues()
+		setEnvPathEdit(undefined)
+		setScope(next)
+	}
 
 	const editKey = `${scope}:`
-	const draftValue = (name: string) => valueEdits[editKey + name] ?? variables[name] ?? ""
+	const draftValue = (name: string) => valueEdits[editKey + name] ?? (revealed ? (revealedValues?.[name] ?? "") : "")
 
 	const commitValueEdit = (name: string) => {
 		const draft = valueEdits[editKey + name]
@@ -81,42 +137,57 @@ function TerminalEnvironmentEditor() {
 			delete next[editKey + name]
 			return next
 		})
-		if (draft !== variables[name]) commitVariables({ ...variables, [name]: draft })
+		// An untouched revealed value needs no write; masked edits always do.
+		if (revealed && draft === revealedValues?.[name]) return
+		patch({ setVariables: { [name]: draft } })
+		if (revealed) setRevealedValues((prev) => (prev ? { ...prev, [name]: draft } : prev))
 	}
 
 	const removeVariable = (name: string) => {
-		const next = { ...variables }
-		delete next[name]
-		commitVariables(next)
+		setValueEdits((prev) => {
+			const next = { ...prev }
+			delete next[editKey + name]
+			return next
+		})
+		setRevealedValues((prev) => {
+			if (!prev) return prev
+			const next = { ...prev }
+			delete next[name]
+			return next
+		})
+		patch({ removeVariables: [name] })
 	}
 
 	const addVariable = () => {
 		const draft = newRows[scope]
 		const name = draft.name.trim()
 		if (!name) return
-		commitVariables({ ...variables, [name]: draft.value })
+		patch({ setVariables: { [name]: draft.value } })
+		if (revealed) setRevealedValues((prev) => (prev ? { ...prev, [name]: draft.value } : prev))
 		setNewRows((prev) => ({ ...prev, [scope]: { name: "", value: "" } }))
 	}
 
 	const addPathEntry = () => {
 		const entry = newPath.trim()
 		if (!entry) return
-		commit({ pathEntries: [...pathEntries, entry] })
+		patch({ addPathEntries: [entry] })
 		setNewPath("")
 	}
 
-	const removePathEntry = (index: number) => {
-		commit({ pathEntries: pathEntries.filter((_, i) => i !== index) })
+	const removePathEntry = (entry: string) => {
+		patch({ removePathEntries: [entry] })
 	}
 
 	const commitEnvFilePath = () => {
 		if (envPathEdit === undefined) return
 		const value = envPathEdit.trim()
+		// An invalid global path is explained inline and not saved.
+		if (scope === "global" && globalEnvFilePathProblem(value)) return
 		setEnvPathEdit(undefined)
-		if (value !== storedEnvFilePath) commit({ envFilePath: value })
+		if (value !== storedEnvFilePath) patch({ envFilePath: value })
 	}
 
-	const names = useMemo(() => Object.keys(variables).sort(), [variables])
+	const names = [...variableNames].sort()
 
 	return (
 		<div className="mb-4">
@@ -136,7 +207,7 @@ function TerminalEnvironmentEditor() {
 								: "border-(--vscode-panel-border) bg-transparent text-(--vscode-foreground)"
 						}`}
 						key={option}
-						onClick={() => setScope(option)}
+						onClick={() => switchScope(option)}
 						type="button">
 						{option === "global" ? "Global" : "Workspace"}
 					</button>
@@ -145,7 +216,8 @@ function TerminalEnvironmentEditor() {
 				<button
 					aria-label={revealed ? "Hide environment values" : "Show environment values"}
 					className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-80 hover:opacity-100"
-					onClick={() => setRevealed((value) => !value)}
+					disabled={revealing}
+					onClick={() => void toggleReveal()}
 					title={revealed ? "Hide all values" : "Show all values"}
 					type="button">
 					{revealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
@@ -171,6 +243,7 @@ function TerminalEnvironmentEditor() {
 									[editKey + name]: (e.target as HTMLInputElement).value,
 								}))
 							}
+							placeholder={valueEdits[editKey + name] === undefined && !revealed ? MASK_PLACEHOLDER : undefined}
 							type={revealed ? "text" : "password"}
 							value={draftValue(name)}
 						/>
@@ -229,26 +302,35 @@ function TerminalEnvironmentEditor() {
 					id={`env-file-${scope}`}
 					onBlur={commitEnvFilePath}
 					onInput={(e) => setEnvPathEdit((e.target as HTMLInputElement).value)}
-					placeholder=".env"
-					value={envPathEdit ?? storedEnvFilePath}
+					placeholder={scope === "global" ? "~/secrets/dev.env" : ".env"}
+					value={envPathValue}
 				/>
-				<p className="text-xs text-(--vscode-descriptionForeground) mt-1">
-					Read when a command runs; its values are never stored or shown here.
-				</p>
+				{envPathProblem ? (
+					<p className="text-xs text-(--vscode-errorForeground) mt-1" role="alert">
+						{envPathProblem}
+					</p>
+				) : (
+					<p className="text-xs text-(--vscode-descriptionForeground) mt-1">
+						{scope === "global"
+							? "Absolute or ~-relative path."
+							: "Relative paths resolve against the workspace root."}{" "}
+						Read when a command runs; its values are never stored or shown here.
+					</p>
+				)}
 			</div>
 
 			<div className="mb-2">
 				<label className="text-xs block mb-1">Extra PATH entries</label>
 				<div className="flex flex-col gap-1">
-					{pathEntries.map((entry, index) => (
-						<div className="flex items-center gap-1" key={`${entry}:${index}`}>
+					{pathEntries.map((entry) => (
+						<div className="flex items-center gap-1" key={entry}>
 							<span className="flex-1 truncate text-xs font-mono text-(--vscode-foreground)" title={entry}>
 								{entry}
 							</span>
 							<button
 								aria-label={`Remove PATH entry ${entry}`}
 								className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-60 hover:opacity-100"
-								onClick={() => removePathEntry(index)}
+								onClick={() => removePathEntry(entry)}
 								type="button">
 								<X className="size-3" />
 							</button>

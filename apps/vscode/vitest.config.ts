@@ -11,6 +11,8 @@ export default defineConfig({
 			"src/hosts/vscode/VscodeEditPreview.test.ts",
 			"src/shared/vsCodeSelectorUtils.test.ts",
 			"src/shared/message-links.test.ts",
+			"src/shared/terminal-environment.test.ts",
+			"src/utils/terminal-env.test.ts",
 			"src/shared/proto-conversions/models/**/*.test.ts",
 			"src/core/storage/remote-config/**/*.test.ts",
 			"src/core/controller/account/setUserOrganization.test.ts",

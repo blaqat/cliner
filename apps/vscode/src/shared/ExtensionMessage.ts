@@ -18,7 +18,7 @@ import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
 import type { TaskGroupSummary } from "./task-groups"
-import type { TerminalEnvironmentState } from "./terminal-environment"
+import type { TerminalEnvironmentWebviewState } from "./terminal-environment"
 import { UserInfo } from "./UserInfo"
 // webview will hold state
 export interface ExtensionMessage {
@@ -188,7 +188,7 @@ export interface ExtensionState {
 	threadTitlesProfileId?: string
 	walkthroughGenerateProfileId?: string
 	/** Terminal environment per scope; workspace values come from workspace state. */
-	terminalEnvironment?: TerminalEnvironmentState
+	terminalEnvironment?: TerminalEnvironmentWebviewState
 	worktreesEnabled?: ClineFeatureSetting
 	favoritedModelIds: string[]
 	// NEW: Add workspace information

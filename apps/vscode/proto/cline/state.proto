@@ -38,6 +38,7 @@ service StateService {
   rpc testOtelConnection(EmptyRequest) returns (TestConnectionResult);
   rpc testPromptUploading(EmptyRequest) returns (TestConnectionResult);
   rpc resolveTerminalEnvironment(EmptyRequest) returns (TerminalEnvironmentResolution);
+  rpc revealTerminalEnvironment(BooleanRequest) returns (TerminalEnvironmentValues);
 }
 
 message AutoApprovalActions {
@@ -466,14 +467,29 @@ message StringList {
   repeated string values = 1;
 }
 
-// Replaces the terminal environment settings for one scope wholesale.
-// `workspace` selects where they are stored: per-workspace state (true,
-// never written to the repo) or global settings (false).
+// A granular patch to the terminal environment settings of one scope. Each
+// field names only what changed, so quick consecutive edits (blur-save then
+// Remove) apply in order on the server instead of racing whole-scope
+// snapshots. `workspace` selects where they are stored: per-workspace state
+// (true, never written to the repo) or global settings (false).
 message TerminalEnvironmentUpdate {
+  reserved 2, 4;
+  reserved "variables", "path_entries";
   optional bool workspace = 1;
-  map<string, string> variables = 2;
+  // Variables to create or overwrite. A value equal to the "unchanged"
+  // sentinel is ignored so a masked placeholder can never replace a secret.
+  map<string, string> set_variables = 5;
+  repeated string remove_variables = 6;
+  // Present means set (an empty string clears the .env path).
   optional string env_file_path = 3;
-  repeated string path_entries = 4;
+  repeated string add_path_entries = 7;
+  repeated string remove_path_entries = 8;
+}
+
+// Real variable values for one scope, returned only by the explicit reveal
+// call. Ordinary webview state carries names with masked placeholders.
+message TerminalEnvironmentValues {
+  map<string, string> variables = 1;
 }
 
 // One variable in the resolved terminal environment. Values are never
