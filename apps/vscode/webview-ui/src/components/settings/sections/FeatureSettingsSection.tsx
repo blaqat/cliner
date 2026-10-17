@@ -3,27 +3,12 @@ import { memo, type ReactNode, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { WorktreeSettings } from "@/components/worktrees/WorktreeSettings"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { DEFAULT_TOAST_SECONDS } from "../../toasts/threadToastRules"
 import Section from "../Section"
-import { featureSettingControlId, featureSettingElementId } from "../settingsTargets"
 import { updateSetting } from "../utils/settingsHandlers"
-
-// Reusable checkbox component for feature settings
-interface FeatureCheckboxProps {
-	id?: string
-	checked: boolean | undefined
-	onChange: (checked: boolean) => void
-	label: string
-	description: ReactNode
-	disabled?: boolean
-	isRemoteLocked?: boolean
-	remoteTooltip?: string
-	isVisible?: boolean
-}
+import { FeatureField, FeatureGroup, FeatureRow } from "./FeatureRow"
 
 // Interface for feature toggle configuration
 interface FeatureToggle {
@@ -77,62 +62,6 @@ const advancedFeatures: FeatureToggle[] = [
 		settingKey: "hooksEnabled",
 	},
 ]
-
-const FeatureRow = memo(
-	({
-		id,
-		checked = false,
-		onChange,
-		label,
-		description,
-		disabled,
-		isRemoteLocked,
-		isVisible = true,
-		remoteTooltip,
-	}: FeatureCheckboxProps) => {
-		if (!isVisible) {
-			return null
-		}
-		const switchId = id ? featureSettingControlId(id) : label
-
-		const checkbox = (
-			<div className="flex items-center justify-between w-full">
-				<label htmlFor={switchId}>{label}</label>
-				<div>
-					<Switch
-						checked={checked}
-						className="shrink-0"
-						disabled={disabled || isRemoteLocked}
-						id={switchId}
-						onCheckedChange={onChange}
-						size="lg"
-					/>
-					{isRemoteLocked && <i className="codicon codicon-lock text-description text-sm" />}
-				</div>
-			</div>
-		)
-
-		return (
-			<div
-				className="flex flex-col items-start justify-between gap-4 py-3 px-1 w-full rounded-xs border border-transparent"
-				id={id ? featureSettingElementId(id) : undefined}>
-				<div className="space-y-0.5 flex-1 w-full">
-					{isRemoteLocked ? (
-						<Tooltip>
-							<TooltipTrigger asChild>{checkbox}</TooltipTrigger>
-							<TooltipContent className="max-w-xs" side="top">
-								{remoteTooltip}
-							</TooltipContent>
-						</Tooltip>
-					) : (
-						checkbox
-					)}
-				</div>
-				<div className="text-xs text-description">{description}</div>
-			</div>
-		)
-	},
-)
 
 interface FeatureSettingsSectionProps {
 	renderSectionHeader: (tabId: string) => JSX.Element | null
@@ -244,45 +173,38 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 				</div>
 
 				{/* Notifications */}
-				<div>
-					<div className="text-xs font-medium text-foreground/80 uppercase tracking-wider mb-3">Notifications</div>
-					<div
-						className="relative p-3 pt-0 my-3 rounded-md border border-editor-widget-border/50"
-						id="notification-features">
-						<FeatureRow
-							checked={toastsOn}
-							description="When a thread you're not viewing finishes or needs input (an approval or a question). Needs-input toasts stay until handled."
-							id="thread-toasts"
-							label="In-app Toasts"
-							onChange={(checked) => updateSetting("threadToastsEnabled", checked)}
+				<FeatureGroup id="notification-features" title="Notifications">
+					<FeatureRow
+						checked={toastsOn}
+						description="When a thread you're not viewing finishes or needs input (an approval or a question). Needs-input toasts stay until handled."
+						id="thread-toasts"
+						label="In-app Toasts"
+						onChange={(checked) => updateSetting("threadToastsEnabled", checked)}
+					/>
+					<FeatureField
+						className="pt-0"
+						description="Hovering pauses it. While VS Code is in the background, the timer waits until you come back."
+						htmlFor="thread-toast-seconds"
+						label="Completion toast duration (seconds)">
+						<Input
+							data-testid="thread-toast-seconds"
+							disabled={!toastsOn}
+							id="thread-toast-seconds"
+							min={1}
+							onBlur={() => {
+								const seconds = Number((toastSecondsDraft ?? storedToastSeconds).trim())
+								if (Number.isInteger(seconds) && seconds >= 1 && seconds !== threadToastSeconds) {
+									updateSetting("threadToastSeconds", seconds)
+								}
+								setToastSecondsDraft(undefined)
+							}}
+							onChange={(event) => setToastSecondsDraft(event.target.value)}
+							step={1}
+							type="number"
+							value={toastSecondsDraft ?? storedToastSeconds}
 						/>
-						<div className="space-y-2 pb-3 px-1">
-							<Label className="text-sm font-medium text-foreground" htmlFor="thread-toast-seconds">
-								Completion toast duration (seconds)
-							</Label>
-							<Input
-								data-testid="thread-toast-seconds"
-								disabled={!toastsOn}
-								id="thread-toast-seconds"
-								min={1}
-								onBlur={() => {
-									const seconds = Number((toastSecondsDraft ?? storedToastSeconds).trim())
-									if (Number.isInteger(seconds) && seconds >= 1 && seconds !== threadToastSeconds) {
-										updateSetting("threadToastSeconds", seconds)
-									}
-									setToastSecondsDraft(undefined)
-								}}
-								onChange={(event) => setToastSecondsDraft(event.target.value)}
-								step={1}
-								type="number"
-								value={toastSecondsDraft ?? storedToastSeconds}
-							/>
-							<p className="text-xs text-muted-foreground">
-								Hovering pauses it. While VS Code is in the background, the timer waits until you come back.
-							</p>
-						</div>
-					</div>
-				</div>
+					</FeatureField>
+				</FeatureGroup>
 
 				{/* Advanced */}
 				<div>
