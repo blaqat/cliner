@@ -180,7 +180,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 									}}
 									role="menuitem"
 									type="button">
-									Change walkthrough
+									<span aria-hidden className="codicon codicon-diff text-[13px]" />
+									Walkthrough
 								</button>
 								<button
 									className={MENU_ITEM_CLASS}

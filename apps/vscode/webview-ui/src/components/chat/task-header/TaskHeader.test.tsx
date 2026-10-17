@@ -111,8 +111,17 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 		const items = within(screen.getByRole("menu")).getAllByRole("menuitem")
-		expect(items.map((row) => row.textContent)).toEqual(["Change walkthrough", "Copy first message"])
+		expect(items.map((row) => row.textContent)).toEqual(["Walkthrough", "Copy first message"])
 		expect(screen.queryByText(firstMessage)).toBeNull()
+	})
+
+	it("opens the walkthrough from the thread menu", () => {
+		const navigateToWalkthrough = vi.fn()
+		mocks.state = { ...mocks.state, navigateToWalkthrough }
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
+		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Walkthrough" }))
+		expect(navigateToWalkthrough).toHaveBeenCalledTimes(1)
 	})
 
 	it("settles through toggleTaskSettled and returns home; unsettle stays", async () => {

@@ -29,6 +29,8 @@ interface CompletionOutputRowProps {
 	showViewChanges?: boolean
 	/** Shows the Aside action, branching the conversation at this message. */
 	asideFromTs?: number
+	/** Adds "Walkthrough" beside View Changes: the thread's changes as a review page. */
+	onOpenWalkthrough?: () => void
 }
 
 /**
@@ -47,6 +49,7 @@ export const CompletionOutputRow = memo(
 		contentRef,
 		showViewChanges,
 		asideFromTs,
+		onOpenWalkthrough,
 	}: CompletionOutputRowProps) => {
 		const [viewChangesPending, setViewChangesPending] = useState(false)
 		// undefined = still checking; the button stays hidden until the host
@@ -102,9 +105,9 @@ export const CompletionOutputRow = memo(
 					)}
 				</div>
 				{showViewChanges && hasChanges === true && (
-					<div className="px-2 pb-2">
+					<div className="flex gap-1.5 px-2 pb-2">
 						<SuccessButton
-							className="w-full"
+							className="flex-1"
 							disabled={viewChangesPending}
 							onClick={() => {
 								setViewChangesPending(true)
@@ -116,6 +119,12 @@ export const CompletionOutputRow = memo(
 							<GitCompareIcon className="size-3 mr-1.5" />
 							View Changes
 						</SuccessButton>
+						{onOpenWalkthrough && (
+							<SuccessButton className="flex-1" onClick={onOpenWalkthrough}>
+								<span aria-hidden className="codicon codicon-diff mr-1.5 text-[12px]!" />
+								Walkthrough
+							</SuccessButton>
+						)}
 					</div>
 				)}
 			</div>

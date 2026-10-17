@@ -177,6 +177,7 @@ export const ChatRowContent = memo(
 			showFeatureTips,
 			enableCheckpointsSetting,
 			turnState,
+			navigateToWalkthrough,
 		} = useExtensionState()
 		const [quoteButtonState, setQuoteButtonState] = useState<QuoteButtonState>({
 			visible: false,
@@ -992,6 +993,7 @@ export const ChatRowContent = memo(
 								contentRef={contentRef}
 								handleQuoteClick={handleQuoteClick}
 								onMouseUp={handleMouseUp}
+								onOpenWalkthrough={currentTaskItem?.isSubagent ? undefined : navigateToWalkthrough}
 								quoteButtonState={quoteButtonState}
 								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
 								text={text || ""}
