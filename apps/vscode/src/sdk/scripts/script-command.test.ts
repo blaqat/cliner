@@ -121,3 +121,24 @@ describe("command templates", () => {
 		expect(validateCommandTemplate("echo {{watch}}", options)[0]).toContain("cannot be used as a value")
 	})
 })
+
+describe("Windows argv quoting", () => {
+	it("doubles trailing backslashes before a closing quote", () => {
+		for (const count of [1, 2, 3]) {
+			const value = "C:\\space path" + "\\".repeat(count)
+			expect(quoteShellValue(value, "win32")).toBe('"C:\\space path' + "\\".repeat(count * 2) + '"')
+		}
+		expect(quoteShellValue("C:\\plain\\", "win32")).toBe("C:\\plain\\")
+		expect(quoteShellValue("", "win32")).toBe('""')
+	})
+	it.each([
+		"%PATH%",
+		"x&calc",
+		"x|calc",
+		"x>file",
+		'x"y',
+		"!VAR!",
+	])("continues to refuse cmd expansion and metacharacters: %s", (value) => {
+		expect(() => quoteShellValue(value, "win32")).toThrow("Windows")
+	})
+})

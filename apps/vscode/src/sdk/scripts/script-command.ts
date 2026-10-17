@@ -153,7 +153,7 @@ export function quoteShellValue(value: string, platform: NodeJS.Platform = proce
 		if (UNSAFE_WINDOWS_CHARACTERS.test(value)) {
 			throw new Error("This value contains characters that cannot be passed safely on Windows")
 		}
-		return value === "" || /[\s;()]/.test(value) ? `"${value}"` : value
+		return value === "" || /[\s;()]/.test(value) ? `"${value.replace(/(\\+)$/, "$1$1")}"` : value
 	}
 	if (value !== "" && SAFE_POSIX_WORD.test(value)) return value
 	return `'${value.replace(/'/g, "'\\''")}'`
