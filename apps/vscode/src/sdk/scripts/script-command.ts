@@ -65,9 +65,73 @@ function referencedNames(parts: TemplatePart[]): { name: string; value: boolean 
 	})
 }
 
+/** Check included and omitted sections, so neither branch can splice shell words. */
+function validateShellContexts(parts: TemplatePart[]): string[] {
+	type State = { quote: string; escaped: boolean; boundary: boolean; value: boolean }
+	const errors: string[] = []
+	const walk = (list: TemplatePart[], initial: State[]): State[] => {
+		let states = initial
+		for (const part of list) {
+			if (part.type === "section") {
+				states = [
+					...states,
+					...walk(
+						part.parts,
+						states.map((state) => ({ ...state })),
+					),
+				]
+				states = [...new Map(states.map((state) => [JSON.stringify(state), state])).values()]
+				continue
+			}
+			for (const state of states) {
+				if (part.type === "value") {
+					if (state.quote || state.escaped || !state.boundary)
+						errors.push(`{{${part.name}}} must be a standalone shell word outside quotes`)
+					state.boundary = false
+					state.value = true
+					continue
+				}
+				// These contexts need a full shell parser, so keep templates conservative.
+				if (/\$[({]|`|<<|(^|[\s;|&])#/.test(part.text))
+					errors.push("Placeholders are not supported with shell substitutions, comments or heredocs")
+				for (const char of part.text) {
+					const separator = /[\s;|&()<>]/.test(char)
+					if (state.value && !separator) errors.push("A placeholder must end at a shell word boundary")
+					state.value = false
+					if (state.escaped) {
+						state.escaped = false
+						state.boundary = false
+						continue
+					}
+					if (char === "\\" && state.quote !== "'") {
+						state.escaped = true
+						state.boundary = false
+						continue
+					}
+					if (state.quote) {
+						if (char === state.quote) state.quote = ""
+						continue
+					}
+					if (char === "'" || char === '"') {
+						state.quote = char
+						state.boundary = false
+						continue
+					}
+					state.boundary = separator
+				}
+			}
+		}
+		return states
+	}
+	if (referencedNames(parts).some((reference) => reference.value))
+		walk(parts, [{ quote: "", escaped: false, boundary: true, value: false }])
+	return errors
+}
+
 /** Static checks of a template against the declared options. */
 export function validateCommandTemplate(template: string, options: readonly ScriptOption[]): string[] {
 	const { parts, errors } = parseCommandTemplate(template)
+	errors.push(...validateShellContexts(parts))
 	for (const reference of referencedNames(parts)) {
 		const option = options.find((candidate) => candidate.name === reference.name)
 		if (!option) errors.push(`The command uses {{${reference.name}}}, which is not a declared option`)
@@ -149,7 +213,8 @@ export function resolveScriptRun(
 		}
 		values[option.name] = value
 	}
-	const { parts, errors } = parseCommandTemplate(script.command)
+	const { parts } = parseCommandTemplate(script.command)
+	const errors = validateCommandTemplate(script.command, script.options)
 	if (errors.length > 0) return { ok: false, error: errors[0] }
 	try {
 		const render = (list: TemplatePart[]): string =>
