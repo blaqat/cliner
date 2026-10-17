@@ -7,15 +7,15 @@ import {
 	MergeWorktreeRequest,
 	SwitchWorktreeRequest,
 } from "@shared/proto/cline/worktree"
-import { VSCodeButton, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
+import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import { AlertCircle, Check, ExternalLink, FolderOpen, GitBranch, GitMerge, Loader2, Plus, Trash2, X } from "lucide-react"
 import { memo, useCallback, useEffect, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { FileServiceClient, TaskServiceClient, WorktreeServiceClient } from "@/services/grpc-client"
 import { getEnvironmentColor } from "@/utils/environmentColors"
-import CreateWorktreeModal from "./CreateWorktreeModal"
-import DeleteWorktreeModal from "./DeleteWorktreeModal"
+import CreateWorktreeForm from "./CreateWorktreeForm"
+import DeleteWorktreeCard from "./DeleteWorktreeCard"
 
 type WorktreesViewProps = {
 	onDone: () => void
@@ -38,7 +38,7 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 	const [isMerging, setIsMerging] = useState(false)
 	const [mergeError, setMergeError] = useState<string | null>(null)
 	const [mergeResult, setMergeResult] = useState<MergeWorktreeResult | null>(null)
-	const [deleteAfterMerge, setDeleteAfterMerge] = useState(true)
+	const deleteAfterMerge = false
 
 	// .worktreeinclude status
 	const [hasWorktreeInclude, setHasWorktreeInclude] = useState(false)
@@ -169,16 +169,15 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 		return worktrees[0]?.branch || "main"
 	}, [worktrees])
 
-	// Open merge modal for a worktree
-	const openMergeModal = useCallback((worktree: WorktreeProto) => {
+	// Open merge form for a worktree
+	const openMergeForm = useCallback((worktree: WorktreeProto) => {
 		setMergeWorktree(worktree)
 		setMergeError(null)
 		setMergeResult(null)
-		setDeleteAfterMerge(true)
 	}, [])
 
-	// Close merge modal
-	const closeMergeModal = useCallback(() => {
+	// Close merge form
+	const closeMergeForm = useCallback(() => {
 		setMergeWorktree(null)
 		setMergeError(null)
 		setMergeResult(null)
@@ -223,18 +222,18 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 		const conflictList = mergeResult.conflictingFiles.join(", ")
 		const prompt = `I tried to merge branch '${mergeResult.sourceBranch}' into '${mergeResult.targetBranch}' but there are merge conflicts in the following files: ${conflictList}
 
-Please help me resolve these merge conflicts, then complete the merge, and delete the worktree at: ${mergeWorktree?.path}`
+Please help me resolve these merge conflicts, then complete the merge. Keep the worktree at: ${mergeWorktree?.path}`
 
 		try {
 			// Create a new task with this prompt
 			await TaskServiceClient.newTask(NewTaskRequest.create({ text: prompt }))
-			closeMergeModal()
+			closeMergeForm()
 			// Close worktrees view to show the chat with the new task
 			onDone()
 		} catch (err) {
 			setMergeError(err instanceof Error ? err.message : "Failed to create task for Cline")
 		}
-	}, [mergeResult, mergeWorktree, closeMergeModal, onDone])
+	}, [mergeResult, mergeWorktree, closeMergeForm, onDone])
 
 	return (
 		<div className="fixed inset-0 flex flex-col overflow-hidden">
@@ -248,6 +247,124 @@ Please help me resolve these merge conflicts, then complete the merge, and delet
 
 			{/* Scrollable Content */}
 			<div className="flex-1 overflow-y-auto p-5">
+				{/* Create worktree form */}
+				<CreateWorktreeForm onClose={() => setShowCreateForm(false)} onSuccess={loadWorktrees} open={showCreateForm} />
+
+				{/* Delete worktree form */}
+				<DeleteWorktreeCard
+					branchName={deleteWorktree?.branch || ""}
+					onClose={() => setDeleteWorktree(null)}
+					onConfirm={(deleteBranch) => handleDeleteWorktree(deleteWorktree!.path, deleteBranch, deleteWorktree!.branch)}
+					open={!!deleteWorktree}
+					worktreePath={deleteWorktree?.path || ""}
+				/>
+
+				{/* Merge worktree form */}
+				{mergeWorktree && (
+					<div aria-label="Merge worktree" className="my-3">
+						<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-4 w-full relative">
+							{/* Close button */}
+							<button
+								className="absolute top-3 right-3 p-1 rounded hover:bg-[var(--vscode-toolbar-hoverBackground)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)] cursor-pointer"
+								disabled={isMerging}
+								onClick={closeMergeForm}
+								type="button">
+								<X className="w-4 h-4" />
+							</button>
+
+							<div className="flex items-center gap-2 mb-2">
+								<GitMerge className="w-5 h-5 text-[var(--vscode-testing-iconPassed)]" />
+								<h4 className="m-0 pr-6">Merge Worktree</h4>
+							</div>
+
+							{/* Success state */}
+							{mergeResult?.success ? (
+								<div className="flex flex-col gap-4">
+									<div className="flex items-center gap-2 p-3 rounded bg-[var(--vscode-testing-iconPassed)]/10 border border-[var(--vscode-testing-iconPassed)]">
+										<Check className="w-5 h-5 text-[var(--vscode-testing-iconPassed)]" />
+										<p className="text-sm m-0">{mergeResult.message}</p>
+									</div>
+									<div className="flex justify-end">
+										<VSCodeButton onClick={closeMergeForm}>Done</VSCodeButton>
+									</div>
+								</div>
+							) : mergeResult?.hasConflicts ? (
+								/* Conflict state */
+								<div className="flex flex-col gap-4">
+									<div className="flex items-start gap-2 p-3 rounded bg-[var(--vscode-inputValidation-warningBackground)] border border-[var(--vscode-inputValidation-warningBorder)]">
+										<AlertCircle className="w-5 h-5 flex-shrink-0 text-[var(--vscode-inputValidation-warningForeground)] mt-0.5" />
+										<div>
+											<p className="text-sm font-medium m-0 mb-1">Merge conflicts detected</p>
+											<p className="text-sm text-[var(--vscode-descriptionForeground)] m-0 mb-2">
+												The following files have conflicts:
+											</p>
+											<ul className="m-0 pl-4 text-sm font-mono text-[var(--vscode-descriptionForeground)]">
+												{mergeResult.conflictingFiles.slice(0, 3).map((file) => (
+													<li key={file}>{file}</li>
+												))}
+												{mergeResult.conflictingFiles.length > 3 && (
+													<li className="text-[var(--vscode-descriptionForeground)]">
+														...and {mergeResult.conflictingFiles.length - 3} more
+													</li>
+												)}
+											</ul>
+										</div>
+									</div>
+
+									<div className="flex flex-col gap-2">
+										<VSCodeButton onClick={handleAskClineToResolve} style={{ width: "100%" }}>
+											Ask Cline to Resolve
+										</VSCodeButton>
+										<VSCodeButton appearance="secondary" onClick={closeMergeForm} style={{ width: "100%" }}>
+											I'll Resolve Manually
+										</VSCodeButton>
+									</div>
+								</div>
+							) : (
+								/* Default state - confirm merge */
+								<div className="flex flex-col gap-4">
+									<p className="text-sm text-[var(--vscode-descriptionForeground)] m-0">
+										This will merge branch{" "}
+										<code className="bg-[var(--vscode-textCodeBlock-background)] px-1 rounded">
+											{mergeWorktree.branch}
+										</code>{" "}
+										into{" "}
+										<code className="bg-[var(--vscode-textCodeBlock-background)] px-1 rounded">
+											{getMainBranch()}
+										</code>
+										.
+									</p>
+
+									{mergeError && (
+										<div className="flex items-start gap-2 p-3 rounded bg-[var(--vscode-inputValidation-errorBackground)] border border-[var(--vscode-inputValidation-errorBorder)]">
+											<AlertCircle className="w-4 h-4 flex-shrink-0 text-[var(--vscode-errorForeground)] mt-0.5" />
+											<p className="text-sm text-[var(--vscode-errorForeground)] m-0">{mergeError}</p>
+										</div>
+									)}
+
+									<div className="flex justify-end gap-2">
+										<VSCodeButton appearance="secondary" disabled={isMerging} onClick={closeMergeForm}>
+											Cancel
+										</VSCodeButton>
+										<VSCodeButton disabled={isMerging} onClick={handleMergeWorktree}>
+											{isMerging ? (
+												<>
+													<Loader2 className="w-4 h-4 mr-1 animate-spin" />
+													Merging...
+												</>
+											) : (
+												<>
+													<GitMerge className="w-4 h-4 mr-1" />
+													Merge
+												</>
+											)}
+										</VSCodeButton>
+									</div>
+								</div>
+							)}
+						</div>
+					</div>
+				)}
 				{/* Description */}
 				<p className="text-sm text-[var(--vscode-descriptionForeground)] m-0 mb-4">
 					Git worktrees let you work on multiple branches at the same time, each in its own folder. Open worktrees in
@@ -455,7 +572,7 @@ Please help me resolve these merge conflicts, then complete the merge, and delet
 														<TooltipTrigger asChild>
 															<VSCodeButton
 																appearance="icon"
-																onClick={() => openMergeModal(worktree)}>
+																onClick={() => openMergeForm(worktree)}>
 																<GitMerge className="w-4 h-4 text-[var(--vscode-testing-iconPassed)]" />
 															</VSCodeButton>
 														</TooltipTrigger>
@@ -499,139 +616,6 @@ Please help me resolve these merge conflicts, then complete the merge, and delet
 						<Plus className="w-4 h-4 mr-1" />
 						New Worktree
 					</VSCodeButton>
-				</div>
-			)}
-
-			{/* Create Worktree Modal */}
-			<CreateWorktreeModal onClose={() => setShowCreateForm(false)} onSuccess={loadWorktrees} open={showCreateForm} />
-
-			{/* Delete Worktree Modal */}
-			<DeleteWorktreeModal
-				branchName={deleteWorktree?.branch || ""}
-				onClose={() => setDeleteWorktree(null)}
-				onConfirm={(deleteBranch) => handleDeleteWorktree(deleteWorktree!.path, deleteBranch, deleteWorktree!.branch)}
-				open={!!deleteWorktree}
-				worktreePath={deleteWorktree?.path || ""}
-			/>
-
-			{/* Merge Worktree Modal */}
-			{mergeWorktree && (
-				<div
-					className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-					onClick={(e) => {
-						if (e.target === e.currentTarget && !isMerging) {
-							closeMergeModal()
-						}
-					}}>
-					<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-5 w-[450px] max-w-[90vw] relative">
-						{/* Close button */}
-						<button
-							className="absolute top-3 right-3 p-1 rounded hover:bg-[var(--vscode-toolbar-hoverBackground)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)] cursor-pointer"
-							disabled={isMerging}
-							onClick={closeMergeModal}
-							type="button">
-							<X className="w-4 h-4" />
-						</button>
-
-						<div className="flex items-center gap-2 mb-2">
-							<GitMerge className="w-5 h-5 text-[var(--vscode-testing-iconPassed)]" />
-							<h4 className="m-0 pr-6">Merge Worktree</h4>
-						</div>
-
-						{/* Success state */}
-						{mergeResult?.success ? (
-							<div className="flex flex-col gap-4">
-								<div className="flex items-center gap-2 p-3 rounded bg-[var(--vscode-testing-iconPassed)]/10 border border-[var(--vscode-testing-iconPassed)]">
-									<Check className="w-5 h-5 text-[var(--vscode-testing-iconPassed)]" />
-									<p className="text-sm m-0">{mergeResult.message}</p>
-								</div>
-								<div className="flex justify-end">
-									<VSCodeButton onClick={closeMergeModal}>Done</VSCodeButton>
-								</div>
-							</div>
-						) : mergeResult?.hasConflicts ? (
-							/* Conflict state */
-							<div className="flex flex-col gap-4">
-								<div className="flex items-start gap-2 p-3 rounded bg-[var(--vscode-inputValidation-warningBackground)] border border-[var(--vscode-inputValidation-warningBorder)]">
-									<AlertCircle className="w-5 h-5 flex-shrink-0 text-[var(--vscode-inputValidation-warningForeground)] mt-0.5" />
-									<div>
-										<p className="text-sm font-medium m-0 mb-1">Merge conflicts detected</p>
-										<p className="text-sm text-[var(--vscode-descriptionForeground)] m-0 mb-2">
-											The following files have conflicts:
-										</p>
-										<ul className="m-0 pl-4 text-sm font-mono text-[var(--vscode-descriptionForeground)]">
-											{mergeResult.conflictingFiles.slice(0, 3).map((file) => (
-												<li key={file}>{file}</li>
-											))}
-											{mergeResult.conflictingFiles.length > 3 && (
-												<li className="text-[var(--vscode-descriptionForeground)]">
-													...and {mergeResult.conflictingFiles.length - 3} more
-												</li>
-											)}
-										</ul>
-									</div>
-								</div>
-
-								<div className="flex flex-col gap-2">
-									<VSCodeButton onClick={handleAskClineToResolve} style={{ width: "100%" }}>
-										Ask Cline to Resolve
-									</VSCodeButton>
-									<VSCodeButton appearance="secondary" onClick={closeMergeModal} style={{ width: "100%" }}>
-										I'll Resolve Manually
-									</VSCodeButton>
-								</div>
-							</div>
-						) : (
-							/* Default state - confirm merge */
-							<div className="flex flex-col gap-4">
-								<p className="text-sm text-[var(--vscode-descriptionForeground)] m-0">
-									This will merge branch{" "}
-									<code className="bg-[var(--vscode-textCodeBlock-background)] px-1 rounded">
-										{mergeWorktree.branch}
-									</code>{" "}
-									into{" "}
-									<code className="bg-[var(--vscode-textCodeBlock-background)] px-1 rounded">
-										{getMainBranch()}
-									</code>
-									.
-								</p>
-
-								<label className="flex items-center gap-2 cursor-pointer">
-									<VSCodeCheckbox
-										checked={deleteAfterMerge}
-										onChange={(e) => setDeleteAfterMerge((e.target as HTMLInputElement).checked)}
-									/>
-									<span className="text-sm">Delete worktree after successful merge</span>
-								</label>
-
-								{mergeError && (
-									<div className="flex items-start gap-2 p-3 rounded bg-[var(--vscode-inputValidation-errorBackground)] border border-[var(--vscode-inputValidation-errorBorder)]">
-										<AlertCircle className="w-4 h-4 flex-shrink-0 text-[var(--vscode-errorForeground)] mt-0.5" />
-										<p className="text-sm text-[var(--vscode-errorForeground)] m-0">{mergeError}</p>
-									</div>
-								)}
-
-								<div className="flex justify-end gap-2">
-									<VSCodeButton appearance="secondary" disabled={isMerging} onClick={closeMergeModal}>
-										Cancel
-									</VSCodeButton>
-									<VSCodeButton disabled={isMerging} onClick={handleMergeWorktree}>
-										{isMerging ? (
-											<>
-												<Loader2 className="w-4 h-4 mr-1 animate-spin" />
-												Merging...
-											</>
-										) : (
-											<>
-												<GitMerge className="w-4 h-4 mr-1" />
-												Merge
-											</>
-										)}
-									</VSCodeButton>
-								</div>
-							</div>
-						)}
-					</div>
 				</div>
 			)}
 		</div>

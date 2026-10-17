@@ -3,7 +3,7 @@ import { AlertTriangle, Loader2, X } from "lucide-react"
 import { memo, useCallback, useState } from "react"
 import { Button } from "@/components/ui/button"
 
-interface DeleteWorktreeModalProps {
+interface DeleteWorktreeCardProps {
 	open: boolean
 	onClose: () => void
 	onConfirm: (deleteBranch: boolean) => Promise<void>
@@ -11,7 +11,7 @@ interface DeleteWorktreeModalProps {
 	branchName: string
 }
 
-const DeleteWorktreeModal = ({ open, onClose, onConfirm, worktreePath, branchName }: DeleteWorktreeModalProps) => {
+const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName }: DeleteWorktreeCardProps) => {
 	const [isDeleting, setIsDeleting] = useState(false)
 	const [deleteBranch, setDeleteBranch] = useState(false)
 
@@ -31,14 +31,8 @@ const DeleteWorktreeModal = ({ open, onClose, onConfirm, worktreePath, branchNam
 	}
 
 	return (
-		<div
-			className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			onClick={(e) => {
-				if (e.target === e.currentTarget && !isDeleting) {
-					onClose()
-				}
-			}}>
-			<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-5 w-[400px] max-w-[90vw] relative">
+		<section aria-label="Remove worktree" className="my-3">
+			<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-4 w-full relative">
 				{/* Close button */}
 				<button
 					className="absolute top-3 right-3 p-1 rounded hover:bg-[var(--vscode-toolbar-hoverBackground)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)] cursor-pointer disabled:opacity-50"
@@ -93,8 +87,8 @@ const DeleteWorktreeModal = ({ open, onClose, onConfirm, worktreePath, branchNam
 					</Button>
 				</div>
 			</div>
-		</div>
+		</section>
 	)
 }
 
-export default memo(DeleteWorktreeModal)
+export default memo(DeleteWorktreeCard)

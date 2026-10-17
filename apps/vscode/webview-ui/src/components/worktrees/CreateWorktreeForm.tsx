@@ -5,7 +5,7 @@ import { AlertCircle, AlertTriangle, Loader2, X } from "lucide-react"
 import { memo, useCallback, useEffect, useState } from "react"
 import { WorktreeServiceClient } from "@/services/grpc-client"
 
-interface CreateWorktreeModalProps {
+interface CreateWorktreeFormProps {
 	open: boolean
 	onClose: () => void
 	/** When true, opens the worktree in a new window after creation */
@@ -14,7 +14,7 @@ interface CreateWorktreeModalProps {
 	onSuccess?: () => void
 }
 
-const CreateWorktreeModal = ({ open, onClose, openAfterCreate = false, onSuccess }: CreateWorktreeModalProps) => {
+const CreateWorktreeForm = ({ open, onClose, openAfterCreate = false, onSuccess }: CreateWorktreeFormProps) => {
 	const [newWorktreePath, setNewWorktreePath] = useState("")
 	const [newBranchName, setNewBranchName] = useState("")
 	const [isCreating, setIsCreating] = useState(false)
@@ -22,7 +22,7 @@ const CreateWorktreeModal = ({ open, onClose, openAfterCreate = false, onSuccess
 	const [isLoadingDefaults, setIsLoadingDefaults] = useState(false)
 	const [hasWorktreeInclude, setHasWorktreeInclude] = useState<boolean | null>(null)
 
-	// Load defaults and check .worktreeinclude status when modal opens
+	// Load defaults and check .worktreeinclude status when form opens
 	const loadDefaults = useCallback(async () => {
 		setIsLoadingDefaults(true)
 		try {
@@ -46,7 +46,7 @@ const CreateWorktreeModal = ({ open, onClose, openAfterCreate = false, onSuccess
 		}
 	}, [open, loadDefaults])
 
-	// Reset form state when modal closes
+	// Reset form state when form closes
 	useEffect(() => {
 		if (!open) {
 			setNewWorktreePath("")
@@ -106,14 +106,8 @@ const CreateWorktreeModal = ({ open, onClose, openAfterCreate = false, onSuccess
 		: "This will create a copy of your project on a new branch."
 
 	return (
-		<div
-			className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			onClick={(e) => {
-				if (e.target === e.currentTarget) {
-					onClose()
-				}
-			}}>
-			<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-5 w-[450px] max-w-[90vw] relative">
+		<section aria-label="Create worktree" className="my-3">
+			<div className="bg-[var(--vscode-editor-background)] border border-[var(--vscode-panel-border)] rounded-lg p-4 w-full relative">
 				{/* Close button */}
 				<button
 					className="absolute top-3 right-3 p-1 rounded hover:bg-[var(--vscode-toolbar-hoverBackground)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)] cursor-pointer"
@@ -221,8 +215,8 @@ const CreateWorktreeModal = ({ open, onClose, openAfterCreate = false, onSuccess
 					</div>
 				</div>
 			</div>
-		</div>
+		</section>
 	)
 }
 
-export default memo(CreateWorktreeModal)
+export default memo(CreateWorktreeForm)

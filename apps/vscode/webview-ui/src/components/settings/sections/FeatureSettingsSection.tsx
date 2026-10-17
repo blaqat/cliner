@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { WorktreeSettings } from "@/components/worktrees/WorktreeSettings"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { DEFAULT_TOAST_SECONDS } from "../../toasts/threadToastRules"
 import Section from "../Section"
@@ -64,13 +65,6 @@ const editorFeatures: FeatureToggle[] = [
 		description: "Save progress at key points for easy rollback",
 		stateKey: "enableCheckpointsSetting",
 		settingKey: "enableCheckpointsSetting",
-	},
-	{
-		id: "worktrees",
-		label: "Worktrees",
-		description: "Enables git worktree management for running parallel Cline tasks.",
-		stateKey: "worktreesEnabled",
-		settingKey: "worktreesEnabled",
 	},
 ]
 
@@ -227,6 +221,7 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 						</div>
 					</div>
 
+					<WorktreeSettings />
 					{/* Editor features */}
 					<div>
 						<div className="text-xs font-medium text-foreground/80 uppercase tracking-wider mb-3">Editor</div>
