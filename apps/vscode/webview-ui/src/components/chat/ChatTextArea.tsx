@@ -55,9 +55,11 @@ import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import ApprovalsMenu from "./composer/ApprovalsMenu"
+import ConfigPicker from "./composer/ConfigPicker"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
-import ModelEffortPill from "./composer/ModelEffortPill"
+import { modelHasReasoning } from "./composer/modelSelection"
 import PlusMenu from "./composer/PlusMenu"
+import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
 import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
@@ -221,7 +223,7 @@ const ButtonGroup = styled.div`
 	min-width: 0;
 	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
 	overflow-x: clip;
-	/* The ＋ keeps its size; the where and model pills truncate to their min-width. */
+	/* The ＋ keeps its size; the where pill and the configuration and effort pickers truncate to their min-width. */
 	& > * {
 		flex-shrink: 0;
 	}
@@ -1760,6 +1762,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			hasUsage: !!usageIndicator,
 			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
+			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
 		})
 
 		return (
@@ -2084,10 +2087,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
 							<WherePill onOpenTaskGroup={onOpenTaskGroup} />
 						</span>
-						<span className="flex min-w-6 shrink" data-shrink="">
-							<ModelEffortPill
+						<span className="flex min-w-14" data-shrink="">
+							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
+						</span>
+						<span className="flex min-w-11 empty:hidden" data-shrink="">
+							<ReasoningEffortPicker
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-								fallbackLabel={modelDisplayName}
 								mode={mode}
 								modelId={selectedModelId}
 								modelInfo={selectedModelInfo}

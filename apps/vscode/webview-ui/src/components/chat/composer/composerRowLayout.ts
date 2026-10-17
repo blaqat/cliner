@@ -1,9 +1,9 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
 
 /**
- * What the composer's bottom row shows at its current width. The where and model pills truncate
- * first (CSS, down to the minimums below); once they reach them, the meter's extras hide in order.
- * Below the last step the pills keep shrinking toward their icons.
+ * What the composer's bottom row shows at its current width. The where pill and the configuration
+ * and effort pickers truncate first (CSS, down to the minimums below); once they reach them, the
+ * meter's extras hide in order. Below the last step they keep shrinking toward their chevrons.
  */
 export interface ComposerRowLayout {
 	/** The chat cost next to the context ring. Hidden first; it stays in the ring's details. */
@@ -17,6 +17,8 @@ export interface ComposerRowContent {
 	hasUsage: boolean
 	hasCost: boolean
 	hasCompactNudge: boolean
+	/** The model has reasoning, so the effort picker shows. */
+	hasEffort: boolean
 }
 
 const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
@@ -29,7 +31,7 @@ export const FULL_COMPOSER_ROW = LAYOUT_STEPS[0]
 
 /**
  * Item widths in px, measured in Chromium with the VS Code font (see ComposerBottomRow.stories).
- * Pills count at the width where they still show a few characters.
+ * Pills and pickers count at the width where they still show a few characters.
  */
 export const COMPOSER_ROW_WIDTHS = {
 	/** px-3 on both sides (rem-based; VS Code's root font is 13px). */
@@ -41,8 +43,10 @@ export const COMPOSER_ROW_WIDTHS = {
 	plus: 20,
 	/** The where pill truncated to a few characters ("◇ No…▾"). */
 	whereMin: 40,
-	/** The model + effort pill truncated to a few characters. */
-	modelMin: 56,
+	/** The configuration picker truncated to a few characters (its min-w-14). */
+	configMin: 56,
+	/** The effort picker truncated to a few characters (its min-w-11). */
+	effortMin: 44,
 	ring: 22,
 	/** Includes its gap after the ring. */
 	cost: 43,
@@ -56,7 +60,7 @@ export const COMPOSER_ROW_WIDTHS = {
 /** Smallest row width (border box) that fits `content` in `layout`. */
 export function composerRowMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
 	const w = COMPOSER_ROW_WIDTHS
-	const group = w.plus + w.whereMin + w.modelMin + 2 * w.groupGap
+	const group = w.plus + w.whereMin + w.configMin + 2 * w.groupGap + (content.hasEffort ? w.groupGap + w.effortMin : 0)
 	const usage = content.hasUsage
 		? w.rowGap +
 			w.ring +
@@ -95,10 +99,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number | un
 /** `composerRowLayout` driven by the row element's measured width. */
 export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
 	const width = useElementWidth(ref)
-	const { hasUsage, hasCost, hasCompactNudge } = content
+	const { hasUsage, hasCost, hasCompactNudge, hasEffort } = content
 	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
 	return useMemo(
-		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge }),
-		[width, hasUsage, hasCost, hasCompactNudge],
+		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge, hasEffort }),
+		[width, hasUsage, hasCost, hasCompactNudge, hasEffort],
 	)
 }

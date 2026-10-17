@@ -26,7 +26,8 @@ vi.mock("@/hooks/useNormalizedApiConfiguration", () => ({
 	useNormalizedApiConfiguration: () => ({
 		selectedProvider: "anthropic",
 		selectedModelId: "model",
-		selectedModelInfo: {},
+		// Reasoning, so the effort picker shows next to the configuration picker.
+		selectedModelInfo: { supportsReasoning: true },
 	}),
 }))
 
@@ -80,19 +81,21 @@ const usageSlot = (
 describe("composer bottom row", () => {
 	afterEach(() => vi.unstubAllGlobals())
 
-	it("is ＋, where, model + effort, then the meter, the approvals shield and the Ask/Act switch", () => {
+	it("is ＋, where, configuration, effort, then the meter, the approvals shield and the Ask/Act switch", () => {
 		renderComposer(usageSlot())
 		const row = screen.getByTestId("composer-bottom-row")
 		const group = screen.getByTestId("composer-pickers")
 		expect(group).toContainElement(screen.getByTestId("plus-menu-button"))
 		expect(group).toContainElement(screen.getByTestId("where-pill"))
-		expect(group).toContainElement(screen.getByTestId("model-effort-pill"))
+		expect(group).toContainElement(screen.getByTestId("config-picker"))
+		expect(group).toContainElement(screen.getByTestId("reasoning-effort-picker"))
 		expect(group).not.toContainElement(screen.getByTestId("approvals-button"))
 
 		const order = [
 			screen.getByTestId("plus-menu-button"),
 			screen.getByTestId("where-pill"),
-			screen.getByTestId("model-effort-pill"),
+			screen.getByTestId("config-picker"),
+			screen.getByTestId("reasoning-effort-picker"),
 			screen.getByTestId("usage-slot"),
 			screen.getByTestId("approvals-button"),
 			screen.getByTestId("mode-switch"),
@@ -106,15 +109,9 @@ describe("composer bottom row", () => {
 		expect(shield.nextElementSibling?.contains(screen.getByTestId("mode-switch"))).toBe(true)
 	})
 
-	it("no longer has separate @, files, MCP, rules, effort or overflow buttons", () => {
+	it("no longer has separate @, files, MCP, rules or overflow buttons, nor a merged model pill", () => {
 		renderComposer(usageSlot())
-		for (const id of [
-			"context-button",
-			"files-button",
-			"reasoning-effort-picker",
-			"picker-overflow-button",
-			"config-picker",
-		]) {
+		for (const id of ["context-button", "files-button", "picker-overflow-button", "model-effort-pill"]) {
 			expect(screen.queryByTestId(id)).not.toBeInTheDocument()
 		}
 		expect(screen.queryByRole("button", { name: /MCP Servers|Customize/ })).not.toBeInTheDocument()
@@ -148,10 +145,17 @@ describe("composer bottom row", () => {
 		const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 		renderComposer(usageSlot(renderMeter))
 		expect(renderMeter).toHaveBeenLastCalledWith(
-			composerRowLayout(320, { hasUsage: true, hasCost: true, hasCompactNudge: true }),
+			composerRowLayout(320, { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: true }),
 		)
 		expect(renderMeter).toHaveBeenLastCalledWith({ showCost: false, inlineCompactNudge: false })
-		for (const id of ["plus-menu-button", "where-pill", "model-effort-pill", "approvals-button", "mode-switch"]) {
+		for (const id of [
+			"plus-menu-button",
+			"where-pill",
+			"config-picker",
+			"reasoning-effort-picker",
+			"approvals-button",
+			"mode-switch",
+		]) {
 			expect(screen.getByTestId(id)).toBeInTheDocument()
 		}
 	})

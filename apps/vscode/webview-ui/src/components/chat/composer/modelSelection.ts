@@ -13,7 +13,7 @@ export function assignedProfileId(
 	return mode === "plan" ? askProfileId : actProfileId
 }
 
-/** True when the selected model exposes any reasoning control the effort choices can drive. */
+/** True when the selected model exposes any reasoning control the effort picker can drive. */
 export function modelHasReasoning(modelId: string | undefined, modelInfo: ModelInfo | undefined): boolean {
 	if (!modelInfo && !modelId) {
 		return false
@@ -31,7 +31,7 @@ export const formatEffort = (effort: string) =>
 
 /**
  * Updates this chat's (or the next chat's) configuration for `mode` without touching Settings.
- * Shared by the profile and effort choices so both go through the same RPC.
+ * Shared by the configuration and effort pickers so both go through the same RPC.
  */
 function useAssignApiProfile(mode: Mode) {
 	const { currentTaskItem } = useExtensionState()
@@ -87,7 +87,7 @@ export function useConfigSelection(mode: Mode, fallbackLabel: string) {
 		profiles,
 		current,
 		modeLabel,
-		/** The pill's label: the configuration's name, or the model when none is assigned. */
+		/** The picker's label: the configuration's name, or the model when none is assigned. */
 		label: current?.name ?? fallbackLabel,
 		scopeLabel,
 		pending,
@@ -118,8 +118,18 @@ interface EffortSelectionOptions {
 
 /** The reasoning effort for `mode` in this chat; `available` is false for models without reasoning. */
 export function useEffortSelection(mode: Mode, { modelId, modelInfo, defaultEffort = "none" }: EffortSelectionOptions) {
-	const { apiConfiguration, askProfileId, actProfileId, composerApiSelection, focusedSessionModels } = useExtensionState()
+	const {
+		apiConfiguration,
+		askProfileId,
+		actProfileId,
+		composerApiSelection,
+		composerNextMessageOnly,
+		currentTaskItem,
+		turnState,
+		focusedSessionModels,
+	} = useExtensionState()
 	const update = useAssignApiProfile(mode)
+	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
 	const modeFields = getModeSpecificFields(apiConfiguration, mode)
 	const storedEffort = composerApiSelection ? composerApiSelection[`${mode}ModeReasoningEffort`] : modeFields.reasoningEffort
 	const profileAssigned =
@@ -141,8 +151,15 @@ export function useEffortSelection(mode: Mode, { modelId, modelInfo, defaultEffo
 		description: pending
 			? `Currently uses ${formatEffort(effective?.reasoningEffort ?? "none")}; change pending`
 			: "Reasoning effort",
+		/** A next-message-only choice can't change while a turn runs. */
+		locked: !!composerNextMessageOnly && busy,
+		busy,
+		hasChat: !!currentTaskItem,
+		nextMessageOnly: !!composerNextMessageOnly,
 		select: (effort: OpenaiReasoningEffort) => {
 			if (effort !== selected) update({ reasoningEffort: effort })
 		},
+		reset: () => update({ resetToDefault: true }),
+		toggleNextMessageOnly: () => update({ nextMessageOnly: !composerNextMessageOnly }),
 	}
 }
