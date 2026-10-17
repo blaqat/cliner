@@ -2,6 +2,7 @@ import { SetThreadTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { extractTicketTags } from "@shared/ticket-tags"
 import { memo, useMemo, useState } from "react"
+import { MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { expandTaskGroupInInbox } from "@/components/inbox/inboxUtils"
 import {
 	setComposerTaskGroup,
@@ -12,6 +13,7 @@ import {
 } from "@/components/taskGroup/composerTaskGroup"
 import { NewTaskGroupSheet } from "@/components/taskGroup/NewTaskGroupSheet"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
+import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -33,10 +35,10 @@ interface WherePillProps {
 }
 
 /**
- * The composer's "where" pill: the thread's task (`◇ No task ▾`) and, once worktrees land, its
+ * The composer's "where" pill: the thread's task (`No task ▾`) and, once worktrees land, its
  * workspace. In a new thread it picks the task the first message files the thread into; in an
  * existing thread it moves the thread right away. A branch → task suggestion shows as a ghost row
- * at the top of the menu, and a green ⎇ on the pill hints at it.
+ * at the top of the menu, and a green branch codicon on the pill hints at it.
  */
 const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 	const { currentTaskItem, taskGroups } = useExtensionState()
@@ -120,20 +122,21 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 									: "File this thread into a task"
 					}
 					type="button">
-					{hasTask ? (
-						<span aria-hidden className="codicon codicon-tasklist text-[11px]! text-(--vscode-charts-purple)" />
-					) : (
-						<span aria-hidden>◇</span>
-					)}
+					<span
+						aria-hidden
+						className={cn(
+							"codicon codicon-tasklist shrink-0 text-[11px]!",
+							hasTask && "text-(--vscode-charts-purple)",
+						)}
+					/>
 					<span className="truncate">{title ?? "No task"}</span>
 					<WorktreeBadgeSlot threadId={threadId} />
 					{suggestion && (
 						<span
 							aria-hidden
-							className="shrink-0 text-(--vscode-charts-green)"
-							data-testid="where-pill-suggestion-hint">
-							⎇
-						</span>
+							className="codicon codicon-git-branch shrink-0 text-[11px]! text-success"
+							data-testid="where-pill-suggestion-hint"
+						/>
 					)}
 					<span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />
 				</button>
@@ -146,15 +149,15 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 				side="top">
 				{suggestion && <BranchTaskSuggestion onAccept={close} suggestion={suggestion} />}
 				{fixedTitle ? (
-					<div className="px-2 py-1 text-xs text-description" data-testid="where-fixed-task">
+					<div className="px-2 py-1 text-[12px] text-description" data-testid="where-fixed-task">
 						New threads here go into <span className="text-foreground">{fixedTitle}</span>.
 					</div>
 				) : (
 					<div aria-label="Task" role="menu">
-						<input
+						<Input
 							aria-label="Find a task"
 							autoFocus
-							className="mb-1 w-full rounded-xs border border-input-border bg-input-background px-1.5 py-0.5 text-xs text-input-foreground placeholder:text-input-placeholder focus:outline focus:outline-1 focus:outline-(--vscode-focusBorder)"
+							className="mb-1 h-6 rounded-xs px-1.5 py-0 text-xs md:text-xs"
 							onChange={(event) => setQuery(event.target.value)}
 							onKeyDown={(event) => {
 								if (event.key === "Enter" && recent[0]) {
@@ -176,15 +179,18 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 								type="button">
 								<span
 									aria-hidden
-									className="codicon codicon-tasklist text-[12px]! text-(--vscode-charts-purple)"
+									className={cn(MENU_ICON_CLASS, "codicon-tasklist text-(--vscode-charts-purple)")}
 								/>
 								<span className="min-w-0 flex-1 truncate">{group.title}</span>
 								{group.tags[0] && <TaskTagChip kind={group.tags[0].kind} value={group.tags[0].value} />}
-								{group.id === selectedId && <span aria-hidden className="codicon codicon-check text-[12px]!" />}
+								<span
+									aria-hidden
+									className={cn(MENU_ICON_CLASS, "codicon-check", group.id !== selectedId && "invisible")}
+								/>
 							</button>
 						))}
 						{query && recent.length === 0 && (
-							<div className="px-2 py-1 text-xs text-description">No matching tasks</div>
+							<div className="px-2 py-1 text-[12px] text-description">No matching tasks</div>
 						)}
 						<button
 							aria-checked={!selectedId}
@@ -192,14 +198,12 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 							onClick={() => pick(undefined)}
 							role="menuitemradio"
 							type="button">
-							<span aria-hidden className="w-3 text-center text-description">
-								◇
-							</span>
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-circle-slash text-description")} />
 							<span className="flex-1">No task</span>
-							<span className="text-[10.5px] text-description">plain thread</span>
-							{!selectedId && <span aria-hidden className="codicon codicon-check text-[12px]!" />}
+							<span className="text-[11px] text-description">plain thread</span>
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !!selectedId && "invisible")} />
 						</button>
-						<div className="my-1 border-t border-menu-foreground/10" />
+						<div className={MENU_SEPARATOR_CLASS} />
 						{threadId && selected && onOpenTaskGroup && (
 							<button
 								className={MENU_ROW_CLASS}
@@ -209,7 +213,7 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 								}}
 								role="menuitem"
 								type="button">
-								<span aria-hidden className="codicon codicon-arrow-right text-[12px]!" />
+								<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-arrow-right")} />
 								Open task
 							</button>
 						)}
@@ -221,7 +225,8 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 							}}
 							role="menuitem"
 							type="button">
-							＋ New task…
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-add")} />
+							New task…
 						</button>
 					</div>
 				)}

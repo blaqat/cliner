@@ -62,7 +62,7 @@ export function useBranchTaskSuggestion(): BranchTaskSuggestionOffer | undefined
 }
 
 /**
- * Dashed ghost row at the top of the where pill's menu: "Add to ⎇ <task>?" when the checked-out
+ * Dashed ghost row at the top of the where pill's menu: "Add to <branch icon> <task>?" when the checked-out
  * branch is tagged on a task this composer isn't in. Click accepts; ✕ stops suggesting that task.
  */
 export const BranchTaskSuggestion = ({
@@ -76,11 +76,11 @@ export const BranchTaskSuggestion = ({
 	const { group, verb } = suggestion
 	return (
 		<div
-			className="mb-1 flex h-6 items-center overflow-hidden rounded-xs border border-dashed border-(--vscode-charts-green)/50 text-xs whitespace-nowrap text-description"
+			className="mb-1 flex h-6 items-center overflow-hidden rounded-xs border border-dashed border-success/50 text-[12px] whitespace-nowrap text-description"
 			data-testid="branch-task-suggestion">
 			<button
 				aria-label={`${verb} task ${group.title}, which has this branch`}
-				className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1 border-0 bg-transparent pr-0.5 pl-2 text-left text-inherit hover:bg-list-hover hover:text-foreground focus-visible:bg-list-hover focus-visible:outline-none"
+				className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1 border-0 bg-transparent pr-0.5 pl-2 text-left text-inherit hover:bg-list-hover hover:text-foreground focus-visible:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
 				onClick={() => {
 					suggestion.accept()
 					onAccept?.()
@@ -89,19 +89,17 @@ export const BranchTaskSuggestion = ({
 				title={`${verb} the task "${group.title}" (it has the branch you're on)`}
 				type="button">
 				<span className="shrink-0">{verb}</span>
-				<span aria-hidden className="shrink-0 text-(--vscode-charts-green)">
-					⎇
-				</span>
+				<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-success" />
 				<span className="truncate">{group.title}?</span>
 			</button>
 			<button
 				aria-label={`Don't suggest ${group.title} again`}
-				className="flex h-full shrink-0 cursor-pointer items-center border-0 bg-transparent px-1.5 text-inherit opacity-70 hover:bg-list-hover hover:opacity-100 focus-visible:bg-list-hover focus-visible:outline-none"
+				className="flex h-full shrink-0 cursor-pointer items-center border-0 bg-transparent px-1.5 text-inherit opacity-70 hover:bg-list-hover hover:opacity-100 focus-visible:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
 				onClick={suggestion.dismiss}
 				role="menuitem"
 				title="Don't suggest this task again"
 				type="button">
-				<span aria-hidden className="codicon codicon-close text-[11px]!" />
+				<span aria-hidden className="codicon codicon-close text-[12px]!" />
 			</button>
 		</div>
 	)

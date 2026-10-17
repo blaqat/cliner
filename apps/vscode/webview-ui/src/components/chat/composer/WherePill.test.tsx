@@ -85,7 +85,7 @@ describe("WherePill: task", () => {
 		expect(titles[0]).toContain("PROJ-482")
 		expect(titles[1]).toContain("SSO redirect loop")
 		expect(within(menu).getByText("No task")).toBeInTheDocument()
-		expect(within(menu).getByText("＋ New task…")).toBeInTheDocument()
+		expect(within(menu).getByText("New task…")).toBeInTheDocument()
 		expect(within(menu).queryByText("Open task")).not.toBeInTheDocument()
 	})
 
@@ -144,7 +144,7 @@ describe("WherePill: task", () => {
 				<ComposerTaskGroupSheet draftText="Look into PROJ-491 please" />
 			</>,
 		)
-		fireEvent.click(within(openMenu()).getByText("＋ New task…"))
+		fireEvent.click(within(openMenu()).getByText("New task…"))
 
 		const sheet = await screen.findByTestId("new-task-sheet")
 		expect(within(sheet).getByText("PROJ-491")).toBeInTheDocument()
@@ -208,7 +208,7 @@ describe("WherePill: branch suggestion", () => {
 		expect(screen.queryByTestId("branch-task-suggestion")).not.toBeInTheDocument()
 
 		const menu = openMenu()
-		expect(within(menu).getByTestId("branch-task-suggestion")).toHaveTextContent("Add to⎇Bulk invoice export?")
+		expect(within(menu).getByTestId("branch-task-suggestion")).toHaveTextContent("Add toBulk invoice export?")
 		fireEvent.click(within(menu).getByRole("menuitem", { name: /Add to task Bulk invoice export/ }))
 
 		expect(getComposerTaskGroup()).toBe("bulk")
@@ -222,14 +222,14 @@ describe("WherePill: branch suggestion", () => {
 	it("says Move to when the new thread already has another task picked", () => {
 		act(() => setComposerTaskGroup("sso"))
 		render(<WherePill />)
-		expect(within(openMenu()).getByTestId("branch-task-suggestion")).toHaveTextContent("Move to⎇Bulk invoice export?")
+		expect(within(openMenu()).getByTestId("branch-task-suggestion")).toHaveTextContent("Move toBulk invoice export?")
 	})
 
 	it("files an existing thread into the task the way picking does", () => {
 		mocks.state.currentTaskItem = { id: "thread-1", taskGroupId: "sso" }
 		render(<WherePill />)
 		const menu = openMenu()
-		expect(within(menu).getByTestId("branch-task-suggestion")).toHaveTextContent("Move to⎇Bulk invoice export?")
+		expect(within(menu).getByTestId("branch-task-suggestion")).toHaveTextContent("Move toBulk invoice export?")
 
 		fireEvent.click(within(menu).getByRole("menuitem", { name: /Move to task Bulk invoice export/ }))
 		expect(mocks.setThreadTaskGroup).toHaveBeenCalledWith(

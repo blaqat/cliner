@@ -1,8 +1,9 @@
 import type { ClineRulesToggles } from "@shared/cline-rules"
-import { PlusIcon } from "lucide-react"
 import type React from "react"
 import { memo, useEffect, useRef, useState } from "react"
+import { HEADER_ICON_BUTTON_CLASS } from "@/components/chat/task-header/HeaderIconButton"
 import ClineRulesPanel from "@/components/cline-rules/ClineRulesPanel"
+import { MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -85,7 +86,8 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 	}
 
 	const row = (props: {
-		icon: React.ReactNode
+		/** Codicon name without the `codicon-` prefix. */
+		icon: string
 		label: string
 		detail?: string
 		onClick: () => void
@@ -107,12 +109,10 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 			}}
 			role="menuitem"
 			type="button">
-			<span aria-hidden className="flex w-4 shrink-0 justify-center text-description">
-				{props.icon}
-			</span>
+			<span aria-hidden className={cn(MENU_ICON_CLASS, `codicon-${props.icon} text-description`)} />
 			<span className="min-w-0 flex-1 truncate">{props.label}</span>
-			{props.detail && <span className="shrink-0 text-[10.5px] text-description">{props.detail}</span>}
-			{props.submenu && <span aria-hidden className="codicon codicon-chevron-right text-[11px]! text-description" />}
+			{props.detail && <span className="shrink-0 text-[11px] text-description">{props.detail}</span>}
+			{props.submenu && <span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-chevron-right text-description")} />}
 		</button>
 	)
 
@@ -127,13 +127,13 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 				<button
 					aria-label="Add context, files, MCP servers and rules"
 					className={cn(
-						"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground",
+						"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
 						open && "bg-toolbar-hover text-foreground",
 					)}
 					data-testid="plus-menu-button"
 					title="Add context, files, MCP servers and rules"
 					type="button">
-					<PlusIcon size={14} />
+					<span aria-hidden className="codicon codicon-add text-[14px]!" />
 				</button>
 			</PopoverTrigger>
 			<PopoverContent
@@ -162,7 +162,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 				{view === "menu" ? (
 					<div aria-label="Add to message" onKeyDown={handleMenuKeyDown} ref={menuRef} role="menu">
 						{row({
-							icon: "@",
+							icon: "mention",
 							label: "Mention a file, folder or problem",
 							testId: "plus-menu-mention",
 							onClick: () => {
@@ -171,7 +171,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 							},
 						})}
 						{row({
-							icon: <span className="codicon codicon-file-media text-[12px]!" />,
+							icon: "file-media",
 							label: "Files & images",
 							testId: "plus-menu-files",
 							disabled: filesDisabled,
@@ -180,9 +180,9 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 								onAddFiles()
 							},
 						})}
-						<div className="my-1 border-t border-menu-foreground/10" />
+						<div className={MENU_SEPARATOR_CLASS} />
 						{row({
-							icon: <span className="codicon codicon-server text-[12px]!" />,
+							icon: "server",
 							label: "MCP servers",
 							detail: serversOn > 0 ? `${serversOn} on` : undefined,
 							testId: "plus-menu-mcp",
@@ -190,7 +190,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 							onClick: () => setView("mcp"),
 						})}
 						{row({
-							icon: <span className="codicon codicon-law text-[12px]!" />,
+							icon: "law",
 							label: "Rules, workflows & skills",
 							detail: rulesOn > 0 ? `${rulesOn} on` : undefined,
 							testId: "plus-menu-rules",
@@ -199,7 +199,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 						})}
 						{scripts &&
 							row({
-								icon: <span className="codicon codicon-play text-[12px]!" />,
+								icon: "play",
 								label: "Scripts",
 								detail: scripts.summary,
 								testId: "plus-menu-scripts",
@@ -209,17 +209,17 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 					</div>
 				) : (
 					<>
-						<div className="flex shrink-0 items-center gap-1 border-b border-menu-foreground/10 px-1 py-1">
+						<div className="flex shrink-0 items-center gap-1 border-b border-solid border-x-0 border-t-0 border-menu-foreground/10 px-1 py-1">
 							<button
 								aria-label="Back to the ＋ menu"
 								autoFocus
-								className="flex size-5 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+								className={HEADER_ICON_BUTTON_CLASS}
 								data-testid="plus-menu-back"
 								onClick={backToMenu}
 								type="button">
-								<span aria-hidden className="codicon codicon-arrow-left text-[12px]!" />
+								<span aria-hidden className="codicon codicon-arrow-left text-[14px]!" />
 							</button>
-							<span className="text-xs font-medium">{VIEW_TITLES[view]}</span>
+							<span className="text-[12px] font-medium">{VIEW_TITLES[view]}</span>
 						</div>
 						{view === "mcp" && <McpServersPanel onOpenSettings={() => close()} />}
 						{view === "rules" && <ClineRulesPanel />}

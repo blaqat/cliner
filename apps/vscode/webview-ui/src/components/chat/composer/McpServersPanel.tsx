@@ -2,8 +2,10 @@ import { EmptyRequest } from "@shared/proto/cline/common"
 import type { McpServers } from "@shared/proto/cline/mcp"
 import { convertProtoMcpServersToMcpServers } from "@shared/proto-conversions/mcp/mcp-server-conversion"
 import { useEffect } from "react"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import ServersToggleList from "@/components/mcp/configuration/tabs/installed/ServersToggleList"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { cn } from "@/lib/utils"
 import { McpServiceClient } from "@/services/grpc-client"
 
 /**
@@ -29,13 +31,13 @@ const McpServersPanel = ({ onOpenSettings }: { onOpenSettings: () => void }) => 
 				<ServersToggleList hasTrashIcon={false} isExpandable={false} listGap="small" servers={mcpServers} />
 			</div>
 			<button
-				className="mx-1 mb-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-xs border-0 bg-transparent px-2 text-left text-xs text-link hover:bg-list-hover focus-visible:bg-list-hover focus-visible:outline-none"
+				className={cn(MENU_ITEM_CLASS, "mx-1 mb-1 w-auto text-link")}
 				onClick={() => {
 					onOpenSettings()
 					navigateToMcp("configure")
 				}}
 				type="button">
-				<span aria-hidden className="codicon codicon-gear text-[12px]!" />
+				<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-gear")} />
 				MCP server settings…
 			</button>
 		</div>

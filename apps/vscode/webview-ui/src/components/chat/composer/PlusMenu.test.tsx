@@ -96,7 +96,7 @@ describe("PlusMenu", () => {
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
-		).toEqual(["@Mention a file, folder or problem", "Files & images", "MCP servers2 on", "Rules, workflows & skills2 on"])
+		).toEqual(["Mention a file, folder or problem", "Files & images", "MCP servers2 on", "Rules, workflows & skills2 on"])
 		// No scripts until step 7 fills the slot.
 		expect(within(menu).queryByTestId("plus-menu-scripts")).not.toBeInTheDocument()
 	})
