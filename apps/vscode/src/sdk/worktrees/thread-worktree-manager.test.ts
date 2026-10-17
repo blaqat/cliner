@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { storageLock } from "./storage-lock"
 import { parseMmModules, ThreadWorktreeManager } from "./thread-worktree-manager"
 
 const mmPath = "/Users/blaqat/dev/tools/scripts/mm.js"
@@ -237,6 +238,98 @@ for (const mode of ["git", "mm"] as const) {
 }
 
 for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: shared leases block every destructive action and serialize journals`, async () => {
+		if (mode === "mm") {
+			await fs.rm(workspace, { recursive: true, force: true })
+			await repo(path.join(workspace, "api"))
+			await repo(path.join(workspace, "web"))
+			await write(workspace, ".mmrc", "api\nweb\n")
+		}
+		const mapping = await manager.create("shared", "Shared", workspace)
+		const other = new ThreadWorktreeManager(storage)
+		const release = await manager.acquireSessionLease("shared")
+		try {
+			await expect(other.acquireSessionLease("shared")).rejects.toThrow("active in another window")
+			for (const action of [
+				() => other.remove("shared", true),
+				() => other.bring("shared"),
+				() => other.undo("shared"),
+				() => other.takeOver("shared"),
+			]) {
+				await expect(action()).rejects.toThrow("active in another window")
+			}
+		} finally {
+			await release()
+		}
+		for (const module of mapping.modules) await write(module.path, "file.txt", "shared\n")
+		await Promise.all([manager.bring("shared"), other.bring("shared")])
+		expect((await manager.get("shared"))!.bringIns).toHaveLength(1)
+		await Promise.all([manager.undo("shared"), other.undo("shared")])
+		for (const module of mapping.modules) expect(await read(module.workspacePath)).toBe("base\n")
+	}, 60_000)
+}
+it("serializes separate processes and recovers dead lock owners", async () => {
+	const modulePath = path.resolve(import.meta.dirname, "storage-lock.ts")
+	const child = spawn(
+		"bun",
+		[
+			"-e",
+			`import { storageLock } from ${JSON.stringify(modulePath)};
+ const release = await storageLock(${JSON.stringify(storage)});
+ console.log("locked");
+ for await (const data of process.stdin) { break; }
+ await release();`,
+		],
+		{ stdio: ["pipe", "pipe", "pipe"] },
+	)
+	const exited = new Promise<void>((resolve, reject) => {
+		child.on("error", reject)
+		child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exit ${code}`))))
+	})
+	try {
+		await new Promise<void>((resolve, reject) => {
+			child.stdout.once("data", () => resolve())
+			child.once("exit", () => reject(new Error("child exited before locking")))
+		})
+		let entered = false
+		const waiting = storageLock(storage).then(async (release) => {
+			entered = true
+			await release()
+		})
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		expect(entered).toBe(false)
+		child.stdin.end("release")
+		await exited
+		await waiting
+		expect(entered).toBe(true)
+	} finally {
+		child.kill()
+	}
+	const lock = path.join(storage, "mutation.lock")
+	await fs.mkdir(lock)
+	await fs.writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: 2147483647, timestamp: Date.now(), token: "dead" }))
+	const release = await storageLock(storage)
+	await release()
+}, 60_000)
+it("refreshes a session lease and recovers an expired owner", async () => {
+	const release = await manager.acquireSessionLease("heartbeat")
+	const files = await fs.readdir(path.join(storage, "leases"))
+	const file = path.join(storage, "leases", files[0])
+	const before = JSON.parse(await fs.readFile(file, "utf8"))
+	try {
+		await vi.waitFor(
+			async () => expect(JSON.parse(await fs.readFile(file, "utf8")).timestamp).toBeGreaterThan(before.timestamp),
+			{ timeout: 10_000, interval: 100 },
+		)
+	} finally {
+		await release()
+	}
+	await fs.writeFile(file, JSON.stringify({ ...before, timestamp: Date.now() - 120_000 }))
+	const recovered = await new ThreadWorktreeManager(storage).acquireSessionLease("heartbeat")
+	await recovered()
+}, 60_000)
+
+for (const mode of ["git", "mm"] as const) {
 	it(`${mode}: removal requires confirmation when the real index cannot be inspected`, async () => {
 		if (mode === "mm") {
 			await fs.rm(workspace, { recursive: true, force: true })
@@ -254,3 +347,30 @@ for (const mode of ["git", "mm"] as const) {
 		await fs.access(mapping.cwd)
 	}, 60_000)
 }
+
+it("holds the storage lock through a lease heartbeat's ownership check and write", async () => {
+	const release = await manager.acquireSessionLease("renewal")
+	const proceed = Promise.withResolvers<void>()
+	const writer = manager as unknown as { write(file: string, data: unknown): Promise<void> }
+	const original = writer.write.bind(manager)
+	const spy = vi.spyOn(writer, "write").mockImplementation(async (file, data) => {
+		await proceed.promise
+		await original(file, data)
+	})
+	try {
+		await vi.waitFor(() => expect(spy).toHaveBeenCalled(), { timeout: 10_000 })
+		let entered = false
+		const other = new ThreadWorktreeManager(storage).exclusive(async () => {
+			entered = true
+		})
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		expect(entered).toBe(false)
+		proceed.resolve()
+		await other
+		expect(entered).toBe(true)
+	} finally {
+		proceed.resolve()
+		await release()
+		spy.mockRestore()
+	}
+}, 60_000)

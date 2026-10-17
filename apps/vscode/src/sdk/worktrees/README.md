@@ -56,7 +56,7 @@ mm runs as `nodePath mmPath isolate <branch>` and `nodePath mmPath free <branch>
 
 Bring here checks all module patches before applying them and journals each applied module. Later bring-ins contain only changes since the last transfer. Undo first tries a reverse patch. On overlap, it runs `git apply -3 -R --index` with a temporary index that represents the current files. Conflicts leave markers in the workspace and return module-prefixed paths for inline display. The user's real index stays unchanged.
 
-Take over requires clean workspace and isolate files. It detaches the isolate so Git can check out its branch in the original workspace. Removal warns when the isolate contains a diff that has not been transferred. Running threads cannot be brought in, taken over, or removed. Cleanup lists settled or completed threads and requires an explicit selection. No worktree is removed automatically.
+Take over requires clean workspace and isolate files. It detaches the isolate so Git can check out its branch in the original workspace. Removal warns when the isolate contains a diff that has not been transferred. Running threads cannot be brought in, undone, taken over, or removed. Mutations use an atomic directory lock in global storage across extension hosts, with a PID, timestamp, heartbeat, and stale-owner recovery. Session startup and every turn acquire a shared per-thread lease before reading the mapping. The lease refreshes while running or queued, and releases when idle or stopped; destructive actions check it under the storage lock. Cleanup lists settled or completed threads and requires an explicit selection. No worktree is removed automatically.
 
 ## Verification
 

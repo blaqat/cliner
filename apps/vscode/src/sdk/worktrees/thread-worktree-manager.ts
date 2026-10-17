@@ -6,6 +6,8 @@ import type { ThreadModuleDiff, ThreadWorktree, ThreadWorktreeSettings, Worktree
 
 import { createWorktree } from "@/utils/git-worktree"
 
+import { alive, heartbeatMs, type Owner, owner, storageLock } from "./storage-lock"
+
 const defaults: ThreadWorktreeSettings = { mode: "off", mmPath: "", nodePath: "node" }
 const exists = async (file: string) =>
 	fs.access(file).then(
@@ -58,10 +60,64 @@ export class ThreadWorktreeManager {
 	private queue: Promise<unknown> = Promise.resolve()
 	constructor(readonly storageDir: string) {}
 	async exclusive<T>(action: () => Promise<T>): Promise<T> {
-		const result = this.queue.then(action)
+		const result = this.queue.then(async () => {
+			const release = await storageLock(this.storageDir)
+			try {
+				return await action()
+			} finally {
+				await release()
+			}
+		})
 		this.queue = result.catch(() => {})
 		return result
 	}
+	private leaseFile(id: string) {
+		return path.join(this.storageDir, "leases", `${createHash("sha256").update(id).digest("hex")}.json`)
+	}
+	private async lease(id: string): Promise<Owner | undefined> {
+		try {
+			return JSON.parse(await fs.readFile(this.leaseFile(id), "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+			throw error
+		}
+	}
+	async assertIdle(id: string) {
+		const lease = await this.lease(id)
+		if (lease && alive(lease))
+			throw new Error("This thread is active in another window or session. Stop it there before changing its worktree.")
+	}
+	/** Acquired before reading the mapping and retained until the runtime is idle/stopped. */
+	async acquireSessionLease(id: string): Promise<() => Promise<void>> {
+		return this.exclusive(async () => {
+			await this.assertIdle(id)
+			const record = owner()
+			const file = this.leaseFile(id)
+			await fs.mkdir(path.dirname(file), { recursive: true })
+			await fs.writeFile(file, JSON.stringify(record), { mode: 0o600 })
+			let pending = Promise.resolve()
+			const timer = setInterval(() => {
+				pending = pending
+					.then(() =>
+						this.exclusive(async () => {
+							if ((await this.lease(id))?.token !== record.token) return
+							record.timestamp = Date.now()
+							await this.write(path.relative(this.storageDir, file), record)
+						}),
+					)
+					.catch(() => {})
+			}, heartbeatMs)
+			timer.unref()
+			return async () => {
+				clearInterval(timer)
+				await pending
+				await this.exclusive(async () => {
+					if ((await this.lease(id))?.token === record.token) await fs.rm(file, { force: true })
+				})
+			}
+		})
+	}
+
 	private async read<T>(file: string, fallback: T): Promise<T> {
 		try {
 			return JSON.parse(await fs.readFile(path.join(this.storageDir, file), "utf8"))
@@ -81,13 +137,15 @@ export class ThreadWorktreeManager {
 		return this.read<ThreadWorktreeSettings>("settings.json", defaults)
 	}
 	async configure(settings: ThreadWorktreeSettings) {
-		if (
-			!["off", "git", "mm"].includes(settings.mode) ||
-			typeof settings.mmPath !== "string" ||
-			typeof settings.nodePath !== "string"
-		)
-			throw new Error("Invalid worktree settings")
-		await this.write("settings.json", settings)
+		return this.exclusive(async () => {
+			if (
+				!["off", "git", "mm"].includes(settings.mode) ||
+				typeof settings.mmPath !== "string" ||
+				typeof settings.nodePath !== "string"
+			)
+				throw new Error("Invalid worktree settings")
+			await this.write("settings.json", settings)
+		})
 	}
 	private mappingFile(id: string) {
 		return path.join("threads", `${createHash("sha256").update(id).digest("hex")}.json`)
@@ -135,57 +193,61 @@ export class ThreadWorktreeManager {
 		return result
 	}
 	async create(threadId: string, title: string, workspace: string, workspaceOff = false): Promise<ThreadWorktree> {
-		const existing = await this.get(threadId)
-		if (existing) {
-			await this.assertPresent(existing)
-			return existing
-		}
-		const availability = await this.availability(workspace, workspaceOff)
-		if (!availability.available || availability.mode === "off") throw new Error(availability.reason)
-		const suffix = createHash("sha256").update(threadId).digest("hex").slice(0, 10)
-		const slug =
-			title
-				.toLowerCase()
-				.replace(/[^a-z0-9]+/g, "-")
-				.replace(/^-|-$/g, "")
-				.slice(0, 44) || "thread"
-		const branch = `cline/${slug}-${suffix}`
-		const mode = availability.mode
-		const cwd =
-			mode === "mm" ? path.join(workspace, "isolates", branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
-		const modules = mode === "mm" ? parseMmModules(await fs.readFile(path.join(workspace, ".mmrc"), "utf8")) : [""]
-		const mapping: ThreadWorktree = {
-			threadId,
-			mode,
-			branch,
-			workspace,
-			cwd,
-			createdAt: Date.now(),
-			bringIns: [],
-			modules: [],
-		}
-		for (const module of modules) {
-			const workspacePath =
-				mode === "git" ? (await git(workspace, ["rev-parse", "--show-toplevel"])).trim() : path.join(workspace, module)
-			const base = (await git(workspacePath, ["rev-parse", "HEAD"])).trim()
-			mapping.modules.push({
-				name: module,
-				workspacePath,
-				path: mode === "mm" ? path.join(cwd, path.basename(module)) : cwd,
-				base,
-			})
-		}
-		// Journal first: partial mm failures remain visible and removable, never orphaned.
-		await this.save(mapping)
-		if (mode === "mm") {
-			const settings = await this.settings()
-			await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
-		} else {
-			const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
-			if (!result.success) throw new Error(result.message)
-		}
-		await this.assertPresent(mapping)
-		return mapping
+		return this.exclusive(async () => {
+			const existing = await this.get(threadId)
+			if (existing) {
+				await this.assertPresent(existing)
+				return existing
+			}
+			const availability = await this.availability(workspace, workspaceOff)
+			if (!availability.available || availability.mode === "off") throw new Error(availability.reason)
+			const suffix = createHash("sha256").update(threadId).digest("hex").slice(0, 10)
+			const slug =
+				title
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-|-$/g, "")
+					.slice(0, 44) || "thread"
+			const branch = `cline/${slug}-${suffix}`
+			const mode = availability.mode
+			const cwd =
+				mode === "mm" ? path.join(workspace, "isolates", branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
+			const modules = mode === "mm" ? parseMmModules(await fs.readFile(path.join(workspace, ".mmrc"), "utf8")) : [""]
+			const mapping: ThreadWorktree = {
+				threadId,
+				mode,
+				branch,
+				workspace,
+				cwd,
+				createdAt: Date.now(),
+				bringIns: [],
+				modules: [],
+			}
+			for (const module of modules) {
+				const workspacePath =
+					mode === "git"
+						? (await git(workspace, ["rev-parse", "--show-toplevel"])).trim()
+						: path.join(workspace, module)
+				const base = (await git(workspacePath, ["rev-parse", "HEAD"])).trim()
+				mapping.modules.push({
+					name: module,
+					workspacePath,
+					path: mode === "mm" ? path.join(cwd, path.basename(module)) : cwd,
+					base,
+				})
+			}
+			// Journal first: partial mm failures remain visible and removable, never orphaned.
+			await this.save(mapping)
+			if (mode === "mm") {
+				const settings = await this.settings()
+				await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
+			} else {
+				const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
+				if (!result.success) throw new Error(result.message)
+			}
+			await this.assertPresent(mapping)
+			return mapping
+		})
 	}
 	async assertPresent(mapping: ThreadWorktree) {
 		for (const module of mapping.modules) {
@@ -239,187 +301,206 @@ export class ThreadWorktreeManager {
 			.digest("hex")
 	}
 	async bring(id: string) {
-		const mapping = await this.required(id)
-		const captured = await this.diffs(id, true)
-		const diffs = captured.filter((d) => d.patch)
-		if (!diffs.length) return { message: "No changes to bring here" }
-		for (const diff of diffs) await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
-		const bring = { id: randomUUID(), patches: [] as ThreadWorktree["bringIns"][number]["patches"] }
-		const folder = path.join(this.storageDir, "patches", bring.id)
-		await fs.mkdir(folder, { recursive: true })
-		for (const [i, diff] of diffs.entries()) {
-			const file = path.join(folder, `${i}.patch`)
-			await fs.writeFile(file, diff.patch, { mode: 0o600 })
-			bring.patches.push({
-				module: diff.module,
-				file,
-				applied: false,
-				previousTree: mapping.modules.find((m) => m.name === diff.module)?.lastBroughtTree,
-				tree: diff.tree,
-			})
-		}
-		await fs.writeFile(
-			path.join(folder, "manifest.json"),
-			JSON.stringify(
-				{ threadId: id, branch: mapping.branch, workspace: mapping.workspace, patches: bring.patches },
-				null,
-				2,
-			),
-			{ mode: 0o600 },
-		)
-		mapping.bringIns.push(bring)
-		await this.save(mapping)
-		for (const patch of bring.patches) {
-			const module = mapping.modules.find((m) => m.name === patch.module)!
-			await git(module.workspacePath, ["apply", "--binary", patch.file])
-			patch.applied = true
-			module.lastBroughtTree = patch.tree
+		return this.exclusive(async () => {
+			await this.assertIdle(id)
+			const mapping = await this.required(id)
+			const captured = await this.diffs(id, true)
+			const diffs = captured.filter((d) => d.patch)
+			if (!diffs.length) return { message: "No changes to bring here" }
+			for (const diff of diffs) await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
+			const bring = { id: randomUUID(), patches: [] as ThreadWorktree["bringIns"][number]["patches"] }
+			const folder = path.join(this.storageDir, "patches", bring.id)
+			await fs.mkdir(folder, { recursive: true })
+			for (const [i, diff] of diffs.entries()) {
+				const file = path.join(folder, `${i}.patch`)
+				await fs.writeFile(file, diff.patch, { mode: 0o600 })
+				bring.patches.push({
+					module: diff.module,
+					file,
+					applied: false,
+					previousTree: mapping.modules.find((m) => m.name === diff.module)?.lastBroughtTree,
+					tree: diff.tree,
+				})
+			}
+			await fs.writeFile(
+				path.join(folder, "manifest.json"),
+				JSON.stringify(
+					{ threadId: id, branch: mapping.branch, workspace: mapping.workspace, patches: bring.patches },
+					null,
+					2,
+				),
+				{ mode: 0o600 },
+			)
+			mapping.bringIns.push(bring)
 			await this.save(mapping)
-		}
-		mapping.transferredDiff = this.fingerprint(captured)
-		await this.save(mapping)
-		return { message: "Brought changes into your workspace. Patches saved.", mapping }
+			for (const patch of bring.patches) {
+				const module = mapping.modules.find((m) => m.name === patch.module)!
+				await git(module.workspacePath, ["apply", "--binary", patch.file])
+				patch.applied = true
+				module.lastBroughtTree = patch.tree
+				await this.save(mapping)
+			}
+			mapping.transferredDiff = this.fingerprint(captured)
+			await this.save(mapping)
+			return { message: "Brought changes into your workspace. Patches saved.", mapping }
+		})
 	}
 	async undo(id: string) {
-		const mapping = await this.required(id)
-		const bring = [...mapping.bringIns].reverse().find((b) => b.patches.some((p) => p.applied && !p.undone))
-		if (!bring) return { message: "No bring-in to undo" }
-		const conflicts: string[] = []
-		for (const patch of bring.patches.filter((p) => p.applied && !p.undone)) {
-			const module = mapping.modules.find((m) => m.name === patch.module)!
-			try {
-				await git(module.workspacePath, ["apply", "--check", "-R", patch.file])
-				await git(module.workspacePath, ["apply", "-R", patch.file])
-			} catch {
-				const index = path.join(this.storageDir, `undo-index-${randomUUID()}`)
-				const env = { GIT_INDEX_FILE: index }
+		return this.exclusive(async () => {
+			await this.assertIdle(id)
+			const mapping = await this.required(id)
+			const bring = [...mapping.bringIns].reverse().find((b) => b.patches.some((p) => p.applied && !p.undone))
+			if (!bring) return { message: "No bring-in to undo" }
+			const conflicts: string[] = []
+			for (const patch of bring.patches.filter((p) => p.applied && !p.undone)) {
+				const module = mapping.modules.find((m) => m.name === patch.module)!
 				try {
-					await git(module.workspacePath, ["read-tree", "HEAD"], undefined, env)
-					await git(module.workspacePath, ["add", "-A", "--", "."], undefined, env)
+					await git(module.workspacePath, ["apply", "--check", "-R", patch.file])
+					await git(module.workspacePath, ["apply", "-R", patch.file])
+				} catch {
+					const index = path.join(this.storageDir, `undo-index-${randomUUID()}`)
+					const env = { GIT_INDEX_FILE: index }
 					try {
-						await git(module.workspacePath, ["apply", "-3", "-R", "--index", patch.file], undefined, env)
-					} catch (error) {
-						const unmerged = (
-							await git(module.workspacePath, ["diff", "--name-only", "--diff-filter=U", "-z"], undefined, env)
-						)
-							.split("\0")
-							.filter(Boolean)
-						if (!unmerged.length) throw error
-						conflicts.push(...unmerged.map((file) => (module.name ? `${module.name}/${file}` : file)))
+						await git(module.workspacePath, ["read-tree", "HEAD"], undefined, env)
+						await git(module.workspacePath, ["add", "-A", "--", "."], undefined, env)
+						try {
+							await git(module.workspacePath, ["apply", "-3", "-R", "--index", patch.file], undefined, env)
+						} catch (error) {
+							const unmerged = (
+								await git(module.workspacePath, ["diff", "--name-only", "--diff-filter=U", "-z"], undefined, env)
+							)
+								.split("\0")
+								.filter(Boolean)
+							if (!unmerged.length) throw error
+							conflicts.push(...unmerged.map((file) => (module.name ? `${module.name}/${file}` : file)))
+						}
+					} finally {
+						await fs.rm(index, { force: true })
 					}
-				} finally {
-					await fs.rm(index, { force: true })
 				}
+				patch.undone = true
+				module.lastBroughtTree = patch.previousTree
+				await this.save(mapping)
 			}
-			patch.undone = true
-			module.lastBroughtTree = patch.previousTree
+			mapping.transferredDiff = undefined
 			await this.save(mapping)
-		}
-		mapping.transferredDiff = undefined
-		await this.save(mapping)
-		return {
-			message: conflicts.length ? "Resolve the conflict markers in your workspace before continuing." : "Bring-in undone",
-			conflicts,
-			mapping,
-		}
+			return {
+				message: conflicts.length
+					? "Resolve the conflict markers in your workspace before continuing."
+					: "Bring-in undone",
+				conflicts,
+				mapping,
+			}
+		})
 	}
 	async takeOver(id: string) {
-		const mapping = await this.required(id)
-		await this.assertPresent(mapping)
-		for (const module of mapping.modules) {
-			if ((await git(module.workspacePath, ["status", "--porcelain", "--", ".", ":(exclude).worktrees"])).trim())
-				return {
-					warning: `Your workspace has changes in ${module.name || "this repository"}. Commit or shelve them before taking over.`,
-				}
-			if ((await git(module.path, ["status", "--porcelain"])).trim())
-				return { warning: "Commit or bring in the worktree's changes before taking over its branch." }
-		}
-		for (const module of mapping.modules) {
-			const registered = await git(module.workspacePath, ["worktree", "list", "--porcelain", "-z"])
-			const canonical = await fs.realpath(module.path)
-			if (registered.split("\0\0").some((entry) => entry.includes(`worktree ${canonical}\0`) && entry.includes("\0locked")))
-				return { warning: `Unlock ${module.name || "the worktree"} before taking over.` }
-		}
-		const transferredDiff = this.fingerprint(await this.diffs(id))
-		// Git refuses checkout of a branch attached elsewhere. Detach the isolate first.
-		const moved: {
-			module: ThreadWorktree["modules"][number]
-			original: string
-			isolateBranch: string
-			isolateHead: string
-		}[] = []
-		try {
+		return this.exclusive(async () => {
+			await this.assertIdle(id)
+			const mapping = await this.required(id)
+			await this.assertPresent(mapping)
 			for (const module of mapping.modules) {
-				const original =
-					(await git(module.workspacePath, ["branch", "--show-current"])).trim() ||
-					(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
-				const isolateBranch = (await git(module.path, ["branch", "--show-current"])).trim()
-				const isolateHead = (await git(module.path, ["rev-parse", "HEAD"])).trim()
-				await git(module.path, ["checkout", "--detach"])
-				moved.push({ module, original, isolateBranch, isolateHead })
-				await git(module.workspacePath, ["checkout", mapping.branch])
+				if ((await git(module.workspacePath, ["status", "--porcelain", "--", ".", ":(exclude).worktrees"])).trim())
+					return {
+						warning: `Your workspace has changes in ${module.name || "this repository"}. Commit or shelve them before taking over.`,
+					}
+				if ((await git(module.path, ["status", "--porcelain"])).trim())
+					return { warning: "Commit or bring in the worktree's changes before taking over its branch." }
 			}
-		} catch (error) {
-			const rollbackErrors: string[] = []
-			for (const entry of moved.reverse()) {
-				try {
-					await git(entry.module.workspacePath, ["checkout", entry.original])
-					await git(
-						entry.module.path,
-						entry.isolateBranch ? ["checkout", entry.isolateBranch] : ["checkout", "--detach", entry.isolateHead],
-					)
-				} catch (rollbackError) {
-					rollbackErrors.push(String(rollbackError))
+			for (const module of mapping.modules) {
+				const registered = await git(module.workspacePath, ["worktree", "list", "--porcelain", "-z"])
+				const canonical = await fs.realpath(module.path)
+				if (
+					registered
+						.split("\0\0")
+						.some((entry) => entry.includes(`worktree ${canonical}\0`) && entry.includes("\0locked"))
+				)
+					return { warning: `Unlock ${module.name || "the worktree"} before taking over.` }
+			}
+			const transferredDiff = this.fingerprint(await this.diffs(id))
+			// Git refuses checkout of a branch attached elsewhere. Detach the isolate first.
+			const moved: {
+				module: ThreadWorktree["modules"][number]
+				original: string
+				isolateBranch: string
+				isolateHead: string
+			}[] = []
+			try {
+				for (const module of mapping.modules) {
+					const original =
+						(await git(module.workspacePath, ["branch", "--show-current"])).trim() ||
+						(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
+					const isolateBranch = (await git(module.path, ["branch", "--show-current"])).trim()
+					const isolateHead = (await git(module.path, ["rev-parse", "HEAD"])).trim()
+					await git(module.path, ["checkout", "--detach"])
+					moved.push({ module, original, isolateBranch, isolateHead })
+					await git(module.workspacePath, ["checkout", mapping.branch])
 				}
+			} catch (error) {
+				const rollbackErrors: string[] = []
+				for (const entry of moved.reverse()) {
+					try {
+						await git(entry.module.workspacePath, ["checkout", entry.original])
+						await git(
+							entry.module.path,
+							entry.isolateBranch ? ["checkout", entry.isolateBranch] : ["checkout", "--detach", entry.isolateHead],
+						)
+					} catch (rollbackError) {
+						rollbackErrors.push(String(rollbackError))
+					}
+				}
+				throw new Error(
+					`${String(error)}${rollbackErrors.length ? `\nCould not restore checkout: ${rollbackErrors.join("\n")}` : ""}`,
+				)
 			}
-			throw new Error(
-				`${String(error)}${rollbackErrors.length ? `\nCould not restore checkout: ${rollbackErrors.join("\n")}` : ""}`,
-			)
-		}
-		mapping.transferredDiff = transferredDiff
-		mapping.takenOver = true
-		await this.save(mapping)
-		return { message: "Worktree branch checked out in your workspace", mapping }
+			mapping.transferredDiff = transferredDiff
+			mapping.takenOver = true
+			await this.save(mapping)
+			return { message: "Worktree branch checked out in your workspace", mapping }
+		})
 	}
 	async remove(id: string, confirmed = false) {
-		const mapping = await this.required(id)
-		if (!confirmed) {
-			let changed = true
-			try {
-				const diffs = await this.diffs(id)
-				changed = diffs.some((d) => d.patch) && this.fingerprint(diffs) !== mapping.transferredDiff
-				// A working-file snapshot cannot represent a different staged version.
-				for (const diff of diffs) {
-					const staged = await git(diff.worktreePath, ["diff", "--cached", "--binary", "HEAD"])
-					if (staged && (await git(diff.worktreePath, ["diff", "--cached", "--binary", diff.tree]))) changed = true
+		return this.exclusive(async () => {
+			await this.assertIdle(id)
+			const mapping = await this.required(id)
+			if (!confirmed) {
+				let changed = true
+				try {
+					const diffs = await this.diffs(id)
+					changed = diffs.some((d) => d.patch) && this.fingerprint(diffs) !== mapping.transferredDiff
+					// A working-file snapshot cannot represent a different staged version.
+					for (const diff of diffs) {
+						const staged = await git(diff.worktreePath, ["diff", "--cached", "--binary", "HEAD"])
+						if (staged && (!diff.tree || (await git(diff.worktreePath, ["diff", "--cached", "--binary", diff.tree]))))
+							changed = true
+					}
+				} catch {
+					changed = true
+					/* Partial isolates and unreadable indexes still need explicit removal. */
 				}
-			} catch {
-				changed = true
-				/* Partial isolates and unreadable indexes still need explicit removal. */
+				if (changed) return { warning: "Changes were never brought in. Remove this worktree and discard those changes?" }
 			}
-			if (changed) return { warning: "Changes were never brought in. Remove this worktree and discard those changes?" }
-		}
-		if (mapping.mode === "mm") {
-			const settings = await this.settings()
-			await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
-		} else {
-			const registered = await git(mapping.workspace, ["worktree", "list", "--porcelain", "-z"])
-			const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)
-			if (registered.split("\0").includes(`worktree ${canonical}`)) {
-				await git(mapping.workspace, [
-					"worktree",
-					"remove",
-					...(confirmed || mapping.transferredDiff ? ["--force"] : []),
-					mapping.cwd,
-				])
-			} else if (await exists(mapping.cwd))
-				throw new Error(
-					"The recorded path is no longer a registered worktree. Inspect it before removing the thread mapping.",
-				)
-		}
-		for (const module of mapping.modules)
-			if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
-		await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
-		return { message: "Worktree removed. Saved bring-in patches are kept." }
+			if (mapping.mode === "mm") {
+				const settings = await this.settings()
+				await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
+			} else {
+				const registered = await git(mapping.workspace, ["worktree", "list", "--porcelain", "-z"])
+				const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)
+				if (registered.split("\0").includes(`worktree ${canonical}`)) {
+					await git(mapping.workspace, [
+						"worktree",
+						"remove",
+						...(confirmed || mapping.transferredDiff ? ["--force"] : []),
+						mapping.cwd,
+					])
+				} else if (await exists(mapping.cwd))
+					throw new Error(
+						"The recorded path is no longer a registered worktree. Inspect it before removing the thread mapping.",
+					)
+			}
+			for (const module of mapping.modules)
+				if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
+			await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
+			return { message: "Worktree removed. Saved bring-in patches are kept." }
+		})
 	}
 }

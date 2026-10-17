@@ -1291,3 +1291,42 @@ it("notifies child cleanup when replacement retires the parent's runtime", async
 	expect(onSessionReplaced).toHaveBeenCalledExactlyOnceWith(parent.sessionId)
 	expect(oldHost.stop).toHaveBeenCalledWith(parent.sessionId)
 })
+
+it("holds admission through mapping lookup, startup and sending, then releases on idle", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const admission = Promise.withResolvers<() => Promise<void>>()
+	const release = vi.fn(async () => {})
+	const acquireSessionLease = vi.fn().mockReturnValueOnce(admission.promise).mockResolvedValue(release)
+	const prepareStartInput = vi.fn((input) => input)
+	const lifecycle = makeLifecycle({ acquireSessionLease, prepareStartInput })
+	const started = lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)
+	await vi.waitFor(() => expect(acquireSessionLease).toHaveBeenCalledOnce())
+	expect(prepareStartInput).not.toHaveBeenCalled()
+	expect(host.start).not.toHaveBeenCalled()
+	admission.resolve(release)
+	await started
+	expect(release).not.toHaveBeenCalled()
+	lifecycle.setRunning(false)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	const turn = Promise.withResolvers<void>()
+	host.send.mockReturnValueOnce(turn.promise)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+	expect(acquireSessionLease).toHaveBeenCalledTimes(2)
+	expect(release).toHaveBeenCalledOnce()
+	turn.resolve()
+	await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+	await lifecycle.dispose()
+})
+it("releases admission if startup fails", async () => {
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({
+		acquireSessionLease: async () => release,
+		prepareStartInput: async () => {
+			throw new Error("missing isolate")
+		},
+	})
+	await expect(lifecycle.startNewSession({ config: { sessionId: "failure" } } as StartInput)).rejects.toThrow("missing isolate")
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+})

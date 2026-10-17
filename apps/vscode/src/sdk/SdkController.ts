@@ -589,6 +589,7 @@ export class Controller {
 			getCwd: () => this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
+			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
 			prepareStartInput: async (input) => {
 				const id = input.config?.sessionId || createSessionId()
 				const mapping = await this.threadWorktrees.get(id)
@@ -1057,17 +1058,14 @@ export class Controller {
 			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
 				const enabled = runInWorktree === true
 				if (!enabled) return workspace
-				return this.threadWorktrees.exclusive(
-					async () =>
-						(
-							await this.threadWorktrees.create(
-								id,
-								title,
-								workspace,
-								!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
-							)
-						).cwd,
-				)
+				return (
+					await this.threadWorktrees.create(
+						id,
+						title,
+						workspace,
+						!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+					)
+				).cwd
 			},
 			consumeDraftApiSelection: () => {
 				const draft = this.draftApiSelection
@@ -2447,60 +2445,58 @@ export class Controller {
 	}
 
 	async threadWorktreeAction(request: ThreadWorktreeActionRequest): Promise<WorktreeActionResult> {
-		return this.threadWorktrees.exclusive(async () => {
-			const workspace = await this.getWorkspaceRoot()
-			const data = request.json ? JSON.parse(request.json) : {}
-			const id = request.threadId
-			const running = this.sessions.getSession(id)?.isRunning
-			const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
-			switch (request.action) {
-				case "state": {
-					const history = await this.taskHistory.listHistory({ hydrate: false })
-					return {
-						state: {
-							settings: await this.threadWorktrees.settings(),
-							availability: await this.threadWorktrees.availability(workspace, workspaceOff),
-							mapping: id ? await this.threadWorktrees.get(id) : undefined,
-							settled: (
-								await this.threadWorktrees.settled(
-									history.map(sessionHistoryRecordToHistoryItem),
-									history.filter((item) => item.status === "completed").map((item) => item.sessionId),
-								)
-							).filter((m) => m.workspace === workspace && !this.sessions.getSession(m.threadId)?.isRunning),
-						},
-					}
+		const workspace = await this.getWorkspaceRoot()
+		const data = request.json ? JSON.parse(request.json) : {}
+		const id = request.threadId
+		const running = this.sessions.getSession(id)?.isRunning
+		const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
+		switch (request.action) {
+			case "state": {
+				const history = await this.taskHistory.listHistory({ hydrate: false })
+				return {
+					state: {
+						settings: await this.threadWorktrees.settings(),
+						availability: await this.threadWorktrees.availability(workspace, workspaceOff),
+						mapping: id ? await this.threadWorktrees.get(id) : undefined,
+						settled: (
+							await this.threadWorktrees.settled(
+								history.map(sessionHistoryRecordToHistoryItem),
+								history.filter((item) => item.status === "completed").map((item) => item.sessionId),
+							)
+						).filter((m) => m.workspace === workspace && !this.sessions.getSession(m.threadId)?.isRunning),
+					},
 				}
-				case "configure":
-					await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
-					return {}
-				case "workspaceOff":
-					this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
-					await this.stateManager.flushPendingState()
-					return {}
-				case "diffs":
-					return { diffs: await this.threadWorktrees.diffs(id) }
-				case "open": {
-					const mapping = await this.threadWorktrees.get(id)
-					if (!mapping) throw new Error("This thread has no worktree")
-					const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
-					if (!opened.success) throw new Error("Could not open the worktree window")
-					return {}
-				}
-				case "bring":
-					if (running) return { warning: "Wait for the thread to finish before bringing changes here." }
-					return this.threadWorktrees.bring(id)
-				case "undo":
-					return this.threadWorktrees.undo(id)
-				case "takeOver":
-					if (running) return { warning: "Stop this thread before taking over its branch." }
-					return this.threadWorktrees.takeOver(id)
-				case "remove":
-					if (running) return { warning: "Stop this thread before removing its worktree." }
-					return this.threadWorktrees.remove(id, request.confirmed)
-				default:
-					throw new Error("Unknown worktree action")
 			}
-		})
+			case "configure":
+				await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
+				return {}
+			case "workspaceOff":
+				this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
+				await this.stateManager.flushPendingState()
+				return {}
+			case "diffs":
+				return { diffs: await this.threadWorktrees.diffs(id) }
+			case "open": {
+				const mapping = await this.threadWorktrees.get(id)
+				if (!mapping) throw new Error("This thread has no worktree")
+				const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
+				if (!opened.success) throw new Error("Could not open the worktree window")
+				return {}
+			}
+			case "bring":
+				if (running) return { warning: "Wait for the thread to finish before bringing changes here." }
+				return this.threadWorktrees.bring(id)
+			case "undo":
+				return this.threadWorktrees.undo(id)
+			case "takeOver":
+				if (running) return { warning: "Stop this thread before taking over its branch." }
+				return this.threadWorktrees.takeOver(id)
+			case "remove":
+				if (running) return { warning: "Stop this thread before removing its worktree." }
+				return this.threadWorktrees.remove(id, request.confirmed)
+			default:
+				throw new Error("Unknown worktree action")
+		}
 	}
 
 	// ---- Task lifecycle ----
