@@ -291,6 +291,28 @@ describe("SDK remote-config coordination", () => {
 		expect(initTask).toHaveBeenCalledWith("start immediately", undefined, undefined, undefined, undefined)
 	})
 
+	it("hands thread-title generation the new thread's captured mode and selection", async () => {
+		const selection = { askProfileId: "ask-a", actProfileId: "composer-pick", actModeReasoningEffort: "high" }
+		const generateThreadTitle = vi.fn()
+		const controller = {
+			waitForInitialRemoteConfig: vi.fn(async () => {}),
+			taskStart: { initTask: vi.fn(async () => "task-id") },
+			taskSessions: new Map([["task-id", { mode: "plan", apiSelection: selection }]]),
+			// Global Act/Ask state differs; it must not leak into the title call.
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			generateThreadTitle,
+		}
+
+		await SdkController.prototype.initTask.call(controller as never, "name this thread")
+		// The captured selection is a copy: later composer edits can't change it.
+		selection.actProfileId = "changed-later"
+
+		expect(generateThreadTitle).toHaveBeenCalledWith("task-id", "name this thread", {
+			mode: "plan",
+			selection: { askProfileId: "ask-a", actProfileId: "composer-pick", actModeReasoningEffort: "high" },
+		})
+	})
+
 	describe("after a Cline sign-in error offers to retry a prompt", () => {
 		function controllerShowingSignInError(options: { existingTask?: boolean } = {}) {
 			const controller = {

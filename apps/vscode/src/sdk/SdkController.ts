@@ -2501,8 +2501,8 @@ export class Controller {
 		if (taskId && !historyItem && prompt?.trim()) {
 			// Captured now, from what the new thread actually started with
 			// (composer profile/effort overrides and mode included).
-			const context = this.taskSessions.get(taskId)
-			const globalMode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+			const context = this.taskSessions?.get(taskId)
+			const globalMode = this.stateManager?.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
 			void this.generateThreadTitle(taskId, prompt, {
 				mode: context?.mode ?? globalMode,
 				selection: context?.apiSelection ? structuredClone(context.apiSelection) : undefined,
