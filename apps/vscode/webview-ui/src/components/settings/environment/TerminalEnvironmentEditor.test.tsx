@@ -33,6 +33,17 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 			/>
 		</label>
 	),
+	VSCodeRadioGroup: ({ children, onChange }: any) => (
+		<div onChange={onChange} role="radiogroup">
+			{children}
+		</div>
+	),
+	VSCodeRadio: ({ children, value, checked }: any) => (
+		<label>
+			<input checked={checked} name="scope" onChange={() => {}} type="radio" value={value} />
+			{children}
+		</label>
+	),
 	VSCodeButton: ({ children, onClick, disabled }: any) => (
 		<button disabled={disabled} onClick={onClick} type="button">
 			{children}

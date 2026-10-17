@@ -1,9 +1,9 @@
 import { BooleanRequest, EmptyRequest } from "@shared/proto/cline/common"
 import type { TerminalEnvironmentResolution, TerminalEnvironmentVariable } from "@shared/proto/cline/state"
 import { globalEnvFilePathProblem, type TerminalEnvironmentWebviewScope } from "@shared/terminal-environment"
-import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
-import { Eye, EyeOff, Plus, X } from "lucide-react"
+import { VSCodeRadio, VSCodeRadioGroup, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import { useState } from "react"
+import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { StateServiceClient } from "@/services/grpc-client"
 import { updateSetting } from "../utils/settingsHandlers"
@@ -33,6 +33,34 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 const MASK_PLACEHOLDER = "••••••••"
+
+/** A codicon-only row action (show/hide, add, remove), like the rule rows' edit and delete. */
+function IconAction({
+	icon,
+	label,
+	title,
+	disabled,
+	onClick,
+}: {
+	icon: string
+	label: string
+	title?: string
+	disabled?: boolean
+	onClick: () => void
+}) {
+	return (
+		<Button
+			aria-label={label}
+			className="size-6 shrink-0 text-description hover:text-foreground"
+			disabled={disabled}
+			onClick={onClick}
+			size="icon"
+			title={title ?? label}
+			variant="icon">
+			<span aria-hidden className={`codicon codicon-${icon} text-[14px]!`} />
+		</Button>
+	)
+}
 
 function scopeVariableNames(scope: TerminalEnvironmentWebviewScope | undefined): string[] {
 	return Object.keys(scope?.variables ?? {})
@@ -191,46 +219,45 @@ function TerminalEnvironmentEditor() {
 
 	return (
 		<div className="mb-4">
-			<div className="font-medium mb-1">Environment</div>
-			<p className="text-xs text-(--vscode-descriptionForeground) mb-2">
+			<label className="font-medium block mb-1" htmlFor="terminal-environment-scope">
+				Environment
+			</label>
+			<p className="text-xs text-description mt-0 mb-2">
 				Applied to every command Cline runs. Global is the default; workspace values override it and are stored outside
 				the repo.
 			</p>
 
 			<div className="flex items-center gap-1 mb-2">
-				{(["global", "workspace"] as const).map((option) => (
-					<button
-						aria-pressed={scope === option}
-						className={`text-xs px-2 py-0.5 rounded-sm border border-solid cursor-pointer ${
-							scope === option
-								? "border-(--vscode-focusBorder) bg-(--vscode-list-activeSelectionBackground) text-(--vscode-list-activeSelectionForeground)"
-								: "border-(--vscode-panel-border) bg-transparent text-(--vscode-foreground)"
-						}`}
-						key={option}
-						onClick={() => switchScope(option)}
-						type="button">
-						{option === "global" ? "Global" : "Workspace"}
-					</button>
-				))}
+				<VSCodeRadioGroup
+					id="terminal-environment-scope"
+					onChange={(event: any) => {
+						const value = event.target?.value
+						if (value === "global" || value === "workspace") switchScope(value)
+					}}
+					orientation="horizontal"
+					value={scope}>
+					<VSCodeRadio checked={scope === "global"} value="global">
+						Global
+					</VSCodeRadio>
+					<VSCodeRadio checked={scope === "workspace"} value="workspace">
+						Workspace
+					</VSCodeRadio>
+				</VSCodeRadioGroup>
 				<span className="flex-1" />
-				<button
-					aria-label={revealed ? "Hide environment values" : "Show environment values"}
-					className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-80 hover:opacity-100"
+				<IconAction
 					disabled={revealing}
+					icon={revealed ? "eye-closed" : "eye"}
+					label={revealed ? "Hide environment values" : "Show environment values"}
 					onClick={() => void toggleReveal()}
 					title={revealed ? "Hide all values" : "Show all values"}
-					type="button">
-					{revealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-				</button>
+				/>
 			</div>
 
 			<div className="flex flex-col gap-1 mb-2">
-				{names.length === 0 && (
-					<p className="text-xs text-(--vscode-descriptionForeground)">No variables in this scope.</p>
-				)}
+				{names.length === 0 && <p className="text-xs text-description m-0">No variables in this scope.</p>}
 				{names.map((name) => (
 					<div className="flex items-center gap-1" key={name}>
-						<span className="w-40 shrink-0 truncate text-xs font-mono text-(--vscode-foreground)" title={name}>
+						<span className="ph-no-capture w-40 shrink-0 truncate text-xs font-mono text-foreground" title={name}>
 							{name}
 						</span>
 						<VSCodeTextField
@@ -247,13 +274,7 @@ function TerminalEnvironmentEditor() {
 							type={revealed ? "text" : "password"}
 							value={draftValue(name)}
 						/>
-						<button
-							aria-label={`Remove ${name}`}
-							className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-60 hover:opacity-100"
-							onClick={() => removeVariable(name)}
-							type="button">
-							<X className="size-3" />
-						</button>
+						<IconAction icon="close" label={`Remove ${name}`} onClick={() => removeVariable(name)} />
 					</div>
 				))}
 				<div className="flex items-center gap-1">
@@ -282,19 +303,17 @@ function TerminalEnvironmentEditor() {
 						type={revealed ? "text" : "password"}
 						value={newRows[scope].value}
 					/>
-					<button
-						aria-label={`Add ${scope} variable`}
-						className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-80 hover:opacity-100"
+					<IconAction
 						disabled={!newRows[scope].name.trim()}
+						icon="add"
+						label={`Add ${scope} variable`}
 						onClick={addVariable}
-						type="button">
-						<Plus className="size-3.5" />
-					</button>
+					/>
 				</div>
 			</div>
 
 			<div className="mb-2">
-				<label className="text-xs block mb-1" htmlFor={`env-file-${scope}`}>
+				<label className="text-xs font-medium block mb-1" htmlFor={`env-file-${scope}`}>
 					.env file path (optional)
 				</label>
 				<VSCodeTextField
@@ -306,11 +325,11 @@ function TerminalEnvironmentEditor() {
 					value={envPathValue}
 				/>
 				{envPathProblem ? (
-					<p className="text-xs text-(--vscode-errorForeground) mt-1" role="alert">
+					<p className="text-xs text-error mt-1 mb-0" role="alert">
 						{envPathProblem}
 					</p>
 				) : (
-					<p className="text-xs text-(--vscode-descriptionForeground) mt-1">
+					<p className="text-xs text-description mt-1 mb-0">
 						{scope === "global"
 							? "Absolute or ~-relative path."
 							: "Relative paths resolve against the workspace root."}{" "}
@@ -320,20 +339,18 @@ function TerminalEnvironmentEditor() {
 			</div>
 
 			<div className="mb-2">
-				<label className="text-xs block mb-1">Extra PATH entries</label>
+				<div className="text-xs font-medium mb-1">Extra PATH entries</div>
 				<div className="flex flex-col gap-1">
 					{pathEntries.map((entry) => (
 						<div className="flex items-center gap-1" key={entry}>
-							<span className="flex-1 truncate text-xs font-mono text-(--vscode-foreground)" title={entry}>
+							<span className="ph-no-capture flex-1 truncate text-xs font-mono text-foreground" title={entry}>
 								{entry}
 							</span>
-							<button
-								aria-label={`Remove PATH entry ${entry}`}
-								className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-60 hover:opacity-100"
+							<IconAction
+								icon="close"
+								label={`Remove PATH entry ${entry}`}
 								onClick={() => removePathEntry(entry)}
-								type="button">
-								<X className="size-3" />
-							</button>
+							/>
 						</div>
 					))}
 					<div className="flex items-center gap-1">
@@ -344,14 +361,12 @@ function TerminalEnvironmentEditor() {
 							placeholder="/path/to/bin"
 							value={newPath}
 						/>
-						<button
-							aria-label={`Add ${scope} PATH entry`}
-							className="bg-transparent border-0 p-1 cursor-pointer text-(--vscode-foreground) opacity-80 hover:opacity-100"
+						<IconAction
 							disabled={!newPath.trim()}
+							icon="add"
+							label={`Add ${scope} PATH entry`}
 							onClick={addPathEntry}
-							type="button">
-							<Plus className="size-3.5" />
-						</button>
+						/>
 					</div>
 				</div>
 			</div>
@@ -391,20 +406,20 @@ function ResolvedEnvironmentPreview({ resolved, setResolved }: ResolvedPreviewPr
 			onToggle={(e) => {
 				if ((e.target as HTMLDetailsElement).open && resolved === undefined) void load()
 			}}>
-			<summary className="cursor-pointer text-(--vscode-foreground) select-none">Resolved environment</summary>
-			<div className="mt-1 rounded-sm border border-solid border-(--vscode-panel-border) p-2 bg-(--vscode-editor-background)">
-				{loading && <p className="text-(--vscode-descriptionForeground)">Resolving…</p>}
+			<summary className="cursor-pointer text-xs font-medium text-foreground select-none">Resolved environment</summary>
+			<div className="mt-1 rounded-xs border border-editor-group-border bg-code p-2">
+				{loading && <p className="m-0 text-description">Resolving…</p>}
 				{!loading && resolved !== undefined && (
 					<>
 						{resolved.length === 0 && (
-							<p className="text-(--vscode-descriptionForeground)">
+							<p className="m-0 text-description">
 								No configured variables — commands use the process environment.
 							</p>
 						)}
 						{resolved.map((variable) => (
 							<div className="flex items-center gap-2 font-mono text-[11px]" key={variable.name}>
-								<span className="flex-1 truncate text-(--vscode-foreground)">{variable.name}</span>
-								<span className="text-(--vscode-descriptionForeground)">
+								<span className="ph-no-capture flex-1 truncate text-foreground">{variable.name}</span>
+								<span className="text-description">
 									{SOURCE_LABELS[variable.source] ?? variable.source}
 									{variable.overriddenSource
 										? ` overrides ${SOURCE_LABELS[variable.overriddenSource] ?? variable.overriddenSource}`
@@ -412,7 +427,7 @@ function ResolvedEnvironmentPreview({ resolved, setResolved }: ResolvedPreviewPr
 								</span>
 							</div>
 						))}
-						<p className="text-(--vscode-descriptionForeground) mt-1">
+						<p className="m-0 mt-1 text-description">
 							Values are never shown here; check your shell for the final environment.
 						</p>
 					</>
