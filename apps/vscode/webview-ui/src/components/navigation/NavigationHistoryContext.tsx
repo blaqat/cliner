@@ -58,6 +58,7 @@ interface ViewState {
 	showMcp: boolean
 	showAccount: boolean
 	showWorktrees: boolean
+	showWalkthrough?: boolean
 	taskGroupView: { id: string; page: "home" | "notebook" } | null
 	threadId?: string
 	searchOpen: boolean
@@ -70,6 +71,7 @@ export function deriveLocation(view: ViewState): NavLocation {
 	if (view.showMarketplace) return { kind: "marketplace" }
 	if (view.showMcp) return { kind: "mcp" }
 	if (view.showAccount) return { kind: "account" }
+	if (view.showWalkthrough && view.threadId) return { kind: "walkthrough", id: view.threadId }
 	if (view.showWorktrees) return { kind: "worktrees" }
 	if (view.taskGroupView) return { kind: "task", id: view.taskGroupView.id, page: view.taskGroupView.page }
 	if (view.threadId) return { kind: "thread", id: view.threadId }
@@ -87,6 +89,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 		showMcp,
 		showAccount,
 		showWorktrees,
+		showWalkthrough,
 		taskGroupView,
 		currentTaskItem,
 		taskHistory,
@@ -112,6 +115,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 				showMcp,
 				showAccount,
 				showWorktrees,
+				showWalkthrough,
 				taskGroupView,
 				threadId: currentTaskItem?.id,
 				searchOpen,
@@ -124,6 +128,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 			showMcp,
 			showAccount,
 			showWorktrees,
+			showWalkthrough,
 			taskGroupView,
 			currentTaskItem?.id,
 			searchOpen,
@@ -171,6 +176,10 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 				return
 			case "task":
 				actions.navigateToTaskGroup(location.id, location.page)
+				return
+			case "walkthrough":
+				actions.navigateToWalkthrough()
+				if (actions.currentTaskItem?.id !== location.id) void openTask(location.id)
 				return
 			case "thread":
 				actions.navigateToChat()

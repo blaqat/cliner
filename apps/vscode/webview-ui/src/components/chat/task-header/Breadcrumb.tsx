@@ -7,7 +7,7 @@ import { HeaderIconButton } from "./HeaderIconButton"
 export interface Crumb {
 	id: string
 	label: string
-	kind: "home" | "task" | "thread"
+	kind: "home" | "task" | "thread" | "page"
 	/** Aside or subagent, shown with a `↳` prefix. */
 	sub?: boolean
 	/** Absent on the current (last) crumb. */

@@ -44,8 +44,17 @@ const MENU_ITEM_CLASS =
  * in the composer. The thread's tags sit on a compact line below.
  */
 const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
-	const { currentBranch, currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
-		useExtensionState()
+	const {
+		navigateToWalkthrough,
+		currentBranch,
+		currentTaskItem,
+		environment,
+		workspaceRoots,
+		platform,
+		sessionStatuses,
+		taskHistory,
+		taskGroups,
+	} = useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
 	// Shown until the saved title comes back through history.
@@ -162,6 +171,17 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
 							<div className="flex flex-col" role="menu">
 								{taskId && <ThreadWorktreeActions threadId={taskId} />}
+								<button
+									className={MENU_ITEM_CLASS}
+									disabled={!taskId}
+									onClick={() => {
+										setMenuOpen(false)
+										navigateToWalkthrough()
+									}}
+									role="menuitem"
+									type="button">
+									Change walkthrough
+								</button>
 								<button
 									className={MENU_ITEM_CLASS}
 									disabled={!task.text}
