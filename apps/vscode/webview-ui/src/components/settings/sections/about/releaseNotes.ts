@@ -16,7 +16,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 		upcoming: true,
 		notes: [
 			"⌘K / Ctrl+K no longer starts a VS Code chord while Cline is focused",
-			"Suggests the task for your checked-out branch; type branch:name to add a branch tag",
+			"Suggests the task for your checked-out branch",
 			"Notebook review and history pages, with Convert to rule, skill or workflow",
 			"# mentions notes from any task; thread: mentions threads; message links",
 			"Toasts for background threads, and Back with a session history",
@@ -26,8 +26,45 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Worktrees: run a thread in a git or mm worktree",
 			"Change walkthrough with notes you can send back to the thread",
 			"Scripts: saved commands with typed options",
-			"Ask mode can no longer write files through the terminal",
 		],
+	},
+	{
+		version: "4.1.22-fork.23",
+		date: "2026-10-14",
+		notes: ["Type branch:name to add a branch tag"],
+	},
+	{
+		version: "4.1.22-fork.22",
+		date: "2026-10-14",
+		notes: ["Active tasks sort among threads by last activity"],
+	},
+	{
+		version: "4.1.22-fork.21",
+		date: "2026-10-14",
+		notes: [
+			"Tag row on threads, tag chips in the inbox and a quick branch tag; threads inherit their task's tags",
+			"Settled tasks leave the active inbox; a task shows as soon as you send; task timeline view",
+		],
+	},
+	{
+		version: "4.1.22-fork.20",
+		date: "2026-10-13",
+		notes: ["The first message is always a chat bubble; editing a message keeps the thread"],
+	},
+	{
+		version: "4.1.22-fork.19",
+		date: "2026-10-13",
+		notes: [
+			"Tasks and the notebook: task groups on home, a task page, a notebook page, a notebook tool for the agent and a wrap-up review",
+			"Search across threads, tasks, notes and messages",
+			"Ask mode can no longer write files through the terminal, including through wrappers, xargs, find or parallel",
+			"Inbox rows take their time from subthreads and subagents; the # menu follows the open thread",
+		],
+	},
+	{
+		version: "4.1.22-fork.18",
+		date: "2026-10-08",
+		notes: ["Subagent token totals stay consistent across reload and cancel"],
 	},
 	{
 		version: "4.1.22-fork.17",
