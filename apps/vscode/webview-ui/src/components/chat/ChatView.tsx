@@ -6,6 +6,7 @@ import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
 import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { SearchView } from "@/components/search/SearchView"
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
@@ -434,6 +435,16 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const openSearch = useCallback((query: string) => setSearchQuery(query), [])
 	const closeSearch = useCallback(() => setSearchQuery(null), [])
 	const showSearch = !task && searchQuery !== null
+	// Back history needs ChatView's thread and search state; lend it the controls.
+	const navigation = useNavigationHistory()
+	const registerChatNavigation = navigation?.registerChat
+	const reportSearch = navigation?.reportSearch
+	const closeThread = messageHandlers.handleTaskCloseButtonClick
+	useEffect(
+		() => registerChatNavigation?.({ closeThread: () => void closeThread(), openSearch, closeSearch }),
+		[registerChatNavigation, closeThread, openSearch, closeSearch],
+	)
+	useEffect(() => reportSearch?.(showSearch), [reportSearch, showSearch])
 	// Opening a thread from anywhere leaves search; coming home lands on home, not stale results.
 	useEffect(() => {
 		if (taskTs !== undefined) setSearchQuery(null)

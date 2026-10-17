@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { BackButton } from "@/components/navigation/BackButton"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { HeaderIconButton } from "./HeaderIconButton"
@@ -61,7 +62,8 @@ const CrumbLabel = ({ crumb }: { crumb: Crumb }) => (
 )
 
 /**
- * `‹ ⌂ / Task / Thread / ↳ subthread`. When the levels don't fit, everything
+ * `‹ ⌂ / Task / Thread / ↳ subthread`. ‹ is session history (see BackButton);
+ * the crumbs stay the hierarchy. When the levels don't fit, everything
  * between home and the current thread collapses into `…`, which opens a menu of
  * every level in order. ✎ or a double-click renames the current thread inline.
  */
@@ -130,13 +132,12 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 
 	return (
 		<nav aria-label="Thread path" className="flex min-w-0 flex-1 items-center gap-1" data-testid="task-breadcrumb">
-			<HeaderIconButton
-				data-testid="crumb-back"
-				disabled={!parent?.onSelect}
-				icon="chevron-left"
-				label="Back"
-				onClick={parent?.onSelect}
-				tooltip={parent ? `Back to ${parent.kind === "home" ? "home" : parent.label}` : "Back"}
+			<BackButton
+				crumbIds={crumbs.map((crumb) => crumb.id)}
+				fallback={{
+					label: parent ? (parent.kind === "home" ? "home" : parent.label) : "home",
+					onSelect: parent?.onSelect,
+				}}
 			/>
 			<div className="flex min-w-0 flex-1 items-center gap-1" ref={listRef}>
 				{crumbs.length > 1 && (
