@@ -27,7 +27,7 @@ const McpServersPanel = ({ onOpenSettings }: { onOpenSettings: () => void }) => 
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col" data-testid="mcp-servers-panel">
-			<div className="flex-1 overflow-y-auto px-3 pb-3 pt-1" style={{ minHeight: 0 }}>
+			<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1">
 				<ServersToggleList hasTrashIcon={false} isExpandable={false} listGap="small" servers={mcpServers} />
 			</div>
 			<button
