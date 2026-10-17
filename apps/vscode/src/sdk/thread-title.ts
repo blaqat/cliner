@@ -2,17 +2,12 @@ import type { ApiConfiguration } from "@shared/api"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { Logger } from "@shared/services/Logger"
 import type { Mode } from "@shared/storage/types"
-import {
-	type ApiProfileStore,
-	buildApiConfigurationFromProfile,
-	readApiConfigProfiles,
-	readProfileSecrets,
-	resolveApiConfigurationForTaskSelection,
-} from "@/core/controller/models/apiProfiles"
+import { type ApiProfileStore, resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
+import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/controller/models/modelProfiles"
 import { buildApiHandler } from "./sdk-api-handler"
 
 /**
- * One-shot thread titles (Profiles → Used by → Thread titles). Enabled
+ * One-shot thread titles (Settings › Profiles › Text generation). Enabled
  * explicitly because it costs a model call per new thread. Runs once, after
  * the first message of a fresh thread; the stored flag plus the user-title
  * guard in applyGeneratedThreadTitle make regen impossible.
@@ -51,21 +46,18 @@ export interface ThreadTitleSource {
 	selection?: TaskApiSelection
 }
 
-/** Chosen profile, else the thread's own captured configuration and mode. */
+/** Chosen profile (its configuration at its effort), else the thread's own captured configuration and mode. */
 function resolveTitleApiConfiguration(
 	store: ApiProfileStore,
 	thread: ThreadTitleSource | undefined,
-): { configuration: ApiConfiguration; mode: Mode } {
-	const profileId = store.getGlobalStateKey("threadTitlesProfileId")
-	const profile = profileId ? readApiConfigProfiles(store).find((candidate) => candidate.id === profileId) : undefined
-	if (profile) {
-		const secrets = readProfileSecrets(store, profile.id)
+): { configuration: ApiConfiguration; mode: Mode; reasoning: boolean } {
+	const resolved = resolveModelProfile(store, store.getGlobalStateKey("threadTitlesProfileId"))
+	if (resolved) {
 		return {
-			configuration: {
-				...store.getApiConfiguration(),
-				...buildApiConfigurationFromProfile(profile, secrets, "act", false),
-			},
+			configuration: apiConfigurationForModelProfile(store, resolved.profile.id, "act"),
 			mode: "act",
+			// A title is tiny: only reason when the profile asks for it.
+			reasoning: resolved.reasoningEffort !== "none",
 		}
 	}
 	if (thread) {
@@ -77,9 +69,10 @@ function resolveTitleApiConfiguration(
 				thread.selection,
 			),
 			mode: thread.mode,
+			reasoning: false,
 		}
 	}
-	return { configuration: store.getApiConfiguration(), mode: "act" }
+	return { configuration: store.getApiConfiguration(), mode: "act", reasoning: false }
 }
 
 export async function maybeGenerateThreadTitle(
@@ -97,8 +90,8 @@ export async function maybeGenerateThreadTitle(
 		// must not even spend the tokens.
 		const titleState = await getTitleState(taskId)
 		if (titleState.hasTitle || titleState.generated) return
-		const { configuration, mode } = resolveTitleApiConfiguration(store, thread)
-		const handler = buildApiHandler(configuration, mode, { disableReasoning: true })
+		const { configuration, mode, reasoning } = resolveTitleApiConfiguration(store, thread)
+		const handler = buildApiHandler(configuration, mode, { disableReasoning: !reasoning })
 		const stream = handler.createMessage(SYSTEM_PROMPT, [
 			{ role: "user", content: `Name this conversation:\n\n${message.slice(0, MAX_PROMPT_CHARS)}` },
 		])

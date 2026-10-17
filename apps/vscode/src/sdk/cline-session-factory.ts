@@ -1190,7 +1190,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 			allowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands") ?? true,
 			allowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp") ?? true,
 			allowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb") ?? true,
-			// Profile names/defaults from the "Used by" section of Profiles;
+			// Profiles, defaults and allow-list from Settings › Profiles › Subagents;
 			// undefined when the toggle is off and the spawn tool ignores them.
 			...buildSubagentProfileSettings(stateManager),
 		},

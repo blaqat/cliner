@@ -202,6 +202,33 @@ describe("selectSubagentProfile", () => {
 		expect(selection.overrides?.apiKey).toBe("fast-key");
 	});
 
+	it("resolves named profiles that share one configuration at their own efforts", () => {
+		// The host keys each named profile (configuration + effort) by its own id.
+		const sameModel = { providerId: "anthropic", modelId: "claude-x", apiKey: "claude-key" };
+		const settings = {
+			profiles: {
+				"p-quick": { ...sameModel, reasoningEffort: "low" as const },
+				"p-think": { ...sameModel, reasoningEffort: "xhigh" as const },
+				"p-plain": { ...sameModel },
+			},
+			profileNames: { "p-quick": "Claude", "p-think": "Claude", "p-plain": "Plain" },
+			allowedProfiles: ["p-think", "p-plain"],
+			defaultProfile: "p-quick",
+		};
+		const think = selectSubagentProfile({ profile: "p-think" }, settings);
+		expect(think.profileId).toBe("p-think");
+		expect(think.overrides).toMatchObject({ modelId: "claude-x", apiKey: "claude-key", reasoningEffort: "xhigh" });
+		// The default applies without being agent-selectable.
+		const byDefault = selectSubagentProfile({}, settings);
+		expect(byDefault.profileId).toBe("p-quick");
+		expect(byDefault.reasoningEffort).toBe("low");
+		expect(selectSubagentProfile({ profile: "p-quick" }, settings).error).toContain("not allowed");
+		// A name shared by an allowed and a disallowed profile never resolves by name.
+		expect(selectSubagentProfile({ profile: "Claude" }, settings).error).toContain("Claude (p-think)");
+		// A profile at the provider default keeps the model's own effort.
+		expect(selectSubagentProfile({ profile: "Plain" }, settings).reasoningEffort).toBeUndefined();
+	});
+
 	it("denies an allowed-but-unconfigured default and lets the call pick another", () => {
 		const selection = selectSubagentProfile({ profile: "Deep" }, profileSettings({ allowedProfiles: ["Fast"] }));
 		expect(selection.error).toContain('"Deep" is not allowed');

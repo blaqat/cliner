@@ -2,14 +2,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ChangeWalkthrough, WalkthroughRequest } from "@shared/Walkthrough"
 import type { Controller } from "@/core/controller"
-import { apiConfigurationForProfileId, readApiConfigProfiles } from "@/core/controller/models/apiProfiles"
+import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/controller/models/modelProfiles"
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { HostProvider } from "@/hosts/host-provider"
 import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
 import { collect, gitRoots, revertChange } from "./collection"
 import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput } from "./engine"
 
-/** The profile Generate used last (Settings › Profiles › Used by › Walkthrough Generate). */
+/** The profile Generate used last (Settings › Profiles › Text generation › Walkthrough Generate). */
 export function readRememberedWalkthroughProfileId(controller: Controller): string | undefined {
 	return controller.stateManager.getGlobalStateKey("walkthroughGenerateProfileId") || undefined
 }
@@ -66,19 +66,21 @@ export class WalkthroughService {
 			const { walk, turns } = await this.current(request)
 			if (!walk.hunks.length) return this.get(request)
 			const profileId = request.profileId?.trim() || readRememberedWalkthroughProfileId(this.controller)
-			const profile = readApiConfigProfiles(this.controller.stateManager).find((p) => p.id === profileId)
-			if (!profile) throw new Error("Choose a saved API profile for Generate")
-			const config = apiConfigurationForProfileId(this.controller.stateManager, profile.id, "act")
+			const resolved = resolveModelProfile(this.controller.stateManager, profileId)
+			if (!resolved) throw new Error("Choose a profile for Generate")
+			const { profile, configuration } = resolved
+			const config = apiConfigurationForModelProfile(this.controller.stateManager, profile.id, "act")
 			// Explicit profiles remain explicit even for large diffs; this prevents silently changing their cost/provider.
 			const provider = buildSdkProviderConfig(config, "act")
 			const identity = {
 				profile: profile.id,
-				apiType: profile.openAiCompatibleApiType,
+				configuration: configuration.id,
+				apiType: configuration.openAiCompatibleApiType,
 				routingProvider: provider.routingProviderId,
 				provider: provider.providerId,
 				model: provider.modelId,
-				options: profile.options,
-				effort: profile.reasoningEffort,
+				options: configuration.options,
+				effort: resolved.reasoningEffort,
 				endpoint: provider.baseUrl,
 			}
 			const cache = cacheKey(walk, identity, turns)

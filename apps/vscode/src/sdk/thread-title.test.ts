@@ -153,13 +153,40 @@ describe("maybeGenerateThreadTitle with the thread's captured configuration", ()
 		expect(Object.values(configuration)).toContain("composer-model")
 	})
 
-	it("an explicit title profile still wins over the thread's configuration", async () => {
-		const [configuration, mode] = await run(
-			{ threadTitlesProfileId: "titles" },
+	it("an explicit title profile resolves to its configuration and effort, winning over the thread's", async () => {
+		const [configuration, mode, options] = await run(
+			{
+				threadTitlesProfileId: "titles-profile",
+				profiles: [{ id: "titles-profile", name: "Titles", configurationId: "titles", reasoningEffort: "low" }],
+			},
 			{ mode: "plan", selection: { askProfileId: "composer" } },
 		)
 		expect(mode).toBe("act")
-		expect(configuration).toMatchObject({ actModeApiProvider: "anthropic", actModeApiModelId: "titles-model" })
+		expect(configuration).toMatchObject({
+			actModeApiProvider: "anthropic",
+			actModeApiModelId: "titles-model",
+			actModeReasoningEffort: "low",
+		})
+		// The profile asked for reasoning, so it is not disabled.
+		expect(options).toEqual({ disableReasoning: false })
+	})
+
+	it("a title profile at the provider default keeps reasoning off", async () => {
+		const [configuration, , options] = await run(
+			{ threadTitlesProfileId: "p", profiles: [{ id: "p", name: "Titles", configurationId: "titles" }] },
+			{ mode: "act", selection: { actProfileId: "act-a" } },
+		)
+		expect(configuration).toMatchObject({ actModeApiModelId: "titles-model" })
+		expect(options).toEqual({ disableReasoning: true })
+	})
+
+	it("treats a configuration id in the title setting as no profile (same as thread)", async () => {
+		const [configuration, mode] = await run(
+			{ threadTitlesProfileId: "titles", profiles: [] },
+			{ mode: "act", selection: { actProfileId: "act-a" } },
+		)
+		expect(mode).toBe("act")
+		expect(configuration).toMatchObject({ actModeApiModelId: "act-model" })
 	})
 
 	it("is unaffected by later changes to the global selection", async () => {

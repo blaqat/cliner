@@ -12,13 +12,17 @@ let requests = 0
 let input: CollectionInput
 let rejectGeneration = false
 const remembered: { id?: string } = {}
+// Settings › Models configuration the "chosen" profile runs on, at its own effort.
 const profile = {
-	id: "chosen",
-	name: "Chosen",
+	id: "cfg",
+	name: "Configuration",
 	provider: "openai",
 	modelId: "fixture-model",
+	reasoningEffort: "high",
 	options: { openAiBaseUrl: "http://example.invalid" },
 }
+const namedProfile = { id: "chosen", name: "Chosen", configurationId: "cfg", reasoningEffort: "low" }
+let generatedWith: Record<string, unknown> | undefined
 const askResponse = mock(async (_text: string) => {})
 let askResponseArgs: unknown[] = []
 const openMultiFileDiff = mock(async (_input: unknown) => ({}))
@@ -31,9 +35,10 @@ mock.module("@/sdk/sdk-api-handler", () => ({
 		baseUrl: profile.options.openAiBaseUrl,
 		config,
 	}),
-	buildApiHandler: () => ({
+	buildApiHandler: (config: Record<string, unknown>) => ({
 		async *createMessage() {
 			requests++
+			generatedWith = config
 			if (rejectGeneration) throw new Error("Provider failed")
 			yield {
 				type: "tool_calls",
@@ -110,11 +115,17 @@ function service() {
 		},
 		stateManager: {
 			getGlobalStateKey: (key: string) =>
-				key === "apiConfigProfiles" ? [profile] : key === "walkthroughGenerateProfileId" ? remembered.id : undefined,
+				key === "apiConfigProfiles"
+					? [profile]
+					: key === "profiles"
+						? [namedProfile]
+						: key === "walkthroughGenerateProfileId"
+							? remembered.id
+							: undefined,
 			setGlobalState: (key: string, value: string) => {
 				if (key === "walkthroughGenerateProfileId") remembered.id = value
 			},
-			listSecretStorageKeys: () => ["profile:chosen:openAiApiKey"],
+			listSecretStorageKeys: () => ["profile:cfg:openAiApiKey"],
 			getSecretForKey: () => "test-credential",
 		},
 		postStateToWebview: async () => {},
@@ -130,8 +141,10 @@ describe("walkthrough service", () => {
 		expect(walk.source).toBe("fallback")
 		expect(requests).toBe(0)
 	})
-	it("requires an explicitly selected saved profile", async () => {
-		await expect(service().generate(request)).rejects.toThrow("Choose a saved API profile")
+	it("requires an explicitly selected profile", async () => {
+		await expect(service().generate(request)).rejects.toThrow("Choose a profile")
+		// A configuration id is not a profile.
+		await expect(service().generate({ ...request, profileId: "cfg" })).rejects.toThrow("Choose a profile")
 		expect(requests).toBe(0)
 	})
 	it("caches one paid request, reloads it across services and regenerates only explicitly", async () => {
@@ -148,6 +161,18 @@ describe("walkthrough service", () => {
 		await service().generate({ ...request, profileId: "chosen" })
 		expect(remembered.id).toBe("chosen")
 		expect((await service().generate(request)).profileId).toBe("chosen")
+	})
+	it("runs the profile's configuration at the profile's effort", async () => {
+		generatedWith = undefined
+		await service().generate({ ...request, profileId: "chosen", regenerate: true })
+		expect(generatedWith).toMatchObject({
+			actModeApiProvider: "openai",
+			actModeOpenAiModelId: "fixture-model",
+			openAiBaseUrl: "http://example.invalid",
+			openAiApiKey: "test-credential",
+			// The profile's effort, not the configuration's default (high).
+			actModeReasoningEffort: "low",
+		})
 	})
 	it("sends one normal user message quoting the host's stops and hunks", async () => {
 		const host = service()
