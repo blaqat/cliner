@@ -48,7 +48,7 @@ vi.mock("@/components/ui/select", () => {
 			disabled?: boolean
 			children: React.ReactNode
 		}) => <ValueContext.Provider value={{ value, onValueChange, disabled }}>{children}</ValueContext.Provider>,
-		SelectTrigger: ({ children, ...props }: { children: React.ReactNode }) => {
+		SelectTrigger: ({ children, showIcon: _showIcon, ...props }: { children: React.ReactNode; showIcon?: boolean }) => {
 			const context = useContext(ValueContext)
 			return (
 				<div aria-disabled={context.disabled} data-testid="config-picker" {...props}>
