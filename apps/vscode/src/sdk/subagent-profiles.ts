@@ -11,7 +11,7 @@ import { buildSdkProviderConfig } from "./sdk-api-handler"
 
 /**
  * Resolve one saved API profile into the SDK-side connection shape spawn_agent
- * applies when the agent picks the profile by name. Secrets are merged into
+ * applies when the agent picks the profile by id. Secrets are merged into
  * the fragment the same way plan/act assignment resolves them; apiKeyEnv is
  * cleared so a profileless credential never falls back to provider env vars.
  */
@@ -45,37 +45,34 @@ const profileName = (profile: ApiConfigProfile) => profile.name.trim() || profil
  */
 export function buildSubagentProfileSettings(
 	store: ApiProfileStore,
-): Pick<SubagentSettings, "profiles" | "allowedProfiles" | "defaultProfile" | "defaultReasoningEffort"> | undefined {
+):
+	| Pick<SubagentSettings, "profiles" | "profileNames" | "allowedProfiles" | "defaultProfile" | "defaultReasoningEffort">
+	| undefined {
 	if (!store.getGlobalStateKey("subagentProfilesEnabled")) return undefined
 	const profiles = readApiConfigProfiles(store)
-	const byName = new Map<string, SubagentProfileConnection>()
+	// Keyed by immutable profile id; names are display-only and may repeat.
+	const byId = new Map<string, SubagentProfileConnection>()
+	const names: Record<string, string> = {}
 	for (const profile of profiles) {
-		const name = profileName(profile)
-		if (byName.has(name)) continue
 		const connection = resolveSubagentProfileConnection(store, profile)
-		if (connection) byName.set(name, connection)
+		if (!connection) continue
+		byId.set(profile.id, connection)
+		names[profile.id] = profileName(profile)
 	}
-	if (byName.size === 0) return undefined
+	if (byId.size === 0) return undefined
 
 	const allowedProfiles: string[] = []
 	for (const id of store.getGlobalStateKey("subagentAllowedProfileIds") ?? []) {
-		if (id === INHERIT_SUBAGENT_PROFILE) {
-			if (!allowedProfiles.includes(id)) allowedProfiles.push(id)
-			continue
-		}
-		const profile = profiles.find((candidate) => candidate.id === id)
-		const name = profile ? profileName(profile) : undefined
-		if (name && byName.has(name) && !allowedProfiles.includes(name)) allowedProfiles.push(name)
+		if ((id === INHERIT_SUBAGENT_PROFILE || byId.has(id)) && !allowedProfiles.includes(id)) allowedProfiles.push(id)
 	}
 
 	const defaultProfileId = store.getGlobalStateKey("subagentDefaultProfileId")
-	const defaultProfile = profiles.find((candidate) => candidate.id === defaultProfileId)
-	const defaultName = defaultProfile ? profileName(defaultProfile) : undefined
 
 	return {
-		profiles: Object.fromEntries(byName),
+		profiles: Object.fromEntries(byId),
+		profileNames: names,
 		allowedProfiles,
-		defaultProfile: defaultName && byName.has(defaultName) ? defaultName : undefined,
+		defaultProfile: defaultProfileId && byId.has(defaultProfileId) ? defaultProfileId : undefined,
 		defaultReasoningEffort: store.getGlobalStateKey("subagentReasoningEffort") || undefined,
 	}
 }

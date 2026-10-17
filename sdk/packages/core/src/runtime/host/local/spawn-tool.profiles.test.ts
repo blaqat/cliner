@@ -103,6 +103,14 @@ async function spawnWith(config: CoreSessionConfig, input: Record<string, unknow
 	return { tool, result, child: agentConstructorSpy.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined };
 }
 
+// Two profiles share the display name "Review"; only id-b is allowed.
+const idSettings = (overrides: Partial<CoreSessionConfig["subagentSettings"]> = {}) => ({
+	profiles: { "id-a": FAST, "id-b": DEEP, "id-c": DEEP },
+	profileNames: { "id-a": "Review", "id-b": "Review", "id-c": "Solo" },
+	allowedProfiles: ["id-b", INHERIT_SUBAGENT_PROFILE],
+	...overrides,
+});
+
 describe("selectSubagentProfile", () => {
 	it("rejects profile params when profiles are not enabled", () => {
 		expect(selectSubagentProfile({ profile: "Fast" }, {}).error).toContain("not enabled");
@@ -113,8 +121,8 @@ describe("selectSubagentProfile", () => {
 	it("rejects unlisted profiles and lists the allowed names", () => {
 		const selection = selectSubagentProfile({ profile: "Rogue" }, profileSettings());
 		expect(selection.error).toContain('"Rogue" is not allowed');
-		expect(selection.error).toContain('"Fast"');
-		expect(selection.error).toContain('"Deep"');
+		expect(selection.error).toContain("Fast (Fast)");
+		expect(selection.error).toContain("Deep (Deep)");
 	});
 
 	it("rejects an unknown reasoning effort", () => {
@@ -156,6 +164,42 @@ describe("selectSubagentProfile", () => {
 		expect(selection.error).toBeUndefined();
 		expect(selection.profileName).toBe(INHERIT_SUBAGENT_PROFILE);
 		expect(selection.overrides?.providerId).toBeUndefined();
+	});
+
+	it("selects and authorizes by id, never by a duplicated name", () => {
+		const byId = selectSubagentProfile({ profile: "id-b" }, idSettings());
+		expect(byId.error).toBeUndefined();
+		expect(byId.profileId).toBe("id-b");
+		expect(byId.profileName).toBe("Review");
+		expect(byId.overrides?.apiKey).toBe("deep-key");
+
+		const byName = selectSubagentProfile({ profile: "Review" }, idSettings());
+		expect(byName.overrides).toBeUndefined();
+		expect(byName.error).toContain("ambiguous");
+		expect(byName.error).toContain("Review (id-b)");
+		expect(byName.error).not.toContain("id-a");
+
+		const notAllowed = selectSubagentProfile({ profile: "id-a" }, idSettings());
+		expect(notAllowed.error).toContain("not allowed");
+		expect(notAllowed.overrides).toBeUndefined();
+	});
+
+	it("accepts a unique display name as a convenience", () => {
+		const selection = selectSubagentProfile(
+			{ profile: "Solo" },
+			idSettings({ allowedProfiles: ["id-c"] }),
+		);
+		expect(selection.profileId).toBe("id-c");
+		expect(selection.profileName).toBe("Solo");
+		// A unique name of a profile that is not allowed stays blocked.
+		expect(selectSubagentProfile({ profile: "Solo" }, idSettings()).error).toContain("not allowed");
+	});
+
+	it("applies the default profile by id", () => {
+		const selection = selectSubagentProfile({}, idSettings({ defaultProfile: "id-a" }));
+		expect(selection.profileId).toBe("id-a");
+		expect(selection.profileName).toBe("Review");
+		expect(selection.overrides?.apiKey).toBe("fast-key");
 	});
 
 	it("denies an allowed-but-unconfigured default and lets the call pick another", () => {
@@ -203,6 +247,30 @@ describe("createSessionSpawnTool profile wiring", () => {
 		);
 		const enabledProps = (enabled.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>;
 		expect(enabledProps.profile?.enum).toEqual(["Fast", "Deep", INHERIT_SUBAGENT_PROFILE]);
-		expect(enabled.description).toContain('"Fast"');
+		expect(enabled.description).toContain("Fast (Fast)");
+	});
+
+	it("lists duplicate names as name (id) and enumerates ids only", async () => {
+		const { createSessionSpawnTool } = await import("./spawn-tool.js");
+		const tool = createSessionSpawnTool(
+			makeDeps() as SpawnToolDeps,
+			makeConfig({ subagentSettings: idSettings() }),
+			"root",
+		);
+		const props = (tool.inputSchema.properties ?? {}) as Record<string, { enum?: string[]; description?: string }>;
+		expect(props.profile?.enum).toEqual(["id-b", INHERIT_SUBAGENT_PROFILE]);
+		expect(props.profile?.description).toContain("Review (id-b)");
+		expect(tool.description).toContain("Review (id-b)");
+	});
+
+	it("spawns on the allowed duplicate's credentials when selected by id", async () => {
+		const { child } = await spawnWith(makeConfig({ subagentSettings: idSettings() }), { profile: "id-b" });
+		expect(child).toMatchObject({ apiKey: "deep-key", providerId: "openai-native" });
+	});
+
+	it("refuses a duplicated name rather than borrowing the other profile's credentials", async () => {
+		const { result } = await spawnWith(makeConfig({ subagentSettings: idSettings() }), { profile: "Review" });
+		expect(result).toEqual({ error: expect.stringContaining("Review (id-b)") });
+		expect(agentConstructorSpy).not.toHaveBeenCalled();
 	});
 });

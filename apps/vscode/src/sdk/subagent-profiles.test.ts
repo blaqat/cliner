@@ -32,7 +32,7 @@ describe("buildSubagentProfileSettings", () => {
 		expect(buildSubagentProfileSettings(makeStore({ subagentProfilesEnabled: false }))).toBeUndefined()
 	})
 
-	it("maps profile ids to names for the allowlist and default, keeping the parent option", () => {
+	it("keys profiles, allowlist and default by id, keeping the parent option", () => {
 		mocks.readApiConfigProfiles.mockReturnValue(profiles)
 		mocks.buildSdkProviderConfig.mockImplementation(() => ({ providerId: "anthropic", modelId: "m" }))
 		const settings = buildSubagentProfileSettings(
@@ -43,10 +43,26 @@ describe("buildSubagentProfileSettings", () => {
 				subagentReasoningEffort: "high",
 			}),
 		)
-		expect(settings?.allowedProfiles).toEqual(["Deep", "parent"])
-		expect(settings?.defaultProfile).toBe("Fast")
+		expect(settings?.allowedProfiles).toEqual(["b", "parent"])
+		expect(settings?.defaultProfile).toBe("a")
+		expect(settings?.profileNames).toEqual({ a: "Fast", b: "Deep" })
 		expect(settings?.defaultReasoningEffort).toBe("high")
-		expect(Object.keys(settings?.profiles ?? {})).toEqual(["Fast", "Deep"])
-		expect(settings?.profiles?.Fast.reasoningEffort).toBe("low")
+		expect(Object.keys(settings?.profiles ?? {})).toEqual(["a", "b"])
+		expect(settings?.profiles?.a.reasoningEffort).toBe("low")
+	})
+
+	it("keeps both profiles that share a name, each with its own connection", () => {
+		mocks.readApiConfigProfiles.mockReturnValue([
+			{ id: "a", name: "Review" },
+			{ id: "b", name: "Review" },
+		])
+		mocks.buildSdkProviderConfig.mockImplementation(() => ({ providerId: "anthropic", modelId: "m" }))
+		mocks.readProfileSecrets.mockImplementation(() => ({}))
+		const settings = buildSubagentProfileSettings(
+			makeStore({ subagentProfilesEnabled: true, subagentAllowedProfileIds: ["b"] }),
+		)
+		expect(Object.keys(settings?.profiles ?? {})).toEqual(["a", "b"])
+		expect(settings?.allowedProfiles).toEqual(["b"])
+		expect(settings?.profileNames).toEqual({ a: "Review", b: "Review" })
 	})
 })

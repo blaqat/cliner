@@ -213,8 +213,10 @@ export const INHERIT_SUBAGENT_PROFILE = "parent";
 export interface SubagentProfileSelection {
 	/** Connection overrides merged over the inherited config. Empty/absent means inherit. */
 	overrides?: Partial<DelegatedAgentConnectionConfig>;
-	/** The profile name applied (for the UI chip); undefined means inherit. */
+	/** The profile display name applied (for the UI chip); undefined means inherit. */
 	profileName?: string;
+	/** The immutable id of the applied profile; "parent" or undefined means inherit. */
+	profileId?: string;
 	/** The effort applied after input > profile > default resolution. */
 	reasoningEffort?: string;
 	/** Set when the requested profile/effort is not usable — return it as the tool error. */
@@ -222,6 +224,56 @@ export interface SubagentProfileSelection {
 }
 
 const REASONING_LEVEL_SET = new Set<string>(REASONING_LEVELS);
+
+const displayProfileName = (
+	settings: CoreSessionConfig["subagentSettings"],
+	id: string,
+): string => settings?.profileNames?.[id]?.trim() || id;
+
+/** `Name (id)`, the form shown to the model so duplicate names stay distinguishable. */
+const describeProfile = (
+	settings: CoreSessionConfig["subagentSettings"],
+	id: string,
+): string =>
+	id === INHERIT_SUBAGENT_PROFILE
+		? `"${id}"`
+		: `${displayProfileName(settings, id)} (${id})`;
+
+type ProfileRefResolution = { id: string } | { error: string };
+
+/**
+ * Map a spawn_agent `profile` value to an allowed profile id. Ids are the
+ * authority; a display name is accepted only when exactly one configured
+ * profile carries it, so a duplicate name can never select (or borrow the
+ * credentials of) a profile other than the one the user allowed.
+ */
+function resolveProfileRef(
+	requested: string,
+	settings: CoreSessionConfig["subagentSettings"],
+): ProfileRefResolution {
+	const allowed = settings?.allowedProfiles ?? [];
+	const listAllowed = () =>
+		allowed.map((id) => describeProfile(settings, id)).join(", ") || "(none)";
+	const notAllowed = {
+		error: `Sub-agent profile "${requested}" is not allowed. Allowed profiles: ${listAllowed()}.`,
+	};
+	if (allowed.includes(requested)) return { id: requested };
+	const profiles = settings?.profiles ?? {};
+	// An id that exists but is not allowed must not be reachable by any route.
+	if (requested in profiles) return notAllowed;
+	const named = Object.keys(profiles).filter(
+		(id) => displayProfileName(settings, id) === requested,
+	);
+	if (named.length === 0) return notAllowed;
+	const candidates = named.filter((id) => allowed.includes(id));
+	if (candidates.length === 0) return notAllowed;
+	if (named.length > 1) {
+		return {
+			error: `Sub-agent profile name "${requested}" is ambiguous. Pass the profile id: ${candidates.map((id) => describeProfile(settings, id)).join(", ")}.`,
+		};
+	}
+	return { id: candidates[0] as string };
+}
 
 /**
  * Resolve a spawn_agent call's `profile`/`reasoningEffort` params against the
@@ -269,40 +321,40 @@ export function selectSubagentProfile(
 		return resolved === "none" && effort !== "none" ? undefined : resolved;
 	};
 	if (requested) {
-		const allowed = settings?.allowedProfiles ?? [];
-		if (!allowed.includes(requested)) {
-			return {
-				error: `Sub-agent profile "${requested}" is not allowed. Allowed profiles: ${allowed.map((name) => `"${name}"`).join(", ") || "(none)"}.`,
-			};
-		}
-		if (requested === INHERIT_SUBAGENT_PROFILE) {
+		const resolution = resolveProfileRef(requested, settings);
+		if ("error" in resolution) return { error: resolution.error };
+		const id = resolution.id;
+		if (id === INHERIT_SUBAGENT_PROFILE) {
 			const resolvedEffort = resolveEffort();
 			return {
-				profileName: requested,
+				profileName: id,
+				profileId: id,
 				reasoningEffort: resolvedEffort,
 				overrides: effortOverrides(resolvedEffort),
 			};
 		}
-		const connection = profiles?.[requested];
+		const connection = profiles?.[id];
 		if (!connection) {
 			return {
-				error: `Sub-agent profile "${requested}" is allowed but not configured.`,
+				error: `Sub-agent profile "${describeProfile(settings, id)}" is allowed but not configured.`,
 			};
 		}
 		const resolvedEffort = resolveEffort(connection.reasoningEffort);
 		return {
-			profileName: requested,
+			profileName: displayProfileName(settings, id),
+			profileId: id,
 			reasoningEffort: resolvedEffort,
 			overrides: { ...connection, ...effortOverrides(resolvedEffort) },
 		};
 	}
 	// No profile requested: the configured default applies when it resolves,
 	// otherwise the child inherits the parent's connection.
-	const defaultName = settings?.defaultProfile;
-	const connection = defaultName ? profiles?.[defaultName] : undefined;
+	const defaultId = settings?.defaultProfile;
+	const connection = defaultId ? profiles?.[defaultId] : undefined;
 	const resolvedEffort = resolveEffort(connection?.reasoningEffort);
 	return {
-		profileName: connection ? defaultName : undefined,
+		profileName: connection && defaultId ? displayProfileName(settings, defaultId) : undefined,
+		profileId: connection ? defaultId : undefined,
 		reasoningEffort: resolvedEffort,
 		overrides: {
 			...(connection ?? {}),
@@ -416,7 +468,10 @@ export function createSessionSpawnTool(
 	// profiles; stripping them from the schema keeps disabled sessions honest.
 	const profilesEnabled =
 		!!settings.profiles && Object.keys(settings.profiles).length > 0;
-	const allowedProfileNames = settings.allowedProfiles ?? [];
+	const allowedProfileIds = settings.allowedProfiles ?? [];
+	const allowedProfileList =
+		allowedProfileIds.map((id) => describeProfile(settings, id)).join(", ") ||
+		"(none)";
 
 	const spawnTool = createSpawnAgentTool({
 		resolveConnectionOverrides: (input) =>
@@ -512,10 +567,10 @@ export function createSessionSpawnTool(
 	let description = spawnTool.description;
 	if (profilesEnabled) {
 		if (profileSchema) {
-			profileSchema.enum = allowedProfileNames;
-			profileSchema.description = `Sub-agent model profile to run on. Allowed values: ${allowedProfileNames.map((name) => `"${name}"`).join(", ") || "(none)"}. Omit to use the configured default, or "parent" to inherit your model.`;
+			profileSchema.enum = allowedProfileIds;
+			profileSchema.description = `Sub-agent model profile id to run on. Allowed profiles (name (id)): ${allowedProfileList}. Pass the id; a name is accepted only when it is unique. Omit to use the configured default, or "parent" to inherit your model.`;
 		}
-		description = `${spawnTool.description} Sub-agent model profiles are enabled: you may pass profile (one of ${allowedProfileNames.map((name) => `"${name}"`).join(", ") || "(none)"}) and reasoningEffort (${REASONING_LEVELS.join(", ")}) to control the sub-agent's model.${settings.defaultProfile ? ` Omitting profile uses the default "${settings.defaultProfile}".` : ""}`;
+		description = `${spawnTool.description} Sub-agent model profiles are enabled: you may pass profile (an id from: ${allowedProfileList}) and reasoningEffort (${REASONING_LEVELS.join(", ")}) to control the sub-agent's model.${settings.defaultProfile ? ` Omitting profile uses the default ${describeProfile(settings, settings.defaultProfile)}.` : ""}`;
 	} else {
 		if (inputSchema.properties) {
 			delete inputSchema.properties.profile;

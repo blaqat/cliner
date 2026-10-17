@@ -80,20 +80,26 @@ export interface SubagentSettings {
 	allowMcp?: boolean;
 	allowWeb?: boolean;
 	/**
-	 * Named connections keyed by profile name. Presence (non-empty) enables
-	 * the spawn_agent `profile`/`reasoningEffort` parameters; when absent the
-	 * tool ignores them and children inherit the parent's model.
+	 * Named connections keyed by immutable profile id. Presence (non-empty)
+	 * enables the spawn_agent `profile`/`reasoningEffort` parameters; when
+	 * absent the tool ignores them and children inherit the parent's model.
 	 */
 	profiles?: Record<string, SubagentProfileConnection>;
 	/**
-	 * Profile names the agent may pass to spawn_agent's `profile` param. The
-	 * reserved name "parent" means the child may explicitly inherit the
-	 * thread's own model. Names not in this list are rejected even when they
+	 * Display names keyed by profile id. Names are for the model and the UI
+	 * only (they may repeat); selection and authorization use the id. An id
+	 * without an entry displays as the id itself.
+	 */
+	profileNames?: Record<string, string>;
+	/**
+	 * Profile ids the agent may pass to spawn_agent's `profile` param. The
+	 * reserved value "parent" means the child may explicitly inherit the
+	 * thread's own model. Ids not in this list are rejected even when they
 	 * exist in {@link profiles} (e.g. a default that is not agent-selectable).
 	 */
 	allowedProfiles?: string[];
 	/**
-	 * Profile applied when the spawn call does not name one. May be outside
+	 * Profile id applied when the spawn call does not name one. May be outside
 	 * {@link allowedProfiles} — the allowlist constrains the agent, not the
 	 * configured default. Unset means inherit the parent's model.
 	 */
