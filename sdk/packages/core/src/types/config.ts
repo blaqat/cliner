@@ -51,6 +51,27 @@ export interface CoreModelConfig {
 	temperature?: number;
 }
 
+/**
+ * A named model connection a spawned sub-agent can run on. Mirrors the
+ * connection fields of {@link CoreModelConfig}; the host resolves each saved
+ * profile into this shape when the session config is built so the runtime
+ * never touches credential storage itself.
+ */
+export interface SubagentProfileConnection {
+	providerId: string;
+	modelId: string;
+	apiKey?: string;
+	baseUrl?: string;
+	headers?: Record<string, string>;
+	providerConfig?: ProviderConfig;
+	knownModels?: Record<string, ModelInfo>;
+	thinking?: boolean;
+	reasoningEffort?: ProviderConfig["reasoningEffort"];
+	thinkingBudgetTokens?: number;
+	maxTokensPerTurn?: number;
+	temperature?: number;
+}
+
 export interface SubagentSettings {
 	/** Zero or absent means unlimited. Includes nested children of this session. */
 	maxConcurrent?: number;
@@ -58,6 +79,27 @@ export interface SubagentSettings {
 	allowCommands?: boolean;
 	allowMcp?: boolean;
 	allowWeb?: boolean;
+	/**
+	 * Named connections keyed by profile name. Presence (non-empty) enables
+	 * the spawn_agent `profile`/`reasoningEffort` parameters; when absent the
+	 * tool ignores them and children inherit the parent's model.
+	 */
+	profiles?: Record<string, SubagentProfileConnection>;
+	/**
+	 * Profile names the agent may pass to spawn_agent's `profile` param. The
+	 * reserved name "parent" means the child may explicitly inherit the
+	 * thread's own model. Names not in this list are rejected even when they
+	 * exist in {@link profiles} (e.g. a default that is not agent-selectable).
+	 */
+	allowedProfiles?: string[];
+	/**
+	 * Profile applied when the spawn call does not name one. May be outside
+	 * {@link allowedProfiles} — the allowlist constrains the agent, not the
+	 * configured default. Unset means inherit the parent's model.
+	 */
+	defaultProfile?: string;
+	/** Reasoning effort applied when the call and the profile set none. */
+	defaultReasoningEffort?: string;
 }
 
 export interface CoreRuntimeFeatures {
