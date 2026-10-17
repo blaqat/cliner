@@ -477,6 +477,22 @@ export class Controller {
 		return this.remoteConfigRevision
 	}
 
+	private readonly workspaceNotices = new Map<string, string>()
+	private readonly seenWorktreeRemovals = new Map<string, number>()
+	private async resolveSessionWorkspace(id: string): Promise<string | undefined> {
+		const mapping = await this.threadWorktrees.get(id)
+		if (mapping) return mapping.cwd
+		const removed = await this.threadWorktrees.removedWorkspace(id)
+		if (!removed) return undefined
+		if (this.seenWorktreeRemovals.get(id) !== removed.removedAt) {
+			this.workspaceNotices.set(
+				id,
+				`The thread worktree was removed. Continue in the user's workspace at ${removed.workspace}.`,
+			)
+			this.seenWorktreeRemovals.set(id, removed.removedAt)
+		}
+		return removed.workspace
+	}
 	readonly threadWorktrees: ThreadWorktreeManager
 
 	constructor(readonly context: ClineExtensionContext) {
@@ -590,12 +606,21 @@ export class Controller {
 		})
 		this.sessions = new SdkSessionLifecycle({
 			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
+			resolveSessionWorkspace: (id) => this.resolveSessionWorkspace(id),
+			consumeWorkspaceNotice: (id) => {
+				const notice = this.workspaceNotices.get(id)
+				this.workspaceNotices.delete(id)
+				return notice
+			},
 			prepareStartInput: async (input) => {
 				const id = input.config?.sessionId || createSessionId()
 				const mapping = await this.threadWorktrees.get(id)
 				if (mapping) {
 					await this.threadWorktrees.assertPresent(mapping)
 					input = { ...input, config: { ...input.config, cwd: mapping.cwd, workspaceRoot: mapping.cwd } }
+				} else {
+					const workspace = await this.resolveSessionWorkspace(id)
+					if (workspace) input = { ...input, config: { ...input.config, cwd: workspace, workspaceRoot: workspace } }
 				}
 				const previous = this.taskSessions.get(id)?.nextMessageSelection?.previous
 				return {
@@ -1991,11 +2016,14 @@ export class Controller {
 
 		try {
 			const mapping = threadId ? await this.threadWorktrees.get(threadId) : undefined
-			const cwd = mapping?.cwd ?? (await this.getWorkspaceRoot())
+			const removed = !mapping && threadId ? await this.threadWorktrees.removedWorkspace(threadId) : undefined
+			const cwd = mapping?.cwd ?? removed?.workspace ?? (await this.getWorkspaceRoot())
 			const urlContentFetcher = new UrlContentFetcher()
 			const workspaceManager = mapping
 				? await WorkspaceRootManager.fromPaths(mapping.modules.map((module) => module.path))
-				: await this.ensureWorkspaceManager()
+				: removed
+					? await WorkspaceRootManager.fromPaths([removed.workspace])
+					: await this.ensureWorkspaceManager()
 			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
 		} catch (error) {
@@ -2491,9 +2519,16 @@ export class Controller {
 			case "takeOver":
 				if (running) return { warning: "Stop this thread before taking over its branch." }
 				return this.threadWorktrees.takeOver(id)
-			case "remove":
+			case "remove": {
 				if (running) return { warning: "Stop this thread before removing its worktree." }
-				return this.threadWorktrees.remove(id, request.confirmed)
+				const release = this.sessions.beginTaskDeletion(id)
+				try {
+					await this.sessions.removeSession(id)
+					return await this.threadWorktrees.remove(id, request.confirmed)
+				} finally {
+					release()
+				}
+			}
 			default:
 				throw new Error("Unknown worktree action")
 		}

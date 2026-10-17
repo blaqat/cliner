@@ -25,6 +25,8 @@ type ApplyPatchExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost
 type ReadFileExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost.create>[0]["readFileExecutor"]>
 
 export interface SdkSessionLifecycleOptions {
+	resolveSessionWorkspace?: (id: string, cwd?: string) => Promise<string | undefined>
+	consumeWorkspaceNotice?: (id: string) => string | undefined
 	acquireSessionLease?: (id: string) => Promise<() => Promise<void>>
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's mentioned-thread allow-list. */
@@ -80,6 +82,48 @@ export interface SdkSessionLifecycleOptions {
 }
 
 export class SdkSessionLifecycle {
+	private readonly startInputs = new Map<string, Parameters<VscodeSessionHost["start"]>[0]>()
+	private readonly refreshingWorkspaces = new Map<string, Promise<void>>()
+	private async refreshWorkspace(id: string): Promise<void> {
+		const pending = this.refreshingWorkspaces.get(id)
+		if (pending) return pending
+		const refresh = (async () => {
+			const session = this.liveSessions.get(id)
+			const input = this.startInputs.get(id)
+			const generation = this.turnGenerations.get(id)
+			const assertCurrent = () => {
+				this.assertTaskAvailable(id)
+				if (this.liveSessions.get(id) !== session || this.turnGenerations.get(id) !== generation) {
+					const error = new Error("Workspace refresh aborted")
+					error.name = "AbortError"
+					throw error
+				}
+			}
+			if (!session || !input) return
+			const cwd = await this.options.resolveSessionWorkspace?.(id, session.startConfig?.cwd)
+			if (!cwd || cwd === session.startConfig?.cwd) return
+			const initialMessages = await (session.sdkHost.readLiveMessages?.(id) ?? session.sdkHost.readMessages(id))
+			const updated = { ...input, initialMessages, config: { ...input.config, cwd, workspaceRoot: cwd } }
+			const prepared = (await this.options.prepareStartInput?.(updated)) ?? updated
+			assertCurrent()
+			await session.sdkHost.stop(id)
+			assertCurrent()
+			session.startResult = await session.sdkHost.start(prepared)
+			this.startInputs.set(id, prepared)
+			if (session.startConfig) session.startConfig = { ...session.startConfig, cwd, workspaceRoot: cwd }
+		})()
+		this.refreshingWorkspaces.set(id, refresh)
+		const starts = this.pendingStarts.get(id) ?? new Set<Promise<unknown>>()
+		starts.add(refresh)
+		this.pendingStarts.set(id, starts)
+		try {
+			await refresh
+		} finally {
+			if (this.refreshingWorkspaces.get(id) === refresh) this.refreshingWorkspaces.delete(id)
+			starts.delete(refresh)
+			if (!starts.size) this.pendingStarts.delete(id)
+		}
+	}
 	private readonly releasingLeases = new Map<string, Promise<void>>()
 	private readonly leases = new Map<string, Promise<() => Promise<void>>>()
 	private ensureLease(id: string): Promise<unknown> {
@@ -109,7 +153,7 @@ export class SdkSessionLifecycle {
 
 	private releaseIdleLease(id: string) {
 		const session = this.liveSessions.get(id)
-		if (session && (session.isRunning || session.queuedPromptCount)) return
+		if (this.refreshingWorkspaces.has(id) || (session && (session.isRunning || session.queuedPromptCount))) return
 		void this.releaseLease(id).catch((error) => Logger.warn("[Worktree] Could not release session lease", error))
 	}
 	private readonly replacements = new Map<string, Promise<string>>()
@@ -297,6 +341,8 @@ export class SdkSessionLifecycle {
 
 		await activeSession.sdkHost.updateSessionModel(activeSession.sessionId, modelId)
 		if (activeSession.startConfig) activeSession.startConfig.modelId = modelId
+		const input = this.startInputs.get(activeSession.sessionId)
+		if (input?.config) input.config.modelId = modelId
 		return true
 	}
 
@@ -379,6 +425,7 @@ export class SdkSessionLifecycle {
 			queuedPromptCount: 0,
 		}
 
+		this.startInputs.set(startResult.sessionId, startInput)
 		this.liveSessions.set(startResult.sessionId, this.activeSession)
 		this.setStatus(startResult.sessionId, "running")
 		// Register first so deletion can stop a start that crossed an awaited host.start.
@@ -482,6 +529,7 @@ export class SdkSessionLifecycle {
 				queuedPromptCount: 0,
 			}
 			this.liveSessions.delete(old.sessionId)
+			this.startInputs.set(startResult.sessionId, input)
 			this.liveSessions.set(startResult.sessionId, replacement)
 			this.replacementHosts.add(sdkHost)
 			liveId = startResult.sessionId
@@ -564,6 +612,7 @@ export class SdkSessionLifecycle {
 			[...this.liveSessions.values()].map((session) => this.trackSessionStop(session.sdkHost, session.sessionId, reason)),
 		)
 		this.liveSessions.clear()
+		this.startInputs.clear()
 		await Promise.all([...this.leases.keys()].map((id) => this.releaseLease(id)))
 		this.turnGenerations.clear()
 		this.activeSession = undefined
@@ -603,6 +652,7 @@ export class SdkSessionLifecycle {
 			}
 			delete this.sessionStatuses[taskId]
 			delete this.subagentCounts[taskId]
+			this.startInputs.delete(taskId)
 			this.options.onSessionRemoved?.(taskId)
 		} finally {
 			release()
@@ -637,6 +687,7 @@ export class SdkSessionLifecycle {
 			this.liveSessions.delete(session.sessionId)
 			this.turnGenerations.delete(session.sessionId)
 			this.safeUnsubscribe(session, "idle session limit")
+			this.startInputs.delete(session.sessionId)
 			this.options.onSessionRemoved?.(session.sessionId)
 			await this.trackSessionStop(session.sdkHost, session.sessionId, "idle session limit")
 		}
@@ -855,14 +906,20 @@ export class SdkSessionLifecycle {
 		const send = () =>
 			sdkHost.send({
 				sessionId,
-				prompt: noticedPrompt,
+				prompt: [this.options.consumeWorkspaceNotice?.(sessionId), noticedPrompt].filter(Boolean).join("\n"),
 				userImages: images,
 				userFiles: files,
 				delivery,
 			})
 		const sending = this.options.acquireSessionLease
-			? this.ensureLease(sessionId).then(() => {
+			? this.ensureLease(sessionId).then(async () => {
+					await this.refreshWorkspace(sessionId)
 					this.assertTaskAvailable(sessionId)
+					if (isSuperseded("workspace refresh")) {
+						const error = new Error("Submission aborted")
+						error.name = "AbortError"
+						throw error
+					}
 					return send()
 				})
 			: send()

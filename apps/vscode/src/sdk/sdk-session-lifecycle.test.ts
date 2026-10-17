@@ -1,9 +1,14 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { isAbortError, SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { SdkTaskHistory } from "./sdk-task-history"
+import { worktreeProject } from "./worktrees/temp-project.test-support"
+import { ThreadWorktreeManager } from "./worktrees/thread-worktree-manager"
 
 type StartInput = Parameters<SdkSessionLifecycle["startNewSession"]>[0]
 type SendHost = Parameters<SdkSessionLifecycle["fireAndForgetSend"]>[0]
@@ -1329,4 +1334,87 @@ it("releases admission if startup fails", async () => {
 	})
 	await expect(lifecycle.startNewSession({ config: { sessionId: "failure" } } as StartInput)).rejects.toThrow("missing isolate")
 	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+})
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: rebuilds a retained session after another window removes its worktree`, async () => {
+		const temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-removed-session-"))
+		let lifecycle: SdkSessionLifecycle | undefined
+		try {
+			const { manager, storage, workspace } = await worktreeProject(temp, mode)
+			const mapping = await manager.create("session-123", "Retained", workspace)
+			const messages = [{ role: "user", content: "previous turn" }]
+			const host = makeSdkHost({ readMessages: vi.fn(async () => messages), updateSessionModel: vi.fn(async () => {}) })
+			mockCreateSessionHost.mockResolvedValueOnce(host)
+			let notice: string | undefined
+			let seen = false
+			lifecycle = makeLifecycle({
+				acquireSessionLease: (id) => manager.acquireSessionLease(id),
+				resolveSessionWorkspace: async (id) => {
+					const removed = await manager.removedWorkspace(id)
+					if (removed && !seen) {
+						notice = "Worktree removed. Continue in the user's workspace."
+						seen = true
+					}
+					return removed?.workspace
+				},
+				consumeWorkspaceNotice: () => {
+					const next = notice
+					notice = undefined
+					return next
+				},
+			})
+			await lifecycle.startNewSession({
+				config: { sessionId: "session-123", cwd: mapping.cwd, workspaceRoot: mapping.cwd },
+			} as StartInput)
+			await lifecycle.updateActiveSessionModel("updated-model")
+			lifecycle.setRunning(false)
+			// Idle releases asynchronously, just as it does in a real extension host.
+			await vi.waitFor(async () => expect(await fs.readdir(path.join(storage, "leases"))).toEqual([]))
+			const result = await new ThreadWorktreeManager(storage).remove("session-123")
+			expect(result.message).toContain("next turn runs in your workspace")
+			lifecycle.fireAndForgetSend(host as never, "session-123", "next turn")
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+			expect(host.start).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					config: expect.objectContaining({ cwd: workspace, workspaceRoot: workspace, modelId: "updated-model" }),
+					initialMessages: messages,
+				}),
+			)
+			expect(host.stop).toHaveBeenCalledWith("session-123")
+			expect(lifecycle.getSession("session-123")?.startConfig?.cwd).toBe(workspace)
+			expect(host.send.mock.calls[0][0].prompt).toContain("Worktree removed")
+			expect(host.send.mock.calls[0][0].prompt).toContain("next turn")
+			await vi.waitFor(() => expect(lifecycle!.getSession("session-123")?.isRunning).toBe(false))
+			lifecycle.fireAndForgetSend(host as never, "session-123", "another turn")
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledTimes(2))
+			expect(host.send.mock.calls[1][0].prompt).toBe("another turn")
+			expect(host.start).toHaveBeenCalledTimes(2)
+		} finally {
+			await lifecycle?.dispose()
+			await fs.rm(temp, { recursive: true, force: true })
+		}
+	}, 60_000)
+}
+
+it("cancels a workspace rebuild before it can restart a retired runtime", async () => {
+	const history = Promise.withResolvers<never[]>()
+	const readMessages = vi.fn(() => history.promise)
+	const host = makeSdkHost({ readMessages })
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({
+		acquireSessionLease: async () => release,
+		resolveSessionWorkspace: async () => "/original-workspace",
+	})
+	await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+	lifecycle.setRunning(false)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(readMessages).toHaveBeenCalled())
+	const retiring = lifecycle.removeSession("session-123")
+	history.resolve([])
+	await retiring
+	expect(host.start).toHaveBeenCalledOnce()
+	expect(host.send).not.toHaveBeenCalled()
+	await lifecycle.dispose()
 })

@@ -164,6 +164,13 @@ export class ThreadWorktreeManager {
 	async get(id: string) {
 		return this.read<ThreadWorktree | undefined>(this.mappingFile(id), undefined)
 	}
+	async removedWorkspace(id: string) {
+		return this.read<{ workspace: string; removedAt: number } | undefined>(
+			path.join("removed", this.mappingFile(id)),
+			undefined,
+		)
+	}
+
 	private async save(mapping: ThreadWorktree) {
 		await this.write(this.mappingFile(mapping.threadId), mapping)
 	}
@@ -499,8 +506,9 @@ export class ThreadWorktreeManager {
 			}
 			for (const module of mapping.modules)
 				if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
+			await this.write(path.join("removed", this.mappingFile(id)), { workspace: mapping.workspace, removedAt: Date.now() })
 			await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
-			return { message: "Worktree removed. Saved bring-in patches are kept." }
+			return { message: "Worktree removed. The next turn runs in your workspace. Saved bring-in patches are kept." }
 		})
 	}
 }

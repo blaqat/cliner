@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { describe, expect, it, vi } from "vitest"
 import { telemetryService } from "@/services/telemetry"
@@ -11,6 +14,7 @@ import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
+import { worktreeProject } from "./worktrees/temp-project.test-support"
 
 describe("isClineManagedProvider", () => {
 	it("treats both Cline account providers as Cline providers", () => {
@@ -34,6 +38,8 @@ describe("resolveWorkspaceRootPath", () => {
 vi.mock("@/services/telemetry", () => ({
 	telemetryService: {
 		captureRemoteConfigSessionGate: vi.fn(),
+		captureMentionUsed: vi.fn(),
+		captureMentionFailed: vi.fn(),
 	},
 }))
 
@@ -1881,3 +1887,53 @@ it("resolves only the addressed notebook group and revision when another group's
 	})
 	expect(JSON.parse(messages[1].text).status).toBe("pending")
 })
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: Remove retires the local idle runtime and records the original workspace`, async () => {
+		const temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-controller-remove-"))
+		try {
+			const { manager, workspace } = await worktreeProject(temp, mode)
+			const mapping = await manager.create("idle", "Idle", workspace)
+			let resident = { isRunning: false, cwd: mapping.cwd } as { isRunning: boolean; cwd: string } | undefined
+			const release = vi.fn()
+			const controller = {
+				threadWorktrees: manager,
+				getWorkspaceRoot: async () => workspace,
+				stateManager: { getWorkspaceStateKey: () => undefined },
+				sessions: {
+					getSession: () => resident,
+					beginTaskDeletion: () => release,
+					removeSession: vi.fn(async () => {
+						await fs.access(mapping.cwd)
+						resident = undefined
+					}),
+				},
+				resolveSlashCommands: async (text: string) => text,
+				resolveReferenceMentions: async (text: string) => text,
+				workspaceNotices: new Map<string, string>(),
+				seenWorktreeRemovals: new Map<string, number>(),
+			}
+			const result = await SdkController.prototype.threadWorktreeAction.call(controller as never, {
+				action: "remove",
+				threadId: "idle",
+				json: "",
+				confirmed: false,
+			})
+			expect(resident).toBeUndefined()
+			expect(result.message).toContain("next turn runs in your workspace")
+			expect(release).toHaveBeenCalledOnce()
+			const resolveWorkspace = Reflect.get(SdkController.prototype, "resolveSessionWorkspace")
+			expect(await resolveWorkspace.call(controller, "idle")).toBe(workspace)
+			expect(controller.workspaceNotices.get("idle")).toContain(workspace)
+			controller.workspaceNotices.clear()
+			await resolveWorkspace.call(controller, "idle")
+			expect(controller.workspaceNotices.size).toBe(0)
+			const relative = mode === "mm" ? "api/file.txt" : "file.txt"
+			await fs.writeFile(path.join(workspace, relative), "Original workspace context\n")
+			const resolveMentions = Reflect.get(SdkController.prototype, "resolveContextMentions")
+			expect(await resolveMentions.call(controller, `@/${relative}`, "idle")).toContain("Original workspace context")
+		} finally {
+			await fs.rm(temp, { recursive: true, force: true })
+		}
+	}, 60_000)
+}
