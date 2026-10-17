@@ -338,6 +338,38 @@ describe("WalkthroughView", () => {
 		expect(sent(mocks.generate, 1)).toMatchObject({ profileId: "fast", regenerate: true })
 	})
 
+	it("moves through the Generate ▾ menu with the arrow keys, Home and End", async () => {
+		await renderPage()
+		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
+		const fast = await screen.findByRole("menuitemradio", { name: /Fast/ })
+		const deep = screen.getByRole("menuitemradio", { name: /Deep/ })
+		const manage = screen.getByRole("menuitem", { name: "Manage profiles…" })
+		const menu = screen.getByRole("menu")
+		fast.focus()
+		fireEvent.keyDown(fast, { key: "ArrowDown" })
+		expect(deep).toHaveFocus()
+		fireEvent.keyDown(deep, { key: "ArrowDown" })
+		expect(manage).toHaveFocus()
+		fireEvent.keyDown(manage, { key: "ArrowDown" })
+		expect(fast).toHaveFocus()
+		fireEvent.keyDown(fast, { key: "ArrowUp" })
+		expect(manage).toHaveFocus()
+		fireEvent.keyDown(manage, { key: "Home" })
+		expect(fast).toHaveFocus()
+		fireEvent.keyDown(fast, { key: "End" })
+		expect(manage).toHaveFocus()
+		expect(within(menu).getByRole("separator")).toBeTruthy()
+	})
+
+	it("opens Settings › Profiles from Manage profiles… in the Generate ▾ menu", async () => {
+		await renderPage()
+		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Manage profiles…" }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("profiles")
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Manage profiles…" })).toBeNull())
+		expect(mocks.generate).not.toHaveBeenCalled()
+	})
+
 	describe("Regenerate with unsent notes", () => {
 		const layoutB: ChangeWalkthrough = {
 			...fixture,

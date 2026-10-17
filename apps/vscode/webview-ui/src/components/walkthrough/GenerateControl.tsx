@@ -1,6 +1,7 @@
 import { useState } from "react"
+import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { LinkButton } from "@/components/common/LinkButton"
-import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
@@ -72,7 +73,7 @@ export function GenerateControl({
 							<span aria-hidden className="codicon codicon-chevron-down text-[11px]!" />
 						</Button>
 					</PopoverTrigger>
-					<PopoverContent align="end" className="menu-rise w-64 p-1" side="bottom">
+					<PopoverContent align="end" className="menu-rise w-64 p-1" onKeyDown={handleMenuKeyDown} side="bottom">
 						<div className={MENU_HEADING_CLASS}>Generate with</div>
 						<div className="flex flex-col" role="menu">
 							{profiles.map((p) => (
@@ -96,6 +97,18 @@ export function GenerateControl({
 									</span>
 								</button>
 							))}
+							<div className={MENU_SEPARATOR_CLASS} role="separator" />
+							<button
+								className={cn(MENU_ITEM_CLASS, "text-description")}
+								onClick={() => {
+									setMenuOpen(false)
+									onOpenProfiles()
+								}}
+								role="menuitem"
+								type="button">
+								<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-settings-gear")} />
+								Manage profiles…
+							</button>
 						</div>
 					</PopoverContent>
 				</Popover>
