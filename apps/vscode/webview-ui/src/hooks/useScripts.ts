@@ -43,7 +43,7 @@ function toEntry(info: ScriptInfo, scope: ScriptEntry["scope"]): ScriptEntry {
 			kind: option.kind as ScriptOptionKind,
 			required: option.required,
 			description: option.description,
-			allowDash: option.allowDash,
+			...(option.allowDash ? { allowDash: true } : {}),
 			...(option.kind === "choice" ? { choices: option.choices } : {}),
 			...(option.choicesFrom === "mmrc" ? { choicesFrom: "mmrc" as const } : {}),
 			...(option.hasDefault
