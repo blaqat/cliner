@@ -275,6 +275,7 @@ describe("SDK remote-config coordination", () => {
 			turnStateTracker: { set: vi.fn() },
 			messageTranslatorState: { clearTurnOutcome: vi.fn() },
 			taskStart: { initTask },
+			generateThreadTitle: vi.fn(),
 		}
 
 		const taskPromise = SdkController.prototype.initTask.call(controller as never, "start immediately")

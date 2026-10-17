@@ -158,6 +158,7 @@ import { sdkMessageText } from "./task-groups/thread-transcript"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
+import { maybeGenerateThreadTitle } from "./thread-title"
 import { TurnStateTracker } from "./turn-state-tracker"
 import { createWorkspaceFileReadExecutor } from "./vscode-file-read-executor"
 import { VscodeSessionHost } from "./vscode-session-host"
@@ -2077,7 +2078,7 @@ export class Controller {
 	 * This avoids using the VS Code extension host's `process.cwd()` (often `/`),
 	 * which produces invalid SDK workspace metadata with an empty hint.
 	 */
-	private async getWorkspaceRoot(): Promise<string> {
+	async getWorkspaceRoot(): Promise<string> {
 		try {
 			const { paths } = await HostProvider.workspace.getWorkspacePaths({})
 			const workspaceRoot = paths?.find((workspacePath) => workspacePath.trim().length > 0)
@@ -2453,7 +2454,26 @@ export class Controller {
 			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
 			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
 		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
+		// Thread titles run once per new thread (never for resumed ones) when
+		// the feature is enabled; failures are logged inside and never block.
+		if (taskId && !historyItem && prompt?.trim()) void this.generateThreadTitle(taskId, prompt)
 		return taskId
+	}
+
+	private async generateThreadTitle(taskId: string, prompt: string): Promise<void> {
+		await maybeGenerateThreadTitle(
+			{
+				store: this.stateManager,
+				getTitleState: (id) => this.taskHistory.getThreadTitleState(id),
+				applyTitle: async (id, title) => {
+					const written = await this.taskHistory.applyGeneratedThreadTitle(id, title)
+					if (written) await this.postStateToWebview()
+					return written
+				},
+			},
+			taskId,
+			prompt,
+		)
 	}
 
 	/** Tags the thread with ticket keys/URLs found in a user message (regex only). Best-effort. */

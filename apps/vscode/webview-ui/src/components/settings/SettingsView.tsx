@@ -51,9 +51,9 @@ interface SettingsTab {
 const SETTINGS_TABS: SettingsTab[] = [
 	{
 		id: "api-config",
-		name: "API Configuration",
-		tooltipText: "API Configuration",
-		headerText: "API Configuration",
+		name: "Profiles",
+		tooltipText: "Profiles",
+		headerText: "Profiles",
 		icon: SlidersHorizontal,
 	},
 	{

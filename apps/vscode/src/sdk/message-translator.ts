@@ -437,12 +437,20 @@ export class MessageTranslatorState {
 	private spawnAgentTotalCount = 0
 
 	/** Register a new spawn_agent call. Returns the entry for this call. */
-	addSpawnAgent(toolCallId: string, prompt: string, access?: "read" | "write"): SubagentStatusItem {
+	addSpawnAgent(
+		toolCallId: string,
+		prompt: string,
+		access?: "read" | "write",
+		profile?: string,
+		reasoningEffort?: string,
+	): SubagentStatusItem {
 		this.spawnAgentTotalCount += 1
 		const entry: SubagentStatusItem = {
 			index: ++this.spawnAgentNextIndex,
 			prompt,
 			access: access === "write" ? "write" : "read",
+			profile,
+			reasoningEffort,
 			toolCallId,
 			status: "running",
 			toolCalls: 0,
@@ -1458,7 +1466,15 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						const taskPrompt = getStringField(parsedInput, "task") ?? ""
 						const access = parsedInput?.access === "write" ? ("write" as const) : ("read" as const)
 						const callId = event.toolCallId ?? `spawn-${state.nextTs()}`
-						state.addSpawnAgent(callId, taskPrompt, access)
+						// Requested profile/effort show immediately; the resolved
+						// values arrive via emitUpdate (content_update) once applied.
+						state.addSpawnAgent(
+							callId,
+							taskPrompt,
+							access,
+							getStringField(parsedInput, "profile"),
+							getStringField(parsedInput, "reasoningEffort"),
+						)
 						if (approvedToolMessageTs !== undefined) {
 							state.setSpawnAgentPromptsTs(approvedToolMessageTs)
 						}
@@ -1567,6 +1583,10 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						if (typeof updateData.contextUsagePercentage === "number")
 							entry.contextUsagePercentage = updateData.contextUsagePercentage
 						if (typeof updateData.latestToolCall === "string") entry.latestToolCall = updateData.latestToolCall
+						// The spawn tool emits the resolved profile/effort once it
+						// applies them, overriding any values parsed from the input.
+						if (typeof updateData.profile === "string") entry.profile = updateData.profile
+						if (typeof updateData.reasoningEffort === "string") entry.reasoningEffort = updateData.reasoningEffort
 					}
 				}
 				// Emit a running status update

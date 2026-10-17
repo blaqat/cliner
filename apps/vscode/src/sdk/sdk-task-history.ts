@@ -987,6 +987,35 @@ export class SdkTaskHistory {
 		await this.updateOwnedMetadata(taskId, () => ({ threadTitle: title.trim() }))
 	}
 
+	/**
+	 * Title ownership flags for a thread: whether a title exists (user-set or
+	 * generated) and whether generation already ran once.
+	 */
+	async getThreadTitleState(taskId: string): Promise<{ hasTitle: boolean; generated: boolean }> {
+		const record = await this.getSdkRecord(taskId)
+		const metadata = record?.metadata
+		return {
+			hasTitle: !!metadataString(metadata, "threadTitle")?.trim(),
+			generated: metadataString(metadata, "threadTitleGenerated") === "true",
+		}
+	}
+
+	/**
+	 * Write a generated thread title — only while no title exists and the
+	 * one-shot flag is unset. Returns whether the write landed; a user-set
+	 * title or a previous generation both keep it from running twice.
+	 */
+	async applyGeneratedThreadTitle(taskId: string, title: string): Promise<boolean> {
+		let changed = false
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			if (metadataString(metadata, "threadTitle")?.trim()) return undefined
+			if (metadataString(metadata, "threadTitleGenerated") === "true") return undefined
+			changed = true
+			return { threadTitle: title.trim(), threadTitleGenerated: "true" }
+		})
+		return changed
+	}
+
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
 		const capturedTags = tags.map((tag) => ({ ...tag }))
 		const capturedDismissed = [...dismissedAutoTags]

@@ -270,6 +270,21 @@ export default function SubagentStatusRow({ message, isLast, lastModifiedMessage
 										prompt={entry.prompt}
 									/>
 								</div>
+								{entry.profile && (
+									<span
+										className="mt-px shrink-0 rounded-sm border border-editor-group-border px-1.5 py-px text-[10px] text-foreground opacity-80"
+										data-testid="subagent-profile-chip"
+										title={
+											entry.profile === "parent"
+												? "Runs on this thread's model"
+												: `Sub-agent profile: ${entry.profile}`
+										}>
+										{entry.profile === "parent" ? "parent" : entry.profile}
+										{entry.reasoningEffort && entry.reasoningEffort !== "none"
+											? ` · ${entry.reasoningEffort}`
+											: ""}
+									</span>
+								)}
 							</div>
 							{shouldShowStats && (
 								<div className="mt-1 text-[11px] opacity-70 min-w-0 whitespace-pre-wrap break-words">

@@ -60,6 +60,7 @@ import {
 import { getProviderSettingsManager } from "./provider-migration"
 import { buildSapProviderConfig, type SapProviderConfig } from "./sap-config"
 import type { SdkSessionHost } from "./session-host"
+import { buildSubagentProfileSettings } from "./subagent-profiles"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1189,6 +1190,9 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 			allowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands") ?? true,
 			allowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp") ?? true,
 			allowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb") ?? true,
+			// Profile names/defaults from the "Used by" section of Profiles;
+			// undefined when the toggle is off and the spawn tool ignores them.
+			...buildSubagentProfileSettings(stateManager),
 		},
 		enableAgentTeams: false,
 		...(useAutoCondense
