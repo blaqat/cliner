@@ -189,24 +189,24 @@ describe("WalkthroughView", () => {
 		expect(screen.getByTestId("walkthrough-send-bar")).toHaveTextContent("No notes yet")
 
 		const first = stop("Stop the request waiting")
-		fireEvent.click(within(first).getByRole("button", { name: "✎ Add note" }))
+		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
 		fireEvent.click(within(first).getByRole("button", { name: "Add a test for this" }))
 		expect(within(first).getByLabelText("Note on Stop the request waiting")).toHaveValue("Add a test for this.")
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
 		expect(within(first).getByText("Add a test for this.")).toBeVisible()
 
-		fireEvent.click(within(first).getByRole("button", { name: "✎ Edit note" }))
+		fireEvent.click(within(first).getByRole("button", { name: "Edit note" }))
 		fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), {
 			target: { value: "Should the job id be a UUID?" },
 		})
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
 
 		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
-		expect(within(first).getByRole("button", { name: "✓ Reviewed" })).toBeVisible()
+		expect(within(first).getByRole("button", { name: "Reviewed" })).toBeVisible()
 		expect(within(first).getByText("Should the job id be a UUID?")).toBeVisible()
 		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 stops reviewed")
 
-		fireEvent.click(screen.getByRole("button", { name: "✎ Add a note on the whole change" }))
+		fireEvent.click(screen.getByRole("button", { name: "Add a note on the whole change" }))
 		fireEvent.change(screen.getByLabelText("Note on the whole change"), { target: { value: "Check the error path." } })
 		expect(screen.getByTestId("walkthrough-send-bar")).toHaveTextContent("2 notes")
 
@@ -227,7 +227,7 @@ describe("WalkthroughView", () => {
 		const { unmount } = await renderPage()
 		const first = stop("Stop the request waiting")
 		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
-		fireEvent.click(within(first).getByRole("button", { name: "✎ Add note" }))
+		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
 		fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), { target: { value: "Keep me" } })
 		unmount()
 		expect(Object.keys(JSON.parse(localStorage.getItem(reviewStorageKey("task", "thread")) ?? "{}"))).toEqual(["diff-1"])
@@ -301,7 +301,7 @@ describe("WalkthroughView", () => {
 	it("carries notes to the same stop after the user's own revert", async () => {
 		await renderPage()
 		const first = stop("Stop the request waiting")
-		fireEvent.click(within(first).getByRole("button", { name: "✎ Add note" }))
+		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
 		fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), { target: { value: "Survives" } })
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
 		fireEvent.click(within(stop("Cap at 10k rows")).getByRole("button", { name: "Revert file" }))
@@ -356,7 +356,7 @@ describe("WalkthroughView", () => {
 				["Cap at 10k rows", "Where did this go"],
 			]) {
 				const card = stop(title)
-				fireEvent.click(within(card).getByRole("button", { name: "✎ Add note" }))
+				fireEvent.click(within(card).getByRole("button", { name: "Add note" }))
 				fireEvent.change(within(card).getByLabelText(`Note on ${title}`), { target: { value: note } })
 				fireEvent.click(within(card).getByRole("button", { name: "Done" }))
 			}

@@ -1,5 +1,7 @@
 import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
 import { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
 import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -8,11 +10,9 @@ import { countChanges, patchToDiffLines, type StopFile, splitInlineCode, stopFil
 /** Quick chips from the round 3 mockup; each fills the note box and stays editable. */
 export const QUICK_NOTES = ["Why this approach?", "Add a test for this.", "Rename for clarity."]
 
-export const LINK_BUTTON_CLASS =
-	"cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline disabled:cursor-default disabled:opacity-50 disabled:hover:no-underline"
-
-const FOOT_BUTTON_CLASS =
-	"inline-flex cursor-pointer items-center gap-1 rounded-xs border border-solid border-(--vscode-panel-border) bg-transparent px-1.5 py-0.5 text-[11px] text-foreground hover:bg-list-hover disabled:cursor-default disabled:opacity-50"
+/** Pill chips under a note box (also the script helper's choices). */
+const CHIP_CLASS =
+	"cursor-pointer rounded-full border border-solid border-editor-group-border bg-transparent px-2 py-px text-[11px] text-description hover:bg-list-hover hover:text-foreground"
 
 export interface RevertTarget {
 	fileId: string
@@ -58,7 +58,7 @@ export function NoteEditor({
 	onDone: () => void
 }) {
 	return (
-		<div className="mt-2 rounded-xs border border-solid border-(--vscode-focusBorder) bg-(--vscode-input-background) p-1.5">
+		<div className="mt-2 rounded-xs border border-solid border-(--vscode-focusBorder) bg-input-background p-1.5">
 			<textarea
 				aria-label={label}
 				autoFocus
@@ -79,7 +79,7 @@ export function NoteEditor({
 				{chips &&
 					QUICK_NOTES.map((text) => (
 						<button
-							className="cursor-pointer rounded-full border border-solid border-(--vscode-panel-border) bg-transparent px-2 py-px text-[11px] text-description hover:text-foreground"
+							className={CHIP_CLASS}
 							key={text}
 							onClick={() => onChange(value.trim() ? `${value.trimEnd()} ${text}` : text)}
 							type="button">
@@ -114,9 +114,9 @@ function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions
 				<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{added}</span>
 				<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{removed}</span>
 				<span className="flex-1" />
-				<button className={LINK_BUTTON_CLASS} disabled={actions.busy} onClick={onRevert} type="button">
+				<LinkButton disabled={actions.busy} onClick={onRevert}>
 					Revert hunk
-				</button>
+				</LinkButton>
 			</div>
 			{open && (
 				<div className="[&>div]:rounded-none [&>div]:border-0">
@@ -139,42 +139,37 @@ function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) 
 				<span className="ph-no-capture min-w-0 flex-1 truncate font-mono" title={file.path}>
 					{file.path}
 				</span>
-				<button
-					className={LINK_BUTTON_CLASS}
-					disabled={actions.busy}
-					onClick={() => actions.openDiff(file.fileId)}
-					type="button">
+				<LinkButton disabled={actions.busy} onClick={() => actions.openDiff(file.fileId)}>
 					Open diff
-				</button>
+				</LinkButton>
 				{!binary && (
-					<button
-						className={LINK_BUTTON_CLASS}
-						disabled={actions.busy}
-						onClick={() => setConfirm({ fileId: file.fileId })}
-						type="button">
+					<LinkButton disabled={actions.busy} onClick={() => setConfirm({ fileId: file.fileId })}>
 						Revert file
-					</button>
+					</LinkButton>
 				)}
 			</div>
 			{confirm && (
-				<div
-					className="flex flex-wrap items-center gap-1.5 border-t border-solid border-x-0 border-b-0 border-editor-group-border bg-input-warning-background px-2 py-1.5 text-[11px]"
-					role="alert">
-					<span className="min-w-0 flex-1">
-						{confirm.hunkId ? "Revert this hunk?" : `Revert every change to ${file.path.split("/").pop()}?`} Later
-						edits to the file block it.
-					</span>
-					<Button
-						disabled={actions.busy}
-						onClick={() => void actions.revert(confirm).then((ok) => ok && setConfirm(undefined))}
-						size="xs"
-						variant="danger">
-						{confirm.hunkId ? "Revert hunk" : "Revert file"}
-					</Button>
-					<Button onClick={() => setConfirm(undefined)} size="xs" variant="secondary">
-						Cancel
-					</Button>
-				</div>
+				<InlineNotice
+					actions={
+						<>
+							<Button
+								disabled={actions.busy}
+								onClick={() => void actions.revert(confirm).then((ok) => ok && setConfirm(undefined))}
+								size="xs"
+								variant="danger">
+								{confirm.hunkId ? "Revert hunk" : "Revert file"}
+							</Button>
+							<Button onClick={() => setConfirm(undefined)} size="xs" variant="secondary">
+								Cancel
+							</Button>
+						</>
+					}
+					className="rounded-none border-x-0 border-b-0 text-[11px]"
+					role="alert"
+					tone="warning">
+					{confirm.hunkId ? "Revert this hunk?" : `Revert every change to ${file.path.split("/").pop()}?`} Later edits
+					to the file block it.
+				</InlineNotice>
 			)}
 			{file.hunks.map((hunk) => (
 				<HunkBlock
@@ -240,7 +235,7 @@ export function WalkthroughStopCard({
 				<FileBlock actions={actions} file={file} key={file.fileId} />
 			))}
 			{hasNote && !editing && (
-				<div className="mt-2 rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-(--vscode-textLink-foreground) bg-code px-2 py-1 text-xs">
+				<div className="mt-2 rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-link bg-code px-2 py-1 text-xs">
 					<span className="font-semibold text-link">Note</span> · <span className="whitespace-pre-wrap">{note}</span>
 				</div>
 			)}
@@ -255,17 +250,20 @@ export function WalkthroughStopCard({
 				/>
 			)}
 			<div className="mt-2 flex items-center gap-1.5">
-				<button className={FOOT_BUTTON_CLASS} onClick={() => setEditing(!editing)} type="button">
-					✎ {hasNote ? "Edit note" : "Add note"}
-				</button>
+				<Button onClick={() => setEditing(!editing)} size="xs" variant="secondary">
+					<span aria-hidden className="codicon codicon-edit text-[11px]!" />
+					{hasNote ? "Edit note" : "Add note"}
+				</Button>
 				<span className="flex-1" />
-				<button
+				<Button
 					aria-pressed={reviewed}
-					className={cn(FOOT_BUTTON_CLASS, reviewed && "border-success/50 text-success")}
+					className={cn(reviewed && "text-success")}
 					onClick={() => onReviewed(!reviewed)}
-					type="button">
-					{reviewed ? "✓ Reviewed" : "Mark reviewed"}
-				</button>
+					size="xs"
+					variant="secondary">
+					{reviewed && <span aria-hidden className="codicon codicon-check text-[11px]!" />}
+					{reviewed ? "Reviewed" : "Mark reviewed"}
+				</Button>
 			</div>
 		</article>
 	)

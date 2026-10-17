@@ -4,12 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildThreadPath } from "@/components/chat/chat-view/utils/threadUtils"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { GenerateControl } from "./GenerateControl"
 import {
@@ -28,7 +29,7 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
-import { InlineCodeProse, LINK_BUTTON_CLASS, NoteEditor, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
+import { InlineCodeProse, NoteEditor, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
 import { supportSummary } from "./walkthroughUtils"
 
 const request = (value: WalkthroughRequest) => StringRequest.create({ value: JSON.stringify(value) })
@@ -372,20 +373,15 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 				<div className="flex flex-wrap items-start gap-2">
 					<div aria-label="Scope" className="flex items-center gap-1" role="group">
 						{SCOPES.map((option) => (
-							<button
+							<Button
 								aria-pressed={scope === option.scope}
-								className={cn(
-									"cursor-pointer rounded-sm border border-solid px-2 py-0.5 text-xs",
-									scope === option.scope
-										? "border-(--vscode-focusBorder) bg-(--vscode-list-activeSelectionBackground) text-(--vscode-list-activeSelectionForeground)"
-										: "border-(--vscode-panel-border) bg-transparent text-foreground",
-								)}
 								disabled={generating}
 								key={option.scope}
 								onClick={() => setScope(option.scope)}
-								type="button">
+								size="xs"
+								variant={scope === option.scope ? "default" : "secondary"}>
 								{option.label}
-							</button>
+							</Button>
 						))}
 					</div>
 					<span className="flex-1" />
@@ -414,60 +410,57 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					</div>
 				)}
 				{error && (
-					<div
-						className="mt-2 flex items-start gap-1.5 rounded-xs border border-solid border-(--vscode-inputValidation-errorBorder) bg-input-error-background px-2 py-1.5 text-input-error-foreground"
-						role="alert">
-						<span aria-hidden className="codicon codicon-error mt-px text-[12px]!" />
-						<span className="min-w-0 flex-1 break-words">{error}</span>
-						<button
-							aria-label="Dismiss error"
-							className={LINK_BUTTON_CLASS}
-							onClick={() => setError("")}
-							type="button">
-							Dismiss
-						</button>
-					</div>
+					<InlineNotice
+						actions={
+							<LinkButton aria-label="Dismiss error" onClick={() => setError("")}>
+								Dismiss
+							</LinkButton>
+						}
+						className="mt-2"
+						tone="error">
+						{error}
+					</InlineNotice>
 				)}
 				{walk && unplaced.length > 0 && (
-					<div
-						className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xs border border-solid border-(--vscode-inputValidation-warningBorder) bg-input-warning-background px-2 py-1.5 text-input-warning-foreground"
+					<InlineNotice
+						actions={
+							<>
+								<Button
+									disabled={busy}
+									onClick={() => persist(recoverUnplacedNotes(store, walk.fingerprint))}
+									size="xs"
+									variant="secondary">
+									Add to overall note
+								</Button>
+								<Button
+									disabled={busy}
+									onClick={() => persist(discardUnplacedNotes(store, walk.fingerprint))}
+									size="xs"
+									variant="secondary">
+									Discard
+								</Button>
+							</>
+						}
+						className="mt-2"
 						data-testid="walkthrough-unplaced"
-						role="status">
-						<span aria-hidden className="codicon codicon-warning text-[12px]!" />
-						<span className="min-w-0 flex-1">
-							{plural(unplaced.length, "note")} from the previous layout did not fit a new stop.
-						</span>
-						<Button
-							disabled={busy}
-							onClick={() => persist(recoverUnplacedNotes(store, walk.fingerprint))}
-							size="xs"
-							variant="secondary">
-							Add to overall note
-						</Button>
-						<Button
-							disabled={busy}
-							onClick={() => persist(discardUnplacedNotes(store, walk.fingerprint))}
-							size="xs"
-							variant="secondary">
-							Discard
-						</Button>
-					</div>
+						tone="warning">
+						{plural(unplaced.length, "note")} from the previous layout did not fit a new stop.
+					</InlineNotice>
 				)}
 				{walk && showMoved && (
-					<div
-						className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xs border border-solid border-(--vscode-inputValidation-warningBorder) bg-input-warning-background px-2 py-1.5 text-input-warning-foreground"
+					<InlineNotice
+						actions={
+							<Button disabled={busy} onClick={() => void refresh()} size="xs" variant="secondary">
+								Refresh
+							</Button>
+						}
+						className="mt-2"
 						data-testid="walkthrough-moved"
-						role="status">
-						<span aria-hidden className="codicon codicon-warning text-[12px]!" />
-						<span className="min-w-0 flex-1">
-							Changes moved; refresh.
-							{stale.notes + stale.reviewed > 0 &&
-								` ${[stale.notes && plural(stale.notes, "note"), stale.reviewed && `${stale.reviewed} reviewed`].filter(Boolean).join(" and ")} from the earlier changes will be cleared.`}
-						</span>
-						<Button disabled={busy} onClick={() => void refresh()} size="xs" variant="secondary">
-							Refresh
-						</Button>
-					</div>
+						tone="warning">
+						Changes moved; refresh.
+						{stale.notes + stale.reviewed > 0 &&
+							` ${[stale.notes && plural(stale.notes, "note"), stale.reviewed && `${stale.reviewed} reviewed`].filter(Boolean).join(" and ")} from the earlier changes will be cleared.`}
+					</InlineNotice>
 				)}
 
 				{walk && (
@@ -477,7 +470,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 							{walk.focus && <InlineCodeProse className="mt-1 text-description" text={walk.focus} />}
 							<div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-description">
 								<span
-									className="rounded-xs border border-solid border-(--vscode-panel-border) px-1.5"
+									className="rounded-xs border border-solid border-editor-group-border px-1.5"
 									data-testid="walkthrough-source"
 									title={
 										walk.source === "generated"
@@ -512,7 +505,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 						</div>
 
 						{walk.warnings.length > 0 && (
-							<ul className="mt-2 mb-0 list-none rounded-xs border border-solid border-(--vscode-panel-border) bg-code px-2 py-1.5 text-[11px] text-description">
+							<ul className="mt-2 mb-0 list-none rounded-xs border border-solid border-editor-group-border bg-code px-2 py-1.5 text-[11px] text-description">
 								{walk.warnings.map((warning) => (
 									<li className="flex gap-1.5 break-words" key={warning}>
 										<span aria-hidden className="codicon codicon-info mt-px text-[11px]!" />
@@ -522,7 +515,12 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 							</ul>
 						)}
 
-						{!walk.hunks.length && <p className="mt-4 text-description">No changes in this scope.</p>}
+						{!walk.hunks.length && (
+							<div className="mt-6 flex flex-col items-center gap-1 text-center text-description">
+								<span aria-hidden className="codicon codicon-diff text-[20px]!" />
+								No changes in this scope.
+							</div>
+						)}
 
 						{walk.chapters.map((chapter) => (
 							<section aria-label={chapter.title} key={chapter.id}>
@@ -568,20 +566,18 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 										value={overallNote}
 									/>
 								) : overallNote.trim() ? (
-									<div className="rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-(--vscode-textLink-foreground) bg-code px-2 py-1">
+									<div className="rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-link bg-code px-2 py-1">
 										<span className="font-semibold text-link">Overall</span> ·{" "}
 										<span className="whitespace-pre-wrap">{overallNote}</span>{" "}
-										<button className={LINK_BUTTON_CLASS} onClick={() => setOverallOpen(true)} type="button">
+										<LinkButton className="text-[11px]" onClick={() => setOverallOpen(true)}>
 											edit
-										</button>
+										</LinkButton>
 									</div>
 								) : (
-									<button
-										className="inline-flex cursor-pointer items-center gap-1 rounded-xs border border-solid border-(--vscode-panel-border) bg-transparent px-1.5 py-0.5 text-[11px] text-foreground hover:bg-list-hover"
-										onClick={() => setOverallOpen(true)}
-										type="button">
-										✎ Add a note on the whole change
-									</button>
+									<Button onClick={() => setOverallOpen(true)} size="xs" variant="secondary">
+										<span aria-hidden className="codicon codicon-edit text-[11px]!" />
+										Add a note on the whole change
+									</Button>
 								)}
 							</section>
 						)}
