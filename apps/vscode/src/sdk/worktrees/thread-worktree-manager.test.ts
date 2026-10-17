@@ -213,3 +213,44 @@ for (const mode of ["git", "mm"] as const) {
 		for (const module of mapping.modules) expect(await read(module.path)).toBe("later\n")
 	}, 60_000)
 }
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: removal preserves staged-only versions even after bringing working files`, async () => {
+		if (mode === "mm") {
+			await fs.rm(workspace, { recursive: true, force: true })
+			await repo(path.join(workspace, "api"))
+			await repo(path.join(workspace, "web"))
+			await write(workspace, ".mmrc", "api\nweb\n")
+		}
+		const mapping = await manager.create("staged-only", "Staged", workspace)
+		for (const module of mapping.modules) {
+			await write(module.path, "file.txt", "staged only\n")
+			git(module.path, "add", "file.txt")
+			await write(module.path, "file.txt", "base\n")
+		}
+		expect((await manager.remove("staged-only")).warning).toContain("never brought in")
+		for (const module of mapping.modules) await write(module.path, "file.txt", "working files\n")
+		await manager.bring("staged-only")
+		expect((await manager.remove("staged-only")).warning).toContain("never brought in")
+		for (const module of mapping.modules) expect(git(module.path, "show", ":file.txt")).toBe("staged only")
+	}, 60_000)
+}
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: removal requires confirmation when the real index cannot be inspected`, async () => {
+		if (mode === "mm") {
+			await fs.rm(workspace, { recursive: true, force: true })
+			await repo(path.join(workspace, "api"))
+			await repo(path.join(workspace, "web"))
+			await write(workspace, ".mmrc", "api\nweb\n")
+		}
+		const mapping = await manager.create("index-error", "Index error", workspace)
+		for (const module of mapping.modules) await write(module.path, "file.txt", "brought\n")
+		await manager.bring("index-error")
+		const module = mapping.modules[0]
+		await fs.writeFile(path.resolve(module.path, git(module.path, "rev-parse", "--git-path", "index")), "invalid index")
+		expect((await manager.remove("index-error")).warning).toContain("never brought in")
+		expect(await manager.get("index-error")).toBeDefined()
+		await fs.access(mapping.cwd)
+	}, 60_000)
+}

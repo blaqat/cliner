@@ -388,8 +388,14 @@ export class ThreadWorktreeManager {
 			try {
 				const diffs = await this.diffs(id)
 				changed = diffs.some((d) => d.patch) && this.fingerprint(diffs) !== mapping.transferredDiff
+				// A working-file snapshot cannot represent a different staged version.
+				for (const diff of diffs) {
+					const staged = await git(diff.worktreePath, ["diff", "--cached", "--binary", "HEAD"])
+					if (staged && (await git(diff.worktreePath, ["diff", "--cached", "--binary", diff.tree]))) changed = true
+				}
 			} catch {
-				/* Partial isolates still need explicit removal. */
+				changed = true
+				/* Partial isolates and unreadable indexes still need explicit removal. */
 			}
 			if (changed) return { warning: "Changes were never brought in. Remove this worktree and discard those changes?" }
 		}
