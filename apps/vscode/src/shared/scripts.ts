@@ -20,6 +20,8 @@ export interface ScriptOption {
 	choices?: string[]
 	/** Resolve `choices` from the workspace's `.mmrc` module list. */
 	choicesFrom?: "mmrc"
+	/** Permit leading-dash text arguments. Only enable when the command handles them safely. */
+	allowDash?: boolean
 	default?: string | boolean
 }
 
@@ -174,6 +176,10 @@ export function parseTypedOptions(
 		}
 		if (!token.hasColon || token.value === "") {
 			issues.push({ option: option.name, message: `${option.name} needs a value: ${option.name}:<value>` })
+			continue
+		}
+		if (option.kind === "text" && token.value.startsWith("-") && !option.allowDash) {
+			issues.push({ option: option.name, message: `${option.name} cannot start with '-'` })
 			continue
 		}
 		if (token.value.length > MAX_SCRIPT_TEXT_VALUE_LENGTH) {

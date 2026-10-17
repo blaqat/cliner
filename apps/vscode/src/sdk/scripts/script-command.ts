@@ -187,8 +187,11 @@ export function resolveScriptRun(
 	for (const option of script.options) {
 		const given = raw[option.name]
 		if (given === undefined || given === null || given === "") {
-			if (option.default !== undefined) values[option.name] = option.default
-			else if (option.required) return { ok: false, error: `Option "${option.name}" is required.` }
+			if (option.default !== undefined) {
+				if (option.kind === "text" && String(option.default).startsWith("-") && !option.allowDash)
+					return { ok: false, error: `Option "${option.name}" cannot start with '-'.` }
+				values[option.name] = option.default
+			} else if (option.required) return { ok: false, error: `Option "${option.name}" is required.` }
 			continue
 		}
 		if (option.kind === "flag") {
@@ -201,6 +204,8 @@ export function resolveScriptRun(
 			return { ok: false, error: `Option "${option.name}" must be a string.` }
 		}
 		const value = String(given)
+		if (option.kind === "text" && value.startsWith("-") && !option.allowDash)
+			return { ok: false, error: `Option "${option.name}" cannot start with '-'.` }
 		if (value.length > MAX_SCRIPT_TEXT_VALUE_LENGTH) return { ok: false, error: `Option "${option.name}" is too long.` }
 		if (CONTROL_CHARACTERS.test(value)) {
 			return { ok: false, error: `Option "${option.name}" contains control characters (such as a newline).` }

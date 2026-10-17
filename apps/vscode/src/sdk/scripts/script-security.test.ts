@@ -41,3 +41,31 @@ describe("script shell boundaries", () => {
 		}
 	})
 })
+
+it("refuses executable git arguments and permits an explicit allowDash opt-in", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "script-dash-"))
+	try {
+		await promisify(execFile)("git", ["init", root])
+		await promisify(execFile)("git", [
+			"-C",
+			root,
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.com",
+			"commit",
+			"--allow-empty",
+			"-m",
+			"test",
+		])
+		const script = { command: "git log {{value}}", options: [option] }
+		expect(resolveScriptRun(script, { value: "--output=injected" }).ok).toBe(false)
+		expect(await fs.readdir(root)).toEqual([".git"])
+		const run = resolveScriptRun({ ...script, options: [{ ...option, allowDash: true }] }, { value: "--output=allowed" })
+		if (!run.ok) throw new Error(run.error)
+		await promisify(execFile)("/bin/sh", ["-c", run.command], { cwd: root })
+		expect(await fs.readFile(path.join(root, "allowed"), "utf8")).toContain("test")
+	} finally {
+		await fs.rm(root, { recursive: true, force: true })
+	}
+})

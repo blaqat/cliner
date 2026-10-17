@@ -67,6 +67,11 @@ function parseOption(raw: unknown, index: number, errors: string[]): ScriptOptio
 		required: entry.required === true,
 		description: asString(entry.description)?.trim() ?? "",
 	}
+	if (entry.allowDash !== undefined) {
+		if (typeof entry.allowDash !== "boolean" || option.kind !== "text")
+			errors.push(`Option "${name}": allowDash must be a boolean on a text option`)
+		else option.allowDash = entry.allowDash
+	}
 	if (entry.required !== undefined && typeof entry.required !== "boolean") {
 		errors.push(`Option "${name}": required must be true or false`)
 	}
@@ -102,6 +107,8 @@ function parseOption(raw: unknown, index: number, errors: string[]): ScriptOptio
 			errors.push(`Option "${name}": default must be a string`)
 		}
 	}
+	if (option.kind === "text" && typeof option.default === "string" && option.default.startsWith("-") && !option.allowDash)
+		errors.push(`Option "${name}": default cannot start with '-' unless allowDash is true`)
 	return option
 }
 
@@ -216,6 +223,8 @@ Usage notes for the agent: what the script does, what its options mean, and what
 - \`{{option}}\` in the command is replaced by that option's value, quoted for the shell.
 - \`{{#flag}}…{{/flag}}\` is included only when the option is set; \`{{^flag}}…{{/flag}}\` only when it is not.
 - \`approval\` is one of \`always_ask\`, \`ask_in_ask_mode\` (default) or \`always_allow\`.
+- Text values cannot start with \`-\` unless the option declares \`allowDash: true\`. Enable this only for commands that safely accept such arguments.
+- Placeholders must be standalone shell words outside quotes and substitutions.
 - A choice option can list its \`choices\`, or use \`choicesFrom: mmrc\` to list the modules in \`.mmrc\`.
 `
 }
