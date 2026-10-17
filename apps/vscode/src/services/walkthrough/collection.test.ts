@@ -28,6 +28,23 @@ afterEach(async () => {
 })
 
 describe("walkthrough collection", () => {
+	it("keeps reviewable files when another changed file exceeds the size limit", async () => {
+		const root = await repo("repo")
+		await writeFile(path.join(root, "a.ts"), "review this\n")
+		await writeFile(path.join(root, "large.bin"), "x".repeat(2 * 1024 * 1024 + 1))
+		const result = await collect({
+			taskId: "task",
+			scope: "git",
+			roots: [root],
+			checkpointRoot: root,
+			messages: [],
+			runSpans: [],
+			edits: [],
+			checkpoints: [],
+		})
+		expect(result.walk.hunks.map((hunk) => hunk.path)).toEqual(["a.ts"])
+		expect(result.walk.warnings.join(" ")).toContain("large.bin")
+	})
 	it("compares each real turn checkpoint and collapses later reversals into the net live diff", async () => {
 		const root = await repo("repo")
 		const before = (await git(root, ["rev-parse", "HEAD"])).trim()
@@ -155,6 +172,33 @@ describe("walkthrough collection", () => {
 		expect(changes.map((change) => change.path)).toEqual(["a.ts", "renamed.ts"])
 		expect(changes[0].afterExists).toBe(false)
 		expect(changes[1].beforeExists).toBe(false)
+	})
+	it("does not mistake an octopus merge's third parent for stash-untracked files", async () => {
+		const root = await repo("repo")
+		const base = (await git(root, ["rev-parse", "HEAD"])).trim()
+		const tree = (await git(root, ["rev-parse", "HEAD^{tree}"])).trim()
+		const second = (await git(root, ["commit-tree", tree, "-p", base, "-m", "second parent"])).trim()
+		await writeFile(path.join(root, "ghost.ts"), "third parent only\n")
+		await git(root, ["add", "ghost.ts"])
+		const thirdTree = (await git(root, ["write-tree"])).trim()
+		const third = (await git(root, ["commit-tree", thirdTree, "-p", base, "-m", "third parent"])).trim()
+		await git(root, ["reset", "--hard", base])
+		const merge = (
+			await git(root, ["commit-tree", tree, "-p", base, "-p", second, "-p", third, "-m", "octopus merge"])
+		).trim()
+		await git(root, ["update-ref", "HEAD", merge])
+		expect(await changesBetween(root, [root], "HEAD")).toEqual([])
+		const result = await collect({
+			taskId: "task",
+			scope: "thread",
+			roots: [root],
+			checkpointRoot: root,
+			messages: [{ role: "user", content: "Review" }],
+			runSpans: [1],
+			edits: [],
+			checkpoints: [{ ref: merge, runCount: 1, kind: "commit" }],
+		})
+		expect(result.walk.hunks).toEqual([])
 	})
 	it("groups persisted editor changes by their real user turn and excludes orphaned journal entries", async () => {
 		const root = await repo("repo")

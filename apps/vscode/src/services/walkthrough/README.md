@@ -55,7 +55,7 @@ All five RPCs belong to `TaskService`. Each accepts `StringRequest { value: JSON
 - `revertWalkthroughChange`: `{ taskId, scope, fingerprint, fileId, confirmed: true }`. Include `hunkId` to revert only that hunk. Returns the refreshed document. The page owns inline confirmation.
 - `sendWalkthroughNotes`: `{ taskId, scope, fingerprint, stopNotes: Record<stopId, string>, overallNote?: string }`. Builds one message from host-owned stops and bounded patch quotes, then uses `task.handleWebviewAskResponse("messageResponse", ...)`, the normal webview send path. On success, return to the thread.
 
-The thread must still be focused. Unknown IDs, stale fingerprints, changed files, and unconfirmed reverts fail without writing. Reverts apply exact reverse patches and preserve other hunks. Binary files are reviewable as synthetic hunks but cannot be reverted here. Files over 2 MiB and symlink files are reported as unavailable.
+The thread must still be focused. Unknown IDs, stale fingerprints, changed files, and unconfirmed reverts fail without writing. Reverts apply exact reverse patches and preserve other hunks. Binary files are reviewable as synthetic hunks but cannot be reverted here. Files over 2 MiB and symlink files are reported as unavailable. Collection continues through the remaining files.
 
 The free layout groups surviving changes by editing turn. A net hunk that combines several turns belongs to the turn with the most matching changed lines, with the latest turn breaking ties. Prose comes from that turn's assistant text. Whole git diff groups known thread edits by turn and uses one stop per file for changes without turn evidence. Both paths use the same document shape.
 

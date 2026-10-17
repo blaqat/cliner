@@ -141,7 +141,11 @@ export async function changesBetween(
 	roots: string[],
 	beforeRef: string,
 	afterRef?: string,
+	warnings: string[] = [],
 ): Promise<ContentChange[]> {
+	// Commit trees cannot expose stash-only third parents.
+	if (beforeRef === "HEAD") beforeRef = "HEAD^{tree}"
+	if (afterRef === "HEAD") afterRef = "HEAD^{tree}"
 	const changed = afterRef
 		? (await git(root, ["diff", "--no-renames", "--name-only", "-z", beforeRef, afterRef, "--"])).split("\0").filter(Boolean)
 		: (await git(root, ["diff", "--no-renames", "--name-only", "-z", beforeRef, "--"])).split("\0").filter(Boolean)
@@ -153,19 +157,23 @@ export async function changesBetween(
 	const files = new Set([...changed, ...extras, ...beforeUntracked])
 	const changes: ContentChange[] = []
 	for (const file of [...files].sort()) {
-		const filePath = path.resolve(root, file)
-		const displayPath = modulePath(filePath, roots)
-		const before = await snapshot(root, beforeRef, file)
-		const after = afterRef ? await snapshot(root, afterRef, file) : await readDisk(filePath)
-		if (before.text !== after.text || before.exists !== after.exists)
-			changes.push({
-				filePath,
-				path: displayPath,
-				before: before.text,
-				after: after.text,
-				beforeExists: before.exists,
-				afterExists: after.exists,
-			})
+		try {
+			const filePath = path.resolve(root, file)
+			const displayPath = modulePath(filePath, roots)
+			const before = await snapshot(root, beforeRef, file)
+			const after = afterRef ? await snapshot(root, afterRef, file) : await readDisk(filePath)
+			if (before.text !== after.text || before.exists !== after.exists)
+				changes.push({
+					filePath,
+					path: displayPath,
+					before: before.text,
+					after: after.text,
+					beforeExists: before.exists,
+					afterExists: after.exists,
+				})
+		} catch (error) {
+			warnings.push(`${modulePath(path.resolve(root, file), roots)}: ${(error as Error).message}`)
+		}
 	}
 	return changes
 }
@@ -177,7 +185,7 @@ export interface CollectionInput {
 	messages: Message[]
 	runSpans: number[]
 	edits: JournalEdit[]
-	checkpoints: { ref: string; runCount: number }[]
+	checkpoints: { ref: string; runCount: number; kind?: "commit" | "stash" }[]
 	checkpointRoot: string
 }
 
@@ -205,6 +213,8 @@ export async function collect(
 	}
 	const checkpoints = [...input.checkpoints].sort((a, b) => a.runCount - b.runCount)
 
+	const checkpointRef = (checkpoint: CollectionInput["checkpoints"][number]) =>
+		checkpoint.kind === "commit" ? `${checkpoint.ref}^{tree}` : checkpoint.ref
 	const checkpointFor = (turn: EditTurn) =>
 		checkpoints.filter((checkpoint) => checkpoint.runCount <= Number(turn.id.slice(4))).at(-1)
 
@@ -218,8 +228,9 @@ export async function collect(
 			const changes = await changesBetween(
 				root,
 				roots,
-				checkpoints[0].ref,
-				turns[0] ? checkpointFor(turns[0])?.ref : undefined,
+				checkpointRef(checkpoints[0]),
+				turns[0] && checkpointFor(turns[0]) ? checkpointRef(checkpointFor(turns[0])!) : undefined,
+				warnings,
 			)
 			if (changes.length) {
 				turns.unshift({
@@ -240,7 +251,13 @@ export async function collect(
 		try {
 			const root = (await git(input.checkpointRoot, ["rev-parse", "--show-toplevel"])).trim()
 			const next = turns[index + 1] ? checkpointFor(turns[index + 1]) : undefined
-			const changes = await changesBetween(root, roots, checkpoint.ref, next?.ref)
+			const changes = await changesBetween(
+				root,
+				roots,
+				checkpointRef(checkpoint),
+				next ? checkpointRef(next) : undefined,
+				warnings,
+			)
 			for (const change of changes) {
 				const recorded = turn.changes.find((candidate) => candidate.filePath === change.filePath)
 				if (recorded) {
@@ -257,7 +274,7 @@ export async function collect(
 		const changes: ContentChange[] = []
 		for (const root of roots) {
 			try {
-				changes.push(...(await changesBetween(root, roots, "HEAD")))
+				changes.push(...(await changesBetween(root, roots, "HEAD", undefined, warnings)))
 			} catch (error) {
 				warnings.push(`${path.basename(root)}: ${(error as Error).message}`)
 			}
