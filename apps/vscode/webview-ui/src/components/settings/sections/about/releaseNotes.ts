@@ -1,6 +1,5 @@
 // Bundled release notes for Settings > About > What's new. Newest first. Add an entry per fork release;
-// the repo is private, so nothing is fetched. The newest entry is the release this build ships as;
-// add its date when it's tagged.
+// nothing is fetched at runtime.
 
 export interface ReleaseNote {
 	/** Fork tag such as "4.1.22-fork.17". */
@@ -13,6 +12,7 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		version: "4.1.22-fork.24",
+		date: "2026-10-17",
 		notes: [
 			"⌘K / Ctrl+K no longer starts a VS Code chord while Cline is focused",
 			"Suggests the task for your checked-out branch",
