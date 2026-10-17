@@ -69,6 +69,35 @@ describe("NotebookChangesRow", () => {
 		)
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 	})
+	it("shows a rejected-save draft with Retry / Reload that target the card revision", async () => {
+		const withDraft = {
+			...payload,
+			changes: [{ ...payload.changes[0], draft: { ts: 5, reason: "Notebook changes have changed since this review." } }],
+		}
+		mocks.state = { clineMessages: [message(10, withDraft)] }
+		render(<NotebookChangesRow message={message(10, withDraft)} />)
+		expect(screen.getByTestId("notebook-draft-notice")).toHaveTextContent("Your text is kept as a draft")
+		fireEvent.click(screen.getByRole("button", { name: /^Retry saving your edit/ }))
+		await waitFor(() =>
+			expect(mocks.action).toHaveBeenCalledWith(
+				expect.objectContaining({ action: "retry_draft", slug: "plan", revision: "r1" }),
+			),
+		)
+		fireEvent.click(screen.getByRole("button", { name: /^Reload your draft/ }))
+		await waitFor(() =>
+			expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "reload_draft", slug: "plan" })),
+		)
+		fireEvent.click(screen.getByRole("button", { name: /^Discard your draft/ }))
+		await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "discard_draft" })))
+	})
+	it("shows a failed Retry inline", async () => {
+		const withDraft = { ...payload, changes: [{ ...payload.changes[0], draft: { ts: 5, reason: "stale" } }] }
+		mocks.state = { clineMessages: [message(10, withDraft)] }
+		mocks.action.mockRejectedValueOnce(new Error("Use the newest review card."))
+		render(<NotebookChangesRow message={message(10, withDraft)} />)
+		fireEvent.click(screen.getByRole("button", { name: /^Retry saving your edit/ }))
+		expect(await screen.findByText("Use the newest review card.")).toBeInTheDocument()
+	})
 	it("accepts every change and renders a summary", async () => {
 		render(<NotebookChangesRow message={message()} />)
 		fireEvent.click(screen.getByRole("button", { name: "Accept all" }))

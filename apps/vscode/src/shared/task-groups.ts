@@ -52,6 +52,8 @@ export interface NotebookChange {
 	editedByUser?: boolean
 	replacedUserVersion?: string
 	baseUpdatedAt?: number
+	/** The user's last editor save was rejected; their text is kept as a recoverable draft. */
+	draft?: { ts: number; reason: string }
 }
 export interface NotebookActivity {
 	ts: number

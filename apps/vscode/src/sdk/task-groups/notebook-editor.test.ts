@@ -11,6 +11,7 @@ const editor = vi.hoisted(() => ({
 	close: undefined as ((doc: unknown) => void) | undefined,
 	show: vi.fn(),
 	error: vi.fn(),
+	warn: vi.fn(),
 }))
 vi.mock("vscode", () => ({
 	workspace: {
@@ -24,7 +25,7 @@ vi.mock("vscode", () => ({
 		},
 		openTextDocument: async (file: string) => ({ uri: { fsPath: file } }),
 	},
-	window: { showTextDocument: editor.show, showErrorMessage: editor.error },
+	window: { showTextDocument: editor.show, showErrorMessage: editor.error, showWarningMessage: editor.warn },
 }))
 let root: string
 let store: NotebookStore
@@ -36,6 +37,7 @@ beforeEach(async () => {
 	groupId = (await new TaskGroupStore(root).createGroup({ title: "Task" })).id
 	editor.show.mockReset().mockResolvedValue(undefined)
 	editor.error.mockReset()
+	editor.warn.mockReset()
 	await store.stageChange(groupId, "thread", { op: "create", slug: "plan", name: "Plan", description: "", content: "draft" })
 })
 afterEach(async () => {
@@ -62,13 +64,14 @@ it("opens a normal markdown tab and saving updates pending reads and the card ca
 	await vi.waitFor(() => expect(saved).toHaveBeenCalledTimes(2))
 	expect((await store.readPending(groupId, "thread"))?.[0].content).toBe("user second version")
 })
-it("refuses a stale editor save after the agent updates the draft", async () => {
+async function openStaleEditor(onRejected = vi.fn(async () => {})) {
 	const pending = (await store.readPendingReview(groupId, "thread"))!
 	const saved = vi.fn(async () => {})
 	handle = await openPendingNoteEditor(
 		store,
 		{ taskGroupId: groupId, threadId: "thread", revision: pending.revision, slug: "plan" },
 		saved,
+		{ onRejected },
 	)
 	await store.stageChange(groupId, "thread", {
 		op: "create",
@@ -77,8 +80,58 @@ it("refuses a stale editor save after the agent updates the draft", async () => 
 		description: "",
 		content: "new agent draft",
 	})
-	editor.save?.({ uri: editor.show.mock.calls[0][0].uri, getText: () => "stale text" })
-	await vi.waitFor(() => expect(editor.error).toHaveBeenCalled())
+	return { saved, onRejected, document: editor.show.mock.calls[0][0] }
+}
+it("keeps a stale editor save as a draft instead of losing it", async () => {
+	const { saved, onRejected, document } = await openStaleEditor()
+	editor.save?.({ uri: document.uri, getText: () => "stale text" })
+	await vi.waitFor(() => expect(onRejected).toHaveBeenCalled())
 	expect(saved).not.toHaveBeenCalled()
 	expect((await store.readPending(groupId, "thread"))?.[0].content).toBe("new agent draft")
+	expect((await store.readDrafts(groupId, "thread")).plan).toMatchObject({ content: "stale text" })
+	const review = await store.reviewDiffs((await store.readPendingReview(groupId, "thread"))!, "thread")
+	expect(review.changes[0].draft?.reason).toContain("newest review card")
+	// Closing the tab removes only the temp file; the draft survives.
+	editor.close?.(document)
+	await vi.waitFor(async () => expect(fs.access(document.uri.fsPath)).rejects.toThrow())
+	expect((await store.readDrafts(groupId, "thread")).plan.content).toBe("stale text")
+})
+it("keeps the temp file when the draft itself cannot be persisted", async () => {
+	const { document } = await openStaleEditor()
+	vi.spyOn(store, "saveRejectedEdit").mockRejectedValue(new Error("disk full"))
+	await fs.writeFile(document.uri.fsPath, "precious")
+	editor.save?.({ uri: document.uri, getText: () => "precious" })
+	await vi.waitFor(() => expect(editor.error).toHaveBeenCalled())
+	editor.close?.(document)
+	await new Promise((resolve) => setTimeout(resolve, 50))
+	expect(await fs.readFile(document.uri.fsPath, "utf8")).toBe("precious")
+	await fs.rm(path.dirname(document.uri.fsPath), { recursive: true, force: true })
+})
+it("Retry persists the draft on the newest revision and then drops it", async () => {
+	const { document, onRejected } = await openStaleEditor()
+	editor.save?.({ uri: document.uri, getText: () => "stale text" })
+	await vi.waitFor(() => expect(onRejected).toHaveBeenCalled())
+	const draft = (await store.readDrafts(groupId, "thread")).plan
+	const current = (await store.readPendingReview(groupId, "thread"))!
+	await store.editPending(groupId, "thread", current.revision, "plan", draft.content, { supersedesDraftTs: draft.ts })
+	expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({ content: "stale text", editedByUser: true })
+	expect(await store.readDrafts(groupId, "thread")).toEqual({})
+})
+it("a draft is moved to history, not dropped, when its review is discarded", async () => {
+	const { document, onRejected } = await openStaleEditor()
+	editor.save?.({ uri: document.uri, getText: () => "stale text" })
+	await vi.waitFor(() => expect(onRejected).toHaveBeenCalled())
+	const current = (await store.readPendingReview(groupId, "thread"))!
+	await store.discardPendingChanges(groupId, "thread", current.revision)
+	expect(await store.readDrafts(groupId, "thread")).toEqual({})
+	expect((await store.history(groupId, "plan")).map((version) => version.content)).toContain("stale text")
+})
+it("goes straight to history when the review no longer exists", async () => {
+	const { document, onRejected } = await openStaleEditor()
+	const current = (await store.readPendingReview(groupId, "thread"))!
+	await store.discardPendingChanges(groupId, "thread", current.revision)
+	editor.save?.({ uri: document.uri, getText: () => "late text" })
+	await vi.waitFor(() => expect(onRejected).toHaveBeenCalled())
+	expect(await store.readDrafts(groupId, "thread")).toEqual({})
+	expect((await store.history(groupId, "plan")).map((version) => version.content)).toContain("late text")
 })

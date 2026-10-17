@@ -218,7 +218,7 @@ message NotebookActionRequest {
   Metadata metadata = 1;
   string task_group_id = 2;
   string slug = 3;
-  string action = 4; // history | restore | edit | restore_pending | convert_preview | convert | open_conversion
+  string action = 4; // history | restore | edit | restore_pending | retry_draft | reload_draft | discard_draft | convert_preview | convert | open_conversion
   string thread_id = 5;
   string revision = 6;
   string version_id = 7;

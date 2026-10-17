@@ -275,6 +275,40 @@ function NotebookChangesCard({
 							)}
 						</div>
 						<NotebookDiff lines={change.diff ?? []} />
+						{change.draft && (
+							<div
+								className="mt-1 flex flex-wrap items-center gap-2 rounded-xs border border-[var(--vscode-inputValidation-warningBorder)] bg-[var(--vscode-inputValidation-warningBackground)] px-2 py-1"
+								data-testid="notebook-draft-notice"
+								role="alert">
+								<span className="min-w-0 flex-1">
+									Your edit wasn't applied: {change.draft.reason}. Your text is kept as a draft.
+								</span>
+								<Button
+									aria-label={`Retry saving your edit to ${change.name}`}
+									disabled={sending}
+									onClick={() => void action(change.slug, "retry_draft")}
+									size="xs"
+									variant="secondary">
+									Retry
+								</Button>
+								<Button
+									aria-label={`Reload your draft of ${change.name} in the editor`}
+									disabled={sending}
+									onClick={() => void action(change.slug, "reload_draft")}
+									size="xs"
+									variant="secondary">
+									Reload
+								</Button>
+								<Button
+									aria-label={`Discard your draft of ${change.name}`}
+									disabled={sending}
+									onClick={() => void action(change.slug, "discard_draft")}
+									size="xs"
+									variant="secondary">
+									Discard draft
+								</Button>
+							</div>
+						)}
 						{change.replacedUserVersion && (
 							<div className="mt-1 flex items-center gap-2 text-description">
 								agent replaced your edit{" "}

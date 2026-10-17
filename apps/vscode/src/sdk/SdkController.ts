@@ -782,7 +782,7 @@ export class Controller {
 					messages,
 					id,
 					await Promise.all(
-						(await this.notebookStore.listPending(id)).map((review) => this.notebookStore.reviewDiffs(review)),
+						(await this.notebookStore.listPending(id)).map((review) => this.notebookStore.reviewDiffs(review, id)),
 					),
 					() => this.messageTranslatorState.nextTs(),
 				),
@@ -3220,7 +3220,7 @@ export class Controller {
 		const context = this.taskSessions.get(taskId)
 		if (context && this.task?.taskId === taskId) {
 			const pending = await Promise.all(
-				(await this.notebookStore.listPending(taskId)).map((review) => this.notebookStore.reviewDiffs(review)),
+				(await this.notebookStore.listPending(taskId)).map((review) => this.notebookStore.reviewDiffs(review, taskId)),
 			)
 			if (this.task?.taskId === taskId) {
 				const current = context.task.messageStateHandler.getClineMessages()
@@ -3915,13 +3915,36 @@ export class Controller {
 
 	async notebookAction(input: NotebookActionRequest): Promise<unknown> {
 		const { taskGroupId: groupId, slug, threadId, revision } = input
-		if (input.action === "edit") {
+		if (input.action === "edit" || input.action === "reload_draft") {
+			// Reload reopens the user's rejected text against the card's current revision.
+			const draft =
+				input.action === "reload_draft" ? (await this.notebookStore.readDrafts(groupId, threadId))[slug] : undefined
+			if (input.action === "reload_draft" && !draft) throw new Error("Your draft is no longer available")
+			const refreshReview = async () => {
+				await this.emitNotebookChanges(threadId)
+				await this.postStateToWebview()
+			}
 			this.notebookEditors.push(
-				await openPendingNoteEditor(this.notebookStore, input, async () => {
-					await this.emitNotebookChanges(threadId)
-					await this.postStateToWebview()
+				await openPendingNoteEditor(this.notebookStore, input, refreshReview, {
+					initialContent: draft?.content,
+					draftTs: draft?.ts,
+					onRejected: refreshReview,
 				}),
 			)
+			return {}
+		}
+		if (input.action === "retry_draft" || input.action === "discard_draft") {
+			if (input.action === "discard_draft") {
+				await this.notebookStore.discardDraft(groupId, threadId, slug)
+			} else {
+				const draft = (await this.notebookStore.readDrafts(groupId, threadId))[slug]
+				if (!draft) throw new Error("Your draft is no longer available")
+				await this.notebookStore.editPending(groupId, threadId, revision, slug, draft.content, {
+					supersedesDraftTs: draft.ts,
+				})
+			}
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
 			return {}
 		}
 		if (input.action === "restore_pending") {
@@ -4090,7 +4113,7 @@ export class Controller {
 					taskGroupId: pending.groupId,
 					threadId: rootThreadId,
 					status: "pending",
-					changes: (await this.notebookStore.reviewDiffs(pending)).changes,
+					changes: (await this.notebookStore.reviewDiffs(pending, rootThreadId)).changes,
 				},
 				reuse ? latest.ts : context.translator.nextTs(),
 			)
