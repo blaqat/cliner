@@ -91,6 +91,18 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		await host.dispose()
 	})
 
+	it("adds the script tool and always routes it through approval when scripts are available", async () => {
+		const scripts = { store: {}, getWorkspaceRoot: () => "/workspace", resolveEnv: async () => ({}), logDir: "/logs" }
+		const resolveScripts = vi.fn().mockReturnValueOnce(scripts).mockReturnValueOnce(undefined)
+		const host = await VscodeSessionHost.create({ mcpHub: {} as never, resolveScripts: resolveScripts as never })
+		await host.start(gitStartInput)
+		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ scripts }))
+		expect(mockInnerStart.mock.calls[0][0].toolPolicies.script).toEqual({ enabled: true, autoApprove: false })
+		await host.start(gitStartInput)
+		expect(mockInnerStart.mock.calls[1][0].toolPolicies.script).toBeUndefined()
+		await host.dispose()
+	})
+
 	it("delivers notebook notices at the next turn or tool boundary and preserves existing hook context", async () => {
 		const consumeNotices = vi.fn().mockResolvedValueOnce("user edited Plan").mockResolvedValueOnce("user discarded Plan")
 		const host = await VscodeSessionHost.create({

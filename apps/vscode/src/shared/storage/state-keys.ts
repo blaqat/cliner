@@ -294,6 +294,8 @@ const USER_SETTINGS_FIELDS = {
 	globalClineRulesToggles: { default: {} as ClineRulesToggles },
 	globalWorkflowToggles: { default: {} as ClineRulesToggles },
 	globalSkillsToggles: { default: {} as Record<string, boolean> },
+	// Script files in ~/.cline/scripts, keyed by path. Missing means on.
+	globalScriptToggles: { default: {} as Record<string, boolean> },
 	browserSettings: {
 		default: DEFAULT_BROWSER_SETTINGS as BrowserSettings,
 		transform: (v: any) => ({ ...DEFAULT_BROWSER_SETTINGS, ...v }),
@@ -408,6 +410,7 @@ export const LocalStateKeys = [
 	"localAgentsRulesToggles",
 	"localSkillsToggles",
 	"workflowToggles",
+	"scriptToggles",
 	// Workspace terminal environment overrides — kept in workspace state so
 	// machine-local values never land in the repo.
 	"terminalEnvironment",

@@ -359,8 +359,12 @@ export interface ClineSayTool {
 		| "summarizeTask"
 		| "useSkill"
 		| "notebook"
+		| "script"
 	action?: "read" | "write" | "delete"
 	name?: string
+	/** `script` tool: what is being asked and the option values; the saved command is never shown. */
+	scriptAction?: "load" | "run"
+	scriptOptions?: Record<string, string | boolean>
 	path?: string
 	diff?: string
 	content?: string

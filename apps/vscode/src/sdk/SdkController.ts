@@ -93,6 +93,7 @@ import { Logger } from "@/shared/services/Logger"
 import { isClineManagedProvider } from "@/shared/utils/cline"
 import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
+import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
@@ -111,6 +112,7 @@ import {
 	ProviderFailureTelemetryTurnGate,
 } from "./provider-failure-telemetry"
 import { RemoteConfigRefreshCoordinator } from "./remote-config-refresh-coordinator"
+import { ScriptsHost } from "./scripts/script-host"
 import { buildAsideConversation } from "./sdk-aside-conversation"
 import {
 	findVisibleCheckpointUserMessageByRun,
@@ -415,6 +417,17 @@ export class Controller {
 	// installs share. The watcher refreshes webview state when notes/groups
 	// change on disk (hand edits, or another install writing to ~/.cline).
 	private readonly taskGroupStore = new TaskGroupStore()
+	/** Saved scripts: the `script` tool, per-script approvals and `/script` composer runs. */
+	readonly scripts = new ScriptsHost({
+		getToggles: () => ({
+			global: StateManager.get().getGlobalSettingsKey("globalScriptToggles") ?? {},
+			workspace: StateManager.get().getWorkspaceStateKey("scriptToggles") ?? {},
+		}),
+		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
+		getLogDir: () => path.join(HostProvider.get().globalStorageFsPath, "script-logs"),
+		// The same environment every other command Cline runs gets (settings + .env + PATH).
+		resolveEnv: async (cwd) => (await resolveConfiguredTerminalEnv(StateManager.get(), { cwd })).env,
+	})
 	private readonly notebookStore = new NotebookStore()
 	private readonly notebookEditors: { dispose(): void }[] = []
 	private readonly historySearcher = new HistorySearcher()
@@ -597,6 +610,7 @@ export class Controller {
 			telemetry: this.sdkTelemetry.telemetry,
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
+			resolveScripts: (input) => this.scripts.toolContext(input.config.cwd),
 			requestToolApproval: async (request) =>
 				this.getTaskSessionContext(
 					this.sessions.getSession(request.sessionId)
@@ -1756,6 +1770,7 @@ export class Controller {
 				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return settings ? isToolAutoApproved(request.toolName, settings) : false
 			},
+			decideScriptApproval: (input, scriptMode) => this.scripts.decideApproval(input, scriptMode, id),
 		})
 		const events = new SdkSessionEventCoordinator({
 			onTurnComplete: () => this.emitNotebookChanges(id),
@@ -1890,11 +1905,16 @@ export class Controller {
 	 * and honors the user's workflow enable/disable toggles. Returns the input
 	 * unchanged if no known command matches or expansion fails.
 	 */
-	private async resolveSlashCommands(text: string): Promise<string> {
+	private async resolveSlashCommands(text: string, threadId?: string): Promise<string> {
 		if (this.isDisposed) {
 			return text
 		}
 		try {
+			// `/script-name option:value` runs a saved script; it wins over a workflow of the same name.
+			const scriptRun = threadId ? await this.scripts.expandInvocation(text, threadId) : undefined
+			if (scriptRun) {
+				return scriptRun
+			}
 			const workspaceRoot = await this.getWorkspaceRoot()
 			const service = await this.ensureUserInstructionService(workspaceRoot)
 			const remoteWorkflows = this.stateManager.getRemoteConfigSettings()?.remoteGlobalWorkflows ?? []
@@ -1953,7 +1973,7 @@ export class Controller {
 		// Only thread ids in the user's own input may authorize transcript
 		// access; text expanded from notes, files or workflows never does.
 		const typedThreadIds = new Set(extractThreadMentionIds(text))
-		const withCommands = await this.resolveSlashCommands(text)
+		const withCommands = await this.resolveSlashCommands(text, threadId)
 		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions

@@ -298,6 +298,7 @@ message Settings {
   optional bool subagents_allow_web = 194;
   optional bool thread_toasts_enabled = 195;
   optional int32 thread_toast_seconds = 196;
+  optional string global_script_toggles = 197;
 }
 
 message State {

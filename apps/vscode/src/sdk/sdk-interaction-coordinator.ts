@@ -25,6 +25,11 @@ export interface SdkInteractionCoordinatorOptions {
 	postStateToWebview: () => Promise<void>
 	getMode?: () => "plan" | "act"
 	shouldAutoApproveTool?: (request: ToolApprovalRequest) => boolean
+	/**
+	 * Per-script approval for the `script` tool (by script, mode and user-typed runs), which
+	 * the global auto-approval toggles never govern. "allow" runs it without asking.
+	 */
+	decideScriptApproval?: (input: unknown, mode: "plan" | "act") => Promise<"allow" | "ask">
 	recordApprovedToolMessage?: (toolCallId: string, messageTs: number, agentId: string) => void
 	recordDeniedToolApproval?: (toolCallId: string, toolName: string, reason: string, agentId: string) => void
 	/**
@@ -146,7 +151,16 @@ export class SdkInteractionCoordinator {
 	async handleRequestToolApproval(request: ToolApprovalRequest): Promise<{ approved: boolean; reason?: string }> {
 		if (request.signal?.aborted) return { approved: false, reason: "Agent run aborted" }
 		if (request.toolName === "notebook") return { approved: true }
+		const scriptDecision =
+			request.toolName === "script" && this.options.decideScriptApproval
+				? await this.options.decideScriptApproval(request.input, this.options.getMode?.() ?? "act")
+				: undefined
+		if (scriptDecision === "allow") {
+			Logger.log("[SdkController] Allowing script run per its approval setting")
+			return { approved: true }
+		}
 		if (
+			scriptDecision === undefined &&
 			request.policy.requireApproval !== true &&
 			(request.policy.autoApprove === true || this.options.shouldAutoApproveTool?.(request) === true)
 		) {

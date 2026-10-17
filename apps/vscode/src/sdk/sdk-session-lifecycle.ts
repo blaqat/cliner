@@ -28,6 +28,8 @@ export interface SdkSessionLifecycleOptions {
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's mentioned-thread allow-list. */
 	resolveThreadTranscript?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveThreadTranscript"]
+	/** Adds the `script` tool for saved scripts. */
+	resolveScripts?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveScripts"]
 	mcpHub: McpHub
 	requestToolApproval: RequestToolApprovalHandler
 	askQuestion: AskQuestionHandler
@@ -677,6 +679,7 @@ export class SdkSessionLifecycle {
 		return VscodeSessionHost.create({
 			resolveNotebook: this.options.resolveNotebook,
 			resolveThreadTranscript: this.options.resolveThreadTranscript,
+			resolveScripts: this.options.resolveScripts,
 			mcpHub: this.options.mcpHub,
 			requestToolApproval: this.options.requestToolApproval,
 			askQuestion: this.options.askQuestion,

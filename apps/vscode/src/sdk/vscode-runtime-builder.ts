@@ -4,6 +4,7 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
 import { Logger } from "@/shared/services/Logger"
+import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookTool } from "./task-groups/notebook-tool"
@@ -57,6 +58,8 @@ export interface VscodeExtraToolsOptions {
 	notebook?: TaskNotebookContext
 	/** Mentioned-thread transcript access (grep_threads/read_thread), allow-listed per conversation. */
 	threadTranscript?: ThreadTranscriptToolsContext
+	/** The user's saved scripts (the `script` tool); approval is decided per script by the host. */
+	scripts?: ScriptToolContext
 	cwd?: string
 	/**
 	 * Lazy factory for the VscodeTerminalManager.
@@ -99,6 +102,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	const tools: AgentTool[] = [...mcpTools.flat()]
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
+	if (options?.scripts) tools.push(createScriptTool(options.scripts))
 
 	// Add the custom run_commands tool when a terminal manager is available.
 	// This replaces the SDK's built-in run_commands, which is suppressed via

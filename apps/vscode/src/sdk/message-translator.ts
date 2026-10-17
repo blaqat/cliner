@@ -891,6 +891,18 @@ function sdkToolToClineSayTool(toolName: string, input?: unknown): ClineSayTool 
 			}
 		}
 
+		case "script": {
+			const options = parsedInput?.options
+			return {
+				tool: "script",
+				scriptAction: getStringField(parsedInput, "action") === "load" ? "load" : "run",
+				name: getStringField(parsedInput, "name") ?? "",
+				...(options && typeof options === "object" && !Array.isArray(options)
+					? { scriptOptions: options as Record<string, string | boolean> }
+					: {}),
+			}
+		}
+
 		default: {
 			// MCP tools and unknown tools — pass through with the raw tool name.
 			const filePath =
@@ -1886,6 +1898,17 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 					}
 
 					const sayTool = toDisplaySayTool(sdkToolToClineSayTool(toolName, storedInput), state.currentCwd())
+					// A script run carries its outcome (exit code, output tail, log path) on the same row.
+					if (toolName === "script" && sayTool.tool === "script" && sayTool.scriptAction === "run") {
+						const output = event.output
+						const outcome =
+							typeof output === "string"
+								? output
+								: typeof (output as { error?: unknown } | undefined)?.error === "string"
+									? `Error: ${(output as { error: string }).error}`
+									: ""
+						if (outcome) sayTool.content = outcome
+					}
 					// If there's an error, include it in the tool message
 					if (event.error) {
 						messages.push({

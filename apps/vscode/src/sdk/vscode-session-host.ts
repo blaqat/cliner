@@ -47,6 +47,7 @@ import type { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import { appendTaskNotebookPrompt } from "./cline-session-factory"
 import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-telemetry"
+import type { ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
@@ -89,6 +90,8 @@ export interface VscodeSessionHostOptions {
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
 	resolveThreadTranscript?: (input: ClineCoreStartInput) => Promise<ThreadTranscriptToolsContext | undefined>
+	/** Adds the `script` tool (saved scripts); its approvals are decided per script by the interaction coordinator. */
+	resolveScripts?: (input: ClineCoreStartInput) => ScriptToolContext | undefined
 	/** Shared SDK telemetry service owned by SdkController. */
 	telemetry?: ITelemetryService
 	/** Resolves once the applicable remote config is ready for a new SDK session. */
@@ -162,9 +165,11 @@ export class VscodeSessionHost implements SdkSessionHost {
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
 			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
 			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
+			const scripts = options.resolveScripts?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
 				threadTranscript,
+				scripts,
 				cwd: inputWithRemoteConfig.config.cwd,
 				getTerminalManager: options.getTerminalManager,
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
@@ -209,6 +214,9 @@ export class VscodeSessionHost implements SdkSessionHost {
 					// the user mentioned are ever readable.
 					grep_threads: { enabled: true, autoApprove: true },
 					read_thread: { enabled: true, autoApprove: true },
+					// Always routed through requestToolApproval: the interaction coordinator applies the
+					// script's own approval level (and Ask/Act mode) instead of the global toggles.
+					...(scripts ? { script: { enabled: true, autoApprove: false } } : {}),
 				},
 				source: inputWithRemoteConfig.source ?? "vscode",
 				// The extension runs file hooks through its own hooks adapter
