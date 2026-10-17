@@ -26,6 +26,16 @@ function setDraft(value: boolean) {
 	for (const listener of listeners) listener()
 }
 
+/** The where pill's "Run in worktree" pick for the next new thread; the send path reads it. */
+export function getDraftRunInWorktree(): boolean {
+	return enabled
+}
+
+/** Cleared once a thread starts with it, like the composer's pending task pick. */
+export function clearDraftRunInWorktree(): void {
+	if (enabled) setDraft(false)
+}
+
 /** Mount in the composer's where pill. Pass `enabled` as NewTaskRequest.runInWorktree. */
 export function useWorktree(threadId?: string) {
 	const { currentTaskItem } = useExtensionState()

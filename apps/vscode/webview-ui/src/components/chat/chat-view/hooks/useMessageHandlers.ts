@@ -6,6 +6,7 @@ import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { noteThreadStopped } from "@/components/toasts/threadToastRules"
+import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
@@ -345,6 +346,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						images,
 						files,
 						taskGroupId: getComposerSendTaskGroup(),
+						runInWorktree: getDraftRunInWorktree() || undefined,
 					})
 					clearSentMessageState()
 					trackPromptSubmitted(false)
@@ -364,8 +366,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						restorePendingMessageState()
 						throw error
 					}
-					// The task pill's pick applied to this thread; the next new thread starts unfiled.
+					// The where pill's picks applied to this thread; the next new thread starts unfiled, in the workspace.
 					setComposerTaskGroup(undefined)
+					clearDraftRunInWorktree()
 					messageSent = true
 				} else if (turnState?.phase === "awaiting_approval") {
 					await sendAskResponseWithPendingState(
@@ -719,8 +722,12 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						files,
 						runInBackground: true,
 						taskGroupId: getComposerSendTaskGroup(),
+						runInWorktree: getDraftRunInWorktree() || undefined,
 					}),
-				).then(() => setComposerTaskGroup(undefined)),
+				).then(() => {
+					setComposerTaskGroup(undefined)
+					clearDraftRunInWorktree()
+				}),
 			).catch((error) => console.error("Failed to start background task:", error))
 		},
 		[sendDraftVia],
