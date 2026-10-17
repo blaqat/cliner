@@ -117,6 +117,7 @@ function validateShellContexts(parts: TemplatePart[]): string[] {
 						state.boundary = false
 						continue
 					}
+					if (/[(){}]/.test(char)) errors.push("Placeholders are not supported with shell grouping or substitutions")
 					state.boundary = separator
 				}
 			}

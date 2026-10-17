@@ -23,6 +23,8 @@ describe("script shell boundaries", () => {
 				"echo $(printf {{value}})",
 				"echo `printf {{value}}`",
 				"echo prefix{{value}}",
+				"echo <(printf {{value}})",
+				"echo ${{#flag}}({{/flag}}printf {{value}})",
 				"echo {{value}}suffix",
 				'echo "{{#flag}}{{value}}{{/flag}}"',
 				"echo {{value}}{{#flag}} safe{{/flag}}suffix",
