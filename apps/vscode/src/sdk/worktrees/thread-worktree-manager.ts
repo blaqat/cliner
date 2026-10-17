@@ -58,13 +58,17 @@ export function parseMmModules(raw: string): string[] {
 /** All mutations are serialized, including settings and mapping persistence. */
 export class ThreadWorktreeManager {
 	private queue: Promise<unknown> = Promise.resolve()
+	private assertMutationOwner = async () => {}
 	constructor(readonly storageDir: string) {}
 	async exclusive<T>(action: () => Promise<T>): Promise<T> {
 		const result = this.queue.then(async () => {
 			const release = await storageLock(this.storageDir)
 			try {
+				this.assertMutationOwner = release.assertOwned
+				await release.assertOwned()
 				return await action()
 			} finally {
+				this.assertMutationOwner = async () => {}
 				await release()
 			}
 		})
@@ -89,33 +93,50 @@ export class ThreadWorktreeManager {
 	}
 	/** Acquired before reading the mapping and retained until the runtime is idle/stopped. */
 	async acquireSessionLease(id: string): Promise<() => Promise<void>> {
-		return this.exclusive(async () => {
-			await this.assertIdle(id)
-			const record = owner()
-			const file = this.leaseFile(id)
-			await fs.mkdir(path.dirname(file), { recursive: true })
-			await fs.writeFile(file, JSON.stringify(record), { mode: 0o600 })
-			let pending = Promise.resolve()
-			const timer = setInterval(() => {
-				pending = pending
-					.then(() =>
-						this.exclusive(async () => {
-							if ((await this.lease(id))?.token !== record.token) return
-							record.timestamp = Date.now()
-							await this.write(path.relative(this.storageDir, file), record)
-						}),
-					)
-					.catch(() => {})
-			}, heartbeatMs)
-			timer.unref()
-			return async () => {
-				clearInterval(timer)
-				await pending
-				await this.exclusive(async () => {
-					if ((await this.lease(id))?.token === record.token) await fs.rm(file, { force: true })
-				})
-			}
-		})
+		return this.exclusive(() =>
+			this.withLeaseLock(id, async () => {
+				await this.assertIdle(id)
+				const record = owner()
+				const file = this.leaseFile(id)
+				await fs.mkdir(path.dirname(file), { recursive: true })
+				await this.writeLease(file, record)
+				let pending = Promise.resolve()
+				const timer = setInterval(() => {
+					pending = pending
+						.then(() =>
+							this.withLeaseLock(id, async () => {
+								if ((await this.lease(id))?.token !== record.token) return
+								record.timestamp = Date.now()
+								await this.writeLease(file, record)
+							}),
+						)
+						.catch(() => {})
+				}, heartbeatMs)
+				timer.unref()
+				return async () => {
+					clearInterval(timer)
+					await pending
+					await this.withLeaseLock(id, async () => {
+						if ((await this.lease(id))?.token === record.token) await fs.rm(file, { force: true })
+					})
+				}
+			}),
+		)
+	}
+
+	private async writeLease(file: string, record: Owner) {
+		const temp = `${file}.${randomUUID()}.tmp`
+		await fs.writeFile(temp, JSON.stringify(record), { mode: 0o600 })
+		await fs.rename(temp, file)
+	}
+
+	private async withLeaseLock<T>(id: string, action: () => Promise<T>): Promise<T> {
+		const release = await storageLock(path.join(this.storageDir, "lease-locks", path.basename(this.leaseFile(id))))
+		try {
+			return await action()
+		} finally {
+			await release()
+		}
 	}
 
 	private async read<T>(file: string, fallback: T): Promise<T> {
@@ -127,10 +148,12 @@ export class ThreadWorktreeManager {
 		}
 	}
 	private async write(file: string, data: unknown) {
+		await this.assertMutationOwner()
 		const target = path.join(this.storageDir, file)
 		await fs.mkdir(path.dirname(target), { recursive: true })
 		const temp = `${target}.${randomUUID()}.tmp`
 		await fs.writeFile(temp, JSON.stringify(data, null, 2), { mode: 0o600 })
+		await this.assertMutationOwner()
 		await fs.rename(temp, target)
 	}
 	settings() {
@@ -247,8 +270,10 @@ export class ThreadWorktreeManager {
 			await this.save(mapping)
 			if (mode === "mm") {
 				const settings = await this.settings()
+				await this.assertMutationOwner()
 				await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
 			} else {
+				await this.assertMutationOwner()
 				const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
 				if (!result.success) throw new Error(result.message)
 			}
@@ -342,6 +367,7 @@ export class ThreadWorktreeManager {
 			await this.save(mapping)
 			for (const patch of bring.patches) {
 				const module = mapping.modules.find((m) => m.name === patch.module)!
+				await this.assertMutationOwner()
 				await git(module.workspacePath, ["apply", "--binary", patch.file])
 				patch.applied = true
 				module.lastBroughtTree = patch.tree
@@ -363,6 +389,7 @@ export class ThreadWorktreeManager {
 				const module = mapping.modules.find((m) => m.name === patch.module)!
 				try {
 					await git(module.workspacePath, ["apply", "--check", "-R", patch.file])
+					await this.assertMutationOwner()
 					await git(module.workspacePath, ["apply", "-R", patch.file])
 				} catch {
 					const index = path.join(this.storageDir, `undo-index-${randomUUID()}`)
@@ -371,6 +398,7 @@ export class ThreadWorktreeManager {
 						await git(module.workspacePath, ["read-tree", "HEAD"], undefined, env)
 						await git(module.workspacePath, ["add", "-A", "--", "."], undefined, env)
 						try {
+							await this.assertMutationOwner()
 							await git(module.workspacePath, ["apply", "-3", "-R", "--index", patch.file], undefined, env)
 						} catch (error) {
 							const unmerged = (
@@ -438,15 +466,19 @@ export class ThreadWorktreeManager {
 						(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
 					const isolateBranch = (await git(module.path, ["branch", "--show-current"])).trim()
 					const isolateHead = (await git(module.path, ["rev-parse", "HEAD"])).trim()
+					await this.assertMutationOwner()
 					await git(module.path, ["checkout", "--detach"])
 					moved.push({ module, original, isolateBranch, isolateHead })
+					await this.assertMutationOwner()
 					await git(module.workspacePath, ["checkout", mapping.branch])
 				}
 			} catch (error) {
 				const rollbackErrors: string[] = []
 				for (const entry of moved.reverse()) {
 					try {
+						await this.assertMutationOwner()
 						await git(entry.module.workspacePath, ["checkout", entry.original])
+						await this.assertMutationOwner()
 						await git(
 							entry.module.path,
 							entry.isolateBranch ? ["checkout", entry.isolateBranch] : ["checkout", "--detach", entry.isolateHead],
@@ -488,11 +520,13 @@ export class ThreadWorktreeManager {
 			}
 			if (mapping.mode === "mm") {
 				const settings = await this.settings()
+				await this.assertMutationOwner()
 				await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
 			} else {
 				const registered = await git(mapping.workspace, ["worktree", "list", "--porcelain", "-z"])
 				const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)
 				if (registered.split("\0").includes(`worktree ${canonical}`)) {
+					await this.assertMutationOwner()
 					await git(mapping.workspace, [
 						"worktree",
 						"remove",

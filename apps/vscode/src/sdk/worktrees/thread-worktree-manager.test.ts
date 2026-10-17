@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { storageLock } from "./storage-lock"
+import { alive, owner, storageLock } from "./storage-lock"
 import { parseMmModules, ThreadWorktreeManager } from "./thread-worktree-manager"
 
 const mmPath = "/Users/blaqat/dev/tools/scripts/mm.js"
@@ -274,7 +274,7 @@ it("serializes separate processes and recovers dead lock owners", async () => {
 		"bun",
 		[
 			"-e",
-			`import { storageLock } from ${JSON.stringify(modulePath)};
+			`import { alive, owner, storageLock } from ${JSON.stringify(modulePath)};
  const release = await storageLock(${JSON.stringify(storage)});
  console.log("locked");
  for await (const data of process.stdin) { break; }
@@ -291,6 +291,9 @@ it("serializes separate processes and recovers dead lock owners", async () => {
 			child.stdout.once("data", () => resolve())
 			child.once("exit", () => reject(new Error("child exited before locking")))
 		})
+		const lock = path.join(storage, "mutation.lock")
+		const old = new Date(Date.now() - 120_000)
+		await fs.utimes(lock, old, old)
 		let entered = false
 		const waiting = storageLock(storage).then(async (release) => {
 			entered = true
@@ -311,7 +314,7 @@ it("serializes separate processes and recovers dead lock owners", async () => {
 	const release = await storageLock(storage)
 	await release()
 }, 60_000)
-it("refreshes a session lease and recovers an expired owner", async () => {
+it("refreshes a session lease and recovers a dead owner", async () => {
 	const release = await manager.acquireSessionLease("heartbeat")
 	const files = await fs.readdir(path.join(storage, "leases"))
 	const file = path.join(storage, "leases", files[0])
@@ -324,7 +327,7 @@ it("refreshes a session lease and recovers an expired owner", async () => {
 	} finally {
 		await release()
 	}
-	await fs.writeFile(file, JSON.stringify({ ...before, timestamp: Date.now() - 120_000 }))
+	await fs.writeFile(file, JSON.stringify({ ...before, pid: 2147483647, timestamp: Date.now() - 120_000 }))
 	const recovered = await new ThreadWorktreeManager(storage).acquireSessionLease("heartbeat")
 	await recovered()
 }, 60_000)
@@ -348,29 +351,71 @@ for (const mode of ["git", "mm"] as const) {
 	}, 60_000)
 }
 
-it("holds the storage lock through a lease heartbeat's ownership check and write", async () => {
+it("renews and releases leases while a long mutation holds the global lock", async () => {
 	const release = await manager.acquireSessionLease("renewal")
-	const proceed = Promise.withResolvers<void>()
-	const writer = manager as unknown as { write(file: string, data: unknown): Promise<void> }
-	const original = writer.write.bind(manager)
-	const spy = vi.spyOn(writer, "write").mockImplementation(async (file, data) => {
-		await proceed.promise
-		await original(file, data)
+	const file = path.join(storage, "leases", (await fs.readdir(path.join(storage, "leases")))[0])
+	const before = JSON.parse(await fs.readFile(file, "utf8"))
+	const unlock = await storageLock(storage)
+	try {
+		await vi.waitFor(
+			async () => expect(JSON.parse(await fs.readFile(file, "utf8")).timestamp).toBeGreaterThan(before.timestamp),
+			{ timeout: 10_000 },
+		)
+		await release()
+		expect(await fs.readdir(path.join(storage, "leases"))).toEqual([])
+	} finally {
+		await unlock()
+		await release()
+	}
+}, 60_000)
+
+it("does not reclaim an old lease belonging to a live child process", async () => {
+	const child = spawn("bun", ["-e", 'console.log("ready"); setInterval(() => {}, 1000)'], { stdio: ["ignore", "pipe", "pipe"] })
+	const exited = new Promise((resolve) => child.once("exit", resolve))
+	await new Promise((resolve) => child.stdout.once("data", resolve))
+	const release = await manager.acquireSessionLease("live-child")
+	await release()
+	const { createHash } = await import("node:crypto")
+	const file = path.join(storage, "leases", `${createHash("sha256").update("live-child").digest("hex")}.json`)
+	await fs.writeFile(file, JSON.stringify({ pid: child.pid, token: "child", timestamp: Date.now() - 120_000 }))
+	try {
+		await expect(manager.acquireSessionLease("live-child")).rejects.toThrow("active in another window")
+		await expect(manager.assertIdle("live-child")).rejects.toThrow("active in another window")
+	} finally {
+		child.kill()
+		await exited
+	}
+	const recovered = await manager.acquireSessionLease("live-child")
+	await recovered()
+}, 60_000)
+
+it("recognizes PID reuse and fences a replaced lock owner", async () => {
+	expect(alive({ ...owner(), processStart: "a different process start" })).toBe(false)
+	const release = await storageLock(storage)
+	await fs.rm(path.join(storage, "mutation.lock"), { recursive: true })
+	const successor = await storageLock(storage)
+	await expect(release.assertOwned()).rejects.toThrow("ownership was lost")
+	await release()
+	await successor.assertOwned()
+	await successor()
+}, 60_000)
+
+it("fences removal if ownership changes during worktree inspection", async () => {
+	const mapping = await manager.create("fenced", "Fenced", workspace)
+	const original = manager.diffs.bind(manager)
+	let successor: Awaited<ReturnType<typeof storageLock>> | undefined
+	vi.spyOn(manager, "diffs").mockImplementationOnce(async (...args) => {
+		const captured = await original(...args)
+		await fs.rm(path.join(storage, "mutation.lock"), { recursive: true })
+		successor = await storageLock(storage)
+		return captured
 	})
 	try {
-		await vi.waitFor(() => expect(spy).toHaveBeenCalled(), { timeout: 10_000 })
-		let entered = false
-		const other = new ThreadWorktreeManager(storage).exclusive(async () => {
-			entered = true
-		})
-		await new Promise((resolve) => setTimeout(resolve, 100))
-		expect(entered).toBe(false)
-		proceed.resolve()
-		await other
-		expect(entered).toBe(true)
+		await expect(manager.remove("fenced")).rejects.toThrow("ownership was lost")
+		await fs.access(mapping.cwd)
+		expect(await manager.get("fenced")).toEqual(mapping)
+		await successor?.assertOwned()
 	} finally {
-		proceed.resolve()
-		await release()
-		spy.mockRestore()
+		await successor?.()
 	}
 }, 60_000)
