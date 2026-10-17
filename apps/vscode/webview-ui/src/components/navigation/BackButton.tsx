@@ -1,7 +1,7 @@
 import * as PopoverPrimitive from "@radix-ui/react-popover"
 import { useEffect, useRef, useState } from "react"
 import { HEADER_ICON_BUTTON_CLASS, HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
-import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { useNavigationHistory } from "./NavigationHistoryContext"
@@ -118,7 +118,7 @@ export const BackButton = ({ crumbIds, fallback }: BackButtonProps) => {
 									}}
 									role="menuitem"
 									type="button">
-									<span aria-hidden className={`codicon codicon-${icon} shrink-0 text-[12px]`} />
+									<span aria-hidden className={cn(MENU_ICON_CLASS, `codicon-${icon}`)} />
 									<span className="ph-no-capture min-w-0 truncate">{label}</span>
 									{detail && (
 										<span className="ph-no-capture min-w-0 shrink truncate text-description">{detail}</span>

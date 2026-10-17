@@ -2,9 +2,11 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import type { SessionStatuses } from "@/components/inbox/inboxUtils"
 import { openTask } from "@/components/inbox/sessionActions"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
+import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import {
@@ -79,9 +81,7 @@ export const ThreadToastCard = ({
 					aria-hidden
 					className={cn(
 						"codicon mt-0.5 shrink-0 text-[13px]",
-						input
-							? "codicon-bell-dot text-(--vscode-charts-yellow)"
-							: "codicon-pass-filled text-(--vscode-charts-green)",
+						input ? "codicon-bell-dot text-warning" : "codicon-pass-filled text-success",
 					)}
 				/>
 				<div className="min-w-0 flex-1 text-[12px]">
@@ -93,21 +93,10 @@ export const ThreadToastCard = ({
 						{taskTitle && <span className="ph-no-capture"> · {taskTitle}</span>}
 					</div>
 				</div>
-				<button
-					className="shrink-0 rounded-xs border-0 bg-(--vscode-button-background) px-2 py-0.5 text-[11px] text-(--vscode-button-foreground) cursor-pointer hover:bg-(--vscode-button-hoverBackground) focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-					data-testid="thread-toast-open"
-					onClick={onOpen}
-					type="button">
+				<Button className="shrink-0 px-2 py-0.5" data-testid="thread-toast-open" onClick={onOpen} size="xs">
 					{input ? "Review" : "Open"}
-				</button>
-				<button
-					aria-label="Dismiss"
-					className="flex size-5 shrink-0 items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description cursor-pointer hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-					data-testid="thread-toast-close"
-					onClick={onClose}
-					type="button">
-					<span aria-hidden className="codicon codicon-close text-[12px]" />
-				</button>
+				</Button>
+				<HeaderIconButton data-testid="thread-toast-close" icon="close" label="Dismiss" onClick={onClose} />
 			</div>
 			{durationMs !== null && (
 				<div
