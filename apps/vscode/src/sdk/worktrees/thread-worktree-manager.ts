@@ -235,12 +235,13 @@ export class ThreadWorktreeManager {
 	}
 	private fingerprint(diffs: ThreadModuleDiff[]) {
 		return createHash("sha256")
-			.update(JSON.stringify(diffs.map((d) => [d.module, d.patch])))
+			.update(JSON.stringify(diffs.map((d) => [d.module, d.tree])))
 			.digest("hex")
 	}
 	async bring(id: string) {
 		const mapping = await this.required(id)
-		const diffs = (await this.diffs(id, true)).filter((d) => d.patch)
+		const captured = await this.diffs(id, true)
+		const diffs = captured.filter((d) => d.patch)
 		if (!diffs.length) return { message: "No changes to bring here" }
 		for (const diff of diffs) await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
 		const bring = { id: randomUUID(), patches: [] as ThreadWorktree["bringIns"][number]["patches"] }
@@ -275,7 +276,7 @@ export class ThreadWorktreeManager {
 			module.lastBroughtTree = patch.tree
 			await this.save(mapping)
 		}
-		mapping.transferredDiff = this.fingerprint(await this.diffs(id))
+		mapping.transferredDiff = this.fingerprint(captured)
 		await this.save(mapping)
 		return { message: "Brought changes into your workspace. Patches saved.", mapping }
 	}

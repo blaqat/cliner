@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseMmModules, ThreadWorktreeManager } from "./thread-worktree-manager"
 
 const mmPath = "/Users/blaqat/dev/tools/scripts/mm.js"
@@ -188,3 +188,28 @@ it("preserves upstream .worktreeinclude copying for a thread isolate", async () 
 	const mapping = await manager.create("include", "Include", workspace)
 	expect(await read(mapping.cwd, "local.env")).toBe("LOCAL_TEST_VALUE=example\n")
 }, 60_000)
+
+// Mutate after capture to model an editor changing the isolate mid-bring.
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: removal checks the exact trees captured by bring`, async () => {
+		if (mode === "mm") {
+			await fs.rm(workspace, { recursive: true, force: true })
+			await repo(path.join(workspace, "api"))
+			await repo(path.join(workspace, "web"))
+			await write(workspace, ".mmrc", "api\nweb\n")
+		}
+		const mapping = await manager.create("capture", "Capture", workspace)
+		for (const module of mapping.modules) await write(module.path, "file.txt", "captured\n")
+		const original = manager.diffs.bind(manager)
+		const spy = vi.spyOn(manager, "diffs").mockImplementationOnce(async (...args) => {
+			const captured = await original(...args)
+			for (const module of mapping.modules) await write(module.path, "file.txt", "later\n")
+			return captured
+		})
+		await manager.bring("capture")
+		spy.mockRestore()
+		for (const module of mapping.modules) expect(await read(module.workspacePath)).toBe("captured\n")
+		expect((await manager.remove("capture")).warning).toContain("never brought in")
+		for (const module of mapping.modules) expect(await read(module.path)).toBe("later\n")
+	}, 60_000)
+}
