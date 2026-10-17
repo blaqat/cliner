@@ -65,6 +65,7 @@ import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
 import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
+import { parseScriptTool, ScriptToolRow } from "./ScriptToolRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
 import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
@@ -424,6 +425,10 @@ export const ChatRowContent = memo(
 			const notebookTool = parseNotebookTool(tool)
 			if (notebookTool) {
 				return <NotebookToolRow info={notebookTool} />
+			}
+			const scriptTool = parseScriptTool(tool)
+			if (scriptTool) {
+				return <ScriptToolRow asking={message.type === "ask"} info={scriptTool} />
 			}
 
 			switch (tool.tool) {

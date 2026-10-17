@@ -101,6 +101,47 @@ describe("PlusMenu", () => {
 		expect(within(menu).queryByTestId("plus-menu-scripts")).not.toBeInTheDocument()
 	})
 
+	it("shows a Scripts row when the composer passes scripts and opens the panel inline", () => {
+		const close = vi.fn()
+		renderMenu({
+			scripts: {
+				summary: "2 on",
+				panel: (closeMenu) => (
+					<button
+						data-testid="scripts-use"
+						onClick={() => {
+							close()
+							closeMenu(true)
+						}}
+						type="button">
+						use
+					</button>
+				),
+			},
+		})
+		const menu = openMenu()
+		expect(within(menu).getByTestId("plus-menu-scripts")).toHaveTextContent("Scripts2 on")
+		fireEvent.click(screen.getByTestId("plus-menu-scripts"))
+		expect(screen.getByTestId("plus-menu")).toContainElement(screen.getByTestId("scripts-use"))
+		expect(screen.getByText("Scripts", { selector: "span" })).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("scripts-use"))
+		expect(close).toHaveBeenCalledOnce()
+		expect(screen.queryByTestId("plus-menu")).not.toBeInTheDocument()
+	})
+
+	it("has a Scripts tab next to Workflows in the rules panel", () => {
+		renderMenu()
+		openMenu()
+		fireEvent.click(screen.getByTestId("plus-menu-rules"))
+		const panel = screen.getByTestId("rules-panel")
+		const tabs = within(panel)
+			.getAllByRole("button", { pressed: false })
+			.map((tab) => tab.textContent)
+		expect(tabs.indexOf("Scripts")).toBe(tabs.indexOf("Workflows") + 1)
+		fireEvent.click(within(panel).getByRole("button", { name: "Scripts" }))
+		expect(screen.getByTestId("scripts-panel")).toBeInTheDocument()
+	})
+
 	it("Mention closes the menu and inserts @ through the composer", () => {
 		const { onMention } = renderMenu()
 		openMenu()

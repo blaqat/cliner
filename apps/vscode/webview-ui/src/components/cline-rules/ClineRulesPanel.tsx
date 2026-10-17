@@ -14,6 +14,7 @@ import {
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 import React, { useEffect, useState } from "react"
 import styled from "styled-components"
+import ScriptsPanel from "@/components/scripts/ScriptsPanel"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import useRemoteConfigSettings from "@/hooks/useRemoteConfigSettings"
 import { FileServiceClient } from "@/services/grpc-client"
@@ -56,7 +57,7 @@ const ClineRulesPanel: React.FC = () => {
 	const [localSkills, setLocalSkills] = useState<SkillInfo[]>([])
 
 	const isWindows = !isMacOSOrLinux()
-	const [currentView, setCurrentView] = useState<"rules" | "workflows" | "hooks" | "skills">("rules")
+	const [currentView, setCurrentView] = useState<"rules" | "workflows" | "hooks" | "skills" | "scripts">("rules")
 
 	// Auto-switch to rules tab if hooks become disabled while viewing hooks tab
 	useEffect(() => {
@@ -403,6 +404,9 @@ const ClineRulesPanel: React.FC = () => {
 						<TabButton isActive={currentView === "workflows"} onClick={() => setCurrentView("workflows")}>
 							Workflows
 						</TabButton>
+						<TabButton isActive={currentView === "scripts"} onClick={() => setCurrentView("scripts")}>
+							Scripts
+						</TabButton>
 					</div>
 				</div>
 
@@ -422,8 +426,8 @@ const ClineRulesPanel: React.FC = () => {
 					</div>
 				) : null}
 
-				{/* Description text */}
-				<div className="text-xs text-description mb-4">
+				{/* Description text (the Scripts tab explains itself) */}
+				<div className={currentView === "scripts" ? "hidden" : "text-xs text-description mb-4"}>
 					{currentView === "rules" ? (
 						<p>
 							Rules allow you to provide Cline with system-level guidance. Think of them as a persistent way to
@@ -775,6 +779,8 @@ const ClineRulesPanel: React.FC = () => {
 							</div>
 						</div>
 					</>
+				) : currentView === "scripts" ? (
+					<ScriptsPanel />
 				) : null}
 			</div>
 		</div>

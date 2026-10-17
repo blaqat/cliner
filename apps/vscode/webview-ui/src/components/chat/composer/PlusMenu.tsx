@@ -10,13 +10,14 @@ import McpServersPanel from "./McpServersPanel"
 import { handleMenuKeyDown, MENU_ROW_CLASS } from "./menuKeyboard"
 
 /**
- * Scripts entry for the ＋ menu. Unused until scripts land (PLAN step 7): pass it to show a
- * "Scripts" row that opens `panel` inline, like MCP servers and rules.
+ * Scripts entry for the ＋ menu: shows a "Scripts" row that opens `panel` inline, like MCP servers
+ * and rules.
  */
 export interface PlusMenuScriptsSlot {
-	/** Short status beside the row, e.g. "4 saved". */
+	/** Short status beside the row, e.g. "4 on". */
 	summary?: string
-	panel: React.ReactNode
+	/** The inline view; a function gets `close(keepFocus)` to dismiss the menu after an action. */
+	panel: React.ReactNode | ((close: (keepFocus?: boolean) => void) => React.ReactNode)
 }
 
 export interface PlusMenuProps {
@@ -41,7 +42,7 @@ function countOn(...toggles: (ClineRulesToggles | undefined)[]): number {
 
 /**
  * The composer's ＋: mention, files & images, and the less frequent MCP servers and rules toggles
- * (inline panels inside the same popover, not modals). Scripts get a slot for later.
+ * (inline panels inside the same popover, not modals) and saved scripts.
  */
 const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuProps) => {
 	const {
@@ -222,7 +223,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, scripts }: PlusMenuPro
 						</div>
 						{view === "mcp" && <McpServersPanel onOpenSettings={() => close()} />}
 						{view === "rules" && <ClineRulesPanel />}
-						{view === "scripts" && scripts?.panel}
+						{view === "scripts" && (typeof scripts?.panel === "function" ? scripts.panel(close) : scripts?.panel)}
 					</>
 				)}
 			</PopoverContent>

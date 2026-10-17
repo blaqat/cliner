@@ -16,6 +16,8 @@ interface SlashCommandMenuProps {
 	remoteWorkflowToggles?: Record<string, boolean>
 	remoteWorkflows?: any[]
 	mcpServers?: McpServer[]
+	/** Saved scripts, listed with the workflows. Only passed when the slash is at the start of the message. */
+	scriptCommands?: SlashCommand[]
 }
 
 const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
@@ -29,6 +31,7 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 	remoteWorkflowToggles,
 	remoteWorkflows,
 	mcpServers = [],
+	scriptCommands = [],
 }) => {
 	const menuRef = useRef<HTMLDivElement>(null)
 
@@ -40,9 +43,11 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 		remoteWorkflowToggles,
 		remoteWorkflows,
 		mcpServers,
+		scriptCommands,
 	)
 	const defaultCommands = filteredCommands.filter((cmd) => cmd.section === "default" || !cmd.section)
 	const workflowCommands = filteredCommands.filter((cmd) => cmd.section === "custom")
+	const scriptMenuCommands = filteredCommands.filter((cmd) => cmd.section === "script")
 	const mcpCommands = filteredCommands.filter((cmd) => cmd.section === "mcp")
 
 	// Screen reader announcements
@@ -145,7 +150,18 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 					<>
 						{renderCommandSection(defaultCommands, "Default Commands", 0, true)}
 						{renderCommandSection(workflowCommands, "Workflow Commands", defaultCommands.length, false)}
-						{renderCommandSection(mcpCommands, "MCP Prompts", defaultCommands.length + workflowCommands.length, true)}
+						{renderCommandSection(
+							scriptMenuCommands,
+							"Scripts",
+							defaultCommands.length + workflowCommands.length,
+							true,
+						)}
+						{renderCommandSection(
+							mcpCommands,
+							"MCP Prompts",
+							defaultCommands.length + workflowCommands.length + scriptMenuCommands.length,
+							true,
+						)}
 					</>
 				) : (
 					<div aria-selected="false" className="py-2 px-3 cursor-default flex flex-col" role="option">

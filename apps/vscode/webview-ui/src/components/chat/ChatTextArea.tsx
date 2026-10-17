@@ -14,11 +14,15 @@ import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
+import ScriptHelper from "@/components/scripts/ScriptHelper"
+import ScriptsPanel from "@/components/scripts/ScriptsPanel"
+import { completeScriptInput, isScriptInputSendable, matchScriptInput } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
+import { refreshScripts, usableScripts, useScripts } from "@/hooks/useScripts"
 import { cn } from "@/lib/utils"
 import { FileServiceClient, StateServiceClient } from "@/services/grpc-client"
 import {
@@ -333,6 +337,39 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [cursorPosition, setCursorPosition] = useState(0)
 		const [searchQuery, setSearchQuery] = useState("")
 		const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+		// Saved scripts: offered by the slash menu and the ＋ menu. A draft starting with `/script-name `
+		// shows the options helper above the input and cannot be sent until its required options are set.
+		const scriptsSnapshot = useScripts()
+		const usable = useMemo(() => usableScripts(scriptsSnapshot), [scriptsSnapshot])
+		const scriptCommands = useMemo<SlashCommand[]>(
+			() => usable.map((script) => ({ name: script.name, description: script.description, section: "script" as const })),
+			[usable],
+		)
+		const scriptInput = useMemo(() => matchScriptInput(inputValue, usable), [inputValue, usable])
+		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput)
+		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
+		const slashAtMessageStart = useMemo(() => {
+			const beforeCursor = inputValue.slice(0, cursorPosition)
+			const slashIndex = beforeCursor.lastIndexOf("/")
+			return slashIndex >= 0 && beforeCursor.slice(0, slashIndex).trim() === ""
+		}, [inputValue, cursorPosition])
+		const menuScriptCommands = slashAtMessageStart ? scriptCommands : []
+		// Re-read the script folders whenever the slash menu opens, so a script just saved shows up.
+		useEffect(() => {
+			if (showSlashCommandsMenu) void refreshScripts()
+		}, [showSlashCommandsMenu])
+		/** Starts a script draft from the ＋ menu; whatever was typed becomes the note under the options line. */
+		const startScriptDraft = useCallback(
+			(name: string) => {
+				const prefix = `/${name} `
+				const existing = textAreaRef.current?.value ?? inputValue
+				setInputValue(existing.trim() ? `${prefix}\n${existing}` : prefix)
+				setCursorPosition(prefix.length)
+				setIntendedCursorPosition(prefix.length)
+				setTimeout(() => textAreaRef.current?.focus(), 0)
+			},
+			[inputValue, setInputValue],
+		)
 		const [isMouseDownOnMenu, setIsMouseDownOnMenu] = useState(false)
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
@@ -714,6 +751,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								remoteWorkflowToggles,
 								remoteConfigSettings?.remoteGlobalWorkflows,
 								mcpServers,
+								menuScriptCommands,
 							)
 
 							if (allCommands.length === 0) {
@@ -739,6 +777,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							remoteWorkflowToggles,
 							remoteConfigSettings?.remoteGlobalWorkflows,
 							mcpServers,
+							menuScriptCommands,
 						)
 						if (commands.length > 0) {
 							handleSlashCommandsSelect(commands[selectedSlashCommandsIndex])
@@ -805,6 +844,28 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
+				// Tab in a script draft completes the option being typed, then jumps to the next missing required one.
+				if (
+					event.key === "Tab" &&
+					scriptInput &&
+					!isComposing &&
+					!event.shiftKey &&
+					!event.metaKey &&
+					!event.ctrlKey &&
+					!event.altKey &&
+					// Anywhere on the options line; Tab in the note below keeps its normal behaviour.
+					(event.currentTarget.selectionStart ?? 0) <= scriptInput.prefix.length + scriptInput.optionsText.length
+				) {
+					event.preventDefault()
+					const completed = completeScriptInput(scriptInput)
+					if (completed) {
+						setInputValue(completed.text)
+						setCursorPosition(completed.cursor)
+						setIntendedCursorPosition(completed.cursor)
+					}
+					return
+				}
+
 				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
 				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
 					if (onStash()) {
@@ -820,7 +881,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				if (submitKind) {
 					event.preventDefault()
 
-					if (!sendingDisabled) {
+					if (!sendDisabled) {
 						// Note: don't set isTextAreaFocused to false here. The textarea keeps
 						// DOM focus after sending, and clearing the flag without an actual
 						// blur desyncs it permanently (programmatic .focus() on an
@@ -915,7 +976,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				selectedSlashCommandsIndex,
 				slashCommandsQuery,
 				handleSlashCommandsSelect,
-				sendingDisabled,
+				sendDisabled,
+				scriptInput,
+				menuScriptCommands,
 				onStash,
 				hasQuotes,
 				isRunning,
@@ -1241,6 +1304,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					globalWorkflowToggles,
 					remoteWorkflowToggles,
 					remoteConfigSettings?.remoteGlobalWorkflows,
+					undefined,
+					scriptCommands,
 				)
 
 				if (isValidCommand) {
@@ -1253,7 +1318,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			highlightLayerRef.current.innerHTML = processedText
 			highlightLayerRef.current.scrollTop = textAreaRef.current.scrollTop
 			highlightLayerRef.current.scrollLeft = textAreaRef.current.scrollLeft
-		}, [localWorkflowToggles, globalWorkflowToggles, remoteWorkflowToggles, remoteConfigSettings])
+		}, [localWorkflowToggles, globalWorkflowToggles, remoteWorkflowToggles, remoteConfigSettings, scriptCommands])
 
 		useLayoutEffect(() => {
 			updateHighlights()
@@ -1681,6 +1746,20 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		return (
 			<div>
+				{scriptInput && (
+					<ScriptHelper
+						onChange={(next) => {
+							const text = `${scriptInput.prefix}${next}${scriptInput.suffix}`
+							const cursor = scriptInput.prefix.length + next.length
+							setInputValue(text)
+							setCursorPosition(cursor)
+							setIntendedCursorPosition(cursor)
+							setTimeout(() => textAreaRef.current?.focus(), 0)
+						}}
+						optionsText={scriptInput.optionsText}
+						script={scriptInput.script}
+					/>
+				)}
 				<div
 					className="relative flex transition-colors ease-in-out duration-100 px-3.5 py-2.5"
 					onDragEnter={handleDragEnter}
@@ -1708,6 +1787,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								query={slashCommandsQuery}
 								remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
 								remoteWorkflowToggles={remoteWorkflowToggles}
+								scriptCommands={menuScriptCommands}
 								selectedIndex={selectedSlashCommandsIndex}
 								setSelectedIndex={setSelectedSlashCommandsIndex}
 							/>
@@ -1882,7 +1962,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							)}
 							{showRunningSendButtons && onSendAs ? (
 								<RunningSendButtons
-									disabled={sendingDisabled}
+									disabled={sendDisabled}
 									enterSendsAs={enterSendsAs}
 									metaKeyChar={metaKeyChar}
 									onInterject={() => onSendAs("interject")}
@@ -1901,7 +1981,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 													aria-label="Start in background"
 													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
 													data-testid="send-background-button"
-													disabled={sendingDisabled}
+													disabled={sendDisabled}
 													onClick={() => onSendAs("background")}
 													type="button">
 													<SendToBackIcon size={13} />
@@ -1912,12 +1992,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									<div
 										className={cn(
 											"input-icon-button",
-											{ disabled: sendingDisabled },
+											{ disabled: sendDisabled },
 											"codicon codicon-send text-sm",
 										)}
 										data-testid="send-button"
 										onClick={() => {
-											if (!sendingDisabled) {
+											if (!sendDisabled) {
 												onSend()
 											}
 										}}
@@ -1969,6 +2049,19 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								}
 							}}
 							onMention={handleContextButtonClick}
+							scripts={{
+								summary: usable.length > 0 ? `${usable.length} on` : undefined,
+								panel: (close) => (
+									<div className="min-h-0 flex-1 overflow-y-auto px-3 pt-2 pb-3">
+										<ScriptsPanel
+											onUse={(name) => {
+												close(true)
+												startScriptDraft(name)
+											}}
+										/>
+									</div>
+								),
+							}}
 						/>
 						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
 							<WherePill onOpenTaskGroup={onOpenTaskGroup} />
