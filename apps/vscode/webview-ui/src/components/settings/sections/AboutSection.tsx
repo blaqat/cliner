@@ -1,5 +1,13 @@
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
+import { type ReactNode, useMemo, useState } from "react"
+import { useExtensionState } from "@/context/ExtensionStateContext"
+import { usePlatform } from "@/context/PlatformContext"
+import { cn } from "@/lib/utils"
+import { detectMetaKeyChar, detectOS } from "@/utils/platformUtils"
 import Section from "../Section"
+import { AboutPicture } from "./about/AboutPictures"
+import { buildShortcuts, FEATURE_GROUPS, IMPROVEMENT_GROUPS, UPSTREAM_CLINE_VERSION } from "./about/aboutContent"
+import { RELEASE_NOTES } from "./about/releaseNotes"
 
 interface AboutSectionProps {
 	version: string
@@ -12,28 +20,204 @@ const VARIANT_LABELS: Record<"legacy" | "next", string> = {
 	next: "Next",
 }
 
+type AboutTab = "features" | "improvements"
+
+const TABS: { id: AboutTab; label: string }[] = [
+	{ id: "features", label: "Features" },
+	{ id: "improvements", label: "Improvements & fixes" },
+]
+
+const Disclosure = ({
+	title,
+	defaultOpen = false,
+	testId,
+	children,
+}: {
+	title: ReactNode
+	defaultOpen?: boolean
+	testId?: string
+	children: ReactNode
+}) => {
+	const [open, setOpen] = useState(defaultOpen)
+	return (
+		<div data-testid={testId}>
+			<button
+				aria-expanded={open}
+				className="flex w-full cursor-pointer items-center gap-1 border-0 bg-transparent p-0 py-1 text-left text-foreground"
+				onClick={() => setOpen((value) => !value)}
+				type="button">
+				<span className={cn("codicon text-xs", open ? "codicon-chevron-down" : "codicon-chevron-right")} />
+				{title}
+			</button>
+			{open && children}
+		</div>
+	)
+}
+
+const GroupTitle = ({ children }: { children: ReactNode }) => <h3 className="mt-3 mb-1 text-[13px] font-semibold">{children}</h3>
+
+const FeaturesTab = () => (
+	<div className="flex flex-col" data-testid="about-features">
+		{FEATURE_GROUPS.map((group) => (
+			<section data-testid={`about-group-${group.id}`} key={group.id}>
+				<GroupTitle>{group.title}</GroupTitle>
+				<ul className="m-0 list-none p-0">
+					{group.items.map((item) => (
+						<li
+							className="flex flex-wrap items-start gap-x-2.5 gap-y-1 border-b border-dashed border-editor-group-border py-1.5 last:border-b-0"
+							key={item.text}>
+							<span className="min-w-[10rem] flex-1 pt-0.5 text-xs text-description">
+								<span aria-hidden className="mr-1.5 opacity-60">
+									•
+								</span>
+								{item.text}
+							</span>
+							<span className="flex shrink-0 gap-1 max-[360px]:ml-3">
+								{item.pictures.map((picture) => (
+									<AboutPicture key={picture} name={picture} />
+								))}
+							</span>
+						</li>
+					))}
+				</ul>
+			</section>
+		))}
+	</div>
+)
+
+const ImprovementsTab = () => (
+	<div className="flex flex-col" data-testid="about-improvements">
+		{IMPROVEMENT_GROUPS.map((group) => (
+			<section data-testid={`about-fixes-${group.id}`} key={group.id}>
+				<GroupTitle>{group.title}</GroupTitle>
+				<ul className="m-0 flex list-none flex-col gap-1 p-0">
+					{group.items.map((item) => (
+						<li className="text-xs text-description" key={item}>
+							<span aria-hidden className="mr-1.5 opacity-60">
+								•
+							</span>
+							{item}
+						</li>
+					))}
+				</ul>
+			</section>
+		))}
+	</div>
+)
+
 const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutSectionProps) => {
+	const { platform, enterSendsAs } = useExtensionState()
+	const { togglePlanActKeys } = usePlatform()
+	const [tab, setTab] = useState<AboutTab>("features")
+
+	const shortcuts = useMemo(
+		() =>
+			buildShortcuts({
+				mod: detectMetaKeyChar(platform),
+				alt: detectOS(platform) === "mac" ? "⌥" : "Alt",
+				toggleKeys: togglePlanActKeys,
+				enterSendsAs: enterSendsAs ?? "steer",
+			}),
+		[platform, togglePlanActKeys, enterSendsAs],
+	)
+
 	return (
 		<div>
 			{renderSectionHeader("about")}
 			<Section>
-				<div className="flex px-4 flex-col gap-2">
-					<h2 className="text-lg font-semibold">
-						Cline v{version}
-						{extensionVariant && (
-							<span className="ml-2 text-sm font-normal text-description">
-								({VARIANT_LABELS[extensionVariant]})
-							</span>
-						)}
-					</h2>
-					<p>
-						An AI assistant that can use your CLI and Editor. Cline can handle complex software development tasks
-						step-by-step with tools that let him create & edit files, explore large projects, use the browser, and
-						execute terminal commands (after you grant permission).
-					</p>
+				<div className="flex flex-col gap-2 px-4">
+					<div>
+						<h2 className="text-lg font-semibold">
+							Cline (Fork)
+							{extensionVariant && (
+								<span className="ml-2 text-sm font-normal text-description">
+									({VARIANT_LABELS[extensionVariant]})
+								</span>
+							)}
+						</h2>
+						<div className="text-xs text-description" data-testid="about-version">
+							v{version} · based on Cline {UPSTREAM_CLINE_VERSION}
+						</div>
+					</div>
 
-					<h3 className="text-md font-semibold">Community & Support</h3>
-					<p>
+					<div aria-label="About" className="flex gap-3.5 border-b border-editor-group-border" role="tablist">
+						{TABS.map(({ id, label }) => (
+							<button
+								aria-selected={tab === id}
+								className={cn(
+									"-mb-px cursor-pointer border-0 border-b-2 bg-transparent px-0 pb-1.5 text-xs",
+									tab === id
+										? "border-b-(--vscode-focusBorder) text-foreground"
+										: "border-b-transparent text-description hover:text-foreground",
+								)}
+								data-testid={`about-tab-${id}`}
+								key={id}
+								onClick={() => setTab(id)}
+								role="tab"
+								type="button">
+								{label}
+							</button>
+						))}
+					</div>
+
+					{tab === "features" ? <FeaturesTab /> : <ImprovementsTab />}
+
+					<section data-testid="about-shortcuts">
+						<GroupTitle>Shortcuts</GroupTitle>
+						<table className="w-full border-collapse text-xs">
+							<tbody>
+								{shortcuts.map((row) => (
+									<tr
+										className="border-b border-dashed border-editor-group-border last:border-b-0"
+										key={row.id}>
+										<td className="py-1 pr-2 text-description">{row.label}</td>
+										<td className="py-1 text-right">
+											<kbd className="whitespace-nowrap rounded-xs border border-input-border px-1 text-[11px]">
+												{row.keys}
+											</kbd>
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</section>
+
+					<section>
+						<Disclosure
+							testId="about-whats-new"
+							title={<h3 className="m-0 text-[13px] font-semibold">What's new</h3>}>
+							<div className="flex flex-col gap-0.5 pl-3">
+								{RELEASE_NOTES.map((release, index) => (
+									<Disclosure
+										defaultOpen={index === 0}
+										key={release.version}
+										testId={`about-release-${release.version}`}
+										title={
+											<span className="text-xs">
+												<b>{release.upcoming ? release.version : `v${release.version}`}</b>
+												<span className="ml-2 text-description">
+													{release.upcoming ? "upcoming" : release.date}
+												</span>
+											</span>
+										}>
+										<ul className="m-0 mb-1 list-none p-0 pl-4">
+											{release.notes.map((note) => (
+												<li className="text-xs text-description" key={note}>
+													<span aria-hidden className="mr-1.5 opacity-60">
+														•
+													</span>
+													{note}
+												</li>
+											))}
+										</ul>
+									</Disclosure>
+								))}
+							</div>
+						</Disclosure>
+					</section>
+
+					<h3 className="mt-2 text-[13px] font-semibold">Community & Support</h3>
+					<p className="m-0">
 						<VSCodeLink href="https://x.com/cline">X</VSCodeLink>
 						{" • "}
 						<VSCodeLink href="https://discord.gg/cline">Discord</VSCodeLink>
@@ -41,8 +225,8 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 						<VSCodeLink href="https://www.reddit.com/r/cline/"> r/cline</VSCodeLink>
 					</p>
 
-					<h3 className="text-md font-semibold">Development</h3>
-					<p>
+					<h3 className="text-[13px] font-semibold">Development</h3>
+					<p className="m-0">
 						<VSCodeLink href="https://github.com/cline/cline">GitHub</VSCodeLink>
 						{" • "}
 						<VSCodeLink href="https://github.com/cline/cline/issues"> Issues</VSCodeLink>
@@ -53,8 +237,8 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 						</VSCodeLink>
 					</p>
 
-					<h3 className="text-md font-semibold">Resources</h3>
-					<p>
+					<h3 className="text-[13px] font-semibold">Resources</h3>
+					<p className="m-0">
 						<VSCodeLink href="https://docs.cline.bot/">Documentation</VSCodeLink>
 						{" • "}
 						<VSCodeLink href="https://cline.bot/">https://cline.bot</VSCodeLink>
