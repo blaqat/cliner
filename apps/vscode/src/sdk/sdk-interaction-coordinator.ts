@@ -8,6 +8,7 @@ import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import { buildToolApprovalDenialReason } from "./tool-approval-denial"
 
 export interface ToolApprovalRequest {
+	sessionId?: string
 	signal?: AbortSignal
 	agentId: string
 	conversationId: string
@@ -54,7 +55,7 @@ export interface SdkInteractionCoordinatorOptions {
 	 * The task's working directory, used to relativize the absolute filesystem paths
 	 * shown in tool-approval asks (display only). Optional for tests.
 	 */
-	getCwd?: () => string | undefined
+	getCwd?: (sessionId?: string) => string | undefined
 }
 
 type ApprovalResolver = (result: { approved: boolean; reason?: string }) => void
@@ -202,7 +203,7 @@ export class SdkInteractionCoordinator {
 			request.toolName,
 			request.input,
 			this.nextMessageTs(),
-			this.options.getCwd?.(),
+			this.options.getCwd?.(request.sessionId),
 		)
 		const id = String(toolAskMessage.ts)
 		toolAskMessage.decisionId = id

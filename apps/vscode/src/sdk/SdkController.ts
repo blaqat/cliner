@@ -575,7 +575,8 @@ export class Controller {
 			onConsecutiveMistakeLimitReached: (context) => this.interactions.handleConsecutiveMistakeLimitReached(context),
 		})
 		this.diffEdits = new SdkDiffEditCoordinator({
-			getCwd: async () => this.sessions?.getActiveSession()?.startConfig?.cwd || (await this.getWorkspaceRoot()),
+			getCwd: async (sessionId) =>
+				this.sessions?.getSession(sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
 		})
 		this.interactions = new SdkInteractionCoordinator({
@@ -589,7 +590,8 @@ export class Controller {
 			getMinter: () => this.messageTranslatorState.getMinter(),
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
 			// Open the diff editor preview before the approval buttons render.
-			onToolApprovalAsk: (request) => this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input),
+			onToolApprovalAsk: (request) =>
+				this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId),
 			recordApprovedToolMessage: (toolCallId, messageTs) =>
 				this.messageTranslatorState.recordApprovedToolMessageTs(toolCallId, messageTs),
 			recordDeniedToolApproval: (toolCallId, toolName, reason) => {
@@ -602,7 +604,7 @@ export class Controller {
 				const autoApprovalSettings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return autoApprovalSettings ? isToolAutoApproved(request.toolName, autoApprovalSettings) : false
 			},
-			getCwd: () => this.lastKnownWorkspaceRoot,
+			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? "")?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
 			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
@@ -1777,10 +1779,10 @@ export class Controller {
 			getMinter: () => translator.getMinter(),
 			postStateToWebview: () => this.postStateToWebview(),
 			setTurnPhase: setPhase,
-			getCwd: () => this.lastKnownWorkspaceRoot,
+			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? id)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 			onToolApprovalAsk: (request) =>
 				this.task?.taskId === id
-					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input)
+					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId ?? id)
 					: Promise.resolve(),
 			recordApprovedToolMessage: (callId, ts, agentId) => {
 				const child = Array.from(this.subagentThreads?.values() ?? []).find(

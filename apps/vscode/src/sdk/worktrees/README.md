@@ -50,7 +50,7 @@ A thread record contains its original workspace, isolate cwd, branch, module pat
 
 ## Runtime behavior
 
-`SdkTaskStartCoordinator.prepareWorkspace` creates the isolate after provider validation and before starting the SDK session. Both `config.cwd` and `config.workspaceRoot` point at the isolate, and history stores that cwd. The SDK receives this cwd for file edits, search, and terminal tools. The file-read override uses the calling session. Explicit file mentions use the thread's module roots. Resume validates the saved mapping and refuses a missing isolate instead of editing the original workspace.
+`SdkTaskStartCoordinator.prepareWorkspace` creates the isolate after provider validation and before starting the SDK session. Both `config.cwd` and `config.workspaceRoot` point at the isolate, and history stores that cwd. The SDK receives this cwd for file edits, search, and terminal tools. File reads, edit previews, and approval labels resolve paths against the calling session. Auto-approved previews use the executor cwd directly. Explicit file mentions use the thread's module roots. Resume validates the saved mapping and refuses a missing isolate instead of editing the original workspace.
 
 mm runs as `nodePath mmPath isolate <branch>` and `nodePath mmPath free <branch>`, with argument arrays and the original workspace as cwd. Both commands can return exit status zero after a module failure, so the manager verifies each module afterward. Legacy newline lists, JSON module arrays, and JSON module objects with `path` are supported. Duplicate module basenames and paths outside the workspace are rejected because mm maps modules by basename.
 
