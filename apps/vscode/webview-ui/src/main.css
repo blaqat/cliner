@@ -317,8 +317,8 @@ body.vscode-reduce-motion [data-slot="select-content"].menu-rise[data-state="ope
 /* A message deep link's target row: brief highlight after the scroll lands. */
 @keyframes message-link-flash {
 	0% {
-		background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 179, 8, 0.35));
-		box-shadow: 0 0 0 2px var(--vscode-focusBorder, rgba(234, 179, 8, 0.5));
+		background-color: var(--vscode-editor-findMatchHighlightBackground);
+		box-shadow: 0 0 0 2px var(--vscode-focusBorder);
 	}
 	100% {
 		background-color: transparent;

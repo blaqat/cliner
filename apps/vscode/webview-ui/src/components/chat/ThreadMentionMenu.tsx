@@ -1,4 +1,10 @@
 import { useEffect, useRef } from "react"
+import {
+	COMPLETION_MENU_CLASS,
+	COMPLETION_SECTION_CLASS,
+	completionDetailClass,
+	completionItemClass,
+} from "./completionMenuStyles"
 import type { ThreadMentionOption } from "./threadMentions"
 
 interface ThreadMentionMenuProps {
@@ -37,23 +43,17 @@ const ThreadMentionMenu = ({ threads, selectedIndex, setSelectedIndex, onSelect 
 			<div
 				aria-activedescendant={`thread-mention-menu-item-${selectedIndex}`}
 				aria-label="Threads"
-				className="bg-(--vscode-dropdown-background) border border-(--vscode-editorGroup-border) rounded-[3px] shadow-[0_4px_10px_var(--vscode-widget-shadow)] flex flex-col overflow-y-auto"
+				className={COMPLETION_MENU_CLASS}
 				ref={menuRef}
 				role="listbox"
 				style={{ maxHeight: "min(200px, calc(50vh))", overscrollBehavior: "contain" }}>
-				<div
-					className="text-xs text-(--vscode-descriptionForeground) px-3 py-1 font-bold border-b border-(--vscode-editorGroup-border)"
-					role="presentation">
+				<div className={COMPLETION_SECTION_CLASS} role="presentation">
 					Threads
 				</div>
 				{threads.map((thread, index) => (
 					<div
 						aria-selected={index === selectedIndex}
-						className={`py-1.5 px-3 cursor-pointer flex flex-col border-b border-(--vscode-editorGroup-border) ${
-							index === selectedIndex
-								? "bg-(--vscode-quickInputList-focusBackground) text-(--vscode-quickInputList-focusForeground)"
-								: ""
-						} hover:bg-(--vscode-list-hoverBackground)`}
+						className={completionItemClass(index === selectedIndex)}
 						id={`thread-mention-menu-item-${index}`}
 						key={thread.id}
 						onClick={() => onSelect(thread)}
@@ -63,12 +63,7 @@ const ThreadMentionMenu = ({ threads, selectedIndex, setSelectedIndex, onSelect 
 							<span aria-hidden className="codicon codicon-comment-discussion text-[12px]! shrink-0" />
 							<span className="ph-no-capture font-bold truncate">{thread.title}</span>
 						</div>
-						<div
-							className={`text-[0.85em] truncate ${
-								index === selectedIndex
-									? "text-(--vscode-quickInputList-focusForeground)"
-									: "text-(--vscode-descriptionForeground)"
-							}`}>
+						<div className={completionDetailClass(index === selectedIndex)}>
 							<span className="ph-no-capture">
 								{[thread.taskGroupTitle, thread.id].filter(Boolean).join(" · ")}
 							</span>
