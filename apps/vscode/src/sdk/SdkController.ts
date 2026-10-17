@@ -33,6 +33,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
+import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -45,6 +46,7 @@ import type {
 	TaskGroupThreadRow,
 	TaskTag,
 } from "@shared/task-groups"
+import type { ThreadWorktreeSettings, WorktreeActionResult } from "@shared/thread-worktrees"
 import { extractTicketTags } from "@shared/ticket-tags"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import chokidar, { type FSWatcher } from "chokidar"
@@ -158,6 +160,7 @@ import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
+import { ThreadWorktreeManager } from "./worktrees/thread-worktree-manager"
 
 /**
  * Log a stub warning and return undefined.
@@ -439,7 +442,10 @@ export class Controller {
 		return this.remoteConfigRevision
 	}
 
+	readonly threadWorktrees: ThreadWorktreeManager
+
 	constructor(readonly context: ClineExtensionContext) {
+		this.threadWorktrees = new ThreadWorktreeManager(path.join(context.globalStorageUri.fsPath, "thread-worktrees"))
 		const controller = this
 		// StateManager must be initialized before creating the Controller
 		this.stateManager = StateManager.get()
@@ -518,7 +524,7 @@ export class Controller {
 			onConsecutiveMistakeLimitReached: (context) => this.interactions.handleConsecutiveMistakeLimitReached(context),
 		})
 		this.diffEdits = new SdkDiffEditCoordinator({
-			getCwd: () => this.getWorkspaceRoot(),
+			getCwd: async () => this.sessions?.getActiveSession()?.startConfig?.cwd || (await this.getWorkspaceRoot()),
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
 		})
 		this.interactions = new SdkInteractionCoordinator({
@@ -548,8 +554,13 @@ export class Controller {
 			getCwd: () => this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
-			prepareStartInput: (input) => {
+			prepareStartInput: async (input) => {
 				const id = input.config?.sessionId || createSessionId()
+				const mapping = await this.threadWorktrees.get(id)
+				if (mapping) {
+					await this.threadWorktrees.assertPresent(mapping)
+					input = { ...input, config: { ...input.config, cwd: mapping.cwd, workspaceRoot: mapping.cwd } }
+				}
 				const previous = this.taskSessions.get(id)?.nextMessageSelection?.previous
 				return {
 					...input,
@@ -588,7 +599,10 @@ export class Controller {
 			applyPatchExecutor: (input, cwd, context) => this.diffEdits.executeApplyPatchTool(input, cwd, context),
 			// The SDK's built-in reader resolves relative paths against the extension
 			// host's process.cwd() (usually "/"); resolve them against the workspace instead.
-			readFileExecutor: createWorkspaceFileReadExecutor(() => this.getWorkspaceRoot()),
+			readFileExecutor: createWorkspaceFileReadExecutor(
+				async (context) =>
+					this.sessions.getSession(context.sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
+			),
 			onSessionEvent: (event) => {
 				if (this.handleSubagentEvent(event)) return
 				if (!this.sessions.getSession(event.payload.sessionId) && !this.taskSessions.has(event.payload.sessionId)) return
@@ -981,6 +995,21 @@ export class Controller {
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
+			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
+				const enabled = runInWorktree === true
+				if (!enabled) return workspace
+				return this.threadWorktrees.exclusive(
+					async () =>
+						(
+							await this.threadWorktrees.create(
+								id,
+								title,
+								workspace,
+								!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+							)
+						).cwd,
+				)
+			},
 			consumeDraftApiSelection: () => {
 				const draft = this.draftApiSelection
 				this.draftApiSelection = undefined
@@ -1894,9 +1923,12 @@ export class Controller {
 		mentionRegexGlobal.lastIndex = 0
 
 		try {
-			const cwd = await this.getWorkspaceRoot()
+			const mapping = threadId ? await this.threadWorktrees.get(threadId) : undefined
+			const cwd = mapping?.cwd ?? (await this.getWorkspaceRoot())
 			const urlContentFetcher = new UrlContentFetcher()
-			const workspaceManager = await this.ensureWorkspaceManager()
+			const workspaceManager = mapping
+				? await WorkspaceRootManager.fromPaths(mapping.modules.map((module) => module.path))
+				: await this.ensureWorkspaceManager()
 			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
 		} catch (error) {
@@ -2219,6 +2251,68 @@ export class Controller {
 		this.postStateToWebview().catch(() => {})
 	}
 
+	/** Shared with the walkthrough and checkpoints; patches stay relative to each module. */
+	async getThreadWorktreeDiffs(threadId: string) {
+		return this.threadWorktrees.exclusive(() => this.threadWorktrees.diffs(threadId))
+	}
+
+	async threadWorktreeAction(request: ThreadWorktreeActionRequest): Promise<WorktreeActionResult> {
+		return this.threadWorktrees.exclusive(async () => {
+			const workspace = await this.getWorkspaceRoot()
+			const data = request.json ? JSON.parse(request.json) : {}
+			const id = request.threadId
+			const running = this.sessions.getSession(id)?.isRunning
+			const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
+			switch (request.action) {
+				case "state": {
+					const history = await this.taskHistory.listHistory({ hydrate: false })
+					return {
+						state: {
+							settings: await this.threadWorktrees.settings(),
+							availability: await this.threadWorktrees.availability(workspace, workspaceOff),
+							mapping: id ? await this.threadWorktrees.get(id) : undefined,
+							settled: (
+								await this.threadWorktrees.settled(
+									history.map(sessionHistoryRecordToHistoryItem),
+									history.filter((item) => item.status === "completed").map((item) => item.sessionId),
+								)
+							).filter((m) => m.workspace === workspace && !this.sessions.getSession(m.threadId)?.isRunning),
+						},
+					}
+				}
+				case "configure":
+					await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
+					return {}
+				case "workspaceOff":
+					this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
+					await this.stateManager.flushPendingState()
+					return {}
+				case "diffs":
+					return { diffs: await this.threadWorktrees.diffs(id) }
+				case "open": {
+					const mapping = await this.threadWorktrees.get(id)
+					if (!mapping) throw new Error("This thread has no worktree")
+					const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
+					if (!opened.success) throw new Error("Could not open the worktree window")
+					return {}
+				}
+				case "bring":
+					if (running) return { warning: "Wait for the thread to finish before bringing changes here." }
+					return this.threadWorktrees.bring(id)
+				case "undo":
+					return this.threadWorktrees.undo(id)
+				case "takeOver":
+					if (running) return { warning: "Stop this thread before taking over its branch." }
+					return this.threadWorktrees.takeOver(id)
+				case "remove":
+					if (running) return { warning: "Stop this thread before removing its worktree." }
+					return this.threadWorktrees.remove(id, request.confirmed)
+				default:
+					throw new Error("Unknown worktree action")
+			}
+		})
+	}
+
 	// ---- Task lifecycle ----
 
 	async initTask(
@@ -2227,7 +2321,7 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean },
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A stale pill pick (group deleted between selection and send) starts unfiled.

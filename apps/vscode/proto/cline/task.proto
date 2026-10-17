@@ -67,6 +67,7 @@ message NewTaskRequest {
   bool run_in_background = 6;
   // Files the new thread into this task group ("Task" in the UI).
   optional string task_group_id = 7;
+  optional bool run_in_worktree = 20;
 }
 
 // Request message for toggling task favorite status

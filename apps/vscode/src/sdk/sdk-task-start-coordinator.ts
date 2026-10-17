@@ -75,6 +75,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	 * the configuration it was started with.
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
+	prepareWorkspace?: (id: string, title: string, workspace: string, enabled?: boolean) => Promise<string>
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
 	/**
 	 * Remembers the task group a new thread starts in. Core writes the session
@@ -94,7 +95,7 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string },
+		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean },
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -107,7 +108,7 @@ export class SdkTaskStartCoordinator {
 			// task-settings overlay drop, no clearing of what the user is looking at.
 			if (!background) await this.options.clearTask()
 
-			const cwd = await this.options.getWorkspaceRoot()
+			let cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
 			const apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
@@ -139,6 +140,31 @@ export class SdkTaskStartCoordinator {
 			}
 
 			taskSessionId = config.sessionId?.trim() || createSessionId()
+			if (this.options.prepareWorkspace) {
+				const isolatedCwd = await this.options.prepareWorkspace(
+					taskSessionId,
+					prompt ?? "thread",
+					cwd,
+					options?.runInWorktree,
+				)
+				if (isolatedCwd !== cwd) {
+					cwd = isolatedCwd
+					Object.assign(
+						config,
+						await this.options.sessionConfigBuilder.build({
+							prompt,
+							images,
+							files,
+							historyItem,
+							taskSettings,
+							cwd,
+							workspaceRoot: cwd,
+							mode,
+							apiSelection,
+						}),
+					)
+				}
+			}
 			const configWithSessionId = {
 				...config,
 				sessionId: taskSessionId,

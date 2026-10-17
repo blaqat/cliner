@@ -88,6 +88,27 @@ describe("SdkTaskStartCoordinator", () => {
 		)
 	})
 
+	it("overrides SDK cwd and workspace root and persists the isolate cwd", async () => {
+		const { options } = makeCoordinator()
+		const prepareWorkspace = vi.fn().mockResolvedValue("/isolate")
+		options.sessionConfigBuilder.build.mockImplementation(async (input) => ({
+			providerId: "anthropic",
+			modelId: "model",
+			apiKey: "key",
+			cwd: input.cwd,
+			workspaceRoot: input.workspaceRoot ?? input.cwd,
+		}))
+		const coordinator = new SdkTaskStartCoordinator({ ...options, prepareWorkspace })
+		const id = await coordinator.initTask("isolate me", undefined, undefined, undefined, undefined, { runInWorktree: true })
+		expect(prepareWorkspace).toHaveBeenCalledWith(id, "isolate me", "/workspace", true)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ cwd: "/isolate", workspaceRoot: "/isolate" }) }),
+		)
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ cwdOnTaskInitialization: "/isolate" }),
+		)
+	})
+
 	it("starts a chat in the background without clearing or focusing the view", async () => {
 		const { options, state } = makeCoordinator()
 		const contextTask = createTaskProxy("", vi.fn(), vi.fn())

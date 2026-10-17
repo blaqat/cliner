@@ -69,7 +69,9 @@ export interface SdkSessionLifecycleOptions {
 	onDidBecomeIdle?: () => void
 	onSessionReplaced?: (sessionId: string) => void
 	onSessionRemoved?: (sessionId: string) => void
-	prepareStartInput?: (input: Parameters<VscodeSessionHost["start"]>[0]) => Parameters<VscodeSessionHost["start"]>[0]
+	prepareStartInput?: (
+		input: Parameters<VscodeSessionHost["start"]>[0],
+	) => Parameters<VscodeSessionHost["start"]>[0] | Promise<Parameters<VscodeSessionHost["start"]>[0]>
 }
 
 export class SdkSessionLifecycle {
@@ -282,7 +284,7 @@ export class SdkSessionLifecycle {
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
 		options?: { focus?: boolean },
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
-		startInput = this.options.prepareStartInput?.(startInput) ?? startInput
+		startInput = (await this.options.prepareStartInput?.(startInput)) ?? startInput
 		// A new task leaves other tasks alive. Only a same-id replacement stops first.
 		const replacementId = startInput.config?.sessionId?.trim()
 		if (replacementId && this.liveSessions.has(replacementId)) {
@@ -315,6 +317,8 @@ export class SdkSessionLifecycle {
 				? {
 						providerId: startInput.config.providerId,
 						modelId: startInput.config.modelId,
+						cwd: startInput.config.cwd,
+						workspaceRoot: startInput.config.workspaceRoot,
 						mode: startInput.mode === "plan" ? "plan" : "act",
 					}
 				: undefined,
@@ -380,7 +384,7 @@ export class SdkSessionLifecycle {
 		let sdkHost: SdkSessionHost | undefined
 		let installed = false
 		try {
-			const input = this.options.prepareStartInput?.(options.startInput) ?? options.startInput
+			const input = (await this.options.prepareStartInput?.(options.startInput)) ?? options.startInput
 			const initialMessages = options.loadInitialMessages ? await options.loadInitialMessages() : options.initialMessages
 			sdkHost = await this.createHost()
 			const idle = () =>
@@ -411,6 +415,8 @@ export class SdkSessionLifecycle {
 					? {
 							providerId: input.config.providerId,
 							modelId: input.config.modelId,
+							cwd: input.config.cwd,
+							workspaceRoot: input.config.workspaceRoot,
 							mode: input.mode === "plan" ? "plan" : "act",
 						}
 					: undefined,
@@ -474,6 +480,8 @@ export class SdkSessionLifecycle {
 				? {
 						providerId: input.start.config.providerId,
 						modelId: input.start.config.modelId,
+						cwd: input.start.config.cwd,
+						workspaceRoot: input.start.config.workspaceRoot,
 						mode:
 							input.start.mode === "plan" || input.start.mode === "act"
 								? input.start.mode

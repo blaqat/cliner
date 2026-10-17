@@ -112,7 +112,7 @@ export interface ActiveSession {
 	/** The session ID */
 	sessionId: string
 	/** The config used to start the active session. */
-	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode }
+	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode; cwd?: string; workspaceRoot?: string }
 	apiSnapshot?: SessionApiSnapshot
 	/** The runtime host instance managing this session (VscodeSessionHost) */
 	sdkHost: SdkSessionHost
