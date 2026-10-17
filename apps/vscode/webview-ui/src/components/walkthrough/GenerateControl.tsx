@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
-import { MENU_HEADING_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
@@ -72,7 +72,7 @@ export function GenerateControl({
 							<span aria-hidden className="codicon codicon-chevron-down text-[11px]!" />
 						</Button>
 					</PopoverTrigger>
-					<PopoverContent align="end" className="w-64 p-1 motion-reduce:animate-none" side="bottom">
+					<PopoverContent align="end" className="menu-rise w-64 p-1" side="bottom">
 						<div className={MENU_HEADING_CLASS}>Generate with</div>
 						<div className="flex flex-col" role="menu">
 							{profiles.map((p) => (
@@ -88,10 +88,7 @@ export function GenerateControl({
 									type="button">
 									<span
 										aria-hidden
-										className={cn(
-											"codicon codicon-check mt-0.5 text-[12px]!",
-											p.id !== profileId && "invisible",
-										)}
+										className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
 									/>
 									<span className="min-w-0 flex-1">
 										<span className="block truncate">{p.name}</span>
