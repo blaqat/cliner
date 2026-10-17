@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test"
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Message } from "@cline/shared"
@@ -361,6 +361,48 @@ describe("walkthrough collection", () => {
 			).rejects.toThrow("File changed")
 			expect(await readFile(filePath, "utf8")).toBe("someone else\n")
 		})
+		for (const removing of [false, true]) {
+			it(`preserves edits landing between the final read and capture, deleting: ${removing}`, async () => {
+				const root = await repo("repo")
+				const filePath = path.join(root, "a.ts")
+				const change = { ...wholeFile(filePath, removing ? "" : "old\n", "new\n"), beforeExists: !removing }
+				await writeFile(filePath, "new\n")
+				await expect(
+					revertChange(change, fallback("task", "git", [], [change]), undefined, [root], {
+						afterRead: () => writeFile(filePath, "later edit\n"),
+					}),
+				).rejects.toThrow("File changed")
+				expect(await readFile(filePath, "utf8")).toBe("later edit\n")
+				expect((await readdir(root)).filter((f) => f.startsWith(".cline-revert-"))).toEqual([])
+			})
+			it(`preserves a concurrent save that recreates the captured path, deleting: ${removing}`, async () => {
+				const root = await repo("repo")
+				const filePath = path.join(root, "a.ts")
+				const change = { ...wholeFile(filePath, removing ? "" : "old\n", "new\n"), beforeExists: !removing }
+				await writeFile(filePath, "new\n")
+				await expect(
+					revertChange(change, fallback("task", "git", [], [change]), undefined, [root], {
+						afterCapture: () => writeFile(filePath, "concurrent save\n"),
+					}),
+				).rejects.toThrow("File changed")
+				expect(await readFile(filePath, "utf8")).toBe("concurrent save\n")
+				const backup = (await readdir(root)).find((f) => f.startsWith(".cline-revert-"))
+				expect(backup).toBeDefined()
+				expect(await readFile(path.join(root, backup!, "captured"), "utf8")).toBe("new\n")
+			})
+		}
+		it("does not overwrite a file recreated while restoring a deleted file", async () => {
+			const root = await repo("repo")
+			const filePath = path.join(root, "deleted.ts")
+			const change = { ...wholeFile(filePath, "old\n", ""), afterExists: false }
+			await expect(
+				revertChange(change, fallback("task", "git", [], [change]), undefined, [root], {
+					afterRead: () => writeFile(filePath, "recreated\n"),
+				}),
+			).rejects.toThrow("File changed")
+			expect(await readFile(filePath, "utf8")).toBe("recreated\n")
+		})
+
 		it("keeps working after a failed revert", async () => {
 			const root = await repo("repo"),
 				filePath = path.join(root, "a.ts")

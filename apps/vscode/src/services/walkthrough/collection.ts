@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process"
-import { appendFile, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises"
+import { appendFile, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import type { Message, MessageWithMetadata } from "@cline/shared"
@@ -342,9 +342,11 @@ export async function collect(
 
 let revertQueue: Promise<unknown> = Promise.resolve()
 
-/** Test seam: runs after the pre-write checks and right before the final re-read and write. */
+/** Test seams around the final read and atomic capture. */
 export interface RevertHooks {
 	beforeWrite?: () => Promise<void>
+	afterRead?: () => Promise<void>
+	afterCapture?: () => Promise<void>
 }
 
 const STALE_FILE = "File changed since this walkthrough. Refresh before reverting."
@@ -390,8 +392,8 @@ async function assertDirectoryInWorkspace(directory: string, roots: string[]): P
 
 /**
  * Reverts only an unchanged reviewed snapshot; later edits always require a
- * refresh. Reverts run one at a time, and the file is read again right before
- * the write so a change made after the first check is refused, not overwritten.
+ * refresh. Reverts run one at a time. Capture the directory entry before comparing it,
+ * and publish the replacement exclusively so a concurrent save is never overwritten.
  */
 export function revertChange(
 	change: ContentChange,
@@ -443,9 +445,42 @@ async function performRevert(
 		await hooks.beforeWrite?.()
 		// Compare-and-write: the check above can be stale by now.
 		if (!unchanged(await readDisk(target))) throw new ReviewError(STALE_FILE)
-		if (removing) {
-			if (current.exists) await unlink(target)
-		} else await writeFile(target, restored, "utf8")
+		await hooks.afterRead?.()
+		const temporary = await mkdtemp(path.join(directory, ".cline-revert-"))
+		const captured = path.join(temporary, "captured")
+		let held = false
+		let preserve = false
+		try {
+			if (current.exists) {
+				await rename(target, captured)
+				held = true
+			}
+			await hooks.afterCapture?.()
+			if (!unchanged(await readDisk(held ? captured : target))) throw new ReviewError(STALE_FILE)
+			if (removing) {
+				// A save that recreated the pathname belongs to the user.
+				if ((await readDisk(target)).exists) throw new ReviewError(STALE_FILE)
+			} else {
+				const replacement = path.join(temporary, "replacement")
+				const mode = held ? (await lstat(captured)).mode & 0o777 : 0o666
+				await writeFile(replacement, restored, { encoding: "utf8", mode })
+				// Unlike rename, link fails if a concurrent writer recreated target.
+				await link(replacement, target)
+			}
+		} catch (error) {
+			if (held) {
+				try {
+					await link(captured, target)
+				} catch {
+					preserve = true
+					throw new ReviewError(`${STALE_FILE} Saved the captured file in ${path.basename(temporary)}/captured.`)
+				}
+			}
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ReviewError(STALE_FILE)
+			throw error
+		} finally {
+			if (!preserve) await rm(temporary, { recursive: true, force: true })
+		}
 	} catch (error) {
 		if (error instanceof ReviewError) throw error
 		Logger.warn(`[walkthrough] Revert of ${change.filePath} failed`, error)
