@@ -54,7 +54,10 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 	const tailLimit = options.tailLines ?? SCRIPT_OUTPUT_TAIL_LINES
 	await fs.mkdir(path.dirname(options.logPath), { recursive: true })
 	const log = createWriteStream(options.logPath, { flags: "w" })
-	log.write(`$ ${options.command}\n# cwd: ${options.cwd}\n\n`)
+	await new Promise<void>((resolve, reject) => {
+		log.once("open", () => resolve())
+		log.once("error", reject)
+	})
 
 	const tail: string[] = []
 	let totalLines = 0
@@ -66,17 +69,18 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 	// Each stream keeps its own partial line, so a half-written stdout line never merges with stderr.
 	const pendingByStream = { stdout: "", stderr: "" }
 	const onData = (stream: "stdout" | "stderr") => (chunk: Buffer) => {
-		log.write(chunk)
+		if (!log.destroyed) log.write(chunk)
 		const lines = (pendingByStream[stream] + chunk.toString("utf8")).split(/\r?\n/)
 		pendingByStream[stream] = lines.pop() ?? ""
 		for (const line of lines) pushLine(line)
 	}
 
-	return await new Promise<ScriptRunResult>((resolve) => {
+	return await new Promise<ScriptRunResult>((resolve, reject) => {
 		let timedOut = false
 		let aborted = false
 		let settled = false
 		let stopping = false
+		let logError: Error | undefined
 		let forceTimer: ReturnType<typeof setTimeout> | undefined
 		const child = spawn(options.command, {
 			shell: true,
@@ -97,6 +101,11 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 			options.signal?.removeEventListener("abort", onAbort)
 			for (const rest of [pendingByStream.stdout, pendingByStream.stderr]) if (rest) pushLine(rest)
 			if (spawnError) pushLine(`Failed to start: ${spawnError.message}`)
+			if (logError) {
+				log.destroy()
+				reject(new Error(`Script log failed: ${logError.message}`))
+				return
+			}
 			log.end(() => {
 				resolve({
 					exitCode,
@@ -135,5 +144,11 @@ export async function runScriptCommand(options: ScriptRunOptions): Promise<Scrip
 		child.on("close", (code, signal) => {
 			if (!stopping) finish(code, signal ?? undefined)
 		})
+		log.on("error", (error) => {
+			logError = error
+			if (settled) reject(new Error(`Script log failed: ${error.message}`))
+			else stop()
+		})
+		log.write(`$ ${options.command}\n# cwd: ${options.cwd}\n\n`)
 	})
 }
