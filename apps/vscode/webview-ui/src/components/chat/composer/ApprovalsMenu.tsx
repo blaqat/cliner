@@ -24,7 +24,7 @@ export function summarizeApprovals(settings: AutoApprovalSettings, actions: Acti
 }
 
 /**
- * Bottom-bar shield next to the config pickers. Shows how many approval types run without asking and
+ * Bottom-bar shield beside the Ask/Act switch (approvals depend on the mode). Shows how many approval types run without asking and
  * turns to the warning color when all of them do. The menu edits the same auto-approval settings, through
  * the same RPC, as the former auto-approve bar above the composer.
  */
@@ -57,7 +57,7 @@ const ApprovalsMenu = () => {
 					</span>
 				</button>
 			</PopoverTrigger>
-			<PopoverContent align="start" className="w-64 max-h-[60vh] overflow-y-auto overscroll-contain" side="top">
+			<PopoverContent align="end" className="w-64 max-h-[60vh] overflow-y-auto overscroll-contain" side="top">
 				<div className="mb-2 text-xs text-description">
 					Let Cline take these actions without asking for approval.{" "}
 					<a

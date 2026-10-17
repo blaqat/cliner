@@ -4,8 +4,7 @@ import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import { type SlashCommand } from "@shared/slashCommands"
 import { Mode } from "@shared/storage/types"
-import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
-import { AtSignIcon, PlusIcon, SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
+import { SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
@@ -43,24 +42,20 @@ import {
 	slashCommandRegexGlobal,
 	validateSlashCommand,
 } from "@/utils/slash-commands"
-import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
 import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
-import { BranchTaskSuggestion, useBranchTaskSuggestion } from "./BranchTaskSuggestion"
-import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import ApprovalsMenu from "./composer/ApprovalsMenu"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
-import PickerOverflowMenu from "./composer/PickerOverflowMenu"
+import ModelEffortPill from "./composer/ModelEffortPill"
+import PlusMenu from "./composer/PlusMenu"
+import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import NoteMentionMenu from "./NoteMentionMenu"
 import { findNoteMention, insertNoteMention, matchNotes, type NoteMentionOption, useTaskNotes } from "./noteMentions"
 import PromptStashButton from "./PromptStashButton"
-import ReasoningEffortPicker, { modelHasReasoning } from "./ReasoningEffortPicker"
-import ServersToggleModal from "./ServersToggleModal"
-import TaskGroupPicker, { ComposerTaskGroupSheet } from "./TaskGroupPicker"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
 
@@ -205,23 +200,13 @@ const ButtonGroup = styled.div`
 	min-width: 0;
 	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
 	overflow-x: clip;
-	/* Icon buttons keep their size; the config and effort pickers truncate to their min-width. */
+	/* The ＋ keeps its size; the where and model pills truncate to their min-width. */
 	& > * {
 		flex-shrink: 0;
 	}
 	& > [data-shrink] {
 		flex-shrink: 1;
 	}
-`
-
-const ButtonContainer = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 3px;
-	font-size: 10px;
-	white-space: nowrap;
-	min-width: 0;
-	width: 100%;
 `
 
 interface RunningSendButtonsProps {
@@ -1610,26 +1595,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", metaKeyChar)
 			.replace(/.$/, (match) => match.toUpperCase())
 
-		const branchSuggestion = useBranchTaskSuggestion()
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
-			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
-			hasBranchChip: !!branchSuggestion,
 		})
-
-		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
-		const taskGroupPicker = <TaskGroupPicker onOpenTaskGroup={onOpenTaskGroup} />
-		const effortPicker = (
-			<ReasoningEffortPicker
-				defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-				mode={mode}
-				modelId={selectedModelId}
-				modelInfo={selectedModelInfo}
-				provider={selectedProvider}
-			/>
-		)
 
 		return (
 			<div>
@@ -1901,83 +1871,33 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				<ComposerTaskGroupSheet draftText={inputValue} />
 				<div
 					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
-					data-collapse-pickers={rowLayout.collapsePickers}
 					data-testid="composer-bottom-row"
 					ref={bottomRowRef}>
 					<ButtonGroup className="h-5" data-testid="composer-pickers">
-						<Tooltip>
-							<TooltipContent>Add Context</TooltipContent>
-							<TooltipTrigger>
-								<VSCodeButton
-									appearance="icon"
-									aria-label="Add Context"
-									className="p-0 m-0 flex items-center"
-									data-testid="context-button"
-									onClick={handleContextButtonClick}>
-									<ButtonContainer>
-										<AtSignIcon size={12} />
-									</ButtonContainer>
-								</VSCodeButton>
-							</TooltipTrigger>
-						</Tooltip>
-
-						<Tooltip>
-							<TooltipContent>Add Files & Images</TooltipContent>
-							<TooltipTrigger>
-								<VSCodeButton
-									appearance="icon"
-									aria-label="Add Files & Images"
-									className="p-0 m-0 flex items-center"
-									data-testid="files-button"
-									disabled={shouldDisableFilesAndImages}
-									onClick={() => {
-										if (!shouldDisableFilesAndImages) {
-											onSelectFilesAndImages()
-										}
-									}}>
-									<ButtonContainer>
-										<PlusIcon size={13} />
-									</ButtonContainer>
-								</VSCodeButton>
-							</TooltipTrigger>
-						</Tooltip>
-
-						<ServersToggleModal />
-
-						<ClineRulesToggleModal />
-
-						{!rowLayout.collapseConfig && (
-							<span className="flex min-w-[18px] shrink" data-shrink="">
-								{taskGroupPicker}
-							</span>
-						)}
-
-						{/* Hidden (not collapsed into the "…" menu) when narrow: it's only a suggestion. */}
-						{!rowLayout.collapseConfig && rowLayout.showBranchChip && <BranchTaskSuggestion />}
-
-						{!rowLayout.collapseConfig && (
-							<span className="flex min-w-14" data-shrink="">
-								{configPicker}
-							</span>
-						)}
-
-						{rowLayout.collapsePickers ? (
-							<PickerOverflowMenu>
-								{rowLayout.collapseConfig && taskGroupPicker}
-								{rowLayout.collapseConfig && configPicker}
-								{effortPicker}
-								<ApprovalsMenu />
-							</PickerOverflowMenu>
-						) : (
-							<>
-								<span className="flex min-w-11 empty:hidden" data-shrink="">
-									{effortPicker}
-								</span>
-								<ApprovalsMenu />
-							</>
-						)}
+						<PlusMenu
+							filesDisabled={shouldDisableFilesAndImages}
+							onAddFiles={() => {
+								if (!shouldDisableFilesAndImages) {
+									onSelectFilesAndImages()
+								}
+							}}
+							onMention={handleContextButtonClick}
+						/>
+						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
+							<WherePill onOpenTaskGroup={onOpenTaskGroup} />
+						</span>
+						<span className="flex min-w-6 shrink" data-shrink="">
+							<ModelEffortPill
+								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
+								fallbackLabel={modelDisplayName}
+								mode={mode}
+								modelId={selectedModelId}
+								modelInfo={selectedModelInfo}
+							/>
+						</span>
 					</ButtonGroup>
 					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
+					<ApprovalsMenu />
 					{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
 					<Tooltip>
 						<TooltipContent

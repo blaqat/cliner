@@ -35,8 +35,8 @@ vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: { togglePlanActModeProto: vi.fn(async () => ({})) },
 }))
 
-vi.mock("../../cline-rules/ClineRulesToggleModal", () => ({ default: () => null }))
-vi.mock("../ServersToggleModal", () => ({ default: () => null }))
+vi.mock("../../cline-rules/ClineRulesPanel", () => ({ default: () => null }))
+vi.mock("./McpServersPanel", () => ({ default: () => null }))
 
 /** Reports `width` for every observed element, as a real ResizeObserver would after layout. */
 function stubRowWidth(width: number) {
@@ -53,7 +53,7 @@ function stubRowWidth(width: number) {
 	)
 }
 
-function renderComposer(usageIndicator?: ChatTextAreaProps["usageIndicator"]) {
+function renderComposer(usageIndicator?: ChatTextAreaProps["usageIndicator"], overrides: Partial<ChatTextAreaProps> = {}) {
 	render(
 		<ChatTextArea
 			inputValue=""
@@ -68,6 +68,7 @@ function renderComposer(usageIndicator?: ChatTextAreaProps["usageIndicator"]) {
 			setSelectedImages={vi.fn()}
 			shouldDisableFilesAndImages={false}
 			usageIndicator={usageIndicator}
+			{...overrides}
 		/>,
 	)
 }
@@ -79,30 +80,61 @@ const usageSlot = (
 describe("composer bottom row", () => {
 	afterEach(() => vi.unstubAllGlobals())
 
-	it("puts the approvals shield in the picker group with the config picker", () => {
-		renderComposer()
+	it("is ＋, where, model + effort, then the meter, the approvals shield and the Ask/Act switch", () => {
+		renderComposer(usageSlot())
+		const row = screen.getByTestId("composer-bottom-row")
 		const group = screen.getByTestId("composer-pickers")
-		expect(group).toContainElement(screen.getByTestId("approvals-button"))
-		expect(group).toContainElement(screen.getByTestId("config-picker"))
-		expect(screen.queryByTestId("picker-overflow-button")).not.toBeInTheDocument()
+		expect(group).toContainElement(screen.getByTestId("plus-menu-button"))
+		expect(group).toContainElement(screen.getByTestId("where-pill"))
+		expect(group).toContainElement(screen.getByTestId("model-effort-pill"))
+		expect(group).not.toContainElement(screen.getByTestId("approvals-button"))
+
+		const order = [
+			screen.getByTestId("plus-menu-button"),
+			screen.getByTestId("where-pill"),
+			screen.getByTestId("model-effort-pill"),
+			screen.getByTestId("usage-slot"),
+			screen.getByTestId("approvals-button"),
+			screen.getByTestId("mode-switch"),
+		]
+		for (let i = 1; i < order.length; i++) {
+			expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		}
+		// The shield sits right before the switch, outside the meter.
+		const shield = screen.getByTestId("approvals-button")
+		expect(shield.parentElement).toBe(row)
+		expect(shield.nextElementSibling?.contains(screen.getByTestId("mode-switch"))).toBe(true)
 	})
 
-	it("lays the row out in normal flow: pickers, then the meter, then the Ask/Act toggle", () => {
+	it("no longer has separate @, files, MCP, rules, effort or overflow buttons", () => {
+		renderComposer(usageSlot())
+		for (const id of [
+			"context-button",
+			"files-button",
+			"reasoning-effort-picker",
+			"picker-overflow-button",
+			"config-picker",
+		]) {
+			expect(screen.queryByTestId(id)).not.toBeInTheDocument()
+		}
+		expect(screen.queryByRole("button", { name: /MCP Servers|Customize/ })).not.toBeInTheDocument()
+	})
+
+	it("lays the row out in normal flow", () => {
 		renderComposer(usageSlot())
 		const row = screen.getByTestId("composer-bottom-row")
 		expect(row).toHaveClass("flex", "flex-nowrap")
 		const slot = screen.getByTestId("usage-slot").parentElement as HTMLElement
 		expect(slot).toHaveClass("shrink-0")
 		expect(slot.parentElement).toBe(row)
-		expect(slot.contains(screen.getByTestId("approvals-button"))).toBe(false)
-		expect(slot.compareDocumentPosition(screen.getByTestId("mode-switch")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-		// Nothing is absolutely positioned on top of the meter any more.
+		// Nothing is absolutely positioned on top of the meter.
 		expect(screen.getByTestId("composer-pickers").className).not.toMatch(/\babsolute\b/)
 	})
 
 	it("omits the meter slot on the home composer", () => {
 		renderComposer()
 		expect(screen.queryByTestId("usage-slot")).not.toBeInTheDocument()
+		expect(screen.getByTestId("approvals-button")).toBeInTheDocument()
 	})
 
 	it("gives the meter the full layout before the row is measured", () => {
@@ -111,26 +143,35 @@ describe("composer bottom row", () => {
 		expect(renderMeter).toHaveBeenLastCalledWith(FULL_COMPOSER_ROW)
 	})
 
-	it("collapses by the measured row width", () => {
+	it("hides the meter's extras by the measured row width, keeping every control", () => {
 		stubRowWidth(320)
 		const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 		renderComposer(usageSlot(renderMeter))
 		expect(renderMeter).toHaveBeenLastCalledWith(
-			composerRowLayout(320, { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: false }),
+			composerRowLayout(320, { hasUsage: true, hasCost: true, hasCompactNudge: true }),
 		)
-		expect(renderMeter).toHaveBeenLastCalledWith(expect.objectContaining({ showCost: false, inlineCompactNudge: false }))
+		expect(renderMeter).toHaveBeenLastCalledWith({ showCost: false, inlineCompactNudge: false })
+		for (const id of ["plus-menu-button", "where-pill", "model-effort-pill", "approvals-button", "mode-switch"]) {
+			expect(screen.getByTestId(id)).toBeInTheDocument()
+		}
 	})
 
-	it("folds the pickers into the … menu at narrow widths", () => {
-		stubRowWidth(250)
-		renderComposer(usageSlot())
-		expect(screen.queryByTestId("approvals-button")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("config-picker")).not.toBeInTheDocument()
-		expect(screen.getByTestId("composer-bottom-row")).toHaveAttribute("data-collapse-pickers", "true")
+	it("Mention in the ＋ menu inserts @ and opens the mention menu", () => {
+		stubRowWidth(400)
+		const setInputValue = vi.fn()
+		renderComposer(undefined, { setInputValue })
+		fireEvent.click(screen.getByTestId("plus-menu-button"))
+		fireEvent.click(screen.getByTestId("plus-menu-mention"))
+		expect(setInputValue).toHaveBeenCalledWith("@")
+		expect(screen.getByTestId("chat-input")).toHaveFocus()
+	})
 
-		fireEvent.click(screen.getByTestId("picker-overflow-button"))
-		const menu = screen.getByTestId("picker-overflow-menu")
-		expect(menu).toContainElement(screen.getByTestId("approvals-button"))
-		expect(menu).toContainElement(screen.getByTestId("config-picker"))
+	it("Files & images in the ＋ menu opens the file picker", () => {
+		stubRowWidth(400)
+		const onSelectFilesAndImages = vi.fn()
+		renderComposer(undefined, { onSelectFilesAndImages })
+		fireEvent.click(screen.getByTestId("plus-menu-button"))
+		fireEvent.click(screen.getByTestId("plus-menu-files"))
+		expect(onSelectFilesAndImages).toHaveBeenCalledOnce()
 	})
 })
