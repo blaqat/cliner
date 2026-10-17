@@ -126,6 +126,22 @@ describe("NotebookStore", () => {
 		expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({ op: "create", content: "my precious text" })
 	})
 
+	it("keeps the tombstone through create, user edit, agent replace, agent delete", async () => {
+		const create = { op: "create", slug: "plan", name: "Plan", description: "", content: "agent draft" } as const
+		await store.stageChange(groupId, "thread", create)
+		const first = (await store.readPendingReview(groupId, "thread"))!
+		await store.editPending(groupId, "thread", first.revision, "plan", "my precious text")
+		await store.stageChange(groupId, "thread", { ...create, content: "agent rewrite" })
+		await store.stageChange(groupId, "thread", { ...create, op: "delete", content: undefined })
+		const review = (await store.readPendingReview(groupId, "thread"))!
+		expect(review.changes).toHaveLength(1)
+		const tombstone = review.changes[0]
+		expect(tombstone).toMatchObject({ op: "delete", slug: "plan", replacedUserVersion: expect.any(String) })
+		expect((await store.history(groupId, "plan")).find((v) => v.id === tombstone.replacedUserVersion)?.content).toBe(
+			"my precious text",
+		)
+	})
+
 	it("a tombstone the agent re-writes stays a create and still offers Restore", async () => {
 		const create = { op: "create", slug: "plan", name: "Plan", description: "", content: "agent draft" } as const
 		await store.stageChange(groupId, "thread", create)

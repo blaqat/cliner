@@ -326,7 +326,9 @@ export class NotebookStore {
 				const version = await this.recordVersion(groupId, prev.slug, prev.content ?? "", "you edited")
 				change = { ...change, replacedUserVersion: version.id }
 			} else if (prev.replacedUserVersion) change = { ...change, replacedUserVersion: prev.replacedUserVersion }
-			if (prev.op === "create" && change.op === "delete" && prev.editedByUser) {
+			// An agent update after the edit clears editedByUser but keeps replacedUserVersion, so
+			// either marker means the user's text still needs a tombstone.
+			if (prev.op === "create" && change.op === "delete" && (prev.editedByUser || prev.replacedUserVersion)) {
 				// The user's edits to a not-yet-saved note must stay reviewable: keep a
 				// delete tombstone (diff + Restore via replacedUserVersion) instead of cancelling.
 				pending[index] = { ...change, op: "delete" }
