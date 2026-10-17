@@ -18,6 +18,7 @@ import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
 import type { TaskGroupSummary } from "./task-groups"
+import type { TerminalEnvironmentState } from "./terminal-environment"
 import { UserInfo } from "./UserInfo"
 // webview will hold state
 export interface ExtensionMessage {
@@ -178,6 +179,16 @@ export interface ExtensionState {
 	subagentsAllowCommands?: boolean
 	subagentsAllowMcp?: boolean
 	subagentsAllowWeb?: boolean
+	/** "Used by" profile settings (Profiles page). */
+	subagentProfilesEnabled?: boolean
+	subagentDefaultProfileId?: string
+	subagentReasoningEffort?: string
+	subagentAllowedProfileIds?: string[]
+	threadTitlesEnabled?: boolean
+	threadTitlesProfileId?: string
+	walkthroughGenerateProfileId?: string
+	/** Terminal environment per scope; workspace values come from workspace state. */
+	terminalEnvironment?: TerminalEnvironmentState
 	worktreesEnabled?: ClineFeatureSetting
 	favoritedModelIds: string[]
 	// NEW: Add workspace information
@@ -382,6 +393,9 @@ export interface SubagentStatusItem {
 	prompt: string
 	/** Access level requested via spawn_agent ("read" default, "write" for editing tools). */
 	access?: "read" | "write"
+	/** Resolved sub-agent profile name ("parent" = inherited model) shown as a chip. */
+	profile?: string
+	reasoningEffort?: string
 	status: SubagentExecutionStatus
 	toolCalls: number
 	inputTokens: number

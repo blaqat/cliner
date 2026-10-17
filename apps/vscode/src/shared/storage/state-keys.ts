@@ -19,6 +19,7 @@ import { Mode } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { UserInfo } from "@shared/UserInfo"
 import { LanguageModelChatSelector } from "vscode"
+import type { TerminalEnvironmentSettings } from "../terminal-environment"
 import { type BlobStoreSettings } from "./types"
 
 // ============================================================================
@@ -106,6 +107,21 @@ const GLOBAL_STATE_FIELDS = {
 	apiConfigProfiles: { default: [] as ApiConfigProfile[] },
 	askProfileId: { default: undefined as string | undefined },
 	actProfileId: { default: undefined as string | undefined },
+	// Features that run on a saved API configuration ("Used by" on the
+	// Profiles page). Ids refer to apiConfigProfiles entries; "parent" in
+	// subagentAllowedProfileIds means the agent may also inherit the
+	// thread's own model.
+	subagentProfilesEnabled: { default: false as boolean },
+	subagentDefaultProfileId: { default: undefined as string | undefined },
+	subagentReasoningEffort: { default: undefined as string | undefined },
+	subagentAllowedProfileIds: { default: [] as string[] },
+	// Off by default: generating a title costs a model call per new thread.
+	threadTitlesEnabled: { default: false as boolean },
+	threadTitlesProfileId: { default: undefined as string | undefined },
+	// Last profile picked for the walkthrough Generate button (step 9 reads it).
+	walkthroughGenerateProfileId: { default: undefined as string | undefined },
+	// Global terminal environment (variables, .env path, PATH additions).
+	terminalEnvironment: { default: undefined as TerminalEnvironmentSettings | undefined },
 } satisfies FieldDefinitions
 
 // Fields that map directly to ApiHandlerOptions in @shared/api.ts
@@ -392,6 +408,9 @@ export const LocalStateKeys = [
 	"localAgentsRulesToggles",
 	"localSkillsToggles",
 	"workflowToggles",
+	// Workspace terminal environment overrides — kept in workspace state so
+	// machine-local values never land in the repo.
+	"terminalEnvironment",
 ] as const
 
 // ============================================================================
@@ -414,7 +433,11 @@ export type RemoteConfigFields = GlobalStateAndSettings & RemoteConfigExtra
 // ============================================================================
 
 export type Secrets = { [K in (typeof SecretKeys)[number]]: string | undefined }
-export type LocalState = { [K in (typeof LocalStateKeys)[number]]: ClineRulesToggles }
+export type LocalState = {
+	[K in (typeof LocalStateKeys)[number]]: K extends "terminalEnvironment"
+		? TerminalEnvironmentSettings | undefined
+		: ClineRulesToggles
+}
 export type SecretKey = (typeof SecretKeys)[number]
 export type GlobalStateKey = keyof GlobalState
 export type LocalStateKey = keyof LocalState

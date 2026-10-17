@@ -2,7 +2,7 @@ import { setCompactionStrategyGlobally, setModelToolEnabledGlobally } from "@cli
 import { Empty } from "@shared/proto/cline/common"
 import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsRequest } from "@shared/proto/cline/state"
 import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
-import { OpenaiReasoningEffort } from "@shared/storage/types"
+import { isOpenaiReasoningEffort, OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { ClineEnv } from "@/config"
 import type { ApiConfiguration } from "@/shared/api"
@@ -178,6 +178,54 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			}
 			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
 		}
+
+		// Sub-agent model profiles ("Used by" on the Profiles page). The
+		// allowlist is stored as profile ids; "parent" is the inherit option.
+		if (request.subagentProfilesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("subagentProfilesEnabled", request.subagentProfilesEnabled)
+		}
+		if (request.subagentDefaultProfileId !== undefined) {
+			controller.stateManager.setGlobalState("subagentDefaultProfileId", request.subagentDefaultProfileId || undefined)
+		}
+		if (request.subagentReasoningEffort !== undefined) {
+			const effort = request.subagentReasoningEffort || "none"
+			if (!isOpenaiReasoningEffort(effort)) {
+				throw new Error(`Invalid subagent reasoning effort: ${request.subagentReasoningEffort}`)
+			}
+			// "none" is the provider default — it means no configured override.
+			controller.stateManager.setGlobalState("subagentReasoningEffort", effort === "none" ? undefined : effort)
+		}
+		if (request.subagentAllowedProfileIds !== undefined) {
+			controller.stateManager.setGlobalState("subagentAllowedProfileIds", request.subagentAllowedProfileIds.values)
+		}
+		if (request.threadTitlesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesEnabled", request.threadTitlesEnabled)
+		}
+		if (request.threadTitlesProfileId !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesProfileId", request.threadTitlesProfileId || undefined)
+		}
+		if (request.walkthroughGenerateProfileId !== undefined) {
+			controller.stateManager.setGlobalState(
+				"walkthroughGenerateProfileId",
+				request.walkthroughGenerateProfileId || undefined,
+			)
+		}
+
+		// Terminal environment replaces one scope wholesale; workspace scope
+		// lives in per-workspace state so machine-local values stay out of the repo.
+		if (request.terminalEnvironment !== undefined) {
+			const env = {
+				variables: request.terminalEnvironment.variables ?? {},
+				envFilePath: request.terminalEnvironment.envFilePath || undefined,
+				pathEntries: request.terminalEnvironment.pathEntries ?? [],
+			}
+			if (request.terminalEnvironment.workspace) {
+				controller.stateManager.setWorkspaceState("terminalEnvironment", env)
+			} else {
+				controller.stateManager.setGlobalState("terminalEnvironment", env)
+			}
+		}
+
 		if (
 			[
 				request.subagentsEnabled,
@@ -186,6 +234,10 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 				request.subagentsAllowCommands,
 				request.subagentsAllowMcp,
 				request.subagentsAllowWeb,
+				request.subagentProfilesEnabled,
+				request.subagentDefaultProfileId,
+				request.subagentReasoningEffort,
+				request.subagentAllowedProfileIds,
 			].some((value) => value !== undefined)
 		) {
 			controller.handleSubagentSettingsChanged()

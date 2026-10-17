@@ -340,7 +340,7 @@ export class StateManager {
 
 		// Update cache immediately for all keys
 		Object.entries(updates).forEach(([key, value]) => {
-			this.workspaceStateCache[key as keyof LocalState] = value
+			this.workspaceStateCache[key as keyof LocalState] = value as never
 			this.pendingWorkspaceState.add(key as LocalStateKey)
 		})
 

@@ -133,6 +133,17 @@ export async function getStateToPostToWebview(controller: {
 		subagentsAllowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands"),
 		subagentsAllowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp"),
 		subagentsAllowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb"),
+		subagentProfilesEnabled: stateManager.getGlobalStateKey("subagentProfilesEnabled"),
+		subagentDefaultProfileId: stateManager.getGlobalStateKey("subagentDefaultProfileId"),
+		subagentReasoningEffort: stateManager.getGlobalStateKey("subagentReasoningEffort"),
+		subagentAllowedProfileIds: stateManager.getGlobalStateKey("subagentAllowedProfileIds"),
+		threadTitlesEnabled: stateManager.getGlobalStateKey("threadTitlesEnabled"),
+		threadTitlesProfileId: stateManager.getGlobalStateKey("threadTitlesProfileId"),
+		walkthroughGenerateProfileId: stateManager.getGlobalStateKey("walkthroughGenerateProfileId"),
+		terminalEnvironment: {
+			global: stateManager.getGlobalStateKey("terminalEnvironment") ?? {},
+			workspace: stateManager.getWorkspaceStateKey("terminalEnvironment") ?? {},
+		},
 
 		userInfo,
 		mcpMarketplaceEnabled,
