@@ -359,7 +359,7 @@ async function isInside(candidate: string, root: string): Promise<boolean> {
  * ancestor, so a deleted directory can be recreated but a symlinked one can
  * never lead the write outside the workspace.
  */
-async function assertDirectoryInWorkspace(directory: string, roots: string[]): Promise<void> {
+async function assertDirectoryInWorkspace(directory: string, roots: string[]): Promise<string> {
 	let ancestor = directory
 	for (;;) {
 		try {
@@ -383,7 +383,7 @@ async function assertDirectoryInWorkspace(directory: string, roots: string[]): P
 	}
 	for (const root of roots) {
 		const realRoot = await realpath(root).catch(() => undefined)
-		if (realRoot && (await isInside(resolved, realRoot))) return
+		if (realRoot && (await isInside(resolved, realRoot))) return path.resolve(resolved, path.relative(ancestor, directory))
 	}
 	throw new ReviewError("Cannot revert outside the thread workspace")
 }
@@ -433,19 +433,19 @@ async function performRevert(
 			restored = result
 		}
 		const removing = !change.beforeExists && (!hunkId || restored === "")
-		const directory = path.dirname(change.filePath)
+		let directory = await assertDirectoryInWorkspace(path.dirname(change.filePath), roots)
 		if (!removing) {
-			await assertDirectoryInWorkspace(directory, roots)
 			await mkdir(directory, { recursive: true })
 			// Creating directories must not have walked through a symlink either.
-			await assertDirectoryInWorkspace(directory, roots)
+			directory = await assertDirectoryInWorkspace(directory, roots)
 		}
+		const target = path.join(directory, path.basename(change.filePath))
 		await hooks.beforeWrite?.()
 		// Compare-and-write: the check above can be stale by now.
-		if (!unchanged(await readDisk(change.filePath))) throw new ReviewError(STALE_FILE)
+		if (!unchanged(await readDisk(target))) throw new ReviewError(STALE_FILE)
 		if (removing) {
-			if (current.exists) await unlink(change.filePath)
-		} else await writeFile(change.filePath, restored, "utf8")
+			if (current.exists) await unlink(target)
+		} else await writeFile(target, restored, "utf8")
 	} catch (error) {
 		if (error instanceof ReviewError) throw error
 		Logger.warn(`[walkthrough] Revert of ${change.filePath} failed`, error)

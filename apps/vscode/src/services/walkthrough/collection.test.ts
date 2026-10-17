@@ -404,6 +404,38 @@ describe("walkthrough collection", () => {
 			)
 			await expect(readFile(path.join(outside, "missing", "c.ts"))).rejects.toMatchObject({ code: "ENOENT" })
 		})
+		it("refuses deletion through a parent symlink outside the workspace", async () => {
+			const root = await repo("repo")
+			const outside = path.join(directory, "outside")
+			await mkdir(outside)
+			await writeFile(path.join(outside, "created.ts"), "new\n")
+			await symlink(outside, path.join(root, "link"))
+			const change = { ...wholeFile(path.join(root, "link", "created.ts"), "", "new\n"), beforeExists: false }
+			await expect(revertChange(change, fallback("task", "git", [], [change]), undefined, [root])).rejects.toThrow(
+				"outside the thread workspace",
+			)
+			expect(await readFile(path.join(outside, "created.ts"), "utf8")).toBe("new\n")
+		})
+		it("deletes from the validated real directory if an in-workspace alias is swapped", async () => {
+			const root = await repo("repo")
+			const inside = path.join(root, "inside")
+			const outside = path.join(directory, "outside")
+			await mkdir(inside)
+			await mkdir(outside)
+			for (const dir of [inside, outside]) await writeFile(path.join(dir, "created.ts"), "new\n")
+			const alias = path.join(root, "link")
+			await symlink(inside, alias)
+			const change = { ...wholeFile(path.join(alias, "created.ts"), "", "new\n"), beforeExists: false }
+			await revertChange(change, fallback("task", "git", [], [change]), undefined, [root], {
+				beforeWrite: async () => {
+					await rm(alias)
+					await symlink(outside, alias)
+				},
+			})
+			expect(await readFile(path.join(outside, "created.ts"), "utf8")).toBe("new\n")
+			await expect(readFile(path.join(inside, "created.ts"))).rejects.toMatchObject({ code: "ENOENT" })
+		})
+
 		it("does not leak absolute paths in revert errors", async () => {
 			const root = await repo("repo"),
 				filePath = path.join(root, "a.ts", "nested", "x.ts")
