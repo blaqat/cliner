@@ -91,6 +91,35 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		await host.dispose()
 	})
 
+	it("delivers notebook notices at the next turn or tool boundary and preserves existing hook context", async () => {
+		const consumeNotices = vi.fn().mockResolvedValueOnce("user edited Plan").mockResolvedValueOnce("user discarded Plan")
+		const host = await VscodeSessionHost.create({
+			mcpHub: {} as never,
+			resolveNotebook: async () =>
+				({
+					group: { id: "group", title: "Task", tags: [], createdAt: 1, updatedAt: 1 },
+					threadId: "root",
+					rootThreadId: "root",
+					store: { consumeNotices },
+				}) as never,
+		})
+		await host.start({
+			...gitStartInput,
+			config: {
+				...gitStartInput.config,
+				hooks: {
+					beforeRun: async () => ({ appendContext: "existing run" }),
+					beforeTool: async () => ({ appendContext: "existing tool" }),
+				},
+			},
+		})
+		const hooks = mockInnerStart.mock.calls[0][0].config.hooks
+		expect(await hooks.beforeRun({})).toEqual({ appendContext: "existing run\n\nuser edited Plan" })
+		expect(await hooks.beforeTool({})).toEqual({ appendContext: "existing tool\n\nuser discarded Plan" })
+		expect(consumeNotices).toHaveBeenCalledWith("group", "root")
+		await host.dispose()
+	})
+
 	it("passes shared telemetry to Core and injects it into session config", async () => {
 		const telemetry = makeTelemetry()
 		const host = await VscodeSessionHost.create({ mcpHub: {} as never, telemetry })

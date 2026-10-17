@@ -45,6 +45,68 @@ describe("NotebookStore", () => {
 		return store.discardPendingChanges(groupId, threadId, review?.revision ?? "")
 	}
 
+	it("user edit is read by the thread and queues a compact notice exactly once", async () => {
+		await store.stageChange(groupId, "thread", {
+			op: "create",
+			slug: "plan",
+			name: "Plan",
+			description: "",
+			content: "agent draft",
+		})
+		const first = (await store.readPendingReview(groupId, "thread"))!
+		const revision = await store.editPending(groupId, "thread", first.revision, "plan", "user draft")
+		expect(revision).not.toBe(first.revision)
+		expect(await store.readThreadNote(groupId, "thread", "plan", "thread")).toEqual({ name: "Plan", content: "user draft" })
+		const notice = await store.consumeNotices(groupId, "thread")
+		expect(notice).toContain("The user edited the pending note `Plan`; build on this version")
+		expect(notice).toContain("-agent draft")
+		expect(notice).toContain("+user draft")
+		expect(await store.consumeNotices(groupId, "thread")).toBeUndefined()
+		await expect(store.editPending(groupId, "thread", first.revision, "plan", "stale")).rejects.toThrow("newest review")
+		await store.stageChange(groupId, "thread", {
+			op: "create",
+			slug: "plan",
+			name: "Plan",
+			description: "",
+			content: "agent replaces",
+		})
+		const change = (await store.readPending(groupId, "thread"))?.[0]
+		if (!change) throw new Error("Expected the replacement draft")
+		expect(change.editedByUser).toBeUndefined()
+		expect((await store.history(groupId, "plan")).find((version) => version.id === change.replacedUserVersion)?.content).toBe(
+			"user draft",
+		)
+	})
+
+	it("discard queues only the note name and never its text", async () => {
+		await store.stageChange(groupId, "thread", {
+			op: "create",
+			slug: "plan",
+			name: "Plan",
+			description: "",
+			content: "private draft",
+		})
+		const pending = await store.readPendingReview(groupId, "thread")
+		if (!pending) throw new Error("Expected a draft")
+		await store.editPending(groupId, "thread", pending.revision, "plan", "user private draft")
+		await discard("thread")
+		expect(await store.consumeNotices(groupId, "thread")).toBe("The user discarded your pending edits to `Plan`")
+		expect(await store.readPending(groupId, "thread")).toBeUndefined()
+	})
+
+	it("retains the original and the last 20 versions and restores with history", async () => {
+		const note = await store.createNote(groupId, { name: "Plan", description: "" })
+		for (let i = 0; i < 25; i++) await store.recordVersion(groupId, note.slug, `version ${i}`, "you edited")
+		const versions = await store.history(groupId, note.slug)
+		expect(versions).toHaveLength(21)
+		expect(versions[0].content).toBe("")
+		expect(versions[1].content).toBe("version 5")
+		expect(versions[20].content).toBe("version 24")
+		await store.restoreVersion(groupId, note.slug, versions[1].id)
+		expect((await store.readNote(groupId, note.slug))?.content).toBe("version 5")
+		expect((await store.history(groupId, note.slug))[0].id).toBe(versions[0].id)
+	})
+
 	describe("slugifyNoteName", () => {
 		it("kebab-cases names", () => {
 			expect(slugifyNoteName("Dev Plan")).toBe("dev-plan")

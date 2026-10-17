@@ -1786,7 +1786,7 @@ describe("task notebook fix round", () => {
 			changes: [{ op: "create", slug: "plan", name: "Plan", description: "", content: groupId }],
 		}))
 		controller.taskHistory = { findHistoryItem: vi.fn(async () => aside), saveNotebookChangesMessage: vi.fn() }
-		controller.notebookStore = { listPending: vi.fn(async () => reviews) }
+		controller.notebookStore = { listPending: vi.fn(async () => reviews), reviewDiffs: vi.fn(async (review) => review) }
 		let ts = 10
 		const emitHookMessage = vi.fn()
 		controller.getTaskSessionContext = vi.fn(() => ({

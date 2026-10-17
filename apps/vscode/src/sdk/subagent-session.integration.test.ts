@@ -117,6 +117,7 @@ describe("subagents through the real parent session", () => {
 			controller = Object.create(Controller.prototype)
 			Object.assign(controller, {
 				taskSessions: new Map(),
+				notebookStore: { listPending: async () => [] },
 				subagentThreads: new Map(),
 				lastKnownWorkspaceRoot: dir,
 				messageTranslatorState: new MessageTranslatorState(),

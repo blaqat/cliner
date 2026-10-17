@@ -32,6 +32,7 @@ import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
+import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { Settings } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -47,6 +48,8 @@ import type {
 import { extractTicketTags } from "@shared/ticket-tags"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
 import chokidar, { type FSWatcher } from "chokidar"
+import { refreshClineRulesToggles } from "@/core/context/instructions/user-instructions/cline-rules"
+import { refreshWorkflowToggles } from "@/core/context/instructions/user-instructions/workflows"
 import {
 	captureTaskApiSelection,
 	readApiConfigProfiles,
@@ -56,11 +59,17 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
-import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
+import {
+	ensureAgentSkillsDirectoryExists,
+	ensureMcpServersDirectoryExists,
+	ensureRulesDirectoryExists,
+	ensureWorkflowsDirectoryExists,
+} from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
 import { StateManager } from "@/core/storage/StateManager"
 import { WorkspaceRootManager } from "@/core/workspace/WorkspaceRootManager"
 import { HostProvider } from "@/hosts/host-provider"
+import { openPendingNoteEditor } from "@/hosts/vscode/NotebookPendingEditor"
 import { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import { openFile as openFileIntegration } from "@/integrations/misc/open-file"
 import { ExtensionRegistryInfo } from "@/registry"
@@ -137,6 +146,8 @@ import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
 import { HistorySearcher } from "./task-groups/history-search"
 import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
 import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
+import { createNotebookConversion, type NotebookConversionKind, notebookConversion } from "./task-groups/notebook-convert"
+import { notebookDiff } from "./task-groups/notebook-diff"
 import { NotebookStore } from "./task-groups/notebook-store"
 import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
@@ -392,6 +403,7 @@ export class Controller {
 	// change on disk (hand edits, or another install writing to ~/.cline).
 	private readonly taskGroupStore = new TaskGroupStore()
 	private readonly notebookStore = new NotebookStore()
+	private readonly notebookEditors: { dispose(): void }[] = []
 	private readonly historySearcher = new HistorySearcher()
 	// Bumped per search kind on every searchHistory call so an in-flight scan for
 	// a superseded request can notice and return early. Keyed by kind because the
@@ -715,8 +727,13 @@ export class Controller {
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
 			resolveNotebookChanges: async (id, messages) =>
-				restoreNotebookChanges(messages, id, await this.notebookStore.listPending(id), () =>
-					this.messageTranslatorState.nextTs(),
+				restoreNotebookChanges(
+					messages,
+					id,
+					await Promise.all(
+						(await this.notebookStore.listPending(id)).map((review) => this.notebookStore.reviewDiffs(review)),
+					),
+					() => this.messageTranslatorState.nextTs(),
 				),
 			beforeDeleteSession: async (id) => {
 				await this.sessionRebuilds.runExclusive(async () => {
@@ -1444,6 +1461,7 @@ export class Controller {
 	}
 
 	async dispose(): Promise<void> {
+		for (const editor of this.notebookEditors) editor.dispose()
 		this.providerConfigStoreSubscription.dispose()
 		// Clear the remote config timer to prevent stale fetches
 		if (this.remoteConfigTimer) {
@@ -2894,7 +2912,9 @@ export class Controller {
 		}
 		const context = this.taskSessions.get(taskId)
 		if (context && this.task?.taskId === taskId) {
-			const pending = await this.notebookStore.listPending(taskId)
+			const pending = await Promise.all(
+				(await this.notebookStore.listPending(taskId)).map((review) => this.notebookStore.reviewDiffs(review)),
+			)
 			if (this.task?.taskId === taskId) {
 				const current = context.task.messageStateHandler.getClineMessages()
 				context.messages.replaceMessages(
@@ -3314,7 +3334,13 @@ export class Controller {
 			const rootDir = taskGroupsRootDir()
 			await fs.mkdir(rootDir, { recursive: true })
 			this.taskGroupsWatcher = chokidar.watch(rootDir, { ignoreInitial: true })
-			this.taskGroupsWatcher.on("all", () => {
+			this.taskGroupsWatcher.on("all", (_event, file) => {
+				const relative = path.relative(rootDir, file).split(path.sep)
+				if (relative.length === 3 && relative[1] === "notebook" && relative[2].endsWith(".md")) {
+					void this.notebookStore
+						.captureSavedVersion(relative[0], relative[2].slice(0, -3))
+						.catch((error) => Logger.warn("Failed to capture note history", error))
+				}
 				this.taskGroupsSummaryCache = undefined
 				void this.notebookStore
 					.refreshNoteIndexes()
@@ -3502,7 +3528,77 @@ export class Controller {
 		if (!existsSync(filePath)) {
 			throw new Error(`Note not found: ${slug}`)
 		}
+		await this.notebookStore.captureSavedVersion(taskGroupId, slug)
 		await openFileIntegration(filePath)
+	}
+
+	async notebookAction(input: NotebookActionRequest): Promise<unknown> {
+		const { taskGroupId: groupId, slug, threadId, revision } = input
+		if (input.action === "edit") {
+			this.notebookEditors.push(
+				await openPendingNoteEditor(this.notebookStore, input, async () => {
+					await this.emitNotebookChanges(threadId)
+					await this.postStateToWebview()
+				}),
+			)
+			return {}
+		}
+		if (input.action === "restore_pending") {
+			const pending = await this.notebookStore.readPendingReview(groupId, threadId)
+			const change = pending?.changes.find((change) => change.slug === slug)
+			const version = (await this.notebookStore.history(groupId, slug)).find(
+				(version) => version.id === change?.replacedUserVersion,
+			)
+			if (!version) throw new Error("Your version is no longer available")
+			await this.notebookStore.editPending(groupId, threadId, revision, slug, version.content)
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			return {}
+		}
+		if (input.action === "restore") {
+			await this.notebookStore.restoreVersion(groupId, slug, input.versionId)
+			this.taskGroupsSummaryCache = undefined
+			await this.postStateToWebview()
+			return {}
+		}
+		const note = await this.notebookStore.readNote(groupId, slug)
+		if (!note) throw new Error("Note no longer exists")
+		if (input.action === "history") {
+			await this.notebookStore.captureSavedVersion(groupId, slug)
+			const versions = await this.notebookStore.history(groupId, slug)
+			return {
+				versions: versions.map((version) => ({ ...version, diff: notebookDiff(version.content, note.content) })),
+				conversions: await this.notebookStore.conversions(groupId, slug),
+			}
+		}
+		if (input.action === "open_conversion") {
+			const links = await this.notebookStore.conversions(groupId, slug)
+			const link = links.find((link) => link.path === input.versionId)
+			if (!link) throw new Error("Conversion no longer available")
+			await openFileIntegration(link.path)
+			return {}
+		}
+		if (input.action !== "convert" && input.action !== "convert_preview") throw new Error("Unknown notebook action")
+		const kind = input.kind as NotebookConversionKind
+		if (!["rule", "skill", "workflow"].includes(kind)) throw new Error("Choose Rule, Skill or Workflow")
+		const workspace = await this.getWorkspaceRoot()
+		if (!input.isGlobal && !(await HostProvider.workspace.getWorkspacePaths({})).paths.length)
+			throw new Error("No workspace folder open")
+		const directory =
+			kind === "skill"
+				? await ensureAgentSkillsDirectoryExists({ isGlobal: input.isGlobal, workspacePath: workspace })
+				: input.isGlobal
+					? await (kind === "workflow" ? ensureWorkflowsDirectoryExists() : ensureRulesDirectoryExists())
+					: path.join(workspace, kind === "workflow" ? ".clinerules/workflows" : ".clinerules")
+		const file = notebookConversion(directory, kind, slug, note.content, input.description)
+		if (input.action === "convert_preview") return file
+		if (file.revision !== input.versionId) throw new Error("The note changed. Review the file again before creating it.")
+		await createNotebookConversion(file)
+		await this.notebookStore.addConversion(groupId, slug, { kind, path: file.path })
+		if (kind === "rule") await refreshClineRulesToggles(this, workspace)
+		if (kind === "workflow") await refreshWorkflowToggles(this, workspace)
+		await this.postStateToWebview()
+		return file
 	}
 
 	async applyNotebookChanges(
@@ -3605,16 +3701,19 @@ export class Controller {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
 		}
 		for (const pending of reviews) {
+			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
+			const reuse = latest && JSON.parse(latest.text ?? "{}").status === "pending"
 			const message = notebookChangesMessage(
 				{
 					revision: pending.revision,
 					taskGroupId: pending.groupId,
 					threadId: rootThreadId,
 					status: "pending",
-					changes: pending.changes,
+					changes: (await this.notebookStore.reviewDiffs(pending)).changes,
 				},
-				context.translator.nextTs(),
+				reuse ? latest.ts : context.translator.nextTs(),
 			)
+			if (reuse) message.sdkMessageIndex = latest.sdkMessageIndex
 			context.messages.emitHookMessage(message)
 			await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
 		}

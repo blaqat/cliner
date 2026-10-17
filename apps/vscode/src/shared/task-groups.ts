@@ -30,12 +30,27 @@ export interface NotebookNoteMeta {
 	readers: number // distinct threads that read it (from activity log)
 }
 export type NotebookChangeOp = "create" | "update" | "delete"
+export interface NotebookDiffLine {
+	kind: "add" | "remove" | "context" | "collapsed"
+	text: string
+}
+
+export interface NotebookVersion {
+	id: string
+	ts: number
+	content: string
+	by: string
+}
+
 export interface NotebookChange {
 	op: NotebookChangeOp
 	slug: string
 	name: string
 	description: string
 	content?: string
+	diff?: NotebookDiffLine[]
+	editedByUser?: boolean
+	replacedUserVersion?: string
 	baseUpdatedAt?: number
 }
 export interface NotebookActivity {

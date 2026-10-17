@@ -32,6 +32,8 @@ service TaskGroupService {
   rpc applyNotebookChanges(ApplyNotebookChangesRequest) returns (Empty);
   // Discards staged notebook changes for a thread
   rpc discardNotebookChanges(DiscardNotebookChangesRequest) returns (Empty);
+  // Notebook history, editor and conversion actions.
+  rpc notebookAction(NotebookActionRequest) returns (NotebookActionResponse);
   // Searches history across tasks, threads, notes and messages
   rpc searchHistory(SearchHistoryRequest) returns (SearchHistoryResponse);
 }
@@ -208,4 +210,21 @@ message SearchHistoryResult {
 
 message SearchHistoryResponse {
   repeated SearchHistoryResult results = 1;
+}
+
+message NotebookActionRequest {
+  Metadata metadata = 1;
+  string task_group_id = 2;
+  string slug = 3;
+  string action = 4; // history | restore | edit | restore_pending | convert_preview | convert | open_conversion
+  string thread_id = 5;
+  string revision = 6;
+  string version_id = 7;
+  string kind = 8; // rule | skill | workflow
+  bool is_global = 9;
+  string description = 10;
+}
+
+message NotebookActionResponse {
+  string json = 1;
 }

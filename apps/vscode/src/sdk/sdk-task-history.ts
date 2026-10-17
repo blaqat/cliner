@@ -621,16 +621,17 @@ export class SdkTaskHistory {
 				const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
 					try {
 						const previous = JSON.parse(entry.text ?? "{}")
-						return previous.taskGroupId === payload.taskGroupId && previous.revision === payload.revision
+						return (
+							previous.taskGroupId === payload.taskGroupId &&
+							(status === "pending" ? previous.status === "pending" : previous.revision === payload.revision)
+						)
 					} catch {
 						return false
 					}
 				})
 				const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
 				metadata.notebookChangesMessages =
-					status !== "pending" && index >= 0
-						? saved.map((entry, i) => (i === index ? message : entry))
-						: [...saved, message]
+					index >= 0 ? saved.map((entry, i) => (i === index ? message : entry)) : [...saved, message]
 				await host.update(taskId, { metadata })
 			}),
 		)

@@ -170,6 +170,27 @@ export class VscodeSessionHost implements SdkSessionHost {
 				...(notebook
 					? { systemPrompt: appendTaskNotebookPrompt(inputWithRemoteConfig.config.systemPrompt ?? "", notebook.group) }
 					: {}),
+				hooks: notebook
+					? {
+							...inputWithRemoteConfig.config.hooks,
+							beforeRun: async (context) => {
+								const result = await inputWithRemoteConfig.config.hooks?.beforeRun?.(context)
+								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								return {
+									...result,
+									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
+								}
+							},
+							beforeTool: async (context) => {
+								const result = await inputWithRemoteConfig.config.hooks?.beforeTool?.(context)
+								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								return {
+									...result,
+									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
+								}
+							},
+						}
+					: inputWithRemoteConfig.config.hooks,
 				telemetry: inputWithRemoteConfig.config.telemetry ?? options.telemetry,
 				extraTools: [...(inputWithRemoteConfig.config.extraTools ?? []), ...extraTools],
 			}
