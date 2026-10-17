@@ -9,6 +9,10 @@ function toScriptInfo(item: LoadedScript): ScriptInfo {
 		description: item.description,
 		path: item.filePath,
 		enabled: item.enabled,
+		trusted: item.trusted,
+		fingerprint: item.fingerprint,
+		command: item.command,
+		cwd: item.cwd,
 		approval: item.script?.approval ?? "",
 		errors: item.errors,
 		options: (item.script?.options ?? []).map((option) =>
@@ -21,6 +25,7 @@ function toScriptInfo(item: LoadedScript): ScriptInfo {
 				hasDefault: option.default !== undefined,
 				defaultValue: option.default === undefined ? "" : String(option.default),
 				choicesFrom: option.choicesFrom ?? "",
+				allowDash: option.allowDash,
 			}),
 		),
 	})

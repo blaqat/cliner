@@ -9,6 +9,10 @@ export interface ScriptEntry {
 	description: string
 	path: string
 	scope: "global" | "workspace"
+	trusted?: boolean
+	fingerprint?: string
+	command?: string
+	cwd?: string
 	enabled: boolean
 	/** Empty for invalid scripts. */
 	approval: ScriptApproval | ""
@@ -28,6 +32,10 @@ function toEntry(info: ScriptInfo, scope: ScriptEntry["scope"]): ScriptEntry {
 		path: info.path,
 		scope,
 		enabled: info.enabled,
+		trusted: info.trusted,
+		fingerprint: info.fingerprint,
+		command: info.command,
+		cwd: info.cwd,
 		approval: SCRIPT_APPROVALS.includes(info.approval as ScriptApproval) ? (info.approval as ScriptApproval) : "",
 		errors: info.errors,
 		options: info.options.map((option) => ({
@@ -35,6 +43,7 @@ function toEntry(info: ScriptInfo, scope: ScriptEntry["scope"]): ScriptEntry {
 			kind: option.kind as ScriptOptionKind,
 			required: option.required,
 			description: option.description,
+			allowDash: option.allowDash,
 			...(option.kind === "choice" ? { choices: option.choices } : {}),
 			...(option.choicesFrom === "mmrc" ? { choicesFrom: "mmrc" as const } : {}),
 			...(option.hasDefault

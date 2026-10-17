@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 import { resolveClineDir } from "@cline/shared/storage"
 import { parseScriptFile, type ScriptDefinition, type ScriptScope } from "./script-file"
+import { ScriptTrustStore, scriptFingerprint } from "./script-trust"
 
 /** Workspace scripts sit next to the workspace workflows (`.clinerules/workflows`). */
 export const WORKSPACE_SCRIPTS_DIR = path.join(".clinerules", "scripts")
@@ -21,6 +22,10 @@ export interface LoadedScript {
 	name: string
 	description: string
 	enabled: boolean
+	trusted?: boolean
+	fingerprint?: string
+	command?: string
+	cwd?: string
 	/** Validation errors; the script is listed but never offered to the agent. */
 	errors: string[]
 	/** Present when the file is valid. */
@@ -109,6 +114,7 @@ async function readScriptDirectory(dir: string, scope: ScriptScope, toggles: Rec
 }
 
 export interface ScriptStoreDeps {
+	getTrustFile?: () => string
 	getGlobalDir?: () => string
 	getWorkspaceRoot: () => string | undefined
 	getToggles: () => ScriptToggles
@@ -120,7 +126,10 @@ export class ScriptStore {
 	private refreshedAt = 0
 	private refreshing = false
 
-	constructor(private readonly deps: ScriptStoreDeps) {}
+	readonly trust: ScriptTrustStore
+	constructor(private readonly deps: ScriptStoreDeps) {
+		this.trust = new ScriptTrustStore(deps.getTrustFile)
+	}
 
 	/** Every script file, valid or not, workspace first. */
 	async list(): Promise<LoadedScript[]> {
@@ -137,6 +146,14 @@ export class ScriptStore {
 		for (const item of all) {
 			for (const option of item.script?.options ?? []) {
 				if (option.choicesFrom === "mmrc") option.choices = [...mmrcModules]
+			}
+		}
+		for (const item of all) {
+			if (item.script) {
+				item.trusted = await this.trust.isTrusted(item.script)
+				item.fingerprint = scriptFingerprint(item.script)
+				item.command = item.script.command
+				item.cwd = item.script.cwd ?? root ?? process.cwd()
 			}
 		}
 		this.cachedEnabled = this.pickEnabled(all)

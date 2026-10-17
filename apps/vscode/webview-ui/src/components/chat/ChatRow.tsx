@@ -428,7 +428,7 @@ export const ChatRowContent = memo(
 			}
 			const scriptTool = parseScriptTool(tool)
 			if (scriptTool) {
-				return <ScriptToolRow asking={message.type === "ask"} info={scriptTool} />
+				return <ScriptToolRow asking={message.type === "ask"} info={scriptTool} message={message} />
 			}
 
 			switch (tool.tool) {

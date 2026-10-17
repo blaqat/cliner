@@ -65,6 +65,7 @@ describe("script RPC handlers", () => {
 			["my-script", globalFile, true],
 		])
 		expect(mocks.openFile).toHaveBeenCalledWith(controller, { value: globalFile })
+		expect(created.globalScripts[0].trusted).toBe(true)
 
 		const local = await createScriptFile(controller, { scriptName: "local", isGlobal: false } as never)
 		expect(local.workspaceScripts[0].path).toBe(path.join(workspace, ".clinerules", "scripts", "local.md"))
@@ -100,6 +101,7 @@ describe("script RPC handlers", () => {
 		const file = path.join(globalDir, "a.md")
 		const changed = await setScriptApproval(controller, { scriptPath: file, approval: "always_allow" } as never)
 		expect(changed.globalScripts[0].approval).toBe("always_allow")
+		expect(changed.globalScripts[0].trusted).toBe(true)
 		expect(await fs.readFile(file, "utf8")).toContain("approval: always_allow")
 		await expect(setScriptApproval(controller, { scriptPath: file, approval: "sometimes" } as never)).rejects.toThrow()
 		const outside = path.join(root, "other.md")
@@ -115,5 +117,23 @@ describe("script RPC handlers", () => {
 		const listed = await refreshScripts(controller, {} as never)
 		expect(listed.globalScripts[0]).toMatchObject({ name: "broken", approval: "" })
 		expect(listed.globalScripts[0].errors.join()).toContain("command is required")
+	})
+	it("refuses stale trust actions and trusts resolved mmrc choices", async () => {
+		await fs.mkdir(globalDir, { recursive: true })
+		await fs.writeFile(path.join(workspace, ".mmrc"), '{"modules":["api"]}')
+		const file = path.join(globalDir, "module.md")
+		await fs.writeFile(
+			file,
+			"---\ndescription: d\ncommand: echo {{module}}\noptions: [{name: module, kind: choice, choicesFrom: mmrc}]\n---\n",
+		)
+		const listed = await refreshScripts(controller, {} as never)
+		expect(listed.globalScripts[0].trusted).toBe(false)
+		const fingerprint = listed.globalScripts[0].fingerprint
+		const trusted = await setScriptApproval(controller, { scriptPath: file, trustOnly: true, fingerprint } as never)
+		expect(trusted.globalScripts[0].trusted).toBe(true)
+		await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("echo", "printf"))
+		await expect(setScriptApproval(controller, { scriptPath: file, trustOnly: true, fingerprint } as never)).rejects.toThrow(
+			"changed",
+		)
 	})
 })

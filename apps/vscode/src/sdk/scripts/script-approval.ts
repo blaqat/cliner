@@ -1,8 +1,10 @@
 import type { ScriptApproval, ScriptValues } from "@shared/scripts"
 import { resolveScriptRun } from "./script-command"
+import type { ScriptDefinition } from "./script-file"
 import type { ScriptStore } from "./script-store"
+import { scriptFingerprint } from "./script-trust"
 
-export type ScriptApprovalDecision = "allow" | "ask"
+export type ScriptApprovalDecision = "allow" | "ask" | "reject"
 
 /**
  * Approval levels, like read vs write tools:
@@ -31,20 +33,21 @@ const GRANT_TTL_MS = 10 * 60 * 1000
  * that thread, so the agent cannot reuse it for different values or later runs.
  */
 export class ScriptRunGrants {
-	private readonly grants = new Map<string, number>()
+	private readonly grants = new Map<string, { expiresAt: number; fingerprint: string }>()
 
 	constructor(private readonly now: () => number = Date.now) {}
 
-	grant(threadId: string, name: string, values: ScriptValues): void {
-		this.grants.set(`${threadId}|${canonicalRun(name, values)}`, this.now() + GRANT_TTL_MS)
+	grant(threadId: string, name: string, values: ScriptValues, fingerprint: string): void {
+		this.grants.set(`${threadId}|${canonicalRun(name, values)}`, { expiresAt: this.now() + GRANT_TTL_MS, fingerprint })
 	}
 
-	consume(threadId: string, name: string, values: ScriptValues): boolean {
+	consume(threadId: string, name: string, values: ScriptValues, fingerprint: string): boolean | "changed" {
 		const key = `${threadId}|${canonicalRun(name, values)}`
-		const expiresAt = this.grants.get(key)
-		if (expiresAt === undefined) return false
+		const entry = this.grants.get(key)
+		if (entry === undefined) return false
 		this.grants.delete(key)
-		return expiresAt > this.now()
+		if (entry.expiresAt <= this.now()) return false
+		return entry.fingerprint === fingerprint ? true : "changed"
 	}
 }
 
@@ -84,13 +87,17 @@ export async function decideScriptApproval(
 	input: unknown,
 	mode: "plan" | "act",
 	threadId: string,
+	snapshot?: ScriptDefinition,
 ): Promise<ScriptApprovalDecision> {
 	const request = readScriptToolInput(input)
-	if (!request || request.action === "load") return "allow"
-	const script = await context.store.find(request.name)
-	if (!script) return "allow"
+	if (!request) return "reject"
+	if (request.action === "load") return "allow"
+	const script = snapshot ?? (await context.store.find(request.name))
+	if (!script) return "reject"
 	const resolved = resolveScriptRun(script, request.options)
-	if (!resolved.ok) return "allow"
-	if (context.grants.consume(threadId, script.name, resolved.values)) return "allow"
-	return scriptApprovalDecision(script.approval, mode)
+	if (!resolved.ok) return "reject"
+	const grant = context.grants.consume(threadId, script.name, resolved.values, scriptFingerprint(script))
+	if (grant === "changed") return "reject"
+	if (!(await context.store.trust.isTrusted(script))) return "ask"
+	return grant ? "allow" : scriptApprovalDecision(script.approval, mode)
 }

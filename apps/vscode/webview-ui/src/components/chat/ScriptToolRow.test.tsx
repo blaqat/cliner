@@ -1,9 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { parseScriptOutcome, parseScriptTool, ScriptToolRow } from "./ScriptToolRow"
 
-const mocks = vi.hoisted(() => ({ openFile: vi.fn(async () => ({})) }))
-vi.mock("@/services/grpc-client", () => ({ FileServiceClient: { openFile: (request: unknown) => mocks.openFile(request) } }))
+const mocks = vi.hoisted(() => ({ openFile: vi.fn(async () => ({})), askResponse: vi.fn(async () => ({})) }))
+vi.mock("@/context/ExtensionStateContext", () => ({
+	useExtensionState: () => ({ currentTaskItem: { id: "thread" }, turnState: { anchorTs: 1 }, pendingSubagentDecisions: [] }),
+}))
+vi.mock("@/services/grpc-client", () => ({
+	FileServiceClient: { openFile: (request: unknown) => mocks.openFile(request) },
+	TaskServiceClient: { askResponse: (request: unknown) => mocks.askResponse(request) },
+}))
 
 describe("parseScriptTool", () => {
 	it("ignores other tools", () => {
@@ -27,6 +33,8 @@ describe("parseScriptTool", () => {
 				["dry", true],
 			],
 			outcome: undefined,
+			command: undefined,
+			cwd: undefined,
 		})
 		expect(parseScriptTool({ tool: "script", scriptAction: "load", name: "deploy" })?.action).toBe("load")
 	})
@@ -106,4 +114,27 @@ describe("ScriptToolRow outcome", () => {
 		render(<ScriptToolRow asking info={{ ...info, outcome: undefined }} />)
 		expect(screen.queryByTestId("script-outcome")).not.toBeInTheDocument()
 	})
+})
+
+it("shows unreviewed command and cwd and scopes trust to the pending decision", async () => {
+	render(
+		<ScriptToolRow
+			asking
+			info={{ action: "run", name: "deploy", options: [], command: "echo reviewed", cwd: "/repo" }}
+			message={{ ts: 1, type: "ask", ask: "tool", decisionId: "decision" }}
+		/>,
+	)
+	expect(screen.getByText("echo reviewed")).toBeInTheDocument()
+	expect(screen.getByText("Runs in: /repo")).toBeInTheDocument()
+	await act(async () => {
+		fireEvent.click(screen.getByRole("button", { name: "Trust this version" }))
+	})
+	expect(mocks.askResponse).toHaveBeenCalledWith(
+		expect.objectContaining({
+			taskId: "thread",
+			decisionId: "decision",
+			responseType: "yesButtonClicked",
+			text: "trust-script-version",
+		}),
+	)
 })

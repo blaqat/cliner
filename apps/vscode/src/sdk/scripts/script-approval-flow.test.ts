@@ -37,11 +37,14 @@ describe("script approvals through the interaction coordinator", () => {
 		await fs.rm(root, { recursive: true, force: true })
 	})
 
-	const writeScript = (name: string, approval?: ScriptApproval) =>
-		fs.writeFile(
+	const writeScript = async (name: string, approval?: ScriptApproval) => {
+		await fs.writeFile(
 			path.join(root, `${name}.md`),
 			`---\ndescription: d\ncommand: deploy.sh --to {{env}}\n${approval ? `approval: ${approval}\n` : ""}options:\n  - {name: env, kind: choice, required: true, choices: [dev, prod]}\n---\n`,
 		)
+
+		await host.store.trust.trust((await host.store.find(name))!)
+	}
 
 	const makeCoordinator = (mode: "plan" | "act", options: { globalAutoApprove?: boolean } = {}) => {
 		const task = createTaskProxy("thread-1", vi.fn(), vi.fn())
@@ -52,7 +55,8 @@ describe("script approvals through the interaction coordinator", () => {
 			getMode: () => mode,
 			postStateToWebview,
 			shouldAutoApproveTool: () => options.globalAutoApprove === true,
-			decideScriptApproval: (input, scriptMode) => host.decideApproval(input, scriptMode, "thread-1"),
+			prepareScriptApproval: (request, mode) => host.prepareApproval(request, mode, "thread-1"),
+			completeScriptApproval: (request, approved, trust) => host.completeApproval(request, approved, trust),
 		})
 		const request = (input: unknown = { action: "run", name: "deploy", options: { env: "prod" } }) =>
 			coordinator.handleRequestToolApproval({
@@ -126,6 +130,33 @@ describe("script approvals through the interaction coordinator", () => {
 		await expect(request()).resolves.toEqual({ approved: true })
 		void request()
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+	})
+
+	it("shows unreviewed definitions and trusts only after the explicit approval action", async () => {
+		await writeScript("deploy", "always_allow")
+		const file = path.join(root, "deploy.md")
+		await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("deploy.sh", "changed.sh"))
+		const { coordinator, task, request } = makeCoordinator("act", { globalAutoApprove: true })
+		const pending = request()
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		expect(JSON.parse(task.messageStateHandler.getClineMessages()[0].text!)).toMatchObject({
+			scriptCommand: "changed.sh --to {{env}}",
+			scriptCwd: process.cwd(),
+		})
+		coordinator.resolvePendingToolApproval("trust-script-version", "yesButtonClicked")
+		await expect(pending).resolves.toEqual({ approved: true })
+		expect(await host.store.trust.isTrusted((await host.store.find("deploy"))!)).toBe(true)
+	})
+
+	it("rejects manual approval when the definition changed while the card was open", async () => {
+		await writeScript("deploy", "always_ask")
+		const { coordinator, task, request } = makeCoordinator("act")
+		const pending = request()
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		const file = path.join(root, "deploy.md")
+		await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("deploy.sh", "changed.sh"))
+		coordinator.resolvePendingToolApproval(undefined, "yesButtonClicked")
+		await expect(pending).resolves.toMatchObject({ approved: false, reason: expect.stringContaining("changed") })
 	})
 
 	it("does not let a typed run approve different values", async () => {

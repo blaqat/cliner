@@ -426,6 +426,7 @@ export class Controller {
 		}),
 		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
 		getLogDir: () => path.join(HostProvider.get().globalStorageFsPath, "script-logs"),
+		getTrustFile: () => path.join(HostProvider.get().globalStorageFsPath, "script-trust.json"),
 		// The same environment every other command Cline runs gets (settings + .env + PATH).
 		// Same .env base as commands and the settings preview (the workspace root, not the script's cwd).
 		resolveEnv: async (cwd) =>
@@ -1803,7 +1804,14 @@ export class Controller {
 				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return settings ? isToolAutoApproved(request.toolName, settings) : false
 			},
-			decideScriptApproval: (input, scriptMode) => this.scripts.decideApproval(input, scriptMode, id),
+			prepareScriptApproval: (request, scriptMode) =>
+				this.scripts.prepareApproval(
+					request,
+					scriptMode,
+					id,
+					this.sessions.getSession(request.sessionId ?? id)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
+				),
+			completeScriptApproval: (request, approved, trust) => this.scripts.completeApproval(request, approved, trust),
 		})
 		const events = new SdkSessionEventCoordinator({
 			onTurnComplete: () => this.emitNotebookChanges(id),

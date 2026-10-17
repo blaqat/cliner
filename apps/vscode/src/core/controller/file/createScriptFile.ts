@@ -3,7 +3,7 @@ import { SCRIPT_NAME_REGEX } from "@shared/scripts"
 import fs from "fs/promises"
 import path from "path"
 import { HostProvider } from "@/hosts/host-provider"
-import { scriptTemplate } from "@/sdk/scripts/script-file"
+import { parseScriptFile, scriptTemplate } from "@/sdk/scripts/script-file"
 import { globalScriptsDir, workspaceScriptsDir } from "@/sdk/scripts/script-store"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { fileExistsAtPath } from "@/utils/fs"
@@ -31,7 +31,14 @@ export async function createScriptFile(controller: Controller, request: CreateSc
 		return buildRefreshedScripts(controller)
 	}
 	await fs.mkdir(dir, { recursive: true })
-	await fs.writeFile(filePath, scriptTemplate(name), "utf-8")
+	const content = scriptTemplate(name)
+	await fs.writeFile(filePath, content, { encoding: "utf-8", flag: "wx" })
+	const script = parseScriptFile(content, {
+		filePath,
+		scope: request.isGlobal ? "global" : "workspace",
+		fallbackName: name,
+	}).script
+	if (script) await controller.scripts.store.trust.trust(script)
 	await openFile(controller, { value: filePath })
 	return buildRefreshedScripts(controller)
 }

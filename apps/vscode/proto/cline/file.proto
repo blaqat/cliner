@@ -366,6 +366,7 @@ message ScriptOptionInfo {
   repeated string choices = 5; // Resolved choices (including modules from .mmrc)
   bool has_default = 6;
   string default_value = 7; // "true"/"false" for flags
+  bool allow_dash = 9;
   string choices_from = 8; // "mmrc" when the choices come from the workspace's .mmrc
 }
 
@@ -378,6 +379,10 @@ message ScriptInfo {
   string approval = 5; // "always_ask" | "ask_in_ask_mode" | "always_allow"
   repeated ScriptOptionInfo options = 6;
   repeated string errors = 7; // Validation errors; an invalid script is listed but never offered to the agent
+  bool trusted = 8;
+  string fingerprint = 9;
+  string command = 10;
+  string cwd = 11;
 }
 
 // Response for refreshScripts and the script mutations
@@ -406,4 +411,6 @@ message SetScriptApprovalRequest {
   Metadata metadata = 1;
   string script_path = 2;
   string approval = 3;
+  string fingerprint = 4;
+  bool trust_only = 5;
 }

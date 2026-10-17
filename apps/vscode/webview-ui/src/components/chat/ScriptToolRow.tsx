@@ -1,18 +1,22 @@
+import type { ClineMessage } from "@shared/ExtensionMessage"
 import { StringRequest } from "@shared/proto/cline/common"
+import { AskResponseRequest } from "@shared/proto/cline/task"
 import { useState } from "react"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
-import { FileServiceClient } from "@/services/grpc-client"
+import { FileServiceClient, TaskServiceClient } from "@/services/grpc-client"
 
 /**
  * Row for the `script` tool: the script's name and the option values it runs with, then the outcome
- * once it has run. The saved command is never shown here; the approval prompt is about the script,
- * not a shell string.
+ * once it has run. Unreviewed definitions show the saved command and cwd before the user approves.
  */
 export interface ScriptToolInfo {
 	action: "load" | "run"
 	name: string
 	options: [string, string | boolean][]
 	/** The tool's result text: status line, output tail and log path. */
+	command?: string
+	cwd?: string
 	outcome?: string
 }
 
@@ -30,6 +34,8 @@ export function parseScriptTool(tool: unknown): ScriptToolInfo | null {
 		action: record.scriptAction === "load" ? "load" : "run",
 		name: typeof record.name === "string" ? record.name : "",
 		options,
+		command: typeof record.scriptCommand === "string" ? record.scriptCommand : undefined,
+		cwd: typeof record.scriptCwd === "string" ? record.scriptCwd : undefined,
 		outcome: typeof record.content === "string" && record.content ? record.content : undefined,
 	}
 }
@@ -57,7 +63,32 @@ export function parseScriptOutcome(text: string): ScriptOutcome {
 	return { ok: status.startsWith("succeeded"), status, output: body.join("\n"), logPath }
 }
 
-export function ScriptToolRow({ info, asking }: { info: ScriptToolInfo; asking: boolean }) {
+export function ScriptToolRow({ info, asking, message }: { info: ScriptToolInfo; asking: boolean; message?: ClineMessage }) {
+	const { currentTaskItem, pendingSubagentDecisions, turnState } = useExtensionState()
+	const [sending, setSending] = useState(false)
+	const [error, setError] = useState("")
+	const active =
+		!!message?.decisionId &&
+		(turnState?.anchorTs === message.ts ||
+			pendingSubagentDecisions?.some((item) => item.message.decisionId === message.decisionId))
+	const respond = async (trust: boolean) => {
+		if (!currentTaskItem || !message?.decisionId) return
+		setSending(true)
+		try {
+			await TaskServiceClient.askResponse(
+				AskResponseRequest.create({
+					taskId: currentTaskItem.id,
+					decisionId: message.decisionId,
+					responseType: "yesButtonClicked",
+					text: trust ? "trust-script-version" : undefined,
+				}),
+			)
+		} catch {
+			setError("Couldn't send approval. Try again.")
+		} finally {
+			setSending(false)
+		}
+	}
 	const [showOutput, setShowOutput] = useState(false)
 	const outcome = info.outcome ? parseScriptOutcome(info.outcome) : undefined
 	const verb =
@@ -86,6 +117,24 @@ export function ScriptToolRow({ info, asking }: { info: ScriptToolInfo; asking: 
 						</span>
 					))}
 				</div>
+				{asking && info.command && (
+					<div className="mt-2 text-xs">
+						<div>Unreviewed script</div>
+						<pre className="whitespace-pre-wrap">{info.command}</pre>
+						<div>Runs in: {info.cwd}</div>
+						{active && (
+							<div className="mt-2 flex gap-2">
+								<button disabled={sending} onClick={() => void respond(false)} type="button">
+									Run once
+								</button>
+								<button disabled={sending} onClick={() => void respond(true)} type="button">
+									Trust this version
+								</button>
+							</div>
+						)}
+						{error && <div role="alert">{error}</div>}
+					</div>
+				)}
 				{outcome && (
 					<div className="mt-1.5 text-xs" data-testid="script-outcome">
 						<div className="flex items-center gap-2">

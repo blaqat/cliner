@@ -1,16 +1,18 @@
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { type AgentTool, createTool } from "@cline/shared"
+import { type AgentTool, type AgentToolContext, createTool } from "@cline/shared"
 import { formatTypedOptions, SCRIPT_APPROVAL_LABELS } from "@shared/scripts"
 import { readScriptToolInput } from "./script-approval"
 import { resolveScriptRun } from "./script-command"
 import type { ScriptDefinition } from "./script-file"
 import { runScriptCommand, SCRIPT_OUTPUT_TAIL_LINES, type ScriptRunResult } from "./script-runner"
 import type { ScriptStore } from "./script-store"
+import { scriptFingerprint } from "./script-trust"
 
 export interface ScriptToolContext {
 	store: ScriptStore
+	takeApprovedRun?: (input: unknown, context: AgentToolContext) => Promise<{ script: ScriptDefinition; cwd: string }>
 	/** Where a script without its own `cwd` runs. */
 	getWorkspaceRoot: () => string
 	/** Full environment for a command run in `cwd`: the configured terminal environment. */
@@ -58,7 +60,7 @@ export function describeScript(script: ScriptDefinition): string {
 	return lines.join("\n")
 }
 
-async function resolveCwd(script: ScriptDefinition, workspaceRoot: string): Promise<string> {
+export async function resolveScriptCwd(script: ScriptDefinition, workspaceRoot: string): Promise<string> {
 	let cwd = script.cwd?.trim()
 	if (!cwd) return workspaceRoot
 	if (cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("~\\")) cwd = path.join(os.homedir(), cwd.slice(1))
@@ -144,7 +146,8 @@ export function createScriptTool(context: ScriptToolContext): AgentTool {
 			try {
 				if (input?.action !== "load" && input?.action !== "run") return { error: 'action must be "load" or "run".' }
 				const name = readScriptToolInput(input)?.name ?? ""
-				const script = await context.store.find(name)
+				const approved = input.action === "run" ? await context.takeApprovedRun?.(input, toolContext) : undefined
+				const script = approved?.script ?? (await context.store.find(name))
 				if (!script) {
 					const known = (await context.store.listEnabled()).map((entry) => entry.name).join(", ") || "none"
 					return { error: `No enabled script named "${name}". Enabled scripts: ${known}.` }
@@ -153,10 +156,13 @@ export function createScriptTool(context: ScriptToolContext): AgentTool {
 
 				const resolved = resolveScriptRun(script, input.options, context.platform)
 				if (!resolved.ok) return { error: resolved.error }
-				const cwd = await resolveCwd(script, context.getWorkspaceRoot())
+				const cwd = approved?.cwd ?? (await resolveScriptCwd(script, context.getWorkspaceRoot()))
 				const env = await context.resolveEnv(cwd)
 				const stamp = new Date().toISOString().replace(/[:.]/g, "-")
 				const logPath = path.join(context.logDir, `${stamp}-${script.name}.log`)
+				const current = await context.store.find(name)
+				if (!current || scriptFingerprint(current) !== scriptFingerprint(script))
+					return { error: "Script changed after approval. Review the current version and run again." }
 				const result = await (context.run ?? runScriptCommand)({
 					command: resolved.command,
 					cwd,

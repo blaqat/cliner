@@ -1,7 +1,7 @@
 import { StringRequest } from "@shared/proto/cline/common"
 import { SetScriptApprovalRequest, ToggleScriptRequest } from "@shared/proto/cline/file"
 import { SCRIPT_APPROVAL_LABELS, SCRIPT_APPROVALS, type ScriptApproval } from "@shared/scripts"
-import type React from "react"
+import React, { useState } from "react"
 import NewRuleRow from "@/components/cline-rules/NewRuleRow"
 import { Switch } from "@/components/ui/switch"
 import { applyScriptsResponse, type ScriptEntry, useScripts } from "@/hooks/useScripts"
@@ -29,6 +29,7 @@ function nextApproval(approval: ScriptApproval): ScriptApproval {
 }
 
 const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void }> = ({ script, onUse }) => {
+	const [error, setError] = useState("")
 	const invalid = script.errors.length > 0
 	const toggle = () =>
 		FileServiceClient.toggleScript(
@@ -43,10 +44,14 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 	const cycleApproval = () => {
 		if (script.approval === "") return
 		FileServiceClient.setScriptApproval(
-			SetScriptApprovalRequest.create({ scriptPath: script.path, approval: nextApproval(script.approval) }),
+			SetScriptApprovalRequest.create({
+				scriptPath: script.path,
+				approval: nextApproval(script.approval),
+				fingerprint: script.fingerprint,
+			}),
 		)
 			.then(applyScriptsResponse)
-			.catch((err) => console.error("Failed to change script approval:", err))
+			.catch((err) => setError(err.message ?? String(err)))
 	}
 	return (
 		<div
@@ -89,6 +94,33 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 					onClick={toggle}
 				/>
 			</div>
+			{!invalid && !script.trusted && (
+				<div className="mt-1 pl-5 text-xs text-description">
+					<span>Unreviewed</span>
+					<pre className="whitespace-pre-wrap">{script.command}</pre>
+					<div>Runs in: {script.cwd}</div>
+					<button
+						onClick={() =>
+							FileServiceClient.setScriptApproval(
+								SetScriptApprovalRequest.create({
+									scriptPath: script.path,
+									fingerprint: script.fingerprint,
+									trustOnly: true,
+								}),
+							)
+								.then(applyScriptsResponse)
+								.catch((err) => setError(err.message ?? String(err)))
+						}
+						type="button">
+						Trust this version
+					</button>
+				</div>
+			)}
+			{error && (
+				<div className="mt-1 pl-5 text-xs text-error" role="alert">
+					{error}
+				</div>
+			)}
 			{script.description && <div className="mt-0.5 pl-5 text-xs text-description">{script.description}</div>}
 			{invalid && (
 				<ul className="m-0 mt-1 list-none pl-5 text-xs text-error" data-testid={`script-errors-${script.name}`}>

@@ -161,4 +161,20 @@ describe("ScriptsPanel", () => {
 		expect(mocks.createScriptFile).not.toHaveBeenCalled()
 		expect(screen.getByText(/Script name can only contain/)).toBeInTheDocument()
 	})
+	it("shows unreviewed definitions and trusts the displayed fingerprint", async () => {
+		mocks.refreshScripts.mockResolvedValue(
+			response([script({ trusted: false, fingerprint: "version-1", command: "echo review", cwd: "/repo" })]),
+		)
+		mocks.setScriptApproval.mockResolvedValue(response([script({ trusted: true })]))
+		render(<ScriptsPanel />)
+		expect(await screen.findByText("Unreviewed")).toBeInTheDocument()
+		expect(screen.getByText("echo review")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Trust this version" }))
+		await waitFor(() =>
+			expect(mocks.setScriptApproval).toHaveBeenCalledWith(
+				expect.objectContaining({ fingerprint: "version-1", trustOnly: true }),
+			),
+		)
+		await waitFor(() => expect(screen.queryByText("Unreviewed")).not.toBeInTheDocument())
+	})
 })

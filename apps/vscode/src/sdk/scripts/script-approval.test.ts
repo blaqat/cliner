@@ -5,6 +5,7 @@ import type { ScriptApproval } from "@shared/scripts"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { decideScriptApproval, readScriptToolInput, ScriptRunGrants, scriptApprovalDecision } from "./script-approval"
 import { ScriptStore } from "./script-store"
+import { scriptFingerprint } from "./script-trust"
 
 describe("scriptApprovalDecision", () => {
 	it.each([
@@ -23,14 +24,16 @@ describe("ScriptRunGrants", () => {
 	it("covers one run of exactly those values in that thread", () => {
 		let now = 1000
 		const grants = new ScriptRunGrants(() => now)
-		grants.grant("t1", "deploy", { env: "prod", dry: true })
-		expect(grants.consume("t2", "deploy", { env: "prod", dry: true })).toBe(false)
-		expect(grants.consume("t1", "deploy", { env: "dev", dry: true })).toBe(false)
-		expect(grants.consume("t1", "deploy", { dry: true, env: "prod" })).toBe(true)
-		expect(grants.consume("t1", "deploy", { env: "prod", dry: true })).toBe(false)
-		grants.grant("t1", "deploy", {})
+		grants.grant("t1", "deploy", { env: "prod", dry: true }, "v1")
+		expect(grants.consume("t2", "deploy", { env: "prod", dry: true }, "v1")).toBe(false)
+		expect(grants.consume("t1", "deploy", { env: "dev", dry: true }, "v1")).toBe(false)
+		expect(grants.consume("t1", "deploy", { dry: true, env: "prod" }, "v1")).toBe(true)
+		expect(grants.consume("t1", "deploy", { env: "prod", dry: true }, "v1")).toBe(false)
+		grants.grant("t1", "deploy", {}, "v1")
+		expect(grants.consume("t1", "deploy", {}, "v2")).toBe("changed")
+		grants.grant("t1", "deploy", {}, "v1")
 		now += 11 * 60 * 1000
-		expect(grants.consume("t1", "deploy", {})).toBe(false)
+		expect(grants.consume("t1", "deploy", {}, "v1")).toBe(false)
 	})
 })
 
@@ -68,6 +71,7 @@ describe("decideScriptApproval", () => {
 		await write("default-level")
 		await write("ask-always", "always_ask")
 		await write("allow-always", "always_allow")
+		for (const script of await store.listEnabled()) await store.trust.trust(script)
 	})
 	afterEach(async () => {
 		await fs.rm(root, { recursive: true, force: true })
@@ -95,17 +99,17 @@ describe("decideScriptApproval", () => {
 		expect(await decide("ask-always", "plan", {}, "load")).toBe("allow")
 	})
 
-	it("lets calls the tool will reject pass, since they cannot run anything", async () => {
-		expect(await decide("ask-always", "plan", {})).toBe("allow") // required option missing
-		expect(await decide("ask-always", "plan", { who: "x", extra: "y" })).toBe("allow")
-		expect(await decide("no-such-script", "plan")).toBe("allow")
+	it("rejects unknown scripts and invalid runs", async () => {
+		expect(await decide("ask-always", "plan", {})).toBe("reject") // required option missing
+		expect(await decide("ask-always", "plan", { who: "x", extra: "y" })).toBe("reject")
+		expect(await decide("no-such-script", "plan")).toBe("reject")
 	})
 
 	it("treats the user's typed run as approval for that one run, at any level", async () => {
-		grants.grant("thread-1", "ask-always", { who: "me" })
+		grants.grant("thread-1", "ask-always", { who: "me" }, scriptFingerprint((await store.find("ask-always"))!))
 		expect(await decide("ask-always", "plan")).toBe("allow")
 		expect(await decide("ask-always", "plan")).toBe("ask")
-		grants.grant("thread-1", "ask-always", { who: "me" })
+		grants.grant("thread-1", "ask-always", { who: "me" }, scriptFingerprint((await store.find("ask-always"))!))
 		expect(await decide("ask-always", "plan", { who: "someone else" })).toBe("ask")
 	})
 })
