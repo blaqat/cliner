@@ -23,6 +23,7 @@ const STATUS_LABEL: Record<ThreadStatus, string> = {
 	subagents: "waiting on subagents",
 	done: "done",
 	error: "error",
+	stopped: "stopped",
 }
 
 const DOT_CLASS: Record<Exclude<ThreadStatus, "subagents">, string> = {
@@ -30,6 +31,7 @@ const DOT_CLASS: Record<Exclude<ThreadStatus, "subagents">, string> = {
 	waiting: "bg-warning",
 	done: "bg-success",
 	error: "bg-error",
+	stopped: "bg-description",
 }
 
 /** The focused thread's subagent lineage, recomputed from extension state. */

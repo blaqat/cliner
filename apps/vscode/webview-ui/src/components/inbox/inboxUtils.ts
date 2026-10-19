@@ -260,6 +260,8 @@ export function describeActivity(row: InboxRow, now: number): string {
 			return "Waiting for you"
 		case "error":
 			return "Stopped with an error"
+		case "stopped":
+			return "Stopped"
 		case "subagents":
 			return waitingOnLabel(row.liveSubagentCount, row.liveSubthreadCount)
 	}

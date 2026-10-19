@@ -34,6 +34,18 @@ describe("SdkSessionLifecycle", () => {
 		mockCreateSessionHost.mockReset()
 	})
 
+	it("reports status changes for background and child sessions once", () => {
+		const onStatusChange = vi.fn()
+		const lifecycle = makeLifecycle({ onStatusChange })
+		lifecycle.setStatus("background", "done")
+		lifecycle.setStatus("child", "waiting")
+		lifecycle.setStatus("child", "waiting")
+		expect(onStatusChange.mock.calls).toEqual([
+			["background", "done"],
+			["child", "waiting"],
+		])
+	})
+
 	it.each([
 		undefined,
 		"queue",

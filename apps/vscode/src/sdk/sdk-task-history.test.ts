@@ -164,6 +164,15 @@ describe("SdkTaskHistory", () => {
 		expect(malformed.taskGroupId).toBeUndefined()
 	})
 
+	it("flushes the final thread status before history disposal", async () => {
+		const { history, getSession } = makeHistory([makeSessionRecord("task-1")])
+		const running = history.saveThreadStatus("task-1", "running")
+		const waiting = history.saveThreadStatus("task-1", "waiting")
+		await history.dispose()
+		await Promise.all([running, waiting])
+		expect((await getSession("task-1"))?.metadata?.vscodeThreadStatus).toBe("waiting")
+	})
+
 	it("serializes owned metadata changes against stale activity and usage snapshots", async () => {
 		const { history, getSession } = makeHistory([
 			makeSessionRecord("task-1", {

@@ -73,6 +73,7 @@ export interface SdkSessionLifecycleOptions {
 	 */
 	consumeMcpChangeNotice?: (sessionId: string) => string | undefined
 	consumeModeSwitchNotice?: (sessionId: string) => ModeSwitchNotice | null
+	onStatusChange?: (id: string, status: SdkSessionLifecycle["sessionStatuses"][string]) => void
 	onDidBecomeIdle?: () => void
 	onSessionReplaced?: (sessionId: string) => void
 	onSessionRemoved?: (sessionId: string) => void
@@ -181,7 +182,7 @@ export class SdkSessionLifecycle {
 	private readonly liveSessions = new Map<string, ActiveSession>()
 	/** Per-session generations fence completion callbacks from earlier queued turns. */
 	private readonly turnGenerations = new Map<string, number>()
-	readonly sessionStatuses: Record<string, "running" | "waiting" | "done" | "error"> = {}
+	readonly sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped"> = {}
 	/** Subagent totals per task id, maintained from subagent events for every live session. */
 	readonly subagentCounts: Record<string, { total: number; live: number }> = {}
 	private sharedHost: SdkSessionHost | undefined
@@ -256,8 +257,10 @@ export class SdkSessionLifecycle {
 		return this.liveSessions
 	}
 
-	setStatus(taskId: string, status: "running" | "waiting" | "done" | "error"): void {
+	setStatus(taskId: string, status: "running" | "waiting" | "done" | "error" | "stopped"): void {
+		if (this.sessionStatuses[taskId] === status) return
 		this.sessionStatuses[taskId] = status
+		this.options.onStatusChange?.(taskId, status)
 	}
 
 	/** Records the subagent tally for a task; returns true when it changed. */

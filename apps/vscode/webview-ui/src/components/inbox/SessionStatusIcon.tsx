@@ -8,12 +8,14 @@ export const STATUS_LABEL: Record<ThreadStatus, string> = {
 	subagents: "Waiting on subagents",
 	done: "Done",
 	error: "Error",
+	stopped: "Stopped",
 }
 
 const DOT_CLASS: Record<Exclude<ThreadStatus, "running" | "subagents">, string> = {
 	waiting: "bg-warning",
 	done: "bg-success",
 	error: "bg-error",
+	stopped: "bg-description",
 }
 
 interface SessionStatusIconProps {

@@ -5,7 +5,7 @@ import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
-import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
+import type { ClineMessage, ClineSaySubagentStatus, ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskTag } from "@shared/task-groups"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
@@ -412,6 +412,7 @@ export class SdkTaskHistory {
 	}
 
 	async dispose(): Promise<void> {
+		await this.flushMetadataWrites()
 		this.disposed = true
 		this.invalidateMetadataHistoryCache()
 		if (this.cachedHistoryHostPromise) {
@@ -966,6 +967,14 @@ export class SdkTaskHistory {
 		item.isSettled = !item.isSettled
 		item.settledAt = item.isSettled ? Date.now() : undefined
 		await this.updateTaskHistoryItem(item)
+	}
+
+	async flushMetadataWrites(): Promise<void> {
+		await Promise.allSettled([...this.selectionWrites.values()])
+	}
+
+	async saveThreadStatus(taskId: string, status: ExtensionState["sessionStatuses"][string]): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({ vscodeThreadStatus: status }))
 	}
 
 	private updateOwnedMetadata(

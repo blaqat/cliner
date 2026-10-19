@@ -131,6 +131,7 @@ import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkMessageCoordinator, type SessionEventListener } from "./sdk-message-coordinator"
 import { ACT_MODE_CONTINUATION_PROMPT, SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
+import { restoredThreadStatus } from "./sdk-restored-status"
 import { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import { SdkSessionConfigChangeCoordinator } from "./sdk-session-config-change-coordinator"
 import { SdkSessionEventCoordinator } from "./sdk-session-event-coordinator"
@@ -612,6 +613,12 @@ export class Controller {
 			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? "")?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
+			onStatusChange: (id, status) => {
+				if (this.isDisposed) return
+				void this.taskHistory
+					.saveThreadStatus(id, status)
+					.catch((error) => Logger.warn("[SdkController] Failed to persist thread status", error))
+			},
 			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
 			resolveSessionWorkspace: (id) => this.resolveSessionWorkspace(id),
 			consumeWorkspaceNotice: (id) => {
@@ -1593,6 +1600,7 @@ export class Controller {
 		}
 		await this.setRemoteConfigCoreIntegration(undefined)
 		this.isDisposed = true
+		await this.taskHistory.flushMetadataWrites()
 		// Tear down the debounced state-post machinery before downstream resources
 		// are disposed below — see StatePostDebouncer.dispose().
 		await this.statePostDebouncer.dispose()
@@ -4608,14 +4616,9 @@ export class Controller {
 					)
 					.map((item) => [item.id, "waiting" as const]),
 			)
+			const childRecord = child ? sdkHistoryRecords.find((record) => record.sessionId === child.id) : undefined
 			const childStatus = child
-				? (this.sessions.sessionStatuses[child.id] ??
-					(sdkHistoryRecords.some(
-						(record) =>
-							record.sessionId === child.id && (record.status === "failed" || record.status === "cancelled"),
-					)
-						? "error"
-						: "done"))
+				? (this.sessions.sessionStatuses[child.id] ?? (childRecord ? restoredThreadStatus(childRecord) : "done"))
 				: undefined
 			// The projected decision has its own freshness stamp. Once it resolves,
 			// publish a newer child phase so the replica can leave awaiting_approval.
@@ -4689,11 +4692,7 @@ export class Controller {
 				queuedPrompts,
 				sessionStatuses: {
 					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
-					...Object.fromEntries(
-						sdkHistoryRecords
-							.filter((record) => record.status === "failed")
-							.map((record) => [record.sessionId, "error" as const]),
-					),
+					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
 					...this.sessions.sessionStatuses,
 					...childDecisionStatuses,
 				},

@@ -202,7 +202,7 @@ describe("inbox helpers", () => {
 	})
 
 	it("describes the latest activity per status", () => {
-		const row = (status: "running" | "waiting" | "done" | "error", settled = false) => ({
+		const row = (status: "running" | "waiting" | "done" | "error" | "stopped", settled = false) => ({
 			item: item("t", NOW - MIN, { settledAt: NOW - 3 * MIN }),
 			activityTs: NOW - MIN,
 			status,
@@ -216,6 +216,7 @@ describe("inbox helpers", () => {
 		expect(describeActivity(row("running"), NOW)).toBe("Working…")
 		expect(describeActivity(row("waiting"), NOW)).toBe("Waiting for you")
 		expect(describeActivity(row("error"), NOW)).toBe("Stopped with an error")
+		expect(describeActivity(row("stopped"), NOW)).toBe("Stopped")
 		expect(describeActivity(row("done", true), NOW)).toBe("Last active 1m ago")
 		expect(describeActivity({ ...row("done", true), activityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
 	})

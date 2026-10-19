@@ -45,6 +45,12 @@ describe("deriveThreadStatus", () => {
 })
 
 describe("buildThreadStatuses", () => {
+	it("does not count interrupted children as live work after reload", () => {
+		const statuses = buildThreadStatuses(history, { p: "done", a: "stopped", b: "done" })
+		expect(statuses.a.status).toBe("stopped")
+		expect(statuses.p).toMatchObject({ status: "done", liveSubagents: 0 })
+	})
+
 	it("is waiting while any subagent runs, done once all are done", () => {
 		const waiting = buildThreadStatuses(history, { p: "done", a: "running", b: "running" })
 		expect(waiting.p).toMatchObject({ status: "subagents", liveSubagents: 2, liveSubthreads: 0 })

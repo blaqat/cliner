@@ -42,12 +42,12 @@ export const DEFAULT_PLATFORM = "unknown"
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
 export interface ExtensionState {
-	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error">
+	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
 	subagentView?: {
 		parentTaskId: string
 		agentId: string
-		status: "running" | "waiting" | "done" | "error"
+		status: "running" | "waiting" | "done" | "error" | "stopped"
 		pendingDecision?: "approval" | "question"
 	} | null
 	/**

@@ -1878,7 +1878,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session: ActiveSession,
 		finishReason: AgentResult["finishReason"],
 	): Promise<void> {
-		if (hasPendingTeamRunWork(session)) return;
+		if (session.shuttingDown || hasPendingTeamRunWork(session)) return;
 		session.lastInteractiveTurnFinishReason = finishReason;
 		await this.markTurnIdle(session);
 		session.aborting = false;
@@ -2404,6 +2404,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 			endReason: string;
 		},
 	): Promise<void> {
+		session.shuttingDown = true;
 		// Fallback `task.completed` emission for completed sessions that did
 		// not observe an explicit `submit_and_exit` tool call, routed through
 		// the shared teardown choke point so it can neither double-fire nor
@@ -2490,6 +2491,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session: ActiveSession,
 		reason: string,
 	): Promise<void> {
+		session.shuttingDown = true;
 		// Releasing is a full session exit too: interactive sessions whose
 		// reported status is already terminal are stopped/disposed through
 		// this branch. The completion emission must happen here as well —
@@ -2560,6 +2562,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 		status: SessionStatus,
 		exitCode?: number | null,
 	): Promise<void> {
+		// Approval cleanup and turn completion can settle after the shutdown status.
+		if (session.shuttingDown && isNonTerminalSessionStatus(status)) return;
 		if (!session.artifacts) return;
 		const result = await this.invoke<{ updated: boolean; endedAt?: string }>(
 			"updateSessionStatus",
