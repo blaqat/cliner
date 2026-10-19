@@ -11,6 +11,18 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
 	{
+		version: "4.1.22-fork.25",
+		date: "2026-10-19",
+		notes: [
+			"Model and effort are two separate composer chips again",
+			"Settings: a Models page for saved configurations, and a Profiles page (a model and an effort under a name) for Thread, Subagents and Text generation",
+			"Existing Ask/Act and feature defaults are carried over into profiles automatically",
+			"About is a plain bulleted list",
+			"UI pass: new settings, menus, worktree, script, walkthrough and notebook UI use Cline's shared components",
+			"Settings writes are safe across multiple VS Code windows",
+		],
+	},
+	{
 		version: "4.1.22-fork.24",
 		date: "2026-10-17",
 		notes: [
