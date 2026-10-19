@@ -2490,7 +2490,14 @@ export function sdkMessagesToClineMessages(
 		for (const update of updates) {
 			const existingIndex = clineMessages.findIndex((m) => m.ts === update.ts)
 			if (existingIndex !== -1) {
-				clineMessages[existingIndex] = update
+				// The retag runs after the per-message stamping below, so carry the row's
+				// transcript position over; without it the row can't be linked or asided.
+				const { sdkMessageIndex, sdkToolCallId } = clineMessages[existingIndex]
+				clineMessages[existingIndex] = {
+					...update,
+					...(sdkMessageIndex !== undefined ? { sdkMessageIndex } : {}),
+					...(sdkToolCallId ? { sdkToolCallId } : {}),
+				}
 			} else {
 				clineMessages.push(update)
 			}
