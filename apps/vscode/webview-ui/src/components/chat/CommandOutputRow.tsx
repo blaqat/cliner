@@ -1,7 +1,8 @@
 import { COMMAND_OUTPUT_STRING, COMMAND_REQ_APP_STRING } from "@shared/combineCommandSequences"
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringRequest } from "@shared/proto/cline/common"
-import { memo, useEffect, useRef } from "react"
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react"
+import { memo, useEffect, useMemo, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { FileServiceClient } from "@/services/grpc-client"
@@ -114,6 +115,45 @@ export const CommandOutputContent = memo(
 
 CommandOutputContent.displayName = "CommandOutputContent"
 
+function splitMessage(text: string): { command: string; rawOutput: string } {
+	const outputIndex = text.indexOf(COMMAND_OUTPUT_STRING)
+	if (outputIndex === -1) {
+		return { command: text, rawOutput: "" }
+	}
+	return {
+		command: text.slice(0, outputIndex).trim(),
+		rawOutput: text.slice(outputIndex + COMMAND_OUTPUT_STRING.length).trim(),
+	}
+}
+
+function sanitizeOutput(output: string): string {
+	return output
+		.split("")
+		.map((char) => {
+			switch (char) {
+				case "\t":
+					return "→   "
+				case "\b":
+					return "⌫"
+				case "\f":
+					return "⏏"
+				case "\v":
+					return "⇳"
+				default:
+					return char
+			}
+		})
+		.join("")
+}
+
+function countLines(text: string): number {
+	let lines = 1
+	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+		lines++
+	}
+	return lines
+}
+
 export const CommandOutputRow = memo(
 	({
 		message,
@@ -127,6 +167,8 @@ export const CommandOutputRow = memo(
 		isOutputFullyExpanded,
 		setIsOutputFullyExpanded,
 		onOutputChange,
+		isExpanded = false,
+		onToggleExpand,
 	}: {
 		message: ClineMessage
 		isCommandExecuting?: boolean
@@ -139,37 +181,15 @@ export const CommandOutputRow = memo(
 		isOutputFullyExpanded: boolean
 		setIsOutputFullyExpanded: (expanded: boolean) => void
 		onOutputChange?: () => void
+		/** Whether the output body is shown. Collapsed by default so a huge output is never mounted. */
+		isExpanded?: boolean
+		onToggleExpand?: () => void
 	}) => {
-		const splitMessage = (text: string) => {
-			const outputIndex = text.indexOf(COMMAND_OUTPUT_STRING)
-			if (outputIndex === -1) {
-				return { command: text, output: "" }
-			}
-			return {
-				command: text.slice(0, outputIndex).trim(),
-				output: text
-					.slice(outputIndex + COMMAND_OUTPUT_STRING.length)
-					.trim()
-					.split("")
-					.map((char) => {
-						switch (char) {
-							case "\t":
-								return "→   "
-							case "\b":
-								return "⌫"
-							case "\f":
-								return "⏏"
-							case "\v":
-								return "⇳"
-							default:
-								return char
-						}
-					})
-					.join(""),
-			}
-		}
-
-		const { command: rawCommand, output } = splitMessage(message.text || "")
+		const { command: rawCommand, rawOutput } = splitMessage(message.text || "")
+		// Only expanded rows pay for the per-character rewrite; a 2 MB output costs nothing while collapsed.
+		const output = useMemo(() => (isExpanded ? sanitizeOutput(rawOutput) : ""), [isExpanded, rawOutput])
+		const hasOutput = rawOutput.length > 0
+		const outputLineCount = useMemo(() => (hasOutput ? countLines(rawOutput) : 0), [hasOutput, rawOutput])
 
 		const requestsApproval = rawCommand.endsWith(COMMAND_REQ_APP_STRING)
 		const command = requestsApproval ? rawCommand.slice(0, -COMMAND_REQ_APP_STRING.length) : rawCommand
@@ -235,12 +255,27 @@ export const CommandOutputRow = memo(
 						<CodeBlock forceWrap={true} source={`${"```"}shell\n${command}\n${"```"}`} />
 					</div>
 
-					{output.length > 0 && (
+					{hasOutput && (
+						<button
+							aria-expanded={isExpanded}
+							aria-label={isExpanded ? "Collapse command output" : "Expand command output"}
+							className="flex w-full items-center gap-1.5 border-0 border-t border-solid border-editor-group-border bg-code px-2.5 py-2 text-left text-description cursor-pointer select-none"
+							onClick={onToggleExpand}
+							type="button">
+							{isExpanded ? <ChevronDownIcon className="size-4" /> : <ChevronRightIcon className="size-4" />}
+							<span>Output</span>
+							<span className="opacity-70">
+								({outputLineCount} {outputLineCount === 1 ? "line" : "lines"})
+							</span>
+						</button>
+					)}
+
+					{hasOutput && isExpanded && (
 						<CommandOutputContent
 							isContainerExpanded={true}
 							isOutputFullyExpanded={isOutputFullyExpanded}
-							onToggle={() => setIsOutputFullyExpanded(!isOutputFullyExpanded)}
 							onOutputChange={onOutputChange}
+							onToggle={() => setIsOutputFullyExpanded(!isOutputFullyExpanded)}
 							output={output}
 						/>
 					)}

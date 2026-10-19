@@ -6,8 +6,6 @@ import styled from "styled-components"
 import type { Node } from "unist"
 import { visit } from "unist-util-visit"
 import "./codeblock-parser.css"
-import { LargeTextPreview } from "./LargeTextPreview"
-import { getTextPreview } from "./text-preview"
 
 export const CODE_BLOCK_BG_COLOR = "var(--vscode-editor-background, --vscode-sideBar-background, rgb(30 30 30))"
 
@@ -146,13 +144,23 @@ const REMARK_OPTIONS = {
 	},
 }
 
+const HIGHLIGHT_LIMIT_CHARACTERS = 128 * 1024
+
+function stripCodeFence(source: string): string {
+	const open = /^```[^\n]*\n/.exec(source)
+	if (!open) return source
+	const body = source.slice(open[0].length)
+	return body.endsWith("\n```") ? body.slice(0, -4) : body
+}
+
 // Rendered synchronously so a block has its final height on the first paint. The async renderer
 // mounted every block empty and filled it a tick later, so each time the chat list re-mounted a
 // code/diff/output row (scrolling it back into view) the row shrank and grew again, and the
 // list's scroll position jumped to compensate while the user was scrolling.
 export function renderCodeBlockContent(source: string): React.ReactNode {
-	const preview = getTextPreview(source)
-	if (preview.truncated) return <pre>{preview.text}</pre>
+	// Syntax highlighting a multi-megabyte block blocks the UI thread. Past this size show the
+	// whole text unhighlighted (never truncated).
+	if (source.length > HIGHLIGHT_LIMIT_CHARACTERS) return <pre>{stripCodeFence(source)}</pre>
 	try {
 		return renderRemarkSync(source, REMARK_OPTIONS)
 	} catch (error) {
@@ -162,11 +170,7 @@ export function renderCodeBlockContent(source: string): React.ReactNode {
 }
 
 const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
-	const preview = getTextPreview(source || "")
-	const reactContent = useMemo(
-		() => (preview.truncated ? null : renderCodeBlockContent(preview.text)),
-		[preview.text, preview.truncated],
-	)
+	const reactContent = useMemo(() => renderCodeBlockContent(source || ""), [source])
 
 	return (
 		<div
@@ -176,7 +180,7 @@ const CodeBlock = memo(({ source, forceWrap = false }: CodeBlockProps) => {
 				backgroundColor: CODE_BLOCK_BG_COLOR,
 			}}>
 			<StyledMarkdown className="ph-no-capture markdown" forceWrap={forceWrap}>
-				{preview.truncated ? <LargeTextPreview source={source || ""} /> : reactContent}
+				{reactContent}
 			</StyledMarkdown>
 		</div>
 	)

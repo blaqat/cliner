@@ -74,11 +74,20 @@ const UrlText = styled.div`
 
 interface McpResponseDisplayProps {
 	responseText: string
+	/** Controlled expansion (kept by the chat list across remounts). Uncontrolled and collapsed when omitted. */
+	isExpanded?: boolean
+	onToggleExpand?: () => void
 }
 
-const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({ responseText }) => {
-	const { mcpResponsesCollapsed, mcpDisplayMode } = useExtensionState() // Get setting from context
-	const [isExpanded, setIsExpanded] = useState(!mcpResponsesCollapsed) // Initialize with context setting
+const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({
+	responseText,
+	isExpanded: controlledExpanded,
+	onToggleExpand,
+}) => {
+	const { mcpDisplayMode } = useExtensionState()
+	// Tool responses start collapsed; the content is not mounted (or processed) until opened.
+	const [localExpanded, setLocalExpanded] = useState(false)
+	const isExpanded = controlledExpanded ?? localExpanded
 	const [isLoading, setIsLoading] = useState(false) // Initial loading state for rich content
 
 	const [urlMatches, setUrlMatches] = useState<UrlMatch[]>([])
@@ -89,13 +98,12 @@ const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({ responseText })
 	}, [])
 
 	const toggleExpand = useCallback(() => {
-		setIsExpanded((prev) => {
-			const newExpanded = !prev
-			// Save collapsed state so future MCP responses start in the same state
-			updateSetting("mcpResponsesCollapsed", !newExpanded)
-			return newExpanded
-		})
-	}, [])
+		if (onToggleExpand) {
+			onToggleExpand()
+		} else {
+			setLocalExpanded((prev) => !prev)
+		}
+	}, [onToggleExpand])
 
 	// Find all URLs in the text and determine if they're images
 	useEffect(() => {
