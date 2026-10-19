@@ -159,6 +159,36 @@ describe("selectSubagentProfile", () => {
 		expect(selection.overrides?.reasoningEffort).toBe("medium");
 	});
 
+	it("applies the default effort to inherited children, never to a profile at its provider default", () => {
+		const plain: SubagentProfileConnection = {
+			providerId: "anthropic",
+			modelId: "claude-x",
+			apiKey: "k",
+		};
+		const settings = profileSettings({
+			profiles: { Plain: plain },
+			allowedProfiles: ["Plain", INHERIT_SUBAGENT_PROFILE],
+			defaultProfile: undefined,
+		});
+		// Inherit (explicitly, or by omitting the profile) runs at the default effort.
+		expect(
+			selectSubagentProfile({ profile: INHERIT_SUBAGENT_PROFILE }, settings)
+				.overrides?.reasoningEffort,
+		).toBe("medium");
+		expect(selectSubagentProfile({}, settings).overrides?.reasoningEffort).toBe(
+			"medium",
+		);
+		// A profile's unset effort is the provider default.
+		expect(
+			selectSubagentProfile({ profile: "Plain" }, settings).overrides
+				?.reasoningEffort,
+		).toBeUndefined();
+		expect(
+			selectSubagentProfile({}, { ...settings, defaultProfile: "Plain" })
+				.overrides?.reasoningEffort,
+		).toBeUndefined();
+	});
+
 	it("treats the reserved parent profile as explicit inherit", () => {
 		const selection = selectSubagentProfile({ profile: INHERIT_SUBAGENT_PROFILE }, profileSettings());
 		expect(selection.error).toBeUndefined();

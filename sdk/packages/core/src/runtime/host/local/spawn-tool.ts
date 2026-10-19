@@ -316,8 +316,11 @@ export function selectSubagentProfile(
 				: { reasoningEffort: value as DelegatedAgentConnectionConfig["reasoningEffort"] };
 	// "none" only counts when the call asked for it — a stored profile/default
 	// "none" is just the provider default and must not force thinking off.
-	const resolveEffort = (connectionEffort?: string) => {
-		const resolved = effort ?? connectionEffort ?? settings?.defaultReasoningEffort;
+	// The settings-level default is for children that inherit the parent's
+	// model; a selected profile carries its own effort ("none" there is the
+	// provider default, so it must not fall through to the default).
+	const resolveEffort = (connectionEffort?: string, profile = false) => {
+		const resolved = effort ?? connectionEffort ?? (profile ? undefined : settings?.defaultReasoningEffort);
 		return resolved === "none" && effort !== "none" ? undefined : resolved;
 	};
 	if (requested) {
@@ -339,7 +342,7 @@ export function selectSubagentProfile(
 				error: `Sub-agent profile "${describeProfile(settings, id)}" is allowed but not configured.`,
 			};
 		}
-		const resolvedEffort = resolveEffort(connection.reasoningEffort);
+		const resolvedEffort = resolveEffort(connection.reasoningEffort, true);
 		return {
 			profileName: displayProfileName(settings, id),
 			profileId: id,
@@ -351,7 +354,7 @@ export function selectSubagentProfile(
 	// otherwise the child inherits the parent's connection.
 	const defaultId = settings?.defaultProfile;
 	const connection = defaultId ? profiles?.[defaultId] : undefined;
-	const resolvedEffort = resolveEffort(connection?.reasoningEffort);
+	const resolvedEffort = resolveEffort(connection?.reasoningEffort, !!connection);
 	return {
 		profileName: connection && defaultId ? displayProfileName(settings, defaultId) : undefined,
 		profileId: connection ? defaultId : undefined,

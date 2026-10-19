@@ -51,7 +51,7 @@ function resolveTitleApiConfiguration(
 	store: ApiProfileStore,
 	thread: ThreadTitleSource | undefined,
 ): { configuration: ApiConfiguration; mode: Mode; reasoning: boolean } {
-	const resolved = resolveModelProfile(store, store.getGlobalStateKey("threadTitlesProfileId"))
+	const resolved = resolveModelProfile(store, store.getGlobalStateKey("threadTitlesModelProfileId"))
 	if (resolved) {
 		return {
 			configuration: apiConfigurationForModelProfile(store, resolved.profile.id, "act"),

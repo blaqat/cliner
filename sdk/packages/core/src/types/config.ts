@@ -104,7 +104,7 @@ export interface SubagentSettings {
 	 * configured default. Unset means inherit the parent's model.
 	 */
 	defaultProfile?: string;
-	/** Reasoning effort applied when the call and the profile set none. */
+	/** Reasoning effort for children that inherit the parent's model (no profile selected); profiles carry their own. */
 	defaultReasoningEffort?: string;
 }
 

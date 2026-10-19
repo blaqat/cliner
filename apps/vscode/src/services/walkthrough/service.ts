@@ -11,13 +11,13 @@ import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput
 
 /** The profile Generate used last (Settings › Profiles › Text generation › Walkthrough Generate). */
 export function readRememberedWalkthroughProfileId(controller: Controller): string | undefined {
-	return controller.stateManager.getGlobalStateKey("walkthroughGenerateProfileId") || undefined
+	return controller.stateManager.getGlobalStateKey("walkthroughGenerateModelProfileId") || undefined
 }
 
 /** Generate remembers whichever profile it ran with, so the ▾ starts there next time. */
 function rememberWalkthroughProfileId(controller: Controller, profileId: string): void {
 	if (readRememberedWalkthroughProfileId(controller) === profileId) return
-	controller.stateManager.setGlobalState("walkthroughGenerateProfileId", profileId)
+	controller.stateManager.setGlobalState("walkthroughGenerateModelProfileId", profileId)
 	void controller.postStateToWebview()
 }
 

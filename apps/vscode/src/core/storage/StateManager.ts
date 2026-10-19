@@ -1,4 +1,6 @@
+import * as path from "node:path"
 import type { ApiConfiguration } from "@shared/api"
+import { acquireFileLock } from "@shared/storage/FileLock"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -21,7 +23,7 @@ import { FSWatcher } from "chokidar"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
-import { ensureModelProfiles } from "../controller/models/modelProfiles"
+import { ensureModelProfiles, THREAD_SELECTION_KEYS, threadSelectionStamp } from "../controller/models/modelProfiles"
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
@@ -103,18 +105,7 @@ export class StateManager {
 		try {
 			await initializeDistinctId(storage)
 
-			// Load all extension state from file-backed stores
-			const globalState = await readGlobalStateFromStorage(storage.globalState)
-			const secrets = readSecretsFromStorage(storage.secrets)
-			const workspaceState = readWorkspaceStateFromStorage(storage.workspaceState)
-
-			// Populate the cache with all extension state and secrets fields
-			// Use populate method to avoid triggering persistence during initialization
-			StateManager.instance.populateCache(globalState, secrets, workspaceState)
-
-			StateManager.instance.isInitialized = true
-			ensureApiConfigProfiles(StateManager.instance)
-			ensureModelProfiles(StateManager.instance)
+			await StateManager.instance.loadFromStorage()
 
 			await AgentConfigLoader.getInstance().ready()
 		} catch (error) {
@@ -130,6 +121,77 @@ export class StateManager {
 			throw new Error("StateManager has not been initialized")
 		}
 		return StateManager.instance
+	}
+
+	/**
+	 * Load all state from the file-backed stores, then bring profile settings up
+	 * to date (see reconcileProfilesUnderLock).
+	 */
+	public async loadFromStorage(): Promise<void> {
+		await this.populateFromStorage()
+		await this.reconcileProfilesUnderLock()
+	}
+
+	private async populateFromStorage(): Promise<void> {
+		const { storage } = this
+		// Load all extension state from file-backed stores
+		const globalState = await readGlobalStateFromStorage(storage.globalState)
+		const secrets = readSecretsFromStorage(storage.secrets)
+		const workspaceState = readWorkspaceStateFromStorage(storage.workspaceState)
+
+		// Populate the cache with all extension state and secrets fields
+		// Use populate method to avoid triggering persistence during initialization
+		this.populateCache(globalState, secrets, workspaceState)
+
+		this.isInitialized = true
+	}
+
+	/**
+	 * Saved configurations and named profiles are migrated and reconciled at
+	 * startup, which other windows may be doing at the same moment from their
+	 * own (possibly older) view of the files. So it runs under an interprocess
+	 * lock, on state freshly re-read inside it, and persists before releasing:
+	 * a window that arrives second finds the first one's committed result and
+	 * changes nothing, and never writes back values that were saved meanwhile.
+	 */
+	private async reconcileProfilesUnderLock(): Promise<void> {
+		const release = await acquireFileLock(path.join(this.storage.dataDir, "profiles-migration.lock"))
+		if (!release) {
+			// Migrating from a stale view could overwrite newer settings. Leave the
+			// profile migration for the next start; settings keep working meanwhile.
+			Logger.warn("[StateManager] Could not take the profile migration lock; skipping it this time.")
+			ensureApiConfigProfiles(this)
+			return
+		}
+		try {
+			await this.reloadPersistedState()
+			ensureApiConfigProfiles(this)
+			ensureModelProfiles(this)
+			await this.flushPendingState()
+		} finally {
+			release()
+		}
+	}
+
+	/**
+	 * Re-read persisted state into the cache, keeping values with changes that
+	 * haven't been written yet (they will be, on top of what was just read).
+	 */
+	private async reloadPersistedState(): Promise<void> {
+		this.storage.globalStateBackingStore.reload()
+		this.storage.secrets.reload()
+		const globalState = (await readGlobalStateFromStorage(this.storage.globalState)) as Record<string, unknown>
+		for (const [key, value] of Object.entries(globalState)) {
+			if (!this.pendingGlobalState.has(key as GlobalStateAndSettingsKey)) {
+				;(this.globalStateCache as Record<string, unknown>)[key] = value
+			}
+		}
+		const secrets = readSecretsFromStorage(this.storage.secrets) as Record<string, unknown>
+		for (const [key, value] of Object.entries(secrets)) {
+			if (!this.pendingSecrets.has(key as SecretKey)) {
+				;(this.secretsCache as Record<string, unknown>)[key] = value
+			}
+		}
 	}
 
 	/**
@@ -686,6 +748,15 @@ export class StateManager {
 			} else {
 				regularEntries[key] = this.globalStateCache[key]
 			}
+		}
+
+		// The thread selection and its stamp always persist as a unit, so the
+		// stamp on disk describes the selection beside it even when a window with
+		// a stale cache writes. An older release changes the selection without
+		// the stamp, which is how the next startup tells (see ensureModelProfiles).
+		if (THREAD_SELECTION_KEYS.some((key) => keys.has(key))) {
+			for (const key of THREAD_SELECTION_KEYS) regularEntries[key] = this.globalStateCache[key]
+			regularEntries.threadSelectionStamp = threadSelectionStamp(this.globalStateCache)
 		}
 
 		// Batch write all regular keys in a single disk operation

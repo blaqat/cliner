@@ -156,7 +156,7 @@ describe("maybeGenerateThreadTitle with the thread's captured configuration", ()
 	it("an explicit title profile resolves to its configuration and effort, winning over the thread's", async () => {
 		const [configuration, mode, options] = await run(
 			{
-				threadTitlesProfileId: "titles-profile",
+				threadTitlesModelProfileId: "titles-profile",
 				profiles: [{ id: "titles-profile", name: "Titles", configurationId: "titles", reasoningEffort: "low" }],
 			},
 			{ mode: "plan", selection: { askProfileId: "composer" } },
@@ -173,7 +173,7 @@ describe("maybeGenerateThreadTitle with the thread's captured configuration", ()
 
 	it("a title profile at the provider default keeps reasoning off", async () => {
 		const [configuration, , options] = await run(
-			{ threadTitlesProfileId: "p", profiles: [{ id: "p", name: "Titles", configurationId: "titles" }] },
+			{ threadTitlesModelProfileId: "p", profiles: [{ id: "p", name: "Titles", configurationId: "titles" }] },
 			{ mode: "act", selection: { actProfileId: "act-a" } },
 		)
 		expect(configuration).toMatchObject({ actModeApiModelId: "titles-model" })
@@ -182,7 +182,7 @@ describe("maybeGenerateThreadTitle with the thread's captured configuration", ()
 
 	it("treats a configuration id in the title setting as no profile (same as thread)", async () => {
 		const [configuration, mode] = await run(
-			{ threadTitlesProfileId: "titles", profiles: [] },
+			{ threadTitlesModelProfileId: "titles", profiles: [] },
 			{ mode: "act", selection: { actProfileId: "act-a" } },
 		)
 		expect(mode).toBe("act")

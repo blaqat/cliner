@@ -119,11 +119,11 @@ function service() {
 					? [profile]
 					: key === "profiles"
 						? [namedProfile]
-						: key === "walkthroughGenerateProfileId"
+						: key === "walkthroughGenerateModelProfileId"
 							? remembered.id
 							: undefined,
 			setGlobalState: (key: string, value: string) => {
-				if (key === "walkthroughGenerateProfileId") remembered.id = value
+				if (key === "walkthroughGenerateModelProfileId") remembered.id = value
 			},
 			listSecretStorageKeys: () => ["profile:cfg:openAiApiKey"],
 			getSecretForKey: () => "test-credential",

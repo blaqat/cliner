@@ -14,7 +14,7 @@ import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusC
 import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_MCP_DISPLAY_MODE, McpDisplayMode } from "@shared/McpDisplayMode"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
-import type { ModelProfile } from "@shared/model-profiles"
+import type { ModelProfile, ProfilesMigrationState, ThreadSelectionStamp } from "@shared/model-profiles"
 import { GlobalInstructionsFile } from "@shared/remote-config/schema"
 import { Mode } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -125,18 +125,34 @@ const GLOBAL_STATE_FIELDS = {
 	threadAskProfileId: { default: undefined as string | undefined },
 	threadActProfileId: { default: undefined as string | undefined },
 	// Features that run on a profile. Ids refer to `profiles` entries;
-	// "parent" in subagentAllowedProfileIds means the agent may also inherit
-	// the thread's own model. subagentReasoningEffort is legacy (profiles
-	// carry their effort) and no longer read.
+	// "parent" in subagentAllowedModelProfileIds means the agent may also
+	// inherit the thread's own model. These are separate from the legacy
+	// subagentDefaultProfileId / subagentAllowedProfileIds /
+	// walkthroughGenerateProfileId / threadTitlesProfileId keys (below), which
+	// hold saved-configuration ids for older releases: this release never
+	// writes them, so a downgrade keeps working and an upgrade can tell what
+	// the older release changed.
 	subagentProfilesEnabled: { default: false as boolean },
+	subagentDefaultModelProfileId: { default: undefined as string | undefined },
+	subagentAllowedModelProfileIds: { default: [] as string[] },
+	// Off by default: generating a title costs a model call per new thread.
+	threadTitlesEnabled: { default: false as boolean },
+	threadTitlesModelProfileId: { default: undefined as string | undefined },
+	// Last profile picked for the walkthrough Generate button (step 9 reads it).
+	walkthroughGenerateModelProfileId: { default: undefined as string | undefined },
+	// Legacy configuration-id references written by earlier releases. Read
+	// only by the profile migration; subagentReasoningEffort is also still the
+	// effort for subagents that inherit the thread's model.
 	subagentDefaultProfileId: { default: undefined as string | undefined },
 	subagentReasoningEffort: { default: undefined as string | undefined },
 	subagentAllowedProfileIds: { default: [] as string[] },
-	// Off by default: generating a title costs a model call per new thread.
-	threadTitlesEnabled: { default: false as boolean },
 	threadTitlesProfileId: { default: undefined as string | undefined },
-	// Last profile picked for the walkthrough Generate button (step 9 reads it).
 	walkthroughGenerateProfileId: { default: undefined as string | undefined },
+	// Profile migration bookkeeping: the version and the legacy values last
+	// reconciled, plus the Ask/Act selection this release last wrote. An older
+	// release changing either shows up as a difference at the next startup.
+	profilesMigration: { default: undefined as ProfilesMigrationState | undefined },
+	threadSelectionStamp: { default: undefined as ThreadSelectionStamp | undefined },
 	// Global terminal environment (variables, .env path, PATH additions).
 	terminalEnvironment: { default: undefined as TerminalEnvironmentSettings | undefined },
 } satisfies FieldDefinitions

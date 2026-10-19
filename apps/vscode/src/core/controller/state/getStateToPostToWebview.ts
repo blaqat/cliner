@@ -140,11 +140,11 @@ export async function getStateToPostToWebview(controller: {
 		threadAskProfileId: stateManager.getGlobalStateKey("threadAskProfileId"),
 		threadActProfileId: stateManager.getGlobalStateKey("threadActProfileId"),
 		subagentProfilesEnabled: stateManager.getGlobalStateKey("subagentProfilesEnabled"),
-		subagentDefaultProfileId: stateManager.getGlobalStateKey("subagentDefaultProfileId"),
-		subagentAllowedProfileIds: stateManager.getGlobalStateKey("subagentAllowedProfileIds"),
+		subagentDefaultProfileId: stateManager.getGlobalStateKey("subagentDefaultModelProfileId"),
+		subagentAllowedProfileIds: stateManager.getGlobalStateKey("subagentAllowedModelProfileIds"),
 		threadTitlesEnabled: stateManager.getGlobalStateKey("threadTitlesEnabled"),
-		threadTitlesProfileId: stateManager.getGlobalStateKey("threadTitlesProfileId"),
-		walkthroughGenerateProfileId: stateManager.getGlobalStateKey("walkthroughGenerateProfileId"),
+		threadTitlesProfileId: stateManager.getGlobalStateKey("threadTitlesModelProfileId"),
+		walkthroughGenerateProfileId: stateManager.getGlobalStateKey("walkthroughGenerateModelProfileId"),
 		// Names + masked placeholders only; values come from revealTerminalEnvironment.
 		terminalEnvironment: {
 			global: maskTerminalEnvironmentScope(stateManager.getGlobalStateKey("terminalEnvironment")),

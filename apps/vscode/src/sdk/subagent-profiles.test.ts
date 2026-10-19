@@ -53,8 +53,8 @@ describe("buildSubagentProfileSettings", () => {
 			makeStore({
 				subagentProfilesEnabled: true,
 				profiles,
-				subagentAllowedProfileIds: ["deep", "parent", "orphan", "cfg-claude"],
-				subagentDefaultProfileId: "fast",
+				subagentAllowedModelProfileIds: ["deep", "parent", "orphan", "cfg-claude"],
+				subagentDefaultModelProfileId: "fast",
 				subagentReasoningEffort: "high",
 			}),
 		)
@@ -66,8 +66,18 @@ describe("buildSubagentProfileSettings", () => {
 		expect(settings?.allowedProfiles).toEqual(["deep", "parent"])
 		expect(settings?.defaultProfile).toBe("fast")
 		expect(settings?.profileNames).toEqual({ fast: "Fast", deep: "Deep" })
-		// The legacy subagent effort setting no longer applies; profiles carry effort.
-		expect(settings).not.toHaveProperty("defaultReasoningEffort")
+		// Profiles carry their own effort; the legacy setting is only the fallback
+		// for subagents that inherit the thread's model (see the SDK's spawn tool).
+		expect(settings?.defaultReasoningEffort).toBe("high")
+	})
+
+	it("has no inherit fallback effort unless the legacy setting is set", () => {
+		const profiles = [{ id: "a", name: "A", configurationId: "cfg-local" }]
+		const settings = (extra: Record<string, unknown>) =>
+			buildSubagentProfileSettings(makeStore({ subagentProfilesEnabled: true, profiles, ...extra }))
+		expect(settings({})?.defaultReasoningEffort).toBeUndefined()
+		expect(settings({ subagentReasoningEffort: "none" })?.defaultReasoningEffort).toBeUndefined()
+		expect(settings({ subagentReasoningEffort: "medium" })?.defaultReasoningEffort).toBe("medium")
 	})
 
 	it("keeps both profiles that share a name, each with its own connection", () => {
@@ -78,7 +88,7 @@ describe("buildSubagentProfileSettings", () => {
 					{ id: "a", name: "Review", configurationId: "cfg-claude" },
 					{ id: "b", name: "Review", configurationId: "cfg-local" },
 				],
-				subagentAllowedProfileIds: ["b"],
+				subagentAllowedModelProfileIds: ["b"],
 			}),
 		)
 		expect(Object.keys(settings?.profiles ?? {})).toEqual(["a", "b"])

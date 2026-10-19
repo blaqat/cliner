@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { ApiConfiguration } from "@shared/api"
 import type { ApiConfigProfile } from "@shared/api-profiles"
-import type { ModelProfile } from "@shared/model-profiles"
+import type { LegacyFeatureRefs, ModelProfile, ProfilesMigrationState, ThreadSelectionStamp } from "@shared/model-profiles"
 import { isOpenaiReasoningEffort, type Mode, type OpenaiReasoningEffort } from "@shared/storage/types"
 import { type ApiProfileStore, apiConfigurationForProfileId, assignApiConfigProfile, readApiConfigProfiles } from "./apiProfiles"
 
@@ -16,7 +16,7 @@ import { type ApiProfileStore, apiConfigurationForProfileId, assignApiConfigProf
  * simply starts on its default profile's model and effort.
  */
 
-/** Reserved id in subagentAllowedProfileIds: the agent may inherit the thread's model. */
+/** Reserved id in subagentAllowedModelProfileIds: the agent may inherit the thread's model. */
 export const INHERIT_PROFILE_ID = "parent"
 
 export function readModelProfiles(store: Pick<ApiProfileStore, "getGlobalStateKey">): ModelProfile[] {
@@ -131,12 +131,12 @@ export function saveModelProfiles(store: ApiProfileStore, input: readonly ModelP
 		threadDefaultProfileId: defaultId,
 		threadAskProfileId: keep(store.getGlobalStateKey("threadAskProfileId")) ?? defaultId,
 		threadActProfileId: keep(store.getGlobalStateKey("threadActProfileId")) ?? defaultId,
-		subagentDefaultProfileId: keep(store.getGlobalStateKey("subagentDefaultProfileId")),
-		subagentAllowedProfileIds: (store.getGlobalStateKey("subagentAllowedProfileIds") ?? []).filter(
+		subagentDefaultModelProfileId: keep(store.getGlobalStateKey("subagentDefaultModelProfileId")),
+		subagentAllowedModelProfileIds: (store.getGlobalStateKey("subagentAllowedModelProfileIds") ?? []).filter(
 			(id) => id === INHERIT_PROFILE_ID || known.has(id),
 		),
-		walkthroughGenerateProfileId: keep(store.getGlobalStateKey("walkthroughGenerateProfileId")),
-		threadTitlesProfileId: keep(store.getGlobalStateKey("threadTitlesProfileId")),
+		walkthroughGenerateModelProfileId: keep(store.getGlobalStateKey("walkthroughGenerateModelProfileId")),
+		threadTitlesModelProfileId: keep(store.getGlobalStateKey("threadTitlesModelProfileId")),
 	})
 	return profiles
 }
@@ -176,25 +176,43 @@ export function adoptConfigurationAsThreadDefault(store: ApiProfileStore, mode: 
 	})
 }
 
-/**
- * One-time migration from configuration-based settings. Earlier builds stored
- * configuration ids in askProfileId/actProfileId (Ask/Act defaults) and in
- * the subagent, walkthrough and thread-title settings. Creates one profile per
- * referenced configuration (named after it, at its default effort) and points
- * those settings at the profiles. Ask/Act keep the effort they currently
- * start with, so when that differs from the configuration's default the
- * thread default gets its own "Name · Effort" profile. Runs only while
- * `profiles` is unset, so it is idempotent.
- */
-export function ensureModelProfiles(store: ApiProfileStore): ModelProfile[] {
-	const stored = store.getGlobalStateKey("profiles")
-	if (Array.isArray(stored)) {
-		applyThreadDefaultProfiles(store)
-		return stored
+export const PROFILES_MIGRATION_VERSION = 1
+
+const MODES = ["plan", "act"] as const
+
+const sameList = (a: readonly string[] | undefined, b: readonly string[] | undefined) =>
+	(a ?? []).length === (b ?? []).length && (a ?? []).every((id, index) => id === (b ?? [])[index])
+
+/** The Ask/Act configuration + effort new threads start from right now. */
+export function readThreadSelection(
+	store: Pick<ApiProfileStore, "getGlobalStateKey" | "getApiConfiguration">,
+): ThreadSelectionStamp {
+	const configuration = store.getApiConfiguration()
+	return {
+		askProfileId: store.getGlobalStateKey("askProfileId"),
+		actProfileId: store.getGlobalStateKey("actProfileId"),
+		planModeReasoningEffort: configuration.planModeReasoningEffort,
+		actModeReasoningEffort: configuration.actModeReasoningEffort,
 	}
-	const configurations = new Map(readApiConfigProfiles(store).map((entry) => [entry.id, entry]))
-	const profiles: ModelProfile[] = []
-	const profileFor = (configurationId: string | undefined, effort?: OpenaiReasoningEffort): string | undefined => {
+}
+
+function readLegacyFeatureRefs(store: Pick<ApiProfileStore, "getGlobalStateKey">): LegacyFeatureRefs {
+	return {
+		subagentDefaultProfileId: store.getGlobalStateKey("subagentDefaultProfileId"),
+		subagentAllowedProfileIds: [...(store.getGlobalStateKey("subagentAllowedProfileIds") ?? [])],
+		walkthroughGenerateProfileId: store.getGlobalStateKey("walkthroughGenerateProfileId"),
+		threadTitlesProfileId: store.getGlobalStateKey("threadTitlesProfileId"),
+		subagentReasoningEffort: store.getGlobalStateKey("subagentReasoningEffort"),
+	}
+}
+
+/**
+ * Find-or-create the profile for a configuration at an effort (default: the
+ * configuration's own). New profiles are named after the configuration, plus
+ * the effort when it isn't the configuration's default. Pushes onto `profiles`.
+ */
+function createProfileFactory(profiles: ModelProfile[], configurations: Map<string, ApiConfigProfile>) {
+	return (configurationId: string | undefined, effort?: OpenaiReasoningEffort): string | undefined => {
 		const configuration = configurationId ? configurations.get(configurationId) : undefined
 		if (!configuration) return undefined
 		const configurationEffort = configuration.reasoningEffort ?? "none"
@@ -212,36 +230,194 @@ export function ensureModelProfiles(store: ApiProfileStore): ModelProfile[] {
 		profiles.push(profile)
 		return profile.id
 	}
+}
 
-	const current = store.getApiConfiguration()
-	const modeEffort = (mode: Mode) => {
-		const effort = current[`${mode}ModeReasoningEffort`]
-		return isOpenaiReasoningEffort(effort) ? effort : undefined
-	}
-	const askId = profileFor(store.getGlobalStateKey("askProfileId"), modeEffort("plan"))
-	const actId = profileFor(store.getGlobalStateKey("actProfileId"), modeEffort("act"))
-	const subagentDefaultId = profileFor(store.getGlobalStateKey("subagentDefaultProfileId"))
-	const allowedIds: string[] = []
-	for (const id of store.getGlobalStateKey("subagentAllowedProfileIds") ?? []) {
-		const mapped = id === INHERIT_PROFILE_ID ? id : profileFor(id)
-		if (mapped && !allowedIds.includes(mapped)) allowedIds.push(mapped)
-	}
-	const walkthroughId = profileFor(store.getGlobalStateKey("walkthroughGenerateProfileId"))
-	const titlesId = profileFor(store.getGlobalStateKey("threadTitlesProfileId"))
+type ProfileFactory = ReturnType<typeof createProfileFactory>
 
-	const defaultId = actId ?? askId
-	const separate = !!askId && !!actId && askId !== actId
-	store.setGlobalStateBatch({
-		profiles,
-		threadDefaultProfileId: defaultId,
-		threadSeparateAskActProfiles: separate,
-		threadAskProfileId: separate ? askId : undefined,
-		threadActProfileId: separate ? actId : undefined,
-		subagentDefaultProfileId: subagentDefaultId,
-		subagentAllowedProfileIds: allowedIds,
-		walkthroughGenerateProfileId: walkthroughId,
-		threadTitlesProfileId: titlesId,
-	})
+const validEffort = (effort: unknown): OpenaiReasoningEffort | undefined => (isOpenaiReasoningEffort(effort) ? effort : undefined)
+
+/**
+ * Older releases changed the Ask/Act selection after this release stamped it:
+ * adopt what they chose as the thread defaults. A mode counts as changed when
+ * its configuration or effort differs from the stamp. Other differences from
+ * the stamp don't exist: this release stamps every selection it persists
+ * (focusing a chat included), so those are never mistaken for a downgrade.
+ */
+function adoptOlderReleaseSelection(store: ApiProfileStore, factory: ProfileFactory): void {
+	const stamp = store.getGlobalStateKey("threadSelectionStamp")
+	if (!stamp) return
+	const live = readThreadSelection(store)
+	const adopted: Partial<Record<Mode, string>> = {}
+	for (const mode of MODES) {
+		const idKey = mode === "plan" ? "askProfileId" : "actProfileId"
+		const effortKey = `${mode}ModeReasoningEffort` as const
+		if (live[idKey] === stamp[idKey] && live[effortKey] === stamp[effortKey]) continue
+		const id = factory(live[idKey], validEffort(live[effortKey]))
+		if (id) adopted[mode] = id
+	}
+	if (!adopted.plan && !adopted.act) return
+
+	const ask = adopted.plan ?? threadDefaultProfileId(store, "plan")
+	const act = adopted.act ?? threadDefaultProfileId(store, "act")
+	if (!ask || !act) return
+	if (ask === act && store.getGlobalStateKey("threadSeparateAskActProfiles") !== true) {
+		store.setGlobalStateBatch({ threadDefaultProfileId: ask })
+	} else {
+		store.setGlobalStateBatch({
+			threadSeparateAskActProfiles: true,
+			threadAskProfileId: ask,
+			threadActProfileId: act,
+			threadDefaultProfileId: store.getGlobalStateKey("threadDefaultProfileId") ?? act,
+		})
+	}
+}
+
+/**
+ * Point the profile-based feature settings at profiles built from the legacy
+ * configuration references, for each group of legacy settings that differs
+ * from what was last reconciled (everything, the first time). Legacy keys are
+ * the older releases' territory and are never written, except to put back a
+ * configuration id where an earlier build of this release overwrote one with a
+ * profile id the older releases can't resolve.
+ */
+function adoptLegacyFeatureRefs(
+	store: ApiProfileStore,
+	factory: ProfileFactory,
+	profiles: ModelProfile[],
+	marker: ProfilesMigrationState | undefined,
+): LegacyFeatureRefs {
+	const legacy = readLegacyFeatureRefs(store)
+	const last = marker?.legacy
+	const configurations = new Map(readApiConfigProfiles(store).map((entry) => [entry.id, entry]))
+	const profileIds = new Set(profiles.map((profile) => profile.id))
+	const restore = (id: string | undefined) =>
+		id && profileIds.has(id) ? (profiles.find((profile) => profile.id === id)?.configurationId ?? id) : id
+
+	// A reference is a profile already (earlier build of this release) or a configuration.
+	const toProfile = (id: string | undefined, effort?: OpenaiReasoningEffort): string | undefined =>
+		id && profileIds.has(id) ? id : factory(id, effort)
+
+	const legacyEffort = legacy.subagentReasoningEffort
+	// Subagents used the call's effort, else the configuration's, else this
+	// setting. Bake the last two into the profile so the first run on a
+	// profile keeps the effort the same subagent ran at before.
+	const subagentProfile = (id: string | undefined): string | undefined => {
+		const configuration = id ? configurations.get(id) : undefined
+		const effort = configuration ? (configuration.reasoningEffort ?? validEffort(legacyEffort)) : undefined
+		return toProfile(id, effort)
+	}
+
+	const updates: Record<string, unknown> = {}
+	if (
+		!last ||
+		legacy.subagentDefaultProfileId !== last.subagentDefaultProfileId ||
+		!sameList(legacy.subagentAllowedProfileIds, last.subagentAllowedProfileIds) ||
+		legacy.subagentReasoningEffort !== last.subagentReasoningEffort
+	) {
+		const allowed: string[] = []
+		for (const id of legacy.subagentAllowedProfileIds ?? []) {
+			const mapped = id === INHERIT_PROFILE_ID ? id : subagentProfile(id)
+			if (mapped && !allowed.includes(mapped)) allowed.push(mapped)
+		}
+		updates.subagentDefaultModelProfileId = subagentProfile(legacy.subagentDefaultProfileId)
+		updates.subagentAllowedModelProfileIds = allowed
+	}
+	if (!last || legacy.walkthroughGenerateProfileId !== last.walkthroughGenerateProfileId) {
+		updates.walkthroughGenerateModelProfileId = toProfile(legacy.walkthroughGenerateProfileId)
+	}
+	if (!last || legacy.threadTitlesProfileId !== last.threadTitlesProfileId) {
+		updates.threadTitlesModelProfileId = toProfile(legacy.threadTitlesProfileId)
+	}
+	if (Object.keys(updates).length > 0) store.setGlobalStateBatch(updates)
+
+	const reconciled: LegacyFeatureRefs = {
+		subagentDefaultProfileId: restore(legacy.subagentDefaultProfileId),
+		subagentAllowedProfileIds: (legacy.subagentAllowedProfileIds ?? []).map((id) => restore(id) ?? id),
+		walkthroughGenerateProfileId: restore(legacy.walkthroughGenerateProfileId),
+		threadTitlesProfileId: restore(legacy.threadTitlesProfileId),
+		subagentReasoningEffort: legacy.subagentReasoningEffort,
+	}
+	const restored: Record<string, unknown> = {}
+	for (const key of ["subagentDefaultProfileId", "walkthroughGenerateProfileId", "threadTitlesProfileId"] as const) {
+		if (reconciled[key] !== legacy[key]) restored[key] = reconciled[key]
+	}
+	if (!sameList(reconciled.subagentAllowedProfileIds, legacy.subagentAllowedProfileIds)) {
+		restored.subagentAllowedProfileIds = reconciled.subagentAllowedProfileIds
+	}
+	if (Object.keys(restored).length > 0) store.setGlobalStateBatch(restored)
+	return reconciled
+}
+
+/**
+ * Reconcile profiles with the configuration-based settings older releases
+ * use. Safe to run any number of times, at every startup:
+ *
+ * - First run (`profiles` unset): create one profile per referenced
+ *   configuration (named after it, at its default effort) and point the new
+ *   profile-based settings at them. Ask/Act keep the effort they currently
+ *   start with, so when that differs from the configuration's default the
+ *   thread default gets its own "Name · Effort" profile.
+ * - Later runs: if an older release (a downgrade) changed the Ask/Act
+ *   selection or the legacy feature settings since this release last
+ *   recorded them, adopt those changes into profiles; otherwise leave the
+ *   user's profiles alone.
+ * - Always: apply the thread defaults onto the Ask/Act selection and record
+ *   what was reconciled.
+ *
+ * The caller must hold the cross-window lock with persisted state reloaded
+ * (see StateManager), so this never works from a stale view.
+ */
+export function ensureModelProfiles(store: ApiProfileStore): ModelProfile[] {
+	const stored = store.getGlobalStateKey("profiles")
+	const firstRun = !Array.isArray(stored)
+	const profiles: ModelProfile[] = firstRun ? [] : structuredClone(stored)
+	const configurations = new Map(readApiConfigProfiles(store).map((entry) => [entry.id, entry]))
+	const factory = createProfileFactory(profiles, configurations)
+	const marker = store.getGlobalStateKey("profilesMigration")
+
+	if (firstRun) {
+		const selection = readThreadSelection(store)
+		const askId = factory(selection.askProfileId, validEffort(selection.planModeReasoningEffort))
+		const actId = factory(selection.actProfileId, validEffort(selection.actModeReasoningEffort))
+		const separate = !!askId && !!actId && askId !== actId
+		store.setGlobalStateBatch({
+			threadDefaultProfileId: actId ?? askId,
+			threadSeparateAskActProfiles: separate,
+			threadAskProfileId: separate ? askId : undefined,
+			threadActProfileId: separate ? actId : undefined,
+		})
+	} else {
+		adoptOlderReleaseSelection(store, factory)
+	}
+	const legacy = adoptLegacyFeatureRefs(store, factory, profiles, marker)
+
+	// Profiles, the settings that refer to them (set above) and the marker are
+	// pending together and persist in one write. Unchanged values aren't
+	// rewritten, so a steady-state startup saves nothing.
+	const changes: Record<string, unknown> = {}
+	const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b)
+	if (firstRun || differs(profiles, stored)) changes.profiles = profiles
+	const next: ProfilesMigrationState = { version: PROFILES_MIGRATION_VERSION, legacy }
+	if (differs(next, marker)) changes.profilesMigration = next
+	if (Object.keys(changes).length > 0) store.setGlobalStateBatch(changes)
 	applyThreadDefaultProfiles(store)
+	const stamp = readThreadSelection(store)
+	if (differs(stamp, store.getGlobalStateKey("threadSelectionStamp")))
+		store.setGlobalStateBatch({ threadSelectionStamp: stamp })
 	return profiles
+}
+
+/** Keys whose persisted values make up the thread selection stamp. */
+export const THREAD_SELECTION_KEYS = [
+	"askProfileId",
+	"actProfileId",
+	"planModeReasoningEffort",
+	"actModeReasoningEffort",
+] as const
+
+/** The stamp for a set of selection values (the persistence hook in StateManager uses this). */
+export function threadSelectionStamp(
+	values: Partial<Record<(typeof THREAD_SELECTION_KEYS)[number], unknown>>,
+): ThreadSelectionStamp {
+	return Object.fromEntries(THREAD_SELECTION_KEYS.map((key) => [key, values[key]])) as ThreadSelectionStamp
 }

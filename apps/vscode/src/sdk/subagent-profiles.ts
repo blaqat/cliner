@@ -42,7 +42,9 @@ export function resolveSubagentProfileConnection(
  */
 export function buildSubagentProfileSettings(
 	store: ApiProfileStore,
-): Pick<SubagentSettings, "profiles" | "profileNames" | "allowedProfiles" | "defaultProfile"> | undefined {
+):
+	| Pick<SubagentSettings, "profiles" | "profileNames" | "allowedProfiles" | "defaultProfile" | "defaultReasoningEffort">
+	| undefined {
 	if (!store.getGlobalStateKey("subagentProfilesEnabled")) return undefined
 	// Keyed by immutable profile id; names are display-only and may repeat.
 	const byId = new Map<string, SubagentProfileConnection>()
@@ -57,16 +59,22 @@ export function buildSubagentProfileSettings(
 	if (byId.size === 0) return undefined
 
 	const allowedProfiles: string[] = []
-	for (const id of store.getGlobalStateKey("subagentAllowedProfileIds") ?? []) {
+	for (const id of store.getGlobalStateKey("subagentAllowedModelProfileIds") ?? []) {
 		if ((id === INHERIT_SUBAGENT_PROFILE || byId.has(id)) && !allowedProfiles.includes(id)) allowedProfiles.push(id)
 	}
 
-	const defaultProfileId = store.getGlobalStateKey("subagentDefaultProfileId")
+	const defaultProfileId = store.getGlobalStateKey("subagentDefaultModelProfileId")
+
+	// Legacy setting: subagents that inherit the thread's model (the "parent"
+	// choice, or no default profile) still run at this effort. Profiles carry
+	// their own effort (the migration baked this in), so it never applies to one.
+	const legacyEffort = store.getGlobalStateKey("subagentReasoningEffort")
 
 	return {
 		profiles: Object.fromEntries(byId),
 		profileNames: names,
 		allowedProfiles,
 		defaultProfile: defaultProfileId && byId.has(defaultProfileId) ? defaultProfileId : undefined,
+		defaultReasoningEffort: legacyEffort && legacyEffort !== "none" ? legacyEffort : undefined,
 	}
 }
