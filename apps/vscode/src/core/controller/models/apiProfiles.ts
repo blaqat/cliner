@@ -74,6 +74,21 @@ export interface ApiProfileStore {
 	getSecretForKey: StateManager["getSecretForKey"]
 	setSecretsForKeys: StateManager["setSecretsForKeys"]
 	listSecretStorageKeys: StateManager["listSecretStorageKeys"]
+	trackOperation?: StateManager["trackOperation"]
+}
+
+// Saves and deletes read the list, await secret writes, then replace the list.
+// Run them one at a time per store so neither works from a stale list.
+const configurationMutations = new WeakMap<object, Promise<unknown>>()
+
+function serializeConfigurationMutation<T>(stateManager: ApiProfileStore, mutate: () => Promise<T>): Promise<T> {
+	const previous = configurationMutations.get(stateManager) ?? Promise.resolve()
+	const run = previous.then(mutate, mutate)
+	configurationMutations.set(
+		stateManager,
+		run.catch(() => {}),
+	)
+	return stateManager.trackOperation ? stateManager.trackOperation(run) : run
 }
 
 const PROFILE_PROVIDER_NAMES: Partial<Record<ApiProvider, string>> = {
@@ -200,10 +215,11 @@ export interface SaveApiProfileInput {
  * profile the record is replaced and any provided secrets are merged into the
  * profile's secret scope; an absent `secrets` map leaves stored secrets intact.
  */
-export async function upsertApiConfigProfile(
-	stateManager: ApiProfileStore,
-	input: SaveApiProfileInput,
-): Promise<ApiConfigProfile> {
+export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: SaveApiProfileInput): Promise<ApiConfigProfile> {
+	return serializeConfigurationMutation(stateManager, () => upsertApiConfigProfileNow(stateManager, input))
+}
+
+async function upsertApiConfigProfileNow(stateManager: ApiProfileStore, input: SaveApiProfileInput): Promise<ApiConfigProfile> {
 	const provider = toLegacyApiProvider(input.provider?.trim() || "") as ApiProvider | undefined
 	if (!provider) {
 		throw new Error("provider is required")
@@ -254,7 +270,11 @@ export async function upsertApiConfigProfile(
  * Delete a saved profile and its secrets, replacing affected assignments
  * before callers compare effective configurations. Keep at least one profile.
  */
-export async function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId: string): Promise<boolean> {
+export function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId: string): Promise<boolean> {
+	return serializeConfigurationMutation(stateManager, () => deleteApiConfigProfileNow(stateManager, profileId))
+}
+
+async function deleteApiConfigProfileNow(stateManager: ApiProfileStore, profileId: string): Promise<boolean> {
 	const profiles = readApiConfigProfiles(stateManager)
 	const next = profiles.filter((p) => p.id !== profileId)
 	if (next.length === profiles.length) {

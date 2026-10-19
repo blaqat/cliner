@@ -467,3 +467,60 @@ describe("profile reasoning defaults", () => {
 		expect(profiles.find((p) => p.id === actProfileId)?.reasoningEffort).toBe("high")
 	})
 })
+
+describe("concurrent configuration mutations", () => {
+	it("keeps both configurations when two saves overlap their secret writes", async () => {
+		const { store } = createStore()
+		const write = store.setSecretsForKeys
+		// Hold every secret write until both saves have started.
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		store.setSecretsForKeys = async (entries) => {
+			await gate
+			return write(entries)
+		}
+		const first = upsertApiConfigProfile(store, {
+			name: "First",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "a" },
+		})
+		const second = upsertApiConfigProfile(store, {
+			name: "Second",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "b" },
+		})
+		release()
+		await Promise.all([first, second])
+		expect(readApiConfigProfiles(store).map((profile) => profile.name)).toEqual(expect.arrayContaining(["First", "Second"]))
+	})
+
+	it("does not resurrect a configuration deleted while a save waited on its secrets", async () => {
+		const { store } = createStore()
+		const keep = await upsertApiConfigProfile(store, { name: "Keep", provider: "anthropic", modelId: "m" })
+		const doomed = await upsertApiConfigProfile(store, { name: "Doomed", provider: "anthropic", modelId: "m" })
+		const write = store.setSecretsForKeys
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		store.setSecretsForKeys = async (entries) => {
+			await gate
+			return write(entries)
+		}
+		const save = upsertApiConfigProfile(store, {
+			id: keep.id,
+			name: "Kept",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "k" },
+		})
+		const remove = deleteApiConfigProfile(store, doomed.id)
+		release()
+		await Promise.all([save, remove])
+		expect(readApiConfigProfiles(store).map((profile) => profile.name)).toEqual(["Kept"])
+	})
+})
