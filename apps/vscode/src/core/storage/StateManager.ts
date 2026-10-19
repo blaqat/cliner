@@ -1,6 +1,4 @@
-import * as path from "node:path"
 import type { ApiConfiguration } from "@shared/api"
-import { acquireFileLock } from "@shared/storage/FileLock"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -18,6 +16,7 @@ import {
 	type SettingsKey,
 } from "@shared/storage/state-keys"
 import type { StorageContext } from "@shared/storage/storage-context"
+import { type StorageLockOptions, StorageLockTimeoutError } from "@shared/storage/storage-lock"
 import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
 import { initializeDistinctId } from "@/services/logging/distinctId"
@@ -154,22 +153,20 @@ export class StateManager {
 	 * a window that arrives second finds the first one's committed result and
 	 * changes nothing, and never writes back values that were saved meanwhile.
 	 */
-	private async reconcileProfilesUnderLock(): Promise<void> {
-		const release = await acquireFileLock(path.join(this.storage.dataDir, "profiles-migration.lock"))
-		if (!release) {
-			// Migrating from a stale view could overwrite newer settings. Leave the
-			// profile migration for the next start; settings keep working meanwhile.
-			Logger.warn("[StateManager] Could not take the profile migration lock; skipping it this time.")
-			ensureApiConfigProfiles(this)
-			return
-		}
+	private async reconcileProfilesUnderLock(options?: StorageLockOptions): Promise<void> {
+		let acquired = false
 		try {
+			await this.storage.globalStateBackingStore.withLock(async () => {
+				acquired = true
+				await this.reloadPersistedState()
+				ensureApiConfigProfiles(this)
+				ensureModelProfiles(this)
+				await this.flushPendingState()
+			}, options)
+		} catch (error) {
+			if (acquired || !(error instanceof StorageLockTimeoutError)) throw error
+			Logger.warn("[StateManager] Could not take the settings lock; deferring profile migration.")
 			await this.reloadPersistedState()
-			ensureApiConfigProfiles(this)
-			ensureModelProfiles(this)
-			await this.flushPendingState()
-		} finally {
-			release()
 		}
 	}
 
@@ -761,7 +758,7 @@ export class StateManager {
 
 		// Batch write all regular keys in a single disk operation
 		if (Object.keys(regularEntries).length > 0) {
-			this.storage.globalStateBackingStore.setBatch(regularEntries)
+			await this.storage.globalStateBackingStore.setBatch(regularEntries)
 		}
 	}
 
@@ -800,7 +797,7 @@ export class StateManager {
 			const value = this.secretsCache[key]
 			entries[key] = value || undefined // Convert empty strings to undefined (delete)
 		}
-		this.storage.secrets.setBatch(entries)
+		await this.storage.secrets.setBatch(entries)
 	}
 
 	/**
@@ -812,7 +809,7 @@ export class StateManager {
 		for (const key of keys) {
 			entries[key] = this.workspaceStateCache[key]
 		}
-		this.storage.workspaceState.setBatch(entries)
+		await this.storage.workspaceState.setBatch(entries)
 	}
 
 	/**

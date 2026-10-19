@@ -1,7 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Logger } from "../services/Logger"
 import { ClineSyncStorage } from "./ClineStorage"
+import { acquireStorageLock, type StorageLock, type StorageLockOptions, tryStorageLock } from "./storage-lock"
+
+const transactions = new AsyncLocalStorage<ReadonlyMap<string, StorageLock>>()
 
 export interface ClineFileStorageOptions {
 	/**
@@ -27,7 +31,7 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 		this.fsPath = filePath
 		this.name = name
 		this.fileMode = options?.fileMode
-		this.data = this.readFromDisk()
+		this.data = this.readFromDiskStrict() ?? {}
 	}
 
 	protected _get(key: string): T | undefined {
@@ -36,11 +40,11 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 
 	protected _set(key: string, value: T | undefined): void {
 		// Use setBatch for consistency - all writes go through one path
-		this.setBatch({ [key]: value })
+		void this.setBatch({ [key]: value }).catch((error) => Logger.error(`[${this.name}] write failed:`, error))
 	}
 
 	protected _delete(key: string): void {
-		this.setBatch({ [key]: undefined })
+		void this.setBatch({ [key]: undefined }).catch((error) => Logger.error(`[${this.name}] delete failed:`, error))
 	}
 
 	/**
@@ -48,32 +52,64 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 	 * More efficient than calling set() for each key individually,
 	 * since it only writes to disk once.
 	 */
-	public setBatch(entries: Record<string, T | undefined>): Thenable<void> {
-		// Apply onto what is on disk now, not onto this instance's cached copy:
-		// another window may have saved other keys since this one loaded, and
-		// writing the stale document back would silently revert them. Only the
-		// keys written here change. Falls back to the cache if the file is
-		// unreadable so a transient failure never truncates it.
-		this.data = this.readFromDiskStrict() ?? this.data
-		const changedKeys: string[] = []
-		for (const [key, value] of Object.entries(entries)) {
-			if (value === undefined) {
-				if (key in this.data) {
-					delete this.data[key]
+	public setBatch(entries: Record<string, T | undefined>): Promise<void> {
+		return this.withLock(() => {
+			this.data = this.readFromDiskStrict() ?? this.data
+			const changedKeys: string[] = []
+			for (const [key, value] of Object.entries(entries)) {
+				if (value === undefined) {
+					if (key in this.data) {
+						delete this.data[key]
+						changedKeys.push(key)
+					}
+				} else {
+					this.data[key] = value
 					changedKeys.push(key)
 				}
-			} else {
-				this.data[key] = value
-				changedKeys.push(key)
+			}
+			if (changedKeys.length > 0) {
+				this.writeToDisk()
+				for (const key of changedKeys) this.fireChange(key)
+			}
+		})
+	}
+
+	/** Hold the same lock used by every writer, including across migration awaits. */
+	public withLock<R>(operation: () => R | Promise<R>, options?: StorageLockOptions): Promise<R> {
+		const lockPath = `${path.resolve(this.fsPath)}.lock`
+		const held = transactions.getStore()?.get(lockPath)
+		if (held) {
+			held.assertOwned()
+			return Promise.resolve(operation())
+		}
+
+		const run = (release: StorageLock): Promise<R> => {
+			const locks = new Map(transactions.getStore())
+			locks.set(lockPath, release)
+			try {
+				const result = transactions.run(locks, operation)
+				if (result instanceof Promise) return result.finally(release)
+				release()
+				return Promise.resolve(result)
+			} catch (error) {
+				release()
+				return Promise.reject(error)
 			}
 		}
-		if (changedKeys.length > 0) {
-			this.writeToDisk()
-			for (const key of changedKeys) {
-				this.fireChange(key)
-			}
+		// Keep uncontended writes synchronous for ClineSyncStorage callers.
+		let release: StorageLock | undefined
+		try {
+			release = tryStorageLock(lockPath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			fs.mkdirSync(path.dirname(this.fsPath), { recursive: true })
+			release = tryStorageLock(lockPath)
 		}
-		return Promise.resolve()
+		return release ? run(release) : acquireStorageLock(lockPath, options).then(run)
+	}
+
+	public override update(key: string, value: T | undefined): Promise<void> {
+		return this.setBatch({ [key]: value })
 	}
 
 	/**
@@ -90,36 +126,33 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 	}
 
 	/** The file's document, or undefined when it is missing or unreadable. */
-	private readFromDiskStrict(): Record<string, T> | undefined {
+	private readFromDiskStrict(onCorrupt?: () => void): Record<string, T> | undefined {
+		let raw: string
 		try {
-			if (fs.existsSync(this.fsPath)) {
-				const parsed = JSON.parse(fs.readFileSync(this.fsPath, "utf-8"))
-				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed
-			}
+			raw = fs.readFileSync(this.fsPath, "utf8")
 		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
 			Logger.error(`[${this.name}] failed to read from ${this.fsPath}:`, error)
+			// A failed read is not evidence of corruption. Never replace it.
+			if (onCorrupt) throw error
+			return undefined
 		}
+		try {
+			const parsed = JSON.parse(raw)
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed
+		} catch (error) {
+			Logger.error(`[${this.name}] failed to parse ${this.fsPath}:`, error)
+		}
+		onCorrupt?.()
 		return undefined
-	}
-
-	private readFromDisk(): Record<string, T> {
-		try {
-			if (fs.existsSync(this.fsPath)) {
-				return JSON.parse(fs.readFileSync(this.fsPath, "utf-8"))
-			}
-		} catch (error) {
-			Logger.error(`[${this.name}] failed to read from ${this.fsPath}:`, error)
-		}
-		return {}
 	}
 
 	private writeToDisk(): void {
 		try {
-			const dir = path.dirname(this.fsPath)
-			fs.mkdirSync(dir, { recursive: true })
 			atomicWriteFileSync(this.fsPath, JSON.stringify(this.data, null, 2), this.fileMode)
 		} catch (error) {
 			Logger.error(`[${this.name}] failed to write to ${this.fsPath}:`, error)
+			throw error
 		}
 	}
 }

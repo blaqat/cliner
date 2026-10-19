@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -6,6 +7,7 @@ import { type ApiProfileStore, upsertApiConfigProfile } from "@/core/controller/
 import { readModelProfiles, saveModelProfiles } from "@/core/controller/models/modelProfiles"
 import { ClineFileStorage } from "@/shared/storage/ClineFileStorage"
 import { createStorageContext } from "@/shared/storage/storage-context"
+import { acquireStorageLock } from "@/shared/storage/storage-lock"
 import { StateManager } from "../StateManager"
 
 let dir: string
@@ -24,7 +26,10 @@ function openWindow() {
 	const manager = new (StateManager as unknown as new (storage: unknown) => StateManager)(storage)
 	// Remote-config filtering reaches for the singleton; any window will do.
 	;(StateManager as unknown as { instance: StateManager }).instance = manager
-	const internals = manager as unknown as { populateFromStorage(): Promise<void>; reconcileProfilesUnderLock(): Promise<void> }
+	const internals = manager as unknown as {
+		populateFromStorage(): Promise<void>
+		reconcileProfilesUnderLock(options?: { timeoutMs: number }): Promise<void>
+	}
 	return {
 		manager,
 		storage,
@@ -32,7 +37,7 @@ function openWindow() {
 		/** Read the files the way a window starting now would. */
 		populate: () => internals.populateFromStorage(),
 		/** The migration step of startup. */
-		reconcile: () => internals.reconcileProfilesUnderLock(),
+		reconcile: (options?: { timeoutMs: number }) => internals.reconcileProfilesUnderLock(options),
 		start: async () => {
 			await manager.loadFromStorage()
 		},
@@ -203,4 +208,77 @@ describe("profile migration across releases and windows", () => {
 		}
 		expect(fs.existsSync(path.join(dir, "data", "profiles-migration.lock"))).toBe(false)
 	})
+})
+
+it("defers all migration writes on timeout and reloads the committed state", async () => {
+	const window = openWindow()
+	await window.populate()
+	const file = path.join(dir, "data", "globalState.json")
+	const release = await acquireStorageLock(`${file}.lock`)
+	const committed = { threadTitlesEnabled: true, actModeApiProvider: "anthropic", actModeApiModelId: "claude-x" }
+	fs.writeFileSync(file, JSON.stringify(committed))
+	const before = fs.readFileSync(file, "utf8")
+	try {
+		await window.reconcile({ timeoutMs: 50 })
+		await window.manager.flushPendingState()
+		expect(fs.readFileSync(file, "utf8")).toBe(before)
+		expect(fs.existsSync(path.join(dir, "data", "secrets.json"))).toBe(false)
+		expect(window.manager.getGlobalStateKey("threadTitlesEnabled")).toBe(true)
+		expect(window.manager.getGlobalStateKey("apiConfigProfiles")).toEqual([])
+	} finally {
+		release()
+	}
+	await window.reconcile()
+	expect(readDisk().profilesMigration.version).toBe(1)
+})
+
+it("preserves an unrelated process write racing the real migration commit", async () => {
+	await seedLegacyUser()
+	const window = openWindow()
+	const backing = window.storage.globalStateBackingStore
+	const original = backing.withLock.bind(backing)
+	let started = false
+	let finished: Promise<void> | undefined
+	backing.withLock = (operation, options) =>
+		original(async () => {
+			if (!started) {
+				started = true
+				const file = path.join(dir, "data", "globalState.json")
+				const module = path.resolve(import.meta.dir, "../../../shared/storage/ClineFileStorage.ts")
+				const worker = spawn(
+					process.execPath,
+					[
+						"-e",
+						`
+				import { ClineFileStorage } from ${JSON.stringify(module)};
+				console.log('ready');
+				await new ClineFileStorage(${JSON.stringify(file)}).setBatch({unrelatedMigrationRace: 'saved'});
+			`,
+					],
+					{ stdio: ["ignore", "pipe", "pipe"] },
+				)
+				let stderr = ""
+				worker.stderr.on("data", (data) => {
+					stderr += data
+				})
+				finished = new Promise<void>((resolve, reject) => {
+					worker.once("error", reject)
+					worker.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(stderr))))
+				})
+				await new Promise<void>((resolve, reject) => {
+					worker.stdout.once("data", () => resolve())
+					worker.once("error", reject)
+					worker.once("exit", () => reject(new Error("writer exited before ready")))
+				})
+				await Bun.sleep(50)
+				expect(readDisk().unrelatedMigrationRace).toBeUndefined()
+			}
+			return operation()
+		}, options)
+	await window.start()
+	await finished
+	const disk = readDisk()
+	expect(disk.unrelatedMigrationRace).toBe("saved")
+	expect(disk.profilesMigration.version).toBe(1)
+	expect(disk.profiles.map((profile: { name: string }) => profile.name)).toEqual(["Claude", "Local"])
 })
