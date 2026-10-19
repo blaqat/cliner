@@ -104,3 +104,79 @@ describe("pending persistence", () => {
 		expect(JSON.parse(fs.readFileSync(path.join(dir, "task.json"), "utf8"))).toEqual({ a: "new", b: "second" })
 	})
 })
+
+describe("profile secret persistence", () => {
+	it("waits for a locked secret save before publishing or resolving the configuration", async () => {
+		const { saveApiProfile } = await import("@/core/controller/models/saveApiProfile")
+		const { apiConfigurationForProfileId } = await import("@/core/controller/models/apiProfiles")
+		;(StateManager as any).instance = manager
+		let published = false
+		const controller = {
+			stateManager: manager,
+			postStateToWebview: async () => {
+				published = true
+			},
+		}
+		const release = await acquireStorageLock(path.join(dir, "data/secrets.json.lock"))
+		const saved = saveApiProfile(
+			controller as any,
+			{
+				id: "locked",
+				name: "Locked",
+				provider: "anthropic",
+				modelId: "claude",
+				secrets: { apiKey: "new-key" },
+			} as any,
+		)
+		let flushed = false
+		await Bun.sleep(30)
+		const flush = manager.flushPendingState().then(() => {
+			flushed = true
+		})
+		try {
+			await Bun.sleep(30)
+			expect(published).toBe(false)
+			expect(flushed).toBe(false)
+			expect(manager.getGlobalStateKey("apiConfigProfiles")).toEqual([])
+		} finally {
+			release()
+		}
+		await saved
+		await flush
+		expect(published).toBe(true)
+		expect(apiConfigurationForProfileId(manager, "locked", "act").apiKey).toBe("new-key")
+		expect(JSON.parse(fs.readFileSync(path.join(dir, "data/secrets.json"), "utf8"))["profile:locked:apiKey"]).toBe("new-key")
+		await manager.flushPendingState()
+	})
+
+	it("reports a secret lock timeout to the caller, flush, and error callback", async () => {
+		const { upsertApiConfigProfile } = await import("@/core/controller/models/apiProfiles")
+		const { StorageLockTimeoutError } = await import("@/shared/storage/storage-lock")
+		;(StateManager as any).instance = manager
+		const original = storage.secrets.withLock.bind(storage.secrets)
+		storage.secrets.withLock = (operation) => original(operation, { timeoutMs: 40, retryMs: 5 })
+		let reported: Error | undefined
+		manager.registerCallbacks({
+			onPersistenceError: ({ error }) => {
+				reported = error
+			},
+		})
+		const release = await acquireStorageLock(path.join(dir, "data/secrets.json.lock"))
+		try {
+			await expect(
+				upsertApiConfigProfile(manager, {
+					id: "timeout",
+					name: "Timeout",
+					provider: "anthropic",
+					modelId: "claude",
+					secrets: { apiKey: "key" },
+				}),
+			).rejects.toBeInstanceOf(StorageLockTimeoutError)
+			await expect(manager.flushPendingState()).rejects.toBeInstanceOf(StorageLockTimeoutError)
+			expect(reported).toBeInstanceOf(StorageLockTimeoutError)
+			expect(manager.getGlobalStateKey("apiConfigProfiles")).toEqual([])
+		} finally {
+			release()
+		}
+	})
+})

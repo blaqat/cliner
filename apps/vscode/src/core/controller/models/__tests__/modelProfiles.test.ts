@@ -36,7 +36,7 @@ function createStore() {
 			}
 		},
 		getSecretForKey: (key) => secretsStore[key],
-		setSecretsForKeys: (entries) => {
+		setSecretsForKeys: async (entries) => {
 			for (const [key, value] of Object.entries(entries)) {
 				if (value === undefined || value === "") delete secretsStore[key]
 				else secretsStore[key] = value
@@ -48,16 +48,16 @@ function createStore() {
 }
 
 /** Two configurations: Claude (default effort high) and Local (no default effort). */
-function withConfigurations() {
+async function withConfigurations() {
 	const ctx = createStore()
-	const claude = upsertApiConfigProfile(ctx.store, {
+	const claude = await upsertApiConfigProfile(ctx.store, {
 		name: "Claude",
 		provider: "anthropic",
 		modelId: "claude-x",
 		reasoningEffort: "high",
 		secrets: { apiKey: "claude-key" },
 	})
-	const local = upsertApiConfigProfile(ctx.store, {
+	const local = await upsertApiConfigProfile(ctx.store, {
 		name: "Local",
 		provider: "openai",
 		modelId: "qwen",
@@ -70,8 +70,8 @@ function withConfigurations() {
 const byId = (profiles: ModelProfile[], id: unknown) => profiles.find((profile) => profile.id === id)
 
 describe("ensureModelProfiles (migration)", () => {
-	it("creates one profile per referenced configuration and repoints every setting", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("creates one profile per referenced configuration and repoints every setting", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		globalState.askProfileId = claude.id
 		globalState.actProfileId = claude.id
 		globalState.planModeReasoningEffort = "high"
@@ -107,8 +107,8 @@ describe("ensureModelProfiles (migration)", () => {
 		expect(store.getApiConfiguration().actModeReasoningEffort).toBe("high")
 	})
 
-	it("keeps different Ask and Act defaults, and their current efforts, behind the switch", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("keeps different Ask and Act defaults, and their current efforts, behind the switch", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		globalState.askProfileId = claude.id
 		globalState.actProfileId = local.id
 		Object.assign(store.getApiConfiguration(), { planModeReasoningEffort: "low", actModeReasoningEffort: "none" })
@@ -127,8 +127,8 @@ describe("ensureModelProfiles (migration)", () => {
 		expect(globalState.actProfileId).toBe(local.id)
 	})
 
-	it("is idempotent", () => {
-		const { store, globalState, claude } = withConfigurations()
+	it("is idempotent", async () => {
+		const { store, globalState, claude } = await withConfigurations()
 		globalState.askProfileId = claude.id
 		globalState.actProfileId = claude.id
 		globalState.walkthroughGenerateProfileId = claude.id
@@ -139,8 +139,8 @@ describe("ensureModelProfiles (migration)", () => {
 		expect(globalState).toEqual(snapshot)
 	})
 
-	it("creates no profiles for settings that reference nothing", () => {
-		const { store, globalState } = withConfigurations()
+	it("creates no profiles for settings that reference nothing", async () => {
+		const { store, globalState } = await withConfigurations()
 		globalState.askProfileId = undefined
 		globalState.actProfileId = undefined
 		expect(ensureModelProfiles(store)).toEqual([])
@@ -150,7 +150,7 @@ describe("ensureModelProfiles (migration)", () => {
 
 /** What an older release does: write the legacy configuration-based keys directly, without touching profiles or the stamp. */
 function olderReleaseSelects(
-	ctx: ReturnType<typeof withConfigurations>,
+	ctx: Awaited<ReturnType<typeof withConfigurations>>,
 	selection: { ask?: [string, string?]; act?: [string, string?] },
 ) {
 	for (const [mode, chosen] of [
@@ -163,8 +163,8 @@ function olderReleaseSelects(
 	}
 }
 
-function startedOnClaude() {
-	const ctx = withConfigurations()
+async function startedOnClaude() {
+	const ctx = await withConfigurations()
 	ctx.globalState.askProfileId = ctx.claude.id
 	ctx.globalState.actProfileId = ctx.claude.id
 	Object.assign(ctx.apiConfig, { planModeReasoningEffort: "high", actModeReasoningEffort: "high" })
@@ -173,8 +173,8 @@ function startedOnClaude() {
 }
 
 describe("upgrade after a downgrade (older release changed what new threads start on)", () => {
-	it("adopts the configuration an older release picked instead of reapplying the stale default", () => {
-		const ctx = startedOnClaude()
+	it("adopts the configuration an older release picked instead of reapplying the stale default", async () => {
+		const ctx = await startedOnClaude()
 		const { store, globalState, apiConfig, local } = ctx
 		expect(byId(readModelProfiles(store), globalState.threadDefaultProfileId)?.name).toBe("Claude")
 
@@ -194,8 +194,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 		expect(globalState).toEqual(snapshot)
 	})
 
-	it("adopts a change to one mode only, behind the Ask/Act switch", () => {
-		const ctx = startedOnClaude()
+	it("adopts a change to one mode only, behind the Ask/Act switch", async () => {
+		const ctx = await startedOnClaude()
 		const { store, globalState, claude, local } = ctx
 		olderReleaseSelects(ctx, { act: [local.id] })
 		ensureModelProfiles(store)
@@ -211,8 +211,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 		expect(globalState.actProfileId).toBe(local.id)
 	})
 
-	it("adopts an effort-only change and reuses a matching profile", () => {
-		const ctx = startedOnClaude()
+	it("adopts an effort-only change and reuses a matching profile", async () => {
+		const ctx = await startedOnClaude()
 		const { store, globalState, claude } = ctx
 		const before = readModelProfiles(store).length
 		olderReleaseSelects(ctx, { ask: [claude.id, "low"], act: [claude.id, "low"] })
@@ -230,8 +230,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 		expect(globalState.threadDefaultProfileId).toBe(profile?.id)
 	})
 
-	it("keeps the profiles the user edited since, and leaves an unchanged selection alone", () => {
-		const ctx = startedOnClaude()
+	it("keeps the profiles the user edited since, and leaves an unchanged selection alone", async () => {
+		const ctx = await startedOnClaude()
 		const { store, globalState, claude, local } = ctx
 		const [fast] = saveModelProfiles(store, [
 			{ name: "Fast", configurationId: local.id },
@@ -248,8 +248,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 		expect(globalState.askProfileId).toBe(local.id)
 	})
 
-	it("adopts the legacy feature settings an older release changed, leaving the rest", () => {
-		const ctx = startedOnClaude()
+	it("adopts the legacy feature settings an older release changed, leaving the rest", async () => {
+		const ctx = await startedOnClaude()
 		const { store, globalState, claude, local } = ctx
 		const [claudeProfile] = readModelProfiles(store)
 		saveModelProfiles(store, [claudeProfile, { name: "Fast", configurationId: local.id }])
@@ -277,8 +277,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 		expect(globalState.threadTitlesModelProfileId).toBe(fast.id)
 	})
 
-	it("moves profile ids an earlier build wrote into the legacy keys over to the profile keys", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("moves profile ids an earlier build wrote into the legacy keys over to the profile keys", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		const profiles = [
 			{ id: "p-claude", name: "Claude", configurationId: claude.id },
 			{ id: "p-local", name: "Local", configurationId: local.id },
@@ -308,8 +308,8 @@ describe("upgrade after a downgrade (older release changed what new threads star
 })
 
 describe("legacy subagent reasoning effort", () => {
-	it("is baked into the migrated subagent profiles when the configuration has no effort of its own", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("is baked into the migrated subagent profiles when the configuration has no effort of its own", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		Object.assign(globalState, {
 			subagentReasoningEffort: "high",
 			subagentDefaultProfileId: local.id,
@@ -323,7 +323,7 @@ describe("legacy subagent reasoning effort", () => {
 		expect(byConfiguration(local.id)).toEqual([expect.objectContaining({ name: "Local · High", reasoningEffort: "high" })])
 		expect(byId(profiles, globalState.subagentDefaultModelProfileId)?.reasoningEffort).toBe("high")
 		// Claude's own effort (high) took precedence over the setting, and still does.
-		const legacyLow = withConfigurations()
+		const legacyLow = await withConfigurations()
 		Object.assign(legacyLow.globalState, {
 			subagentReasoningEffort: "low",
 			subagentAllowedProfileIds: [legacyLow.claude.id],
@@ -337,8 +337,8 @@ describe("legacy subagent reasoning effort", () => {
 		])
 	})
 
-	it("does not leak into thread defaults, walkthrough or titles", () => {
-		const { store, globalState, apiConfig, claude, local } = withConfigurations()
+	it("does not leak into thread defaults, walkthrough or titles", async () => {
+		const { store, globalState, apiConfig, claude, local } = await withConfigurations()
 		Object.assign(apiConfig, { planModeReasoningEffort: "none", actModeReasoningEffort: "none" })
 		Object.assign(globalState, {
 			subagentReasoningEffort: "high",
@@ -354,8 +354,8 @@ describe("legacy subagent reasoning effort", () => {
 		expect(claude.id).toBeTruthy()
 	})
 
-	it("re-applies a changed legacy effort from an older release to the subagent profiles", () => {
-		const { store, globalState, local } = withConfigurations()
+	it("re-applies a changed legacy effort from an older release to the subagent profiles", async () => {
+		const { store, globalState, local } = await withConfigurations()
 		Object.assign(globalState, { subagentDefaultProfileId: local.id, subagentReasoningEffort: "low" })
 		ensureModelProfiles(store)
 		expect(byId(readModelProfiles(store), globalState.subagentDefaultModelProfileId)?.reasoningEffort).toBe("low")
@@ -366,8 +366,8 @@ describe("legacy subagent reasoning effort", () => {
 })
 
 describe("saveModelProfiles", () => {
-	it("round-trips create, edit and delete, pruning references to removed profiles", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("round-trips create, edit and delete, pruning references to removed profiles", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		const created = saveModelProfiles(store, [
 			{ name: "Fast", configurationId: local.id },
 			{ name: " Deep ", configurationId: claude.id, reasoningEffort: "xhigh" },
@@ -393,24 +393,24 @@ describe("saveModelProfiles", () => {
 		expect(globalState.walkthroughGenerateModelProfileId).toBeUndefined()
 	})
 
-	it("rejects unknown configurations and invalid efforts, and names unnamed profiles after their model", () => {
-		const { store, local } = withConfigurations()
+	it("rejects unknown configurations and invalid efforts, and names unnamed profiles after their model", async () => {
+		const { store, local } = await withConfigurations()
 		expect(() => saveModelProfiles(store, [{ name: "X", configurationId: "missing" }])).toThrow()
 		expect(() => saveModelProfiles(store, [{ name: "X", configurationId: local.id, reasoningEffort: "max!" }])).toThrow()
 		expect(saveModelProfiles(store, [{ name: "  ", configurationId: local.id }])[0].name).toBe("Local")
 	})
 
-	it("blocks deleting a configuration a profile runs on", () => {
-		const { store, claude, local } = withConfigurations()
+	it("blocks deleting a configuration a profile runs on", async () => {
+		const { store, claude, local } = await withConfigurations()
 		saveModelProfiles(store, [{ name: "Deep", configurationId: claude.id }])
-		expect(() => deleteApiConfigProfile(store, claude.id)).toThrow(/"Deep"/)
-		expect(deleteApiConfigProfile(store, local.id)).toBe(true)
+		await expect(deleteApiConfigProfile(store, claude.id)).rejects.toThrow(/"Deep"/)
+		expect(await deleteApiConfigProfile(store, local.id)).toBe(true)
 	})
 })
 
 describe("Thread defaults", () => {
-	it("uses one profile for both modes until the switch is on", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("uses one profile for both modes until the switch is on", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		const [fast, deep] = saveModelProfiles(store, [
 			{ name: "Fast", configurationId: local.id },
 			{ name: "Deep", configurationId: claude.id, reasoningEffort: "xhigh" },
@@ -426,8 +426,8 @@ describe("Thread defaults", () => {
 		expect(threadDefaultProfileId(store, "act")).toBe(fast.id)
 	})
 
-	it("starts a new thread on its default profile's configuration and effort", () => {
-		const { store, globalState, claude, local } = withConfigurations()
+	it("starts a new thread on its default profile's configuration and effort", async () => {
+		const { store, globalState, claude, local } = await withConfigurations()
 		const [fast, deep] = saveModelProfiles(store, [
 			{ name: "Fast", configurationId: local.id, reasoningEffort: "low" },
 			{ name: "Deep", configurationId: claude.id, reasoningEffort: "xhigh" },
@@ -459,8 +459,8 @@ describe("Thread defaults", () => {
 		expect(act.actModeReasoningEffort).toBe("low")
 	})
 
-	it("follows a Settings-side configuration assignment (onboarding)", () => {
-		const { store, globalState, local } = withConfigurations()
+	it("follows a Settings-side configuration assignment (onboarding)", async () => {
+		const { store, globalState, local } = await withConfigurations()
 		adoptConfigurationAsThreadDefault(store, "act", local.id)
 		const profile = byId(readModelProfiles(store), globalState.threadDefaultProfileId)
 		expect(profile).toMatchObject({ name: "Local", configurationId: local.id })
@@ -470,8 +470,8 @@ describe("Thread defaults", () => {
 })
 
 describe("profile resolution", () => {
-	it("resolves a profile to its configuration's connection at the profile's effort", () => {
-		const { store, claude } = withConfigurations()
+	it("resolves a profile to its configuration's connection at the profile's effort", async () => {
+		const { store, claude } = await withConfigurations()
 		const [deep] = saveModelProfiles(store, [{ name: "Deep", configurationId: claude.id, reasoningEffort: "low" }])
 		expect(resolveModelProfile(store, deep.id)).toMatchObject({ configuration: { id: claude.id }, reasoningEffort: "low" })
 		const configuration = apiConfigurationForModelProfile(store, deep.id, "act")

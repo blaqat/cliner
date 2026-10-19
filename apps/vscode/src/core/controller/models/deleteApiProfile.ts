@@ -17,7 +17,7 @@ export async function deleteApiProfile(controller: Controller, request: DeleteAp
 		if (!id) {
 			throw new Error("profile id is required")
 		}
-		if (!deleteApiConfigProfile(controller.stateManager, id)) {
+		if (!(await deleteApiConfigProfile(controller.stateManager, id))) {
 			throw new Error(`No saved configuration with id "${id}"`)
 		}
 		// A mode left running the deleted configuration was repaired to a

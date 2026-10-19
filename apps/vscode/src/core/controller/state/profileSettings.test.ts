@@ -41,7 +41,7 @@ function makeController() {
 		}),
 		setGlobalStateBatch: (updates: Record<string, unknown>) => Object.assign(state, updates),
 		getSecretForKey: () => undefined,
-		setSecretsForKeys: () => {},
+		setSecretsForKeys: async () => {},
 		listSecretStorageKeys: () => [],
 	}
 	return {

@@ -56,14 +56,14 @@ const olderReleaseWrites = (entries: Record<string, unknown>) => {
 async function seedLegacyUser() {
 	const window = openWindow()
 	await window.populate()
-	const claude = upsertApiConfigProfile(window.store, {
+	const claude = await upsertApiConfigProfile(window.store, {
 		name: "Claude",
 		provider: "anthropic",
 		modelId: "claude-x",
 		reasoningEffort: "high",
 		secrets: { apiKey: "claude-key" },
 	})
-	const local = upsertApiConfigProfile(window.store, {
+	const local = await upsertApiConfigProfile(window.store, {
 		name: "Local",
 		provider: "openai",
 		modelId: "qwen",

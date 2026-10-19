@@ -77,6 +77,8 @@ export class StateManager {
 	private pendingWorkspaceState = new Set<LocalStateKey>()
 	private persistenceTimeout: NodeJS.Timeout | null = null
 	private persistence: Promise<void> = Promise.resolve()
+	private secretWrites = new Set<Promise<void>>()
+	private secretWriteErrors: unknown[] = []
 	private readonly PERSISTENCE_DELAY_MS = 500
 	private taskHistoryWatcher: FSWatcher | null = null
 
@@ -160,7 +162,7 @@ export class StateManager {
 			await this.storage.globalStateBackingStore.withLock(async () => {
 				acquired = true
 				await this.reloadPersistedState()
-				ensureApiConfigProfiles(this)
+				await ensureApiConfigProfiles(this)
 				ensureModelProfiles(this)
 				await this.flushPendingState()
 			}, options)
@@ -576,11 +578,26 @@ export class StateManager {
 	 * Write secrets under arbitrary keys in the secrets store. Empty/undefined
 	 * values delete the key. Writes go straight to the backing store.
 	 */
-	setSecretsForKeys(entries: Record<string, string | undefined>): void {
+	setSecretsForKeys(entries: Record<string, string | undefined>): Promise<void> {
 		if (!this.isInitialized) {
 			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
 		}
-		void this.storage.secrets.setBatch(entries)
+		const write = Promise.resolve().then(() => this.storage.secrets.setBatch(entries))
+		this.secretWrites.add(write)
+		void write.then(
+			() => this.secretWrites.delete(write),
+			(error) => {
+				this.secretWrites.delete(write)
+				this.secretWriteErrors.push(error)
+				Logger.error("[StateManager] Failed to persist profile secrets:", error)
+				void Promise.resolve()
+					.then(() => this.onPersistenceError?.({ error }))
+					.catch((callbackError) => {
+						Logger.error("[StateManager] Persistence error callback failed:", callbackError)
+					})
+			},
+		)
+		return write
 	}
 
 	/**
@@ -707,8 +724,12 @@ export class StateManager {
 			this.persistenceTimeout = null
 		}
 
-		// Execute persistence immediately
-		await this.persistPendingState()
+		// Include profile-secret writes even when no debounced state is pending.
+		const results = await Promise.allSettled([this.persistPendingState(), ...this.secretWrites])
+		const secretErrors = this.secretWriteErrors.splice(0)
+		const failure = results.find((result) => result.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
+		if (secretErrors.length) throw secretErrors[0]
 	}
 
 	/**
@@ -729,7 +750,11 @@ export class StateManager {
 				Logger.error("[StateManager] Failed to persist pending changes:", error)
 
 				// Call persistence error callback for error recovery
-				this.onPersistenceError?.({ error: error })
+				try {
+					await this.onPersistenceError?.({ error: error })
+				} catch (callbackError) {
+					Logger.error("[StateManager] Persistence error callback failed:", callbackError)
+				}
 			}
 		}, this.PERSISTENCE_DELAY_MS)
 	}
