@@ -88,11 +88,30 @@ describe("InboxList", () => {
 		expect(row).not.toHaveTextContent("3h")
 	})
 
-	it("shows subthread work on an idle parent", () => {
+	it("shows an idle parent with a running subthread as waiting on it", () => {
 		mocks.state.sessionStatuses = { run: "done", aside: "running" }
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
-		expect(screen.getAllByTestId("inbox-row")[0]).toHaveTextContent("Working… in subthread")
+		const row = screen.getAllByTestId("inbox-row")[0]
+		expect(row).toHaveTextContent("Waiting on 1 subthread")
+		expect(within(row).getByRole("img", { name: "Waiting on 1 subthread" })).toHaveAttribute("data-status", "subagents")
+	})
+
+	it("shows an idle parent with running subagents as waiting on subagents, not done", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW),
+			item("a", NOW + 1, { parentTaskId: "parent", isSubagent: true }),
+			item("b", NOW + 2, { parentTaskId: "parent", isSubagent: true }),
+		]
+		mocks.state.sessionStatuses = { parent: "done", a: "running", b: "running" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const row = screen.getByTestId("inbox-row")
+		const icon = within(row).getByRole("img", { name: "Waiting on 2 subagents" })
+		expect(icon).toHaveClass("text-(--vscode-charts-purple)")
+		expect(icon.querySelector("title")).toHaveTextContent("Waiting on 2 subagents")
+		expect(within(row).getByTestId("inbox-row-detail")).toHaveTextContent("Waiting on 2 subagents")
+		expect(row).not.toHaveTextContent("Done")
 	})
 
 	it("turns the subagent count yellow when a child needs the user", () => {

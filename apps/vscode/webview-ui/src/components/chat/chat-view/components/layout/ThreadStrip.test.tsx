@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import ThreadStrip from "./ThreadStrip"
 
@@ -38,6 +38,16 @@ describe("ThreadStrip", () => {
 		expect(chips[1]).toHaveTextContent("why?")
 		expect(chips[0]).toHaveAttribute("aria-current", "true")
 		expect(screen.queryByText("Subagent report")).toBeNull()
+	})
+
+	it("shows Main as waiting on its subagents and subthreads once its own turn ends", () => {
+		mocks.state = { ...mocks.state, sessionStatuses: { root: "done", aside: "running", root__a: "running" } }
+		render(<ThreadStrip />)
+
+		const [main, asideChip] = screen.getAllByTestId("thread-chip")
+		const icon = within(main).getByRole("img", { name: "Waiting on 1 subagent and 1 subthread" })
+		expect(icon).toHaveAttribute("data-status", "subagents")
+		expect(within(asideChip).getByRole("img", { name: "Running" })).toBeInTheDocument()
 	})
 
 	it("focuses an aside on click and collapses", () => {

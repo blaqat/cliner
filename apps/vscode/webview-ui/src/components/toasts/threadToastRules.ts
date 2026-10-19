@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import type { SessionStatuses } from "@/components/inbox/inboxUtils"
+import type { ThreadStatusMap } from "@/components/inbox/threadStatus"
 
 /** `done`: a background thread finished its turn. `input`: it waits on an approval or a question. */
 export type ThreadToastKind = "done" | "input"
@@ -34,15 +34,19 @@ export interface ToastEventContext {
  * Which status changes toast. `previous` undefined is the first snapshot after
  * load: it only sets the baseline, so reopening the sidebar doesn't replay
  * everything that is already done or waiting.
+ * Statuses are the derived thread statuses, so a thread whose own turn ended
+ * while its subagents still run is "subagents", not done.
  * - running → done toasts "finished". A stop also lands on done; those ids
  *   come in `stoppedIds`. Failures land on error and never toast.
+ * - running → subagents is not a finish; subagents → done (the subagents
+ *   finished and the thread is idle) toasts "finished".
  * - anything → waiting toasts "needs input".
  * - Subagents never toast on finishing (their parent reports back). Their
  *   decisions surface in the parent thread, so an input toast opens the parent.
  */
 export function threadToastEvents(
-	previous: SessionStatuses | undefined,
-	next: SessionStatuses,
+	previous: ThreadStatusMap | undefined,
+	next: ThreadStatusMap,
 	{ viewingThreadId, history, stoppedIds }: ToastEventContext,
 ): ThreadToastEvent[] {
 	if (!previous) return []
@@ -56,7 +60,12 @@ export function threadToastEvents(
 		if (id === viewingThreadId || target === viewingThreadId) continue
 		if (status === "waiting") {
 			events.push({ threadId: target, sourceId: id, kind: "input" })
-		} else if (status === "done" && before === "running" && !item?.isSubagent && !stoppedIds?.has(id)) {
+		} else if (
+			status === "done" &&
+			(before === "running" || before === "subagents") &&
+			!item?.isSubagent &&
+			!stoppedIds?.has(id)
+		) {
 			events.push({ threadId: target, sourceId: id, kind: "done" })
 		}
 	}
@@ -82,7 +91,7 @@ export function addThreadToasts(
  */
 export function pruneThreadToasts(
 	toasts: readonly ThreadToast[],
-	statuses: SessionStatuses,
+	statuses: ThreadStatusMap,
 	viewingThreadId: string | undefined,
 ): ThreadToast[] {
 	const kept = toasts.filter(

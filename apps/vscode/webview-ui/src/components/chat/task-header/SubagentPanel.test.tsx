@@ -106,6 +106,16 @@ describe("SubagentPanelButton", () => {
 		expect(screen.queryByText("grandchild")).toBeNull()
 	})
 
+	it("shows the current thread as waiting on subagents while its children run", () => {
+		mocks.state = { ...mocks.state, sessionStatuses: { root: "done", a: "running", b: "running", d: "done" } }
+		render(<SubagentPanelButton />)
+		openPanel()
+
+		const current = rows()[0]
+		expect(within(current).getByTestId("lineage-status")).toHaveTextContent("waiting on 2 subagents")
+		expect(within(current).getByRole("img", { name: "Waiting on 2 subagents" })).toHaveAttribute("data-status", "subagents")
+	})
+
 	it("shows the immediate parent, current subagent and its children inside a subagent", () => {
 		mocks.state = { ...mocks.state, currentTaskItem: a, sessionStatuses: { n: "waiting" } }
 		render(<SubagentPanelButton />)

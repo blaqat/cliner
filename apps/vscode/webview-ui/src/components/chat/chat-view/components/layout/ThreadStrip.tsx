@@ -46,7 +46,11 @@ const ThreadChip = ({ item, onOpen, onClose }: ThreadChipProps) => {
 			title={tooltip}>
 			<MessageSquareIcon className="size-3 shrink-0" />
 			<span className="min-w-0 flex-1 truncate">{item.title}</span>
-			<SessionStatusIcon className={item.status === "running" ? "size-2.5" : undefined} status={item.status} />
+			<SessionStatusIcon
+				className={item.status === "running" || item.status === "subagents" ? "size-2.5" : undefined}
+				label={item.statusLabel}
+				status={item.status}
+			/>
 			{item.kind !== "main" && (
 				<button
 					aria-label={`Close aside ${item.title}`}

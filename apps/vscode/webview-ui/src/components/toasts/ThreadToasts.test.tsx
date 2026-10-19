@@ -62,6 +62,17 @@ describe("ThreadToasts", () => {
 		expect(screen.queryByTestId("thread-toast")).toBeNull()
 	})
 
+	it("waits for subagents before toasting a parent finished", () => {
+		const taskHistory = [...baseState().taskHistory, { id: "sub", ts: 5, task: "Child", parentTaskId: "a", isSubagent: true }]
+		state = { ...baseState(), taskHistory, sessionStatuses: { a: "running", sub: "running" } }
+		const { rerender } = render(<ThreadToasts />)
+		// The parent's own turn ends while its subagent still runs: no toast yet.
+		update({ sessionStatuses: { a: "done", sub: "running" } }, rerender)
+		expect(screen.queryByTestId("thread-toast")).toBeNull()
+		update({ sessionStatuses: { a: "done", sub: "done" } }, rerender)
+		expect(screen.getByTestId("thread-toast")).toHaveTextContent("Finished")
+	})
+
 	it("pauses the timer while hovered", () => {
 		const { rerender } = mountWith({ a: "running" })
 		update({ sessionStatuses: { a: "done" } }, rerender)

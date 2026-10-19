@@ -239,6 +239,32 @@ describe("TaskGroupView", () => {
 		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "impl" }))
 	})
 
+	it("marks a thread waiting on its subagents with its own icon and tooltip", async () => {
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: { impl: "done", sub: "running" },
+			taskHistory: [
+				{ id: "impl", ts: NOW, task: "Implement", tokensIn: 0, tokensOut: 0, totalCost: 0 },
+				{
+					id: "sub",
+					ts: NOW,
+					task: "sub",
+					parentTaskId: "impl",
+					isSubagent: true,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			],
+		}
+		await renderView()
+		const rows = screen.getAllByTestId("task-group-timeline-row")
+		const icon = within(rows[4]).getByRole("img", { name: "Waiting on 1 subagent" })
+		expect(icon).toHaveAttribute("data-status", "subagents")
+		expect(icon).toHaveClass("size-3")
+		expect(within(rows[0]).getByRole("img", { name: "Done" })).toBeInTheDocument()
+	})
+
 	it("draws the connector only between the first and last nodes", async () => {
 		await renderView()
 		const entries = screen.getAllByTestId("task-group-timeline-entry")

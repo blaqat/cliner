@@ -9,6 +9,7 @@ import {
 	expandTaskGroupInInbox,
 	formatAge,
 	type InboxSettledEntry,
+	isRowWorking,
 	readExpandedTaskGroups,
 	writeExpandedTaskGroups,
 } from "./inboxUtils"
@@ -219,11 +220,11 @@ describe("inbox helpers", () => {
 		expect(describeActivity({ ...row("done", true), activityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
 	})
 
-	it("says a subthread is working when the parent is idle but a descendant is live", () => {
+	it("says what an idle parent is waiting on", () => {
 		const row = (liveSubthreadCount: number, liveSubagentCount = 0) => ({
 			item: item("t", NOW - MIN),
 			activityTs: NOW - MIN,
-			status: "done" as const,
+			status: "subagents" as const,
 			settled: false,
 			subthreadCount: liveSubthreadCount,
 			liveSubthreadCount,
@@ -231,13 +232,43 @@ describe("inbox helpers", () => {
 			liveSubagentCount,
 			attentionSubagentCount: 0,
 		})
-		expect(describeActivity(row(1), NOW)).toBe("Working… in subthread")
-		expect(describeActivity(row(0, 1), NOW)).toBe("Working… in subthread")
+		expect(describeActivity(row(1), NOW)).toBe("Waiting on 1 subthread")
+		expect(describeActivity(row(0, 2), NOW)).toBe("Waiting on 2 subagents")
+		expect(describeActivity(row(1, 1), NOW)).toBe("Waiting on 1 subagent and 1 subthread")
 		expect(describeActivity({ ...row(1), status: "running" }, NOW)).toBe("Working…")
 		// A parent that needs the user still says so while a subthread works.
 		expect(describeActivity({ ...row(1), status: "waiting" }, NOW)).toBe("Waiting for you")
 		expect(describeActivity({ ...row(1), status: "error" }, NOW)).toBe("Stopped with an error")
-		expect(describeActivity(row(0), NOW)).toBe("Done")
+		expect(describeActivity({ ...row(0), status: "done" }, NOW)).toBe("Done")
+	})
+
+	it("derives waiting on subagents for an idle parent with live children", () => {
+		const history = [
+			item("p", NOW - MIN),
+			item("a", NOW, { parentTaskId: "p", isSubagent: true }),
+			item("b", NOW, { parentTaskId: "p", isSubagent: true }),
+		]
+		const rowFor = (statuses: Record<string, "running" | "waiting" | "done" | "error">) =>
+			buildInbox(history, statuses).active[0]
+
+		const waiting = rowFor({ p: "done", a: "running", b: "running" })
+		expect(waiting.status).toBe("subagents")
+		expect(describeActivity(waiting, NOW)).toBe("Waiting on 2 subagents")
+		expect(rowFor({ p: "done", a: "done", b: "done" }).status).toBe("done")
+		// A subagent that needs the user wins over waiting on the others.
+		expect(rowFor({ p: "done", a: "waiting", b: "running" }).status).toBe("waiting")
+		// The parent's own state wins while it is running or failed.
+		expect(rowFor({ p: "running", a: "running", b: "done" }).status).toBe("running")
+		expect(rowFor({ p: "error", a: "running", b: "done" }).status).toBe("error")
+	})
+
+	it("keeps a settled thread that waits on subagents in the active section", () => {
+		const history = [item("p", NOW - MIN, { isSettled: true }), item("a", NOW, { parentTaskId: "p", isSubagent: true })]
+		const inbox = buildInbox(history, { p: "done", a: "running" })
+		expect(inbox.active.map((row) => row.item.id)).toEqual(["p"])
+		expect(inbox.active[0]).toMatchObject({ status: "subagents", settled: false })
+		expect(inbox.settledTotal).toBe(0)
+		expect(isRowWorking(inbox.active[0])).toBe(true)
 	})
 })
 

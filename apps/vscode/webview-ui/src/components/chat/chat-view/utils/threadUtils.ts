@@ -5,7 +5,14 @@ import type {
 	SubagentExecutionStatus,
 } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { type SessionStatus, type SessionStatuses, statusFor } from "@/components/inbox/inboxUtils"
+import type { SessionStatus, SessionStatuses } from "@/components/inbox/inboxUtils"
+import {
+	buildThreadStatuses,
+	type ThreadStatus,
+	type ThreadStatuses,
+	threadStatusFor,
+	threadStatusLabel,
+} from "@/components/inbox/threadStatus"
 
 export type ThreadKind = "main" | "aside" | "subagent"
 
@@ -14,7 +21,9 @@ export interface ThreadItem {
 	/** Task id for main/aside; `<statusMessageTs>:<index>` for subagents. */
 	id: string
 	title: string
-	status: SessionStatus
+	status: ThreadStatus
+	/** Status tooltip when it says more than the status name ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	/** True for the chip of the focused task. */
 	current: boolean
 	access?: "read" | "write"
@@ -32,6 +41,12 @@ const SUBAGENT_STATUS: Record<SubagentExecutionStatus, SessionStatus> = {
 }
 
 const ASIDE_PREFIX = /^Aside:\s*/i
+
+/** Derived status and its tooltip for a thread id. */
+function statusFields(statuses: ThreadStatuses, id: string): { status: ThreadStatus; statusLabel?: string } {
+	const statusLabel = threadStatusLabel(statuses[id])
+	return { status: threadStatusFor(statuses, id), ...(statusLabel ? { statusLabel } : {}) }
+}
 
 function parseJson<T>(text: string | undefined): T | undefined {
 	if (!text) {
@@ -123,8 +138,9 @@ export function buildThreadItems(
 		return []
 	}
 	const root = (focused.parentTaskId && history.find((item) => item.id === focused.parentTaskId)) || focused
+	const derived = buildThreadStatuses(history, statuses)
 	const items: ThreadItem[] = [
-		{ kind: "main", id: root.id, title: "Main", status: statusFor(statuses, root.id), current: root.id === focused.id },
+		{ kind: "main", id: root.id, title: "Main", ...statusFields(derived, root.id), current: root.id === focused.id },
 	]
 
 	const asides = history
@@ -140,7 +156,7 @@ export function buildThreadItems(
 			kind: "aside",
 			id: aside.id,
 			title: asideTitle(aside),
-			status: statusFor(statuses, aside.id),
+			...statusFields(derived, aside.id),
 			current: aside.id === focused.id,
 		})
 	}
@@ -150,7 +166,7 @@ export function buildThreadItems(
 			kind: "aside",
 			id: focused.id,
 			title: asideTitle(focused),
-			status: statusFor(statuses, focused.id),
+			...statusFields(derived, focused.id),
 			current: true,
 		})
 	}
@@ -221,7 +237,9 @@ export interface LineageRow {
 	/** Task id; `<statusMessageTs>:<index>` for an unsaved transcript preview. */
 	id: string
 	title: string
-	status: SessionStatus
+	status: ThreadStatus
+	/** Status tooltip when it says more than the status name ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	access?: "read" | "write"
 	/** Older transcripts without a saved child record; opens by scrolling to its status row. */
 	previewOnly?: boolean
@@ -257,18 +275,19 @@ export function buildSubagentLineage(
 	}
 	const parentId = focused.isSubagent ? (focused.parentTaskId ?? fallbackParentId) : undefined
 	const parentItem = parentId ? history.find((item) => item.id === parentId) : undefined
+	const derived = buildThreadStatuses(history, statuses)
 	const parent: LineageRow | undefined = parentId
 		? {
 				id: parentId,
 				title: parentItem ? (parentItem.isSubagent ? parentItem.task : asideTitleOrTask(parentItem)) : "Parent",
-				status: statusFor(statuses, parentId),
+				...statusFields(derived, parentId),
 				access: parentItem?.isSubagent ? (parentItem.subagentAccess ?? "read") : undefined,
 			}
 		: undefined
 	const current: LineageRow = {
 		id: focused.id,
 		title: focused.isSubagent ? focused.task : asideTitleOrTask(focused),
-		status: statusFor(statuses, focused.id),
+		...statusFields(derived, focused.id),
 		access: focused.isSubagent ? (focused.subagentAccess ?? "read") : undefined,
 		parentTaskId: parentId,
 	}
@@ -277,7 +296,7 @@ export function buildSubagentLineage(
 	const children: LineageRow[] = saved.map((child) => ({
 		id: child.id,
 		title: child.task,
-		status: statusFor(statuses, child.id),
+		...statusFields(derived, child.id),
 		access: child.subagentAccess ?? "read",
 		parentTaskId: focused.id,
 		toolCalls: child.subagentToolCalls,

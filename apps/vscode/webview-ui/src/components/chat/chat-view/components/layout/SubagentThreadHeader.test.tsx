@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from "vitest"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./SubagentThreadHeader"
 
 const mocks = vi.hoisted(() => ({ openTask: vi.fn(), stopSubagent: vi.fn() }))
-vi.mock("@/components/inbox/sessionActions", () => mocks)
-vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ currentTaskItem: undefined, taskHistory: [], sessionStatuses: {}, clineMessages: [] }),
+const extensionState = vi.hoisted(() => ({
+	current: { currentTaskItem: undefined, taskHistory: [], sessionStatuses: {}, clineMessages: [] } as Record<string, unknown>,
 }))
+vi.mock("@/components/inbox/sessionActions", () => mocks)
+vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => extensionState.current }))
 const item: HistoryItem = {
 	id: "parent__child",
 	ts: 1,
@@ -40,6 +41,24 @@ describe("subagent thread controls", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Stop subagent" }))
 		await waitFor(() => expect(screen.getByRole("button", { name: "Stop subagent" })).toHaveTextContent("Stopping…"))
 		expect(screen.getByRole("button", { name: "Stop subagent" })).toBeDisabled()
+	})
+
+	it("shows a finished subagent that still waits on its own subagents", () => {
+		const nested: HistoryItem = { ...item, id: "parent__nested", parentTaskId: item.id, task: "Dig deeper" }
+		const previous = extensionState.current
+		extensionState.current = {
+			...previous,
+			taskHistory: [item, nested],
+			sessionStatuses: { [item.id]: "done", [nested.id]: "running" },
+		}
+		try {
+			render(
+				<SubagentThreadHeader item={item} view={{ parentTaskId: "parent", agentId: "child", status: "done" as const }} />,
+			)
+			expect(screen.getByRole("img", { name: "Waiting on 1 subagent" })).toHaveAttribute("data-status", "subagents")
+		} finally {
+			extensionState.current = previous
+		}
 	})
 
 	it("explains read-only behavior and quotes the report without sending a followup", () => {

@@ -3,8 +3,8 @@ import type { TaskGroupSummary } from "@shared/task-groups"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
-import type { SessionStatuses } from "@/components/inbox/inboxUtils"
 import { openTask } from "@/components/inbox/sessionActions"
+import { buildThreadStatuses, type ThreadStatusMap, threadStatusMap } from "@/components/inbox/threadStatus"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -146,7 +146,7 @@ export const ThreadToasts = () => {
 	const viewingThreadId = navigation ? (current?.kind === "thread" ? current.id : undefined) : currentTaskItem?.id
 	const enabled = threadToastsEnabled !== false
 	const [toasts, setToasts] = useState<ThreadToast[]>([])
-	const previousRef = useRef<SessionStatuses>()
+	const previousRef = useRef<ThreadStatusMap>()
 	const idRef = useRef(0)
 	const history = taskHistory ?? []
 	const historyRef = useRef(history)
@@ -154,16 +154,19 @@ export const ThreadToasts = () => {
 
 	useEffect(() => {
 		if (!didHydrateState) return
+		// Derived statuses: a thread idle only because its subagents still run is
+		// "subagents", so it toasts "finished" when they are done, not before.
+		const statuses = threadStatusMap(buildThreadStatuses(historyRef.current, sessionStatuses))
 		const previous = previousRef.current
-		previousRef.current = sessionStatuses
+		previousRef.current = statuses
 		if (!enabled) return
-		const events = threadToastEvents(previous, sessionStatuses, {
+		const events = threadToastEvents(previous, statuses, {
 			viewingThreadId,
 			history: historyRef.current,
 			stoppedIds: recentlyStoppedIds(),
 		})
 		setToasts((existing) => {
-			const pruned = pruneThreadToasts(existing, sessionStatuses, viewingThreadId)
+			const pruned = pruneThreadToasts(existing, statuses, viewingThreadId)
 			return events.length ? addThreadToasts(pruned, events, () => ++idRef.current) : pruned
 		})
 	}, [sessionStatuses, viewingThreadId, enabled, didHydrateState])

@@ -9,6 +9,8 @@ import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles
 import { formatAge, statusFor } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask } from "@/components/inbox/sessionActions"
+import { type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
+import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -84,7 +86,8 @@ interface TaskGroupViewProps {
  * chat composer below it starts new threads in this task.
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
-	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, sessionStatuses } = useExtensionState()
+	const { currentBranch, hideTaskGroupView, navigateToTaskGroup } = useExtensionState()
+	const threadStatuses = useThreadStatuses()
 	const { details, missing, refresh, setDetails } = useTaskGroup(taskGroupId)
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -349,7 +352,8 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 										hideTaskGroupView()
 										void openTask(thread.threadId)
 									}}
-									status={statusFor(sessionStatuses, thread.threadId)}
+									status={threadStatusFor(threadStatuses, thread.threadId)}
+									statusLabel={threadStatusLabel(threadStatuses[thread.threadId])}
 									subthread={depth > 0}
 									thread={thread}
 								/>
@@ -422,6 +426,7 @@ const SPINE_CLASS = "pointer-events-none absolute left-[15.5px] w-px bg-descript
 function TimelineRow({
 	thread,
 	status,
+	statusLabel,
 	noteNames,
 	now,
 	onOpen,
@@ -430,7 +435,9 @@ function TimelineRow({
 	subthread,
 }: {
 	thread: TaskGroupThreadRow
-	status: ReturnType<typeof statusFor>
+	status: ThreadStatus
+	/** Tooltip for "waiting on subagents" ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	noteNames: Map<string, string>
 	now: number
 	onOpen: () => void
@@ -442,6 +449,8 @@ function TimelineRow({
 	const started = formatAge(thread.startedTs, now)
 	const active = formatAge(thread.ts, now)
 	const describeAge = (age: string) => (age === "now" ? "just now" : `${age} ago`)
+	// Icons (spinner, hourglass) need more room than a dot.
+	const iconStatus = status === "running" || status === "subagents"
 	return (
 		<li className="relative" data-subthread={subthread || undefined} data-testid="task-group-timeline-entry">
 			<button
@@ -456,15 +465,8 @@ function TimelineRow({
 				<span className={cn("flex h-5 items-center", subthread ? "justify-end" : "justify-center")}>
 					<span className="flex w-3 items-center justify-center" data-testid="task-group-timeline-node">
 						<SessionStatusIcon
-							className={
-								subthread
-									? status === "running"
-										? "size-2.5"
-										: "size-1.5"
-									: status === "running"
-										? "size-3"
-										: "size-2.5"
-							}
+							className={subthread ? (iconStatus ? "size-2.5" : "size-1.5") : iconStatus ? "size-3" : "size-2.5"}
+							label={statusLabel}
 							status={status}
 						/>
 					</span>

@@ -130,7 +130,7 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 			tabIndex={0}
 			transition={{ duration: 0.18, ease: "easeOut" }}>
 			<div className="flex h-5 items-center justify-center self-start pt-1.5">
-				<SessionStatusIcon settled={settled} status={status} />
+				<SessionStatusIcon label={status === "subagents" ? activity : undefined} settled={settled} status={status} />
 			</div>
 			<div className="min-w-0">
 				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>

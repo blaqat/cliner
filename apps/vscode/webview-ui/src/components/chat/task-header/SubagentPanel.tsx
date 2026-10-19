@@ -7,8 +7,9 @@ import {
 	needsAttention,
 	type SubagentLineage,
 } from "@/components/chat/chat-view/utils/threadUtils"
-import type { SessionStatus } from "@/components/inbox/inboxUtils"
+import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, stopSubagent } from "@/components/inbox/sessionActions"
+import type { ThreadStatus } from "@/components/inbox/threadStatus"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -16,14 +17,15 @@ import { cn } from "@/lib/utils"
 import { SubagentDecisionControls } from "../SubagentDecisionControls"
 import { HeaderIconButton } from "./HeaderIconButton"
 
-const STATUS_LABEL: Record<SessionStatus, string> = {
+const STATUS_LABEL: Record<ThreadStatus, string> = {
 	running: "running",
 	waiting: "needs you",
+	subagents: "waiting on subagents",
 	done: "done",
 	error: "error",
 }
 
-const DOT_CLASS: Record<SessionStatus, string> = {
+const DOT_CLASS: Record<Exclude<ThreadStatus, "subagents">, string> = {
 	running: "bg-link animate-breathe motion-reduce:animate-none",
 	waiting: "bg-warning",
 	done: "bg-success",
@@ -74,7 +76,9 @@ interface LineageRowViewProps {
 }
 
 const LineageRowView = ({ row, relation, stopping, stopFailed, onOpen, onStop, decisionMessage }: LineageRowViewProps) => {
-	const label = stopping ? "stopping…" : stopFailed ? "couldn't stop" : STATUS_LABEL[row.status]
+	// "Waiting on 2 subagents" reads lowercase like the other row labels.
+	const statusText = row.statusLabel ? row.statusLabel.charAt(0).toLowerCase() + row.statusLabel.slice(1) : undefined
+	const label = stopping ? "stopping…" : stopFailed ? "couldn't stop" : (statusText ?? STATUS_LABEL[row.status])
 	return (
 		<div
 			className={cn(
@@ -98,11 +102,15 @@ const LineageRowView = ({ row, relation, stopping, stopFailed, onOpen, onStop, d
 				onClick={onOpen}
 				type="button">
 				{relation === "parent" && <span aria-hidden className="codicon codicon-arrow-up shrink-0 text-[12px]" />}
-				<span
-					aria-label={STATUS_LABEL[row.status]}
-					className={cn("inline-block size-1.75 shrink-0 rounded-full", DOT_CLASS[row.status])}
-					role="img"
-				/>
+				{row.status === "subagents" ? (
+					<SessionStatusIcon className="size-2.75" label={row.statusLabel} status="subagents" />
+				) : (
+					<span
+						aria-label={STATUS_LABEL[row.status]}
+						className={cn("inline-block size-1.75 shrink-0 rounded-full", DOT_CLASS[row.status])}
+						role="img"
+					/>
+				)}
 				{row.access && <AccessIcon access={row.access} />}
 				<span className="min-w-0 flex-1 truncate">{row.title}</span>
 				<span

@@ -57,6 +57,18 @@ describe("threadToastEvents", () => {
 		expect(threadToastEvents({ child: "running" }, { child: "done" }, { history })).toEqual([])
 		expect(threadToastEvents({ child: "running" }, { child: "waiting" }, { history, viewingThreadId: "a" })).toEqual([])
 	})
+
+	it("doesn't call a thread waiting on subagents finished; toasts once they are done", () => {
+		expect(threadToastEvents({ a: "running" }, { a: "subagents" }, { history })).toEqual([])
+		expect(threadToastEvents({ a: "subagents" }, { a: "done" }, { history })).toEqual([
+			{ threadId: "a", sourceId: "a", kind: "done" },
+		])
+		expect(threadToastEvents({ a: "subagents" }, { a: "done" }, { history, stoppedIds: new Set(["a"]) })).toEqual([])
+		// Needs-input toasts are unchanged.
+		expect(threadToastEvents({ a: "subagents" }, { a: "waiting" }, { history })).toEqual([
+			{ threadId: "a", sourceId: "a", kind: "input" },
+		])
+	})
 })
 
 describe("addThreadToasts / pruneThreadToasts", () => {
