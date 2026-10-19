@@ -390,7 +390,9 @@ it("does not reclaim an old lease belonging to a live child process", async () =
 }, 60_000)
 
 it("recognizes PID reuse and fences a replaced lock owner", async () => {
-	expect(alive({ ...owner(), processStart: `${owner().processStart}-different` })).toBe(false)
+	expect(await alive({ ...owner(), processStart: `${process.platform === "win32" ? "ticks" : "ps-utc"}:different` })).toBe(
+		false,
+	)
 	const release = await storageLock(storage)
 	await fs.rm(path.join(storage, "mutation.lock"), { recursive: true })
 	const successor = await storageLock(storage)

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import os from "node:os"
@@ -12,8 +12,14 @@ export interface Owner {
 	host?: string
 	processStart?: string
 }
-function processStart(pid: number): string | undefined {
-	try {
+const identityTimeoutMs = 500
+const identityCacheMs = 5_000
+const identities = new Map<number, { expires: number; pending: boolean; result: Promise<string | undefined> }>()
+
+function processStart(pid: number, refresh = false): Promise<string | undefined> {
+	const cached = identities.get(pid)
+	if (cached && Date.now() < cached.expires && (!refresh || cached.pending)) return cached.result
+	const result = new Promise<string | undefined>((resolve) => {
 		const command = process.platform === "win32" ? "powershell.exe" : "ps"
 		const args =
 			process.platform === "win32"
@@ -24,21 +30,46 @@ function processStart(pid: number): string | undefined {
 						`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
 					]
 				: ["-o", "lstart=", "-p", String(pid)]
-		const start = execFileSync(command, args, {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
-		}).trim()
-		return start ? `${process.platform === "win32" ? "ticks" : "ps-utc"}:${start}` : undefined
-	} catch {
-		return undefined
-	}
+		const child = execFile(
+			command,
+			args,
+			{
+				encoding: "utf8",
+				timeout: identityTimeoutMs,
+				killSignal: "SIGKILL",
+				env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+			},
+			(error, stdout) => {
+				clearTimeout(timer)
+				const start = error ? "" : stdout.trim()
+				resolve(start ? `${process.platform === "win32" ? "ticks" : "ps-utc"}:${start}` : undefined)
+			},
+		)
+		// Bound the wait even if process exit/stdio completion never arrives.
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL")
+			resolve(undefined)
+		}, identityTimeoutMs)
+	}).catch(() => undefined)
+	if (identities.size >= 128) identities.delete(identities.keys().next().value!)
+	const entry = { expires: Date.now() + identityCacheMs, pending: true, result }
+	identities.set(pid, entry)
+	void result.then(() => {
+		entry.pending = false
+	})
+	return result
 }
-const started = processStart(process.pid)
+
+// Identity is optional in early lock records. Until this async lookup finishes,
+// recovery conservatively treats any existing pid as alive.
+let started: string | undefined
+void processStart(process.pid).then((value) => {
+	started = value
+})
 export function owner(): Owner {
 	return { pid: process.pid, token: randomUUID(), timestamp: Date.now(), host: os.hostname(), processStart: started }
 }
-export function alive(record: Owner): boolean {
+export async function alive(record: Owner): Promise<boolean> {
 	if (record.host && record.host !== os.hostname()) return true
 	if (!Number.isInteger(record.pid) || record.pid <= 0) return true
 	try {
@@ -50,8 +81,12 @@ export function alive(record: Owner): boolean {
 	// Older records lack a timezone/locale convention. Treat an existing pid
 	// conservatively rather than confusing a format change with pid reuse.
 	if (!record.processStart || !/^(ps-utc|ticks):/.test(record.processStart)) return true
-	const current = processStart(record.pid)
-	return !current || current === record.processStart
+	const current = await processStart(record.pid)
+	if (!current || current === record.processStart) return true
+	// A cached identity may predate pid reuse. Confirm a mismatch with a fresh
+	// lookup before treating a live pid as a different owner.
+	const confirmed = await processStart(record.pid, true)
+	return !confirmed || confirmed === record.processStart
 }
 export interface StorageLock {
 	(): void
@@ -118,7 +153,7 @@ function tryDirectoryLock(lock: string): StorageLock | undefined {
 		if (!published) fs.rmSync(candidate, { recursive: true, force: true })
 	}
 }
-function recoverDirectory(lock: string, legacy = false): void {
+async function recoverDirectory(lock: string, legacy = false): Promise<void> {
 	let files: string[]
 	try {
 		files = fs.readdirSync(lock)
@@ -129,7 +164,7 @@ function recoverDirectory(lock: string, legacy = false): void {
 	for (const file of files) {
 		if (!/^owner-[\w-]+\.json$/.test(file) && !(legacy && file === "owner.json")) continue
 		const record = readOwner(path.join(lock, file))
-		if (record && (file === `owner-${record.token}.json` || (legacy && file === "owner.json")) && !alive(record)) {
+		if (record && (file === `owner-${record.token}.json` || (legacy && file === "owner.json")) && !(await alive(record))) {
 			try {
 				fs.unlinkSync(path.join(lock, file))
 			} catch (error) {
@@ -166,14 +201,14 @@ export function tryStorageLock(lock: string): StorageLock | undefined {
 		},
 	)
 }
-function recover(lock: string): void {
+async function recover(lock: string): Promise<void> {
 	// Only one recoverer may examine/unlink the shared symlink. Without this
 	// gate, a delayed waiter could unlink a fresh owner's replacement link.
 	// The gate itself uses the fenced directory protocol, including recovery.
 	const gate = `${lock}.recovery`
 	const release = tryDirectoryLock(gate)
 	if (!release) {
-		recoverDirectory(gate)
+		await recoverDirectory(gate)
 		return
 	}
 	try {
@@ -181,10 +216,10 @@ function recover(lock: string): void {
 		if (record) {
 			// A dead owner cannot release its link; only this gate holder can
 			// remove it. Re-read after acquiring the gate, never before.
-			if (!alive(record)) fs.unlinkSync(lock)
+			if (!(await alive(record))) fs.unlinkSync(lock)
 		} else {
 			try {
-				recoverDirectory(lock, true)
+				await recoverDirectory(lock, true)
 			} catch (error) {
 				// Malformed/unknown records are preserved, never guessed stale.
 				if (code(error) !== "ENOTDIR") throw error
@@ -199,7 +234,7 @@ export async function acquireStorageLock(lock: string, options: StorageLockOptio
 	for (;;) {
 		const release = tryStorageLock(lock)
 		if (release) return release
-		recover(lock)
+		await recover(lock)
 		if (Date.now() >= deadline) throw new StorageLockTimeoutError()
 		await new Promise((resolve) => setTimeout(resolve, options.retryMs ?? 25))
 	}

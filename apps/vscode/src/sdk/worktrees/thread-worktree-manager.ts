@@ -88,7 +88,7 @@ export class ThreadWorktreeManager {
 	}
 	async assertIdle(id: string) {
 		const lease = await this.lease(id)
-		if (lease && alive(lease))
+		if (lease && (await alive(lease)))
 			throw new Error("This thread is active in another window or session. Stop it there before changing its worktree.")
 	}
 	/** Acquired before reading the mapping and retained until the runtime is idle/stopped. */

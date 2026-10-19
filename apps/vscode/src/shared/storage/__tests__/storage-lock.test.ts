@@ -31,6 +31,7 @@ function child(code: string) {
 	})
 	return {
 		proc,
+		output: () => stdout,
 		done,
 		ready: async () => {
 			const deadline = Date.now() + 5000
@@ -92,7 +93,9 @@ describe("shared storage lock", () => {
 	}, 20_000)
 
 	it("recognizes pid reuse and fences assertion and release", async () => {
-		expect(alive({ ...owner(), processStart: `${owner().processStart}-different` })).toBe(false)
+		expect(await alive({ ...owner(), processStart: `${process.platform === "win32" ? "ticks" : "ps-utc"}:different` })).toBe(
+			false,
+		)
 		const release = await acquireStorageLock(lockPath)
 		fs.rmSync(lockPath, { recursive: true })
 		const successor = await acquireStorageLock(lockPath)
@@ -101,4 +104,54 @@ describe("shared storage lock", () => {
 		successor.assertOwned()
 		successor()
 	})
+})
+
+it.skipIf(process.platform === "win32")(
+	"bounds stalled identity lookups without blocking and caches failures per pid",
+	async () => {
+		const attempts = path.join(dir, "attempts")
+		const ps = path.join(dir, "ps")
+		fs.writeFileSync(
+			ps,
+			`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(attempts)}, 'lookup\\n'); setTimeout(() => process.exit(0), 3000);`,
+			{ mode: 0o700 },
+		)
+		const worker = child(`
+		process.env.PATH = ${JSON.stringify(dir)};
+		let ticks = 0;
+		const timer = setInterval(() => ticks++, 10);
+		const began = Date.now();
+		const { alive, owner } = await import(${lockModule});
+		const record = { ...owner(), processStart: 'ps-utc:unknown' };
+		const results = await Promise.all(Array.from({length: 4}, () => alive(record)));
+		results.push(await alive(record));
+		clearInterval(timer);
+		console.log(JSON.stringify({results, ticks, elapsed: Date.now() - began}));
+	`)
+		await worker.done
+		const result = JSON.parse(worker.output())
+		expect(result.results).toEqual([true, true, true, true, true])
+		expect(result.ticks).toBeGreaterThan(5)
+		expect(result.elapsed).toBeLessThan(2000)
+		expect(fs.readFileSync(attempts, "utf8").trim().split("\n")).toHaveLength(1)
+	},
+)
+
+it.skipIf(process.platform === "win32")("confirms a cached identity mismatch before declaring a live owner dead", async () => {
+	const identity = path.join(dir, "identity")
+	fs.writeFileSync(identity, "first")
+	fs.writeFileSync(
+		path.join(dir, "ps"),
+		`#!${process.execPath}\nimport fs from 'node:fs'; console.log(fs.readFileSync(${JSON.stringify(identity)}, 'utf8'));`,
+		{ mode: 0o700 },
+	)
+	const worker = child(`
+		process.env.PATH = ${JSON.stringify(dir)};
+		const fs = await import('node:fs');
+		const { alive, owner } = await import(${lockModule});
+		if (!await alive({ ...owner(), processStart: 'ps-utc:first' })) throw new Error('first owner lost');
+		fs.writeFileSync(${JSON.stringify(identity)}, 'second');
+		if (!await alive({ ...owner(), processStart: 'ps-utc:second' })) throw new Error('cached identity stole live owner');
+	`)
+	await worker.done
 })
