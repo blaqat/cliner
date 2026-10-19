@@ -49,9 +49,11 @@ describe("buildInbox", () => {
 			item("orphan", NOW - 5 * MIN, { parentTaskId: "deleted" }),
 		]
 
-		const { active } = buildInbox(history, { a2: "running", a1: "done" })
+		const { active, settled } = buildInbox(history, { a2: "running", a1: "done" })
 
-		expect(active.map((row) => row.item.id)).toEqual(["orphan", "root"])
+		// An aside whose parent is gone has nothing to roll up into: it lists itself, settled.
+		expect(active.map((row) => row.item.id)).toEqual(["root"])
+		expect(settled.map(settledId)).toEqual(["orphan"])
 		const root = active.find((row) => row.item.id === "root")
 		expect(root?.subthreadCount).toBe(2)
 		expect(root?.liveSubthreadCount).toBe(1)
@@ -440,6 +442,102 @@ describe("buildInbox task groups", () => {
 		expect(active.map((row) => row.item.id)).toEqual(["x"])
 		expect(hiddenCount).toBe(1)
 		expect(groups[0].members).toHaveLength(1)
+	})
+})
+
+/** Every history item must surface somewhere in the inbox: a row, a subthread count, or a task. */
+function inboxIds(result: ReturnType<typeof buildInbox>): Set<string> {
+	const ids = new Set<string>()
+	for (const entry of [...result.activeEntries, ...result.settled]) {
+		if (entry.kind === "thread") ids.add(entry.row.item.id)
+		else entry.row.members.forEach((member) => ids.add(member.item.id))
+	}
+	return ids
+}
+
+describe("buildInbox keeps every History thread", () => {
+	const paged = { activeLimit: 10_000, settledLimit: 10_000 }
+
+	it("lists legacy items that lack every fork field", () => {
+		// What regular Cline wrote: no settle flags, activity stamp, title, parents or model.
+		const legacy = Array.from({ length: 3 }, (_, i) => ({
+			id: String(1_700_000_000_000 + i),
+			ts: 1_700_000_000_000 + i,
+			task: `legacy ${i}`,
+			tokensIn: 5,
+			tokensOut: 5,
+			totalCost: 0,
+		})) as HistoryItem[]
+
+		const result = buildInbox(legacy, undefined, undefined, paged)
+
+		expect(inboxIds(result)).toEqual(new Set(legacy.map((entry) => entry.id)))
+	})
+
+	it("lists threads from another workspace without filtering by cwd", () => {
+		const history = [
+			item("here", NOW, { cwdOnTaskInitialization: "/work/current" }),
+			item("elsewhere", NOW - MIN, { cwdOnTaskInitialization: "/work/other", isSettled: true }),
+			item("nowhere", NOW - 2 * MIN, { cwdOnTaskInitialization: "" }),
+		]
+
+		expect(inboxIds(buildInbox(history, {}, undefined, paged))).toEqual(new Set(["here", "elsewhere", "nowhere"]))
+	})
+
+	it("lists an orphaned subthread as its own settled thread", () => {
+		const history = [
+			item("alive", NOW),
+			item("orphanAside", NOW - MIN, { parentTaskId: "gone", task: "Aside: question" }),
+			item("orphanAgent", NOW - 2 * MIN, { parentTaskId: "gone", isSubagent: true, agentId: "a1" }),
+		]
+
+		const { settled, active } = buildInbox(history, {}, undefined, paged)
+
+		expect(active.map((row) => row.item.id)).toEqual(["alive"])
+		expect(settled.map(settledId)).toEqual(["orphanAside", "orphanAgent"])
+	})
+
+	it("keeps an orphan visible as active while it is still working", () => {
+		const history = [item("orphan", NOW, { parentTaskId: "gone", isSubagent: true })]
+
+		const { active, settled } = buildInbox(history, { orphan: "running" }, undefined, paged)
+
+		expect(active.map((row) => row.item.id)).toEqual(["orphan"])
+		expect(settled).toEqual([])
+	})
+
+	it("does not lose threads whose parent ids point at themselves or loop", () => {
+		const history = [
+			item("self", NOW, { parentTaskId: "self" }),
+			item("a", NOW - MIN, { parentTaskId: "b", isSubagent: true }),
+			item("b", NOW - 2 * MIN, { parentTaskId: "a", isSubagent: true }),
+		]
+
+		expect(inboxIds(buildInbox(history, {}, undefined, paged))).toEqual(new Set(["self", "a", "b"]))
+	})
+
+	it("shows 500 threads across the two sections when the limits are lifted", () => {
+		const history = Array.from({ length: 500 }, (_, i) =>
+			item(`t${i}`, NOW - i * MIN, i % 3 === 0 ? { isSettled: true } : {}),
+		)
+
+		const result = buildInbox(history, {}, undefined, paged)
+
+		expect(inboxIds(result).size).toBe(500)
+		expect(result.hiddenCount).toBe(0)
+		expect(result.settled).toHaveLength(result.settledTotal)
+	})
+
+	it("reports what the default limits hold back so the list can page it in", () => {
+		const history = Array.from({ length: 500 }, (_, i) => item(`t${i}`, NOW - i * MIN))
+
+		const first = buildInbox(history, {})
+		expect(first.active).toHaveLength(15)
+		expect(first.hiddenCount).toBe(485)
+
+		const all = buildInbox(history, {}, undefined, { activeLimit: 15 + 485 })
+		expect(all.active).toHaveLength(500)
+		expect(all.hiddenCount).toBe(0)
 	})
 })
 

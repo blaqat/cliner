@@ -9,7 +9,9 @@ import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
 import { cn } from "@/lib/utils"
 import {
+	ACTIVE_PAGE_SIZE,
 	buildInbox,
+	DEFAULT_ACTIVE_LIMIT,
 	DEFAULT_SETTLED_LIMIT,
 	describeActivity,
 	EXPANDED_TASK_GROUPS_EVENT,
@@ -351,12 +353,13 @@ interface InboxListProps {
 const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: InboxListProps) => {
 	const { taskHistory, sessionStatuses, subagentCounts, taskGroups } = useExtensionState()
 	const reduceMotion = useReducedMotionPreference()
+	const [activeLimit, setActiveLimit] = useState(DEFAULT_ACTIVE_LIMIT)
 	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
 	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
 	const [expandedGroups, setExpandedGroups] = useState(readExpandedTaskGroups)
 	const { activeEntries, settled, settledTotal, hiddenCount } = useMemo(
-		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit, taskGroups }),
-		[taskHistory, sessionStatuses, subagentCounts, settledLimit, taskGroups],
+		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { activeLimit, settledLimit, taskGroups }),
+		[taskHistory, sessionStatuses, subagentCounts, activeLimit, settledLimit, taskGroups],
 	)
 	// A group created elsewhere (the new-task sheet) opens expanded.
 	useEffect(() => {
@@ -510,9 +513,9 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 			{hiddenCount > 0 && (
 				<button
 					className="mt-1 w-full border-0 bg-transparent px-2 py-1 text-left text-xs text-description hover:text-foreground cursor-pointer"
-					onClick={showHistoryView}
+					onClick={() => setActiveLimit((limit) => limit + ACTIVE_PAGE_SIZE)}
 					type="button">
-					{hiddenCount} more in history
+					Show more ({hiddenCount})
 				</button>
 			)}
 		</div>

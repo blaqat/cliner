@@ -11,6 +11,8 @@ export const DEFAULT_ACTIVE_LIMIT = 15
 export const DEFAULT_SETTLED_LIMIT = 10
 /** How many more settled rows each "Show more" reveals. */
 export const SETTLED_PAGE_SIZE = 25
+/** How many more active rows each "Show more" reveals. */
+export const ACTIVE_PAGE_SIZE = 25
 
 export interface InboxRow {
 	item: HistoryItem
@@ -58,7 +60,7 @@ export interface InboxGroups {
 	settled: InboxSettledEntry[]
 	/** All settled entries, including those cut by the settled limit. */
 	settledTotal: number
-	/** Active rows cut by the active limit; the list links to the full history when non-zero. */
+	/** Active rows past the active limit; the list offers "Show more" for them. */
 	hiddenCount: number
 }
 
@@ -101,11 +103,23 @@ export function buildInbox(
 	// Asides own their task membership. One moved to another task (or out of its
 	// parent's) is listed as its own row there instead of under the parent, so it
 	// shows wherever its breadcrumb says it lives. Subagents always nest.
+	// Legacy or hand-edited history can point a thread at itself or loop parents; nesting those
+	// would remove every thread in the loop from the list, so they stay top-level.
+	const inParentLoop = (item: HistoryItem): boolean => {
+		const seen = new Set([item.id])
+		for (let parentId = item.parentTaskId; parentId; parentId = byId.get(parentId)?.parentTaskId) {
+			if (seen.has(parentId)) return true
+			seen.add(parentId)
+		}
+		return false
+	}
 	const nests = (item: HistoryItem): boolean => {
 		const parent = item.parentTaskId ? byId.get(item.parentTaskId) : undefined
-		if (!parent) return false
+		if (!parent || inParentLoop(item)) return false
 		return !!item.isSubagent || (item.taskGroupId || undefined) === (parent.taskGroupId || undefined)
 	}
+	// A subthread whose parent is gone has nowhere to roll up into: it is listed on its own, settled.
+	const isOrphan = (item: HistoryItem): boolean => !!item.parentTaskId && !byId.has(item.parentTaskId)
 	const childrenByParent = new Map<string, HistoryItem[]>()
 	for (const item of valid) {
 		if (item.parentTaskId && nests(item)) {
@@ -159,7 +173,7 @@ export function buildInbox(
 				activityTs,
 				status,
 				// A live thread (including one waiting on subagents) is never shown as settled, even if the history flag lags.
-				settled: !!item.isSettled && !isLiveThreadStatus(status),
+				settled: (!!item.isSettled || isOrphan(item)) && !isLiveThreadStatus(status),
 				subthreadCount: children.length,
 				liveSubthreadCount,
 				subagentCount: Math.max(counts?.total ?? item.subagentCount ?? 0, agents.length),

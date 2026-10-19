@@ -101,6 +101,54 @@ describe("SdkTaskHistory", () => {
 		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
 	})
 
+	describe("threads left by regular Cline or older builds", () => {
+		it("settles idle records that carry no settle flag, but not ones still running", () => {
+			const done = sessionHistoryRecordToHistoryItem(makeSessionRecord("done", { metadata: {} }))
+			const running = sessionHistoryRecordToHistoryItem(makeSessionRecord("run", { status: "running", metadata: {} }))
+			const explicitlyOpen = sessionHistoryRecordToHistoryItem(
+				makeSessionRecord("open", { metadata: { isSettled: false } }),
+			)
+
+			expect(done.isSettled).toBe(true)
+			expect(running.isSettled).toBe(false)
+			expect(explicitlyOpen.isSettled).toBe(false)
+		})
+
+		it("keeps a thread whose display text formats down to nothing", () => {
+			const raw = "<environment_details>\nonly wrapper\n</environment_details>"
+			const item = sessionHistoryRecordToHistoryItem(makeSessionRecord("odd", { prompt: raw, metadata: {} }))
+
+			expect(item.task).toBeTruthy()
+		})
+
+		it("lists unmigrated Cline threads as settled, with every fork field absent", async () => {
+			legacyStateReaderMock.taskHistory = [
+				{ id: "1700000000001", ts: 1_700_000_000_001, task: "old thread", tokensIn: 1, tokensOut: 1, totalCost: 0 },
+			]
+			const { history } = makeHistory([])
+
+			const [record] = await history.listHistory({ hydrate: false, includeSubagents: true })
+			const item = sessionHistoryRecordToHistoryItem(record)
+
+			expect(item).toMatchObject({ id: "1700000000001", task: "old thread", isSettled: true })
+		})
+
+		it("lists unmigrated threads from another workspace and every SDK record past 100", async () => {
+			legacyStateReaderMock.taskHistory = [
+				makeHistoryItem("elsewhere", { task: "other repo", cwdOnTaskInitialization: "/other/workspace" }),
+			]
+			const records = Array.from({ length: 250 }, (_, i) =>
+				makeSessionRecord(`sdk-${i}`, { updatedAt: new Date(Date.UTC(2026, 0, 2, 0, i)).toISOString() }),
+			)
+			const { history } = makeHistory(records)
+
+			const listed = await history.listHistory({ hydrate: false, includeSubagents: true, limit: 10_000 })
+
+			expect(listed).toHaveLength(251)
+			expect(listed.map((record) => record.sessionId)).toContain("elsewhere")
+		})
+	})
+
 	it("round trips the persisted subagent count", () => {
 		const item = makeHistoryItem("task", { subagentCount: 3 })
 		const result = sessionHistoryRecordToHistoryItem(
@@ -280,7 +328,7 @@ describe("SdkTaskHistory", () => {
 	})
 
 	it("toggles settle and automatically clears it on activity", async () => {
-		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: false } })])
 		await history.toggleTaskSettled("task-1")
 		expect((await history.findHistoryItem("task-1"))?.isSettled).toBe(true)
 		expect((await history.findHistoryItem("task-1"))?.settledAt).toBeGreaterThan(0)
@@ -296,8 +344,11 @@ describe("SdkTaskHistory", () => {
 
 	it("keeps last-activity time when settling and only bumps it on activity", async () => {
 		const { history } = makeHistory([
-			makeSessionRecord("task-1", { updatedAt: "2026-01-02T00:00:00.000Z", metadata: { lastActivityTs: 1234 } }),
-			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z" }),
+			makeSessionRecord("task-1", {
+				updatedAt: "2026-01-02T00:00:00.000Z",
+				metadata: { lastActivityTs: 1234, isSettled: false },
+			}),
+			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z", metadata: { isSettled: false } }),
 		])
 		await history.toggleTaskSettled("task-1")
 		expect(await history.findHistoryItem("task-1")).toMatchObject({ ts: 1234, lastActivityTs: 1234, isSettled: true })

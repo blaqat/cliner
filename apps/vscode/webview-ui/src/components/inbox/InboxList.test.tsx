@@ -173,6 +173,42 @@ describe("InboxList", () => {
 			mocks.state = { taskHistory: settledHistory(40), sessionStatuses: {} }
 		})
 
+		it("pages active chats in with Show more instead of pointing at history", () => {
+			mocks.state = {
+				taskHistory: Array.from({ length: 60 }, (_, i) => item(`a${i}`, NOW - i * 1000)),
+				sessionStatuses: {},
+			}
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(15)
+			expect(screen.queryByText(/more in history/)).not.toBeInTheDocument()
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(45\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(40)
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(20\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(60)
+			expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument()
+		})
+
+		it("shows legacy, other-workspace and orphaned threads", () => {
+			mocks.state = {
+				taskHistory: [
+					{ id: "1700000000001", ts: NOW - 5000, task: "legacy thread", tokensIn: 0, tokensOut: 0, totalCost: 0 },
+					item("other", NOW - 6000, { cwdOnTaskInitialization: "/somewhere/else", isSettled: true }),
+					item("orphan", NOW - 7000, { parentTaskId: "deleted", task: "Aside: orphan" }),
+				],
+				sessionStatuses: {},
+			}
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			const rows = screen.getAllByTestId("inbox-row")
+			expect(rows).toHaveLength(3)
+			expect(rows[0]).toHaveTextContent("legacy thread")
+			expect(rows[1]).toHaveTextContent("task other")
+			expect(rows[2]).toHaveTextContent("Aside: orphan")
+			expect(rows[2]).toHaveTextContent("Last active")
+		})
+
 		it("pages settled chats and shows fewer again", () => {
 			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 			expect(screen.getAllByTestId("inbox-row")).toHaveLength(10)

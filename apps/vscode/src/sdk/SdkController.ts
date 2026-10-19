@@ -64,6 +64,7 @@ import {
 	resolveTaskApiSelection,
 } from "@/core/controller/models/apiProfiles"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
+import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
 import { expandThreadMentions } from "@/core/mentions/thread-mentions"
@@ -4502,30 +4503,11 @@ export class Controller {
 			const sortedHistory = Array.from(mergedTaskHistoryById.values())
 				.filter((item) => item.ts && item.task)
 				.sort((a, b) => b.ts - a.ts)
-			const roots = sortedHistory.filter((item) => !item.isSubagent).slice(0, 100)
 			const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
-			for (const id of [focusedItem?.isSubagent ? undefined : focusedItem?.id, focusedItem?.parentTaskId]) {
-				const item = id ? mergedTaskHistoryById.get(id) : undefined
-				if (item && !roots.some((root) => root.id === item.id)) roots.push(item)
-			}
-			// Keep the full child tree so navigation and inbox counts survive nested spawns.
-			const parentIds = new Set(roots.map((item) => item.id))
-			let addedChild = true
-			while (addedChild) {
-				addedChild = false
-				for (const item of sortedHistory) {
-					if (item.isSubagent && parentIds.has(item.parentTaskId ?? "") && !parentIds.has(item.id)) {
-						parentIds.add(item.id)
-						addedChild = true
-					}
-				}
-			}
-			const processedTaskHistory = [
-				...roots,
-				...sortedHistory.filter(
-					(item) => item.isSubagent && parentIds.has(item.id) && !roots.some((root) => root.id === item.id),
-				),
-			]
+			const processedTaskHistory = buildStateTaskHistory(sortedHistory, [
+				focusedItem?.isSubagent ? undefined : focusedItem?.id,
+				focusedItem?.parentTaskId,
+			])
 
 			let queuedPrompts: ExtensionState["queuedPrompts"] = []
 			if (snapshotSession) {

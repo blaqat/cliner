@@ -17,6 +17,7 @@ import { getExtensionVariant } from "@/services/telemetry/rollout-metadata"
 import { getLatestAnnouncementId } from "@/utils/announcements"
 import { readApiConfigProfiles, readApiProfileAssignments } from "../models/apiProfiles"
 import { getClineOnboardingModels } from "../models/getClineOnboardingModels"
+import { buildStateTaskHistory } from "./stateTaskHistory"
 
 /**
  * Builds the ExtensionState object to push to the webview.
@@ -90,10 +91,10 @@ export async function getStateToPostToWebview(controller: {
 	const clineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
 	const checkpointRestoreInput = controller.checkpointRestoreInput
 
-	const processedTaskHistory = (taskHistory || [])
-		.filter((item: any) => item.ts && item.task)
-		.sort((a: any, b: any) => b.ts - a.ts)
-		.slice(0, 100)
+	const processedTaskHistory = buildStateTaskHistory(
+		(taskHistory || []).filter((item: any) => item.ts && item.task).sort((a: any, b: any) => b.ts - a.ts),
+		[controller.task?.taskId],
+	)
 
 	const latestAnnouncementId = getLatestAnnouncementId()
 	const shouldShowAnnouncement = lastShownAnnouncementId !== latestAnnouncementId

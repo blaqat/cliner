@@ -173,6 +173,9 @@ function historyItemToSessionHistoryRecord(item: HistoryItem): SessionHistoryRec
 		prompt: displayTask,
 		metadata: {
 			...historyItemToSessionMetadata({ ...item, task: displayTask }),
+			// Regular Cline has no settle flag: threads it left behind were never reviewed in the
+			// fork's inbox, so they start settled. Activity unsettles them (markTaskActive).
+			isSettled: item.isSettled ?? true,
 			legacyTask: true,
 		},
 		updatedAt: startedAt,
@@ -246,7 +249,11 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		id: item.sessionId,
 		ts: lastActivityTs,
 		lastActivityTs,
-		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
+		// History lists a thread whenever its raw title/prompt is non-empty; fall back to it so the
+		// inbox never drops a thread whose display text formats down to nothing.
+		task:
+			formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? "") ||
+			(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
 		subagentToolCalls: metadataNumber(metadata, "subagentToolCalls"),
@@ -255,7 +262,9 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 		size: metadataNumber(metadata, "size"),
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
-		isSettled: metadataBoolean(metadata, "isSettled") ?? false,
+		// Records written by regular Cline or an older fork build carry no settle flag. Nothing was
+		// left for the user to review, so an idle one is settled; only a running one stays open.
+		isSettled: metadataBoolean(metadata, "isSettled") ?? (item.status !== "running" && item.status !== "pending"),
 		settledAt: metadataNumber(metadata, "settledAt") || undefined,
 		parentTaskId: item.isSubagent
 			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
