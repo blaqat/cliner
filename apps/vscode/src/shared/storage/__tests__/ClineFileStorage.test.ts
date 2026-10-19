@@ -88,4 +88,16 @@ describe("settings writers", () => {
 		const saved = () => second.get<string>("key")
 		expect(saved()).toBe("saved")
 	})
+
+	it("preserves corrupt bytes before rewriting from cache", async () => {
+		const file = path.join(dir, "state.json")
+		const storage = new ClineFileStorage(file)
+		await storage.setBatch({ a: 1 })
+		fs.writeFileSync(file, "{ not json")
+		await storage.setBatch({ b: 2 })
+		const backups = fs.readdirSync(dir).filter((name) => name.startsWith("state.json.corrupt-"))
+		expect(backups).toHaveLength(1)
+		expect(fs.readFileSync(path.join(dir, backups[0]), "utf8")).toBe("{ not json")
+		expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ a: 1, b: 2 })
+	})
 })

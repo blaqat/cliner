@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks"
+import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Logger } from "../services/Logger"
@@ -54,7 +55,11 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 	 */
 	public setBatch(entries: Record<string, T | undefined>): Promise<void> {
 		return this.withLock(() => {
-			this.data = this.readFromDiskStrict() ?? this.data
+			let corrupt = false
+			this.data =
+				this.readFromDiskStrict(() => {
+					corrupt = true
+				}) ?? this.data
 			const changedKeys: string[] = []
 			for (const [key, value] of Object.entries(entries)) {
 				if (value === undefined) {
@@ -68,6 +73,7 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 				}
 			}
 			if (changedKeys.length > 0) {
+				if (corrupt) fs.renameSync(this.fsPath, `${this.fsPath}.corrupt-${Date.now()}-${randomUUID()}`)
 				this.writeToDisk()
 				for (const key of changedKeys) this.fireChange(key)
 			}
