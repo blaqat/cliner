@@ -76,6 +76,7 @@ export class StateManager {
 	private pendingSecrets = new Set<SecretKey>()
 	private pendingWorkspaceState = new Set<LocalStateKey>()
 	private persistenceTimeout: NodeJS.Timeout | null = null
+	private persistence: Promise<void> = Promise.resolve()
 	private readonly PERSISTENCE_DELAY_MS = 500
 	private taskHistoryWatcher: FSWatcher | null = null
 
@@ -319,20 +320,8 @@ export class StateManager {
 	 * Clear task settings cache - ensures pending changes are persisted first
 	 */
 	async clearTaskSettings(): Promise<void> {
-		// If there are pending task settings, persist them first
-		if (this.pendingTaskState.size > 0) {
-			try {
-				// Persist pending task state immediately
-				await this.persistTaskStateBatch(this.pendingTaskState)
-				// Clear pending set after successful persistence
-				this.pendingTaskState.clear()
-			} catch (error) {
-				Logger.error("[StateManager] Failed to persist task settings before clearing:", error)
-			}
-		}
-
+		await this.flushPendingState()
 		this.taskStateCache = {}
-		this.pendingTaskState.clear()
 	}
 
 	/**
@@ -619,9 +608,7 @@ export class StateManager {
 	 * Used for error recovery when write operations fail
 	 */
 	async reInitialize(currentTaskId?: string): Promise<void> {
-		if (this.persistenceTimeout) {
-			await this.persistPendingState()
-		}
+		await this.flushPendingState()
 		// Clear all cached data and pending state
 		this.dispose()
 
@@ -667,30 +654,46 @@ export class StateManager {
 	 * Private method to persist all pending state changes
 	 * Returns early if nothing is pending
 	 */
-	private async persistPendingState(): Promise<void> {
-		// Early return if nothing to persist
-		if (
-			this.pendingGlobalState.size === 0 &&
-			this.pendingSecrets.size === 0 &&
-			this.pendingWorkspaceState.size === 0 &&
-			this.pendingTaskState.size === 0
-		) {
-			return
-		}
-
-		// Execute all persistence operations in parallel
-		await Promise.all([
-			this.persistGlobalStateBatch(this.pendingGlobalState),
-			this.persistSecretsBatch(this.pendingSecrets),
-			this.persistWorkspaceStateBatch(this.pendingWorkspaceState),
-			this.persistTaskStateBatch(this.pendingTaskState),
-		])
-
-		// Clear pending sets after successful persistence
-		this.pendingGlobalState.clear()
-		this.pendingSecrets.clear()
-		this.pendingWorkspaceState.clear()
-		this.pendingTaskState.clear()
+	private persistPendingState(): Promise<void> {
+		const flush = this.persistence.then(async () => {
+			while (
+				this.pendingGlobalState.size ||
+				this.pendingSecrets.size ||
+				this.pendingWorkspaceState.size ||
+				this.pendingTaskState.size
+			) {
+				const global = this.pendingGlobalState
+				const secrets = this.pendingSecrets
+				const workspace = this.pendingWorkspaceState
+				const tasks = this.pendingTaskState
+				this.pendingGlobalState = new Set()
+				this.pendingSecrets = new Set()
+				this.pendingWorkspaceState = new Set()
+				this.pendingTaskState = new Map()
+				// Wait for every writer before restoring a failed batch or starting another.
+				const results = await Promise.allSettled([
+					this.persistGlobalStateBatch(global),
+					this.persistSecretsBatch(secrets),
+					this.persistWorkspaceStateBatch(workspace),
+					this.persistTaskStateBatch(tasks),
+				])
+				if (results[0].status === "rejected") for (const key of global) this.pendingGlobalState.add(key)
+				if (results[1].status === "rejected") for (const key of secrets) this.pendingSecrets.add(key)
+				if (results[2].status === "rejected") for (const key of workspace) this.pendingWorkspaceState.add(key)
+				if (results[3].status === "rejected") {
+					for (const [taskId, keys] of tasks) {
+						const pending = this.pendingTaskState.get(taskId) ?? new Set<SettingsKey>()
+						for (const key of keys) pending.add(key)
+						this.pendingTaskState.set(taskId, pending)
+					}
+				}
+				// Restore keys only. The caches already contain any newer values.
+				const failure = results.find((result) => result.status === "rejected")
+				if (failure?.status === "rejected") throw failure.reason
+			}
+		})
+		this.persistence = flush.catch(() => {})
+		return flush
 	}
 
 	/**
@@ -719,12 +722,11 @@ export class StateManager {
 
 		// Schedule a new timeout to persist pending changes
 		this.persistenceTimeout = setTimeout(async () => {
+			this.persistenceTimeout = null
 			try {
 				await this.persistPendingState()
-				this.persistenceTimeout = null
 			} catch (error) {
 				Logger.error("[StateManager] Failed to persist pending changes:", error)
-				this.persistenceTimeout = null
 
 				// Call persistence error callback for error recovery
 				this.onPersistenceError?.({ error: error })
@@ -770,7 +772,7 @@ export class StateManager {
 			return
 		}
 		// Persist each task's settings
-		await Promise.all(
+		const results = await Promise.allSettled(
 			Array.from(pendingTaskStates.entries()).map(([taskId, keys]) => {
 				if (keys.size === 0) {
 					return Promise.resolve()
@@ -785,6 +787,8 @@ export class StateManager {
 				return writeTaskSettingsToStorage(taskId, settingsToWrite)
 			}),
 		)
+		const failure = results.find((result) => result.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
 	}
 
 	/**

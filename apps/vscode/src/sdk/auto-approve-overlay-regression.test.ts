@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Controller } from "@/core/controller"
 import { updateAutoApprovalSettings } from "@/core/controller/state/updateAutoApprovalSettings"
 import { StateManager } from "@/core/storage/StateManager"
+import { HostProvider } from "@/hosts/host-provider"
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@/shared/AutoApprovalSettings"
 import { AutoApprovalSettingsRequest } from "@/shared/proto/cline/state"
 import { createStorageContext } from "@/shared/storage/storage-context"
@@ -93,6 +94,8 @@ describe("auto-approve settings after New Task (#13260)", () => {
 
 	beforeAll(async () => {
 		clineDir = await fs.mkdtemp(path.join(os.tmpdir(), "cline-13260-regression-"))
+		// Clearing the task now waits for persistence and reports write failures.
+		vi.spyOn(HostProvider, "get").mockReturnValue({ globalStorageFsPath: clineDir } as HostProvider)
 		await StateManager.initialize(createStorageContext({ clineDir, workspacePath: clineDir }))
 		stateManager = StateManager.get()
 	})
@@ -108,6 +111,7 @@ describe("auto-approve settings after New Task (#13260)", () => {
 		await StateManager.get().flushPendingState()
 		await StateManager.get().reInitialize()
 		await fs.rm(clineDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
 	})
 
 	it("keeps checkboxes working after a mid-task toggle followed by New Task", async () => {
