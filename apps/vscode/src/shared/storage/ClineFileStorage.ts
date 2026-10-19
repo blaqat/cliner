@@ -49,6 +49,12 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 	 * since it only writes to disk once.
 	 */
 	public setBatch(entries: Record<string, T | undefined>): Thenable<void> {
+		// Apply onto what is on disk now, not onto this instance's cached copy:
+		// another window may have saved other keys since this one loaded, and
+		// writing the stale document back would silently revert them. Only the
+		// keys written here change. Falls back to the cache if the file is
+		// unreadable so a transient failure never truncates it.
+		this.data = this.readFromDiskStrict() ?? this.data
 		const changedKeys: string[] = []
 		for (const [key, value] of Object.entries(entries)) {
 			if (value === undefined) {
@@ -70,8 +76,30 @@ export class ClineFileStorage<T = any> extends ClineSyncStorage<T> {
 		return Promise.resolve()
 	}
 
+	/**
+	 * Re-read the file, replacing the cached copy. Reads are otherwise served
+	 * from memory for the life of the instance, so a migration that must see
+	 * what other windows have saved calls this first.
+	 */
+	public reload(): void {
+		this.data = this.readFromDiskStrict() ?? this.data
+	}
+
 	protected _keys(): readonly string[] {
 		return Object.keys(this.data)
+	}
+
+	/** The file's document, or undefined when it is missing or unreadable. */
+	private readFromDiskStrict(): Record<string, T> | undefined {
+		try {
+			if (fs.existsSync(this.fsPath)) {
+				const parsed = JSON.parse(fs.readFileSync(this.fsPath, "utf-8"))
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed
+			}
+		} catch (error) {
+			Logger.error(`[${this.name}] failed to read from ${this.fsPath}:`, error)
+		}
+		return undefined
 	}
 
 	private readFromDisk(): Record<string, T> {
