@@ -20,13 +20,15 @@ interface PromptStashButtonProps {
 	entries: PromptStashEntry[]
 	onRestore: (id: string) => void
 	onDelete: (id: string) => void
+	/** "⌘" on macOS, "Ctrl" elsewhere; labels the stash shortcut in the tooltip. */
+	modKey?: string
 }
 
 /**
  * Stash icon next to send. Rendered only while the stash has entries; opens a
  * list where clicking an entry restores it and the x deletes it.
  */
-const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonProps) => {
+const PromptStashButton = ({ entries, onRestore, onDelete, modKey }: PromptStashButtonProps) => {
 	const [open, setOpen] = useState(false)
 	const count = entries.length
 
@@ -52,7 +54,7 @@ const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonPr
 						open && "text-foreground",
 					)}
 					data-testid="stash-button"
-					title={`Stashed prompts (${count})`}
+					title={`Stashed prompts (${count})${modKey ? ` · stash the draft with ${modKey}+S` : ""}`}
 					type="button">
 					<ArchiveIcon size={13} />
 					<span className="absolute -top-1.5 -right-2 min-w-3 h-3 px-0.5 rounded-full bg-badge-background text-badge-foreground text-[9px] leading-3 text-center">

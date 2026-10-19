@@ -43,6 +43,7 @@ describe("AboutSection", () => {
 			expect(within(section).getAllByRole("listitem")).toHaveLength(group.items.length)
 		}
 		expect(screen.getByText(/⌘K \/ Ctrl\+K is claimed while Cline is focused/)).toBeTruthy()
+		expect(screen.getByText(/⌘S \/ Ctrl\+S is claimed while Cline is focused/)).toBeTruthy()
 		expect(screen.getByText(/⌘ shortcuts use Ctrl on Windows and Linux/)).toBeTruthy()
 	})
 
@@ -106,6 +107,8 @@ describe("AboutSection", () => {
 		expect(table.getByText("⌘+'")).toBeTruthy()
 		expect(table.getByText("⌥+Enter")).toBeTruthy()
 		expect(table.getAllByText("⌘+Enter").length).toBe(2)
+		expect(table.getByText("⌘+S / Esc")).toBeTruthy()
+		expect(table.getByText("Stash the draft")).toBeTruthy()
 		expect(table.queryByText(/Ctrl/)).toBeNull()
 	})
 
@@ -119,6 +122,7 @@ describe("AboutSection", () => {
 			expect(table.getByText("Ctrl+'")).toBeTruthy()
 			expect(table.getByText("Alt+Enter")).toBeTruthy()
 			expect(table.getAllByText("Ctrl+Enter").length).toBe(2)
+			expect(table.getByText("Ctrl+S / Esc")).toBeTruthy()
 			expect(table.queryByText(/⌘/)).toBeNull()
 			unmount()
 		}

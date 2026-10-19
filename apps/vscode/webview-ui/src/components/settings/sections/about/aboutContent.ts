@@ -188,6 +188,7 @@ export const IMPROVEMENT_GROUPS: FixGroup[] = [
 		items: [
 			"⌘ shortcuts use Ctrl on Windows and Linux, and labels show the right key",
 			"⌘K / Ctrl+K is claimed while Cline is focused, so VS Code's K chord (⌘K Z, ⌘K W) can't swallow the next key",
+			"⌘S / Ctrl+S is claimed while Cline is focused, so it stashes the draft instead of saving a file",
 			"Installs next to the Marketplace Cline, with its own extension, views and commands",
 		],
 	},
@@ -228,6 +229,7 @@ export function buildShortcuts({ mod, alt, toggleKeys, enterSendsAs }: ShortcutO
 		{ id: "newline", label: "New line", keys: "Shift+Enter" },
 		{ id: "aside", label: "Send as an aside", keys: `${alt}+Enter` },
 		{ id: "background", label: "Start in the background (home)", keys: `${mod}+Enter` },
+		{ id: "stash", label: "Stash the draft", keys: `${mod}+S / Esc` },
 		{ id: "running", label: `While running: ${plain}`, keys: "Enter" },
 		{ id: "running-other", label: `While running: ${other}`, keys: `${mod}+Enter` },
 	]

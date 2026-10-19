@@ -1979,7 +1979,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						style={{ height: textAreaBaseHeight }}>
 						<div className="flex flex-row items-center">
 							{onRestoreStash && onDeleteStash && (
-								<PromptStashButton entries={stashEntries} onDelete={onDeleteStash} onRestore={onRestoreStash} />
+								<PromptStashButton
+									entries={stashEntries}
+									modKey={metaKeyChar}
+									onDelete={onDeleteStash}
+									onRestore={onRestoreStash}
+								/>
 							)}
 							{showRunningSendButtons && onSendAs ? (
 								<RunningSendButtons
