@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-2",
 		title: "Release 2",
-		builds: "test builds fork.24–26",
+		builds: "test builds fork.24–27",
 		date: "2026-10-19",
 		notes: [
 			"Composer: ＋ menu (mentions, files, MCP, rules, scripts), a where pill (task, worktree, branch suggestion), separate model and effort chips, context ring and approvals shield",
@@ -32,6 +32,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Change walkthrough with stops, review notes and optional Generate",
 			"⌘K / Ctrl+K search and ⌘S / Ctrl+S stash work while Cline is focused",
 			"About page; settings writes are safe across multiple VS Code windows",
+			"Pasted message links become hover tags that give the agent that message; Copy link works on every message",
+			"Tool call output starts collapsed; long messages and answers show in full",
+			"Fixes: Responses streams no longer hang after the response completes (stall timeout too); finished threads stay done after a reload; every History thread shows in the inbox",
 		],
 	},
 	{
