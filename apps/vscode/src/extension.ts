@@ -11,6 +11,7 @@ import { sendHistoryButtonClickedEvent } from "./core/controller/ui/subscribeToH
 import { sendMarketplaceButtonClickedEvent } from "./core/controller/ui/subscribeToMarketplaceButtonClicked"
 import { sendMcpButtonClickedEvent } from "./core/controller/ui/subscribeToMcpButtonClicked"
 import { sendSettingsButtonClickedEvent } from "./core/controller/ui/subscribeToSettingsButtonClicked"
+import { sendStashShortcutEvent } from "./core/controller/ui/subscribeToStashShortcut"
 import { sendWorktreesButtonClickedEvent } from "./core/controller/ui/subscribeToWorktreesButtonClicked"
 import { WebviewProvider } from "./core/webview"
 import { createClineAPI } from "./exports"
@@ -150,6 +151,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	// key itself (focus search); this binding only claims it while the Cline view is
 	// focused, so the forwarded keydown doesn't start a chord that eats the next key.
 	context.subscriptions.push(vscode.commands.registerCommand(commands.SearchShortcut, () => {}))
+	// ⌘S / Ctrl+S is workbench.action.files.save. The package.json binding claims it
+	// while the Cline view is focused and posts to the webview, where the composer
+	// stashes the draft — the same path as Esc-to-stash, but reliable because it
+	// doesn't depend on which element inside the view holds DOM focus.
+	context.subscriptions.push(vscode.commands.registerCommand(commands.StashShortcut, () => sendStashShortcutEvent()))
 
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider))
 

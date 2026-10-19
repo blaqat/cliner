@@ -301,6 +301,10 @@ service UiService {
   // Subscribe to show webview events
   rpc subscribeToShowWebview(EmptyRequest) returns (stream ShowWebviewEvent);
 
+  // Subscribe to stash shortcut events (⌘S / Ctrl+S while the Cline view is
+  // focused; the workbench keybinding claims the key so it can't save a file)
+  rpc subscribeToStashShortcut(EmptyRequest) returns (stream Empty);
+
   // Returns the HTML for the webview index page. This is only used by external clients, not by the vscode webview.
   rpc getWebviewHtml(EmptyRequest) returns (String);
 
