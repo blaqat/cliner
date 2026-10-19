@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
-import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { formatAge, statusFor } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask } from "@/components/inbox/sessionActions"
@@ -14,6 +15,7 @@ import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
+import { useSettleAll } from "./settleAll"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { sameTag, TaskTagEditor } from "./TaskTagEditor"
 import { formatNoteSize, openNote, requestNewNoteForm, threadRowTitle, useTaskGroup } from "./useTaskGroup"
@@ -87,6 +89,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
 	const [renaming, setRenaming] = useState(false)
+	const settleAll = useSettleAll(taskGroupId)
 
 	// The composer below starts threads in this task, however many are sent.
 	useEffect(() => {
@@ -176,6 +179,24 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								Rename task
 							</button>
 							<button
+								className={MENU_ITEM_CLASS}
+								disabled={settleAll.disabled}
+								onClick={() => {
+									setMenuOpen(false)
+									void settleAll.run()
+								}}
+								role="menuitem"
+								type="button">
+								<span
+									aria-hidden
+									className={cn(
+										MENU_ICON_CLASS,
+										settleAll.plan.mode === "settle" ? "codicon-check-all" : "codicon-discard",
+									)}
+								/>
+								{settleAll.plan.mode === "settle" ? "Settle all" : "Unsettle all"}
+							</button>
+							<button
 								className={cn(MENU_ITEM_CLASS, "text-error")}
 								onClick={() => {
 									setMenuOpen(false)
@@ -190,6 +211,19 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					</PopoverContent>
 				</Popover>
 			</TaskGroupPageHeader>
+			{settleAll.message && (
+				<InlineNotice
+					actions={
+						<Button onClick={settleAll.dismiss} size="xs" variant="secondary">
+							Dismiss
+						</Button>
+					}
+					className="mx-4 mb-1"
+					data-testid="task-group-settle-notice"
+					tone={settleAll.message.partial ? "warning" : "info"}>
+					{settleAll.message.text}
+				</InlineNotice>
+			)}
 			{confirmingDelete && (
 				<div
 					className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-xs border border-error/50 bg-error/10 px-2 py-1.5 text-xs"

@@ -1,7 +1,9 @@
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
 import { type EffectiveTag, effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
+import { useSettleAll } from "@/components/taskGroup/settleAll"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
@@ -22,6 +24,7 @@ import {
 } from "./inboxUtils"
 import { SessionStatusIcon } from "./SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "./sessionActions"
+import { TaskGroupRowMenu } from "./TaskGroupRowMenu"
 
 interface CountBadgeProps {
 	/** Codicon name without the `codicon-` prefix. */
@@ -207,6 +210,8 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 	const preview = members.slice(0, GROUP_PREVIEW_COUNT)
 	const older = members.length - preview.length
 	const open = () => onOpen?.(group.id)
+	const settleAll = useSettleAll(group.id)
+	const [menuOpen, setMenuOpen] = useState(false)
 
 	return (
 		<div data-testid="inbox-task-group">
@@ -259,10 +264,16 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						</span>
 					</div>
 				</div>
-				<div className="flex flex-col items-end gap-0.5">
-					<span className="text-[10px] text-description">
+				<div className="relative flex min-w-11 flex-col items-end gap-0.5">
+					{/* The time and the ⋯ menu share one slot: hover swaps them. */}
+					<span
+						className={cn(
+							"text-[10px] leading-[18px] text-description transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0 motion-reduce:transition-none",
+							menuOpen && "opacity-0",
+						)}>
 						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
 					</span>
+					<TaskGroupRowMenu onOpenChange={setMenuOpen} settleAll={settleAll} title={group.title} />
 					{runningCount > 0 && (
 						<span className="text-[10px] text-link" data-testid="inbox-task-group-running">
 							{runningCount} running
@@ -270,6 +281,22 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 					)}
 				</div>
 			</div>
+			{settleAll.message && (
+				<InlineNotice
+					actions={
+						<button
+							className="cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
+							onClick={settleAll.dismiss}
+							type="button">
+							Dismiss
+						</button>
+					}
+					className="mx-2 mb-1"
+					data-testid="inbox-task-group-settle-notice"
+					tone={settleAll.message.partial ? "warning" : "info"}>
+					{settleAll.message.text}
+				</InlineNotice>
+			)}
 			{expanded && (
 				<div className="ml-3.5 border-l border-editor-group-border pl-1" data-testid="inbox-task-group-members">
 					{preview.map((member) => (

@@ -42,6 +42,16 @@ describe("pushLocation", () => {
 		expect(entries).toHaveLength(5)
 	})
 
+	it("resets the stack when you arrive at Home, so Back has nothing before it", () => {
+		const settings: NavLocation = { kind: "settings", section: "general" }
+		const atHome = pushLocation([HOME, thread("a"), settings], HOME)
+		expect(atHome).toEqual([HOME])
+		expect(backTarget(atHome)).toBeUndefined()
+		expect(popLocation(atHome)).toBeUndefined()
+		// Even when Home is not the immediately previous entry.
+		expect(pushLocation([thread("a"), task("t"), search], HOME)).toEqual([HOME])
+	})
+
 	it("stays bounded", () => {
 		let entries: NavLocation[] = [HOME]
 		for (let i = 0; i < MAX_NAV_ENTRIES + 10; i++) entries = pushLocation(entries, thread(String(i)))
@@ -61,6 +71,13 @@ describe("popLocation / jumpToLocation / backTarget", () => {
 	it("has nowhere to go from the first entry", () => {
 		expect(popLocation([HOME])).toBeUndefined()
 		expect(backTarget([HOME])).toBeUndefined()
+	})
+
+	it("a Back or jump that lands on Home leaves just Home", () => {
+		// A stack that somehow kept earlier entries before a Home entry is normalised.
+		const stale = [thread("a"), HOME, search]
+		expect(popLocation(stale)).toEqual([HOME])
+		expect(jumpToLocation([thread("a"), HOME, search], 1)).toEqual([HOME])
 	})
 
 	it("jumps to an earlier entry, not the current one", () => {

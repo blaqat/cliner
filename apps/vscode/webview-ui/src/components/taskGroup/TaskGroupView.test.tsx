@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	getTaskGroup: vi.fn(),
 	updateTaskGroup: vi.fn(),
 	deleteTaskGroup: vi.fn(),
+	toggleTaskSettled: vi.fn(),
 	openNote: vi.fn(),
 	showTaskWithId: vi.fn(),
 	state: {} as Record<string, unknown>,
@@ -21,7 +22,10 @@ vi.mock("@/services/grpc-client", () => ({
 		deleteTaskGroup: (request: unknown) => mocks.deleteTaskGroup(request),
 		openNote: (request: unknown) => mocks.openNote(request),
 	},
-	TaskServiceClient: { showTaskWithId: (request: unknown) => mocks.showTaskWithId(request) },
+	TaskServiceClient: {
+		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
+		toggleTaskSettled: (request: unknown) => mocks.toggleTaskSettled(request),
+	},
 }))
 
 const NOW = 10 * 86_400_000
@@ -138,6 +142,7 @@ describe("TaskGroupView", () => {
 		mocks.getTaskGroup.mockReset().mockResolvedValue(FIXTURE)
 		mocks.updateTaskGroup.mockReset().mockResolvedValue({})
 		mocks.deleteTaskGroup.mockReset().mockResolvedValue({})
+		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
 		mocks.openNote.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.state = {
@@ -336,6 +341,47 @@ describe("TaskGroupView", () => {
 		fireEvent.click(within(screen.getByTestId("task-group-delete-confirm")).getByRole("button", { name: "Delete" }))
 		expect(mocks.deleteTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
 		await waitFor(() => expect(mocks.state.hideTaskGroupView).toHaveBeenCalled())
+	})
+
+	it("settles every idle thread from the ⋯ menu and reports the running one", async () => {
+		const thread = (id: string, extra = {}) => ({ id, ts: 1, task: id, taskGroupId: "g1", ...extra })
+		mocks.state = {
+			...mocks.state,
+			taskHistory: [
+				thread("refine", { isSettled: true }),
+				thread("impl"),
+				thread("plan"),
+				thread("aside-late", { parentTaskId: "plan" }),
+				thread("sub", { isSubagent: true, parentTaskId: "impl" }),
+				{ id: "elsewhere", ts: 1, task: "x", taskGroupId: "other" },
+			],
+		}
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Settle all" }))
+
+		const notice = await screen.findByTestId("task-group-settle-notice")
+		// impl is running: skipped. refine was already settled; the subagent and other task's thread are not counted.
+		expect(notice).toHaveTextContent("Settled 2 · 1 still running")
+		expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => request.taskId)).toEqual(["plan", "aside-late"])
+		fireEvent.click(within(notice).getByRole("button", { name: "Dismiss" }))
+		expect(screen.queryByTestId("task-group-settle-notice")).toBeNull()
+	})
+
+	it("offers Unsettle all when every thread is settled", async () => {
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: {},
+			taskHistory: [
+				{ id: "a", ts: 1, task: "a", taskGroupId: "g1", isSettled: true },
+				{ id: "b", ts: 1, task: "b", taskGroupId: "g1", isSettled: true },
+			],
+		}
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
+		await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+		expect(await screen.findByTestId("task-group-settle-notice")).toHaveTextContent("Unsettled 2")
 	})
 
 	it("renames from the ⋯ menu", async () => {

@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import InboxList from "./InboxList"
 
@@ -304,6 +304,60 @@ describe("InboxList task groups", () => {
 		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("Implement steps")
 		fireEvent.click(screen.getByRole("button", { name: "Open task ›" }))
 		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
+	})
+
+	describe("Settle all", () => {
+		beforeEach(() => {
+			mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
+			vi.stubGlobal(
+				"ResizeObserver",
+				class {
+					observe() {}
+					unobserve() {}
+					disconnect() {}
+				},
+			)
+		})
+
+		it("settles every idle thread in the task from the row's menu, skips running ones and says so", async () => {
+			const onOpenTaskGroup = vi.fn()
+			render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			fireEvent.click(screen.getByRole("menuitem", { name: "Settle all" }))
+
+			expect(onOpenTaskGroup).not.toHaveBeenCalled()
+			await waitFor(() =>
+				expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Settled 3 · 1 still running"),
+			)
+			expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => (request as { taskId: string }).taskId)).toEqual([
+				"m2",
+				"m3",
+				"m4",
+			])
+		})
+
+		it("offers Unsettle all when every thread is settled", async () => {
+			mocks.state.sessionStatuses = {}
+			mocks.state.taskHistory = [
+				item("m1", NOW - 60_000, { taskGroupId: "g", isSettled: true }),
+				item("m2", NOW - 120_000, { taskGroupId: "g", isSettled: true }),
+			]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
+			await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unsettled 2")
+		})
+
+		it("disables the action for a task with no threads", () => {
+			mocks.state.taskHistory = [item("loose", NOW, { task: "Loose" })]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			expect(screen.getByRole("menuitem", { name: "Settle all" })).toBeDisabled()
+		})
 	})
 })
 

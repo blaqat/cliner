@@ -119,6 +119,32 @@ describe("navigation history", () => {
 		expect(entries()).toBe("home > thread:a")
 	})
 
+	it("going Home clears the Back stack: nothing reappears via Back", () => {
+		const { go } = setup()
+		go({ currentTaskItem: { id: "a" } })
+		go({ showSettings: true })
+		expect(entries()).toBe("home > thread:a > settings:api-config")
+		expect(screen.getByTestId("crumb-back")).toBeInTheDocument()
+
+		// Settings' close (or a Home crumb) lands on Home with no thread open.
+		go({ showSettings: false, currentTaskItem: undefined })
+		expect(entries()).toBe("home")
+		expect(screen.queryByTestId("crumb-back")).toBeNull()
+		expect(actions.navigateToSettings).not.toHaveBeenCalled()
+	})
+
+	it("Home from a task page and a thread both reset", () => {
+		const { go } = setup()
+		go({ taskGroupView: { id: "t", page: "home" } })
+		go({ taskGroupView: null, currentTaskItem: { id: "a" } })
+		go({ currentTaskItem: undefined })
+		expect(entries()).toBe("home")
+		expect(screen.queryByTestId("crumb-back")).toBeNull()
+		// New visits build a fresh stack from Home.
+		go({ taskGroupView: { id: "t", page: "home" } })
+		expect(entries()).toBe("home > task:t:home")
+	})
+
 	it("returns to search with its last query", () => {
 		const { go } = setup()
 		fireEvent.click(screen.getByText("open-search"))

@@ -61,8 +61,15 @@ export function sameLocation(a: NavLocation | undefined, b: NavLocation | undefi
 	return !!a && !!b && locationKey(a) === locationKey(b)
 }
 
+/** Home is the root: arriving there drops everything before it, so Back never leaves Home. */
+function resetAtHome(entries: NavLocation[]): NavLocation[] {
+	const last = entries[entries.length - 1]
+	return last?.kind === "home" && entries.length > 1 ? [last] : entries
+}
+
 /**
  * Records a visit. The last entry is where you are now.
+ * - Arriving at Home (however you got there) resets the stack to just Home.
  * - Re-reporting the current place is a no-op.
  * - Arriving where Back would take you (A → B → A, e.g. Settings' Done or a
  *   crumb back to the page you came from) pops instead of growing a loop.
@@ -70,19 +77,20 @@ export function sameLocation(a: NavLocation | undefined, b: NavLocation | undefi
 export function pushLocation(entries: readonly NavLocation[], location: NavLocation): NavLocation[] {
 	const current = entries[entries.length - 1]
 	if (sameLocation(current, location)) return entries as NavLocation[]
+	if (location.kind === "home") return [location]
 	if (sameLocation(entries[entries.length - 2], location)) return entries.slice(0, -1)
 	return [...entries, location].slice(-MAX_NAV_ENTRIES)
 }
 
 /** The stack after Back, or undefined when there is nowhere to go. */
 export function popLocation(entries: readonly NavLocation[]): NavLocation[] | undefined {
-	return entries.length > 1 ? entries.slice(0, -1) : undefined
+	return entries.length > 1 ? resetAtHome(entries.slice(0, -1)) : undefined
 }
 
 /** The stack after jumping to `index` from the history list. */
 export function jumpToLocation(entries: readonly NavLocation[], index: number): NavLocation[] | undefined {
 	if (index < 0 || index >= entries.length - 1) return undefined
-	return entries.slice(0, index + 1)
+	return resetAtHome(entries.slice(0, index + 1))
 }
 
 export function backTarget(entries: readonly NavLocation[]): NavLocation | undefined {
