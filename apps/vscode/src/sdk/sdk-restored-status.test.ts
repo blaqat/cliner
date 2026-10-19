@@ -20,4 +20,11 @@ describe("restored thread status", () => {
 		expect(restoredThreadStatus({ status: "failed", metadata })).toBe("error")
 		expect(restoredThreadStatus({ status: "idle", metadata: { vscodeThreadStatus: "error" } })).toBe("error")
 	})
+
+	it("shows records an older build marked failed on window close as done, but keeps real errors", () => {
+		const legacy = { terminal_marker: "failed_external_process_exit" }
+		expect(restoredThreadStatus({ status: "failed", metadata: legacy })).toBe("done")
+		expect(restoredThreadStatus({ status: "failed", metadata: { ...legacy, vscodeThreadStatus: "error" } })).toBe("error")
+		expect(restoredThreadStatus({ status: "failed", metadata: { terminal_marker: "something_else" } })).toBe("error")
+	})
 })
