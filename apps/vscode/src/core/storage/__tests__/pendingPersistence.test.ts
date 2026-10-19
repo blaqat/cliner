@@ -179,4 +179,23 @@ describe("profile secret persistence", () => {
 			release()
 		}
 	})
+
+	it("waits for a tracked operation and persists the state it queues afterwards", async () => {
+		const internals = manager as any
+		let finish!: () => void
+		const operation = manager.trackOperation(
+			new Promise<void>((resolve) => {
+				finish = resolve
+			}).then(() => {
+				internals.globalStateCache.queuedLater = "yes"
+				internals.pendingGlobalState.add("queuedLater")
+			}),
+		)
+		const flush = manager.flushPendingState()
+		await Bun.sleep(20)
+		finish()
+		await Promise.all([operation, flush])
+		const file = path.join(dir, "data/globalState.json")
+		expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ queuedLater: "yes" })
+	})
 })

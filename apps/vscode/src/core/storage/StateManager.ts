@@ -78,6 +78,8 @@ export class StateManager {
 	private persistenceTimeout: NodeJS.Timeout | null = null
 	private persistence: Promise<void> = Promise.resolve()
 	private secretWrites = new Set<Promise<void>>()
+	// Multi-step operations (e.g. a configuration save: secrets, then settings) that may still queue state.
+	private trackedOperations = new Set<Promise<unknown>>()
 	private secretWriteErrors: unknown[] = []
 	private readonly PERSISTENCE_DELAY_MS = 500
 	private taskHistoryWatcher: FSWatcher | null = null
@@ -575,6 +577,26 @@ export class StateManager {
 	}
 
 	/**
+	 * Track an operation that may queue more state after it awaits, so a flush
+	 * (e.g. on deactivate) waits for it and then persists what it queued.
+	 */
+	trackOperation<T>(operation: Promise<T>): Promise<T> {
+		this.trackedOperations.add(operation)
+		const untrack = () => this.trackedOperations.delete(operation)
+		void operation.then(untrack, untrack)
+		return operation
+	}
+
+	private hasPendingState(): boolean {
+		return (
+			this.pendingGlobalState.size > 0 ||
+			this.pendingSecrets.size > 0 ||
+			this.pendingWorkspaceState.size > 0 ||
+			this.pendingTaskState.size > 0
+		)
+	}
+
+	/**
 	 * Write secrets under arbitrary keys in the secrets store. Empty/undefined
 	 * values delete the key. Writes go straight to the backing store.
 	 */
@@ -724,11 +746,25 @@ export class StateManager {
 			this.persistenceTimeout = null
 		}
 
-		// Include profile-secret writes even when no debounced state is pending.
-		const results = await Promise.allSettled([this.persistPendingState(), ...this.secretWrites])
+		// Include profile-secret writes even when no debounced state is pending. A tracked
+		// operation can queue more state once its secrets land, so drain until nothing is left.
+		let failure: unknown
+		for (let round = 0; round < 5; round++) {
+			const results = await Promise.allSettled([
+				this.persistPendingState(),
+				...this.secretWrites,
+				...this.trackedOperations,
+			])
+			const rejected = results.find((result) => result.status === "rejected")
+			// A failed write leaves its keys pending for the next flush; report it rather than retry here.
+			if (rejected?.status === "rejected") {
+				failure = rejected.reason
+				break
+			}
+			if (!this.hasPendingState() && this.secretWrites.size === 0 && this.trackedOperations.size === 0) break
+		}
 		const secretErrors = this.secretWriteErrors.splice(0)
-		const failure = results.find((result) => result.status === "rejected")
-		if (failure?.status === "rejected") throw failure.reason
+		if (failure !== undefined) throw failure
 		if (secretErrors.length) throw secretErrors[0]
 	}
 
