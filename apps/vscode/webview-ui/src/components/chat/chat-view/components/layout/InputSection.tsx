@@ -1,6 +1,6 @@
 import type { ParsedMessageLink } from "@shared/message-links"
 import { ResolveMessageLinkRequest } from "@shared/proto/cline/task"
-import React, { useCallback, useEffect, useRef } from "react"
+import React, { useCallback, useEffect, useLayoutEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
 import { ContextUsageIndicator, useComposerContextUsage } from "@/components/chat/composer/ContextUsageIndicator"
 import {
@@ -12,7 +12,7 @@ import {
 } from "@/components/chat/composer/contextUsage"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { TaskServiceClient } from "@/services/grpc-client"
+import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { usePromptStash } from "../../hooks/usePromptStash"
 import { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 
@@ -118,6 +118,29 @@ export const InputSection: React.FC<InputSectionProps> = ({
 		setQuotes([])
 		return true
 	}, [promptStash, inputValue, quotes, setInputValue, setQuotes])
+
+	// ⌘S / Ctrl+S reaches the webview as a host event: the workbench claims the
+	// key (cline.stashShortcut) and posts here. Subscribing once via a ref keeps
+	// the stream stable while handleStash is rebuilt on each keystroke.
+	const handleStashRef = useRef(handleStash)
+	useLayoutEffect(() => {
+		handleStashRef.current = handleStash
+	})
+	useEffect(() => {
+		const cleanup = UiServiceClient.subscribeToStashShortcut(
+			{},
+			{
+				onResponse: () => {
+					handleStashRef.current()
+				},
+				onError: (error: unknown) => {
+					console.error("Error in stashShortcut subscription:", error)
+				},
+				onComplete: () => {},
+			},
+		)
+		return cleanup
+	}, [])
 
 	const handleSendAs = useCallback(
 		(kind: "interject" | "aside" | "background") => {

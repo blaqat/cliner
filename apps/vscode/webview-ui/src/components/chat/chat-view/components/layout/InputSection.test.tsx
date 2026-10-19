@@ -1,5 +1,5 @@
 import type { ExtensionState, TurnState } from "@shared/ExtensionMessage"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FULL_COMPOSER_ROW } from "@/components/chat/composer/composerRowLayout"
@@ -24,9 +24,19 @@ vi.mock("@/components/chat/composer/useFocusedChatModel", () => ({
 vi.mock("@/hooks/useProviderUsageCostDisplay", () => ({ useProviderUsageCostDisplay: () => "show" }))
 
 const resolveMessageLink = vi.fn()
+const stashShortcut = vi.hoisted(() => ({
+	callbacks: null as { onResponse: () => void } | null,
+	unsubscribed: vi.fn(),
+}))
 vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
 	TaskServiceClient: { resolveMessageLink: (request: unknown) => resolveMessageLink(request) },
+	UiServiceClient: {
+		subscribeToStashShortcut: (_request: unknown, callbacks: { onResponse: () => void }) => {
+			stashShortcut.callbacks = callbacks
+			return () => stashShortcut.unsubscribed()
+		},
+	},
 }))
 
 vi.mock("@/components/chat/ChatTextArea", () => ({
@@ -422,6 +432,37 @@ describe("InputSection", () => {
 			expect(setInputValue).toHaveBeenLastCalledWith("draft")
 			expect(setQuotes).toHaveBeenLastCalledWith(quotes)
 			expect(screen.queryByRole("button", { name: "Restore draft" })).toBeNull()
+		})
+
+		it("stashes the draft when the host posts the ⌘S stash shortcut event", () => {
+			const setInputValue = vi.fn()
+			const setQuotes = vi.fn()
+			const quotes = [{ text: "q", note: "n" }]
+			renderSection(makeChatState({ inputValue: "keep for later", quotes, setInputValue, setQuotes }))
+
+			act(() => stashShortcut.callbacks?.onResponse())
+
+			expect(setInputValue).toHaveBeenCalledWith("")
+			expect(setQuotes).toHaveBeenCalledWith([])
+			expect(screen.getByRole("button", { name: "Restore keep for later" })).toBeInTheDocument()
+		})
+
+		it("ignores the stash shortcut event when the draft is empty", () => {
+			const setInputValue = vi.fn()
+			const setQuotes = vi.fn()
+			renderSection(makeChatState({ inputValue: "  ", quotes: [], setInputValue, setQuotes }))
+
+			act(() => stashShortcut.callbacks?.onResponse())
+
+			expect(setInputValue).not.toHaveBeenCalled()
+			expect(setQuotes).not.toHaveBeenCalled()
+		})
+
+		it("unsubscribes from the stash shortcut stream on unmount", () => {
+			const { unmount } = renderSection(makeChatState())
+			expect(stashShortcut.callbacks).not.toBeNull()
+			unmount()
+			expect(stashShortcut.unsubscribed).toHaveBeenCalled()
 		})
 	})
 
