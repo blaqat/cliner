@@ -176,6 +176,32 @@ describe("translateSessionEvent — chunk events", () => {
 // ---------------------------------------------------------------------------
 
 describe("translateSessionEvent — pending prompts", () => {
+	it("echoes a resolved prompt without its message_reference block, keeping the tag for display", () => {
+		const state = new MessageTranslatorState()
+		const result = translateSessionEvent(
+			{
+				type: "pending_prompt_submitted",
+				payload: {
+					sessionId: "session-1",
+					id: "pending-1",
+					prompt: '<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>\n\nuse this',
+					delivery: "steer",
+					attachmentCount: 0,
+				},
+			} as CoreSessionEvent,
+			state,
+		)
+		expect(result.messages).toEqual([
+			expect.objectContaining({
+				say: "user_feedback",
+				text: "use this",
+				messageReferences: [
+					{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports at 10k rows" },
+				],
+			}),
+		])
+	})
+
 	it("renders a submitted queued prompt as user feedback", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {

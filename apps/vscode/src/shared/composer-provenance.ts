@@ -13,6 +13,10 @@ export interface MessageLinkRef {
 	messageIndex: number
 	toolCallId?: string
 	block?: number
+	/** Set when the reference is carried verbatim (edit-and-resend); the host then skips resolving. */
+	threadTitle?: string
+	author?: string
+	text?: string
 }
 
 export interface ComposerProvenance {
@@ -40,7 +44,8 @@ export function messageLinkRefs(provenance: ComposerProvenance | undefined): Mes
 		if (!Number.isSafeInteger(link.messageIndex) || link.messageIndex < 0) continue
 		const toolCallId = link.toolCallId || undefined
 		const block = toolCallId === undefined && Number.isSafeInteger(link.block) ? link.block : undefined
-		const key = `${link.threadId}:${link.messageIndex}:${toolCallId ?? ""}:${block ?? ""}`
+		const text = link.text || undefined
+		const key = `${link.threadId}:${link.messageIndex}:${toolCallId ?? ""}:${block ?? ""}:${text ?? ""}`
 		if (seen.has(key)) continue
 		seen.add(key)
 		refs.push({
@@ -48,6 +53,7 @@ export function messageLinkRefs(provenance: ComposerProvenance | undefined): Mes
 			messageIndex: link.messageIndex,
 			...(toolCallId ? { toolCallId } : {}),
 			...(block !== undefined ? { block } : {}),
+			...(text ? { text, threadTitle: link.threadTitle || "", author: link.author || "assistant" } : {}),
 		})
 		if (refs.length >= MAX_MESSAGE_LINKS) break
 	}

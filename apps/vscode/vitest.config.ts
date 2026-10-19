@@ -12,7 +12,7 @@ export default defineConfig({
 			"src/shared/vsCodeSelectorUtils.test.ts",
 			"src/shared/message-links.test.ts",
 			"src/shared/composer-provenance.test.ts",
-			"src/core/mentions/message-references.test.ts",
+			"src/shared/message-references.test.ts",
 			"src/shared/terminal-environment.test.ts",
 			"src/utils/terminal-env.test.ts",
 			"src/shared/scripts.test.ts",

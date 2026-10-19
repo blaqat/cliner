@@ -40,6 +40,7 @@ import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
+import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
@@ -72,7 +73,6 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
-import { formatMessageReference, prependMessageReferences } from "@/core/mentions/message-references"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
 import { expandThreadMentions } from "@/core/mentions/thread-mentions"
 import {
@@ -2088,12 +2088,32 @@ export class Controller {
 	private async resolveMessageReferenceBlocks(links: readonly MessageLinkRef[]): Promise<string[]> {
 		const blocks: string[] = []
 		for (const link of links) {
+			// A reference carried verbatim (an edited message resending the tags it already had)
+			// keeps its text: the linked message may be past the rewind point by now.
+			if (link.text) {
+				blocks.push(
+					formatMessageReference({
+						threadId: link.threadId,
+						threadTitle: link.threadTitle ?? "",
+						author: link.author === "user" ? "user" : "assistant",
+						text: link.text,
+					}),
+				)
+				continue
+			}
 			try {
 				const info = await this.resolveMessageLink(link.threadId, link.messageIndex, {
 					toolCallId: link.toolCallId,
 					block: link.block,
 				})
-				if (info.text) blocks.push(formatMessageReference({ ...info, threadId: link.threadId }))
+				if (info.text)
+					blocks.push(
+						formatMessageReference({
+							...info,
+							threadId: link.threadId,
+							author: info.author === "user" ? "user" : "assistant",
+						}),
+					)
 			} catch (error) {
 				Logger.warn(`[SdkController] Failed to resolve message tag for thread ${link.threadId}:`, error)
 			}

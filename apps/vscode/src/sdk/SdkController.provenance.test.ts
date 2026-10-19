@@ -113,6 +113,18 @@ describe("message tags attach one message as context", () => {
 		expect(controller.referencedThreads.size).toBe(0)
 	})
 
+	it("resends a verbatim reference as-is without resolving it again", async () => {
+		const { controller, send } = followUpController()
+		controller.taskHistory.readSessionMessages = vi.fn(async () => [])
+		await controller.askResponse("edited", undefined, undefined, undefined, {
+			messageLinks: [{ threadId: "7_src", messageIndex: 0, threadTitle: "Dev plan", author: "user", text: "Cap exports" }],
+		})
+		expect(send.mock.calls[0][2]).toBe(
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports\n</message_reference>\n\nedited',
+		)
+		expect(controller.taskHistory.readSessionMessages).not.toHaveBeenCalled()
+	})
+
 	it("skips a link that no longer resolves and still sends the text", async () => {
 		const { controller, send } = followUpController()
 		controller.taskHistory.readSessionMessages = vi.fn(async () => [])

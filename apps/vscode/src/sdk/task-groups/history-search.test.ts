@@ -104,6 +104,19 @@ describe("HistorySearcher", () => {
 			}
 		})
 
+		it("never shows a message_reference block in a hit snippet", async () => {
+			const threads: HistorySearchThread[] = [{ id: "s1", title: "Deploy API", ts: 100 }]
+			const block =
+				'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+			await writeSession(sessionsDir, "s1", [
+				textMessage("user", `<user_input mode="act">${block}\n\nship the release</user_input>`, 100),
+			])
+			const hits = await searcher.search({ query: "ship", kind: "messages", threads })
+			expect(hits.map((hit) => hit.snippet)).toEqual(["ship the release"])
+			// The attached message is context, not the user's words, so its text isn't searchable.
+			expect(await searcher.search({ query: "10k rows", kind: "messages", threads })).toEqual([])
+		})
+
 		it("returns newest sessions first and stops scanning at the limit", async () => {
 			// Oldest session carries the largest message ts: if the scan didn't stop
 			// early, its hit would sort first and appear in the results.

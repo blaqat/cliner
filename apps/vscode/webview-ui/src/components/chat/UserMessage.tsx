@@ -1,4 +1,5 @@
-import { Int64Request } from "@shared/proto/cline/common"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
+import { ComposerProvenance, Int64Request, MessageLinkRef } from "@shared/proto/cline/common"
 import { EditMessageAndRegenerateRequest } from "@shared/proto/cline/task"
 import type React from "react"
 import { useEffect, useMemo, useState } from "react"
@@ -8,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { CheckpointsServiceClient, TaskServiceClient } from "@/services/grpc-client"
 import MessageLinkButton from "./MessageLinkButton"
+import { MessageReferenceTags } from "./MessageTag"
 import { highlightText } from "./task-header/Highlights"
 
 interface UserMessageProps {
@@ -15,6 +17,8 @@ interface UserMessageProps {
 	files?: string[]
 	images?: string[]
 	messageTs?: number
+	/** Message tags the user attached when sending; shown as chips, never as raw text. */
+	messageReferences?: MessageReferenceInfo[]
 	sendMessageFromChatRow?: (text: string, images: string[], files: string[]) => void
 	/** True for messages that started an agent run, which are the only ones Reset Code applies to. */
 	canRestoreWorkspace?: boolean
@@ -36,7 +40,20 @@ const WORKSPACE_RESTORE_TOOLTIPS: Record<WorkspaceRestoreAvailability["state"], 
 	unavailable: "No workspace checkpoint was created for this message.",
 }
 
-const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageTs, canRestoreWorkspace }) => {
+const UserMessage: React.FC<UserMessageProps> = ({
+	text: rawText,
+	images,
+	files,
+	messageTs,
+	messageReferences,
+	canRestoreWorkspace,
+}) => {
+	// The host parses the blocks out already; parsing here too keeps a block from ever showing as text.
+	const parsed = useMemo(() => parseMessageReferences(rawText ?? ""), [rawText])
+	const text = rawText === undefined ? undefined : parsed.text
+	const references = useMemo(() => [...(messageReferences ?? []), ...parsed.references], [messageReferences, parsed.references])
+	// Tags stay on the message when it is edited and resent, unless the user removes them.
+	const [editedReferences, setEditedReferences] = useState<MessageReferenceInfo[]>(references)
 	const { navigateToSettings, enableCheckpointsSetting, subagentView } = useExtensionState()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedText, setEditedText] = useState(text ?? "")
@@ -89,6 +106,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 
 	const startEditing = () => {
 		setEditedText(text ?? "")
+		setEditedReferences(references)
 		setEditedImages(images ?? [])
 		setEditedFiles(files ?? [])
 		setErrorMessage(undefined)
@@ -126,6 +144,20 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					images: editedImages,
 					files: editedFiles,
 					restoreWorkspace,
+					// Carried verbatim: the linked message may be past the rewind point by now.
+					provenance:
+						editedReferences.length > 0
+							? ComposerProvenance.create({
+									messageLinks: editedReferences.map((reference) =>
+										MessageLinkRef.create({
+											threadId: reference.threadId,
+											threadTitle: reference.threadTitle,
+											author: reference.author,
+											text: reference.text,
+										}),
+									),
+								})
+							: undefined,
 				}),
 			)
 			setIsEditing(false)
@@ -207,6 +239,12 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 			)}
 			{isEditing ? (
 				<div className="flex flex-col gap-2" onKeyDown={handleEditingKeyDown}>
+					{editedReferences.length > 0 && (
+						<MessageReferenceTags
+							onRemove={(index) => setEditedReferences((current) => current.filter((_, i) => i !== index))}
+							references={editedReferences}
+						/>
+					)}
 					<textarea
 						className="w-full box-border rounded-xs border border-vscode-input-border bg-vscode-input-background text-vscode-input-foreground p-2 text-sm resize-vertical"
 						disabled={!!savingMode}
@@ -277,9 +315,12 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					</div>
 				</div>
 			) : (
-				<span className="ph-no-capture text-sm" style={{ display: "block" }}>
-					{highlightedText}
-				</span>
+				<>
+					{references.length > 0 && <MessageReferenceTags references={references} />}
+					<span className="ph-no-capture text-sm" style={{ display: "block" }}>
+						{highlightedText}
+					</span>
+				</>
 			)}
 			{!isEditing && ((images && images.length > 0) || (files && files.length > 0)) && (
 				<Thumbnails files={files ?? []} images={images ?? []} style={{ marginTop: "8px" }} />

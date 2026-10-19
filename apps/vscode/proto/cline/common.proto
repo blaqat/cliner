@@ -116,6 +116,11 @@ message MessageLinkRef {
   // Row anchor (see ResolveMessageLinkRequest).
   optional string tool_call_id = 3;
   optional int32 block = 4;
+  // A reference carried verbatim, e.g. an edited message resending the tags it
+  // already had. When text is set the host uses these instead of resolving.
+  optional string thread_title = 5;
+  optional string author = 6;
+  optional string text = 7;
 }
 
 // What the user explicitly did in the composer for one message. The host

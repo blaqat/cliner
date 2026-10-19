@@ -7,6 +7,7 @@ import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage, ClineSaySubagentStatus, ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import type { TaskTag } from "@shared/task-groups"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
@@ -183,7 +184,7 @@ function historyItemToSessionHistoryRecord(item: HistoryItem): SessionHistoryRec
 }
 
 /** SdkMessage plus the plan/act mode recovered from its <user_input mode="..."> wrapper. */
-type SdkDisplayMessage = SdkMessage & { uiMode?: "plan" | "act" | "yolo" }
+type SdkDisplayMessage = SdkMessage & { uiMode?: "plan" | "act" | "yolo"; messageReferences?: MessageReferenceInfo[] }
 
 function parseUserMessageMode(content: SdkMessage["content"]): "plan" | "act" | "yolo" | undefined {
 	if (typeof content === "string") {
@@ -208,18 +209,26 @@ export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDi
 		// Recover the mode BEFORE display sanitization strips the <user_input mode="..."> wrapper;
 		// history rendering uses it to style each turn's inferred completion row.
 		const uiMode = parseUserMessageMode(message.content)
+		// Message tags are persisted as <message_reference> blocks in the user text. Pull them out
+		// before display formatting so the bubble can render them as chips instead of raw markup.
+		const messageReferences: MessageReferenceInfo[] = []
+		const display = (text: string) => {
+			const parsed = parseMessageReferences(text)
+			messageReferences.push(...parsed.references)
+			return formatDisplayUserInput(parsed.text)
+		}
+		const withReferences = () => (messageReferences.length > 0 ? { messageReferences } : {})
 		if (typeof message.content === "string") {
-			return { ...message, content: formatDisplayUserInput(message.content), uiMode }
+			return { ...message, content: display(message.content), uiMode, ...withReferences() }
 		}
 		if (Array.isArray(message.content)) {
 			return {
 				...message,
 				content: message.content.map((block) =>
-					block.type === "text" && typeof block.text === "string"
-						? { ...block, text: formatDisplayUserInput(block.text) }
-						: block,
+					block.type === "text" && typeof block.text === "string" ? { ...block, text: display(block.text) } : block,
 				),
 				uiMode,
+				...withReferences(),
 			}
 		}
 		return message

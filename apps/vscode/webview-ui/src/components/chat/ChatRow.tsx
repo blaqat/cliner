@@ -954,6 +954,7 @@ export const ChatRowContent = memo(
 								canRestoreWorkspace={canRestoreWorkspaceFromMessage(clineMessages, message.ts)}
 								files={message.files}
 								images={message.images}
+								messageReferences={message.messageReferences}
 								messageTs={message.ts}
 								sendMessageFromChatRow={sendMessageFromChatRow}
 								text={message.text}

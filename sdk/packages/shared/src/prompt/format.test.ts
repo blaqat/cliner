@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest"
 import {
 	createModeSwitchNoticeTracker,
 	formatDisplayUserInput,
+	stripMessageReferences,
 	formatModeSwitchNotice,
 	formatSessionSearchPreview,
 	formatSessionSearchTitle,
@@ -13,7 +14,7 @@ import {
 	SESSION_SEARCH_PREVIEW_MAX_LENGTH,
 	SESSION_SEARCH_TITLE_MAX_LENGTH,
 	stripModeNotices,
-} from "./format";
+} from "./format"
 
 describe("prompt format helpers", () => {
 	it("parses a user command wrapper", () => {
@@ -23,154 +24,143 @@ describe("prompt format helpers", () => {
 			),
 		).toEqual({
 			slash: "team",
-			content:
-				"spawn a team of agents for the following task: inspect rpc startup",
-		});
-	});
+			content: "spawn a team of agents for the following task: inspect rpc startup",
+		})
+	})
 
 	it("normalizes wrapped user command content for model input", () => {
 		expect(
 			normalizeUserInput(
 				'<user_command slash="team">spawn a team of agents for the following task: inspect rpc startup</user_command>',
 			),
-		).toBe(
-			"spawn a team of agents for the following task: inspect rpc startup",
-		);
-	});
+		).toBe("spawn a team of agents for the following task: inspect rpc startup")
+	})
 
 	it("formats wrapped team commands for display", () => {
-		const wrapped = formatUserCommandBlock(
-			"spawn a team of agents for the following task: inspect rpc startup",
-			"team",
-		);
-		expect(formatDisplayUserInput(wrapped)).toBe("/team inspect rpc startup");
-	});
+		const wrapped = formatUserCommandBlock("spawn a team of agents for the following task: inspect rpc startup", "team")
+		expect(formatDisplayUserInput(wrapped)).toBe("/team inspect rpc startup")
+	})
 
 	it("parses the mode attribute from a user_input wrapper", () => {
-		expect(parseUserInputMode(formatUserInputBlock("hello", "plan"))).toBe(
-			"plan",
-		);
-		expect(parseUserInputMode(formatUserInputBlock("hello", "act"))).toBe(
-			"act",
-		);
-	});
+		expect(parseUserInputMode(formatUserInputBlock("hello", "plan"))).toBe("plan")
+		expect(parseUserInputMode(formatUserInputBlock("hello", "act"))).toBe("act")
+	})
 
 	it("parses the mode when a mode notice precedes the wrapper", () => {
-		const input = `${formatModeSwitchNotice("act", "plan")}${formatUserInputBlock("hello", "plan")}`;
-		expect(parseUserInputMode(input)).toBe("plan");
-	});
+		const input = `${formatModeSwitchNotice("act", "plan")}${formatUserInputBlock("hello", "plan")}`
+		expect(parseUserInputMode(input)).toBe("plan")
+	})
 
 	it("returns undefined for unwrapped or unknown-mode input", () => {
-		expect(parseUserInputMode("plain text")).toBeUndefined();
-		expect(parseUserInputMode(undefined)).toBeUndefined();
-		expect(
-			parseUserInputMode('<user_input mode="warp">hello</user_input>'),
-		).toBeUndefined();
-	});
+		expect(parseUserInputMode("plain text")).toBeUndefined()
+		expect(parseUserInputMode(undefined)).toBeUndefined()
+		expect(parseUserInputMode('<user_input mode="warp">hello</user_input>')).toBeUndefined()
+	})
 
 	it("formats a mode switch notice", () => {
 		expect(formatModeSwitchNotice("plan", "act")).toBe(
 			"<mode_notice>The user switched from Ask mode to Act mode before sending this message.</mode_notice>",
-		);
-	});
+		)
+	})
 
 	it("hides mode switch notices from displayed user input", () => {
-		const wrapped = formatUserInputBlock(
-			`${formatModeSwitchNotice("act", "plan")}\nhow should we refactor this?`,
-			"plan",
-		);
-		expect(formatDisplayUserInput(wrapped)).toBe(
-			"how should we refactor this?",
-		);
-	});
+		const wrapped = formatUserInputBlock(`${formatModeSwitchNotice("act", "plan")}\nhow should we refactor this?`, "plan")
+		expect(formatDisplayUserInput(wrapped)).toBe("how should we refactor this?")
+	})
 
 	it("keeps mode switch notices when normalizing outbound prompts", () => {
 		// prepareTurnInput sanitizes prompts with normalizeUserInput before the
 		// host wraps them; stripping notices here would delete the switch
 		// signal before the model ever sees it.
-		const prompt = `${formatModeSwitchNotice("plan", "act")}\ndo it`;
-		expect(normalizeUserInput(prompt)).toBe(prompt);
-	});
+		const prompt = `${formatModeSwitchNotice("plan", "act")}\ndo it`
+		expect(normalizeUserInput(prompt)).toBe(prompt)
+	})
 
 	it("removes every mode notice and leaves unclosed ones intact", () => {
-		expect(
-			stripModeNotices(
-				"<mode_notice>a</mode_notice>hello<mode_notice>b</mode_notice> there",
-			),
-		).toBe("hello there");
-		expect(stripModeNotices("<mode_notice>dangling")).toBe(
-			"<mode_notice>dangling",
-		);
-	});
+		expect(stripModeNotices("<mode_notice>a</mode_notice>hello<mode_notice>b</mode_notice> there")).toBe("hello there")
+		expect(stripModeNotices("<mode_notice>dangling")).toBe("<mode_notice>dangling")
+	})
 
 	it("strips adversarial repeated open tags in linear time", () => {
 		// Regression guard for CodeQL js/polynomial-redos: many unmatched
 		// opening tags must not trigger quadratic rescanning.
-		const hostile = "<mode_notice>".repeat(50_000);
-		const started = performance.now();
-		const result = stripModeNotices(hostile);
-		expect(performance.now() - started).toBeLessThan(1_000);
-		expect(result).toBe(hostile);
-	});
+		const hostile = "<mode_notice>".repeat(50_000)
+		const started = performance.now()
+		const result = stripModeNotices(hostile)
+		expect(performance.now() - started).toBeLessThan(1_000)
+		expect(result).toBe(hostile)
+	})
 
 	it("bounds and unwraps session search display text", () => {
-		const oversized = "generate ".repeat(10_000);
-		const wrapped = formatUserInputBlock(oversized, "act");
-		const title = formatSessionSearchTitle(wrapped);
-		const preview = formatSessionSearchPreview("session", wrapped);
+		const oversized = "generate ".repeat(10_000)
+		const wrapped = formatUserInputBlock(oversized, "act")
+		const title = formatSessionSearchTitle(wrapped)
+		const preview = formatSessionSearchPreview("session", wrapped)
 
-		expect(title).not.toContain("user_input");
-		expect(preview).not.toContain("user_input");
-		expect(title).toHaveLength(SESSION_SEARCH_TITLE_MAX_LENGTH);
-		expect(preview).toHaveLength(SESSION_SEARCH_PREVIEW_MAX_LENGTH);
-		expect(title.endsWith("…")).toBe(true);
-		expect(preview.endsWith("…")).toBe(true);
-	});
+		expect(title).not.toContain("user_input")
+		expect(preview).not.toContain("user_input")
+		expect(title).toHaveLength(SESSION_SEARCH_TITLE_MAX_LENGTH)
+		expect(preview).toHaveLength(SESSION_SEARCH_PREVIEW_MAX_LENGTH)
+		expect(title.endsWith("…")).toBe(true)
+		expect(preview.endsWith("…")).toBe(true)
+	})
 
 	it("preserves assistant examples while bounding their search previews", () => {
-		const content =
-			'<user_input mode="act">this tag is part of the answer</user_input>';
+		const content = '<user_input mode="act">this tag is part of the answer</user_input>'
 
-		expect(formatSessionSearchPreview("assistant", content)).toBe(content);
-	});
-});
+		expect(formatSessionSearchPreview("assistant", content)).toBe(content)
+	})
+})
 
 // Promoted from apps/cli/src/runtime/interactive/mode.ts so the VSCode
 // extension shares the exact semantics; the CLI re-exports it from there.
 describe("createModeSwitchNoticeTracker", () => {
 	it("records a switch and clears it on consume", () => {
-		const tracker = createModeSwitchNoticeTracker();
+		const tracker = createModeSwitchNoticeTracker()
 
-		tracker.record("act", "plan");
+		tracker.record("act", "plan")
 
-		expect(tracker.consume()).toEqual({ from: "act", to: "plan" });
-		expect(tracker.consume()).toBeNull();
-	});
+		expect(tracker.consume()).toEqual({ from: "act", to: "plan" })
+		expect(tracker.consume()).toBeNull()
+	})
 
 	it("cancels a round trip that returns to the mode the model last saw", () => {
-		const tracker = createModeSwitchNoticeTracker();
+		const tracker = createModeSwitchNoticeTracker()
 
-		tracker.record("act", "plan");
-		tracker.record("plan", "act");
+		tracker.record("act", "plan")
+		tracker.record("plan", "act")
 
-		expect(tracker.consume()).toBeNull();
-	});
+		expect(tracker.consume()).toBeNull()
+	})
 
 	it("keeps the original starting mode across chained switches", () => {
-		const tracker = createModeSwitchNoticeTracker();
+		const tracker = createModeSwitchNoticeTracker()
 
-		tracker.record("act", "plan");
-		tracker.record("plan", "act");
-		tracker.record("act", "plan");
+		tracker.record("act", "plan")
+		tracker.record("plan", "act")
+		tracker.record("act", "plan")
 
-		expect(tracker.consume()).toEqual({ from: "act", to: "plan" });
-	});
+		expect(tracker.consume()).toEqual({ from: "act", to: "plan" })
+	})
 
 	it("ignores a no-op switch", () => {
-		const tracker = createModeSwitchNoticeTracker();
+		const tracker = createModeSwitchNoticeTracker()
 
-		tracker.record("plan", "plan");
+		tracker.record("plan", "plan")
 
-		expect(tracker.consume()).toBeNull();
-	});
-});
+		expect(tracker.consume()).toBeNull()
+	})
+
+	it("hides message reference blocks from displayed user input", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports\n</message_reference>'
+		const wrapped = formatUserInputBlock(`${block}\n\nuse this`, "act")
+		expect(formatDisplayUserInput(wrapped)).toBe("use this")
+		expect(formatDisplayUserInput(`${block}\n\n${block}\n\nhi`)).toBe("hi")
+	})
+
+	it("leaves an unterminated message reference opening intact", () => {
+		const broken = '<message_reference thread_id="a">never closed'
+		expect(stripMessageReferences(broken)).toBe(broken)
+	})
+})

@@ -7,7 +7,12 @@ import type { TelemetryService } from "@/services/telemetry/TelemetryService"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
-import { historyItemToSessionMetadata, SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import {
+	historyItemToSessionMetadata,
+	SdkTaskHistory,
+	sanitizeSdkUserMessagesForDisplay,
+	sessionHistoryRecordToHistoryItem,
+} from "./sdk-task-history"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 vi.mock("@/core/storage/disk", () => ({
@@ -91,6 +96,35 @@ describe("SdkTaskHistory", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+	})
+
+	it("shows a persisted message_reference block as a tag on the bubble, never as text", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const messages = sdkMessagesToClineMessages(
+			sanitizeSdkUserMessagesForDisplay([
+				{ role: "user", content: `<user_input mode="act">${block}\n\nfirst question</user_input>` },
+				{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+				{ role: "user", content: [{ type: "text", text: `<user_input mode="act">${block}\n\nsecond</user_input>` }] },
+			] as never),
+		)
+		const user = messages.filter((row) => row.say === "task" || row.say === "user_feedback")
+		expect(user.map((row) => row.text)).toEqual(["first question", "second"])
+		for (const row of user) {
+			expect(row.messageReferences).toEqual([
+				{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports at 10k rows" },
+			])
+		}
+		expect(JSON.stringify(messages.map((row) => row.text))).not.toContain("message_reference")
+	})
+
+	it("derives a thread title and preview without the message_reference block", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const item = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task-1", { prompt: `<user_input mode="act">${block}\n\nFix the login loop</user_input>` }),
+		)
+		expect(item.task).toBe("Fix the login loop")
 	})
 
 	it("round trips settle and aside metadata", () => {

@@ -13,6 +13,7 @@ import { BannerCardData } from "./cline/banner"
 import { ClineRulesToggles } from "./cline-rules"
 import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
+import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
 import type { ModelProfile } from "./model-profiles"
 import { OnboardingModelGroup } from "./proto/cline/state"
@@ -272,6 +273,8 @@ export interface ClineMessage {
 	/** Index in the persisted SDK transcript, for conversation-only forks. */
 	sdkMessageIndex?: number
 	sdkToolCallId?: string
+	/** Message tags the user attached to this user message, parsed out of its text for display. */
+	messageReferences?: MessageReferenceInfo[]
 	ts: number
 	type: "ask" | "say"
 	ask?: ClineAsk

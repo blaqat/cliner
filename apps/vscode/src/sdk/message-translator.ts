@@ -43,6 +43,7 @@ import type {
 	ClineSubagentUsageInfo,
 	SubagentStatusItem,
 } from "@shared/ExtensionMessage"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import { Logger } from "@shared/services/Logger"
 import * as path from "path"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -2281,7 +2282,8 @@ export function translateSessionEvent(
 			// Display boundary: formatDisplayUserInput strips runtime-generated
 			// notice elements (e.g. mode_notice) that normalizeUserInput must
 			// preserve, since the latter also sanitizes model-bound prompts.
-			const displayPrompt = isSyntheticUserPrompt(prompt) ? "" : formatDisplayUserInput(prompt)
+			const { text: promptWithoutReferences, references } = parseMessageReferences(prompt)
+			const displayPrompt = isSyntheticUserPrompt(prompt) ? "" : formatDisplayUserInput(promptWithoutReferences)
 			const hasPrompt = displayPrompt.trim().length > 0
 			const hasImages = (userImages?.length ?? 0) > 0
 			const hasFiles = (userFiles?.length ?? 0) > 0
@@ -2291,6 +2293,7 @@ export function translateSessionEvent(
 					type: "say",
 					say: "user_feedback",
 					text: displayPrompt,
+					...(references.length > 0 ? { messageReferences: references } : {}),
 					images: userImages,
 					files: userFiles,
 					partial: false,
@@ -2329,6 +2332,8 @@ type SdkMessageWithMetrics = SdkMessage & {
 	 * Only meaningful on user messages; governs the turn that follows.
 	 */
 	uiMode?: "plan" | "act" | "yolo"
+	/** Message tags parsed out of the user text during display sanitization. */
+	messageReferences?: MessageReferenceInfo[]
 }
 
 function textContentBlocksToText(content: SdkMessage["content"]): string {
@@ -2655,6 +2660,9 @@ export function sdkMessagesToClineMessages(
 							type: "say",
 							say: clineMessages.length === 0 ? "task" : "user_feedback",
 							text,
+							...(sourceMessage.messageReferences?.length
+								? { messageReferences: sourceMessage.messageReferences }
+								: {}),
 							partial: false,
 						})
 					}
@@ -2672,6 +2680,9 @@ export function sdkMessagesToClineMessages(
 						type: "say",
 						say: clineMessages.length === 0 ? "task" : "user_feedback",
 						text: userText,
+						...(sourceMessage.messageReferences?.length
+							? { messageReferences: sourceMessage.messageReferences }
+							: {}),
 						partial: false,
 					})
 				}

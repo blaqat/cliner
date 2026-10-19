@@ -1,11 +1,13 @@
+import { type MessageReferenceInfo, messageReferenceSource } from "@shared/message-references"
 import { MessageSquareTextIcon, XIcon } from "lucide-react"
 import React, { memo } from "react"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import type { MessageTagDraft } from "./chat-view/types/chatTypes"
 
 interface MessageTagProps {
-	tag: MessageTagDraft
-	onRemove: () => void
+	tag: Pick<MessageTagDraft, "source" | "text">
+	/** Omitted for a read-only chip (a tag on a sent message). */
+	onRemove?: () => void
 	triggerRef?: React.Ref<HTMLButtonElement>
 }
 
@@ -21,10 +23,10 @@ export const MessageTag = memo(({ tag, onRemove, triggerRef }: MessageTagProps) 
 		<HoverCard closeDelay={100} openDelay={200}>
 			<HoverCardTrigger asChild>
 				<button
-					aria-label={`Message from ${tag.source}. Press Delete to remove.`}
+					aria-label={`Message from ${tag.source}.${onRemove ? " Press Delete to remove." : ""}`}
 					className="flex h-full min-w-0 cursor-default items-center gap-1 border-0 bg-transparent py-0 pr-0.5 pl-1.5 text-inherit outline-none"
 					onKeyDown={(event) => {
-						if (event.key === "Backspace" || event.key === "Delete") {
+						if (onRemove && (event.key === "Backspace" || event.key === "Delete")) {
 							event.preventDefault()
 							onRemove()
 						}
@@ -49,15 +51,22 @@ export const MessageTag = memo(({ tag, onRemove, triggerRef }: MessageTagProps) 
 				</div>
 			</HoverCardContent>
 		</HoverCard>
-		<button
-			aria-label="Remove message"
-			className="flex h-full shrink-0 cursor-pointer items-center border-0 bg-transparent px-0.5 text-description hover:text-foreground"
-			onClick={onRemove}
-			tabIndex={-1}
-			title="Remove message"
-			type="button">
-			<XIcon size={11} />
-		</button>
+		{onRemove ? (
+			<button
+				aria-label="Remove message"
+				className="flex h-full shrink-0 cursor-pointer items-center border-0 bg-transparent px-0.5 text-description hover:text-foreground"
+				onClick={(event) => {
+					event.stopPropagation()
+					onRemove()
+				}}
+				tabIndex={-1}
+				title="Remove message"
+				type="button">
+				<XIcon size={11} />
+			</button>
+		) : (
+			<span aria-hidden className="w-1" />
+		)}
 	</span>
 ))
 MessageTag.displayName = "MessageTag"
@@ -89,6 +98,33 @@ export const MessageTagList = ({ tags, setTags, focusComposer }: MessageTagListP
 					focusComposer()
 				}}
 				tag={tag}
+			/>
+		))}
+	</div>
+)
+
+interface MessageReferenceTagsProps {
+	references: readonly MessageReferenceInfo[]
+	/** Index-based removal; omit for read-only chips. */
+	onRemove?: (index: number) => void
+}
+
+/**
+ * The tags attached to a sent message, as the same chips the composer shows.
+ * Clicks stay on the chips so they don't open the bubble's editor.
+ */
+export const MessageReferenceTags = ({ references, onRemove }: MessageReferenceTagsProps) => (
+	// biome-ignore lint/a11y/noStaticElementInteractions: only stops clicks from reaching the bubble's edit handler
+	<div
+		className="mb-1.5 flex flex-wrap items-center gap-1 whitespace-normal"
+		data-testid="message-reference-tags"
+		onClick={(event) => event.stopPropagation()}
+		onKeyDown={(event) => event.stopPropagation()}>
+		{references.map((reference, index) => (
+			<MessageTag
+				key={`${reference.threadId}:${index}`}
+				onRemove={onRemove ? () => onRemove(index) : undefined}
+				tag={{ source: messageReferenceSource(reference), text: reference.text }}
 			/>
 		))}
 	</div>
