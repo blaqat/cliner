@@ -3,7 +3,7 @@ import { Controller } from ".."
 
 /**
  * Resolves a message deep link back to its message for the composer's
- * paste -> quote chip. Returns the single message's text — never the thread.
+ * paste -> message tag and its send-time context block. Returns the single message's text — never the thread.
  * An empty `text` means the target couldn't be found, so the composer falls
  * back to inserting the URL literally.
  */

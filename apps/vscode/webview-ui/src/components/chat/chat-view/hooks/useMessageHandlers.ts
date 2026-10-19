@@ -39,6 +39,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		setInputValue,
 		quotes,
 		setQuotes,
+		messageTags,
+		setMessageTags,
 		setSelectedImages,
 		setSelectedFiles,
 		sendingDisabled,
@@ -62,15 +64,15 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		},
 		[currentTaskItem?.id, displayedAsk],
 	)
-	// The composer's explicit grants (thread picks, a typed script run) apply only to the
-	// composer's own text. A send of other text, such as a chat row's option button, carries none.
+	// The composer's explicit grants (thread picks, a typed script run) and its message tags
+	// apply only to the composer's own text. A send of other text, such as a chat row's option button, carries none.
 	const composerGrants = useCallback(
 		(text: string, snapshot = chatState.getDraftSnapshot()) => {
 			const applies = snapshot.text === text
 			const auth: DraftAuthorization | undefined = applies
 				? { authorizedThreadIds: snapshot.authorizedThreadIds ?? [], scriptRun: snapshot.scriptRun }
 				: undefined
-			return { auth, provenance: auth ? toComposerProvenance(snapshot.text, auth) : undefined }
+			return { auth, provenance: auth ? toComposerProvenance(snapshot.text, auth, snapshot.messageTags) : undefined }
 		},
 		[chatState],
 	)
@@ -191,6 +193,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						// clear the composer like a completed send.
 						setInputValue("")
 						setQuotes([])
+						setMessageTags([])
 						setSelectedImages([])
 						setSelectedFiles([])
 						if (recoveryDraft) {
@@ -222,6 +225,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				// field the whole time reads as if the send didn't register.
 				setInputValue("")
 				setQuotes([])
+				setMessageTags([])
 				await compactTask().catch((err) => console.error("Failed to compact task:", err))
 				if ("disableAutoScrollRef" in chatState) {
 					;(chatState as any).disableAutoScrollRef.current = false
@@ -248,6 +252,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				const clearSentMessageState = () => {
 					setInputValue("")
 					setQuotes([])
+					setMessageTags([])
 					setSendingDisabled(true)
 					setSelectedImages([])
 					setSelectedFiles([])
@@ -256,6 +261,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				const restorePendingMessageState = () => {
 					setInputValue(text)
 					setQuotes(quotes)
+					setMessageTags(messageTags)
 					setSendingDisabled(sendingDisabled)
 					setSelectedImages(images)
 					setSelectedFiles(files)
@@ -521,6 +527,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			turnState,
 			mode,
 			quotes,
+			messageTags,
 			recoverySeq,
 			errorRecoveryAvailable,
 			compactTask,
@@ -528,6 +535,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			releaseErrorRecoveryClaim,
 			setInputValue,
 			setQuotes,
+			setMessageTags,
 			sendingDisabled,
 			setSendingDisabled,
 			setSelectedImages,
@@ -569,6 +577,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			// Quotes refer to rows in the task being closed. Keep independent draft
 			// text and attachments, but do not carry stale task context forward.
 			setQuotes([])
+			setMessageTags([])
 			try {
 				await clearTask(source)
 			} catch (error) {
@@ -577,7 +586,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes],
+		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes, setMessageTags],
 	)
 
 	// Execute button action based on type
@@ -641,6 +650,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						// Reset context from the old task before the first await. A quote
 						// selected while New Task is in flight belongs to the new draft.
 						setQuotes([])
+						setMessageTags([])
 						await TaskServiceClient.newTask(
 							NewTaskRequest.create({
 								text: lastMessage?.text,
@@ -711,6 +721,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			claimErrorRecovery,
 			releaseErrorRecoveryClaim,
 			setQuotes,
+			setMessageTags,
 			setSendingDisabled,
 			setEnableButtons,
 		],
@@ -732,8 +743,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			// Read the grants before the draft is cleared below.
 			const { auth, provenance } = composerGrants(text)
 			const sentQuotes = quotes
+			const sentMessageTags = messageTags
 			setInputValue("")
 			setQuotes([])
+			setMessageTags([])
 			setSelectedImages([])
 			setSelectedFiles([])
 			try {
@@ -742,6 +755,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				setInputValue(text)
 				if (auth) chatState.restoreAuthorization(auth)
 				setQuotes(sentQuotes)
+				setMessageTags(sentMessageTags)
 				setSelectedImages(images)
 				setSelectedFiles(files)
 				throw error
@@ -751,7 +765,17 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[quotes, composerGrants, setInputValue, setQuotes, setSelectedImages, setSelectedFiles, chatState],
+		[
+			quotes,
+			messageTags,
+			composerGrants,
+			setInputValue,
+			setQuotes,
+			setMessageTags,
+			setSelectedImages,
+			setSelectedFiles,
+			chatState,
+		],
 	)
 
 	// Background start (home composer Ctrl/Cmd+Enter): the draft becomes a NEW chat

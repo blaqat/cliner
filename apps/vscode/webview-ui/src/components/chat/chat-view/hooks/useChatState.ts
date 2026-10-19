@@ -1,18 +1,26 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChatState, type DraftSnapshot, PendingResponse, PendingUserMessage, type QuoteDraft } from "../types/chatTypes"
+import {
+	ChatState,
+	type DraftSnapshot,
+	type MessageTagDraft,
+	PendingResponse,
+	PendingUserMessage,
+	type QuoteDraft,
+} from "../types/chatTypes"
 import { type DraftAuthorization, hasThreadToken, pruneAuthorization } from "../utils/composerProvenance"
 
 const EMPTY_DRAFT: DraftSnapshot = {
 	revision: 0,
 	text: "",
 	quotes: [],
+	messageTags: [],
 	images: [],
 	files: [],
 	authorizedThreadIds: [],
 }
 
-function applyDraftFieldUpdate<Key extends "text" | "quotes" | "images" | "files">(
+function applyDraftFieldUpdate<Key extends "text" | "quotes" | "messageTags" | "images" | "files">(
 	draft: DraftSnapshot,
 	key: Key,
 	update: SetStateAction<DraftSnapshot[Key]>,
@@ -42,6 +50,10 @@ export function useChatState(messages: ClineMessage[]): ChatState {
 	)
 	const setQuotes = useCallback<Dispatch<SetStateAction<QuoteDraft[]>>>(
 		(update) => updateDraft((current) => applyDraftFieldUpdate(current, "quotes", update)),
+		[updateDraft],
+	)
+	const setMessageTags = useCallback<Dispatch<SetStateAction<MessageTagDraft[]>>>(
+		(update) => updateDraft((current) => applyDraftFieldUpdate(current, "messageTags", update)),
 		[updateDraft],
 	)
 	const addQuote = useCallback((text: string) => setQuotes((current) => [...current, { text, note: "" }]), [setQuotes])
@@ -114,9 +126,10 @@ export function useChatState(messages: ClineMessage[]): ChatState {
 	const resetState = useCallback(() => {
 		setInputValue("")
 		setQuotes([])
+		setMessageTags([])
 		setSelectedImages([])
 		setSelectedFiles([])
-	}, [setInputValue, setQuotes, setSelectedImages, setSelectedFiles])
+	}, [setInputValue, setQuotes, setMessageTags, setSelectedImages, setSelectedFiles])
 
 	// Handle focus change
 	const handleFocusChange = useCallback((isFocused: boolean) => {
@@ -134,6 +147,8 @@ export function useChatState(messages: ClineMessage[]): ChatState {
 		setInputValue,
 		quotes: draft.quotes,
 		setQuotes,
+		messageTags: draft.messageTags,
+		setMessageTags,
 		addQuote,
 		isTextAreaFocused,
 		setIsTextAreaFocused,

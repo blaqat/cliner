@@ -29,7 +29,13 @@ import type { ApiConfiguration } from "@shared/api"
 import { type TaskApiSelection, taskApiSelectionsEqual } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
-import { authorizedThreadIds, type ComposerProvenance, normalizeProvenance } from "@shared/composer-provenance"
+import {
+	authorizedThreadIds,
+	type ComposerProvenance,
+	type MessageLinkRef,
+	messageLinkRefs,
+	normalizeProvenance,
+} from "@shared/composer-provenance"
 import { mentionRegexGlobal } from "@shared/context-mentions"
 import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
@@ -66,6 +72,7 @@ import {
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
 import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
+import { formatMessageReference, prependMessageReferences } from "@/core/mentions/message-references"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
 import { expandThreadMentions } from "@/core/mentions/thread-mentions"
 import {
@@ -2043,12 +2050,18 @@ export class Controller {
 		// so nothing is inferred from it; callers without provenance (host-built
 		// prompts, task-creation URIs) authorize nothing.
 		const authorizedThreads = authorizedThreadIds(provenance)
+		// Message tags attach one message each as context; they never touch `authorizedThreads`.
+		const messageLinks = messageLinkRefs(provenance)
+		const finish = async (resolved: string): Promise<string> =>
+			messageLinks.length === 0
+				? resolved
+				: prependMessageReferences(resolved, await this.resolveMessageReferenceBlocks(messageLinks))
 		const withCommands = await this.resolveSlashCommands(text, threadId, provenance)
 		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return this.resolveReferenceMentions(withCommands, threadId, authorizedThreads)
+			return finish(await this.resolveReferenceMentions(withCommands, threadId, authorizedThreads))
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
@@ -2068,7 +2081,24 @@ export class Controller {
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
 		}
-		return this.resolveReferenceMentions(resolved, threadId, authorizedThreads)
+		return finish(await this.resolveReferenceMentions(resolved, threadId, authorizedThreads))
+	}
+
+	/** Context blocks for the message tags the user attached (links that no longer resolve are skipped). */
+	private async resolveMessageReferenceBlocks(links: readonly MessageLinkRef[]): Promise<string[]> {
+		const blocks: string[] = []
+		for (const link of links) {
+			try {
+				const info = await this.resolveMessageLink(link.threadId, link.messageIndex, {
+					toolCallId: link.toolCallId,
+					block: link.block,
+				})
+				if (info.text) blocks.push(formatMessageReference({ ...info, threadId: link.threadId }))
+			} catch (error) {
+				Logger.warn(`[SdkController] Failed to resolve message tag for thread ${link.threadId}:`, error)
+			}
+		}
+		return blocks
 	}
 
 	private async resolveReferenceMentions(
@@ -3754,7 +3784,7 @@ export class Controller {
 	}
 
 	/**
-	 * Resolves a message link for the composer's paste -> quote chip. Returns
+	 * Resolves a message link for the composer's paste -> message tag and for sending it as context. Returns
 	 * the single referenced row's text (never the thread) plus attribution.
 	 */
 	async resolveMessageLink(

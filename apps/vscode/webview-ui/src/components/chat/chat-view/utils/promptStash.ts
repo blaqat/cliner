@@ -1,10 +1,12 @@
-import type { QuoteDraft } from "../types/chatTypes"
+import type { MessageTagDraft, QuoteDraft } from "../types/chatTypes"
 
 /** Mirrors `ExtensionState.promptStash` entries (see AGENT_BRIEF contract). */
 export interface PromptStashEntry {
 	id: string
 	text: string
 	quotes: QuoteDraft[]
+	/** Absent in entries stashed before message tags existed. */
+	messageTags?: MessageTagDraft[]
 	ts: number
 	taskId?: string
 }
@@ -12,10 +14,11 @@ export interface PromptStashEntry {
 export interface StashableDraft {
 	text: string
 	quotes: QuoteDraft[]
+	messageTags?: MessageTagDraft[]
 }
 
 export function isDraftEmpty(draft: StashableDraft): boolean {
-	return !draft.text.trim() && draft.quotes.length === 0
+	return !draft.text.trim() && draft.quotes.length === 0 && !draft.messageTags?.length
 }
 
 export function createStashId(): string {
@@ -35,6 +38,7 @@ export function pushStashEntry(
 		id: meta.id,
 		text: draft.text,
 		quotes: draft.quotes.map((quote) => ({ ...quote })),
+		...(draft.messageTags?.length ? { messageTags: draft.messageTags.map((tag) => ({ ...tag })) } : {}),
 		ts: meta.ts,
 		...(meta.taskId ? { taskId: meta.taskId } : {}),
 	}
@@ -63,11 +67,14 @@ export function removeStashEntry(entries: readonly PromptStashEntry[], id: strin
 	return entries.filter((entry) => entry.id !== id)
 }
 
-/** Label for a stash row: the text, or a quote count when only quotes were stashed. */
+/** Label for a stash row: the text, or a count when only quotes / message tags were stashed. */
 export function describeStashEntry(entry: PromptStashEntry): string {
 	const text = entry.text.trim()
 	if (text) {
 		return text
+	}
+	if (entry.quotes.length === 0 && entry.messageTags?.length) {
+		return `(${entry.messageTags.length} message${entry.messageTags.length === 1 ? "" : "s"})`
 	}
 	return `(${entry.quotes.length} quote${entry.quotes.length === 1 ? "" : "s"})`
 }

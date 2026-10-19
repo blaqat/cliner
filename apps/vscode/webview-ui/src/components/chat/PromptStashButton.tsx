@@ -84,6 +84,8 @@ const PromptStashButton = ({ entries, onRestore, onDelete, modKey }: PromptStash
 									{formatAge(entry.ts, now)}
 									{entry.quotes.length > 0 &&
 										` · ${entry.quotes.length} quote${entry.quotes.length === 1 ? "" : "s"}`}
+									{!!entry.messageTags?.length &&
+										` · ${entry.messageTags.length} message${entry.messageTags.length === 1 ? "" : "s"}`}
 								</div>
 							</div>
 							<button

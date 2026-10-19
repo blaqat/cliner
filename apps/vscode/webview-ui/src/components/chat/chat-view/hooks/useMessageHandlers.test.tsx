@@ -58,6 +58,7 @@ vi.mock("@shared/proto/cline/common", () => ({
 	StringRequest: { create: (x: unknown) => x },
 	ComposerProvenance: { create: (x: unknown) => x },
 	ScriptInvocation: { create: (x: unknown) => x },
+	MessageLinkRef: { create: (x: unknown) => x },
 }))
 
 // useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
@@ -84,6 +85,8 @@ function makeChatState(messages: ClineMessage[], overrides: Partial<ChatState> =
 		setInputValue: vi.fn(),
 		quotes: [],
 		setQuotes: vi.fn(),
+		messageTags: [],
+		setMessageTags: vi.fn(),
 		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		setIsTextAreaFocused: vi.fn(),
@@ -1654,5 +1657,80 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 		act(() => view.result.current.chatState.setInputValue("please /deploy env:prod"))
 		await send(view)
 		expect(newTask.mock.calls[0][0].provenance).toBeUndefined()
+	})
+
+	describe("message tags", () => {
+		const TAG = {
+			threadId: "7_src",
+			messageIndex: 3,
+			toolCallId: "call_done",
+			text: "All fixed.",
+			source: "Cline · Dev plan",
+		}
+		const LINK = { threadId: "7_src", messageIndex: 3, toolCallId: "call_done", block: undefined }
+
+		it("sends the tag's link (not its text or a quote) and authorizes no thread", async () => {
+			const view = composer([])
+			act(() => view.result.current.chatState.setInputValue("use this"))
+			act(() => view.result.current.chatState.setMessageTags([TAG]))
+			await send(view)
+
+			const request = newTask.mock.calls[0][0]
+			expect(request.text).toBe("use this")
+			expect(request.provenance.messageLinks).toEqual([LINK])
+			expect(request.provenance.authorizedThreadIds).toEqual([])
+		})
+
+		it("forwards the tag on a follow-up, an interject and a background start", async () => {
+			const follow = composer(completedConversation)
+			act(() => follow.result.current.chatState.setInputValue("again"))
+			act(() => follow.result.current.chatState.setMessageTags([TAG]))
+			await send(follow)
+			expect(askResponse.mock.calls[0][0].provenance.messageLinks).toEqual([LINK])
+
+			const interject = composer(completedConversation)
+			act(() => interject.result.current.chatState.setInputValue("now"))
+			act(() => interject.result.current.chatState.setMessageTags([TAG]))
+			await act(async () => {
+				await interject.result.current.handlers.handleInterject("now", [], [])
+			})
+			expect(interjectPrompt.mock.calls[0][0].provenance.messageLinks).toEqual([LINK])
+
+			const background = composer([])
+			act(() => background.result.current.chatState.setInputValue("go"))
+			act(() => background.result.current.chatState.setMessageTags([TAG]))
+			await act(async () => {
+				await background.result.current.handlers.handleSendInBackground("go", [], [])
+			})
+			expect(newTask.mock.calls.at(-1)?.[0]).toMatchObject({ runInBackground: true })
+			expect(newTask.mock.calls.at(-1)?.[0].provenance.messageLinks).toEqual([LINK])
+		})
+
+		it("clears the tags once the message is sent", async () => {
+			const view = composer([])
+			act(() => view.result.current.chatState.setInputValue("use this"))
+			act(() => view.result.current.chatState.setMessageTags([TAG]))
+			await send(view)
+			expect(view.result.current.chatState.messageTags).toEqual([])
+		})
+
+		it("puts the tags back when the send fails", async () => {
+			newTask.mockRejectedValueOnce(new Error("offline"))
+			const view = composer([])
+			act(() => view.result.current.chatState.setInputValue("use this"))
+			act(() => view.result.current.chatState.setMessageTags([TAG]))
+			await act(async () => {
+				await view.result.current.handlers.handleSendMessage("use this", [], []).catch(() => {})
+			})
+			expect(view.result.current.chatState.messageTags).toEqual([TAG])
+		})
+
+		it("sends no message links for a send of text other than the draft", async () => {
+			const view = composer(completedConversation)
+			act(() => view.result.current.chatState.setInputValue("draft"))
+			act(() => view.result.current.chatState.setMessageTags([TAG]))
+			await send(view, "an option button's text")
+			expect(askResponse.mock.calls[0][0].provenance).toBeUndefined()
+		})
 	})
 })

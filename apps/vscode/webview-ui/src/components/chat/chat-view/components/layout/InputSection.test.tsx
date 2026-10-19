@@ -73,6 +73,16 @@ vi.mock("@/components/chat/ChatTextArea", () => ({
 					type="button">
 					Paste link
 				</button>
+				<button
+					onClick={() =>
+						onPasteMessageLink?.(
+							{ threadId: "t9", messageIndex: 4, toolCallId: "call_1" },
+							"vscode://x/thread/t9?m=4&t=call_1",
+						)
+					}
+					type="button">
+					Paste anchored link
+				</button>
 				{usageIndicator?.render(FULL_COMPOSER_ROW)}
 				<button onClick={() => onStash?.()} type="button">
 					Stash
@@ -104,6 +114,8 @@ function makeChatState(overrides: Partial<ChatState> = {}): ChatState {
 	return {
 		quotes: [],
 		setQuotes: vi.fn(),
+		messageTags: [],
+		setMessageTags: vi.fn(),
 		addQuote: vi.fn(),
 		isTextAreaFocused: false,
 		inputValue: "queue this",
@@ -434,6 +446,34 @@ describe("InputSection", () => {
 			expect(screen.queryByRole("button", { name: "Restore draft" })).toBeNull()
 		})
 
+		it("round-trips message tags through the stash", () => {
+			const setInputValue = vi.fn()
+			const setQuotes = vi.fn()
+			const setMessageTags = vi.fn()
+			const tag = { threadId: "t9", messageIndex: 4, toolCallId: "call_1", text: "Cap exports", source: "You · Dev plan" }
+			const { rerender } = renderSection(
+				makeChatState({ inputValue: "", messageTags: [tag], setInputValue, setQuotes, setMessageTags }),
+			)
+
+			// A draft that holds only a message tag is still stashable.
+			fireEvent.click(screen.getByRole("button", { name: "Stash" }))
+			expect(setMessageTags).toHaveBeenCalledWith([])
+
+			rerender(
+				<InputSection
+					chatState={makeChatState({ inputValue: "", messageTags: [], setInputValue, setQuotes, setMessageTags })}
+					messageHandlers={{ handleSendMessage: vi.fn() } as unknown as MessageHandlers}
+					placeholderText="Type a message"
+					scrollBehavior={makeScrollBehavior()}
+					selectFilesAndImages={vi.fn()}
+					shouldDisableFilesAndImages={false}
+				/>,
+			)
+			expect(screen.getByRole("button", { name: /Restore/ })).toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: /Restore/ }))
+			expect(setMessageTags).toHaveBeenLastCalledWith([tag])
+		})
+
 		it("stashes the draft when the host posts the ⌘S stash shortcut event", () => {
 			const setInputValue = vi.fn()
 			const setQuotes = vi.fn()
@@ -479,19 +519,57 @@ describe("InputSection", () => {
 				/>,
 			)
 
-		it("becomes a quote chip holding only that message, attributed to its author and thread", async () => {
+		it("becomes a message tag (not a quote) attributed to its author and thread", async () => {
 			resolveMessageLink.mockResolvedValue({ author: "user", threadTitle: "Dev plan", text: "Cap exports at 10k rows" })
 			const setQuotes = vi.fn()
+			const setMessageTags = vi.fn()
 			const setInputValue = vi.fn()
-			renderWith(makeChatState({ setQuotes, setInputValue }))
+			renderWith(makeChatState({ setQuotes, setMessageTags, setInputValue }))
 
 			fireEvent.click(screen.getByRole("button", { name: "Paste link" }))
 
-			await waitFor(() => expect(setQuotes).toHaveBeenCalled())
+			await waitFor(() => expect(setMessageTags).toHaveBeenCalled())
 			expect(resolveMessageLink).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t9", messageIndex: 4 }))
-			const update = setQuotes.mock.calls[0][0] as (current: unknown[]) => unknown[]
-			expect(update([])).toEqual([{ text: "Cap exports at 10k rows", note: "", source: "You · Dev plan" }])
+			const update = setMessageTags.mock.calls[0][0] as (current: unknown[]) => unknown[]
+			expect(update([])).toEqual([
+				{ threadId: "t9", messageIndex: 4, text: "Cap exports at 10k rows", source: "You · Dev plan" },
+			])
+			expect(setQuotes).not.toHaveBeenCalled()
 			expect(setInputValue).not.toHaveBeenCalled()
+		})
+
+		it("labels an assistant message with Cline and keeps the row anchor", async () => {
+			resolveMessageLink.mockResolvedValue({ author: "assistant", threadTitle: "Dev plan", text: "Done." })
+			const setMessageTags = vi.fn()
+			renderWith(makeChatState({ setMessageTags }))
+			fireEvent.click(screen.getByRole("button", { name: "Paste anchored link" }))
+			await waitFor(() => expect(setMessageTags).toHaveBeenCalled())
+			const update = setMessageTags.mock.calls[0][0] as (current: unknown[]) => unknown[]
+			expect(update([])).toEqual([
+				{ threadId: "t9", messageIndex: 4, toolCallId: "call_1", text: "Done.", source: "Cline · Dev plan" },
+			])
+		})
+
+		it("does not add the same message twice", async () => {
+			resolveMessageLink.mockResolvedValue({ author: "user", threadTitle: "Dev plan", text: "Cap exports" })
+			const setMessageTags = vi.fn()
+			renderWith(makeChatState({ setMessageTags }))
+			fireEvent.click(screen.getByRole("button", { name: "Paste link" }))
+			await waitFor(() => expect(setMessageTags).toHaveBeenCalled())
+			const update = setMessageTags.mock.calls[0][0] as (current: unknown[]) => unknown[]
+			const once = update([])
+			expect(update(once)).toBe(once)
+		})
+
+		it("renders the tag chip in the composer next to the quotes, with a remove button", () => {
+			const setMessageTags = vi.fn()
+			const tag = { threadId: "t9", messageIndex: 4, text: "Cap exports", source: "You · Dev plan" }
+			renderWith(makeChatState({ messageTags: [tag], quotes: [{ text: "q", note: "" }], setMessageTags }))
+			expect(screen.getByTestId("message-tag-source")).toHaveTextContent("You · Dev plan")
+			expect(screen.getAllByTestId("quote-tag")).toHaveLength(1)
+			fireEvent.click(screen.getByRole("button", { name: "Remove message" }))
+			const update = setMessageTags.mock.calls[0][0] as (current: unknown[]) => unknown[]
+			expect(update([tag])).toEqual([])
 		})
 
 		it("falls back to the literal URL when the message can't be resolved", async () => {
@@ -506,6 +584,17 @@ describe("InputSection", () => {
 			expect(setQuotes).not.toHaveBeenCalled()
 			const update = setInputValue.mock.calls[0][0] as (current: string) => string
 			expect(update("see")).toBe("see vscode://x/thread/t9?m=4 ")
+		})
+
+		it("falls back to the literal URL when the host request fails", async () => {
+			resolveMessageLink.mockRejectedValue(new Error("gone"))
+			const setMessageTags = vi.fn()
+			const setInputValue = vi.fn()
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			renderWith(makeChatState({ setMessageTags, setInputValue }))
+			fireEvent.click(screen.getByRole("button", { name: "Paste link" }))
+			await waitFor(() => expect(setInputValue).toHaveBeenCalled())
+			expect(setMessageTags).not.toHaveBeenCalled()
 		})
 	})
 })

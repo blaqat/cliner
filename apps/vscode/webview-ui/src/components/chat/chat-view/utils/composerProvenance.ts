@@ -1,5 +1,6 @@
-import { ComposerProvenance, ScriptInvocation } from "@shared/proto/cline/common"
+import { ComposerProvenance, MessageLinkRef, ScriptInvocation } from "@shared/proto/cline/common"
 import type { ScriptValues } from "@shared/scripts"
+import type { MessageTagDraft } from "../types/chatTypes"
 
 /**
  * What the user explicitly did in the composer, kept next to the draft text.
@@ -39,10 +40,20 @@ export function pruneAuthorization(text: string, auth: DraftAuthorization): Draf
 	return { authorizedThreadIds: ids, scriptRun }
 }
 
-/** The explicit-action field sent with a message, or undefined when the draft carries none. */
-export function toComposerProvenance(text: string, auth: DraftAuthorization): ComposerProvenance | undefined {
+/** The part of a message tag the host needs to resolve its text. */
+type MessageTagTarget = Pick<MessageTagDraft, "threadId" | "messageIndex" | "toolCallId" | "block">
+
+/**
+ * The explicit-action field sent with a message, or undefined when the draft carries none.
+ * Message tags ride along as context links only; they never add to `authorizedThreadIds`.
+ */
+export function toComposerProvenance(
+	text: string,
+	auth: DraftAuthorization,
+	messageTags: readonly MessageTagTarget[] = [],
+): ComposerProvenance | undefined {
 	const live = pruneAuthorization(text, auth)
-	if (live.authorizedThreadIds.length === 0 && !live.scriptRun) return undefined
+	if (live.authorizedThreadIds.length === 0 && !live.scriptRun && messageTags.length === 0) return undefined
 	const values: Record<string, string> = {}
 	const flags: Record<string, boolean> = {}
 	for (const [name, value] of Object.entries(live.scriptRun?.values ?? {})) {
@@ -51,6 +62,18 @@ export function toComposerProvenance(text: string, auth: DraftAuthorization): Co
 	}
 	return ComposerProvenance.create({
 		authorizedThreadIds: [...live.authorizedThreadIds],
+		...(messageTags.length > 0
+			? {
+					messageLinks: messageTags.map((tag) =>
+						MessageLinkRef.create({
+							threadId: tag.threadId,
+							messageIndex: tag.messageIndex,
+							toolCallId: tag.toolCallId,
+							block: tag.block,
+						}),
+					),
+				}
+			: {}),
 		scriptInvocation: live.scriptRun ? ScriptInvocation.create({ name: live.scriptRun.name, values, flags }) : undefined,
 	})
 }

@@ -10,6 +10,7 @@ import {
 	isCompactionRunning,
 	showsCompactNudge,
 } from "@/components/chat/composer/contextUsage"
+import { MessageTagList, sameMessageTag } from "@/components/chat/MessageTag"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
@@ -53,6 +54,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	const {
 		quotes,
 		setQuotes,
+		messageTags = [],
+		setMessageTags,
 		inputValue,
 		setInputValue,
 		sendingDisabled,
@@ -111,13 +114,14 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	const focusComposer = useCallback(() => textAreaRef.current?.focus(), [textAreaRef])
 
 	const handleStash = useCallback(() => {
-		if (!promptStash.stash({ text: inputValue, quotes })) {
+		if (!promptStash.stash({ text: inputValue, quotes, messageTags })) {
 			return false
 		}
 		setInputValue("")
 		setQuotes([])
+		setMessageTags([])
 		return true
-	}, [promptStash, inputValue, quotes, setInputValue, setQuotes])
+	}, [promptStash, inputValue, quotes, messageTags, setInputValue, setQuotes, setMessageTags])
 
 	// ⌘S / Ctrl+S reaches the webview as a host event: the workbench claims the
 	// key (cline.stashShortcut) and posts here. Subscribing once via a ref keeps
@@ -157,21 +161,23 @@ export const InputSection: React.FC<InputSectionProps> = ({
 
 	const handleRestoreStash = useCallback(
 		(id: string) => {
-			const restored = promptStash.restore(id, { text: inputValue, quotes })
+			const restored = promptStash.restore(id, { text: inputValue, quotes, messageTags })
 			if (!restored) {
 				return
 			}
 			prevQuoteCountRef.current = restored.quotes.length
 			setInputValue(restored.text)
 			setQuotes(restored.quotes)
+			setMessageTags(restored.messageTags ?? [])
 			focusComposer()
 		},
-		[promptStash, inputValue, quotes, setInputValue, setQuotes, focusComposer],
+		[promptStash, inputValue, quotes, messageTags, setInputValue, setQuotes, setMessageTags, focusComposer],
 	)
 
-	// A pasted vscode:// message link becomes a quote chip holding only that
-	// message's text — "You · <thread>" attribution when the host resolves it.
-	// Unresolvable links fall back to inserting the URL literally.
+	// A pasted vscode:// message link becomes a message tag: a context connection
+	// (not a quote, so no note) that shows the message on hover and hands the
+	// host the link to resolve on send. "You · <thread>" attribution comes from
+	// the host. Unresolvable links fall back to inserting the URL literally.
 	const handlePasteMessageLink = useCallback(
 		(link: ParsedMessageLink, rawUrl: string) => {
 			const insertRawUrl = () =>
@@ -188,7 +194,17 @@ export const InputSection: React.FC<InputSectionProps> = ({
 					if (info.text) {
 						const who = info.author === "user" ? "You" : "Cline"
 						const source = info.threadTitle ? `${who} · ${info.threadTitle}` : who
-						setQuotes((current) => [...current, { text: info.text, note: "", source }])
+						const tag = {
+							threadId: link.threadId,
+							messageIndex: link.messageIndex,
+							...(link.toolCallId ? { toolCallId: link.toolCallId } : {}),
+							...(link.block !== undefined ? { block: link.block } : {}),
+							text: info.text,
+							source,
+						}
+						setMessageTags((current) =>
+							current.some((existing) => sameMessageTag(existing, tag)) ? current : [...current, tag],
+						)
 						focusComposer()
 					} else {
 						insertRawUrl()
@@ -199,13 +215,13 @@ export const InputSection: React.FC<InputSectionProps> = ({
 					insertRawUrl()
 				})
 		},
-		[setInputValue, setQuotes, focusComposer],
+		[setInputValue, setMessageTags, focusComposer],
 	)
 
 	return (
 		<ChatTextArea
 			enterSendsAs={enterSendsAs}
-			hasQuotes={quotes.length > 0}
+			hasQuotes={quotes.length > 0 || messageTags.length > 0}
 			inputValue={inputValue}
 			isHome={!currentTaskItem}
 			isRunning={isRunning}
@@ -227,13 +243,22 @@ export const InputSection: React.FC<InputSectionProps> = ({
 			onThreadPicked={chatState.authorizeThread}
 			placeholderText={isRunning ? runningPlaceholder : placeholderText}
 			quoteTags={
-				quotes.length > 0 ? (
-					<QuoteTagList
-						autoOpenIndex={focusNewQuoteNote ? quotes.length - 1 : undefined}
-						focusComposer={focusComposer}
-						quotes={quotes}
-						setQuotes={setQuotes}
-					/>
+				quotes.length > 0 || messageTags.length > 0 ? (
+					<div className="flex items-center gap-1" data-testid="composer-chips">
+						{messageTags.length > 0 && (
+							<MessageTagList focusComposer={focusComposer} setTags={setMessageTags} tags={messageTags} />
+						)}
+						{quotes.length > 0 && (
+							<div className="min-w-0 flex-1">
+								<QuoteTagList
+									autoOpenIndex={focusNewQuoteNote ? quotes.length - 1 : undefined}
+									focusComposer={focusComposer}
+									quotes={quotes}
+									setQuotes={setQuotes}
+								/>
+							</div>
+						)}
+					</div>
 				) : undefined
 			}
 			ref={textAreaRef}

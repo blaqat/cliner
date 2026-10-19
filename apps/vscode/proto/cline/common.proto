@@ -107,6 +107,17 @@ message ScriptInvocation {
   map<string, bool> flags = 3;
 }
 
+// A message the user attached as context by pasting its link into the composer.
+// The host resolves the text from the link; it never authorizes the thread's
+// transcript tools (only thread: picks do).
+message MessageLinkRef {
+  string thread_id = 1;
+  int64 message_index = 2;
+  // Row anchor (see ResolveMessageLinkRequest).
+  optional string tool_call_id = 3;
+  optional int32 block = 4;
+}
+
 // What the user explicitly did in the composer for one message. The host
 // authorizes exactly this and never derives authorization from message text
 // (quote chips, "Add to Cline" insertions, restored drafts, expanded notes).
@@ -114,4 +125,6 @@ message ComposerProvenance {
   // Thread ids picked from the thread: mention menu whose token is still in the text.
   repeated string authorized_thread_ids = 1;
   optional ScriptInvocation script_invocation = 2;
+  // Message tags in the composer: context only, no authorization.
+  repeated MessageLinkRef message_links = 3;
 }

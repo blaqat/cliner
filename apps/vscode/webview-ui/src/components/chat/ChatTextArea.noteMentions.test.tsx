@@ -301,6 +301,19 @@ describe("ChatTextArea thread: mentions and message-link paste", () => {
 		expect(textarea.value).toBe("")
 	})
 
+	it("pastes a malformed message link as plain text, not a tag", async () => {
+		const textarea = await renderInThread()
+		for (const url of [
+			"vscode://saoudrizwan.cliner/thread/t2",
+			"vscode://saoudrizwan.cliner/thread/t2?m=abc",
+			"vscode://x/other?m=1",
+		]) {
+			fireEvent.paste(textarea, { clipboardData: { items: [], getData: () => url } })
+		}
+		expect(onPasteMessageLink).not.toHaveBeenCalled()
+		expect(textarea.value).toContain("vscode://saoudrizwan.cliner/thread/t2?m=abc")
+	})
+
 	it("leaves other pasted URLs as text", async () => {
 		const textarea = await renderInThread()
 		fireEvent.paste(textarea, { clipboardData: { items: [], getData: () => "https://example.com/x" } })

@@ -143,7 +143,7 @@ export interface ChatTextAreaProps {
 	}
 	/** Opens a task group's page (the task pill's "Open task"). */
 	onOpenTaskGroup?: (taskGroupId: string) => void
-	/** A vscode:// message link was pasted — becomes a quote chip instead of raw text. */
+	/** A vscode:// message link was pasted — becomes a message tag (context, not a quote) instead of raw text. */
 	onPasteMessageLink?: (link: ParsedMessageLink, rawUrl: string) => void
 }
 
@@ -1185,7 +1185,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				const items = e.clipboardData.items
 
 				const pastedText = e.clipboardData.getData("text")
-				// A message deep link becomes a quote chip carrying just that message.
+				// A message deep link becomes a message tag carrying just that message.
 				const messageLink = parseMessageLink(pastedText.trim())
 				if (messageLink) {
 					e.preventDefault()

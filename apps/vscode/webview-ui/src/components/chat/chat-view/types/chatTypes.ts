@@ -18,10 +18,27 @@ export interface QuoteDraft {
 	source?: string
 }
 
+/**
+ * A message pasted into the composer as a link: a context connection, not a
+ * quote. It carries the link's target so the host can resolve the text when the
+ * message is sent, plus what the chip and its hover card show.
+ */
+export interface MessageTagDraft {
+	threadId: string
+	messageIndex: number
+	toolCallId?: string
+	block?: number
+	/** The linked message's text as resolved at paste time (shown on hover). */
+	text: string
+	/** Attribution shown on the chip, e.g. "You · Dev plan". */
+	source: string
+}
+
 export interface DraftSnapshot extends DraftAuthorization {
 	revision: number
 	text: string
 	quotes: QuoteDraft[]
+	messageTags: MessageTagDraft[]
 	images: string[]
 	files: string[]
 }
@@ -53,6 +70,8 @@ export interface ChatState {
 	setInputValue: React.Dispatch<React.SetStateAction<string>>
 	quotes: QuoteDraft[]
 	setQuotes: React.Dispatch<React.SetStateAction<QuoteDraft[]>>
+	messageTags: MessageTagDraft[]
+	setMessageTags: React.Dispatch<React.SetStateAction<MessageTagDraft[]>>
 	/** Appends a quote with an empty note. */
 	addQuote: (text: string) => void
 	isTextAreaFocused: boolean

@@ -61,6 +61,14 @@ export interface ExtensionState {
 		id: string
 		text: string
 		quotes: { text: string; note: string; source?: string }[]
+		messageTags?: {
+			threadId: string
+			messageIndex: number
+			toolCallId?: string
+			block?: number
+			text: string
+			source: string
+		}[]
 		ts: number
 		taskId?: string
 	}[]

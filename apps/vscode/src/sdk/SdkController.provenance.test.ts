@@ -76,6 +76,51 @@ describe("normal follow-ups carry composer provenance", () => {
 	})
 })
 
+describe("message tags attach one message as context", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const tag = { threadId: "7_src", messageIndex: 3, toolCallId: "call_done" }
+
+	it("injects the linked message with its source thread and author, ahead of the typed text", async () => {
+		const { controller, send } = followUpController()
+		controller.taskHistory.readSessionMessages = vi.fn(async () => [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "x" },
+			{ role: "user", content: "x" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call_done", name: "attempt_completion", input: { result: "All fixed." } }],
+			},
+		])
+		await controller.askResponse("use this", undefined, undefined, undefined, { messageLinks: [tag] })
+		const sent = send.mock.calls[0][2] as string
+		expect(sent).toBe(
+			'<message_reference thread_id="7_src" thread_title="Title 7_src" author="assistant">\nAll fixed.\n</message_reference>\n\nuse this',
+		)
+	})
+
+	it("does not authorize the thread's transcript tools or expand a thread: token", async () => {
+		const { controller, send } = followUpController()
+		controller.taskHistory.readSessionMessages = vi.fn(async () => [{ role: "user", content: "hello there" }])
+		await controller.askResponse("see thread:7_src", undefined, undefined, undefined, {
+			messageLinks: [{ threadId: "7_src", messageIndex: 0 }],
+		})
+		const sent = send.mock.calls[0][2] as string
+		expect(sent).toContain('author="user"')
+		expect(sent).toContain("hello there")
+		expect(sent).toContain("see thread:7_src")
+		expect(sent).not.toContain("<thread_reference")
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+
+	it("skips a link that no longer resolves and still sends the text", async () => {
+		const { controller, send } = followUpController()
+		controller.taskHistory.readSessionMessages = vi.fn(async () => [])
+		await controller.askResponse("just text", undefined, undefined, undefined, { messageLinks: [tag] })
+		expect(send.mock.calls[0][2]).toBe("just text")
+	})
+})
+
 describe("one-run script grants come only from the composer's script marker", () => {
 	let root: string
 	beforeEach(async () => {

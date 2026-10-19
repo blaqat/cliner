@@ -39,7 +39,7 @@ export const FEATURE_GROUPS: FeatureGroup[] = [
 		items: [
 			"# mentions notes from any task",
 			"thread: mentions any thread, including other tasks",
-			"Copy a message link; pasting it becomes a quote chip",
+			"Copy a message link; pasting it adds a tag that gives the agent that message",
 		],
 	},
 	{
