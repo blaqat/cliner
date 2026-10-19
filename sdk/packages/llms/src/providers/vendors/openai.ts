@@ -10,6 +10,7 @@ import {
 	withApiVersion,
 	withHttpErrorContext,
 } from "./http-error-context";
+import { withResponsesStreamGuard } from "./responses-stream";
 import type { ProviderFactoryResult } from "./types";
 
 function isChatGptOAuthBaseUrl(baseUrl: string | undefined): boolean {
@@ -37,7 +38,9 @@ export async function createOpenAIProviderModule(
 		config.baseUrl,
 		configuredApiVersion,
 	);
-	const errorFetch = withHttpErrorContext(config.fetch);
+	const errorFetch = withResponsesStreamGuard(
+		withHttpErrorContext(config.fetch),
+	);
 	const provider = createOpenAI({
 		apiKey,
 		baseURL: azure?.baseUrl ?? config.baseUrl,

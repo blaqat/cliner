@@ -5,7 +5,7 @@ import type {
 	GatewayStreamRequest,
 } from "@cline/shared";
 import { describe, expect, it, vi } from "vitest";
-import { createOpenAIProvider, createOpenAICompatibleProvider } from "./ai-sdk";
+import { createOpenAICompatibleProvider, createOpenAIProvider } from "./ai-sdk";
 
 const tool = {
 	name: "lookup",
@@ -389,6 +389,156 @@ describe("OpenAI Compatible Responses runtime", () => {
 		expect(events).toContainEqual({ type: "text-delta", text: "partial" });
 		expect(events).toContainEqual({ type: "finish", reason: "aborted" });
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["max_output_tokens", "max-tokens"],
+		["content_filter", "content-filter"],
+	])("surfaces incomplete %s with usage", async (reason, expected) => {
+		const { provider, request, context } = await setup([
+			sse([
+				created,
+				{
+					...completed,
+					type: "response.incomplete",
+					response: { ...completed.response, incomplete_details: { reason } },
+				},
+			]),
+		]);
+		const events = await collect(await provider.stream(request, context));
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "finish", reason: expected }),
+		);
+		expect(events).toContainEqual(expect.objectContaining({ type: "usage" }));
+	});
+	it.each([
+		{
+			type: "response.failed",
+			sequence_number: 1,
+			response: {
+				error: { code: "server_error", message: "Server timed out" },
+			},
+		},
+		{
+			type: "error",
+			sequence_number: 1,
+			code: "server_error",
+			message: "Server timed out",
+			param: null,
+		},
+		{
+			type: "response.incomplete",
+			response: { incomplete_details: { reason: "server_timeout" } },
+		},
+		{
+			type: "response.refusal.done",
+			item_id: "msg_1",
+			refusal: "I cannot help",
+		},
+	])("surfaces $type as an error instead of an empty successful turn", async (event) => {
+		const { provider, request, context, fetchMock } = await setup([
+			textStream().replace(sse([completed]), sse([event])),
+		]);
+		const events = await collect(await provider.stream(request, context));
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "finish",
+				reason: "error",
+				error: expect.any(String),
+			}),
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	}, 15_000);
+	it("turns a mid-stream stall into a retryable error finish, not a user abort", async () => {
+		vi.useFakeTimers();
+		try {
+			const { config, context, request } = await setup([]);
+			const fetchMock = vi.fn(
+				async () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							start(controller) {
+								controller.enqueue(
+									new TextEncoder().encode(
+										textStream().replace(sse([completed]), ""),
+									),
+								);
+							},
+						}),
+						{ headers: { "content-type": "text/event-stream" } },
+					),
+			);
+			const provider = await createOpenAIProvider({
+				...config,
+				fetch: fetchMock as typeof fetch,
+			});
+			const events: AgentModelEvent[] = [];
+			for await (const event of await provider.stream(request, context)) {
+				events.push(event);
+				if (event.type === "text-delta")
+					await vi.advanceTimersByTimeAsync(5 * 60_000);
+			}
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "finish",
+					reason: "error",
+					error: expect.stringContaining("timed out"),
+					errorRetryable: true,
+				}),
+			);
+			expect(fetchMock).toHaveBeenCalledOnce();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports a truncated response after partial text as retryable, without replaying output", async () => {
+		const { provider, request, context, fetchMock } = await setup([
+			textStream().replace(sse([completed]), ""),
+		]);
+		const events = await collect(await provider.stream(request, context));
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "finish",
+				reason: "error",
+				error: expect.stringContaining("without a terminal event"),
+				errorRetryable: true,
+			}),
+		);
+		expect(events).toContainEqual({ type: "text-delta", text: "Hello" });
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("finishes after a terminal event even if an Azure gateway keeps HTTP open", async () => {
+		const { config, context, request } = await setup([]);
+		const cancel = vi.fn();
+		const fetchMock = vi.fn(
+			async (_url: unknown, _init?: RequestInit) =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode(textStream()));
+						},
+						cancel,
+					}),
+					{ headers: { "content-type": "text/event-stream" } },
+				),
+		);
+		const provider = await createOpenAIProvider({
+			...config,
+			baseUrl:
+				"https://gateway.example/prefix/openai/deployments/my-gpt-6?api-version=2025-04-01-preview",
+			fetch: fetchMock as typeof fetch,
+		});
+		const events = await collect(await provider.stream(request, context));
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "finish", reason: "stop" }),
+		);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"https://gateway.example/prefix/openai/responses?api-version=2025-04-01-preview",
+		);
+		expect(cancel).toHaveBeenCalledOnce();
 	});
 
 	it("uses chat completions again when the compatible adapter is rebuilt", async () => {
