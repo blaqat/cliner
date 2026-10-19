@@ -141,17 +141,17 @@ describe("AboutSection", () => {
 	it("renders collapsible release notes from the data file", () => {
 		renderAbout()
 		const whatsNew = screen.getByTestId("about-whats-new")
-		expect(screen.queryByTestId(`about-release-${RELEASE_NOTES[0].version}`)).toBeNull()
+		expect(screen.queryByTestId(`about-release-${RELEASE_NOTES[0].id}`)).toBeNull()
 
 		fireEvent.click(within(whatsNew).getByRole("button", { name: /What's new/ }))
 		for (const release of RELEASE_NOTES) {
-			expect(screen.getByTestId(`about-release-${release.version}`)).toBeTruthy()
+			expect(screen.getByTestId(`about-release-${release.id}`)).toBeTruthy()
 		}
 		// The newest entry starts open, older ones start closed.
 		const [newest, older] = RELEASE_NOTES
 		expect(screen.getByText(newest.notes[0])).toBeTruthy()
 		expect(screen.queryByText(older.notes[0])).toBeNull()
-		fireEvent.click(within(screen.getByTestId(`about-release-${older.version}`)).getByRole("button"))
+		fireEvent.click(within(screen.getByTestId(`about-release-${older.id}`)).getByRole("button"))
 		expect(screen.getByText(older.notes[0])).toBeTruthy()
 		expect(screen.queryByText(/upcoming|next release/i)).toBeNull()
 	})

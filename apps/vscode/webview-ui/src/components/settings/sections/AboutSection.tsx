@@ -174,12 +174,14 @@ const AboutSection = ({ version, extensionVariant, renderSectionHeader }: AboutS
 								{RELEASE_NOTES.map((release, index) => (
 									<Disclosure
 										defaultOpen={index === 0}
-										key={release.version}
-										testId={`about-release-${release.version}`}
+										key={release.id}
+										testId={`about-release-${release.id}`}
 										title={
 											<span className="text-sm">
-												<b>{`v${release.version}`}</b>
-												{release.date && <span className="ml-2 text-description">{release.date}</span>}
+												<b>{release.title}</b>
+												<span className="ml-2 text-description">
+													{[release.builds, release.date].filter(Boolean).join(" · ")}
+												</span>
 											</span>
 										}>
 										<BulletList className="mb-1 pl-8" items={release.notes} />
