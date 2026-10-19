@@ -293,7 +293,7 @@ it("serializes separate processes and recovers dead lock owners", async () => {
 		})
 		const lock = path.join(storage, "mutation.lock")
 		const old = new Date(Date.now() - 120_000)
-		await fs.utimes(lock, old, old)
+		await fs.lutimes(lock, old, old)
 		let entered = false
 		const waiting = storageLock(storage).then(async (release) => {
 			entered = true
@@ -390,11 +390,11 @@ it("does not reclaim an old lease belonging to a live child process", async () =
 }, 60_000)
 
 it("recognizes PID reuse and fences a replaced lock owner", async () => {
-	expect(alive({ ...owner(), processStart: "a different process start" })).toBe(false)
+	expect(alive({ ...owner(), processStart: `${owner().processStart}-different` })).toBe(false)
 	const release = await storageLock(storage)
 	await fs.rm(path.join(storage, "mutation.lock"), { recursive: true })
 	const successor = await storageLock(storage)
-	await expect(release.assertOwned()).rejects.toThrow("ownership was lost")
+	expect(() => release.assertOwned()).toThrow("ownership was lost")
 	await release()
 	await successor.assertOwned()
 	await successor()

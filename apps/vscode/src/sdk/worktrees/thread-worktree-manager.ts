@@ -58,7 +58,7 @@ export function parseMmModules(raw: string): string[] {
 /** All mutations are serialized, including settings and mapping persistence. */
 export class ThreadWorktreeManager {
 	private queue: Promise<unknown> = Promise.resolve()
-	private assertMutationOwner = async () => {}
+	private assertMutationOwner: () => void | Promise<void> = async () => {}
 	constructor(readonly storageDir: string) {}
 	async exclusive<T>(action: () => Promise<T>): Promise<T> {
 		const result = this.queue.then(async () => {
