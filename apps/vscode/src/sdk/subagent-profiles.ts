@@ -43,7 +43,15 @@ export function resolveSubagentProfileConnection(
 export function buildSubagentProfileSettings(
 	store: ApiProfileStore,
 ):
-	| Pick<SubagentSettings, "profiles" | "profileNames" | "allowedProfiles" | "defaultProfile" | "defaultReasoningEffort">
+	| Pick<
+			SubagentSettings,
+			| "profiles"
+			| "profileNames"
+			| "allowedProfiles"
+			| "defaultProfile"
+			| "defaultReasoningEffort"
+			| "profilesUseProviderDefaultEffort"
+	  >
 	| undefined {
 	if (!store.getGlobalStateKey("subagentProfilesEnabled")) return undefined
 	// Keyed by immutable profile id; names are display-only and may repeat.
@@ -72,6 +80,7 @@ export function buildSubagentProfileSettings(
 
 	return {
 		profiles: Object.fromEntries(byId),
+		profilesUseProviderDefaultEffort: true,
 		profileNames: names,
 		allowedProfiles,
 		defaultProfile: defaultProfileId && byId.has(defaultProfileId) ? defaultProfileId : undefined,

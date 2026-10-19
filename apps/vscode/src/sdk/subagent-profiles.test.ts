@@ -69,6 +69,7 @@ describe("buildSubagentProfileSettings", () => {
 		// Profiles carry their own effort; the legacy setting is only the fallback
 		// for subagents that inherit the thread's model (see the SDK's spawn tool).
 		expect(settings?.defaultReasoningEffort).toBe("high")
+		expect(settings?.profilesUseProviderDefaultEffort).toBe(true)
 	})
 
 	it("has no inherit fallback effort unless the legacy setting is set", () => {

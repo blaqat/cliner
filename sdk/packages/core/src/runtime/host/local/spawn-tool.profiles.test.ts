@@ -1,8 +1,11 @@
 import type { AgentTool } from "@cline/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoreSessionConfig, SubagentProfileConnection } from "../../../types/config";
-import { INHERIT_SUBAGENT_PROFILE, selectSubagentProfile } from "./spawn-tool";
+import type {
+	CoreSessionConfig,
+	SubagentProfileConnection,
+} from "../../../types/config";
 import type { SpawnToolDeps } from "./spawn-tool";
+import { INHERIT_SUBAGENT_PROFILE, selectSubagentProfile } from "./spawn-tool";
 
 const runMock = vi.fn();
 const agentConstructorSpy = vi.fn();
@@ -40,13 +43,18 @@ vi.mock("../../orchestration/session-runtime-orchestrator", () => {
 function makeDeps() {
 	return {
 		getSession: () => undefined,
-		subAgentStarts: new Map<string, { startedAt: number; rootSessionId: string }>(),
+		subAgentStarts: new Map<
+			string,
+			{ startedAt: number; rootSessionId: string }
+		>(),
 		onAgentEvent: vi.fn(),
 		invokeBackendOptional: vi.fn(async () => {}),
 	};
 }
 
-function makeConfig(overrides: Partial<CoreSessionConfig> = {}): CoreSessionConfig {
+function makeConfig(
+	overrides: Partial<CoreSessionConfig> = {},
+): CoreSessionConfig {
 	return {
 		providerId: "anthropic",
 		modelId: "claude-sonnet-4-6",
@@ -74,7 +82,9 @@ const DEEP: SubagentProfileConnection = {
 	reasoningEffort: "high",
 };
 
-const profileSettings = (overrides: Partial<CoreSessionConfig["subagentSettings"]> = {}) => ({
+const profileSettings = (
+	overrides: Partial<CoreSessionConfig["subagentSettings"]> = {},
+) => ({
 	profiles: { Fast: FAST, Deep: DEEP },
 	allowedProfiles: ["Fast", "Deep", INHERIT_SUBAGENT_PROFILE],
 	defaultProfile: "Fast",
@@ -85,7 +95,10 @@ const profileSettings = (overrides: Partial<CoreSessionConfig["subagentSettings"
 const INPUT = { systemPrompt: "sub", task: "work" };
 const CONTEXT = { agentId: "parent", conversationId: "conv", iteration: 1 };
 
-async function spawnWith(config: CoreSessionConfig, input: Record<string, unknown>) {
+async function spawnWith(
+	config: CoreSessionConfig,
+	input: Record<string, unknown>,
+) {
 	const { createSessionSpawnTool } = await import("./spawn-tool.js");
 	runMock.mockResolvedValue({
 		text: "done",
@@ -93,18 +106,31 @@ async function spawnWith(config: CoreSessionConfig, input: Record<string, unknow
 		finishReason: "completed",
 		usage: { inputTokens: 1, outputTokens: 1 },
 	});
-	const tool = createSessionSpawnTool(makeDeps() as SpawnToolDeps, config, "root", {
-		readFile: (async () => "") as never,
-		search: (async () => "") as never,
-		bash: (async () => "") as never,
-		editor: (async () => "") as never,
-	});
+	const tool = createSessionSpawnTool(
+		makeDeps() as SpawnToolDeps,
+		config,
+		"root",
+		{
+			readFile: (async () => "") as never,
+			search: (async () => "") as never,
+			bash: (async () => "") as never,
+			editor: (async () => "") as never,
+		},
+	);
 	const result = await tool.execute({ ...INPUT, ...input }, CONTEXT);
-	return { tool, result, child: agentConstructorSpy.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined };
+	return {
+		tool,
+		result,
+		child: agentConstructorSpy.mock.calls.at(-1)?.[0] as
+			| Record<string, unknown>
+			| undefined,
+	};
 }
 
 // Two profiles share the display name "Review"; only id-b is allowed.
-const idSettings = (overrides: Partial<CoreSessionConfig["subagentSettings"]> = {}) => ({
+const idSettings = (
+	overrides: Partial<CoreSessionConfig["subagentSettings"]> = {},
+) => ({
 	profiles: { "id-a": FAST, "id-b": DEEP, "id-c": DEEP },
 	profileNames: { "id-a": "Review", "id-b": "Review", "id-c": "Solo" },
 	allowedProfiles: ["id-b", INHERIT_SUBAGENT_PROFILE],
@@ -113,13 +139,20 @@ const idSettings = (overrides: Partial<CoreSessionConfig["subagentSettings"]> = 
 
 describe("selectSubagentProfile", () => {
 	it("rejects profile params when profiles are not enabled", () => {
-		expect(selectSubagentProfile({ profile: "Fast" }, {}).error).toContain("not enabled");
-		expect(selectSubagentProfile({ reasoningEffort: "low" }, undefined).error).toContain("not enabled");
+		expect(selectSubagentProfile({ profile: "Fast" }, {}).error).toContain(
+			"not enabled",
+		);
+		expect(
+			selectSubagentProfile({ reasoningEffort: "low" }, undefined).error,
+		).toContain("not enabled");
 		expect(selectSubagentProfile({}, undefined)).toEqual({});
 	});
 
 	it("rejects unlisted profiles and lists the allowed names", () => {
-		const selection = selectSubagentProfile({ profile: "Rogue" }, profileSettings());
+		const selection = selectSubagentProfile(
+			{ profile: "Rogue" },
+			profileSettings(),
+		);
 		expect(selection.error).toContain('"Rogue" is not allowed');
 		expect(selection.error).toContain("Fast (Fast)");
 		expect(selection.error).toContain("Deep (Deep)");
@@ -127,12 +160,18 @@ describe("selectSubagentProfile", () => {
 
 	it("rejects an unknown reasoning effort", () => {
 		expect(
-			selectSubagentProfile({ profile: "Fast", reasoningEffort: "ludicrous" }, profileSettings()).error,
+			selectSubagentProfile(
+				{ profile: "Fast", reasoningEffort: "ludicrous" },
+				profileSettings(),
+			).error,
 		).toContain("Invalid reasoningEffort");
 	});
 
 	it("resolves an allowed profile with its connection and effort", () => {
-		const selection = selectSubagentProfile({ profile: "Deep" }, profileSettings());
+		const selection = selectSubagentProfile(
+			{ profile: "Deep" },
+			profileSettings(),
+		);
 		expect(selection.error).toBeUndefined();
 		expect(selection.profileName).toBe("Deep");
 		expect(selection.overrides?.providerId).toBe("openai-native");
@@ -141,7 +180,10 @@ describe("selectSubagentProfile", () => {
 	});
 
 	it("prefers the call's effort over profile and default", () => {
-		const selection = selectSubagentProfile({ profile: "Deep", reasoningEffort: "low" }, profileSettings());
+		const selection = selectSubagentProfile(
+			{ profile: "Deep", reasoningEffort: "low" },
+			profileSettings(),
+		);
 		expect(selection.overrides?.reasoningEffort).toBe("low");
 	});
 
@@ -153,13 +195,16 @@ describe("selectSubagentProfile", () => {
 	});
 
 	it("falls back to inherit and the default effort without a default profile", () => {
-		const selection = selectSubagentProfile({}, profileSettings({ defaultProfile: undefined }));
+		const selection = selectSubagentProfile(
+			{},
+			profileSettings({ defaultProfile: undefined }),
+		);
 		expect(selection.profileName).toBeUndefined();
 		expect(selection.overrides?.providerId).toBeUndefined();
 		expect(selection.overrides?.reasoningEffort).toBe("medium");
 	});
 
-	it("applies the default effort to inherited children, never to a profile at its provider default", () => {
+	it("lets a host explicitly choose provider defaults for selected profiles", () => {
 		const plain: SubagentProfileConnection = {
 			providerId: "anthropic",
 			modelId: "claude-x",
@@ -167,6 +212,7 @@ describe("selectSubagentProfile", () => {
 		};
 		const settings = profileSettings({
 			profiles: { Plain: plain },
+			profilesUseProviderDefaultEffort: true,
 			allowedProfiles: ["Plain", INHERIT_SUBAGENT_PROFILE],
 			defaultProfile: undefined,
 		});
@@ -189,8 +235,29 @@ describe("selectSubagentProfile", () => {
 		).toBeUndefined();
 	});
 
+	it("keeps the settings effort fallback for non-extension SDK consumers", () => {
+		const settings = profileSettings({
+			profiles: { Plain: { providerId: "anthropic", modelId: "claude-x" } },
+			allowedProfiles: ["Plain"],
+			defaultProfile: "Plain",
+		});
+		expect(
+			selectSubagentProfile({ profile: "Plain" }, settings).reasoningEffort,
+		).toBe("medium");
+		expect(selectSubagentProfile({}, settings).reasoningEffort).toBe("medium");
+		expect(
+			selectSubagentProfile(
+				{ profile: "Plain", reasoningEffort: "high" },
+				settings,
+			).reasoningEffort,
+		).toBe("high");
+	});
+
 	it("treats the reserved parent profile as explicit inherit", () => {
-		const selection = selectSubagentProfile({ profile: INHERIT_SUBAGENT_PROFILE }, profileSettings());
+		const selection = selectSubagentProfile(
+			{ profile: INHERIT_SUBAGENT_PROFILE },
+			profileSettings(),
+		);
 		expect(selection.error).toBeUndefined();
 		expect(selection.profileName).toBe(INHERIT_SUBAGENT_PROFILE);
 		expect(selection.overrides?.providerId).toBeUndefined();
@@ -222,11 +289,16 @@ describe("selectSubagentProfile", () => {
 		expect(selection.profileId).toBe("id-c");
 		expect(selection.profileName).toBe("Solo");
 		// A unique name of a profile that is not allowed stays blocked.
-		expect(selectSubagentProfile({ profile: "Solo" }, idSettings()).error).toContain("not allowed");
+		expect(
+			selectSubagentProfile({ profile: "Solo" }, idSettings()).error,
+		).toContain("not allowed");
 	});
 
 	it("applies the default profile by id", () => {
-		const selection = selectSubagentProfile({}, idSettings({ defaultProfile: "id-a" }));
+		const selection = selectSubagentProfile(
+			{},
+			idSettings({ defaultProfile: "id-a" }),
+		);
 		expect(selection.profileId).toBe("id-a");
 		expect(selection.profileName).toBe("Review");
 		expect(selection.overrides?.apiKey).toBe("fast-key");
@@ -234,33 +306,54 @@ describe("selectSubagentProfile", () => {
 
 	it("resolves named profiles that share one configuration at their own efforts", () => {
 		// The host keys each named profile (configuration + effort) by its own id.
-		const sameModel = { providerId: "anthropic", modelId: "claude-x", apiKey: "claude-key" };
+		const sameModel = {
+			providerId: "anthropic",
+			modelId: "claude-x",
+			apiKey: "claude-key",
+		};
 		const settings = {
 			profiles: {
 				"p-quick": { ...sameModel, reasoningEffort: "low" as const },
 				"p-think": { ...sameModel, reasoningEffort: "xhigh" as const },
 				"p-plain": { ...sameModel },
 			},
-			profileNames: { "p-quick": "Claude", "p-think": "Claude", "p-plain": "Plain" },
+			profileNames: {
+				"p-quick": "Claude",
+				"p-think": "Claude",
+				"p-plain": "Plain",
+			},
 			allowedProfiles: ["p-think", "p-plain"],
 			defaultProfile: "p-quick",
 		};
 		const think = selectSubagentProfile({ profile: "p-think" }, settings);
 		expect(think.profileId).toBe("p-think");
-		expect(think.overrides).toMatchObject({ modelId: "claude-x", apiKey: "claude-key", reasoningEffort: "xhigh" });
+		expect(think.overrides).toMatchObject({
+			modelId: "claude-x",
+			apiKey: "claude-key",
+			reasoningEffort: "xhigh",
+		});
 		// The default applies without being agent-selectable.
 		const byDefault = selectSubagentProfile({}, settings);
 		expect(byDefault.profileId).toBe("p-quick");
 		expect(byDefault.reasoningEffort).toBe("low");
-		expect(selectSubagentProfile({ profile: "p-quick" }, settings).error).toContain("not allowed");
+		expect(
+			selectSubagentProfile({ profile: "p-quick" }, settings).error,
+		).toContain("not allowed");
 		// A name shared by an allowed and a disallowed profile never resolves by name.
-		expect(selectSubagentProfile({ profile: "Claude" }, settings).error).toContain("Claude (p-think)");
+		expect(
+			selectSubagentProfile({ profile: "Claude" }, settings).error,
+		).toContain("Claude (p-think)");
 		// A profile at the provider default keeps the model's own effort.
-		expect(selectSubagentProfile({ profile: "Plain" }, settings).reasoningEffort).toBeUndefined();
+		expect(
+			selectSubagentProfile({ profile: "Plain" }, settings).reasoningEffort,
+		).toBeUndefined();
 	});
 
 	it("denies an allowed-but-unconfigured default and lets the call pick another", () => {
-		const selection = selectSubagentProfile({ profile: "Deep" }, profileSettings({ allowedProfiles: ["Fast"] }));
+		const selection = selectSubagentProfile(
+			{ profile: "Deep" },
+			profileSettings({ allowedProfiles: ["Fast"] }),
+		);
 		expect(selection.error).toContain('"Deep" is not allowed');
 	});
 });
@@ -273,27 +366,46 @@ describe("createSessionSpawnTool profile wiring", () => {
 			makeConfig({ subagentSettings: profileSettings() }),
 			{ profile: "Deep" },
 		);
-		expect(child).toMatchObject({ providerId: "openai-native", modelId: "gpt-5.2-codex", apiKey: "deep-key" });
+		expect(child).toMatchObject({
+			providerId: "openai-native",
+			modelId: "gpt-5.2-codex",
+			apiKey: "deep-key",
+		});
 		expect(child?.reasoningEffort).toBe("high");
 	});
 
 	it("returns the allowlist error without spawning", async () => {
-		const { result } = await spawnWith(makeConfig({ subagentSettings: profileSettings() }), {
-			profile: "Rogue",
+		const { result } = await spawnWith(
+			makeConfig({ subagentSettings: profileSettings() }),
+			{
+				profile: "Rogue",
+			},
+		);
+		expect(result).toEqual({
+			error: expect.stringContaining('"Rogue" is not allowed'),
 		});
-		expect(result).toEqual({ error: expect.stringContaining('"Rogue" is not allowed') });
 		expect(agentConstructorSpy).not.toHaveBeenCalled();
 	});
 
 	it("inherits the parent connection when no profiles are configured", async () => {
 		const { child } = await spawnWith(makeConfig(), {});
-		expect(child).toMatchObject({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+		expect(child).toMatchObject({
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+		});
 	});
 
 	it("strips profile params from the schema when disabled", async () => {
 		const { createSessionSpawnTool } = await import("./spawn-tool.js");
-		const disabled = createSessionSpawnTool(makeDeps() as SpawnToolDeps, makeConfig(), "root");
-		const props = (disabled.inputSchema.properties ?? {}) as Record<string, unknown>;
+		const disabled = createSessionSpawnTool(
+			makeDeps() as SpawnToolDeps,
+			makeConfig(),
+			"root",
+		);
+		const props = (disabled.inputSchema.properties ?? {}) as Record<
+			string,
+			unknown
+		>;
 		expect(props.profile).toBeUndefined();
 		expect(props.reasoningEffort).toBeUndefined();
 
@@ -302,8 +414,15 @@ describe("createSessionSpawnTool profile wiring", () => {
 			makeConfig({ subagentSettings: profileSettings() }),
 			"root",
 		);
-		const enabledProps = (enabled.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>;
-		expect(enabledProps.profile?.enum).toEqual(["Fast", "Deep", INHERIT_SUBAGENT_PROFILE]);
+		const enabledProps = (enabled.inputSchema.properties ?? {}) as Record<
+			string,
+			{ enum?: string[] }
+		>;
+		expect(enabledProps.profile?.enum).toEqual([
+			"Fast",
+			"Deep",
+			INHERIT_SUBAGENT_PROFILE,
+		]);
 		expect(enabled.description).toContain("Fast (Fast)");
 	});
 
@@ -314,19 +433,31 @@ describe("createSessionSpawnTool profile wiring", () => {
 			makeConfig({ subagentSettings: idSettings() }),
 			"root",
 		);
-		const props = (tool.inputSchema.properties ?? {}) as Record<string, { enum?: string[]; description?: string }>;
+		const props = (tool.inputSchema.properties ?? {}) as Record<
+			string,
+			{ enum?: string[]; description?: string }
+		>;
 		expect(props.profile?.enum).toEqual(["id-b", INHERIT_SUBAGENT_PROFILE]);
 		expect(props.profile?.description).toContain("Review (id-b)");
 		expect(tool.description).toContain("Review (id-b)");
 	});
 
 	it("spawns on the allowed duplicate's credentials when selected by id", async () => {
-		const { child } = await spawnWith(makeConfig({ subagentSettings: idSettings() }), { profile: "id-b" });
-		expect(child).toMatchObject({ apiKey: "deep-key", providerId: "openai-native" });
+		const { child } = await spawnWith(
+			makeConfig({ subagentSettings: idSettings() }),
+			{ profile: "id-b" },
+		);
+		expect(child).toMatchObject({
+			apiKey: "deep-key",
+			providerId: "openai-native",
+		});
 	});
 
 	it("refuses a duplicated name rather than borrowing the other profile's credentials", async () => {
-		const { result } = await spawnWith(makeConfig({ subagentSettings: idSettings() }), { profile: "Review" });
+		const { result } = await spawnWith(
+			makeConfig({ subagentSettings: idSettings() }),
+			{ profile: "Review" },
+		);
 		expect(result).toEqual({ error: expect.stringContaining("Review (id-b)") });
 		expect(agentConstructorSpy).not.toHaveBeenCalled();
 	});

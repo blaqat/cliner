@@ -1,10 +1,10 @@
-import { REASONING_LEVELS } from "@cline/shared";
 import type {
 	AgentEvent,
 	AgentTool,
 	ToolApprovalRequest,
 	ToolApprovalResult,
 } from "@cline/shared";
+import { REASONING_LEVELS } from "@cline/shared";
 import {
 	createAskModeMcpGateExtension,
 	MCP_TOOL_METADATA_KEY,
@@ -313,14 +313,21 @@ export function selectSubagentProfile(
 			? {}
 			: value === "none"
 				? { thinking: false, reasoningEffort: undefined }
-				: { reasoningEffort: value as DelegatedAgentConnectionConfig["reasoningEffort"] };
+				: {
+						reasoningEffort:
+							value as DelegatedAgentConnectionConfig["reasoningEffort"],
+					};
 	// "none" only counts when the call asked for it — a stored profile/default
 	// "none" is just the provider default and must not force thinking off.
-	// The settings-level default is for children that inherit the parent's
-	// model; a selected profile carries its own effort ("none" there is the
-	// provider default, so it must not fall through to the default).
+	// Hosts may explicitly opt into provider defaults for effort-less profiles.
+	// Other SDK consumers keep call > profile > settings fallback precedence.
 	const resolveEffort = (connectionEffort?: string, profile = false) => {
-		const resolved = effort ?? connectionEffort ?? (profile ? undefined : settings?.defaultReasoningEffort);
+		const resolved =
+			effort ??
+			connectionEffort ??
+			(profile && settings?.profilesUseProviderDefaultEffort
+				? undefined
+				: settings?.defaultReasoningEffort);
 		return resolved === "none" && effort !== "none" ? undefined : resolved;
 	};
 	if (requested) {
@@ -354,9 +361,15 @@ export function selectSubagentProfile(
 	// otherwise the child inherits the parent's connection.
 	const defaultId = settings?.defaultProfile;
 	const connection = defaultId ? profiles?.[defaultId] : undefined;
-	const resolvedEffort = resolveEffort(connection?.reasoningEffort, !!connection);
+	const resolvedEffort = resolveEffort(
+		connection?.reasoningEffort,
+		!!connection,
+	);
 	return {
-		profileName: connection && defaultId ? displayProfileName(settings, defaultId) : undefined,
+		profileName:
+			connection && defaultId
+				? displayProfileName(settings, defaultId)
+				: undefined,
 		profileId: connection ? defaultId : undefined,
 		reasoningEffort: resolvedEffort,
 		overrides: {
