@@ -749,7 +749,8 @@ export class StateManager {
 		// Include profile-secret writes even when no debounced state is pending. A tracked
 		// operation can queue more state once its secrets land, so drain until nothing is left.
 		let failure: unknown
-		for (let round = 0; round < 5; round++) {
+		// Drain until settled: each round waits for the work queued during the previous one.
+		for (;;) {
 			const results = await Promise.allSettled([
 				this.persistPendingState(),
 				...this.secretWrites,
