@@ -10,6 +10,7 @@ export interface ReviewRecord {
 	overallNote?: string
 	fallback?: StopReview
 	generated?: StopReview
+	authored?: StopReview
 }
 
 /** Records per diff fingerprint. Usually one; a second means the changes moved and the old one awaits a refresh. */

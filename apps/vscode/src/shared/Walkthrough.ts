@@ -1,4 +1,4 @@
-export type WalkthroughScope = "thread" | "last_turn" | "git"
+export type WalkthroughScope = "thread" | "last_turn" | "git" | "authored"
 
 export interface WalkthroughHunk {
 	id: string
@@ -11,6 +11,8 @@ export interface WalkthroughHunk {
 	newStart: number
 	turnId?: string
 	synthetic?: boolean
+	/** Authored walkthroughs: the hunk came from the agent (e.g. a merge request), not a local file. No open-diff or revert. */
+	external?: boolean
 }
 
 export interface WalkthroughStop {
@@ -34,7 +36,7 @@ export interface ChangeWalkthrough {
 	taskId: string
 	scope: WalkthroughScope
 	fingerprint: string
-	source: "fallback" | "generated"
+	source: "fallback" | "generated" | "authored"
 	title: string
 	focus: string
 	chapters: WalkthroughChapter[]
@@ -43,6 +45,43 @@ export interface ChangeWalkthrough {
 	warnings: string[]
 	profileId?: string
 	cacheHit?: boolean
+	/** Authored walkthroughs only: the stored document's id within the thread. */
+	authoredId?: string
+	/** Authored walkthroughs only: where the change lives, e.g. { label: "GitLab MR !128", url }. */
+	origin?: WalkthroughOrigin
+}
+
+export interface WalkthroughOrigin {
+	label: string
+	url?: string
+}
+
+/**
+ * Input of the agent's `present_walkthrough` tool: a walkthrough the agent authored
+ * from changes that aren't local (e.g. someone's merge request fetched over MCP).
+ * Each hunk patch is unified-diff text (a hunk starting with "@@", or a file diff).
+ */
+export interface AuthoredWalkthroughInput {
+	title: string
+	focus?: string
+	origin?: WalkthroughOrigin
+	chapters: Array<{
+		title: string
+		stops: Array<{
+			title: string
+			prose: string
+			hunks: Array<{ path: string; patch: string }>
+		}>
+	}>
+}
+
+/** Payload of the `walkthrough_ready` chat row (JSON in ClineMessage.text). */
+export interface WalkthroughReadyMessage {
+	authoredId: string
+	title: string
+	origin?: WalkthroughOrigin
+	stopCount: number
+	fileCount: number
 }
 
 export interface WalkthroughNotes {
@@ -62,4 +101,6 @@ export interface WalkthroughRequest {
 	confirmed?: boolean
 	stopNotes?: Record<string, string>
 	overallNote?: string
+	/** With scope "authored": which stored walkthrough. */
+	authoredId?: string
 }

@@ -77,6 +77,7 @@ enum ClineSay {
   COMPACTION = 37;
   PLAN_COMPLETION_RESULT = 38;
   NOTEBOOK_CHANGES = 39;
+  WALKTHROUGH_READY = 40;
 }
 
 // Enum for ClineSayTool tool types

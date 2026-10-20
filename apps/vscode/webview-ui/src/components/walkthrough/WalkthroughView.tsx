@@ -59,6 +59,7 @@ const EMPTY_HINT: Record<WalkthroughScope, string> = {
 	thread: "This thread hasn't changed any files.",
 	last_turn: "The last turn didn't change any files.",
 	git: "No uncommitted changes in the workspace.",
+	authored: "This walkthrough has no changes.",
 }
 
 /**

@@ -365,6 +365,7 @@ export type ClineSay =
 	| "conditional_rules_applied"
 	| "compaction" // context compaction progress/result divider
 	| "notebook_changes"
+	| "walkthrough_ready"
 
 export interface ClineSayTool {
 	tool:
