@@ -720,6 +720,53 @@ describe("interject ordering", () => {
 })
 
 describe("task session contexts", () => {
+	it.each([
+		"streaming",
+		"awaiting_approval",
+	])("shows a retryable chat error for a silent %s turn with no decision", async (phase) => {
+		vi.useFakeTimers()
+		type Context = {
+			task: TaskProxy
+			turn: { set: (phase: string) => void; currentPhase: string }
+			watchdog: { activity: () => void; stop: () => void }
+			cancelled: boolean
+		}
+		const abort = vi.fn(async () => {})
+		const controller = {
+			task: { taskId: "stalled" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: { emitSessionEvents: vi.fn() },
+			stateManager: { getGlobalSettingsKey: () => undefined },
+			sessions: {
+				getSession: () => ({ isRunning: true, sdkHost: { abort } }),
+				setStatus: vi.fn(),
+				setRunning: vi.fn(),
+			},
+			taskHistory: {},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		try {
+			const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
+				.getTaskSessionContext
+			const context = factory.call(controller, "stalled")
+			context.turn.set(phase)
+			context.watchdog.activity()
+			await vi.advanceTimersByTimeAsync(120_000)
+			expect(context.turn.currentPhase).toBe("error")
+			expect(context.task.messageStateHandler.getClineMessages()).toContainEqual(
+				expect.objectContaining({
+					ask: "api_req_failed",
+					text: expect.stringContaining("Retry to continue"),
+				}),
+			)
+			expect(abort).toHaveBeenCalledWith("stalled")
+			expect(context.cancelled).toBe(true)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("isolates messages and approvals, streams only focus, and marks background asks waiting", async () => {
 		type Context = { task: TaskProxy; interactions: SdkInteractionCoordinator; messages: SdkMessageCoordinator }
 		const statuses: Record<string, string> = {}

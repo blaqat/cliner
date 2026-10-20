@@ -71,6 +71,26 @@ describe("approval response compatibility", () => {
 		expect(getActiveSession).not.toHaveBeenCalled()
 	})
 
+	it("keeps the submitted decision response while metadata writes yield", async () => {
+		const { controller, interactions } = setup()
+		const saving = Promise.withResolvers<void>()
+		controller.taskHistory.markTaskActive.mockImplementationOnce(() => saving.promise)
+		const approval = requestApproval(interactions)
+		await vi.waitFor(() => expect(interactions.getPendingDecision()).toBeDefined())
+		const response = webviewAskResponse(
+			controller as never,
+			AskResponseRequest.create({
+				responseType: "noButtonClicked",
+				decisionId: interactions.getPendingDecision()!.id,
+			}),
+		)
+		await vi.waitFor(() => expect(controller.taskHistory.markTaskActive).toHaveBeenCalled())
+		controller.task.taskState.askResponse = "messageResponse"
+		saving.resolve()
+		await response
+		await expect(approval).resolves.toMatchObject({ approved: false })
+	})
+
 	it("public API sends the current question ID and resolves the answer", async () => {
 		const { controller, interactions, api, getActiveSession } = setup()
 		const answer = interactions.handleAskQuestion("Which file?", [])

@@ -2462,7 +2462,8 @@ export class AgentRuntime {
 		try {
 			this.throwIfAborted();
 			const cancelled = new Promise<ToolApprovalResult>((resolve) => {
-				onAbort = () => resolve({ approved: false, reason: "Agent run aborted" });
+				onAbort = () =>
+					resolve({ approved: false, reason: "Agent run aborted" });
 				signal?.addEventListener("abort", onAbort, { once: true });
 			});
 			const approval = requestApproval({
@@ -2499,7 +2500,6 @@ export class AgentRuntime {
 	private async executePreparedTool(
 		prepared: PreparedToolExecution,
 	): Promise<AgentMessage> {
-		this.throwIfAborted();
 		const startedAt = new Date();
 		await this.emit({
 			type: "tool-started",
@@ -2508,11 +2508,17 @@ export class AgentRuntime {
 			toolCall: prepared.toolCall,
 		});
 
-		this.throwIfAborted();
+		const abortedBeforeExecution =
+			this.abortController?.signal.aborted === true;
 		let result: AgentToolResult;
-		if (prepared.skipReason) {
+		// Even an aborted approval batch must close every tool call in the transcript.
+		// Do not execute siblings after cancellation, but still return their results.
+		if (abortedBeforeExecution || prepared.skipReason) {
 			result = {
-				output: { error: prepared.skipReason },
+				output: {
+					error:
+						prepared.skipReason ?? "Agent run aborted; tool was not executed",
+				},
 				isError: true,
 			};
 		} else if (!prepared.tool) {
@@ -2556,7 +2562,7 @@ export class AgentRuntime {
 		const endedAt = new Date();
 		const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
 
-		if (prepared.tool) {
+		if (prepared.tool && !abortedBeforeExecution) {
 			for (const hook of this.hooks.afterTool) {
 				const after = (await hook({
 					snapshot: this.snapshot(),

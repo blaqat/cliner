@@ -25,6 +25,10 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.cancelTask()
 
+		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable")
+		expect(options.interactions.clearPending.mock.invocationCallOrder[0]).toBeLessThan(
+			options.setTurnPhase.mock.invocationCallOrder[0],
+		)
 		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cancelled")
 		expect(activeSession.sdkHost.abort).toHaveBeenCalledWith("session-123")
 		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
@@ -263,14 +267,19 @@ describe("SdkTaskControlCoordinator", () => {
 	})
 
 	it.each(["cancel", "interject"])("clears active and queued child approvals on parent %s", async (action) => {
+		let phase = "resumable"
+		const setTurnPhase = (next: string) => {
+			phase = next
+		}
 		const task = createTaskProxy("session-123", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => task }),
 			getSessionId: () => task.taskId,
+			setTurnPhase,
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
 		})
 		const { options } = makeCoordinator({ activeSession: makeActiveSession() })
-		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions })
+		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions, setTurnPhase })
 		const approvals = ["child-1", "child-2"].map((id) =>
 			interactions.handleRequestToolApproval({
 				agentId: id,
@@ -285,6 +294,7 @@ describe("SdkTaskControlCoordinator", () => {
 		)
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 		await coordinator.cancelTask(false, action === "interject" ? { text: "new direction" } : undefined)
+		expect(phase).toBe("resumable")
 		for (const approval of approvals) await expect(approval).resolves.toMatchObject({ approved: false })
 		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
 		expect(

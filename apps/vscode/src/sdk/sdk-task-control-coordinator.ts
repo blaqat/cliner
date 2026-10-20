@@ -91,6 +91,8 @@ export class SdkTaskControlCoordinator {
 
 	async cancelTask(appendResume = true, interject?: { text: string; images?: string[]; files?: string[] }): Promise<void> {
 		this.options.interactions.clearPending("Task cancelled")
+		// Clearing approvals resumes their promises and can project streaming. Cancellation wins.
+		this.options.setTurnPhase?.("resumable")
 
 		const activeSession = this.options.sessions.getActiveSession()
 		if (!activeSession) {

@@ -1876,6 +1876,80 @@ describe("AgentRuntime", () => {
 		]);
 	});
 
+	it.each([
+		"reject",
+		"abort",
+	])("records every result when a mixed approval batch is %s", async (action) => {
+		const pending = Promise.withResolvers<void>();
+		const decision = Promise.withResolvers<{
+			approved: boolean;
+			reason?: string;
+		}>();
+		const read = vi.fn(async () => "contents");
+		const command = vi.fn(async () => "ran");
+		const runtime = new AgentRuntime({
+			model: new ScriptedModel([
+				() => [
+					...(["read_files", "run_commands"] as const).map((name) => ({
+						type: "tool-call-delta" as const,
+						toolCallId: name,
+						toolName: name,
+						inputText: "{}",
+					})),
+					{ type: "finish", reason: "tool-calls" },
+				],
+				() => [
+					{ type: "text-delta", text: "continued" },
+					{ type: "finish", reason: "stop" },
+				],
+			]),
+			tools: [
+				{
+					name: "read_files",
+					description: "read",
+					inputSchema: { type: "object" },
+					executionMode: "parallel",
+					execute: read,
+				},
+				{
+					name: "run_commands",
+					description: "command",
+					inputSchema: { type: "object" },
+					executionMode: "parallel",
+					execute: command,
+				},
+			],
+			toolPolicies: {
+				read_files: { autoApprove: true },
+				run_commands: { autoApprove: false },
+			},
+			requestToolApproval: () => {
+				pending.resolve();
+				return decision.promise;
+			},
+		});
+		const run = runtime.run("change app.js");
+		await pending.promise;
+		if (action === "abort") runtime.abort("Task cancelled");
+		else
+			decision.resolve({
+				approved: false,
+				reason: "The user skipped this command",
+			});
+		const result = await run;
+		expect(result.status).toBe(action === "abort" ? "aborted" : "completed");
+		const results = result.messages
+			.flatMap((message) => message.content)
+			.filter((part) => part.type === "tool-result");
+		expect(results.map((part) => part.toolCallId)).toEqual([
+			"read_files",
+			"run_commands",
+		]);
+		expect(command).not.toHaveBeenCalled();
+		if (action === "reject") expect(read).toHaveBeenCalledOnce();
+		else expect(read).not.toHaveBeenCalled();
+	});
+
 	it("executes a tool call and continues the loop", async () => {
 		const model = new ScriptedModel([
 			() => [

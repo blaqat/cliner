@@ -185,6 +185,7 @@ import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcri
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
 import { maybeGenerateThreadTitle, type ThreadTitleSource } from "./thread-title"
+import { TurnActivityWatchdog } from "./turn-activity-watchdog"
 import { TurnStateTracker } from "./turn-state-tracker"
 import { createWorkspaceFileReadExecutor } from "./vscode-file-read-executor"
 import { VscodeSessionHost } from "./vscode-session-host"
@@ -254,6 +255,7 @@ interface TaskSessionContext {
 	messages: SdkMessageCoordinator
 	interactions: SdkInteractionCoordinator
 	events: SdkSessionEventCoordinator
+	watchdog: TurnActivityWatchdog
 	mode: "plan" | "act"
 	cancelled: boolean
 	/**
@@ -750,6 +752,7 @@ export class Controller {
 				this.mcpTools?.forgetSession(id)
 				this.sessionRebuilds?.forgetSession(id)
 				this.taskSessions.get(id)?.interactions.clearPending("Session removed")
+				this.taskSessions.get(id)?.watchdog.stop()
 				this.taskSessions.get(id)?.messages.dispose()
 				this.taskSessions.delete(id)
 			},
@@ -759,6 +762,7 @@ export class Controller {
 				if (temporary && !temporary.started) temporary.started = true
 				if (delivery !== "interject") this.getTaskSessionContext(id).cancelled = false
 				this.getTaskSessionContext(id).turn.set("streaming")
+				this.getTaskSessionContext(id).watchdog.activity()
 				void this.taskHistory.markTaskActive(id)
 				this.beginProviderFailureTelemetryTurn()
 			},
@@ -792,6 +796,7 @@ export class Controller {
 			onSendError: async (error, sessionId) => {
 				const context = this.getTaskSessionContext(sessionId)
 				context.turn.set("error")
+				context.watchdog.stop()
 				if (this.task?.taskId !== sessionId) {
 					context.messages.appendMessages([
 						{ ts: context.translator.nextTs(), type: "say", say: "error", text: String(error) },
@@ -1627,6 +1632,7 @@ export class Controller {
 		await this.clearTask()
 		for (const context of this.taskSessions.values()) {
 			context.interactions.clearPending("Controller disposed")
+			context.watchdog.stop()
 			context.messages.dispose()
 		}
 		this.taskSessions.clear()
@@ -1778,8 +1784,14 @@ export class Controller {
 			if (event.type === "status" && event.payload.status === "error") setPhase("error")
 			if (this.task?.taskId === id) this.sessionEventStream.emitSessionEvents(updates, event)
 		})
+		const hasActiveTurn = () =>
+			turn.currentPhase === "streaming" ||
+			turn.currentPhase === "awaiting_approval" ||
+			(turn.currentPhase === "awaiting_followup" && this.sessions.getSession(id)?.isRunning === true)
 		const setPhase = (phase: TurnPhase, anchorTs?: number) => {
 			turn.set(phase, anchorTs)
+			if (hasActiveTurn()) watchdog.activity()
+			else watchdog.stop()
 			this.sessions.setStatus(
 				id,
 				phase === "awaiting_approval" || (phase === "awaiting_followup" && this.sessions.getSession(id)?.isRunning)
@@ -1791,6 +1803,32 @@ export class Controller {
 							: "done",
 			)
 		}
+		const watchdog = new TurnActivityWatchdog(
+			() => context.interactions.hasPendingUserDecision(),
+			() => {
+				if (!hasActiveTurn() || context.cancelled) return
+				context.cancelled = true
+				translator.setErrorSeen()
+				setPhase("error")
+				this.sessions.setRunning(false, id)
+				messages.appendAndEmit(
+					[
+						{
+							ts: translator.nextTs(),
+							type: "ask",
+							ask: "api_req_failed",
+							partial: false,
+							text: "The agent stopped responding for 2 minutes with no pending approval or question. Retry to continue this turn.",
+						},
+					],
+					{ type: "status", payload: { sessionId: id, status: "error" } },
+				)
+				void this.postStateToWebview()
+				const session = this.sessions.getSession(id)
+				void session?.sdkHost.abort(id).catch((error) => Logger.warn("Failed to abort stalled turn", error))
+			},
+		)
+
 		const interactions = new SdkInteractionCoordinator({
 			messages,
 			onDecisionMessage: (agentId, message) => {
@@ -1845,6 +1883,9 @@ export class Controller {
 			completeScriptApproval: (request, approved, trust) => this.scripts.completeApproval(request, approved, trust),
 		})
 		const events = new SdkSessionEventCoordinator({
+			onRuntimeActivity: () => {
+				if (hasActiveTurn()) watchdog.activity()
+			},
 			onTurnComplete: () => this.emitNotebookChanges(id),
 			sessionId: id,
 			messageTranslatorState: translator,
@@ -1878,6 +1919,7 @@ export class Controller {
 			messages,
 			interactions,
 			events,
+			watchdog,
 			mode,
 			cancelled: false,
 			apiSelection: session?.apiSnapshot?.selection,
@@ -2802,6 +2844,7 @@ export class Controller {
 		decisionId?: string,
 		provenance?: ComposerProvenance,
 	): Promise<void> {
+		const decisionResponseType = this.task?.taskState?.askResponse
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
 		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
 		const ownerInteractions = ownerId ? this.taskSessions?.get(ownerId)?.interactions : undefined
@@ -2814,7 +2857,6 @@ export class Controller {
 					(!child || item.id === child.id || item.parentTaskId === child.id),
 			)
 		})
-		const decisionResponseType = this.task?.taskState?.askResponse
 		if (
 			childDecision &&
 			(childDecision.kind === "question"
@@ -2836,7 +2878,7 @@ export class Controller {
 		if (child) {
 			const parent = this.taskSessions.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
 			const decision = parent?.interactions.getPendingDecision(child.agentId ?? "")
-			const responseType = this.task?.taskState.askResponse
+			const responseType = decisionResponseType
 			if (decisionId && decision?.id !== decisionId) return
 			if (decision?.kind === "approval" && (responseType === "yesButtonClicked" || responseType === "noButtonClicked")) {
 				parent!.interactions.resolvePendingToolApproval(prompt, responseType, images, files, decision.id)
@@ -2851,7 +2893,7 @@ export class Controller {
 			// Capture the projected decision before awaiting metadata writes. A legacy
 			// response must not answer a later decision that replaces it while we wait.
 			const decision = this.interactions?.getPendingDecision?.()
-			const responseType = this.task?.taskState?.askResponse
+			const responseType = decisionResponseType
 			if (
 				decision &&
 				(decision.kind === "question" || responseType === "yesButtonClicked" || responseType === "noButtonClicked")
@@ -2864,7 +2906,7 @@ export class Controller {
 		const retry = this.pendingClineAuthRetry
 		this.pendingClineAuthRetry = undefined
 		if (retry && retry.task === this.task) {
-			const askResponse = this.task.taskState.askResponse
+			const askResponse = decisionResponseType
 			if (askResponse === "yesButtonClicked") {
 				await this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance })
 				return
@@ -2906,7 +2948,7 @@ export class Controller {
 			prompt,
 			images,
 			files,
-			this.task?.taskState?.askResponse,
+			decisionResponseType,
 			turnStateBefore.phase,
 			undefined,
 			decisionId,

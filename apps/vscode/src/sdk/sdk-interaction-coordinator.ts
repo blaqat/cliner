@@ -157,6 +157,10 @@ export class SdkInteractionCoordinator {
 		return { action: "stop", reason: `mistake_limit_reached: ${latest}` }
 	}
 
+	hasPendingUserDecision(): boolean {
+		return !!(this.pendingApproval || this.preparingApproval || this.toolApprovalQueue.length || this.pendingQuestions.size)
+	}
+
 	async handleRequestToolApproval(request: ToolApprovalRequest): Promise<{ approved: boolean; reason?: string }> {
 		if (request.signal?.aborted) return { approved: false, reason: "Agent run aborted" }
 		if (request.toolName === "notebook") return { approved: true }

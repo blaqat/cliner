@@ -21,6 +21,7 @@ type AgentFailureTelemetry = Pick<ProviderFailureTelemetry, "sessionId" | "error
 
 export interface SdkSessionEventCoordinatorOptions {
 	onTurnComplete?: () => Promise<void>
+	onRuntimeActivity?: () => void
 	messageTranslatorState: MessageTranslatorState
 	sessions: SdkSessionLifecycle
 	messages: SdkMessageCoordinator
@@ -67,6 +68,8 @@ export class SdkSessionEventCoordinator {
 			)
 			return
 		}
+
+		this.options.onRuntimeActivity?.()
 
 		if (event.type === "pending_prompts") {
 			this.options.sessions.setQueuedPromptCount(event.payload.prompts.length, activeSession.sessionId)

@@ -99,23 +99,6 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, ch
 		[messageHandlers, askIdentity],
 	)
 
-	// Keyboard event handler
-	const handleKeyDown = useCallback(
-		(event: KeyboardEvent) => {
-			if (event.key === "Escape") {
-				event.preventDefault()
-				event.stopPropagation()
-				handleActionClick({ type: "cancel" })
-			}
-		},
-		[handleActionClick],
-	)
-
-	useEffect(() => {
-		window.addEventListener("keydown", handleKeyDown)
-		return () => window.removeEventListener("keydown", handleKeyDown)
-	}, [handleKeyDown])
-
 	if (!task) {
 		return null
 	}
