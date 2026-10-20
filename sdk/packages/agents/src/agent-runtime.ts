@@ -881,6 +881,27 @@ export class AgentRuntime {
 					// A turn that produced no content because it hit the output-token
 					// limit is not a true empty response: fall through so the message is
 					// kept and the max-tokens recovery branch below can nudge and retry.
+					if (
+						!hasModelToolActivity &&
+						finishReason !== "max-tokens" &&
+						finishReason !== "content-filter" &&
+						this.endsWithEmptyResponseCompletingTool()
+					) {
+						await this.emit({
+							type: "turn-finished",
+							snapshot: this.snapshot(),
+							iteration: this.state.iteration,
+							toolCallCount: 0,
+						});
+						const result = this.finishRun("completed");
+						await this.callAfterRunHooks(result);
+						await this.emit({
+							type: "run-finished",
+							snapshot: this.snapshot(),
+							result,
+						});
+						return result;
+					}
 					if (!hasModelToolActivity && finishReason !== "max-tokens") {
 						this.state.lastFinishReason = finishReason;
 						throw new Error(
@@ -2320,6 +2341,25 @@ export class AgentRuntime {
 			);
 		}
 		return results;
+	}
+
+	/**
+	 * True when the conversation ends with a tool message holding a successful
+	 * result from a tool flagged `lifecycle.emptyResponseCompletes`. Only the
+	 * last message counts, so it is strictly "directly after, same turn".
+	 */
+	private endsWithEmptyResponseCompletingTool(): boolean {
+		const last = this.state.messages.at(-1);
+		if (last?.role !== "tool") {
+			return false;
+		}
+		return last.content.some(
+			(part) =>
+				part.type === "tool-result" &&
+				!part.isError &&
+				this.tools.get(part.toolName)?.lifecycle?.emptyResponseCompletes ===
+					true,
+		);
 	}
 
 	private findCompletingToolMessage(
