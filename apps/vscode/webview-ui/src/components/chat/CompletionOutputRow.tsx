@@ -1,6 +1,7 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
 import { GitCompareIcon } from "lucide-react"
 import { MouseEvent, memo, RefObject, useEffect, useState } from "react"
+import { Button } from "@/components/ui/button"
 import { CheckpointsServiceClient } from "@/services/grpc-client"
 import { CopyButton } from "../common/CopyButton"
 import SuccessButton from "../common/SuccessButton"
@@ -29,7 +30,11 @@ interface CompletionOutputRowProps {
 	showViewChanges?: boolean
 	/** Shows the Aside action, branching the conversation at this message. */
 	asideFromTs?: number
-	/** Adds "Walkthrough" beside View Changes: the thread's changes as a review page. */
+	/**
+	 * Adds "Open walkthrough" beside View Changes: the thread's changes as a review page.
+	 * Shares View Changes' gate, so it only shows when this turn changed files; the caller
+	 * leaves it unset for subagent threads.
+	 */
 	onOpenWalkthrough?: () => void
 }
 
@@ -120,10 +125,16 @@ export const CompletionOutputRow = memo(
 							View Changes
 						</SuccessButton>
 						{onOpenWalkthrough && (
-							<SuccessButton className="flex-1" onClick={onOpenWalkthrough}>
-								<span aria-hidden className="codicon codicon-diff mr-1.5 text-[12px]!" />
-								Walkthrough
-							</SuccessButton>
+							<Button
+								className="h-auto min-h-6.5 flex-1 gap-1.5 px-2 text-(length:--vscode-font-size)"
+								data-testid="completion-open-walkthrough"
+								onClick={onOpenWalkthrough}
+								size="xs"
+								title="Review this thread's changes stop by stop"
+								variant="secondary">
+								<span aria-hidden className="codicon codicon-diff text-[14px]!" />
+								Open walkthrough
+							</Button>
 						)}
 					</div>
 				)}
