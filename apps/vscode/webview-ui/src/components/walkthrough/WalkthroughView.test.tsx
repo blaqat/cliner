@@ -361,6 +361,37 @@ describe("WalkthroughView", () => {
 		expect(within(menu).getByRole("separator")).toBeTruthy()
 	})
 
+	it("shows a turn's short prose and reveals its full narration with Show more", async () => {
+		const walk: ChangeWalkthrough = {
+			...fixture,
+			chapters: [
+				{
+					id: "c1",
+					title: "Runtime",
+					stops: [
+						{
+							id: "s1",
+							title: "Stop the request waiting",
+							prose: "Export now runs in a worker.",
+							detail: "Plan: add a worker.\n\nRetrying the build.\n\nExport now runs in a worker.",
+							hunkIds: ["h1", "h2"],
+						},
+						{ id: "s2", title: "Cap at 10k rows", prose: "Lives in `shared`.", hunkIds: ["h3"] },
+					],
+				},
+			],
+		}
+		mocks.get.mockResolvedValue(response(walk))
+		await renderPage()
+		const card = stop("Stop the request waiting")
+		expect(within(card).queryByText(/Retrying the build/)).toBeNull()
+		fireEvent.click(within(card).getByRole("button", { name: "Show more" }))
+		expect(within(card).getByText(/Retrying the build/)).toBeVisible()
+		fireEvent.click(within(card).getByRole("button", { name: "Show less" }))
+		expect(within(card).queryByText(/Retrying the build/)).toBeNull()
+		expect(within(stop("Cap at 10k rows")).queryByRole("button", { name: "Show more" })).toBeNull()
+	})
+
 	it("opens Settings › Profiles from Manage profiles… in the Generate ▾ menu", async () => {
 		await renderPage()
 		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))

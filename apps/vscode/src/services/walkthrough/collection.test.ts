@@ -239,6 +239,101 @@ describe("walkthrough collection", () => {
 		const last = await collect({ ...input, scope: "last_turn" })
 		expect(last.walk.hunks.map((h) => h.path)).toEqual(["b.ts"])
 	})
+	it("uses the completion summary as a turn's short prose and keeps the narration as detail", () => {
+		const messages = [
+			{ role: "user", content: "Build it" },
+			{ role: "assistant", content: "Plan: 1. add worker\n2. wire route" },
+			{ role: "assistant", content: "That failed, retrying with a different approach." },
+			{ role: "assistant", content: "The implementation is complete." },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool_use",
+						id: "done",
+						name: "submit_and_exit",
+						input: { summary: "Exports now run in a worker.\nThe route returns a job id.\nTests pass.\nExtra\nMore" },
+					},
+				],
+			},
+		] as Message[]
+		const [turn] = transcriptTurns(messages, [1, 0, 0, 0, 0]).turns
+		expect(turn.prose).toBe("Exports now run in a worker.\nThe route returns a job id.\nTests pass.…")
+		expect(turn.detail).toContain("Plan: 1. add worker")
+		expect(turn.detail).toContain("retrying")
+		expect(turn.detail).toContain("Extra")
+		const noCompletion = transcriptTurns(messages.slice(0, 4), [1, 0, 0, 0]).turns[0]
+		expect(noCompletion.prose).toBe("The implementation is complete.")
+		expect(noCompletion.detail).toContain("Plan:")
+		const single = transcriptTurns([messages[0], { role: "assistant", content: "Edited" }] as Message[], [1, 0]).turns[0]
+		expect(single.prose).toBe("Edited")
+		expect(single.detail).toBeUndefined()
+		const change: ContentChange = {
+			filePath: "/r/a.ts",
+			path: "a.ts",
+			before: "a\n",
+			after: "b\n",
+			beforeExists: true,
+			afterExists: true,
+			turnId: turn.id,
+		}
+		const walk = fallback("task", "git", [{ ...turn, changes: [change] }], [change])
+		expect(walk.chapters[0].stops[0].detail).toBe(turn.detail)
+	})
+	it("matches a recorded edit reached through a symlinked workspace to the real root", async () => {
+		const root = await repo("repo")
+		const alias = path.join(directory, "alias")
+		await symlink(root, alias)
+		const input = {
+			taskId: "task",
+			scope: "thread" as const,
+			roots: [alias],
+			checkpointRoot: root,
+			messages: [
+				{ role: "user", content: "go" },
+				{ role: "assistant", content: [{ type: "tool_use", id: "edit", name: "editor", input: {} }] },
+			] as Message[],
+			runSpans: [1, 0],
+			checkpoints: [],
+		}
+		const edit = (filePath: string) => ({
+			filePath,
+			before: "old\n",
+			after: "new\n",
+			beforeExists: true,
+			afterExists: true,
+			toolCallId: "edit",
+			runId: "run",
+		})
+		await writeFile(path.join(root, "a.ts"), "new\n")
+		const viaAlias = await collect({ ...input, edits: [edit(path.join(alias, "a.ts"))] })
+		expect(viaAlias.walk.warnings.join(" ")).not.toContain("outside the thread workspace")
+		expect(viaAlias.walk.hunks.map((h) => h.path)).toEqual(["a.ts"])
+		// A file the edit later deleted is judged by its nearest existing ancestor.
+		await rm(path.join(root, "a.ts"))
+		const gone = await collect({ ...input, edits: [{ ...edit(path.join(alias, "sub", "gone.ts")), afterExists: false }] })
+		expect(gone.walk.warnings.join(" ")).not.toContain("outside the thread workspace")
+		expect(gone.changes.map((c) => c.path)).toContain("sub/gone.ts")
+		// Still outside once the symlinks are resolved.
+		const outside = await collect({ ...input, edits: [edit(path.join(alias, "..", "elsewhere.ts"))] })
+		expect(outside.walk.warnings.join(" ")).toContain("outside the thread workspace")
+	})
+	it("reverts through a symlinked workspace path and restores a missing directory beneath it", async () => {
+		const root = await repo("repo")
+		const alias = path.join(directory, "alias")
+		await symlink(root, alias)
+		const filePath = path.join(alias, "gone", "deep", "b.ts")
+		const deleted: ContentChange = {
+			filePath,
+			path: "gone/deep/b.ts",
+			before: "restore\n",
+			after: "",
+			beforeExists: true,
+			afterExists: false,
+		}
+		await revertChange(deleted, fallback("task", "git", [], [deleted]), undefined, [alias])
+		expect(await readFile(path.join(root, "gone", "deep", "b.ts"), "utf8")).toBe("restore\n")
+	})
 	it("respects runtime turn boundaries for tool results, synthetic prompts and status messages", () => {
 		const messages = [
 			{ role: "user", content: "Edit" },

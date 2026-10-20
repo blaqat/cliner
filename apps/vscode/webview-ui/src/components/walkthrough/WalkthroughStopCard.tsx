@@ -268,6 +268,7 @@ export function WalkthroughStopCard({
 	onReviewed,
 }: WalkthroughStopCardProps) {
 	const [editing, setEditing] = useState(false)
+	const [expanded, setExpanded] = useState(false)
 	const files = stopFiles(walk, stop)
 	const hasNote = !!note.trim()
 	return (
@@ -300,7 +301,21 @@ export function WalkthroughStopCard({
 					<span aria-label="Reviewed" className="codicon codicon-check text-[12px]! text-success" role="img" />
 				)}
 			</div>
-			{stop.prose && <InlineCodeProse className="mt-1 text-xs leading-normal text-description" text={stop.prose} />}
+			{stop.prose && (
+				<InlineCodeProse
+					className="mt-1 text-xs leading-normal text-description"
+					text={expanded && stop.detail ? stop.detail : stop.prose}
+				/>
+			)}
+			{stop.detail && (
+				<button
+					aria-expanded={expanded}
+					className="mt-0.5 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
+					onClick={() => setExpanded(!expanded)}
+					type="button">
+					{expanded ? "Show less" : "Show more"}
+				</button>
+			)}
 			{files.length > 0 && (
 				<div className="mt-2 flex flex-col gap-2">
 					{files.map((file) => (

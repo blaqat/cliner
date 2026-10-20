@@ -40,10 +40,13 @@ interface WalkthroughStop {
 	id: string
 	title: string
 	prose: string
+	detail?: string
 	hunkIds: string[]
 	turnId?: string
 }
 ```
+
+In the free (from-turns) layout, `prose` is a few lines of the turn's final message (the completion summary, else the last assistant text). `detail` holds the turn's whole narration when `prose` leaves something out; the webview shows it behind "Show more".
 
 Hunk aliases are deterministic `h1`, `h2`, … for the current collection. A content fingerprint identifies each real patch. Refresh can reassign aliases, so retain notes and review state only while `fingerprint` remains unchanged. Render hunk paths and patches from `hunks`, never from model output. `fileId` is an opaque host-resolved file identifier. Absolute paths and complete file contents stay on the host.
 

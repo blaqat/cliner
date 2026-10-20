@@ -17,6 +17,8 @@ export interface WalkthroughStop {
 	id: string
 	title: string
 	prose: string
+	/** Free layout only: the turn's full narration behind "Show more". */
+	detail?: string
 	hunkIds: string[]
 	turnId?: string
 }

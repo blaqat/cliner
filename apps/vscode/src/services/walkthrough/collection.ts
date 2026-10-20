@@ -72,8 +72,55 @@ export async function readEdits(directory: string): Promise<JournalEdit[]> {
 	}
 }
 
+const COMPLETION_TOOLS = new Set(["submit_and_exit", "attempt_completion"])
+const PROSE_LINES = 3
+const PROSE_CHARS = 320
+const DETAIL_CHARS = 8000
+
+/** The completion tool carries its summary in `summary` (submit_and_exit) or `result` (attempt_completion). */
+function completionText(block: { name?: string; input?: unknown }): string {
+	if (!block.name || !COMPLETION_TOOLS.has(block.name)) return ""
+	let input = block.input
+	if (typeof input === "string") {
+		try {
+			input = JSON.parse(input)
+		} catch {
+			return ""
+		}
+	}
+	if (!input || typeof input !== "object") return ""
+	const fields = input as Record<string, unknown>
+	const text = fields.summary ?? fields.result
+	return typeof text === "string" ? text.trim() : ""
+}
+
+/** A few lines of the text, ending in an ellipsis when something was cut. */
+function shorten(text: string): string {
+	const lines = text
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+	let short = lines.slice(0, PROSE_LINES).join("\n")
+	if (short.length > PROSE_CHARS) short = `${short.slice(0, PROSE_CHARS - 1).trimEnd()}…`
+	else if (lines.length > PROSE_LINES) short = `${short}…`
+	return short
+}
+
+/**
+ * A turn's prose is its final message: the completion summary, else the last
+ * assistant text. The whole narration (plan, retries, summary) stays available
+ * as `detail` whenever the short prose leaves something out.
+ */
+function summarizeTurn(texts: string[], completion: string): Pick<EditTurn, "prose" | "detail"> {
+	const final = completion || texts.at(-1) || ""
+	const narration = [...texts, ...(completion && !texts.includes(completion) ? [completion] : [])].join("\n\n").trim()
+	const prose = shorten(final)
+	return { prose, ...(narration && narration !== prose ? { detail: narration.slice(0, DETAIL_CHARS) } : {}) }
+}
+
 export function transcriptTurns(messages: Message[], runSpans: number[]): { turns: EditTurn[]; toolTurns: Map<string, string> } {
 	const turns: EditTurn[] = []
+	const texts = new Map<EditTurn, { texts: string[]; completion: string }>()
 	const toolTurns = new Map<string, string>()
 	let runCount = 0
 	for (const [index, message] of messages.entries()) {
@@ -90,17 +137,28 @@ export function transcriptTurns(messages: Message[], runSpans: number[]): { turn
 			!["compaction", "compaction_summary"].includes(String(metadata?.kind)) &&
 			!["system", "status", "error"].includes(String(metadata?.displayRole))
 		) {
-			turns.push({ id: `turn${runCount}`, prose: "", context: text, changes: [] })
+			const turn: EditTurn = { id: `turn${runCount}`, prose: "", context: text, changes: [] }
+			turns.push(turn)
+			texts.set(turn, { texts: [], completion: "" })
 		}
 		const turn = turns.at(-1)
 		if (!turn) continue
 		if (message.role === "assistant") {
+			const narration = texts.get(turn)!
 			if (text.trim()) {
-				turn.prose = [turn.prose, text].filter(Boolean).join("\n\n")
+				narration.texts.push(text.trim())
 				turn.context += `\nAssistant: ${text}`
 			}
-			for (const block of blocks) if (block.type === "tool_use") toolTurns.set(block.id, turn.id)
+			for (const block of blocks)
+				if (block.type === "tool_use") {
+					toolTurns.set(block.id, turn.id)
+					narration.completion = completionText(block) || narration.completion
+				}
 		}
+	}
+	for (const turn of turns) {
+		const narration = texts.get(turn)!
+		Object.assign(turn, summarizeTurn(narration.texts, narration.completion))
 	}
 	return { turns, toolTurns }
 }
@@ -125,13 +183,40 @@ export function modulePath(filePath: string, roots: string[]): string {
 	return roots.length > 1 ? `${prefix}/${relative}` : relative
 }
 
+/**
+ * Resolves symlinks (macOS /tmp is /private/tmp) so paths from different
+ * sources compare equal. A file that no longer exists is judged by its nearest
+ * existing ancestor, with the missing tail re-appended.
+ */
+export async function canonicalPath(filePath: string): Promise<string> {
+	let ancestor = path.resolve(filePath)
+	const tail: string[] = []
+	for (;;) {
+		try {
+			return path.join(await realpath(ancestor), ...tail)
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code
+			if (code !== "ENOENT" && code !== "ENOTDIR") throw error
+			const parent = path.dirname(ancestor)
+			if (parent === ancestor) return path.resolve(filePath)
+			tail.unshift(path.basename(ancestor))
+			ancestor = parent
+		}
+	}
+}
+
+/** Like canonicalPath, but an unreadable path falls back to its lexical form. */
+async function safeCanonical(filePath: string): Promise<string> {
+	return canonicalPath(filePath).catch(() => path.resolve(filePath))
+}
+
 export async function gitRoots(paths: string[]): Promise<string[]> {
 	const roots = new Set<string>()
 	for (const cwd of paths) {
 		try {
-			roots.add(path.resolve((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()))
+			roots.add(await safeCanonical((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()))
 		} catch {
-			roots.add(path.resolve(cwd))
+			roots.add(await safeCanonical(cwd))
 		}
 	}
 	return [...roots].sort()
@@ -226,12 +311,14 @@ export async function collect(
 		// Edits from a truncated/forked transcript must never leak back into the review.
 		if (!turn) continue
 		try {
-			const displayPath = modulePath(edit.filePath, roots)
-			const existing = turn.changes.find((c) => c.filePath === edit.filePath)
+			// Journal paths are as the tool saw them; roots and checkpoint changes are real paths.
+			const filePath = await safeCanonical(edit.filePath)
+			const displayPath = modulePath(filePath, roots)
+			const existing = turn.changes.find((c) => c.filePath === filePath)
 			if (existing) {
 				existing.after = edit.after
 				existing.afterExists = edit.afterExists
-			} else turn.changes.push({ ...edit, path: displayPath, turnId: turn.id })
+			} else turn.changes.push({ ...edit, filePath, path: displayPath, turnId: turn.id })
 		} catch (error) {
 			warnings.push(warningFor("Recorded edit", error))
 		}

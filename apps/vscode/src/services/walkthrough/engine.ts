@@ -24,6 +24,8 @@ export interface ContentChange {
 export interface EditTurn {
 	id: string
 	prose: string
+	/** The turn's whole narration, when `prose` is only its final message. */
+	detail?: string
 	context: string
 	changes: ContentChange[]
 }
@@ -114,6 +116,7 @@ export function fallback(
 			id: turn.id,
 			title: turn.id === "earlier" ? "Earlier edits" : `Turn ${turn.id.replace(/^turn/, "") || index + 1}`,
 			prose: turn.prose,
+			detail: turn.detail,
 			hunks: hunks.filter((hunk) => hunk.turnId === turn.id),
 			turnId: turn.id as string | undefined,
 		}))
@@ -124,6 +127,7 @@ export function fallback(
 			id: fileId,
 			title: unmatched.find((hunk) => hunk.fileId === fileId)!.path,
 			prose: "",
+			detail: undefined,
 			hunks: unmatched.filter((hunk) => hunk.fileId === fileId),
 			turnId: undefined,
 		})
@@ -145,6 +149,7 @@ export function fallback(
 					id: `s${index + 1}`,
 					title: group.title,
 					prose: group.prose,
+					...(group.detail ? { detail: group.detail } : {}),
 					hunkIds: group.hunks.map((h) => h.id),
 					...(group.turnId ? { turnId: group.turnId } : {}),
 				},
