@@ -71,6 +71,7 @@ import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
 import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
+import { WalkthroughReadyRow } from "./WalkthroughReadyRow"
 
 const HEADER_CLASSNAMES = "flex items-center gap-2.5 mb-3"
 
@@ -1116,6 +1117,8 @@ export const ChatRowContent = memo(
 						return <CompactionRow message={message} />
 					case "notebook_changes":
 						return <NotebookChangesRow message={message} />
+					case "walkthrough_ready":
+						return <WalkthroughReadyRow message={message} />
 					default:
 						return (
 							<div>
