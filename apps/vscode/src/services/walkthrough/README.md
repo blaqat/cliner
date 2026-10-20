@@ -3,14 +3,14 @@
 `src/shared/Walkthrough.ts` defines the JSON contract shared with the webview. The page is `webview-ui/src/components/walkthrough/WalkthroughView.tsx`; review marks and notes persist in webview localStorage per task, scope and fingerprint (`reviewState.ts`). Thread actions open it with `navigateToWalkthrough()`. Navigation history records `{ kind: "walkthrough", id: taskId }`.
 
 ```ts
-type WalkthroughScope = "thread" | "last_turn" | "git"
+type WalkthroughScope = "thread" | "last_turn" | "git" | "authored"
 
 interface ChangeWalkthrough {
 	version: 1
 	taskId: string
 	scope: WalkthroughScope
 	fingerprint: string
-	source: "fallback" | "generated"
+	source: "fallback" | "generated" | "authored"
 	title: string
 	focus: string
 	chapters: Array<{
@@ -50,7 +50,7 @@ In the free (from-turns) layout, `prose` is a few lines of the turn's final mess
 
 Hunk aliases are deterministic `h1`, `h2`, … for the current collection. A content fingerprint identifies each real patch. Refresh can reassign aliases, so retain notes and review state only while `fingerprint` remains unchanged. Render hunk paths and patches from `hunks`, never from model output. `fileId` is an opaque host-resolved file identifier. Absolute paths and complete file contents stay on the host.
 
-All five RPCs belong to `TaskService`. Each accepts `StringRequest { value: JSON.stringify(request) }`. The three document-returning RPCs return `String { value: JSON.stringify(walkthrough) }`. The others return `Empty`.
+All five RPCs belong to `TaskService`. Each accepts `StringRequest { value: JSON.stringify(request) }`. The document-returning RPCs return `String { value: JSON.stringify(walkthrough) }`. The others return `Empty`.
 
 - `getChangeWalkthrough`: `{ taskId, scope }`. Free collection only.
 - `generateChangeWalkthrough`: `{ taskId, scope, profileId, regenerate?: boolean }`. One provider request on a cache miss. `regenerate: true` bypasses the cache and includes the previous document's prose without IDs.
@@ -69,3 +69,40 @@ Generate has no agent loop, retry, or repair call. It requests one `submit_walkt
 `readRememberedWalkthroughProfileId(controller)` in `service.ts` is the single Step 6 integration point. It currently returns `undefined`. The page passes a selected profile ID. No new setting is stored. Explicit profiles keep their selected model for large diffs, matching Codiff's treatment of explicit model selections.
 
 Prompt excerpts use 60,000 characters total or 35,000 above 32 files, with per-hunk caps of 8,000, 2,500, or 700. Context is capped at 16,000 characters. Timeouts scale from 90 seconds to five minutes. The manual eval runner is documented in `evals/walkthrough/README.md`.
+
+
+## Agent-authored walkthroughs
+
+`present_walkthrough` accepts `AuthoredWalkthroughInput` from `src/shared/Walkthrough.ts`:
+
+```ts
+{
+  title: string
+  focus?: string
+  origin?: { label: string; url?: string }
+  chapters: Array<{
+    title: string
+    stops: Array<{
+      title: string
+      prose: string
+      hunks: Array<{ path: string; patch: string }>
+    }>
+  }>
+}
+```
+
+`authored-tool.ts` defines the tool. `sdk/vscode-runtime-builder.ts` registers it with the other extension-host tools. `sdk/vscode-session-host.ts` auto-approves it in Ask and Act. It has no `subagentAccess` metadata, so session-spawned subagents do not receive it. The tool description asks for conceptual chapters, 2–6 word stop titles, short prose with inline code only, and diffs copied verbatim from the source.
+
+The host validates input before writing. Limits are 1–8 chapters, 1–60 total stops, 400 parsed hunks, and 300,000 total patch characters. Stops may contain no hunks. Strings have additional bounds in `authored.ts`; origin URLs accept HTTP and HTTPS only. Each patch accepts one unified `@@` hunk or one full file diff with multiple hunks. The parser checks declared line counts, preserves hunk text, normalizes CRLF to LF, and adds a final newline. Malformed patches produce an error the agent can correct. File headers are discarded; the supplied `path` identifies the file. The host never resolves these paths against the local workspace.
+
+Normalized documents use `scope: "authored"`, `source: "authored"`, `authoredId`, and optional `origin`. Hunks use `external: true`, sequential `h1` aliases, content fingerprints, and a stable file ID hashed from the supplied path. The document fingerprint covers title, focus, origin, chapters, and hunks.
+
+Each successful presentation creates a new UUID and writes the full document to `tasks/<taskId>/walkthroughs/<authoredId>.json` under extension global storage. Re-presenting the same title and origin adds a separate document, preserving earlier cards and notes. The SDK persists the tool result, a JSON string with `{ walkthroughReady: WalkthroughReadyMessage, message: string }`. `sdk/message-translator.ts` emits its `walkthrough_ready` say row with the ready payload as JSON text. History reconstruction uses the same translator branch, so the row survives reload and reopen. Failed calls emit an error instead of a ready card.
+
+Authored RPC payloads use the existing `StringRequest` JSON envelope:
+
+- `getChangeWalkthrough`: `{ taskId, scope: "authored", authoredId }`. Returns the stored document without git collection or a model request.
+- `sendWalkthroughNotes`: `{ taskId, scope: "authored", authoredId, fingerprint, stopNotes, overallNote? }`. Loads the stored document, checks its fingerprint, and quotes its stop titles and bounded hunk excerpts. The message includes the origin label and URL when supplied, then follows the normal thread send path.
+- `openWalkthroughDiff`, `revertWalkthroughChange`, and `generateChangeWalkthrough` reject `scope: "authored"` with explicit errors. Authored hunks describe external changes and cannot operate on local files.
+
+Get and send require the requested thread to remain focused. Unknown document IDs and stale fingerprints fail. No shared-type, protobuf, or setting changes are required.

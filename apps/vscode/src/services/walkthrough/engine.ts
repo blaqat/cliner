@@ -388,6 +388,7 @@ export async function generate(
 
 export function formatNotes(walk: ChangeWalkthrough, notes: WalkthroughNotes): string {
 	const sections: string[] = ["Review notes for the change walkthrough:"]
+	if (walk.origin) sections[0] += `\nOrigin: ${walk.origin.label}${walk.origin.url ? ` (${walk.origin.url})` : ""}`
 	let remaining = 24000
 	for (const stop of [...walk.chapters.flatMap((c) => c.stops), ...walk.support]) {
 		const note = notes.stopNotes[stop.id]?.trim()

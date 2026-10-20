@@ -4581,3 +4581,66 @@ describe("child transcript routing", () => {
 		expect(done.messages).toContainEqual(expect.objectContaining({ say: "completion_result" }))
 	})
 })
+
+describe("authored walkthrough ready cards", () => {
+	const ready = { authoredId: "a1", title: "Review remote changes", origin: { label: "MR !12" }, stopCount: 2, fileCount: 1 }
+	const output = JSON.stringify({ walkthroughReady: ready, message: "Ready for review" })
+	it("emits a live ready card after success, with no partial generic tool row", () => {
+		const state = new MessageTranslatorState()
+		const send = (event: AgentEvent) =>
+			translateSessionEvent({ type: "agent_event", payload: { sessionId: "task", event } }, state).messages
+		expect(
+			send({
+				type: "content_start",
+				contentType: "tool",
+				toolName: "present_walkthrough",
+				toolCallId: "p1",
+				input: {},
+			} as AgentEvent),
+		).toEqual([])
+		const rows = send({
+			type: "content_end",
+			contentType: "tool",
+			toolName: "present_walkthrough",
+			toolCallId: "p1",
+			output,
+		} as AgentEvent)
+		expect(rows).toEqual([
+			expect.objectContaining({ type: "say", say: "walkthrough_ready", text: JSON.stringify(ready), partial: false }),
+		])
+	})
+	it("rebuilds the same card from persisted tool results on reopen", () => {
+		for (const content of [output, [{ type: "text", text: output }]]) {
+			const messages = [
+				{ role: "assistant", content: [{ type: "tool_use", id: "p1", name: "present_walkthrough", input: {} }] },
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "p1", content }] },
+			] as SdkMessage[]
+			const rows = sdkMessagesToClineMessages(messages)
+			expect(rows.filter((row) => row.say === "walkthrough_ready")).toEqual([
+				expect.objectContaining({ text: JSON.stringify(ready), sdkToolCallId: "p1" }),
+			])
+		}
+	})
+	it("never emits a ready card for a failed or malformed tool result", () => {
+		for (const result of [{ output, error: "Storage failed" }, { output: "bad" }]) {
+			const state = new MessageTranslatorState()
+			const rows = translateSessionEvent(
+				{
+					type: "agent_event",
+					payload: {
+						sessionId: "task",
+						event: {
+							type: "content_end",
+							contentType: "tool",
+							toolName: "present_walkthrough",
+							...result,
+						} as AgentEvent,
+					},
+				},
+				state,
+			).messages
+			expect(rows.some((row) => row.say === "walkthrough_ready")).toBe(false)
+			expect(rows.some((row) => row.say === "error")).toBe(true)
+		}
+	})
+})

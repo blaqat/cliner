@@ -103,8 +103,8 @@ beforeEach(async () => {
 afterEach(async () => {
 	await rm(directory, { recursive: true, force: true })
 })
-function service() {
-	return new WalkthroughService({
+function controller() {
+	return {
 		task: {
 			taskId: "task",
 			handleWebviewAskResponse: async (type: string, text: string, ...rest: unknown[]) => {
@@ -131,7 +131,10 @@ function service() {
 		postStateToWebview: async () => {},
 		getWalkthroughCollectionInput: async (_taskId: string, scope: CollectionInput["scope"]) => ({ ...input, scope }),
 		askResponse,
-	} as unknown as Controller)
+	} as unknown as Controller
+}
+function service() {
+	return new WalkthroughService(controller())
 }
 const request = { taskId: "task", scope: "thread" as const }
 
@@ -239,6 +242,66 @@ describe("walkthrough service", () => {
 	})
 	it("rejects a different thread before any model call", async () => {
 		await expect(service().get({ ...request, taskId: "other" })).rejects.toThrow("Open the requested thread")
+		expect(requests).toBe(0)
+	})
+})
+
+describe("authored walkthrough RPCs", () => {
+	it("loads the saved document and sends notes with origin without collecting local files", async () => {
+		const { saveAuthoredWalkthrough } = await import("./authored")
+		const { getChangeWalkthrough } = await import("@/core/controller/task/getChangeWalkthrough")
+		const { sendWalkthroughNotes } = await import("@/core/controller/task/sendWalkthroughNotes")
+		const walk = await saveAuthoredWalkthrough("task", {
+			title: "Remote review",
+			origin: { label: "MR !12", url: "https://example.com/mr/12" },
+			chapters: [
+				{
+					title: "Parser",
+					stops: [
+						{
+							title: "Validate remote input",
+							prose: "Validate input.",
+							hunks: [{ path: "remote.ts", patch: "@@ -1 +1 @@\n-old\n+remote\n" }],
+						},
+					],
+				},
+			],
+		})
+		const host = controller()
+		host.getWalkthroughCollectionInput = async () => {
+			throw new Error("Must not collect git")
+		}
+		const request = {
+			taskId: "task",
+			scope: "authored" as const,
+			authoredId: walk.authoredId,
+			fingerprint: walk.fingerprint,
+			stopNotes: { s1: "Explain remote." },
+		}
+		const rpc = { value: JSON.stringify(request) }
+		expect(JSON.parse((await getChangeWalkthrough(host, rpc)).value)).toEqual(walk)
+		await sendWalkthroughNotes(host, rpc)
+		expect(askResponse.mock.calls[0][0]).toContain("Origin: MR !12 (https://example.com/mr/12)")
+		expect(askResponse.mock.calls[0][0]).toContain("> Stop: Validate remote input")
+		expect(askResponse.mock.calls[0][0]).toContain("> +remote")
+		await expect(sendWalkthroughNotes(host, { value: JSON.stringify({ ...request, fingerprint: "stale" }) })).rejects.toThrow(
+			"Changes moved",
+		)
+		await expect(getChangeWalkthrough(host, { value: JSON.stringify({ ...request, taskId: "other" }) })).rejects.toThrow(
+			"Open the requested thread",
+		)
+		expect(requests).toBe(0)
+	})
+	it("refuses local diff, revert and generation for authored documents", async () => {
+		const { openWalkthroughDiff } = await import("@/core/controller/task/openWalkthroughDiff")
+		const { revertWalkthroughChange } = await import("@/core/controller/task/revertWalkthroughChange")
+		const { generateChangeWalkthrough } = await import("@/core/controller/task/generateChangeWalkthrough")
+		const rpc = { value: JSON.stringify({ taskId: "task", scope: "authored", confirmed: true }) }
+		const host = controller()
+		await expect(openWalkthroughDiff(host, rpc)).rejects.toThrow("no local diff")
+		await expect(revertWalkthroughChange(host, rpc)).rejects.toThrow("cannot revert")
+		await expect(generateChangeWalkthrough(host, rpc)).rejects.toThrow("cannot collect local changes or Generate")
+		expect(openMultiFileDiff).not.toHaveBeenCalled()
 		expect(requests).toBe(0)
 	})
 })

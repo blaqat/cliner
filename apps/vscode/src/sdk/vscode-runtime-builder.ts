@@ -3,6 +3,7 @@ import type { AgentTool, AgentToolContext } from "@cline/shared"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
+import { createPresentWalkthroughTool } from "@/services/walkthrough/authored-tool"
 import { Logger } from "@/shared/services/Logger"
 import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
@@ -99,7 +100,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// No completion tool is exposed: the agent simply ends its turn with a text
 	// response, and the turn-end inference in message-translator.ts styles that
 	// final text as the completion feedback row.
-	const tools: AgentTool[] = [...mcpTools.flat()]
+	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
 	if (options?.scripts) tools.push(createScriptTool(options.scripts))

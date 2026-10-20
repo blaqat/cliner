@@ -6,6 +6,7 @@ import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/con
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { HostProvider } from "@/hosts/host-provider"
 import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
+import { readAuthoredWalkthrough } from "./authored"
 import { collect, gitRoots, revertChange } from "./collection"
 import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput } from "./engine"
 
@@ -38,11 +39,12 @@ export class WalkthroughService {
 
 	private validate(request: WalkthroughRequest) {
 		if (!request.taskId || this.controller.task?.taskId !== request.taskId) throw new Error("Open the requested thread first")
-		if (!["thread", "last_turn", "git"].includes(request.scope)) throw new Error("Unknown walkthrough scope")
+		if (!["thread", "last_turn", "git", "authored"].includes(request.scope)) throw new Error("Unknown walkthrough scope")
 	}
 
 	private async current(request: WalkthroughRequest) {
 		this.validate(request)
+		if (request.scope === "authored") throw new Error("Authored walkthroughs cannot collect local changes or Generate")
 		return collect(await this.controller.getWalkthroughCollectionInput(request.taskId, request.scope))
 	}
 
@@ -51,6 +53,8 @@ export class WalkthroughService {
 	}
 
 	async get(request: WalkthroughRequest): Promise<ChangeWalkthrough> {
+		this.validate(request)
+		if (request.scope === "authored") return readAuthoredWalkthrough(request.taskId, request.authoredId)
 		const { walk } = await this.current(request)
 		const previous = this.documents.get(this.key(request))
 		const result =
@@ -131,6 +135,11 @@ export class WalkthroughService {
 	}
 
 	private async reviewed(request: WalkthroughRequest): Promise<{ walk: ChangeWalkthrough; changes: ContentChange[] }> {
+		if (request.scope === "authored") {
+			const walk = await this.get(request)
+			if (request.fingerprint !== walk.fingerprint) throw new Error("Changes moved. Refresh the walkthrough first.")
+			return { walk, changes: [] }
+		}
 		const current = await this.current(request)
 		const walk = this.documents.get(this.key(request))
 		if (!walk || request.fingerprint !== walk.fingerprint || current.walk.fingerprint !== walk.fingerprint)
@@ -139,6 +148,7 @@ export class WalkthroughService {
 	}
 
 	async openDiff(request: WalkthroughRequest): Promise<void> {
+		if (request.scope === "authored") throw new Error("Authored walkthroughs have no local diff to open")
 		const { walk, changes } = await this.reviewed(request)
 		const change = this.findChange(request, walk, changes)
 		await HostProvider.diff.openMultiFileDiff({
@@ -155,6 +165,7 @@ export class WalkthroughService {
 	}
 
 	async revert(request: WalkthroughRequest): Promise<ChangeWalkthrough> {
+		if (request.scope === "authored") throw new Error("Authored walkthroughs cannot revert local files")
 		if (request.confirmed !== true) throw new Error("Confirm this revert inline first")
 		const { walk, changes } = await this.reviewed(request)
 		const input = await this.controller.getWalkthroughCollectionInput(request.taskId, request.scope)

@@ -82,12 +82,14 @@ describe("VscodeSessionHost telemetry wiring", () => {
 			'# Task notebook\n\nThis thread is part of the task "Fix" (PROJ-1).',
 		)
 		expect(mockInnerStart.mock.calls[0][0].toolPolicies.notebook).toEqual({ enabled: true, autoApprove: true })
+		expect(mockInnerStart.mock.calls[0][0].toolPolicies.present_walkthrough).toEqual({ enabled: true, autoApprove: true })
 		await host.start(gitStartInput)
 		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(
 			expect.anything(),
 			expect.objectContaining({ notebook: undefined }),
 		)
 		expect(mockInnerStart.mock.calls[1][0].config.systemPrompt).toBe("test")
+		expect(mockInnerStart.mock.calls[1][0].toolPolicies.present_walkthrough).toEqual({ enabled: true, autoApprove: true })
 		await host.dispose()
 	})
 

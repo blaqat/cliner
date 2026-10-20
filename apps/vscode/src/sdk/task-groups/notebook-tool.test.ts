@@ -28,12 +28,12 @@ describe("task notebook agent tool", () => {
 
 	it("registers notebook only for grouped threads and exposes it to reader subagents", async () => {
 		const hub = { getServers: () => [] } as never
-		expect(await createVscodeExtraTools(hub)).toEqual([])
+		expect((await createVscodeExtraTools(hub)).map((tool) => tool.name)).toEqual(["present_walkthrough"])
 		const tools = await createVscodeExtraTools(hub, {
 			notebook: { group, threadId: "root", rootThreadId: "root", store },
 		})
-		expect(tools.map((tool) => tool.name)).toEqual(["notebook"])
-		expect(tools[0].metadata?.subagentAccess).toBe("read")
+		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "notebook"])
+		expect(tools.find((tool) => tool.name === "notebook")?.metadata?.subagentAccess).toBe("read")
 	})
 
 	it("indexes the 40 latest notes through a getter and refreshes hand edits", async () => {

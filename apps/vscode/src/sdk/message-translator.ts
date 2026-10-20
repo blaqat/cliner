@@ -1427,6 +1427,9 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						state.setStreamingToolTs(approvedToolMessageTs)
 					}
 
+					// present_walkthrough emits its card only after the document is saved.
+					if (toolName === "present_walkthrough") break
+
 					// ask_question (and ask_followup_question) is NOT a visual tool row: the
 					// SdkInteractionCoordinator services it and emits the proper ask:"followup"
 					// message. Emitting a generic say:"tool" here would leave an orphan partial
@@ -1679,6 +1682,44 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 
 					if (state.checkDeniedToolApproval(event.toolCallId) || isKnownToolApprovalDenial(event.error)) {
 						state.clearStreamingTool()
+						break
+					}
+
+					// History reuses this branch and rebuilds the card from the SDK's persisted result.
+					if (toolName === "present_walkthrough") {
+						state.clearStreamingTool()
+						try {
+							if (event.error) throw new Error(event.error)
+							const output = event.output
+							const raw =
+								Array.isArray(output) && output.every((item) => item?.type === "text")
+									? output.map((item) => item.text).join("\n")
+									: extractToolOutputText(output)
+							const ready = JSON.parse(raw).walkthroughReady
+							if (
+								!ready ||
+								typeof ready.authoredId !== "string" ||
+								typeof ready.title !== "string" ||
+								!Number.isInteger(ready.stopCount) ||
+								!Number.isInteger(ready.fileCount)
+							)
+								throw new Error("Invalid present_walkthrough result")
+							messages.push({
+								ts: state.nextTs(),
+								type: "say",
+								say: "walkthrough_ready",
+								text: JSON.stringify(ready),
+								partial: false,
+							})
+						} catch (error) {
+							messages.push({
+								ts: state.nextTs(),
+								type: "say",
+								say: "error",
+								text: error instanceof Error ? error.message : String(error),
+								partial: false,
+							})
+						}
 						break
 					}
 

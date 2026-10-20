@@ -214,6 +214,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 					// the user mentioned are ever readable.
 					grep_threads: { enabled: true, autoApprove: true },
 					read_thread: { enabled: true, autoApprove: true },
+					present_walkthrough: { enabled: true, autoApprove: true },
 					// Always routed through requestToolApproval: the interaction coordinator applies the
 					// script's own approval level (and Ask/Act mode) instead of the global toggles.
 					...(scripts ? { script: { enabled: true, autoApprove: false } } : {}),
