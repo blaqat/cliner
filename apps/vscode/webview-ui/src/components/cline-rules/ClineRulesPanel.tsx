@@ -25,10 +25,11 @@ import RuleRow from "./RuleRow"
 import RulesToggleList from "./RulesToggleList"
 
 /**
- * Rules, hooks, skills and workflows toggles. Shown inline in the composer's ＋ menu; it refreshes
- * from disk while mounted, so it should only be rendered while that panel is open.
+ * Rules, hooks, skills, workflows and scripts. Shown in the composer's rules popover (or the ＋ menu
+ * when that button is folded in); it refreshes from disk while mounted, so it should only be
+ * rendered while open. `onUseScript` is the Scripts tab's "Use" (starts a script draft).
  */
-const ClineRulesPanel: React.FC = () => {
+const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ onUseScript }) => {
 	const {
 		globalClineRulesToggles = {},
 		localClineRulesToggles = {},
@@ -768,7 +769,7 @@ const ClineRulesPanel: React.FC = () => {
 						</div>
 					</>
 				) : currentView === "scripts" ? (
-					<ScriptsPanel />
+					<ScriptsPanel onUse={onUseScript} />
 				) : null}
 			</div>
 		</div>

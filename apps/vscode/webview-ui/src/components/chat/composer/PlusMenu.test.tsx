@@ -88,49 +88,39 @@ describe("PlusMenu", () => {
 		}
 	})
 
-	it("is a labelled button that opens a menu of everything it holds", () => {
+	it("is a labelled button that opens a menu of mention and files only", () => {
 		renderMenu()
-		expect(screen.getByRole("button", { name: "Add context, files, MCP servers and rules" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Add context and files" })).toBeInTheDocument()
 		const menu = openMenu()
 		expect(
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
-		).toEqual(["Mention a file, folder or problem", "Files & images", "MCP servers2 on", "Rules, workflows & skills2 on"])
-		// No scripts until step 7 fills the slot.
-		expect(within(menu).queryByTestId("plus-menu-scripts")).not.toBeInTheDocument()
+		).toEqual(["Mention a file, folder or problem", "Files & images"])
+		// MCP servers and rules have their own buttons beside ＋, so they aren't duplicated here.
+		for (const id of ["plus-menu-mcp", "plus-menu-rules", "plus-menu-scripts"]) {
+			expect(within(menu).queryByTestId(id)).not.toBeInTheDocument()
+		}
 	})
 
-	it("shows a Scripts row when the composer passes scripts and opens the panel inline", () => {
-		const close = vi.fn()
-		renderMenu({
-			scripts: {
-				summary: "2 on",
-				panel: (closeMenu) => (
-					<button
-						data-testid="scripts-use"
-						onClick={() => {
-							close()
-							closeMenu(true)
-						}}
-						type="button">
-						use
-					</button>
-				),
-			},
-		})
+	it("lists MCP servers and rules when their buttons are folded in (narrow row)", () => {
+		renderMenu({ foldedPanels: true })
+		expect(screen.getByRole("button", { name: "Add context and files, MCP servers and rules" })).toBeInTheDocument()
 		const menu = openMenu()
-		expect(within(menu).getByTestId("plus-menu-scripts")).toHaveTextContent("Scripts2 on")
-		fireEvent.click(screen.getByTestId("plus-menu-scripts"))
-		expect(screen.getByTestId("plus-menu")).toContainElement(screen.getByTestId("scripts-use"))
-		expect(screen.getByText("Scripts", { selector: "span" })).toBeInTheDocument()
-		fireEvent.click(screen.getByTestId("scripts-use"))
-		expect(close).toHaveBeenCalledOnce()
-		expect(screen.queryByTestId("plus-menu")).not.toBeInTheDocument()
+		expect(
+			within(menu)
+				.getAllByRole("menuitem")
+				.map((item) => item.textContent),
+		).toEqual([
+			"Mention a file, folder or problem",
+			"Files & images",
+			"MCP servers2 on",
+			"Rules, workflows, skills & scripts2 on",
+		])
 	})
 
 	it("has a Scripts tab next to Workflows in the rules panel", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId("plus-menu-rules"))
 		const panel = screen.getByTestId("rules-panel")
@@ -167,7 +157,7 @@ describe("PlusMenu", () => {
 	})
 
 	it("shows the MCP server toggles inline, refreshes them, and goes back", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId("plus-menu-mcp"))
 
@@ -183,7 +173,7 @@ describe("PlusMenu", () => {
 	})
 
 	it("MCP server settings closes the menu and opens the MCP page", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId("plus-menu-mcp"))
 		fireEvent.click(screen.getByRole("button", { name: /MCP server settings/ }))
@@ -192,7 +182,7 @@ describe("PlusMenu", () => {
 	})
 
 	it("shows the rules, workflows and skills toggles inline and refreshes them from disk", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId("plus-menu-rules"))
 
@@ -206,7 +196,7 @@ describe("PlusMenu", () => {
 	})
 
 	it("opens a submenu with ArrowRight and moves with the arrow keys", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		const mention = screen.getByTestId("plus-menu-mention")
 		mention.focus()
@@ -233,7 +223,7 @@ describe("PlusMenu", () => {
 		["mcp", "mcp-servers-panel"],
 		["rules", "rules-panel"],
 	])("Escape in the %s panel goes back to the list, and a second Escape closes", (view, panelId) => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId(`plus-menu-${view}`))
 		fireEvent.keyDown(screen.getByTestId(panelId), { key: "Escape" })
@@ -250,18 +240,10 @@ describe("PlusMenu", () => {
 	})
 
 	it("Back returns focus to the panel's row", () => {
-		renderMenu()
+		renderMenu({ foldedPanels: true })
 		openMenu()
 		fireEvent.click(screen.getByTestId("plus-menu-rules"))
 		fireEvent.click(screen.getByTestId("plus-menu-back"))
 		expect(screen.getByTestId("plus-menu-rules")).toHaveFocus()
-	})
-
-	it("shows Scripts once the slot is filled, opening its panel inline", () => {
-		renderMenu({ scripts: { summary: "4 saved", panel: <div data-testid="scripts-panel">scripts</div> } })
-		openMenu()
-		expect(screen.getByTestId("plus-menu-scripts")).toHaveTextContent("Scripts4 saved")
-		fireEvent.click(screen.getByTestId("plus-menu-scripts"))
-		expect(screen.getByTestId("plus-menu")).toContainElement(screen.getByTestId("scripts-panel"))
 	})
 })

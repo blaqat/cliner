@@ -20,7 +20,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 		builds: "test builds fork.24–27",
 		date: "2026-10-19",
 		notes: [
-			"Composer: ＋ menu (mentions, files, MCP, rules, scripts), a where pill (task, worktree, branch suggestion), separate model and effort chips, context ring and approvals shield",
+			"Composer: ＋ for mentions and files with MCP servers and rules/scripts buttons beside it, a where pill (task, worktree, branch suggestion), separate model and effort chips with the approvals shield, and a context ring",
 			"Models page for saved configurations, and Profiles (a model and an effort under a name) for new threads (Ask/Act), subagents and text generation; existing defaults carry over",
 			"Notebook: unified review of agent edits, edit pending notes, a history page, and Convert to rule, skill or workflow",
 			"References: # notes from any task, thread: mentions the agent can search, and message links",

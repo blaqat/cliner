@@ -1,5 +1,5 @@
 import { RefreshedScripts, ScriptInfo, ScriptOptionInfo } from "@shared/proto/cline/file"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { resetScriptsForTest } from "@/hooks/useScripts"
@@ -249,14 +249,13 @@ describe("ChatTextArea scripts", () => {
 		expect(textarea.value).toBe("/test-module module:web ")
 	})
 
-	it("starts a script draft from the ＋ menu, keeping what was typed as a note", async () => {
+	it("starts a script draft from the rules button's Scripts tab, keeping what was typed as a note", async () => {
 		const { textarea } = await renderComposer("then fix the failures")
-		fireEvent.click(screen.getByTestId("plus-menu-button"))
-		expect(screen.getByTestId("plus-menu-scripts")).toHaveTextContent("2 on")
-		fireEvent.click(screen.getByTestId("plus-menu-scripts"))
+		fireEvent.click(screen.getByTestId("rules-button"))
+		fireEvent.click(within(screen.getByTestId("rules-panel")).getByRole("button", { name: "Scripts" }))
 		fireEvent.click(await screen.findByTestId("script-use-test-module"))
 		await waitFor(() => expect(textarea.value).toBe("/test-module \nthen fix the failures"))
-		expect(screen.queryByTestId("plus-menu")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("rules")).not.toBeInTheDocument()
 		expect(await screen.findByTestId("script-helper")).toBeInTheDocument()
 	})
 })

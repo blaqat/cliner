@@ -79,9 +79,9 @@ export const FEATURE_GROUPS: FeatureGroup[] = [
 		id: "composer",
 		title: "Composer",
 		items: [
-			"＋ menu: @ mentions, files, MCP servers, rules, workflows and scripts",
+			"＋ for @ mentions and files; beside it, MCP servers and rules, workflows, skills and scripts",
 			"Where pill: task, workspace and worktree in one place",
-			"Context ring with cost and approvals",
+			"Approvals shield next to the model and effort; context ring with cost",
 			"Workflows expand anywhere in a message",
 		],
 	},

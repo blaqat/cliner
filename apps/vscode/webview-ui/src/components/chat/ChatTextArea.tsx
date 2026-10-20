@@ -16,7 +16,6 @@ import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
 import ScriptHelper from "@/components/scripts/ScriptHelper"
-import ScriptsPanel from "@/components/scripts/ScriptsPanel"
 import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -55,6 +54,7 @@ import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import ApprovalsMenu from "./composer/ApprovalsMenu"
+import { McpServersButton, RulesButton } from "./composer/ComposerPanelButtons"
 import ConfigPicker from "./composer/ConfigPicker"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
 import { modelHasReasoning } from "./composer/modelSelection"
@@ -223,7 +223,7 @@ const ButtonGroup = styled.div`
 	min-width: 0;
 	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
 	overflow-x: clip;
-	/* The ＋ keeps its size; the where pill and the configuration and effort pickers truncate to their min-width. */
+	/* The icon buttons and the shield keep their size; the where pill and the configuration and effort pickers truncate to their min-width. */
 	& > * {
 		flex-shrink: 0;
 	}
@@ -346,7 +346,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [cursorPosition, setCursorPosition] = useState(0)
 		const [searchQuery, setSearchQuery] = useState("")
 		const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
-		// Saved scripts: offered by the slash menu and the ＋ menu. A draft starting with `/script-name `
+		// Saved scripts: offered by the slash menu and the rules panel's Scripts tab. A draft starting with `/script-name `
 		// shows the options helper above the input and cannot be sent until its required options are set.
 		const scriptsSnapshot = useScripts()
 		const usable = useMemo(() => usableScripts(scriptsSnapshot), [scriptsSnapshot])
@@ -377,7 +377,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		useEffect(() => {
 			if (showSlashCommandsMenu) void refreshScripts()
 		}, [showSlashCommandsMenu])
-		/** Starts a script draft from the ＋ menu; whatever was typed becomes the note under the options line. */
+		/** Starts a script draft from the rules panel's Scripts tab; whatever was typed becomes the note under the options line. */
 		const startScriptDraft = useCallback(
 			(name: string) => {
 				const prefix = `/${name} `
@@ -2069,26 +2069,21 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					<ButtonGroup className="h-5" data-testid="composer-pickers">
 						<PlusMenu
 							filesDisabled={shouldDisableFilesAndImages}
+							foldedPanels={!rowLayout.inlinePanelButtons}
 							onAddFiles={() => {
 								if (!shouldDisableFilesAndImages) {
 									onSelectFilesAndImages()
 								}
 							}}
 							onMention={handleContextButtonClick}
-							scripts={{
-								summary: usable.length > 0 ? `${usable.length} on` : undefined,
-								panel: (close) => (
-									<div className="min-h-0 flex-1 overflow-y-auto px-3 pt-2 pb-3">
-										<ScriptsPanel
-											onUse={(name) => {
-												close(true)
-												startScriptDraft(name)
-											}}
-										/>
-									</div>
-								),
-							}}
+							onUseScript={startScriptDraft}
 						/>
+						{rowLayout.inlinePanelButtons && (
+							<>
+								<McpServersButton />
+								<RulesButton onUseScript={startScriptDraft} />
+							</>
+						)}
 						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
 							<WherePill onOpenTaskGroup={onOpenTaskGroup} />
 						</span>
@@ -2103,9 +2098,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								modelInfo={selectedModelInfo}
 							/>
 						</span>
+						<ApprovalsMenu />
 					</ButtonGroup>
 					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
-					<ApprovalsMenu />
 					{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
 					<Tooltip>
 						<TooltipContent

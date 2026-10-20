@@ -142,7 +142,7 @@ const ScriptRow: React.FC<{ script: ScriptEntry; onUse?: (name: string) => void 
 }
 
 /**
- * Saved scripts: the Scripts tab of the rules panel and the ＋ menu's Scripts view. Rows open the
+ * Saved scripts: the Scripts tab of the rules panel (the composer's rules button). Rows open the
  * Markdown file in the editor; the approval badge cycles the level in the file's frontmatter.
  */
 const ScriptsPanel: React.FC<{ onUse?: (name: string) => void }> = ({ onUse }) => {

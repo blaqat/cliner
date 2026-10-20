@@ -13,3 +13,12 @@ export const MENU_SEPARATOR_CLASS = "my-1 h-px border-0 bg-menu-foreground/10"
 
 /** Leading codicon in a menu row. */
 export const MENU_ICON_CLASS = "codicon shrink-0 text-[13px]!"
+
+/**
+ * Icon-only trigger in the composer's bottom row (＋, MCP servers, rules): 20px square, toolbar
+ * hover, focus ring; pair it with `COMPOSER_ICON_BUTTON_OPEN_CLASS` while its popover is open.
+ */
+export const COMPOSER_ICON_BUTTON_CLASS =
+	"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+
+export const COMPOSER_ICON_BUTTON_OPEN_CLASS = "bg-toolbar-hover text-foreground"

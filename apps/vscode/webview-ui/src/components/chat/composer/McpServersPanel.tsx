@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils"
 import { McpServiceClient } from "@/services/grpc-client"
 
 /**
- * MCP server toggles, shown inline in the composer's ＋ menu. Fetches the latest servers when it
+ * MCP server toggles, shown in the composer's MCP servers popover (or the ＋ menu when that button
+ * is folded in). Fetches the latest servers when it
  * mounts, so render it only while that panel is open.
  */
 const McpServersPanel = ({ onOpenSettings }: { onOpenSettings: () => void }) => {
