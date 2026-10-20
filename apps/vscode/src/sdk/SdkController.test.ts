@@ -877,6 +877,145 @@ describe("aside session creation", () => {
 	})
 })
 
+describe("aside task membership", () => {
+	const record = (id: string, metadata: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+		({
+			sessionId: id,
+			prompt: id,
+			status: "completed",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			isSubagent: false,
+			metadata,
+			...extra,
+		}) as never
+
+	function makeFilingController(records: unknown[]) {
+		const stored = new Map<string, string | undefined>()
+		const controller = {
+			taskGroupStore: { getGroup: vi.fn(async (id: string) => ({ id })) },
+			taskHistory: {
+				listHistory: vi.fn(async () =>
+					(records as { sessionId: string; metadata: Record<string, unknown> }[]).map((entry) =>
+						stored.has(entry.sessionId)
+							? { ...entry, metadata: { ...entry.metadata, taskGroupId: stored.get(entry.sessionId) ?? "" } }
+							: entry,
+					),
+				),
+				setTaskGroup: vi.fn(async (id: string, group: string | undefined) => void stored.set(id, group)),
+			},
+			sessionConfigChanges: { handleTaskGroupChanged: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			fileThread: (SdkController.prototype as never as Record<string, unknown>).fileThread,
+		}
+		return { controller, stored }
+	}
+	const family = [
+		record("parent"),
+		record("aside", { parentTaskId: "parent", forkedAtTs: 1 }),
+		record("nested", { parentTaskId: "aside", forkedAtTs: 2 }),
+		record("agent", { parentTaskId: "parent" }, { isSubagent: true, parentSessionId: "parent" }),
+		record("unrelated"),
+		record("unrelatedAside", { parentTaskId: "unrelated" }),
+	]
+
+	it("filing, moving and unfiling a parent carries its asides, nested ones included", async () => {
+		const { controller, stored } = makeFilingController(family)
+		const call = (group: string) => SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", group)
+
+		await call("A")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "A", aside: "A", nested: "A" })
+		expect(controller.sessionConfigChanges.handleTaskGroupChanged.mock.calls.map(([id]) => id).sort()).toEqual([
+			"aside",
+			"nested",
+			"parent",
+		])
+
+		await call("B")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "B", aside: "B", nested: "B" })
+
+		await call("")
+		expect(Object.fromEntries(stored)).toEqual({ parent: undefined, aside: undefined, nested: undefined })
+		expect(controller.taskGroupStore.getGroup).toHaveBeenCalledTimes(2)
+		expect(controller.postStateToWebview).toHaveBeenCalledTimes(3)
+	})
+
+	it("leaves a subagent record and unrelated threads alone", async () => {
+		const { controller, stored } = makeFilingController(family)
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", "A")
+		expect(stored.has("agent")).toBe(false)
+		expect(stored.has("unrelated")).toBe(false)
+		expect(stored.has("unrelatedAside")).toBe(false)
+	})
+
+	it("picks up asides filed wrongly before: a stray task is overwritten with the parent's", async () => {
+		const { controller, stored } = makeFilingController([
+			record("parent", { taskGroupId: "A" }),
+			record("aside", { parentTaskId: "parent", taskGroupId: "B" }),
+		])
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", "A")
+		expect(stored.get("aside")).toBe("A")
+	})
+
+	it("filing an aside files the thread it was forked from, so the family never splits", async () => {
+		const { controller, stored } = makeFilingController(family)
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "nested", "A")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "A", aside: "A", nested: "A" })
+	})
+
+	it("creating a task with a thread files its asides too", async () => {
+		const { controller, stored } = makeFilingController(family)
+		const createGroup = vi.fn(async () => ({ id: "NEW" }))
+		await SdkController.prototype.createTaskGroup.call({ ...controller, taskGroupStore: { createGroup } } as never, {
+			title: "T",
+			tags: [],
+			threadId: "parent",
+		})
+		expect(Object.fromEntries(stored)).toEqual({ parent: "NEW", aside: "NEW", nested: "NEW" })
+	})
+
+	it("a new aside starts in its parent's task, even when the parent is a legacy aside stored unfiled", async () => {
+		const items = new Map([
+			["root", { id: "root", task: "Root", taskGroupId: "A", cwdOnTaskInitialization: "/repo" }],
+			["legacy", { id: "legacy", task: "Legacy", parentTaskId: "root", cwdOnTaskInitialization: "/repo" }],
+		])
+		const visible = [{ ts: 10, type: "say", say: "task", text: "Q", sdkMessageIndex: 0 }]
+		const task = createTaskProxy("legacy", vi.fn(), vi.fn())
+		task.messageStateHandler.addMessages(visible as never)
+		const context = { mode: "act", task: createTaskProxy("aside", vi.fn(), vi.fn()), turn: { set: vi.fn() } }
+		const controller = {
+			stateManager: { getGlobalStateKey: () => undefined, getApiConfiguration: () => ({}) },
+			task,
+			taskSessions: new Map([["legacy", { task }]]),
+			sessionRebuilds: { runExclusive: async (run: () => Promise<void>) => run() },
+			taskHistory: {
+				findHistoryItem: async (id: string) => items.get(id),
+				updateTaskHistoryItem: vi.fn(async () => {}),
+				getClineMessages: async () => visible,
+			},
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ sdkHost: { readLiveMessages: vi.fn(async () => [{ role: "user", content: "Q" }]) } }),
+				startNewSession: vi.fn(async () => ({ startResult: { sessionId: "aside" } })),
+				focusSession: vi.fn(),
+				setRunning: vi.fn(),
+			},
+			sessionConfigBuilder: {
+				build: vi.fn(async () => ({ providerId: "anthropic", modelId: "model", cwd: "/repo", mode: "plan" })),
+			},
+			getTaskSessionContext: () => context,
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await SdkController.prototype.forkTaskAt.call(controller as never, "legacy", 10)
+		expect(controller.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionMetadata: expect.objectContaining({ taskGroupId: "A", parentTaskId: "legacy" }) }),
+		)
+		expect(controller.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ parentTaskId: "legacy", taskGroupId: "A" }),
+		)
+	})
+})
+
 describe("stopSubagent", () => {
 	it("aborts the child run, marks it stopped, and emits an updated status row", async () => {
 		const translator = new MessageTranslatorState()
@@ -1802,17 +1941,19 @@ it("marks live descendants stopped with a clear status when their root runtime i
 })
 
 describe("task notebook fix round", () => {
-	it("uses an aside's own group in timeline and history search, including when unfiled", () => {
+	it("uses the parent's group for an aside in timeline and history search, whatever the aside stores", () => {
 		const controller = Object.create(SdkController.prototype)
 		const parent = { id: "parent", taskGroupId: "A" }
 		const aside = { id: "aside", parentTaskId: "parent" }
 		const child = { id: "child", isSubagent: true, runtimeOwnerTaskId: "aside" }
 		const byId = new Map([parent, aside, child].map((item) => [item.id, item]))
-		expect(controller.effectiveTaskGroupId(aside, byId)).toBeUndefined()
-		expect(controller.effectiveTaskGroupId(child, byId)).toBeUndefined()
+		expect(controller.effectiveTaskGroupId(aside, byId)).toBe("A")
+		expect(controller.effectiveTaskGroupId(child, byId)).toBe("A")
 		byId.set("aside", { ...aside, taskGroupId: "B" } as typeof aside)
-		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBe("B")
-		expect(controller.effectiveTaskGroupId(child, byId)).toBe("B")
+		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBe("A")
+		expect(controller.effectiveTaskGroupId(child, byId)).toBe("A")
+		byId.set("parent", { id: "parent" } as typeof parent)
+		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBeUndefined()
 	})
 
 	it("emits a review card for every pending group owned by an aside", async () => {

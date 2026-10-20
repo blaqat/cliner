@@ -117,31 +117,34 @@ describe("task notebook agent tool", () => {
 		)
 		expect(await store.listActivity(group.id)).toHaveLength(1)
 	})
-	it("an unfiled aside under a grouped parent has no notebook ownership", async () => {
+	it("an unfiled aside under a grouped parent uses the parent's task, but stages under its own id", async () => {
 		const aside = { id: "aside", parentTaskId: "root" }
 		const find = async () => ({ id: "root", taskGroupId: group.id }) as never
-		expect(await resolveNotebookOwner(aside as never, find)).toEqual({ rootThreadId: "aside", taskGroupId: undefined })
+		const owner = await resolveNotebookOwner(aside as never, find)
+		expect(owner).toEqual({ rootThreadId: "aside", taskGroupId: group.id })
 		expect(
-			await resolveNotebookOwner(
-				{ id: "child", isSubagent: true, parentTaskId: "aside" } as never,
-				async () => aside as never,
+			await resolveNotebookOwner({ id: "child", isSubagent: true, parentTaskId: "aside" } as never, async (id) =>
+				id === "aside" ? (aside as never) : find(),
 			),
-		).toEqual({ rootThreadId: "aside", taskGroupId: undefined })
+		).toEqual({ rootThreadId: "aside", taskGroupId: group.id })
+		// The aside reads and writes the task's notes through the notebook tool.
+		await store.createNote(group.id, { name: "Shared", description: "From the task" })
+		await fs.writeFile(store.notePath(group.id, "shared"), "---\nname: Shared\ndescription: From the task\n---\nTask body")
+		const tool = await createNotebookTool({ group, threadId: "aside", rootThreadId: owner.rootThreadId, store })
+		expect(await tool.execute({ action: "read", name: "shared" }, context)).toBe("Task body")
+		await tool.execute({ action: "write", name: "From aside", content: "Aside body" }, context)
+		expect(await store.readPending(group.id, "aside")).toHaveLength(1)
+		expect(
+			await expandTaskNoteMentions("Use #shared", (slug) =>
+				store.readThreadNote(group.id, owner.rootThreadId, slug, "aside"),
+			),
+		).toContain("Task body")
 	})
 
-	it("an aside moved to B stages and expands mentions under its own id in B", async () => {
+	it("an aside stored under another task still resolves to its parent's task", async () => {
 		const other = await new TaskGroupStore(root).createGroup({ title: "B" })
 		const aside = { id: "aside", parentTaskId: "root", taskGroupId: other.id }
 		const owner = await resolveNotebookOwner(aside as never, async () => ({ id: "root", taskGroupId: group.id }) as never)
-		expect(owner).toEqual({ rootThreadId: "aside", taskGroupId: other.id })
-		const tool = await createNotebookTool({ group: other, threadId: "aside", rootThreadId: owner.rootThreadId, store })
-		await tool.execute({ action: "write", name: "Plan", content: "B plan" }, context)
-		expect(await store.readPending(other.id, "aside")).toHaveLength(1)
-		expect(await store.readPending(group.id, "root")).toBeUndefined()
-		expect(
-			await expandTaskNoteMentions("Use #plan", (slug) =>
-				store.readThreadNote(other.id, owner.rootThreadId, slug, "aside"),
-			),
-		).toContain("B plan")
+		expect(owner).toEqual({ rootThreadId: "aside", taskGroupId: group.id })
 	})
 })

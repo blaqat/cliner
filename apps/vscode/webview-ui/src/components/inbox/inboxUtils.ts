@@ -79,8 +79,8 @@ export function isRowWorking(row: InboxRow): boolean {
 
 /**
  * Groups task history for the home inbox. Asides are folded into their parent's
- * subthread count instead of being top-level rows (unless the parent is gone or
- * the aside is filed in a different task than the parent).
+ * subthread count instead of being top-level rows (unless the parent is gone).
+ * An aside always belongs to its parent's task, so it never differs in grouping.
  * Threads filed into a known task group move under that group's row. A group
  * is active while any member has unsettled or in-progress work; groups whose
  * members are all settled (or that have none) sit in the settled list.
@@ -100,9 +100,8 @@ export function buildInbox(
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
 	const byId = new Map(valid.map((item) => [item.id, item]))
-	// Asides own their task membership. One moved to another task (or out of its
-	// parent's) is listed as its own row there instead of under the parent, so it
-	// shows wherever its breadcrumb says it lives. Subagents always nest.
+	// Asides and subagents always nest under their parent: an aside belongs to its parent's
+	// task (the extension keeps them in step), so it never needs a row of its own.
 	// Legacy or hand-edited history can point a thread at itself or loop parents; nesting those
 	// would remove every thread in the loop from the list, so they stay top-level.
 	const inParentLoop = (item: HistoryItem): boolean => {
@@ -116,7 +115,7 @@ export function buildInbox(
 	const nests = (item: HistoryItem): boolean => {
 		const parent = item.parentTaskId ? byId.get(item.parentTaskId) : undefined
 		if (!parent || inParentLoop(item)) return false
-		return !!item.isSubagent || (item.taskGroupId || undefined) === (parent.taskGroupId || undefined)
+		return true
 	}
 	// A subthread whose parent is gone has nowhere to roll up into: it is listed on its own, settled.
 	const isOrphan = (item: HistoryItem): boolean => !!item.parentTaskId && !byId.has(item.parentTaskId)

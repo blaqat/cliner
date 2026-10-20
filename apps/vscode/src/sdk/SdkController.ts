@@ -167,6 +167,13 @@ import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
 import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
+import {
+	asideDescendantIds,
+	asideRootId,
+	effectiveTaskGroupId,
+	resolveEffectiveTaskGroupId,
+	withEffectiveTaskGroups,
+} from "./task-groups/effective-task-group"
 import { HistorySearcher } from "./task-groups/history-search"
 import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
 import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
@@ -3570,7 +3577,19 @@ export class Controller {
 		})
 
 		const hasMore = sessionHistory.length > limit
-		const tasks = filteredTasks.slice(0, limit).map((item) => {
+		const pageItems = filteredTasks.slice(0, limit)
+		// An aside lists under its parent's task; the parent may be on another page.
+		const effectiveGroups = new Map<string, string | undefined>()
+		for (const record of pageItems) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.parentTaskId && !item.isSubagent) {
+				effectiveGroups.set(
+					item.id,
+					await resolveEffectiveTaskGroupId(item, (id) => this.taskHistory.findHistoryItem(id)),
+				)
+			}
+		}
+		const tasks = pageItems.map((item) => {
 			const metadata = item.metadata
 			return {
 				id: item.sessionId,
@@ -3590,7 +3609,9 @@ export class Controller {
 				modelId: item.model || metadataString(metadata, "modelId") || "",
 				apiProvider: item.provider ?? "",
 				title: metadataString(metadata, "threadTitle") ?? "",
-				taskGroupId: metadataString(metadata, "taskGroupId") ?? "",
+				taskGroupId: effectiveGroups.has(item.sessionId)
+					? (effectiveGroups.get(item.sessionId) ?? "")
+					: (metadataString(metadata, "taskGroupId") ?? ""),
 				isLegacy:
 					metadataBoolean(metadata, "legacyTask") === true ||
 					metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -3721,6 +3742,8 @@ export class Controller {
 			this.sessions.assertTaskAvailable(taskId)
 			const parent = await this.taskHistory.findHistoryItem(taskId)
 			if (!parent) throw new Error("Parent task not found")
+			// The parent's effective task: a parent that is itself an aside may be stored unfiled.
+			const taskGroupId = await resolveEffectiveTaskGroupId(parent, (id) => this.taskHistory.findHistoryItem(id))
 			const visible =
 				this.taskSessions.get(taskId)?.task.messageStateHandler.getClineMessages() ??
 				(await this.taskHistory.getClineMessages(taskId))
@@ -3752,7 +3775,7 @@ export class Controller {
 						parentTaskId: taskId,
 						forkedAtTs: messageTs,
 						// Asides stay in their parent's task group.
-						taskGroupId: parent.taskGroupId ?? "",
+						taskGroupId: taskGroupId ?? "",
 					},
 				})
 				newId = startResult.sessionId
@@ -3761,7 +3784,7 @@ export class Controller {
 					apiSelection,
 					parentTaskId: taskId,
 					forkedAtTs: messageTs,
-					taskGroupId: parent.taskGroupId,
+					taskGroupId,
 				}
 				await this.taskHistory.updateTaskHistoryItem(item)
 				const context = this.getTaskSessionContext(newId)
@@ -3953,22 +3976,9 @@ export class Controller {
 		return branch || undefined
 	}
 
-	/**
-	 * The effective group of a thread: stored `taskGroupId` for normal threads
-	 * and asides; subagents belong to their root thread's group (derived, never
-	 * stored on the subagent record).
-	 */
+	/** The effective group of a thread (see {@link effectiveTaskGroupId}). */
 	private effectiveTaskGroupId(item: HistoryItem, byId: Map<string, HistoryItem>): string | undefined {
-		let current: HistoryItem | undefined = item
-		const seen = new Set<string>()
-		while (current && !seen.has(current.id)) {
-			seen.add(current.id)
-			if (!current.isSubagent) {
-				return current.taskGroupId
-			}
-			current = byId.get(current.runtimeOwnerTaskId ?? current.parentTaskId ?? "")
-		}
-		return undefined
+		return effectiveTaskGroupId(item, byId)
 	}
 
 	/** Group detail: summary + note metas + member threads (the webview orders the timeline). */
@@ -4005,10 +4015,7 @@ export class Controller {
 
 	async createTaskGroup(input: { title: string; tags: TaskTag[]; threadId?: string }): Promise<string> {
 		const group = await this.taskGroupStore.createGroup(input)
-		if (input.threadId) {
-			await this.taskHistory.setTaskGroup(input.threadId, group.id)
-			this.sessionConfigChanges.handleTaskGroupChanged(input.threadId)
-		}
+		if (input.threadId) await this.fileThread(input.threadId, group.id)
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
 		return group.id
@@ -4051,9 +4058,30 @@ export class Controller {
 		if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId))) {
 			throw new Error(`Task group not found: ${taskGroupId}`)
 		}
-		await this.taskHistory.setTaskGroup(threadId, taskGroupId || undefined)
-		this.sessionConfigChanges.handleTaskGroupChanged(threadId)
+		await this.fileThread(threadId, taskGroupId || undefined)
 		await this.postStateToWebview()
+	}
+
+	/**
+	 * Stores a thread's task and carries every aside under it (nested ones too)
+	 * along, so they keep the task's notebook, notes and inbox grouping. An aside
+	 * is never filed on its own: that would split it from its parent, so filing
+	 * one moves the thread it was forked from (and that thread's other asides).
+	 * Each affected live session reloads its notebook.
+	 */
+	private async fileThread(threadId: string, taskGroupId: string | undefined): Promise<void> {
+		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(items.map((item) => [item.id, item]))
+		const rootId = asideRootId(threadId, byId)
+		await this.taskHistory.setTaskGroup(rootId, taskGroupId)
+		this.sessionConfigChanges.handleTaskGroupChanged(rootId)
+		for (const id of asideDescendantIds(rootId, items)) {
+			if ((byId.get(id)?.taskGroupId || undefined) === taskGroupId) continue
+			await this.taskHistory.setTaskGroup(id, taskGroupId)
+			this.sessionConfigChanges.handleTaskGroupChanged(id)
+		}
 	}
 
 	/** Creates a note file in the group's notebook; returns its absolute path. */
@@ -4550,9 +4578,12 @@ export class Controller {
 			for (const child of this.subagentThreads?.values() ?? []) {
 				mergedTaskHistoryById.set(child.id, child)
 			}
-			const sortedHistory = Array.from(mergedTaskHistoryById.values())
-				.filter((item) => item.ts && item.task)
-				.sort((a, b) => b.ts - a.ts)
+			// Asides show their parent's task, including ones filed wrong before the cascade existed.
+			const sortedHistory = withEffectiveTaskGroups(
+				Array.from(mergedTaskHistoryById.values())
+					.filter((item) => item.ts && item.task)
+					.sort((a, b) => b.ts - a.ts),
+			)
 			const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
 			const processedTaskHistory = buildStateTaskHistory(sortedHistory, [
 				focusedItem?.isSubagent ? undefined : focusedItem?.id,
