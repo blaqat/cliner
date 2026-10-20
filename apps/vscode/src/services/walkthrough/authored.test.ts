@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { AgentToolContext } from "@cline/shared"
+import { AgentRuntime } from "@cline/agents"
+import type { AgentModel, AgentModelEvent, AgentToolContext } from "@cline/shared"
 import type { AuthoredWalkthroughInput } from "@shared/Walkthrough"
 
 let directory = ""
@@ -57,12 +58,45 @@ describe("authored walkthroughs", () => {
 	it("rejects malformed patches with actionable errors", () => {
 		for (const bad of [
 			"not a patch",
-			"@@ -1,2 +1 @@\n-old\n+new\n",
 			"--- a\n+++ b\n",
 			"@@ broken\n",
+			"@@ -1 +1 @@\n",
+			"@@ -1 +1 @@\n-old\nnot a diff line\n",
 			`${patch}diff --git a/b b/b\n`,
 		])
 			expect(() => parseAuthoredPatch(bad)).toThrow("Malformed patch")
+	})
+	it("repairs hunk headers whose counts do not match the body", () => {
+		// The QA repro: header says +1,11 but the body has 12 new-side lines.
+		const body = `${Array.from({ length: 7 }, (_, n) => ` ctx${n}`).join("\n")}\n${Array.from({ length: 5 }, (_, n) => `+added${n}`).join("\n")}\n`
+		const value = input()
+		value.chapters[0].stops[0].hunks[0].patch = `@@ -1,7 +1,11 @@ function f() {\n${body}`
+		const walk = normalizeAuthoredWalkthrough("task", value)
+		expect(walk.hunks).toHaveLength(1)
+		expect(walk.hunks[0]).toMatchObject({
+			header: "@@ -1,7 +1,12 @@ function f() {",
+			oldStart: 1,
+			newStart: 1,
+			patch: `@@ -1,7 +1,12 @@ function f() {\n${body}`,
+		})
+		expect(walk.warnings).toEqual([
+			"Repaired hunk header in src/a.ts: @@ -1,7 +1,11 @@ function f() { -> @@ -1,7 +1,12 @@ function f() {",
+		])
+	})
+	it("repairs missing or garbled starts and blank context lines, and leaves valid headers untouched", () => {
+		const [garbled] = parseAuthoredPatch("@@ -x +7,2 @@ label\n a\n\n-b\n+c\n")
+		expect(garbled).toMatchObject({
+			oldStart: 7,
+			newStart: 7,
+			header: "@@ -7,3 +7,3 @@ label",
+			patch: "@@ -7,3 +7,3 @@ label\n a\n \n-b\n+c\n",
+		})
+		expect(garbled.warning).toContain("->")
+		const [bare] = parseAuthoredPatch("@@ @@\n+only\n")
+		expect(bare).toMatchObject({ oldStart: 1, newStart: 1, header: "@@ -1,0 +1 @@" })
+		const [fine] = parseAuthoredPatch(patch)
+		expect(fine.warning).toBeUndefined()
+		expect(normalizeAuthoredWalkthrough("task", input()).warnings).toEqual([])
 	})
 	it("enforces chapter, stop, hunk and patch caps", () => {
 		const value = input()
@@ -100,9 +134,37 @@ describe("authored walkthroughs", () => {
 	it("tool stores the document and returns the card payload", async () => {
 		const tool = createPresentWalkthroughTool()
 		expect(tool.metadata?.subagentAccess).toBeUndefined()
+		expect(tool.lifecycle?.emptyResponseCompletes).toBe(true)
 		const result = JSON.parse(await tool.execute(input(), { sessionId: "task" } as AgentToolContext))
 		const walk = await readAuthoredWalkthrough("task", result.walkthroughReady.authoredId)
 		expect(result.walkthroughReady).toEqual(walkthroughReady(walk))
+		expect(result.message).toContain("shown to the user")
+		expect(result.message).toContain("one short sentence")
 		await expect(tool.execute(input(), { sessionId: "../escape" } as AgentToolContext)).rejects.toThrow("thread session")
+	})
+	it("ends the turn as completed when the model returns nothing after a successful present_walkthrough", async () => {
+		const steps: AgentModelEvent[][] = [
+			[
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_1",
+					toolName: "present_walkthrough",
+					inputText: JSON.stringify(input()),
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+			[{ type: "finish", reason: "stop" }],
+		]
+		const model: AgentModel = {
+			stream: async () =>
+				(async function* () {
+					yield* steps.shift() ?? []
+				})(),
+		}
+		const runtime = new AgentRuntime({ model, tools: [createPresentWalkthroughTool()], sessionId: "task" } as never)
+		const result = await runtime.run("Review the MR")
+		expect(result.error).toBeUndefined()
+		expect(result.status).toBe("completed")
+		expect(steps).toHaveLength(0)
 	})
 })

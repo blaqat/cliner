@@ -50,13 +50,16 @@ export function createPresentWalkthroughTool() {
 			},
 			required: ["title", "chapters"],
 		},
+		// A closing sentence is optional: the page itself is the answer, so an empty reply ends the turn.
+		lifecycle: { emptyResponseCompletes: true },
 		retryable: false,
 		execute: async (input, context) => {
 			if (!context.sessionId || !/^[a-zA-Z0-9_-]+$/.test(context.sessionId)) throw new Error("A thread session is required")
 			const walk = await saveAuthoredWalkthrough(context.sessionId, input)
 			return JSON.stringify({
 				walkthroughReady: walkthroughReady(walk),
-				message: "The walkthrough is ready for the user. Do not repeat its content.",
+				message:
+					"The walkthrough is now shown to the user as a card they can open. Finish the turn with one short sentence and do not repeat or summarize its content.",
 			})
 		},
 	})

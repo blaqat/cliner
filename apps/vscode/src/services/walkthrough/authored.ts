@@ -21,11 +21,20 @@ function array(value: unknown, label: string): unknown[] {
 	return value
 }
 
-/** Preserve source patch text while checking each hunk's declared line counts. */
-export function parseAuthoredPatch(patch: string): Array<Pick<WalkthroughHunk, "patch" | "header" | "oldStart" | "newStart">> {
+type ParsedPatchHunk = Pick<WalkthroughHunk, "patch" | "header" | "oldStart" | "newStart"> & { warning?: string }
+
+const STRICT_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
+const countText = (count: number) => (count === 1 ? "" : `,${count}`)
+
+/**
+ * Split a patch into hunks. Agents copy and trim diffs, so a header whose counts (or starts) don't
+ * match its body is repaired from the body instead of rejected; the hunk carries a `warning` then.
+ * Only patches with no usable hunk lines or with foreign lines in a body are rejected.
+ */
+export function parseAuthoredPatch(patch: string): ParsedPatchHunk[] {
 	const lines = patch.replace(/\r\n/g, "\n").split("\n")
-	if (lines.at(-1) === "") lines.pop()
-	const result: ReturnType<typeof parseAuthoredPatch> = []
+	while (lines.at(-1) === "") lines.pop()
+	const result: ParsedPatchHunk[] = []
 	let i = 0
 	let fileHeaders = 0
 	while (i < lines.length && !lines[i].startsWith("@@")) {
@@ -40,31 +49,68 @@ export function parseAuthoredPatch(patch: string): Array<Pick<WalkthroughHunk, "
 	}
 	if (fileHeaders > 1) throw new Error("Each patch must describe one file; split files into separate hunks inputs")
 	while (i < lines.length) {
-		const start = i
 		const header = lines[i++]
-		const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$/.exec(header)
-		if (!match) throw new Error("Malformed patch: expected @@ -old,count +new,count @@")
-		if (match.slice(1).some((value) => value !== undefined && !Number.isSafeInteger(Number(value))))
-			throw new Error("Malformed patch: line positions and counts must be safe integers")
+		const body: string[] = []
 		let oldCount = 0
 		let newCount = 0
+		let blankContext = false
 		while (i < lines.length && !lines[i].startsWith("@@")) {
-			const line = lines[i++]
-			if (line === "\\ No newline at end of file") continue
+			let line = lines[i++]
+			if (line === "\\ No newline at end of file") {
+				body.push(line)
+				continue
+			}
+			// Editors and agents strip the single space of a blank context line.
+			if (line === "") {
+				line = " "
+				blankContext = true
+			}
 			if (line.startsWith(" ")) {
 				oldCount++
 				newCount++
 			} else if (line.startsWith("-")) oldCount++
 			else if (line.startsWith("+")) newCount++
 			else throw new Error("Malformed patch: hunk lines must start with space, +, or -")
+			body.push(line)
 		}
-		if (oldCount !== Number(match[2] ?? 1) || newCount !== Number(match[4] ?? 1))
-			throw new Error(`Malformed patch: line counts do not match ${header}`)
+		if (!oldCount && !newCount) throw new Error(`Malformed patch: hunk has no changed or context lines after ${header}`)
+		const strict = STRICT_HEADER.exec(header)
+		let oldStart: number
+		let newStart: number
+		let tail: string
+		let declaredOk = false
+		if (strict) {
+			oldStart = Number(strict[1])
+			newStart = Number(strict[3])
+			tail = strict[5]
+			if (![strict[1], strict[3]].every((value) => Number.isSafeInteger(Number(value))))
+				throw new Error("Malformed patch: line positions and counts must be safe integers")
+			declaredOk = oldCount === Number(strict[2] ?? 1) && newCount === Number(strict[4] ?? 1)
+		} else {
+			// Garbled header: salvage whatever starts and trailing label are readable.
+			const closing = header.indexOf("@@", 2)
+			const spec = closing === -1 ? header.slice(2) : header.slice(2, closing)
+			tail = closing === -1 ? "" : header.slice(closing + 2)
+			const oldMatch = /-\s*(\d+)/.exec(spec)
+			const newMatch = /\+\s*(\d+)/.exec(spec)
+			const safe = (match: RegExpExecArray | null) =>
+				match && Number.isSafeInteger(Number(match[1])) ? Number(match[1]) : undefined
+			const guessedOld = safe(oldMatch)
+			const guessedNew = safe(newMatch)
+			oldStart = guessedOld ?? guessedNew ?? 1
+			newStart = guessedNew ?? guessedOld ?? 1
+		}
+		if (declaredOk && !blankContext) {
+			result.push({ header, oldStart, newStart, patch: `${[header, ...body].join("\n")}\n` })
+			continue
+		}
+		const repaired = `@@ -${oldStart}${countText(oldCount)} +${newStart}${countText(newCount)} @@${tail}`
 		result.push({
-			header,
-			oldStart: Number(match[1]),
-			newStart: Number(match[3]),
-			patch: `${lines.slice(start, i).join("\n")}\n`,
+			header: repaired,
+			oldStart,
+			newStart,
+			patch: `${[repaired, ...body].join("\n")}\n`,
+			warning: repaired === header ? undefined : `${header.trim()} -> ${repaired}`,
 		})
 	}
 	if (!result.length) throw new Error("Malformed patch: no unified @@ hunks found")
@@ -88,6 +134,7 @@ export function normalizeAuthoredWalkthrough(taskId: string, value: unknown, aut
 	const chaptersInput = array(input.chapters, "chapters")
 	if (!chaptersInput.length || chaptersInput.length > AUTHORED_LIMITS.chapters) throw new Error("Use 1–8 chapters")
 	const hunks: WalkthroughHunk[] = []
+	const warnings: string[] = []
 	let stopCount = 0
 	let patchChars = 0
 	const chapters = chaptersInput.map((entry, chapterIndex) => {
@@ -104,9 +151,10 @@ export function normalizeAuthoredWalkthrough(taskId: string, value: unknown, aut
 					const patch = text(hunk.patch, "hunk.patch", AUTHORED_LIMITS.patchChars)
 					patchChars += patch.length
 					if (patchChars > AUTHORED_LIMITS.patchChars) throw new Error("Use at most 300000 total patch characters")
-					return parseAuthoredPatch(patch).map((part) => {
+					return parseAuthoredPatch(patch).map(({ warning, ...part }) => {
 						if (hunks.length >= AUTHORED_LIMITS.hunks) throw new Error("Use at most 400 hunks")
 						const id = `h${hunks.length + 1}`
+						if (warning) warnings.push(`Repaired hunk header in ${filePath}: ${warning}`)
 						hunks.push({
 							...part,
 							id,
@@ -138,7 +186,7 @@ export function normalizeAuthoredWalkthrough(taskId: string, value: unknown, aut
 		...content,
 		fingerprint: hash(content),
 		support: [],
-		warnings: [],
+		warnings,
 	}
 }
 
