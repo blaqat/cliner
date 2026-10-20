@@ -89,6 +89,17 @@ describe("WherePill: task", () => {
 		expect(within(menu).queryByText("Open task")).not.toBeInTheDocument()
 	})
 
+	it("icon-only keeps the label and menu but hides the name and chevron", () => {
+		render(<WherePill iconOnly />)
+		const pill = screen.getByTestId("where-pill")
+		expect(pill).toHaveAttribute("data-icon-only", "true")
+		expect(pill).not.toHaveTextContent("No task")
+		expect(pill.querySelector(".codicon-tasklist")).not.toBeNull()
+		expect(pill.querySelector(".codicon-chevron-down")).toBeNull()
+		expect(pill).toHaveAccessibleName()
+		expect(within(openMenu()).getByText("No task")).toBeInTheDocument()
+	})
+
 	it("in a new thread, picking sets the pending task for the first message", () => {
 		render(<WherePill />)
 		fireEvent.click(within(openMenu()).getByText("SSO redirect loop"))

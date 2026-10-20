@@ -32,6 +32,8 @@ function matchesQuery(group: TaskGroupSummary, query: string): boolean {
 
 interface WherePillProps {
 	onOpenTaskGroup?: (taskGroupId: string) => void
+	/** Icon only (the task name and chevron hide; the tooltip and label keep them), for very narrow rows. */
+	iconOnly?: boolean
 }
 
 /**
@@ -40,7 +42,7 @@ interface WherePillProps {
  * existing thread it moves the thread right away. A branch → task suggestion shows as a ghost row
  * at the top of the menu, and a green branch codicon on the pill hints at it.
  */
-const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
+const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 	const { currentTaskItem, taskGroups } = useExtensionState()
 	const pendingId = useComposerTaskGroup()
 	const pageId = useComposerPageTaskGroup()
@@ -110,6 +112,7 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 						open && "border-(--vscode-focusBorder)",
 					)}
 					data-fixed={fixedId ? "true" : undefined}
+					data-icon-only={iconOnly ? "true" : undefined}
 					data-suggestion={suggestion ? "true" : undefined}
 					data-testid="where-pill"
 					title={
@@ -129,7 +132,7 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 							hasTask && "text-(--vscode-charts-purple)",
 						)}
 					/>
-					<span className="truncate">{title ?? "No task"}</span>
+					{!iconOnly && <span className="truncate">{title ?? "No task"}</span>}
 					<WorktreeBadgeSlot threadId={threadId} />
 					{suggestion && (
 						<span
@@ -138,7 +141,7 @@ const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
 							data-testid="where-pill-suggestion-hint"
 						/>
 					)}
-					<span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />
+					{!iconOnly && <span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />}
 				</button>
 			</PopoverTrigger>
 			<PopoverContent

@@ -5,20 +5,23 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  * 1. The where pill and the configuration and effort pickers truncate (CSS, down to the minimums
  *    below).
  * 2. The chat cost hides; it stays in the ring's details.
- * 3. The MCP servers and rules buttons fold into ＋ as rows that open the same panels: still one
- *    click away, but less used than anything left on the row.
- * 4. The Compact pill hides last, since it's the one time-sensitive extra; Compact stays in the
- *    ring's details.
+ * 3. The Compact pill hides; Compact stays in the ring's details.
+ * 4. The pills go tight: the where pill shows only its icon and the configuration and effort
+ *    pickers drop to a character or two.
+ * 5. Only then do the MCP servers and rules buttons fold into ＋ (as rows that open the same
+ *    panels), so they stay visible in a 320px sidebar during a chat.
  * Below the last step the pills keep shrinking toward their chevrons. ＋, the approvals shield, the
  * ring and the Ask/Act switch never hide.
  */
 export interface ComposerRowLayout {
-	/** The MCP servers and rules buttons beside ＋. When false, they are rows in the ＋ menu instead. */
+	/** The MCP servers and rules buttons beside ＋. Last to go; when false they are rows in the ＋ menu. */
 	inlinePanelButtons: boolean
 	/** The chat cost next to the context ring. Hidden first; it stays in the ring's details. */
 	showCost: boolean
-	/** The "Compact" pill at high usage. Last to go; Compact stays in the ring's details. */
+	/** The "Compact" pill at high usage. Next to go; Compact stays in the ring's details. */
 	inlineCompactNudge: boolean
+	/** Icon-only where pill and lower picker minimums, to keep the MCP and rules buttons on the row. */
+	tightPills: boolean
 }
 
 /** What the row has to fit; absent items need no room and cost nothing to hide. */
@@ -31,10 +34,11 @@ export interface ComposerRowContent {
 }
 
 const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
-	{ inlinePanelButtons: true, showCost: true, inlineCompactNudge: true },
-	{ inlinePanelButtons: true, showCost: false, inlineCompactNudge: true },
-	{ inlinePanelButtons: false, showCost: false, inlineCompactNudge: true },
-	{ inlinePanelButtons: false, showCost: false, inlineCompactNudge: false },
+	{ inlinePanelButtons: true, showCost: true, inlineCompactNudge: true, tightPills: false },
+	{ inlinePanelButtons: true, showCost: false, inlineCompactNudge: true, tightPills: false },
+	{ inlinePanelButtons: true, showCost: false, inlineCompactNudge: false, tightPills: false },
+	{ inlinePanelButtons: true, showCost: false, inlineCompactNudge: false, tightPills: true },
+	{ inlinePanelButtons: false, showCost: false, inlineCompactNudge: false, tightPills: true },
 ]
 
 export const FULL_COMPOSER_ROW = LAYOUT_STEPS[0]
@@ -59,6 +63,10 @@ export const COMPOSER_ROW_WIDTHS = {
 	configMin: 56,
 	/** The effort picker truncated to a few characters (its min-w-11). */
 	effortMin: 44,
+	/** Tight pills: the where pill's icon alone, the configuration picker's min-w-10, the effort picker's min-w-7. */
+	whereTight: 20,
+	configTight: 40,
+	effortTight: 28,
 	ring: 22,
 	/** Includes its gap after the ring. */
 	cost: 43,
@@ -72,7 +80,9 @@ export const COMPOSER_ROW_WIDTHS = {
 /** Smallest row width (border box) that fits `content` in `layout`. */
 export function composerRowMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
 	const w = COMPOSER_ROW_WIDTHS
-	const pills = w.whereMin + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
+	const pills = layout.tightPills
+		? w.whereTight + w.configTight + (content.hasEffort ? w.groupGap + w.effortTight : 0)
+		: w.whereMin + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
 	const panelButtons = layout.inlinePanelButtons ? 2 * (w.panelButton + w.groupGap) : 0
 	// ＋, [MCP, rules,] where, configuration, [effort,] shield: one gap between each.
 	const group = w.plus + panelButtons + pills + 3 * w.groupGap + w.approvals

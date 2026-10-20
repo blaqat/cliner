@@ -161,14 +161,19 @@ describe("composer bottom row", () => {
 		expect(renderMeter).toHaveBeenLastCalledWith(FULL_COMPOSER_ROW)
 	})
 
-	it("folds the MCP servers and rules buttons into ＋ at narrow widths, keeping every other control", () => {
-		stubRowWidth(320)
+	it("folds the MCP servers and rules buttons into ＋ only below the tight row, keeping every other control", () => {
+		stubRowWidth(300)
 		const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 		renderComposer(usageSlot(renderMeter))
 		expect(renderMeter).toHaveBeenLastCalledWith(
-			composerRowLayout(320, { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: true }),
+			composerRowLayout(300, { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: true }),
 		)
-		expect(renderMeter).toHaveBeenLastCalledWith({ inlinePanelButtons: false, showCost: false, inlineCompactNudge: false })
+		expect(renderMeter).toHaveBeenLastCalledWith({
+			inlinePanelButtons: false,
+			showCost: false,
+			inlineCompactNudge: false,
+			tightPills: true,
+		})
 		for (const id of [
 			"plus-menu-button",
 			"where-pill",
@@ -187,11 +192,30 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("plus-menu-back")).toBeInTheDocument()
 	})
 
+	it("keeps the MCP servers and rules buttons in a 320px sidebar by making the pills tight", () => {
+		stubRowWidth(320)
+		renderComposer(usageSlot())
+		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
+		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
+		expect(screen.getByTestId("where-pill")).toHaveAttribute("data-icon-only", "true")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-10")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-7")
+	})
+
+	it("keeps the where pill's name and the usual picker minimums while there's room", () => {
+		stubRowWidth(400)
+		renderComposer(usageSlot())
+		expect(screen.getByTestId("where-pill")).not.toHaveAttribute("data-icon-only")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-14")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-11")
+	})
+
 	it.each([
 		[600, true],
-		[480, true],
-		[440, false],
-		[360, false],
+		[440, true],
+		[360, true],
+		[320, true],
+		[300, false],
 	])("at %ipx the MCP servers and rules buttons are inline: %s", (width, inline) => {
 		stubRowWidth(width)
 		renderComposer(usageSlot())

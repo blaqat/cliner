@@ -2085,12 +2085,13 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							</>
 						)}
 						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
-							<WherePill onOpenTaskGroup={onOpenTaskGroup} />
+							<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
 						</span>
-						<span className="flex min-w-14" data-shrink="">
+						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
+						<span className={cn("flex", rowLayout.tightPills ? "min-w-10" : "min-w-14")} data-shrink="">
 							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
 						</span>
-						<span className="flex min-w-11 empty:hidden" data-shrink="">
+						<span className={cn("flex empty:hidden", rowLayout.tightPills ? "min-w-7" : "min-w-11")} data-shrink="">
 							<ReasoningEffortPicker
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								mode={mode}
