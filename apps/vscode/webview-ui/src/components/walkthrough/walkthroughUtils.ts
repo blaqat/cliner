@@ -67,3 +67,30 @@ export function supportSummary(walk: ChangeWalkthrough): string {
 	]
 	return paths.length > 4 ? `${paths.slice(0, 3).join(", ")} and ${paths.length - 3} more` : paths.join(", ")
 }
+
+/**
+ * What is folded on one walkthrough. Chapters are keyed by id; hunks by their content fingerprint,
+ * so a hunk stays folded when a refresh or revert reassigns its alias.
+ */
+export interface Folds {
+	collapsedChapters: Record<string, boolean>
+	collapsedHunks: Record<string, boolean>
+	/** Support starts folded: it's lockfiles and mechanical changes. */
+	supportOpen: boolean
+}
+
+export const EMPTY_FOLDS: Folds = { collapsedChapters: {}, collapsedHunks: {}, supportOpen: false }
+
+/** Collapse all: every chapter, hunk and Support, so reopening a chapter shows its stops' prose first. */
+export function foldAll(walk: ChangeWalkthrough): Folds {
+	return {
+		collapsedChapters: Object.fromEntries(walk.chapters.map((chapter) => [chapter.id, true])),
+		collapsedHunks: Object.fromEntries(walk.hunks.map((hunk) => [hunk.fingerprint, true])),
+		supportOpen: false,
+	}
+}
+
+/** Expand all: every chapter and hunk. Support keeps its own toggle. */
+export function unfoldAll(folds: Folds): Folds {
+	return { collapsedChapters: {}, collapsedHunks: {}, supportOpen: folds.supportOpen }
+}

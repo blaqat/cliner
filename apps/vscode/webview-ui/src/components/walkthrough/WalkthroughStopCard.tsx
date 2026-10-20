@@ -1,7 +1,7 @@
 import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
 import { useState } from "react"
+import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
-import { LinkButton } from "@/components/common/LinkButton"
 import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -23,7 +23,13 @@ export interface StopActions {
 	busy: boolean
 	openDiff: (fileId: string) => void
 	revert: (target: RevertTarget) => Promise<boolean>
+	/** Hunk folding lives on the page so Collapse all / Expand all reach every hunk. */
+	hunkOpen: (hunk: WalkthroughHunk) => boolean
+	toggleHunk: (hunk: WalkthroughHunk) => void
 }
+
+/** A compact codicon action inside file and hunk headers. */
+const ROW_ICON_CLASS = "size-5 [&>.codicon]:text-[13px]!"
 
 export function InlineCodeProse({ text, className }: { text: string; className?: string }) {
 	return (
@@ -58,11 +64,11 @@ export function NoteEditor({
 	onDone: () => void
 }) {
 	return (
-		<div className="mt-2 rounded-xs border border-solid border-(--vscode-focusBorder) bg-input-background p-1.5">
+		<div className="mt-2 rounded-xs border border-solid border-(--vscode-focusBorder) bg-input-background p-2">
 			<textarea
 				aria-label={label}
 				autoFocus
-				className="block w-full resize-y border-0 bg-transparent p-0 font-[inherit] text-xs text-input-foreground outline-none"
+				className="block w-full resize-y border-0 bg-transparent p-0 font-[inherit] text-xs leading-normal text-input-foreground outline-none placeholder:text-input-placeholder"
 				onChange={(event) => onChange(event.target.value)}
 				onKeyDown={(event) => {
 					if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
@@ -95,31 +101,51 @@ export function NoteEditor({
 	)
 }
 
+/** "+3 −1" in the git decoration colors. */
+function ChangeCounts({ added, removed }: { added: number; removed: number }) {
+	return (
+		<span className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+			<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{added}</span>
+			<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{removed}</span>
+		</span>
+	)
+}
+
 function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions: StopActions; onRevert: () => void }) {
-	const [open, setOpen] = useState(true)
-	if (hunk.synthetic) return <div className="px-2 py-1.5 text-[11px] text-description">{syntheticReason(hunk)}</div>
+	if (hunk.synthetic)
+		return (
+			<div className="flex items-center gap-1.5 border-t border-solid border-x-0 border-b-0 border-editor-group-border px-2 py-1.5 text-[11px] text-description first:border-t-0">
+				<span aria-hidden className="codicon codicon-info text-[12px]!" />
+				{syntheticReason(hunk)}
+			</div>
+		)
+	const open = actions.hunkOpen(hunk)
 	const { added, removed } = countChanges(hunk.patch)
 	return (
-		<div className="border-t border-solid border-x-0 border-b-0 border-editor-group-border first:border-t-0">
-			<div className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-description">
+		<div
+			className="border-t border-solid border-x-0 border-b-0 border-editor-group-border first:border-t-0"
+			data-testid="walkthrough-hunk">
+			<div className="flex h-6 items-center gap-1 pr-1 text-[11px] text-description hover:bg-list-hover">
 				<button
 					aria-expanded={open}
 					aria-label={`${open ? "Collapse" : "Expand"} hunk ${hunk.header}`}
-					className="flex min-w-0 cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-mono text-[11px] text-description hover:text-foreground"
-					onClick={() => setOpen(!open)}
+					className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1 border-0 bg-transparent py-0 pr-1 pl-1.5 text-left font-mono text-[11px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
+					onClick={() => actions.toggleHunk(hunk)}
 					type="button">
-					<span aria-hidden className={`codicon codicon-chevron-${open ? "down" : "right"} text-[11px]!`} />
-					<span className="truncate">{hunk.header}</span>
+					<span aria-hidden className={`codicon codicon-chevron-${open ? "down" : "right"} text-[12px]!`} />
+					<span className="min-w-0 truncate">{hunk.header}</span>
 				</button>
-				<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{added}</span>
-				<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{removed}</span>
-				<span className="flex-1" />
-				<LinkButton disabled={actions.busy} onClick={onRevert}>
-					Revert hunk
-				</LinkButton>
+				<ChangeCounts added={added} removed={removed} />
+				<HeaderIconButton
+					className={ROW_ICON_CLASS}
+					disabled={actions.busy}
+					icon="discard"
+					label="Revert hunk"
+					onClick={onRevert}
+				/>
 			</div>
 			{open && (
-				<div className="[&>div]:rounded-none [&>div]:border-0">
+				<div className="[&>div]:rounded-none [&>div]:border-x-0 [&>div]:border-b-0 [&>div]:border-t [&>div]:border-solid [&>div]:border-editor-group-border">
 					<NotebookDiff lines={patchToDiffLines(hunk.patch)} />
 				</div>
 			)}
@@ -130,22 +156,42 @@ function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions
 function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) {
 	const [confirm, setConfirm] = useState<RevertTarget>()
 	const binary = file.hunks.every((hunk) => hunk.synthetic)
+	const slash = file.path.lastIndexOf("/")
+	const name = file.path.slice(slash + 1)
+	const dir = slash > 0 ? file.path.slice(0, slash) : ""
+	const totals = file.hunks
+		.filter((hunk) => !hunk.synthetic)
+		.reduce(
+			(sum, hunk) => {
+				const counts = countChanges(hunk.patch)
+				return { added: sum.added + counts.added, removed: sum.removed + counts.removed }
+			},
+			{ added: 0, removed: 0 },
+		)
 	return (
-		<div
-			className="mt-2 overflow-hidden rounded-xs border border-solid border-editor-group-border"
-			data-testid="walkthrough-file">
-			<div className="flex items-center gap-1.5 bg-code px-2 py-1 text-[11px]">
-				<span aria-hidden className="codicon codicon-file text-[12px]! text-description" />
-				<span className="ph-no-capture min-w-0 flex-1 truncate font-mono" title={file.path}>
-					{file.path}
+		<div className="overflow-hidden rounded-xs border border-solid border-editor-group-border" data-testid="walkthrough-file">
+			<div className="flex h-7 items-center gap-1.5 border-b border-solid border-x-0 border-t-0 border-editor-group-border bg-code pr-1 pl-2 text-[12px]">
+				<span aria-hidden className="codicon codicon-file text-[13px]! text-description" />
+				<span className="ph-no-capture flex min-w-0 flex-1 items-baseline gap-1.5" title={file.path}>
+					<span className="shrink-0 font-medium text-foreground">{name}</span>
+					{dir && <span className="min-w-0 truncate text-[11px] text-description">{dir}</span>}
 				</span>
-				<LinkButton disabled={actions.busy} onClick={() => actions.openDiff(file.fileId)}>
-					Open diff
-				</LinkButton>
+				{!binary && <ChangeCounts {...totals} />}
+				<HeaderIconButton
+					className={ROW_ICON_CLASS}
+					disabled={actions.busy}
+					icon="diff"
+					label="Open diff"
+					onClick={() => actions.openDiff(file.fileId)}
+				/>
 				{!binary && (
-					<LinkButton disabled={actions.busy} onClick={() => setConfirm({ fileId: file.fileId })}>
-						Revert file
-					</LinkButton>
+					<HeaderIconButton
+						className={ROW_ICON_CLASS}
+						disabled={actions.busy}
+						icon="discard"
+						label="Revert file"
+						onClick={() => setConfirm({ fileId: file.fileId })}
+					/>
 				)}
 			</div>
 			{confirm && (
@@ -164,11 +210,10 @@ function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) 
 							</Button>
 						</>
 					}
-					className="rounded-none border-x-0 border-b-0 text-[11px]"
+					className="rounded-none border-x-0 border-t-0 text-[11px]"
 					role="alert"
 					tone="warning">
-					{confirm.hunkId ? "Revert this hunk?" : `Revert every change to ${file.path.split("/").pop()}?`} Later edits
-					to the file block it.
+					{confirm.hunkId ? "Revert this hunk?" : `Revert every change to ${name}?`} Later edits to the file block it.
 				</InlineNotice>
 			)}
 			{file.hunks.map((hunk) => (
@@ -180,6 +225,23 @@ function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) 
 				/>
 			))}
 		</div>
+	)
+}
+
+/** A saved note, shown as a quote on its stop or under Overall; click to edit. */
+export function NoteQuote({ label, note, onEdit }: { label: string; note: string; onEdit: () => void }) {
+	return (
+		<button
+			className="mt-2 block w-full cursor-pointer rounded-xs border-0 border-l-2 border-solid border-link bg-code px-2 py-1.5 text-left font-[inherit] text-xs text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+			onClick={onEdit}
+			title="Edit"
+			type="button">
+			<span className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-link">
+				<span aria-hidden className="codicon codicon-comment text-[11px]!" />
+				{label}
+			</span>
+			<span className="block whitespace-pre-wrap break-words">{note}</span>
+		</button>
 	)
 }
 
@@ -211,34 +273,42 @@ export function WalkthroughStopCard({
 	return (
 		<article
 			aria-label={stop.title}
-			className={cn("rounded-xs border border-solid border-editor-group-border px-2.5 py-2", reviewed && "bg-success/5")}
+			className={cn(
+				"rounded-xs border border-solid px-3 py-2.5 transition-colors motion-reduce:transition-none",
+				reviewed ? "border-success/30 bg-success/5" : "border-editor-group-border",
+			)}
 			data-testid="walkthrough-stop">
-			<div className="flex items-center gap-1.5">
+			<div className="flex items-center gap-2">
 				{number !== undefined && (
 					<span
+						aria-hidden
 						className={cn(
-							"flex size-4 shrink-0 items-center justify-center rounded-full text-[10px]",
+							"flex size-4.5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums",
 							reviewed ? "bg-success/20 text-success" : "bg-badge-background text-badge-foreground",
 						)}>
-						{number}
+						{reviewed ? <span className="codicon codicon-check text-[11px]!" /> : number}
 					</span>
 				)}
-				<h3 className={cn("m-0 min-w-0 flex-1 truncate text-[13px] font-semibold", reviewed && "text-description")}>
+				<h3
+					className={cn(
+						"m-0 min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold",
+						reviewed && "text-description",
+					)}>
 					{stop.title}
 				</h3>
-				{reviewed && (
+				{reviewed && number === undefined && (
 					<span aria-label="Reviewed" className="codicon codicon-check text-[12px]! text-success" role="img" />
 				)}
 			</div>
-			{stop.prose && <InlineCodeProse className="mt-1 text-xs text-description" text={stop.prose} />}
-			{files.map((file) => (
-				<FileBlock actions={actions} file={file} key={file.fileId} />
-			))}
-			{hasNote && !editing && (
-				<div className="mt-2 rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-link bg-code px-2 py-1 text-xs">
-					<span className="font-semibold text-link">Note</span> · <span className="whitespace-pre-wrap">{note}</span>
+			{stop.prose && <InlineCodeProse className="mt-1 text-xs leading-normal text-description" text={stop.prose} />}
+			{files.length > 0 && (
+				<div className="mt-2 flex flex-col gap-2">
+					{files.map((file) => (
+						<FileBlock actions={actions} file={file} key={file.fileId} />
+					))}
 				</div>
 			)}
+			{hasNote && !editing && <NoteQuote label="Note" note={note} onEdit={() => setEditing(true)} />}
 			{editing && (
 				<NoteEditor
 					chips
@@ -249,19 +319,22 @@ export function WalkthroughStopCard({
 					value={note}
 				/>
 			)}
-			<div className="mt-2 flex items-center gap-1.5">
-				<Button onClick={() => setEditing(!editing)} size="xs" variant="secondary">
-					<span aria-hidden className="codicon codicon-edit text-[11px]!" />
+			<div className="mt-2.5 flex items-center gap-1.5">
+				<Button className="h-6 gap-1 px-2" onClick={() => setEditing(!editing)} size="xs" variant="secondary">
+					<span aria-hidden className="codicon codicon-comment text-[12px]!" />
 					{hasNote ? "Edit note" : "Add note"}
 				</Button>
 				<span className="flex-1" />
 				<Button
 					aria-pressed={reviewed}
-					className={cn(reviewed && "text-success")}
+					className={cn("h-6 gap-1 px-2", reviewed && "text-success")}
 					onClick={() => onReviewed(!reviewed)}
 					size="xs"
 					variant="secondary">
-					{reviewed && <span aria-hidden className="codicon codicon-check text-[11px]!" />}
+					<span
+						aria-hidden
+						className={cn("codicon text-[12px]!", reviewed ? "codicon-pass-filled" : "codicon-circle-large")}
+					/>
 					{reviewed ? "Reviewed" : "Mark reviewed"}
 				</Button>
 			</div>

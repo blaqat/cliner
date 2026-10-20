@@ -25,9 +25,12 @@ interface GenerateControlProps {
 	onOpenProfiles: () => void
 }
 
+/** Both halves share one height, radius and separator so they read as one split button. */
+const HALF_CLASS = "h-6 rounded-none py-0 leading-none"
+
 /**
- * `✦ Generate ▾`: the walkthrough's one AI-cost action. One call to the chosen
- * profile, only on click; ▾ picks the profile and starts on the remembered one.
+ * `✦ Generate ▾`: the walkthrough's one AI-cost action, as one split button.
+ * Runs only on click; ▾ picks the profile and starts on the remembered one.
  */
 export function GenerateControl({
 	profiles,
@@ -48,74 +51,72 @@ export function GenerateControl({
 			</LinkButton>
 		)
 	return (
-		<div className="flex flex-col items-end gap-0.5">
-			<div className="flex items-center">
-				<Button
-					className="rounded-r-none"
-					disabled={disabled || generating}
-					onClick={() => (profile ? onGenerate() : setMenuOpen(true))}
-					size="xs"
-					title={profile ? `One call to ${profile.name}` : "Choose a profile first"}>
-					{generating ? (
-						<span aria-hidden className="codicon codicon-loading codicon-modifier-spin text-[11px]!" />
-					) : (
-						<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+		<div className="inline-flex shrink-0 items-stretch overflow-hidden rounded-xs" data-testid="walkthrough-generate">
+			<Button
+				aria-busy={generating || undefined}
+				className={cn(HALF_CLASS, "gap-1 px-2")}
+				disabled={disabled || generating}
+				onClick={() => (profile ? onGenerate() : setMenuOpen(true))}
+				size="xs"
+				title={profile ? `Generate with ${profile.name}` : "Choose a profile first"}>
+				<span
+					aria-hidden
+					className={cn(
+						"codicon text-[12px]!",
+						generating ? "codicon-loading codicon-modifier-spin" : "codicon-sparkle",
 					)}
-					{regenerate ? "Regenerate" : "Generate"}
-				</Button>
-				<Popover onOpenChange={setMenuOpen} open={menuOpen}>
-					<PopoverTrigger asChild>
-						<Button
-							aria-label="Choose Generate profile"
-							className="rounded-l-none border-0 border-l border-solid border-button-separator px-1"
-							disabled={generating}
-							size="xs">
-							<span aria-hidden className="codicon codicon-chevron-down text-[11px]!" />
-						</Button>
-					</PopoverTrigger>
-					<PopoverContent align="end" className="menu-rise w-64 p-1" onKeyDown={handleMenuKeyDown} side="bottom">
-						<div className={MENU_HEADING_CLASS}>Generate with</div>
-						<div className="flex flex-col" role="menu">
-							{profiles.map((p) => (
-								<button
-									aria-checked={p.id === profileId}
-									className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
-									key={p.id}
-									onClick={() => {
-										onPickProfile(p.id)
-										setMenuOpen(false)
-									}}
-									role="menuitemradio"
-									type="button">
-									<span
-										aria-hidden
-										className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
-									/>
-									<span className="min-w-0 flex-1">
-										<span className="block truncate">{p.name}</span>
-										<span className="block truncate text-[11px] text-description">{p.description}</span>
-									</span>
-								</button>
-							))}
-							<div className={MENU_SEPARATOR_CLASS} role="separator" />
+				/>
+				{generating ? "Generating…" : regenerate ? "Regenerate" : "Generate"}
+			</Button>
+			<Popover onOpenChange={setMenuOpen} open={menuOpen}>
+				<PopoverTrigger asChild>
+					<Button
+						aria-label="Choose Generate profile"
+						className={cn(HALF_CLASS, "w-5 border-y-0 border-r-0 border-l border-solid border-button-separator px-0")}
+						disabled={generating}
+						size="xs">
+						<span aria-hidden className="codicon codicon-chevron-down text-[12px]!" />
+					</Button>
+				</PopoverTrigger>
+				<PopoverContent align="end" className="menu-rise w-64 p-1" onKeyDown={handleMenuKeyDown} side="bottom">
+					<div className={MENU_HEADING_CLASS}>Generate with</div>
+					<div className="flex flex-col" role="menu">
+						{profiles.map((p) => (
 							<button
-								className={cn(MENU_ITEM_CLASS, "text-description")}
+								aria-checked={p.id === profileId}
+								className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
+								key={p.id}
 								onClick={() => {
+									onPickProfile(p.id)
 									setMenuOpen(false)
-									onOpenProfiles()
 								}}
-								role="menuitem"
+								role="menuitemradio"
 								type="button">
-								<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-settings-gear")} />
-								Manage profiles…
+								<span
+									aria-hidden
+									className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
+								/>
+								<span className="min-w-0 flex-1">
+									<span className="block truncate">{p.name}</span>
+									<span className="block truncate text-[11px] text-description">{p.description}</span>
+								</span>
 							</button>
-						</div>
-					</PopoverContent>
-				</Popover>
-			</div>
-			<span className="text-[10px] text-description" data-testid="walkthrough-generate-cost">
-				{profile ? `One call to ${profile.name} · only when you click` : "Pick a profile · one call, only when you click"}
-			</span>
+						))}
+						<div className={MENU_SEPARATOR_CLASS} role="separator" />
+						<button
+							className={cn(MENU_ITEM_CLASS, "text-description")}
+							onClick={() => {
+								setMenuOpen(false)
+								onOpenProfiles()
+							}}
+							role="menuitem"
+							type="button">
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-settings-gear")} />
+							Manage profiles…
+						</button>
+					</div>
+				</PopoverContent>
+			</Popover>
 		</div>
 	)
 }

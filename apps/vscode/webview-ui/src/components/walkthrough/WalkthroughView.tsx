@@ -1,17 +1,25 @@
 import { StringRequest } from "@shared/proto/cline/common"
-import type { ChangeWalkthrough, WalkthroughRequest, WalkthroughScope, WalkthroughStop } from "@shared/Walkthrough"
+import type {
+	ChangeWalkthrough,
+	WalkthroughHunk,
+	WalkthroughRequest,
+	WalkthroughScope,
+	WalkthroughStop,
+} from "@shared/Walkthrough"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildThreadPath } from "@/components/chat/chat-view/utils/threadUtils"
+import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
-import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { describeProfile } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { cn } from "@/lib/utils"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { GenerateControl } from "./GenerateControl"
 import {
@@ -30,8 +38,8 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
-import { InlineCodeProse, NoteEditor, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
-import { supportSummary } from "./walkthroughUtils"
+import { InlineCodeProse, NoteEditor, NoteQuote, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
+import { countChanges, EMPTY_FOLDS, type Folds, foldAll, supportSummary, unfoldAll } from "./walkthroughUtils"
 
 const request = (value: WalkthroughRequest) => StringRequest.create({ value: JSON.stringify(value) })
 const parse = (response: { value: string }) => JSON.parse(response.value) as ChangeWalkthrough
@@ -47,12 +55,11 @@ const SCOPES: { scope: WalkthroughScope; label: string }[] = [
 // While the page is open, the agent may keep editing; re-check the diff after activity settles.
 const RECHECK_DELAY_MS = 1200
 
-const ChapterHeader = ({ title }: { title: string }) => (
-	<div className="mt-4 mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-description">
-		<span className="shrink-0">{title}</span>
-		<span className="h-px flex-1 bg-editor-group-border" />
-	</div>
-)
+const EMPTY_HINT: Record<WalkthroughScope, string> = {
+	thread: "This thread hasn't changed any files.",
+	last_turn: "The last turn didn't change any files.",
+	git: "No uncommitted changes in the workspace.",
+}
 
 /**
  * `Task › Thread › Walkthrough`: the thread's changes as one long scroll of
@@ -83,7 +90,8 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	// Set when a background check finds a different diff than the one on screen.
 	const [moved, setMoved] = useState(false)
 	const [pickedProfileId, setPickedProfileId] = useState<string>()
-	const [supportOpen, setSupportOpen] = useState(false)
+	// Fold state per scope and layout, kept while the page is open (not persisted).
+	const [foldsByWalk, setFoldsByWalk] = useState<Record<string, Folds>>({})
 	const [overallOpen, setOverallOpen] = useState(false)
 	const [menuOpen, setMenuOpen] = useState(false)
 	const sequence = useRef(0)
@@ -238,9 +246,27 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 			return walk ? { ...current, [walk.source]: next } : current
 		})
 
+	const foldKey = walk ? `${scope}:${walk.source}` : ""
+	const folds = foldsByWalk[foldKey] ?? EMPTY_FOLDS
+	const setFolds = (change: (current: Folds) => Folds) =>
+		setFoldsByWalk((all) => ({ ...all, [foldKey]: change(all[foldKey] ?? EMPTY_FOLDS) }))
+	const toggleChapter = (chapterId: string) =>
+		setFolds((current) => ({
+			...current,
+			collapsedChapters: { ...current.collapsedChapters, [chapterId]: !current.collapsedChapters[chapterId] },
+		}))
+	const collapseAll = () => walk && setFolds(() => foldAll(walk))
+	const expandAll = () => setFolds(unfoldAll)
+
 	const input = walk ? { taskId, scope, fingerprint: walk.fingerprint } : undefined
 	const actions = {
 		busy: busy || generating || moved,
+		hunkOpen: (hunk: WalkthroughHunk) => !folds.collapsedHunks[hunk.fingerprint],
+		toggleHunk: (hunk: WalkthroughHunk) =>
+			setFolds((current) => ({
+				...current,
+				collapsedHunks: { ...current.collapsedHunks, [hunk.fingerprint]: !current.collapsedHunks[hunk.fingerprint] },
+			})),
 		openDiff: (fileId: string) => {
 			if (input) void run(async () => void (await TaskServiceClient.openWalkthroughDiff(request({ ...input, fileId }))))
 		},
@@ -315,20 +341,48 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const showMoved = moved || stale.notes + stale.reviewed > 0
 	const unplaced = walk ? unplacedNotes(store, walk.fingerprint) : []
 	const generatedBy = walk?.profileId ? profiles.find((p) => p.id === walk.profileId)?.name : undefined
-	let stopNumber = 0
+	// Numbered up front so a collapsed chapter doesn't renumber the ones after it.
+	const stopNumbers = new Map(mainStops.map((stop, index) => [stop.id, index + 1]))
+	const fileCount = walk ? new Set(walk.hunks.map((h) => h.fileId)).size : 0
+	const totals = (walk?.hunks ?? [])
+		.filter((hunk) => !hunk.synthetic)
+		.reduce(
+			(sum, hunk) => {
+				const counts = countChanges(hunk.patch)
+				return { added: sum.added + counts.added, removed: sum.removed + counts.removed }
+			},
+			{ added: 0, removed: 0 },
+		)
+	const allCollapsed = !!walk?.chapters.length && walk.chapters.every((chapter) => folds.collapsedChapters[chapter.id])
+	const complete = mainStops.length > 0 && reviewedCount === mainStops.length
 
 	const renderStop = (stop: WalkthroughStop, numbered: boolean) => (
 		<WalkthroughStopCard
 			actions={actions}
 			key={stop.id}
 			note={review.notes[stop.id] ?? ""}
-			number={numbered ? ++stopNumber : undefined}
+			number={numbered ? stopNumbers.get(stop.id) : undefined}
 			onNote={(note) => updateStop(stop.id, { note })}
 			onReviewed={(reviewed) => updateStop(stop.id, { reviewed })}
 			reviewed={!!review.reviewed[stop.id]}
 			stop={stop}
 			walk={walk as ChangeWalkthrough}
 		/>
+	)
+
+	const menuItem = (icon: string, label: string, onSelect: () => void, disabled = false) => (
+		<button
+			className={MENU_ITEM_CLASS}
+			disabled={disabled}
+			onClick={() => {
+				setMenuOpen(false)
+				onSelect()
+			}}
+			role="menuitem"
+			type="button">
+			<span aria-hidden className={cn(MENU_ICON_CLASS, `codicon-${icon}`)} />
+			{label}
+		</button>
 	)
 
 	return (
@@ -339,47 +393,30 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					data-testid="walkthrough-header">
 					<Breadcrumb crumbs={crumbs} />
 					<div className="flex shrink-0 items-center gap-0.5">
+						{!!walk?.chapters.length && (
+							<HeaderIconButton
+								icon={allCollapsed ? "expand-all" : "collapse-all"}
+								label={allCollapsed ? "Expand all" : "Collapse all"}
+								onClick={allCollapsed ? expandAll : collapseAll}
+							/>
+						)}
 						<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 							<PopoverTrigger asChild>
 								<HeaderIconButton icon="ellipsis" label="More actions" />
 							</PopoverTrigger>
 							<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
-								<div className="flex flex-col" role="menu">
-									<button
-										className={MENU_ITEM_CLASS}
-										disabled={busy || loading}
-										onClick={() => {
-											setMenuOpen(false)
-											void refresh()
-										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-refresh text-[13px]" />
-										Refresh
-									</button>
-									<button
-										className={MENU_ITEM_CLASS}
-										disabled={!walk || (!reviewedCount && !sending.count)}
-										onClick={() => {
-											setMenuOpen(false)
-											updateRecord(() => ({}))
-										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-clear-all text-[13px]" />
-										Clear notes and marks
-									</button>
-									<button
-										className={MENU_ITEM_CLASS}
-										onClick={() => {
-											setMenuOpen(false)
-											onDone()
-										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-comment-discussion text-[13px]" />
-										Back to thread
-									</button>
+								<div className="flex flex-col" onKeyDown={handleMenuKeyDown} role="menu">
+									{menuItem("refresh", "Refresh", () => void refresh(), busy || loading)}
+									{menuItem("collapse-all", "Collapse all", collapseAll, !walk?.chapters.length)}
+									{menuItem("expand-all", "Expand all", expandAll, !walk?.chapters.length)}
+									<div className={MENU_SEPARATOR_CLASS} role="separator" />
+									{menuItem(
+										"clear-all",
+										"Clear notes and marks",
+										() => updateRecord(() => ({})),
+										!walk || (!reviewedCount && !sending.count),
+									)}
+									{menuItem("comment-discussion", "Back to thread", onDone)}
 								</div>
 							</PopoverContent>
 						</Popover>
@@ -388,17 +425,24 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 				</div>
 			</div>
 
-			<div className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-4 text-xs">
-				<div className="flex flex-wrap items-start gap-2">
-					<div aria-label="Scope" className="flex items-center gap-1" role="group">
+			<div className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-6 text-xs">
+				<div className="flex flex-wrap items-center gap-2" data-testid="walkthrough-toolbar">
+					<div
+						aria-label="Scope"
+						className="inline-flex h-6 items-stretch gap-px rounded-xs border border-solid border-editor-group-border p-px"
+						role="group">
 						{SCOPES.map((option) => (
 							<Button
 								aria-pressed={scope === option.scope}
+								className={cn(
+									"h-full rounded-[1px] px-2 py-0",
+									scope !== option.scope && "text-description hover:bg-list-hover hover:text-foreground",
+								)}
 								disabled={generating}
 								key={option.scope}
 								onClick={() => setScope(option.scope)}
 								size="xs"
-								variant={scope === option.scope ? "default" : "secondary"}>
+								variant={scope === option.scope ? "default" : "ghost"}>
 								{option.label}
 							</Button>
 						))}
@@ -416,18 +460,6 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					/>
 				</div>
 
-				{generating && (
-					<div className="mt-2 flex items-center gap-1.5 text-description" role="status">
-						<span aria-hidden className="codicon codicon-loading codicon-modifier-spin text-[12px]!" />
-						Generating with {profiles.find((p) => p.id === profileId)?.name ?? "the chosen profile"}…
-					</div>
-				)}
-				{loading && !walk && (
-					<div className="mt-3 flex items-center gap-1.5 text-description" role="status">
-						<span aria-hidden className="codicon codicon-loading codicon-modifier-spin text-[12px]!" />
-						Collecting changes…
-					</div>
-				)}
 				{error && (
 					<InlineNotice
 						actions={
@@ -435,7 +467,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 								Dismiss
 							</LinkButton>
 						}
-						className="mt-2"
+						className="mt-3"
 						tone="error">
 						{error}
 					</InlineNotice>
@@ -460,7 +492,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 								</Button>
 							</>
 						}
-						className="mt-2"
+						className="mt-3"
 						data-testid="walkthrough-unplaced"
 						tone="warning">
 						{plural(unplaced.length, "note")} from the previous layout did not fit a new stop.
@@ -473,7 +505,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 								Refresh
 							</Button>
 						}
-						className="mt-2"
+						className="mt-3"
 						data-testid="walkthrough-moved"
 						tone="warning">
 						Changes moved; refresh.
@@ -482,134 +514,204 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					</InlineNotice>
 				)}
 
-				{walk && (
-					<>
-						<div className="mt-3">
-							<h2 className="m-0 text-[14px] font-semibold">{walk.title}</h2>
-							{walk.focus && <InlineCodeProse className="mt-1 text-description" text={walk.focus} />}
-							<div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-description">
+				{loading && !walk && (
+					<div
+						className="flex flex-col items-center gap-2 py-12 text-center text-description"
+						data-testid="walkthrough-loading"
+						role="status">
+						<span aria-hidden className="codicon codicon-loading codicon-modifier-spin text-[16px]!" />
+						Collecting changes…
+					</div>
+				)}
+
+				{walk && walk.hunks.length > 0 && (
+					<header className="mt-4">
+						<h2 className="m-0 text-[15px] leading-snug font-semibold text-foreground">{walk.title}</h2>
+						{walk.focus && (
+							<InlineCodeProse className="mt-1 text-[12px] leading-normal text-description" text={walk.focus} />
+						)}
+						<div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-description">
+							<span
+								className={cn(
+									"inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid px-1.5",
+									walk.source === "generated" ? "border-link/40 text-link" : "border-editor-group-border",
+								)}
+								data-testid="walkthrough-source"
+								title={
+									walk.source === "generated"
+										? walk.cacheHit
+											? "Grouped by idea · saved result for these changes"
+											: "Grouped by idea"
+										: "Grouped by the agent's turns"
+								}>
 								<span
-									className="rounded-xs border border-solid border-editor-group-border px-1.5"
-									data-testid="walkthrough-source"
-									title={
-										walk.source === "generated"
-											? "Grouped by idea from one call to the chosen profile"
-											: "Free: grouped by the agent's turns, with each turn's message as the explanation"
-									}>
-									{walk.source === "generated"
-										? `Generated · ${generatedBy ?? "profile"}${walk.cacheHit ? " · cached" : ""}`
-										: "From turns"}
-								</span>
-								<span>{plural(new Set(walk.hunks.map((h) => h.fileId)).size, "file")}</span>
-							</div>
-							{mainStops.length > 0 && (
-								<>
-									<div
-										aria-label="Stops reviewed"
-										aria-valuemax={mainStops.length}
-										aria-valuemin={0}
-										aria-valuenow={reviewedCount}
-										className="mt-2 h-1 overflow-hidden rounded-full bg-editor-group-border"
-										role="progressbar">
-										<div
-											className="h-full bg-success transition-[width] motion-reduce:transition-none"
-											style={{ width: `${(reviewedCount / mainStops.length) * 100}%` }}
-										/>
-									</div>
-									<div className="mt-1 text-[11px] text-description" data-testid="walkthrough-progress">
-										{reviewedCount} / {mainStops.length} stops reviewed
-									</div>
-								</>
-							)}
+									aria-hidden
+									className={cn(
+										"codicon text-[11px]!",
+										walk.source === "generated" ? "codicon-sparkle" : "codicon-history",
+									)}
+								/>
+								{walk.source === "generated" ? `Generated · ${generatedBy ?? "profile"}` : "From turns"}
+							</span>
+							<span>{plural(fileCount, "file")}</span>
+							<span className="flex items-center gap-1 font-mono tabular-nums">
+								<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{totals.added}</span>
+								<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{totals.removed}</span>
+							</span>
 						</div>
-
-						{walk.warnings.length > 0 && (
-							<ul className="mt-2 mb-0 list-none rounded-xs border border-solid border-editor-group-border bg-code px-2 py-1.5 text-[11px] text-description">
-								{walk.warnings.map((warning) => (
-									<li className="flex gap-1.5 break-words" key={warning}>
-										<span aria-hidden className="codicon codicon-info mt-px text-[11px]!" />
-										<span className="min-w-0">{warning}</span>
-									</li>
-								))}
-							</ul>
-						)}
-
-						{!walk.hunks.length && (
-							<div className="mt-6 flex flex-col items-center gap-1 text-center text-description">
-								<span aria-hidden className="codicon codicon-diff text-[20px]!" />
-								No changes in this scope.
+						{mainStops.length > 0 && (
+							<div className="mt-3 flex items-center gap-2">
+								<div
+									aria-label="Stops reviewed"
+									aria-valuemax={mainStops.length}
+									aria-valuemin={0}
+									aria-valuenow={reviewedCount}
+									className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-editor-group-border"
+									role="progressbar">
+									<div
+										className="h-full rounded-full bg-success transition-[width] motion-reduce:transition-none"
+										style={{ width: `${(reviewedCount / mainStops.length) * 100}%` }}
+									/>
+								</div>
+								<span
+									className={cn(
+										"shrink-0 text-[11px] tabular-nums",
+										complete ? "text-success" : "text-description",
+									)}
+									data-testid="walkthrough-progress">
+									{reviewedCount} / {mainStops.length} stops reviewed
+								</span>
 							</div>
 						)}
+					</header>
+				)}
 
-						{walk.chapters.map((chapter) => (
-							<section aria-label={chapter.title} key={chapter.id}>
-								<ChapterHeader title={chapter.title} />
-								<div className="flex flex-col gap-2">{chapter.stops.map((stop) => renderStop(stop, true))}</div>
-							</section>
+				{walk && walk.warnings.length > 0 && (
+					<ul className="mt-3 mb-0 flex list-none flex-col gap-1 rounded-xs border border-solid border-editor-group-border bg-code px-2 py-1.5 text-[11px] text-description">
+						{walk.warnings.map((warning) => (
+							<li className="flex gap-1.5 break-words" key={warning}>
+								<span aria-hidden className="codicon codicon-info mt-px text-[11px]!" />
+								<span className="min-w-0">{warning}</span>
+							</li>
 						))}
+					</ul>
+				)}
 
-						{walk.support.length > 0 && (
-							<section className="mt-4" data-testid="walkthrough-support">
-								<button
-									aria-expanded={supportOpen}
-									className="flex w-full cursor-pointer items-center gap-1.5 rounded-xs border border-solid border-editor-group-border bg-transparent px-2.5 py-1.5 text-left text-xs text-foreground opacity-80 hover:opacity-100"
-									onClick={() => setSupportOpen(!supportOpen)}
-									type="button">
-									<span className="font-semibold">Support</span>
-									<span className="min-w-0 flex-1 truncate text-[11px] text-description">
-										{supportSummary(walk)}
-									</span>
-									<span className="shrink-0 text-[11px] text-description">{plural(supportHunks, "hunk")}</span>
-									<span
-										aria-hidden
-										className={`codicon codicon-chevron-${supportOpen ? "down" : "right"} text-[12px]! text-description`}
-									/>
-								</button>
-								{supportOpen && (
-									<div className="mt-2 flex flex-col gap-2">
-										{walk.support.map((stop) => renderStop(stop, false))}
-									</div>
-								)}
-							</section>
+				{walk && !walk.hunks.length && (
+					<div
+						className="flex flex-col items-center gap-1.5 py-12 text-center text-description"
+						data-testid="walkthrough-empty">
+						<span aria-hidden className="codicon codicon-diff text-[24px]! opacity-60" />
+						<span className="text-[13px] font-medium text-foreground">No changes</span>
+						<span>{EMPTY_HINT[scope]}</span>
+						{scope !== "git" && (
+							<LinkButton className="mt-1" onClick={() => setScope("git")}>
+								Show the whole git diff
+							</LinkButton>
 						)}
+					</div>
+				)}
 
-						{walk.hunks.length > 0 && (
-							<section aria-label="Overall">
-								<ChapterHeader title="Overall" />
-								{overallOpen ? (
-									<NoteEditor
-										label="Note on the whole change"
-										onChange={(value) => updateRecord((current) => ({ ...current, overallNote: value }))}
-										onDone={() => setOverallOpen(false)}
-										placeholder="Anything about the whole change…"
-										value={overallNote}
-									/>
-								) : overallNote.trim() ? (
-									<div className="rounded-xs border-l-2 border-solid border-y-0 border-r-0 border-link bg-code px-2 py-1">
-										<span className="font-semibold text-link">Overall</span> ·{" "}
-										<span className="whitespace-pre-wrap">{overallNote}</span>{" "}
-										<LinkButton className="text-[11px]" onClick={() => setOverallOpen(true)}>
-											edit
-										</LinkButton>
-									</div>
-								) : (
-									<Button onClick={() => setOverallOpen(true)} size="xs" variant="secondary">
-										<span aria-hidden className="codicon codicon-edit text-[11px]!" />
-										Add a note on the whole change
-									</Button>
-								)}
-							</section>
+				{walk?.chapters.map((chapter) => {
+					const open = !folds.collapsedChapters[chapter.id]
+					const done = chapter.stops.filter((stop) => review.reviewed[stop.id]).length
+					return (
+						<section aria-label={chapter.title} className="mt-5" data-testid="walkthrough-chapter" key={chapter.id}>
+							<button
+								aria-controls={`walkthrough-chapter-${chapter.id}`}
+								aria-expanded={open}
+								className="group mb-2 flex h-5 w-full cursor-pointer items-center gap-1.5 rounded-xs border-0 bg-transparent p-0 text-left text-[11px] font-semibold uppercase tracking-wider text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+								onClick={() => toggleChapter(chapter.id)}
+								type="button">
+								<span aria-hidden className={`codicon codicon-chevron-${open ? "down" : "right"} text-[12px]!`} />
+								<span className="min-w-0 truncate">{chapter.title}</span>
+								<span
+									className={cn(
+										"shrink-0 font-normal normal-case tracking-normal tabular-nums",
+										done === chapter.stops.length && done > 0 && "text-success",
+									)}>
+									{done}/{chapter.stops.length}
+								</span>
+								<span aria-hidden className="h-px flex-1 bg-editor-group-border" />
+							</button>
+							{open && (
+								<div className="flex flex-col gap-2.5" id={`walkthrough-chapter-${chapter.id}`}>
+									{chapter.stops.map((stop) => renderStop(stop, true))}
+								</div>
+							)}
+						</section>
+					)
+				})}
+
+				{walk && walk.support.length > 0 && (
+					<section className="mt-5" data-testid="walkthrough-support">
+						<button
+							aria-expanded={folds.supportOpen}
+							className="flex h-7 w-full cursor-pointer items-center gap-1.5 rounded-xs border border-dashed border-editor-group-border bg-transparent px-2 text-left text-xs text-description hover:bg-list-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+							onClick={() => setFolds((current) => ({ ...current, supportOpen: !current.supportOpen }))}
+							type="button">
+							<span
+								aria-hidden
+								className={`codicon codicon-chevron-${folds.supportOpen ? "down" : "right"} text-[12px]!`}
+							/>
+							<span className="font-semibold">Support</span>
+							<span className="min-w-0 flex-1 truncate text-[11px]">{supportSummary(walk)}</span>
+							<span className="shrink-0 text-[11px] tabular-nums">{plural(supportHunks, "hunk")}</span>
+						</button>
+						{folds.supportOpen && (
+							<div className="mt-2 flex flex-col gap-2.5">
+								{walk.support.map((stop) => renderStop(stop, false))}
+							</div>
 						)}
-					</>
+					</section>
+				)}
+
+				{walk && walk.hunks.length > 0 && (
+					<section aria-label="Overall" className="mt-5">
+						<div className="mb-2 flex h-5 items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-description">
+							<span aria-hidden className="codicon codicon-comment-discussion text-[12px]!" />
+							<span className="shrink-0">Overall</span>
+							<span aria-hidden className="h-px flex-1 bg-editor-group-border" />
+						</div>
+						{overallOpen ? (
+							<NoteEditor
+								label="Note on the whole change"
+								onChange={(value) => updateRecord((current) => ({ ...current, overallNote: value }))}
+								onDone={() => setOverallOpen(false)}
+								placeholder="Anything about the whole change…"
+								value={overallNote}
+							/>
+						) : overallNote.trim() ? (
+							<NoteQuote label="Overall" note={overallNote} onEdit={() => setOverallOpen(true)} />
+						) : (
+							<Button className="h-6 gap-1 px-2" onClick={() => setOverallOpen(true)} size="xs" variant="secondary">
+								<span aria-hidden className="codicon codicon-comment text-[12px]!" />
+								Add a note on the whole change
+							</Button>
+						)}
+					</section>
 				)}
 			</div>
 
 			<div
-				className="flex items-center gap-2 border-t border-solid border-x-0 border-b-0 border-editor-group-border px-4 py-2"
+				className="flex items-center gap-2 border-t border-solid border-x-0 border-b-0 border-editor-group-border bg-background px-4 py-2"
 				data-testid="walkthrough-send-bar">
-				<span className="text-xs text-description">{sending.count ? plural(sending.count, "note") : "No notes yet"}</span>
+				<span
+					className={cn(
+						"flex min-w-0 items-center gap-1.5 text-xs",
+						sending.count ? "text-foreground" : "text-description",
+					)}>
+					<span aria-hidden className="codicon codicon-comment text-[13px]!" />
+					{sending.count ? plural(sending.count, "note") : "No notes yet"}
+				</span>
 				<span className="flex-1" />
-				<Button disabled={!sending.count || busy || generating || moved} onClick={() => void send()} size="xs">
+				<Button
+					className="h-6 gap-1 px-2.5"
+					disabled={!sending.count || busy || generating || moved}
+					onClick={() => void send()}
+					size="xs"
+					title="Sends every note to the thread as one message">
+					<span aria-hidden className="codicon codicon-send text-[12px]!" />
 					Send to thread
 				</Button>
 			</div>

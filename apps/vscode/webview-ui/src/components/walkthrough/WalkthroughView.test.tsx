@@ -319,14 +319,14 @@ describe("WalkthroughView", () => {
 	it("never generates on mount; Generate uses the remembered profile, ▾ picks another, then Regenerate", async () => {
 		await renderPage()
 		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByTestId("walkthrough-generate-cost")).toHaveTextContent("One call to Deep · only when you click")
+		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Deep")
 
 		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
 		// Each profile shows its model and effort under its name.
 		expect(await screen.findByRole("menuitemradio", { name: /Deep.*Anthropic · opus · high effort/ })).toBeTruthy()
 		fireEvent.click(await screen.findByRole("menuitemradio", { name: /Fast/ }))
 		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByTestId("walkthrough-generate-cost")).toHaveTextContent("One call to Fast")
+		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Fast")
 
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
 		await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated · Fast"))
@@ -438,6 +438,109 @@ describe("WalkthroughView", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a profile for Generate")
 		expect(sent(mocks.generate).profileId).toBe("deep")
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
+	})
+
+	it("renders Generate as one split button: both halves the same height, no cost caption", async () => {
+		await renderPage()
+		const split = screen.getByTestId("walkthrough-generate")
+		const main = within(split).getByRole("button", { name: /Generate$/ })
+		const menu = within(split).getByRole("button", { name: "Choose Generate profile" })
+		for (const half of [main, menu]) expect(half.className).toMatch(/\bh-6\b/)
+		expect(main.className).toMatch(/\brounded-none\b/)
+		expect(menu.className).toMatch(/\brounded-none\b/)
+		expect(menu.className).toContain("border-l")
+		expect(main.querySelector(".codicon-sparkle")).not.toBeNull()
+		expect(screen.queryByTestId("walkthrough-generate-cost")).toBeNull()
+		expect(screen.queryByText(/only when you click/i)).toBeNull()
+		expect(screen.queryByText(/One call to/i)).toBeNull()
+		// The profile name stays where it helps: the ▾ menu and the Generated badge.
+		fireEvent.click(menu)
+		expect(await screen.findByRole("menuitemradio", { name: /Deep/ })).toHaveAttribute("aria-checked", "true")
+	})
+
+	describe("collapsing", () => {
+		const chapterToggle = (title: string) =>
+			within(screen.getByRole("region", { name: title })).getByRole("button", { name: new RegExp(`^${title}`) })
+
+		it("toggles a chapter's stops from its header", async () => {
+			await renderPage()
+			const toggle = chapterToggle("Runtime")
+			expect(toggle).toHaveAttribute("aria-expanded", "true")
+			fireEvent.click(toggle)
+			expect(toggle).toHaveAttribute("aria-expanded", "false")
+			expect(screen.queryByText("Stop the request waiting")).toBeNull()
+			expect(screen.queryByText("Cap at 10k rows")).toBeNull()
+			// Other chapters and the numbering stay put.
+			expect(stop("Banner past the cap")).toBeVisible()
+			expect(within(stop("Banner past the cap")).getByText("3")).toBeTruthy()
+			fireEvent.click(toggle)
+			expect(stop("Stop the request waiting")).toBeVisible()
+		})
+
+		it("toggles each hunk on its own", async () => {
+			await renderPage()
+			const first = stop("Stop the request waiting")
+			const hunk = within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ })
+			expect(hunk).toHaveAttribute("aria-expanded", "true")
+			fireEvent.click(hunk)
+			expect(within(first).queryByText(/const job = await jobs.enqueue/)).toBeNull()
+			expect(within(first).getByText(/jobId: job.id/)).toBeVisible()
+			fireEvent.click(within(first).getByRole("button", { name: /Expand hunk @@ -1,2/ }))
+			expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
+		})
+
+		it("collapses and expands everything from the ⋯ menu and the header toggle", async () => {
+			await renderPage()
+			fireEvent.click(screen.getByRole("button", { name: "More actions" }))
+			fireEvent.click(await screen.findByRole("menuitem", { name: "Collapse all" }))
+			expect(screen.queryAllByTestId("walkthrough-stop")).toHaveLength(0)
+			for (const title of ["Runtime", "UI"]) expect(chapterToggle(title)).toHaveAttribute("aria-expanded", "false")
+
+			// Reopening one chapter shows its stops with their hunks folded.
+			fireEvent.click(chapterToggle("Runtime"))
+			expect(stop("Stop the request waiting")).toBeVisible()
+			expect(screen.queryByText(/const job = await jobs.enqueue/)).toBeNull()
+
+			fireEvent.click(screen.getByRole("button", { name: "More actions" }))
+			fireEvent.click(await screen.findByRole("menuitem", { name: "Expand all" }))
+			expect(screen.getAllByTestId("walkthrough-stop")).toHaveLength(3)
+			expect(screen.getByText(/const job = await jobs.enqueue/)).toBeVisible()
+
+			// The header toggle flips between the two.
+			fireEvent.click(screen.getByRole("button", { name: "Collapse all" }))
+			expect(screen.queryAllByTestId("walkthrough-stop")).toHaveLength(0)
+			fireEvent.click(screen.getByRole("button", { name: "Expand all" }))
+			expect(screen.getAllByTestId("walkthrough-stop")).toHaveLength(3)
+		})
+
+		it("remembers collapse state per walkthrough while the page is open", async () => {
+			await renderPage()
+			fireEvent.click(chapterToggle("UI"))
+			fireEvent.click(screen.getByRole("button", { name: "Whole git diff" }))
+			await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2))
+			// Another scope is its own walkthrough: nothing folded there.
+			await waitFor(() => expect(chapterToggle("UI")).toHaveAttribute("aria-expanded", "true"))
+			fireEvent.click(screen.getByRole("button", { name: "This thread" }))
+			await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(3))
+			await waitFor(() => expect(chapterToggle("UI")).toHaveAttribute("aria-expanded", "false"))
+			expect(chapterToggle("Runtime")).toHaveAttribute("aria-expanded", "true")
+		})
+	})
+
+	it("shows a quiet empty state that offers the whole git diff", async () => {
+		mocks.get.mockResolvedValue(response({ ...fixture, chapters: [], support: [], hunks: [], warnings: [] }))
+		render(<WalkthroughView onDone={vi.fn()} taskId="task" />)
+		const empty = await screen.findByTestId("walkthrough-empty")
+		expect(empty).toHaveTextContent("No changes")
+		expect(screen.queryByRole("heading", { name: fixture.title })).toBeNull()
+		fireEvent.click(within(empty).getByRole("button", { name: "Show the whole git diff" }))
+		await waitFor(() => expect(sent(mocks.get, 1)).toEqual({ taskId: "task", scope: "git" }))
+	})
+
+	it("shows a loading state while collecting changes", async () => {
+		mocks.get.mockReturnValue(new Promise(() => {}))
+		render(<WalkthroughView onDone={vi.fn()} taskId="task" />)
+		expect(screen.getByTestId("walkthrough-loading")).toHaveTextContent("Collecting changes…")
 	})
 
 	it("switches scope with a free reload only", async () => {
