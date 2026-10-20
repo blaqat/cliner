@@ -17,8 +17,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-2",
 		title: "Release 2",
-		builds: "test builds fork.24–27",
-		date: "2026-10-19",
+		builds: "test builds fork.24–28",
+		date: "2026-10-20",
 		notes: [
 			"Composer: ＋ for mentions and files with MCP servers and rules/scripts buttons beside it, a where pill (task, worktree, branch suggestion), separate model and effort chips with the approvals shield, and a context ring",
 			"Models page for saved configurations, and Profiles (a model and an effort under a name) for new threads (Ask/Act), subagents and text generation; existing defaults carry over",
@@ -35,6 +35,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Pasted message links become hover tags that give the agent that message; Copy link works on every message",
 			"Tool call output starts collapsed; long messages and answers show in full",
 			"Fixes: Responses streams no longer hang after the response completes (stall timeout too); finished threads stay done after a reload; every History thread shows in the inbox",
+			"Walkthrough: one split Generate button, collapsible turns and hunks, short stop summaries with Show more, and Open walkthrough on completed turns that changed files",
+			"Fixes: Escape no longer cancels a running task (a common cause of endless Thinking…); skipped approvals always let the turn continue; a watchdog surfaces a stuck turn; asides follow their thread into a task; reopened finished threads keep their completion block",
 		],
 	},
 	{
