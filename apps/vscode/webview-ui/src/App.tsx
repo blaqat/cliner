@@ -30,6 +30,7 @@ const AppContent = () => {
 		showAccount,
 		showWorktrees,
 		showWalkthrough,
+		walkthroughAuthoredId,
 		currentTaskItem,
 		hideWalkthrough,
 		showAnnouncement,
@@ -101,7 +102,12 @@ const AppContent = () => {
 			)}
 			{showWorktrees && <WorktreesView onDone={hideWorktrees} />}
 			{showWalkthrough && currentTaskItem && (
-				<WalkthroughView key={currentTaskItem.id} onDone={hideWalkthrough} taskId={currentTaskItem.id} />
+				<WalkthroughView
+					authoredId={walkthroughAuthoredId}
+					key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}
+					onDone={hideWalkthrough}
+					taskId={currentTaskItem.id}
+				/>
 			)}
 			{/* Do not conditionally load ChatView, it's expensive and there's state we don't want to lose (user input, disableInput, askResponse promise, etc.) */}
 			<ChatView

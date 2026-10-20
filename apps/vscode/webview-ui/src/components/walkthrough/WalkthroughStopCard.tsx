@@ -111,7 +111,18 @@ function ChangeCounts({ added, removed }: { added: number; removed: number }) {
 	)
 }
 
-function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions: StopActions; onRevert: () => void }) {
+function HunkBlock({
+	hunk,
+	actions,
+	external,
+	onRevert,
+}: {
+	hunk: WalkthroughHunk
+	actions: StopActions
+	/** The changes aren't local files (an authored walkthrough): no revert. */
+	external: boolean
+	onRevert: () => void
+}) {
 	if (hunk.synthetic)
 		return (
 			<div className="flex items-center gap-1.5 border-t border-solid border-x-0 border-b-0 border-editor-group-border px-2 py-1.5 text-[11px] text-description first:border-t-0">
@@ -136,13 +147,15 @@ function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions
 					<span className="min-w-0 truncate">{hunk.header}</span>
 				</button>
 				<ChangeCounts added={added} removed={removed} />
-				<HeaderIconButton
-					className={ROW_ICON_CLASS}
-					disabled={actions.busy}
-					icon="discard"
-					label="Revert hunk"
-					onClick={onRevert}
-				/>
+				{!(external || hunk.external) && (
+					<HeaderIconButton
+						className={ROW_ICON_CLASS}
+						disabled={actions.busy}
+						icon="discard"
+						label="Revert hunk"
+						onClick={onRevert}
+					/>
+				)}
 			</div>
 			{open && (
 				<div className="[&>div]:rounded-none [&>div]:border-x-0 [&>div]:border-b-0 [&>div]:border-t [&>div]:border-solid [&>div]:border-editor-group-border">
@@ -153,9 +166,11 @@ function HunkBlock({ hunk, actions, onRevert }: { hunk: WalkthroughHunk; actions
 	)
 }
 
-function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) {
+function FileBlock({ file, actions, external }: { file: StopFile; actions: StopActions; external: boolean }) {
 	const [confirm, setConfirm] = useState<RevertTarget>()
 	const binary = file.hunks.every((hunk) => hunk.synthetic)
+	// External hunks live outside the workspace (e.g. a merge request): no diff, no revert.
+	const notLocal = external || file.hunks.every((hunk) => hunk.external)
 	const slash = file.path.lastIndexOf("/")
 	const name = file.path.slice(slash + 1)
 	const dir = slash > 0 ? file.path.slice(0, slash) : ""
@@ -177,14 +192,16 @@ function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) 
 					{dir && <span className="min-w-0 truncate text-[11px] text-description">{dir}</span>}
 				</span>
 				{!binary && <ChangeCounts {...totals} />}
-				<HeaderIconButton
-					className={ROW_ICON_CLASS}
-					disabled={actions.busy}
-					icon="diff"
-					label="Open diff"
-					onClick={() => actions.openDiff(file.fileId)}
-				/>
-				{!binary && (
+				{!notLocal && (
+					<HeaderIconButton
+						className={ROW_ICON_CLASS}
+						disabled={actions.busy}
+						icon="diff"
+						label="Open diff"
+						onClick={() => actions.openDiff(file.fileId)}
+					/>
+				)}
+				{!binary && !notLocal && (
 					<HeaderIconButton
 						className={ROW_ICON_CLASS}
 						disabled={actions.busy}
@@ -219,6 +236,7 @@ function FileBlock({ file, actions }: { file: StopFile; actions: StopActions }) 
 			{file.hunks.map((hunk) => (
 				<HunkBlock
 					actions={actions}
+					external={notLocal}
 					hunk={hunk}
 					key={hunk.id}
 					onRevert={() => setConfirm({ fileId: file.fileId, hunkId: hunk.id })}
@@ -319,7 +337,7 @@ export function WalkthroughStopCard({
 			{files.length > 0 && (
 				<div className="mt-2 flex flex-col gap-2">
 					{files.map((file) => (
-						<FileBlock actions={actions} file={file} key={file.fileId} />
+						<FileBlock actions={actions} external={walk.scope === "authored"} file={file} key={file.fileId} />
 					))}
 				</div>
 			)}

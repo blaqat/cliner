@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	revert: vi.fn(),
 	send: vi.fn(),
 	open: vi.fn(),
+	openUrl: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
@@ -24,6 +25,7 @@ vi.mock("@/services/grpc-client", () => ({
 		sendWalkthroughNotes: mocks.send,
 		openWalkthroughDiff: mocks.open,
 	},
+	UiServiceClient: { openUrl: (...args: unknown[]) => mocks.openUrl(...args) },
 }))
 
 const hunk = (id: string, path: string, patch: string, extra: Partial<ChangeWalkthrough["hunks"][number]> = {}) => ({
@@ -138,6 +140,7 @@ beforeEach(() => {
 	)
 	mocks.send.mockResolvedValue({})
 	mocks.open.mockResolvedValue({})
+	mocks.openUrl.mockResolvedValue({})
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -581,5 +584,91 @@ describe("WalkthroughView", () => {
 		expect(sent(mocks.get, 1)).toEqual({ taskId: "task", scope: "git" })
 		await act(async () => {})
 		expect(mocks.generate).not.toHaveBeenCalled()
+	})
+
+	describe("authored", () => {
+		const authoredWalk: ChangeWalkthrough = {
+			...fixture,
+			scope: "authored",
+			source: "authored",
+			fingerprint: "auth-1",
+			authoredId: "walk-1",
+			origin: { label: "GitLab MR !128", url: "https://gitlab.example.com/team/app/-/merge_requests/128" },
+			title: "Retry on checkout timeouts",
+			hunks: fixture.hunks.map((h) => ({ ...h, external: true })),
+		}
+
+		async function renderAuthored() {
+			mocks.get.mockResolvedValue(response(authoredWalk))
+			render(<WalkthroughView authoredId="walk-1" onDone={vi.fn()} taskId="task" />)
+			await screen.findByText("Stop the request waiting")
+		}
+
+		it("fetches the stored doc by authoredId and hides the scope switch and Generate", async () => {
+			await renderAuthored()
+			expect(sent(mocks.get)).toEqual({ taskId: "task", scope: "authored", authoredId: "walk-1" })
+			expect(screen.queryByTestId("walkthrough-toolbar")).toBeNull()
+			expect(screen.queryByRole("group", { name: "Scope" })).toBeNull()
+			expect(screen.queryByRole("button", { name: /Generate$/ })).toBeNull()
+			expect(screen.getByRole("heading", { name: "Retry on checkout timeouts" })).toBeVisible()
+			expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 stops reviewed")
+		})
+
+		it("shows the origin as a link that opens externally", async () => {
+			await renderAuthored()
+			const origin = screen.getByTestId("walkthrough-origin")
+			expect(origin).toHaveTextContent("GitLab MR !128")
+			fireEvent.click(origin)
+			expect(mocks.openUrl).toHaveBeenCalledTimes(1)
+			expect(mocks.openUrl.mock.calls[0][0]).toEqual({ value: authoredWalk.origin?.url })
+		})
+
+		it("shows a label-only chip when the origin has no URL", async () => {
+			mocks.get.mockResolvedValue(response({ ...authoredWalk, origin: { label: "A pasted diff" } }))
+			render(<WalkthroughView authoredId="walk-1" onDone={vi.fn()} taskId="task" />)
+			await screen.findByText("Stop the request waiting")
+			const origin = screen.getByTestId("walkthrough-origin")
+			expect(origin).toHaveTextContent("A pasted diff")
+			expect(origin.tagName).not.toBe("BUTTON")
+		})
+
+		it("offers no Open diff or Revert anywhere, but keeps notes and marks", async () => {
+			const { onDone } = await (async () => {
+				const onDone = vi.fn()
+				mocks.get.mockResolvedValue(response(authoredWalk))
+				render(<WalkthroughView authoredId="walk-1" onDone={onDone} taskId="task" />)
+				await screen.findByText("Stop the request waiting")
+				return { onDone }
+			})()
+			expect(screen.queryByRole("button", { name: "Open diff" })).toBeNull()
+			expect(screen.queryByRole("button", { name: "Revert file" })).toBeNull()
+			expect(screen.queryByRole("button", { name: "Revert hunk" })).toBeNull()
+
+			const first = stop("Stop the request waiting")
+			fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
+			fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
+			fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), {
+				target: { value: "Back off on 429s too?" },
+			})
+			fireEvent.click(within(first).getByRole("button", { name: "Done" }))
+			fireEvent.click(screen.getByRole("button", { name: "Send to thread" }))
+			await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+			expect(sent(mocks.send)).toEqual({
+				taskId: "task",
+				scope: "authored",
+				authoredId: "walk-1",
+				fingerprint: "auth-1",
+				stopNotes: { s1: "Back off on 429s too?" },
+				overallNote: undefined,
+			})
+		})
+
+		it("keys review state by authoredId as well as fingerprint", async () => {
+			await renderAuthored()
+			fireEvent.click(within(stop("Cap at 10k rows")).getByRole("button", { name: "Mark reviewed" }))
+			const stored = () => JSON.parse(localStorage.getItem(reviewStorageKey("task", "authored", "walk-1")) ?? "{}")
+			expect(stored()["auth-1"].authored.reviewed).toEqual({ s2: true })
+			expect(localStorage.getItem(reviewStorageKey("task", "thread"))).toBeNull()
+		})
 	})
 })

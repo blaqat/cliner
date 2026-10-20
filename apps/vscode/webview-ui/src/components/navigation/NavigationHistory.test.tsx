@@ -15,6 +15,7 @@ const actions = {
 	navigateToMarketplace: vi.fn(),
 	navigateToTaskGroup: vi.fn(),
 	navigateToChat: vi.fn(),
+	navigateToWalkthrough: vi.fn(),
 	setShowMcp: vi.fn(),
 }
 const baseState = () => ({
@@ -26,6 +27,8 @@ const baseState = () => ({
 	showMcp: false,
 	showAccount: false,
 	showWorktrees: false,
+	showWalkthrough: false,
+	walkthroughAuthoredId: undefined as string | undefined,
 	taskGroupView: null as { id: string; page: "home" | "notebook" } | null,
 	currentTaskItem: undefined as { id: string } | undefined,
 	taskHistory: [
@@ -172,6 +175,23 @@ describe("navigation history", () => {
 		// came from thread A, which isn't in B's crumbs
 		expect(screen.getByTestId("crumb-back-label")).toHaveTextContent("Thread A")
 		expect(screen.getByTestId("crumb-back-bar")).toBeInTheDocument()
+	})
+
+	it("Back between authored walkthroughs of one thread restores the authoredId", () => {
+		const { go } = setup()
+		go({ currentTaskItem: { id: "a" } })
+		go({ showWalkthrough: true, walkthroughAuthoredId: "w1" })
+		go({ walkthroughAuthoredId: "w2" })
+		expect(entries()).toBe("home > thread:a > walkthrough:a:w1 > walkthrough:a:w2")
+
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(actions.navigateToWalkthrough).toHaveBeenCalledWith("w1")
+		expect(entries()).toBe("home > thread:a > walkthrough:a:w1")
+
+		// The restore lands; the thread's own diff walkthrough is a different place than an authored one.
+		go({ walkthroughAuthoredId: "w1" })
+		go({ walkthroughAuthoredId: undefined })
+		expect(entries()).toBe("home > thread:a > walkthrough:a:w1 > walkthrough:a")
 	})
 
 	it("right-click lists history; picking an entry jumps there", () => {

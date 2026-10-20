@@ -2,6 +2,7 @@ import { StringRequest } from "@shared/proto/cline/common"
 import type {
 	ChangeWalkthrough,
 	WalkthroughHunk,
+	WalkthroughOrigin,
 	WalkthroughRequest,
 	WalkthroughScope,
 	WalkthroughStop,
@@ -20,7 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
-import { TaskServiceClient } from "@/services/grpc-client"
+import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { GenerateControl } from "./GenerateControl"
 import {
 	carryOverReview,
@@ -45,6 +46,10 @@ const request = (value: WalkthroughRequest) => StringRequest.create({ value: JSO
 const parse = (response: { value: string }) => JSON.parse(response.value) as ChangeWalkthrough
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+const openExternal = (url: string) =>
+	UiServiceClient.openUrl(StringRequest.create({ value: url })).catch((err) =>
+		console.error("Failed to open walkthrough origin:", err),
+	)
 
 const SCOPES: { scope: WalkthroughScope; label: string }[] = [
 	{ scope: "thread", label: "This thread" },
@@ -66,8 +71,20 @@ const EMPTY_HINT: Record<WalkthroughScope, string> = {
  * `Task › Thread › Walkthrough`: the thread's changes as one long scroll of
  * chapters and stops. Free by default (grouped by turn); Generate is the only
  * AI-cost action and runs only when clicked. Notes go to the thread as one message.
+ *
+ * With `authoredId` the page instead shows one stored agent-authored walkthrough
+ * (e.g. a merge request the agent presented): no scope switch, no Generate, and
+ * no open-diff/revert — the changes aren't local files.
  */
-export default function WalkthroughView({ taskId, onDone }: { taskId: string; onDone: () => void }) {
+export default function WalkthroughView({
+	taskId,
+	authoredId,
+	onDone,
+}: {
+	taskId: string
+	authoredId?: string
+	onDone: () => void
+}) {
 	const {
 		apiConfigProfiles,
 		profiles: namedProfiles,
@@ -82,8 +99,11 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	} = useExtensionState()
 	const navigation = useNavigationHistory()
 	const [scope, setScope] = useState<WalkthroughScope>("thread")
+	// An authoredId pins the page to the stored authored doc; the scope switch is not offered.
+	const authored = authoredId !== undefined
+	const activeScope: WalkthroughScope = authored ? "authored" : scope
 	const [walk, setWalk] = useState<ChangeWalkthrough>()
-	const [store, setStore] = useState<ReviewStore>(() => loadReviewStore(taskId, "thread"))
+	const [store, setStore] = useState<ReviewStore>(() => loadReviewStore(taskId, activeScope, authoredId))
 	const [loading, setLoading] = useState(true)
 	const [generating, setGenerating] = useState(false)
 	const [busy, setBusy] = useState(false)
@@ -124,46 +144,46 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 
 	const fetchFree = useCallback(
 		async (forScope: WalkthroughScope) =>
-			parse(await TaskServiceClient.getChangeWalkthrough(request({ taskId, scope: forScope }))),
-		[taskId],
+			parse(await TaskServiceClient.getChangeWalkthrough(request({ taskId, scope: forScope, authoredId }))),
+		[taskId, authoredId],
 	)
 
 	const persist = useCallback(
 		(next: ReviewStore) => {
 			storeRef.current = next
-			saveReviewStore(taskId, scope, next)
+			saveReviewStore(taskId, activeScope, authoredId, next)
 			setStore(next)
 		},
-		[taskId, scope],
+		[taskId, activeScope, authoredId],
 	)
 
-	// Each scope has its own walkthrough and review state.
+	// Each scope (and each authored doc) has its own walkthrough and review state.
 	useEffect(() => {
 		const id = ++sequence.current
 		setWalk(undefined)
 		setMoved(false)
 		setError("")
 		setLoading(true)
-		setStore(loadReviewStore(taskId, scope))
-		fetchFree(scope)
+		setStore(loadReviewStore(taskId, activeScope, authoredId))
+		fetchFree(activeScope)
 			.then((next) => id === sequence.current && setWalk(next))
 			.catch((err) => id === sequence.current && setError(message(err)))
 			.finally(() => id === sequence.current && setLoading(false))
 		return () => {
 			sequence.current++
 		}
-	}, [taskId, scope, fetchFree])
+	}, [taskId, activeScope, authoredId, fetchFree])
 
 	const checkMoved = useCallback(async () => {
 		if (!walk) return
 		const id = sequence.current
 		try {
-			const next = await fetchFree(scope)
+			const next = await fetchFree(activeScope)
 			if (id === sequence.current && next.fingerprint !== walk.fingerprint) setMoved(true)
 		} catch {
 			// A failed background check changes nothing on screen.
 		}
-	}, [walk, scope, fetchFree])
+	}, [walk, activeScope, fetchFree])
 
 	const messageCount = clineMessages?.length ?? 0
 	const firstCheck = useRef(true)
@@ -197,7 +217,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const refresh = () =>
 		run(async () => {
 			const id = ++sequence.current
-			const next = await fetchFree(scope)
+			const next = await fetchFree(activeScope)
 			if (id !== sequence.current) return
 			setWalk(next)
 			setMoved(false)
@@ -213,7 +233,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 			const id = ++sequence.current
 			const next = parse(
 				await TaskServiceClient.generateChangeWalkthrough(
-					request({ taskId, scope, fingerprint: walk.fingerprint, profileId, regenerate }),
+					request({ taskId, scope: activeScope, fingerprint: walk.fingerprint, profileId, regenerate }),
 				),
 			)
 			if (id !== sequence.current) return
@@ -247,7 +267,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 			return walk ? { ...current, [walk.source]: next } : current
 		})
 
-	const foldKey = walk ? `${scope}:${walk.source}` : ""
+	const foldKey = walk ? `${activeScope}:${authoredId ?? ""}:${walk.source}` : ""
 	const folds = foldsByWalk[foldKey] ?? EMPTY_FOLDS
 	const setFolds = (change: (current: Folds) => Folds) =>
 		setFoldsByWalk((all) => ({ ...all, [foldKey]: change(all[foldKey] ?? EMPTY_FOLDS) }))
@@ -259,7 +279,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 	const collapseAll = () => walk && setFolds(() => foldAll(walk))
 	const expandAll = () => setFolds(unfoldAll)
 
-	const input = walk ? { taskId, scope, fingerprint: walk.fingerprint } : undefined
+	const input = walk ? { taskId, scope: activeScope, fingerprint: walk.fingerprint, authoredId } : undefined
 	const actions = {
 		busy: busy || generating || moved,
 		hunkOpen: (hunk: WalkthroughHunk) => !folds.collapsedHunks[hunk.fingerprint],
@@ -331,9 +351,13 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 				onSelect: () => navigation?.navigate({ kind: "thread", id: ancestor.id }),
 			})),
 			{ id: taskId, kind: "thread", label: thread?.title || "Thread", sub: thread?.sub, onSelect: onDone },
-			{ id: `walkthrough:${taskId}`, kind: "page", label: "Walkthrough" },
+			{
+				id: `walkthrough:${taskId}${authoredId ? `:${authoredId}` : ""}`,
+				kind: "page",
+				label: "Walkthrough",
+			},
 		]
-	}, [currentTaskItem, taskHistory, taskGroups, taskId, navigation, navigateToTaskGroup, onDone])
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, authoredId, navigation, navigateToTaskGroup, onDone])
 
 	const mainStops = walk?.chapters.flatMap((chapter) => chapter.stops) ?? []
 	const reviewedCount = mainStops.filter((stop) => review.reviewed[stop.id]).length
@@ -356,6 +380,8 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 		)
 	const allCollapsed = !!walk?.chapters.length && walk.chapters.every((chapter) => folds.collapsedChapters[chapter.id])
 	const complete = mainStops.length > 0 && reviewedCount === mainStops.length
+	// Narrative stops can carry no hunks (authored walkthroughs allow it); the page still has content.
+	const contentful = !!walk && (walk.hunks.length > 0 || mainStops.length > 0)
 
 	const renderStop = (stop: WalkthroughStop, numbered: boolean) => (
 		<WalkthroughStopCard
@@ -427,39 +453,41 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 			</div>
 
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-6 text-xs">
-				<div className="flex flex-wrap items-center gap-2" data-testid="walkthrough-toolbar">
-					<div
-						aria-label="Scope"
-						className="inline-flex h-6 items-stretch gap-px rounded-xs border border-solid border-editor-group-border p-px"
-						role="group">
-						{SCOPES.map((option) => (
-							<Button
-								aria-pressed={scope === option.scope}
-								className={cn(
-									"h-full rounded-[1px] px-2 py-0",
-									scope !== option.scope && "text-description hover:bg-list-hover hover:text-foreground",
-								)}
-								disabled={generating}
-								key={option.scope}
-								onClick={() => setScope(option.scope)}
-								size="xs"
-								variant={scope === option.scope ? "default" : "ghost"}>
-								{option.label}
-							</Button>
-						))}
+				{!authored && (
+					<div className="flex flex-wrap items-center gap-2" data-testid="walkthrough-toolbar">
+						<div
+							aria-label="Scope"
+							className="inline-flex h-6 items-stretch gap-px rounded-xs border border-solid border-editor-group-border p-px"
+							role="group">
+							{SCOPES.map((option) => (
+								<Button
+									aria-pressed={scope === option.scope}
+									className={cn(
+										"h-full rounded-[1px] px-2 py-0",
+										scope !== option.scope && "text-description hover:bg-list-hover hover:text-foreground",
+									)}
+									disabled={generating}
+									key={option.scope}
+									onClick={() => setScope(option.scope)}
+									size="xs"
+									variant={scope === option.scope ? "default" : "ghost"}>
+									{option.label}
+								</Button>
+							))}
+						</div>
+						<span className="flex-1" />
+						<GenerateControl
+							disabled={!walk || !walk.hunks.length || busy || moved}
+							generating={generating}
+							onGenerate={() => void generate()}
+							onOpenProfiles={() => navigateToSettings("profiles")}
+							onPickProfile={setPickedProfileId}
+							profileId={profileId}
+							profiles={profiles}
+							regenerate={walk?.source === "generated"}
+						/>
 					</div>
-					<span className="flex-1" />
-					<GenerateControl
-						disabled={!walk || !walk.hunks.length || busy || moved}
-						generating={generating}
-						onGenerate={() => void generate()}
-						onOpenProfiles={() => navigateToSettings("profiles")}
-						onPickProfile={setPickedProfileId}
-						profileId={profileId}
-						profiles={profiles}
-						regenerate={walk?.source === "generated"}
-					/>
-				</div>
+				)}
 
 				{error && (
 					<InlineNotice
@@ -525,35 +553,39 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					</div>
 				)}
 
-				{walk && walk.hunks.length > 0 && (
+				{contentful && (
 					<header className="mt-4">
-						<h2 className="m-0 text-[15px] leading-snug font-semibold text-foreground">{walk.title}</h2>
-						{walk.focus && (
+						<h2 className="m-0 text-[15px] leading-snug font-semibold text-foreground">{walk?.title}</h2>
+						{walk?.focus && (
 							<InlineCodeProse className="mt-1 text-[12px] leading-normal text-description" text={walk.focus} />
 						)}
 						<div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-description">
-							<span
-								className={cn(
-									"inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid px-1.5",
-									walk.source === "generated" ? "border-link/40 text-link" : "border-editor-group-border",
-								)}
-								data-testid="walkthrough-source"
-								title={
-									walk.source === "generated"
-										? walk.cacheHit
-											? "Grouped by idea · saved result for these changes"
-											: "Grouped by idea"
-										: "Grouped by the agent's turns"
-								}>
+							{authored ? (
+								<OriginChip origin={walk?.origin} />
+							) : (
 								<span
-									aria-hidden
 									className={cn(
-										"codicon text-[11px]!",
-										walk.source === "generated" ? "codicon-sparkle" : "codicon-history",
+										"inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid px-1.5",
+										walk?.source === "generated" ? "border-link/40 text-link" : "border-editor-group-border",
 									)}
-								/>
-								{walk.source === "generated" ? `Generated · ${generatedBy ?? "profile"}` : "From turns"}
-							</span>
+									data-testid="walkthrough-source"
+									title={
+										walk?.source === "generated"
+											? walk.cacheHit
+												? "Grouped by idea · saved result for these changes"
+												: "Grouped by idea"
+											: "Grouped by the agent's turns"
+									}>
+									<span
+										aria-hidden
+										className={cn(
+											"codicon text-[11px]!",
+											walk?.source === "generated" ? "codicon-sparkle" : "codicon-history",
+										)}
+									/>
+									{walk?.source === "generated" ? `Generated · ${generatedBy ?? "profile"}` : "From turns"}
+								</span>
+							)}
 							<span>{plural(fileCount, "file")}</span>
 							<span className="flex items-center gap-1 font-mono tabular-nums">
 								<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{totals.added}</span>
@@ -598,14 +630,14 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					</ul>
 				)}
 
-				{walk && !walk.hunks.length && (
+				{walk && !contentful && (
 					<div
 						className="flex flex-col items-center gap-1.5 py-12 text-center text-description"
 						data-testid="walkthrough-empty">
 						<span aria-hidden className="codicon codicon-diff text-[24px]! opacity-60" />
 						<span className="text-[13px] font-medium text-foreground">No changes</span>
-						<span>{EMPTY_HINT[scope]}</span>
-						{scope !== "git" && (
+						<span>{EMPTY_HINT[activeScope]}</span>
+						{!authored && scope !== "git" && (
 							<LinkButton className="mt-1" onClick={() => setScope("git")}>
 								Show the whole git diff
 							</LinkButton>
@@ -667,7 +699,7 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 					</section>
 				)}
 
-				{walk && walk.hunks.length > 0 && (
+				{contentful && (
 					<section aria-label="Overall" className="mt-5">
 						<div className="mb-2 flex h-5 items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-description">
 							<span aria-hidden className="codicon codicon-comment-discussion text-[12px]!" />
@@ -717,6 +749,35 @@ export default function WalkthroughView({ taskId, onDone }: { taskId: string; on
 				</Button>
 			</div>
 		</section>
+	)
+}
+
+/** The authored walkthrough's "where this change lives" chip; links out when it has a URL. */
+function OriginChip({ origin }: { origin?: WalkthroughOrigin }) {
+	const chipClass = "inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid px-1.5"
+	if (origin?.url)
+		return (
+			<button
+				className={cn(
+					chipClass,
+					"cursor-pointer border-link/40 text-link hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+				)}
+				data-testid="walkthrough-origin"
+				onClick={() => openExternal(origin.url as string)}
+				title={origin.url}
+				type="button">
+				<span aria-hidden className="codicon codicon-link-external text-[11px]!" />
+				{origin.label}
+			</button>
+		)
+	return (
+		<span
+			className={cn(chipClass, "border-editor-group-border")}
+			data-testid="walkthrough-origin"
+			title="Written by the agent">
+			<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+			{origin?.label ?? "Authored"}
+		</span>
 	)
 }
 

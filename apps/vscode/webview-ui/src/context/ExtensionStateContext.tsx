@@ -81,6 +81,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showAccount: boolean
 	showWorktrees: boolean
 	showWalkthrough: boolean
+	/** Set while the walkthrough page shows a stored agent-authored doc; unset for the thread diff. */
+	walkthroughAuthoredId?: string
 	/** The task (group) page or its notebook, shown in the sidebar in place of chat/home. */
 	taskGroupView: TaskGroupViewState | null
 	showAnnouncement: boolean
@@ -137,7 +139,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	navigateToHistory: () => void
 	navigateToAccount: () => void
 	navigateToWorktrees: () => void
-	navigateToWalkthrough: () => void
+	navigateToWalkthrough: (authoredId?: string) => void
 	/** Opens a task group's page (or its notebook) in the sidebar. */
 	navigateToTaskGroup: (id: string, page?: TaskGroupPage) => void
 	navigateToChat: () => void
@@ -184,7 +186,11 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showAccount, setShowAccount] = useState(false)
 	const [showWorktrees, setShowWorktrees] = useState(false)
 	const [showWalkthrough, setShowWalkthrough] = useState(false)
-	const hideWalkthrough = useCallback(() => setShowWalkthrough(false), [])
+	const [walkthroughAuthoredId, setWalkthroughAuthoredId] = useState<string | undefined>(undefined)
+	const hideWalkthrough = useCallback(() => {
+		setShowWalkthrough(false)
+		setWalkthroughAuthoredId(undefined)
+	}, [])
 	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [windowFocused, setWindowFocused] = useState(true)
@@ -322,10 +328,14 @@ export const ExtensionStateContextProvider: React.FC<{
 		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
-	const navigateToWalkthrough = useCallback(() => {
-		navigateToChat()
-		setShowWalkthrough(true)
-	}, [navigateToChat])
+	const navigateToWalkthrough = useCallback(
+		(authoredId?: string) => {
+			navigateToChat()
+			setWalkthroughAuthoredId(authoredId)
+			setShowWalkthrough(true)
+		},
+		[navigateToChat],
+	)
 
 	const [state, setState] = useState<ExtensionState>({
 		version: "",
@@ -1015,6 +1025,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showAccount,
 		showWorktrees,
 		showWalkthrough,
+		walkthroughAuthoredId,
 		taskGroupView,
 		showAnnouncement,
 		globalClineRulesToggles: state.globalClineRulesToggles || {},

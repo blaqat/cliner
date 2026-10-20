@@ -18,22 +18,24 @@ export type ReviewStore = Record<string, ReviewRecord>
 
 const KEY_PREFIX = "cline.walkthroughReview"
 
-export const reviewStorageKey = (taskId: string, scope: WalkthroughScope) => `${KEY_PREFIX}:${taskId}:${scope}`
+/** Authored docs share scope "authored" within a thread, so the id keeps their reviews apart. */
+export const reviewStorageKey = (taskId: string, scope: WalkthroughScope, authoredId?: string) =>
+	`${KEY_PREFIX}:${taskId}:${scope}${authoredId ? `:${authoredId}` : ""}`
 
 export const EMPTY_STOP_REVIEW: StopReview = { notes: {}, reviewed: {} }
 
-export function loadReviewStore(taskId: string, scope: WalkthroughScope): ReviewStore {
+export function loadReviewStore(taskId: string, scope: WalkthroughScope, authoredId?: string): ReviewStore {
 	try {
-		const parsed: unknown = JSON.parse(localStorage.getItem(reviewStorageKey(taskId, scope)) ?? "{}")
+		const parsed: unknown = JSON.parse(localStorage.getItem(reviewStorageKey(taskId, scope, authoredId)) ?? "{}")
 		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ReviewStore) : {}
 	} catch {
 		return {}
 	}
 }
 
-export function saveReviewStore(taskId: string, scope: WalkthroughScope, store: ReviewStore) {
+export function saveReviewStore(taskId: string, scope: WalkthroughScope, authoredId: string | undefined, store: ReviewStore) {
 	try {
-		const key = reviewStorageKey(taskId, scope)
+		const key = reviewStorageKey(taskId, scope, authoredId)
 		const kept = Object.fromEntries(Object.entries(store).filter(([, record]) => hasContent(record)))
 		if (Object.keys(kept).length) localStorage.setItem(key, JSON.stringify(kept))
 		else localStorage.removeItem(key)
@@ -49,7 +51,9 @@ export function hasContent(record: ReviewRecord | undefined): boolean {
 	if (!record) return false
 	return (
 		!!record.overallNote?.trim() ||
-		[record.fallback, record.generated].some((review) => filled(review?.notes) + marked(review?.reviewed) > 0)
+		[record.fallback, record.generated, record.authored].some(
+			(review) => filled(review?.notes) + marked(review?.reviewed) > 0,
+		)
 	)
 }
 
@@ -62,8 +66,12 @@ export function summarizeStale(store: ReviewStore, fingerprint: string): { notes
 	let reviewed = 0
 	for (const [key, record] of Object.entries(store)) {
 		if (key === fingerprint || key === previousLayoutKey(fingerprint) || !hasContent(record)) continue
-		notes += (record.overallNote?.trim() ? 1 : 0) + filled(record.fallback?.notes) + filled(record.generated?.notes)
-		reviewed += marked(record.fallback?.reviewed) + marked(record.generated?.reviewed)
+		notes +=
+			(record.overallNote?.trim() ? 1 : 0) +
+			filled(record.fallback?.notes) +
+			filled(record.generated?.notes) +
+			filled(record.authored?.notes)
+		reviewed += marked(record.fallback?.reviewed) + marked(record.generated?.reviewed) + marked(record.authored?.reviewed)
 	}
 	return { notes, reviewed }
 }

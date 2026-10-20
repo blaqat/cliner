@@ -7,7 +7,7 @@ export type NavLocation =
 	| { kind: "home" }
 	| { kind: "search" }
 	| { kind: "thread"; id: string }
-	| { kind: "walkthrough"; id: string }
+	| { kind: "walkthrough"; id: string; authoredId?: string }
 	| { kind: "task"; id: string; page: "home" | "notebook" }
 	| { kind: "settings"; section?: string }
 	| { kind: "history" }
@@ -32,7 +32,7 @@ export function crumbIdFor(location: NavLocation): string | undefined {
 		case "search":
 			return "search"
 		case "walkthrough":
-			return `walkthrough:${location.id}`
+			return walkthroughId(location)
 		case "thread":
 			return location.id
 		case "task":
@@ -42,10 +42,14 @@ export function crumbIdFor(location: NavLocation): string | undefined {
 	}
 }
 
+/** A thread can hold several authored walkthroughs; the id keeps them distinct in history. */
+const walkthroughId = (location: { id: string; authoredId?: string }) =>
+	`walkthrough:${location.id}${location.authoredId ? `:${location.authoredId}` : ""}`
+
 export function locationKey(location: NavLocation): string {
 	switch (location.kind) {
 		case "walkthrough":
-			return `walkthrough:${location.id}`
+			return walkthroughId(location)
 		case "thread":
 			return `thread:${location.id}`
 		case "task":
@@ -135,7 +139,7 @@ export function describeLocation(
 ): LocationLabel {
 	switch (location.kind) {
 		case "walkthrough":
-			return { label: "Walkthrough", icon: "diff" }
+			return { label: "Walkthrough", icon: "diff", detail: location.authoredId ? "Authored" : undefined }
 		case "home":
 			return { label: "Home", icon: "home" }
 		case "search":
