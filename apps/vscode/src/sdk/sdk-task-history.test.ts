@@ -4,6 +4,7 @@ import getFolderSize from "get-folder-size"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
+import reopenedCompletedThread from "./__fixtures__/reopened-completed-thread.json"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -652,6 +653,67 @@ describe("SdkTaskHistory", () => {
 
 		expect(result).toContainEqual(expect.objectContaining({ type: "say", say: "text", text: "Answer of unknown outcome" }))
 		expect(result.filter((m) => m.say === "completion_result" || m.say === "plan_completion_result")).toHaveLength(0)
+	})
+
+	describe("reopening a completed thread after a window reload (real QA session)", () => {
+		// The window reload skipped the graceful release, so the SDK record is "idle" — but the
+		// extension had persisted vscodeThreadStatus "done" when the turn finished.
+		const fixtureRecord = (metadata: Record<string, unknown> = reopenedCompletedThread.record.metadata) =>
+			makeSessionRecord(reopenedCompletedThread.record.session_id, {
+				status: reopenedCompletedThread.record.status as SessionHistoryRecord["status"],
+				metadata,
+			})
+
+		async function rebuild(metadata?: Record<string, unknown>) {
+			const { history, readMessages } = makeHistory([fixtureRecord(metadata)])
+			readMessages.mockResolvedValueOnce(reopenedCompletedThread.messages as never)
+			const id = reopenedCompletedThread.record.session_id
+			return { history, id, messages: await history.getClineMessages(id) }
+		}
+
+		it("rebuilds the final message as the completion row, like the live translator", async () => {
+			const { messages } = await rebuild()
+			const finalContent = reopenedCompletedThread.messages.at(-1)?.content as { text?: string }[]
+			const finalText = finalContent[0].text
+
+			const completions = messages.filter((m) => m.say === "completion_result")
+			expect(completions).toHaveLength(1)
+			expect(completions[0]).toMatchObject({ type: "say", text: finalText, partial: false })
+			// Earlier narration stays plain text; the final message is no longer a text row.
+			expect(messages.filter((m) => m.say === "text").map((m) => m.text)).not.toContain(finalText)
+		})
+
+		it("keeps the completion row last among visible rows and linked to its SDK message", async () => {
+			const { messages } = await rebuild()
+			const completion = messages.find((m) => m.say === "completion_result")
+
+			// View Changes / Open walkthrough render only on the last visible, finalized completion
+			// row. Everything after it must be a row the webview hides (empty completion ask).
+			const afterCompletion = messages.slice(messages.indexOf(completion!) + 1)
+			expect(afterCompletion.length).toBeGreaterThan(0)
+			for (const row of afterCompletion) {
+				expect(row).toMatchObject({ type: "ask", ask: "completion_result", text: "" })
+			}
+			// Message links and asides resolve through ts and sdkMessageIndex.
+			expect(completion?.sdkMessageIndex).toBe(reopenedCompletedThread.messages.length - 1)
+			expect(completion?.ts).toBeGreaterThan(0)
+		})
+
+		it("reports the thread completed so the reopened view gets no Resume Task ask", async () => {
+			const { history, id } = await rebuild()
+			expect(await history.getSessionStatus(id)).toBe("completed")
+		})
+
+		it.each([
+			["stopped by the user", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "stopped" }],
+			["still running", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "running" }],
+			["errored", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "error" }],
+			["unrecorded", {}],
+		])("keeps the plain text and the Resume affordance for a thread %s", async (_label, metadata) => {
+			const { history, id, messages } = await rebuild(metadata)
+			expect(messages.filter((m) => m.say === "completion_result")).toHaveLength(0)
+			expect(await history.getSessionStatus(id)).toBe("idle")
+		})
 	})
 
 	it("does not retag a transcript that ends on a dangling tool call", () => {

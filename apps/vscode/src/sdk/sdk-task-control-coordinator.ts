@@ -121,6 +121,7 @@ export class SdkTaskControlCoordinator {
 			return
 		}
 
+		const wasRunning = activeSession.isRunning
 		try {
 			this.options.sessions.cancelHeldSends(sessionId)
 			await sdkHost.abort(sessionId)
@@ -133,6 +134,13 @@ export class SdkTaskControlCoordinator {
 		}
 
 		this.options.sessions.setRunning(false)
+		// setRunning(false) persists "done", and the SDK record only says "idle" after an abort.
+		// Persist the interruption so a reopened thread offers Resume instead of treating the
+		// partial response as a finished turn (see lastTurnCompleted).
+		if (wasRunning)
+			void this.options.taskHistory
+				.saveThreadStatus(sessionId, "stopped")
+				.catch((error) => Logger.warn("[SdkController] Failed to persist stopped thread status", error))
 
 		const resumeMessage: ClineMessage = {
 			ts: Date.now(),

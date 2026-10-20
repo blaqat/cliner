@@ -18,3 +18,16 @@ export function restoredThreadStatus(
 	if (record.status === "pending") return "waiting"
 	return "done"
 }
+
+/**
+ * Whether the thread's last turn ended cleanly. The SDK only writes "completed" when the
+ * session is released gracefully; a window reload or crash leaves "idle" regardless of how the
+ * last turn ended (aborted turns also go idle). The extension's own persisted thread status
+ * disambiguates: "done" is written when a turn finishes and "stopped" when the user cancels it.
+ * Anything else (failed, cancelled, running, pending, or an idle record with no saved status)
+ * is treated as not completed, so its trailing response stays plain text and Resume is offered.
+ */
+export function lastTurnCompleted(record: Pick<SessionHistoryRecord, "status" | "metadata">): boolean {
+	if (record.status === "completed") return true
+	return record.status === "idle" && record.metadata?.vscodeThreadStatus === "done"
+}

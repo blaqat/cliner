@@ -43,6 +43,23 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
 
+	it("persists a stopped thread status when cancelling a running turn", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).toHaveBeenCalledWith("session-123", "stopped")
+	})
+
+	it("does not mark an idle session stopped when cancel is requested", async () => {
+		const activeSession = { ...makeActiveSession(), isRunning: false }
+		const { coordinator, options } = makeCoordinator({ activeSession })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).not.toHaveBeenCalled()
+	})
+
 	it("aborts an interject without adding a resumable message", async () => {
 		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
 		await coordinator.cancelTask(false)
@@ -466,6 +483,26 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable", expect.any(Number))
 	})
 
+	it("shows no Resume Task ask and a completed phase for a reopened thread whose last turn completed", async () => {
+		// getSessionStatus reports "completed" for an idle record the extension marked done.
+		const { coordinator, options, state } = makeCoordinator({
+			hasHistoryItem: true,
+			clineMessages: [
+				{ ts: 1, type: "say", say: "task", text: "hello" },
+				{ ts: 2, type: "say", say: "completion_result", text: "All done" },
+				{ ts: 3, type: "ask", ask: "completion_result", text: "" },
+			],
+			sessionStatus: "completed",
+		})
+
+		await coordinator.showTaskWithId("task-1")
+
+		const reopened = state.task?.messageStateHandler.getClineMessages() ?? []
+		expect(reopened.some((message) => message.ask === "resume_task")).toBe(false)
+		expect(reopened.at(-1)).toEqual(expect.objectContaining({ ask: "resume_completed_task" }))
+		expect(options.setTurnPhase).toHaveBeenCalledWith("completed", expect.any(Number))
+	})
+
 	it("sets the turn phase to resumable when showing a failed task", async () => {
 		const sdkClineMessages: ClineMessage[] = [
 			{ ts: 1, type: "say", say: "task", text: "hello" },
@@ -683,6 +720,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		taskHistory: {
 			getClineMessages: vi.fn().mockResolvedValue(input.clineMessages ?? []),
 			getSessionStatus: vi.fn().mockResolvedValue(input.sessionStatus),
+			saveThreadStatus: vi.fn().mockResolvedValue(undefined),
 			isLegacyTask: vi.fn().mockResolvedValue(input.isLegacyTask ?? false),
 			findHistoryItem: vi.fn(() =>
 				input.hasHistoryItem === false

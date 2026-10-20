@@ -52,6 +52,21 @@ const createAskMessage = (
 })
 
 describe("filterVisibleMessages", () => {
+	it("leaves the rebuilt completion row last on a reopened completed thread", () => {
+		// Tail of a thread rebuilt from history: the retagged final message, the empty
+		// completion ask the rebuild appends, and the resume ask added on reopen. View Changes
+		// and Open walkthrough render only on the last visible row, so the latter two must hide.
+		const completion: ClineMessage = { type: "say", say: "completion_result", text: "Updated app.js", ts: 3, partial: false }
+		const visible = filterVisibleMessages([
+			createTextMessage(2, "Plan"),
+			completion,
+			{ type: "ask", ask: "completion_result", text: "", ts: 4, partial: false },
+			{ type: "ask", ask: "resume_completed_task", text: "", ts: 5 },
+		])
+
+		expect(visible.at(-1)).toBe(completion)
+	})
+
 	it("hides exact user feedback echoes for selected follow-up options", () => {
 		const askMessage = createAskMessage(1, "followup", ["Use this", "Use that"], "Use this")
 		const visible = filterVisibleMessages([askMessage, createUserFeedbackMessage(2, "Use this")])
