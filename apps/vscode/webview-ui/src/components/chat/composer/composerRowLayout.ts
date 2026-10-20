@@ -2,12 +2,13 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
 
 /**
  * What the composer's bottom row shows at its current width, in the order things give way:
- * 1. The where pill and the configuration and effort pickers truncate (CSS, down to the minimums
- *    below).
+ * 1. The task name in the where pill (a no-task pill is just its icon already) and the
+ *    configuration picker truncate (CSS, down to the minimums below). The effort chip uses short
+ *    labels (Default, Low, Med, High, XHigh), so it keeps its width until step 4.
  * 2. The chat cost hides; it stays in the ring's details.
  * 3. The Compact pill hides; Compact stays in the ring's details.
  * 4. The pills go tight: the where pill shows only its icon and the configuration and effort
- *    pickers drop to a character or two.
+ *    pickers drop to a few characters.
  * 5. Only then do the MCP servers and rules buttons fold into ＋ (as rows that open the same
  *    panels), so they stay visible in a 320px sidebar during a chat.
  * Below the last step the pills keep shrinking toward their chevrons. ＋, the approvals shield, the
@@ -31,6 +32,8 @@ export interface ComposerRowContent {
 	hasCompactNudge: boolean
 	/** The model has reasoning, so the effort picker shows. */
 	hasEffort: boolean
+	/** The where pill shows a task name; with no task it is just its icon. */
+	hasTask: boolean
 }
 
 const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
@@ -57,14 +60,15 @@ export const COMPOSER_ROW_WIDTHS = {
 	plus: 20,
 	/** The MCP servers button and the rules button, each the ＋'s size. */
 	panelButton: 20,
-	/** The where pill truncated to a few characters ("◇ No…▾"). */
-	whereMin: 40,
-	/** The configuration picker truncated to a few characters (its min-w-14). */
-	configMin: 56,
-	/** The effort picker truncated to a few characters (its min-w-11). */
-	effortMin: 44,
-	/** Tight pills: the where pill's icon alone, the configuration picker's min-w-10, the effort picker's min-w-7. */
-	whereTight: 20,
+	/** The where pill with no task: its icon alone (tasklist icon, padding and border). */
+	whereIcon: 22,
+	/** The where pill with a task, truncated to a few characters ("◇ Na…▾"). */
+	whereNamed: 52,
+	/** The configuration picker truncated to a still-readable name (about "OpenAI Q…"). */
+	configMin: 72,
+	/** The effort chip at its widest short label ("Default ▾"); it doesn't truncate until the pills go tight. */
+	effortMin: 60,
+	/** Tight pills: the where pill's icon alone, the configuration picker's and the effort chip's few characters. */
 	configTight: 40,
 	effortTight: 28,
 	ring: 22,
@@ -81,8 +85,8 @@ export const COMPOSER_ROW_WIDTHS = {
 export function composerRowMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
 	const w = COMPOSER_ROW_WIDTHS
 	const pills = layout.tightPills
-		? w.whereTight + w.configTight + (content.hasEffort ? w.groupGap + w.effortTight : 0)
-		: w.whereMin + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
+		? w.whereIcon + w.configTight + (content.hasEffort ? w.groupGap + w.effortTight : 0)
+		: (content.hasTask ? w.whereNamed : w.whereIcon) + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
 	const panelButtons = layout.inlinePanelButtons ? 2 * (w.panelButton + w.groupGap) : 0
 	// ＋, [MCP, rules,] where, configuration, [effort,] shield: one gap between each.
 	const group = w.plus + panelButtons + pills + 3 * w.groupGap + w.approvals
@@ -124,10 +128,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number | un
 /** `composerRowLayout` driven by the row element's measured width. */
 export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
 	const width = useElementWidth(ref)
-	const { hasUsage, hasCost, hasCompactNudge, hasEffort } = content
+	const { hasUsage, hasCost, hasCompactNudge, hasEffort, hasTask } = content
 	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
 	return useMemo(
-		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge, hasEffort }),
-		[width, hasUsage, hasCost, hasCompactNudge, hasEffort],
+		() => composerRowLayout(width, { hasUsage, hasCost, hasCompactNudge, hasEffort, hasTask }),
+		[width, hasUsage, hasCost, hasCompactNudge, hasEffort, hasTask],
 	)
 }

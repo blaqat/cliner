@@ -27,7 +27,11 @@ export function modelHasReasoning(modelId: string | undefined, modelInfo: ModelI
 }
 
 export const formatEffort = (effort: string) =>
-	effort === "none" ? "Provider default" : effort.charAt(0).toUpperCase() + effort.slice(1)
+	effort === "none" ? "Provider default" : effort === "xhigh" ? "XHigh" : effort.charAt(0).toUpperCase() + effort.slice(1)
+
+/** The effort chip's label: short enough for a narrow sidebar. The menu and tooltip keep {@link formatEffort}. */
+export const formatEffortShort = (effort: string) =>
+	effort === "none" ? "Default" : effort === "medium" ? "Med" : formatEffort(effort)
 
 /**
  * Updates this chat's (or the next chat's) configuration for `mode` without touching Settings.
@@ -150,7 +154,7 @@ export function useEffortSelection(mode: Mode, { modelId, modelInfo, defaultEffo
 		pending,
 		description: pending
 			? `Currently uses ${formatEffort(effective?.reasoningEffort ?? "none")}; change pending`
-			: "Reasoning effort",
+			: `Reasoning effort: ${formatEffort(selected)}`,
 		/** A next-message-only choice can't change while a turn runs. */
 		locked: !!composerNextMessageOnly && busy,
 		busy,

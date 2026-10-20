@@ -60,7 +60,7 @@ import { type ComposerRowLayout, useComposerRowLayout } from "./composer/compose
 import { modelHasReasoning } from "./composer/modelSelection"
 import PlusMenu from "./composer/PlusMenu"
 import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
-import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
+import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
 	findNoteMention,
@@ -1758,11 +1758,13 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", metaKeyChar)
 			.replace(/.$/, (match) => match.toUpperCase())
 
+		const whereHasTask = useWherePillHasTask()
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
+			hasTask: whereHasTask,
 		})
 
 		return (
@@ -2084,14 +2086,22 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								<RulesButton onUseScript={startScriptDraft} />
 							</>
 						)}
-						<span className="flex min-w-[18px] shrink empty:hidden" data-shrink="">
+						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
+						<span
+							className={cn(
+								"flex empty:hidden",
+								!whereHasTask ? "shrink-0" : rowLayout.tightPills ? "min-w-[22px] shrink" : "min-w-[52px] shrink",
+							)}
+							data-shrink="">
 							<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
 						</span>
 						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
-						<span className={cn("flex", rowLayout.tightPills ? "min-w-10" : "min-w-14")} data-shrink="">
+						<span className={cn("flex", rowLayout.tightPills ? "min-w-[40px]" : "min-w-[72px]")} data-shrink="">
 							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
 						</span>
-						<span className={cn("flex empty:hidden", rowLayout.tightPills ? "min-w-7" : "min-w-11")} data-shrink="">
+						<span
+							className={cn("flex empty:hidden", rowLayout.tightPills ? "min-w-[28px]" : "min-w-[60px]")}
+							data-shrink="">
 							<ReasoningEffortPicker
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								mode={mode}

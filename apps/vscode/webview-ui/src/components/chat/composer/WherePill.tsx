@@ -30,31 +30,57 @@ function matchesQuery(group: TaskGroupSummary, query: string): boolean {
 	return !q || group.title.toLowerCase().includes(q) || group.tags.some((tag) => tag.value.toLowerCase().includes(q))
 }
 
+/**
+ * The task the pill shows: the thread's, the pending one for a new thread, or the fixed one on a
+ * task page. Shared with the composer row, which sizes the pill by whether there is a task name.
+ */
+function useWhereTask() {
+	const { currentTaskItem, taskGroups } = useExtensionState()
+	const pendingId = useComposerTaskGroup()
+	const pageId = useComposerPageTaskGroup()
+	const threadId = currentTaskItem?.id
+	// On a task page, new threads always go into that task: the task part is fixed.
+	const fixedId = !threadId ? pageId : undefined
+	const selectedId = fixedId ?? (threadId ? currentTaskItem?.taskGroupId : pendingId)
+	const selected = (taskGroups ?? []).find((group) => group.id === selectedId)
+	const fixedTitle = fixedId ? (selected?.title ?? "This task") : undefined
+	return {
+		threadId,
+		fixedId,
+		selectedId,
+		selected,
+		fixedTitle,
+		title: fixedTitle ?? selected?.title,
+		/** Subagent threads belong to their root thread's task; the pill doesn't show for them. */
+		hidden: !!currentTaskItem?.isSubagent,
+	}
+}
+
+/** True when the where pill shows a task name (so it needs room for it); false for "No task" or no pill. */
+export function useWherePillHasTask(): boolean {
+	const { title, hidden } = useWhereTask()
+	return !hidden && !!title
+}
+
 interface WherePillProps {
 	onOpenTaskGroup?: (taskGroupId: string) => void
-	/** Icon only (the task name and chevron hide; the tooltip and label keep them), for very narrow rows. */
+	/** Icon only even with a task (the name and chevron hide; the tooltip and label keep them), for very narrow rows. */
 	iconOnly?: boolean
 }
 
 /**
- * The composer's "where" pill: the thread's task (`No task ▾`) and, once worktrees land, its
- * workspace. In a new thread it picks the task the first message files the thread into; in an
+ * The composer's "where" pill: the thread's task and, once worktrees land, its workspace. With no
+ * task it is just the icon ("No task" in the tooltip and label); with one it shows a short,
+ * truncating name. In a new thread it picks the task the first message files the thread into; in an
  * existing thread it moves the thread right away. A branch → task suggestion shows as a ghost row
  * at the top of the menu, and a green branch codicon on the pill hints at it.
  */
 const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
-	const { currentTaskItem, taskGroups } = useExtensionState()
-	const pendingId = useComposerTaskGroup()
-	const pageId = useComposerPageTaskGroup()
+	const { taskGroups } = useExtensionState()
 	const suggestion = useBranchTaskSuggestion()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState("")
-	const threadId = currentTaskItem?.id
-	const groups = taskGroups ?? []
-	// On a task page, new threads always go into that task: the task part is fixed.
-	const fixedId = !threadId ? pageId : undefined
-	const selectedId = fixedId ?? (threadId ? currentTaskItem?.taskGroupId : pendingId)
-	const selected = groups.find((group) => group.id === selectedId)
+	const { threadId, fixedId, selectedId, selected, fixedTitle, title, hidden } = useWhereTask()
 	const recent = useMemo(
 		() =>
 			[...(taskGroups ?? [])]
@@ -64,12 +90,12 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 		[taskGroups, query],
 	)
 	// Subagent threads belong to their root thread's task; they can't move on their own.
-	if (currentTaskItem?.isSubagent) {
+	if (hidden) {
 		return null
 	}
-	const fixedTitle = fixedId ? (selected?.title ?? "This task") : undefined
-	const title = fixedTitle ?? selected?.title
 	const hasTask = !!title
+	// No task: nothing worth a label, so the pill is just the icon.
+	const showName = hasTask && !iconOnly
 
 	const close = () => {
 		setOpen(false)
@@ -105,14 +131,14 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 				<button
 					aria-label={pillLabel}
 					className={cn(
-						"flex h-4.5 min-w-[18px] max-w-40 shrink cursor-pointer items-center gap-1 overflow-hidden rounded-full border px-1 text-[11px] leading-none whitespace-nowrap",
+						"flex h-4.5 min-w-[18px] max-w-[120px] shrink cursor-pointer items-center gap-1 overflow-hidden rounded-full border px-1 text-[11px] leading-none whitespace-nowrap",
 						hasTask
 							? "border-(--vscode-charts-purple)/50 bg-(--vscode-charts-purple)/15 text-foreground"
 							: "border-dashed border-description/50 bg-transparent text-description hover:text-foreground",
 						open && "border-(--vscode-focusBorder)",
 					)}
 					data-fixed={fixedId ? "true" : undefined}
-					data-icon-only={iconOnly ? "true" : undefined}
+					data-icon-only={showName ? undefined : "true"}
 					data-suggestion={suggestion ? "true" : undefined}
 					data-testid="where-pill"
 					title={
@@ -122,7 +148,7 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 								? `${hasTask ? `Task: ${title}` : "No task"} · ${suggestion.verb} ${suggestion.group.title}? (it has the branch you're on)`
 								: hasTask
 									? `Task: ${title}`
-									: "File this thread into a task"
+									: "No task. Click to file this thread into one"
 					}
 					type="button">
 					<span
@@ -132,7 +158,7 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							hasTask && "text-(--vscode-charts-purple)",
 						)}
 					/>
-					{!iconOnly && <span className="truncate">{title ?? "No task"}</span>}
+					{showName && <span className="truncate">{title}</span>}
 					<WorktreeBadgeSlot threadId={threadId} />
 					{suggestion && (
 						<span
@@ -141,7 +167,7 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							data-testid="where-pill-suggestion-hint"
 						/>
 					)}
-					{!iconOnly && <span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />}
+					{showName && <span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />}
 				</button>
 			</PopoverTrigger>
 			<PopoverContent

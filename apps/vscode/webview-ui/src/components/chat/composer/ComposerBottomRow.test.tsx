@@ -5,6 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import ChatTextArea, { type ChatTextAreaProps } from "../ChatTextArea"
 import { type ComposerRowLayout, composerRowLayout, FULL_COMPOSER_ROW } from "./composerRowLayout"
 
+// A thread filed into a task, to see the where pill with a name; the default is no task.
+const mocks = vi.hoisted(() => ({
+	withTask: false,
+	// Stable references: a new array every render would re-run effects that depend on it.
+	taskState: {
+		currentTaskItem: { id: "thread", taskGroupId: "sso" },
+		taskGroups: [{ id: "sso", title: "SSO redirect loop", tags: [], createdAt: 0, updatedAt: 0, noteCount: 0 }],
+	},
+}))
+
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		mode: "act",
@@ -15,6 +25,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		remoteWorkflowToggles: {},
 		mcpServers: [],
 		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
+		...(mocks.withTask ? mocks.taskState : {}),
 	}),
 }))
 
@@ -79,7 +90,10 @@ const usageSlot = (
 ) => ({ hasCost: true, hasCompactNudge: true, render: renderMeter })
 
 describe("composer bottom row", () => {
-	afterEach(() => vi.unstubAllGlobals())
+	afterEach(() => {
+		vi.unstubAllGlobals()
+		mocks.withTask = false
+	})
 
 	it("is ＋, MCP servers, rules, where, configuration, effort, the approvals shield, then the meter and the Ask/Act switch", () => {
 		renderComposer(usageSlot())
@@ -198,16 +212,50 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
 		expect(screen.getByTestId("where-pill")).toHaveAttribute("data-icon-only", "true")
-		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-10")
-		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-7")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-[40px]")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-[28px]")
 	})
 
-	it("keeps the where pill's name and the usual picker minimums while there's room", () => {
-		stubRowWidth(400)
+	it("keeps the where pill's task name and the usual picker minimums while there's room", () => {
+		mocks.withTask = true
+		stubRowWidth(440)
 		renderComposer(usageSlot())
-		expect(screen.getByTestId("where-pill")).not.toHaveAttribute("data-icon-only")
-		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-14")
-		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-11")
+		const pill = screen.getByTestId("where-pill")
+		expect(pill).not.toHaveAttribute("data-icon-only")
+		expect(pill).toHaveTextContent("SSO redirect loop")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-[72px]")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-[60px]")
+	})
+
+	it.each([
+		320, 420, 480,
+	])("at %ipx the where pill is just its icon with no task, and the effort chip says Default", (width) => {
+		stubRowWidth(width)
+		renderComposer(usageSlot())
+		const pill = screen.getByTestId("where-pill")
+		expect(pill).toHaveAttribute("data-icon-only", "true")
+		expect(pill).toHaveAccessibleName("No task")
+		expect(pill.closest("[data-shrink]")).toHaveClass("shrink-0")
+		// Realistic labels: the effort chip is short, so it never shows "Provide…".
+		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent(/^Default$/)
+		expect(screen.getByTestId("reasoning-effort-picker")).toHaveAttribute("title", "Reasoning effort: Provider default")
+		// The MCP servers and rules buttons stay on the row down to 320px.
+		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
+		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
+	})
+
+	it.each([
+		[320, true],
+		[420, false],
+		[480, false],
+	])("at %ipx with a task the where pill is icon-only: %s", (width, iconOnly) => {
+		mocks.withTask = true
+		stubRowWidth(width)
+		renderComposer(usageSlot())
+		const pill = screen.getByTestId("where-pill")
+		expect(pill.hasAttribute("data-icon-only")).toBe(iconOnly)
+		expect(pill).toHaveAccessibleName("Task: SSO redirect loop")
+		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 	})
 
 	it.each([

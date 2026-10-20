@@ -229,6 +229,22 @@ describe("ReasoningEffortPicker", () => {
 		expect(screen.queryByRole("option", { name: "Manage configurations…" })).not.toBeInTheDocument()
 	})
 
+	it.each([
+		["none", "Default", "Provider default"],
+		["low", "Low", "Low"],
+		["medium", "Med", "Medium"],
+		["high", "High", "High"],
+		["xhigh", "XHigh", "XHigh"],
+	])("shows %s as the short label %s, with the full label %s in the menu and tooltip", (effort, short, full) => {
+		mocks.state.apiConfiguration = { actModeReasoningEffort: effort }
+		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} />)
+		const chip = screen.getByTestId("reasoning-effort-picker")
+		expect(chip).toHaveTextContent(new RegExp(`^${short}$`))
+		expect(chip).toHaveAttribute("title", `Reasoning effort: ${full}`)
+		expect(chip).toHaveAccessibleName(`Reasoning effort: ${full}`)
+		expect(screen.getByRole("option", { name: full })).toHaveAttribute("aria-selected", "true")
+	})
+
 	it("resets the chat and arms a next-message choice like the configuration picker", () => {
 		mocks.state.currentTaskItem = { id: "chat" }
 		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} />)
@@ -244,7 +260,7 @@ describe("ReasoningEffortPicker", () => {
 
 	it.each(["plan", "act"] as const)("updates only %s effort without saving provider or profile settings", (mode) => {
 		render(<ReasoningEffortPicker mode={mode} modelId="m" modelInfo={{ supportsReasoning: true }} provider="anthropic" />)
-		fireEvent.click(screen.getByRole("option", { name: "Xhigh" }))
+		fireEvent.click(screen.getByRole("option", { name: "XHigh" }))
 		expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({ mode, reasoningEffort: "xhigh", chatOverride: true }),
 		)
@@ -273,8 +289,8 @@ describe("ReasoningEffortPicker", () => {
 			act: { profileId: "p1", provider: "anthropic", modelId: "m", reasoningEffort: "high" },
 		}
 		render(<ReasoningEffortPicker mode="act" modelId="m" modelInfo={{ supportsReasoning: true }} />)
-		expect(screen.getByRole("option", { name: "Xhigh" })).toHaveAttribute("aria-selected", "true")
-		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent("Xhigh (pending)")
+		expect(screen.getByRole("option", { name: "XHigh" })).toHaveAttribute("aria-selected", "true")
+		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent("XHigh (pending)")
 		expect(mocks.state.apiConfiguration).toEqual({ planModeReasoningEffort: "low", actModeReasoningEffort: "high" })
 	})
 

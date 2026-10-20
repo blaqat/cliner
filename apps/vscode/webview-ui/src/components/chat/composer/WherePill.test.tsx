@@ -73,9 +73,31 @@ describe("WherePill: task", () => {
 		expect(within(menu).queryByText("Bulk invoice export")).not.toBeInTheDocument()
 	})
 
+	it("with no task it is just the icon, with No task in the tooltip and label", () => {
+		render(<WherePill />)
+		const pill = screen.getByTestId("where-pill")
+		expect(pill).toHaveTextContent("")
+		expect(pill).toHaveAttribute("data-icon-only", "true")
+		expect(pill.querySelector(".codicon-tasklist")).not.toBeNull()
+		expect(pill.querySelector(".codicon-chevron-down")).toBeNull()
+		expect(pill).toHaveAccessibleName("No task")
+		expect(pill.getAttribute("title")).toMatch(/^No task/)
+	})
+
+	it("with a task it shows the task name, truncating, and the chevron", () => {
+		act(() => setComposerTaskGroup("sso"))
+		render(<WherePill />)
+		const pill = screen.getByTestId("where-pill")
+		expect(pill).toHaveTextContent("SSO redirect loop")
+		expect(pill).not.toHaveAttribute("data-icon-only")
+		expect(pill.querySelector(".truncate")).toHaveTextContent("SSO redirect loop")
+		expect(pill.querySelector(".codicon-chevron-down")).not.toBeNull()
+		expect(pill).toHaveAttribute("title", "Task: SSO redirect loop")
+	})
+
 	it("shows No task by default and lists recent tasks newest first with their first tag", () => {
 		render(<WherePill />)
-		expect(screen.getByTestId("where-pill")).toHaveTextContent("No task")
+		expect(screen.getByTestId("where-pill")).toHaveAccessibleName("No task")
 
 		const menu = openMenu()
 		const titles = within(menu)
@@ -90,10 +112,12 @@ describe("WherePill: task", () => {
 	})
 
 	it("icon-only keeps the label and menu but hides the name and chevron", () => {
+		act(() => setComposerTaskGroup("sso"))
 		render(<WherePill iconOnly />)
 		const pill = screen.getByTestId("where-pill")
 		expect(pill).toHaveAttribute("data-icon-only", "true")
-		expect(pill).not.toHaveTextContent("No task")
+		expect(pill).not.toHaveTextContent("SSO redirect loop")
+		expect(pill).toHaveAccessibleName("Task: SSO redirect loop")
 		expect(pill.querySelector(".codicon-tasklist")).not.toBeNull()
 		expect(pill.querySelector(".codicon-chevron-down")).toBeNull()
 		expect(pill).toHaveAccessibleName()
@@ -211,7 +235,7 @@ describe("WherePill: branch suggestion", () => {
 	it("hints on the pill and offers to add a new thread to the task from inside the menu", () => {
 		render(<WherePill />)
 		const pill = screen.getByTestId("where-pill")
-		expect(pill).toHaveTextContent("No task")
+		expect(pill).toHaveTextContent("")
 		expect(pill).toHaveAttribute("data-suggestion", "true")
 		expect(screen.getByTestId("where-pill-suggestion-hint")).toBeInTheDocument()
 		expect(pill).toHaveAccessibleName("No task; suggested: add to Bulk invoice export")

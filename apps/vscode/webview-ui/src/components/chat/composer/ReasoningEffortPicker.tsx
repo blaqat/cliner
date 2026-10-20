@@ -17,7 +17,7 @@ import {
 	NEXT_MESSAGE_VALUE,
 	RESET_CONFIGURATION_VALUE,
 } from "./ConfigPicker"
-import { formatEffort, useEffortSelection } from "./modelSelection"
+import { formatEffort, formatEffortShort, useEffortSelection } from "./modelSelection"
 
 interface ReasoningEffortPickerProps {
 	mode: Mode
@@ -46,14 +46,14 @@ const ReasoningEffortPicker = ({ mode, modelId, modelInfo, defaultEffort = "none
 			}}
 			value={effort.selected}>
 			<SelectTrigger
-				aria-label="Reasoning effort"
+				aria-label={`Reasoning effort: ${formatEffort(effort.selected)}`}
 				className={CHIP_TRIGGER_CLASS}
 				data-testid="reasoning-effort-picker"
 				showIcon={false}
 				title={effort.description}>
 				<SelectValue>
 					<span className="truncate">
-						{formatEffort(effort.selected)}
+						{formatEffortShort(effort.selected)}
 						{effort.pending ? " (pending)" : ""}
 					</span>
 				</SelectValue>

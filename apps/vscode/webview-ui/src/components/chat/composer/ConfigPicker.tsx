@@ -58,7 +58,7 @@ const ConfigPicker = ({ mode, fallbackLabel }: ConfigPickerProps) => {
 			value={config.current?.id ?? ""}>
 			<SelectTrigger
 				aria-label={`${config.modeLabel} configuration`}
-				className={cn(CHIP_TRIGGER_CLASS, "max-w-40")}
+				className={cn(CHIP_TRIGGER_CLASS, "max-w-[200px]")}
 				data-testid="config-picker"
 				showIcon={false}
 				title={config.description}>
