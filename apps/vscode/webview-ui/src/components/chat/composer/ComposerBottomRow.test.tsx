@@ -212,8 +212,8 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
 		expect(screen.getByTestId("where-pill")).toHaveAttribute("data-icon-only", "true")
-		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-[40px]")
-		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-[28px]")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveAttribute("data-floor", "40")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveAttribute("data-floor", "28")
 	})
 
 	it("keeps the where pill's task name and the usual picker minimums while there's room", () => {
@@ -223,8 +223,8 @@ describe("composer bottom row", () => {
 		const pill = screen.getByTestId("where-pill")
 		expect(pill).not.toHaveAttribute("data-icon-only")
 		expect(pill).toHaveTextContent("SSO redirect loop")
-		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveClass("min-w-[72px]")
-		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveClass("min-w-[60px]")
+		expect(screen.getByTestId("config-picker").closest("[data-shrink]")).toHaveAttribute("data-floor", "72")
+		expect(screen.getByTestId("reasoning-effort-picker").closest("[data-shrink]")).toHaveAttribute("data-floor", "60")
 	})
 
 	it.each([
@@ -235,7 +235,7 @@ describe("composer bottom row", () => {
 		const pill = screen.getByTestId("where-pill")
 		expect(pill).toHaveAttribute("data-icon-only", "true")
 		expect(pill).toHaveAccessibleName("No task")
-		expect(pill.closest("[data-shrink]")).toHaveClass("shrink-0")
+		expect(pill.closest("[data-shrink]")).toBeNull()
 		// Realistic labels: the effort chip is short, so it never shows "Provide…".
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent(/^Default$/)
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveAttribute("title", "Reasoning effort: Provider default")

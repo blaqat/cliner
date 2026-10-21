@@ -60,6 +60,7 @@ import { type ComposerRowLayout, useComposerRowLayout } from "./composer/compose
 import { modelHasReasoning } from "./composer/modelSelection"
 import PlusMenu from "./composer/PlusMenu"
 import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
+import { ShrinkSlot } from "./composer/ShrinkSlot"
 import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
@@ -2087,28 +2088,27 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							</>
 						)}
 						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
-						<span
-							className={cn(
-								"flex empty:hidden",
-								!whereHasTask ? "shrink-0" : rowLayout.tightPills ? "min-w-[22px] shrink" : "min-w-[52px] shrink",
-							)}
-							data-shrink="">
-							<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
-						</span>
+						{whereHasTask ? (
+							<ShrinkSlot floor={rowLayout.tightPills ? 22 : 52}>
+								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
+							</ShrinkSlot>
+						) : (
+							<span className="flex shrink-0 empty:hidden">
+								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
+							</span>
+						)}
 						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
-						<span className={cn("flex", rowLayout.tightPills ? "min-w-[40px]" : "min-w-[72px]")} data-shrink="">
+						<ShrinkSlot floor={rowLayout.tightPills ? 40 : 72}>
 							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
-						</span>
-						<span
-							className={cn("flex empty:hidden", rowLayout.tightPills ? "min-w-[28px]" : "min-w-[60px]")}
-							data-shrink="">
+						</ShrinkSlot>
+						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60}>
 							<ReasoningEffortPicker
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								mode={mode}
 								modelId={selectedModelId}
 								modelInfo={selectedModelInfo}
 							/>
-						</span>
+						</ShrinkSlot>
 						<ApprovalsMenu />
 					</ButtonGroup>
 					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
