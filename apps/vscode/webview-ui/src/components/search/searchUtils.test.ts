@@ -102,6 +102,11 @@ describe("mergeResults", () => {
 		expect(merged[0].tags).toHaveLength(1)
 	})
 
+	it("lists message hits after every other kind, even a looser thread match", () => {
+		const merged = mergeResults([row("thread", "loose-thread", 0.39, 1)], [row("message", "exact", 0.35, 9)])
+		expect(merged.map((r) => r.id)).toEqual(["loose-thread", "exact"])
+	})
+
 	it("keeps the server's rank order for notes instead of re-sorting by recency", () => {
 		// The server returns name/description hits before body hits. The newer
 		// note here is the body hit, so a recency sort would flip them.
@@ -123,7 +128,7 @@ describe("mergeResults", () => {
 
 	it("drops unknown kinds and empty ids from server results", () => {
 		const rows = fromServerResults([
-			{ kind: "message", id: "m", title: "T", snippet: "s", ts: 3, taskGroupId: "", threadId: "t" },
+			{ kind: "message", id: "m", title: "T", snippet: "s", ts: 3, taskGroupId: "", threadId: "t", author: "" },
 			{ kind: "bogus", id: "x", title: "", snippet: "", ts: 0, taskGroupId: "", threadId: "" },
 			{ kind: "note", id: "", title: "", snippet: "", ts: 0, taskGroupId: "g", threadId: "" },
 		])
@@ -137,6 +142,25 @@ describe("filters", () => {
 		expect(countByKind(rows)).toEqual({ task: 1, thread: 2, note: 0, message: 1 })
 		expect(filterRows(rows, "threads").map((r) => r.id)).toEqual(["b", "c"])
 		expect(filterRows(rows, "all")).toHaveLength(4)
+	})
+
+	it("narrows messages by who wrote them, leaving other kinds alone", () => {
+		const rows = [
+			row("thread", "t", 0),
+			row("message", "mine", 0, 0, { author: "you" }),
+			row("message", "theirs", 0, 0, { author: "agent" }),
+		]
+		expect(filterRows(rows, "messages", "you").map((r) => r.id)).toEqual(["mine"])
+		expect(filterRows(rows, "messages", "agent").map((r) => r.id)).toEqual(["theirs"])
+		expect(filterRows(rows, "messages").map((r) => r.id)).toEqual(["mine", "theirs"])
+		expect(filterRows(rows, "all", "you").map((r) => r.id)).toEqual(["t", "mine"])
+	})
+
+	it("reads the author from server message results", () => {
+		const [hit] = fromServerResults([
+			{ kind: "message", id: "m", title: "T", snippet: "s", ts: 3, taskGroupId: "", threadId: "t", author: "agent" },
+		])
+		expect(hit.author).toBe("agent")
 	})
 })
 

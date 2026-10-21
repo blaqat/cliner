@@ -128,6 +128,8 @@ interface SearchableMessage {
 	/** Index into the session's raw `messages` array; used in the result id. */
 	index: number
 	ts: number
+	/** Who wrote it: the user or the agent. */
+	author: "you" | "agent"
 	/**
 	 * Collapsed display text. Only the original is kept: matching runs a
 	 * case-insensitive regex over it, so no lowercase copy is stored.
@@ -177,7 +179,12 @@ function parseSessionMessages(raw: string): SearchableMessage[] | undefined {
 		if (!text) {
 			continue
 		}
-		messages.push({ index, ts: typeof message.ts === "number" ? message.ts : 0, text })
+		messages.push({
+			index,
+			ts: typeof message.ts === "number" ? message.ts : 0,
+			author: message.role === "user" ? "you" : "agent",
+			text,
+		})
 	}
 	return messages
 }
@@ -427,6 +434,7 @@ export class HistorySearcher {
 					title: thread?.title ?? (await this.sessionTitle(file.sessionId)) ?? "",
 					ts: message.ts || thread?.ts || file.mtimeMs,
 					snippet: searchSnippet(message.text, matchIndex),
+					author: message.author,
 				})
 			}
 		}

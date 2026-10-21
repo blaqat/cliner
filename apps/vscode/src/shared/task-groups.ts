@@ -107,4 +107,6 @@ export interface HistorySearchHit {
 	ts: number
 	taskGroupId?: string
 	threadId?: string
+	/** Message hits: who wrote the message. */
+	author?: "you" | "agent"
 }

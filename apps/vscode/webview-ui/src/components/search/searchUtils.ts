@@ -28,7 +28,21 @@ export interface SearchRow {
 	threadId?: string
 	/** 0 = best match, 1 = worst (Fuse scale). */
 	score: number
+	/** Message rows: who wrote the message. */
+	author?: MessageAuthor
+	/** Thread rows: settled, and the model it last ran. */
+	settled?: boolean
+	modelId?: string
 }
+
+export type MessageAuthor = "you" | "agent"
+export type MessageAuthorFilter = "anyone" | MessageAuthor
+
+export const MESSAGE_AUTHOR_FILTERS: { filter: MessageAuthorFilter; label: string }[] = [
+	{ filter: "anyone", label: "Anyone" },
+	{ filter: "you", label: "You" },
+	{ filter: "agent", label: "Agent" },
+]
 
 // Server matches are exact substrings in bodies. They rank below a close title
 // or tag match but above a loose fuzzy one; ties go to the newest.
@@ -90,6 +104,8 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 			id: item.id,
 			title: titleOf(item),
 			ts: item.lastActivityTs ?? item.ts,
+			settled: !!item.isSettled,
+			modelId: item.modelId || undefined,
 			tags: item.tags,
 			taskGroupId: item.taskGroupId || undefined,
 			threadId: item.id,
@@ -115,13 +131,17 @@ export function fromServerResults(results: SearchHistoryResult[]): SearchRow[] {
 				ts: Number(result.ts) || 0,
 				taskGroupId: result.taskGroupId || undefined,
 				threadId: result.threadId || undefined,
+				author: result.author === "you" || result.author === "agent" ? result.author : undefined,
 				score: kind === "note" ? SERVER_SCORE.note + noteRank++ * NOTE_RANK_STEP : SERVER_SCORE[kind],
 			},
 		]
 	})
 }
 
-/** One ranked list: local rows win on duplicates (they carry tags and a real score); best score first, then newest. */
+/**
+ * One ranked list: local rows win on duplicates (they carry tags and a real score); best score first, then newest.
+ * Message hits always come last: a word found in some message matters less than any task, thread or note that matched.
+ */
 export function mergeResults(local: SearchRow[], server: SearchRow[]): SearchRow[] {
 	const seen = new Set<string>()
 	const merged: SearchRow[] = []
@@ -132,7 +152,8 @@ export function mergeResults(local: SearchRow[], server: SearchRow[]): SearchRow
 		seen.add(key)
 		merged.push(row)
 	}
-	return merged.sort((a, b) => a.score - b.score || b.ts - a.ts)
+	const isMessage = (row: SearchRow) => (row.kind === "message" ? 1 : 0)
+	return merged.sort((a, b) => isMessage(a) - isMessage(b) || a.score - b.score || b.ts - a.ts)
 }
 
 export function countByKind(rows: SearchRow[]): Record<SearchResultKind, number> {
@@ -141,9 +162,12 @@ export function countByKind(rows: SearchRow[]): Record<SearchResultKind, number>
 	return counts
 }
 
-export function filterRows(rows: SearchRow[], filter: SearchFilter): SearchRow[] {
+/** Rows of the chosen kind; message rows also by who wrote them (`anyone` keeps all). */
+export function filterRows(rows: SearchRow[], filter: SearchFilter, author: MessageAuthorFilter = "anyone"): SearchRow[] {
 	const kind = SEARCH_FILTERS.find((entry) => entry.filter === filter)?.kind
-	return kind ? rows.filter((row) => row.kind === kind) : rows
+	return rows.filter(
+		(row) => (!kind || row.kind === kind) && (author === "anyone" || row.kind !== "message" || row.author === author),
+	)
 }
 
 const tagKey = (tag: TaskTag) => `${tag.kind}:${tag.value.toLowerCase()}`

@@ -61,6 +61,7 @@ export function historySearchHitToProto(hit: HistorySearchHit): ProtoSearchHisto
 		ts: hit.ts,
 		taskGroupId: hit.taskGroupId ?? "",
 		threadId: hit.threadId ?? "",
+		author: hit.author ?? "",
 	})
 }
 

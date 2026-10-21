@@ -208,6 +208,7 @@ message SearchHistoryResult {
   int64 ts = 5;
   string task_group_id = 6;
   string thread_id = 7;
+  string author = 8; // message results: "you" | "agent"
 }
 
 message SearchHistoryResponse {

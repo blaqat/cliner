@@ -95,6 +95,7 @@ describe("HistorySearcher", () => {
 			const hits = await searcher.search({ query: "DEPLOY", kind: "messages", threads })
 			expect(hits).toHaveLength(2)
 			expect(hits.map((h) => h.id).sort()).toEqual(["s1:0", "s1:1"])
+			expect(Object.fromEntries(hits.map((h) => [h.id, h.author]))).toEqual({ "s1:0": "you", "s1:1": "agent" })
 			for (const hit of hits) {
 				expect(hit.kind).toBe("message")
 				expect(hit.threadId).toBe("s1")
