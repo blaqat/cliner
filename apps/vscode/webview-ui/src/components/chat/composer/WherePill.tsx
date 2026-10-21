@@ -167,7 +167,9 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"
-				className={cn("menu-rise w-64 p-1", COMPOSER_MENU_SCROLL_CLASS)}
+				// One scrollbar: the task list scrolls and shrinks to fit a short window. The menu itself
+				// only scrolls (without a bar of its own) as a last resort when even that doesn't fit.
+				className={cn("menu-rise flex w-64 flex-col p-1 [scrollbar-width:none]", COMPOSER_MENU_SCROLL_CLASS)}
 				data-testid="where-menu"
 				onKeyDown={handleMenuKeyDown}
 				side="top">
@@ -177,10 +179,10 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 						New threads here go into <span className="text-foreground">{fixedTitle}</span>.
 					</div>
 				) : (
-					<div aria-label="Task" role="menu">
-						{/* Pinned to the top of the menu, so it stays in reach when a short window makes the menu scroll. */}
+					<div aria-label="Task" className="flex min-h-0 flex-col" role="menu">
+						{/* Pinned to the top, so it stays in reach even if the menu has to scroll. */}
 						<div
-							className={cn("sticky top-0 z-10 -mx-1 bg-menu px-1 py-1", !suggestion && "-mt-1")}
+							className={cn("sticky top-0 z-10 -mx-1 shrink-0 bg-menu px-1 py-1", !suggestion && "-mt-1")}
 							data-testid="where-search">
 							<Input
 								aria-label="Find a task"
@@ -198,11 +200,12 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							/>
 						</div>
 						{recent.length > 0 && <div className={MENU_HEADING_CLASS}>{query ? "Matching tasks" : "Recent"}</div>}
-						{/* Every task, newest first; past eight rows the list scrolls and the rows below stay put. */}
+						{/* Every task, newest first; past eight rows (or fewer when the window is short, down to two)
+						    the list scrolls and the rows below stay put. */}
 						<div
 							className="overflow-y-auto overscroll-contain"
 							data-testid="where-task-list"
-							style={{ maxHeight: VISIBLE_TASK_ROWS * 24 }}>
+							style={{ maxHeight: VISIBLE_TASK_ROWS * 24, minHeight: Math.min(recent.length, 2) * 24 }}>
 							{recent.map((group) => (
 								<button
 									aria-checked={group.id === selectedId}

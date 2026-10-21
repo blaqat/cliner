@@ -123,7 +123,10 @@ describe("WherePill: task", () => {
 		expect(list).toHaveStyle({ maxHeight: "192px" })
 		expect(list).toHaveClass("overflow-y-auto")
 		expect(list).not.toContainElement(within(menu).getByText("No task"))
-		expect(menu).toHaveClass("overflow-y-auto")
+		// One visible scrollbar: the list shrinks (to two rows at least) in a short window, and the menu
+		// only scrolls without a bar as a last resort.
+		expect(list).toHaveStyle({ minHeight: "48px" })
+		expect(menu).toHaveClass("flex-col", "overflow-y-auto", "[scrollbar-width:none]")
 		// The find field stays pinned at the top when the whole menu scrolls in a short window.
 		const search = within(menu).getByTestId("where-search")
 		expect(search).toHaveClass("sticky", "top-0", "bg-menu")
