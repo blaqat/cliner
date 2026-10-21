@@ -178,20 +178,25 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 					</div>
 				) : (
 					<div aria-label="Task" role="menu">
-						<Input
-							aria-label="Find a task"
-							autoFocus
-							className="mb-1 h-6 rounded-xs px-1.5 py-0 text-xs md:text-xs"
-							onChange={(event) => setQuery(event.target.value)}
-							onKeyDown={(event) => {
-								if (event.key === "Enter" && recent[0]) {
-									event.preventDefault()
-									pick(recent[0].id)
-								}
-							}}
-							placeholder="Find a task…"
-							value={query}
-						/>
+						{/* Pinned to the top of the menu, so it stays in reach when a short window makes the menu scroll. */}
+						<div
+							className={cn("sticky top-0 z-10 -mx-1 bg-menu px-1 py-1", !suggestion && "-mt-1")}
+							data-testid="where-search">
+							<Input
+								aria-label="Find a task"
+								autoFocus
+								className="h-6 rounded-xs px-1.5 py-0 text-xs md:text-xs"
+								onChange={(event) => setQuery(event.target.value)}
+								onKeyDown={(event) => {
+									if (event.key === "Enter" && recent[0]) {
+										event.preventDefault()
+										pick(recent[0].id)
+									}
+								}}
+								placeholder="Find a task…"
+								value={query}
+							/>
+						</div>
 						{recent.length > 0 && <div className={MENU_HEADING_CLASS}>{query ? "Matching tasks" : "Recent"}</div>}
 						{/* Every task, newest first; past eight rows the list scrolls and the rows below stay put. */}
 						<div

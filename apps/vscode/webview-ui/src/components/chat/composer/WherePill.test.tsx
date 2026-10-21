@@ -124,6 +124,11 @@ describe("WherePill: task", () => {
 		expect(list).toHaveClass("overflow-y-auto")
 		expect(list).not.toContainElement(within(menu).getByText("No task"))
 		expect(menu).toHaveClass("overflow-y-auto")
+		// The find field stays pinned at the top when the whole menu scrolls in a short window.
+		const search = within(menu).getByTestId("where-search")
+		expect(search).toHaveClass("sticky", "top-0", "bg-menu")
+		expect(search).toContainElement(within(menu).getByLabelText("Find a task"))
+		expect(list).not.toContainElement(search)
 	})
 
 	it("icon-only keeps the label and menu but hides the name and chevron", () => {
