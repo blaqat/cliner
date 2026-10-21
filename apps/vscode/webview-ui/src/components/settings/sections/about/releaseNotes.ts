@@ -17,12 +17,14 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-2",
 		title: "Release 2",
-		builds: "fork.24–32",
+		builds: "fork.24–33",
 		date: "2026-10-21",
 		notes: [
 			"Composer: ＋ for mentions and files, MCP and rules/scripts buttons beside it, a where pill (task, worktree, branch), separate model and effort chips, the approvals shield and a context ring",
 			"Models page for saved configurations, and Profiles (a model and an effort under a name) for threads, subagents and text generation",
 			"Notebook review of agent edits, a history page, and Convert to rule, skill or workflow; # notes, thread: mentions and message links as context",
+			"Context and cost card: how full the window is with the auto-compact point, cost per model and for subagents, and Compact; the Compact pill stays as an icon on narrow rows",
+			"Search shows when each result was last active, labels messages You or Agent with a From filter, and lists message matches after tasks, threads and notes",
 			"Walkthroughs: review a thread's changes stop by stop with notes, optional Generate, and Open walkthrough on finished turns; the agent can also write one for changes that aren't local, like a GitLab merge request",
 			"Scripts with typed options, per-thread worktrees (git or mm), and terminal environment variables, .env and PATH for every command",
 			"Toasts for background threads, Back history, Settle all on tasks or any one thread from home or the task page (active threads listed first), a waiting-on-subagents status, and ⌘K search / ⌘S stash while Cline is focused",
