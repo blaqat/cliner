@@ -291,7 +291,7 @@ describe("InboxList task groups", () => {
 		expect(screen.getAllByTestId("inbox-row").map((el) => el.textContent)).toEqual([expect.stringContaining("Loose thread")])
 	})
 
-	it("expands to the two newest members plus an older count, and remembers it", () => {
+	it("expands to the two newest members plus Show more, and remembers it", () => {
 		const { unmount } = render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
 
@@ -299,13 +299,46 @@ describe("InboxList task groups", () => {
 		expect(members).toHaveTextContent("Implement steps")
 		expect(members).toHaveTextContent("Dev plan")
 		expect(members).not.toHaveTextContent("Refine ticket")
-		expect(members).toHaveTextContent("＋2 older")
+		expect(screen.getByTestId("inbox-task-group-more")).toHaveTextContent("Show 2 more")
 		unmount()
 
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 		expect(screen.getByRole("button", { name: "Collapse Bulk invoice export" })).toHaveAttribute("aria-expanded", "true")
 		fireEvent.click(screen.getByRole("button", { name: "Collapse Bulk invoice export" }))
 		expect(screen.queryByTestId("inbox-task-group-members")).not.toBeInTheDocument()
+	})
+
+	it("shows every member on Show more, active ones first and settled ones under a divider", () => {
+		mocks.state.taskHistory = [
+			item("m1", NOW - 2 * 60_000, { taskGroupId: "g", task: "Implement steps", isSettled: true }),
+			item("m2", NOW - 60 * 60_000, { taskGroupId: "g", task: "Dev plan" }),
+			item("m3", NOW - 120 * 60_000, { taskGroupId: "g", task: "Refine ticket", isSettled: true }),
+			item("m4", NOW - 180 * 60_000, { taskGroupId: "g", task: "Research" }),
+		]
+		mocks.state.sessionStatuses = {}
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		const members = screen.getByTestId("inbox-task-group-members")
+		const titles = () =>
+			within(members)
+				.getAllByTestId("inbox-row")
+				.map((row) => row.textContent ?? "")
+
+		// The preview is the newest active threads, not the newest threads.
+		expect(titles()).toEqual([expect.stringContaining("Dev plan"), expect.stringContaining("Research")])
+		fireEvent.click(screen.getByRole("button", { name: "Show 2 more" }))
+		expect(titles()).toEqual([
+			expect.stringContaining("Dev plan"),
+			expect.stringContaining("Research"),
+			expect.stringContaining("Implement steps"),
+			expect.stringContaining("Refine ticket"),
+		])
+		expect(within(members).getByTestId("inbox-task-group-settled-divider")).toBeInTheDocument()
+		// Older settled threads can be unsettled right here.
+		expect(within(members).getByRole("button", { name: "Unsettle Refine ticket" })).toBeInTheDocument()
+
+		fireEvent.click(screen.getByRole("button", { name: "Show fewer" }))
+		expect(titles()).toHaveLength(2)
 	})
 
 	it("opens the task from the row and from Open task ›, and opens member threads", () => {

@@ -296,6 +296,19 @@ describe("buildInbox task groups", () => {
 		expect(groups[0].members.map((row) => row.item.id)).toEqual(["m1", "m2"])
 	})
 
+	it("orders members active first, then settled, each newest first", () => {
+		const history = [
+			item("settledNew", NOW - MIN, { taskGroupId: "g", isSettled: true }),
+			item("activeOld", NOW - 30 * MIN, { taskGroupId: "g" }),
+			item("settledOld", NOW - 40 * MIN, { taskGroupId: "g", isSettled: true }),
+			item("activeNew", NOW - 5 * MIN, { taskGroupId: "g" }),
+		]
+		const { groups } = buildInbox(history, {}, undefined, { taskGroups: [group("g", 0)] })
+		expect(groups[0].members.map((row) => row.item.id)).toEqual(["activeNew", "activeOld", "settledNew", "settledOld"])
+		// The task's activity is still its newest thread's, settled or not.
+		expect(groups[0].activityTs).toBe(NOW - MIN)
+	})
+
 	it("lists a task as active only while a member thread is unsettled", () => {
 		const history = [
 			item("open", NOW - 10 * MIN, { taskGroupId: "live" }),

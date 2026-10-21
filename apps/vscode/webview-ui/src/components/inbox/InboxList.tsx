@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
-import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import { type EffectiveTag, effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
 import { useSettleAll } from "@/components/taskGroup/settleAll"
@@ -20,6 +20,7 @@ import {
 	GROUP_PREVIEW_COUNT,
 	type InboxRow,
 	type InboxTaskGroupRow,
+	isRowWorking,
 	readExpandedTaskGroups,
 	SETTLED_PAGE_SIZE,
 	writeExpandedTaskGroups,
@@ -209,8 +210,11 @@ interface TaskGroupRowViewProps {
 /** A task group row: chevron, title + tags, thread count, newest activity, running count. */
 const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout, settled = false }: TaskGroupRowViewProps) => {
 	const { group, members, activityTs, runningCount } = row
-	const preview = members.slice(0, GROUP_PREVIEW_COUNT)
-	const older = members.length - preview.length
+	// Every member shows once expanded past the preview, so any thread can be settled from home.
+	const [showAll, setShowAll] = useState(false)
+	const shown = showAll ? members : members.slice(0, GROUP_PREVIEW_COUNT)
+	const more = members.length - shown.length
+	const firstSettled = shown.findIndex((member) => member.settled && !isRowWorking(member))
 	const open = () => onOpen?.(group.id)
 	const settleAll = useSettleAll(group.id)
 	const [menuOpen, setMenuOpen] = useState(false)
@@ -301,18 +305,39 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 			)}
 			{expanded && (
 				<div className="ml-3.5 border-l border-editor-group-border pl-1" data-testid="inbox-task-group-members">
-					{preview.map((member) => (
-						<InboxRowView
-							animateLayout={animateLayout}
-							key={member.item.id}
-							now={now}
-							row={member}
-							// The task row above already shows the task's tags, so members list only their own.
-							tags={(member.item.tags ?? []).map((tag) => ({ tag, inherited: false }))}
-						/>
+					{shown.map((member, index) => (
+						<Fragment key={member.item.id}>
+							{/* Active threads come first; a quiet divider starts the settled ones. */}
+							{index === firstSettled && index > 0 && (
+								<div
+									className="flex h-5 items-center gap-1.5 px-2 text-[10px] uppercase tracking-wider text-description"
+									data-testid="inbox-task-group-settled-divider">
+									Settled
+									<span aria-hidden className="h-px flex-1 bg-editor-group-border" />
+								</div>
+							)}
+							<InboxRowView
+								animateLayout={animateLayout}
+								now={now}
+								row={member}
+								// The task row above already shows the task's tags, so members list only their own.
+								tags={(member.item.tags ?? []).map((tag) => ({ tag, inherited: false }))}
+							/>
+						</Fragment>
 					))}
 					<div className="flex h-6 items-center gap-2 px-2 text-xs text-description">
-						{older > 0 ? <span>＋{older} older</span> : members.length === 0 && <span>No threads yet</span>}
+						{members.length > GROUP_PREVIEW_COUNT ? (
+							<button
+								aria-expanded={showAll}
+								className="cursor-pointer border-0 bg-transparent p-0 text-xs text-description hover:text-foreground"
+								data-testid="inbox-task-group-more"
+								onClick={() => setShowAll(!showAll)}
+								type="button">
+								{showAll ? "Show fewer" : `Show ${more} more`}
+							</button>
+						) : (
+							members.length === 0 && <span>No threads yet</span>
+						)}
 						<button
 							className="ml-auto cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
 							onClick={open}

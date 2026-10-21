@@ -1,5 +1,6 @@
 import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
@@ -8,8 +9,8 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { formatAge } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
-import { openTask } from "@/components/inbox/sessionActions"
-import { type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
+import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { isLiveThreadStatus, type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
 import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -86,7 +87,7 @@ interface TaskGroupViewProps {
  * chat composer below it starts new threads in this task.
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
-	const { currentBranch, hideTaskGroupView, navigateToTaskGroup } = useExtensionState()
+	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, taskHistory } = useExtensionState()
 	const threadStatuses = useThreadStatuses()
 	const { details, missing, refresh, setDetails } = useTaskGroup(taskGroupId)
 	const [menuOpen, setMenuOpen] = useState(false)
@@ -106,6 +107,10 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const timeline = useMemo(() => orderTimeline(details?.threads ?? []), [details?.threads])
 	const threadCount = timeline.length
 	const noteNames = useMemo(() => new Map(notes.map((note) => [note.slug, note.name])), [notes])
+	const settledIds = useMemo(
+		() => new Set((taskHistory ?? []).filter((item) => item.isSettled).map((item) => item.id)),
+		[taskHistory],
+	)
 
 	if (missing) {
 		return (
@@ -341,23 +346,28 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						<div className="px-2 pb-1 text-xs text-description">No threads yet. Start one below.</div>
 					) : (
 						<ol className="m-0 list-none p-0" data-testid="task-group-timeline">
-							{timeline.map(({ thread, depth }, index) => (
-								<TimelineRow
-									first={index === 0}
-									key={thread.threadId}
-									last={index === timeline.length - 1}
-									noteNames={noteNames}
-									now={now}
-									onOpen={() => {
-										hideTaskGroupView()
-										void openTask(thread.threadId)
-									}}
-									status={threadStatusFor(threadStatuses, thread.threadId)}
-									statusLabel={threadStatusLabel(threadStatuses[thread.threadId])}
-									subthread={depth > 0}
-									thread={thread}
-								/>
-							))}
+							{timeline.map(({ thread, depth }, index) => {
+								const status = threadStatusFor(threadStatuses, thread.threadId)
+								return (
+									<TimelineRow
+										first={index === 0}
+										key={thread.threadId}
+										last={index === timeline.length - 1}
+										noteNames={noteNames}
+										now={now}
+										onOpen={() => {
+											hideTaskGroupView()
+											void openTask(thread.threadId)
+										}}
+										// A live thread is never shown as settled, even if the history flag lags.
+										settled={settledIds.has(thread.threadId) && !isLiveThreadStatus(status)}
+										status={status}
+										statusLabel={threadStatusLabel(threadStatuses[thread.threadId])}
+										subthread={depth > 0}
+										thread={thread}
+									/>
+								)
+							})}
 						</ol>
 					)}
 				</section>
@@ -433,9 +443,12 @@ function TimelineRow({
 	first,
 	last,
 	subthread,
+	settled,
 }: {
 	thread: TaskGroupThreadRow
 	status: ThreadStatus
+	/** Settled threads dim; any thread or aside can be settled or unsettled from its row. */
+	settled: boolean
 	/** Tooltip for "waiting on subagents" ("Waiting on 2 subagents"). */
 	statusLabel?: string
 	noteNames: Map<string, string>
@@ -452,11 +465,16 @@ function TimelineRow({
 	// Icons (spinner, hourglass) need more room than a dot.
 	const iconStatus = status === "running" || status === "subagents"
 	return (
-		<li className="relative" data-subthread={subthread || undefined} data-testid="task-group-timeline-entry">
+		<li
+			className="group relative"
+			data-settled={settled || undefined}
+			data-subthread={subthread || undefined}
+			data-testid="task-group-timeline-entry">
 			<button
 				className={cn(
 					"relative grid w-full cursor-pointer gap-x-2 rounded-xs border border-transparent bg-transparent px-2 py-1 text-left transition-colors duration-150 hover:border-editor-group-border hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) motion-reduce:transition-none",
 					subthread ? "grid-cols-[28px_minmax(0,1fr)]" : "grid-cols-[14px_minmax(0,1fr)]",
+					settled && "opacity-55 hover:opacity-90",
 				)}
 				data-testid="task-group-timeline-row"
 				onClick={onOpen}
@@ -481,7 +499,15 @@ function TimelineRow({
 						{subthread && <span className="sr-only">Subthread: </span>}
 						{title}
 					</span>
-					<span className="shrink-0 text-[10.5px] text-description">{started}</span>
+					{/* Hover swaps the start time for Settle. */}
+					<span
+						className={cn(
+							"shrink-0 text-right text-[10.5px] text-description",
+							// On hover the slot widens to the button's size, so the title truncates before it.
+							"transition-opacity duration-150 group-hover:min-w-16 group-hover:opacity-0 group-focus-within:min-w-16 group-focus-within:opacity-0 motion-reduce:transition-none",
+						)}>
+						{started}
+					</span>
 				</span>
 				{(thread.wrote.length > 0 || thread.read.length > 0) && (
 					<span className="col-start-2 mt-0.5 flex min-w-0 flex-wrap gap-1">
@@ -493,6 +519,18 @@ function TimelineRow({
 						))}
 					</span>
 				)}
+			</button>
+			<button
+				aria-label={settled ? `Unsettle ${title}` : `Settle ${title}`}
+				className={cn(
+					"absolute top-1 right-2 flex h-4.5 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[10px] text-button-secondary-foreground",
+					"opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 hover:bg-button-secondary-background-hover motion-reduce:transition-none",
+				)}
+				data-testid="task-group-timeline-settle"
+				onClick={() => void toggleTaskSettled(thread.threadId)}
+				type="button">
+				{settled ? <RotateCcwIcon className="size-2.5" /> : <CheckIcon className="size-2.5" />}
+				{settled ? "Unsettle" : "Settle"}
 			</button>
 			{/* After the button so a hovered row's background doesn't hide the line. */}
 			{subthread ? (

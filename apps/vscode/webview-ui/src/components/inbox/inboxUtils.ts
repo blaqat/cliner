@@ -36,7 +36,7 @@ export interface InboxRow {
 /** A task group ("Task" in the UI) row: its member threads leave the top level. */
 export interface InboxTaskGroupRow {
 	group: TaskGroupSummary
-	/** Member thread rows (settled included), newest activity first. */
+	/** Member thread rows: active ones first, then settled ones, each newest activity first. */
 	members: InboxRow[]
 	/** Newest member activity; the group's own update time when it has no threads. */
 	activityTs: number
@@ -190,12 +190,13 @@ export function buildInbox(
 	}
 	const allGroups = taskGroups
 		.map((group) => {
-			const members = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
+			const byActivity = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
+			const isActive = (member: InboxRow) => !member.settled || isRowWorking(member)
 			return {
 				group,
-				members,
-				activityTs: members[0]?.activityTs ?? group.updatedAt,
-				runningCount: members.filter(isRowWorking).length,
+				members: [...byActivity.filter(isActive), ...byActivity.filter((member) => !isActive(member))],
+				activityTs: byActivity[0]?.activityTs ?? group.updatedAt,
+				runningCount: byActivity.filter(isRowWorking).length,
 			}
 		})
 		.sort((a, b) => b.activityTs - a.activityTs)
@@ -281,7 +282,7 @@ export function describeActivity(row: InboxRow, now: number): string {
 	return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
 }
 
-/** Member threads an expanded group row shows; the rest collapse into "＋N older". */
+/** Member threads an expanded group row shows before "Show N more". */
 export const GROUP_PREVIEW_COUNT = 2
 
 const EXPANDED_TASK_GROUPS_KEY = "inbox.expandedTaskGroups"

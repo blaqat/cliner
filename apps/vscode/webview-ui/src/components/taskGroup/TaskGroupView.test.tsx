@@ -369,6 +369,25 @@ describe("TaskGroupView", () => {
 		await waitFor(() => expect(mocks.state.hideTaskGroupView).toHaveBeenCalled())
 	})
 
+	it("settles or unsettles one thread or aside from its timeline row", async () => {
+		const thread = (id: string, extra = {}) => ({ id, ts: 1, task: id, taskGroupId: "g1", ...extra })
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: {},
+			taskHistory: [thread("refine", { isSettled: true }), thread("plan"), thread("aside-late", { parentTaskId: "plan" })],
+		}
+		await renderView()
+		const entries = screen.getAllByTestId("task-group-timeline-entry")
+		const entry = (name: string) => entries.find((el) => el.textContent?.includes(name)) as HTMLElement
+
+		expect(entry("Refine ticket")).toHaveAttribute("data-settled", "true")
+		fireEvent.click(within(entry("Refine ticket")).getByRole("button", { name: "Unsettle Refine ticket" }))
+		fireEvent.click(within(entry("Dev plan")).getByRole("button", { name: "Settle Dev plan" }))
+		fireEvent.click(within(entry("Aside: edge cases")).getByRole("button", { name: "Settle Aside: edge cases" }))
+		expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => request.taskId)).toEqual(["refine", "plan", "aside-late"])
+		expect(screen.getAllByTestId("task-group-timeline-settle")).toHaveLength(entries.length)
+	})
+
 	it("settles every idle thread from the ⋯ menu and reports the running one", async () => {
 		const thread = (id: string, extra = {}) => ({ id, ts: 1, task: id, taskGroupId: "g1", ...extra })
 		mocks.state = {
