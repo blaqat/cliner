@@ -29,7 +29,7 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
 			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)
 		}
-		if (request.promptStash !== undefined) controller.stateManager.setGlobalState("promptStash", request.promptStash.entries)
+		if (request.promptStash !== undefined) await controller.stateManager.applyPromptStash(request.promptStash.entries)
 
 		if (request.clineEnv !== undefined && request.clineEnv !== "") {
 			ClineEnv.setEnvironment(request.clineEnv)

@@ -228,6 +228,47 @@ export class StateManager {
 	}
 
 	/**
+	 * Saves a webview's new stash list as edits to the stash on disk: entries it
+	 * added go on top and entries it removed are dropped, under the settings lock.
+	 * Each window keeps its own copy of the stash, so writing the whole list
+	 * back would bring back entries another window removed (or drop ones it added).
+	 */
+	async applyPromptStash(next: GlobalStateAndSettings["promptStash"]): Promise<void> {
+		if (!this.isInitialized) {
+			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
+		}
+		const store = this.storage.globalStateBackingStore
+		await store.withLock(async () => {
+			const seen = this.globalStateCache.promptStash ?? []
+			const nextIds = new Set(next.map((entry) => entry.id))
+			const seenIds = new Set(seen.map((entry) => entry.id))
+			const removed = new Set(seen.filter((entry) => !nextIds.has(entry.id)).map((entry) => entry.id))
+			const added = next.filter((entry) => !seenIds.has(entry.id))
+			const addedIds = new Set(added.map((entry) => entry.id))
+			store.reload()
+			const onDisk = store.get<GlobalStateAndSettings["promptStash"]>("promptStash") ?? []
+			const merged = [...added, ...onDisk.filter((entry) => !removed.has(entry.id) && !addedIds.has(entry.id))]
+			await store.setBatch({ promptStash: merged })
+			this.globalStateCache.promptStash = merged
+			this.pendingGlobalState.delete("promptStash")
+		})
+	}
+
+	/**
+	 * Re-reads the stash from disk (another window may have changed it).
+	 * Returns true when this window's copy changed.
+	 */
+	refreshPromptStash(): boolean {
+		if (!this.isInitialized || this.pendingGlobalState.has("promptStash")) return false
+		const store = this.storage.globalStateBackingStore
+		store.reload()
+		const onDisk = store.get<GlobalStateAndSettings["promptStash"]>("promptStash") ?? []
+		if (JSON.stringify(onDisk) === JSON.stringify(this.globalStateCache.promptStash ?? [])) return false
+		this.globalStateCache.promptStash = onDisk
+		return true
+	}
+
+	/**
 	 * Batch set method for global state keys - updates cache immediately and schedules debounced persistence
 	 */
 	setGlobalStateBatch(updates: Partial<GlobalStateAndSettings>): void {

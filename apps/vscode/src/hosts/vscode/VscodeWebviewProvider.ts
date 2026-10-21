@@ -101,7 +101,10 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		vscode.window.onDidChangeWindowState(
 			(state) => {
 				void sendWindowFocusEvent(state.focused)
-				if (state.focused) void this.controller.refreshCurrentBranch().catch(() => {})
+				if (!state.focused) return
+				void this.controller.refreshCurrentBranch().catch(() => {})
+				// Another window may have stashed or removed prompts meanwhile.
+				if (this.controller.stateManager.refreshPromptStash()) void this.controller.postStateToWebview()
 			},
 			null,
 			this.disposables,
