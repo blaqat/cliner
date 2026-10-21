@@ -11,8 +11,8 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  *    pickers drop to a few characters.
  * 5. Only then do the MCP servers and rules buttons fold into ＋ (as rows that open the same
  *    panels), so they stay visible in a 340px sidebar during a chat.
- * Below the last step the pills keep shrinking toward their chevrons. ＋, the approvals shield, the
- * ring and the Ask/Act switch never hide.
+ * Below the last step the pills keep shrinking toward their chevrons. ＋, the workspace button, the
+ * approvals shield, the ring and the Ask/Act switch never hide.
  */
 export interface ComposerRowLayout {
 	/** The MCP servers and rules buttons beside ＋. Last to go; when false they are rows in the ＋ menu. */
@@ -60,6 +60,8 @@ export const COMPOSER_ROW_WIDTHS = {
 	plus: 26,
 	/** The MCP servers button and the rules button, each the ＋'s size. */
 	panelButton: 26,
+	/** The workspace button left of the where pill, the ＋'s size. */
+	workspace: 26,
 	/** The where pill with no task: its icon alone (tasklist icon, padding and border). */
 	whereIcon: 22,
 	/** The where pill with a task, truncated to a few characters ("◇ Na…▾"). */
@@ -90,8 +92,8 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		? w.whereIcon + w.configTight + (content.hasEffort ? w.groupGap + w.effortTight : 0)
 		: (content.hasTask ? w.whereNamed : w.whereIcon) + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
 	const panelButtons = layout.inlinePanelButtons ? 2 * (w.panelButton + w.groupGap) : 0
-	// ＋, [MCP, rules,] where, configuration, [effort,] shield: one gap between each.
-	const group = w.plus + panelButtons + pills + 3 * w.groupGap + w.approvals
+	// ＋, [MCP, rules,] workspace, where, configuration, [effort,] shield: one gap between each.
+	const group = w.plus + panelButtons + w.workspace + w.groupGap + pills + 3 * w.groupGap + w.approvals
 	const usage = content.hasUsage
 		? w.rowGap +
 			w.ring +

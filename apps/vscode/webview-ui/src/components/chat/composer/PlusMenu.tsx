@@ -5,6 +5,7 @@ import ClineRulesPanel from "@/components/cline-rules/ClineRulesPanel"
 import {
 	COMPOSER_ICON_BUTTON_CLASS,
 	COMPOSER_ICON_BUTTON_OPEN_CLASS,
+	COMPOSER_MENU_SCROLL_CLASS,
 	MENU_ICON_CLASS,
 	MENU_SEPARATOR_CLASS,
 } from "@/components/common/menuStyles"
@@ -136,7 +137,7 @@ const PlusMenu = ({ onMention, onAddFiles, filesDisabled, foldedPanels = false, 
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"
-				className={cn("menu-rise p-1", view === "menu" ? "w-60" : COMPOSER_PANEL_CLASS)}
+				className={cn("menu-rise p-1", view === "menu" ? cn("w-60", COMPOSER_MENU_SCROLL_CLASS) : COMPOSER_PANEL_CLASS)}
 				data-testid="plus-menu"
 				onCloseAutoFocus={(event) => {
 					if (keepFocusRef.current) {

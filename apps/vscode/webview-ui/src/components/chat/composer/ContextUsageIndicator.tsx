@@ -2,6 +2,7 @@ import type { CostBreakdownRow } from "@shared/getApiMetrics"
 import type { Mode } from "@shared/storage/types"
 import { FoldVerticalIcon } from "lucide-react"
 import { memo, useState } from "react"
+import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
 import { describeProfile, PROVIDER_LABELS } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -226,7 +227,7 @@ export const ContextUsageIndicator = memo(
 					</PopoverTrigger>
 					<PopoverContent
 						align="end"
-						className="w-[296px] max-w-[calc(100vw-1.5rem)] p-0 text-xs"
+						className={cn("w-[296px] max-w-[calc(100vw-1.5rem)] p-0 text-xs", COMPOSER_MENU_SCROLL_CLASS)}
 						data-testid="context-usage-details"
 						side="top">
 						<section aria-label="Context" className="px-3 py-2.5" data-testid="context-usage-context">

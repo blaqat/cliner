@@ -106,28 +106,28 @@ describe("composerRowLayout", () => {
 	})
 
 	// Thresholds with the widest meter (cost and Compact pill) and an effort picker:
-	// full ≥520, no cost ≥477, Compact as its icon ≥423, tight pills ≥359, panel buttons folded below 359.
+	// full ≥550, no cost ≥507, Compact as its icon ≥453, tight pills ≥389, panel buttons folded below 389.
 	it.each([
 		[600, FULL_COMPOSER_ROW],
-		[520, FULL_COMPOSER_ROW],
-		[519, { ...FULL_COMPOSER_ROW, showCost: false }],
-		[477, { ...FULL_COMPOSER_ROW, showCost: false }],
-		[476, BARE_METER],
-		[423, BARE_METER],
-		[422, TIGHT],
-		[360, TIGHT],
-		[359, TIGHT],
-		[358, MOST_COLLAPSED],
+		[550, FULL_COMPOSER_ROW],
+		[549, { ...FULL_COMPOSER_ROW, showCost: false }],
+		[507, { ...FULL_COMPOSER_ROW, showCost: false }],
+		[506, BARE_METER],
+		[453, BARE_METER],
+		[452, TIGHT],
+		[390, TIGHT],
+		[389, TIGHT],
+		[388, MOST_COLLAPSED],
 		[280, MOST_COLLAPSED],
 	])("at %ipx with the widest meter", (width, expected) => {
 		expect(composerRowLayout(width, WIDEST)).toEqual(expected)
 	})
 
-	it("keeps the MCP and rules buttons in a 340px sidebar during a chat, with or without effort", () => {
-		expect(composerRowLayout(340, CHAT).inlinePanelButtons).toBe(true)
+	it("keeps the MCP and rules buttons in a 380px sidebar during a chat, with or without effort", () => {
+		expect(composerRowLayout(380, CHAT).inlinePanelButtons).toBe(true)
 		const noEffort = { ...CHAT, hasEffort: false }
 		// Without an effort picker the pills stay roomy a little longer.
-		expect(composerRowLayout(340, noEffort)).toMatchObject({ inlinePanelButtons: true, tightPills: false })
+		expect(composerRowLayout(380, noEffort)).toMatchObject({ inlinePanelButtons: true, tightPills: false })
 		const tight = composerRowMinWidth(noEffort, TIGHT)
 		expect(composerRowLayout(tight, noEffort)).toEqual(TIGHT)
 		expect(composerRowLayout(tight - 1, noEffort)).toEqual(MOST_COLLAPSED)
@@ -147,13 +147,13 @@ describe("composerRowLayout", () => {
 		expect(composerRowLayout(width, { ...WIDEST, hasCompactNudge: false }).showCost).toBe(true)
 	})
 
-	it("keeps the panel buttons on the home composer, which has no meter, down to 310px", () => {
+	it("keeps the panel buttons on the home composer, which has no meter, down to 340px", () => {
 		const home = { hasUsage: false, hasCost: false, hasCompactNudge: false, hasEffort: true, hasTask: false }
 		expect(composerRowMinWidth(home, FULL_COMPOSER_ROW)).toBeLessThan(composerRowMinWidth(WIDEST, FULL_COMPOSER_ROW))
-		expect(composerRowLayout(374, home)).toEqual(FULL_COMPOSER_ROW)
-		expect(composerRowLayout(373, home).tightPills).toBe(true)
-		expect(composerRowLayout(310, home).inlinePanelButtons).toBe(true)
-		expect(composerRowLayout(309, home).inlinePanelButtons).toBe(false)
+		expect(composerRowLayout(404, home)).toEqual(FULL_COMPOSER_ROW)
+		expect(composerRowLayout(403, home).tightPills).toBe(true)
+		expect(composerRowLayout(340, home).inlinePanelButtons).toBe(true)
+		expect(composerRowLayout(339, home).inlinePanelButtons).toBe(false)
 	})
 
 	// Realistic labels: the where pill "No task" is only its icon, the model chip is "OpenAI QA"
@@ -175,28 +175,28 @@ describe("composerRowLayout", () => {
 		["a task", CHAT_WITH_TASK],
 	])("at sidebar widths, with %s", (_label, content) => {
 		const OPENAI_QA_WIDTH = 76
-		it("keeps the MCP and rules buttons inline at 340, 440 and 480px", () => {
-			for (const width of [340, 440, 480]) {
+		it("keeps the MCP and rules buttons inline at 380, 470 and 510px", () => {
+			for (const width of [380, 470, 510]) {
 				expect(composerRowLayout(width, content).inlinePanelButtons, `width ${width}`).toBe(true)
 			}
 		})
 
-		it("hides the cost at 340 and 440px, keeping the ring, and shows it at 480px", () => {
-			for (const width of [340, 440]) {
+		it("hides the cost at 380 and 470px, keeping the ring, and shows it at 510px", () => {
+			for (const width of [380, 470]) {
 				expect(composerRowLayout(width, content).showCost, `width ${width}`).toBe(false)
 			}
-			expect(composerRowLayout(480, content).showCost).toBe(true)
+			expect(composerRowLayout(510, content).showCost).toBe(true)
 		})
 
-		it("goes tight at 340px but not at 440 or 480px", () => {
-			expect(composerRowLayout(340, content).tightPills).toBe(true)
-			expect(composerRowLayout(440, content).tightPills).toBe(false)
-			expect(composerRowLayout(480, content).tightPills).toBe(false)
+		it("goes tight at 380px but not at 470 or 510px", () => {
+			expect(composerRowLayout(380, content).tightPills).toBe(true)
+			expect(composerRowLayout(470, content).tightPills).toBe(false)
+			expect(composerRowLayout(510, content).tightPills).toBe(false)
 		})
 
-		it("gives the model chip room for 'OpenAI QA' at 440 and 500px, even with the Compact pill", () => {
+		it("gives the model chip room for 'OpenAI QA' at 470 and 510px", () => {
 			const w = COMPOSER_ROW_WIDTHS
-			for (const width of [440, 500]) {
+			for (const width of [470, 510]) {
 				const layout = composerRowLayout(width, content)
 				// What the row has beyond its minimums goes to the model chip, which flexes the most.
 				const configSpace = width - composerRowMinWidth(content, layout) + w.configMin

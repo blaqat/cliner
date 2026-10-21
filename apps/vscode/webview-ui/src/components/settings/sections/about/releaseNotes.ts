@@ -17,10 +17,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-2",
 		title: "Release 2",
-		builds: "fork.24–33",
+		builds: "fork.24–34",
 		date: "2026-10-21",
 		notes: [
-			"Composer: ＋ for mentions and files, MCP and rules/scripts buttons beside it, a where pill (task, worktree, branch), separate model and effort chips, the approvals shield and a context ring",
+			"Composer: ＋ for mentions and files, MCP and rules/scripts buttons beside it, a workspace button (your workspace or a worktree, with a link to set worktrees up) and a task pill, separate model and effort chips, the approvals shield and a context ring; every composer menu scrolls in a short window",
 			"Models page for saved configurations, and Profiles (a model and an effort under a name) for threads, subagents and text generation",
 			"Notebook review of agent edits, a history page, and Convert to rule, skill or workflow; # notes, thread: mentions and message links as context",
 			"Context and cost card: how full the window is with the auto-compact point, cost per model and for subagents, and Compact; the Compact pill stays as an icon on narrow rows",

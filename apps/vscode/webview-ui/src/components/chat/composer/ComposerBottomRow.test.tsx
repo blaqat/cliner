@@ -206,8 +206,8 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("plus-menu-back")).toBeInTheDocument()
 	})
 
-	it("keeps the MCP servers and rules buttons in a 340px sidebar by making the pills tight", () => {
-		stubRowWidth(340)
+	it("keeps the MCP servers and rules buttons in a 380px sidebar by making the pills tight", () => {
+		stubRowWidth(380)
 		renderComposer(usageSlot())
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
@@ -218,7 +218,7 @@ describe("composer bottom row", () => {
 
 	it("keeps the where pill's task name and the usual picker minimums while there's room", () => {
 		mocks.withTask = true
-		stubRowWidth(440)
+		stubRowWidth(480)
 		renderComposer(usageSlot())
 		const pill = screen.getByTestId("where-pill")
 		expect(pill).not.toHaveAttribute("data-icon-only")
@@ -228,7 +228,7 @@ describe("composer bottom row", () => {
 	})
 
 	it.each([
-		340, 420, 480,
+		380, 420, 480,
 	])("at %ipx the where pill is just its icon with no task, and the effort chip says Default", (width) => {
 		stubRowWidth(width)
 		renderComposer(usageSlot())
@@ -239,15 +239,15 @@ describe("composer bottom row", () => {
 		// Realistic labels: the effort chip is short, so it never shows "Provide…".
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent(/^Default$/)
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveAttribute("title", "Reasoning effort: Provider default")
-		// The MCP servers and rules buttons stay on the row down to 340px.
+		// The MCP servers and rules buttons stay on the row down to 380px.
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
 	})
 
 	it.each([
-		[340, true],
-		[440, false],
+		[380, true],
 		[480, false],
+		[520, false],
 	])("at %ipx with a task the where pill is icon-only: %s", (width, iconOnly) => {
 		mocks.withTask = true
 		stubRowWidth(width)
@@ -261,9 +261,9 @@ describe("composer bottom row", () => {
 	it.each([
 		[600, true],
 		[440, true],
-		[360, true],
-		[340, true],
-		[320, false],
+		[380, true],
+		[367, true],
+		[366, false],
 		[300, false],
 	])("at %ipx the MCP servers and rules buttons are inline: %s", (width, inline) => {
 		stubRowWidth(width)

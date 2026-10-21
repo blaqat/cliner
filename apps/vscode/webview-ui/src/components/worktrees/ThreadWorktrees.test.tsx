@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ThreadWorktreeActions, WorktreeBadge } from "./ThreadWorktreeActions"
 import { WorktreeSettings } from "./WorktreeSettings"
-import { WorktreeToggle } from "./WorktreeToggle"
 
 const mocks = vi.hoisted(() => ({ action: vi.fn(), state: {} as WorktreeState, thread: 0 }))
 vi.mock("@/context/ExtensionStateContext", () => ({
@@ -43,21 +42,6 @@ beforeEach(() => {
 	mocks.action.mockReset().mockImplementation(async (request) => ({
 		json: JSON.stringify(request.action === "state" ? { state: mocks.state } : {}),
 	}))
-})
-it("starts unchecked and updates the shared draft without a modal", async () => {
-	render(<WorktreeToggle />)
-	const toggle = screen.getByRole("menuitemcheckbox", { name: "Run in worktree" })
-	await waitFor(() => expect(toggle).not.toBeDisabled())
-	expect(toggle).not.toBeChecked()
-	fireEvent.click(toggle)
-	await waitFor(() => expect(toggle).toBeChecked())
-	expect(screen.queryByRole("dialog")).toBeNull()
-})
-it("shows mode availability and the reason isolation is unavailable", async () => {
-	mocks.state.availability = { ...mocks.state.availability, mode: "mm", available: false, reason: "Set the path to mm.js" }
-	render(<WorktreeToggle />)
-	expect(await screen.findByText("Set the path to mm.js")).toBeVisible()
-	expect(screen.getByRole("menuitemcheckbox")).toBeDisabled()
 })
 it("renders the worktree badge and asks inline before discarding untransferred changes", async () => {
 	mocks.state.mapping = mapping

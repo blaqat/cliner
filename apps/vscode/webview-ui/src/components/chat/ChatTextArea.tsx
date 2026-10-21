@@ -62,6 +62,7 @@ import PlusMenu from "./composer/PlusMenu"
 import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
 import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
+import { WorkspaceButton } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
 	findNoteMention,
@@ -2087,6 +2088,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								<RulesButton onUseScript={startScriptDraft} />
 							</>
 						)}
+						<WorkspaceButton />
 						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
 						{whereHasTask ? (
 							<ShrinkSlot floor={rowLayout.tightPills ? 22 : 52}>

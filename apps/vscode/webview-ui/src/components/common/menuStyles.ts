@@ -22,3 +22,9 @@ export const COMPOSER_ICON_BUTTON_CLASS =
 	"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 
 export const COMPOSER_ICON_BUTTON_OPEN_CLASS = "bg-toolbar-hover text-foreground"
+
+/**
+ * Composer popovers never run off a short window: they cap at the room Radix measures between
+ * the trigger and the window edge and scroll inside.
+ */
+export const COMPOSER_MENU_SCROLL_CLASS = "max-h-(--radix-popover-content-available-height) overflow-y-auto overscroll-contain"

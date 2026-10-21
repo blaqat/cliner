@@ -1,5 +1,6 @@
 import { ArchiveIcon, XIcon } from "lucide-react"
 import { memo, useEffect, useState } from "react"
+import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { describeStashEntry, type PromptStashEntry } from "./chat-view/utils/promptStash"
@@ -64,7 +65,7 @@ const PromptStashButton = ({ entries, onRestore, onDelete, modKey }: PromptStash
 			</PopoverTrigger>
 			<PopoverContent
 				align="end"
-				className="menu-rise w-72 max-w-[calc(100vw-2rem)] p-1"
+				className={cn("menu-rise w-72 max-w-[calc(100vw-2rem)] p-1", COMPOSER_MENU_SCROLL_CLASS)}
 				data-testid="stash-popover"
 				side="top">
 				<div className="px-1.5 py-1 text-xs text-description">Stashed prompts</div>

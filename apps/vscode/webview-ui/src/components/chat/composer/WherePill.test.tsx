@@ -111,6 +111,21 @@ describe("WherePill: task", () => {
 		expect(within(menu).queryByText("Open task")).not.toBeInTheDocument()
 	})
 
+	it("lists every task in a list that scrolls past eight rows, with No task and New task below it", () => {
+		mocks.state = {
+			taskGroups: Array.from({ length: 12 }, (_, i) => group(`g${i}`, `Task ${i}`, 100 - i)),
+			currentTaskItem: undefined,
+		}
+		render(<WherePill />)
+		const menu = openMenu()
+		const list = within(menu).getByTestId("where-task-list")
+		expect(within(list).getAllByRole("menuitemradio")).toHaveLength(12)
+		expect(list).toHaveStyle({ maxHeight: "192px" })
+		expect(list).toHaveClass("overflow-y-auto")
+		expect(list).not.toContainElement(within(menu).getByText("No task"))
+		expect(menu).toHaveClass("overflow-y-auto")
+	})
+
 	it("icon-only keeps the label and menu but hides the name and chevron", () => {
 		act(() => setComposerTaskGroup("sso"))
 		render(<WherePill iconOnly />)

@@ -109,7 +109,7 @@ export const FEATURE_GROUPS: FeatureGroup[] = [
 		id: "worktrees",
 		title: "Worktrees",
 		items: [
-			"Run a thread in its own git or mm worktree; toggle it in the where pill",
+			"Run a thread in its own git or mm worktree; pick it with the workspace button beside the task pill",
 			"Bring here, Undo, Take over and Remove from the breadcrumb ⋯ menu",
 		],
 	},

@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils"
 import McpServersPanel from "./McpServersPanel"
 
 /** Popover width and height shared by the composer's panels (also the ＋ menu's folded-in views). */
-export const COMPOSER_PANEL_CLASS = "flex max-h-[min(70vh,520px)] w-[min(400px,calc(100vw-16px))] flex-col overflow-hidden p-0"
+export const COMPOSER_PANEL_CLASS =
+	"flex max-h-[min(70vh,520px,var(--radix-popover-content-available-height))] w-[min(400px,calc(100vw-16px))] flex-col overflow-hidden p-0"
 
 interface ComposerPanelButtonProps {
 	/** Codicon name without the `codicon-` prefix. */

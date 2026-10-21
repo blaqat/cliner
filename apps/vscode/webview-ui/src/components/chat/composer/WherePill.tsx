@@ -2,7 +2,7 @@ import { SetThreadTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { extractTicketTags } from "@shared/ticket-tags"
 import { memo, useMemo, useState } from "react"
-import { MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { COMPOSER_MENU_SCROLL_CLASS, MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { expandTaskGroupInInbox } from "@/components/inbox/inboxUtils"
 import {
 	setComposerTaskGroup,
@@ -20,10 +20,10 @@ import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { BranchTaskSuggestion, useBranchTaskSuggestion } from "./BranchTaskSuggestion"
 import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKeyboard"
-import { WorktreeBadgeSlot, WorktreeToggleSlot } from "./worktreeSlot"
 
 /** How many tasks the menu lists before the find field is needed. */
-const RECENT_LIMIT = 8
+/** Task rows visible before the list scrolls (24px each). */
+const VISIBLE_TASK_ROWS = 8
 
 function matchesQuery(group: TaskGroupSummary, query: string): boolean {
 	const q = query.trim().toLowerCase()
@@ -69,7 +69,7 @@ interface WherePillProps {
 }
 
 /**
- * The composer's "where" pill: the thread's task and, once worktrees land, its workspace. With no
+ * The composer's "where" pill: the thread's task (the workspace button beside it says where it runs). With no
  * task it is just the icon ("No task" in the tooltip and label); with one it shows a short,
  * truncating name. In a new thread it picks the task the first message files the thread into; in an
  * existing thread it moves the thread right away. A branch → task suggestion shows as a ghost row
@@ -82,11 +82,7 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 	const [query, setQuery] = useState("")
 	const { threadId, fixedId, selectedId, selected, fixedTitle, title, hidden } = useWhereTask()
 	const recent = useMemo(
-		() =>
-			[...(taskGroups ?? [])]
-				.sort((a, b) => b.updatedAt - a.updatedAt)
-				.filter((group) => matchesQuery(group, query))
-				.slice(0, RECENT_LIMIT),
+		() => [...(taskGroups ?? [])].sort((a, b) => b.updatedAt - a.updatedAt).filter((group) => matchesQuery(group, query)),
 		[taskGroups, query],
 	)
 	// Subagent threads belong to their root thread's task; they can't move on their own.
@@ -159,7 +155,6 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 						)}
 					/>
 					{showName && <span className="truncate">{title}</span>}
-					<WorktreeBadgeSlot threadId={threadId} />
 					{suggestion && (
 						<span
 							aria-hidden
@@ -172,7 +167,7 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"
-				className="menu-rise w-64 p-1"
+				className={cn("menu-rise w-64 p-1", COMPOSER_MENU_SCROLL_CLASS)}
 				data-testid="where-menu"
 				onKeyDown={handleMenuKeyDown}
 				side="top">
@@ -197,27 +192,33 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							placeholder="Find a task…"
 							value={query}
 						/>
-						{recent.length > 0 && <div className={MENU_HEADING_CLASS}>Recent</div>}
-						{recent.map((group) => (
-							<button
-								aria-checked={group.id === selectedId}
-								className={MENU_ROW_CLASS}
-								key={group.id}
-								onClick={() => pick(group.id)}
-								role="menuitemradio"
-								type="button">
-								<span
-									aria-hidden
-									className={cn(MENU_ICON_CLASS, "codicon-tasklist text-(--vscode-charts-purple)")}
-								/>
-								<span className="min-w-0 flex-1 truncate">{group.title}</span>
-								{group.tags[0] && <TaskTagChip kind={group.tags[0].kind} value={group.tags[0].value} />}
-								<span
-									aria-hidden
-									className={cn(MENU_ICON_CLASS, "codicon-check", group.id !== selectedId && "invisible")}
-								/>
-							</button>
-						))}
+						{recent.length > 0 && <div className={MENU_HEADING_CLASS}>{query ? "Matching tasks" : "Recent"}</div>}
+						{/* Every task, newest first; past eight rows the list scrolls and the rows below stay put. */}
+						<div
+							className="overflow-y-auto overscroll-contain"
+							data-testid="where-task-list"
+							style={{ maxHeight: VISIBLE_TASK_ROWS * 24 }}>
+							{recent.map((group) => (
+								<button
+									aria-checked={group.id === selectedId}
+									className={MENU_ROW_CLASS}
+									key={group.id}
+									onClick={() => pick(group.id)}
+									role="menuitemradio"
+									type="button">
+									<span
+										aria-hidden
+										className={cn(MENU_ICON_CLASS, "codicon-tasklist text-(--vscode-charts-purple)")}
+									/>
+									<span className="min-w-0 flex-1 truncate">{group.title}</span>
+									{group.tags[0] && <TaskTagChip kind={group.tags[0].kind} value={group.tags[0].value} />}
+									<span
+										aria-hidden
+										className={cn(MENU_ICON_CLASS, "codicon-check", group.id !== selectedId && "invisible")}
+									/>
+								</button>
+							))}
+						</div>
 						{query && recent.length === 0 && (
 							<div className="px-2 py-1 text-[12px] text-description">No matching tasks</div>
 						)}
@@ -259,7 +260,6 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 						</button>
 					</div>
 				)}
-				<WorktreeToggleSlot threadId={threadId} />
 			</PopoverContent>
 		</Popover>
 	)
