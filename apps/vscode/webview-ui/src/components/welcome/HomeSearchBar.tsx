@@ -21,7 +21,10 @@ export const HomeSearchBar = ({ onOpenSearch }: HomeSearchBarProps) => {
 	useShortcut("Meta+k", () => inputRef.current?.focus(), { disableTextInputs: false })
 
 	return (
-		<div className="flex shrink-0 items-center gap-1.5 px-5 pb-2" data-testid="home-search-bar">
+		// Pinned to the top of the home scroll: the header scrolls away, search never does.
+		<div
+			className="sticky top-0 z-10 flex shrink-0 items-center gap-1.5 bg-background px-5 pt-1 pb-2"
+			data-testid="home-search-bar">
 			<label className="flex h-7 min-w-0 flex-1 cursor-text items-center gap-1.5 rounded-xs border border-input-border bg-input-background px-2 text-description focus-within:border-(--vscode-focusBorder)">
 				<span aria-hidden className="codicon codicon-search text-[12px]!" />
 				<input

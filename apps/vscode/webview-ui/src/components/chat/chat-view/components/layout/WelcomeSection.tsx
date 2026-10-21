@@ -327,9 +327,9 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 			/>
 			<div className="overflow-y-auto flex flex-col pb-2.5">
 				<HomeHeader shouldShowQuickWins={shouldShowQuickWins} />
+				<HomeSearchBar onOpenSearch={onOpenSearch} />
 				{!showWhatsNewModal && (
 					<>
-						<HomeSearchBar onOpenSearch={onOpenSearch} />
 						<BannerCarousel banners={activeBanners} />
 						{!shouldShowQuickWins && (taskHistory.length > 0 || taskGroups?.length > 0) && (
 							<InboxList onOpenTaskGroup={onOpenTaskGroup} showHistoryView={showHistoryView} />

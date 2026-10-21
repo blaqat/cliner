@@ -153,10 +153,12 @@ describe("ContextUsageIndicator", () => {
 		expect(screen.queryByTestId("context-usage-details")).not.toBeInTheDocument()
 	})
 
-	it("disables Compact now when compaction isn't allowed", () => {
+	it("disables Compact now when compaction isn't allowed, without a hint line", () => {
 		renderIndicator({ canCompact: false })
 		fireEvent.click(screen.getByTestId("context-usage-button"))
 		expect(screen.getByTestId("compact-now-button")).toBeDisabled()
+		expect(screen.queryByText(/between turns/)).toBeNull()
+		expect(screen.queryByText("Summarizes the history to free up context")).toBeNull()
 	})
 
 	it("shows the Compact nudge from 85% usage", () => {

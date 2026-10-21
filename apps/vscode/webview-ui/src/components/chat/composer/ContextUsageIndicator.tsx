@@ -371,9 +371,11 @@ export const ContextUsageIndicator = memo(
 								<FoldVerticalIcon size={12} />
 								Compact now
 							</Button>
-							<div className="mt-1.5 text-center text-[11px] text-description">
-								{canCompact ? "Summarizes the history to free up context" : "Available between turns"}
-							</div>
+							{canCompact && (
+								<div className="mt-1.5 text-center text-[11px] text-description">
+									Summarizes the history to free up context
+								</div>
+							)}
 						</section>
 					</PopoverContent>
 				</Popover>
