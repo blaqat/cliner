@@ -4370,6 +4370,32 @@ describe("tool display paths are relativized to the cwd", () => {
 		expect(clineMessages.some((m) => m.say === "completion_result" || m.ask === "completion_result")).toBe(true)
 	})
 
+	it("records the model that produced each restored request, for the cost breakdown", () => {
+		const messages: MessageWithMetadata[] = [
+			{ role: "user", content: "hi" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "hello" }],
+				modelInfo: { id: "gpt-5.6-sol", provider: "openai-native" },
+				metrics: { inputTokens: 10, outputTokens: 2, cost: 0.01 },
+			},
+			{ role: "user", content: "again" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "ok" }],
+				metrics: { inputTokens: 5, outputTokens: 1, cost: 0.005 },
+			},
+		]
+		const rows = sdkMessagesToClineMessages(messages as SdkMessage[])
+			.filter((m) => m.say === "api_req_started")
+			.map((m) => JSON.parse(m.text ?? "{}"))
+			.filter((info) => info.tokensIn !== undefined)
+		expect(rows.map((info) => [info.modelId, info.providerId])).toEqual([
+			["gpt-5.6-sol", "openai-native"],
+			[undefined, undefined],
+		])
+	})
+
 	it("relativizes persisted-history tool paths via options.cwd", () => {
 		const messages: SdkMessage[] = [
 			{

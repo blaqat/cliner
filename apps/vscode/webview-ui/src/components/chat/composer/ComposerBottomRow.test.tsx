@@ -87,7 +87,7 @@ function renderComposer(usageIndicator?: ChatTextAreaProps["usageIndicator"], ov
 
 const usageSlot = (
 	renderMeter: (layout: ComposerRowLayout) => React.ReactNode = () => <span data-testid="usage-slot">ring</span>,
-) => ({ hasCost: true, hasCompactNudge: true, render: renderMeter })
+) => ({ hasCost: true, hasCompactNudge: false, render: renderMeter })
 
 describe("composer bottom row", () => {
 	afterEach(() => {
@@ -180,7 +180,7 @@ describe("composer bottom row", () => {
 		const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 		renderComposer(usageSlot(renderMeter))
 		expect(renderMeter).toHaveBeenLastCalledWith(
-			composerRowLayout(300, { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: true }),
+			composerRowLayout(300, { hasUsage: true, hasCost: true, hasCompactNudge: false, hasEffort: true }),
 		)
 		expect(renderMeter).toHaveBeenLastCalledWith({
 			inlinePanelButtons: false,

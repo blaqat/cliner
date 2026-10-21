@@ -494,6 +494,9 @@ export interface ClineApiReqInfo {
 	cacheWrites?: number
 	cacheReads?: number
 	cost?: number
+	/** The model that served this request; absent on requests recorded before it was stamped. */
+	modelId?: string
+	providerId?: string
 	cancelReason?: ClineApiReqCancelReason
 	streamingFailedMessage?: string
 }

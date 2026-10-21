@@ -10,6 +10,9 @@ import {
 
 const WIDEST: ComposerRowContent = { hasUsage: true, hasCost: true, hasCompactNudge: true, hasEffort: true, hasTask: false }
 const WIDEST_WITH_TASK: ComposerRowContent = { ...WIDEST, hasTask: true }
+// A chat below the Compact threshold: the usual case at sidebar widths.
+const CHAT: ComposerRowContent = { ...WIDEST, hasCompactNudge: false }
+const CHAT_WITH_TASK: ComposerRowContent = { ...CHAT, hasTask: true }
 const MOST_COLLAPSED: ComposerRowLayout = {
 	inlinePanelButtons: false,
 	showCost: false,
@@ -57,6 +60,8 @@ describe("composerRowLayout", () => {
 	it("collapses only as far as each width needs", () => {
 		for (const content of [WIDEST, WIDEST_WITH_TASK]) {
 			for (const width of [280, 300, 320, 330, 360, 400, 420, 440, 480, 520]) {
+				// Below the most collapsed row nothing fits; the row clips instead.
+				if (width < composerRowMinWidth(content, MOST_COLLAPSED)) continue
 				const layout = composerRowLayout(width, content)
 				expect(composerRowMinWidth(content, layout), `width ${width}`).toBeLessThanOrEqual(width)
 			}
@@ -101,31 +106,31 @@ describe("composerRowLayout", () => {
 	})
 
 	// Thresholds with the widest meter (cost and Compact pill) and an effort picker:
-	// full ≥520, no cost ≥477, no Compact ≥401, tight pills ≥337, panel buttons folded below 337.
+	// full ≥520, no cost ≥477, Compact as its icon ≥423, tight pills ≥359, panel buttons folded below 359.
 	it.each([
 		[600, FULL_COMPOSER_ROW],
 		[520, FULL_COMPOSER_ROW],
 		[519, { ...FULL_COMPOSER_ROW, showCost: false }],
 		[477, { ...FULL_COMPOSER_ROW, showCost: false }],
 		[476, BARE_METER],
-		[401, BARE_METER],
-		[400, TIGHT],
-		[340, TIGHT],
-		[337, TIGHT],
-		[336, MOST_COLLAPSED],
+		[423, BARE_METER],
+		[422, TIGHT],
+		[360, TIGHT],
+		[359, TIGHT],
+		[358, MOST_COLLAPSED],
 		[280, MOST_COLLAPSED],
 	])("at %ipx with the widest meter", (width, expected) => {
 		expect(composerRowLayout(width, WIDEST)).toEqual(expected)
 	})
 
 	it("keeps the MCP and rules buttons in a 340px sidebar during a chat, with or without effort", () => {
-		expect(composerRowLayout(340, WIDEST).inlinePanelButtons).toBe(true)
-		const noEffort = { ...WIDEST, hasEffort: false }
+		expect(composerRowLayout(340, CHAT).inlinePanelButtons).toBe(true)
+		const noEffort = { ...CHAT, hasEffort: false }
 		// Without an effort picker the pills stay roomy a little longer.
-		expect(composerRowLayout(340, noEffort)).toEqual(BARE_METER)
-		expect(composerRowLayout(336, noEffort)).toEqual(TIGHT)
-		expect(composerRowLayout(305, noEffort)).toEqual(TIGHT)
-		expect(composerRowLayout(304, noEffort)).toEqual(MOST_COLLAPSED)
+		expect(composerRowLayout(340, noEffort)).toMatchObject({ inlinePanelButtons: true, tightPills: false })
+		const tight = composerRowMinWidth(noEffort, TIGHT)
+		expect(composerRowLayout(tight, noEffort)).toEqual(TIGHT)
+		expect(composerRowLayout(tight - 1, noEffort)).toEqual(MOST_COLLAPSED)
 	})
 
 	it("makes room for the effort picker only when the model has reasoning", () => {
@@ -153,9 +158,21 @@ describe("composerRowLayout", () => {
 
 	// Realistic labels: the where pill "No task" is only its icon, the model chip is "OpenAI QA"
 	// (about 76px with its chevron) and the effort chip "Default" (about 64px).
+	it("keeps Compact as its icon when the context is nearly full, folding the panel buttons first", () => {
+		const layout = composerRowLayout(340, WIDEST)
+		expect(layout.inlineCompactNudge).toBe(false)
+		expect(layout.inlinePanelButtons).toBe(false)
+		expect(composerRowMinWidth(WIDEST, layout)).toBeLessThanOrEqual(340)
+		// The icon counts toward the row: 22px instead of the labelled pill's 76px.
+		expect(
+			composerRowMinWidth(WIDEST, MOST_COLLAPSED) -
+				composerRowMinWidth({ ...WIDEST, hasCompactNudge: false }, MOST_COLLAPSED),
+		).toBe(COMPOSER_ROW_WIDTHS.compactNudgeIcon)
+	})
+
 	describe.each([
-		["No task", WIDEST],
-		["a task", WIDEST_WITH_TASK],
+		["No task", CHAT],
+		["a task", CHAT_WITH_TASK],
 	])("at sidebar widths, with %s", (_label, content) => {
 		const OPENAI_QA_WIDTH = 76
 		it("keeps the MCP and rules buttons inline at 340, 440 and 480px", () => {
@@ -164,10 +181,11 @@ describe("composerRowLayout", () => {
 			}
 		})
 
-		it("hides the cost at 340-480px, keeping the ring", () => {
-			for (const width of [340, 440, 480]) {
+		it("hides the cost at 340 and 440px, keeping the ring, and shows it at 480px", () => {
+			for (const width of [340, 440]) {
 				expect(composerRowLayout(width, content).showCost, `width ${width}`).toBe(false)
 			}
+			expect(composerRowLayout(480, content).showCost).toBe(true)
 		})
 
 		it("goes tight at 340px but not at 440 or 480px", () => {

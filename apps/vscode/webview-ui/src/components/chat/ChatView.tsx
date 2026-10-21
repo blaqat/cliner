@@ -1,7 +1,7 @@
 import { combineApiRequests } from "@shared/combineApiRequests"
 import { combineCommandSequences } from "@shared/combineCommandSequences"
 import { combineHookSequences } from "@shared/combineHookSequences"
-import { getApiMetrics, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
+import { getApiMetrics, getCostBreakdown, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
@@ -141,6 +141,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	}, [displayMessages, hooksEnabled])
 	// has to be after api_req_finished are all reduced into api_req_started messages
 	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
+	const costBreakdown = useMemo(() => getCostBreakdown(modifiedMessages), [modifiedMessages])
 
 	const lastApiReqTotalTokens = useMemo(() => getLastApiReqTotalTokens(modifiedMessages) || undefined, [modifiedMessages])
 	const lastAppliedCheckpointRestoreSessionId = useRef<string | undefined>(checkpointRestoreInput?.sessionId)
@@ -572,6 +573,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 					<InputSection
 						apiMetrics={apiMetrics}
 						chatState={chatState}
+						costBreakdown={costBreakdown}
 						lastApiReqTotalTokens={lastApiReqTotalTokens}
 						messageHandlers={messageHandlers}
 						onOpenTaskGroup={openTaskGroup}

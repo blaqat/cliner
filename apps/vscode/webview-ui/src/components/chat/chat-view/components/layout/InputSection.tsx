@@ -1,3 +1,4 @@
+import type { CostBreakdownRow } from "@shared/getApiMetrics"
 import type { ParsedMessageLink } from "@shared/message-links"
 import { ResolveMessageLinkRequest } from "@shared/proto/cline/task"
 import React, { useCallback, useEffect, useLayoutEffect, useRef } from "react"
@@ -33,6 +34,8 @@ interface InputSectionProps {
 		totalCost: number
 	}
 	lastApiReqTotalTokens?: number
+	/** Usage and cost per model for the context popover. */
+	costBreakdown?: CostBreakdownRow[]
 	/** Opens a task group's page (the task pill's "Open task"). */
 	onOpenTaskGroup?: (taskGroupId: string) => void
 }
@@ -49,6 +52,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	selectFilesAndImages,
 	apiMetrics,
 	lastApiReqTotalTokens,
+	costBreakdown,
 	onOpenTaskGroup,
 }) => {
 	const {
@@ -75,6 +79,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 		currentTaskItem,
 		enterSendsAs = "steer",
 		clineMessages = [],
+		useAutoCondense,
 		mode,
 		subagentView,
 		sessionStatuses,
@@ -281,6 +286,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 							render: ({ showCost, inlineCompactNudge }) => (
 								<ContextUsageIndicator
 									{...usage}
+									autoCompact={useAutoCondense !== false}
+									breakdown={costBreakdown}
 									cacheReads={apiMetrics.totalCacheReads}
 									cacheWrites={apiMetrics.totalCacheWrites}
 									canCompact={canCompact}

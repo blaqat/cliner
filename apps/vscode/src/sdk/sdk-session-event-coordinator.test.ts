@@ -75,6 +75,30 @@ describe("SdkSessionEventCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
 
+	it("stamps the session's model on usage rows only", async () => {
+		const opening: ClineMessage = { ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({}) }
+		const usage: ClineMessage = {
+			ts: 2,
+			type: "say",
+			say: "api_req_started",
+			text: JSON.stringify({ tokensIn: 10, tokensOut: 2, cost: 0.01 }),
+		}
+		const { coordinator, options, event } = makeCoordinator({
+			translation: { messages: [opening, usage], sessionEnded: false, turnComplete: false },
+		})
+		Object.assign(options, { getModelId: () => "claude-x", getProviderId: () => "anthropic" })
+		await coordinator.handleSessionEvent(event)
+		const [emitted] = options.messages.appendAndEmit.mock.calls[0] as [ClineMessage[]]
+		expect(JSON.parse(emitted[0].text ?? "")).toEqual({})
+		expect(JSON.parse(emitted[1].text ?? "")).toEqual({
+			tokensIn: 10,
+			tokensOut: 2,
+			cost: 0.01,
+			modelId: "claude-x",
+			providerId: "anthropic",
+		})
+	})
+
 	it("filters late completion messages after cancellation", async () => {
 		const { coordinator, options, event } = makeCoordinator({
 			activeSession: makeActiveSession({ isRunning: false }),

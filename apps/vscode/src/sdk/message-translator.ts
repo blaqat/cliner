@@ -2443,6 +2443,9 @@ function appendPersistedMetricsMessage(
 			cacheWrites: usage.cacheWrites,
 			cacheReads: usage.cacheReads,
 			cost: usage.totalCost,
+			// The persisted message records the model that produced it; the cost breakdown groups by it.
+			...(message.modelInfo?.id ? { modelId: message.modelInfo.id } : {}),
+			...(message.modelInfo?.provider ? { providerId: message.modelInfo.provider } : {}),
 		} satisfies ClineApiReqInfo),
 		partial: false,
 	})

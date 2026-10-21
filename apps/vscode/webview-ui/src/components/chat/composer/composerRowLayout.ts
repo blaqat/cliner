@@ -6,7 +6,7 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  *    configuration picker truncate (CSS, down to the minimums below). The effort chip uses short
  *    labels (Default, Low, Med, High, XHigh), so it keeps its width until step 4.
  * 2. The chat cost hides; it stays in the ring's details.
- * 3. The Compact pill hides; Compact stays in the ring's details.
+ * 3. The Compact pill shrinks to its icon (it never hides while context is nearly full).
  * 4. The pills go tight: the where pill shows only its icon and the configuration and effort
  *    pickers drop to a few characters.
  * 5. Only then do the MCP servers and rules buttons fold into ＋ (as rows that open the same
@@ -19,7 +19,7 @@ export interface ComposerRowLayout {
 	inlinePanelButtons: boolean
 	/** The chat cost next to the context ring. Hidden first; it stays in the ring's details. */
 	showCost: boolean
-	/** The "Compact" pill at high usage. Next to go; Compact stays in the ring's details. */
+	/** The "Compact" pill at high usage shows its label. Next to go: it shrinks to its icon. */
 	inlineCompactNudge: boolean
 	/** Icon-only where pill and lower picker minimums, to keep the MCP and rules buttons on the row. */
 	tightPills: boolean
@@ -76,6 +76,8 @@ export const COMPOSER_ROW_WIDTHS = {
 	cost: 43,
 	/** Includes its gap before the ring. */
 	compactNudge: 76,
+	/** The Compact pill as its icon alone on narrower rows, with its gap. */
+	compactNudgeIcon: 22,
 	/** The approvals shield and its count, right after the effort picker. */
 	approvals: 28,
 	modeSwitch: 65,
@@ -94,7 +96,7 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		? w.rowGap +
 			w.ring +
 			(content.hasCost && layout.showCost ? w.cost : 0) +
-			(content.hasCompactNudge && layout.inlineCompactNudge ? w.compactNudge : 0)
+			(content.hasCompactNudge ? (layout.inlineCompactNudge ? w.compactNudge : w.compactNudgeIcon) : 0)
 		: 0
 	return w.padding + group + usage + w.rowGap + w.modeSwitch
 }

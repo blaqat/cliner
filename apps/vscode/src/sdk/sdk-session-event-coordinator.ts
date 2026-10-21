@@ -103,6 +103,7 @@ export class SdkSessionEventCoordinator {
 			this.options.sessions.setRunning(true, activeSession.sessionId)
 			this.options.setTurnPhase?.(PROVIDER_FAILURE_PHASE.STREAMING)
 		}
+		this.stampRequestModel(result)
 		const zeroCostPromise = this.zeroCostForFreeClineModel(result)
 		if (zeroCostPromise) {
 			await zeroCostPromise
@@ -268,6 +269,25 @@ export class SdkSessionEventCoordinator {
 			}
 		}
 		return undefined
+	}
+
+	/** Records which model served each request's usage, so the cost breakdown can group by model. */
+	private stampRequestModel(result: TranslationResult): void {
+		const modelId = this.options.getModelId?.()
+		if (!modelId) return
+		const providerId = this.options.getProviderId?.()
+		result.messages = result.messages.map((message) => {
+			if (message.type !== "say" || message.say !== "api_req_started" || !message.text) return message
+			try {
+				const info = JSON.parse(message.text) as ClineApiReqInfo
+				// Only the usage update carries tokens; the opening row has nothing to attribute yet.
+				if (info.tokensIn === undefined && info.tokensOut === undefined && info.cost === undefined) return message
+				if (info.modelId) return message
+				return { ...message, text: JSON.stringify({ ...info, modelId, ...(providerId ? { providerId } : {}) }) }
+			} catch {
+				return message
+			}
+		})
 	}
 
 	private zeroCostForFreeClineModel(result: TranslationResult): Promise<void> | undefined {
