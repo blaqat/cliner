@@ -109,6 +109,10 @@ describe("composer panel buttons", () => {
 		}
 		expect(panel).toHaveTextContent("style.md")
 		expect(mocks.refreshRules).toHaveBeenCalledOnce()
+		// Only the tabs are fixed: the explanation scrolls with the list, so a short window still shows content.
+		const scroll = within(panel).getByTestId("rules-panel-scroll")
+		expect(scroll).toHaveClass("overflow-y-auto", "min-h-0")
+		expect(within(scroll).getByText(/Rules allow you to provide Cline/)).toBeInTheDocument()
 		fireEvent.click(within(panel).getByRole("button", { name: "Scripts" }))
 		expect(screen.getByTestId("scripts-panel")).toBeInTheDocument()
 	})

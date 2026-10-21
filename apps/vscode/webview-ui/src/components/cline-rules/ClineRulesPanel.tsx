@@ -374,7 +374,7 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col" data-testid="rules-panel">
-			{/* Fixed header section - tabs and description */}
+			{/* Only the tabs stay fixed; the explanation scrolls with the list so a short window still shows content. */}
 			<div className="flex-shrink-0 px-3 pt-2">
 				{/* Tabs container */}
 				<div className="mb-2.5 flex justify-between overflow-hidden">
@@ -398,7 +398,10 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 						</TabButton>
 					</div>
 				</div>
+			</div>
 
+			{/* Scrollable content area */}
+			<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3" data-testid="rules-panel-scroll">
 				{/* Remote config banner */}
 				{(currentView === "rules" && hasRemoteRules) ||
 				(currentView === "workflows" && hasRemoteWorkflows) ||
@@ -452,10 +455,6 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 						</p>
 					)}
 				</div>
-			</div>
-
-			{/* Scrollable content area */}
-			<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
 				{isRemoteConfigLoading && remoteConfigSettings.length === 0 && (
 					<div className="text-xs text-description mb-3" role="status">
 						Loading managed configuration…
