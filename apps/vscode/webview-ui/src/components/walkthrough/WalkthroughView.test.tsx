@@ -612,6 +612,19 @@ describe("WalkthroughView", () => {
 			expect(screen.queryByRole("button", { name: /Generate$/ })).toBeNull()
 			expect(screen.getByRole("heading", { name: "Retry on checkout timeouts" })).toBeVisible()
 			expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 stops reviewed")
+			expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Authored")
+		})
+
+		it("shows repair warnings with paths and headers as code", async () => {
+			mocks.get.mockResolvedValue(
+				response({
+					...authoredWalk,
+					warnings: ["Fixed the line counts in a hunk header in `app.js`: `@@ -1 +1 @@` → `@@ -1 +1,2 @@`"],
+				}),
+			)
+			render(<WalkthroughView authoredId="walk-1" onDone={vi.fn()} taskId="task" />)
+			expect((await screen.findByText("app.js")).tagName).toBe("CODE")
+			expect(screen.getByText("@@ -1 +1,2 @@").tagName).toBe("CODE")
 		})
 
 		it("shows the origin as a link that opens externally", async () => {

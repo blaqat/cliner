@@ -51,31 +51,19 @@ export function WalkthroughReadyRow({ message }: { message: ClineMessage }) {
 	if (!payload) return null
 	const { authoredId, title, origin, stopCount, fileCount } = payload
 	return (
-		<div
-			className="rounded-xs border border-solid border-editor-group-border bg-code px-2.5 py-2 text-xs"
-			data-testid="walkthrough-ready">
-			<div className="flex items-center gap-1.5">
-				<span aria-hidden className="codicon codicon-diff shrink-0 text-[13px]! text-description" />
-				<span className="min-w-0 flex-1 font-semibold break-words text-foreground">{title}</span>
-				<span className="shrink-0 text-[11px] text-description">
-					{plural(stopCount, "stop")} · {plural(fileCount, "file")}
-				</span>
+		<div className="rounded-sm border border-solid border-link/30 bg-link/10" data-testid="walkthrough-ready">
+			<div className="flex min-w-0 items-center gap-2 pl-2 pr-1.5 pt-1.5">
+				<span className="shrink-0 text-xs font-medium uppercase tracking-wider text-link/80">Walkthrough</span>
+				<span className="flex-1" />
+				{origin && <OriginLink origin={origin} />}
 			</div>
-			{origin && (
-				<div className="mt-1 flex items-center gap-1 text-[11px] text-description">
-					<span aria-hidden className="codicon codicon-link-external text-[11px]!" />
-					{origin.url ? (
-						<LinkButton onClick={() => openExternal(origin.url as string)} title={origin.url}>
-							{origin.label}
-						</LinkButton>
-					) : (
-						<span>{origin.label}</span>
-					)}
+			<div className="px-2 pt-1 pb-2">
+				<div className="text-[13px] leading-snug font-semibold break-words text-foreground">{title}</div>
+				<div className="mt-0.5 text-[11px] text-description tabular-nums">
+					{plural(stopCount, "stop")} · {plural(fileCount, "file")}
 				</div>
-			)}
-			<div className="mt-2">
 				<Button
-					className="h-6 gap-1.5 px-2"
+					className="mt-2 h-auto min-h-6.5 w-full gap-1.5 px-2 text-(length:--vscode-font-size)"
 					onClick={() => navigateToWalkthrough(authoredId)}
 					size="xs"
 					title="Review this walkthrough stop by stop"
@@ -85,5 +73,29 @@ export function WalkthroughReadyRow({ message }: { message: ClineMessage }) {
 				</Button>
 			</div>
 		</div>
+	)
+}
+
+/** Where the change lives (e.g. the merge request); opens it when there's a URL. */
+function OriginLink({ origin }: { origin: WalkthroughOrigin }) {
+	const content = (
+		<>
+			<span className="min-w-0 truncate">{origin.label}</span>
+			{origin.url && <span aria-hidden className="codicon codicon-link-external shrink-0 text-[11px]!" />}
+		</>
+	)
+	const className = "inline-flex min-w-0 max-w-[60%] items-center gap-1 text-[11px]"
+	return origin.url ? (
+		<LinkButton
+			className={className}
+			data-testid="walkthrough-ready-origin"
+			onClick={() => openExternal(origin.url as string)}
+			title={origin.url}>
+			{content}
+		</LinkButton>
+	) : (
+		<span className={`${className} text-description`} data-testid="walkthrough-ready-origin">
+			{content}
+		</span>
 	)
 }

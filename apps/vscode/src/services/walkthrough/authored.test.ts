@@ -80,7 +80,7 @@ describe("authored walkthroughs", () => {
 			patch: `@@ -1,7 +1,12 @@ function f() {\n${body}`,
 		})
 		expect(walk.warnings).toEqual([
-			"Repaired hunk header in src/a.ts: @@ -1,7 +1,11 @@ function f() { -> @@ -1,7 +1,12 @@ function f() {",
+			"Fixed the line counts in a hunk header in `src/a.ts`: `@@ -1,7 +1,11 @@ function f() {` → `@@ -1,7 +1,12 @@ function f() {`",
 		])
 	})
 	it("repairs missing or garbled starts and blank context lines, and leaves valid headers untouched", () => {
@@ -91,7 +91,7 @@ describe("authored walkthroughs", () => {
 			header: "@@ -7,3 +7,3 @@ label",
 			patch: "@@ -7,3 +7,3 @@ label\n a\n \n-b\n+c\n",
 		})
-		expect(garbled.warning).toContain("->")
+		expect(garbled.warning).toContain("→")
 		const [bare] = parseAuthoredPatch("@@ @@\n+only\n")
 		expect(bare).toMatchObject({ oldStart: 1, newStart: 1, header: "@@ -1,0 +1 @@" })
 		const [fine] = parseAuthoredPatch(patch)

@@ -561,7 +561,16 @@ export default function WalkthroughView({
 						)}
 						<div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-description">
 							{authored ? (
-								<OriginChip origin={walk?.origin} />
+								<>
+									<span
+										className="inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid border-link/40 px-1.5 text-link"
+										data-testid="walkthrough-source"
+										title="Written by the agent from changes that aren't in this workspace">
+										<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+										Authored
+									</span>
+									{walk?.origin && <OriginChip origin={walk.origin} />}
+								</>
 							) : (
 								<span
 									className={cn(
@@ -622,9 +631,9 @@ export default function WalkthroughView({
 				{walk && walk.warnings.length > 0 && (
 					<ul className="mt-3 mb-0 flex list-none flex-col gap-1 rounded-xs border border-solid border-editor-group-border bg-code px-2 py-1.5 text-[11px] text-description">
 						{walk.warnings.map((warning) => (
-							<li className="flex gap-1.5 break-words" key={warning}>
+							<li className="flex gap-1.5" key={warning}>
 								<span aria-hidden className="codicon codicon-info mt-px text-[11px]!" />
-								<span className="min-w-0">{warning}</span>
+								<InlineCodeProse className="min-w-0" text={warning} />
 							</li>
 						))}
 					</ul>
@@ -753,30 +762,26 @@ export default function WalkthroughView({
 }
 
 /** The authored walkthrough's "where this change lives" chip; links out when it has a URL. */
-function OriginChip({ origin }: { origin?: WalkthroughOrigin }) {
-	const chipClass = "inline-flex h-4.5 items-center gap-1 rounded-xs border border-solid px-1.5"
-	if (origin?.url)
+function OriginChip({ origin }: { origin: WalkthroughOrigin }) {
+	const chipClass = "inline-flex h-4.5 min-w-0 max-w-full items-center gap-1 rounded-xs border border-solid px-1.5"
+	if (origin.url)
 		return (
 			<button
 				className={cn(
 					chipClass,
-					"cursor-pointer border-link/40 text-link hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					"cursor-pointer border-editor-group-border bg-transparent font-[inherit] text-[11px] text-link hover:bg-list-hover hover:text-link-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
 				)}
 				data-testid="walkthrough-origin"
 				onClick={() => openExternal(origin.url as string)}
 				title={origin.url}
 				type="button">
-				<span aria-hidden className="codicon codicon-link-external text-[11px]!" />
-				{origin.label}
+				<span className="truncate">{origin.label}</span>
+				<span aria-hidden className="codicon codicon-link-external shrink-0 text-[11px]!" />
 			</button>
 		)
 	return (
-		<span
-			className={cn(chipClass, "border-editor-group-border")}
-			data-testid="walkthrough-origin"
-			title="Written by the agent">
-			<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
-			{origin?.label ?? "Authored"}
+		<span className={cn(chipClass, "border-editor-group-border")} data-testid="walkthrough-origin">
+			<span className="truncate">{origin.label}</span>
 		</span>
 	)
 }

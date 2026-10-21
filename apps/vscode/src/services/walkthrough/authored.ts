@@ -110,7 +110,7 @@ export function parseAuthoredPatch(patch: string): ParsedPatchHunk[] {
 			oldStart,
 			newStart,
 			patch: `${[repaired, ...body].join("\n")}\n`,
-			warning: repaired === header ? undefined : `${header.trim()} -> ${repaired}`,
+			warning: repaired === header ? undefined : `\`${header.trim()}\` → \`${repaired}\``,
 		})
 	}
 	if (!result.length) throw new Error("Malformed patch: no unified @@ hunks found")
@@ -154,7 +154,7 @@ export function normalizeAuthoredWalkthrough(taskId: string, value: unknown, aut
 					return parseAuthoredPatch(patch).map(({ warning, ...part }) => {
 						if (hunks.length >= AUTHORED_LIMITS.hunks) throw new Error("Use at most 400 hunks")
 						const id = `h${hunks.length + 1}`
-						if (warning) warnings.push(`Repaired hunk header in ${filePath}: ${warning}`)
+						if (warning) warnings.push(`Fixed the line counts in a hunk header in \`${filePath}\`: ${warning}`)
 						hunks.push({
 							...part,
 							id,
