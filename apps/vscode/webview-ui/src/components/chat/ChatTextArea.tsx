@@ -2101,7 +2101,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<ShrinkSlot floor={rowLayout.tightPills ? 40 : 72}>
 							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
 						</ShrinkSlot>
-						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60}>
+						{/* Effort labels are short ("Default", "Med"): the long model name gives way first. */}
+						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60} shrink={0.2}>
 							<ReasoningEffortPicker
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								mode={mode}

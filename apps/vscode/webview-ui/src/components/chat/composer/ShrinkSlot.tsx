@@ -1,13 +1,33 @@
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 
-/** The pill's full width: its current width plus whatever its truncating label is hiding. */
+/**
+ * The pill's full (unsqueezed) width, measured on a hidden copy laid out at
+ * max-content beside the slot. Reading the live pill would see its squeezed
+ * width wherever a wrapper, not the label itself, clips the text.
+ */
 function naturalWidth(slot: HTMLElement): number {
 	const pill = slot.firstElementChild as HTMLElement | null
-	if (!pill) return 0
-	const label = pill.querySelector<HTMLElement>(".truncate")
-	const hidden = label ? Math.max(0, label.scrollWidth - label.clientWidth) : 0
-	return Math.ceil(pill.offsetWidth + hidden)
+	const host = slot.parentElement
+	if (!pill || !host) return 0
+	const copy = pill.cloneNode(true) as HTMLElement
+	for (const element of [copy, ...copy.querySelectorAll<HTMLElement>("[id]")]) element.removeAttribute("id")
+	copy.setAttribute("aria-hidden", "true")
+	Object.assign(copy.style, {
+		position: "absolute",
+		visibility: "hidden",
+		pointerEvents: "none",
+		left: "0",
+		top: "0",
+		width: "max-content",
+		minWidth: "0",
+		maxWidth: "none",
+	})
+	// Outside the slot, so the slot's own mutation observer doesn't see it.
+	host.appendChild(copy)
+	const width = copy.getBoundingClientRect().width
+	copy.remove()
+	return Math.ceil(width)
 }
 
 /**
@@ -15,7 +35,18 @@ function naturalWidth(slot: HTMLElement): number {
  * The row may squeeze it down to `floor` px, but it never reserves more room than
  * the pill needs: a short label ("Med") sits right next to whatever follows it.
  */
-export function ShrinkSlot({ floor, className, children }: { floor: number; className?: string; children: ReactNode }) {
+export function ShrinkSlot({
+	floor,
+	shrink = 1,
+	className,
+	children,
+}: {
+	floor: number
+	/** How much of the squeeze this slot takes relative to the others (flex-shrink). */
+	shrink?: number
+	className?: string
+	children: ReactNode
+}) {
 	const ref = useRef<HTMLSpanElement>(null)
 	const [natural, setNatural] = useState<number>()
 
@@ -43,7 +74,7 @@ export function ShrinkSlot({ floor, className, children }: { floor: number; clas
 			data-floor={floor}
 			data-shrink=""
 			ref={ref}
-			style={{ minWidth: natural ? Math.min(floor, natural) : floor }}>
+			style={{ minWidth: natural ? Math.min(floor, natural) : floor, flexShrink: shrink }}>
 			{children}
 		</span>
 	)

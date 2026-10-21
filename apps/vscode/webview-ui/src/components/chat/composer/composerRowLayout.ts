@@ -10,7 +10,7 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  * 4. The pills go tight: the where pill shows only its icon and the configuration and effort
  *    pickers drop to a few characters.
  * 5. Only then do the MCP servers and rules buttons fold into ＋ (as rows that open the same
- *    panels), so they stay visible in a 320px sidebar during a chat.
+ *    panels), so they stay visible in a 340px sidebar during a chat.
  * Below the last step the pills keep shrinking toward their chevrons. ＋, the approvals shield, the
  * ring and the Ask/Act switch never hide.
  */
@@ -56,10 +56,10 @@ export const COMPOSER_ROW_WIDTHS = {
 	/** gap-1.5, rem-based too. */
 	rowGap: 5,
 	groupGap: 4,
-	/** The ＋ menu button. */
-	plus: 20,
+	/** The ＋ menu button (measured in VS Code: 26px with its padding). */
+	plus: 26,
 	/** The MCP servers button and the rules button, each the ＋'s size. */
-	panelButton: 20,
+	panelButton: 26,
 	/** The where pill with no task: its icon alone (tasklist icon, padding and border). */
 	whereIcon: 22,
 	/** The where pill with a task, truncated to a few characters ("◇ Na…▾"). */

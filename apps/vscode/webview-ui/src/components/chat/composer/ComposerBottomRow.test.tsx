@@ -206,8 +206,8 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("plus-menu-back")).toBeInTheDocument()
 	})
 
-	it("keeps the MCP servers and rules buttons in a 320px sidebar by making the pills tight", () => {
-		stubRowWidth(320)
+	it("keeps the MCP servers and rules buttons in a 340px sidebar by making the pills tight", () => {
+		stubRowWidth(340)
 		renderComposer(usageSlot())
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
@@ -228,7 +228,7 @@ describe("composer bottom row", () => {
 	})
 
 	it.each([
-		320, 420, 480,
+		340, 420, 480,
 	])("at %ipx the where pill is just its icon with no task, and the effort chip says Default", (width) => {
 		stubRowWidth(width)
 		renderComposer(usageSlot())
@@ -239,14 +239,14 @@ describe("composer bottom row", () => {
 		// Realistic labels: the effort chip is short, so it never shows "Provide…".
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent(/^Default$/)
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveAttribute("title", "Reasoning effort: Provider default")
-		// The MCP servers and rules buttons stay on the row down to 320px.
+		// The MCP servers and rules buttons stay on the row down to 340px.
 		expect(screen.getByTestId("mcp-servers-button")).toBeInTheDocument()
 		expect(screen.getByTestId("rules-button")).toBeInTheDocument()
 	})
 
 	it.each([
-		[320, true],
-		[420, false],
+		[340, true],
+		[440, false],
 		[480, false],
 	])("at %ipx with a task the where pill is icon-only: %s", (width, iconOnly) => {
 		mocks.withTask = true
@@ -262,7 +262,8 @@ describe("composer bottom row", () => {
 		[600, true],
 		[440, true],
 		[360, true],
-		[320, true],
+		[340, true],
+		[320, false],
 		[300, false],
 	])("at %ipx the MCP servers and rules buttons are inline: %s", (width, inline) => {
 		stubRowWidth(width)
