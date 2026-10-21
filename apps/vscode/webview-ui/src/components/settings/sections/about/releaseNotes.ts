@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-2",
 		title: "Release 2",
-		builds: "fork.24–31",
+		builds: "fork.24–32",
 		date: "2026-10-21",
 		notes: [
 			"Composer: ＋ for mentions and files, MCP and rules/scripts buttons beside it, a where pill (task, worktree, branch), separate model and effort chips, the approvals shield and a context ring",
@@ -25,7 +25,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Notebook review of agent edits, a history page, and Convert to rule, skill or workflow; # notes, thread: mentions and message links as context",
 			"Walkthroughs: review a thread's changes stop by stop with notes, optional Generate, and Open walkthrough on finished turns; the agent can also write one for changes that aren't local, like a GitLab merge request",
 			"Scripts with typed options, per-thread worktrees (git or mm), and terminal environment variables, .env and PATH for every command",
-			"Toasts for background threads, Back history, Settle all on tasks, a waiting-on-subagents status, and ⌘K search / ⌘S stash while Cline is focused",
+			"Toasts for background threads, Back history, Settle all on tasks or any one thread from home or the task page (active threads listed first), a waiting-on-subagents status, and ⌘K search / ⌘S stash while Cline is focused",
 			"Fixes: no more endless Thinking… (Responses streams end on completion, Escape no longer cancels, a watchdog flags stuck turns); finished threads stay done after reload; every History thread shows in the inbox; asides follow their thread into a task; settings writes and the prompt stash are safe across windows",
 		],
 	},
