@@ -157,7 +157,8 @@ interface SubagentPanelButtonProps {
 
 /**
  * Header button for the focused thread's subagents: a count of its direct
- * children (yellow when one needs the user) that opens a popover with the
+ * children still running or waiting, none once they're all finished (yellow
+ * when one needs the user), that opens a popover with the
  * immediate parent, the current thread, and those children. Hidden when the
  * lineage has no subagents at all.
  */
@@ -267,7 +268,8 @@ export const SubagentPanelButton = ({ onOpenPreview }: SubagentPanelButtonProps)
 					icon="type-hierarchy-sub"
 					label={`Subagents (${count})`}
 					tooltip={tooltip}>
-					{count > 0 && (
+					{/* Only live subagents earn a number; finished ones are in the panel and the tooltip. */}
+					{live.length > 0 && (
 						<span
 							className={cn(
 								"absolute -top-1 -right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.75 text-[9px] leading-none font-semibold transition-colors duration-200 motion-reduce:transition-none",
@@ -276,7 +278,7 @@ export const SubagentPanelButton = ({ onOpenPreview }: SubagentPanelButtonProps)
 									: "bg-badge-background text-badge-foreground",
 							)}
 							data-testid="subagents-badge">
-							{count}
+							{live.length}
 						</span>
 					)}
 				</HeaderIconButton>

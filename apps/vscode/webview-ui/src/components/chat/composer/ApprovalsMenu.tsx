@@ -58,7 +58,7 @@ const ApprovalsMenu = () => {
 					</span>
 				</button>
 			</PopoverTrigger>
-			<PopoverContent align="start" className={cn("w-64", COMPOSER_MENU_SCROLL_CLASS)} side="top">
+			<PopoverContent align="end" className={cn("w-64", COMPOSER_MENU_SCROLL_CLASS)} side="top">
 				<div className="mb-2 text-xs text-description">
 					Let Cline take these actions without asking for approval.{" "}
 					<a

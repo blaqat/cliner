@@ -233,6 +233,8 @@ export interface ExtensionState {
 	threadToastsEnabled?: boolean
 	/** How long a completion toast stays, in seconds. */
 	threadToastSeconds?: number
+	/** Switching to Act right after an Ask answer also continues it (default on). */
+	continueAnswerOnActSwitch?: boolean
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	openAiCodexIsAuthenticated?: boolean

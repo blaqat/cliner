@@ -186,6 +186,62 @@ describe("SdkModeCoordinator", () => {
 		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
 	})
 
+	it("with continueAnswerOnActSwitch off, a plain switch only changes the mode and keeps the draft", async () => {
+		const activeSession = makeActiveSession()
+		const { coordinator, options, state } = makeCoordinator({
+			activeSession,
+			task: makeTask("old-session", planMessages()),
+			mode: "plan",
+			turnPhase: "awaiting_followup",
+		})
+		Object.assign(state, { continueAnswerOnActSwitch: false })
+
+		await expect(coordinator.togglePlanActMode("act", { message: "do it", images: [], files: [] })).resolves.toBe(false)
+
+		expect(state.mode).toBe("act")
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.onAutoContinueStarting).not.toHaveBeenCalled()
+	})
+
+	it("with continueAnswerOnActSwitch off, the answer's Continue in Act button still continues", async () => {
+		const activeSession = makeActiveSession()
+		const { coordinator, options, state } = makeCoordinator({
+			activeSession,
+			task: makeTask("old-session", planMessages()),
+			mode: "plan",
+			turnPhase: "awaiting_followup",
+		})
+		Object.assign(state, { continueAnswerOnActSwitch: false })
+
+		await coordinator.togglePlanActMode("act", undefined, { continueAnswer: true })
+
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+			expect.anything(),
+			"new-session",
+			"The user approved switching to act mode. Continue with the approved plan now.",
+			undefined,
+			undefined,
+		)
+	})
+
+	it("with continueAnswerOnActSwitch off, a reopened answer isn't resumed by a plain switch", async () => {
+		const { coordinator, options, state } = makeCoordinator({
+			task: makeTask("old-session", planMessages()),
+			mode: "plan",
+			turnPhase: "resumable",
+		})
+		Object.assign(state, { continueAnswerOnActSwitch: false })
+		const resume = vi.fn().mockResolvedValue(true)
+		Object.assign(options, { resumeInAct: resume })
+
+		await expect(coordinator.togglePlanActMode("act")).resolves.toBe(false)
+		expect(state.mode).toBe("act")
+		expect(resume).not.toHaveBeenCalled()
+		await coordinator.togglePlanActMode("plan")
+		await coordinator.togglePlanActMode("act", undefined, { continueAnswer: true })
+		expect(resume).toHaveBeenCalledOnce()
+	})
+
 	it("auto-continues when completed request bookkeeping trails the presented plan", async () => {
 		const activeSession = makeActiveSession()
 		const task = makeTask("old-session", [

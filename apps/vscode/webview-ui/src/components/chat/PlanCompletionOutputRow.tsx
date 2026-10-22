@@ -42,7 +42,10 @@ const PlanCompletionOutputRow = memo(
 
 		const continueInAct = () => {
 			setSwitching(true)
-			StateServiceClient.togglePlanActModeProto(TogglePlanActModeRequest.create({ mode: PlanActMode.ACT }))
+			// continueAnswer: this button always carries the answer out, even when a plain switch doesn't.
+			StateServiceClient.togglePlanActModeProto(
+				TogglePlanActModeRequest.create({ mode: PlanActMode.ACT, continueAnswer: true }),
+			)
 				.catch((error) => console.error("Failed to switch to Act mode:", error))
 				.finally(() => setSwitching(false))
 		}

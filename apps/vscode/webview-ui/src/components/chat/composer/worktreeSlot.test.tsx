@@ -47,6 +47,8 @@ beforeEach(() => {
 it("lets a new thread pick a worktree, and the button and send path follow the pick", async () => {
 	render(<WorkspaceButton />)
 	expect(screen.getByTestId("workspace-button")).toHaveAccessibleName("Workspace: your workspace")
+	// The worktree icon either way; only its color says a worktree is on.
+	expect(screen.getByTestId("workspace-button").querySelector(".codicon-repo-forked")).not.toBeNull()
 	await openMenu()
 	const worktree = screen.getByRole("menuitemradio", { name: /New worktree/ })
 	await waitFor(() => expect(worktree).not.toBeDisabled())

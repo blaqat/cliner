@@ -23,7 +23,9 @@ export async function togglePlanActModeProto(controller: Controller, request: To
 		const chatContent = request.chatContent
 
 		// Call the existing controller implementation
-		const sentMessage = await controller.togglePlanActMode(mode, chatContent)
+		const sentMessage = await controller.togglePlanActMode(mode, chatContent, {
+			continueAnswer: request.continueAnswer === true,
+		})
 
 		return Boolean.create({
 			value: sentMessage,

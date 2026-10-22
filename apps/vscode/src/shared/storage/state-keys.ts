@@ -364,6 +364,8 @@ const USER_SETTINGS_FIELDS = {
 	showFeatureTips: { default: false as boolean },
 	threadToastsEnabled: { default: true as boolean },
 	threadToastSeconds: { default: 5 as number },
+	// Switching to Act right after an Ask answer also continues it. Off: only the answer's Continue in Act button does.
+	continueAnswerOnActSwitch: { default: true as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },

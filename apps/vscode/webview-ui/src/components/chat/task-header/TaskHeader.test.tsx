@@ -153,12 +153,17 @@ describe("TaskHeader", () => {
 		expect(mocks.deleteTasksWithIds).not.toHaveBeenCalled()
 	})
 
-	it("hides the subagents button without subagents and shows the direct-child count with them", () => {
+	it("hides the subagents button without subagents and badges only running ones", () => {
 		const { rerender } = render(<TaskHeader onClose={vi.fn()} task={task} />)
 		expect(screen.queryByTestId("subagents-button")).toBeNull()
 
 		const child = item("t1__a", { isSubagent: true, parentTaskId: "t1", task: "explore" })
 		mocks.state = { ...mocks.state, taskHistory: [mocks.state.currentTaskItem, child] }
+		rerender(<TaskHeader onClose={vi.fn()} task={task} />)
+		expect(screen.getByTestId("subagents-button")).toBeInTheDocument()
+		expect(screen.queryByTestId("subagents-badge")).toBeNull()
+
+		mocks.state = { ...mocks.state, sessionStatuses: { t1__a: "running" } }
 		rerender(<TaskHeader onClose={vi.fn()} task={task} />)
 		expect(screen.getByTestId("subagents-badge")).toHaveTextContent("1")
 	})

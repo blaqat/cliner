@@ -299,6 +299,7 @@ message Settings {
   optional bool thread_toasts_enabled = 195;
   optional int32 thread_toast_seconds = 196;
   optional string global_script_toggles = 197;
+  optional bool continue_answer_on_act_switch = 198;
 }
 
 message State {
@@ -326,6 +327,8 @@ message TogglePlanActModeRequest {
   Metadata metadata = 1;
   PlanActMode mode = 2;
   optional ChatContent chat_content = 3;
+  // The answer's own "Continue in Act" button: continue the answer even when switching alone doesn't.
+  optional bool continue_answer = 4;
 }
 
 enum PlanActMode {
@@ -452,6 +455,7 @@ message UpdateSettingsRequest {
   optional bool subagents_allow_web = 52;
   optional bool thread_toasts_enabled = 53;
   optional int32 thread_toast_seconds = 54;
+  optional bool continue_answer_on_act_switch = 68;
   optional bool subagent_profiles_enabled = 55;
   optional string subagent_default_profile_id = 56;
   optional string subagent_reasoning_effort = 57;

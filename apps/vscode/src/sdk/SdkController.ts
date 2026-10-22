@@ -3455,11 +3455,15 @@ export class Controller {
 
 	// ---- Mode switching ----
 
-	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+	async togglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent?: ChatContent,
+		options?: { continueAnswer?: boolean },
+	): Promise<boolean> {
 		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		const taskId = this.task?.taskId
 		const hadLiveSession = taskId ? !!this.sessions.getSession(taskId) : false
-		const result = await this.mode.togglePlanActMode(modeToSwitchTo, chatContent)
+		const result = await this.mode.togglePlanActMode(modeToSwitchTo, chatContent, options)
 		// Live mode changes are committed by onModeRebuilt inside the transition
 		// lock. A history-only task has no session to rebuild, so commit its mode
 		// after the coordinator completes the global mode change.

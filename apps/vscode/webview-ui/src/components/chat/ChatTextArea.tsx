@@ -2112,51 +2112,54 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								modelInfo={selectedModelInfo}
 							/>
 						</ShrinkSlot>
-						<ApprovalsMenu />
 					</ButtonGroup>
 					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
-					{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
-					<Tooltip>
-						<TooltipContent
-							className="text-xs px-2 flex flex-col gap-1"
-							hidden={shownTooltipMode === null}
-							side="top">
-							{shownTooltipMode === "act"
-								? "In Act mode, Cline will complete the task immediately"
-								: "In Ask mode, Cline will answer questions and explore the codebase"}
-							<p className="text-description/80 text-xs mb-0">
-								Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
-							</p>
-						</TooltipContent>
-						<TooltipTrigger className="shrink-0">
-							<SwitchContainer
-								$flash={modeSwitchFlash}
-								data-testid="mode-switch"
-								disabled={false}
-								onClick={onModeToggle}>
-								<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
-								{(
-									[
-										{ value: "plan", label: "Ask" },
-										{ value: "act", label: "Act" },
-									] as const
-								).map((m) => (
-									<div
-										aria-checked={mode === m.value}
-										className={cn(
-											"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
-											mode === m.value ? "text-button-foreground" : "text-input-foreground",
-										)}
-										key={m.value}
-										onMouseLeave={() => setShownTooltipMode(null)}
-										onMouseOver={() => setShownTooltipMode(m.value)}
-										role="switch">
-										{m.label}
-									</div>
-								))}
-							</SwitchContainer>
-						</TooltipTrigger>
-					</Tooltip>
+					{/* The approvals shield sits with the Ask/Act switch: both decide how much Cline does on its own. */}
+					<div className="flex shrink-0 items-center gap-1" data-testid="composer-mode-controls">
+						<ApprovalsMenu />
+						{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
+						<Tooltip>
+							<TooltipContent
+								className="text-xs px-2 flex flex-col gap-1"
+								hidden={shownTooltipMode === null}
+								side="top">
+								{shownTooltipMode === "act"
+									? "In Act mode, Cline will complete the task immediately"
+									: "In Ask mode, Cline will answer questions and explore the codebase"}
+								<p className="text-description/80 text-xs mb-0">
+									Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
+								</p>
+							</TooltipContent>
+							<TooltipTrigger className="shrink-0">
+								<SwitchContainer
+									$flash={modeSwitchFlash}
+									data-testid="mode-switch"
+									disabled={false}
+									onClick={onModeToggle}>
+									<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
+									{(
+										[
+											{ value: "plan", label: "Ask" },
+											{ value: "act", label: "Act" },
+										] as const
+									).map((m) => (
+										<div
+											aria-checked={mode === m.value}
+											className={cn(
+												"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
+												mode === m.value ? "text-button-foreground" : "text-input-foreground",
+											)}
+											key={m.value}
+											onMouseLeave={() => setShownTooltipMode(null)}
+											onMouseOver={() => setShownTooltipMode(m.value)}
+											role="switch">
+											{m.label}
+										</div>
+									))}
+								</SwitchContainer>
+							</TooltipTrigger>
+						</Tooltip>
+					</div>
 				</div>
 			</div>
 		)

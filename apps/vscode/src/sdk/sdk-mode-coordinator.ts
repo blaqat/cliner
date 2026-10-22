@@ -130,11 +130,22 @@ export class SdkModeCoordinator {
 		this.modeSwitchNoticeTracker.record(from, to)
 	}
 
-	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+	/**
+	 * `continueAnswer` is the answer's own Continue in Act button. A plain switch (the Ask/Act toggle,
+	 * its shortcut, /act) only continues an answer while the continueAnswerOnActSwitch setting is on;
+	 * off, it just changes the mode and leaves the draft in the composer.
+	 */
+	async togglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent?: ChatContent,
+		{ continueAnswer = false }: { continueAnswer?: boolean } = {},
+	): Promise<boolean> {
 		const currentMode = this.options.stateManager.getGlobalSettingsKey("mode")
 		if (currentMode === modeToSwitchTo) {
 			return false
 		}
+		const mayContinue =
+			continueAnswer || this.options.stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch") !== false
 
 		const activeSession = this.options.sessions.getActiveSession()
 		if (activeSession) {
@@ -153,7 +164,7 @@ export class SdkModeCoordinator {
 				!activeSession.isRunning &&
 				(turnPhase === "awaiting_followup" || turnPhase === "completed") &&
 				isAskAnswer(latestAssistantResult)
-			const autoContinue = modeToSwitchTo === "act" && planPresented
+			const autoContinue = modeToSwitchTo === "act" && planPresented && mayContinue
 			const userPrompt = chatContent?.message?.trim() || undefined
 			const userImages = chatContent?.images?.length ? chatContent.images : undefined
 			const userFiles = chatContent?.files?.length ? chatContent.files : undefined
@@ -172,7 +183,7 @@ export class SdkModeCoordinator {
 		this.options.stateManager.setGlobalState("mode", modeToSwitchTo)
 		const task = this.options.getTask()
 		const latestResult = latestModeResult(task?.messageStateHandler.getClineMessages() ?? [])
-		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && this.options.resumeInAct) {
+		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && mayContinue && this.options.resumeInAct) {
 			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
 			const sent = await this.options.resumeInAct(chatContent)
 			await this.options.postStateToWebview()

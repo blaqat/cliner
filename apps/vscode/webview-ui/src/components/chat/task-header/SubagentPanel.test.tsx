@@ -62,9 +62,10 @@ describe("SubagentPanelButton", () => {
 		expect(container).toBeEmptyDOMElement()
 	})
 
-	it("badges the direct-child count and turns yellow when a child needs the user", () => {
+	it("badges only the live direct children, turns yellow when one needs the user, and drops the badge when none run", () => {
 		const { rerender } = render(<SubagentPanelButton />)
-		expect(screen.getByTestId("subagents-badge")).toHaveTextContent("3")
+		// a and b run; d is done and doesn't count.
+		expect(screen.getByTestId("subagents-badge")).toHaveTextContent("2")
 		expect(screen.getByTestId("subagents-button")).not.toHaveAttribute("data-attention")
 		expect(screen.getByTestId("subagents-badge").className).toContain("bg-badge-background")
 
@@ -72,6 +73,11 @@ describe("SubagentPanelButton", () => {
 		rerender(<SubagentPanelButton />)
 		expect(screen.getByTestId("subagents-button")).toHaveAttribute("data-attention", "true")
 		expect(screen.getByTestId("subagents-badge").className).toContain("bg-warning")
+
+		mocks.state = { ...mocks.state, sessionStatuses: { a: "done", b: "done", d: "done" } }
+		rerender(<SubagentPanelButton />)
+		expect(screen.queryByTestId("subagents-badge")).toBeNull()
+		expect(screen.getByTestId("subagents-button")).toHaveAccessibleName("Subagents (3)")
 	})
 
 	it("opens waiting live children and offers the active approval beside progress totals", async () => {

@@ -1,5 +1,5 @@
 import { type MessageReferenceInfo, messageReferenceSource } from "@shared/message-references"
-import { MessageSquareTextIcon, XIcon } from "lucide-react"
+import { LinkIcon, XIcon } from "lucide-react"
 import React, { memo } from "react"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import type { MessageTagDraft } from "./chat-view/types/chatTypes"
@@ -15,10 +15,13 @@ interface MessageTagProps {
  * Compact chip for one pasted message link. Unlike a quote it has no note: it
  * only connects the linked message to the next send as context. Hover (or
  * focus) shows the message; Backspace/Delete or the x removes it.
+ *
+ * Link-tinted with the link icon (the one on a message's copy-link button), so
+ * it never reads as a grey quote chip.
  */
 export const MessageTag = memo(({ tag, onRemove, triggerRef }: MessageTagProps) => (
 	<span
-		className="group inline-flex h-5 max-w-[200px] shrink-0 items-center rounded-xs border border-input-border bg-muted text-xs text-foreground hover:border-border focus-within:border-border"
+		className="group inline-flex h-5 max-w-[200px] shrink-0 items-center rounded-xs border border-link/40 bg-link/10 text-xs text-foreground hover:border-link/70 focus-within:border-link/70"
 		data-testid="message-tag">
 		<HoverCard closeDelay={100} openDelay={200}>
 			<HoverCardTrigger asChild>
@@ -33,7 +36,7 @@ export const MessageTag = memo(({ tag, onRemove, triggerRef }: MessageTagProps) 
 					}}
 					ref={triggerRef}
 					type="button">
-					<MessageSquareTextIcon aria-hidden className="shrink-0 text-description" size={11} />
+					<LinkIcon aria-hidden className="shrink-0 text-link" size={11} />
 					<span className="truncate" data-testid="message-tag-source">
 						{tag.source}
 					</span>

@@ -399,6 +399,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showFeatureTips: false,
 		threadToastsEnabled: true,
 		threadToastSeconds: 5,
+		continueAnswerOnActSwitch: true,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
 		apiConfigProfiles: [],

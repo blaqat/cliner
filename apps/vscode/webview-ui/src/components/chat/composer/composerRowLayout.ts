@@ -80,7 +80,7 @@ export const COMPOSER_ROW_WIDTHS = {
 	compactNudge: 76,
 	/** The Compact pill as its icon alone on narrower rows, with its gap. */
 	compactNudgeIcon: 22,
-	/** The approvals shield and its count, right after the effort picker. */
+	/** The approvals shield and its count, just left of the Ask/Act switch. */
 	approvals: 28,
 	modeSwitch: 65,
 } as const
@@ -92,15 +92,16 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		? w.whereIcon + w.configTight + (content.hasEffort ? w.groupGap + w.effortTight : 0)
 		: (content.hasTask ? w.whereNamed : w.whereIcon) + w.configMin + (content.hasEffort ? w.groupGap + w.effortMin : 0)
 	const panelButtons = layout.inlinePanelButtons ? 2 * (w.panelButton + w.groupGap) : 0
-	// ＋, [MCP, rules,] workspace, where, configuration, [effort,] shield: one gap between each.
-	const group = w.plus + panelButtons + w.workspace + w.groupGap + pills + 3 * w.groupGap + w.approvals
+	// ＋, [MCP, rules,] workspace, where, configuration, [effort]: one gap between each.
+	const group = w.plus + panelButtons + w.workspace + w.groupGap + pills + 2 * w.groupGap
 	const usage = content.hasUsage
 		? w.rowGap +
 			w.ring +
 			(content.hasCost && layout.showCost ? w.cost : 0) +
 			(content.hasCompactNudge ? (layout.inlineCompactNudge ? w.compactNudge : w.compactNudgeIcon) : 0)
 		: 0
-	return w.padding + group + usage + w.rowGap + w.modeSwitch
+	// The shield and the Ask/Act switch sit together on the right, a pill gap apart.
+	return w.padding + group + usage + w.rowGap + w.approvals + w.groupGap + w.modeSwitch
 }
 
 /** The fullest layout that fits a measured row width; unknown widths (not laid out yet, jsdom) get the full row. */

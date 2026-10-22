@@ -95,7 +95,7 @@ describe("composer bottom row", () => {
 		mocks.withTask = false
 	})
 
-	it("is ＋, MCP servers, rules, where, configuration, effort, the approvals shield, then the meter and the Ask/Act switch", () => {
+	it("is ＋, MCP servers, rules, where, configuration, effort, then the meter, the approvals shield and the Ask/Act switch", () => {
 		renderComposer(usageSlot())
 		const group = screen.getByTestId("composer-pickers")
 		const order = [
@@ -105,21 +105,24 @@ describe("composer bottom row", () => {
 			screen.getByTestId("where-pill"),
 			screen.getByTestId("config-picker"),
 			screen.getByTestId("reasoning-effort-picker"),
-			screen.getByTestId("approvals-button"),
 		]
 		for (const element of order) {
 			expect(group).toContainElement(element)
 		}
-		for (const element of [...order, screen.getByTestId("usage-slot"), screen.getByTestId("mode-switch")].reduce<
-			HTMLElement[][]
-		>((pairs, element, i, all) => (i > 0 ? [...pairs, [all[i - 1], element]] : pairs), [])) {
+		for (const element of [
+			...order,
+			screen.getByTestId("usage-slot"),
+			screen.getByTestId("approvals-button"),
+			screen.getByTestId("mode-switch"),
+		].reduce<HTMLElement[][]>((pairs, element, i, all) => (i > 0 ? [...pairs, [all[i - 1], element]] : pairs), [])) {
 			expect(element[0].compareDocumentPosition(element[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 		}
-		// The shield closes the picker group, right after the model and effort chips.
+		// The shield sits with the Ask/Act switch, right before it, outside the picker group.
 		const shield = screen.getByTestId("approvals-button")
-		expect(shield.parentElement).toBe(group)
-		expect(group.lastElementChild).toBe(shield)
-		expect(shield.previousElementSibling).toContainElement(screen.getByTestId("reasoning-effort-picker"))
+		expect(group).not.toContainElement(shield)
+		const controls = screen.getByTestId("composer-mode-controls")
+		expect(controls.firstElementChild).toBe(shield)
+		expect(controls).toContainElement(screen.getByTestId("mode-switch"))
 	})
 
 	it("keeps the MCP servers and rules buttons out of the ＋ menu while they're beside it", () => {

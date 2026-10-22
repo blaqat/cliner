@@ -62,7 +62,8 @@ export function WorkspaceButton() {
 					data-worktree={enabled ? "true" : undefined}
 					title={label}
 					type="button">
-					<span aria-hidden className={`codicon codicon-${enabled ? "repo-forked" : "folder"} text-[13px]!`} />
+					{/* Always the worktree icon, so the button reads as "worktrees"; green when this thread uses one. */}
+					<span aria-hidden className="codicon codicon-repo-forked text-[13px]!" />
 				</button>
 			</PopoverTrigger>
 			<PopoverContent

@@ -52,6 +52,9 @@ describe("MessageTagList", () => {
 		expect(screen.queryByTestId("quote-tag")).toBeNull()
 		expect(screen.queryByTestId("quote-tag-editor")).toBeNull()
 		expect(chips[0]).not.toHaveTextContent("Line 1")
+		// Looks like a link, not a grey quote chip: link tint and the link icon.
+		expect(chips[0]).toHaveClass("border-link/40", "bg-link/10")
+		expect(chips[0].querySelector(".lucide-link")).not.toBeNull()
 	})
 
 	it("shows the linked message in a height-capped, scrollable card on hover", async () => {

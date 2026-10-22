@@ -81,6 +81,7 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 		showFeatureTips,
 		threadToastsEnabled,
 		threadToastSeconds,
+		continueAnswerOnActSwitch,
 	} = useExtensionState()
 	// The duration field commits on blur, like other number settings.
 	const [toastSecondsDraft, setToastSecondsDraft] = useState<string>()
@@ -146,6 +147,13 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 								description="Let the model search the web when the selected provider and model support it. Applies to new tasks."
 								label="Web Search"
 								onChange={(checked) => updateSetting("webSearchEnabled", checked)}
+							/>
+							<FeatureRow
+								checked={continueAnswerOnActSwitch !== false}
+								description="Right after an Ask answer, switching to Act also tells Cline to carry it out (with anything you typed). Off: switching only changes the mode; the answer's Continue in Act button still carries it out."
+								id="continue-answer-on-act-switch"
+								label="Continue the answer when switching to Act"
+								onChange={(checked) => updateSetting("continueAnswerOnActSwitch", checked)}
 							/>
 						</div>
 					</div>
