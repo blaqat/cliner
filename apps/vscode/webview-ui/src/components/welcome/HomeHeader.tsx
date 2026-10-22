@@ -24,11 +24,13 @@ const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
 	const headingText = "What can I do for you?"
 
 	return (
-		// Compact: the logo sits beside the heading on one line, so the inbox starts higher up.
-		<div className="mt-3 mb-2 flex flex-col items-center">
-			<div className="flex items-center justify-center gap-2 px-4">
-				<LogoComponent className="size-7 shrink-0" environment={environment} />
-				<h1 className="m-0 text-[15px] font-semibold">{headingText}</h1>
+		// The original layout (logo over the heading), just smaller: about 110px instead of 190.
+		<div className="mb-3 flex flex-col items-center">
+			<div className="mt-4 mb-2.5">
+				<LogoComponent className="size-12" environment={environment} />
+			</div>
+			<div className="flex items-center justify-center px-4 text-center">
+				<h1 className="m-0 text-lg font-bold">{headingText}</h1>
 			</div>
 			{shouldShowQuickWins && (
 				<div className="mt-3">
