@@ -128,7 +128,7 @@ const FIXTURE = GetTaskGroupResponse.fromPartial({
 
 const renderView = async () => {
 	const result = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-	await screen.findByTestId("task-group-title")
+	await screen.findByTestId("task-group-counts")
 	return result
 }
 
@@ -164,7 +164,10 @@ describe("TaskGroupView", () => {
 		expect(mocks.getTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
 		expect(screen.getByTestId("task-group-header")).toHaveTextContent("Bulk invoice export")
 		expect(screen.getByTestId("crumb-home")).toBeInTheDocument()
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk invoice export")
+		// The name lives in the breadcrumb only, with the task icon, like a thread's.
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk invoice export")
+		expect(screen.getByTestId("task-header-title").querySelector(".codicon-tasklist")).not.toBeNull()
+		expect(screen.queryByRole("heading", { name: "Bulk invoice export" })).toBeNull()
 		// Subagents belong to their root thread and aren't counted.
 		expect(screen.getByTestId("task-group-counts")).toHaveTextContent("5 threads · 5 notes")
 		const tags = screen.getAllByTestId("task-tag-chip").map((chip) => chip.textContent)
@@ -173,7 +176,7 @@ describe("TaskGroupView", () => {
 
 	it("fixes the composer's task pill to this task while open", async () => {
 		const { unmount } = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-		await screen.findByTestId("task-group-title")
+		await screen.findByTestId("task-group-counts")
 		expect(getComposerPageTaskGroup()).toBe("g1")
 		// The page scope isn't the clearable pill pick, so sends can't drop it.
 		expect(getComposerTaskGroup()).toBeUndefined()
@@ -365,21 +368,22 @@ describe("TaskGroupView", () => {
 		expect(lastTags.map((tag: { value: string }) => tag.value)).toEqual(["PROJ-482", "PROJ-490"])
 	})
 
-	it("renames from ✎ (Enter saves, Esc cancels)", async () => {
+	it("renames from the breadcrumb's ✎ or ⋯ › Rename task (Enter saves, Esc cancels)", async () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "Rename task" }))
 		let input = screen.getByLabelText("Task title")
 		fireEvent.change(input, { target: { value: "Nope" } })
 		fireEvent.keyDown(input, { key: "Escape" })
 		expect(mocks.updateTaskGroup).not.toHaveBeenCalled()
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk invoice export")
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk invoice export")
 
-		fireEvent.click(screen.getByRole("button", { name: "Rename task" }))
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Rename task" }))
 		input = screen.getByLabelText("Task title")
 		fireEvent.change(input, { target: { value: "Bulk export v2" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		expect(mocks.updateTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1", title: "Bulk export v2" }))
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk export v2")
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk export v2")
 	})
 
 	it("deletes through an inline confirm row, not a modal", async () => {
@@ -479,7 +483,7 @@ describe("TaskGroupView", () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true })
 		try {
 			const { rerender } = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-			await screen.findByTestId("task-group-title")
+			await screen.findByTestId("task-group-counts")
 			expect(mocks.getTaskGroup).toHaveBeenCalledTimes(1)
 			mocks.state = { ...mocks.state, taskGroups: [] }
 			rerender(<TaskGroupView now={NOW} taskGroupId="g1" />)

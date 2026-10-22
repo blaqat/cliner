@@ -97,7 +97,9 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const { details, missing, refresh, setDetails } = useTaskGroup(taskGroupId)
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
-	const [renaming, setRenaming] = useState(false)
+	// Bumped by ⋯ › Rename task to start renaming in the breadcrumb.
+	const [renameSignal, setRenameSignal] = useState(0)
+	const renameFromMenu = useRef(false)
 	const settleAll = useSettleAll(taskGroupId)
 
 	// The composer below starts threads in this task, however many are sent.
@@ -153,7 +155,6 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 			.finally(refresh)
 	}
 	const rename = (title: string) => {
-		setRenaming(false)
 		const next = title.trim().replace(/\s+/g, " ")
 		if (next && next !== group.title) update({ title: next })
 	}
@@ -173,18 +174,29 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 
 	return (
 		<div className="flex flex-1 flex-col overflow-hidden" data-testid="task-group-view">
-			<TaskGroupPageHeader taskGroupId={group.id} title={group.title}>
+			<TaskGroupPageHeader onRename={rename} renameSignal={renameSignal} taskGroupId={group.id} title={group.title}>
 				<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 					<PopoverTrigger asChild>
 						<HeaderIconButton icon="ellipsis" label="Task actions" />
 					</PopoverTrigger>
-					<PopoverContent align="end" className="w-48 p-1 motion-reduce:animate-none" side="bottom">
+					<PopoverContent
+						align="end"
+						className="w-48 p-1 motion-reduce:animate-none"
+						// Rename moves focus into the breadcrumb; returning it to ⋯ would end the rename at once.
+						onCloseAutoFocus={(event) => {
+							if (renameFromMenu.current) {
+								renameFromMenu.current = false
+								event.preventDefault()
+							}
+						}}
+						side="bottom">
 						<div className="flex flex-col" role="menu">
 							<button
 								className={MENU_ITEM_CLASS}
 								onClick={() => {
+									renameFromMenu.current = true
 									setMenuOpen(false)
-									setRenaming(true)
+									setRenameSignal((count) => count + 1)
 								}}
 								role="menuitem"
 								type="button">
@@ -254,31 +266,12 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 				</div>
 			)}
 			<div className="flex-1 overflow-y-auto pb-2">
-				<div className="px-4 pt-2 pb-2">
-					<div className="flex min-w-0 items-center gap-1.5">
-						{renaming ? (
-							<RenameInput initial={group.title} onCancel={() => setRenaming(false)} onSave={rename} />
-						) : (
-							<>
-								<h2
-									className="ph-no-capture m-0 min-w-0 truncate text-[15px] font-semibold text-foreground"
-									data-testid="task-group-title">
-									{group.title}
-								</h2>
-								<button
-									aria-label="Rename task"
-									className="flex shrink-0 cursor-pointer items-center border-0 bg-transparent p-0 text-description hover:text-foreground"
-									onClick={() => setRenaming(true)}
-									type="button">
-									<span aria-hidden className="codicon codicon-edit text-[12px]" />
-								</button>
-							</>
-						)}
-						<span className="ml-auto shrink-0 text-[11px] text-description" data-testid="task-group-counts">
-							{plural(threadCount, "thread")} · {plural(notes.length, "note")}
-						</span>
-					</div>
-					<TaskTagEditor className="mt-1.5" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
+				{/* The name is in the breadcrumb (like a thread's); under it, just the tags and counts. */}
+				<div className="flex min-w-0 items-start gap-2 px-4 pt-1 pb-2">
+					<TaskTagEditor className="min-w-0 flex-1" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
+					<span className="shrink-0 text-[11px] leading-4 text-description" data-testid="task-group-counts">
+						{plural(threadCount, "thread")} · {plural(notes.length, "note")}
+					</span>
 				</div>
 				{!branchLinked && currentBranch && !isBranchHintDismissed(group.id, currentBranch) && (
 					<div
@@ -396,38 +389,6 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 				</section>
 			</div>
 		</div>
-	)
-}
-
-function RenameInput({ initial, onSave, onCancel }: { initial: string; onSave: (title: string) => void; onCancel: () => void }) {
-	const [draft, setDraft] = useState(initial)
-	const settledRef = useRef(false)
-	const finish = (save: boolean) => {
-		if (settledRef.current) return
-		settledRef.current = true
-		if (save) onSave(draft)
-		else onCancel()
-	}
-	return (
-		<input
-			aria-label="Task title"
-			autoFocus
-			className={cn(INPUT_CLASS, "h-6 flex-1 text-[13px]")}
-			onBlur={() => finish(true)}
-			onChange={(event) => setDraft(event.target.value)}
-			onFocus={(event) => event.target.select()}
-			onKeyDown={(event) => {
-				if (event.key === "Enter") {
-					event.preventDefault()
-					finish(true)
-				} else if (event.key === "Escape") {
-					event.preventDefault()
-					event.stopPropagation()
-					finish(false)
-				}
-			}}
-			value={draft}
-		/>
 	)
 }
 
