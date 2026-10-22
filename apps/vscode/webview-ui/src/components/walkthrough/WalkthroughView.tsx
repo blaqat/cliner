@@ -27,6 +27,7 @@ import {
 	carryOverReview,
 	discardUnplacedNotes,
 	dropStale,
+	lineNoteKey,
 	loadReviewStore,
 	migrateRegeneratedReview,
 	notesToSend,
@@ -39,6 +40,7 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
+import type { LineNotes } from "./WalkthroughDiff"
 import { InlineCodeProse, NoteEditor, NoteQuote, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
 import { countChanges, EMPTY_FOLDS, type Folds, foldAll, supportSummary, unfoldAll } from "./walkthroughUtils"
 
@@ -115,6 +117,12 @@ export default function WalkthroughView({
 	const [foldsByWalk, setFoldsByWalk] = useState<Record<string, Folds>>({})
 	const [overallOpen, setOverallOpen] = useState(false)
 	const [menuOpen, setMenuOpen] = useState(false)
+	// One note box at a time: a stop's (N opens it) or a line's (＋ beside the line).
+	const [editingStopId, setEditingStopId] = useState<string>()
+	const [editingLine, setEditingLine] = useState<string>()
+	const scroller = useRef<HTMLDivElement>(null)
+	// The stop J/K last moved to; cleared when the user scrolls, so keys follow what's on screen.
+	const keyedStop = useRef<string>()
 	const sequence = useRef(0)
 	// Generate finishes long after it starts; it must merge into the latest notes, not a stale render's.
 	const storeRef = useRef(store)
@@ -288,6 +296,23 @@ export default function WalkthroughView({
 				...current,
 				collapsedHunks: { ...current.collapsedHunks, [hunk.fingerprint]: !current.collapsedHunks[hunk.fingerprint] },
 			})),
+		annotations: (hunk: WalkthroughHunk) => (walk?.annotations ?? []).filter((annotation) => annotation.hunkId === hunk.id),
+		lineNotes: (hunk: WalkthroughHunk): LineNotes => {
+			const keyFor = (line: number) => lineNoteKey(hunk, line)
+			const open = editingLine?.startsWith(`${hunk.fingerprint}:`)
+				? Number(editingLine.slice(hunk.fingerprint.length + 1))
+				: undefined
+			return {
+				get: (line) => record.lineNotes?.[keyFor(line)] ?? "",
+				set: (line, note) =>
+					updateRecord((current) => ({ ...current, lineNotes: { ...current.lineNotes, [keyFor(line)]: note } })),
+				editing: open,
+				onEdit: (line) => {
+					setEditingLine(line === undefined ? undefined : keyFor(line))
+					if (line !== undefined) setEditingStopId(undefined)
+				},
+			}
+		},
 		openDiff: (fileId: string) => {
 			if (input) void run(async () => void (await TaskServiceClient.openWalkthroughDiff(request({ ...input, fileId }))))
 		},
@@ -306,17 +331,23 @@ export default function WalkthroughView({
 			}),
 	}
 
-	const sending = notesToSend(walk ?? EMPTY_WALK, review, overallNote)
+	const sending = notesToSend(walk ?? EMPTY_WALK, review, overallNote, record.lineNotes)
 	const send = () =>
 		run(async () => {
 			if (!input || !walk || !sending.count) return
 			await TaskServiceClient.sendWalkthroughNotes(
-				request({ ...input, stopNotes: sending.stopNotes, overallNote: sending.overallNote }),
+				request({
+					...input,
+					stopNotes: sending.stopNotes,
+					lineNotes: sending.lineNotes,
+					overallNote: sending.overallNote,
+				}),
 			)
 			// Sent notes now live in the thread; reviewed marks stay.
 			updateRecord((current) => ({
 				...current,
 				overallNote: undefined,
+				lineNotes: undefined,
 				[walk.source]: { notes: {}, reviewed: current[walk.source]?.reviewed ?? {} },
 			}))
 			onDone()
@@ -383,19 +414,115 @@ export default function WalkthroughView({
 	// Narrative stops can carry no hunks (authored walkthroughs allow it); the page still has content.
 	const contentful = !!walk && (walk.hunks.length > 0 || mainStops.length > 0)
 
+	const lineNoteCount = (stop: WalkthroughStop) =>
+		(walk?.hunks ?? [])
+			.filter((hunk) => stop.hunkIds.includes(hunk.id))
+			.reduce(
+				(sum, hunk) =>
+					sum +
+					Object.entries(record.lineNotes ?? {}).filter(
+						([key, note]) => note.trim() && key.startsWith(`${hunk.fingerprint}:`),
+					).length,
+				0,
+			)
+
+	// Every stop on the page in order, support last (what J/K walk through).
+	const pageStops = [...mainStops, ...(folds.supportOpen ? (walk?.support ?? []) : [])]
+	const scrollToStop = (stopId: string) => {
+		keyedStop.current = stopId
+		// After the fold re-renders, so the next stop lands where the reviewed one was.
+		requestAnimationFrame(() =>
+			scroller.current
+				?.querySelector(`[data-stop-id="${CSS.escape(stopId)}"]`)
+				?.scrollIntoView?.({ block: "start", behavior: "smooth" }),
+		)
+	}
+	const nextUnreviewed = (after?: string) => {
+		const start = after ? mainStops.findIndex((stop) => stop.id === after) + 1 : 0
+		return [...mainStops.slice(start), ...mainStops.slice(0, start)].find(
+			(stop) => stop.id !== after && !review.reviewed[stop.id],
+		)
+	}
+	const markReviewed = (stopId: string, reviewed: boolean) => {
+		updateStop(stopId, { reviewed })
+		if (editingStopId === stopId) setEditingStopId(undefined)
+		const next = reviewed ? nextUnreviewed(stopId) : undefined
+		if (next) {
+			// Its chapter may be folded.
+			const chapter = walk?.chapters.find((c) => c.stops.some((stop) => stop.id === next.id))
+			if (chapter && folds.collapsedChapters[chapter.id]) toggleChapter(chapter.id)
+			scrollToStop(next.id)
+		}
+	}
+
 	const renderStop = (stop: WalkthroughStop, numbered: boolean) => (
 		<WalkthroughStopCard
 			actions={actions}
+			editing={editingStopId === stop.id}
 			key={stop.id}
+			lineNoteCount={lineNoteCount(stop)}
 			note={review.notes[stop.id] ?? ""}
 			number={numbered ? stopNumbers.get(stop.id) : undefined}
+			onEditing={(open) => {
+				setEditingStopId(open ? stop.id : undefined)
+				if (open) setEditingLine(undefined)
+			}}
 			onNote={(note) => updateStop(stop.id, { note })}
-			onReviewed={(reviewed) => updateStop(stop.id, { reviewed })}
+			onReviewed={(reviewed) => markReviewed(stop.id, reviewed)}
 			reviewed={!!review.reviewed[stop.id]}
 			stop={stop}
 			walk={walk as ChangeWalkthrough}
 		/>
 	)
+
+	/** The stop keys act on: the one J/K moved to, else the first one still on screen. */
+	const currentStopId = (): string | undefined => {
+		if (keyedStop.current && pageStops.some((stop) => stop.id === keyedStop.current)) return keyedStop.current
+		const top = scroller.current?.getBoundingClientRect().top ?? 0
+		const elements = [...(scroller.current?.querySelectorAll<HTMLElement>("[data-stop-id]") ?? [])]
+		const visible = elements.find((element) => element.getBoundingClientRect().bottom > top + 8)
+		return visible?.dataset.stopId ?? pageStops[0]?.id
+	}
+
+	// J/K move between stops, R marks the current one reviewed, N notes it, Esc goes back to the thread.
+	const keys = useRef<(event: KeyboardEvent) => void>(() => {})
+	keys.current = (event: KeyboardEvent) => {
+		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || menuOpen) return
+		const target = event.target instanceof Element ? event.target : null
+		if (
+			target?.closest(
+				"input, textarea, select, [contenteditable='true'], [role='menu'], [role='dialog'], [data-radix-popper-content-wrapper]",
+			)
+		)
+			return
+		const key = event.key.toLowerCase()
+		if (key === "escape") {
+			event.preventDefault()
+			onDone()
+			return
+		}
+		if (!pageStops.length || !["j", "k", "r", "n"].includes(key)) return
+		event.preventDefault()
+		const current = currentStopId()
+		const index = Math.max(
+			0,
+			pageStops.findIndex((stop) => stop.id === current),
+		)
+		if (key === "j" || key === "k") {
+			const next = pageStops[Math.min(pageStops.length - 1, Math.max(0, index + (key === "j" ? 1 : -1)))]
+			if (next) scrollToStop(next.id)
+		} else if (key === "r" && current) {
+			markReviewed(current, !review.reviewed[current])
+		} else if (key === "n" && current) {
+			setEditingLine(undefined)
+			setEditingStopId(current)
+		}
+	}
+	useEffect(() => {
+		const listener = (event: KeyboardEvent) => keys.current(event)
+		window.addEventListener("keydown", listener)
+		return () => window.removeEventListener("keydown", listener)
+	}, [])
 
 	const menuItem = (icon: string, label: string, onSelect: () => void, disabled = false) => (
 		<button
@@ -452,7 +579,12 @@ export default function WalkthroughView({
 				</div>
 			</div>
 
-			<div className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-6 text-xs">
+			<div
+				className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-6 text-xs"
+				onScroll={() => {
+					keyedStop.current = undefined
+				}}
+				ref={scroller}>
 				{!authored && (
 					<div className="flex flex-wrap items-center gap-2" data-testid="walkthrough-toolbar">
 						<div
@@ -601,30 +733,6 @@ export default function WalkthroughView({
 								<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{totals.removed}</span>
 							</span>
 						</div>
-						{mainStops.length > 0 && (
-							<div className="mt-3 flex items-center gap-2">
-								<div
-									aria-label="Stops reviewed"
-									aria-valuemax={mainStops.length}
-									aria-valuemin={0}
-									aria-valuenow={reviewedCount}
-									className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-editor-group-border"
-									role="progressbar">
-									<div
-										className="h-full rounded-full bg-success transition-[width] motion-reduce:transition-none"
-										style={{ width: `${(reviewedCount / mainStops.length) * 100}%` }}
-									/>
-								</div>
-								<span
-									className={cn(
-										"shrink-0 text-[11px] tabular-nums",
-										complete ? "text-success" : "text-description",
-									)}
-									data-testid="walkthrough-progress">
-									{reviewedCount} / {mainStops.length} stops reviewed
-								</span>
-							</div>
-						)}
 					</header>
 				)}
 
@@ -735,26 +843,68 @@ export default function WalkthroughView({
 				)}
 			</div>
 
+			{/* Every way on from here, where the mouse ends up after reading: back, progress, send. */}
 			<div
-				className="flex items-center gap-2 border-t border-solid border-x-0 border-b-0 border-editor-group-border bg-background px-4 py-2"
+				className="flex items-center gap-2 border-t border-solid border-x-0 border-b-0 border-editor-group-border bg-background px-3 py-2"
 				data-testid="walkthrough-send-bar">
-				<span
-					className={cn(
-						"flex min-w-0 items-center gap-1.5 text-xs",
-						sending.count ? "text-foreground" : "text-description",
-					)}>
-					<span aria-hidden className="codicon codicon-comment text-[13px]!" />
-					{sending.count ? plural(sending.count, "note") : "No notes yet"}
-				</span>
-				<span className="flex-1" />
 				<Button
-					className="h-6 gap-1 px-2.5"
+					className="h-6 shrink-0 gap-1 px-1.5"
+					onClick={onDone}
+					size="xs"
+					title="Back to the thread (Esc)"
+					variant="ghost">
+					<span aria-hidden className="codicon codicon-arrow-left text-[12px]!" />
+					Thread
+				</Button>
+				{mainStops.length > 0 ? (
+					<div className="flex min-w-0 flex-1 items-center gap-1.5">
+						<div
+							aria-label="Stops reviewed"
+							aria-valuemax={mainStops.length}
+							aria-valuemin={0}
+							aria-valuenow={reviewedCount}
+							className="h-1 w-12 shrink overflow-hidden rounded-full bg-editor-group-border"
+							role="progressbar">
+							<div
+								className="h-full rounded-full bg-success transition-[width] motion-reduce:transition-none"
+								style={{ width: `${(reviewedCount / mainStops.length) * 100}%` }}
+							/>
+						</div>
+						<span
+							className={cn(
+								"min-w-0 truncate text-[11px] tabular-nums",
+								complete ? "text-success" : "text-description",
+							)}
+							data-testid="walkthrough-progress"
+							title="J/K: next or previous stop · R: mark reviewed · N: note · Esc: back to the thread">
+							{reviewedCount} / {mainStops.length} reviewed
+						</span>
+						{!complete && (
+							<HeaderIconButton
+								className="size-5 shrink-0"
+								icon="arrow-down"
+								label="Next stop to review"
+								onClick={() => {
+									const next = nextUnreviewed(currentStopId())
+									if (!next) return
+									const chapter = walk?.chapters.find((c) => c.stops.some((stop) => stop.id === next.id))
+									if (chapter && folds.collapsedChapters[chapter.id]) toggleChapter(chapter.id)
+									scrollToStop(next.id)
+								}}
+							/>
+						)}
+					</div>
+				) : (
+					<span className="flex-1" />
+				)}
+				<Button
+					className="h-6 shrink-0 gap-1 px-2.5"
 					disabled={!sending.count || busy || generating || moved}
 					onClick={() => void send()}
 					size="xs"
-					title="Sends every note to the thread as one message">
+					title={sending.count ? "Sends every note to the thread as one message" : "Add a note to send"}>
 					<span aria-hidden className="codicon codicon-send text-[12px]!" />
-					Send to thread
+					{sending.count ? `Send ${plural(sending.count, "note")}` : "Send"}
 				</Button>
 			</div>
 		</section>

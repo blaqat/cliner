@@ -46,6 +46,7 @@ describe("review state", () => {
 		const doc = walk("f", [["s1", "A"]])
 		expect(notesToSend(doc, { notes: { s1: " keep ", s9: "gone", s2: " " }, reviewed: {} }, "  ")).toEqual({
 			stopNotes: { s1: "keep" },
+			lineNotes: [],
 			overallNote: undefined,
 			count: 1,
 		})

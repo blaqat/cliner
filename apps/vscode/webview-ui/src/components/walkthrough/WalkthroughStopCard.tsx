@@ -1,22 +1,14 @@
-import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
-import { useLayoutEffect, useRef, useState } from "react"
+import type { ChangeWalkthrough, WalkthroughAnnotation, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
+import { useState } from "react"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
-import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { getCurrentPlatform } from "@/utils/platformUtils"
-import { countChanges, patchToDiffLines, type StopFile, splitInlineCode, stopFiles, syntheticReason } from "./walkthroughUtils"
+import { type LineNotes, WalkthroughDiff } from "./WalkthroughDiff"
+import { InlineCodeProse, NoteEditor, NoteQuote } from "./WalkthroughNote"
+import { countChanges, type StopFile, stopFiles, syntheticReason } from "./walkthroughUtils"
 
-/** Quick chips from the round 3 mockup; each fills the note box and stays editable. */
-export const QUICK_NOTES = ["Why this approach?", "Add a test for this.", "Rename for clarity."]
-
-/** A quick-note suggestion inside the note box: quiet text until hovered, like the composer's icon buttons. */
-const CHIP_CLASS =
-	"inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border-0 bg-transparent px-1.5 text-[11px] text-description hover:bg-list-hover hover:text-foreground"
-
-/** Tallest the note box grows before it scrolls (about ten lines). */
-const NOTE_MAX_HEIGHT = 160
+export { InlineCodeProse, NoteEditor, NoteQuote, QUICK_NOTES } from "./WalkthroughNote"
 
 export interface RevertTarget {
 	fileId: string
@@ -30,107 +22,14 @@ export interface StopActions {
 	/** Hunk folding lives on the page so Collapse all / Expand all reach every hunk. */
 	hunkOpen: (hunk: WalkthroughHunk) => boolean
 	toggleHunk: (hunk: WalkthroughHunk) => void
+	/** Notes inside this hunk's diff, above the lines they explain. */
+	annotations: (hunk: WalkthroughHunk) => WalkthroughAnnotation[]
+	/** The reviewer's notes on this hunk's lines. */
+	lineNotes: (hunk: WalkthroughHunk) => LineNotes
 }
 
 /** A compact codicon action inside file and hunk headers. */
 const ROW_ICON_CLASS = "size-5 [&>.codicon]:text-[13px]!"
-
-export function InlineCodeProse({ text, className }: { text: string; className?: string }) {
-	return (
-		<p className={cn("m-0 whitespace-pre-line break-words", className)}>
-			{splitInlineCode(text).map((part, index) =>
-				part.code ? (
-					<code className="rounded-xs bg-code px-1 font-mono text-[11px]" key={index}>
-						{part.text}
-					</code>
-				) : (
-					<span key={index}>{part.text}</span>
-				),
-			)}
-		</p>
-	)
-}
-
-/**
- * A note box with quick chips, as quiet as the quote note in the composer: a plain input box that
- * doesn't light up when focused (the caret is enough), growing with the text, with its suggestions
- * and Done inside. Used by each stop and by the overall note. Esc or Cmd/Ctrl+Enter finishes.
- */
-export function NoteEditor({
-	value,
-	placeholder,
-	label,
-	chips,
-	onChange,
-	onDone,
-}: {
-	value: string
-	placeholder: string
-	label: string
-	chips?: boolean
-	onChange: (value: string) => void
-	onDone: () => void
-}) {
-	const textarea = useRef<HTMLTextAreaElement>(null)
-	// Grows with the text (from two lines) like the composer, then scrolls.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measure whenever the text changes
-	useLayoutEffect(() => {
-		const element = textarea.current
-		if (!element) return
-		element.style.height = "auto"
-		element.style.height = `${Math.min(element.scrollHeight, NOTE_MAX_HEIGHT)}px`
-	}, [value])
-	return (
-		<div className="mt-2 rounded-xs border border-solid border-input-border bg-input-background" data-testid="note-editor">
-			<textarea
-				aria-label={label}
-				autoFocus
-				className="block w-full resize-none border-0 bg-transparent px-2 pt-1.5 pb-1 font-[inherit] text-xs leading-normal text-input-foreground outline-none! placeholder:text-input-placeholder"
-				onChange={(event) => onChange(event.target.value)}
-				onKeyDown={(event) => {
-					if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
-						event.preventDefault()
-						event.stopPropagation()
-						onDone()
-					}
-				}}
-				placeholder={placeholder}
-				ref={textarea}
-				rows={2}
-				style={{ maxHeight: NOTE_MAX_HEIGHT }}
-				value={value}
-			/>
-			<div className="flex flex-wrap items-center gap-x-0.5 gap-y-0 px-1 pb-1">
-				{chips &&
-					QUICK_NOTES.map((text) => (
-						<button
-							className={CHIP_CLASS}
-							key={text}
-							onClick={() => {
-								onChange(value.trim() ? `${value.trimEnd()} ${text}` : text)
-								textarea.current?.focus()
-							}}
-							type="button">
-							<span aria-hidden className="codicon codicon-add text-[10px]! opacity-70" />
-							{text.replace(/[.?]$/, "")}
-						</button>
-					))}
-				<span className="flex-1" />
-				<span aria-hidden className="shrink-0 text-[10.5px] text-description">
-					{getCurrentPlatform() === "mac" ? "⌘↵" : "Ctrl+↵"}
-				</span>
-				<button
-					aria-label="Done"
-					className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground"
-					onClick={onDone}
-					title="Done (Esc)"
-					type="button">
-					<span aria-hidden className="codicon codicon-check text-[14px]!" />
-				</button>
-			</div>
-		</div>
-	)
-}
 
 /** "+3 −1" in the git decoration colors. */
 function ChangeCounts({ added, removed }: { added: number; removed: number }) {
@@ -189,8 +88,8 @@ function HunkBlock({
 				)}
 			</div>
 			{open && (
-				<div className="[&>div]:rounded-none [&>div]:border-x-0 [&>div]:border-b-0 [&>div]:border-t [&>div]:border-solid [&>div]:border-editor-group-border">
-					<NotebookDiff lines={patchToDiffLines(hunk.patch)} />
+				<div className="border-t border-solid border-x-0 border-b-0 border-editor-group-border">
+					<WalkthroughDiff annotations={actions.annotations(hunk)} hunk={hunk} notes={actions.lineNotes(hunk)} />
 				</div>
 			)}
 		</div>
@@ -277,131 +176,175 @@ function FileBlock({ file, actions, external }: { file: StopFile; actions: StopA
 	)
 }
 
-/** A saved note, shown as a quote on its stop or under Overall; click to edit. */
-export function NoteQuote({ label, note, onEdit }: { label: string; note: string; onEdit: () => void }) {
-	return (
-		<button
-			className="mt-2 block w-full cursor-pointer rounded-xs border-0 border-l-2 border-solid border-link bg-code px-2 py-1.5 text-left font-[inherit] text-xs text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-			onClick={onEdit}
-			title="Edit"
-			type="button">
-			<span className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-link">
-				<span aria-hidden className="codicon codicon-comment text-[11px]!" />
-				{label}
-			</span>
-			<span className="block whitespace-pre-wrap break-words">{note}</span>
-		</button>
-	)
-}
-
 interface WalkthroughStopCardProps {
 	walk: ChangeWalkthrough
 	stop: WalkthroughStop
 	/** 1-based; absent for support stops. */
 	number?: number
 	note: string
+	/** Notes on lines of this stop's hunks (shown on the folded row's count). */
+	lineNoteCount: number
 	reviewed: boolean
+	/** The stop's note box is open (the page owns it so N can open it). */
+	editing: boolean
 	actions: StopActions
+	onEditing: (editing: boolean) => void
 	onNote: (note: string) => void
 	onReviewed: (reviewed: boolean) => void
 }
 
+/**
+ * One stop. Its number is also its reviewed checkbox, so a stop can be marked where reading starts;
+ * Mark reviewed leads the row at its end, where reading finishes. A reviewed stop folds to its
+ * title row (click the title to look again), so the page gets shorter as the review goes.
+ */
 export function WalkthroughStopCard({
 	walk,
 	stop,
 	number,
 	note,
+	lineNoteCount,
 	reviewed,
+	editing,
 	actions,
+	onEditing,
 	onNote,
 	onReviewed,
 }: WalkthroughStopCardProps) {
-	const [editing, setEditing] = useState(false)
 	const [expanded, setExpanded] = useState(false)
+	// A reviewed stop shows only its title until it's opened again.
+	const [peek, setPeek] = useState(false)
 	const files = stopFiles(walk, stop)
 	const hasNote = !!note.trim()
+	const folded = reviewed && !peek && !editing
+	const notes = (hasNote ? 1 : 0) + lineNoteCount
+	const toggleReviewed = () => {
+		setPeek(false)
+		onReviewed(!reviewed)
+	}
 	return (
 		<article
 			aria-label={stop.title}
 			className={cn(
-				"rounded-xs border border-solid px-3 py-2.5 transition-colors motion-reduce:transition-none",
+				"rounded-xs border border-solid transition-colors motion-reduce:transition-none",
+				folded ? "px-3 py-1.5" : "px-3 py-2.5",
 				reviewed ? "border-success/30 bg-success/5" : "border-editor-group-border",
 			)}
+			data-folded={folded ? "true" : undefined}
+			data-stop-id={stop.id}
 			data-testid="walkthrough-stop">
 			<div className="flex items-center gap-2">
-				{number !== undefined && (
-					<span
-						aria-hidden
-						className={cn(
-							"flex size-4.5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums",
-							reviewed ? "bg-success/20 text-success" : "bg-badge-background text-badge-foreground",
-						)}>
-						{reviewed ? <span className="codicon codicon-check text-[11px]!" /> : number}
-					</span>
-				)}
-				<h3
-					className={cn(
-						"m-0 min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold",
-						reviewed && "text-description",
-					)}>
-					{stop.title}
-				</h3>
-				{reviewed && number === undefined && (
-					<span aria-label="Reviewed" className="codicon codicon-check text-[12px]! text-success" role="img" />
-				)}
-			</div>
-			{stop.prose && (
-				<InlineCodeProse
-					className="mt-1 text-xs leading-normal text-description"
-					text={expanded && stop.detail ? stop.detail : stop.prose}
-				/>
-			)}
-			{stop.detail && (
 				<button
-					aria-expanded={expanded}
-					className="mt-0.5 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
-					onClick={() => setExpanded(!expanded)}
-					type="button">
-					{expanded ? "Show less" : "Show more"}
-				</button>
-			)}
-			{files.length > 0 && (
-				<div className="mt-2 flex flex-col gap-2">
-					{files.map((file) => (
-						<FileBlock actions={actions} external={walk.scope === "authored"} file={file} key={file.fileId} />
-					))}
-				</div>
-			)}
-			{hasNote && !editing && <NoteQuote label="Note" note={note} onEdit={() => setEditing(true)} />}
-			{editing && (
-				<NoteEditor
-					chips
-					label={`Note on ${stop.title}`}
-					onChange={onNote}
-					onDone={() => setEditing(false)}
-					placeholder="Note on this stop…"
-					value={note}
-				/>
-			)}
-			<div className="mt-2.5 flex items-center gap-1.5">
-				<Button className="h-6 gap-1 px-2" onClick={() => setEditing(!editing)} size="xs" variant="secondary">
-					<span aria-hidden className="codicon codicon-comment text-[12px]!" />
-					{hasNote ? "Edit note" : "Add note"}
-				</Button>
-				<span className="flex-1" />
-				<Button
+					aria-label={reviewed ? `Mark ${stop.title} not reviewed` : `Mark ${stop.title} reviewed`}
 					aria-pressed={reviewed}
-					className={cn("h-6 gap-1 px-2", reviewed && "text-success")}
-					onClick={() => onReviewed(!reviewed)}
-					size="xs"
-					variant="secondary">
-					<span
-						aria-hidden
-						className={cn("codicon text-[12px]!", reviewed ? "codicon-pass-filled" : "codicon-circle-large")}
-					/>
-					{reviewed ? "Reviewed" : "Mark reviewed"}
-				</Button>
+					className={cn(
+						"group/check relative flex size-4.5 shrink-0 cursor-pointer items-center justify-center rounded-full border-solid p-0 text-[10px] font-semibold tabular-nums",
+						reviewed
+							? "border-0 bg-success/20 text-success"
+							: "border-[1.5px] border-description/70 bg-transparent text-description hover:border-success hover:text-success",
+					)}
+					data-testid="walkthrough-stop-check"
+					onClick={toggleReviewed}
+					title={reviewed ? "Reviewed. Click to unmark (R)" : "Mark reviewed (R)"}
+					type="button">
+					{reviewed ? (
+						<span aria-hidden className="codicon codicon-check text-[11px]!" />
+					) : (
+						<>
+							{/* Swapped by opacity: the codicon class would override a display toggle. */}
+							<span aria-hidden className="group-hover/check:opacity-0">
+								{number ?? ""}
+							</span>
+							<span
+								aria-hidden
+								className="codicon codicon-check absolute text-[11px]! opacity-0 group-hover/check:opacity-100"
+							/>
+						</>
+					)}
+				</button>
+				{reviewed ? (
+					<button
+						aria-expanded={!folded}
+						className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-description hover:text-foreground"
+						onClick={() => setPeek(folded)}
+						title={folded ? "Show this stop again" : "Fold it"}
+						type="button">
+						<h3 className="m-0 min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold">{stop.title}</h3>
+						{folded && notes > 0 && (
+							<span className="shrink-0 text-[11px]" data-testid="walkthrough-stop-note-count">
+								{notes} {notes === 1 ? "note" : "notes"}
+							</span>
+						)}
+						<span
+							aria-hidden
+							className={`codicon codicon-chevron-${folded ? "right" : "down"} shrink-0 text-[12px]!`}
+						/>
+					</button>
+				) : (
+					<h3 className="m-0 min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold">{stop.title}</h3>
+				)}
 			</div>
+			{!folded && (
+				<>
+					{stop.prose && (
+						<InlineCodeProse
+							className="mt-1 text-xs leading-normal text-description"
+							text={expanded && stop.detail ? stop.detail : stop.prose}
+						/>
+					)}
+					{stop.detail && (
+						<button
+							aria-expanded={expanded}
+							className="mt-0.5 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
+							onClick={() => setExpanded(!expanded)}
+							type="button">
+							{expanded ? "Show less" : "Show more"}
+						</button>
+					)}
+					{files.length > 0 && (
+						<div className="mt-2 flex flex-col gap-2">
+							{files.map((file) => (
+								<FileBlock actions={actions} external={walk.scope === "authored"} file={file} key={file.fileId} />
+							))}
+						</div>
+					)}
+					{hasNote && !editing && <NoteQuote label="Note" note={note} onEdit={() => onEditing(true)} />}
+					{editing && (
+						<NoteEditor
+							chips
+							label={`Note on ${stop.title}`}
+							onChange={onNote}
+							onDone={() => onEditing(false)}
+							placeholder="Note on this stop…"
+							value={note}
+						/>
+					)}
+					<div className="mt-2.5 flex items-center gap-1.5">
+						<Button
+							aria-pressed={reviewed}
+							className={cn("h-6 gap-1 px-2", reviewed && "text-success")}
+							onClick={toggleReviewed}
+							size="xs"
+							title="R"
+							variant="secondary">
+							<span
+								aria-hidden
+								className={cn("codicon text-[12px]!", reviewed ? "codicon-pass-filled" : "codicon-circle-large")}
+							/>
+							{reviewed ? "Reviewed" : "Mark reviewed"}
+						</Button>
+						<Button
+							className="h-6 gap-1 px-2"
+							onClick={() => onEditing(!editing)}
+							size="xs"
+							title="N"
+							variant="ghost">
+							<span aria-hidden className="codicon codicon-comment text-[12px]!" />
+							{hasNote ? "Edit note" : "Add note"}
+						</Button>
+					</div>
+				</>
+			)}
 		</article>
 	)
 }

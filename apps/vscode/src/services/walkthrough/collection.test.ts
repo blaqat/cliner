@@ -239,6 +239,31 @@ describe("walkthrough collection", () => {
 		const last = await collect({ ...input, scope: "last_turn" })
 		expect(last.walk.hunks.map((h) => h.path)).toEqual(["b.ts"])
 	})
+	it("remembers what the agent said right before each tool call, once", () => {
+		const messages = [
+			{ role: "user", content: "Build it" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Queue the export instead of blocking." },
+					{ type: "tool_use", id: "edit1", name: "editor", input: {} },
+					{ type: "tool_use", id: "edit2", name: "editor", input: {} },
+				],
+			},
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Keep the old route working." },
+					{ type: "tool_use", id: "edit3", name: "editor", input: {} },
+				],
+			},
+		] as Message[]
+		const { toolNarration } = transcriptTurns(messages, [1, 0, 0])
+		expect(toolNarration.get("edit1")).toBe("Queue the export instead of blocking.")
+		// Two calls after one sentence: only the first carries it.
+		expect(toolNarration.has("edit2")).toBe(false)
+		expect(toolNarration.get("edit3")).toBe("Keep the old route working.")
+	})
 	it("uses the completion summary as a turn's short prose and keeps the narration as detail", () => {
 		const messages = [
 			{ role: "user", content: "Build it" },

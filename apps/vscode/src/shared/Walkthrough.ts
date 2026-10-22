@@ -31,6 +31,48 @@ export interface WalkthroughChapter {
 	stops: WalkthroughStop[]
 }
 
+/**
+ * A short note shown inside a hunk's diff, above the line it explains, to break a long change
+ * into readable pieces. "turn" quotes what the agent said right before making that edit (free);
+ * "why" is written by Generate.
+ */
+export interface WalkthroughAnnotation {
+	hunkId: string
+	/** Index into the hunk's body lines (see hunkBodyLines) the note sits above. */
+	line: number
+	text: string
+	kind: "turn" | "why"
+	/** "turn" notes: the turn that made the edit, e.g. "turn3". */
+	turnId?: string
+}
+
+/** A reviewer's note on one line of a hunk (the line is an index into hunkBodyLines). */
+export interface WalkthroughLineNote {
+	hunkId: string
+	line: number
+	note: string
+}
+
+/** A hunk patch's lines after its `@@` header, without "\ No newline" markers: what annotations and line notes index. */
+export function hunkBodyLines(patch: string): string[] {
+	return patch
+		.replace(/\n$/, "")
+		.split("\n")
+		.filter((line) => !line.startsWith("@@") && !line.startsWith("\\"))
+}
+
+/** The file line number a body line shows: the new file's for added and unchanged lines, the old file's for removed ones. */
+export function hunkLineNumbers(hunk: Pick<WalkthroughHunk, "patch" | "oldStart" | "newStart">): number[] {
+	let oldLine = hunk.oldStart
+	let newLine = hunk.newStart
+	return hunkBodyLines(hunk.patch).map((line) => {
+		if (line.startsWith("+")) return newLine++
+		if (line.startsWith("-")) return oldLine++
+		oldLine++
+		return newLine++
+	})
+}
+
 export interface ChangeWalkthrough {
 	version: 1
 	taskId: string
@@ -42,6 +84,8 @@ export interface ChangeWalkthrough {
 	chapters: WalkthroughChapter[]
 	support: WalkthroughStop[]
 	hunks: WalkthroughHunk[]
+	/** Notes inside the diff (see WalkthroughAnnotation). */
+	annotations?: WalkthroughAnnotation[]
 	warnings: string[]
 	profileId?: string
 	cacheHit?: boolean
@@ -86,6 +130,7 @@ export interface WalkthroughReadyMessage {
 
 export interface WalkthroughNotes {
 	stopNotes: Record<string, string>
+	lineNotes?: WalkthroughLineNote[]
 	overallNote?: string
 }
 
@@ -100,6 +145,7 @@ export interface WalkthroughRequest {
 	hunkId?: string
 	confirmed?: boolean
 	stopNotes?: Record<string, string>
+	lineNotes?: WalkthroughLineNote[]
 	overallNote?: string
 	/** With scope "authored": which stored walkthrough. */
 	authoredId?: string

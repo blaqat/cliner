@@ -118,10 +118,16 @@ function summarizeTurn(texts: string[], completion: string): Pick<EditTurn, "pro
 	return { prose, ...(narration && narration !== prose ? { detail: narration.slice(0, DETAIL_CHARS) } : {}) }
 }
 
-export function transcriptTurns(messages: Message[], runSpans: number[]): { turns: EditTurn[]; toolTurns: Map<string, string> } {
+export function transcriptTurns(
+	messages: Message[],
+	runSpans: number[],
+): { turns: EditTurn[]; toolTurns: Map<string, string>; toolNarration: Map<string, string> } {
 	const turns: EditTurn[] = []
 	const texts = new Map<EditTurn, { texts: string[]; completion: string }>()
 	const toolTurns = new Map<string, string>()
+	// What the agent said right before each tool call (once: the next call without new words gets none).
+	const toolNarration = new Map<string, string>()
+	let pending = ""
 	let runCount = 0
 	for (const [index, message] of messages.entries()) {
 		const blocks = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content
@@ -140,6 +146,7 @@ export function transcriptTurns(messages: Message[], runSpans: number[]): { turn
 			const turn: EditTurn = { id: `turn${runCount}`, prose: "", context: text, changes: [] }
 			turns.push(turn)
 			texts.set(turn, { texts: [], completion: "" })
+			pending = ""
 		}
 		const turn = turns.at(-1)
 		if (!turn) continue
@@ -149,18 +156,32 @@ export function transcriptTurns(messages: Message[], runSpans: number[]): { turn
 				narration.texts.push(text.trim())
 				turn.context += `\nAssistant: ${text}`
 			}
-			for (const block of blocks)
+			for (const block of blocks) {
+				if (block.type === "text" && block.text.trim()) pending = block.text.trim()
 				if (block.type === "tool_use") {
 					toolTurns.set(block.id, turn.id)
+					if (pending) toolNarration.set(block.id, pending)
+					pending = ""
 					narration.completion = completionText(block) || narration.completion
 				}
+			}
 		}
 	}
 	for (const turn of turns) {
 		const narration = texts.get(turn)!
 		Object.assign(turn, summarizeTurn(narration.texts, narration.completion))
 	}
-	return { turns, toolTurns }
+	return { turns, toolTurns, toolNarration }
+}
+
+/** Lines one edit added, trimmed; too-short lines (`}`, `return`) can't anchor a quote reliably. */
+function editAddedLines(before: string, after: string): string[] {
+	if (before.includes("\0") || after.includes("\0")) return []
+	const lines = new Set<string>()
+	for (const part of structuredPatch("a", "b", before, after, "", "", { context: 0 }).hunks)
+		for (const line of part.lines)
+			if (line.startsWith("+") && line.slice(1).trim().length >= 6) lines.add(line.slice(1).trim())
+	return [...lines]
 }
 
 /** Workspace-relative (or module-prefixed) label for a warning; never an absolute path. */
@@ -303,7 +324,7 @@ export async function collect(
 	input: CollectionInput,
 ): Promise<{ walk: ChangeWalkthrough; turns: EditTurn[]; changes: ContentChange[] }> {
 	const roots = await gitRoots(input.roots)
-	const { turns, toolTurns } = transcriptTurns(input.messages, input.runSpans)
+	const { turns, toolTurns, toolNarration } = transcriptTurns(input.messages, input.runSpans)
 	const warnings: string[] = []
 
 	for (const edit of input.edits) {
@@ -314,6 +335,11 @@ export async function collect(
 			// Journal paths are as the tool saw them; roots and checkpoint changes are real paths.
 			const filePath = await safeCanonical(edit.filePath)
 			const displayPath = modulePath(filePath, roots)
+			const said = toolNarration.get(edit.toolCallId)
+			if (said) {
+				const added = editAddedLines(edit.before, edit.after)
+				if (added.length) (turn.notes ??= []).push({ path: displayPath, text: said, added })
+			}
 			const existing = turn.changes.find((c) => c.filePath === filePath)
 			if (existing) {
 				existing.after = edit.after

@@ -153,7 +153,7 @@ describe("WalkthroughView", () => {
 		expect(screen.getByRole("region", { name: "Runtime" })).toBeVisible()
 		expect(screen.getByRole("region", { name: "UI" })).toBeVisible()
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
-		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 stops reviewed")
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 reviewed")
 		expect(screen.getByText(/changes outside the primary root/)).toBeVisible()
 
 		// Two hunks of one file sit under one file header.
@@ -192,9 +192,8 @@ describe("WalkthroughView", () => {
 
 	it("adds and edits notes with quick chips, keeps them on reviewed stops, then sends one message and returns", async () => {
 		const { onDone } = await renderPage()
-		const sendButton = screen.getByRole("button", { name: "Send to thread" })
+		const sendButton = screen.getByRole("button", { name: "Send" })
 		expect(sendButton).toBeDisabled()
-		expect(screen.getByTestId("walkthrough-send-bar")).toHaveTextContent("No notes yet")
 
 		const first = stop("Stop the request waiting")
 		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
@@ -212,15 +211,20 @@ describe("WalkthroughView", () => {
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
 
 		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
+		// A reviewed stop folds to its title, still counting its note; the title opens it again.
+		expect(first).toHaveAttribute("data-folded", "true")
+		expect(within(first).getByTestId("walkthrough-stop-note-count")).toHaveTextContent("1 note")
+		expect(within(first).queryByText("Should the job id be a UUID?")).toBeNull()
+		fireEvent.click(within(first).getByRole("button", { name: /Stop the request waiting/, expanded: false }))
 		expect(within(first).getByRole("button", { name: "Reviewed" })).toBeVisible()
 		expect(within(first).getByText("Should the job id be a UUID?")).toBeVisible()
-		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 stops reviewed")
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 reviewed")
 
 		fireEvent.click(screen.getByRole("button", { name: "Add a note on the whole change" }))
 		fireEvent.change(screen.getByLabelText("Note on the whole change"), { target: { value: "Check the error path." } })
-		expect(screen.getByTestId("walkthrough-send-bar")).toHaveTextContent("2 notes")
+		expect(screen.getByTestId("walkthrough-send-bar")).toHaveTextContent("Send 2 notes")
 
-		fireEvent.click(sendButton)
+		fireEvent.click(screen.getByRole("button", { name: "Send 2 notes" }))
 		await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
 		expect(mocks.send).toHaveBeenCalledTimes(1)
 		expect(sent(mocks.send)).toEqual({
@@ -228,22 +232,128 @@ describe("WalkthroughView", () => {
 			scope: "thread",
 			fingerprint: "diff-1",
 			stopNotes: { s1: "Should the job id be a UUID?" },
+			lineNotes: [],
 			overallNote: "Check the error path.",
 		})
 		expect(mocks.send.mock.invocationCallOrder[0]).toBeLessThan(onDone.mock.invocationCallOrder[0])
 	})
 
+	it("shows the agent's words and Generate's notes inside the diff, above the lines they explain", async () => {
+		mocks.get.mockResolvedValue(
+			response({
+				...fixture,
+				annotations: [
+					{ hunkId: "h1", line: 2, text: "Queue it instead of `buildCsv`.", kind: "turn", turnId: "turn3" },
+					{ hunkId: "h2", line: 0, text: "Callers poll with this id.", kind: "why" },
+				],
+			}),
+		)
+		await renderPage()
+		const first = stop("Stop the request waiting")
+		const [turn, why] = within(first).getAllByTestId("walkthrough-annotation")
+		expect(turn).toHaveTextContent("Turn 3“Queue it instead of buildCsv.”")
+		expect(why).toHaveTextContent("WhyCallers poll with this id.")
+		// Above the added line it explains, after the context and the removed line.
+		const lines = within(first).getAllByTestId("walkthrough-diff-line")
+		expect(lines[1].nextElementSibling).toBe(turn)
+		expect(turn.nextElementSibling).toBe(lines[2])
+		expect(lines[2]).toHaveTextContent("+ const job = await jobs.enqueue({ rows })")
+	})
+
+	it("numbers diff lines and takes a note on one line, which is sent with its hunk and line", async () => {
+		const { onDone } = await renderPage()
+		const first = stop("Stop the request waiting")
+		expect(within(first).getAllByTestId("walkthrough-diff-line")[0]).toHaveTextContent(/^1/)
+		// The removed line 2 is the old file's: its button says so.
+		expect(within(first).getByRole("button", { name: "Note on old line 2" })).toBeInTheDocument()
+		fireEvent.click(within(first).getByRole("button", { name: "Note on line 2" }))
+		fireEvent.change(within(first).getByRole("textbox", { name: "Note on line 2" }), { target: { value: "UUID?" } })
+		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("You · L2UUID?")
+		expect(screen.getByRole("button", { name: "Send 1 note" })).toBeEnabled()
+
+		// Folded once reviewed, the stop still counts it.
+		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
+		expect(within(first).getByTestId("walkthrough-stop-note-count")).toHaveTextContent("1 note")
+
+		fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }))
+		await waitFor(() => expect(onDone).toHaveBeenCalled())
+		expect(sent(mocks.send).lineNotes).toEqual([{ hunkId: "h1", line: 2, note: "UUID?" }])
+	})
+
+	it("marks a stop reviewed from its number and brings the next unreviewed stop into view", async () => {
+		const scrolled: string[] = []
+		vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+			callback()
+			return 0
+		})
+		Element.prototype.scrollIntoView = function () {
+			scrolled.push((this as HTMLElement).getAttribute("aria-label") ?? "")
+		}
+		await renderPage()
+		const first = stop("Stop the request waiting")
+		fireEvent.click(within(first).getByRole("button", { name: "Mark Stop the request waiting reviewed" }))
+		expect(first).toHaveAttribute("data-folded", "true")
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 reviewed")
+		expect(scrolled).toEqual(["Cap at 10k rows"])
+		// The check undoes it, and the stop opens again.
+		fireEvent.click(within(first).getByRole("button", { name: "Mark Stop the request waiting not reviewed" }))
+		expect(first).not.toHaveAttribute("data-folded")
+		// The bar's ↓ goes to the next stop still to review after the one in view.
+		fireEvent.click(screen.getByRole("button", { name: "Next stop to review" }))
+		expect(scrolled.at(-1)).toBe("Banner past the cap")
+	})
+
+	it("reviews from the keyboard: J/K move, R marks, N notes, Esc goes back, but not while typing", async () => {
+		vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+			callback()
+			return 0
+		})
+		Element.prototype.scrollIntoView = () => {}
+		const { onDone } = await renderPage()
+		fireEvent.keyDown(window, { key: "j" })
+		fireEvent.keyDown(window, { key: "r" })
+		expect(stop("Cap at 10k rows")).toHaveAttribute("data-folded", "true")
+		expect(stop("Stop the request waiting")).not.toHaveAttribute("data-folded")
+		// R moved on to the next stop to review, so N notes that one.
+		fireEvent.keyDown(window, { key: "n" })
+		const box = within(stop("Banner past the cap")).getByLabelText("Note on Banner past the cap")
+		// Typing an R in the note doesn't mark anything.
+		fireEvent.keyDown(box, { key: "r" })
+		expect(stop("Banner past the cap")).not.toHaveAttribute("data-folded")
+		// K goes back up.
+		fireEvent.keyDown(window, { key: "k" })
+		fireEvent.keyDown(window, { key: "k" })
+		fireEvent.keyDown(window, { key: "r" })
+		expect(stop("Stop the request waiting")).toHaveAttribute("data-folded", "true")
+		fireEvent.keyDown(box, { key: "Escape" })
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.keyDown(window, { key: "Escape" })
+		expect(onDone).toHaveBeenCalledTimes(1)
+	})
+
+	it("goes back to the thread from the bottom bar", async () => {
+		const { onDone } = await renderPage()
+		fireEvent.click(within(screen.getByTestId("walkthrough-send-bar")).getByRole("button", { name: "Thread" }))
+		expect(onDone).toHaveBeenCalledTimes(1)
+	})
+
 	it("persists reviewed marks and notes per task, scope and fingerprint", async () => {
 		const { unmount } = await renderPage()
 		const first = stop("Stop the request waiting")
-		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
 		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
 		fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), { target: { value: "Keep me" } })
+		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
+		fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
 		unmount()
 		expect(Object.keys(JSON.parse(localStorage.getItem(reviewStorageKey("task", "thread")) ?? "{}"))).toEqual(["diff-1"])
 
 		await renderPage()
-		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 stops reviewed")
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 reviewed")
+		expect(within(stop("Stop the request waiting")).getByTestId("walkthrough-stop-note-count")).toHaveTextContent("1 note")
+		fireEvent.click(
+			within(stop("Stop the request waiting")).getByRole("button", { name: /Stop the request waiting/, expanded: false }),
+		)
 		expect(within(stop("Stop the request waiting")).getByText("Keep me")).toBeVisible()
 		expect(screen.queryByTestId("walkthrough-moved")).toBeNull()
 	})
@@ -272,12 +382,12 @@ describe("WalkthroughView", () => {
 		rerender(<WalkthroughView onDone={vi.fn()} taskId="task" />)
 		await waitFor(() => expect(screen.getByTestId("walkthrough-moved")).toBeVisible(), { timeout: 3000 })
 		// Still showing the reviewed diff, and nothing can be sent against it.
-		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 stops reviewed")
-		expect(screen.getByRole("button", { name: "Send to thread" })).toBeDisabled()
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("1 / 3 reviewed")
+		expect(screen.getByRole("button", { name: "Send" })).toBeDisabled()
 
 		fireEvent.click(within(screen.getByTestId("walkthrough-moved")).getByRole("button", { name: "Refresh" }))
 		await waitFor(() => expect(screen.queryByTestId("walkthrough-moved")).toBeNull())
-		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 stops reviewed")
+		expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 reviewed")
 		expect(localStorage.getItem(reviewStorageKey("task", "thread"))).toBeNull()
 	})
 
@@ -613,7 +723,7 @@ describe("WalkthroughView", () => {
 			expect(screen.queryByRole("group", { name: "Scope" })).toBeNull()
 			expect(screen.queryByRole("button", { name: /Generate$/ })).toBeNull()
 			expect(screen.getByRole("heading", { name: "Retry on checkout timeouts" })).toBeVisible()
-			expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 stops reviewed")
+			expect(screen.getByTestId("walkthrough-progress")).toHaveTextContent("0 / 3 reviewed")
 			expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Authored")
 		})
 
@@ -660,13 +770,13 @@ describe("WalkthroughView", () => {
 			expect(screen.queryByRole("button", { name: "Revert hunk" })).toBeNull()
 
 			const first = stop("Stop the request waiting")
-			fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
 			fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
 			fireEvent.change(within(first).getByLabelText("Note on Stop the request waiting"), {
 				target: { value: "Back off on 429s too?" },
 			})
 			fireEvent.click(within(first).getByRole("button", { name: "Done" }))
-			fireEvent.click(screen.getByRole("button", { name: "Send to thread" }))
+			fireEvent.click(within(first).getByRole("button", { name: "Mark reviewed" }))
+			fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }))
 			await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
 			expect(sent(mocks.send)).toEqual({
 				taskId: "task",
@@ -674,6 +784,7 @@ describe("WalkthroughView", () => {
 				authoredId: "walk-1",
 				fingerprint: "auth-1",
 				stopNotes: { s1: "Back off on 429s too?" },
+				lineNotes: [],
 				overallNote: undefined,
 			})
 		})

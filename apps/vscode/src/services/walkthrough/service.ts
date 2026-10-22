@@ -176,7 +176,11 @@ export class WalkthroughService {
 
 	async sendNotes(request: WalkthroughRequest): Promise<void> {
 		const { walk } = await this.reviewed(request)
-		const message = formatNotes(walk, { stopNotes: request.stopNotes ?? {}, overallNote: request.overallNote })
+		const message = formatNotes(walk, {
+			stopNotes: request.stopNotes ?? {},
+			lineNotes: Array.isArray(request.lineNotes) ? request.lineNotes : [],
+			overallNote: request.overallNote,
+		})
 		this.validate(request)
 		await this.controller.task!.handleWebviewAskResponse("messageResponse", message, [], [])
 	}

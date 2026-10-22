@@ -13,6 +13,7 @@ import {
 	generate,
 	repairOutput,
 	timeoutMs,
+	turnAnnotations,
 } from "./engine"
 
 const change = (path = "a.ts", turnId = "turn1", after = "new\n"): ContentChange => ({
@@ -207,6 +208,84 @@ describe("walkthrough engine", () => {
 			} as unknown as ApiHandler
 			await expect(generate(live(), turns, handler)).rejects.toThrow("exactly one")
 		}
+	})
+	it("quotes what the agent said before an edit above the first line that edit added", () => {
+		const before = "start\nkeep\nend\n"
+		const after = "start\nconst job = queue.add(query)\nkeep\nres.status(202).json(job)\nend\n"
+		const edit = { ...change("api.ts", "turn1"), before, after }
+		const turn: EditTurn = {
+			id: "turn1",
+			prose: "Exports are queued now.",
+			context: "",
+			changes: [edit],
+			notes: [
+				{ path: "api.ts", text: "Queue the job   instead of\nwaiting.", added: ["const job = queue.add(query)"] },
+				{ path: "api.ts", text: "Answer right away.", added: ["res.status(202).json(job)"] },
+				// Repeats the stop's prose: left out.
+				{ path: "api.ts", text: "Exports are queued now.", added: ["res.status(202).json(job)"] },
+				{ path: "other.ts", text: "Elsewhere.", added: ["const job = queue.add(query)"] },
+			],
+		}
+		const walk = fallback("task", "thread", [turn], [edit])
+		const body = walk.hunks[0].patch.split("\n").slice(1)
+		expect(walk.annotations).toEqual([
+			{
+				hunkId: "h1",
+				line: body.indexOf("+const job = queue.add(query)"),
+				text: "Queue the job instead of waiting.",
+				kind: "turn",
+				turnId: "turn1",
+			},
+			{
+				hunkId: "h1",
+				line: body.indexOf("+res.status(202).json(job)"),
+				text: "Answer right away.",
+				kind: "turn",
+				turnId: "turn1",
+			},
+		])
+		expect(turnAnnotations(walk.hunks, [{ ...turn, notes: [] }])).toEqual([])
+	})
+	it("keeps generated notes only where the quoted line is in the stop's own hunks", () => {
+		const walk = live()
+		const repaired = repairOutput(
+			{
+				...output,
+				chapters: [
+					{
+						title: "Parser",
+						stops: [
+							{
+								title: "Reject invalid input",
+								prose: "The parser validates input.",
+								hunkIds: ["h1"],
+								notes: [
+									{ hunkId: "h1", line: "+new", text: "Why it changed." },
+									{ hunkId: "h2", line: "new", text: "Not this stop's hunk." },
+									{ hunkId: "h1", line: "not in the patch", text: "Invented." },
+								],
+							},
+						],
+					},
+				],
+			},
+			walk,
+		)
+		expect(repaired.annotations).toEqual([{ hunkId: "h1", line: 1, text: "Why it changed.", kind: "why" }])
+	})
+	it("sends a line note with its path, line number and the lines around it", () => {
+		const walk = live()
+		const message = formatNotes(walk, {
+			stopNotes: {},
+			lineNotes: [
+				{ hunkId: "h1", line: 1, note: "Is this right?" },
+				{ hunkId: "h1", line: 99, note: "Out of range" },
+				{ hunkId: "nope", line: 0, note: "Unknown hunk" },
+			],
+		})
+		expect(message).toContain("> a.ts:1\n> -old\n> +new\n\nIs this right?")
+		expect(message).not.toContain("Out of range")
+		expect(message).not.toContain("Unknown hunk")
 	})
 	it("scales the timeout and caps it at five minutes", () => {
 		const walk = live()
