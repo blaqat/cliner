@@ -46,6 +46,11 @@ export interface SdkDiffEditCoordinatorOptions {
 	previewOpenTimeoutMs?: number
 	/** Injectable for tests. Defaults to opening the file via the host's showTextDocument. */
 	showEditedFile?: (absolutePath: string) => Promise<void>
+	/**
+	 * The window's own workspace folder. When a thread runs elsewhere (its own worktree), preview
+	 * titles name that folder, so an edit there can't be mistaken for one to the same-named file here.
+	 */
+	getWorkspaceRoot?: () => Promise<string | undefined>
 }
 
 interface DiffEditSession {
@@ -262,6 +267,7 @@ export class SdkDiffEditCoordinator {
 
 		await this.openPreview(toolCallId, {
 			absolutePath,
+			where: await this.elsewhereLabel(cwd),
 			displayPath: input.path,
 			editType,
 			leftContent: originalContent ?? "",
@@ -288,6 +294,7 @@ export class SdkDiffEditCoordinator {
 		await this.openPreview(toolCallId, {
 			absolutePath: resolveEditPath(cwd, filePath),
 			revealPath: resolveEditPath(cwd, change.movePath ?? filePath),
+			where: await this.elsewhereLabel(cwd),
 			displayPath: filePath,
 			editType: change.type === PatchActionType.ADD ? "create" : "modify",
 			leftContent: change.oldContent ?? "",
@@ -300,6 +307,8 @@ export class SdkDiffEditCoordinator {
 		content: {
 			absolutePath: string
 			revealPath?: string
+			/** Set when the edit lands outside this window's workspace, e.g. "worktree hello-4cdbc570f5". */
+			where?: string
 			displayPath: string
 			editType: "create" | "modify"
 			leftContent: string
@@ -322,7 +331,7 @@ export class SdkDiffEditCoordinator {
 		}
 
 		const preview = this.createPreview()
-		const fileName = path.basename(content.absolutePath)
+		const fileName = path.basename(content.absolutePath) + (content.where ? ` (${content.where})` : "")
 		const title =
 			content.editType === "create"
 				? `${fileName}: New File (Preview)`
@@ -358,6 +367,13 @@ export class SdkDiffEditCoordinator {
 			absolutePath: content.absolutePath,
 			revealPath: content.revealPath ?? content.absolutePath,
 		})
+	}
+
+	/** "worktree <folder>" when cwd isn't this window's workspace folder; undefined otherwise. */
+	private async elsewhereLabel(cwd: string): Promise<string | undefined> {
+		const root = await this.options.getWorkspaceRoot?.().catch(() => undefined)
+		if (!root || path.resolve(root) === path.resolve(cwd)) return undefined
+		return `worktree ${path.basename(cwd)}`
 	}
 
 	private createPreview(): EditPreview {

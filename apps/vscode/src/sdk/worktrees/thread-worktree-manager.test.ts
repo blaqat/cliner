@@ -79,6 +79,16 @@ it("brings changes here, saves the patch and undoes a clean bring-in", async () 
 	expect(await read(workspace)).toBe("base\n")
 	await expect(fs.access(path.join(workspace, "new.txt"))).rejects.toThrow()
 }, 60_000)
+it("explains a bring-in that clashes with the workspace's own uncommitted edits, and changes nothing", async () => {
+	const m = await manager.create("clash", "Clash", workspace)
+	await write(m.cwd, "file.txt", "from the thread\n")
+	await write(workspace, "file.txt", "edited in the workspace\n")
+	await expect(manager.bring("clash")).rejects.toThrow(
+		"Your workspace has its own changes to `file.txt` that clash with this thread's. Commit, stash or undo them in your workspace, then Bring here again.",
+	)
+	expect(await read(workspace)).toBe("edited in the workspace\n")
+	expect((await manager.get("clash"))!.bringIns).toEqual([])
+}, 60_000)
 it("undo reports overlapping later edits as conflicts and preserves the real index", async () => {
 	const m = await manager.create("conflict", "Conflict", workspace)
 	await write(m.cwd, "file.txt", "brought\n")

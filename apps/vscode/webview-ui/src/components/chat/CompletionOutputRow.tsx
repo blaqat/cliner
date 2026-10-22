@@ -128,7 +128,8 @@ export const CompletionOutputRow = memo(
 							<Button
 								className="h-auto min-h-6.5 flex-1 gap-1.5 px-2 text-(length:--vscode-font-size)"
 								data-testid="completion-open-walkthrough"
-								onClick={onOpenWalkthrough}
+								// Not onClick={onOpenWalkthrough}: the click event would arrive as the authored id.
+								onClick={() => onOpenWalkthrough()}
 								size="xs"
 								title="Review this thread's changes stop by stop"
 								variant="secondary">

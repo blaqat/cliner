@@ -124,8 +124,8 @@ function toastLabels(
 }
 
 /**
- * Toasts for background threads that finish or need input, stacked under the
- * header (newest on top, at most three). They never take focus or block input:
+ * Toasts for background threads that finish or need input, stacked in the
+ * top-right corner under the header (newest on top, at most three). They never take focus or block input:
  * the layer ignores the pointer except on the cards themselves.
  */
 export const ThreadToasts = () => {
@@ -142,8 +142,14 @@ export const ThreadToasts = () => {
 	} = useExtensionState()
 	const navigation = useNavigationHistory()
 	const current = navigation?.current
-	// The thread on screen; any other view (home, a task page, settings) watches none.
-	const viewingThreadId = navigation ? (current?.kind === "thread" ? current.id : undefined) : currentTaskItem?.id
+	// The thread on screen; any other view (home, a task page, settings) watches none. The open chat
+	// counts too: the thread strip switches to an aside without a navigation entry, so `current`
+	// can still name its parent while the aside is what you're looking at.
+	const onThreadView = !navigation || current?.kind === "thread"
+	const viewingKey = onThreadView
+		? [current?.kind === "thread" ? current.id : undefined, currentTaskItem?.id].filter(Boolean).join("\n")
+		: ""
+	const viewingThreadId = useMemo(() => (viewingKey ? viewingKey.split("\n") : []), [viewingKey])
 	const enabled = threadToastsEnabled !== false
 	const [toasts, setToasts] = useState<ThreadToast[]>([])
 	const previousRef = useRef<ThreadStatusMap>()
@@ -198,7 +204,8 @@ export const ThreadToasts = () => {
 	return (
 		<div
 			aria-live="polite"
-			className="pointer-events-none absolute inset-x-2 top-10 z-40 flex flex-col gap-1.5"
+			// A compact stack in the top-right corner, not a full-width banner over the chat.
+			className="pointer-events-none absolute top-10 right-2 z-40 flex w-[min(280px,calc(100%-16px))] flex-col gap-1.5"
 			data-testid="thread-toasts">
 			{toasts.map((toast) => {
 				const label = labels.get(toast.id)

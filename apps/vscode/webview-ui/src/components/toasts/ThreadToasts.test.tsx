@@ -24,6 +24,8 @@ const baseState = () => ({
 })
 let state = baseState()
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => state }))
+const nav = vi.hoisted(() => ({ value: undefined as { current?: { kind: string; id?: string } } | undefined }))
+vi.mock("@/components/navigation/NavigationHistoryContext", () => ({ useNavigationHistory: () => nav.value }))
 
 function update(patch: Partial<ReturnType<typeof baseState>>, rerender: (ui: React.ReactElement) => void) {
 	state = { ...state, ...patch }
@@ -42,8 +44,29 @@ describe("ThreadToasts", () => {
 		vi.useFakeTimers()
 		openTask.mockClear()
 		navigateToChat.mockClear()
+		nav.value = undefined
 	})
 	afterEach(() => vi.useRealTimers())
+
+	it("doesn't toast the aside on screen when the thread strip opened it without a navigation entry", () => {
+		// Navigation still names the parent; the open chat is the aside.
+		nav.value = { current: { kind: "thread", id: "a" } }
+		state = { ...baseState(), currentTaskItem: { id: "b" }, sessionStatuses: { a: "running", b: "running" } }
+		const { rerender } = render(<ThreadToasts />)
+		update({ sessionStatuses: { a: "running", b: "done" } }, rerender)
+		expect(screen.queryByTestId("thread-toast")).toBeNull()
+		update({ sessionStatuses: { a: "done", b: "done" } }, rerender)
+		expect(screen.queryByTestId("thread-toast")).toBeNull()
+		nav.value = undefined
+	})
+
+	it("stacks in the top-right corner rather than across the whole width", () => {
+		const { rerender } = mountWith({ a: "running" })
+		update({ sessionStatuses: { a: "done" } }, rerender)
+		const stack = screen.getByTestId("thread-toasts")
+		expect(stack).toHaveClass("right-2", "w-[min(280px,calc(100%-16px))]")
+		expect(stack).not.toHaveClass("inset-x-2")
+	})
 
 	it("doesn't toast what was already done or waiting at load", () => {
 		mountWith({ a: "done", b: "waiting" })

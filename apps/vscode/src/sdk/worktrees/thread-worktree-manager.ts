@@ -32,6 +32,24 @@ async function run(command: string, args: string[], cwd: string, input?: string,
 }
 const git = (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) => run("git", args, cwd, input, env)
 
+/**
+ * Bring here only applies cleanly onto the files the thread started from. When the workspace has
+ * its own edits to the same lines, say which files clash and what to do, not git's raw error.
+ */
+export function bringClashMessage(module: string, gitError: string): string {
+	const files = [
+		...new Set(
+			[
+				...gitError.matchAll(
+					/error: (?:patch failed: (.+?):\d+|(.+?): (?:patch does not apply|already exists in working directory|does not exist in index))/g,
+				),
+			].map((match) => (module ? `${module}/` : "") + (match[1] ?? match[2])),
+		),
+	]
+	const which = files.length ? files.map((file) => `\`${file}\``).join(", ") : "the same files"
+	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then Bring here again.`
+}
+
 export function parseMmModules(raw: string): string[] {
 	const text = raw.trim()
 	const parsed =
@@ -339,7 +357,13 @@ export class ThreadWorktreeManager {
 			const captured = await this.diffs(id, true)
 			const diffs = captured.filter((d) => d.patch)
 			if (!diffs.length) return { message: "No changes to bring here" }
-			for (const diff of diffs) await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
+			for (const diff of diffs) {
+				try {
+					await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
+				} catch (error) {
+					throw new Error(bringClashMessage(diff.module, String(error)))
+				}
+			}
 			const bring = { id: randomUUID(), patches: [] as ThreadWorktree["bringIns"][number]["patches"] }
 			const folder = path.join(this.storageDir, "patches", bring.id)
 			await fs.mkdir(folder, { recursive: true })

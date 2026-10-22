@@ -1,7 +1,7 @@
 import type { ThreadWorktree, WorktreeState } from "@shared/thread-worktrees"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
-import { ThreadWorktreeActions, WorktreeBadge } from "./ThreadWorktreeActions"
+import { ThreadWorktreeActions } from "./ThreadWorktreeActions"
 import { WorktreeSettings } from "./WorktreeSettings"
 
 const mocks = vi.hoisted(() => ({ action: vi.fn(), state: {} as WorktreeState, thread: 0 }))
@@ -43,7 +43,7 @@ beforeEach(() => {
 		json: JSON.stringify(request.action === "state" ? { state: mocks.state } : {}),
 	}))
 })
-it("renders the worktree badge and asks inline before discarding untransferred changes", async () => {
+it("asks inline before discarding untransferred changes, and tells the caller after an action", async () => {
 	mocks.state.mapping = mapping
 	mocks.action.mockImplementation(async (request) => ({
 		json: JSON.stringify(
@@ -54,17 +54,13 @@ it("renders the worktree badge and asks inline before discarding untransferred c
 					: { message: "Removed" },
 		),
 	}))
-	render(
-		<>
-			<WorktreeBadge threadId="thread" />
-			<ThreadWorktreeActions threadId="thread" />
-		</>,
-	)
-	expect(await screen.findByLabelText("Thread runs in a worktree")).toHaveAttribute("title", "/isolate")
+	const onChanged = vi.fn(async () => {})
+	render(<ThreadWorktreeActions onChanged={onChanged} threadId="thread" />)
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Remove worktree" }))
 	expect(await screen.findByText("Changes were never brought in")).toBeVisible()
 	fireEvent.click(screen.getByRole("menuitem", { name: "Remove and discard changes" }))
 	await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "remove", confirmed: true })))
+	await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2))
 	expect(screen.queryByRole("dialog")).toBeNull()
 })
 it("shows undo conflict paths inline", async () => {

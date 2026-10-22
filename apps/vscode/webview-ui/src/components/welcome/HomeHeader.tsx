@@ -24,15 +24,14 @@ const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
 	const headingText = "What can I do for you?"
 
 	return (
-		<div className="flex flex-col items-center mb-5">
-			<div className="my-7">
-				<LogoComponent className="size-20" environment={environment} />
-			</div>
-			<div className="text-center flex items-center justify-center px-4">
-				<h1 className="m-0 font-bold">{headingText}</h1>
+		// Compact: the logo sits beside the heading on one line, so the inbox starts higher up.
+		<div className="mt-3 mb-2 flex flex-col items-center">
+			<div className="flex items-center justify-center gap-2 px-4">
+				<LogoComponent className="size-7 shrink-0" environment={environment} />
+				<h1 className="m-0 text-[15px] font-semibold">{headingText}</h1>
 			</div>
 			{shouldShowQuickWins && (
-				<div className="mt-4">
+				<div className="mt-3">
 					<button
 						className="flex items-center gap-2 px-4 py-2 rounded-full border border-border-panel bg-white/2 hover:bg-list-background-hover transition-colors duration-150 ease-in-out text-code-foreground text-sm font-medium cursor-pointer"
 						onClick={handleTakeATour}

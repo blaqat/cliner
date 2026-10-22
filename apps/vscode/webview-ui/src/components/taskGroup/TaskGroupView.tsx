@@ -425,8 +425,15 @@ function NoteCard({ note, onOpen }: { note: NotebookNoteMeta; onOpen: () => void
 	)
 }
 
-/** Connector geometry: the spine runs down the node column; node centers sit on the title line. */
-const SPINE_CLASS = "pointer-events-none absolute left-[15.5px] w-px bg-description/35"
+/**
+ * Connector geometry: node centers sit at (16px, 15px) of each row — the row's 1px border and 8px
+ * padding put the 14px node column's center at x=16, and the 20px title line's center at y=15. The
+ * spine is 2px wide on whole pixels (15–17) so it stays centered and crisp at any zoom, and stops
+ * 2px short of each node so a dimmed (settled) node never shows the line through it.
+ */
+const SPINE_CLASS = "pointer-events-none absolute left-[15px] w-[2px] rounded-full bg-description/30"
+const NODE_CENTER_Y = 15
+const SPINE_GAP = 2
 
 /**
  * One timeline entry. The spine is drawn per row (above and below the node,
@@ -464,6 +471,8 @@ function TimelineRow({
 	const describeAge = (age: string) => (age === "now" ? "just now" : `${age} ago`)
 	// Icons (spinner, hourglass) need more room than a dot.
 	const iconStatus = status === "running" || status === "subagents"
+	// Half the node's size (12px icon, 10px dot) plus the gap: where the spine stops above and below.
+	const reach = (iconStatus ? 6 : 5) + SPINE_GAP
 	return (
 		<li
 			className="group relative"
@@ -535,17 +544,19 @@ function TimelineRow({
 			{/* After the button so a hovered row's background doesn't hide the line. */}
 			{subthread ? (
 				<>
-					{/* Elbow from the spine into the subthread's node. */}
+					{/* Elbow from the spine into the subthread's node; the spine carries on past it. */}
 					<span
 						aria-hidden
-						className="pointer-events-none absolute top-0 left-[15.5px] h-[15.5px] w-[9.5px] rounded-bl-[5px] border-b border-l border-description/35"
+						className="pointer-events-none absolute top-0 left-[15px] h-[16px] w-[9px] rounded-bl-[6px] border-x-0 border-t-0 border-b-2 border-l-2 border-solid border-description/30"
 					/>
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[15px] bottom-0")} />}
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y }} />}
 				</>
 			) : (
 				<>
-					{!first && <span aria-hidden className={cn(SPINE_CLASS, "top-0 h-[8px]")} />}
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[22px] bottom-0")} />}
+					{!first && (
+						<span aria-hidden className={cn(SPINE_CLASS, "top-0")} style={{ height: NODE_CENTER_Y - reach }} />
+					)}
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y + reach }} />}
 				</>
 			)}
 		</li>

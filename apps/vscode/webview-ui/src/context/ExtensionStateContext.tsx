@@ -331,7 +331,8 @@ export const ExtensionStateContextProvider: React.FC<{
 	const navigateToWalkthrough = useCallback(
 		(authoredId?: string) => {
 			navigateToChat()
-			setWalkthroughAuthoredId(authoredId)
+			// Guard against being wired straight to onClick, which passes a click event here.
+			setWalkthroughAuthoredId(typeof authoredId === "string" ? authoredId : undefined)
 			setShowWalkthrough(true)
 		},
 		[navigateToChat],

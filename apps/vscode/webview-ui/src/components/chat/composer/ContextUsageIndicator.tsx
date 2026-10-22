@@ -367,7 +367,8 @@ export const ContextUsageIndicator = memo(
 								disabled={!canCompact}
 								onClick={compact}
 								size="xs"
-								variant={nudge ? "default" : "secondary"}>
+								// The primary button style: secondary blends into the menu on some themes.
+								variant="default">
 								<FoldVerticalIcon size={12} />
 								Compact now
 							</Button>

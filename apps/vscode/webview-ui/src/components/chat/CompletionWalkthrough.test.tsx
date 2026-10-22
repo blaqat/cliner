@@ -75,6 +75,8 @@ describe("Open walkthrough on the completion block", () => {
 		expect(screen.getByRole("button", { name: /View Changes/ })).toBeVisible()
 		fireEvent.click(button)
 		expect(mocks.navigateToWalkthrough).toHaveBeenCalledTimes(1)
+		// No click event as the authored id: it can't be serialized and broke the page.
+		expect(mocks.navigateToWalkthrough).toHaveBeenCalledWith()
 	})
 
 	it("stays hidden when the turn changed no files", async () => {

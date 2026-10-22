@@ -1,5 +1,5 @@
 import type { WorktreeState } from "@shared/thread-worktrees"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
 import { WorkspaceButton } from "./worktreeSlot"
@@ -96,6 +96,10 @@ it("shows where an existing thread runs instead of a choice", async () => {
 	await openMenu()
 	expect(screen.getByTestId("workspace-current")).toHaveTextContent("cline/t1")
 	expect(screen.queryByRole("menuitemradio")).toBeNull()
+	// The worktree's actions live here now, under the branch (not in the thread header).
+	const actions = await screen.findByTestId("worktree-actions")
+	for (const name of ["Open in new window", "Bring here", "Undo bring-in", "Take over branch", "Remove worktree"])
+		expect(within(actions).getByRole("menuitem", { name })).toBeInTheDocument()
 	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Worktree settings")
 })
 

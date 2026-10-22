@@ -7,6 +7,7 @@ import {
 	MENU_SEPARATOR_CLASS,
 } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { ThreadWorktreeActions } from "@/components/worktrees/ThreadWorktreeActions"
 import { useWorktree } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -21,7 +22,7 @@ import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKey
 export function WorkspaceButton() {
 	const { currentTaskItem, navigateToSettings } = useExtensionState()
 	const threadId = currentTaskItem?.id
-	const { availability, state, enabled, setEnabled, error } = useWorktree(threadId)
+	const { availability, state, enabled, setEnabled, error, refresh } = useWorktree(threadId)
 	const [open, setOpen] = useState(false)
 	// Subagent threads run where their parent does.
 	if (currentTaskItem?.isSubagent) return null
@@ -117,7 +118,8 @@ export function WorkspaceButton() {
 						)}
 					</div>
 				)}
-				{threadId && (
+				{threadId && mapping && <ThreadWorktreeActions onChanged={refresh} threadId={threadId} />}
+				{threadId && !mapping && (
 					<p className="m-0 px-2 pb-0.5 text-[11px] text-description">A thread's workspace is picked when it starts.</p>
 				)}
 				{blocker && (

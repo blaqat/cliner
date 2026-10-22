@@ -333,7 +333,8 @@ describe("InboxList task groups", () => {
 			expect.stringContaining("Implement steps"),
 			expect.stringContaining("Refine ticket"),
 		])
-		expect(within(members).getByTestId("inbox-task-group-settled-divider")).toBeInTheDocument()
+		// No divider: settled threads are already dimmed and checked.
+		expect(within(members).queryByTestId("inbox-task-group-settled-divider")).toBeNull()
 		// Older settled threads can be unsettled right here.
 		expect(within(members).getByRole("button", { name: "Unsettle Refine ticket" })).toBeInTheDocument()
 

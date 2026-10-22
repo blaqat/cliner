@@ -601,6 +601,7 @@ export class Controller {
 			getCwd: async (sessionId) =>
 				this.sessions?.getSession(sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
+			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 		})
 		this.interactions = new SdkInteractionCoordinator({
 			get messages() {

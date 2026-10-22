@@ -1,23 +1,16 @@
 import { useState } from "react"
+import { MENU_ROW_CLASS } from "@/components/chat/composer/menuKeyboard"
 import { InlineNotice } from "@/components/common/InlineNotice"
-import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { MENU_ICON_CLASS } from "@/components/common/menuStyles"
 import { cn } from "@/lib/utils"
 import { threadWorktreeAction, useWorktree } from "./useWorktree"
 
-export function WorktreeBadge({ threadId }: { threadId?: string }) {
-	const { state } = useWorktree(threadId)
-	return state?.mapping ? (
-		<span
-			aria-label="Thread runs in a worktree"
-			className="codicon codicon-repo-forked shrink-0 text-[12px]! text-description"
-			role="img"
-			title={state.mapping.cwd}
-		/>
-	) : null
-}
-
-/** The thread header ⋯ menu's worktree section: the branch, then the worktree actions. */
-export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
+/**
+ * The worktree actions for a thread that runs in one, shown in the composer's workspace menu under
+ * the branch (the green workspace button is where worktree things live). `onChanged` refreshes the
+ * caller's worktree state, so the button follows a removal.
+ */
+export function ThreadWorktreeActions({ threadId, onChanged }: { threadId: string; onChanged?: () => Promise<void> }) {
 	const { state, refresh, error } = useWorktree(threadId)
 	const [message, setMessage] = useState<string>()
 	const [conflicts, setConflicts] = useState<string[]>([])
@@ -30,7 +23,7 @@ export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 			setMessage(result.warning || result.message)
 			setConflicts(result.conflicts ?? [])
 			setConfirmRemove(action === "remove" && !!result.warning)
-			await refresh()
+			await Promise.all([refresh(), onChanged?.()])
 		} catch (error) {
 			setMessage(String(error))
 		} finally {
@@ -46,14 +39,10 @@ export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 		["remove", confirmRemove ? "Remove and discard changes" : "Remove worktree", "trash"],
 	]
 	return (
-		<div>
-			<div className={cn(MENU_HEADING_CLASS, "flex items-center gap-1 normal-case tracking-normal")}>
-				<span aria-hidden className="codicon codicon-repo-forked text-[11px]!" />
-				<span className="ph-no-capture min-w-0 truncate font-mono">{state.mapping.branch}</span>
-			</div>
+		<div data-testid="worktree-actions">
 			{actions.map(([action, label, icon]) => (
 				<button
-					className={cn(MENU_ITEM_CLASS, action === "remove" && confirmRemove && "text-error")}
+					className={cn(MENU_ROW_CLASS, action === "remove" && confirmRemove && "text-error")}
 					disabled={busy}
 					key={action}
 					onClick={() => void act(action)}
@@ -65,7 +54,7 @@ export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 			))}
 			{confirmRemove && (
 				<button
-					className={MENU_ITEM_CLASS}
+					className={MENU_ROW_CLASS}
 					onClick={() => {
 						setConfirmRemove(false)
 						setMessage(undefined)
@@ -90,7 +79,6 @@ export function ThreadWorktreeActions({ threadId }: { threadId: string }) {
 					)}
 				</InlineNotice>
 			)}
-			<div className={MENU_SEPARATOR_CLASS} />
 		</div>
 	)
 }

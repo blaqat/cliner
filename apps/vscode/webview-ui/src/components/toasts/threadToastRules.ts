@@ -22,9 +22,16 @@ export interface ThreadToastEvent {
 export const MAX_THREAD_TOASTS = 3
 export const DEFAULT_TOAST_SECONDS = 5
 
+/** The thread(s) on screen. Several ids when navigation and the open chat briefly disagree. */
+export type ViewingThreads = string | readonly (string | undefined)[] | undefined
+
+function viewing(ids: ViewingThreads, id: string): boolean {
+	return typeof ids === "string" ? ids === id : !!ids?.includes(id)
+}
+
 export interface ToastEventContext {
 	/** The thread on screen; it never toasts. */
-	viewingThreadId?: string
+	viewingThreadId?: ViewingThreads
 	history: readonly HistoryItem[]
 	/** Threads the user just stopped; their running → done is not a completion. */
 	stoppedIds?: ReadonlySet<string>
@@ -57,7 +64,7 @@ export function threadToastEvents(
 		if (status === before) continue
 		const item = byId.get(id)
 		const target = item?.isSubagent && item.parentTaskId ? item.parentTaskId : id
-		if (id === viewingThreadId || target === viewingThreadId) continue
+		if (viewing(viewingThreadId, id) || viewing(viewingThreadId, target)) continue
 		if (status === "waiting") {
 			events.push({ threadId: target, sourceId: id, kind: "input" })
 		} else if (
@@ -92,12 +99,12 @@ export function addThreadToasts(
 export function pruneThreadToasts(
 	toasts: readonly ThreadToast[],
 	statuses: ThreadStatusMap,
-	viewingThreadId: string | undefined,
+	viewingThreadId: ViewingThreads,
 ): ThreadToast[] {
 	const kept = toasts.filter(
 		(toast) =>
-			toast.threadId !== viewingThreadId &&
-			toast.sourceId !== viewingThreadId &&
+			!viewing(viewingThreadId, toast.threadId) &&
+			!viewing(viewingThreadId, toast.sourceId) &&
 			(toast.kind !== "input" || statuses[toast.sourceId] === "waiting"),
 	)
 	return kept.length === toasts.length ? (toasts as ThreadToast[]) : kept

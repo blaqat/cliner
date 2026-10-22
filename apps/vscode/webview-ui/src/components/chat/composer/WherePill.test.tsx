@@ -168,14 +168,19 @@ describe("WherePill: task", () => {
 		expect(getComposerTaskGroup()).toBe("sso")
 	})
 
-	it("in an existing thread, picking moves the thread and offers Open task", () => {
+	it("in an existing thread, picking moves the thread and clicking its own task opens it", () => {
 		mocks.state.currentTaskItem = { id: "thread-1", taskGroupId: "bulk" }
 		const onOpenTaskGroup = vi.fn()
 		render(<WherePill onOpenTaskGroup={onOpenTaskGroup} />)
 		expect(screen.getByTestId("where-pill")).toHaveTextContent("Bulk invoice export")
 
-		fireEvent.click(within(openMenu()).getByText("Open task"))
+		const menu = openMenu()
+		expect(within(menu).queryByText("Open task")).toBeNull()
+		const own = within(within(menu).getByTestId("where-task-list")).getByText("Bulk invoice export").closest("button")!
+		expect(own).toHaveAttribute("title", "Open Bulk invoice export")
+		fireEvent.click(own)
 		expect(onOpenTaskGroup).toHaveBeenCalledWith("bulk")
+		expect(mocks.setThreadTaskGroup).not.toHaveBeenCalled()
 
 		fireEvent.click(within(openMenu()).getByText("SSO redirect loop"))
 		expect(mocks.setThreadTaskGroup).toHaveBeenCalledWith(

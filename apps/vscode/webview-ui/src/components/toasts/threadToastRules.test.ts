@@ -36,6 +36,8 @@ describe("threadToastEvents", () => {
 	it("skips the thread being viewed", () => {
 		expect(threadToastEvents({ a: "running" }, { a: "done" }, { history, viewingThreadId: "a" })).toEqual([])
 		expect(threadToastEvents({ a: "running" }, { a: "waiting" }, { history, viewingThreadId: "a" })).toEqual([])
+		// Any of several on-screen ids counts (navigation and the open chat can briefly disagree).
+		expect(threadToastEvents({ a: "running" }, { a: "done" }, { history, viewingThreadId: ["x", "a"] })).toEqual([])
 	})
 
 	it("skips failed threads", () => {

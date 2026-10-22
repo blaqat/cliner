@@ -363,6 +363,17 @@ describe("SdkDiffEditCoordinator", () => {
 		})
 	})
 
+	it("names the worktree in the preview title when the thread runs outside this window's workspace", async () => {
+		await writeFile("a.ts", "line1\n")
+		coordinator = makeCoordinator({ getWorkspaceRoot: async () => "/somewhere/else" })
+		await coordinator.openForApproval("tc1", "editor", { path: "a.ts", old_text: "line1", new_text: "changed" })
+		expect(previews[0].opened?.title).toBe(`a.ts (worktree ${path.basename(tempDir)}): Original ↔ Cline's Changes (Preview)`)
+
+		coordinator = makeCoordinator({ getWorkspaceRoot: async () => tempDir })
+		await coordinator.openForApproval("tc2", "editor", { path: "a.ts", old_text: "line1", new_text: "again" })
+		expect(previews[1].opened?.title).toBe("a.ts: Original ↔ Cline's Changes (Preview)")
+	})
+
 	it("opens a preview for a multi-line edit in a CRLF file (issue #13296)", async () => {
 		await writeFile("crlf.ts", "line1\r\nline2\r\nline3")
 		await coordinator.openForApproval("tc1", "editor", {

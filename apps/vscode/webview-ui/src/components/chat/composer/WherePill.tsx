@@ -103,7 +103,11 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 			setComposerTaskGroup(id)
 			return
 		}
-		if (id === selectedId) return
+		// Clicking the thread's own task opens it (there's no separate Open task row).
+		if (id === selectedId) {
+			if (id && onOpenTaskGroup) onOpenTaskGroup(id)
+			return
+		}
 		void TaskGroupServiceClient.setThreadTaskGroup(
 			SetThreadTaskGroupRequest.create({ threadId, taskGroupId: id ?? "" }),
 		).catch((error) => console.error("Failed to move thread to task:", error))
@@ -213,6 +217,9 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 									key={group.id}
 									onClick={() => pick(group.id)}
 									role="menuitemradio"
+									title={
+										threadId && group.id === selectedId && onOpenTaskGroup ? `Open ${group.title}` : undefined
+									}
 									type="button">
 									<span
 										aria-hidden
@@ -242,19 +249,6 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !!selectedId && "invisible")} />
 						</button>
 						<div className={MENU_SEPARATOR_CLASS} />
-						{threadId && selected && onOpenTaskGroup && (
-							<button
-								className={MENU_ROW_CLASS}
-								onClick={() => {
-									close()
-									onOpenTaskGroup(selected.id)
-								}}
-								role="menuitem"
-								type="button">
-								<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-arrow-right")} />
-								Open task
-							</button>
-						)}
 						<button
 							className={cn(MENU_ROW_CLASS, "text-link")}
 							onClick={() => {
