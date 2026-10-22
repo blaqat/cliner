@@ -10,6 +10,10 @@ export interface MessageReferenceInfo {
 	/** "user" or "assistant". */
 	author: "user" | "assistant"
 	text: string
+	/** Where the message is (the link's target), so its chip can scroll to it. Missing on older references. */
+	messageIndex?: number
+	toolCallId?: string
+	block?: number
 }
 
 /** Longest message text injected per tag; a single pasted message should never flood the context. */
@@ -42,7 +46,13 @@ export function formatMessageReference(reference: MessageReferenceInfo): string 
 		reference.text.length > MAX_MESSAGE_CHARS
 			? `${reference.text.slice(0, MAX_MESSAGE_CHARS)}\n[message truncated]`
 			: reference.text
-	return `${OPEN}thread_id="${escapeAttr(reference.threadId)}" thread_title="${escapeAttr(reference.threadTitle)}" author="${author}">\n${body.split(CLOSE).join(ESCAPED_CLOSE)}\n${CLOSE}`
+	let position = ""
+	if (reference.messageIndex !== undefined && Number.isSafeInteger(reference.messageIndex) && reference.messageIndex >= 0) {
+		position = ` message_index="${reference.messageIndex}"`
+		if (reference.toolCallId) position += ` tool_call_id="${escapeAttr(reference.toolCallId)}"`
+		else if (reference.block !== undefined && Number.isSafeInteger(reference.block)) position += ` block="${reference.block}"`
+	}
+	return `${OPEN}thread_id="${escapeAttr(reference.threadId)}" thread_title="${escapeAttr(reference.threadTitle)}" author="${author}"${position}>\n${body.split(CLOSE).join(ESCAPED_CLOSE)}\n${CLOSE}`
 }
 
 /** Prepends the blocks to the user's text (the way quote chips are), separated by blank lines. */
@@ -57,6 +67,12 @@ function readAttributes(openTag: string): Record<string, string> {
 		attributes[match[1]] = unescapeAttr(match[2])
 	}
 	return attributes
+}
+
+function readIndex(value: string | undefined): number | undefined {
+	if (!value || !/^\d+$/.test(value)) return undefined
+	const index = Number(value)
+	return Number.isSafeInteger(index) ? index : undefined
 }
 
 /**
@@ -75,6 +91,8 @@ export function parseMessageReferences(input: string): { text: string; reference
 		const close = openEnd === -1 ? -1 : input.indexOf(CLOSE, openEnd)
 		if (close === -1) break
 		const attributes = readAttributes(input.slice(start, openEnd))
+		const messageIndex = readIndex(attributes.message_index)
+		const block = readIndex(attributes.block)
 		references.push({
 			threadId: attributes.thread_id ?? "",
 			threadTitle: attributes.thread_title ?? "",
@@ -85,6 +103,9 @@ export function parseMessageReferences(input: string): { text: string; reference
 				.replace(/\n$/, "")
 				.split(ESCAPED_CLOSE)
 				.join(CLOSE),
+			...(messageIndex !== undefined ? { messageIndex } : {}),
+			...(messageIndex !== undefined && attributes.tool_call_id ? { toolCallId: attributes.tool_call_id } : {}),
+			...(messageIndex !== undefined && !attributes.tool_call_id && block !== undefined ? { block } : {}),
 		})
 		remaining += input.slice(cursor, start)
 		cursor = close + CLOSE.length

@@ -33,6 +33,19 @@ describe("message links in composer provenance", () => {
 		])
 	})
 
+	it("accepts -1 (position never stored) only on a verbatim reference", () => {
+		const links = messageLinkRefs({
+			messageLinks: [
+				{ threadId: "t1", messageIndex: -1, threadTitle: "Dev plan", author: "user", text: "Cap exports" },
+				{ threadId: "t2", messageIndex: -1 },
+				{ threadId: "t3", messageIndex: -2, text: "Too low" },
+			],
+		})
+		expect(links).toEqual([
+			{ threadId: "t1", messageIndex: -1, text: "Cap exports", threadTitle: "Dev plan", author: "user" },
+		])
+	})
+
 	it("keeps a message-link-only provenance without authorizing any thread", () => {
 		const normalized = normalizeProvenance({ authorizedThreadIds: [], messageLinks: [{ threadId: "t1", messageIndex: 1 }] })
 		expect(normalized?.messageLinks).toEqual([{ threadId: "t1", messageIndex: 1 }])

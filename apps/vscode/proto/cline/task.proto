@@ -64,6 +64,8 @@ service TaskService {
   rpc buildMessageLink(BuildMessageLinkRequest) returns (MessageLink);
   // Resolves a message link back to its message (the paste -> quote chip path).
   rpc resolveMessageLink(ResolveMessageLinkRequest) returns (MessageLinkInfo);
+  // Opens a linked message: shows its thread scrolled to it (a sent message's tag).
+  rpc openMessageLink(ResolveMessageLinkRequest) returns (Empty);
 }
 
 // Request message for creating a new task

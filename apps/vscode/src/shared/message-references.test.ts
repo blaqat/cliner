@@ -59,6 +59,23 @@ describe("message references", () => {
 		expect(parseMessageReferences(broken)).toEqual({ text: broken, references: [] })
 	})
 
+	it("keeps where the message is, so the sent chip can open it scrolled to the message", () => {
+		const block = formatMessageReference({ ...ref, messageIndex: 4, toolCallId: "call_1", block: 2 })
+		// A tool call id wins over the block ordinal, as in links.
+		expect(block).toContain('message_index="4" tool_call_id="call_1">')
+		expect(block).not.toContain("block=")
+		expect(parseMessageReferences(`${block}\n\nhi`).references).toEqual([{ ...ref, messageIndex: 4, toolCallId: "call_1" }])
+		const byBlock = formatMessageReference({ ...ref, messageIndex: 0, block: 1 })
+		expect(parseMessageReferences(byBlock).references).toEqual([{ ...ref, messageIndex: 0, block: 1 }])
+	})
+
+	it("leaves the position out when it isn't known, and ignores a malformed one", () => {
+		expect(formatMessageReference({ ...ref, messageIndex: -1 })).not.toContain("message_index")
+		const malformed =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user" message_index="x" block="1">\nCap exports\n</message_reference>'
+		expect(parseMessageReferences(malformed).references).toEqual([ref])
+	})
+
 	it("labels chips like the composer does", () => {
 		expect(messageReferenceSource(ref)).toBe("You · Dev plan")
 		expect(messageReferenceSource({ author: "assistant", threadTitle: "" })).toBe("Cline")

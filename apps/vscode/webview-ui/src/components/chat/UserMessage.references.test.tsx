@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import UserMessage from "./UserMessage"
 
 const editMessageAndRegenerate = vi.fn()
+const openMessageLink = vi.fn()
+const openTask = vi.fn()
 
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
@@ -16,9 +18,12 @@ vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
 		buildMessageLink: vi.fn(),
 		editMessageAndRegenerate: (request: unknown) => editMessageAndRegenerate(request),
+		openMessageLink: (request: unknown) => openMessageLink(request),
 	},
 	CheckpointsServiceClient: { checkpointExistsForMessage: vi.fn(() => Promise.resolve({ value: false })) },
 }))
+
+vi.mock("@/components/inbox/sessionActions", () => ({ openTask: (id: string) => openTask(id) }))
 
 const REF = { threadId: "7_src", threadTitle: "Dev plan", author: "user" as const, text: "Cap exports at 10k rows" }
 const REF_2 = { threadId: "8_src", threadTitle: "Infra", author: "assistant" as const, text: "Use the queue." }
@@ -27,6 +32,8 @@ const RAW_BLOCK = `<message_reference thread_id="7_src" thread_title="Dev plan" 
 describe("UserMessage message tags", () => {
 	beforeEach(() => {
 		editMessageAndRegenerate.mockReset().mockResolvedValue({})
+		openMessageLink.mockReset().mockResolvedValue({})
+		openTask.mockReset().mockResolvedValue(undefined)
 		vi.stubGlobal(
 			"ResizeObserver",
 			class {
@@ -61,6 +68,41 @@ describe("UserMessage message tags", () => {
 		expect(document.body.textContent).not.toContain("thread_id")
 	})
 
+	it("is drawn in the bubble's text colour, not link blue (which vanishes on the bubble)", () => {
+		render(<UserMessage messageReferences={[REF]} messageTs={5} text="use this" />)
+		const chip = screen.getByTestId("message-tag")
+		expect(chip).toHaveClass("border-current/35", "bg-black/20")
+		expect(chip).not.toHaveClass("border-link/40")
+	})
+
+	it("opens the linked message, scrolled to it, on click", () => {
+		render(
+			<UserMessage messageReferences={[{ ...REF, messageIndex: 4, toolCallId: "call_1" }]} messageTs={5} text="use this" />,
+		)
+		fireEvent.click(screen.getByRole("button", { name: /^Message from You · Dev plan/ }))
+		expect(openMessageLink).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: "7_src", messageIndex: 4, toolCallId: "call_1" }),
+		)
+		expect(openTask).not.toHaveBeenCalled()
+		// Opening it never starts editing the bubble.
+		expect(screen.queryByRole("textbox")).toBeNull()
+	})
+
+	it("opens just the thread for a tag sent before references kept the message's position", () => {
+		render(<UserMessage messageReferences={[REF]} messageTs={5} text="use this" />)
+		fireEvent.click(screen.getByRole("button", { name: /^Message from You · Dev plan/ }))
+		expect(openTask).toHaveBeenCalledWith("7_src")
+		expect(openMessageLink).not.toHaveBeenCalled()
+	})
+
+	it("says where the message opens in its hover card", async () => {
+		render(<UserMessage messageReferences={[{ ...REF, messageIndex: 4 }]} messageTs={5} text="use this" />)
+		fireEvent.pointerEnter(screen.getByRole("button", { name: /^Message from You · Dev plan/ }))
+		fireEvent.click(await screen.findByTestId("message-tag-open"))
+		expect(screen.getByTestId("message-tag-open")).toHaveTextContent("Open in Dev plan")
+		expect(openMessageLink).toHaveBeenCalledWith(expect.objectContaining({ threadId: "7_src", messageIndex: 4 }))
+	})
+
 	it("hovering a chip does not open the editor", () => {
 		render(<UserMessage messageReferences={[REF]} messageTs={5} text="use this" />)
 		fireEvent.click(screen.getByTestId("message-reference-tags"))
@@ -86,10 +128,22 @@ describe("UserMessage message tags", () => {
 				threadTitle: "Dev plan",
 				author: "user",
 				text: "Cap exports at 10k rows",
+				// No stored position: -1 tells the host there is nothing to scroll to.
+				messageIndex: -1,
 			}),
 		])
 		// The tags were never put into the editable text, and they don't authorize any thread.
 		expect(request.provenance.authorizedThreadIds ?? []).toEqual([])
+	})
+
+	it("keeps a tag's message position when resending it", async () => {
+		render(<UserMessage messageReferences={[{ ...REF, messageIndex: 4, block: 1 }]} messageTs={5} text="use this" />)
+		fireEvent.click(screen.getByRole("button", { name: "Edit and regenerate from this message" }))
+		fireEvent.click(screen.getByRole("button", { name: "Reset Chat" }))
+		await waitFor(() => expect(editMessageAndRegenerate).toHaveBeenCalled())
+		expect(editMessageAndRegenerate.mock.calls[0][0].provenance.messageLinks).toEqual([
+			expect.objectContaining({ threadId: "7_src", messageIndex: 4, block: 1 }),
+		])
 	})
 
 	it("drops a tag the user removes while editing", async () => {

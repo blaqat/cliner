@@ -95,7 +95,7 @@ describe("message tags attach one message as context", () => {
 		await controller.askResponse("use this", undefined, undefined, undefined, { messageLinks: [tag] })
 		const sent = send.mock.calls[0][2] as string
 		expect(sent).toBe(
-			'<message_reference thread_id="7_src" thread_title="Title 7_src" author="assistant">\nAll fixed.\n</message_reference>\n\nuse this',
+			'<message_reference thread_id="7_src" thread_title="Title 7_src" author="assistant" message_index="3" tool_call_id="call_done">\nAll fixed.\n</message_reference>\n\nuse this',
 		)
 	})
 
@@ -120,9 +120,20 @@ describe("message tags attach one message as context", () => {
 			messageLinks: [{ threadId: "7_src", messageIndex: 0, threadTitle: "Dev plan", author: "user", text: "Cap exports" }],
 		})
 		expect(send.mock.calls[0][2]).toBe(
-			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports\n</message_reference>\n\nedited',
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user" message_index="0">\nCap exports\n</message_reference>\n\nedited',
 		)
 		expect(controller.taskHistory.readSessionMessages).not.toHaveBeenCalled()
+	})
+
+	it("resends a verbatim reference whose position was never stored without one", async () => {
+		const { controller, send } = followUpController()
+		controller.taskHistory.readSessionMessages = vi.fn(async () => [])
+		await controller.askResponse("edited", undefined, undefined, undefined, {
+			messageLinks: [{ threadId: "7_src", messageIndex: -1, threadTitle: "Dev plan", author: "user", text: "Cap exports" }],
+		})
+		expect(send.mock.calls[0][2]).toBe(
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports\n</message_reference>\n\nedited',
+		)
 	})
 
 	it("skips a link that no longer resolves and still sends the text", async () => {

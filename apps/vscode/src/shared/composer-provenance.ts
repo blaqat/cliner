@@ -10,6 +10,7 @@ import type { ScriptValues } from "./scripts"
 /** A pasted message link attached to the message as context (the host resolves its text). */
 export interface MessageLinkRef {
 	threadId: string
+	/** -1 on a verbatim reference whose position was never stored (sent before references kept it). */
 	messageIndex: number
 	toolCallId?: string
 	block?: number
@@ -41,10 +42,11 @@ export function messageLinkRefs(provenance: ComposerProvenance | undefined): Mes
 	const refs: MessageLinkRef[] = []
 	for (const link of provenance?.messageLinks ?? []) {
 		if (typeof link?.threadId !== "string" || !link.threadId || link.threadId.length > 200) continue
-		if (!Number.isSafeInteger(link.messageIndex) || link.messageIndex < 0) continue
+		const text = link.text || undefined
+		// -1 is allowed only on a verbatim reference: its text is carried, its position was never stored.
+		if (!Number.isSafeInteger(link.messageIndex) || link.messageIndex < (text ? -1 : 0)) continue
 		const toolCallId = link.toolCallId || undefined
 		const block = toolCallId === undefined && Number.isSafeInteger(link.block) ? link.block : undefined
-		const text = link.text || undefined
 		const key = `${link.threadId}:${link.messageIndex}:${toolCallId ?? ""}:${block ?? ""}:${text ?? ""}`
 		if (seen.has(key)) continue
 		seen.add(key)

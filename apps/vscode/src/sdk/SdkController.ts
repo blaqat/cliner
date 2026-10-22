@@ -2140,6 +2140,10 @@ export class Controller {
 		for (const link of links) {
 			// A reference carried verbatim (an edited message resending the tags it already had)
 			// keeps its text: the linked message may be past the rewind point by now.
+			// The position goes into the block too, so the sent chip can scroll to the message.
+			// A verbatim reference whose position was never stored arrives as messageIndex -1.
+			const position =
+				link.messageIndex >= 0 ? { messageIndex: link.messageIndex, toolCallId: link.toolCallId, block: link.block } : {}
 			if (link.text) {
 				blocks.push(
 					formatMessageReference({
@@ -2147,6 +2151,7 @@ export class Controller {
 						threadTitle: link.threadTitle ?? "",
 						author: link.author === "user" ? "user" : "assistant",
 						text: link.text,
+						...position,
 					}),
 				)
 				continue
@@ -2159,9 +2164,11 @@ export class Controller {
 				if (info.text)
 					blocks.push(
 						formatMessageReference({
-							...info,
+							threadTitle: info.threadTitle,
+							text: info.text,
 							threadId: link.threadId,
 							author: info.author === "user" ? "user" : "assistant",
+							...position,
 						}),
 					)
 			} catch (error) {

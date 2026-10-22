@@ -152,6 +152,10 @@ const UserMessage: React.FC<UserMessageProps> = ({
 									messageLinks: editedReferences.map((reference) =>
 										MessageLinkRef.create({
 											threadId: reference.threadId,
+											// -1: sent before references kept their position, so there's nothing to scroll to.
+											messageIndex: reference.messageIndex ?? -1,
+											toolCallId: reference.toolCallId,
+											block: reference.block,
 											threadTitle: reference.threadTitle,
 											author: reference.author,
 											text: reference.text,
