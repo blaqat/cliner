@@ -11,9 +11,9 @@ import { countChanges, patchToDiffLines, type StopFile, splitInlineCode, stopFil
 /** Quick chips from the round 3 mockup; each fills the note box and stays editable. */
 export const QUICK_NOTES = ["Why this approach?", "Add a test for this.", "Rename for clarity."]
 
-/** A quick-note suggestion inside the note box: the composer's chip look (quote and message tags). */
+/** A quick-note suggestion inside the note box: quiet text until hovered, like the composer's icon buttons. */
 const CHIP_CLASS =
-	"inline-flex h-5 cursor-pointer items-center gap-1 rounded-xs border border-solid border-input-border bg-transparent px-1.5 text-[11px] text-description hover:border-border hover:bg-list-hover hover:text-foreground"
+	"inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border-0 bg-transparent px-1.5 text-[11px] text-description hover:bg-list-hover hover:text-foreground"
 
 /** Tallest the note box grows before it scrolls (about ten lines). */
 const NOTE_MAX_HEIGHT = 160
@@ -52,9 +52,9 @@ export function InlineCodeProse({ text, className }: { text: string; className?:
 }
 
 /**
- * A note box with quick chips, built like the chat composer: one bordered input that lights up
- * when focused, growing with the text, with its suggestions and Done inside the box. Used by each
- * stop and by the overall note. Esc or Cmd/Ctrl+Enter finishes.
+ * A note box with quick chips, as quiet as the quote note in the composer: a plain input box that
+ * doesn't light up when focused (the caret is enough), growing with the text, with its suggestions
+ * and Done inside. Used by each stop and by the overall note. Esc or Cmd/Ctrl+Enter finishes.
  */
 export function NoteEditor({
 	value,
@@ -81,9 +81,7 @@ export function NoteEditor({
 		element.style.height = `${Math.min(element.scrollHeight, NOTE_MAX_HEIGHT)}px`
 	}, [value])
 	return (
-		<div
-			className="mt-2 rounded-xs border border-solid border-input-border bg-input-background focus-within:border-(--vscode-focusBorder)"
-			data-testid="note-editor">
+		<div className="mt-2 rounded-xs border border-solid border-input-border bg-input-background" data-testid="note-editor">
 			<textarea
 				aria-label={label}
 				autoFocus
@@ -102,7 +100,7 @@ export function NoteEditor({
 				style={{ maxHeight: NOTE_MAX_HEIGHT }}
 				value={value}
 			/>
-			<div className="flex items-center gap-1 px-1.5 pb-1.5">
+			<div className="flex flex-wrap items-center gap-x-0.5 gap-y-0 px-1 pb-1">
 				{chips &&
 					QUICK_NOTES.map((text) => (
 						<button

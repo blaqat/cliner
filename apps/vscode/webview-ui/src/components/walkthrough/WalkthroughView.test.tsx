@@ -198,6 +198,8 @@ describe("WalkthroughView", () => {
 
 		const first = stop("Stop the request waiting")
 		fireEvent.click(within(first).getByRole("button", { name: "Add note" }))
+		// A quiet box like the composer's quote note: no focus highlight drawing attention to itself.
+		expect(within(first).getByTestId("note-editor").className).not.toContain("focus")
 		fireEvent.click(within(first).getByRole("button", { name: "Add a test for this" }))
 		expect(within(first).getByLabelText("Note on Stop the request waiting")).toHaveValue("Add a test for this.")
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
