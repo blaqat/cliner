@@ -32,3 +32,34 @@ export function suggestBranchTask({
 		.filter((group) => !group.branchSuggestionDismissed && hasBranch(group))
 		.sort((a, b) => b.updatedAt - a.updatedAt)[0]
 }
+
+const BRANCH_HINT_DISMISSED_KEY = "cline.taskBranchHintDismissed"
+// Holds this session's dismissals even where storage is unavailable.
+const sessionDismissed = new Set<string>()
+
+function dismissedBranchHints(): string[] {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(BRANCH_HINT_DISMISSED_KEY) ?? "[]")
+		return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []
+	} catch {
+		return []
+	}
+}
+
+/** The task page's "current branch isn't linked" hint, dismissed for this task and branch only. */
+export function isBranchHintDismissed(taskGroupId: string, branch: string): boolean {
+	const key = `${taskGroupId}\n${branch}`
+	return sessionDismissed.has(key) || dismissedBranchHints().includes(key)
+}
+
+export function dismissBranchHint(taskGroupId: string, branch: string): void {
+	const key = `${taskGroupId}\n${branch}`
+	sessionDismissed.add(key)
+	// Keep the list short: the newest dismissals win.
+	const next = [key, ...dismissedBranchHints().filter((entry) => entry !== key)].slice(0, 200)
+	try {
+		localStorage.setItem(BRANCH_HINT_DISMISSED_KEY, JSON.stringify(next))
+	} catch {
+		// Storage full or unavailable: the hint just comes back next time.
+	}
+}

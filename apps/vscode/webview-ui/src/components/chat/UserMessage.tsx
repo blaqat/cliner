@@ -1,6 +1,7 @@
 import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import { ComposerProvenance, Int64Request, MessageLinkRef } from "@shared/proto/cline/common"
 import { EditMessageAndRegenerateRequest } from "@shared/proto/cline/task"
+import { PencilIcon } from "lucide-react"
 import type React from "react"
 import { useEffect, useMemo, useState } from "react"
 import Thumbnails from "@/components/common/Thumbnails"
@@ -211,12 +212,13 @@ const UserMessage: React.FC<UserMessageProps> = ({
 			tabIndex={messageTs && !isEditing && !subagentView ? 0 : undefined}
 			title={messageTs && !isEditing && !subagentView ? "Edit and regenerate from here" : undefined}>
 			{messageTs && !isEditing && !subagentView && (
-				<>
+				// One small toolbar: both actions are 20px buttons with 12px icons, side by side.
+				<span className="absolute right-1.5 top-1.5 flex items-center gap-0.5 text-badge-foreground">
 					<Tooltip>
 						<TooltipContent side="left">Copy link to this message</TooltipContent>
 						<TooltipTrigger asChild>
-							<span className="absolute right-7 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 text-badge-foreground">
-								<MessageLinkButton messageTs={messageTs} />
+							<span className="flex size-5 items-center justify-center opacity-0 group-hover:opacity-80 hover:opacity-100">
+								<MessageLinkButton className="scale-100" iconClassName="size-3!" messageTs={messageTs} />
 							</span>
 						</TooltipTrigger>
 					</Tooltip>
@@ -225,17 +227,17 @@ const UserMessage: React.FC<UserMessageProps> = ({
 						<TooltipTrigger asChild>
 							<button
 								aria-label="Edit and regenerate from this message"
-								className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-1"
+								className="flex size-5 items-center justify-center opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-0"
 								onClick={(event) => {
 									event.stopPropagation()
 									startEditing()
 								}}
 								type="button">
-								<i className="codicon codicon-edit" />
+								<PencilIcon aria-hidden className="size-3" />
 							</button>
 						</TooltipTrigger>
 					</Tooltip>
-				</>
+				</span>
 			)}
 			{isEditing ? (
 				<div className="flex flex-col gap-2" onKeyDown={handleEditingKeyDown}>

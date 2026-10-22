@@ -10,6 +10,8 @@ interface MessageLinkButtonProps {
 	/** The row's ClineMessage.ts — the host maps it to a stable transcript index. */
 	messageTs: number
 	className?: string
+	/** Classes for the icon itself, e.g. to match a neighboring button's icon size. */
+	iconClassName?: string
 }
 
 const COPIED_TIMEOUT = 1500
@@ -38,7 +40,7 @@ async function writeClipboard(text: string): Promise<void> {
  * thread scrolled to this message. Pasted into the composer it becomes a
  * message tag (context connection, not a quote) holding just this message.
  */
-const MessageLinkButton = ({ messageTs, className }: MessageLinkButtonProps) => {
+const MessageLinkButton = ({ messageTs, className, iconClassName }: MessageLinkButtonProps) => {
 	const { currentTaskItem } = useExtensionState()
 	const [state, setState] = useState<"idle" | "busy" | "copied" | "failed">("idle")
 	const taskId = currentTaskItem?.id
@@ -71,11 +73,11 @@ const MessageLinkButton = ({ messageTs, className }: MessageLinkButtonProps) => 
 			title={state === "failed" ? "Couldn't copy link to this message" : "Copy link to this message"}
 			variant="icon">
 			{state === "copied" ? (
-				<CheckCheckIcon className="size-2" />
+				<CheckCheckIcon className={cn("size-2", iconClassName)} />
 			) : state === "failed" ? (
-				<TriangleAlertIcon className="size-2 text-error" />
+				<TriangleAlertIcon className={cn("size-2 text-error", iconClassName)} />
 			) : (
-				<LinkIcon className="size-2" />
+				<LinkIcon className={cn("size-2", iconClassName)} />
 			)}
 		</Button>
 	)

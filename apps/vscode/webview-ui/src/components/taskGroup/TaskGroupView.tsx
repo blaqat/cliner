@@ -12,11 +12,13 @@ import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { isLiveThreadStatus, type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
 import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
+import { dismissBranchHint, isBranchHintDismissed } from "./branchSuggestion"
 import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
 import { useSettleAll } from "./settleAll"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
@@ -88,6 +90,9 @@ interface TaskGroupViewProps {
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
 	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, taskHistory } = useExtensionState()
+	const navigation = useNavigationHistory()
+	// Bumped on dismiss so the hint (read from storage) re-renders away.
+	const [, setBranchHintDismissals] = useState(0)
 	const threadStatuses = useThreadStatuses()
 	const { details, missing, refresh, setDetails } = useTaskGroup(taskGroupId)
 	const [menuOpen, setMenuOpen] = useState(false)
@@ -275,7 +280,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					</div>
 					<TaskTagEditor className="mt-1.5" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
 				</div>
-				{!branchLinked && currentBranch && (
+				{!branchLinked && currentBranch && !isBranchHintDismissed(group.id, currentBranch) && (
 					<div
 						className="mx-4 mb-2 flex items-center gap-1.5 rounded-xs border border-dashed border-(--vscode-charts-green)/50 px-2 py-1 text-[11px] text-(--vscode-charts-green)"
 						data-testid="task-group-branch-hint">
@@ -286,6 +291,18 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						<Button onClick={() => addTag({ kind: "branch", value: currentBranch })} size="xs" variant="secondary">
 							Link branch
 						</Button>
+						<button
+							aria-label={`Dismiss: don't suggest linking ${currentBranch} to this task`}
+							className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
+							data-testid="task-group-branch-hint-dismiss"
+							onClick={() => {
+								dismissBranchHint(group.id, currentBranch)
+								setBranchHintDismissals((count) => count + 1)
+							}}
+							title="Dismiss"
+							type="button">
+							<span aria-hidden className="codicon codicon-close text-[12px]" />
+						</button>
 					</div>
 				)}
 				<section className="px-2">
@@ -356,6 +373,12 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 										noteNames={noteNames}
 										now={now}
 										onOpen={() => {
+											// Through the history layer, so Back returns here, not to the home screen
+											// the task page briefly passes through while the thread opens.
+											if (navigation) {
+												navigation.navigate({ kind: "thread", id: thread.threadId })
+												return
+											}
 											hideTaskGroupView()
 											void openTask(thread.threadId)
 										}}

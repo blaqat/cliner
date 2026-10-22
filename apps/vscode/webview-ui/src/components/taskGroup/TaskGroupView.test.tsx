@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
+const nav = vi.hoisted(() => ({ value: undefined as { navigate: ReturnType<typeof vi.fn> } | undefined }))
+vi.mock("@/components/navigation/NavigationHistoryContext", () => ({ useNavigationHistory: () => nav.value }))
 vi.mock("@/services/grpc-client", () => ({
 	TaskGroupServiceClient: {
 		getTaskGroup: (request: unknown) => mocks.getTaskGroup(request),
@@ -125,8 +127,9 @@ const FIXTURE = GetTaskGroupResponse.fromPartial({
 })
 
 const renderView = async () => {
-	render(<TaskGroupView now={NOW} taskGroupId="g1" />)
+	const result = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
 	await screen.findByTestId("task-group-title")
+	return result
 }
 
 describe("TaskGroupView", () => {
@@ -201,6 +204,19 @@ describe("TaskGroupView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "＋ New" }))
 		expect(navigate).toHaveBeenCalledTimes(2)
 		expect(consumeNewNoteRequest()).toBe(true)
+	})
+
+	it("opens a timeline thread through the history layer, so Back returns to the task", async () => {
+		nav.value = { navigate: vi.fn() }
+		try {
+			await renderView()
+			fireEvent.click(screen.getAllByTestId("task-group-timeline-row")[0])
+			expect(nav.value.navigate).toHaveBeenCalledWith({ kind: "thread", id: expect.any(String) })
+			// No direct open: that path passes through home and Back would land there.
+			expect(mocks.showTaskWithId).not.toHaveBeenCalled()
+		} finally {
+			nav.value = undefined
+		}
 	})
 
 	it("tells the task's story oldest first, subthreads right after their parent, with chips", async () => {
@@ -314,6 +330,23 @@ describe("TaskGroupView", () => {
 			}),
 		)
 		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
+	})
+
+	it("dismisses the branch hint for this task and branch, and it stays dismissed", async () => {
+		const stored = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => stored.get(key) ?? null,
+			setItem: (key: string, value: string) => stored.set(key, value),
+		})
+		const { unmount } = await renderView()
+		fireEvent.click(screen.getByTestId("task-group-branch-hint-dismiss"))
+		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
+		expect(mocks.updateTaskGroup).not.toHaveBeenCalled()
+		unmount()
+		await renderView()
+		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
+		expect(JSON.parse(stored.get("cline.taskBranchHintDismissed") ?? "[]")).toEqual(["g1\nfeature/PROJ-482-bulk-export"])
+		vi.unstubAllGlobals()
 	})
 
 	it("＋ tag adds a typed tag and × removes one", async () => {
