@@ -145,6 +145,44 @@ describe("buildThreadItems", () => {
 	})
 })
 
+describe("buildThreadItems with asides of asides", () => {
+	const history = [
+		item("root", 100),
+		item("time", 200, { parentTaskId: "root", task: "Aside: what time is" }),
+		item("again", 300, { parentTaskId: "root", task: "Aside: hello again" }),
+		item("deeper", 400, { parentTaskId: "again", task: "Aside: deeper" }),
+		item("deepest", 500, { parentTaskId: "deeper", task: "Aside: deepest" }),
+		item("later", 600, { parentTaskId: "root", task: "Aside: later" }),
+	]
+	const shape = (items: ReturnType<typeof buildThreadItems>) => items.map((it) => [it.id, it.depth, it.current])
+
+	it("stays rooted at the real Main from any depth, in tree order", () => {
+		const expected = [
+			["root", 0, false],
+			["time", 1, false],
+			["again", 1, false],
+			["deeper", 2, true],
+			["deepest", 3, false],
+			["later", 1, false],
+		]
+		expect(shape(buildThreadItems(history[3], history, {}))).toEqual(expected)
+		expect(buildThreadItems(history[4], history, {})[0]).toMatchObject({ kind: "main", id: "root", title: "Main" })
+	})
+
+	it("drops a closed aside with its asides, unless you're in one of them", () => {
+		const hidden = new Set(["again"])
+		expect(buildThreadItems(history[0], history, {}, hidden).map((it) => it.id)).toEqual(["root", "time", "later"])
+		expect(buildThreadItems(history[3], history, {}, hidden).map((it) => it.id)).toEqual([
+			"root",
+			"time",
+			"again",
+			"deeper",
+			"deepest",
+			"later",
+		])
+	})
+})
+
 describe("buildSubagentLineage", () => {
 	const root = item("root", 1, { task: "Refactor auth" })
 	const a = item("a", 2, { isSubagent: true, parentTaskId: "root", task: "explore-auth", subagentAccess: "read" })
