@@ -27,10 +27,13 @@ import {
 	carryOverReview,
 	discardUnplacedNotes,
 	dropStale,
+	type LineRange,
+	lineNoteEntry,
 	lineNoteKey,
 	loadReviewStore,
 	migrateRegeneratedReview,
 	notesToSend,
+	parseLineNoteKey,
 	type ReviewRecord,
 	type ReviewStore,
 	recoverUnplacedNotes,
@@ -119,7 +122,8 @@ export default function WalkthroughView({
 	const [menuOpen, setMenuOpen] = useState(false)
 	// One note box at a time: a stop's (N opens it) or a line's (＋ beside the line).
 	const [editingStopId, setEditingStopId] = useState<string>()
-	const [editingLine, setEditingLine] = useState<string>()
+	// The selection whose note box is open: its hunk, lines and the exact text picked.
+	const [editingLine, setEditingLine] = useState<{ fingerprint: string } & LineRange & { quote?: string }>()
 	const scroller = useRef<HTMLDivElement>(null)
 	// The stop J/K last moved to; cleared when the user scrolls, so keys follow what's on screen.
 	const keyedStop = useRef<string>()
@@ -297,22 +301,22 @@ export default function WalkthroughView({
 				collapsedHunks: { ...current.collapsedHunks, [hunk.fingerprint]: !current.collapsedHunks[hunk.fingerprint] },
 			})),
 		annotations: (hunk: WalkthroughHunk) => (walk?.annotations ?? []).filter((annotation) => annotation.hunkId === hunk.id),
-		lineNotes: (hunk: WalkthroughHunk): LineNotes => {
-			const keyFor = (line: number) => lineNoteKey(hunk, line)
-			const open = editingLine?.startsWith(`${hunk.fingerprint}:`)
-				? Number(editingLine.slice(hunk.fingerprint.length + 1))
-				: undefined
-			return {
-				get: (line) => record.lineNotes?.[keyFor(line)] ?? "",
-				set: (line, note) =>
-					updateRecord((current) => ({ ...current, lineNotes: { ...current.lineNotes, [keyFor(line)]: note } })),
-				editing: open,
-				onEdit: (line) => {
-					setEditingLine(line === undefined ? undefined : keyFor(line))
-					if (line !== undefined) setEditingStopId(undefined)
-				},
-			}
-		},
+		lineNotes: (hunk: WalkthroughHunk): LineNotes => ({
+			list: Object.entries(record.lineNotes ?? {}).flatMap(([key, value]) => {
+				const range = parseLineNoteKey(key)
+				return range?.fingerprint === hunk.fingerprint ? [{ ...range, ...lineNoteEntry(value) }] : []
+			}),
+			set: (range, note, quote) =>
+				updateRecord((current) => ({
+					...current,
+					lineNotes: { ...current.lineNotes, [lineNoteKey(hunk, range)]: { note, ...(quote ? { quote } : {}) } },
+				})),
+			editing: editingLine?.fingerprint === hunk.fingerprint ? editingLine : undefined,
+			onEdit: (range) => {
+				setEditingLine(range && { fingerprint: hunk.fingerprint, ...range })
+				if (range) setEditingStopId(undefined)
+			},
+		}),
 		openDiff: (fileId: string) => {
 			if (input) void run(async () => void (await TaskServiceClient.openWalkthroughDiff(request({ ...input, fileId }))))
 		},
@@ -421,7 +425,8 @@ export default function WalkthroughView({
 				(sum, hunk) =>
 					sum +
 					Object.entries(record.lineNotes ?? {}).filter(
-						([key, note]) => note.trim() && key.startsWith(`${hunk.fingerprint}:`),
+						([key, value]) =>
+							lineNoteEntry(value).note.trim() && parseLineNoteKey(key)?.fingerprint === hunk.fingerprint,
 					).length,
 				0,
 			)

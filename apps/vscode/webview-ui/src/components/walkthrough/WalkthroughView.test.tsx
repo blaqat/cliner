@@ -160,7 +160,12 @@ describe("WalkthroughView", () => {
 		const first = stop("Stop the request waiting")
 		expect(within(first).getAllByTestId("walkthrough-file")).toHaveLength(1)
 		expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
-		expect(within(first).getByText(/const csv = await buildCsv/).textContent).toMatch(/^−/)
+		// The sign sits beside the code (outside the selectable text), shown as − for removals.
+		expect(
+			within(first)
+				.getByText(/const csv = await buildCsv/)
+				.closest("[data-line-index]")?.textContent,
+		).toMatch(/^2−/)
 
 		// A binary file says why it can't be reverted.
 		const banner = stop("Banner past the cap")
@@ -260,16 +265,16 @@ describe("WalkthroughView", () => {
 		expect(lines[2]).toHaveTextContent("+ const job = await jobs.enqueue({ rows })")
 	})
 
-	it("numbers diff lines and takes a note on one line, which is sent with its hunk and line", async () => {
+	it("notes one line from its number, which is sent with its hunk and line", async () => {
 		const { onDone } = await renderPage()
 		const first = stop("Stop the request waiting")
 		expect(within(first).getAllByTestId("walkthrough-diff-line")[0]).toHaveTextContent(/^1/)
-		// The removed line 2 is the old file's: its button says so.
+		// The removed line 2 is the old file's: its number says so.
 		expect(within(first).getByRole("button", { name: "Note on old line 2" })).toBeInTheDocument()
 		fireEvent.click(within(first).getByRole("button", { name: "Note on line 2" }))
 		fireEvent.change(within(first).getByRole("textbox", { name: "Note on line 2" }), { target: { value: "UUID?" } })
 		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
-		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("You · L2UUID?")
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("You · line 2UUID?")
 		expect(screen.getByRole("button", { name: "Send 1 note" })).toBeEnabled()
 
 		// Folded once reviewed, the stop still counts it.
@@ -279,6 +284,32 @@ describe("WalkthroughView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }))
 		await waitFor(() => expect(onDone).toHaveBeenCalled())
 		expect(sent(mocks.send).lineNotes).toEqual([{ hunkId: "h1", line: 2, note: "UUID?" }])
+	})
+
+	it("notes a selection like quoting a message: every selected line, plus the exact text when partial", async () => {
+		const { onDone } = await renderPage()
+		const first = stop("Stop the request waiting")
+		const lines = within(first).getAllByTestId("walkthrough-diff-line")
+		// jsdom has no layout; the button only needs some rectangle to sit under.
+		Range.prototype.getBoundingClientRect ??= () => new DOMRect(0, 0, 10, 10)
+		// Select from inside the removed line to inside the added one.
+		const range = document.createRange()
+		range.setStart(lines[1].lastChild?.firstChild as Node, 8)
+		range.setEnd(lines[2].lastChild?.firstChild as Node, 13)
+		window.getSelection()?.removeAllRanges()
+		window.getSelection()?.addRange(range)
+		fireEvent.mouseUp(within(first).getAllByTestId("walkthrough-diff")[0])
+		fireEvent.click(await within(first).findByTestId("walkthrough-note-selection"))
+		// Old line 2 to new line 2: one number, so it reads as one line.
+		const box = within(first).getByRole("textbox", { name: "Note on line 2" })
+		fireEvent.change(box, { target: { value: "Is enqueue awaited?" } })
+		fireEvent.click(within(first).getByRole("button", { name: "Done" }))
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("Is enqueue awaited?")
+		fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }))
+		await waitFor(() => expect(onDone).toHaveBeenCalled())
+		const [note] = sent(mocks.send).lineNotes
+		expect(note).toMatchObject({ hunkId: "h1", line: 1, endLine: 2, note: "Is enqueue awaited?" })
+		expect(note.quote).toContain("const job")
 	})
 
 	it("marks a stop reviewed from its number and brings the next unreviewed stop into view", async () => {

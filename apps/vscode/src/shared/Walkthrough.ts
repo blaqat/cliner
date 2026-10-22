@@ -46,10 +46,15 @@ export interface WalkthroughAnnotation {
 	turnId?: string
 }
 
-/** A reviewer's note on one line of a hunk (the line is an index into hunkBodyLines). */
+/** A reviewer's note on a selection inside one hunk (lines are indexes into hunkBodyLines). */
 export interface WalkthroughLineNote {
 	hunkId: string
+	/** First selected line. */
 	line: number
+	/** Last selected line; absent for a single line. */
+	endLine?: number
+	/** The exact text selected, when it wasn't whole lines. */
+	quote?: string
 	note: string
 }
 

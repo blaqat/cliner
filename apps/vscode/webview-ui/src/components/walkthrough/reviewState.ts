@@ -8,8 +8,8 @@ export interface StopReview {
 
 export interface ReviewRecord {
 	overallNote?: string
-	/** Notes on single diff lines, keyed by lineNoteKey. Hunks are the same in every layout, so these are shared. */
-	lineNotes?: Record<string, string>
+	/** Notes on selections inside a hunk, keyed by lineNoteKey. Hunks are the same in every layout, so these are shared. */
+	lineNotes?: Record<string, LineNoteEntry>
 	fallback?: StopReview
 	generated?: StopReview
 	authored?: StopReview
@@ -48,15 +48,45 @@ export function saveReviewStore(taskId: string, scope: WalkthroughScope, authore
 
 const filled = (notes: Record<string, string> = {}) => Object.values(notes).filter((note) => note.trim()).length
 
-/** A line note's key: the hunk's fingerprint (stable across layouts) and the body line. */
-export const lineNoteKey = (hunk: Pick<WalkthroughHunk, "fingerprint">, line: number) => `${hunk.fingerprint}:${line}`
+export interface LineNoteEntry {
+	note: string
+	/** The exact text selected, when it wasn't whole lines. */
+	quote?: string
+}
+
+/** Selected body lines of one hunk, first to last. */
+export interface LineRange {
+	start: number
+	end: number
+}
+
+/** A line note's key: the hunk's fingerprint (stable across layouts) and the selected body lines. */
+export const lineNoteKey = (hunk: Pick<WalkthroughHunk, "fingerprint">, range: LineRange) =>
+	`${hunk.fingerprint}:${range.start}-${range.end}`
+
+/** Splits a key back into its hunk and lines (also reads a single-line `fingerprint:line`). */
+export function parseLineNoteKey(key: string): ({ fingerprint: string } & LineRange) | undefined {
+	const split = key.lastIndexOf(":")
+	const match = /^(\d+)(?:-(\d+))?$/.exec(key.slice(split + 1))
+	if (split < 0 || !match) return undefined
+	const start = Number(match[1])
+	const end = match[2] === undefined ? start : Number(match[2])
+	return end >= start ? { fingerprint: key.slice(0, split), start, end } : undefined
+}
+
+/** Older builds stored the note text alone. */
+export const lineNoteEntry = (value: LineNoteEntry | string | undefined): LineNoteEntry =>
+	typeof value === "string" ? { note: value } : (value ?? { note: "" })
+
+const filledLineNotes = (notes: ReviewRecord["lineNotes"] = {}) =>
+	Object.values(notes).filter((value) => lineNoteEntry(value).note.trim()).length
 const marked = (reviewed: Record<string, boolean> = {}) => Object.values(reviewed).filter(Boolean).length
 
 export function hasContent(record: ReviewRecord | undefined): boolean {
 	if (!record) return false
 	return (
 		!!record.overallNote?.trim() ||
-		filled(record.lineNotes) > 0 ||
+		filledLineNotes(record.lineNotes) > 0 ||
 		[record.fallback, record.generated, record.authored].some(
 			(review) => filled(review?.notes) + marked(review?.reviewed) > 0,
 		)
@@ -74,7 +104,7 @@ export function summarizeStale(store: ReviewStore, fingerprint: string): { notes
 		if (key === fingerprint || key === previousLayoutKey(fingerprint) || !hasContent(record)) continue
 		notes +=
 			(record.overallNote?.trim() ? 1 : 0) +
-			filled(record.lineNotes) +
+			filledLineNotes(record.lineNotes) +
 			filled(record.fallback?.notes) +
 			filled(record.generated?.notes) +
 			filled(record.authored?.notes)
@@ -198,10 +228,10 @@ export function carryOverReview(store: ReviewStore, before: ChangeWalkthrough, a
 	if (hasContent({ [otherSource]: old[otherSource] })) lost = true
 	// Line notes follow their hunk when it is still there (a revert elsewhere leaves it untouched).
 	const surviving = new Set(after.hunks.map((hunk) => hunk.fingerprint))
-	const lineNotes: Record<string, string> = {}
-	for (const [key, note] of Object.entries(old.lineNotes ?? {})) {
-		if (!note.trim()) continue
-		if (surviving.has(key.slice(0, key.lastIndexOf(":")))) lineNotes[key] = note
+	const lineNotes: Record<string, LineNoteEntry> = {}
+	for (const [key, value] of Object.entries(old.lineNotes ?? {})) {
+		if (!lineNoteEntry(value).note.trim()) continue
+		if (surviving.has(parseLineNoteKey(key)?.fingerprint ?? "")) lineNotes[key] = lineNoteEntry(value)
 		else lost = true
 	}
 	const next: ReviewStore = { ...store }
@@ -225,7 +255,7 @@ export function notesToSend(
 	walk: ChangeWalkthrough,
 	review: StopReview,
 	overallNote: string | undefined,
-	lineNotes: Record<string, string> = {},
+	lineNotes: ReviewRecord["lineNotes"] = {},
 ) {
 	const stopIds = new Set(allStops(walk).map((stop) => stop.id))
 	const stopNotes = Object.fromEntries(
@@ -235,12 +265,18 @@ export function notesToSend(
 	)
 	const hunks = new Map(walk.hunks.map((hunk) => [hunk.fingerprint, hunk]))
 	const lines: WalkthroughLineNote[] = []
-	for (const [key, raw] of Object.entries(lineNotes)) {
-		const note = raw.trim()
-		const split = key.lastIndexOf(":")
-		const hunk = hunks.get(key.slice(0, split))
-		const line = Number(key.slice(split + 1))
-		if (note && hunk && Number.isSafeInteger(line)) lines.push({ hunkId: hunk.id, line, note })
+	for (const [key, value] of Object.entries(lineNotes)) {
+		const { note, quote } = lineNoteEntry(value)
+		const range = parseLineNoteKey(key)
+		const hunk = range && hunks.get(range.fingerprint)
+		if (!note.trim() || !range || !hunk) continue
+		lines.push({
+			hunkId: hunk.id,
+			line: range.start,
+			...(range.end > range.start ? { endLine: range.end } : {}),
+			...(quote?.trim() ? { quote: quote.trim() } : {}),
+			note: note.trim(),
+		})
 	}
 	// In page order: by hunk, then line.
 	const order = new Map(walk.hunks.map((hunk, index) => [hunk.id, index]))

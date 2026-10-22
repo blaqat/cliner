@@ -504,18 +504,20 @@ export function formatNotes(walk: ChangeWalkthrough, notes: WalkthroughNotes): s
 	for (const lineNote of (notes.lineNotes ?? []).slice(0, 100)) {
 		const hunk = walk.hunks.find((candidate) => candidate.id === lineNote.hunkId)
 		const note = typeof lineNote.note === "string" ? lineNote.note.trim() : ""
-		if (!hunk || hunk.synthetic || !note || !Number.isSafeInteger(lineNote.line)) continue
+		const first = lineNote.line
+		const last = lineNote.endLine ?? lineNote.line
+		if (!hunk || hunk.synthetic || !note || !Number.isSafeInteger(first) || !Number.isSafeInteger(last)) continue
 		const body = hunkBodyLines(hunk.patch)
-		if (lineNote.line < 0 || lineNote.line >= body.length) continue
+		if (first < 0 || last < first || last >= body.length) continue
 		const numbers = hunkLineNumbers(hunk)
-		// The line plus a little around it, so the agent can find it even if the file moved since.
-		const around = body
-			.slice(Math.max(0, lineNote.line - 2), lineNote.line + 3)
-			.map((line) => excerpt(line, 300))
-			.join("\n")
-		sections.push(
-			`${[`${hunk.path}:${numbers[lineNote.line]}${body[lineNote.line].startsWith("-") ? " (removed line)" : ""}`, ...around.split("\n")].map((line) => `> ${line}`).join("\n")}\n\n${excerpt(note, 4000)}`,
-		)
+		// The lines the reviewer selected, as diff lines (+/−), so the agent sees exactly what they meant.
+		const selected = body.slice(first, Math.min(last + 1, first + 60)).map((line) => excerpt(line, 300))
+		if (last + 1 - first > selected.length) selected.push(`[${last + 1 - first - selected.length} more lines]`)
+		const removed = body.slice(first, last + 1).every((line) => line.startsWith("-"))
+		const where = `${hunk.path}:${numbers[first]}${last > first ? `-${numbers[last]}` : ""}${removed ? ` (removed ${last > first ? "lines" : "line"})` : ""}`
+		const quote = typeof lineNote.quote === "string" && lineNote.quote.trim() ? excerpt(lineNote.quote.trim(), 1000) : ""
+		const quoted = [where, ...selected, ...(quote ? [`Selected: ${quote.replace(/\n/g, "\n  ")}`] : [])]
+		sections.push(`${quoted.map((line) => `> ${line}`).join("\n")}\n\n${excerpt(note, 4000)}`)
 	}
 	if (notes.overallNote?.trim()) sections.push(`Overall note:\n${excerpt(notes.overallNote.trim(), 8000)}`)
 	if (sections.length === 1) throw new Error("Add a note before sending")

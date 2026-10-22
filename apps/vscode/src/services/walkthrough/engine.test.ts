@@ -273,19 +273,23 @@ describe("walkthrough engine", () => {
 		)
 		expect(repaired.annotations).toEqual([{ hunkId: "h1", line: 1, text: "Why it changed.", kind: "why" }])
 	})
-	it("sends a line note with its path, line number and the lines around it", () => {
-		const walk = live()
+	it("sends a note on a selection with its path, line range and the selected lines", () => {
+		const walk = fallback("task", "thread", [], [{ ...change("api.ts"), before: "a\nb\nc\n", after: "a\nB\nC\nD\n" }])
+		const body = walk.hunks[0].patch.split("\n").slice(1)
+		const first = body.indexOf("+B")
 		const message = formatNotes(walk, {
 			stopNotes: {},
 			lineNotes: [
-				{ hunkId: "h1", line: 1, note: "Is this right?" },
+				{ hunkId: "h1", line: first, endLine: first + 1, note: "Why both?" },
+				{ hunkId: "h1", line: first + 2, quote: "D", note: "Just this" },
+				{ hunkId: "h1", line: 1, endLine: 0, note: "Backwards" },
 				{ hunkId: "h1", line: 99, note: "Out of range" },
 				{ hunkId: "nope", line: 0, note: "Unknown hunk" },
 			],
 		})
-		expect(message).toContain("> a.ts:1\n> -old\n> +new\n\nIs this right?")
-		expect(message).not.toContain("Out of range")
-		expect(message).not.toContain("Unknown hunk")
+		expect(message).toContain("> api.ts:2-3\n> +B\n> +C\n\nWhy both?")
+		expect(message).toContain("> api.ts:4\n> +D\n> Selected: D\n\nJust this")
+		for (const dropped of ["Backwards", "Out of range", "Unknown hunk"]) expect(message).not.toContain(dropped)
 	})
 	it("scales the timeout and caps it at five minutes", () => {
 		const walk = live()
