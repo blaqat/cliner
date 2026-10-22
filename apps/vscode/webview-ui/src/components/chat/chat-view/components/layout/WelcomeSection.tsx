@@ -13,7 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import HomeHeader from "@/components/welcome/HomeHeader"
 import { HomeSearchBar } from "@/components/welcome/HomeSearchBar"
 import { SuggestedTasks } from "@/components/welcome/SuggestedTasks"
-import CreateWorktreeModal from "@/components/worktrees/CreateWorktreeModal"
+import CreateWorktreeForm from "@/components/worktrees/CreateWorktreeForm"
 import { useClineAuth } from "@/context/ClineAuthContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useClinePassPromo } from "@/hooks/useClinePassPromo"
@@ -47,8 +47,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 	const [hasShownWhatsNewModal, setHasShownWhatsNewModal] = useState(false)
 	const [showWhatsNewModal, setShowWhatsNewModal] = useState(false)
 
-	// Quick launch worktree modal
-	const [showCreateWorktreeModal, setShowCreateWorktreeModal] = useState(false)
+	// Quick launch worktree form
+	const [showCreateWorktreeForm, setShowCreateWorktreeForm] = useState(false)
 	const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null)
 	const [currentWorktree, setCurrentWorktree] = useState<Worktree | null>(null)
 
@@ -327,9 +327,9 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 			/>
 			<div className="overflow-y-auto flex flex-col pb-2.5">
 				<HomeHeader shouldShowQuickWins={shouldShowQuickWins} />
+				<HomeSearchBar onOpenSearch={onOpenSearch} />
 				{!showWhatsNewModal && (
 					<>
-						<HomeSearchBar onOpenSearch={onOpenSearch} />
 						<BannerCarousel banners={activeBanners} />
 						{!shouldShowQuickWins && (taskHistory.length > 0 || taskGroups?.length > 0) && (
 							<InboxList onOpenTaskGroup={onOpenTaskGroup} showHistoryView={showHistoryView} />
@@ -342,7 +342,7 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 									<TooltipTrigger asChild>
 										<button
 											className="flex items-center gap-2 px-4 py-2 rounded-full border border-[var(--vscode-foreground)]/30 text-[var(--vscode-foreground)] bg-transparent hover:bg-[var(--vscode-list-hoverBackground)] active:opacity-80 text-sm font-medium cursor-pointer"
-											onClick={() => setShowCreateWorktreeModal(true)}
+											onClick={() => setShowCreateWorktreeForm(true)}
 											type="button">
 											<span className="codicon codicon-empty-window"></span>
 											New Worktree Window
@@ -385,10 +385,10 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 			</div>
 			<SuggestedTasks shouldShowQuickWins={shouldShowQuickWins} />
 
-			{/* Quick launch worktree modal */}
-			<CreateWorktreeModal
-				onClose={() => setShowCreateWorktreeModal(false)}
-				open={showCreateWorktreeModal}
+			{/* Quick launch worktree form */}
+			<CreateWorktreeForm
+				onClose={() => setShowCreateWorktreeForm(false)}
+				open={showCreateWorktreeForm}
 				openAfterCreate={true}
 			/>
 		</div>

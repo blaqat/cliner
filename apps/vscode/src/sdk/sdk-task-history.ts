@@ -5,8 +5,9 @@ import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
 import { resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
-import type { ClineMessage, ClineSaySubagentStatus } from "@shared/ExtensionMessage"
+import type { ClineMessage, ClineSaySubagentStatus, ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import type { TaskTag } from "@shared/task-groups"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
@@ -21,9 +22,11 @@ import {
 } from "./legacy-task-handling"
 import type { MessageIdMinter } from "./message-id-minter"
 import { sdkMessagesToClineMessages } from "./message-translator"
+import { lastTurnCompleted } from "./sdk-restored-status"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { readCurrentMessages } from "./session-host"
 import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
+import { clineMessagesToTranscript, sdkMessagesToTranscript, type TranscriptEntry } from "./task-groups/thread-transcript"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 export interface TaskUsage {
@@ -172,6 +175,9 @@ function historyItemToSessionHistoryRecord(item: HistoryItem): SessionHistoryRec
 		prompt: displayTask,
 		metadata: {
 			...historyItemToSessionMetadata({ ...item, task: displayTask }),
+			// Regular Cline has no settle flag: threads it left behind were never reviewed in the
+			// fork's inbox, so they start settled. Activity unsettles them (markTaskActive).
+			isSettled: item.isSettled ?? true,
 			legacyTask: true,
 		},
 		updatedAt: startedAt,
@@ -179,7 +185,7 @@ function historyItemToSessionHistoryRecord(item: HistoryItem): SessionHistoryRec
 }
 
 /** SdkMessage plus the plan/act mode recovered from its <user_input mode="..."> wrapper. */
-type SdkDisplayMessage = SdkMessage & { uiMode?: "plan" | "act" | "yolo" }
+type SdkDisplayMessage = SdkMessage & { uiMode?: "plan" | "act" | "yolo"; messageReferences?: MessageReferenceInfo[] }
 
 function parseUserMessageMode(content: SdkMessage["content"]): "plan" | "act" | "yolo" | undefined {
 	if (typeof content === "string") {
@@ -204,18 +210,26 @@ export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDi
 		// Recover the mode BEFORE display sanitization strips the <user_input mode="..."> wrapper;
 		// history rendering uses it to style each turn's inferred completion row.
 		const uiMode = parseUserMessageMode(message.content)
+		// Message tags are persisted as <message_reference> blocks in the user text. Pull them out
+		// before display formatting so the bubble can render them as chips instead of raw markup.
+		const messageReferences: MessageReferenceInfo[] = []
+		const display = (text: string) => {
+			const parsed = parseMessageReferences(text)
+			messageReferences.push(...parsed.references)
+			return formatDisplayUserInput(parsed.text)
+		}
+		const withReferences = () => (messageReferences.length > 0 ? { messageReferences } : {})
 		if (typeof message.content === "string") {
-			return { ...message, content: formatDisplayUserInput(message.content), uiMode }
+			return { ...message, content: display(message.content), uiMode, ...withReferences() }
 		}
 		if (Array.isArray(message.content)) {
 			return {
 				...message,
 				content: message.content.map((block) =>
-					block.type === "text" && typeof block.text === "string"
-						? { ...block, text: formatDisplayUserInput(block.text) }
-						: block,
+					block.type === "text" && typeof block.text === "string" ? { ...block, text: display(block.text) } : block,
 				),
 				uiMode,
+				...withReferences(),
 			}
 		}
 		return message
@@ -245,7 +259,11 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		id: item.sessionId,
 		ts: lastActivityTs,
 		lastActivityTs,
-		task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
+		// History lists a thread whenever its raw title/prompt is non-empty; fall back to it so the
+		// inbox never drops a thread whose display text formats down to nothing.
+		task:
+			formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? "") ||
+			(metadataString(metadata, "title") ?? item.prompt ?? ""),
 		tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
 		tokensOut: metadataNumber(metadata, "tokensOut") ?? 0,
 		subagentToolCalls: metadataNumber(metadata, "subagentToolCalls"),
@@ -254,7 +272,9 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 		size: metadataNumber(metadata, "size"),
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
-		isSettled: metadataBoolean(metadata, "isSettled") ?? false,
+		// Records written by regular Cline or an older fork build carry no settle flag. Nothing was
+		// left for the user to review, so an idle one is settled; only a running one stays open.
+		isSettled: metadataBoolean(metadata, "isSettled") ?? (item.status !== "running" && item.status !== "pending"),
 		settledAt: metadataNumber(metadata, "settledAt") || undefined,
 		parentTaskId: item.isSubagent
 			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
@@ -411,6 +431,7 @@ export class SdkTaskHistory {
 	}
 
 	async dispose(): Promise<void> {
+		await this.flushMetadataWrites()
 		this.disposed = true
 		this.invalidateMetadataHistoryCache()
 		if (this.cachedHistoryHostPromise) {
@@ -560,16 +581,14 @@ export class SdkTaskHistory {
 			this.options.getMinter?.(),
 			{
 				// Only retag the transcript's terminal text as an inferred completion when the
-				// session record says its last turn ended cleanly — status "completed", written
-				// by the SDK runtime host's resolveInteractiveStopStatus when the session is
-				// released (task switch, clear, extension dispose). Everything else stays a
-				// plain text row: "failed"/"cancelled" runs ended on a dangling response, and
-				// non-terminal statuses at rest ("idle"/"running"/"pending") mean the process
-				// died without recording an outcome — "idle" in particular is also the state
-				// after an aborted turn (markTurnIdle runs for every finish reason), so it
-				// cannot be trusted as a clean ending. A missing record is likewise an unknown
-				// outcome, so it gets no completion styling either.
-				finalTurnCompleted: sdkRecord?.status === "completed",
+				// session record says its last turn ended cleanly: status "completed" (written
+				// when the runtime host releases the session) or an "idle" record the extension
+				// marked done (a window reload skips the graceful release). Everything else stays
+				// a plain text row: "failed"/"cancelled" runs ended on a dangling response, and
+				// other non-terminal statuses at rest mean the process died without recording an
+				// outcome. A missing record is likewise an unknown outcome, so it gets no
+				// completion styling either.
+				finalTurnCompleted: !!sdkRecord && lastTurnCompleted(sdkRecord),
 				// Relativize the absolute tool paths for display, same as the live path.
 				cwd: sdkRecord?.cwd || sdkRecord?.workspaceRoot || undefined,
 			},
@@ -621,16 +640,17 @@ export class SdkTaskHistory {
 				const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
 					try {
 						const previous = JSON.parse(entry.text ?? "{}")
-						return previous.taskGroupId === payload.taskGroupId && previous.revision === payload.revision
+						return (
+							previous.taskGroupId === payload.taskGroupId &&
+							(status === "pending" ? previous.status === "pending" : previous.revision === payload.revision)
+						)
 					} catch {
 						return false
 					}
 				})
 				const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
 				metadata.notebookChangesMessages =
-					status !== "pending" && index >= 0
-						? saved.map((entry, i) => (i === index ? message : entry))
-						: [...saved, message]
+					index >= 0 ? saved.map((entry, i) => (i === index ? message : entry)) : [...saved, message]
 				await host.update(taskId, { metadata })
 			}),
 		)
@@ -673,7 +693,9 @@ export class SdkTaskHistory {
 	 */
 	async getSessionStatus(taskId: string): Promise<SessionHistoryRecord["status"] | undefined> {
 		const sdkRecord = await this.getSdkRecord(taskId).catch(() => undefined)
-		return sdkRecord?.status
+		// Same completion rule as the message rebuild, so the reopened thread's trailing ask
+		// (resume_completed_task vs resume_task) always matches its completion styling.
+		return sdkRecord && lastTurnCompleted(sdkRecord) ? "completed" : sdkRecord?.status
 	}
 
 	async getTaskMode(taskId: string): Promise<"plan" | "act" | undefined> {
@@ -767,9 +789,10 @@ export class SdkTaskHistory {
 				...historyItemToSessionMetadata(item, existing?.model),
 				// User-owned fields are changed only by their dedicated operations.
 				...Object.fromEntries(
-					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags"].map((key) => [
+					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags", "referencedThreadIds"].map((key) => [
 						key,
-						existing?.metadata?.[key] ?? (key === "tags" || key === "dismissedAutoTags" ? [] : ""),
+						existing?.metadata?.[key] ??
+							(key === "tags" || key === "dismissedAutoTags" || key === "referencedThreadIds" ? [] : ""),
 					]),
 				),
 				// History reads may predate live picker changes. Only explicit selection
@@ -965,6 +988,14 @@ export class SdkTaskHistory {
 		await this.updateTaskHistoryItem(item)
 	}
 
+	async flushMetadataWrites(): Promise<void> {
+		await Promise.allSettled([...this.selectionWrites.values()])
+	}
+
+	async saveThreadStatus(taskId: string, status: ExtensionState["sessionStatuses"][string]): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({ vscodeThreadStatus: status }))
+	}
+
 	private updateOwnedMetadata(
 		taskId: string,
 		update: (metadata: Record<string, unknown>) => Record<string, unknown> | undefined,
@@ -984,6 +1015,35 @@ export class SdkTaskHistory {
 		await this.updateOwnedMetadata(taskId, () => ({ threadTitle: title.trim() }))
 	}
 
+	/**
+	 * Title ownership flags for a thread: whether a title exists (user-set or
+	 * generated) and whether generation already ran once.
+	 */
+	async getThreadTitleState(taskId: string): Promise<{ hasTitle: boolean; generated: boolean }> {
+		const record = await this.getSdkRecord(taskId)
+		const metadata = record?.metadata
+		return {
+			hasTitle: !!metadataString(metadata, "threadTitle")?.trim(),
+			generated: metadataString(metadata, "threadTitleGenerated") === "true",
+		}
+	}
+
+	/**
+	 * Write a generated thread title — only while no title exists and the
+	 * one-shot flag is unset. Returns whether the write landed; a user-set
+	 * title or a previous generation both keep it from running twice.
+	 */
+	async applyGeneratedThreadTitle(taskId: string, title: string): Promise<boolean> {
+		let changed = false
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			if (metadataString(metadata, "threadTitle")?.trim()) return undefined
+			if (metadataString(metadata, "threadTitleGenerated") === "true") return undefined
+			changed = true
+			return { threadTitle: title.trim(), threadTitleGenerated: "true" }
+		})
+		return changed
+	}
+
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
 		const capturedTags = tags.map((tag) => ({ ...tag }))
 		const capturedDismissed = [...dismissedAutoTags]
@@ -992,6 +1052,50 @@ export class SdkTaskHistory {
 
 	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
 		await this.updateOwnedMetadata(taskId, () => ({ taskGroupId: taskGroupId || "" }))
+	}
+
+	/**
+	 * Records thread ids the user referenced via `thread:` mentions in this
+	 * conversation. The transcript tools (grep_threads/read_thread) refuse any
+	 * id not on this list — persisted so access survives session rebuilds.
+	 */
+	async addReferencedThreads(taskId: string, threadIds: string[]): Promise<void> {
+		const captured = [...new Set(threadIds)]
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const existing = metadataStringArray(metadata, "referencedThreadIds") ?? []
+			const next = [...new Set([...existing, ...captured])]
+			return next.length === existing.length ? undefined : { referencedThreadIds: next }
+		})
+	}
+
+	/** Thread ids the user has mentioned in this conversation (durable allow-list). */
+	async getReferencedThreads(taskId: string): Promise<string[]> {
+		const record = await this.getSdkRecord(taskId).catch(() => undefined)
+		return metadataStringArray(record?.metadata, "referencedThreadIds") ?? []
+	}
+
+	/**
+	 * A thread's transcript as numbered user/assistant entries for the
+	 * thread_transcript tools: live messages when the session is resident, the
+	 * persisted transcript otherwise, ui_messages for pre-SDK tasks.
+	 */
+	async readSessionTranscript(taskId: string): Promise<TranscriptEntry[]> {
+		const sdkRecord = await this.getSdkRecord(taskId)
+		const legacyTask = this.findLegacyTask(taskId)
+		if (!sdkRecord) {
+			return legacyTask ? clineMessagesToTranscript(readUiMessages(taskId, legacyTask.dataDir)) : []
+		}
+		const sdkMessages = await this.readSessionMessages(taskId)
+		return sdkMessagesToTranscript(sdkMessages)
+	}
+
+	/**
+	 * The thread's raw SDK transcript (live messages when resident, persisted
+	 * otherwise), unfiltered — indexes are positions in the session's messages
+	 * array, matching ClineMessage.sdkMessageIndex and message-link anchors.
+	 */
+	async readSessionMessages(taskId: string): Promise<SdkMessage[]> {
+		return (await this.withHistoryHost((host) => readCurrentMessages(host, taskId))) as SdkMessage[]
 	}
 
 	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {

@@ -3,6 +3,7 @@ export const featureSettingControlId = (featureId: string) => `${featureSettingE
 
 export const SETTINGS_NAVIGATION_TARGETS = {
 	"api-config": { tabId: "api-config" },
+	profiles: { tabId: "profiles" },
 	features: { tabId: "features" },
 	subagents: { tabId: "subagents" },
 	checkpoints: {
@@ -10,6 +11,7 @@ export const SETTINGS_NAVIGATION_TARGETS = {
 		elementId: featureSettingElementId("checkpoints"),
 		focusElementId: featureSettingControlId("checkpoints"),
 	},
+	worktrees: { tabId: "features", elementId: "worktree-features" },
 	terminal: { tabId: "terminal" },
 	general: { tabId: "general" },
 	about: { tabId: "about" },

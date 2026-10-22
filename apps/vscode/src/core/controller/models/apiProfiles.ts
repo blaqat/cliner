@@ -74,6 +74,21 @@ export interface ApiProfileStore {
 	getSecretForKey: StateManager["getSecretForKey"]
 	setSecretsForKeys: StateManager["setSecretsForKeys"]
 	listSecretStorageKeys: StateManager["listSecretStorageKeys"]
+	trackOperation?: StateManager["trackOperation"]
+}
+
+// Saves and deletes read the list, await secret writes, then replace the list.
+// Run them one at a time per store so neither works from a stale list.
+const configurationMutations = new WeakMap<object, Promise<unknown>>()
+
+function serializeConfigurationMutation<T>(stateManager: ApiProfileStore, mutate: () => Promise<T>): Promise<T> {
+	const previous = configurationMutations.get(stateManager) ?? Promise.resolve()
+	const run = previous.then(mutate, mutate)
+	configurationMutations.set(
+		stateManager,
+		run.catch(() => {}),
+	)
+	return stateManager.trackOperation ? stateManager.trackOperation(run) : run
 }
 
 const PROFILE_PROVIDER_NAMES: Partial<Record<ApiProvider, string>> = {
@@ -129,11 +144,11 @@ export function readProfileSecrets(
 	return secrets as Partial<Secrets>
 }
 
-export function writeProfileSecrets(
+export async function writeProfileSecrets(
 	stateManager: Pick<ApiProfileStore, "setSecretsForKeys">,
 	profileId: string,
 	secrets: Record<string, string | undefined>,
-): void {
+): Promise<void> {
 	const entries: Record<string, string | undefined> = {}
 	for (const [key, value] of Object.entries(secrets)) {
 		if (!isSecretKey(key)) {
@@ -141,13 +156,13 @@ export function writeProfileSecrets(
 		}
 		entries[profileSecretStorageKey(profileId, key)] = value || undefined
 	}
-	stateManager.setSecretsForKeys(entries)
+	await stateManager.setSecretsForKeys(entries)
 }
 
-export function deleteProfileSecrets(
+export async function deleteProfileSecrets(
 	stateManager: Pick<ApiProfileStore, "listSecretStorageKeys" | "setSecretsForKeys">,
 	profileId: string,
-): void {
+): Promise<void> {
 	const prefix = `profile:${profileId}:`
 	const entries: Record<string, undefined> = {}
 	for (const key of stateManager.listSecretStorageKeys()) {
@@ -155,7 +170,7 @@ export function deleteProfileSecrets(
 			entries[key] = undefined
 		}
 	}
-	stateManager.setSecretsForKeys(entries)
+	await stateManager.setSecretsForKeys(entries)
 }
 
 function sanitizeProfileOptions(options: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -200,7 +215,11 @@ export interface SaveApiProfileInput {
  * profile the record is replaced and any provided secrets are merged into the
  * profile's secret scope; an absent `secrets` map leaves stored secrets intact.
  */
-export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: SaveApiProfileInput): ApiConfigProfile {
+export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: SaveApiProfileInput): Promise<ApiConfigProfile> {
+	return serializeConfigurationMutation(stateManager, () => upsertApiConfigProfileNow(stateManager, input))
+}
+
+async function upsertApiConfigProfileNow(stateManager: ApiProfileStore, input: SaveApiProfileInput): Promise<ApiConfigProfile> {
 	const provider = toLegacyApiProvider(input.provider?.trim() || "") as ApiProvider | undefined
 	if (!provider) {
 		throw new Error("provider is required")
@@ -214,10 +233,10 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
 	const id = existingIndex >= 0 ? profiles[existingIndex].id : (input.id?.trim() ?? "") || randomUUID()
 
 	if (existingIndex >= 0 && profiles[existingIndex].provider !== provider) {
-		deleteProfileSecrets(stateManager, id)
+		await deleteProfileSecrets(stateManager, id)
 	}
 	if (input.secrets) {
-		writeProfileSecrets(stateManager, id, input.secrets)
+		await writeProfileSecrets(stateManager, id, input.secrets)
 	}
 
 	const profile: ApiConfigProfile = {
@@ -237,7 +256,7 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
 		next.push(profile)
 	}
 	stateManager.setGlobalStateBatch({ apiConfigProfiles: next })
-	ensureApiConfigProfiles(stateManager)
+	await ensureApiConfigProfiles(stateManager)
 	for (const mode of ["plan", "act"] as const) {
 		if (stateManager.getGlobalStateKey(mode === "plan" ? "askProfileId" : "actProfileId") === id) {
 			// Refresh saved model/connection edits without resetting the current effort.
@@ -251,7 +270,11 @@ export function upsertApiConfigProfile(stateManager: ApiProfileStore, input: Sav
  * Delete a saved profile and its secrets, replacing affected assignments
  * before callers compare effective configurations. Keep at least one profile.
  */
-export function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId: string): boolean {
+export function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId: string): Promise<boolean> {
+	return serializeConfigurationMutation(stateManager, () => deleteApiConfigProfileNow(stateManager, profileId))
+}
+
+async function deleteApiConfigProfileNow(stateManager: ApiProfileStore, profileId: string): Promise<boolean> {
 	const profiles = readApiConfigProfiles(stateManager)
 	const next = profiles.filter((p) => p.id !== profileId)
 	if (next.length === profiles.length) {
@@ -260,9 +283,14 @@ export function deleteApiConfigProfile(stateManager: ApiProfileStore, profileId:
 	if (next.length === 0) {
 		throw new Error("Cannot delete the last saved configuration. Create another configuration first.")
 	}
-	deleteProfileSecrets(stateManager, profileId)
+	// Profiles point at configurations by id; deleting one would orphan them.
+	const usedBy = (stateManager.getGlobalStateKey("profiles") ?? []).filter((p) => p.configurationId === profileId)
+	if (usedBy.length > 0) {
+		throw new Error(`Used by ${usedBy.map((p) => `"${p.name}"`).join(", ")}. Change those profiles first.`)
+	}
+	await deleteProfileSecrets(stateManager, profileId)
 	stateManager.setGlobalStateBatch({ apiConfigProfiles: next })
-	ensureApiConfigProfiles(stateManager)
+	await ensureApiConfigProfiles(stateManager)
 	return true
 }
 
@@ -330,6 +358,15 @@ const profileConfigurations = new WeakSet<ApiConfiguration>()
 
 export function hasAssignedApiProfile(configuration: ApiConfiguration): boolean {
 	return profileConfigurations.has(configuration)
+}
+
+/** Resolve a standalone feature's explicit profile without changing Ask/Act assignments. */
+export function apiConfigurationForProfileId(store: ApiProfileStore, id: string, mode: Mode): ApiConfiguration {
+	const profile = readApiConfigProfiles(store).find((entry) => entry.id === id)
+	if (!profile) throw new Error(`No saved configuration with id "${id}"`)
+	const configuration = buildApiConfigurationFromProfile(profile, readProfileSecrets(store, id), mode) as ApiConfiguration
+	profileConfigurations.add(configuration)
+	return configuration
 }
 
 const modeSnapshots = new WeakMap<ApiConfiguration, Record<Mode, ApiConfiguration>>()
@@ -472,11 +509,11 @@ function profileSignature(profile: Omit<ApiConfigProfile, "id" | "name">, secret
  * Ask / Act respectively. Dangling or missing assignments are repaired to the
  * first profile so every mode always resolves to a saved configuration.
  */
-export function ensureApiConfigProfiles(stateManager: ApiProfileStore): {
+export async function ensureApiConfigProfiles(stateManager: ApiProfileStore): Promise<{
 	profiles: ApiConfigProfile[]
 	askProfileId?: string
 	actProfileId?: string
-} {
+}> {
 	const profiles = readApiConfigProfiles(stateManager)
 	let { askProfileId, actProfileId } = readApiProfileAssignments(stateManager)
 	const updates: Record<string, unknown> = {}
@@ -492,7 +529,7 @@ export function ensureApiConfigProfiles(stateManager: ApiProfileStore): {
 			name: PROFILE_PROVIDER_NAMES[ask.profile.provider] ?? ask.profile.provider,
 			...ask.profile,
 		}
-		writeProfileSecrets(stateManager, askProfile.id, ask.secrets)
+		await writeProfileSecrets(stateManager, askProfile.id, ask.secrets)
 
 		let actProfile = askProfile
 		if (!deduped) {
@@ -501,7 +538,7 @@ export function ensureApiConfigProfiles(stateManager: ApiProfileStore): {
 				name: PROFILE_PROVIDER_NAMES[act.profile.provider] ?? act.profile.provider,
 				...act.profile,
 			}
-			writeProfileSecrets(stateManager, actProfile.id, act.secrets)
+			await writeProfileSecrets(stateManager, actProfile.id, act.secrets)
 		}
 
 		const seeded = deduped ? [askProfile] : [askProfile, actProfile]

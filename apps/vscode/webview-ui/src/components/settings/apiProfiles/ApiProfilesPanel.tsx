@@ -1,11 +1,10 @@
 import type { OpenAiCompatibleApiType } from "@shared/api-profiles"
 import { EmptyRequest } from "@shared/proto/cline/common"
-import { AssignApiProfileRequest, DeleteApiProfileRequest } from "@shared/proto/cline/models"
-import { UpdateSettingsRequest } from "@shared/proto/cline/state"
-import { VSCodeButton, VSCodeDropdown, VSCodeOption } from "@vscode/webview-ui-toolkit/react"
+import { DeleteApiProfileRequest } from "@shared/proto/cline/models"
+import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import { useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { ModelsServiceClient, StateServiceClient } from "@/services/grpc-client"
+import { ModelsServiceClient } from "@/services/grpc-client"
 import ApiProfileEditor from "./ApiProfileEditor"
 import {
 	buildSaveRequest,
@@ -16,41 +15,20 @@ import {
 	type ProfileDraft,
 } from "./profileDraft"
 
-const MODES = [
-	{ mode: "plan", label: "Ask" },
-	{ mode: "act", label: "Act" },
-] as const
-
-type ProfileMode = (typeof MODES)[number]["mode"]
-
-const ModeBadge = ({ label }: { label: string }) => (
-	<span className="text-[10px] px-1.5 py-px rounded-full border border-solid border-(--vscode-badge-background) bg-(--vscode-badge-background) text-(--vscode-badge-foreground)">
-		{label}
-	</span>
-)
-
 const ApiProfilesPanel = () => {
-	const { apiConfigProfiles, askProfileId, actProfileId, planActSeparateModelsSetting } = useExtensionState()
+	const { apiConfigProfiles, profiles: namedProfiles } = useExtensionState()
 	const [draft, setDraft] = useState<ProfileDraft | undefined>(undefined)
 	const [isSaving, setIsSaving] = useState(false)
 	const [error, setError] = useState<string | undefined>(undefined)
 
 	const profiles = apiConfigProfiles ?? []
-	const assignedId: Record<ProfileMode, string | undefined> = { plan: askProfileId, act: actProfileId }
-	const modesUsing = (profileId: string | undefined) =>
-		profileId ? MODES.filter((m) => assignedId[m.mode] === profileId).map((m) => m.label) : []
-
-	const assign = async (mode: ProfileMode, profileId: string) => {
-		try {
-			// Per-mode keys only take effect when Ask and Act may differ.
-			if (!planActSeparateModelsSetting) {
-				await StateServiceClient.updateSettings(UpdateSettingsRequest.create({ planActSeparateModelsSetting: true }))
-			}
-			await ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode, profileId }))
-		} catch (err) {
-			console.error("Failed to assign API configuration:", err)
-		}
-	}
+	// Profiles (Settings › Profiles) run on these configurations; one in use cannot be deleted.
+	const profilesUsing = (configurationId: string | undefined) =>
+		configurationId
+			? (namedProfiles ?? [])
+					.filter((profile) => profile.configurationId === configurationId)
+					.map((profile) => profile.name)
+			: []
 
 	const openProfile = async (id: string) => {
 		setError(undefined)
@@ -80,7 +58,7 @@ const ApiProfilesPanel = () => {
 	}
 
 	const remove = async () => {
-		if (!draft?.id || modesUsing(draft.id).length > 0) {
+		if (!draft?.id || profilesUsing(draft.id).length > 0) {
 			return
 		}
 		try {
@@ -94,7 +72,6 @@ const ApiProfilesPanel = () => {
 	if (draft) {
 		return (
 			<ApiProfileEditor
-				assignedModes={modesUsing(draft.id)}
 				draft={draft}
 				error={error}
 				isSaving={isSaving}
@@ -106,38 +83,13 @@ const ApiProfilesPanel = () => {
 				onDelete={remove}
 				onDuplicate={() => setDraft(duplicateDraft(draft))}
 				onSave={save}
+				usedBy={profilesUsing(draft.id)}
 			/>
 		)
 	}
 
 	return (
 		<div className="flex flex-col gap-4">
-			<div>
-				<div className="font-medium mb-2">Modes</div>
-				<div className="flex flex-col gap-2">
-					{MODES.map(({ mode, label }) => {
-						const selected = assignedId[mode] ?? ""
-						return (
-							<div className="flex items-center gap-2" key={mode}>
-								<span className="w-14 text-sm">{label} uses</span>
-								<VSCodeDropdown
-									aria-label={`${label} configuration`}
-									className="flex-1"
-									key={`${mode}:${selected}:${profiles.map((p) => p.id).join(",")}`}
-									onChange={(e) => assign(mode, (e.target as HTMLSelectElement).value)}
-									value={selected}>
-									{profiles.map((profile) => (
-										<VSCodeOption key={profile.id} value={profile.id}>
-											{profile.name}
-										</VSCodeOption>
-									))}
-								</VSCodeDropdown>
-							</div>
-						)
-					})}
-				</div>
-			</div>
-
 			<div>
 				<div className="flex items-center mb-2">
 					<span className="font-medium flex-1">API Configurations</span>
@@ -152,7 +104,7 @@ const ApiProfilesPanel = () => {
 				<div className="flex flex-col gap-2">
 					{profiles.length === 0 && (
 						<p className="text-xs text-(--vscode-descriptionForeground)">
-							No configurations yet. Create one to choose what Ask and Act use.
+							No configurations yet. Create one, then use it in a profile.
 						</p>
 					)}
 					{profiles.map((profile) => (
@@ -163,9 +115,6 @@ const ApiProfilesPanel = () => {
 							type="button">
 							<div className="flex items-center gap-2">
 								<b>{profile.name}</b>
-								{modesUsing(profile.id).map((label) => (
-									<ModeBadge key={label} label={label} />
-								))}
 								<span className="flex-1" />
 								<span className="codicon codicon-chevron-right text-(--vscode-descriptionForeground)" />
 							</div>

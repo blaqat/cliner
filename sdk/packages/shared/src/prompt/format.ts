@@ -1,34 +1,29 @@
 export function formatFileContentBlock(path: string, content: string): string {
-	return `<file_content path="${path}">\n${content}\n</file_content>`;
+	return `<file_content path="${path}">\n${content}\n</file_content>`
 }
 
-export function formatUserInputBlock(
-	input: string,
-	mode: "act" | "plan" | "yolo" = "act",
-): string {
-	return `<user_input mode="${mode}">${input}</user_input>`;
+export function formatUserInputBlock(input: string, mode: "act" | "plan" | "yolo" = "act"): string {
+	return `<user_input mode="${mode}">${input}</user_input>`
 }
 
 export function formatUserCommandBlock(input: string, slash: string): string {
-	return `<user_command slash="${slash}">${input}</user_command>`;
+	return `<user_command slash="${slash}">${input}</user_command>`
 }
 
 // Mirrors exactly what formatUserInputBlock writes (lowercase tag, lowercase
 // mode values), but searches rather than anchors: persisted user content can
 // carry prepended <mode_notice> elements or trailing attachment blocks
 // around the wrapper.
-const USER_INPUT_MODE_RE = /<user_input\b[^>]*\bmode="(act|plan|yolo)"/;
+const USER_INPUT_MODE_RE = /<user_input\b[^>]*\bmode="(act|plan|yolo)"/
 
 /**
  * Recovers the agent mode a persisted user message was sent in from its
  * <user_input mode="..."> wrapper. Returns undefined when the input isn't
  * wrapped (plain text, user_command envelopes, older transcripts).
  */
-export function parseUserInputMode(
-	input?: string,
-): "act" | "plan" | "yolo" | undefined {
-	const match = USER_INPUT_MODE_RE.exec(input ?? "");
-	return match ? (match[1] as "act" | "plan" | "yolo") : undefined;
+export function parseUserInputMode(input?: string): "act" | "plan" | "yolo" | undefined {
+	const match = USER_INPUT_MODE_RE.exec(input ?? "")
+	return match ? (match[1] as "act" | "plan" | "yolo") : undefined
 }
 
 /**
@@ -38,19 +33,16 @@ export function parseUserInputMode(
  * prepareTurnInput delivers it to the model) and is hidden from transcript
  * display by stripModeNotices at display boundaries.
  */
-export function formatModeSwitchNotice(
-	from: "act" | "plan",
-	to: "act" | "plan",
-): string {
+export function formatModeSwitchNotice(from: "act" | "plan", to: "act" | "plan"): string {
 	// The internal "plan" mode is presented to users (and the model) as "Ask".
-	const label = (mode: "act" | "plan") => (mode === "plan" ? "Ask" : "Act");
-	return `<mode_notice>The user switched from ${label(from)} mode to ${label(to)} mode before sending this message.</mode_notice>`;
+	const label = (mode: "act" | "plan") => (mode === "plan" ? "Ask" : "Act")
+	return `<mode_notice>The user switched from ${label(from)} mode to ${label(to)} mode before sending this message.</mode_notice>`
 }
 
 export type ModeSwitchNotice = {
-	from: "act" | "plan";
-	to: "act" | "plan";
-};
+	from: "act" | "plan"
+	to: "act" | "plan"
+}
 
 /**
  * Tracks a user-initiated mode switch so the next user message can carry a
@@ -61,90 +53,76 @@ export type ModeSwitchNotice = {
  * changed.
  */
 export function createModeSwitchNoticeTracker() {
-	let pending: ModeSwitchNotice | null = null;
+	let pending: ModeSwitchNotice | null = null
 	return {
 		record(from: "act" | "plan", to: "act" | "plan"): void {
 			if (from === to) {
-				return;
+				return
 			}
 			if (pending) {
-				pending = pending.from === to ? null : { from: pending.from, to };
-				return;
+				pending = pending.from === to ? null : { from: pending.from, to }
+				return
 			}
-			pending = { from, to };
+			pending = { from, to }
 		},
 		consume(): ModeSwitchNotice | null {
-			const notice = pending;
-			pending = null;
-			return notice;
+			const notice = pending
+			pending = null
+			return notice
 		},
-	};
+	}
 }
 
-export type ModeSwitchNoticeTracker = ReturnType<
-	typeof createModeSwitchNoticeTracker
->;
+export type ModeSwitchNoticeTracker = ReturnType<typeof createModeSwitchNoticeTracker>
 
 export type UserCommandEnvelope = {
-	slash: string;
-	content: string;
-};
+	slash: string
+	content: string
+}
 
-function extractFullTagContent(
-	input: string,
-	tag: string,
-): { attrs: string; content: string } | undefined {
-	const trimmed = input.trim();
-	const match = new RegExp(
-		`^<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>$`,
-		"i",
-	).exec(trimmed);
+function extractFullTagContent(input: string, tag: string): { attrs: string; content: string } | undefined {
+	const trimmed = input.trim()
+	const match = new RegExp(`^<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>$`, "i").exec(trimmed)
 	if (!match) {
-		return undefined;
+		return undefined
 	}
 	return {
 		attrs: match[1] ?? "",
 		content: match[2] ?? "",
-	};
+	}
 }
 
 function readAttribute(attrs: string, key: string): string | undefined {
-	const match = new RegExp(`${key}="([^"]+)"`, "i").exec(attrs);
-	return match?.[1]?.trim() || undefined;
+	const match = new RegExp(`${key}="([^"]+)"`, "i").exec(attrs)
+	return match?.[1]?.trim() || undefined
 }
 
-export function parseUserCommandEnvelope(
-	input?: string,
-): UserCommandEnvelope | undefined {
+export function parseUserCommandEnvelope(input?: string): UserCommandEnvelope | undefined {
 	if (!input?.trim()) {
-		return undefined;
+		return undefined
 	}
-	const extracted = extractFullTagContent(input, "user_command");
+	const extracted = extractFullTagContent(input, "user_command")
 	if (!extracted) {
-		return undefined;
+		return undefined
 	}
-	const slash = readAttribute(extracted.attrs, "slash");
+	const slash = readAttribute(extracted.attrs, "slash")
 	if (!slash) {
-		return undefined;
+		return undefined
 	}
 	return {
 		slash,
 		content: extracted.content.trim(),
-	};
+	}
 }
 
 export function normalizeUserInput(input?: string): string {
-	if (!input?.trim()) return "";
-	let next = input.trim();
+	if (!input?.trim()) return ""
+	let next = input.trim()
 	for (const tag of ["user_input", "user_command"] as const) {
-		const extracted = xmlTagsRemoval(next, tag);
-		next = (
-			extracted !== next
-				? extracted
-				: next.replace(new RegExp(`<${tag}[^>]*>`, "g"), "")
-		).trim();
+		const extracted = xmlTagsRemoval(next, tag)
+		next = (extracted !== next ? extracted : next.replace(new RegExp(`<${tag}[^>]*>`, "g"), "")).trim()
 	}
-	return next;
+	return next
 }
 
 /**
@@ -155,77 +133,89 @@ export function normalizeUserInput(input?: string): string {
  * the notice before the model ever sees it.
  */
 export function stripModeNotices(input?: string): string {
-	if (!input?.trim()) return "";
-	return removeTagElements(input, "mode_notice").trim();
+	if (!input?.trim()) return ""
+	return removeTagElements(input, "mode_notice").trim()
 }
 
 // indexOf-based rather than a regex: a lazy dot-all pattern re-scans to the
 // end of the string from every unmatched opening tag, which is polynomial on
 // adversarial transcript content (CodeQL js/polynomial-redos).
 function removeTagElements(input: string, tag: string): string {
-	const open = `<${tag}>`;
-	const close = `</${tag}>`;
-	let result = input;
-	let start = result.indexOf(open);
+	const open = `<${tag}>`
+	const close = `</${tag}>`
+	let result = input
+	let start = result.indexOf(open)
 	while (start !== -1) {
-		const end = result.indexOf(close, start + open.length);
+		const end = result.indexOf(close, start + open.length)
 		if (end === -1) {
-			break;
+			break
 		}
-		result = result.slice(0, start) + result.slice(end + close.length);
-		start = result.indexOf(open, start);
+		result = result.slice(0, start) + result.slice(end + close.length)
+		start = result.indexOf(open, start)
 	}
-	return result;
+	return result
+}
+
+/**
+ * Removes the host-injected <message_reference ...> blocks (a message the user
+ * attached as context, content included). Like mode notices they are not
+ * user-typed text; hosts that want to show them parse them out first.
+ */
+export function stripMessageReferences(input?: string): string {
+	if (!input?.trim()) return ""
+	const open = "<message_reference "
+	const close = "</message_reference>"
+	let result = input
+	let start = result.indexOf(open)
+	while (start !== -1) {
+		const openEnd = result.indexOf(">", start)
+		const end = openEnd === -1 ? -1 : result.indexOf(close, openEnd)
+		if (end === -1) {
+			break
+		}
+		result = result.slice(0, start) + result.slice(end + close.length)
+		start = result.indexOf(open, start)
+	}
+	return result.trim()
 }
 
 export function formatDisplayUserInput(input?: string): string {
-	const normalized = stripModeNotices(normalizeUserInput(input));
-	const envelope = parseUserCommandEnvelope(input);
+	const normalized = stripMessageReferences(stripModeNotices(normalizeUserInput(input)))
+	const envelope = parseUserCommandEnvelope(input)
 	if (!envelope) {
-		return normalized;
+		return normalized
 	}
 	if (envelope.slash.toLowerCase() === "team") {
-		const prefix = "spawn a team of agents for the following task:";
-		const stripped = normalized.toLowerCase().startsWith(prefix)
-			? normalized.slice(prefix.length).trim()
-			: normalized;
-		return stripped ? `/team ${stripped}` : "/team";
+		const prefix = "spawn a team of agents for the following task:"
+		const stripped = normalized.toLowerCase().startsWith(prefix) ? normalized.slice(prefix.length).trim() : normalized
+		return stripped ? `/team ${stripped}` : "/team"
 	}
-	return normalized ? `/${envelope.slash} ${normalized}` : `/${envelope.slash}`;
+	return normalized ? `/${envelope.slash} ${normalized}` : `/${envelope.slash}`
 }
 
-export const SESSION_SEARCH_TITLE_MAX_LENGTH = 240;
-export const SESSION_SEARCH_PREVIEW_MAX_LENGTH = 480;
+export const SESSION_SEARCH_TITLE_MAX_LENGTH = 240
+export const SESSION_SEARCH_PREVIEW_MAX_LENGTH = 480
 
 function compactSessionSearchText(input: string, maxLength: number): string {
-	const compact = input.replace(/\s+/gu, " ").trim();
-	if (compact.length <= maxLength) return compact;
-	return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
+	const compact = input.replace(/\s+/gu, " ").trim()
+	if (compact.length <= maxLength) return compact
+	return `${compact.slice(0, maxLength - 1).trimEnd()}…`
 }
 
 export function formatSessionSearchTitle(input?: string): string {
-	return compactSessionSearchText(
-		formatDisplayUserInput(input),
-		SESSION_SEARCH_TITLE_MAX_LENGTH,
-	);
+	return compactSessionSearchText(formatDisplayUserInput(input), SESSION_SEARCH_TITLE_MAX_LENGTH)
 }
 
-export function formatSessionSearchPreview(
-	role: string,
-	input?: string,
-): string {
-	const trimmed = input?.trim() ?? "";
-	const normalizedRole = role.toLowerCase();
-	const display =
-		normalizedRole === "user" || normalizedRole === "session"
-			? formatDisplayUserInput(trimmed)
-			: trimmed;
-	return compactSessionSearchText(display, SESSION_SEARCH_PREVIEW_MAX_LENGTH);
+export function formatSessionSearchPreview(role: string, input?: string): string {
+	const trimmed = input?.trim() ?? ""
+	const normalizedRole = role.toLowerCase()
+	const display = normalizedRole === "user" || normalizedRole === "session" ? formatDisplayUserInput(trimmed) : trimmed
+	return compactSessionSearchText(display, SESSION_SEARCH_PREVIEW_MAX_LENGTH)
 }
 
 export function xmlTagsRemoval(input?: string, tag?: string): string {
-	if (!input?.trim()) return "";
-	if (!tag) return input;
-	const regex = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, "g");
-	return input.replace(regex, "$1");
+	if (!input?.trim()) return ""
+	if (!tag) return input
+	const regex = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, "g")
+	return input.replace(regex, "$1")
 }

@@ -2,6 +2,7 @@ import { getProviderAuthStorageId } from "@cline/core"
 import { createModeSwitchNoticeTracker, type ModeSwitchNotice, type ModeSwitchNoticeTracker } from "@cline/shared"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
+import { type ComposerProvenance, normalizeProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import { resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
@@ -67,7 +68,7 @@ export interface SdkModeCoordinatorOptions {
 	 * Approve/Reject buttons wired to an approval that was already denied.
 	 */
 	setTurnPhase: (phase: TurnPhase, anchorTs?: number) => void
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, provenance?: ComposerProvenance) => Promise<string>
 	/**
 	 * Called right before an auto-continue send kicks off a new turn. Mirrors
 	 * initTask/askResponse: moves the turn phase to "streaming" (footer shows
@@ -129,11 +130,22 @@ export class SdkModeCoordinator {
 		this.modeSwitchNoticeTracker.record(from, to)
 	}
 
-	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+	/**
+	 * `continueAnswer` is the answer's own Continue in Act button. A plain switch (the Ask/Act toggle,
+	 * its shortcut, /act) only continues an answer while the continueAnswerOnActSwitch setting is on;
+	 * off, it just changes the mode and leaves the draft in the composer.
+	 */
+	async togglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent?: ChatContent,
+		{ continueAnswer = false }: { continueAnswer?: boolean } = {},
+	): Promise<boolean> {
 		const currentMode = this.options.stateManager.getGlobalSettingsKey("mode")
 		if (currentMode === modeToSwitchTo) {
 			return false
 		}
+		const mayContinue =
+			continueAnswer || this.options.stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch") !== false
 
 		const activeSession = this.options.sessions.getActiveSession()
 		if (activeSession) {
@@ -152,7 +164,7 @@ export class SdkModeCoordinator {
 				!activeSession.isRunning &&
 				(turnPhase === "awaiting_followup" || turnPhase === "completed") &&
 				isAskAnswer(latestAssistantResult)
-			const autoContinue = modeToSwitchTo === "act" && planPresented
+			const autoContinue = modeToSwitchTo === "act" && planPresented && mayContinue
 			const userPrompt = chatContent?.message?.trim() || undefined
 			const userImages = chatContent?.images?.length ? chatContent.images : undefined
 			const userFiles = chatContent?.files?.length ? chatContent.files : undefined
@@ -160,6 +172,7 @@ export class SdkModeCoordinator {
 			const continuationSent = await this.rebuildSessionForMode(modeToSwitchTo, {
 				autoContinue,
 				userContinuationPrompt: autoContinue ? userPrompt : undefined,
+				userProvenance: autoContinue ? normalizeProvenance(chatContent?.provenance) : undefined,
 				userImages: autoContinue ? userImages : undefined,
 				userFiles: autoContinue ? userFiles : undefined,
 			})
@@ -170,7 +183,7 @@ export class SdkModeCoordinator {
 		this.options.stateManager.setGlobalState("mode", modeToSwitchTo)
 		const task = this.options.getTask()
 		const latestResult = latestModeResult(task?.messageStateHandler.getClineMessages() ?? [])
-		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && this.options.resumeInAct) {
+		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && mayContinue && this.options.resumeInAct) {
 			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
 			const sent = await this.options.resumeInAct(chatContent)
 			await this.options.postStateToWebview()
@@ -190,6 +203,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		} = {},
@@ -202,6 +217,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		},
@@ -335,7 +352,9 @@ export class SdkModeCoordinator {
 				this.options.onAutoContinueStarting()
 				// Resolve mentions before echoing so a resolution failure cannot
 				// leave an echoed-but-never-sent user message in the transcript.
-				const prompt = userPrompt ? await this.options.resolveContextMentions(userPrompt) : ACT_MODE_CONTINUATION_PROMPT
+				const prompt = userPrompt
+					? await this.options.resolveContextMentions(userPrompt, options.userProvenance)
+					: ACT_MODE_CONTINUATION_PROMPT
 				if (userPrompt || userImages?.length || userFiles?.length) {
 					const userMessage: ClineMessage = {
 						ts: Date.now(),

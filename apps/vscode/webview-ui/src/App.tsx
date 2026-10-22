@@ -8,6 +8,8 @@ import McpView from "./components/mcp/configuration/McpConfigurationView"
 import { openClinePassSubscriptionIfPending } from "./components/onboarding/clinePassSubscribe"
 import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
+import { ThreadToasts } from "./components/toasts/ThreadToasts"
+import WalkthroughView from "./components/walkthrough/WalkthroughView"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
 import { useExtensionState } from "./context/ExtensionStateContext"
@@ -27,6 +29,10 @@ const AppContent = () => {
 		showHistory,
 		showAccount,
 		showWorktrees,
+		showWalkthrough,
+		walkthroughAuthoredId,
+		currentTaskItem,
+		hideWalkthrough,
 		showAnnouncement,
 		setShowAnnouncement,
 		setShouldShowAnnouncement,
@@ -41,6 +47,9 @@ const AppContent = () => {
 	} = useExtensionState()
 
 	const { clineUser, organizations, activeOrganization } = useClineAuth()
+	useEffect(() => {
+		if (showWalkthrough && !currentTaskItem) hideWalkthrough()
+	}, [showWalkthrough, currentTaskItem, hideWalkthrough])
 
 	const showUpdateAnnouncementModal = useCallback(() => {
 		setShowAnnouncement(true)
@@ -77,7 +86,8 @@ const AppContent = () => {
 	}
 
 	return (
-		<div className="flex h-screen w-full flex-col">
+		<div className="relative flex h-screen w-full flex-col">
+			<ThreadToasts />
 			{showSettings && <SettingsView navigationRequest={settingsNavigationRequest} onDone={hideSettings} />}
 			{showHistory && <HistoryView onDone={hideHistory} />}
 			{showMarketplace && <MarketplaceView initialType={mcpTab ? "mcp" : undefined} onDone={closeMarketplaceView} />}
@@ -91,10 +101,20 @@ const AppContent = () => {
 				/>
 			)}
 			{showWorktrees && <WorktreesView onDone={hideWorktrees} />}
+			{showWalkthrough && currentTaskItem && (
+				<WalkthroughView
+					authoredId={walkthroughAuthoredId}
+					key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}
+					onDone={hideWalkthrough}
+					taskId={currentTaskItem.id}
+				/>
+			)}
 			{/* Do not conditionally load ChatView, it's expensive and there's state we don't want to lose (user input, disableInput, askResponse promise, etc.) */}
 			<ChatView
 				hideAnnouncement={hideAnnouncement}
-				isHidden={showSettings || showHistory || showMarketplace || showMcp || showAccount || showWorktrees}
+				isHidden={
+					showSettings || showHistory || showMarketplace || showMcp || showAccount || showWorktrees || showWalkthrough
+				}
 				showAnnouncement={showAnnouncement}
 				showHistoryView={navigateToHistory}
 			/>

@@ -2,6 +2,7 @@ import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -32,9 +33,6 @@ export function headerTitle(title: string | undefined, firstMessage: string | un
 	return (title?.trim() || firstMessage?.trim() || "New task").replace(/\s+/g, " ")
 }
 
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
-
 /**
  * One compact row: the breadcrumb path to this thread (home, task, ancestor
  * threads, then the renamable current title) and codicon actions — subagents,
@@ -43,8 +41,17 @@ const MENU_ITEM_CLASS =
  * in the composer. The thread's tags sit on a compact line below.
  */
 const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
-	const { currentBranch, currentTaskItem, environment, workspaceRoots, platform, sessionStatuses, taskHistory, taskGroups } =
-		useExtensionState()
+	const {
+		navigateToWalkthrough,
+		currentBranch,
+		currentTaskItem,
+		environment,
+		workspaceRoots,
+		platform,
+		sessionStatuses,
+		taskHistory,
+		taskGroups,
+	} = useExtensionState()
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [copied, setCopied] = useState(false)
 	// Shown until the saved title comes back through history.
@@ -159,6 +166,18 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 						</PopoverTrigger>
 						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
 							<div className="flex flex-col" role="menu">
+								<button
+									className={MENU_ITEM_CLASS}
+									disabled={!taskId}
+									onClick={() => {
+										setMenuOpen(false)
+										navigateToWalkthrough()
+									}}
+									role="menuitem"
+									type="button">
+									<span aria-hidden className="codicon codicon-diff text-[13px]" />
+									Walkthrough
+								</button>
 								<button
 									className={MENU_ITEM_CLASS}
 									disabled={!task.text}

@@ -5,7 +5,14 @@ import type {
 	SubagentExecutionStatus,
 } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { type SessionStatus, type SessionStatuses, statusFor } from "@/components/inbox/inboxUtils"
+import type { SessionStatus, SessionStatuses } from "@/components/inbox/inboxUtils"
+import {
+	buildThreadStatuses,
+	type ThreadStatus,
+	type ThreadStatuses,
+	threadStatusFor,
+	threadStatusLabel,
+} from "@/components/inbox/threadStatus"
 
 export type ThreadKind = "main" | "aside" | "subagent"
 
@@ -14,13 +21,17 @@ export interface ThreadItem {
 	/** Task id for main/aside; `<statusMessageTs>:<index>` for subagents. */
 	id: string
 	title: string
-	status: SessionStatus
+	status: ThreadStatus
+	/** Status tooltip when it says more than the status name ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	/** True for the chip of the focused task. */
 	current: boolean
 	access?: "read" | "write"
 	parentTaskId?: string
 	/** Older transcripts without a saved child record retain their inline preview. */
 	previewOnly?: boolean
+	/** Thread strip only: 0 for Main, 1 for its asides, 2+ for asides of asides. */
+	depth?: number
 }
 
 const SUBAGENT_STATUS: Record<SubagentExecutionStatus, SessionStatus> = {
@@ -32,6 +43,12 @@ const SUBAGENT_STATUS: Record<SubagentExecutionStatus, SessionStatus> = {
 }
 
 const ASIDE_PREFIX = /^Aside:\s*/i
+
+/** Derived status and its tooltip for a thread id. */
+function statusFields(statuses: ThreadStatuses, id: string): { status: ThreadStatus; statusLabel?: string } {
+	const statusLabel = threadStatusLabel(statuses[id])
+	return { status: threadStatusFor(statuses, id), ...(statusLabel ? { statusLabel } : {}) }
+}
 
 function parseJson<T>(text: string | undefined): T | undefined {
 	if (!text) {
@@ -109,9 +126,14 @@ export function collectSubagents(messages: readonly ClineMessage[]): ThreadItem[
 }
 
 /**
- * Chips for the human-made threads of the focused chat: Main and its asides.
- * Subagents live in the header's subagent panel instead. Returns [] when the
- * chat has no asides, or when a subagent thread is focused.
+ * Chips for the human-made threads of the focused chat: Main and its asides, at any depth.
+ * Subagents live in the header's subagent panel instead. Returns [] when the chat has no asides,
+ * or when a subagent thread is focused.
+ *
+ * Always rooted at the real Main (focusing an aside of an aside must not make its parent "Main"),
+ * in tree order: each aside, oldest first, is followed by its own asides, with `depth` set so the
+ * strip can group an aside with everything under it. A closed (hidden) aside drops with its
+ * asides, unless the focused thread is among them.
  */
 export function buildThreadItems(
 	focused: HistoryItem | undefined,
@@ -122,39 +144,54 @@ export function buildThreadItems(
 	if (!focused || focused.isSubagent) {
 		return []
 	}
-	const root = (focused.parentTaskId && history.find((item) => item.id === focused.parentTaskId)) || focused
+	const byId = new Map(history.map((item) => [item.id, item]))
+	byId.set(focused.id, byId.get(focused.id) ?? focused)
+	// Walk up through asides to the thread that has no (known, human) parent.
+	let root = focused
+	const seen = new Set([root.id])
+	for (let parent = root.parentTaskId ? byId.get(root.parentTaskId) : undefined; parent && !parent.isSubagent; ) {
+		if (seen.has(parent.id)) break
+		seen.add(parent.id)
+		root = parent
+		parent = root.parentTaskId ? byId.get(root.parentTaskId) : undefined
+	}
+	const children = new Map<string, HistoryItem[]>()
+	for (const item of byId.values()) {
+		if (item.isSubagent || !item.parentTaskId || item.id === root.id) continue
+		const list = children.get(item.parentTaskId) ?? []
+		list.push(item)
+		children.set(item.parentTaskId, list)
+	}
+	const derived = buildThreadStatuses(history, statuses)
+	const containsFocused = (id: string): boolean =>
+		id === focused.id || (children.get(id) ?? []).some((child) => containsFocused(child.id))
+
 	const items: ThreadItem[] = [
-		{ kind: "main", id: root.id, title: "Main", status: statusFor(statuses, root.id), current: root.id === focused.id },
+		{
+			kind: "main",
+			id: root.id,
+			title: "Main",
+			...statusFields(derived, root.id),
+			current: root.id === focused.id,
+			depth: 0,
+		},
 	]
-
-	const asides = history
-		.filter(
-			(item) =>
-				!item.isSubagent &&
-				(item.parentTaskId === root.id || item.parentTaskId === focused.id) &&
-				(!hiddenIds.has(item.id) || item.id === focused.id),
-		)
-		.sort((a, b) => a.ts - b.ts)
-	for (const aside of asides) {
-		items.push({
-			kind: "aside",
-			id: aside.id,
-			title: asideTitle(aside),
-			status: statusFor(statuses, aside.id),
-			current: aside.id === focused.id,
-		})
+	const visit = (parentId: string, depth: number, trail: Set<string>) => {
+		for (const aside of [...(children.get(parentId) ?? [])].sort((a, b) => a.ts - b.ts)) {
+			if (trail.has(aside.id)) continue
+			if (hiddenIds.has(aside.id) && !containsFocused(aside.id)) continue
+			items.push({
+				kind: "aside",
+				id: aside.id,
+				title: asideTitle(aside),
+				...statusFields(derived, aside.id),
+				current: aside.id === focused.id,
+				depth,
+			})
+			visit(aside.id, depth + 1, new Set(trail).add(aside.id))
+		}
 	}
-	// An aside that is not yet in the (possibly lagging) history list still gets a chip.
-	if (focused.id !== root.id && !asides.some((aside) => aside.id === focused.id)) {
-		items.push({
-			kind: "aside",
-			id: focused.id,
-			title: asideTitle(focused),
-			status: statusFor(statuses, focused.id),
-			current: true,
-		})
-	}
-
+	visit(root.id, 1, new Set([root.id]))
 	return items.length > 1 ? items : []
 }
 
@@ -221,7 +258,9 @@ export interface LineageRow {
 	/** Task id; `<statusMessageTs>:<index>` for an unsaved transcript preview. */
 	id: string
 	title: string
-	status: SessionStatus
+	status: ThreadStatus
+	/** Status tooltip when it says more than the status name ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	access?: "read" | "write"
 	/** Older transcripts without a saved child record; opens by scrolling to its status row. */
 	previewOnly?: boolean
@@ -257,18 +296,19 @@ export function buildSubagentLineage(
 	}
 	const parentId = focused.isSubagent ? (focused.parentTaskId ?? fallbackParentId) : undefined
 	const parentItem = parentId ? history.find((item) => item.id === parentId) : undefined
+	const derived = buildThreadStatuses(history, statuses)
 	const parent: LineageRow | undefined = parentId
 		? {
 				id: parentId,
 				title: parentItem ? (parentItem.isSubagent ? parentItem.task : asideTitleOrTask(parentItem)) : "Parent",
-				status: statusFor(statuses, parentId),
+				...statusFields(derived, parentId),
 				access: parentItem?.isSubagent ? (parentItem.subagentAccess ?? "read") : undefined,
 			}
 		: undefined
 	const current: LineageRow = {
 		id: focused.id,
 		title: focused.isSubagent ? focused.task : asideTitleOrTask(focused),
-		status: statusFor(statuses, focused.id),
+		...statusFields(derived, focused.id),
 		access: focused.isSubagent ? (focused.subagentAccess ?? "read") : undefined,
 		parentTaskId: parentId,
 	}
@@ -277,7 +317,7 @@ export function buildSubagentLineage(
 	const children: LineageRow[] = saved.map((child) => ({
 		id: child.id,
 		title: child.task,
-		status: statusFor(statuses, child.id),
+		...statusFields(derived, child.id),
 		access: child.subagentAccess ?? "read",
 		parentTaskId: focused.id,
 		toolCalls: child.subagentToolCalls,

@@ -18,7 +18,7 @@ service TaskGroupService {
   rpc getTaskGroup(GetTaskGroupRequest) returns (GetTaskGroupResponse);
   // Creates a task group; when thread_id is set the thread is filed into it
   rpc createTaskGroup(CreateTaskGroupRequest) returns (CreateTaskGroupResponse);
-  // Renames a task group and/or replaces its tags
+  // Renames a task group, replaces its tags and/or sets its branch-suggestion dismissal
   rpc updateTaskGroup(UpdateTaskGroupRequest) returns (TaskGroupSummary);
   // Deletes a task group; member threads are unfiled, never deleted
   rpc deleteTaskGroup(DeleteTaskGroupRequest) returns (Empty);
@@ -32,8 +32,12 @@ service TaskGroupService {
   rpc applyNotebookChanges(ApplyNotebookChangesRequest) returns (Empty);
   // Discards staged notebook changes for a thread
   rpc discardNotebookChanges(DiscardNotebookChangesRequest) returns (Empty);
+  // Notebook history, editor and conversion actions.
+  rpc notebookAction(NotebookActionRequest) returns (NotebookActionResponse);
   // Searches history across tasks, threads, notes and messages
   rpc searchHistory(SearchHistoryRequest) returns (SearchHistoryResponse);
+  // Lists notebook notes across every task group (the composer's `#` menu)
+  rpc listAllNotes(EmptyRequest) returns (AllTaskNotes);
 }
 
 // A tag on a task group or thread. kind is "ticket" | "branch" | "label";
@@ -54,6 +58,7 @@ message TaskGroup {
   repeated TaskTag tags = 3;
   int64 created_at = 4;
   int64 updated_at = 5;
+  bool branch_suggestion_dismissed = 6;
 }
 
 message TaskGroupSummary {
@@ -63,6 +68,8 @@ message TaskGroupSummary {
   int64 created_at = 4;
   int64 updated_at = 5;
   int32 note_count = 6;
+  // The user dismissed the composer's branch -> task suggestion for this task.
+  bool branch_suggestion_dismissed = 7;
 }
 
 message TaskGroupSummaryList {
@@ -129,6 +136,9 @@ message UpdateTaskGroupRequest {
   optional string title = 3;
   // When set, replaces the group's tags wholesale (including with an empty list).
   optional TaskTagList tags = 4;
+  // Sets or clears the dismissed flag of the composer's branch -> task suggestion.
+  // Does not change the group's updated_at.
+  optional bool branch_suggestion_dismissed = 5;
 }
 
 message DeleteTaskGroupRequest {
@@ -198,8 +208,38 @@ message SearchHistoryResult {
   int64 ts = 5;
   string task_group_id = 6;
   string thread_id = 7;
+  string author = 8; // message results: "you" | "agent"
 }
 
 message SearchHistoryResponse {
   repeated SearchHistoryResult results = 1;
+}
+
+message NotebookActionRequest {
+  Metadata metadata = 1;
+  string task_group_id = 2;
+  string slug = 3;
+  string action = 4; // history | restore | edit | restore_pending | retry_draft | reload_draft | discard_draft | convert_preview | convert | open_conversion
+  string thread_id = 5;
+  string revision = 6;
+  string version_id = 7;
+  string kind = 8; // rule | skill | workflow
+  bool is_global = 9;
+  string description = 10;
+}
+
+message NotebookActionResponse {
+  string json = 1;
+}
+
+// One task group's notebook notes, carrying the group title so the `#` menu
+// can label notes from other tasks without another lookup.
+message TaskGroupNotes {
+  string task_group_id = 1;
+  string task_group_title = 2;
+  repeated NotebookNoteMeta notes = 3;
+}
+
+message AllTaskNotes {
+  repeated TaskGroupNotes groups = 1;
 }

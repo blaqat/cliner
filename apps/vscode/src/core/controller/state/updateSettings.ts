@@ -4,6 +4,7 @@ import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsReque
 import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
 import { OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
+import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
@@ -12,6 +13,7 @@ import { telemetryService } from "../../../services/telemetry"
 import { BrowserSettings as SharedBrowserSettings } from "../../../shared/BrowserSettings"
 import { Controller } from ".."
 import { accountLogoutClicked } from "../account/accountLogoutClicked"
+import { applyThreadDefaultProfiles, findModelProfile, saveModelProfiles } from "../models/modelProfiles"
 import { normalizeProviderSwitchModel } from "../models/providerSwitchNormalization"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "../models/taskApiModel"
 
@@ -27,7 +29,7 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
 			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)
 		}
-		if (request.promptStash !== undefined) controller.stateManager.setGlobalState("promptStash", request.promptStash.entries)
+		if (request.promptStash !== undefined) await controller.stateManager.applyPromptStash(request.promptStash.entries)
 
 		if (request.clineEnv !== undefined && request.clineEnv !== "") {
 			ClineEnv.setEnvironment(request.clineEnv)
@@ -178,6 +180,90 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			}
 			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
 		}
+
+		// Profiles page: the profile list and the Thread defaults. Defaults are
+		// applied onto the per-mode selection new threads start from.
+		const profilesChanged = request.profiles !== undefined
+		const threadDefaultsChanged = [
+			request.threadDefaultProfileId,
+			request.threadSeparateAskActProfiles,
+			request.threadAskProfileId,
+			request.threadActProfileId,
+		].some((value) => value !== undefined)
+		if (profilesChanged) {
+			saveModelProfiles(controller.stateManager, request.profiles?.values ?? [])
+		}
+		for (const key of ["threadDefaultProfileId", "threadAskProfileId", "threadActProfileId"] as const) {
+			const id = request[key]
+			if (id === undefined) continue
+			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
+			controller.stateManager.setGlobalState(key, id || undefined)
+		}
+		if (request.threadSeparateAskActProfiles !== undefined) {
+			controller.stateManager.setGlobalState("threadSeparateAskActProfiles", request.threadSeparateAskActProfiles)
+		}
+		if (profilesChanged || threadDefaultsChanged) {
+			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
+			if (applyThreadDefaultProfiles(controller.stateManager)) {
+				const nextApiConfiguration = controller.stateManager.getApiConfiguration()
+				controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration)
+			}
+		}
+
+		// Features that run on a profile. Ids are profile ids; "parent" in
+		// the allowlist is the inherit option.
+		for (const key of ["subagentDefaultProfileId", "threadTitlesProfileId", "walkthroughGenerateProfileId"] as const) {
+			const id = request[key]
+			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
+		}
+		if (request.subagentProfilesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("subagentProfilesEnabled", request.subagentProfilesEnabled)
+		}
+		if (request.subagentDefaultProfileId !== undefined) {
+			controller.stateManager.setGlobalState("subagentDefaultModelProfileId", request.subagentDefaultProfileId || undefined)
+		}
+		// subagentReasoningEffort is a legacy setting this release only reads (the
+		// fallback for subagents inheriting the thread's model); profiles carry effort.
+		if (request.subagentAllowedProfileIds !== undefined) {
+			controller.stateManager.setGlobalState("subagentAllowedModelProfileIds", request.subagentAllowedProfileIds.values)
+		}
+		if (request.threadTitlesEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesEnabled", request.threadTitlesEnabled)
+		}
+		if (request.threadTitlesProfileId !== undefined) {
+			controller.stateManager.setGlobalState("threadTitlesModelProfileId", request.threadTitlesProfileId || undefined)
+		}
+		if (request.walkthroughGenerateProfileId !== undefined) {
+			controller.stateManager.setGlobalState(
+				"walkthroughGenerateModelProfileId",
+				request.walkthroughGenerateProfileId || undefined,
+			)
+		}
+
+		// Terminal environment arrives as a granular patch for one scope, applied
+		// to the freshest stored value so back-to-back edits cannot clobber each
+		// other. Workspace scope lives in per-workspace state so machine-local
+		// values stay out of the repo. Values are never logged.
+		if (request.terminalEnvironment !== undefined) {
+			const patch = request.terminalEnvironment
+			const isWorkspace = !!patch.workspace
+			const current = isWorkspace
+				? controller.stateManager.getWorkspaceStateKey("terminalEnvironment")
+				: controller.stateManager.getGlobalStateKey("terminalEnvironment")
+			const env = applyTerminalEnvironmentPatch(current, {
+				setVariables: patch.setVariables,
+				removeVariables: patch.removeVariables,
+				envFilePath: patch.envFilePath,
+				addPathEntries: patch.addPathEntries,
+				removePathEntries: patch.removePathEntries,
+			})
+			if (isWorkspace) {
+				controller.stateManager.setWorkspaceState("terminalEnvironment", env)
+			} else {
+				controller.stateManager.setGlobalState("terminalEnvironment", env)
+			}
+		}
+
 		if (
 			[
 				request.subagentsEnabled,
@@ -186,6 +272,10 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 				request.subagentsAllowCommands,
 				request.subagentsAllowMcp,
 				request.subagentsAllowWeb,
+				request.subagentProfilesEnabled,
+				request.subagentDefaultProfileId,
+				request.subagentAllowedProfileIds,
+				request.profiles,
 			].some((value) => value !== undefined)
 		) {
 			controller.handleSubagentSettingsChanged()
@@ -291,6 +381,19 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 
 		if (request.showFeatureTips !== undefined) {
 			controller.stateManager.setGlobalState("showFeatureTips", request.showFeatureTips)
+		}
+
+		if (request.threadToastsEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadToastsEnabled", request.threadToastsEnabled)
+		}
+		if (request.continueAnswerOnActSwitch !== undefined) {
+			controller.stateManager.setGlobalState("continueAnswerOnActSwitch", request.continueAnswerOnActSwitch)
+		}
+		if (request.threadToastSeconds !== undefined) {
+			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
+				throw new Error("Toast duration must be a whole number of seconds, at least 1.")
+			}
+			controller.stateManager.setGlobalState("threadToastSeconds", request.threadToastSeconds)
 		}
 
 		// Post updated state to webview

@@ -7,6 +7,7 @@
 import { isModelToolEnabledGlobally, readCompactionStrategyGlobally } from "@cline/core"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
 import type { ExtensionState, Platform } from "@shared/ExtensionMessage"
+import { maskTerminalEnvironmentScope } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo } from "@/registry"
 import { BannerService } from "@/services/banner/BannerService"
@@ -16,6 +17,7 @@ import { getExtensionVariant } from "@/services/telemetry/rollout-metadata"
 import { getLatestAnnouncementId } from "@/utils/announcements"
 import { readApiConfigProfiles, readApiProfileAssignments } from "../models/apiProfiles"
 import { getClineOnboardingModels } from "../models/getClineOnboardingModels"
+import { buildStateTaskHistory } from "./stateTaskHistory"
 
 /**
  * Builds the ExtensionState object to push to the webview.
@@ -89,10 +91,10 @@ export async function getStateToPostToWebview(controller: {
 	const clineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
 	const checkpointRestoreInput = controller.checkpointRestoreInput
 
-	const processedTaskHistory = (taskHistory || [])
-		.filter((item: any) => item.ts && item.task)
-		.sort((a: any, b: any) => b.ts - a.ts)
-		.slice(0, 100)
+	const processedTaskHistory = buildStateTaskHistory(
+		(taskHistory || []).filter((item: any) => item.ts && item.task).sort((a: any, b: any) => b.ts - a.ts),
+		[controller.task?.taskId],
+	)
 
 	const latestAnnouncementId = getLatestAnnouncementId()
 	const shouldShowAnnouncement = lastShownAnnouncementId !== latestAnnouncementId
@@ -133,6 +135,22 @@ export async function getStateToPostToWebview(controller: {
 		subagentsAllowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands"),
 		subagentsAllowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp"),
 		subagentsAllowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb"),
+		profiles: stateManager.getGlobalStateKey("profiles") ?? [],
+		threadDefaultProfileId: stateManager.getGlobalStateKey("threadDefaultProfileId"),
+		threadSeparateAskActProfiles: stateManager.getGlobalStateKey("threadSeparateAskActProfiles") ?? false,
+		threadAskProfileId: stateManager.getGlobalStateKey("threadAskProfileId"),
+		threadActProfileId: stateManager.getGlobalStateKey("threadActProfileId"),
+		subagentProfilesEnabled: stateManager.getGlobalStateKey("subagentProfilesEnabled"),
+		subagentDefaultProfileId: stateManager.getGlobalStateKey("subagentDefaultModelProfileId"),
+		subagentAllowedProfileIds: stateManager.getGlobalStateKey("subagentAllowedModelProfileIds"),
+		threadTitlesEnabled: stateManager.getGlobalStateKey("threadTitlesEnabled"),
+		threadTitlesProfileId: stateManager.getGlobalStateKey("threadTitlesModelProfileId"),
+		walkthroughGenerateProfileId: stateManager.getGlobalStateKey("walkthroughGenerateModelProfileId"),
+		// Names + masked placeholders only; values come from revealTerminalEnvironment.
+		terminalEnvironment: {
+			global: maskTerminalEnvironmentScope(stateManager.getGlobalStateKey("terminalEnvironment")),
+			workspace: maskTerminalEnvironmentScope(stateManager.getWorkspaceStateKey("terminalEnvironment")),
+		},
 
 		userInfo,
 		mcpMarketplaceEnabled,
@@ -197,6 +215,9 @@ export async function getStateToPostToWebview(controller: {
 		optOutOfRemoteConfig: stateManager.getGlobalSettingsKey("optOutOfRemoteConfig"),
 		remoteConfigAvailable: controller.isRemoteConfigAvailable ?? false,
 		showFeatureTips,
+		threadToastsEnabled: stateManager.getGlobalSettingsKey("threadToastsEnabled"),
+		threadToastSeconds: stateManager.getGlobalSettingsKey("threadToastSeconds"),
+		continueAnswerOnActSwitch: stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch"),
 		banners,
 		welcomeBanners,
 		openAiCodexIsAuthenticated,

@@ -5,6 +5,8 @@ import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton
 import { SubagentPanelButton } from "@/components/chat/task-header/SubagentPanel"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, stopSubagent } from "@/components/inbox/sessionActions"
+import { threadStatusLabel } from "@/components/inbox/threadStatus"
+import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { LineageRow } from "../../utils/threadUtils"
 
@@ -17,6 +19,9 @@ interface Props {
 /** Compact header of a subagent thread: back to parent, the prompt, Stop while live, and the lineage panel. */
 export function SubagentThreadHeader({ item, view, onOpenSubagentPreview }: Props) {
 	const live = view.status === "running" || view.status === "waiting"
+	// A subagent whose own turn ended can still be waiting on subagents it spawned.
+	const derived = useThreadStatuses()[item.id]
+	const status = view.status === "done" && derived?.status === "subagents" ? derived.status : view.status
 	const [stopState, setStopState] = useState<"idle" | "stopping" | "failed">("idle")
 	// A different subagent, or the child leaving its live state, resets the button.
 	useEffect(() => setStopState("idle"), [item.id, live])
@@ -28,7 +33,7 @@ export function SubagentThreadHeader({ item, view, onOpenSubagentPreview }: Prop
 		<div className="px-4 pt-2 pb-1" data-testid="subagent-thread-header">
 			<div className="flex h-7.5 items-center gap-1.5 rounded-xs border border-transparent pl-1 pr-1 bg-(--vscode-toolbar-hoverBackground)/40">
 				<HeaderIconButton icon="arrow-left" label="Back to parent" onClick={() => void openTask(view.parentTaskId)} />
-				<SessionStatusIcon status={view.status} />
+				<SessionStatusIcon label={status === "subagents" ? threadStatusLabel(derived) : undefined} status={status} />
 				<Tooltip>
 					<TooltipContent className="block max-w-sm p-2" side="bottom">
 						<div className="line-clamp-[12] whitespace-pre-wrap break-words">{item.task}</div>

@@ -7,6 +7,7 @@ import {
 	FlaskConical,
 	HardDriveDownload,
 	Info,
+	Layers,
 	type LucideIcon,
 	SlidersHorizontal,
 	SquareTerminal,
@@ -22,6 +23,7 @@ import { StateServiceClient } from "@/services/grpc-client"
 import { isAdminOrOwner } from "../account/helpers"
 import { Tab, TabContent, TabList, TabTrigger } from "../common/Tab"
 import ViewHeader from "../common/ViewHeader"
+import { useNavigationHistory } from "../navigation/NavigationHistoryContext"
 import SectionHeader from "./SectionHeader"
 import SettingsTargetHighlight from "./SettingsTargetHighlight"
 import AboutSection from "./sections/AboutSection"
@@ -29,6 +31,7 @@ import ApiConfigurationSection from "./sections/ApiConfigurationSection"
 import DebugSection from "./sections/DebugSection"
 import FeatureSettingsSection from "./sections/FeatureSettingsSection"
 import GeneralSettingsSection from "./sections/GeneralSettingsSection"
+import ProfilesSection from "./sections/ProfilesSection"
 import { RemoteConfigSection } from "./sections/RemoteConfigSection"
 import SubagentsSettingsSection from "./sections/SubagentsSettingsSection"
 import TerminalSettingsSection from "./sections/TerminalSettingsSection"
@@ -37,7 +40,16 @@ import { getNextSettingsNavigationRequestId, resolveSettingsTarget, type Setting
 const IS_DEV = process.env.IS_DEV
 
 // Tab definitions
-type SettingsTabID = "api-config" | "subagents" | "features" | "terminal" | "general" | "about" | "debug" | "remote-config"
+type SettingsTabID =
+	| "api-config"
+	| "profiles"
+	| "subagents"
+	| "features"
+	| "terminal"
+	| "general"
+	| "about"
+	| "debug"
+	| "remote-config"
 interface SettingsTab {
 	id: SettingsTabID
 	name: string
@@ -50,10 +62,17 @@ interface SettingsTab {
 const SETTINGS_TABS: SettingsTab[] = [
 	{
 		id: "api-config",
-		name: "API Configuration",
-		tooltipText: "API Configuration",
-		headerText: "API Configuration",
+		name: "Models",
+		tooltipText: "Models",
+		headerText: "Models",
 		icon: SlidersHorizontal,
+	},
+	{
+		id: "profiles",
+		name: "Profiles",
+		tooltipText: "Profiles",
+		headerText: "Profiles",
+		icon: Layers,
 	},
 	{
 		id: "features",
@@ -138,6 +157,7 @@ const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 	const TAB_CONTENT_MAP: Record<SettingsTabID, React.FC<any>> = useMemo(
 		() => ({
 			"api-config": ApiConfigurationSection,
+			profiles: ProfilesSection,
 			general: GeneralSettingsSection,
 			features: FeatureSettingsSection,
 			subagents: SubagentsSettingsSection,
@@ -201,6 +221,11 @@ const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 			console.error("Failed to reset state:", error)
 		}
 	}, [])
+
+	// Back history records settings sections as places.
+	const reportSettingsSection = useNavigationHistory()?.reportSettingsSection
+	useEffect(() => reportSettingsSection?.(activeTab), [reportSettingsSection, activeTab])
+	useEffect(() => () => reportSettingsSection?.(undefined), [reportSettingsSection])
 
 	// Update active tab and restart target emphasis for every navigation request.
 	useEffect(() => {

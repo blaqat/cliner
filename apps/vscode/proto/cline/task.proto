@@ -11,6 +11,12 @@ option java_multiple_files = true;
 option java_package = "bot.cline.proto";
 
 service TaskService {
+  // JSON payloads use shared/Walkthrough.ts; all anchors resolve on the host.
+  rpc getChangeWalkthrough(StringRequest) returns (String);
+  rpc generateChangeWalkthrough(StringRequest) returns (String);
+  rpc openWalkthroughDiff(StringRequest) returns (Empty);
+  rpc revertWalkthroughChange(StringRequest) returns (String);
+  rpc sendWalkthroughNotes(StringRequest) returns (Empty);
   // Cancels the currently running task
   rpc cancelTask(EmptyRequest) returns (Empty);
   // Cancels a queued prompt by ID
@@ -54,6 +60,12 @@ service TaskService {
   rpc renameTask(RenameTaskRequest) returns (Empty);
   // Replaces a thread's tags and records auto tags the user dismissed
   rpc setThreadTags(SetThreadTagsRequest) returns (Empty);
+  // Builds the vscode:// deep link for a chat message ("Copy link").
+  rpc buildMessageLink(BuildMessageLinkRequest) returns (MessageLink);
+  // Resolves a message link back to its message (the paste -> quote chip path).
+  rpc resolveMessageLink(ResolveMessageLinkRequest) returns (MessageLinkInfo);
+  // Opens a linked message: shows its thread scrolled to it (a sent message's tag).
+  rpc openMessageLink(ResolveMessageLinkRequest) returns (Empty);
 }
 
 // Request message for creating a new task
@@ -67,6 +79,9 @@ message NewTaskRequest {
   bool run_in_background = 6;
   // Files the new thread into this task group ("Task" in the UI).
   optional string task_group_id = 7;
+  optional bool run_in_worktree = 20;
+  // Explicit composer actions for this message (see ComposerProvenance).
+  ComposerProvenance provenance = 21;
 }
 
 // Request message for toggling task favorite status
@@ -92,6 +107,7 @@ message InterjectPromptRequest {
   string text = 2;
   repeated string images = 3;
   repeated string files = 4;
+  ComposerProvenance provenance = 5;
 }
 
 message StopSubagentRequest {
@@ -159,6 +175,10 @@ message TaskItem {
   // Provider id the task ran on. Empty for tasks recorded before this
   // field existed and for legacy imports; consumers show cost in that case.
   string api_provider = 13;
+  // User-set thread title; empty = fall back to `task` (the first message).
+  string title = 18;
+  // Task group this thread is filed under; empty when unfiled.
+  string task_group_id = 19;
 }
 
 // Request for ask response operation
@@ -170,6 +190,7 @@ message AskResponseRequest {
   repeated string files = 5;
   string decision_id = 6;
   string task_id = 7;
+  ComposerProvenance provenance = 8;
 }
 
 // Request for editing a past user message and regenerating the conversation after it
@@ -180,6 +201,8 @@ message EditMessageAndRegenerateRequest {
   repeated string images = 4;
   repeated string files = 5;
   bool restore_workspace = 6;
+  // Explicit composer actions for this edit (see ComposerProvenance).
+  ComposerProvenance provenance = 7;
 }
 
 // Request for executing a quick win task
@@ -209,4 +232,41 @@ message SetThreadTagsRequest {
   repeated TaskTag tags = 3;
   // Auto tag values the user removed; prevents re-adding them on later scans.
   repeated string dismissed_auto_tags = 4;
+}
+
+// Identifies the rendered row a link is being copied from: the row's
+// ClineMessage.ts is minted per render, so the host maps it to the stable
+// SDK transcript index before building the link.
+message BuildMessageLinkRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  int64 message_ts = 3;
+}
+
+message MessageLink {
+  string url = 1;
+}
+
+// A message deep link's target: thread id + index into the SDK transcript
+// (ClineMessage.sdkMessageIndex), which is stable across reloads.
+message ResolveMessageLinkRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  int64 message_index = 3;
+  // Row anchor within that transcript message: the tool call a completion-tool
+  // row came from, or the ordinal of the rendered text row among its siblings.
+  // Both absent for links minted before anchors existed.
+  optional string tool_call_id = 4;
+  optional int32 block = 5;
+}
+
+// The message a link points at: its text plus enough attribution for the
+// composer's quote chip ("You · Dev plan").
+message MessageLinkInfo {
+  string thread_id = 1;
+  int64 message_index = 2;
+  string thread_title = 3;
+  // "user" or "assistant" — the chip renders "You" or "Cline".
+  string author = 4;
+  string text = 5;
 }

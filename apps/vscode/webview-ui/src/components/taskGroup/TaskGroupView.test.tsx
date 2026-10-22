@@ -9,11 +9,14 @@ const mocks = vi.hoisted(() => ({
 	getTaskGroup: vi.fn(),
 	updateTaskGroup: vi.fn(),
 	deleteTaskGroup: vi.fn(),
+	toggleTaskSettled: vi.fn(),
 	openNote: vi.fn(),
 	showTaskWithId: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
+const nav = vi.hoisted(() => ({ value: undefined as { navigate: ReturnType<typeof vi.fn> } | undefined }))
+vi.mock("@/components/navigation/NavigationHistoryContext", () => ({ useNavigationHistory: () => nav.value }))
 vi.mock("@/services/grpc-client", () => ({
 	TaskGroupServiceClient: {
 		getTaskGroup: (request: unknown) => mocks.getTaskGroup(request),
@@ -21,7 +24,10 @@ vi.mock("@/services/grpc-client", () => ({
 		deleteTaskGroup: (request: unknown) => mocks.deleteTaskGroup(request),
 		openNote: (request: unknown) => mocks.openNote(request),
 	},
-	TaskServiceClient: { showTaskWithId: (request: unknown) => mocks.showTaskWithId(request) },
+	TaskServiceClient: {
+		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
+		toggleTaskSettled: (request: unknown) => mocks.toggleTaskSettled(request),
+	},
 }))
 
 const NOW = 10 * 86_400_000
@@ -121,8 +127,9 @@ const FIXTURE = GetTaskGroupResponse.fromPartial({
 })
 
 const renderView = async () => {
-	render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-	await screen.findByTestId("task-group-title")
+	const result = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
+	await screen.findByTestId("task-group-counts")
+	return result
 }
 
 describe("TaskGroupView", () => {
@@ -138,6 +145,7 @@ describe("TaskGroupView", () => {
 		mocks.getTaskGroup.mockReset().mockResolvedValue(FIXTURE)
 		mocks.updateTaskGroup.mockReset().mockResolvedValue({})
 		mocks.deleteTaskGroup.mockReset().mockResolvedValue({})
+		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
 		mocks.openNote.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.state = {
@@ -156,7 +164,10 @@ describe("TaskGroupView", () => {
 		expect(mocks.getTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
 		expect(screen.getByTestId("task-group-header")).toHaveTextContent("Bulk invoice export")
 		expect(screen.getByTestId("crumb-home")).toBeInTheDocument()
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk invoice export")
+		// The name lives in the breadcrumb only, with the task icon, like a thread's.
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk invoice export")
+		expect(screen.getByTestId("task-header-title").querySelector(".codicon-tasklist")).not.toBeNull()
+		expect(screen.queryByRole("heading", { name: "Bulk invoice export" })).toBeNull()
 		// Subagents belong to their root thread and aren't counted.
 		expect(screen.getByTestId("task-group-counts")).toHaveTextContent("5 threads · 5 notes")
 		const tags = screen.getAllByTestId("task-tag-chip").map((chip) => chip.textContent)
@@ -165,7 +176,7 @@ describe("TaskGroupView", () => {
 
 	it("fixes the composer's task pill to this task while open", async () => {
 		const { unmount } = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-		await screen.findByTestId("task-group-title")
+		await screen.findByTestId("task-group-counts")
 		expect(getComposerPageTaskGroup()).toBe("g1")
 		// The page scope isn't the clearable pill pick, so sends can't drop it.
 		expect(getComposerTaskGroup()).toBeUndefined()
@@ -196,6 +207,19 @@ describe("TaskGroupView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "＋ New" }))
 		expect(navigate).toHaveBeenCalledTimes(2)
 		expect(consumeNewNoteRequest()).toBe(true)
+	})
+
+	it("opens a timeline thread through the history layer, so Back returns to the task", async () => {
+		nav.value = { navigate: vi.fn() }
+		try {
+			await renderView()
+			fireEvent.click(screen.getAllByTestId("task-group-timeline-row")[0])
+			expect(nav.value.navigate).toHaveBeenCalledWith({ kind: "thread", id: expect.any(String) })
+			// No direct open: that path passes through home and Back would land there.
+			expect(mocks.showTaskWithId).not.toHaveBeenCalled()
+		} finally {
+			nav.value = undefined
+		}
 	})
 
 	it("tells the task's story oldest first, subthreads right after their parent, with chips", async () => {
@@ -232,6 +256,32 @@ describe("TaskGroupView", () => {
 		fireEvent.click(rows[4])
 		expect(mocks.state.hideTaskGroupView).toHaveBeenCalled()
 		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "impl" }))
+	})
+
+	it("marks a thread waiting on its subagents with its own icon and tooltip", async () => {
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: { impl: "done", sub: "running" },
+			taskHistory: [
+				{ id: "impl", ts: NOW, task: "Implement", tokensIn: 0, tokensOut: 0, totalCost: 0 },
+				{
+					id: "sub",
+					ts: NOW,
+					task: "sub",
+					parentTaskId: "impl",
+					isSubagent: true,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			],
+		}
+		await renderView()
+		const rows = screen.getAllByTestId("task-group-timeline-row")
+		const icon = within(rows[4]).getByRole("img", { name: "Waiting on 1 subagent" })
+		expect(icon).toHaveAttribute("data-status", "subagents")
+		expect(icon).toHaveClass("size-3")
+		expect(within(rows[0]).getByRole("img", { name: "Done" })).toBeInTheDocument()
 	})
 
 	it("draws the connector only between the first and last nodes", async () => {
@@ -285,6 +335,23 @@ describe("TaskGroupView", () => {
 		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
 	})
 
+	it("dismisses the branch hint for this task and branch, and it stays dismissed", async () => {
+		const stored = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => stored.get(key) ?? null,
+			setItem: (key: string, value: string) => stored.set(key, value),
+		})
+		const { unmount } = await renderView()
+		fireEvent.click(screen.getByTestId("task-group-branch-hint-dismiss"))
+		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
+		expect(mocks.updateTaskGroup).not.toHaveBeenCalled()
+		unmount()
+		await renderView()
+		expect(screen.queryByTestId("task-group-branch-hint")).toBeNull()
+		expect(JSON.parse(stored.get("cline.taskBranchHintDismissed") ?? "[]")).toEqual(["g1\nfeature/PROJ-482-bulk-export"])
+		vi.unstubAllGlobals()
+	})
+
 	it("＋ tag adds a typed tag and × removes one", async () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "＋ tag" }))
@@ -301,21 +368,22 @@ describe("TaskGroupView", () => {
 		expect(lastTags.map((tag: { value: string }) => tag.value)).toEqual(["PROJ-482", "PROJ-490"])
 	})
 
-	it("renames from ✎ (Enter saves, Esc cancels)", async () => {
+	it("renames from the breadcrumb's ✎ or ⋯ › Rename task (Enter saves, Esc cancels)", async () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "Rename task" }))
 		let input = screen.getByLabelText("Task title")
 		fireEvent.change(input, { target: { value: "Nope" } })
 		fireEvent.keyDown(input, { key: "Escape" })
 		expect(mocks.updateTaskGroup).not.toHaveBeenCalled()
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk invoice export")
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk invoice export")
 
-		fireEvent.click(screen.getByRole("button", { name: "Rename task" }))
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Rename task" }))
 		input = screen.getByLabelText("Task title")
 		fireEvent.change(input, { target: { value: "Bulk export v2" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		expect(mocks.updateTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1", title: "Bulk export v2" }))
-		expect(screen.getByTestId("task-group-title")).toHaveTextContent("Bulk export v2")
+		expect(screen.getByTestId("task-header-title")).toHaveTextContent("Bulk export v2")
 	})
 
 	it("deletes through an inline confirm row, not a modal", async () => {
@@ -338,6 +406,66 @@ describe("TaskGroupView", () => {
 		await waitFor(() => expect(mocks.state.hideTaskGroupView).toHaveBeenCalled())
 	})
 
+	it("settles or unsettles one thread or aside from its timeline row", async () => {
+		const thread = (id: string, extra = {}) => ({ id, ts: 1, task: id, taskGroupId: "g1", ...extra })
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: {},
+			taskHistory: [thread("refine", { isSettled: true }), thread("plan"), thread("aside-late", { parentTaskId: "plan" })],
+		}
+		await renderView()
+		const entries = screen.getAllByTestId("task-group-timeline-entry")
+		const entry = (name: string) => entries.find((el) => el.textContent?.includes(name)) as HTMLElement
+
+		expect(entry("Refine ticket")).toHaveAttribute("data-settled", "true")
+		fireEvent.click(within(entry("Refine ticket")).getByRole("button", { name: "Unsettle Refine ticket" }))
+		fireEvent.click(within(entry("Dev plan")).getByRole("button", { name: "Settle Dev plan" }))
+		fireEvent.click(within(entry("Aside: edge cases")).getByRole("button", { name: "Settle Aside: edge cases" }))
+		expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => request.taskId)).toEqual(["refine", "plan", "aside-late"])
+		expect(screen.getAllByTestId("task-group-timeline-settle")).toHaveLength(entries.length)
+	})
+
+	it("settles every idle thread from the ⋯ menu and reports the running one", async () => {
+		const thread = (id: string, extra = {}) => ({ id, ts: 1, task: id, taskGroupId: "g1", ...extra })
+		mocks.state = {
+			...mocks.state,
+			taskHistory: [
+				thread("refine", { isSettled: true }),
+				thread("impl"),
+				thread("plan"),
+				thread("aside-late", { parentTaskId: "plan" }),
+				thread("sub", { isSubagent: true, parentTaskId: "impl" }),
+				{ id: "elsewhere", ts: 1, task: "x", taskGroupId: "other" },
+			],
+		}
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Settle all" }))
+
+		const notice = await screen.findByTestId("task-group-settle-notice")
+		// impl is running: skipped. refine was already settled; the subagent and other task's thread are not counted.
+		expect(notice).toHaveTextContent("Settled 2 · 1 still running")
+		expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => request.taskId)).toEqual(["plan", "aside-late"])
+		fireEvent.click(within(notice).getByRole("button", { name: "Dismiss" }))
+		expect(screen.queryByTestId("task-group-settle-notice")).toBeNull()
+	})
+
+	it("offers Unsettle all when every thread is settled", async () => {
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: {},
+			taskHistory: [
+				{ id: "a", ts: 1, task: "a", taskGroupId: "g1", isSettled: true },
+				{ id: "b", ts: 1, task: "b", taskGroupId: "g1", isSettled: true },
+			],
+		}
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
+		await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+		expect(await screen.findByTestId("task-group-settle-notice")).toHaveTextContent("Unsettled 2")
+	})
+
 	it("renames from the ⋯ menu", async () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
@@ -355,7 +483,7 @@ describe("TaskGroupView", () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true })
 		try {
 			const { rerender } = render(<TaskGroupView now={NOW} taskGroupId="g1" />)
-			await screen.findByTestId("task-group-title")
+			await screen.findByTestId("task-group-counts")
 			expect(mocks.getTaskGroup).toHaveBeenCalledTimes(1)
 			mocks.state = { ...mocks.state, taskGroups: [] }
 			rerender(<TaskGroupView now={NOW} taskGroupId="g1" />)

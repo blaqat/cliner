@@ -98,6 +98,37 @@ describe("CompletionOutputRow View Changes", () => {
 		expect(button).not.toBeDisabled()
 	})
 
+	it("offers the walkthrough beside View Changes", async () => {
+		checkpointLatestChangesCount.mockResolvedValue({ value: 2 })
+		const onOpenWalkthrough = vi.fn()
+		render(
+			<CompletionOutputRow
+				handleQuoteClick={vi.fn()}
+				onOpenWalkthrough={onOpenWalkthrough}
+				quoteButtonState={hiddenQuoteButton}
+				showViewChanges
+				text="All done!"
+			/>,
+		)
+		fireEvent.click(await screen.findByRole("button", { name: "Open walkthrough" }))
+		expect(onOpenWalkthrough).toHaveBeenCalledTimes(1)
+	})
+
+	it("hides Open walkthrough when the latest run changed nothing", async () => {
+		checkpointLatestChangesCount.mockResolvedValue({ value: 0 })
+		render(
+			<CompletionOutputRow
+				handleQuoteClick={vi.fn()}
+				onOpenWalkthrough={vi.fn()}
+				quoteButtonState={hiddenQuoteButton}
+				showViewChanges
+				text="All done!"
+			/>,
+		)
+		await waitFor(() => expect(checkpointLatestChangesCount).toHaveBeenCalled())
+		expect(screen.queryByRole("button", { name: "Open walkthrough" })).toBeNull()
+	})
+
 	it("stays hidden while the count is still being checked", () => {
 		checkpointLatestChangesCount.mockReturnValue(new Promise(() => {}))
 

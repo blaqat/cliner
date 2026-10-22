@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { BackButton } from "@/components/navigation/BackButton"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { HeaderIconButton } from "./HeaderIconButton"
@@ -6,7 +7,7 @@ import { HeaderIconButton } from "./HeaderIconButton"
 export interface Crumb {
 	id: string
 	label: string
-	kind: "home" | "task" | "thread"
+	kind: "home" | "task" | "thread" | "page"
 	/** Aside or subagent, shown with a `↳` prefix. */
 	sub?: boolean
 	/** Absent on the current (last) crumb. */
@@ -18,6 +19,8 @@ interface BreadcrumbProps {
 	crumbs: Crumb[]
 	/** Saves a new title for the last crumb; renaming is off without it. */
 	onRename?: (title: string) => void
+	/** Bumped to start renaming from elsewhere (a page's ⋯ › Rename). */
+	renameSignal?: number
 }
 
 // Rough widths (px) used to decide when the middle levels collapse to `…`.
@@ -61,11 +64,12 @@ const CrumbLabel = ({ crumb }: { crumb: Crumb }) => (
 )
 
 /**
- * `‹ ⌂ / Task / Thread / ↳ subthread`. When the levels don't fit, everything
+ * `‹ ⌂ / Task / Thread / ↳ subthread`. ‹ is session history (see BackButton);
+ * the crumbs stay the hierarchy. When the levels don't fit, everything
  * between home and the current thread collapses into `…`, which opens a menu of
  * every level in order. ✎ or a double-click renames the current thread inline.
  */
-export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
+export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename, renameSignal }) => {
 	const listRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
 	const settledRef = useRef(false)
@@ -79,6 +83,8 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 	const middle = crumbs.slice(1, -1)
 	const parent = crumbs.length > 1 ? crumbs[crumbs.length - 2] : undefined
 	const collapsed = shouldCollapseCrumbs(width, middle.length)
+	// What the last crumb is, for the rename labels ("Rename task" on a task's page).
+	const noun = current.kind === "task" ? "task" : "thread"
 
 	useLayoutEffect(() => {
 		const element = listRef.current
@@ -107,6 +113,11 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 		setDraft(current.label)
 		setRenaming(true)
 	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new signal starts a rename
+	useEffect(() => {
+		if (renameSignal) startRename()
+	}, [renameSignal])
+
 	const finishRename = (save: boolean) => {
 		if (settledRef.current) return
 		settledRef.current = true
@@ -130,13 +141,12 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 
 	return (
 		<nav aria-label="Thread path" className="flex min-w-0 flex-1 items-center gap-1" data-testid="task-breadcrumb">
-			<HeaderIconButton
-				data-testid="crumb-back"
-				disabled={!parent?.onSelect}
-				icon="chevron-left"
-				label="Back"
-				onClick={parent?.onSelect}
-				tooltip={parent ? `Back to ${parent.kind === "home" ? "home" : parent.label}` : "Back"}
+			<BackButton
+				crumbIds={crumbs.map((crumb) => crumb.id)}
+				fallback={{
+					label: parent ? (parent.kind === "home" ? "home" : parent.label) : "home",
+					onSelect: parent?.onSelect,
+				}}
 			/>
 			<div className="flex min-w-0 flex-1 items-center gap-1" ref={listRef}>
 				{crumbs.length > 1 && (
@@ -201,7 +211,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 				{renaming ? (
 					<div className="flex min-w-[130px] flex-1 items-center gap-0.5">
 						<input
-							aria-label="Thread title"
+							aria-label={noun === "task" ? "Task title" : "Thread title"}
 							className="ph-no-capture h-5.5 min-w-0 flex-1 rounded-xs border border-(--vscode-focusBorder) bg-input-background px-1.5 text-[12px] text-input-foreground outline-none"
 							data-testid="crumb-rename-input"
 							onBlur={() => finishRename(true)}
@@ -216,7 +226,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 									finishRename(false)
 								}
 							}}
-							placeholder="Thread title"
+							placeholder={noun === "task" ? "Task title" : "Thread title"}
 							ref={inputRef}
 							value={draft}
 						/>
@@ -240,6 +250,10 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 						)}
 						data-testid="task-header-title"
 						onDoubleClick={startRename}>
+						{/* A task page's crumb keeps the task icon it has under a thread. */}
+						{current.kind === "task" && (
+							<span aria-hidden className="codicon codicon-tasklist shrink-0 text-[12px] font-normal" />
+						)}
 						<span
 							className="ph-no-capture min-w-0 truncate"
 							data-testid="task-header-title-text"
@@ -249,11 +263,11 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename }) => {
 						</span>
 						{onRename && (
 							<button
-								aria-label="Rename thread"
+								aria-label={`Rename ${noun}`}
 								className="flex shrink-0 items-center rounded-xs border-0 bg-transparent p-0 text-description cursor-pointer hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 								data-testid="crumb-rename"
 								onClick={startRename}
-								title="Rename thread (or double-click the title)"
+								title={`Rename ${noun} (or double-click the title)`}
 								type="button">
 								<span aria-hidden className="codicon codicon-edit text-[12px]" />
 							</button>

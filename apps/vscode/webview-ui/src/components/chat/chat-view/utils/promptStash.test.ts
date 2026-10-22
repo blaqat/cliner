@@ -71,4 +71,30 @@ describe("prompt stash helpers", () => {
 	it("deletes an entry", () => {
 		expect(removeStashEntry([entry("a", "one"), entry("b", "two")], "a").map((e) => e.id)).toEqual(["b"])
 	})
+
+	it("stashes a message-tag-only draft, copies the tags and describes them", () => {
+		const messageTags = [{ threadId: "t1", messageIndex: 2, toolCallId: "call_1", text: "Done.", source: "Cline · Dev plan" }]
+		const next = pushStashEntry([], { text: "", quotes: [], messageTags }, { id: "b", ts: 5 })
+
+		expect(next[0].messageTags).toEqual(messageTags)
+		expect(next[0].messageTags?.[0]).not.toBe(messageTags[0])
+		expect(describeStashEntry(next[0])).toBe("(1 message)")
+	})
+
+	it("swaps a current message-tag draft into the stash when restoring another entry", () => {
+		const messageTags = [{ threadId: "t1", messageIndex: 2, text: "Done.", source: "You · Dev plan" }]
+		const { entries, restored } = takeStashEntry(
+			[entry("a", "one")],
+			"a",
+			{ text: "", quotes: [], messageTags },
+			{ id: "c", ts: 9 },
+		)
+		expect(restored?.id).toBe("a")
+		expect(entries.map((e) => e.messageTags)).toEqual([messageTags])
+	})
+
+	it("leaves entries stashed before message tags existed without a tags field", () => {
+		const next = pushStashEntry([], { text: "draft", quotes: [] }, { id: "b", ts: 5 })
+		expect(next[0]).not.toHaveProperty("messageTags")
+	})
 })

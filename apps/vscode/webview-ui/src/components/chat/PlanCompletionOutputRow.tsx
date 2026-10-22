@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { StateServiceClient } from "@/services/grpc-client"
 import AsideButton from "./AsideButton"
 import { QuoteButtonState } from "./ChatRow"
+import MessageLinkButton from "./MessageLinkButton"
 import QuoteButton from "./QuoteButton"
 
 interface PlanCompletionOutputProps {
@@ -41,7 +42,10 @@ const PlanCompletionOutputRow = memo(
 
 		const continueInAct = () => {
 			setSwitching(true)
-			StateServiceClient.togglePlanActModeProto(TogglePlanActModeRequest.create({ mode: PlanActMode.ACT }))
+			// continueAnswer: this button always carries the answer out, even when a plain switch doesn't.
+			StateServiceClient.togglePlanActModeProto(
+				TogglePlanActModeRequest.create({ mode: PlanActMode.ACT, continueAnswer: true }),
+			)
 				.catch((error) => console.error("Failed to switch to Act mode:", error))
 				.finally(() => setSwitching(false))
 		}
@@ -52,6 +56,7 @@ const PlanCompletionOutputRow = memo(
 					<span className="text-xs font-medium uppercase tracking-wider text-warning/70">Answer</span>
 					<div className="flex items-center">
 						{asideFromTs !== undefined && <AsideButton className="text-warning/70" messageTs={asideFromTs} />}
+						{asideFromTs !== undefined && <MessageLinkButton className="text-warning/70" messageTs={asideFromTs} />}
 						<CopyButton ariaLabel="Copy answer" className="text-warning/70" textToCopy={text} />
 					</div>
 				</div>

@@ -25,6 +25,10 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.cancelTask()
 
+		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable")
+		expect(options.interactions.clearPending.mock.invocationCallOrder[0]).toBeLessThan(
+			options.setTurnPhase.mock.invocationCallOrder[0],
+		)
 		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cancelled")
 		expect(activeSession.sdkHost.abort).toHaveBeenCalledWith("session-123")
 		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
@@ -37,6 +41,23 @@ describe("SdkTaskControlCoordinator", () => {
 			{ type: "status", payload: { sessionId: "session-123", status: "cancelled" } },
 		)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("persists a stopped thread status when cancelling a running turn", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).toHaveBeenCalledWith("session-123", "stopped")
+	})
+
+	it("does not mark an idle session stopped when cancel is requested", async () => {
+		const activeSession = { ...makeActiveSession(), isRunning: false }
+		const { coordinator, options } = makeCoordinator({ activeSession })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).not.toHaveBeenCalled()
 	})
 
 	it("aborts an interject without adding a resumable message", async () => {
@@ -263,14 +284,19 @@ describe("SdkTaskControlCoordinator", () => {
 	})
 
 	it.each(["cancel", "interject"])("clears active and queued child approvals on parent %s", async (action) => {
+		let phase = "resumable"
+		const setTurnPhase = (next: string) => {
+			phase = next
+		}
 		const task = createTaskProxy("session-123", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => task }),
 			getSessionId: () => task.taskId,
+			setTurnPhase,
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
 		})
 		const { options } = makeCoordinator({ activeSession: makeActiveSession() })
-		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions })
+		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions, setTurnPhase })
 		const approvals = ["child-1", "child-2"].map((id) =>
 			interactions.handleRequestToolApproval({
 				agentId: id,
@@ -285,6 +311,7 @@ describe("SdkTaskControlCoordinator", () => {
 		)
 		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
 		await coordinator.cancelTask(false, action === "interject" ? { text: "new direction" } : undefined)
+		expect(phase).toBe("resumable")
 		for (const approval of approvals) await expect(approval).resolves.toMatchObject({ approved: false })
 		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
 		expect(
@@ -454,6 +481,26 @@ describe("SdkTaskControlCoordinator", () => {
 			expect.objectContaining({ type: "ask", ask: "resume_task" }),
 		)
 		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable", expect.any(Number))
+	})
+
+	it("shows no Resume Task ask and a completed phase for a reopened thread whose last turn completed", async () => {
+		// getSessionStatus reports "completed" for an idle record the extension marked done.
+		const { coordinator, options, state } = makeCoordinator({
+			hasHistoryItem: true,
+			clineMessages: [
+				{ ts: 1, type: "say", say: "task", text: "hello" },
+				{ ts: 2, type: "say", say: "completion_result", text: "All done" },
+				{ ts: 3, type: "ask", ask: "completion_result", text: "" },
+			],
+			sessionStatus: "completed",
+		})
+
+		await coordinator.showTaskWithId("task-1")
+
+		const reopened = state.task?.messageStateHandler.getClineMessages() ?? []
+		expect(reopened.some((message) => message.ask === "resume_task")).toBe(false)
+		expect(reopened.at(-1)).toEqual(expect.objectContaining({ ask: "resume_completed_task" }))
+		expect(options.setTurnPhase).toHaveBeenCalledWith("completed", expect.any(Number))
 	})
 
 	it("sets the turn phase to resumable when showing a failed task", async () => {
@@ -673,6 +720,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		taskHistory: {
 			getClineMessages: vi.fn().mockResolvedValue(input.clineMessages ?? []),
 			getSessionStatus: vi.fn().mockResolvedValue(input.sessionStatus),
+			saveThreadStatus: vi.fn().mockResolvedValue(undefined),
 			isLegacyTask: vi.fn().mockResolvedValue(input.isLegacyTask ?? false),
 			findHistoryItem: vi.fn(() =>
 				input.hasHistoryItem === false

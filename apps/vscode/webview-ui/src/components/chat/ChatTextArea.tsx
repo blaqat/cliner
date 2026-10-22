@@ -1,11 +1,12 @@
 import { mentionRegex, mentionRegexGlobal } from "@shared/context-mentions"
+import { type ParsedMessageLink, parseMessageLink } from "@shared/message-links"
 import { StringRequest } from "@shared/proto/cline/common"
 import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared/proto/cline/file"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
+import type { ScriptValues } from "@shared/scripts"
 import { type SlashCommand } from "@shared/slashCommands"
 import { Mode } from "@shared/storage/types"
-import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
-import { AtSignIcon, PlusIcon, SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
+import { SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
@@ -14,11 +15,14 @@ import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
+import ScriptHelper from "@/components/scripts/ScriptHelper"
+import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
+import { refreshScripts, usableScripts, useScripts } from "@/hooks/useScripts"
 import { cn } from "@/lib/utils"
 import { FileServiceClient, StateServiceClient } from "@/services/grpc-client"
 import {
@@ -43,23 +47,34 @@ import {
 	slashCommandRegexGlobal,
 	validateSlashCommand,
 } from "@/utils/slash-commands"
-import ClineRulesToggleModal from "../cline-rules/ClineRulesToggleModal"
 import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
-import ConfigPicker from "./ConfigPicker"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import ApprovalsMenu from "./composer/ApprovalsMenu"
+import { McpServersButton, RulesButton } from "./composer/ComposerPanelButtons"
+import ConfigPicker from "./composer/ConfigPicker"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
-import PickerOverflowMenu from "./composer/PickerOverflowMenu"
+import { modelHasReasoning } from "./composer/modelSelection"
+import PlusMenu from "./composer/PlusMenu"
+import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
+import { ShrinkSlot } from "./composer/ShrinkSlot"
+import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
+import { WorkspaceButton } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
-import { findNoteMention, insertNoteMention, matchNotes, type NoteMentionOption, useTaskNotes } from "./noteMentions"
+import {
+	findNoteMention,
+	groupNotesToOptions,
+	insertNoteMention,
+	matchNotes,
+	type NoteMentionOption,
+	useAllNotes,
+} from "./noteMentions"
 import PromptStashButton from "./PromptStashButton"
-import ReasoningEffortPicker, { modelHasReasoning } from "./ReasoningEffortPicker"
-import ServersToggleModal from "./ServersToggleModal"
-import TaskGroupPicker, { ComposerTaskGroupSheet } from "./TaskGroupPicker"
+import ThreadMentionMenu from "./ThreadMentionMenu"
+import { findThreadMention, insertThreadMention, type ThreadMentionOption, useThreadMentionMatches } from "./threadMentions"
 
 const { MAX_IMAGES_AND_FILES_PER_MESSAGE } = CHAT_CONSTANTS
 
@@ -91,6 +106,10 @@ export interface ChatTextAreaProps {
 	/** Quote chips shown in one row at the top of the input box. */
 	quoteTags?: React.ReactNode
 	setInputValue: (value: string) => void
+	/** The user picked this thread from the `thread:` mention menu (its token was just inserted). */
+	onThreadPicked?: (threadId: string) => void
+	/** The script run the draft holds after a user edit: set when it starts with a runnable `/script options`. */
+	onScriptRun?: (scriptRun: { name: string; values: ScriptValues } | undefined) => void
 	sendingDisabled: boolean
 	placeholderText: string
 	selectedFiles: string[]
@@ -126,6 +145,8 @@ export interface ChatTextAreaProps {
 	}
 	/** Opens a task group's page (the task pill's "Open task"). */
 	onOpenTaskGroup?: (taskGroupId: string) => void
+	/** A vscode:// message link was pasted — becomes a message tag (context, not a quote) instead of raw text. */
+	onPasteMessageLink?: (link: ParsedMessageLink, rawUrl: string) => void
 }
 
 interface GitCommit {
@@ -204,23 +225,13 @@ const ButtonGroup = styled.div`
 	min-width: 0;
 	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
 	overflow-x: clip;
-	/* Icon buttons keep their size; the config and effort pickers truncate to their min-width. */
+	/* The icon buttons and the shield keep their size; the where pill and the configuration and effort pickers truncate to their min-width. */
 	& > * {
 		flex-shrink: 0;
 	}
 	& > [data-shrink] {
 		flex-shrink: 1;
 	}
-`
-
-const ButtonContainer = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 3px;
-	font-size: 10px;
-	white-space: nowrap;
-	min-width: 0;
-	width: 100%;
 `
 
 interface RunningSendButtonsProps {
@@ -276,7 +287,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
 		{
 			inputValue,
-			setInputValue,
+			setInputValue: setDraftInputValue,
+			onThreadPicked,
+			onScriptRun,
 			sendingDisabled,
 			placeholderText,
 			selectedFiles,
@@ -300,6 +313,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			onSendAs,
 			usageIndicator,
 			onOpenTaskGroup,
+			onPasteMessageLink,
 		},
 		ref,
 	) => {
@@ -334,6 +348,49 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [cursorPosition, setCursorPosition] = useState(0)
 		const [searchQuery, setSearchQuery] = useState("")
 		const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+		// Saved scripts: offered by the slash menu and the rules panel's Scripts tab. A draft starting with `/script-name `
+		// shows the options helper above the input and cannot be sent until its required options are set.
+		const scriptsSnapshot = useScripts()
+		const usable = useMemo(() => usableScripts(scriptsSnapshot), [scriptsSnapshot])
+		const scriptCommands = useMemo<SlashCommand[]>(
+			() => usable.map((script) => ({ name: script.name, description: script.description, section: "script" as const })),
+			[usable],
+		)
+		const scriptInput = useMemo(() => matchScriptInput(inputValue, usable), [inputValue, usable])
+		// Every edit made through this composer (typing, menu picks, the helper strip) is the user's own,
+		// so a draft that now starts with a runnable script is a script run the user asked for. Text
+		// that arrives another way (Add to Cline, restored drafts) never reaches here.
+		const setInputValue = useCallback(
+			(value: string) => {
+				setDraftInputValue(value)
+				onScriptRun?.(scriptRunOf(value, usable))
+			},
+			[setDraftInputValue, onScriptRun, usable],
+		)
+		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput)
+		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
+		const slashAtMessageStart = useMemo(() => {
+			const beforeCursor = inputValue.slice(0, cursorPosition)
+			const slashIndex = beforeCursor.lastIndexOf("/")
+			return slashIndex >= 0 && beforeCursor.slice(0, slashIndex).trim() === ""
+		}, [inputValue, cursorPosition])
+		const menuScriptCommands = slashAtMessageStart ? scriptCommands : []
+		// Re-read the script folders whenever the slash menu opens, so a script just saved shows up.
+		useEffect(() => {
+			if (showSlashCommandsMenu) void refreshScripts()
+		}, [showSlashCommandsMenu])
+		/** Starts a script draft from the rules panel's Scripts tab; whatever was typed becomes the note under the options line. */
+		const startScriptDraft = useCallback(
+			(name: string) => {
+				const prefix = `/${name} `
+				const existing = textAreaRef.current?.value ?? inputValue
+				setInputValue(existing.trim() ? `${prefix}\n${existing}` : prefix)
+				setCursorPosition(prefix.length)
+				setIntendedCursorPosition(prefix.length)
+				setTimeout(() => textAreaRef.current?.focus(), 0)
+			},
+			[inputValue, setInputValue],
+		)
 		const [isMouseDownOnMenu, setIsMouseDownOnMenu] = useState(false)
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
@@ -346,23 +403,19 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
-		// `#note` mentions: the task this composer's thread (or task page) belongs to.
-		// An open thread's notes are the ones its mentions expand against, even when
-		// it's in no task; the page/pill selection only applies to new threads.
+		// `#note` mentions search every task's notes; the task this composer's
+		// thread (or task page) belongs to ranks first and inserts bare `#slug`.
+		// Picks from other tasks insert `#<group>/<slug>` so the host can resolve
+		// them against that task's notebook.
 		const composerTaskGroupId = useResolvedComposerTaskGroup()
 		const noteTaskGroupId = currentTaskItem
 			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
 			: composerTaskGroupId
-		const noteMention = useMemo(
-			() => (noteTaskGroupId ? findNoteMention(inputValue, cursorPosition) : undefined),
-			[noteTaskGroupId, inputValue, cursorPosition],
-		)
+		const noteMention = useMemo(() => findNoteMention(inputValue, cursorPosition), [inputValue, cursorPosition])
 		const [dismissedNoteMentionAt, setDismissedNoteMentionAt] = useState<number>()
 		const [selectedNoteIndex, setSelectedNoteIndex] = useState(0)
-		const taskNotes = useTaskNotes(
-			noteMention ? noteTaskGroupId : undefined,
-			taskGroups?.find((group) => group.id === noteTaskGroupId)?.noteCount,
-		)
+		const noteGroups = useAllNotes(noteMention ? taskGroups : undefined)
+		const taskNotes = useMemo(() => groupNotesToOptions(noteGroups, noteTaskGroupId), [noteGroups, noteTaskGroupId])
 		const noteMatches = useMemo(() => (noteMention ? matchNotes(taskNotes, noteMention.query) : []), [taskNotes, noteMention])
 		const showNoteMentionMenu =
 			!!noteMention &&
@@ -379,12 +432,53 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const handleNoteMentionSelect = useCallback(
 			(note: NoteMentionOption) => {
 				if (!noteMention) return
-				const next = insertNoteMention(inputValue, cursorPosition, noteMention.start, note.slug)
+				const next = insertNoteMention(inputValue, cursorPosition, noteMention.start, note.insertText ?? `#${note.slug}`)
 				setInputValue(next.value)
 				setCursorPosition(next.cursor)
 				setIntendedCursorPosition(next.cursor)
 			},
 			[noteMention, inputValue, cursorPosition, setInputValue],
+		)
+
+		// `thread:` mentions pick any thread from any task; the mention sends the
+		// agent the thread's title + id and unlocks its transcript tools for this
+		// conversation.
+		const threadMention = useMemo(() => findThreadMention(inputValue, cursorPosition), [inputValue, cursorPosition])
+		const [dismissedThreadMentionAt, setDismissedThreadMentionAt] = useState<number>()
+		const [selectedThreadIndex, setSelectedThreadIndex] = useState(0)
+		const taskGroupTitleById = useMemo(
+			() => new Map((taskGroups ?? []).map((group) => [group.id, group.title])),
+			[taskGroups],
+		)
+		const activeThreadMention = threadMention && threadMention.start !== dismissedThreadMentionAt ? threadMention : undefined
+		const threadMatches = useThreadMentionMatches(
+			taskHistory,
+			taskGroupTitleById,
+			currentTaskItem?.id,
+			activeThreadMention?.query ?? null,
+		)
+		const showThreadMentionMenu =
+			!!activeThreadMention &&
+			threadMatches.length > 0 &&
+			isTextAreaFocused &&
+			!showSlashCommandsMenu &&
+			!showContextMenu &&
+			!showNoteMentionMenu
+		useEffect(() => {
+			if (!threadMention) setDismissedThreadMentionAt(undefined)
+			setSelectedThreadIndex(0)
+		}, [threadMention?.start, threadMention?.query])
+
+		const handleThreadMentionSelect = useCallback(
+			(thread: ThreadMentionOption) => {
+				if (!threadMention) return
+				const next = insertThreadMention(inputValue, cursorPosition, threadMention.start, thread.id)
+				setInputValue(next.value)
+				onThreadPicked?.(thread.id)
+				setCursorPosition(next.cursor)
+				setIntendedCursorPosition(next.cursor)
+			},
+			[threadMention, inputValue, cursorPosition, setInputValue, onThreadPicked],
 		)
 		const [modeSwitchFlash, setModeSwitchFlash] = useState(false)
 		const [pendingInsertions, setPendingInsertions] = useState<string[]>([])
@@ -640,6 +734,26 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
+				if (showThreadMentionMenu && activeThreadMention && !isComposing) {
+					if (event.key === "Escape") {
+						event.preventDefault()
+						setDismissedThreadMentionAt(activeThreadMention.start)
+						return
+					}
+					if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+						event.preventDefault()
+						const direction = event.key === "ArrowUp" ? -1 : 1
+						setSelectedThreadIndex((index) => (index + direction + threadMatches.length) % threadMatches.length)
+						return
+					}
+					const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+					if ((event.key === "Enter" || event.key === "Tab") && plain) {
+						event.preventDefault()
+						handleThreadMentionSelect(threadMatches[Math.min(selectedThreadIndex, threadMatches.length - 1)])
+						return
+					}
+				}
+
 				if (showSlashCommandsMenu) {
 					if (event.key === "Escape") {
 						setShowSlashCommandsMenu(false)
@@ -659,6 +773,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								remoteWorkflowToggles,
 								remoteConfigSettings?.remoteGlobalWorkflows,
 								mcpServers,
+								menuScriptCommands,
 							)
 
 							if (allCommands.length === 0) {
@@ -684,6 +799,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							remoteWorkflowToggles,
 							remoteConfigSettings?.remoteGlobalWorkflows,
 							mcpServers,
+							menuScriptCommands,
 						)
 						if (commands.length > 0) {
 							handleSlashCommandsSelect(commands[selectedSlashCommandsIndex])
@@ -750,6 +866,28 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
+				// Tab in a script draft completes the option being typed, then jumps to the next missing required one.
+				if (
+					event.key === "Tab" &&
+					scriptInput &&
+					!isComposing &&
+					!event.shiftKey &&
+					!event.metaKey &&
+					!event.ctrlKey &&
+					!event.altKey &&
+					// Anywhere on the options line; Tab in the note below keeps its normal behaviour.
+					(event.currentTarget.selectionStart ?? 0) <= scriptInput.prefix.length + scriptInput.optionsText.length
+				) {
+					event.preventDefault()
+					const completed = completeScriptInput(scriptInput)
+					if (completed) {
+						setInputValue(completed.text)
+						setCursorPosition(completed.cursor)
+						setIntendedCursorPosition(completed.cursor)
+					}
+					return
+				}
+
 				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
 				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
 					if (onStash()) {
@@ -765,7 +903,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				if (submitKind) {
 					event.preventDefault()
 
-					if (!sendingDisabled) {
+					if (!sendDisabled) {
 						// Note: don't set isTextAreaFocused to false here. The textarea keeps
 						// DOM focus after sending, and clearing the flag without an actual
 						// blur desyncs it permanently (programmatic .focus() on an
@@ -860,7 +998,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				selectedSlashCommandsIndex,
 				slashCommandsQuery,
 				handleSlashCommandsSelect,
-				sendingDisabled,
+				sendDisabled,
+				scriptInput,
+				menuScriptCommands,
 				onStash,
 				hasQuotes,
 				isRunning,
@@ -1047,6 +1187,14 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				const items = e.clipboardData.items
 
 				const pastedText = e.clipboardData.getData("text")
+				// A message deep link becomes a message tag carrying just that message.
+				const messageLink = parseMessageLink(pastedText.trim())
+				if (messageLink) {
+					e.preventDefault()
+					setShowContextMenu(false)
+					onPasteMessageLink?.(messageLink, pastedText.trim())
+					return
+				}
 				// Check if the pasted content is a URL, add space after so user can easily delete if they don't want it
 				const urlRegex = /^\S+:\/\/\S+$/
 				if (urlRegex.test(pastedText.trim())) {
@@ -1135,6 +1283,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				setInputValue,
 				inputValue,
 				showDimensionErrorMessage,
+				onPasteMessageLink,
 			],
 		)
 
@@ -1177,6 +1326,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					globalWorkflowToggles,
 					remoteWorkflowToggles,
 					remoteConfigSettings?.remoteGlobalWorkflows,
+					undefined,
+					scriptCommands,
 				)
 
 				if (isValidCommand) {
@@ -1189,7 +1340,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			highlightLayerRef.current.innerHTML = processedText
 			highlightLayerRef.current.scrollTop = textAreaRef.current.scrollTop
 			highlightLayerRef.current.scrollLeft = textAreaRef.current.scrollLeft
-		}, [localWorkflowToggles, globalWorkflowToggles, remoteWorkflowToggles, remoteConfigSettings])
+		}, [localWorkflowToggles, globalWorkflowToggles, remoteWorkflowToggles, remoteConfigSettings, scriptCommands])
 
 		useLayoutEffect(() => {
 			updateHighlights()
@@ -1609,27 +1760,31 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", metaKeyChar)
 			.replace(/.$/, (match) => match.toUpperCase())
 
+		const whereHasTask = useWherePillHasTask()
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
+			hasTask: whereHasTask,
 		})
-
-		const configPicker = <ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
-		const taskGroupPicker = <TaskGroupPicker onOpenTaskGroup={onOpenTaskGroup} />
-		const effortPicker = (
-			<ReasoningEffortPicker
-				defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-				mode={mode}
-				modelId={selectedModelId}
-				modelInfo={selectedModelInfo}
-				provider={selectedProvider}
-			/>
-		)
 
 		return (
 			<div>
+				{scriptInput && (
+					<ScriptHelper
+						onChange={(next) => {
+							const text = `${scriptInput.prefix}${next}${scriptInput.suffix}`
+							const cursor = scriptInput.prefix.length + next.length
+							setInputValue(text)
+							setCursorPosition(cursor)
+							setIntendedCursorPosition(cursor)
+							setTimeout(() => textAreaRef.current?.focus(), 0)
+						}}
+						optionsText={scriptInput.optionsText}
+						script={scriptInput.script}
+					/>
+				)}
 				<div
 					className="relative flex transition-colors ease-in-out duration-100 px-3.5 py-2.5"
 					onDragEnter={handleDragEnter}
@@ -1657,6 +1812,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								query={slashCommandsQuery}
 								remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
 								remoteWorkflowToggles={remoteWorkflowToggles}
+								scriptCommands={menuScriptCommands}
 								selectedIndex={selectedSlashCommandsIndex}
 								setSelectedIndex={setSelectedSlashCommandsIndex}
 							/>
@@ -1669,6 +1825,15 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							onSelect={handleNoteMentionSelect}
 							selectedIndex={selectedNoteIndex}
 							setSelectedIndex={setSelectedNoteIndex}
+						/>
+					)}
+
+					{showThreadMentionMenu && (
+						<ThreadMentionMenu
+							onSelect={handleThreadMentionSelect}
+							selectedIndex={selectedThreadIndex}
+							setSelectedIndex={setSelectedThreadIndex}
+							threads={threadMatches}
 						/>
 					)}
 
@@ -1818,11 +1983,16 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						style={{ height: textAreaBaseHeight }}>
 						<div className="flex flex-row items-center">
 							{onRestoreStash && onDeleteStash && (
-								<PromptStashButton entries={stashEntries} onDelete={onDeleteStash} onRestore={onRestoreStash} />
+								<PromptStashButton
+									entries={stashEntries}
+									modKey={metaKeyChar}
+									onDelete={onDeleteStash}
+									onRestore={onRestoreStash}
+								/>
 							)}
 							{showRunningSendButtons && onSendAs ? (
 								<RunningSendButtons
-									disabled={sendingDisabled}
+									disabled={sendDisabled}
 									enterSendsAs={enterSendsAs}
 									metaKeyChar={metaKeyChar}
 									onInterject={() => onSendAs("interject")}
@@ -1841,7 +2011,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 													aria-label="Start in background"
 													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
 													data-testid="send-background-button"
-													disabled={sendingDisabled}
+													disabled={sendDisabled}
 													onClick={() => onSendAs("background")}
 													type="button">
 													<SendToBackIcon size={13} />
@@ -1852,12 +2022,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									<div
 										className={cn(
 											"input-icon-button",
-											{ disabled: sendingDisabled },
+											{ disabled: sendDisabled },
 											"codicon codicon-send text-sm",
 										)}
 										data-testid="send-button"
 										onClick={() => {
-											if (!sendingDisabled) {
+											if (!sendDisabled) {
 												onSend()
 											}
 										}}
@@ -1898,122 +2068,98 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				<ComposerTaskGroupSheet draftText={inputValue} />
 				<div
 					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
-					data-collapse-pickers={rowLayout.collapsePickers}
 					data-testid="composer-bottom-row"
 					ref={bottomRowRef}>
 					<ButtonGroup className="h-5" data-testid="composer-pickers">
-						<Tooltip>
-							<TooltipContent>Add Context</TooltipContent>
-							<TooltipTrigger>
-								<VSCodeButton
-									appearance="icon"
-									aria-label="Add Context"
-									className="p-0 m-0 flex items-center"
-									data-testid="context-button"
-									onClick={handleContextButtonClick}>
-									<ButtonContainer>
-										<AtSignIcon size={12} />
-									</ButtonContainer>
-								</VSCodeButton>
-							</TooltipTrigger>
-						</Tooltip>
-
-						<Tooltip>
-							<TooltipContent>Add Files & Images</TooltipContent>
-							<TooltipTrigger>
-								<VSCodeButton
-									appearance="icon"
-									aria-label="Add Files & Images"
-									className="p-0 m-0 flex items-center"
-									data-testid="files-button"
-									disabled={shouldDisableFilesAndImages}
-									onClick={() => {
-										if (!shouldDisableFilesAndImages) {
-											onSelectFilesAndImages()
-										}
-									}}>
-									<ButtonContainer>
-										<PlusIcon size={13} />
-									</ButtonContainer>
-								</VSCodeButton>
-							</TooltipTrigger>
-						</Tooltip>
-
-						<ServersToggleModal />
-
-						<ClineRulesToggleModal />
-
-						{!rowLayout.collapseConfig && (
-							<span className="flex min-w-[18px] shrink" data-shrink="">
-								{taskGroupPicker}
-							</span>
-						)}
-
-						{!rowLayout.collapseConfig && (
-							<span className="flex min-w-14" data-shrink="">
-								{configPicker}
-							</span>
-						)}
-
-						{rowLayout.collapsePickers ? (
-							<PickerOverflowMenu>
-								{rowLayout.collapseConfig && taskGroupPicker}
-								{rowLayout.collapseConfig && configPicker}
-								{effortPicker}
-								<ApprovalsMenu />
-							</PickerOverflowMenu>
-						) : (
+						<PlusMenu
+							filesDisabled={shouldDisableFilesAndImages}
+							foldedPanels={!rowLayout.inlinePanelButtons}
+							onAddFiles={() => {
+								if (!shouldDisableFilesAndImages) {
+									onSelectFilesAndImages()
+								}
+							}}
+							onMention={handleContextButtonClick}
+							onUseScript={startScriptDraft}
+						/>
+						{rowLayout.inlinePanelButtons && (
 							<>
-								<span className="flex min-w-11 empty:hidden" data-shrink="">
-									{effortPicker}
-								</span>
-								<ApprovalsMenu />
+								<McpServersButton />
+								<RulesButton onUseScript={startScriptDraft} />
 							</>
 						)}
+						<WorkspaceButton />
+						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
+						{whereHasTask ? (
+							<ShrinkSlot floor={rowLayout.tightPills ? 22 : 52}>
+								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
+							</ShrinkSlot>
+						) : (
+							<span className="flex shrink-0 empty:hidden">
+								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
+							</span>
+						)}
+						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
+						<ShrinkSlot floor={rowLayout.tightPills ? 40 : 72}>
+							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
+						</ShrinkSlot>
+						{/* Effort labels are short ("Default", "Med"): the long model name gives way first. */}
+						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60} shrink={0.2}>
+							<ReasoningEffortPicker
+								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
+								mode={mode}
+								modelId={selectedModelId}
+								modelInfo={selectedModelInfo}
+							/>
+						</ShrinkSlot>
 					</ButtonGroup>
 					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
-					{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
-					<Tooltip>
-						<TooltipContent
-							className="text-xs px-2 flex flex-col gap-1"
-							hidden={shownTooltipMode === null}
-							side="top">
-							{shownTooltipMode === "act"
-								? "In Act mode, Cline will complete the task immediately"
-								: "In Ask mode, Cline will answer questions and explore the codebase"}
-							<p className="text-description/80 text-xs mb-0">
-								Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
-							</p>
-						</TooltipContent>
-						<TooltipTrigger className="shrink-0">
-							<SwitchContainer
-								$flash={modeSwitchFlash}
-								data-testid="mode-switch"
-								disabled={false}
-								onClick={onModeToggle}>
-								<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
-								{(
-									[
-										{ value: "plan", label: "Ask" },
-										{ value: "act", label: "Act" },
-									] as const
-								).map((m) => (
-									<div
-										aria-checked={mode === m.value}
-										className={cn(
-											"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
-											mode === m.value ? "text-button-foreground" : "text-input-foreground",
-										)}
-										key={m.value}
-										onMouseLeave={() => setShownTooltipMode(null)}
-										onMouseOver={() => setShownTooltipMode(m.value)}
-										role="switch">
-										{m.label}
-									</div>
-								))}
-							</SwitchContainer>
-						</TooltipTrigger>
-					</Tooltip>
+					{/* The approvals shield sits with the Ask/Act switch: both decide how much Cline does on its own. */}
+					<div className="flex shrink-0 items-center gap-1" data-testid="composer-mode-controls">
+						<ApprovalsMenu />
+						{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
+						<Tooltip>
+							<TooltipContent
+								className="text-xs px-2 flex flex-col gap-1"
+								hidden={shownTooltipMode === null}
+								side="top">
+								{shownTooltipMode === "act"
+									? "In Act mode, Cline will complete the task immediately"
+									: "In Ask mode, Cline will answer questions and explore the codebase"}
+								<p className="text-description/80 text-xs mb-0">
+									Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
+								</p>
+							</TooltipContent>
+							<TooltipTrigger className="shrink-0">
+								<SwitchContainer
+									$flash={modeSwitchFlash}
+									data-testid="mode-switch"
+									disabled={false}
+									onClick={onModeToggle}>
+									<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
+									{(
+										[
+											{ value: "plan", label: "Ask" },
+											{ value: "act", label: "Act" },
+										] as const
+									).map((m) => (
+										<div
+											aria-checked={mode === m.value}
+											className={cn(
+												"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
+												mode === m.value ? "text-button-foreground" : "text-input-foreground",
+											)}
+											key={m.value}
+											onMouseLeave={() => setShownTooltipMode(null)}
+											onMouseOver={() => setShownTooltipMode(m.value)}
+											role="switch">
+											{m.label}
+										</div>
+									))}
+								</SwitchContainer>
+							</TooltipTrigger>
+						</Tooltip>
+					</div>
 				</div>
 			</div>
 		)

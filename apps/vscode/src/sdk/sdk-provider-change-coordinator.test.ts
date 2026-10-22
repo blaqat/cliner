@@ -191,13 +191,13 @@ describe("SdkProviderChangeCoordinator", () => {
 				Object.assign(legacy, updates)
 			},
 			getSecretForKey: (key) => secrets[key],
-			setSecretsForKeys: (updates) => {
+			setSecretsForKeys: async (updates) => {
 				Object.assign(secrets, updates)
 			},
 			listSecretStorageKeys: () => Object.keys(secrets),
 		}
-		const migrated = ensureApiConfigProfiles(store).profiles[0]
-		const b = upsertApiConfigProfile(store, {
+		const migrated = (await ensureApiConfigProfiles(store)).profiles[0]
+		const b = await upsertApiConfigProfile(store, {
 			name: "B",
 			provider: "openai",
 			modelId: "B",
@@ -315,7 +315,7 @@ describe("SdkProviderChangeCoordinator", () => {
 					Object.assign(legacy, updates)
 				},
 				getSecretForKey: (key) => secrets[key],
-				setSecretsForKeys: (updates) => {
+				setSecretsForKeys: async (updates) => {
 					Object.assign(secrets, updates)
 				},
 				listSecretStorageKeys: () => Object.keys(secrets),
@@ -343,13 +343,13 @@ describe("SdkProviderChangeCoordinator", () => {
 			"delete",
 		])("reconciles a background profile %s against its build snapshot", async (change) => {
 			const { store, state } = makeProfileStore()
-			const p = upsertApiConfigProfile(store, {
+			const p = await upsertApiConfigProfile(store, {
 				name: "P",
 				provider: "openai",
 				modelId: "p-model",
 				secrets: { openAiApiKey: "old-key" },
 			})
-			const q = upsertApiConfigProfile(store, { name: "Q", provider: "openai", modelId: "q-model" })
+			const q = await upsertApiConfigProfile(store, { name: "Q", provider: "openai", modelId: "q-model" })
 			state.actProfileId = q.id
 			const previous = store.getApiConfiguration()
 			const selection = { actProfileId: p.id, actModeReasoningEffort: "low" as const }
@@ -381,9 +381,9 @@ describe("SdkProviderChangeCoordinator", () => {
 					[focused.sessionId, focused],
 				]) as never
 			options.getTaskApiSelection = (id) => (id === a.sessionId ? selection : focused.apiSnapshot.selection)
-			if (change === "delete") deleteApiConfigProfile(store, p.id)
+			if (change === "delete") await deleteApiConfigProfile(store, p.id)
 			else
-				upsertApiConfigProfile(store, {
+				await upsertApiConfigProfile(store, {
 					...p,
 					modelId: change === "model" ? "p-new" : p.modelId,
 					secrets: change === "secret" ? { openAiApiKey: "new-key" } : undefined,
@@ -407,9 +407,9 @@ describe("SdkProviderChangeCoordinator", () => {
 			)
 		})
 
-		it("changes effort only for the focused chat when two chats share a profile", () => {
+		it("changes effort only for the focused chat when two chats share a profile", async () => {
 			const { store, state, legacy } = makeProfileStore()
-			const p = upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "p-model" })
+			const p = await upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "p-model" })
 			state.actProfileId = p.id
 			legacy.actModeReasoningEffort = "low"
 			const previous = store.getApiConfiguration()
@@ -439,15 +439,15 @@ describe("SdkProviderChangeCoordinator", () => {
 			expect(options.rebuilds.request).toHaveBeenCalledExactlyOnceWith("provider", expect.any(Function), "focused")
 		})
 
-		it("does not restart a background session pinned to a different profile", () => {
+		it("does not restart a background session pinned to a different profile", async () => {
 			const { store, state } = makeProfileStore()
-			const p = upsertApiConfigProfile(store, {
+			const p = await upsertApiConfigProfile(store, {
 				name: "P",
 				provider: "openai",
 				modelId: "p-model",
 				options: { openAiBaseUrl: "https://p/v1" },
 			})
-			const r = upsertApiConfigProfile(store, {
+			const r = await upsertApiConfigProfile(store, {
 				name: "R",
 				provider: "openai",
 				modelId: "r-model",
@@ -502,7 +502,7 @@ describe("SdkProviderChangeCoordinator", () => {
 
 		it("rebuilds a pinned session against its own profile, not the global selection", async () => {
 			const { store, state, legacy } = makeProfileStore()
-			const p = upsertApiConfigProfile(store, {
+			const p = await upsertApiConfigProfile(store, {
 				name: "P",
 				provider: "openai",
 				modelId: "p-model",
@@ -525,7 +525,7 @@ describe("SdkProviderChangeCoordinator", () => {
 			const previous = snapshotApiProfileConfiguration(store, legacy as never, "act")
 			Object.assign(a, { apiSnapshot: { configuration: previous, selection: { actProfileId: p.id } } })
 			// Edit the pinned profile's connection data in place.
-			upsertApiConfigProfile(store, {
+			await upsertApiConfigProfile(store, {
 				...p,
 				options: { openAiBaseUrl: "https://p-new/v1" },
 			})

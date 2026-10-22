@@ -95,3 +95,41 @@ enum DiagnosticSeverity {
   DIAGNOSTIC_INFORMATION = 2;
   DIAGNOSTIC_HINT = 3;
 }
+
+// A saved script the user explicitly ran from the composer (typed `/name options`
+// or picked it from a menu). Only this marker lets a message grant a one-run
+// approval; prompt text alone never does.
+message ScriptInvocation {
+  string name = 1;
+  // Text and choice option values, by option name.
+  map<string, string> values = 2;
+  // Flag options the user turned on.
+  map<string, bool> flags = 3;
+}
+
+// A message the user attached as context by pasting its link into the composer.
+// The host resolves the text from the link; it never authorizes the thread's
+// transcript tools (only thread: picks do).
+message MessageLinkRef {
+  string thread_id = 1;
+  int64 message_index = 2;
+  // Row anchor (see ResolveMessageLinkRequest).
+  optional string tool_call_id = 3;
+  optional int32 block = 4;
+  // A reference carried verbatim, e.g. an edited message resending the tags it
+  // already had. When text is set the host uses these instead of resolving.
+  optional string thread_title = 5;
+  optional string author = 6;
+  optional string text = 7;
+}
+
+// What the user explicitly did in the composer for one message. The host
+// authorizes exactly this and never derives authorization from message text
+// (quote chips, "Add to Cline" insertions, restored drafts, expanded notes).
+message ComposerProvenance {
+  // Thread ids picked from the thread: mention menu whose token is still in the text.
+  repeated string authorized_thread_ids = 1;
+  optional ScriptInvocation script_invocation = 2;
+  // Message tags in the composer: context only, no authorization.
+  repeated MessageLinkRef message_links = 3;
+}

@@ -29,6 +29,7 @@ export function taskGroupSummaryToProto(group: TaskGroupSummary): ProtoTaskGroup
 		createdAt: group.createdAt,
 		updatedAt: group.updatedAt,
 		noteCount: group.noteCount,
+		branchSuggestionDismissed: group.branchSuggestionDismissed ?? false,
 	})
 }
 
@@ -60,6 +61,7 @@ export function historySearchHitToProto(hit: HistorySearchHit): ProtoSearchHisto
 		ts: hit.ts,
 		taskGroupId: hit.taskGroupId ?? "",
 		threadId: hit.threadId ?? "",
+		author: hit.author ?? "",
 	})
 }
 

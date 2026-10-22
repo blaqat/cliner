@@ -60,6 +60,7 @@ import {
 import { getProviderSettingsManager } from "./provider-migration"
 import { buildSapProviderConfig, type SapProviderConfig } from "./sap-config"
 import type { SdkSessionHost } from "./session-host"
+import { buildSubagentProfileSettings } from "./subagent-profiles"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -112,7 +113,7 @@ export interface ActiveSession {
 	/** The session ID */
 	sessionId: string
 	/** The config used to start the active session. */
-	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode }
+	startConfig?: Pick<CoreSessionConfig, "providerId" | "modelId"> & { mode?: Mode; cwd?: string; workspaceRoot?: string }
 	apiSnapshot?: SessionApiSnapshot
 	/** The runtime host instance managing this session (VscodeSessionHost) */
 	sdkHost: SdkSessionHost
@@ -1189,6 +1190,9 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 			allowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands") ?? true,
 			allowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp") ?? true,
 			allowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb") ?? true,
+			// Profiles, defaults and allow-list from Settings › Profiles › Subagents;
+			// undefined when the toggle is off and the spawn tool ignores them.
+			...buildSubagentProfileSettings(stateManager),
 		},
 		enableAgentTeams: false,
 		...(useAutoCondense

@@ -16,11 +16,13 @@ import {
 	type SettingsKey,
 } from "@shared/storage/state-keys"
 import type { StorageContext } from "@shared/storage/storage-context"
+import { type StorageLockOptions, StorageLockTimeoutError } from "@shared/storage/storage-lock"
 import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
+import { ensureModelProfiles, THREAD_SELECTION_KEYS, threadSelectionStamp } from "../controller/models/modelProfiles"
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
@@ -74,6 +76,11 @@ export class StateManager {
 	private pendingSecrets = new Set<SecretKey>()
 	private pendingWorkspaceState = new Set<LocalStateKey>()
 	private persistenceTimeout: NodeJS.Timeout | null = null
+	private persistence: Promise<void> = Promise.resolve()
+	private secretWrites = new Set<Promise<void>>()
+	// Multi-step operations (e.g. a configuration save: secrets, then settings) that may still queue state.
+	private trackedOperations = new Set<Promise<unknown>>()
+	private secretWriteErrors: unknown[] = []
 	private readonly PERSISTENCE_DELAY_MS = 500
 	private taskHistoryWatcher: FSWatcher | null = null
 
@@ -102,17 +109,7 @@ export class StateManager {
 		try {
 			await initializeDistinctId(storage)
 
-			// Load all extension state from file-backed stores
-			const globalState = await readGlobalStateFromStorage(storage.globalState)
-			const secrets = readSecretsFromStorage(storage.secrets)
-			const workspaceState = readWorkspaceStateFromStorage(storage.workspaceState)
-
-			// Populate the cache with all extension state and secrets fields
-			// Use populate method to avoid triggering persistence during initialization
-			StateManager.instance.populateCache(globalState, secrets, workspaceState)
-
-			StateManager.instance.isInitialized = true
-			ensureApiConfigProfiles(StateManager.instance)
+			await StateManager.instance.loadFromStorage()
 
 			await AgentConfigLoader.getInstance().ready()
 		} catch (error) {
@@ -128,6 +125,75 @@ export class StateManager {
 			throw new Error("StateManager has not been initialized")
 		}
 		return StateManager.instance
+	}
+
+	/**
+	 * Load all state from the file-backed stores, then bring profile settings up
+	 * to date (see reconcileProfilesUnderLock).
+	 */
+	public async loadFromStorage(): Promise<void> {
+		await this.populateFromStorage()
+		await this.reconcileProfilesUnderLock()
+	}
+
+	private async populateFromStorage(): Promise<void> {
+		const { storage } = this
+		// Load all extension state from file-backed stores
+		const globalState = await readGlobalStateFromStorage(storage.globalState)
+		const secrets = readSecretsFromStorage(storage.secrets)
+		const workspaceState = readWorkspaceStateFromStorage(storage.workspaceState)
+
+		// Populate the cache with all extension state and secrets fields
+		// Use populate method to avoid triggering persistence during initialization
+		this.populateCache(globalState, secrets, workspaceState)
+
+		this.isInitialized = true
+	}
+
+	/**
+	 * Saved configurations and named profiles are migrated and reconciled at
+	 * startup, which other windows may be doing at the same moment from their
+	 * own (possibly older) view of the files. So it runs under an interprocess
+	 * lock, on state freshly re-read inside it, and persists before releasing:
+	 * a window that arrives second finds the first one's committed result and
+	 * changes nothing, and never writes back values that were saved meanwhile.
+	 */
+	private async reconcileProfilesUnderLock(options?: StorageLockOptions): Promise<void> {
+		let acquired = false
+		try {
+			await this.storage.globalStateBackingStore.withLock(async () => {
+				acquired = true
+				await this.reloadPersistedState()
+				await ensureApiConfigProfiles(this)
+				ensureModelProfiles(this)
+				await this.flushPendingState()
+			}, options)
+		} catch (error) {
+			if (acquired || !(error instanceof StorageLockTimeoutError)) throw error
+			Logger.warn("[StateManager] Could not take the settings lock; deferring profile migration.")
+			await this.reloadPersistedState()
+		}
+	}
+
+	/**
+	 * Re-read persisted state into the cache, keeping values with changes that
+	 * haven't been written yet (they will be, on top of what was just read).
+	 */
+	private async reloadPersistedState(): Promise<void> {
+		this.storage.globalStateBackingStore.reload()
+		this.storage.secrets.reload()
+		const globalState = (await readGlobalStateFromStorage(this.storage.globalState)) as Record<string, unknown>
+		for (const [key, value] of Object.entries(globalState)) {
+			if (!this.pendingGlobalState.has(key as GlobalStateAndSettingsKey)) {
+				;(this.globalStateCache as Record<string, unknown>)[key] = value
+			}
+		}
+		const secrets = readSecretsFromStorage(this.storage.secrets) as Record<string, unknown>
+		for (const [key, value] of Object.entries(secrets)) {
+			if (!this.pendingSecrets.has(key as SecretKey)) {
+				;(this.secretsCache as Record<string, unknown>)[key] = value
+			}
+		}
 	}
 
 	/**
@@ -159,6 +225,47 @@ export class StateManager {
 		// Add to pending persistence set and schedule debounced write
 		this.pendingGlobalState.add(key)
 		this.scheduleDebouncedPersistence()
+	}
+
+	/**
+	 * Saves a webview's new stash list as edits to the stash on disk: entries it
+	 * added go on top and entries it removed are dropped, under the settings lock.
+	 * Each window keeps its own copy of the stash, so writing the whole list
+	 * back would bring back entries another window removed (or drop ones it added).
+	 */
+	async applyPromptStash(next: GlobalStateAndSettings["promptStash"]): Promise<void> {
+		if (!this.isInitialized) {
+			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
+		}
+		const store = this.storage.globalStateBackingStore
+		await store.withLock(async () => {
+			const seen = this.globalStateCache.promptStash ?? []
+			const nextIds = new Set(next.map((entry) => entry.id))
+			const seenIds = new Set(seen.map((entry) => entry.id))
+			const removed = new Set(seen.filter((entry) => !nextIds.has(entry.id)).map((entry) => entry.id))
+			const added = next.filter((entry) => !seenIds.has(entry.id))
+			const addedIds = new Set(added.map((entry) => entry.id))
+			store.reload()
+			const onDisk = store.get<GlobalStateAndSettings["promptStash"]>("promptStash") ?? []
+			const merged = [...added, ...onDisk.filter((entry) => !removed.has(entry.id) && !addedIds.has(entry.id))]
+			await store.setBatch({ promptStash: merged })
+			this.globalStateCache.promptStash = merged
+			this.pendingGlobalState.delete("promptStash")
+		})
+	}
+
+	/**
+	 * Re-reads the stash from disk (another window may have changed it).
+	 * Returns true when this window's copy changed.
+	 */
+	refreshPromptStash(): boolean {
+		if (!this.isInitialized || this.pendingGlobalState.has("promptStash")) return false
+		const store = this.storage.globalStateBackingStore
+		store.reload()
+		const onDisk = store.get<GlobalStateAndSettings["promptStash"]>("promptStash") ?? []
+		if (JSON.stringify(onDisk) === JSON.stringify(this.globalStateCache.promptStash ?? [])) return false
+		this.globalStateCache.promptStash = onDisk
+		return true
 	}
 
 	/**
@@ -258,20 +365,8 @@ export class StateManager {
 	 * Clear task settings cache - ensures pending changes are persisted first
 	 */
 	async clearTaskSettings(): Promise<void> {
-		// If there are pending task settings, persist them first
-		if (this.pendingTaskState.size > 0) {
-			try {
-				// Persist pending task state immediately
-				await this.persistTaskStateBatch(this.pendingTaskState)
-				// Clear pending set after successful persistence
-				this.pendingTaskState.clear()
-			} catch (error) {
-				Logger.error("[StateManager] Failed to persist task settings before clearing:", error)
-			}
-		}
-
+		await this.flushPendingState()
 		this.taskStateCache = {}
-		this.pendingTaskState.clear()
 	}
 
 	/**
@@ -340,7 +435,7 @@ export class StateManager {
 
 		// Update cache immediately for all keys
 		Object.entries(updates).forEach(([key, value]) => {
-			this.workspaceStateCache[key as keyof LocalState] = value
+			this.workspaceStateCache[key as keyof LocalState] = value as never
 			this.pendingWorkspaceState.add(key as LocalStateKey)
 		})
 
@@ -523,14 +618,49 @@ export class StateManager {
 	}
 
 	/**
+	 * Track an operation that may queue more state after it awaits, so a flush
+	 * (e.g. on deactivate) waits for it and then persists what it queued.
+	 */
+	trackOperation<T>(operation: Promise<T>): Promise<T> {
+		this.trackedOperations.add(operation)
+		const untrack = () => this.trackedOperations.delete(operation)
+		void operation.then(untrack, untrack)
+		return operation
+	}
+
+	private hasPendingState(): boolean {
+		return (
+			this.pendingGlobalState.size > 0 ||
+			this.pendingSecrets.size > 0 ||
+			this.pendingWorkspaceState.size > 0 ||
+			this.pendingTaskState.size > 0
+		)
+	}
+
+	/**
 	 * Write secrets under arbitrary keys in the secrets store. Empty/undefined
 	 * values delete the key. Writes go straight to the backing store.
 	 */
-	setSecretsForKeys(entries: Record<string, string | undefined>): void {
+	setSecretsForKeys(entries: Record<string, string | undefined>): Promise<void> {
 		if (!this.isInitialized) {
 			throw new Error(STATE_MANAGER_NOT_INITIALIZED)
 		}
-		void this.storage.secrets.setBatch(entries)
+		const write = Promise.resolve().then(() => this.storage.secrets.setBatch(entries))
+		this.secretWrites.add(write)
+		void write.then(
+			() => this.secretWrites.delete(write),
+			(error) => {
+				this.secretWrites.delete(write)
+				this.secretWriteErrors.push(error)
+				Logger.error("[StateManager] Failed to persist profile secrets:", error)
+				void Promise.resolve()
+					.then(() => this.onPersistenceError?.({ error }))
+					.catch((callbackError) => {
+						Logger.error("[StateManager] Persistence error callback failed:", callbackError)
+					})
+			},
+		)
+		return write
 	}
 
 	/**
@@ -558,9 +688,7 @@ export class StateManager {
 	 * Used for error recovery when write operations fail
 	 */
 	async reInitialize(currentTaskId?: string): Promise<void> {
-		if (this.persistenceTimeout) {
-			await this.persistPendingState()
-		}
+		await this.flushPendingState()
 		// Clear all cached data and pending state
 		this.dispose()
 
@@ -606,30 +734,46 @@ export class StateManager {
 	 * Private method to persist all pending state changes
 	 * Returns early if nothing is pending
 	 */
-	private async persistPendingState(): Promise<void> {
-		// Early return if nothing to persist
-		if (
-			this.pendingGlobalState.size === 0 &&
-			this.pendingSecrets.size === 0 &&
-			this.pendingWorkspaceState.size === 0 &&
-			this.pendingTaskState.size === 0
-		) {
-			return
-		}
-
-		// Execute all persistence operations in parallel
-		await Promise.all([
-			this.persistGlobalStateBatch(this.pendingGlobalState),
-			this.persistSecretsBatch(this.pendingSecrets),
-			this.persistWorkspaceStateBatch(this.pendingWorkspaceState),
-			this.persistTaskStateBatch(this.pendingTaskState),
-		])
-
-		// Clear pending sets after successful persistence
-		this.pendingGlobalState.clear()
-		this.pendingSecrets.clear()
-		this.pendingWorkspaceState.clear()
-		this.pendingTaskState.clear()
+	private persistPendingState(): Promise<void> {
+		const flush = this.persistence.then(async () => {
+			while (
+				this.pendingGlobalState.size ||
+				this.pendingSecrets.size ||
+				this.pendingWorkspaceState.size ||
+				this.pendingTaskState.size
+			) {
+				const global = this.pendingGlobalState
+				const secrets = this.pendingSecrets
+				const workspace = this.pendingWorkspaceState
+				const tasks = this.pendingTaskState
+				this.pendingGlobalState = new Set()
+				this.pendingSecrets = new Set()
+				this.pendingWorkspaceState = new Set()
+				this.pendingTaskState = new Map()
+				// Wait for every writer before restoring a failed batch or starting another.
+				const results = await Promise.allSettled([
+					this.persistGlobalStateBatch(global),
+					this.persistSecretsBatch(secrets),
+					this.persistWorkspaceStateBatch(workspace),
+					this.persistTaskStateBatch(tasks),
+				])
+				if (results[0].status === "rejected") for (const key of global) this.pendingGlobalState.add(key)
+				if (results[1].status === "rejected") for (const key of secrets) this.pendingSecrets.add(key)
+				if (results[2].status === "rejected") for (const key of workspace) this.pendingWorkspaceState.add(key)
+				if (results[3].status === "rejected") {
+					for (const [taskId, keys] of tasks) {
+						const pending = this.pendingTaskState.get(taskId) ?? new Set<SettingsKey>()
+						for (const key of keys) pending.add(key)
+						this.pendingTaskState.set(taskId, pending)
+					}
+				}
+				// Restore keys only. The caches already contain any newer values.
+				const failure = results.find((result) => result.status === "rejected")
+				if (failure?.status === "rejected") throw failure.reason
+			}
+		})
+		this.persistence = flush.catch(() => {})
+		return flush
 	}
 
 	/**
@@ -643,8 +787,27 @@ export class StateManager {
 			this.persistenceTimeout = null
 		}
 
-		// Execute persistence immediately
-		await this.persistPendingState()
+		// Include profile-secret writes even when no debounced state is pending. A tracked
+		// operation can queue more state once its secrets land, so drain until nothing is left.
+		let failure: unknown
+		// Drain until settled: each round waits for the work queued during the previous one.
+		for (;;) {
+			const results = await Promise.allSettled([
+				this.persistPendingState(),
+				...this.secretWrites,
+				...this.trackedOperations,
+			])
+			const rejected = results.find((result) => result.status === "rejected")
+			// A failed write leaves its keys pending for the next flush; report it rather than retry here.
+			if (rejected?.status === "rejected") {
+				failure = rejected.reason
+				break
+			}
+			if (!this.hasPendingState() && this.secretWrites.size === 0 && this.trackedOperations.size === 0) break
+		}
+		const secretErrors = this.secretWriteErrors.splice(0)
+		if (failure !== undefined) throw failure
+		if (secretErrors.length) throw secretErrors[0]
 	}
 
 	/**
@@ -658,15 +821,18 @@ export class StateManager {
 
 		// Schedule a new timeout to persist pending changes
 		this.persistenceTimeout = setTimeout(async () => {
+			this.persistenceTimeout = null
 			try {
 				await this.persistPendingState()
-				this.persistenceTimeout = null
 			} catch (error) {
 				Logger.error("[StateManager] Failed to persist pending changes:", error)
-				this.persistenceTimeout = null
 
 				// Call persistence error callback for error recovery
-				this.onPersistenceError?.({ error: error })
+				try {
+					await this.onPersistenceError?.({ error: error })
+				} catch (callbackError) {
+					Logger.error("[StateManager] Persistence error callback failed:", callbackError)
+				}
 			}
 		}, this.PERSISTENCE_DELAY_MS)
 	}
@@ -686,9 +852,18 @@ export class StateManager {
 			}
 		}
 
+		// The thread selection and its stamp always persist as a unit, so the
+		// stamp on disk describes the selection beside it even when a window with
+		// a stale cache writes. An older release changes the selection without
+		// the stamp, which is how the next startup tells (see ensureModelProfiles).
+		if (THREAD_SELECTION_KEYS.some((key) => keys.has(key))) {
+			for (const key of THREAD_SELECTION_KEYS) regularEntries[key] = this.globalStateCache[key]
+			regularEntries.threadSelectionStamp = threadSelectionStamp(this.globalStateCache)
+		}
+
 		// Batch write all regular keys in a single disk operation
 		if (Object.keys(regularEntries).length > 0) {
-			this.storage.globalStateBackingStore.setBatch(regularEntries)
+			await this.storage.globalStateBackingStore.setBatch(regularEntries)
 		}
 	}
 
@@ -700,7 +875,7 @@ export class StateManager {
 			return
 		}
 		// Persist each task's settings
-		await Promise.all(
+		const results = await Promise.allSettled(
 			Array.from(pendingTaskStates.entries()).map(([taskId, keys]) => {
 				if (keys.size === 0) {
 					return Promise.resolve()
@@ -715,6 +890,8 @@ export class StateManager {
 				return writeTaskSettingsToStorage(taskId, settingsToWrite)
 			}),
 		)
+		const failure = results.find((result) => result.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
 	}
 
 	/**
@@ -727,7 +904,7 @@ export class StateManager {
 			const value = this.secretsCache[key]
 			entries[key] = value || undefined // Convert empty strings to undefined (delete)
 		}
-		this.storage.secrets.setBatch(entries)
+		await this.storage.secrets.setBatch(entries)
 	}
 
 	/**
@@ -739,7 +916,7 @@ export class StateManager {
 		for (const key of keys) {
 			entries[key] = this.workspaceStateCache[key]
 		}
-		this.storage.workspaceState.setBatch(entries)
+		await this.storage.workspaceState.setBatch(entries)
 	}
 
 	/**

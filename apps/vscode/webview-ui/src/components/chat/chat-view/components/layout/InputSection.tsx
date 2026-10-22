@@ -1,4 +1,7 @@
-import React, { useCallback, useEffect, useRef } from "react"
+import type { CostBreakdownRow } from "@shared/getApiMetrics"
+import type { ParsedMessageLink } from "@shared/message-links"
+import { ResolveMessageLinkRequest } from "@shared/proto/cline/task"
+import React, { useCallback, useEffect, useLayoutEffect, useRef } from "react"
 import ChatTextArea from "@/components/chat/ChatTextArea"
 import { ContextUsageIndicator, useComposerContextUsage } from "@/components/chat/composer/ContextUsageIndicator"
 import {
@@ -8,8 +11,10 @@ import {
 	isCompactionRunning,
 	showsCompactNudge,
 } from "@/components/chat/composer/contextUsage"
+import { MessageTagList, sameMessageTag } from "@/components/chat/MessageTag"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { usePromptStash } from "../../hooks/usePromptStash"
 import { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 
@@ -29,6 +34,8 @@ interface InputSectionProps {
 		totalCost: number
 	}
 	lastApiReqTotalTokens?: number
+	/** Usage and cost per model for the context popover. */
+	costBreakdown?: CostBreakdownRow[]
 	/** Opens a task group's page (the task pill's "Open task"). */
 	onOpenTaskGroup?: (taskGroupId: string) => void
 }
@@ -45,11 +52,14 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	selectFilesAndImages,
 	apiMetrics,
 	lastApiReqTotalTokens,
+	costBreakdown,
 	onOpenTaskGroup,
 }) => {
 	const {
 		quotes,
 		setQuotes,
+		messageTags = [],
+		setMessageTags,
 		inputValue,
 		setInputValue,
 		sendingDisabled,
@@ -69,6 +79,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 		currentTaskItem,
 		enterSendsAs = "steer",
 		clineMessages = [],
+		useAutoCondense,
 		mode,
 		subagentView,
 		sessionStatuses,
@@ -108,13 +119,37 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	const focusComposer = useCallback(() => textAreaRef.current?.focus(), [textAreaRef])
 
 	const handleStash = useCallback(() => {
-		if (!promptStash.stash({ text: inputValue, quotes })) {
+		if (!promptStash.stash({ text: inputValue, quotes, messageTags })) {
 			return false
 		}
 		setInputValue("")
 		setQuotes([])
+		setMessageTags([])
 		return true
-	}, [promptStash, inputValue, quotes, setInputValue, setQuotes])
+	}, [promptStash, inputValue, quotes, messageTags, setInputValue, setQuotes, setMessageTags])
+
+	// ⌘S / Ctrl+S reaches the webview as a host event: the workbench claims the
+	// key (cline.stashShortcut) and posts here. Subscribing once via a ref keeps
+	// the stream stable while handleStash is rebuilt on each keystroke.
+	const handleStashRef = useRef(handleStash)
+	useLayoutEffect(() => {
+		handleStashRef.current = handleStash
+	})
+	useEffect(() => {
+		const cleanup = UiServiceClient.subscribeToStashShortcut(
+			{},
+			{
+				onResponse: () => {
+					handleStashRef.current()
+				},
+				onError: (error: unknown) => {
+					console.error("Error in stashShortcut subscription:", error)
+				},
+				onComplete: () => {},
+			},
+		)
+		return cleanup
+	}, [])
 
 	const handleSendAs = useCallback(
 		(kind: "interject" | "aside" | "background") => {
@@ -131,22 +166,67 @@ export const InputSection: React.FC<InputSectionProps> = ({
 
 	const handleRestoreStash = useCallback(
 		(id: string) => {
-			const restored = promptStash.restore(id, { text: inputValue, quotes })
+			const restored = promptStash.restore(id, { text: inputValue, quotes, messageTags })
 			if (!restored) {
 				return
 			}
 			prevQuoteCountRef.current = restored.quotes.length
 			setInputValue(restored.text)
 			setQuotes(restored.quotes)
+			setMessageTags(restored.messageTags ?? [])
 			focusComposer()
 		},
-		[promptStash, inputValue, quotes, setInputValue, setQuotes, focusComposer],
+		[promptStash, inputValue, quotes, messageTags, setInputValue, setQuotes, setMessageTags, focusComposer],
+	)
+
+	// A pasted vscode:// message link becomes a message tag: a context connection
+	// (not a quote, so no note) that shows the message on hover and hands the
+	// host the link to resolve on send. "You · <thread>" attribution comes from
+	// the host. Unresolvable links fall back to inserting the URL literally.
+	const handlePasteMessageLink = useCallback(
+		(link: ParsedMessageLink, rawUrl: string) => {
+			const insertRawUrl = () =>
+				setInputValue((current) => current + (current && !current.endsWith(" ") ? " " : "") + rawUrl + " ")
+			TaskServiceClient.resolveMessageLink(
+				ResolveMessageLinkRequest.create({
+					threadId: link.threadId,
+					messageIndex: link.messageIndex,
+					toolCallId: link.toolCallId,
+					block: link.block,
+				}),
+			)
+				.then((info) => {
+					if (info.text) {
+						const who = info.author === "user" ? "You" : "Cline"
+						const source = info.threadTitle ? `${who} · ${info.threadTitle}` : who
+						const tag = {
+							threadId: link.threadId,
+							messageIndex: link.messageIndex,
+							...(link.toolCallId ? { toolCallId: link.toolCallId } : {}),
+							...(link.block !== undefined ? { block: link.block } : {}),
+							text: info.text,
+							source,
+						}
+						setMessageTags((current) =>
+							current.some((existing) => sameMessageTag(existing, tag)) ? current : [...current, tag],
+						)
+						focusComposer()
+					} else {
+						insertRawUrl()
+					}
+				})
+				.catch((error) => {
+					console.error("Failed to resolve message link:", error)
+					insertRawUrl()
+				})
+		},
+		[setInputValue, setMessageTags, focusComposer],
 	)
 
 	return (
 		<ChatTextArea
 			enterSendsAs={enterSendsAs}
-			hasQuotes={quotes.length > 0}
+			hasQuotes={quotes.length > 0 || messageTags.length > 0}
 			inputValue={inputValue}
 			isHome={!currentTaskItem}
 			isRunning={isRunning}
@@ -158,20 +238,32 @@ export const InputSection: React.FC<InputSectionProps> = ({
 				}
 			}}
 			onOpenTaskGroup={onOpenTaskGroup}
+			onPasteMessageLink={handlePasteMessageLink}
 			onRestoreStash={handleRestoreStash}
+			onScriptRun={chatState.setScriptRun}
 			onSelectFilesAndImages={selectFilesAndImages}
 			onSend={() => messageHandlers.handleSendMessage(inputValue, selectedImages, selectedFiles)}
 			onSendAs={handleSendAs}
 			onStash={handleStash}
+			onThreadPicked={chatState.authorizeThread}
 			placeholderText={isRunning ? runningPlaceholder : placeholderText}
 			quoteTags={
-				quotes.length > 0 ? (
-					<QuoteTagList
-						autoOpenIndex={focusNewQuoteNote ? quotes.length - 1 : undefined}
-						focusComposer={focusComposer}
-						quotes={quotes}
-						setQuotes={setQuotes}
-					/>
+				quotes.length > 0 || messageTags.length > 0 ? (
+					<div className="flex items-center gap-1" data-testid="composer-chips">
+						{messageTags.length > 0 && (
+							<MessageTagList focusComposer={focusComposer} setTags={setMessageTags} tags={messageTags} />
+						)}
+						{quotes.length > 0 && (
+							<div className="min-w-0 flex-1">
+								<QuoteTagList
+									autoOpenIndex={focusNewQuoteNote ? quotes.length - 1 : undefined}
+									focusComposer={focusComposer}
+									quotes={quotes}
+									setQuotes={setQuotes}
+								/>
+							</div>
+						)}
+					</div>
 				) : undefined
 			}
 			ref={textAreaRef}
@@ -194,6 +286,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 							render: ({ showCost, inlineCompactNudge }) => (
 								<ContextUsageIndicator
 									{...usage}
+									autoCompact={useAutoCondense !== false}
+									breakdown={costBreakdown}
 									cacheReads={apiMetrics.totalCacheReads}
 									cacheWrites={apiMetrics.totalCacheWrites}
 									canCompact={canCompact}

@@ -1,6 +1,7 @@
 import type { ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskGroupSummary } from "@shared/task-groups"
+import { deriveThreadStatus, isLiveThreadStatus, type ThreadStatus, waitingOnLabel } from "./threadStatus"
 
 export type SessionStatus = ExtensionState["sessionStatuses"][string]
 export type SessionStatuses = ExtensionState["sessionStatuses"]
@@ -10,12 +11,15 @@ export const DEFAULT_ACTIVE_LIMIT = 15
 export const DEFAULT_SETTLED_LIMIT = 10
 /** How many more settled rows each "Show more" reveals. */
 export const SETTLED_PAGE_SIZE = 25
+/** How many more active rows each "Show more" reveals. */
+export const ACTIVE_PAGE_SIZE = 25
 
 export interface InboxRow {
 	item: HistoryItem
 	/** Effective last-active time: the item's ts or the newest descendant's (asides and subagents). */
 	activityTs: number
-	status: SessionStatus
+	/** Derived: "subagents" when the thread is idle but its subagents or subthreads still run. */
+	status: ThreadStatus
 	settled: boolean
 	/** Asides forked from this task (history items whose parentTaskId is this task). */
 	subthreadCount: number
@@ -32,7 +36,7 @@ export interface InboxRow {
 /** A task group ("Task" in the UI) row: its member threads leave the top level. */
 export interface InboxTaskGroupRow {
 	group: TaskGroupSummary
-	/** Member thread rows (settled included), newest activity first. */
+	/** Member thread rows: active ones first, then settled ones, each newest activity first. */
 	members: InboxRow[]
 	/** Newest member activity; the group's own update time when it has no threads. */
 	activityTs: number
@@ -56,7 +60,7 @@ export interface InboxGroups {
 	settled: InboxSettledEntry[]
 	/** All settled entries, including those cut by the settled limit. */
 	settledTotal: number
-	/** Active rows cut by the active limit; the list links to the full history when non-zero. */
+	/** Active rows past the active limit; the list offers "Show more" for them. */
 	hiddenCount: number
 }
 
@@ -70,13 +74,13 @@ function isLive(status: SessionStatus): boolean {
 
 /** The thread or one of its subthreads/subagents is working right now. */
 export function isRowWorking(row: InboxRow): boolean {
-	return row.status === "running" || row.liveSubthreadCount > 0 || row.liveSubagentCount > 0
+	return row.status === "running" || row.status === "subagents" || row.liveSubthreadCount > 0 || row.liveSubagentCount > 0
 }
 
 /**
  * Groups task history for the home inbox. Asides are folded into their parent's
- * subthread count instead of being top-level rows (unless the parent is gone or
- * the aside is filed in a different task than the parent).
+ * subthread count instead of being top-level rows (unless the parent is gone).
+ * An aside always belongs to its parent's task, so it never differs in grouping.
  * Threads filed into a known task group move under that group's row. A group
  * is active while any member has unsettled or in-progress work; groups whose
  * members are all settled (or that have none) sit in the settled list.
@@ -96,14 +100,25 @@ export function buildInbox(
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
 	const byId = new Map(valid.map((item) => [item.id, item]))
-	// Asides own their task membership. One moved to another task (or out of its
-	// parent's) is listed as its own row there instead of under the parent, so it
-	// shows wherever its breadcrumb says it lives. Subagents always nest.
+	// Asides and subagents always nest under their parent: an aside belongs to its parent's
+	// task (the extension keeps them in step), so it never needs a row of its own.
+	// Legacy or hand-edited history can point a thread at itself or loop parents; nesting those
+	// would remove every thread in the loop from the list, so they stay top-level.
+	const inParentLoop = (item: HistoryItem): boolean => {
+		const seen = new Set([item.id])
+		for (let parentId = item.parentTaskId; parentId; parentId = byId.get(parentId)?.parentTaskId) {
+			if (seen.has(parentId)) return true
+			seen.add(parentId)
+		}
+		return false
+	}
 	const nests = (item: HistoryItem): boolean => {
 		const parent = item.parentTaskId ? byId.get(item.parentTaskId) : undefined
-		if (!parent) return false
-		return !!item.isSubagent || (item.taskGroupId || undefined) === (parent.taskGroupId || undefined)
+		if (!parent || inParentLoop(item)) return false
+		return true
 	}
+	// A subthread whose parent is gone has nowhere to roll up into: it is listed on its own, settled.
+	const isOrphan = (item: HistoryItem): boolean => !!item.parentTaskId && !byId.has(item.parentTaskId)
 	const childrenByParent = new Map<string, HistoryItem[]>()
 	for (const item of valid) {
 		if (item.parentTaskId && nests(item)) {
@@ -139,21 +154,30 @@ export function buildInbox(
 				descendants.push(...(childrenByParent.get(child.id) ?? []))
 			}
 			const counts = subagentCounts?.[item.id]
+			const ownStatus = statusFor(statuses, item.id)
+			const liveSubthreadCount = children.filter((child) => statusFor(statuses, child.id) === "running").length
+			// Live sessions report total+live; otherwise fall back to the persisted total.
+			const liveSubagentCount = Math.max(
+				counts?.live ?? 0,
+				agents.filter((child) => isLive(statusFor(statuses, child.id))).length,
+			)
+			const attentionSubagentCount = agents.filter((child) => statusFor(statuses, child.id) === "waiting").length
+			const status = deriveThreadStatus(ownStatus, {
+				liveSubagents: liveSubagentCount,
+				liveSubthreads: liveSubthreadCount,
+				attentionSubagents: attentionSubagentCount,
+			})
 			return {
 				item,
 				activityTs,
-				status: statusFor(statuses, item.id),
-				// A live session is never shown as settled, even if the history flag lags.
-				settled: !!item.isSettled && !isLive(statusFor(statuses, item.id)),
+				status,
+				// A live thread (including one waiting on subagents) is never shown as settled, even if the history flag lags.
+				settled: (!!item.isSettled || isOrphan(item)) && !isLiveThreadStatus(status),
 				subthreadCount: children.length,
-				liveSubthreadCount: children.filter((child) => statusFor(statuses, child.id) === "running").length,
-				// Live sessions report total+live; otherwise fall back to the persisted total.
+				liveSubthreadCount,
 				subagentCount: Math.max(counts?.total ?? item.subagentCount ?? 0, agents.length),
-				liveSubagentCount: Math.max(
-					counts?.live ?? 0,
-					agents.filter((child) => isLive(statusFor(statuses, child.id))).length,
-				),
-				attentionSubagentCount: agents.filter((child) => statusFor(statuses, child.id) === "waiting").length,
+				liveSubagentCount,
+				attentionSubagentCount,
 			}
 		})
 
@@ -166,12 +190,13 @@ export function buildInbox(
 	}
 	const allGroups = taskGroups
 		.map((group) => {
-			const members = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
+			const byActivity = (membersByGroup.get(group.id) ?? []).sort((a, b) => b.activityTs - a.activityTs)
+			const isActive = (member: InboxRow) => !member.settled || isRowWorking(member)
 			return {
 				group,
-				members,
-				activityTs: members[0]?.activityTs ?? group.updatedAt,
-				runningCount: members.filter(isRowWorking).length,
+				members: [...byActivity.filter(isActive), ...byActivity.filter((member) => !isActive(member))],
+				activityTs: byActivity[0]?.activityTs ?? group.updatedAt,
+				runningCount: byActivity.filter(isRowWorking).length,
 			}
 		})
 		.sort((a, b) => b.activityTs - a.activityTs)
@@ -249,13 +274,15 @@ export function describeActivity(row: InboxRow, now: number): string {
 			return "Waiting for you"
 		case "error":
 			return "Stopped with an error"
+		case "stopped":
+			return "Stopped"
+		case "subagents":
+			return waitingOnLabel(row.liveSubagentCount, row.liveSubthreadCount)
 	}
-	// An idle parent with a busy subthread still has work happening.
-	if (row.liveSubthreadCount > 0 || row.liveSubagentCount > 0) return "Working… in subthread"
 	return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
 }
 
-/** Member threads an expanded group row shows; the rest collapse into "＋N older". */
+/** Member threads an expanded group row shows before "Show N more". */
 export const GROUP_PREVIEW_COUNT = 2
 
 const EXPANDED_TASK_GROUPS_KEY = "inbox.expandedTaskGroups"

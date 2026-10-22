@@ -29,6 +29,16 @@ describe("createWorkspaceFileReadExecutor", () => {
 		expect(content).toContain("line one")
 	})
 
+	it("uses the calling session's cwd for relative reads", async () => {
+		const sessionCwd = path.join(workspaceRoot, "isolate")
+		await fs.mkdir(sessionCwd)
+		await fs.writeFile(path.join(sessionCwd, "file.txt"), "isolate file")
+		const executor = createWorkspaceFileReadExecutor(async (ctx) =>
+			ctx.sessionId === "isolated" ? sessionCwd : workspaceRoot,
+		)
+		expect(await executor({ path: "file.txt" }, { ...context, sessionId: "isolated" })).toContain("isolate file")
+	})
+
 	it("passes absolute paths through unchanged", async () => {
 		const content = await readFile({ path: path.join(workspaceRoot, "src", "app.ts") }, context)
 		expect(content).toContain("line two")

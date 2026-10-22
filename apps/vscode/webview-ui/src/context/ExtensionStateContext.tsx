@@ -80,10 +80,15 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showHistory: boolean
 	showAccount: boolean
 	showWorktrees: boolean
+	showWalkthrough: boolean
+	/** Set while the walkthrough page shows a stored agent-authored doc; unset for the thread diff. */
+	walkthroughAuthoredId?: string
 	/** The task (group) page or its notebook, shown in the sidebar in place of chat/home. */
 	taskGroupView: TaskGroupViewState | null
 	showAnnouncement: boolean
 	expandTaskHeader: boolean
+	/** Whether the VS Code window has focus (pushed by the host; true until told otherwise). */
+	windowFocused: boolean
 
 	// Setters
 	setShowAnnouncement: (value: boolean) => void
@@ -134,6 +139,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	navigateToHistory: () => void
 	navigateToAccount: () => void
 	navigateToWorktrees: () => void
+	navigateToWalkthrough: (authoredId?: string) => void
 	/** Opens a task group's page (or its notebook) in the sidebar. */
 	navigateToTaskGroup: (id: string, page?: TaskGroupPage) => void
 	navigateToChat: () => void
@@ -143,6 +149,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	hideHistory: () => void
 	hideAccount: () => void
 	hideWorktrees: () => void
+	hideWalkthrough: () => void
 	hideTaskGroupView: () => void
 	hideAnnouncement: () => void
 	closeMarketplaceView: () => void
@@ -150,6 +157,11 @@ export interface ExtensionStateContextType extends ExtensionState {
 
 	// Event callbacks
 	onRelinquishControl: (callback: () => void) => () => void
+
+	// Message deep links: set when a vscode:// link opens a thread; the chat
+	// view scrolls to the message, flashes it, then clears this.
+	openMessageTarget?: { threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number }
+	clearOpenMessageTarget: () => void
 }
 
 export type TaskGroupPage = "home" | "notebook"
@@ -173,8 +185,15 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showHistory, setShowHistory] = useState(false)
 	const [showAccount, setShowAccount] = useState(false)
 	const [showWorktrees, setShowWorktrees] = useState(false)
+	const [showWalkthrough, setShowWalkthrough] = useState(false)
+	const [walkthroughAuthoredId, setWalkthroughAuthoredId] = useState<string | undefined>(undefined)
+	const hideWalkthrough = useCallback(() => {
+		setShowWalkthrough(false)
+		setWalkthroughAuthoredId(undefined)
+	}, [])
 	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
+	const [windowFocused, setWindowFocused] = useState(true)
 
 	// Helper for MCP view
 	const closeMcpView = useCallback(() => {
@@ -204,6 +223,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			setShowHistory(false)
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			closeMcpView()
 			if (tab) {
 				setMcpTab(tab)
@@ -219,6 +239,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowMarketplace(true)
 	}, [closeMcpView])
 
@@ -229,6 +250,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			closeMcpView()
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			setSettingsNavigationRequest(targetSection ? createSettingsNavigationRequest(targetSection) : undefined)
 			setSettingsInitialModelTab(undefined)
 			setShowSettings(true)
@@ -243,6 +265,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			closeMcpView()
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			setSettingsNavigationRequest(opts.targetSection ? createSettingsNavigationRequest(opts.targetSection) : undefined)
 			setSettingsInitialModelTab(opts.initialModelTab)
 			setShowSettings(true)
@@ -256,6 +279,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowHistory(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowAccount, setShowWorktrees, setShowHistory])
 
@@ -265,6 +289,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowHistory(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowAccount(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowWorktrees, setShowAccount])
 
@@ -274,6 +299,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowHistory(false)
 		setShowAccount(false)
+		setShowWalkthrough(false)
 		setShowWorktrees(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
@@ -285,6 +311,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			setShowHistory(false)
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			setTaskGroupView({ id, page })
 		},
 		[closeMarketplaceView, closeMcpView],
@@ -297,8 +324,19 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
+
+	const navigateToWalkthrough = useCallback(
+		(authoredId?: string) => {
+			navigateToChat()
+			// Guard against being wired straight to onClick, which passes a click event here.
+			setWalkthroughAuthoredId(typeof authoredId === "string" ? authoredId : undefined)
+			setShowWalkthrough(true)
+		},
+		[navigateToChat],
+	)
 
 	const [state, setState] = useState<ExtensionState>({
 		version: "",
@@ -359,9 +397,13 @@ export const ExtensionStateContextProvider: React.FC<{
 		lastDismissedCliBannerVersion: 0,
 		backgroundEditEnabled: false,
 		showFeatureTips: false,
+		threadToastsEnabled: true,
+		threadToastSeconds: 5,
+		continueAnswerOnActSwitch: true,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
 		apiConfigProfiles: [],
+		profiles: [],
 
 		// NEW: Add workspace information with defaults
 		workspaceRoots: [],
@@ -465,11 +507,17 @@ export const ExtensionStateContextProvider: React.FC<{
 	const accountButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const settingsButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const worktreesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
+	const windowFocusSubscriptionRef = useRef<(() => void) | null>(null)
 	const partialMessageUnsubscribeRef = useRef<(() => void) | null>(null)
 	const openRouterModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const liteLlmModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const workspaceUpdatesUnsubscribeRef = useRef<(() => void) | null>(null)
 	const relinquishControlUnsubscribeRef = useRef<(() => void) | null>(null)
+	const openMessageUnsubscribeRef = useRef<(() => void) | null>(null)
+	const [openMessageTarget, setOpenMessageTarget] = useState<
+		{ threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number } | undefined
+	>(undefined)
+	const clearOpenMessageTarget = useCallback(() => setOpenMessageTarget(undefined), [])
 
 	// Add ref for callbacks
 	const relinquishControlCallbacks = useRef<Set<() => void>>(new Set())
@@ -665,6 +713,14 @@ export const ExtensionStateContextProvider: React.FC<{
 			},
 		)
 
+		windowFocusSubscriptionRef.current = UiServiceClient.subscribeToWindowFocus(EmptyRequest.create({}), {
+			onResponse: (response) => setWindowFocused(!!response.value),
+			onError: (error: any) => {
+				console.error("Error in window focus subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Subscribe to partial message events
 		partialMessageUnsubscribeRef.current = UiServiceClient.subscribeToPartialMessage(EmptyRequest.create({}), {
 			onResponse: (protoMessage: any) => {
@@ -779,6 +835,25 @@ export const ExtensionStateContextProvider: React.FC<{
 			onComplete: () => {},
 		})
 
+		// Subscribe to message deep-link events (vscode://…/thread/<id>?m=<index>)
+		openMessageUnsubscribeRef.current = UiServiceClient.subscribeToOpenMessage(EmptyRequest.create({}), {
+			onResponse: (event: any) => {
+				if (event?.threadId) {
+					setOpenMessageTarget({
+						threadId: event.threadId,
+						messageIndex: event.messageIndex,
+						text: event.text ?? "",
+						toolCallId: event.toolCallId || undefined,
+						block: event.block ?? undefined,
+					})
+				}
+			},
+			onError: (error: any) => {
+				console.error("Error in openMessage subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Clean up subscriptions when component unmounts
 		return () => {
 			if (stateSubscriptionRef.current) {
@@ -809,6 +884,8 @@ export const ExtensionStateContextProvider: React.FC<{
 				settingsButtonClickedSubscriptionRef.current()
 				settingsButtonClickedSubscriptionRef.current = null
 			}
+			windowFocusSubscriptionRef.current?.()
+			windowFocusSubscriptionRef.current = null
 			if (worktreesButtonClickedSubscriptionRef.current) {
 				worktreesButtonClickedSubscriptionRef.current()
 				worktreesButtonClickedSubscriptionRef.current = null
@@ -832,6 +909,10 @@ export const ExtensionStateContextProvider: React.FC<{
 			if (relinquishControlUnsubscribeRef.current) {
 				relinquishControlUnsubscribeRef.current()
 				relinquishControlUnsubscribeRef.current = null
+			}
+			if (openMessageUnsubscribeRef.current) {
+				openMessageUnsubscribeRef.current()
+				openMessageUnsubscribeRef.current = null
 			}
 			if (mcpServersSubscriptionRef.current) {
 				mcpServersSubscriptionRef.current()
@@ -941,9 +1022,12 @@ export const ExtensionStateContextProvider: React.FC<{
 		showSettings,
 		settingsNavigationRequest,
 		settingsInitialModelTab,
+		windowFocused,
 		showHistory,
 		showAccount,
 		showWorktrees,
+		showWalkthrough,
+		walkthroughAuthoredId,
 		taskGroupView,
 		showAnnouncement,
 		globalClineRulesToggles: state.globalClineRulesToggles || {},
@@ -965,14 +1049,20 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToHistory,
 		navigateToAccount,
 		navigateToWorktrees,
+		navigateToWalkthrough,
 		navigateToTaskGroup,
 		navigateToChat,
+
+		// Message deep links
+		openMessageTarget,
+		clearOpenMessageTarget,
 
 		// Hide functions
 		hideSettings,
 		hideHistory,
 		hideAccount,
 		hideWorktrees,
+		hideWalkthrough,
 		hideTaskGroupView,
 		hideAnnouncement,
 		closeMarketplaceView,

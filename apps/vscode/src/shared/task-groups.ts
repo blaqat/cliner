@@ -14,6 +14,8 @@ export interface TaskGroup {
 	tags: TaskTag[]
 	createdAt: number
 	updatedAt: number
+	/** The user dismissed the composer's "Add to this task?" branch suggestion for this task. */
+	branchSuggestionDismissed?: boolean
 }
 export interface TaskGroupSummary extends TaskGroup {
 	noteCount: number
@@ -28,13 +30,30 @@ export interface NotebookNoteMeta {
 	readers: number // distinct threads that read it (from activity log)
 }
 export type NotebookChangeOp = "create" | "update" | "delete"
+export interface NotebookDiffLine {
+	kind: "add" | "remove" | "context" | "collapsed"
+	text: string
+}
+
+export interface NotebookVersion {
+	id: string
+	ts: number
+	content: string
+	by: string
+}
+
 export interface NotebookChange {
 	op: NotebookChangeOp
 	slug: string
 	name: string
 	description: string
 	content?: string
+	diff?: NotebookDiffLine[]
+	editedByUser?: boolean
+	replacedUserVersion?: string
 	baseUpdatedAt?: number
+	/** The user's last editor save was rejected; their text is kept as a recoverable draft. */
+	draft?: { ts: number; reason: string }
 }
 export interface NotebookActivity {
 	ts: number
@@ -88,4 +107,6 @@ export interface HistorySearchHit {
 	ts: number
 	taskGroupId?: string
 	threadId?: string
+	/** Message hits: who wrote the message. */
+	author?: "you" | "agent"
 }

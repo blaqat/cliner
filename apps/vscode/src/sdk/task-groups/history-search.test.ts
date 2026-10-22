@@ -95,6 +95,7 @@ describe("HistorySearcher", () => {
 			const hits = await searcher.search({ query: "DEPLOY", kind: "messages", threads })
 			expect(hits).toHaveLength(2)
 			expect(hits.map((h) => h.id).sort()).toEqual(["s1:0", "s1:1"])
+			expect(Object.fromEntries(hits.map((h) => [h.id, h.author]))).toEqual({ "s1:0": "you", "s1:1": "agent" })
 			for (const hit of hits) {
 				expect(hit.kind).toBe("message")
 				expect(hit.threadId).toBe("s1")
@@ -102,6 +103,19 @@ describe("HistorySearcher", () => {
 				expect(hit.title).toBe("Deploy API")
 				expect(hit.snippet.toLowerCase()).toContain("deploy")
 			}
+		})
+
+		it("never shows a message_reference block in a hit snippet", async () => {
+			const threads: HistorySearchThread[] = [{ id: "s1", title: "Deploy API", ts: 100 }]
+			const block =
+				'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+			await writeSession(sessionsDir, "s1", [
+				textMessage("user", `<user_input mode="act">${block}\n\nship the release</user_input>`, 100),
+			])
+			const hits = await searcher.search({ query: "ship", kind: "messages", threads })
+			expect(hits.map((hit) => hit.snippet)).toEqual(["ship the release"])
+			// The attached message is context, not the user's words, so its text isn't searchable.
+			expect(await searcher.search({ query: "10k rows", kind: "messages", threads })).toEqual([])
 		})
 
 		it("returns newest sessions first and stops scanning at the limit", async () => {

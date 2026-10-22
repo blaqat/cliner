@@ -28,6 +28,11 @@ describe("HomeSearchBar", () => {
 		expect(onOpenSearch).toHaveBeenLastCalledWith("PROJ-482")
 	})
 
+	it("stays pinned to the top of the home page while it scrolls", () => {
+		render(<HomeSearchBar onOpenSearch={vi.fn()} />)
+		expect(screen.getByTestId("home-search-bar")).toHaveClass("sticky", "top-0", "bg-background")
+	})
+
 	it("focuses the field on ⌘K", () => {
 		render(<HomeSearchBar onOpenSearch={vi.fn()} />)
 		expect(screen.getByText("⌘K")).toBeInTheDocument()

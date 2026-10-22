@@ -4,6 +4,7 @@ import { memo, useState } from "react"
 import AutoApproveMenuItem from "@/components/chat/auto-approve-menu/AutoApproveMenuItem"
 import { ACTION_METADATA } from "@/components/chat/auto-approve-menu/constants"
 import type { ActionMetadata } from "@/components/chat/auto-approve-menu/types"
+import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAutoApproveActions } from "@/hooks/useAutoApproveActions"
@@ -24,7 +25,7 @@ export function summarizeApprovals(settings: AutoApprovalSettings, actions: Acti
 }
 
 /**
- * Bottom-bar shield next to the config pickers. Shows how many approval types run without asking and
+ * Bottom-bar shield right after the model and effort pickers (what the model may do on its own). Shows how many approval types run without asking and
  * turns to the warning color when all of them do. The menu edits the same auto-approval settings, through
  * the same RPC, as the former auto-approve bar above the composer.
  */
@@ -57,7 +58,7 @@ const ApprovalsMenu = () => {
 					</span>
 				</button>
 			</PopoverTrigger>
-			<PopoverContent align="start" className="w-64 max-h-[60vh] overflow-y-auto overscroll-contain" side="top">
+			<PopoverContent align="end" className={cn("w-64", COMPOSER_MENU_SCROLL_CLASS)} side="top">
 				<div className="mb-2 text-xs text-description">
 					Let Cline take these actions without asking for approval.{" "}
 					<a

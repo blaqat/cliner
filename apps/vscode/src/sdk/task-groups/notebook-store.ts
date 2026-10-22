@@ -1,16 +1,25 @@
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
+import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
-import type { NotebookActivity, NotebookChange, NotebookNoteMeta } from "@shared/task-groups"
+import type { NotebookActivity, NotebookChange, NotebookNoteMeta, NotebookVersion } from "@shared/task-groups"
 import * as yaml from "js-yaml"
 import { Logger } from "@/shared/services/Logger"
+import { compactNotebookDiff, notebookDiff } from "./notebook-diff"
 import { taskGroupPaths, taskGroupsRootDir, validateTaskGroupIdentifier, writeFileAtomic } from "./task-group-store"
 
 export interface PendingNotebookChanges {
 	groupId: string
 	revision: string
 	changes: NotebookChange[]
+}
+
+/** A user's editor save the store rejected (stale revision, busy lock). Never lost until persisted or discarded. */
+export interface NotebookEditDraft {
+	content: string
+	ts: number
+	reason: string
 }
 
 type NoteUpdatedBy = NotebookNoteMeta["updatedBy"]
@@ -241,6 +250,7 @@ export class NotebookStore {
 			body: "",
 		})
 		const slug = await this.createExclusive(groupId, slugifyNoteName(input.name) || "note", content)
+		await this.recordVersion(groupId, slug, "", "original")
 		return { slug, path: paths.noteFile(slug) }
 	}
 
@@ -305,18 +315,40 @@ export class NotebookStore {
 	}
 
 	private async performStageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
+		await this.captureSavedVersion(groupId, change.slug)
 		const pending = (await this.readPending(groupId, threadId)) ?? []
 		const index = pending.findIndex((entry) => entry.slug === change.slug)
 		if (index === -1) {
 			pending.push(change)
 		} else {
 			const prev = pending[index]
-			if (prev.op === "create" && change.op === "delete") {
+			if (prev.editedByUser) {
+				const version = await this.recordVersion(groupId, prev.slug, prev.content ?? "", "you edited")
+				change = { ...change, replacedUserVersion: version.id }
+			} else if (prev.replacedUserVersion) change = { ...change, replacedUserVersion: prev.replacedUserVersion }
+			// An agent update after the edit clears editedByUser but keeps replacedUserVersion, so
+			// either marker means the user's text still needs a tombstone.
+			if (prev.op === "create" && change.op === "delete" && (prev.editedByUser || prev.replacedUserVersion)) {
+				// The user's edits to a not-yet-saved note must stay reviewable: keep a
+				// delete tombstone (diff + Restore via replacedUserVersion) instead of cancelling.
+				pending[index] = { ...change, op: "delete" }
+			} else if (prev.op === "create" && change.op === "delete") {
+				await this.settleDraft(groupId, threadId, change.slug)
 				pending.splice(index, 1)
 			} else {
 				pending[index] = {
 					...change,
-					op: prev.op === "create" ? "create" : change.op === "create" ? "update" : change.op,
+					op:
+						prev.op === "create"
+							? "create"
+							: prev.op === "delete" && change.op !== "delete"
+								? // A tombstone for a note that never existed re-creates it.
+									(await this.readNote(groupId, change.slug))
+									? "update"
+									: "create"
+								: change.op === "create"
+									? "update"
+									: change.op,
 				}
 			}
 		}
@@ -363,6 +395,31 @@ export class NotebookStore {
 		} catch {
 			return undefined
 		}
+	}
+
+	async reviewDiffs(review: PendingNotebookChanges, threadId?: string): Promise<PendingNotebookChanges> {
+		const drafts = threadId ? await this.readDrafts(review.groupId, threadId) : {}
+		return {
+			...review,
+			changes: await Promise.all(
+				review.changes.map(async (change) => ({
+					...change,
+					...(drafts[change.slug] ? { draft: { ts: drafts[change.slug].ts, reason: drafts[change.slug].reason } } : {}),
+					diff: notebookDiff(
+						(await this.readNote(review.groupId, change.slug))?.content ??
+							(await this.tombstonedContent(review.groupId, change)) ??
+							"",
+						change.op === "delete" ? "" : (change.content ?? ""),
+					),
+				})),
+			),
+		}
+	}
+
+	/** What a delete tombstone for a never-saved note removed: the user's last edit, from history. */
+	private async tombstonedContent(groupId: string, change: NotebookChange): Promise<string | undefined> {
+		if (change.op !== "delete" || !change.replacedUserVersion) return undefined
+		return (await this.history(groupId, change.slug)).find((version) => version.id === change.replacedUserVersion)?.content
 	}
 
 	async listPending(threadId: string): Promise<PendingNotebookChanges[]> {
@@ -416,6 +473,7 @@ export class NotebookStore {
 				for (const change of changes) {
 					const item = items.find((entry) => entry.slug === change.slug)
 					if (!item?.include) continue
+					await this.settleDraft(groupId, threadId, change.slug)
 					const slug = await this.applyChange(groupId, change, item.editedContent, {
 						kind: "thread",
 						threadId,
@@ -458,8 +516,258 @@ export class NotebookStore {
 	async discardPendingChanges(groupId: string, threadId: string, revision: string): Promise<void> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		return this.serializePending(groupId, threadId, async () => {
-			await this.requireRevision(groupId, threadId, revision)
+			const pending = await this.requireRevision(groupId, threadId, revision)
+			for (const change of pending.changes) await this.settleDraft(groupId, threadId, change.slug)
+			for (const change of pending.changes)
+				await this.queueNotice(
+					groupId,
+					threadId,
+					change.slug,
+					`The user discarded your pending edits to \`${change.name}\``,
+				)
 			await this.writePending(groupId, threadId, [])
+		})
+	}
+
+	async conversions(groupId: string, slug: string): Promise<{ kind: string; path: string }[]> {
+		const file = this.historyPath(groupId, slug).replace(/\.json$/, ".conversions.json")
+		try {
+			return JSON.parse(await fs.readFile(file, "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			return []
+		}
+	}
+
+	async addConversion(groupId: string, slug: string, link: { kind: string; path: string }): Promise<void> {
+		const links = await this.conversions(groupId, slug)
+		await fs.mkdir(join(taskGroupPaths(this.rootDir, groupId).dir, "note-history"), { recursive: true })
+		await writeFileAtomic(
+			this.historyPath(groupId, slug).replace(/\.json$/, ".conversions.json"),
+			JSON.stringify([...links, link]),
+		)
+	}
+
+	private historyPath(groupId: string, slug: string): string {
+		const paths = taskGroupPaths(this.rootDir, groupId)
+		paths.noteFile(slug)
+		return join(paths.dir, "note-history", `${slug}.json`)
+	}
+
+	async history(groupId: string, slug: string): Promise<NotebookVersion[]> {
+		try {
+			return JSON.parse(await fs.readFile(this.historyPath(groupId, slug), "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			return []
+		}
+	}
+
+	async recordVersion(groupId: string, slug: string, content: string, by: string): Promise<NotebookVersion> {
+		const lockId = `history-${createHash("sha256").update(slug).digest("hex")}`
+		return this.serializePending(groupId, lockId, () => this.writeVersion(groupId, slug, content, by))
+	}
+
+	private async writeVersion(groupId: string, slug: string, content: string, by: string): Promise<NotebookVersion> {
+		const versions = await this.history(groupId, slug)
+		const last = versions[versions.length - 1]
+		if (last?.content === content) return last
+		const version = { id: randomUUID(), ts: Date.now(), content, by }
+		versions.push(version)
+		const retained = versions.length > 21 ? [versions[0], ...versions.slice(-20)] : versions
+		await fs.mkdir(join(taskGroupPaths(this.rootDir, groupId).dir, "note-history"), { recursive: true })
+		await writeFileAtomic(this.historyPath(groupId, slug), JSON.stringify(retained))
+		return version
+	}
+
+	async captureSavedVersion(groupId: string, slug: string): Promise<void> {
+		const note = await this.readNote(groupId, slug)
+		if (note) await this.recordVersion(groupId, slug, note.content, "saved")
+	}
+
+	async restoreVersion(groupId: string, slug: string, versionId: string): Promise<void> {
+		const version = (await this.history(groupId, slug)).find((version) => version.id === versionId)
+		if (!version) throw new Error("Version no longer available")
+		const note = await this.readNote(groupId, slug)
+		await this.captureSavedVersion(groupId, slug)
+		// History outlives the note (a never-saved or deleted note still has versions), so restoring recreates it.
+		const meta = note?.meta ?? {
+			name: slug,
+			description: "",
+			updatedAt: 0,
+			updatedBy: { kind: "user" as const },
+		}
+		await fs.mkdir(taskGroupPaths(this.rootDir, groupId).notebookDir, { recursive: true })
+		await writeFileAtomic(
+			this.notePath(groupId, slug),
+			serializeNote({
+				name: meta.name,
+				description: meta.description,
+				body: version.content,
+				updatedAt: Date.now(),
+				updatedBy: { kind: "user" },
+			}),
+		)
+		await this.recordVersion(groupId, slug, version.content, "restored by you")
+	}
+
+	/**
+	 * `supersedesDraftTs` names the rejected-save draft this edit replaces (Retry
+	 * or a reopened draft editor); that draft is dropped only once the edit is
+	 * persisted, and a newer draft is never touched.
+	 */
+	async editPending(
+		groupId: string,
+		threadId: string,
+		revision: string,
+		slug: string,
+		content: string,
+		options?: { supersedesDraftTs?: number },
+	): Promise<string> {
+		return this.serializePending(groupId, threadId, async () => {
+			const pending = await this.requireRevision(groupId, threadId, revision)
+			const change = pending.changes.find((change) => change.slug === slug)
+			if (!change) throw new Error("Pending note no longer available")
+			if (change.op === "delete") change.op = (await this.readNote(groupId, slug)) ? "update" : "create"
+			await this.captureSavedVersion(groupId, slug)
+			const before = change.content ?? ""
+			await this.recordVersion(groupId, slug, content, "you edited")
+			change.content = content
+			change.editedByUser = true
+			delete change.replacedUserVersion
+			await this.writePending(groupId, threadId, pending.changes)
+			await this.queueNotice(
+				groupId,
+				threadId,
+				slug,
+				`The user edited the pending note \`${change.name}\`; build on this version`,
+				{ before, after: content },
+			)
+			const updated = await this.readPendingReview(groupId, threadId)
+			if (!updated) throw new Error("Pending note was removed while saving")
+			if (options?.supersedesDraftTs !== undefined) {
+				const drafts = await this.readDrafts(groupId, threadId)
+				if (drafts[slug]?.ts === options.supersedesDraftTs) {
+					delete drafts[slug]
+					await this.writeDrafts(groupId, threadId, drafts)
+				}
+			}
+			return updated.revision
+		})
+	}
+
+	// ---- Rejected-save drafts (pending/<threadId>.drafts.json) ----
+
+	private draftsPath(groupId: string, threadId: string): string {
+		return taskGroupPaths(this.rootDir, groupId)
+			.pendingFile(threadId)
+			.replace(/\.json$/, ".drafts.json")
+	}
+
+	async readDrafts(groupId: string, threadId: string): Promise<Record<string, NotebookEditDraft>> {
+		try {
+			const raw = JSON.parse(await fs.readFile(this.draftsPath(groupId, threadId), "utf8"))
+			const drafts: Record<string, NotebookEditDraft> = {}
+			for (const [slug, draft] of Object.entries<NotebookEditDraft>(raw ?? {})) {
+				if (typeof draft?.content === "string") drafts[slug] = draft
+			}
+			return drafts
+		} catch {
+			return {}
+		}
+	}
+
+	private async writeDrafts(groupId: string, threadId: string, drafts: Record<string, NotebookEditDraft>): Promise<void> {
+		const file = this.draftsPath(groupId, threadId)
+		if (!Object.keys(drafts).length) {
+			await fs.rm(file, { force: true })
+			return
+		}
+		await fs.mkdir(taskGroupPaths(this.rootDir, groupId).pendingDir, { recursive: true })
+		await writeFileAtomic(file, JSON.stringify(drafts))
+	}
+
+	/**
+	 * Keeps the text of an editor save that couldn't be applied. While the note
+	 * is still under review it becomes a draft the card offers Retry / Reload
+	 * for; otherwise (the review is gone) it goes straight to the note's history.
+	 * Throws if nothing could be persisted, so the caller keeps its temp file.
+	 */
+	async saveRejectedEdit(
+		groupId: string,
+		threadId: string,
+		slug: string,
+		content: string,
+		reason: string,
+	): Promise<{ kind: "draft"; ts: number } | { kind: "history" }> {
+		taskGroupPaths(this.rootDir, groupId).noteFile(slug)
+		return this.serializePending(groupId, threadId, async () => {
+			const pending = await this.readPendingReview(groupId, threadId)
+			if (!pending?.changes.some((change) => change.slug === slug)) {
+				await this.recordVersion(groupId, slug, content, "your unsaved edit")
+				return { kind: "history" }
+			}
+			const drafts = await this.readDrafts(groupId, threadId)
+			const previous = drafts[slug]
+			// A second rejected save replaces the draft; the older text moves to history.
+			if (previous && previous.content !== content)
+				await this.recordVersion(groupId, slug, previous.content, "your unsaved edit")
+			const ts = Date.now()
+			drafts[slug] = { content, ts, reason }
+			await this.writeDrafts(groupId, threadId, drafts)
+			return { kind: "draft", ts }
+		})
+	}
+
+	async discardDraft(groupId: string, threadId: string, slug: string): Promise<void> {
+		taskGroupPaths(this.rootDir, groupId).noteFile(slug)
+		await this.serializePending(groupId, threadId, async () => {
+			const drafts = await this.readDrafts(groupId, threadId)
+			if (!drafts[slug]) return
+			delete drafts[slug]
+			await this.writeDrafts(groupId, threadId, drafts)
+		})
+	}
+
+	/** Called under the pending lock when a review is applied or discarded: the draft text moves to history, never vanishes. */
+	private async settleDraft(groupId: string, threadId: string, slug: string): Promise<void> {
+		const drafts = await this.readDrafts(groupId, threadId)
+		const draft = drafts[slug]
+		if (!draft) return
+		await this.recordVersion(groupId, slug, draft.content, "your unsaved edit")
+		delete drafts[slug]
+		await this.writeDrafts(groupId, threadId, drafts)
+	}
+
+	private noticePath(groupId: string, threadId: string): string {
+		return taskGroupPaths(this.rootDir, groupId)
+			.pendingFile(threadId)
+			.replace(/\.json$/, ".notices.json")
+	}
+
+	private async queueNotice(
+		groupId: string,
+		threadId: string,
+		slug: string,
+		text: string,
+		edit?: { before: string; after: string },
+	): Promise<void> {
+		const file = this.noticePath(groupId, threadId)
+		const notices: { slug: string; text: string; base?: string }[] = JSON.parse(
+			await fs.readFile(file, "utf8").catch(() => "[]"),
+		)
+		const base = edit ? (notices.find((notice) => notice.slug === slug)?.base ?? edit.before) : undefined
+		const notice = { slug, text: edit ? `${text}\n${compactNotebookDiff(base ?? "", edit.after)}` : text, base }
+		// A discard replaces an undelivered edit notice, so discarded text never reaches the agent.
+		await writeFileAtomic(file, JSON.stringify([...notices.filter((notice) => notice.slug !== slug), notice]))
+	}
+
+	async consumeNotices(groupId: string, threadId: string): Promise<string | undefined> {
+		return this.serializePending(groupId, threadId, async () => {
+			const file = this.noticePath(groupId, threadId)
+			const notices: { text: string }[] = JSON.parse(await fs.readFile(file, "utf8").catch(() => "[]"))
+			await fs.rm(file, { force: true })
+			return notices.length ? notices.map((notice) => notice.text).join("\n\n") : undefined
 		})
 	}
 
@@ -537,6 +845,8 @@ export class NotebookStore {
 		const paths = taskGroupPaths(this.rootDir, groupId)
 		const filePath = paths.noteFile(change.slug)
 		if (change.op === "delete") {
+			const previous = await this.readNote(groupId, change.slug)
+			if (previous) await this.recordVersion(groupId, change.slug, previous.content, "saved")
 			await fs.rm(filePath, { force: true })
 			return change.slug
 		}
@@ -548,7 +858,14 @@ export class NotebookStore {
 		const name = change.name.trim() || change.slug
 		await fs.mkdir(paths.notebookDir, { recursive: true })
 		const content = serializeNote({ name, description: change.description, updatedAt: Date.now(), updatedBy, body })
-		if (change.op === "create") return this.createExclusive(groupId, change.slug, content)
+		if (change.op === "create") {
+			const slug = await this.createExclusive(groupId, change.slug, content)
+			await this.recordVersion(groupId, slug, body, "thread")
+			return slug
+		}
+		if (existing !== undefined)
+			await this.recordVersion(groupId, change.slug, parseYamlFrontmatter(existing).body.trimStart(), "saved")
+		await this.recordVersion(groupId, change.slug, body, "thread")
 		await writeFileAtomic(filePath, content)
 		return change.slug
 	}

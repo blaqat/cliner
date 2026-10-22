@@ -1,9 +1,10 @@
-import { CreateHookRequest, CreateSkillRequest, RuleFileRequest } from "@shared/proto/index.cline"
+import { CreateHookRequest, CreateScriptRequest, CreateSkillRequest, RuleFileRequest } from "@shared/proto/index.cline"
 import { PlusIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useClickAway } from "react-use"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { applyScriptsResponse } from "@/hooks/useScripts"
 import { cn } from "@/lib/utils"
 import { FileServiceClient } from "@/services/grpc-client"
 
@@ -89,6 +90,27 @@ const NewRuleRow: React.FC<NewRuleRowProps> = ({ isGlobal, ruleType, existingHoo
 
 		if (filename.trim()) {
 			const trimmedFilename = filename.trim()
+
+			// Scripts are <name>.md files with a template; creating one opens it in the editor
+			if (ruleType === "script") {
+				if (!/^[a-zA-Z0-9_-]+$/.test(trimmedFilename)) {
+					setError("Script name can only contain letters, numbers, dashes, and underscores")
+					return
+				}
+				try {
+					applyScriptsResponse(
+						await FileServiceClient.createScriptFile(
+							CreateScriptRequest.create({ scriptName: trimmedFilename, isGlobal }),
+						),
+					)
+					setFilename("")
+					setError(null)
+					setIsExpanded(false)
+				} catch (err) {
+					setError(err instanceof Error ? err.message : "Failed to create script")
+				}
+				return
+			}
 
 			// Skills use directory names, not file extensions
 			if (ruleType === "skill") {
@@ -219,12 +241,16 @@ const NewRuleRow: React.FC<NewRuleRowProps> = ({ isGlobal, ruleType, existingHoo
 											? "workflow-name (.md, .txt, or no extension)"
 											: ruleType === "skill"
 												? "skill-name (letters, numbers, dashes, underscores)"
-												: "rule-name (.md, .txt, or no extension)"
+												: ruleType === "script"
+													? "script-name (letters, numbers, dashes, underscores)"
+													: "rule-name (.md, .txt, or no extension)"
 										: ruleType === "workflow"
 											? "New workflow file..."
 											: ruleType === "skill"
 												? "New skill..."
-												: "New rule file..."
+												: ruleType === "script"
+													? "New script..."
+													: "New rule file..."
 								}
 								ref={inputRef}
 								type="text"
@@ -236,12 +262,16 @@ const NewRuleRow: React.FC<NewRuleRowProps> = ({ isGlobal, ruleType, existingHoo
 									isExpanded
 										? ruleType === "skill"
 											? "Create skill"
-											: "Create file"
+											: ruleType === "script"
+												? "Create script"
+												: "Create file"
 										: ruleType === "workflow"
 											? "New workflow file..."
 											: ruleType === "skill"
 												? "New skill..."
-												: "New rule file..."
+												: ruleType === "script"
+													? "New script..."
+													: "New rule file..."
 								}
 								className="mx-0.5"
 								onClick={(e) => {

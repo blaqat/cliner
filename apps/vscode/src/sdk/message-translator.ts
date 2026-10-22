@@ -43,6 +43,7 @@ import type {
 	ClineSubagentUsageInfo,
 	SubagentStatusItem,
 } from "@shared/ExtensionMessage"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import { Logger } from "@shared/services/Logger"
 import * as path from "path"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -437,12 +438,20 @@ export class MessageTranslatorState {
 	private spawnAgentTotalCount = 0
 
 	/** Register a new spawn_agent call. Returns the entry for this call. */
-	addSpawnAgent(toolCallId: string, prompt: string, access?: "read" | "write"): SubagentStatusItem {
+	addSpawnAgent(
+		toolCallId: string,
+		prompt: string,
+		access?: "read" | "write",
+		profile?: string,
+		reasoningEffort?: string,
+	): SubagentStatusItem {
 		this.spawnAgentTotalCount += 1
 		const entry: SubagentStatusItem = {
 			index: ++this.spawnAgentNextIndex,
 			prompt,
 			access: access === "write" ? "write" : "read",
+			profile,
+			reasoningEffort,
 			toolCallId,
 			status: "running",
 			toolCalls: 0,
@@ -880,6 +889,18 @@ function sdkToolToClineSayTool(toolName: string, input?: unknown): ClineSayTool 
 				tool: "notebook",
 				action: action === "write" || action === "delete" ? action : "read",
 				name: getStringField(parsedInput, "name") ?? "",
+			}
+		}
+
+		case "script": {
+			const options = parsedInput?.options
+			return {
+				tool: "script",
+				scriptAction: getStringField(parsedInput, "action") === "load" ? "load" : "run",
+				name: getStringField(parsedInput, "name") ?? "",
+				...(options && typeof options === "object" && !Array.isArray(options)
+					? { scriptOptions: options as Record<string, string | boolean> }
+					: {}),
 			}
 		}
 
@@ -1406,6 +1427,9 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						state.setStreamingToolTs(approvedToolMessageTs)
 					}
 
+					// present_walkthrough emits its card only after the document is saved.
+					if (toolName === "present_walkthrough") break
+
 					// ask_question (and ask_followup_question) is NOT a visual tool row: the
 					// SdkInteractionCoordinator services it and emits the proper ask:"followup"
 					// message. Emitting a generic say:"tool" here would leave an orphan partial
@@ -1458,7 +1482,15 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						const taskPrompt = getStringField(parsedInput, "task") ?? ""
 						const access = parsedInput?.access === "write" ? ("write" as const) : ("read" as const)
 						const callId = event.toolCallId ?? `spawn-${state.nextTs()}`
-						state.addSpawnAgent(callId, taskPrompt, access)
+						// Requested profile/effort show immediately; the resolved
+						// values arrive via emitUpdate (content_update) once applied.
+						state.addSpawnAgent(
+							callId,
+							taskPrompt,
+							access,
+							getStringField(parsedInput, "profile"),
+							getStringField(parsedInput, "reasoningEffort"),
+						)
 						if (approvedToolMessageTs !== undefined) {
 							state.setSpawnAgentPromptsTs(approvedToolMessageTs)
 						}
@@ -1567,6 +1599,10 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						if (typeof updateData.contextUsagePercentage === "number")
 							entry.contextUsagePercentage = updateData.contextUsagePercentage
 						if (typeof updateData.latestToolCall === "string") entry.latestToolCall = updateData.latestToolCall
+						// The spawn tool emits the resolved profile/effort once it
+						// applies them, overriding any values parsed from the input.
+						if (typeof updateData.profile === "string") entry.profile = updateData.profile
+						if (typeof updateData.reasoningEffort === "string") entry.reasoningEffort = updateData.reasoningEffort
 					}
 				}
 				// Emit a running status update
@@ -1646,6 +1682,44 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 
 					if (state.checkDeniedToolApproval(event.toolCallId) || isKnownToolApprovalDenial(event.error)) {
 						state.clearStreamingTool()
+						break
+					}
+
+					// History reuses this branch and rebuilds the card from the SDK's persisted result.
+					if (toolName === "present_walkthrough") {
+						state.clearStreamingTool()
+						try {
+							if (event.error) throw new Error(event.error)
+							const output = event.output
+							const raw =
+								Array.isArray(output) && output.every((item) => item?.type === "text")
+									? output.map((item) => item.text).join("\n")
+									: extractToolOutputText(output)
+							const ready = JSON.parse(raw).walkthroughReady
+							if (
+								!ready ||
+								typeof ready.authoredId !== "string" ||
+								typeof ready.title !== "string" ||
+								!Number.isInteger(ready.stopCount) ||
+								!Number.isInteger(ready.fileCount)
+							)
+								throw new Error("Invalid present_walkthrough result")
+							messages.push({
+								ts: state.nextTs(),
+								type: "say",
+								say: "walkthrough_ready",
+								text: JSON.stringify(ready),
+								partial: false,
+							})
+						} catch (error) {
+							messages.push({
+								ts: state.nextTs(),
+								type: "say",
+								say: "error",
+								text: error instanceof Error ? error.message : String(error),
+								partial: false,
+							})
+						}
 						break
 					}
 
@@ -1866,6 +1940,17 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 					}
 
 					const sayTool = toDisplaySayTool(sdkToolToClineSayTool(toolName, storedInput), state.currentCwd())
+					// A script run carries its outcome (exit code, output tail, log path) on the same row.
+					if (toolName === "script" && sayTool.tool === "script" && sayTool.scriptAction === "run") {
+						const output = event.output
+						const outcome =
+							typeof output === "string"
+								? output
+								: typeof (output as { error?: unknown } | undefined)?.error === "string"
+									? `Error: ${(output as { error: string }).error}`
+									: ""
+						if (outcome) sayTool.content = outcome
+					}
 					// If there's an error, include it in the tool message
 					if (event.error) {
 						messages.push({
@@ -2238,7 +2323,8 @@ export function translateSessionEvent(
 			// Display boundary: formatDisplayUserInput strips runtime-generated
 			// notice elements (e.g. mode_notice) that normalizeUserInput must
 			// preserve, since the latter also sanitizes model-bound prompts.
-			const displayPrompt = isSyntheticUserPrompt(prompt) ? "" : formatDisplayUserInput(prompt)
+			const { text: promptWithoutReferences, references } = parseMessageReferences(prompt)
+			const displayPrompt = isSyntheticUserPrompt(prompt) ? "" : formatDisplayUserInput(promptWithoutReferences)
 			const hasPrompt = displayPrompt.trim().length > 0
 			const hasImages = (userImages?.length ?? 0) > 0
 			const hasFiles = (userFiles?.length ?? 0) > 0
@@ -2248,6 +2334,7 @@ export function translateSessionEvent(
 					type: "say",
 					say: "user_feedback",
 					text: displayPrompt,
+					...(references.length > 0 ? { messageReferences: references } : {}),
 					images: userImages,
 					files: userFiles,
 					partial: false,
@@ -2286,6 +2373,8 @@ type SdkMessageWithMetrics = SdkMessage & {
 	 * Only meaningful on user messages; governs the turn that follows.
 	 */
 	uiMode?: "plan" | "act" | "yolo"
+	/** Message tags parsed out of the user text during display sanitization. */
+	messageReferences?: MessageReferenceInfo[]
 }
 
 function textContentBlocksToText(content: SdkMessage["content"]): string {
@@ -2354,6 +2443,9 @@ function appendPersistedMetricsMessage(
 			cacheWrites: usage.cacheWrites,
 			cacheReads: usage.cacheReads,
 			cost: usage.totalCost,
+			// The persisted message records the model that produced it; the cost breakdown groups by it.
+			...(message.modelInfo?.id ? { modelId: message.modelInfo.id } : {}),
+			...(message.modelInfo?.provider ? { providerId: message.modelInfo.provider } : {}),
 		} satisfies ClineApiReqInfo),
 		partial: false,
 	})
@@ -2447,7 +2539,14 @@ export function sdkMessagesToClineMessages(
 		for (const update of updates) {
 			const existingIndex = clineMessages.findIndex((m) => m.ts === update.ts)
 			if (existingIndex !== -1) {
-				clineMessages[existingIndex] = update
+				// The retag runs after the per-message stamping below, so carry the row's
+				// transcript position over; without it the row can't be linked or asided.
+				const { sdkMessageIndex, sdkToolCallId } = clineMessages[existingIndex]
+				clineMessages[existingIndex] = {
+					...update,
+					...(sdkMessageIndex !== undefined ? { sdkMessageIndex } : {}),
+					...(sdkToolCallId ? { sdkToolCallId } : {}),
+				}
 			} else {
 				clineMessages.push(update)
 			}
@@ -2605,6 +2704,9 @@ export function sdkMessagesToClineMessages(
 							type: "say",
 							say: clineMessages.length === 0 ? "task" : "user_feedback",
 							text,
+							...(sourceMessage.messageReferences?.length
+								? { messageReferences: sourceMessage.messageReferences }
+								: {}),
 							partial: false,
 						})
 					}
@@ -2622,6 +2724,9 @@ export function sdkMessagesToClineMessages(
 						type: "say",
 						say: clineMessages.length === 0 ? "task" : "user_feedback",
 						text: userText,
+						...(sourceMessage.messageReferences?.length
+							? { messageReferences: sourceMessage.messageReferences }
+							: {}),
 						partial: false,
 					})
 				}

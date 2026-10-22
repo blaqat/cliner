@@ -208,6 +208,7 @@ export function getMatchingSlashCommands(
 	remoteWorkflowToggles?: Record<string, boolean>,
 	remoteWorkflows?: any[],
 	mcpServers: McpServer[] = [],
+	scriptCommands: SlashCommand[] = [],
 ): SlashCommand[] {
 	const workflowCommands = getWorkflowCommands(
 		localWorkflowToggles,
@@ -216,7 +217,7 @@ export function getMatchingSlashCommands(
 		remoteWorkflows,
 	)
 	const mcpPromptCommands = getMcpPromptCommands(mcpServers)
-	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...mcpPromptCommands]
+	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...scriptCommands, ...mcpPromptCommands]
 
 	if (!query) {
 		return allCommands
@@ -260,6 +261,7 @@ export function validateSlashCommand(
 	remoteWorkflowToggles?: Record<string, boolean>,
 	remoteWorkflows?: any[],
 	mcpServers: McpServer[] = [],
+	scriptCommands: SlashCommand[] = [],
 ): "full" | "partial" | null {
 	if (!command) {
 		return null
@@ -272,7 +274,7 @@ export function validateSlashCommand(
 		remoteWorkflows,
 	)
 	const mcpPromptCommands = getMcpPromptCommands(mcpServers)
-	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...mcpPromptCommands]
+	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...scriptCommands, ...mcpPromptCommands]
 
 	// case insensitive matching
 	const exactMatch = allCommands.some((cmd) => cmd.name.toLowerCase() === command.toLowerCase())

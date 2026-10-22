@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import InboxList from "./InboxList"
 
@@ -88,11 +88,30 @@ describe("InboxList", () => {
 		expect(row).not.toHaveTextContent("3h")
 	})
 
-	it("shows subthread work on an idle parent", () => {
+	it("shows an idle parent with a running subthread as waiting on it", () => {
 		mocks.state.sessionStatuses = { run: "done", aside: "running" }
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
-		expect(screen.getAllByTestId("inbox-row")[0]).toHaveTextContent("Working… in subthread")
+		const row = screen.getAllByTestId("inbox-row")[0]
+		expect(row).toHaveTextContent("Waiting on 1 subthread")
+		expect(within(row).getByRole("img", { name: "Waiting on 1 subthread" })).toHaveAttribute("data-status", "subagents")
+	})
+
+	it("shows an idle parent with running subagents as waiting on subagents, not done", () => {
+		mocks.state.taskHistory = [
+			item("parent", NOW),
+			item("a", NOW + 1, { parentTaskId: "parent", isSubagent: true }),
+			item("b", NOW + 2, { parentTaskId: "parent", isSubagent: true }),
+		]
+		mocks.state.sessionStatuses = { parent: "done", a: "running", b: "running" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+		const row = screen.getByTestId("inbox-row")
+		const icon = within(row).getByRole("img", { name: "Waiting on 2 subagents" })
+		expect(icon).toHaveClass("text-(--vscode-charts-purple)")
+		expect(icon.querySelector("title")).toHaveTextContent("Waiting on 2 subagents")
+		expect(within(row).getByTestId("inbox-row-detail")).toHaveTextContent("Waiting on 2 subagents")
+		expect(row).not.toHaveTextContent("Done")
 	})
 
 	it("turns the subagent count yellow when a child needs the user", () => {
@@ -152,6 +171,42 @@ describe("InboxList", () => {
 				setItem: (key: string, value: string) => void store.set(key, value),
 			})
 			mocks.state = { taskHistory: settledHistory(40), sessionStatuses: {} }
+		})
+
+		it("pages active chats in with Show more instead of pointing at history", () => {
+			mocks.state = {
+				taskHistory: Array.from({ length: 60 }, (_, i) => item(`a${i}`, NOW - i * 1000)),
+				sessionStatuses: {},
+			}
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(15)
+			expect(screen.queryByText(/more in history/)).not.toBeInTheDocument()
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(45\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(40)
+
+			fireEvent.click(screen.getByRole("button", { name: /Show more \(20\)/ }))
+			expect(screen.getAllByTestId("inbox-row")).toHaveLength(60)
+			expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument()
+		})
+
+		it("shows legacy, other-workspace and orphaned threads", () => {
+			mocks.state = {
+				taskHistory: [
+					{ id: "1700000000001", ts: NOW - 5000, task: "legacy thread", tokensIn: 0, tokensOut: 0, totalCost: 0 },
+					item("other", NOW - 6000, { cwdOnTaskInitialization: "/somewhere/else", isSettled: true }),
+					item("orphan", NOW - 7000, { parentTaskId: "deleted", task: "Aside: orphan" }),
+				],
+				sessionStatuses: {},
+			}
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			const rows = screen.getAllByTestId("inbox-row")
+			expect(rows).toHaveLength(3)
+			expect(rows[0]).toHaveTextContent("legacy thread")
+			expect(rows[1]).toHaveTextContent("task other")
+			expect(rows[2]).toHaveTextContent("Aside: orphan")
+			expect(rows[2]).toHaveTextContent("Last active")
 		})
 
 		it("pages settled chats and shows fewer again", () => {
@@ -236,7 +291,7 @@ describe("InboxList task groups", () => {
 		expect(screen.getAllByTestId("inbox-row").map((el) => el.textContent)).toEqual([expect.stringContaining("Loose thread")])
 	})
 
-	it("expands to the two newest members plus an older count, and remembers it", () => {
+	it("expands to the two newest members plus Show more, and remembers it", () => {
 		const { unmount } = render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
 
@@ -244,13 +299,47 @@ describe("InboxList task groups", () => {
 		expect(members).toHaveTextContent("Implement steps")
 		expect(members).toHaveTextContent("Dev plan")
 		expect(members).not.toHaveTextContent("Refine ticket")
-		expect(members).toHaveTextContent("＋2 older")
+		expect(screen.getByTestId("inbox-task-group-more")).toHaveTextContent("Show 2 more")
 		unmount()
 
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 		expect(screen.getByRole("button", { name: "Collapse Bulk invoice export" })).toHaveAttribute("aria-expanded", "true")
 		fireEvent.click(screen.getByRole("button", { name: "Collapse Bulk invoice export" }))
 		expect(screen.queryByTestId("inbox-task-group-members")).not.toBeInTheDocument()
+	})
+
+	it("shows every member on Show more, active ones first and settled ones under a divider", () => {
+		mocks.state.taskHistory = [
+			item("m1", NOW - 2 * 60_000, { taskGroupId: "g", task: "Implement steps", isSettled: true }),
+			item("m2", NOW - 60 * 60_000, { taskGroupId: "g", task: "Dev plan" }),
+			item("m3", NOW - 120 * 60_000, { taskGroupId: "g", task: "Refine ticket", isSettled: true }),
+			item("m4", NOW - 180 * 60_000, { taskGroupId: "g", task: "Research" }),
+		]
+		mocks.state.sessionStatuses = {}
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		const members = screen.getByTestId("inbox-task-group-members")
+		const titles = () =>
+			within(members)
+				.getAllByTestId("inbox-row")
+				.map((row) => row.textContent ?? "")
+
+		// The preview is the newest active threads, not the newest threads.
+		expect(titles()).toEqual([expect.stringContaining("Dev plan"), expect.stringContaining("Research")])
+		fireEvent.click(screen.getByRole("button", { name: "Show 2 more" }))
+		expect(titles()).toEqual([
+			expect.stringContaining("Dev plan"),
+			expect.stringContaining("Research"),
+			expect.stringContaining("Implement steps"),
+			expect.stringContaining("Refine ticket"),
+		])
+		// No divider: settled threads are already dimmed and checked.
+		expect(within(members).queryByTestId("inbox-task-group-settled-divider")).toBeNull()
+		// Older settled threads can be unsettled right here.
+		expect(within(members).getByRole("button", { name: "Unsettle Refine ticket" })).toBeInTheDocument()
+
+		fireEvent.click(screen.getByRole("button", { name: "Show fewer" }))
+		expect(titles()).toHaveLength(2)
 	})
 
 	it("opens the task from the row and from Open task ›, and opens member threads", () => {
@@ -304,6 +393,60 @@ describe("InboxList task groups", () => {
 		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("Implement steps")
 		fireEvent.click(screen.getByRole("button", { name: "Open task ›" }))
 		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
+	})
+
+	describe("Settle all", () => {
+		beforeEach(() => {
+			mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
+			vi.stubGlobal(
+				"ResizeObserver",
+				class {
+					observe() {}
+					unobserve() {}
+					disconnect() {}
+				},
+			)
+		})
+
+		it("settles every idle thread in the task from the row's menu, skips running ones and says so", async () => {
+			const onOpenTaskGroup = vi.fn()
+			render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			fireEvent.click(screen.getByRole("menuitem", { name: "Settle all" }))
+
+			expect(onOpenTaskGroup).not.toHaveBeenCalled()
+			await waitFor(() =>
+				expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Settled 3 · 1 still running"),
+			)
+			expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => (request as { taskId: string }).taskId)).toEqual([
+				"m2",
+				"m3",
+				"m4",
+			])
+		})
+
+		it("offers Unsettle all when every thread is settled", async () => {
+			mocks.state.sessionStatuses = {}
+			mocks.state.taskHistory = [
+				item("m1", NOW - 60_000, { taskGroupId: "g", isSettled: true }),
+				item("m2", NOW - 120_000, { taskGroupId: "g", isSettled: true }),
+			]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
+			await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unsettled 2")
+		})
+
+		it("disables the action for a task with no threads", () => {
+			mocks.state.taskHistory = [item("loose", NOW, { task: "Loose" })]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+
+			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
+			expect(screen.getByRole("menuitem", { name: "Settle all" })).toBeDisabled()
+		})
 	})
 })
 

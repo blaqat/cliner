@@ -4,9 +4,11 @@ import { ALLOWED_API_PROVIDERS, isAllowedApiProvider, toAllowedApiProvider } fro
 import { isSecretKey } from "@shared/storage/state-keys"
 import {
 	type ApiProfileStore,
+	apiConfigurationForProfileId,
 	assignApiConfigProfile,
 	deleteApiConfigProfile,
 	ensureApiConfigProfiles,
+	hasAssignedApiProfile,
 	listProfileSecretKeys,
 	profileSecretStorageKey,
 	readApiConfigProfiles,
@@ -37,7 +39,7 @@ function createStore(config: Partial<ApiConfiguration> = {}) {
 			}
 		},
 		getSecretForKey: (key) => secretsStore[key],
-		setSecretsForKeys: (entries) => {
+		setSecretsForKeys: async (entries) => {
 			for (const [key, value] of Object.entries(entries)) {
 				if (value === undefined || value === "") {
 					delete secretsStore[key]
@@ -52,6 +54,28 @@ function createStore(config: Partial<ApiConfiguration> = {}) {
 }
 
 describe("provider allowlist", () => {
+	it("resolves an explicit feature profile with isolated credentials without changing mode defaults", async () => {
+		const { store, globalState } = createStore()
+		const chat = await upsertApiConfigProfile(store, {
+			name: "Chat",
+			provider: "openai",
+			modelId: "chat-model",
+			secrets: { openAiApiKey: "chat-key" },
+		})
+		const review = await upsertApiConfigProfile(store, {
+			name: "Review",
+			provider: "anthropic",
+			modelId: "review-model",
+			secrets: { apiKey: "review-key" },
+		})
+		const config = apiConfigurationForProfileId(store, review.id, "act")
+		expect(config.actModeApiProvider).toBe("anthropic")
+		expect(config.apiKey).toBe("review-key")
+		expect(config.openAiApiKey).toBeUndefined()
+		expect(hasAssignedApiProfile(config)).toBe(true)
+		expect(globalState.actProfileId).toBe(chat.id)
+	})
+
 	it("keeps allowed providers", () => {
 		for (const provider of ALLOWED_API_PROVIDERS) {
 			expect(toAllowedApiProvider(provider)).toBe(provider)
@@ -67,9 +91,9 @@ describe("provider allowlist", () => {
 })
 
 describe("upsertApiConfigProfile", () => {
-	it("creates a profile and stores secrets under the profile scope", () => {
+	it("creates a profile and stores secrets under the profile scope", async () => {
 		const { store, secretsStore } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "Local vLLM",
 			provider: "openai",
 			modelId: "gpt-5.5",
@@ -84,9 +108,9 @@ describe("upsertApiConfigProfile", () => {
 		expect(listProfileSecretKeys(store, profile.id)).toEqual(["openAiApiKey"])
 	})
 
-	it("sanitizes options: drops secret keys and unknown settings keys", () => {
+	it("sanitizes options: drops secret keys and unknown settings keys", async () => {
 		const { store } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "x",
 			provider: "anthropic",
 			modelId: "m",
@@ -99,27 +123,27 @@ describe("upsertApiConfigProfile", () => {
 		expect(profile.options).toEqual({ anthropicBaseUrl: "https://example.com" })
 	})
 
-	it("repairs missing assignments at save without waiting for serialization", () => {
+	it("repairs missing assignments at save without waiting for serialization", async () => {
 		const { store, globalState } = createStore()
-		const first = upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "a" })
+		const first = await upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "a" })
 		globalState.askProfileId = "missing"
 		globalState.actProfileId = undefined
-		upsertApiConfigProfile(store, { name: "B", provider: "openai", modelId: "b" })
+		await upsertApiConfigProfile(store, { name: "B", provider: "openai", modelId: "b" })
 		expect(globalState.askProfileId).toBe(first.id)
 		expect(globalState.actProfileId).toBe(first.id)
 		expect(store.getApiConfiguration().planModeOpenAiModelId).toBe("a")
 		expect(store.getApiConfiguration().actModeOpenAiModelId).toBe("a")
 	})
 
-	it("updates an existing profile in place and preserves stored secrets when none are sent", () => {
+	it("updates an existing profile in place and preserves stored secrets when none are sent", async () => {
 		const { store, secretsStore } = createStore()
-		const created = upsertApiConfigProfile(store, {
+		const created = await upsertApiConfigProfile(store, {
 			name: "a",
 			provider: "anthropic",
 			modelId: "claude-1",
 			secrets: { apiKey: "k1" },
 		})
-		const updated = upsertApiConfigProfile(store, {
+		const updated = await upsertApiConfigProfile(store, {
 			id: created.id,
 			name: "b",
 			provider: "anthropic",
@@ -133,9 +157,9 @@ describe("upsertApiConfigProfile", () => {
 })
 
 describe("assignApiConfigProfile", () => {
-	it("writes provider, model, options and secrets into the mode's keys", () => {
+	it("writes provider, model, options and secrets into the mode's keys", async () => {
 		const { store, apiConfig: legacyConfig } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "Local vLLM",
 			provider: "openai",
 			modelId: "gpt-5.6",
@@ -155,9 +179,9 @@ describe("assignApiConfigProfile", () => {
 		expect(store.getGlobalStateKey("actProfileId")).toBe(profile.id)
 	})
 
-	it("remaps mode-prefixed options onto the assigned mode", () => {
+	it("remaps mode-prefixed options onto the assigned mode", async () => {
 		const { store, apiConfig } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "x",
 			provider: "openai",
 			modelId: "m",
@@ -177,18 +201,18 @@ describe("assignApiConfigProfile", () => {
 })
 
 describe("deleteApiConfigProfile", () => {
-	it("removes the profile and secrets and assigns the replacement before returning", () => {
+	it("removes the profile and secrets and assigns the replacement before returning", async () => {
 		const { store, secretsStore } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "a",
 			provider: "anthropic",
 			modelId: "m",
 			secrets: { apiKey: "k" },
 		})
 		assignApiConfigProfile(store, "plan", profile.id)
-		const replacement = upsertApiConfigProfile(store, { name: "b", provider: "anthropic", modelId: "replacement" })
+		const replacement = await upsertApiConfigProfile(store, { name: "b", provider: "anthropic", modelId: "replacement" })
 
-		expect(deleteApiConfigProfile(store, profile.id)).toBe(true)
+		expect(await deleteApiConfigProfile(store, profile.id)).toBe(true)
 		expect(readApiConfigProfiles(store)).toEqual([replacement])
 		expect(listProfileSecretKeys(store, profile.id)).toEqual([])
 		expect(secretsStore[profileSecretStorageKey(profile.id, "apiKey")]).toBeUndefined()
@@ -197,28 +221,28 @@ describe("deleteApiConfigProfile", () => {
 		expect(store.getApiConfiguration().planModeApiModelId).toBe("replacement")
 	})
 
-	it("rejects deleting the last profile without changing assignments or secrets", () => {
+	it("rejects deleting the last profile without changing assignments or secrets", async () => {
 		const { store, globalState, secretsStore } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "a",
 			provider: "anthropic",
 			modelId: "m",
 			secrets: { apiKey: "key" },
 		})
 		const before = { ...globalState }
-		expect(() => deleteApiConfigProfile(store, profile.id)).toThrow("Cannot delete the last saved configuration")
+		await expect(deleteApiConfigProfile(store, profile.id)).rejects.toThrow("Cannot delete the last saved configuration")
 		expect(globalState).toEqual(before)
 		expect(secretsStore[profileSecretStorageKey(profile.id, "apiKey")]).toBe("key")
 	})
 
-	it("returns false for unknown ids", () => {
+	it("returns false for unknown ids", async () => {
 		const { store } = createStore()
-		expect(deleteApiConfigProfile(store, "nope")).toBe(false)
+		expect(await deleteApiConfigProfile(store, "nope")).toBe(false)
 	})
 })
 
 describe("ensureApiConfigProfiles (migration)", () => {
-	it("creates one profile per mode and assigns them", () => {
+	it("creates one profile per mode and assigns them", async () => {
 		const { store } = createStore({
 			planModeApiProvider: "anthropic",
 			planModeApiModelId: "claude-ask",
@@ -228,7 +252,7 @@ describe("ensureApiConfigProfiles (migration)", () => {
 			openAiCompatibleApiType: "responses",
 		})
 
-		const { profiles, askProfileId, actProfileId } = ensureApiConfigProfiles(store)
+		const { profiles, askProfileId, actProfileId } = await ensureApiConfigProfiles(store)
 		expect(profiles).toHaveLength(2)
 
 		const ask = profiles.find((p) => p.id === askProfileId)
@@ -243,7 +267,7 @@ describe("ensureApiConfigProfiles (migration)", () => {
 		expect(act?.options?.openAiBaseUrl).toBe("http://localhost:8000/v1")
 	})
 
-	it("dedupes identical mode configurations into a single profile", () => {
+	it("dedupes identical mode configurations into a single profile", async () => {
 		const { store } = createStore({
 			planModeApiProvider: "anthropic",
 			planModeApiModelId: "claude-1",
@@ -252,7 +276,7 @@ describe("ensureApiConfigProfiles (migration)", () => {
 			apiKey: "shared-key",
 		})
 
-		const { profiles, askProfileId, actProfileId } = ensureApiConfigProfiles(store)
+		const { profiles, askProfileId, actProfileId } = await ensureApiConfigProfiles(store)
 		expect(profiles).toHaveLength(1)
 		expect(askProfileId).toBe(profiles[0].id)
 		expect(actProfileId).toBe(profiles[0].id)
@@ -260,26 +284,26 @@ describe("ensureApiConfigProfiles (migration)", () => {
 		expect(store.getSecretForKey(profileSecretStorageKey(profiles[0].id, "apiKey"))).toBe("shared-key")
 	})
 
-	it("is a no-op when profiles already exist", () => {
+	it("is a no-op when profiles already exist", async () => {
 		const { store } = createStore()
-		const profile = upsertApiConfigProfile(store, { name: "x", provider: "bedrock", modelId: "m" })
-		const first = ensureApiConfigProfiles(store)
+		const profile = await upsertApiConfigProfile(store, { name: "x", provider: "bedrock", modelId: "m" })
+		const first = await ensureApiConfigProfiles(store)
 		expect(first.profiles).toEqual([profile])
 		expect(first.actProfileId).toBe(profile.id)
 	})
 })
 
 describe("isolated profile configuration", () => {
-	it("clears credentials, headers and omitted connection options on reassignment", () => {
+	it("clears credentials, headers and omitted connection options on reassignment", async () => {
 		const { store, apiConfig } = createStore({ openAiApiKey: "legacy-key", awsRegion: "legacy-region", azureIdentity: true })
-		const a = upsertApiConfigProfile(store, {
+		const a = await upsertApiConfigProfile(store, {
 			name: "A",
 			provider: "openai",
 			modelId: "a",
 			options: { openAiBaseUrl: "https://a/v1", openAiHeaders: { Authorization: "secret-a" } },
 			secrets: { openAiApiKey: "key-a" },
 		})
-		const b = upsertApiConfigProfile(store, {
+		const b = await upsertApiConfigProfile(store, {
 			name: "B",
 			provider: "openai",
 			modelId: "b",
@@ -295,9 +319,9 @@ describe("isolated profile configuration", () => {
 		expect(config.awsRegion).toBeUndefined()
 	})
 
-	it("resolves Ask and Act independently and re-resolves edits on mode switches", () => {
+	it("resolves Ask and Act independently and re-resolves edits on mode switches", async () => {
 		const { store, apiConfig } = createStore()
-		const a = upsertApiConfigProfile(store, {
+		const a = await upsertApiConfigProfile(store, {
 			name: "A",
 			provider: "openai",
 			modelId: "ask",
@@ -305,7 +329,7 @@ describe("isolated profile configuration", () => {
 			options: { openAiBaseUrl: "https://a/v1" },
 			secrets: { openAiApiKey: "key-a" },
 		})
-		const b = upsertApiConfigProfile(store, {
+		const b = await upsertApiConfigProfile(store, {
 			name: "B",
 			provider: "openai",
 			modelId: "act",
@@ -319,7 +343,7 @@ describe("isolated profile configuration", () => {
 		const act = resolveApiConfigurationForMode(ask, "act")
 		expect([ask.openAiBaseUrl, ask.openAiApiKey, ask.openAiCompatibleApiType]).toEqual(["https://a/v1", "key-a", "chat"])
 		expect([act.openAiBaseUrl, act.openAiApiKey, act.openAiCompatibleApiType]).toEqual(["https://b/v1", "key-b", "responses"])
-		upsertApiConfigProfile(store, {
+		await upsertApiConfigProfile(store, {
 			id: a.id,
 			name: "A",
 			provider: "openai",
@@ -342,10 +366,15 @@ describe("isSecretKey sanity", () => {
 })
 
 describe("profile reasoning defaults", () => {
-	it("applies defaults independently on assignment and resets overrides on reassignment", () => {
+	it("applies defaults independently on assignment and resets overrides on reassignment", async () => {
 		const { store, apiConfig } = createStore()
-		const high = upsertApiConfigProfile(store, { name: "High", provider: "anthropic", modelId: "m", reasoningEffort: "high" })
-		const low = upsertApiConfigProfile(store, { name: "Low", provider: "openai", modelId: "n", reasoningEffort: "low" })
+		const high = await upsertApiConfigProfile(store, {
+			name: "High",
+			provider: "anthropic",
+			modelId: "m",
+			reasoningEffort: "high",
+		})
+		const low = await upsertApiConfigProfile(store, { name: "Low", provider: "openai", modelId: "n", reasoningEffort: "low" })
 		assignApiConfigProfile(store, "plan", low.id)
 		assignApiConfigProfile(store, "act", high.id)
 		expect(apiConfig.planModeReasoningEffort).toBe("low")
@@ -356,19 +385,29 @@ describe("profile reasoning defaults", () => {
 		expect(apiConfig.planModeReasoningEffort).toBe("low")
 	})
 
-	it.each([undefined, "none"])("resets old effort to provider default for %s", (reasoningEffort) => {
+	it.each([undefined, "none"])("resets old effort to provider default for %s", async (reasoningEffort) => {
 		const { store, apiConfig } = createStore()
-		const profile = upsertApiConfigProfile(store, { name: "Default", provider: "openai", modelId: "m", reasoningEffort })
+		const profile = await upsertApiConfigProfile(store, {
+			name: "Default",
+			provider: "openai",
+			modelId: "m",
+			reasoningEffort,
+		})
 		store.setApiConfiguration({ actModeReasoningEffort: "high" })
 		assignApiConfigProfile(store, "act", profile.id)
 		expect(apiConfig.actModeReasoningEffort).toBe("none")
 	})
 
-	it("preserves current effort on save and reads, applying edits only on assignment", () => {
+	it("preserves current effort on save and reads, applying edits only on assignment", async () => {
 		const { store, apiConfig } = createStore()
-		const profile = upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "a", reasoningEffort: "high" })
+		const profile = await upsertApiConfigProfile(store, {
+			name: "A",
+			provider: "openai",
+			modelId: "a",
+			reasoningEffort: "high",
+		})
 		store.setApiConfiguration({ planModeReasoningEffort: "low", actModeReasoningEffort: "xhigh" })
-		const updated = upsertApiConfigProfile(store, { ...profile, modelId: "b", reasoningEffort: "medium" })
+		const updated = await upsertApiConfigProfile(store, { ...profile, modelId: "b", reasoningEffort: "medium" })
 		const snapshot = snapshotApiProfileConfiguration(store, apiConfig as ApiConfiguration, "act")
 		expect(snapshot.actModeReasoningEffort).toBe("xhigh")
 		expect(resolveApiConfigurationForMode(snapshot, "plan").planModeReasoningEffort).toBe("low")
@@ -379,9 +418,9 @@ describe("profile reasoning defaults", () => {
 		expect(apiConfig.planModeReasoningEffort).toBe("low")
 	})
 
-	it("keeps temporary model and effort selections out of the saved profile", () => {
+	it("keeps temporary model and effort selections out of the saved profile", async () => {
 		const { store, apiConfig } = createStore()
-		const profile = upsertApiConfigProfile(store, {
+		const profile = await upsertApiConfigProfile(store, {
 			name: "A",
 			provider: "openai",
 			modelId: "saved",
@@ -397,12 +436,12 @@ describe("profile reasoning defaults", () => {
 		expect(apiConfig.actModeReasoningEffort).toBe("high")
 	})
 
-	it("rejects invalid defaults and drops mode efforts from option snapshots", () => {
+	it("rejects invalid defaults and drops mode efforts from option snapshots", async () => {
 		const { store } = createStore()
-		expect(() =>
+		await expect(
 			upsertApiConfigProfile(store, { name: "A", provider: "openai", modelId: "m", reasoningEffort: "max" }),
-		).toThrow("Invalid reasoning effort")
-		const profile = upsertApiConfigProfile(store, {
+		).rejects.toThrow("Invalid reasoning effort")
+		const profile = await upsertApiConfigProfile(store, {
 			name: "A",
 			provider: "openai",
 			modelId: "m",
@@ -413,7 +452,7 @@ describe("profile reasoning defaults", () => {
 		expect(store.getApiConfiguration().planModeReasoningEffort).toBe("low")
 	})
 
-	it("migrates mode defaults and separates otherwise identical profiles with different efforts", () => {
+	it("migrates mode defaults and separates otherwise identical profiles with different efforts", async () => {
 		const { store } = createStore({
 			planModeApiProvider: "anthropic",
 			actModeApiProvider: "anthropic",
@@ -422,9 +461,66 @@ describe("profile reasoning defaults", () => {
 			planModeReasoningEffort: "low",
 			actModeReasoningEffort: "high",
 		})
-		const { profiles, askProfileId, actProfileId } = ensureApiConfigProfiles(store)
+		const { profiles, askProfileId, actProfileId } = await ensureApiConfigProfiles(store)
 		expect(profiles).toHaveLength(2)
 		expect(profiles.find((p) => p.id === askProfileId)?.reasoningEffort).toBe("low")
 		expect(profiles.find((p) => p.id === actProfileId)?.reasoningEffort).toBe("high")
+	})
+})
+
+describe("concurrent configuration mutations", () => {
+	it("keeps both configurations when two saves overlap their secret writes", async () => {
+		const { store } = createStore()
+		const write = store.setSecretsForKeys
+		// Hold every secret write until both saves have started.
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		store.setSecretsForKeys = async (entries) => {
+			await gate
+			return write(entries)
+		}
+		const first = upsertApiConfigProfile(store, {
+			name: "First",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "a" },
+		})
+		const second = upsertApiConfigProfile(store, {
+			name: "Second",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "b" },
+		})
+		release()
+		await Promise.all([first, second])
+		expect(readApiConfigProfiles(store).map((profile) => profile.name)).toEqual(expect.arrayContaining(["First", "Second"]))
+	})
+
+	it("does not resurrect a configuration deleted while a save waited on its secrets", async () => {
+		const { store } = createStore()
+		const keep = await upsertApiConfigProfile(store, { name: "Keep", provider: "anthropic", modelId: "m" })
+		const doomed = await upsertApiConfigProfile(store, { name: "Doomed", provider: "anthropic", modelId: "m" })
+		const write = store.setSecretsForKeys
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		store.setSecretsForKeys = async (entries) => {
+			await gate
+			return write(entries)
+		}
+		const save = upsertApiConfigProfile(store, {
+			id: keep.id,
+			name: "Kept",
+			provider: "anthropic",
+			modelId: "m",
+			secrets: { apiKey: "k" },
+		})
+		const remove = deleteApiConfigProfile(store, doomed.id)
+		release()
+		await Promise.all([save, remove])
+		expect(readApiConfigProfiles(store).map((profile) => profile.name)).toEqual(["Kept"])
 	})
 })

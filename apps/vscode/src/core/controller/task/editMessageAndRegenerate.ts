@@ -1,3 +1,4 @@
+import { normalizeProvenance } from "@shared/composer-provenance"
 import { Empty } from "@shared/proto/cline/common"
 import { EditMessageAndRegenerateRequest } from "@shared/proto/cline/task"
 import { Logger } from "@/shared/services/Logger"
@@ -15,6 +16,7 @@ export async function editMessageAndRegenerate(controller: Controller, request: 
 			images: request.images,
 			files: request.files,
 			restoreWorkspace: request.restoreWorkspace,
+			provenance: normalizeProvenance(request.provenance),
 		})
 		return Empty.create({})
 	} catch (error) {

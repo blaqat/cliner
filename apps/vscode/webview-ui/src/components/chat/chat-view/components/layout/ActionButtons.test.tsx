@@ -48,6 +48,23 @@ function makeChatState(): ChatState {
 }
 
 describe("ActionButtons", () => {
+	it("does not cancel or reject a pending approval on Escape", () => {
+		mockTurnState.mockReturnValue({ phase: "awaiting_approval", seq: 1, anchorTs: 10 })
+		const executeButtonAction = vi.fn()
+		const task = fileApprovalAsk(10, "app.js")
+		render(
+			<ActionButtons
+				chatState={makeChatState()}
+				messageHandlers={{ executeButtonAction } as unknown as MessageHandlers}
+				messages={[task]}
+				mode="act"
+				task={task}
+			/>,
+		)
+		fireEvent.keyDown(window, { key: "Escape" })
+		expect(executeButtonAction).not.toHaveBeenCalled()
+	})
+
 	it("does not render a scroll button when there are no action buttons", () => {
 		mockTurnState.mockReturnValue(undefined)
 		const task: ClineMessage = {

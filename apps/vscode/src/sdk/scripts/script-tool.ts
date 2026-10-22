@@ -1,0 +1,246 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { type AgentTool, type AgentToolContext, createTool } from "@cline/shared"
+import { formatTypedOptions, SCRIPT_APPROVAL_LABELS } from "@shared/scripts"
+import { readScriptToolInput } from "./script-approval"
+import { resolveScriptRun } from "./script-command"
+import type { ScriptDefinition } from "./script-file"
+import { runScriptCommand, SCRIPT_OUTPUT_TAIL_LINES, type ScriptRunResult } from "./script-runner"
+import type { ScriptStore } from "./script-store"
+import { scriptFingerprint } from "./script-trust"
+
+export interface ScriptToolContext {
+	store: ScriptStore
+	takeApprovedRun?: (input: unknown, context: AgentToolContext) => Promise<{ script: ScriptDefinition; cwd: string }>
+	/** Where a script without its own `cwd` runs. */
+	getWorkspaceRoot: () => string
+	/** Full environment for a command run in `cwd`: the configured terminal environment. */
+	resolveEnv: (cwd: string) => Promise<Record<string, string>>
+	/** Extension storage folder for full output logs. */
+	logDir: string
+	platform?: NodeJS.Platform
+	/** Replaceable for tests. */
+	run?: typeof runScriptCommand
+}
+
+const MAX_LOGS = 50
+const MAX_INDEX_SCRIPTS = 40
+
+interface ScriptToolInput {
+	action: "load" | "run"
+	name: string
+	options?: Record<string, string | boolean>
+}
+
+function describeOption(option: ScriptDefinition["options"][number]): string {
+	const parts = [option.kind, option.required ? "required" : "optional"]
+	if (option.choices?.length) parts.push(`one of: ${option.choices.join(", ")}`)
+	else if (option.kind === "choice") parts.push("no choices available")
+	if (option.default !== undefined) parts.push(`default: ${String(option.default)}`)
+	return `- ${option.name} (${parts.join("; ")})${option.description ? `: ${option.description}` : ""}`
+}
+
+/** Full usage notes returned by `load`. */
+export function describeScript(script: ScriptDefinition): string {
+	const lines = [
+		`Script: ${script.name}`,
+		`Use when: ${script.description}`,
+		`File: ${script.filePath}`,
+		`Approval: ${SCRIPT_APPROVAL_LABELS[script.approval]}`,
+		`Command: ${script.command}`,
+	]
+	if (script.cwd) lines.push(`Runs in: ${script.cwd}`)
+	lines.push(
+		script.options.length
+			? `Options (pass them in "options" when running):\n${script.options.map(describeOption).join("\n")}`
+			: "Options: none",
+	)
+	if (script.notes) lines.push(`\nUsage notes:\n${script.notes}`)
+	return lines.join("\n")
+}
+
+/** A script's working directory as approved: the canonical path plus the directory's identity. */
+export interface ScriptCwd {
+	path: string
+	dev: bigint
+	ino: bigint
+}
+
+async function canonicalDirectory(candidate: string): Promise<ScriptCwd | undefined> {
+	try {
+		const real = await fs.realpath(candidate)
+		const stat = await fs.stat(real, { bigint: true })
+		return stat.isDirectory() ? { path: real, dev: stat.dev, ino: stat.ino } : undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Resolves the script's cwd to its canonical path (symlinks followed) and records the directory's
+ * dev/ino, so an approval binds to the directory the user reviewed, not to a pathname that a
+ * symlink retarget could point somewhere else.
+ */
+export async function resolveScriptCwdIdentity(script: ScriptDefinition, workspaceRoot: string): Promise<ScriptCwd> {
+	let cwd = script.cwd?.trim()
+	if (cwd === "~" || cwd?.startsWith("~/") || cwd?.startsWith("~\\")) cwd = path.join(os.homedir(), cwd.slice(1))
+	const resolved = cwd ? path.resolve(workspaceRoot, cwd) : workspaceRoot
+	const identity = await canonicalDirectory(resolved)
+	if (!identity) throw new Error(`The script's cwd does not exist: ${resolved}`)
+	return identity
+}
+
+export async function resolveScriptCwd(script: ScriptDefinition, workspaceRoot: string): Promise<string> {
+	return (await resolveScriptCwdIdentity(script, workspaceRoot)).path
+}
+
+/** Re-checks an approved cwd right before running: same canonical path and same directory. */
+export async function verifyScriptCwd(approved: ScriptCwd): Promise<string> {
+	const current = await canonicalDirectory(approved.path)
+	if (!current || current.path !== approved.path || current.dev !== approved.dev || current.ino !== approved.ino)
+		throw new Error("The script's working directory changed after approval. Request approval again.")
+	return current.path
+}
+
+async function pruneLogs(logDir: string): Promise<void> {
+	try {
+		const names = (await fs.readdir(logDir)).filter((name) => name.endsWith(".log")).sort()
+		for (const name of names.slice(0, Math.max(0, names.length - MAX_LOGS))) {
+			await fs.rm(path.join(logDir, name), { force: true })
+		}
+	} catch {
+		// Pruning is best effort.
+	}
+}
+
+function formatRunResult(script: ScriptDefinition, result: ScriptRunResult, tailLines: number): string {
+	const status = result.aborted
+		? "was cancelled"
+		: result.timedOut
+			? "timed out and was stopped"
+			: result.signal
+				? `was stopped by ${result.signal}`
+				: result.exitCode === 0
+					? "succeeded (exit code 0)"
+					: `failed (exit code ${result.exitCode ?? "unknown"})`
+	const shown = Math.min(result.totalLines, tailLines)
+	const heading =
+		result.totalLines === 0
+			? "No output."
+			: result.totalLines > tailLines
+				? `Output (last ${shown} of ${result.totalLines} lines):`
+				: `Output (${result.totalLines} line${result.totalLines === 1 ? "" : "s"}):`
+	return [
+		`Script "${script.name}" ${status}.`,
+		heading,
+		...(result.tail ? [result.tail] : []),
+		`Full log: ${result.logPath}${result.totalLines > tailLines ? " (read it for earlier output)" : ""}`,
+	].join("\n")
+}
+
+export function buildScriptIndex(scripts: readonly ScriptDefinition[]): string {
+	if (scripts.length === 0) return "No scripts are enabled."
+	const lines = scripts.slice(0, MAX_INDEX_SCRIPTS).map((script) => `- ${script.name}: ${script.description}`)
+	if (scripts.length > MAX_INDEX_SCRIPTS) lines.push(`${scripts.length - MAX_INDEX_SCRIPTS} more; load by name`)
+	return lines.join("\n")
+}
+
+/**
+ * The `script` tool: loads a saved script's notes, or runs its exact saved
+ * command with validated option values. There is no free-form shell here; the
+ * approval prompt and the "always allow" level apply to the script by name.
+ */
+export function createScriptTool(context: ScriptToolContext): AgentTool {
+	const baseDescription =
+		"Load or run the user's saved scripts. Scripts are fixed commands with declared options; you cannot change the command. " +
+		'Use action "load" to read a script\'s usage notes and options before running it, and action "run" with "options" ' +
+		"(option name to value; flags are true) to run it. A run returns the exit code and the tail of the output; the full log path is included. " +
+		"Some scripts ask the user for approval first."
+	const tool = createTool<ScriptToolInput, string | { error: string }>({
+		name: "script",
+		description: baseDescription,
+		inputSchema: {
+			type: "object",
+			properties: {
+				action: { type: "string", enum: ["load", "run"] },
+				name: { type: "string", description: "Script name from the list" },
+				options: {
+					type: "object",
+					description: "Option values by option name; flags are true. Only declared options are accepted.",
+					additionalProperties: { type: ["string", "boolean"] },
+				},
+			},
+			required: ["action", "name"],
+		},
+		retryable: false,
+		executionMode: "sequential",
+		execute: async (input, toolContext) => {
+			try {
+				if (input?.action !== "load" && input?.action !== "run") return { error: 'action must be "load" or "run".' }
+				const name = readScriptToolInput(input)?.name ?? ""
+				const approved = input.action === "run" ? await context.takeApprovedRun?.(input, toolContext) : undefined
+				const script = approved?.script ?? (await context.store.find(name))
+				if (!script) {
+					const known = (await context.store.listEnabled()).map((entry) => entry.name).join(", ") || "none"
+					return { error: `No enabled script named "${name}". Enabled scripts: ${known}.` }
+				}
+				if (input.action === "load") return describeScript(script)
+
+				const resolved = resolveScriptRun(script, input.options, context.platform)
+				if (!resolved.ok) return { error: resolved.error }
+				const cwd = approved?.cwd ?? (await resolveScriptCwd(script, context.getWorkspaceRoot()))
+				const env = await context.resolveEnv(cwd)
+				const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+				const logPath = path.join(context.logDir, `${stamp}-${script.name}.log`)
+				const current = await context.store.find(name)
+				if (!current || scriptFingerprint(current) !== scriptFingerprint(script))
+					return { error: "Script changed after approval. Review the current version and run again." }
+				const result = await (context.run ?? runScriptCommand)({
+					command: resolved.command,
+					cwd,
+					env,
+					logPath,
+					signal: toolContext?.signal,
+				})
+				void pruneLogs(context.logDir)
+				return formatRunResult(script, result, SCRIPT_OUTPUT_TAIL_LINES)
+			} catch (error) {
+				return { error: error instanceof Error ? error.message : String(error) }
+			}
+		},
+	})
+	// The index is read each time the tool list is sent, so scripts the user adds or
+	// toggles show up without restarting the thread.
+	Object.defineProperty(tool, "description", {
+		get() {
+			return `${baseDescription}\n\nEnabled scripts:\n${buildScriptIndex(context.store.peekEnabled())}`
+		},
+		enumerable: true,
+		configurable: true,
+	})
+	return tool as AgentTool
+}
+
+/**
+ * The instruction a composer-typed script becomes. `approved` is true only when the composer
+ * marked the message as the user's explicit run, which counts as approval for this one run.
+ */
+export function buildScriptInvocationInstruction(
+	script: ScriptDefinition,
+	values: Record<string, string | boolean>,
+	note: string,
+	approved: boolean,
+): string {
+	const typed = formatTypedOptions(script.options, values)
+	const lines = [
+		`The user ran the saved script "${script.name}"${typed ? ` with: ${typed}` : " with no options"}.`,
+		`Run it now with the script tool, using exactly these values and no others: ${JSON.stringify({ action: "run", name: script.name, options: values })}.`,
+		approved
+			? "The user asked for this run explicitly, so it needs no further approval. Do not run it with different options or run other scripts for this request."
+			: "It follows the script's normal approval, so the user may be asked to approve it first. Do not run it with different options or run other scripts for this request.",
+		"Then report the outcome briefly.",
+	]
+	if (note) lines.push(`\nNote from the user: ${note}`)
+	return lines.join("\n")
+}

@@ -1,12 +1,14 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
 import { GitCompareIcon } from "lucide-react"
 import { MouseEvent, memo, RefObject, useEffect, useState } from "react"
+import { Button } from "@/components/ui/button"
 import { CheckpointsServiceClient } from "@/services/grpc-client"
 import { CopyButton } from "../common/CopyButton"
 import SuccessButton from "../common/SuccessButton"
 import AsideButton from "./AsideButton"
 import { QuoteButtonState } from "./ChatRow"
 import { MarkdownRow } from "./MarkdownRow"
+import MessageLinkButton from "./MessageLinkButton"
 import QuoteButton from "./QuoteButton"
 
 interface CompletionOutputRowProps {
@@ -28,6 +30,12 @@ interface CompletionOutputRowProps {
 	showViewChanges?: boolean
 	/** Shows the Aside action, branching the conversation at this message. */
 	asideFromTs?: number
+	/**
+	 * Adds "Open walkthrough" beside View Changes: the thread's changes as a review page.
+	 * Shares View Changes' gate, so it only shows when this turn changed files; the caller
+	 * leaves it unset for subagent threads.
+	 */
+	onOpenWalkthrough?: () => void
 }
 
 /**
@@ -46,6 +54,7 @@ export const CompletionOutputRow = memo(
 		contentRef,
 		showViewChanges,
 		asideFromTs,
+		onOpenWalkthrough,
 	}: CompletionOutputRowProps) => {
 		const [viewChangesPending, setViewChangesPending] = useState(false)
 		// undefined = still checking; the button stays hidden until the host
@@ -87,6 +96,7 @@ export const CompletionOutputRow = memo(
 					<span className="text-xs font-medium uppercase tracking-wider text-success/70">Completed</span>
 					<div className="flex items-center">
 						{asideFromTs !== undefined && <AsideButton className="text-success/70" messageTs={asideFromTs} />}
+						{asideFromTs !== undefined && <MessageLinkButton className="text-success/70" messageTs={asideFromTs} />}
 						<CopyButton ariaLabel="Copy response" className="text-success/70" textToCopy={text} />
 					</div>
 				</div>
@@ -100,9 +110,9 @@ export const CompletionOutputRow = memo(
 					)}
 				</div>
 				{showViewChanges && hasChanges === true && (
-					<div className="px-2 pb-2">
+					<div className="flex gap-1.5 px-2 pb-2">
 						<SuccessButton
-							className="w-full"
+							className="flex-1"
 							disabled={viewChangesPending}
 							onClick={() => {
 								setViewChangesPending(true)
@@ -114,6 +124,19 @@ export const CompletionOutputRow = memo(
 							<GitCompareIcon className="size-3 mr-1.5" />
 							View Changes
 						</SuccessButton>
+						{onOpenWalkthrough && (
+							<Button
+								className="h-auto min-h-6.5 flex-1 gap-1.5 px-2 text-(length:--vscode-font-size)"
+								data-testid="completion-open-walkthrough"
+								// Not onClick={onOpenWalkthrough}: the click event would arrive as the authored id.
+								onClick={() => onOpenWalkthrough()}
+								size="xs"
+								title="Review this thread's changes stop by stop"
+								variant="secondary">
+								<span aria-hidden className="codicon codicon-diff text-[14px]!" />
+								Open walkthrough
+							</Button>
+						)}
 					</div>
 				)}
 			</div>

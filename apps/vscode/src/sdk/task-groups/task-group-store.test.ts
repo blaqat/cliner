@@ -9,6 +9,7 @@ vi.mock("@/shared/services/Logger", () => ({
 	Logger: { error: vi.fn(), log: vi.fn(), warn: vi.fn() },
 }))
 
+const branchTag: TaskTag = { kind: "branch", value: "feat/export", source: "user" }
 const ticketTag: TaskTag = { kind: "ticket", value: "PROJ-482", source: "auto" }
 const labelTag: TaskTag = { kind: "label", value: "backend", source: "user" }
 
@@ -64,6 +65,31 @@ describe("TaskGroupStore", () => {
 		const retagged = await store.updateGroup(group.id, { tags: [] })
 		expect(retagged?.title).toBe("b")
 		expect(retagged?.tags).toEqual([])
+	})
+
+	it("persists the branch-suggestion dismissal without bumping updatedAt, and keeps it across other edits", async () => {
+		let now = 1000
+		vi.spyOn(Date, "now").mockImplementation(() => now++)
+		const group = await store.createGroup({ title: "a", tags: [branchTag] })
+		expect(group.branchSuggestionDismissed).toBeUndefined()
+
+		const dismissed = await store.updateGroup(group.id, { branchSuggestionDismissed: true })
+		expect(dismissed?.branchSuggestionDismissed).toBe(true)
+		expect(dismissed?.updatedAt).toBe(group.updatedAt)
+
+		// A fresh store (a reload) reads it back from disk.
+		const reloaded = await new TaskGroupStore(rootDir).getGroup(group.id)
+		expect(reloaded?.branchSuggestionDismissed).toBe(true)
+		expect((await new TaskGroupStore(rootDir).listGroupSummaries())[0].branchSuggestionDismissed).toBe(true)
+
+		const renamed = await store.updateGroup(group.id, { title: "b" })
+		expect(renamed?.branchSuggestionDismissed).toBe(true)
+		expect(renamed?.updatedAt).toBeGreaterThan(group.updatedAt)
+
+		const cleared = await store.updateGroup(group.id, { branchSuggestionDismissed: false })
+		expect(cleared?.branchSuggestionDismissed).toBeUndefined()
+		const raw = JSON.parse(await fs.readFile(taskGroupPaths(rootDir, group.id).groupFile, "utf8"))
+		expect(raw).not.toHaveProperty("branchSuggestionDismissed")
 	})
 
 	it("returns undefined when updating or reading a missing group", async () => {

@@ -1,27 +1,32 @@
 import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
+import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
-import { formatAge, statusFor } from "@/components/inbox/inboxUtils"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { formatAge } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
-import { openTask } from "@/components/inbox/sessionActions"
+import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { isLiveThreadStatus, type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
+import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
+import { dismissBranchHint, isBranchHintDismissed } from "./branchSuggestion"
 import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
+import { useSettleAll } from "./settleAll"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { sameTag, TaskTagEditor } from "./TaskTagEditor"
 import { formatNoteSize, openNote, requestNewNoteForm, threadRowTitle, useTaskGroup } from "./useTaskGroup"
 
 /** How many notes the notebook preview grid shows. */
 const NOTE_PREVIEW_COUNT = 4
-
-const MENU_ITEM_CLASS =
-	"flex h-6 w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 text-left text-[12px] text-menu-foreground cursor-pointer hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 
 const SECTION_HEADER_CLASS =
 	"flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-description"
@@ -84,11 +89,18 @@ interface TaskGroupViewProps {
  * chat composer below it starts new threads in this task.
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
-	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, sessionStatuses } = useExtensionState()
+	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, taskHistory } = useExtensionState()
+	const navigation = useNavigationHistory()
+	// Bumped on dismiss so the hint (read from storage) re-renders away.
+	const [, setBranchHintDismissals] = useState(0)
+	const threadStatuses = useThreadStatuses()
 	const { details, missing, refresh, setDetails } = useTaskGroup(taskGroupId)
 	const [menuOpen, setMenuOpen] = useState(false)
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
-	const [renaming, setRenaming] = useState(false)
+	// Bumped by ⋯ › Rename task to start renaming in the breadcrumb.
+	const [renameSignal, setRenameSignal] = useState(0)
+	const renameFromMenu = useRef(false)
+	const settleAll = useSettleAll(taskGroupId)
 
 	// The composer below starts threads in this task, however many are sent.
 	useEffect(() => {
@@ -102,6 +114,10 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const timeline = useMemo(() => orderTimeline(details?.threads ?? []), [details?.threads])
 	const threadCount = timeline.length
 	const noteNames = useMemo(() => new Map(notes.map((note) => [note.slug, note.name])), [notes])
+	const settledIds = useMemo(
+		() => new Set((taskHistory ?? []).filter((item) => item.isSettled).map((item) => item.id)),
+		[taskHistory],
+	)
 
 	if (missing) {
 		return (
@@ -139,7 +155,6 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 			.finally(refresh)
 	}
 	const rename = (title: string) => {
-		setRenaming(false)
 		const next = title.trim().replace(/\s+/g, " ")
 		if (next && next !== group.title) update({ title: next })
 	}
@@ -159,23 +174,52 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 
 	return (
 		<div className="flex flex-1 flex-col overflow-hidden" data-testid="task-group-view">
-			<TaskGroupPageHeader taskGroupId={group.id} title={group.title}>
+			<TaskGroupPageHeader onRename={rename} renameSignal={renameSignal} taskGroupId={group.id} title={group.title}>
 				<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 					<PopoverTrigger asChild>
 						<HeaderIconButton icon="ellipsis" label="Task actions" />
 					</PopoverTrigger>
-					<PopoverContent align="end" className="w-48 p-1 motion-reduce:animate-none" side="bottom">
+					<PopoverContent
+						align="end"
+						className="w-48 p-1 motion-reduce:animate-none"
+						// Rename moves focus into the breadcrumb; returning it to ⋯ would end the rename at once.
+						onCloseAutoFocus={(event) => {
+							if (renameFromMenu.current) {
+								renameFromMenu.current = false
+								event.preventDefault()
+							}
+						}}
+						side="bottom">
 						<div className="flex flex-col" role="menu">
 							<button
 								className={MENU_ITEM_CLASS}
 								onClick={() => {
+									renameFromMenu.current = true
 									setMenuOpen(false)
-									setRenaming(true)
+									setRenameSignal((count) => count + 1)
 								}}
 								role="menuitem"
 								type="button">
 								<span aria-hidden className="codicon codicon-edit text-[13px]" />
 								Rename task
+							</button>
+							<button
+								className={MENU_ITEM_CLASS}
+								disabled={settleAll.disabled}
+								onClick={() => {
+									setMenuOpen(false)
+									void settleAll.run()
+								}}
+								role="menuitem"
+								type="button">
+								<span
+									aria-hidden
+									className={cn(
+										MENU_ICON_CLASS,
+										settleAll.plan.mode === "settle" ? "codicon-check-all" : "codicon-discard",
+									)}
+								/>
+								{settleAll.plan.mode === "settle" ? "Settle all" : "Unsettle all"}
 							</button>
 							<button
 								className={cn(MENU_ITEM_CLASS, "text-error")}
@@ -192,6 +236,19 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					</PopoverContent>
 				</Popover>
 			</TaskGroupPageHeader>
+			{settleAll.message && (
+				<InlineNotice
+					actions={
+						<Button onClick={settleAll.dismiss} size="xs" variant="secondary">
+							Dismiss
+						</Button>
+					}
+					className="mx-4 mb-1"
+					data-testid="task-group-settle-notice"
+					tone={settleAll.message.partial ? "warning" : "info"}>
+					{settleAll.message.text}
+				</InlineNotice>
+			)}
 			{confirmingDelete && (
 				<div
 					className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-xs border border-error/50 bg-error/10 px-2 py-1.5 text-xs"
@@ -209,33 +266,14 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 				</div>
 			)}
 			<div className="flex-1 overflow-y-auto pb-2">
-				<div className="px-4 pt-2 pb-2">
-					<div className="flex min-w-0 items-center gap-1.5">
-						{renaming ? (
-							<RenameInput initial={group.title} onCancel={() => setRenaming(false)} onSave={rename} />
-						) : (
-							<>
-								<h2
-									className="ph-no-capture m-0 min-w-0 truncate text-[15px] font-semibold text-foreground"
-									data-testid="task-group-title">
-									{group.title}
-								</h2>
-								<button
-									aria-label="Rename task"
-									className="flex shrink-0 cursor-pointer items-center border-0 bg-transparent p-0 text-description hover:text-foreground"
-									onClick={() => setRenaming(true)}
-									type="button">
-									<span aria-hidden className="codicon codicon-edit text-[12px]" />
-								</button>
-							</>
-						)}
-						<span className="ml-auto shrink-0 text-[11px] text-description" data-testid="task-group-counts">
-							{plural(threadCount, "thread")} · {plural(notes.length, "note")}
-						</span>
-					</div>
-					<TaskTagEditor className="mt-1.5" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
+				{/* The name is in the breadcrumb (like a thread's); under it, just the tags and counts. */}
+				<div className="flex min-w-0 items-start gap-2 px-4 pt-1 pb-2">
+					<TaskTagEditor className="min-w-0 flex-1" onAdd={addTag} onRemove={removeTag} tags={group.tags} />
+					<span className="shrink-0 text-[11px] leading-4 text-description" data-testid="task-group-counts">
+						{plural(threadCount, "thread")} · {plural(notes.length, "note")}
+					</span>
 				</div>
-				{!branchLinked && currentBranch && (
+				{!branchLinked && currentBranch && !isBranchHintDismissed(group.id, currentBranch) && (
 					<div
 						className="mx-4 mb-2 flex items-center gap-1.5 rounded-xs border border-dashed border-(--vscode-charts-green)/50 px-2 py-1 text-[11px] text-(--vscode-charts-green)"
 						data-testid="task-group-branch-hint">
@@ -246,6 +284,18 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						<Button onClick={() => addTag({ kind: "branch", value: currentBranch })} size="xs" variant="secondary">
 							Link branch
 						</Button>
+						<button
+							aria-label={`Dismiss: don't suggest linking ${currentBranch} to this task`}
+							className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
+							data-testid="task-group-branch-hint-dismiss"
+							onClick={() => {
+								dismissBranchHint(group.id, currentBranch)
+								setBranchHintDismissals((count) => count + 1)
+							}}
+							title="Dismiss"
+							type="button">
+							<span aria-hidden className="codicon codicon-close text-[12px]" />
+						</button>
 					</div>
 				)}
 				<section className="px-2">
@@ -306,59 +356,39 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						<div className="px-2 pb-1 text-xs text-description">No threads yet. Start one below.</div>
 					) : (
 						<ol className="m-0 list-none p-0" data-testid="task-group-timeline">
-							{timeline.map(({ thread, depth }, index) => (
-								<TimelineRow
-									first={index === 0}
-									key={thread.threadId}
-									last={index === timeline.length - 1}
-									noteNames={noteNames}
-									now={now}
-									onOpen={() => {
-										hideTaskGroupView()
-										void openTask(thread.threadId)
-									}}
-									status={statusFor(sessionStatuses, thread.threadId)}
-									subthread={depth > 0}
-									thread={thread}
-								/>
-							))}
+							{timeline.map(({ thread, depth }, index) => {
+								const status = threadStatusFor(threadStatuses, thread.threadId)
+								return (
+									<TimelineRow
+										first={index === 0}
+										key={thread.threadId}
+										last={index === timeline.length - 1}
+										noteNames={noteNames}
+										now={now}
+										onOpen={() => {
+											// Through the history layer, so Back returns here, not to the home screen
+											// the task page briefly passes through while the thread opens.
+											if (navigation) {
+												navigation.navigate({ kind: "thread", id: thread.threadId })
+												return
+											}
+											hideTaskGroupView()
+											void openTask(thread.threadId)
+										}}
+										// A live thread is never shown as settled, even if the history flag lags.
+										settled={settledIds.has(thread.threadId) && !isLiveThreadStatus(status)}
+										status={status}
+										statusLabel={threadStatusLabel(threadStatuses[thread.threadId])}
+										subthread={depth > 0}
+										thread={thread}
+									/>
+								)
+							})}
 						</ol>
 					)}
 				</section>
 			</div>
 		</div>
-	)
-}
-
-function RenameInput({ initial, onSave, onCancel }: { initial: string; onSave: (title: string) => void; onCancel: () => void }) {
-	const [draft, setDraft] = useState(initial)
-	const settledRef = useRef(false)
-	const finish = (save: boolean) => {
-		if (settledRef.current) return
-		settledRef.current = true
-		if (save) onSave(draft)
-		else onCancel()
-	}
-	return (
-		<input
-			aria-label="Task title"
-			autoFocus
-			className={cn(INPUT_CLASS, "h-6 flex-1 text-[13px]")}
-			onBlur={() => finish(true)}
-			onChange={(event) => setDraft(event.target.value)}
-			onFocus={(event) => event.target.select()}
-			onKeyDown={(event) => {
-				if (event.key === "Enter") {
-					event.preventDefault()
-					finish(true)
-				} else if (event.key === "Escape") {
-					event.preventDefault()
-					event.stopPropagation()
-					finish(false)
-				}
-			}}
-			value={draft}
-		/>
 	)
 }
 
@@ -379,8 +409,15 @@ function NoteCard({ note, onOpen }: { note: NotebookNoteMeta; onOpen: () => void
 	)
 }
 
-/** Connector geometry: the spine runs down the node column; node centers sit on the title line. */
-const SPINE_CLASS = "pointer-events-none absolute left-[15.5px] w-px bg-description/35"
+/**
+ * Connector geometry: node centers sit at (16px, 15px) of each row — the row's 1px border and 8px
+ * padding put the 14px node column's center at x=16, and the 20px title line's center at y=15. The
+ * spine is 2px wide on whole pixels (15–17) so it stays centered and crisp at any zoom, and stops
+ * 2px short of each node so a dimmed (settled) node never shows the line through it.
+ */
+const SPINE_CLASS = "pointer-events-none absolute left-[15px] w-[2px] rounded-full bg-description/30"
+const NODE_CENTER_Y = 15
+const SPINE_GAP = 2
 
 /**
  * One timeline entry. The spine is drawn per row (above and below the node,
@@ -390,15 +427,21 @@ const SPINE_CLASS = "pointer-events-none absolute left-[15.5px] w-px bg-descript
 function TimelineRow({
 	thread,
 	status,
+	statusLabel,
 	noteNames,
 	now,
 	onOpen,
 	first,
 	last,
 	subthread,
+	settled,
 }: {
 	thread: TaskGroupThreadRow
-	status: ReturnType<typeof statusFor>
+	status: ThreadStatus
+	/** Settled threads dim; any thread or aside can be settled or unsettled from its row. */
+	settled: boolean
+	/** Tooltip for "waiting on subagents" ("Waiting on 2 subagents"). */
+	statusLabel?: string
 	noteNames: Map<string, string>
 	now: number
 	onOpen: () => void
@@ -410,12 +453,21 @@ function TimelineRow({
 	const started = formatAge(thread.startedTs, now)
 	const active = formatAge(thread.ts, now)
 	const describeAge = (age: string) => (age === "now" ? "just now" : `${age} ago`)
+	// Icons (spinner, hourglass) need more room than a dot.
+	const iconStatus = status === "running" || status === "subagents"
+	// Half the node's size (12px icon, 10px dot) plus the gap: where the spine stops above and below.
+	const reach = (iconStatus ? 6 : 5) + SPINE_GAP
 	return (
-		<li className="relative" data-subthread={subthread || undefined} data-testid="task-group-timeline-entry">
+		<li
+			className="group relative"
+			data-settled={settled || undefined}
+			data-subthread={subthread || undefined}
+			data-testid="task-group-timeline-entry">
 			<button
 				className={cn(
 					"relative grid w-full cursor-pointer gap-x-2 rounded-xs border border-transparent bg-transparent px-2 py-1 text-left transition-colors duration-150 hover:border-editor-group-border hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) motion-reduce:transition-none",
 					subthread ? "grid-cols-[28px_minmax(0,1fr)]" : "grid-cols-[14px_minmax(0,1fr)]",
+					settled && "opacity-55 hover:opacity-90",
 				)}
 				data-testid="task-group-timeline-row"
 				onClick={onOpen}
@@ -424,15 +476,8 @@ function TimelineRow({
 				<span className={cn("flex h-5 items-center", subthread ? "justify-end" : "justify-center")}>
 					<span className="flex w-3 items-center justify-center" data-testid="task-group-timeline-node">
 						<SessionStatusIcon
-							className={
-								subthread
-									? status === "running"
-										? "size-2.5"
-										: "size-1.5"
-									: status === "running"
-										? "size-3"
-										: "size-2.5"
-							}
+							className={subthread ? (iconStatus ? "size-2.5" : "size-1.5") : iconStatus ? "size-3" : "size-2.5"}
+							label={statusLabel}
 							status={status}
 						/>
 					</span>
@@ -447,7 +492,15 @@ function TimelineRow({
 						{subthread && <span className="sr-only">Subthread: </span>}
 						{title}
 					</span>
-					<span className="shrink-0 text-[10.5px] text-description">{started}</span>
+					{/* Hover swaps the start time for Settle. */}
+					<span
+						className={cn(
+							"shrink-0 text-right text-[10.5px] text-description",
+							// On hover the slot widens to the button's size, so the title truncates before it.
+							"transition-opacity duration-150 group-hover:min-w-16 group-hover:opacity-0 group-focus-within:min-w-16 group-focus-within:opacity-0 motion-reduce:transition-none",
+						)}>
+						{started}
+					</span>
 				</span>
 				{(thread.wrote.length > 0 || thread.read.length > 0) && (
 					<span className="col-start-2 mt-0.5 flex min-w-0 flex-wrap gap-1">
@@ -460,20 +513,34 @@ function TimelineRow({
 					</span>
 				)}
 			</button>
+			<button
+				aria-label={settled ? `Unsettle ${title}` : `Settle ${title}`}
+				className={cn(
+					"absolute top-1 right-2 flex h-4.5 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[10px] text-button-secondary-foreground",
+					"opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 hover:bg-button-secondary-background-hover motion-reduce:transition-none",
+				)}
+				data-testid="task-group-timeline-settle"
+				onClick={() => void toggleTaskSettled(thread.threadId)}
+				type="button">
+				{settled ? <RotateCcwIcon className="size-2.5" /> : <CheckIcon className="size-2.5" />}
+				{settled ? "Unsettle" : "Settle"}
+			</button>
 			{/* After the button so a hovered row's background doesn't hide the line. */}
 			{subthread ? (
 				<>
-					{/* Elbow from the spine into the subthread's node. */}
+					{/* Elbow from the spine into the subthread's node; the spine carries on past it. */}
 					<span
 						aria-hidden
-						className="pointer-events-none absolute top-0 left-[15.5px] h-[15.5px] w-[9.5px] rounded-bl-[5px] border-b border-l border-description/35"
+						className="pointer-events-none absolute top-0 left-[15px] h-[16px] w-[9px] rounded-bl-[6px] border-x-0 border-t-0 border-b-2 border-l-2 border-solid border-description/30"
 					/>
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[15px] bottom-0")} />}
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y }} />}
 				</>
 			) : (
 				<>
-					{!first && <span aria-hidden className={cn(SPINE_CLASS, "top-0 h-[8px]")} />}
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "top-[22px] bottom-0")} />}
+					{!first && (
+						<span aria-hidden className={cn(SPINE_CLASS, "top-0")} style={{ height: NODE_CENTER_Y - reach }} />
+					)}
+					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y + reach }} />}
 				</>
 			)}
 		</li>

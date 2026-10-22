@@ -1,5 +1,7 @@
-import { Int64Request } from "@shared/proto/cline/common"
+import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
+import { ComposerProvenance, Int64Request, MessageLinkRef } from "@shared/proto/cline/common"
 import { EditMessageAndRegenerateRequest } from "@shared/proto/cline/task"
+import { PencilIcon } from "lucide-react"
 import type React from "react"
 import { useEffect, useMemo, useState } from "react"
 import Thumbnails from "@/components/common/Thumbnails"
@@ -7,6 +9,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { CheckpointsServiceClient, TaskServiceClient } from "@/services/grpc-client"
+import MessageLinkButton from "./MessageLinkButton"
+import { MessageReferenceTags } from "./MessageTag"
 import { highlightText } from "./task-header/Highlights"
 
 interface UserMessageProps {
@@ -14,6 +18,8 @@ interface UserMessageProps {
 	files?: string[]
 	images?: string[]
 	messageTs?: number
+	/** Message tags the user attached when sending; shown as chips, never as raw text. */
+	messageReferences?: MessageReferenceInfo[]
 	sendMessageFromChatRow?: (text: string, images: string[], files: string[]) => void
 	/** True for messages that started an agent run, which are the only ones Reset Code applies to. */
 	canRestoreWorkspace?: boolean
@@ -35,7 +41,20 @@ const WORKSPACE_RESTORE_TOOLTIPS: Record<WorkspaceRestoreAvailability["state"], 
 	unavailable: "No workspace checkpoint was created for this message.",
 }
 
-const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageTs, canRestoreWorkspace }) => {
+const UserMessage: React.FC<UserMessageProps> = ({
+	text: rawText,
+	images,
+	files,
+	messageTs,
+	messageReferences,
+	canRestoreWorkspace,
+}) => {
+	// The host parses the blocks out already; parsing here too keeps a block from ever showing as text.
+	const parsed = useMemo(() => parseMessageReferences(rawText ?? ""), [rawText])
+	const text = rawText === undefined ? undefined : parsed.text
+	const references = useMemo(() => [...(messageReferences ?? []), ...parsed.references], [messageReferences, parsed.references])
+	// Tags stay on the message when it is edited and resent, unless the user removes them.
+	const [editedReferences, setEditedReferences] = useState<MessageReferenceInfo[]>(references)
 	const { navigateToSettings, enableCheckpointsSetting, subagentView } = useExtensionState()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedText, setEditedText] = useState(text ?? "")
@@ -88,6 +107,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 
 	const startEditing = () => {
 		setEditedText(text ?? "")
+		setEditedReferences(references)
 		setEditedImages(images ?? [])
 		setEditedFiles(files ?? [])
 		setErrorMessage(undefined)
@@ -125,6 +145,24 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					images: editedImages,
 					files: editedFiles,
 					restoreWorkspace,
+					// Carried verbatim: the linked message may be past the rewind point by now.
+					provenance:
+						editedReferences.length > 0
+							? ComposerProvenance.create({
+									messageLinks: editedReferences.map((reference) =>
+										MessageLinkRef.create({
+											threadId: reference.threadId,
+											// -1: sent before references kept their position, so there's nothing to scroll to.
+											messageIndex: reference.messageIndex ?? -1,
+											toolCallId: reference.toolCallId,
+											block: reference.block,
+											threadTitle: reference.threadTitle,
+											author: reference.author,
+											text: reference.text,
+										}),
+									),
+								})
+							: undefined,
 				}),
 			)
 			setIsEditing(false)
@@ -156,7 +194,7 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 	return (
 		<div
 			className={`group relative p-2.5 my-1 text-badge-foreground rounded-xs ${
-				messageTs && !isEditing && !subagentView ? "cursor-pointer pr-8" : ""
+				messageTs && !isEditing && !subagentView ? "cursor-pointer pr-12" : ""
 			}`}
 			onClick={messageTs && !isEditing && !subagentView ? startEditing : undefined}
 			onKeyDown={
@@ -178,24 +216,41 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 			tabIndex={messageTs && !isEditing && !subagentView ? 0 : undefined}
 			title={messageTs && !isEditing && !subagentView ? "Edit and regenerate from here" : undefined}>
 			{messageTs && !isEditing && !subagentView && (
-				<Tooltip>
-					<TooltipContent side="left">Edit and regenerate from here</TooltipContent>
-					<TooltipTrigger asChild>
-						<button
-							aria-label="Edit and regenerate from this message"
-							className="absolute right-1.5 top-1.5 opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-1"
-							onClick={(event) => {
-								event.stopPropagation()
-								startEditing()
-							}}
-							type="button">
-							<i className="codicon codicon-edit" />
-						</button>
-					</TooltipTrigger>
-				</Tooltip>
+				// One small toolbar: both actions are 20px buttons with 12px icons, side by side.
+				<span className="absolute right-1.5 top-1.5 flex items-center gap-0.5 text-badge-foreground">
+					<Tooltip>
+						<TooltipContent side="left">Copy link to this message</TooltipContent>
+						<TooltipTrigger asChild>
+							<span className="flex size-5 items-center justify-center opacity-0 group-hover:opacity-80 hover:opacity-100">
+								<MessageLinkButton className="scale-100" iconClassName="size-3!" messageTs={messageTs} />
+							</span>
+						</TooltipTrigger>
+					</Tooltip>
+					<Tooltip>
+						<TooltipContent side="left">Edit and regenerate from here</TooltipContent>
+						<TooltipTrigger asChild>
+							<button
+								aria-label="Edit and regenerate from this message"
+								className="flex size-5 items-center justify-center opacity-0 group-hover:opacity-80 hover:opacity-100 bg-transparent border-0 text-badge-foreground cursor-pointer p-0"
+								onClick={(event) => {
+									event.stopPropagation()
+									startEditing()
+								}}
+								type="button">
+								<PencilIcon aria-hidden className="size-3" />
+							</button>
+						</TooltipTrigger>
+					</Tooltip>
+				</span>
 			)}
 			{isEditing ? (
 				<div className="flex flex-col gap-2" onKeyDown={handleEditingKeyDown}>
+					{editedReferences.length > 0 && (
+						<MessageReferenceTags
+							onRemove={(index) => setEditedReferences((current) => current.filter((_, i) => i !== index))}
+							references={editedReferences}
+						/>
+					)}
 					<textarea
 						className="w-full box-border rounded-xs border border-vscode-input-border bg-vscode-input-background text-vscode-input-foreground p-2 text-sm resize-vertical"
 						disabled={!!savingMode}
@@ -266,9 +321,12 @@ const UserMessage: React.FC<UserMessageProps> = ({ text, images, files, messageT
 					</div>
 				</div>
 			) : (
-				<span className="ph-no-capture text-sm" style={{ display: "block" }}>
-					{highlightedText}
-				</span>
+				<>
+					{references.length > 0 && <MessageReferenceTags references={references} />}
+					<span className="ph-no-capture text-sm" style={{ display: "block" }}>
+						{highlightedText}
+					</span>
+				</>
 			)}
 			{!isEditing && ((images && images.length > 0) || (files && files.length > 0)) && (
 				<Thumbnails files={files ?? []} images={images ?? []} style={{ marginTop: "8px" }} />

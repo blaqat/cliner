@@ -1,5 +1,6 @@
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskGroup } from "@shared/task-groups"
+import { resolveEffectiveTaskGroupId } from "./effective-task-group"
 import type { NotebookStore } from "./notebook-store"
 
 export interface TaskNotebookContext {
@@ -24,5 +25,11 @@ export async function resolveNotebookOwner(
 		if (!parent) break
 		current = parent
 	}
-	return { rootThreadId: current.id, taskGroupId: current.isSubagent ? undefined : current.taskGroupId }
+	// `rootThreadId` is the user-facing thread that owns pending edits and reads (an aside is
+	// its own thread, with its own chat to review them in). The task itself resolves further
+	// through aside parents: an aside always belongs to its parent's task.
+	return {
+		rootThreadId: current.id,
+		taskGroupId: current.isSubagent ? undefined : await resolveEffectiveTaskGroupId(current, findThread),
+	}
 }

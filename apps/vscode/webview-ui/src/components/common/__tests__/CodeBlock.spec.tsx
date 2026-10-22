@@ -1,7 +1,6 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { render, screen } from "@testing-library/react"
+import { describe, expect, it } from "vitest"
 import CodeBlock from "../CodeBlock"
-import { TEXT_PREVIEW_CHARACTERS } from "../text-preview"
 
 describe("CodeBlock", () => {
 	it("renders highlighted code on the first render, so the row keeps its height when re-mounted", () => {
@@ -21,31 +20,18 @@ describe("CodeBlock", () => {
 		expect(container.textContent).toContain("plain output")
 	})
 
-	it.each([
-		"```ts\n" + Array.from({ length: 20_000 }, (_, i) => `const value_${i} = "${"x".repeat(80)}";`).join("\n") + "\n```",
-		"```diff\n+" + "x".repeat(2 * 1024 * 1024) + "\n```",
-	])("bounds huge blocks before parsing or highlighting", (source) => {
-		const { container, rerender } = render(<CodeBlock forceWrap source={source} />)
-		const pre = container.querySelector("pre")!
-		expect(pre.textContent!.length).toBeLessThanOrEqual(TEXT_PREVIEW_CHARACTERS)
-		expect(container.querySelector(".hljs")).toBeNull()
-		expect(container.querySelectorAll("*").length).toBeLessThan(100)
-		rerender(<CodeBlock forceWrap source={source + "tail"} />)
-		expect(container.querySelector("pre")).toBe(pre)
+	it("renders large blocks in full with no pager", () => {
+		const lines = Array.from({ length: 1_000 }, (_, i) => `const value_${i} = "${"x".repeat(40)}";`)
+		const { container } = render(<CodeBlock source={"```ts\n" + lines.join("\n") + "\n```"} />)
+		expect(container.textContent).toContain("value_999")
+		expect(container.textContent).not.toContain("Large content")
+		expect(screen.queryByRole("button", { name: /section/i })).toBeNull()
 	})
 
-	it("pages through full content without accumulating DOM and copies the unabridged source", async () => {
-		const source = "a".repeat(TEXT_PREVIEW_CHARACTERS) + "last section"
-		const writeText = vi.fn().mockResolvedValue(undefined)
-		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } })
-		const { container } = render(<CodeBlock source={source} />)
-		fireEvent.click(screen.getByRole("button", { name: "Show next section" }))
-		expect(container.querySelector("pre")!.textContent).toBe("last section")
-		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: "Copy full content" }))
-		})
-		expect(writeText).toHaveBeenCalledWith(source)
-		fireEvent.click(screen.getByRole("button", { name: "Previous section" }))
-		expect(container.querySelector("pre")!.textContent).toBe("a".repeat(TEXT_PREVIEW_CHARACTERS))
+	it("shows an oversized block in full without highlighting it", () => {
+		const body = "x".repeat(200 * 1024)
+		const { container } = render(<CodeBlock source={"```shell\n" + body + "\n```"} />)
+		expect(container.textContent).toBe(body)
+		expect(container.querySelector(".hljs")).toBeNull()
 	})
 })

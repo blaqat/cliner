@@ -12,7 +12,9 @@ type FileReadExecutor = NonNullable<ToolExecutors["readFile"]>
  * read failed with ENOENT and pushed the model into terminal fallbacks. The terminal
  * and editor tools already run against the workspace root; this makes reads match.
  */
-export function createWorkspaceFileReadExecutor(getWorkspaceRoot: () => Promise<string>): FileReadExecutor {
+export function createWorkspaceFileReadExecutor(
+	getWorkspaceRoot: (context: Parameters<FileReadExecutor>[1]) => Promise<string>,
+): FileReadExecutor {
 	const readFile = createDefaultExecutors().readFile
 	if (!readFile) {
 		throw new Error("SDK default executors did not provide a readFile executor")
@@ -21,7 +23,7 @@ export function createWorkspaceFileReadExecutor(getWorkspaceRoot: () => Promise<
 		if (path.isAbsolute(request.path)) {
 			return readFile(request, context)
 		}
-		const workspaceRoot = await getWorkspaceRoot()
+		const workspaceRoot = await getWorkspaceRoot(context)
 		return readFile({ ...request, path: path.resolve(workspaceRoot, request.path) }, context)
 	}
 }

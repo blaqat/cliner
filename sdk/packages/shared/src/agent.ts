@@ -177,6 +177,14 @@ export interface AgentToolDefinition {
 		 * Whether a successful call to this tool completes the current run.
 		 */
 		completesRun?: boolean;
+		/**
+		 * Whether an empty model response directly after a successful call to
+		 * this tool (same turn) ends the run as completed instead of failing
+		 * with "Model returned empty response". For display-only tools whose
+		 * result already told the user everything, so a closing sentence is
+		 * optional.
+		 */
+		emptyResponseCompletes?: boolean;
 	};
 }
 

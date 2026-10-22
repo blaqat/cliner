@@ -1,5 +1,6 @@
 import { ArchiveIcon, XIcon } from "lucide-react"
 import { memo, useEffect, useState } from "react"
+import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { describeStashEntry, type PromptStashEntry } from "./chat-view/utils/promptStash"
@@ -20,13 +21,15 @@ interface PromptStashButtonProps {
 	entries: PromptStashEntry[]
 	onRestore: (id: string) => void
 	onDelete: (id: string) => void
+	/** "⌘" on macOS, "Ctrl" elsewhere; labels the stash shortcut in the tooltip. */
+	modKey?: string
 }
 
 /**
  * Stash icon next to send. Rendered only while the stash has entries; opens a
  * list where clicking an entry restores it and the x deletes it.
  */
-const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonProps) => {
+const PromptStashButton = ({ entries, onRestore, onDelete, modKey }: PromptStashButtonProps) => {
 	const [open, setOpen] = useState(false)
 	const count = entries.length
 
@@ -52,7 +55,7 @@ const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonPr
 						open && "text-foreground",
 					)}
 					data-testid="stash-button"
-					title={`Stashed prompts (${count})`}
+					title={`Stashed prompts (${count})${modKey ? ` · stash the draft with ${modKey}+S` : ""}`}
 					type="button">
 					<ArchiveIcon size={13} />
 					<span className="absolute -top-1.5 -right-2 min-w-3 h-3 px-0.5 rounded-full bg-badge-background text-badge-foreground text-[9px] leading-3 text-center">
@@ -62,7 +65,7 @@ const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonPr
 			</PopoverTrigger>
 			<PopoverContent
 				align="end"
-				className="menu-rise w-72 max-w-[calc(100vw-2rem)] p-1"
+				className={cn("menu-rise w-72 max-w-[calc(100vw-2rem)] p-1", COMPOSER_MENU_SCROLL_CLASS)}
 				data-testid="stash-popover"
 				side="top">
 				<div className="px-1.5 py-1 text-xs text-description">Stashed prompts</div>
@@ -82,6 +85,8 @@ const PromptStashButton = ({ entries, onRestore, onDelete }: PromptStashButtonPr
 									{formatAge(entry.ts, now)}
 									{entry.quotes.length > 0 &&
 										` · ${entry.quotes.length} quote${entry.quotes.length === 1 ? "" : "s"}`}
+									{!!entry.messageTags?.length &&
+										` · ${entry.messageTags.length} message${entry.messageTags.length === 1 ? "" : "s"}`}
 								</div>
 							</div>
 							<button

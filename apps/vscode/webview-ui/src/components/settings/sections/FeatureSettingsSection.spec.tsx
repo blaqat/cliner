@@ -92,4 +92,36 @@ describe("FeatureSettingsSection", () => {
 
 		expect(mockUpdateSetting).toHaveBeenCalledWith("showFeatureTips", true)
 	})
+
+	it("turns in-app toasts off and on", () => {
+		mockExtensionState.value = { ...mockExtensionState.value, threadToastsEnabled: true, threadToastSeconds: 5 } as never
+		render(<FeatureSettingsSection renderSectionHeader={() => null} />)
+
+		fireEvent.click(screen.getByRole("switch", { name: "In-app Toasts" }))
+
+		expect(mockUpdateSetting).toHaveBeenCalledWith("threadToastsEnabled", false)
+	})
+
+	it("saves the completion toast duration on blur and ignores invalid values", () => {
+		mockExtensionState.value = { ...mockExtensionState.value, threadToastsEnabled: true, threadToastSeconds: 5 } as never
+		render(<FeatureSettingsSection renderSectionHeader={() => null} />)
+		const input = screen.getByTestId("thread-toast-seconds") as HTMLInputElement
+		expect(input.value).toBe("5")
+
+		fireEvent.change(input, { target: { value: "0" } })
+		fireEvent.blur(input)
+		expect(mockUpdateSetting).not.toHaveBeenCalled()
+		expect(input.value).toBe("5")
+
+		fireEvent.change(input, { target: { value: "9" } })
+		fireEvent.blur(input)
+		expect(mockUpdateSetting).toHaveBeenCalledWith("threadToastSeconds", 9)
+	})
+
+	it("disables the duration while toasts are off", () => {
+		mockExtensionState.value = { ...mockExtensionState.value, threadToastsEnabled: false } as never
+		render(<FeatureSettingsSection renderSectionHeader={() => null} />)
+
+		expect(screen.getByTestId("thread-toast-seconds")).toBeDisabled()
+	})
 })

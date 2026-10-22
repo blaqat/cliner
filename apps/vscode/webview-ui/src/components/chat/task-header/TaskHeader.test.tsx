@@ -111,8 +111,17 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 		const items = within(screen.getByRole("menu")).getAllByRole("menuitem")
-		expect(items.map((row) => row.textContent)).toEqual(["Copy first message"])
+		expect(items.map((row) => row.textContent)).toEqual(["Walkthrough", "Copy first message"])
 		expect(screen.queryByText(firstMessage)).toBeNull()
+	})
+
+	it("opens the walkthrough from the thread menu", () => {
+		const navigateToWalkthrough = vi.fn()
+		mocks.state = { ...mocks.state, navigateToWalkthrough }
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
+		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
+		fireEvent.click(screen.getByRole("menuitem", { name: "Walkthrough" }))
+		expect(navigateToWalkthrough).toHaveBeenCalledTimes(1)
 	})
 
 	it("settles through toggleTaskSettled and returns home; unsettle stays", async () => {
@@ -144,12 +153,17 @@ describe("TaskHeader", () => {
 		expect(mocks.deleteTasksWithIds).not.toHaveBeenCalled()
 	})
 
-	it("hides the subagents button without subagents and shows the direct-child count with them", () => {
+	it("hides the subagents button without subagents and badges only running ones", () => {
 		const { rerender } = render(<TaskHeader onClose={vi.fn()} task={task} />)
 		expect(screen.queryByTestId("subagents-button")).toBeNull()
 
 		const child = item("t1__a", { isSubagent: true, parentTaskId: "t1", task: "explore" })
 		mocks.state = { ...mocks.state, taskHistory: [mocks.state.currentTaskItem, child] }
+		rerender(<TaskHeader onClose={vi.fn()} task={task} />)
+		expect(screen.getByTestId("subagents-button")).toBeInTheDocument()
+		expect(screen.queryByTestId("subagents-badge")).toBeNull()
+
+		mocks.state = { ...mocks.state, sessionStatuses: { t1__a: "running" } }
 		rerender(<TaskHeader onClose={vi.fn()} task={task} />)
 		expect(screen.getByTestId("subagents-badge")).toHaveTextContent("1")
 	})

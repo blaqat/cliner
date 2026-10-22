@@ -9,6 +9,7 @@ import {
 	expandTaskGroupInInbox,
 	formatAge,
 	type InboxSettledEntry,
+	isRowWorking,
 	readExpandedTaskGroups,
 	writeExpandedTaskGroups,
 } from "./inboxUtils"
@@ -48,9 +49,11 @@ describe("buildInbox", () => {
 			item("orphan", NOW - 5 * MIN, { parentTaskId: "deleted" }),
 		]
 
-		const { active } = buildInbox(history, { a2: "running", a1: "done" })
+		const { active, settled } = buildInbox(history, { a2: "running", a1: "done" })
 
-		expect(active.map((row) => row.item.id)).toEqual(["orphan", "root"])
+		// An aside whose parent is gone has nothing to roll up into: it lists itself, settled.
+		expect(active.map((row) => row.item.id)).toEqual(["root"])
+		expect(settled.map(settledId)).toEqual(["orphan"])
 		const root = active.find((row) => row.item.id === "root")
 		expect(root?.subthreadCount).toBe(2)
 		expect(root?.liveSubthreadCount).toBe(1)
@@ -201,7 +204,7 @@ describe("inbox helpers", () => {
 	})
 
 	it("describes the latest activity per status", () => {
-		const row = (status: "running" | "waiting" | "done" | "error", settled = false) => ({
+		const row = (status: "running" | "waiting" | "done" | "error" | "stopped", settled = false) => ({
 			item: item("t", NOW - MIN, { settledAt: NOW - 3 * MIN }),
 			activityTs: NOW - MIN,
 			status,
@@ -215,15 +218,16 @@ describe("inbox helpers", () => {
 		expect(describeActivity(row("running"), NOW)).toBe("Working…")
 		expect(describeActivity(row("waiting"), NOW)).toBe("Waiting for you")
 		expect(describeActivity(row("error"), NOW)).toBe("Stopped with an error")
+		expect(describeActivity(row("stopped"), NOW)).toBe("Stopped")
 		expect(describeActivity(row("done", true), NOW)).toBe("Last active 1m ago")
 		expect(describeActivity({ ...row("done", true), activityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
 	})
 
-	it("says a subthread is working when the parent is idle but a descendant is live", () => {
+	it("says what an idle parent is waiting on", () => {
 		const row = (liveSubthreadCount: number, liveSubagentCount = 0) => ({
 			item: item("t", NOW - MIN),
 			activityTs: NOW - MIN,
-			status: "done" as const,
+			status: "subagents" as const,
 			settled: false,
 			subthreadCount: liveSubthreadCount,
 			liveSubthreadCount,
@@ -231,13 +235,43 @@ describe("inbox helpers", () => {
 			liveSubagentCount,
 			attentionSubagentCount: 0,
 		})
-		expect(describeActivity(row(1), NOW)).toBe("Working… in subthread")
-		expect(describeActivity(row(0, 1), NOW)).toBe("Working… in subthread")
+		expect(describeActivity(row(1), NOW)).toBe("Waiting on 1 subthread")
+		expect(describeActivity(row(0, 2), NOW)).toBe("Waiting on 2 subagents")
+		expect(describeActivity(row(1, 1), NOW)).toBe("Waiting on 1 subagent and 1 subthread")
 		expect(describeActivity({ ...row(1), status: "running" }, NOW)).toBe("Working…")
 		// A parent that needs the user still says so while a subthread works.
 		expect(describeActivity({ ...row(1), status: "waiting" }, NOW)).toBe("Waiting for you")
 		expect(describeActivity({ ...row(1), status: "error" }, NOW)).toBe("Stopped with an error")
-		expect(describeActivity(row(0), NOW)).toBe("Done")
+		expect(describeActivity({ ...row(0), status: "done" }, NOW)).toBe("Done")
+	})
+
+	it("derives waiting on subagents for an idle parent with live children", () => {
+		const history = [
+			item("p", NOW - MIN),
+			item("a", NOW, { parentTaskId: "p", isSubagent: true }),
+			item("b", NOW, { parentTaskId: "p", isSubagent: true }),
+		]
+		const rowFor = (statuses: Record<string, "running" | "waiting" | "done" | "error">) =>
+			buildInbox(history, statuses).active[0]
+
+		const waiting = rowFor({ p: "done", a: "running", b: "running" })
+		expect(waiting.status).toBe("subagents")
+		expect(describeActivity(waiting, NOW)).toBe("Waiting on 2 subagents")
+		expect(rowFor({ p: "done", a: "done", b: "done" }).status).toBe("done")
+		// A subagent that needs the user wins over waiting on the others.
+		expect(rowFor({ p: "done", a: "waiting", b: "running" }).status).toBe("waiting")
+		// The parent's own state wins while it is running or failed.
+		expect(rowFor({ p: "running", a: "running", b: "done" }).status).toBe("running")
+		expect(rowFor({ p: "error", a: "running", b: "done" }).status).toBe("error")
+	})
+
+	it("keeps a settled thread that waits on subagents in the active section", () => {
+		const history = [item("p", NOW - MIN, { isSettled: true }), item("a", NOW, { parentTaskId: "p", isSubagent: true })]
+		const inbox = buildInbox(history, { p: "done", a: "running" })
+		expect(inbox.active.map((row) => row.item.id)).toEqual(["p"])
+		expect(inbox.active[0]).toMatchObject({ status: "subagents", settled: false })
+		expect(inbox.settledTotal).toBe(0)
+		expect(isRowWorking(inbox.active[0])).toBe(true)
 	})
 })
 
@@ -260,6 +294,19 @@ describe("buildInbox task groups", () => {
 		expect(settledTotal).toBe(0)
 		expect(groups).toHaveLength(1)
 		expect(groups[0].members.map((row) => row.item.id)).toEqual(["m1", "m2"])
+	})
+
+	it("orders members active first, then settled, each newest first", () => {
+		const history = [
+			item("settledNew", NOW - MIN, { taskGroupId: "g", isSettled: true }),
+			item("activeOld", NOW - 30 * MIN, { taskGroupId: "g" }),
+			item("settledOld", NOW - 40 * MIN, { taskGroupId: "g", isSettled: true }),
+			item("activeNew", NOW - 5 * MIN, { taskGroupId: "g" }),
+		]
+		const { groups } = buildInbox(history, {}, undefined, { taskGroups: [group("g", 0)] })
+		expect(groups[0].members.map((row) => row.item.id)).toEqual(["activeNew", "activeOld", "settledNew", "settledOld"])
+		// The task's activity is still its newest thread's, settled or not.
+		expect(groups[0].activityTs).toBe(NOW - MIN)
 	})
 
 	it("lists a task as active only while a member thread is unsettled", () => {
@@ -330,12 +377,12 @@ describe("buildInbox task groups", () => {
 		expect(groups[0].members.map((row) => row.item.id)).toEqual(["a1"])
 	})
 
-	it("lists an aside filed in another task as a member of that task, not under its parent", () => {
+	it("keeps an aside under its parent's task whatever task the aside record says", () => {
 		const history = [
 			item("parent", NOW - 60 * MIN, { taskGroupId: "a" }),
 			item("same", NOW - 30 * MIN, { parentTaskId: "parent", taskGroupId: "a" }),
-			item("moved", NOW - MIN, { parentTaskId: "parent", taskGroupId: "b" }),
-			item("agent", NOW, { parentTaskId: "moved", isSubagent: true }),
+			item("stray", NOW - MIN, { parentTaskId: "parent", taskGroupId: "b" }),
+			item("agent", NOW, { parentTaskId: "stray", isSubagent: true }),
 		]
 
 		const { groups, active } = buildInbox(history, { agent: "running" }, undefined, {
@@ -344,14 +391,12 @@ describe("buildInbox task groups", () => {
 
 		const byId = new Map(groups.map((row) => [row.group.id, row]))
 		expect(byId.get("a")?.members.map((row) => row.item.id)).toEqual(["parent"])
-		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 1, activityTs: NOW - 30 * MIN })
-		// The moved aside keeps its own subagents and counts toward its own task.
-		expect(byId.get("b")?.members.map((row) => row.item.id)).toEqual(["moved"])
-		expect(byId.get("b")).toMatchObject({ runningCount: 1, activityTs: NOW })
+		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 2, activityTs: NOW })
+		expect(byId.has("b")).toBe(false)
 		expect(active).toHaveLength(0)
 	})
 
-	it("lists an aside taken out of its parent's task as an unfiled row", () => {
+	it("folds an unfiled aside into its filed parent", () => {
 		const history = [
 			item("parent", NOW - 60 * MIN, { taskGroupId: "a" }),
 			item("aside", NOW - MIN, { parentTaskId: "parent" }),
@@ -359,8 +404,8 @@ describe("buildInbox task groups", () => {
 
 		const { groups, active } = buildInbox(history, {}, undefined, { taskGroups: [group("a", 0)] })
 
-		expect(groups[0].members[0]).toMatchObject({ subthreadCount: 0, activityTs: NOW - 60 * MIN })
-		expect(active.map((row) => row.item.id)).toEqual(["aside"])
+		expect(groups[0].members[0]).toMatchObject({ subthreadCount: 1, activityTs: NOW - MIN })
+		expect(active).toHaveLength(0)
 	})
 
 	it("falls back to the group's update time when it has no threads", () => {
@@ -408,6 +453,102 @@ describe("buildInbox task groups", () => {
 		expect(active.map((row) => row.item.id)).toEqual(["x"])
 		expect(hiddenCount).toBe(1)
 		expect(groups[0].members).toHaveLength(1)
+	})
+})
+
+/** Every history item must surface somewhere in the inbox: a row, a subthread count, or a task. */
+function inboxIds(result: ReturnType<typeof buildInbox>): Set<string> {
+	const ids = new Set<string>()
+	for (const entry of [...result.activeEntries, ...result.settled]) {
+		if (entry.kind === "thread") ids.add(entry.row.item.id)
+		else entry.row.members.forEach((member) => ids.add(member.item.id))
+	}
+	return ids
+}
+
+describe("buildInbox keeps every History thread", () => {
+	const paged = { activeLimit: 10_000, settledLimit: 10_000 }
+
+	it("lists legacy items that lack every fork field", () => {
+		// What regular Cline wrote: no settle flags, activity stamp, title, parents or model.
+		const legacy = Array.from({ length: 3 }, (_, i) => ({
+			id: String(1_700_000_000_000 + i),
+			ts: 1_700_000_000_000 + i,
+			task: `legacy ${i}`,
+			tokensIn: 5,
+			tokensOut: 5,
+			totalCost: 0,
+		})) as HistoryItem[]
+
+		const result = buildInbox(legacy, undefined, undefined, paged)
+
+		expect(inboxIds(result)).toEqual(new Set(legacy.map((entry) => entry.id)))
+	})
+
+	it("lists threads from another workspace without filtering by cwd", () => {
+		const history = [
+			item("here", NOW, { cwdOnTaskInitialization: "/work/current" }),
+			item("elsewhere", NOW - MIN, { cwdOnTaskInitialization: "/work/other", isSettled: true }),
+			item("nowhere", NOW - 2 * MIN, { cwdOnTaskInitialization: "" }),
+		]
+
+		expect(inboxIds(buildInbox(history, {}, undefined, paged))).toEqual(new Set(["here", "elsewhere", "nowhere"]))
+	})
+
+	it("lists an orphaned subthread as its own settled thread", () => {
+		const history = [
+			item("alive", NOW),
+			item("orphanAside", NOW - MIN, { parentTaskId: "gone", task: "Aside: question" }),
+			item("orphanAgent", NOW - 2 * MIN, { parentTaskId: "gone", isSubagent: true, agentId: "a1" }),
+		]
+
+		const { settled, active } = buildInbox(history, {}, undefined, paged)
+
+		expect(active.map((row) => row.item.id)).toEqual(["alive"])
+		expect(settled.map(settledId)).toEqual(["orphanAside", "orphanAgent"])
+	})
+
+	it("keeps an orphan visible as active while it is still working", () => {
+		const history = [item("orphan", NOW, { parentTaskId: "gone", isSubagent: true })]
+
+		const { active, settled } = buildInbox(history, { orphan: "running" }, undefined, paged)
+
+		expect(active.map((row) => row.item.id)).toEqual(["orphan"])
+		expect(settled).toEqual([])
+	})
+
+	it("does not lose threads whose parent ids point at themselves or loop", () => {
+		const history = [
+			item("self", NOW, { parentTaskId: "self" }),
+			item("a", NOW - MIN, { parentTaskId: "b", isSubagent: true }),
+			item("b", NOW - 2 * MIN, { parentTaskId: "a", isSubagent: true }),
+		]
+
+		expect(inboxIds(buildInbox(history, {}, undefined, paged))).toEqual(new Set(["self", "a", "b"]))
+	})
+
+	it("shows 500 threads across the two sections when the limits are lifted", () => {
+		const history = Array.from({ length: 500 }, (_, i) =>
+			item(`t${i}`, NOW - i * MIN, i % 3 === 0 ? { isSettled: true } : {}),
+		)
+
+		const result = buildInbox(history, {}, undefined, paged)
+
+		expect(inboxIds(result).size).toBe(500)
+		expect(result.hiddenCount).toBe(0)
+		expect(result.settled).toHaveLength(result.settledTotal)
+	})
+
+	it("reports what the default limits hold back so the list can page it in", () => {
+		const history = Array.from({ length: 500 }, (_, i) => item(`t${i}`, NOW - i * MIN))
+
+		const first = buildInbox(history, {})
+		expect(first.active).toHaveLength(15)
+		expect(first.hiddenCount).toBe(485)
+
+		const all = buildInbox(history, {}, undefined, { activeLimit: 15 + 485 })
+		expect(all.active).toHaveLength(500)
+		expect(all.hiddenCount).toBe(0)
 	})
 })
 

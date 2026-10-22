@@ -40,6 +40,7 @@ const result = (extra: Partial<SearchHistoryResult>): SearchHistoryResult => ({
 	ts: 0,
 	taskGroupId: "",
 	threadId: "",
+	author: "",
 	...extra,
 })
 
@@ -105,6 +106,48 @@ describe("SearchView", () => {
 	afterEach(() => {
 		vi.useRealTimers()
 		vi.unstubAllGlobals()
+	})
+
+	it("filters messages by who wrote them and labels each one", async () => {
+		serverResults.messages = [
+			result({
+				id: "m-you",
+				title: "Why is CI slow on main?",
+				snippet: "check PROJ-482",
+				threadId: "ci",
+				author: "you",
+				ts: 6,
+			}),
+			result({
+				id: "m-agent",
+				title: "Why is CI slow on main?",
+				snippet: "PROJ-482 blocks the queue",
+				threadId: "ci",
+				author: "agent",
+				ts: 4,
+			}),
+		]
+		render(<SearchView initialQuery="PROJ-482" onClose={vi.fn()} />)
+		await flushDebounce()
+		expect(screen.queryByTestId("search-author-filter")).toBeNull()
+		fireEvent.click(screen.getByTestId("search-filter-messages"))
+		const snippets = () => screen.getAllByTestId("search-row").map((row) => row.textContent ?? "")
+		expect(snippets()).toEqual([
+			expect.stringContaining("You: “check PROJ-482”"),
+			expect.stringContaining("Agent: “PROJ-482 blocks"),
+		])
+		fireEvent.click(screen.getByTestId("search-author-you"))
+		expect(snippets()).toEqual([expect.stringContaining("You: “check PROJ-482”")])
+		fireEvent.click(screen.getByTestId("search-author-agent"))
+		expect(snippets()).toEqual([expect.stringContaining("Agent:")])
+	})
+
+	it("shows when each result was last active", async () => {
+		mocks.state.taskHistory = [item("ci", "Why is CI slow on main?", { lastActivityTs: Date.now() - 2 * 3_600_000 })]
+		render(<SearchView initialQuery="CI slow" onClose={vi.fn()} />)
+		const time = screen.getAllByTestId("search-row-time")[0]
+		expect(time).toHaveTextContent("2h ago")
+		expect(time.getAttribute("title")).toMatch(/^Last active /)
 	})
 
 	it("carries the query over, autofocuses, and merges local and server results with type labels", async () => {

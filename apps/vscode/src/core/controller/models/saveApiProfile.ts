@@ -22,7 +22,7 @@ export async function saveApiProfile(controller: Controller, request: SaveApiPro
 			}
 		}
 
-		const profile = upsertApiConfigProfile(controller.stateManager, {
+		const profile = await upsertApiConfigProfile(controller.stateManager, {
 			id: request.id || undefined,
 			name: request.name,
 			provider: request.provider,

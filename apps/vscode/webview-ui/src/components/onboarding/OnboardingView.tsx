@@ -105,12 +105,12 @@ const OnboardingView = () => {
 				<div className="flex-1 w-full flex max-w-lg overflow-y-auto min-h-0">
 					<div className="w-full my-4">
 						<ApiProfileEditor
-							assignedModes={[]}
 							draft={draft}
 							error={error}
 							isSaving={isSaving}
 							onChange={onDraftChange}
 							onSave={complete}
+							usedBy={[]}
 						/>
 					</div>
 				</div>

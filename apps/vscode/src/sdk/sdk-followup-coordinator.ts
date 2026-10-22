@@ -1,5 +1,6 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { ClineAskResponse } from "@shared/WebviewMessage"
@@ -40,7 +41,7 @@ export interface SdkFollowupCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	loadInitialMessages: (sessionHost: SdkSessionHost, taskId: string) => Promise<unknown[] | undefined>
 	buildStartSessionInput: (config: SessionConfig, input: { cwd: string; mode: Mode }) => StartInput
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, provenance?: ComposerProvenance) => Promise<string>
 	isClineManagedProviderActive: () => boolean
 	emitClineAuthError: () => void
 	resetMessageTranslator: () => void
@@ -72,6 +73,7 @@ export class SdkFollowupCoordinator {
 		turnPhaseAtSubmit?: TurnPhase,
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
 		decisionId?: string,
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		if (this.options.interactions.resolvePendingToolApproval(prompt, askResponse, images, files, decisionId)) {
 			return
@@ -88,7 +90,7 @@ export class SdkFollowupCoordinator {
 		const task = this.options.getTask()
 		const submittedDuringActiveTurn = turnPhaseAtSubmit === "streaming" || turnPhaseAtSubmit === "awaiting_approval"
 		if (activeSession && (activeSession.isRunning || submittedDuringActiveTurn)) {
-			await this.queueToActiveSession(activeSession, task?.taskId, prompt, images, files)
+			await this.queueToActiveSession(activeSession, task?.taskId, prompt, images, files, provenance)
 			return
 		}
 
@@ -107,7 +109,7 @@ export class SdkFollowupCoordinator {
 
 			const currentSession = this.options.sessions.getActiveSession()
 			if (currentSession && (currentSession.isRunning || submittedDuringActiveTurn)) {
-				await this.queueToActiveSession(currentSession, task?.taskId, prompt, images, files)
+				await this.queueToActiveSession(currentSession, task?.taskId, prompt, images, files, provenance)
 				return
 			}
 
@@ -117,13 +119,13 @@ export class SdkFollowupCoordinator {
 			// reserved for tasks without a live session (opened from history,
 			// extension host reload).
 			if (currentSession && (!task || currentSession.sessionId === task.taskId)) {
-				await this.continueIdleSession(currentSession, prompt, images, files, fallbackPrompt)
+				await this.continueIdleSession(currentSession, prompt, images, files, fallbackPrompt, provenance)
 				return
 			}
 
 			if (task) {
 				Logger.log(`[SdkController] askResponse: Resuming task ${task.taskId} before follow-up`)
-				await this.tryResumeSessionFromTask(task, prompt, images, files, fallbackPrompt)
+				await this.tryResumeSessionFromTask(task, prompt, images, files, fallbackPrompt, provenance)
 				return
 			}
 
@@ -139,6 +141,7 @@ export class SdkFollowupCoordinator {
 		prompt?: string,
 		images?: string[],
 		files?: string[],
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		const { sessionId } = activeSession
 		Logger.log(`[SdkController] Session is running - queuing follow-up message for session: ${sessionId}`)
@@ -148,7 +151,7 @@ export class SdkFollowupCoordinator {
 		// resolution runs. Core owns the queue: it shows the prompt in the webview
 		// at once, and a later session rebuild carries the queue over.
 		this.options.sessions.markSendRunning()
-		const resolvedPrompt = prompt ? await this.options.resolveContextMentions(prompt) : ""
+		const resolvedPrompt = prompt ? await this.options.resolveContextMentions(prompt, provenance) : ""
 		if (displayedTaskId && this.options.getTask()?.taskId !== displayedTaskId) {
 			await this.abandonFollowUp(`Task changed while resolving a follow-up for ${displayedTaskId}; cancelling follow-up`)
 			return
@@ -183,6 +186,7 @@ export class SdkFollowupCoordinator {
 		images?: string[],
 		files?: string[],
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		const { sdkHost, sessionId } = activeSession
 		Logger.log(`[SdkController] Continuing idle session for follow-up: ${sessionId}`)
@@ -199,7 +203,7 @@ export class SdkFollowupCoordinator {
 		}
 
 		const effectivePrompt = prompt?.trim() || fallbackPrompt
-		const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt)
+		const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt, provenance)
 		this.options.sessions.fireAndForgetSend(sdkHost, sessionId, resolvedPrompt, images, files)
 	}
 
@@ -209,9 +213,10 @@ export class SdkFollowupCoordinator {
 		images?: string[],
 		files?: string[],
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		try {
-			await this.resumeSessionFromTask(task, prompt, images, files, fallbackPrompt)
+			await this.resumeSessionFromTask(task, prompt, images, files, fallbackPrompt, provenance)
 		} catch (error) {
 			if (this.options.getTask()?.taskId !== task.taskId) {
 				// Settle the pre-set streaming phase, but do not emit the stale
@@ -255,6 +260,7 @@ export class SdkFollowupCoordinator {
 		images?: string[],
 		files?: string[],
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
+		provenance?: ComposerProvenance,
 	): Promise<void> {
 		const taskId = task.taskId
 		Logger.log(`[SdkController] Resuming session from task: ${taskId}`)
@@ -298,7 +304,7 @@ export class SdkFollowupCoordinator {
 			}
 
 			const effectivePrompt = prompt?.trim() || fallbackPrompt
-			const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt)
+			const resolvedPrompt = await this.options.resolveContextMentions(effectivePrompt, provenance)
 			if (this.options.getTask()?.taskId !== taskId) {
 				await this.endStartedResume(sdkHost, startResult.sessionId)
 				await this.abandonFollowUp(`Task changed while resolving mentions for ${taskId}; cancelled follow-up`)

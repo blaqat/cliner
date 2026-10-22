@@ -1,10 +1,12 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
-import { ApplyNotebookChangesRequest, DiscardNotebookChangesRequest } from "@shared/proto/cline/task_group"
-import type { NotebookChange, NotebookChangeOp, NotebookChangesPayload } from "@shared/task-groups"
+import { ApplyNotebookChangesRequest, DiscardNotebookChangesRequest, NotebookActionRequest } from "@shared/proto/cline/task_group"
+import type { NotebookChange, NotebookChangesPayload } from "@shared/task-groups"
 import { useMemo, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { LinkButton } from "@/components/common/LinkButton"
+import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 
 /** Parses a `notebook_changes` message text. Anything malformed returns null so the row renders nothing. */
@@ -40,12 +42,6 @@ export function parseNotebookChangesPayload(text: string | undefined): NotebookC
 	} catch {
 		return null
 	}
-}
-
-const OP_BADGE: Record<NotebookChangeOp, { label: string; className: string }> = {
-	create: { label: "new", className: "text-success border-success/40 bg-success/10" },
-	update: { label: "edit", className: "text-link border-link/40 bg-link/10" },
-	delete: { label: "delete", className: "text-error border-error/40 bg-error/10" },
 }
 
 /** A note this thread wrote: solid purple chip with a pencil, matching the task page timeline. */
@@ -92,17 +88,20 @@ export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChanges
 	if (status !== "pending") {
 		const appliedSlugs = payload.status === "pending" ? resolved?.appliedSlugs : payload.appliedSlugs
 		return (
-			<NotebookSummaryRow
-				changes={
-					status === "applied"
-						? appliedSlugs
-							? payload.changes.filter((change) => appliedSlugs.includes(change.slug))
-							: payload.changes
-						: []
-				}
-				onOpenTask={() => openTaskGroup?.(payload.taskGroupId)}
-				status={status}
-			/>
+			<div>
+				<NotebookSummaryRow
+					changes={
+						status === "applied"
+							? appliedSlugs
+								? payload.changes.filter((change) => appliedSlugs.includes(change.slug))
+								: payload.changes
+							: []
+					}
+					onOpenTask={() => openTaskGroup?.(payload.taskGroupId)}
+					status={status}
+				/>
+				<NotebookUserEdits changes={payload.changes} />
+			</div>
 		)
 	}
 	if (!isNewest || payload.changes.length === 0) {
@@ -146,18 +145,15 @@ function NotebookSummaryRow({
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
 			data-testid="notebook-changes-summary">
-			<i aria-hidden className="codicon codicon-book text-[var(--vscode-charts-purple)]" />
+			<i aria-hidden className="codicon codicon-book text-(--vscode-charts-purple)" />
 			<span>{label}</span>
 			{changes.map((change) => (
 				<WroteNoteChip key={change.slug} name={change.name} />
 			))}
 			<span className="flex-1" />
-			<button
-				className="cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
-				onClick={onOpenTask}
-				type="button">
+			<LinkButton className="text-[11px]" onClick={onOpenTask}>
 				Open task
-			</button>
+			</LinkButton>
 		</div>
 	)
 }
@@ -173,14 +169,8 @@ function NotebookChangesCard({
 	onResolved: (resolved: Pick<NotebookChangesPayload, "status" | "appliedSlugs">) => void
 	onError: (error: string | null) => void
 }) {
-	const [included, setIncluded] = useState<Record<string, boolean>>(() =>
-		Object.fromEntries(payload.changes.map((change) => [change.slug, true])),
-	)
-	const [edited, setEdited] = useState<Record<string, string>>({})
-	const [editing, setEditing] = useState<string | null>(null)
 	const [sending, setSending] = useState(false)
 	const [error, setError] = useState<string | null>(null)
-	const count = payload.changes.filter((change) => included[change.slug]).length
 
 	const apply = async () => {
 		setSending(true)
@@ -194,17 +184,13 @@ function NotebookChangesCard({
 					revision: payload.revision,
 					items: payload.changes.map((change) => ({
 						slug: change.slug,
-						include: !!included[change.slug],
-						editedContent:
-							edited[change.slug] !== undefined && edited[change.slug] !== (change.content ?? "")
-								? edited[change.slug]
-								: undefined,
+						include: true,
 					})),
 				}),
 			)
 			onResolved({
 				status: "applied",
-				appliedSlugs: payload.changes.filter((change) => included[change.slug]).map((change) => change.slug),
+				appliedSlugs: payload.changes.map((change) => change.slug),
 			})
 		} catch (error) {
 			const message = `Couldn't apply the changes. ${error instanceof Error ? error.message : "Try again."}`
@@ -237,86 +223,138 @@ function NotebookChangesCard({
 		}
 	}
 
+	const action = async (slug: string, action: string) => {
+		setSending(true)
+		setError(null)
+		try {
+			await TaskGroupServiceClient.notebookAction(
+				NotebookActionRequest.create({
+					taskGroupId: payload.taskGroupId,
+					threadId: payload.threadId,
+					revision: payload.revision,
+					slug,
+					action,
+				}),
+			)
+		} catch (error) {
+			setError(error instanceof Error ? error.message : "Couldn't open the note")
+		} finally {
+			setSending(false)
+		}
+	}
+
 	return (
-		<div
-			className="rounded-xs border border-[color-mix(in_srgb,var(--vscode-charts-purple)_45%,var(--vscode-editorGroup-border))] bg-code p-2.5 text-xs"
-			data-testid="notebook-changes-card">
-			<div className="mb-1 flex items-center gap-1.5">
-				<i aria-hidden className="codicon codicon-book text-[var(--vscode-charts-purple)]" />
-				<span className="flex-1 font-semibold">Notebook changes · {payload.changes.length}</span>
-			</div>
-			<div className="mb-1 text-[11px] text-description">
-				{taskGroupTitle && <span>For {taskGroupTitle}. </span>}
-				Staged while the thread ran. Nothing is written until you apply.
-			</div>
-			{payload.changes.map((change) => {
-				const badge = OP_BADGE[change.op] ?? OP_BADGE.update
-				const isEditing = editing === change.slug
-				const checkboxId = `notebook-change-${change.slug}`
-				return (
-					<div className="border-t border-editor-group-border py-1.5" key={change.slug}>
-						<div className="flex min-w-0 items-center gap-2">
-							<input
-								checked={!!included[change.slug]}
-								className="m-0 shrink-0 cursor-pointer accent-[var(--vscode-button-background)]"
-								disabled={sending}
-								id={checkboxId}
-								onChange={(event) => setIncluded((prev) => ({ ...prev, [change.slug]: event.target.checked }))}
-								type="checkbox"
-							/>
-							<label className="min-w-0 flex-1 cursor-pointer truncate font-semibold" htmlFor={checkboxId}>
-								{change.name}
-							</label>
-							<span className={cn("shrink-0 rounded-xs border px-1 text-[10.5px] leading-4", badge.className)}>
-								{badge.label}
-							</span>
+		<div>
+			<div
+				className="rounded-xs border border-editor-group-border bg-code p-2.5 text-xs"
+				data-testid="notebook-changes-card">
+				<div className="mb-1 flex items-center gap-1.5">
+					<i aria-hidden className="codicon codicon-book text-(--vscode-charts-purple)" />
+					<span className="flex-1 font-semibold">Notebook changes · {payload.changes.length}</span>
+					<span className="text-description">from this thread</span>
+				</div>
+				{taskGroupTitle && <div className="mb-2 text-description">For {taskGroupTitle}</div>}
+				{payload.changes.map((change) => (
+					<div className="border-t border-editor-group-border py-2" key={change.slug}>
+						<div className="mb-1 flex items-center gap-2">
+							<span className="flex-1 font-semibold">{change.name}</span>
+							{change.editedByUser && <span className="text-[11px] text-success">edited by you</span>}
+							{change.op !== "update" && (
+								<span className="text-[11px] text-description">{change.op === "create" ? "new" : "delete"}</span>
+							)}
 							{change.op !== "delete" && (
-								<button
-									aria-label={`${isEditing ? "Done editing" : "Edit"} ${change.name}`}
-									aria-pressed={isEditing}
-									className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline disabled:opacity-50"
+								<Button
+									aria-label={`Edit ${change.name}`}
 									disabled={sending}
-									onClick={() => setEditing(isEditing ? null : change.slug)}
-									type="button">
-									{isEditing ? "Done" : "Edit"}
-								</button>
+									onClick={() => void action(change.slug, "edit")}
+									size="xs"
+									variant="secondary">
+									Edit
+								</Button>
 							)}
 						</div>
-						{isEditing ? (
-							<textarea
-								aria-label={`Content of ${change.name}`}
-								className="mt-1.5 ml-5 box-border block min-h-24 w-[calc(100%-1.25rem)] resize-y rounded-xs border border-input-border bg-input-background p-1.5 font-mono text-[11px] leading-[1.55] text-input-foreground focus:border-border focus:outline-none"
-								disabled={sending}
-								onChange={(event) => setEdited((prev) => ({ ...prev, [change.slug]: event.target.value }))}
-								value={edited[change.slug] ?? change.content ?? ""}
-							/>
-						) : (
-							change.description && (
-								<div className="ml-5 truncate text-[11px] text-description">{change.description}</div>
-							)
+						<NotebookDiff lines={change.diff ?? []} />
+						{change.draft && (
+							<InlineNotice
+								actions={
+									<>
+										<Button
+											aria-label={`Retry saving your edit to ${change.name}`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "retry_draft")}
+											size="xs"
+											variant="secondary">
+											Retry
+										</Button>
+										<Button
+											aria-label={`Reload your draft of ${change.name} in the editor`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "reload_draft")}
+											size="xs"
+											variant="secondary">
+											Reload
+										</Button>
+										<Button
+											aria-label={`Discard your draft of ${change.name}`}
+											disabled={sending}
+											onClick={() => void action(change.slug, "discard_draft")}
+											size="xs"
+											variant="secondary">
+											Discard draft
+										</Button>
+									</>
+								}
+								className="mt-1"
+								data-testid="notebook-draft-notice"
+								role="alert"
+								tone="warning">
+								Your edit wasn't applied: {change.draft.reason}. Your text is kept as a draft.
+							</InlineNotice>
+						)}
+						{change.replacedUserVersion && (
+							<div className="mt-1 flex items-center gap-2 text-description">
+								agent replaced your edit{" "}
+								<Button
+									disabled={sending}
+									onClick={() => void action(change.slug, "restore_pending")}
+									size="xs"
+									variant="secondary">
+									Restore
+								</Button>
+							</div>
 						)}
 					</div>
-				)
-			})}
-			<div className="mt-2 flex flex-wrap items-center gap-1.5">
-				<Button className="px-2.5" disabled={sending || count === 0} onClick={() => void apply()} size="xs" type="button">
-					Apply {count}
-				</Button>
-				<Button
-					className="px-2.5"
-					disabled={sending}
-					onClick={() => void discard()}
-					size="xs"
-					type="button"
-					variant="secondary">
-					Discard all
-				</Button>
+				))}
+				<div className="mt-2 flex justify-end gap-1.5">
+					<Button disabled={sending} onClick={() => void discard()} size="xs" variant="secondary">
+						Discard all
+					</Button>
+					<Button disabled={sending} onClick={() => void apply()} size="xs">
+						Accept all
+					</Button>
+				</div>
 				{error && (
-					<span className="text-[11px] text-error" role="alert">
+					<InlineNotice className="mt-2" tone="error">
 						{error}
-					</span>
+					</InlineNotice>
 				)}
 			</div>
+			<NotebookUserEdits changes={payload.changes} />
 		</div>
+	)
+}
+
+function NotebookUserEdits({ changes }: { changes: NotebookChange[] }) {
+	return (
+		<>
+			{changes
+				.filter((change) => change.editedByUser || change.replacedUserVersion)
+				.map((change) => (
+					<div className="flex items-center gap-1 py-1 text-[11px] text-description" key={change.slug}>
+						<span aria-hidden className="codicon codicon-edit text-[11px]!" />
+						You edited {change.name}
+					</div>
+				))}
+		</>
 	)
 }

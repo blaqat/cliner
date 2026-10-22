@@ -1,4 +1,5 @@
 import { sendShowWebviewEvent } from "@core/controller/ui/subscribeToShowWebview"
+import { sendWindowFocusEvent } from "@core/controller/ui/subscribeToWindowFocus"
 import { WebviewProvider } from "@core/webview"
 import * as vscode from "vscode"
 import { handleGrpcRequest, handleGrpcRequestCancel } from "@/core/controller/grpc-handler"
@@ -96,9 +97,14 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 			this.disposables,
 		)
 
+		void sendWindowFocusEvent(vscode.window.state.focused)
 		vscode.window.onDidChangeWindowState(
 			(state) => {
-				if (state.focused) void this.controller.refreshCurrentBranch().catch(() => {})
+				void sendWindowFocusEvent(state.focused)
+				if (!state.focused) return
+				void this.controller.refreshCurrentBranch().catch(() => {})
+				// Another window may have stashed or removed prompts meanwhile.
+				if (this.controller.stateManager.refreshPromptStash()) void this.controller.postStateToWebview()
 			},
 			null,
 			this.disposables,

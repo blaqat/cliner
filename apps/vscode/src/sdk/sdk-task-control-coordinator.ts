@@ -1,3 +1,4 @@
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { Logger } from "@/shared/services/Logger"
@@ -15,7 +16,13 @@ export interface SdkTaskControlCoordinatorOptions {
 	taskHistory: SdkTaskHistory
 	getTask: () => TaskProxy | undefined
 	setTask: (task: TaskProxy | undefined) => void
-	onAskResponse: (text?: string, images?: string[], files?: string[], decisionId?: string) => Promise<void>
+	onAskResponse: (
+		text?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		provenance?: ComposerProvenance,
+	) => Promise<void>
 	resetMessageTranslator: () => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "runTaskTransition">
@@ -84,6 +91,8 @@ export class SdkTaskControlCoordinator {
 
 	async cancelTask(appendResume = true, interject?: { text: string; images?: string[]; files?: string[] }): Promise<void> {
 		this.options.interactions.clearPending("Task cancelled")
+		// Clearing approvals resumes their promises and can project streaming. Cancellation wins.
+		this.options.setTurnPhase?.("resumable")
 
 		const activeSession = this.options.sessions.getActiveSession()
 		if (!activeSession) {
@@ -112,6 +121,7 @@ export class SdkTaskControlCoordinator {
 			return
 		}
 
+		const wasRunning = activeSession.isRunning
 		try {
 			this.options.sessions.cancelHeldSends(sessionId)
 			await sdkHost.abort(sessionId)
@@ -124,6 +134,13 @@ export class SdkTaskControlCoordinator {
 		}
 
 		this.options.sessions.setRunning(false)
+		// setRunning(false) persists "done", and the SDK record only says "idle" after an abort.
+		// Persist the interruption so a reopened thread offers Resume instead of treating the
+		// partial response as a finished turn (see lastTurnCompleted).
+		if (wasRunning)
+			void this.options.taskHistory
+				.saveThreadStatus(sessionId, "stopped")
+				.catch((error) => Logger.warn("[SdkController] Failed to persist stopped thread status", error))
 
 		const resumeMessage: ClineMessage = {
 			ts: Date.now(),
@@ -245,8 +262,8 @@ export class SdkTaskControlCoordinator {
 
 				const task = createTaskProxy(
 					taskId,
-					(text?: string, images?: string[], files?: string[], decisionId?: string) =>
-						this.options.onAskResponse(text, images, files, decisionId),
+					(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+						this.options.onAskResponse(text, images, files, decisionId, provenance),
 					() => this.cancelTask(),
 				)
 				if (cleanedMessages.length > 0) {

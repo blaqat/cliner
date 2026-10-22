@@ -5,17 +5,40 @@
 import { ClineAsk, ClineMessage } from "@shared/ExtensionMessage"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import type { ButtonActionType, SubmittingButtonActionType } from "../shared/buttonConfig"
+import type { DraftAuthorization } from "../utils/composerProvenance"
 
 /** A passage quoted from the conversation, with an optional note typed under it. */
 export interface QuoteDraft {
 	text: string
 	note: string
+	/**
+	 * Optional attribution shown on the chip and prepended to the sent quote,
+	 * e.g. "You · Dev plan" for a pasted message link.
+	 */
+	source?: string
 }
 
-export interface DraftSnapshot {
+/**
+ * A message pasted into the composer as a link: a context connection, not a
+ * quote. It carries the link's target so the host can resolve the text when the
+ * message is sent, plus what the chip and its hover card show.
+ */
+export interface MessageTagDraft {
+	threadId: string
+	messageIndex: number
+	toolCallId?: string
+	block?: number
+	/** The linked message's text as resolved at paste time (shown on hover). */
+	text: string
+	/** Attribution shown on the chip, e.g. "You · Dev plan". */
+	source: string
+}
+
+export interface DraftSnapshot extends DraftAuthorization {
 	revision: number
 	text: string
 	quotes: QuoteDraft[]
+	messageTags: MessageTagDraft[]
 	images: string[]
 	files: string[]
 }
@@ -47,6 +70,8 @@ export interface ChatState {
 	setInputValue: React.Dispatch<React.SetStateAction<string>>
 	quotes: QuoteDraft[]
 	setQuotes: React.Dispatch<React.SetStateAction<QuoteDraft[]>>
+	messageTags: MessageTagDraft[]
+	setMessageTags: React.Dispatch<React.SetStateAction<MessageTagDraft[]>>
 	/** Appends a quote with an empty note. */
 	addQuote: (text: string) => void
 	isTextAreaFocused: boolean
@@ -56,6 +81,12 @@ export interface ChatState {
 	selectedFiles: string[]
 	setSelectedFiles: React.Dispatch<React.SetStateAction<string[]>>
 	getDraftSnapshot: () => DraftSnapshot
+	/** Records a thread the user picked from the `thread:` mention menu; ignored unless its token is in the text. */
+	authorizeThread: (threadId: string) => void
+	/** Records the script run the user typed or picked in the composer (undefined when none). */
+	setScriptRun: (scriptRun: DraftAuthorization["scriptRun"]) => void
+	/** Puts back the explicit grants of a draft whose send failed and was restored. */
+	restoreAuthorization: (auth: DraftAuthorization) => void
 	consumeDraftSnapshot: (draft: DraftSnapshot) => void
 	sendingDisabled: boolean
 	setSendingDisabled: React.Dispatch<React.SetStateAction<boolean>>

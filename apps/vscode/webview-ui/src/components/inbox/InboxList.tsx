@@ -1,13 +1,17 @@
 import { AnimatePresence, motion } from "framer-motion"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
 import { type EffectiveTag, effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
+import { useSettleAll } from "@/components/taskGroup/settleAll"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
 import { cn } from "@/lib/utils"
 import {
+	ACTIVE_PAGE_SIZE,
 	buildInbox,
+	DEFAULT_ACTIVE_LIMIT,
 	DEFAULT_SETTLED_LIMIT,
 	describeActivity,
 	EXPANDED_TASK_GROUPS_EVENT,
@@ -22,6 +26,7 @@ import {
 } from "./inboxUtils"
 import { SessionStatusIcon } from "./SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "./sessionActions"
+import { TaskGroupRowMenu } from "./TaskGroupRowMenu"
 
 interface CountBadgeProps {
 	/** Codicon name without the `codicon-` prefix. */
@@ -127,7 +132,7 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 			tabIndex={0}
 			transition={{ duration: 0.18, ease: "easeOut" }}>
 			<div className="flex h-5 items-center justify-center self-start pt-1.5">
-				<SessionStatusIcon settled={settled} status={status} />
+				<SessionStatusIcon label={status === "subagents" ? activity : undefined} settled={settled} status={status} />
 			</div>
 			<div className="min-w-0">
 				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
@@ -204,9 +209,13 @@ interface TaskGroupRowViewProps {
 /** A task group row: chevron, title + tags, thread count, newest activity, running count. */
 const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout, settled = false }: TaskGroupRowViewProps) => {
 	const { group, members, activityTs, runningCount } = row
-	const preview = members.slice(0, GROUP_PREVIEW_COUNT)
-	const older = members.length - preview.length
+	// Every member shows once expanded past the preview, so any thread can be settled from home.
+	const [showAll, setShowAll] = useState(false)
+	const shown = showAll ? members : members.slice(0, GROUP_PREVIEW_COUNT)
+	const more = members.length - shown.length
 	const open = () => onOpen?.(group.id)
+	const settleAll = useSettleAll(group.id)
+	const [menuOpen, setMenuOpen] = useState(false)
 
 	return (
 		<div data-testid="inbox-task-group">
@@ -259,10 +268,16 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						</span>
 					</div>
 				</div>
-				<div className="flex flex-col items-end gap-0.5">
-					<span className="text-[10px] text-description">
+				<div className="relative flex min-w-11 flex-col items-end gap-0.5">
+					{/* The time and the ⋯ menu share one slot: hover swaps them. */}
+					<span
+						className={cn(
+							"text-[10px] leading-[18px] text-description transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0 motion-reduce:transition-none",
+							menuOpen && "opacity-0",
+						)}>
 						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
 					</span>
+					<TaskGroupRowMenu onOpenChange={setMenuOpen} settleAll={settleAll} title={group.title} />
 					{runningCount > 0 && (
 						<span className="text-[10px] text-link" data-testid="inbox-task-group-running">
 							{runningCount} running
@@ -270,9 +285,26 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 					)}
 				</div>
 			</div>
+			{settleAll.message && (
+				<InlineNotice
+					actions={
+						<button
+							className="cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
+							onClick={settleAll.dismiss}
+							type="button">
+							Dismiss
+						</button>
+					}
+					className="mx-2 mb-1"
+					data-testid="inbox-task-group-settle-notice"
+					tone={settleAll.message.partial ? "warning" : "info"}>
+					{settleAll.message.text}
+				</InlineNotice>
+			)}
 			{expanded && (
 				<div className="ml-3.5 border-l border-editor-group-border pl-1" data-testid="inbox-task-group-members">
-					{preview.map((member) => (
+					{/* Active threads come first; settled ones follow, dimmed with a check, no divider needed. */}
+					{shown.map((member) => (
 						<InboxRowView
 							animateLayout={animateLayout}
 							key={member.item.id}
@@ -283,7 +315,18 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						/>
 					))}
 					<div className="flex h-6 items-center gap-2 px-2 text-xs text-description">
-						{older > 0 ? <span>＋{older} older</span> : members.length === 0 && <span>No threads yet</span>}
+						{members.length > GROUP_PREVIEW_COUNT ? (
+							<button
+								aria-expanded={showAll}
+								className="cursor-pointer border-0 bg-transparent p-0 text-xs text-description hover:text-foreground"
+								data-testid="inbox-task-group-more"
+								onClick={() => setShowAll(!showAll)}
+								type="button">
+								{showAll ? "Show fewer" : `Show ${more} more`}
+							</button>
+						) : (
+							members.length === 0 && <span>No threads yet</span>
+						)}
 						<button
 							className="ml-auto cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
 							onClick={open}
@@ -324,12 +367,13 @@ interface InboxListProps {
 const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: InboxListProps) => {
 	const { taskHistory, sessionStatuses, subagentCounts, taskGroups } = useExtensionState()
 	const reduceMotion = useReducedMotionPreference()
+	const [activeLimit, setActiveLimit] = useState(DEFAULT_ACTIVE_LIMIT)
 	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
 	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
 	const [expandedGroups, setExpandedGroups] = useState(readExpandedTaskGroups)
 	const { activeEntries, settled, settledTotal, hiddenCount } = useMemo(
-		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { settledLimit, taskGroups }),
-		[taskHistory, sessionStatuses, subagentCounts, settledLimit, taskGroups],
+		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { activeLimit, settledLimit, taskGroups }),
+		[taskHistory, sessionStatuses, subagentCounts, activeLimit, settledLimit, taskGroups],
 	)
 	// A group created elsewhere (the new-task sheet) opens expanded.
 	useEffect(() => {
@@ -483,9 +527,9 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 			{hiddenCount > 0 && (
 				<button
 					className="mt-1 w-full border-0 bg-transparent px-2 py-1 text-left text-xs text-description hover:text-foreground cursor-pointer"
-					onClick={showHistoryView}
+					onClick={() => setActiveLimit((limit) => limit + ACTIVE_PAGE_SIZE)}
 					type="button">
-					{hiddenCount} more in history
+					Show more ({hiddenCount})
 				</button>
 			)}
 		</div>

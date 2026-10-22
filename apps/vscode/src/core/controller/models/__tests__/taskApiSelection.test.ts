@@ -29,7 +29,7 @@ function createStore(config: Partial<ApiConfiguration> = {}) {
 			}
 		},
 		getSecretForKey: (key) => secretsStore[key],
-		setSecretsForKeys: (entries) => {
+		setSecretsForKeys: async (entries) => {
 			for (const [key, value] of Object.entries(entries)) {
 				if (value === undefined || value === "") {
 					delete secretsStore[key]
@@ -96,9 +96,9 @@ describe("captureTaskApiSelection", () => {
 })
 
 describe("resolveTaskApiSelection", () => {
-	it("keeps stored ids and drops ones that no longer exist", () => {
+	it("keeps stored ids and drops ones that no longer exist", async () => {
 		const { store } = createStore()
-		const kept = upsertApiConfigProfile(store, { name: "Kept", provider: "anthropic", modelId: "claude" })
+		const kept = await upsertApiConfigProfile(store, { name: "Kept", provider: "anthropic", modelId: "claude" })
 		const resolved = resolveTaskApiSelection(
 			store,
 			{ apiSelection: { askProfileId: kept.id, actProfileId: "deleted-id" } },
@@ -108,29 +108,29 @@ describe("resolveTaskApiSelection", () => {
 		expect(resolved.actProfileId).toBeUndefined()
 	})
 
-	it("falls back to matching the recorded provider+model for the task's mode", () => {
+	it("falls back to matching the recorded provider+model for the task's mode", async () => {
 		const { store } = createStore()
-		const profile = upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "gpt-5.5" })
+		const profile = await upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "gpt-5.5" })
 		const resolved = resolveTaskApiSelection(store, { apiProvider: "openai", modelId: "gpt-5.5" }, "act")
 		expect(resolved.actProfileId).toBe(profile.id)
 		expect(resolved.askProfileId).toBeUndefined()
 	})
 
-	it("leaves the selection unset when nothing matches", () => {
+	it("leaves the selection unset when nothing matches", async () => {
 		const { store } = createStore()
-		upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "gpt-5.5" })
+		await upsertApiConfigProfile(store, { name: "P", provider: "openai", modelId: "gpt-5.5" })
 		const resolved = resolveTaskApiSelection(store, { apiProvider: "anthropic", modelId: "claude" }, "act")
 		expect(resolved.actProfileId).toBeUndefined()
 	})
 })
 
 describe("resolveApiConfigurationForTaskSelection", () => {
-	it("overlays the pinned profile and effort over the resolved snapshot", () => {
+	it("overlays the pinned profile and effort over the resolved snapshot", async () => {
 		const { store, apiConfig } = createStore({
 			actModeApiProvider: "anthropic",
 			actModeReasoningEffort: "low",
 		})
-		const pinned = upsertApiConfigProfile(store, {
+		const pinned = await upsertApiConfigProfile(store, {
 			name: "Pinned",
 			provider: "openai",
 			modelId: "gpt-5.5",

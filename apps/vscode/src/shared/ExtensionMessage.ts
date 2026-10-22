@@ -13,11 +13,14 @@ import { BannerCardData } from "./cline/banner"
 import { ClineRulesToggles } from "./cline-rules"
 import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
+import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
+import type { ModelProfile } from "./model-profiles"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
 import type { TaskGroupSummary } from "./task-groups"
+import type { TerminalEnvironmentWebviewState } from "./terminal-environment"
 import { UserInfo } from "./UserInfo"
 // webview will hold state
 export interface ExtensionMessage {
@@ -40,12 +43,12 @@ export const DEFAULT_PLATFORM = "unknown"
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
 export interface ExtensionState {
-	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error">
+	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
 	subagentView?: {
 		parentTaskId: string
 		agentId: string
-		status: "running" | "waiting" | "done" | "error"
+		status: "running" | "waiting" | "done" | "error" | "stopped"
 		pendingDecision?: "approval" | "question"
 	} | null
 	/**
@@ -55,7 +58,21 @@ export interface ExtensionState {
 	 */
 	subagentCounts: Record<string, { total: number; live: number }>
 	enterSendsAs: "steer" | "interject"
-	promptStash: { id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }[]
+	promptStash: {
+		id: string
+		text: string
+		quotes: { text: string; note: string; source?: string }[]
+		messageTags?: {
+			threadId: string
+			messageIndex: number
+			toolCallId?: string
+			block?: number
+			text: string
+			source: string
+		}[]
+		ts: number
+		taskId?: string
+	}[]
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined
@@ -178,6 +195,20 @@ export interface ExtensionState {
 	subagentsAllowCommands?: boolean
 	subagentsAllowMcp?: boolean
 	subagentsAllowWeb?: boolean
+	/** Named profiles (configuration + effort) and what uses them (Profiles page). */
+	profiles?: ModelProfile[]
+	threadDefaultProfileId?: string
+	threadSeparateAskActProfiles?: boolean
+	threadAskProfileId?: string
+	threadActProfileId?: string
+	subagentProfilesEnabled?: boolean
+	subagentDefaultProfileId?: string
+	subagentAllowedProfileIds?: string[]
+	threadTitlesEnabled?: boolean
+	threadTitlesProfileId?: string
+	walkthroughGenerateProfileId?: string
+	/** Terminal environment per scope; workspace values come from workspace state. */
+	terminalEnvironment?: TerminalEnvironmentWebviewState
 	worktreesEnabled?: ClineFeatureSetting
 	favoritedModelIds: string[]
 	// NEW: Add workspace information
@@ -198,6 +229,12 @@ export interface ExtensionState {
 	optOutOfRemoteConfig?: boolean
 	remoteConfigAvailable?: boolean
 	showFeatureTips?: boolean
+	/** In-app toasts when a background thread finishes or needs input. */
+	threadToastsEnabled?: boolean
+	/** How long a completion toast stays, in seconds. */
+	threadToastSeconds?: number
+	/** Switching to Act right after an Ask answer also continues it (default on). */
+	continueAnswerOnActSwitch?: boolean
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	openAiCodexIsAuthenticated?: boolean
@@ -238,6 +275,8 @@ export interface ClineMessage {
 	/** Index in the persisted SDK transcript, for conversation-only forks. */
 	sdkMessageIndex?: number
 	sdkToolCallId?: string
+	/** Message tags the user attached to this user message, parsed out of its text for display. */
+	messageReferences?: MessageReferenceInfo[]
 	ts: number
 	type: "ask" | "say"
 	ask?: ClineAsk
@@ -328,6 +367,7 @@ export type ClineSay =
 	| "conditional_rules_applied"
 	| "compaction" // context compaction progress/result divider
 	| "notebook_changes"
+	| "walkthrough_ready"
 
 export interface ClineSayTool {
 	tool:
@@ -344,8 +384,15 @@ export interface ClineSayTool {
 		| "summarizeTask"
 		| "useSkill"
 		| "notebook"
+		| "script"
 	action?: "read" | "write" | "delete"
 	name?: string
+	/** `script` tool: what is being asked and the option values; unreviewed definitions include the command template and cwd. */
+	scriptCommand?: string
+	scriptCwd?: string
+	scriptFingerprint?: string
+	scriptAction?: "load" | "run"
+	scriptOptions?: Record<string, string | boolean>
 	path?: string
 	diff?: string
 	content?: string
@@ -378,6 +425,9 @@ export interface SubagentStatusItem {
 	prompt: string
 	/** Access level requested via spawn_agent ("read" default, "write" for editing tools). */
 	access?: "read" | "write"
+	/** Resolved sub-agent profile name ("parent" = inherited model) shown as a chip. */
+	profile?: string
+	reasoningEffort?: string
 	status: SubagentExecutionStatus
 	toolCalls: number
 	inputTokens: number
@@ -446,6 +496,9 @@ export interface ClineApiReqInfo {
 	cacheWrites?: number
 	cacheReads?: number
 	cost?: number
+	/** The model that served this request; absent on requests recorded before it was stamped. */
+	modelId?: string
+	providerId?: string
 	cancelReason?: ClineApiReqCancelReason
 	streamingFailedMessage?: string
 }

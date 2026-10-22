@@ -11,6 +11,7 @@ import {
 	type EditPreviewContent,
 } from "@/integrations/editor/EditPreview"
 import { computeNewEditorContent, SdkDiffEditCoordinator } from "./sdk-diff-edit-coordinator"
+import { worktreeProject } from "./worktrees/temp-project.test-support"
 
 vi.mock("diff", { spy: true })
 
@@ -295,6 +296,38 @@ describe("SdkDiffEditCoordinator", () => {
 		})
 	}
 
+	for (const mode of ["git", "mm"] as const) {
+		it(`${mode}: previews and reveals follow the calling session when focus changes`, async () => {
+			const { manager, workspace } = await worktreeProject(tempDir, mode)
+			const calling = await manager.create("calling", "Calling", workspace)
+			const focused = await manager.create("focused", "Focused", workspace)
+			const relative = mode === "mm" ? "api/file.txt" : "file.txt"
+			await fs.writeFile(path.join(calling.cwd, relative), "calling content\n")
+			await fs.writeFile(path.join(focused.cwd, relative), "focused content\n")
+			const getCwd = vi.fn(async (id?: string) => (id === "calling" ? calling.cwd : focused.cwd))
+			coordinator = makeCoordinator({ getCwd })
+			const edit = { path: relative, old_text: "calling content", new_text: "changed" }
+			await coordinator.openForApproval("manual", "editor", edit, "calling")
+			expect(previews.at(-1)?.opened?.absolutePath).toBe(path.join(calling.cwd, relative))
+			expect(previews.at(-1)?.opened?.leftContent).toBe("calling content\n")
+			await coordinator.executeEditorTool(edit, calling.cwd, makeContext("manual"))
+			expect(showEditedFile).toHaveBeenLastCalledWith(path.join(calling.cwd, relative))
+			getCwd.mockClear()
+			await coordinator.executeEditorTool(edit, calling.cwd, makeContext("auto"))
+			expect(getCwd).not.toHaveBeenCalled()
+			expect(previews.at(-1)?.opened?.absolutePath).toBe(path.join(calling.cwd, relative))
+			const patch = {
+				input: `*** Begin Patch\n*** Update File: ${relative}\n@@\n-calling content\n+patched\n*** End Patch`,
+			}
+			await coordinator.openForApproval("patch-manual", "apply_patch", patch, "calling")
+			expect(previews.at(-1)?.opened?.leftContent).toBe("calling content\n")
+			await coordinator.executeApplyPatchTool(patch, calling.cwd, makeContext("patch-manual"))
+			await coordinator.executeApplyPatchTool(patch, calling.cwd, makeContext("patch-auto"))
+			expect(previews.at(-1)?.opened?.absolutePath).toBe(path.join(calling.cwd, relative))
+			expect(showEditedFile).toHaveBeenLastCalledWith(path.join(calling.cwd, relative))
+		}, 60_000)
+	}
+
 	beforeEach(async () => {
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "diff-edit-test-"))
 		previews = []
@@ -328,6 +361,17 @@ describe("SdkDiffEditCoordinator", () => {
 			rightContent: "changed\nline2\n",
 			title: "a.ts: Original ↔ Cline's Changes (Preview)",
 		})
+	})
+
+	it("names the worktree in the preview title when the thread runs outside this window's workspace", async () => {
+		await writeFile("a.ts", "line1\n")
+		coordinator = makeCoordinator({ getWorkspaceRoot: async () => "/somewhere/else" })
+		await coordinator.openForApproval("tc1", "editor", { path: "a.ts", old_text: "line1", new_text: "changed" })
+		expect(previews[0].opened?.title).toBe(`a.ts (worktree ${path.basename(tempDir)}): Original ↔ Cline's Changes (Preview)`)
+
+		coordinator = makeCoordinator({ getWorkspaceRoot: async () => tempDir })
+		await coordinator.openForApproval("tc2", "editor", { path: "a.ts", old_text: "line1", new_text: "again" })
+		expect(previews[1].opened?.title).toBe("a.ts: Original ↔ Cline's Changes (Preview)")
 	})
 
 	it("opens a preview for a multi-line edit in a CRLF file (issue #13296)", async () => {

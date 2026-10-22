@@ -3,10 +3,13 @@ import type { AgentTool, AgentToolContext } from "@cline/shared"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
+import { createPresentWalkthroughTool } from "@/services/walkthrough/authored-tool"
 import { Logger } from "@/shared/services/Logger"
+import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookTool } from "./task-groups/notebook-tool"
+import { createThreadTranscriptTools, type ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createVscodeRunCommandsTool, VSCODE_FOREGROUND_RUN_COMMANDS_TIMEOUT_MS } from "./vscode-run-commands-tool"
 
 interface McpToolDescriptor {
@@ -54,6 +57,10 @@ export class McpHubToolProvider {
 
 export interface VscodeExtraToolsOptions {
 	notebook?: TaskNotebookContext
+	/** Mentioned-thread transcript access (grep_threads/read_thread), allow-listed per conversation. */
+	threadTranscript?: ThreadTranscriptToolsContext
+	/** The user's saved scripts (the `script` tool); approval is decided per script by the host. */
+	scripts?: ScriptToolContext
 	cwd?: string
 	/**
 	 * Lazy factory for the VscodeTerminalManager.
@@ -93,8 +100,10 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// No completion tool is exposed: the agent simply ends its turn with a text
 	// response, and the turn-end inference in message-translator.ts styles that
 	// final text as the completion feedback row.
-	const tools: AgentTool[] = [...mcpTools.flat()]
+	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
+	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
+	if (options?.scripts) tools.push(createScriptTool(options.scripts))
 
 	// Add the custom run_commands tool when a terminal manager is available.
 	// This replaces the SDK's built-in run_commands, which is suppressed via

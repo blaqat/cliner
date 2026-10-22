@@ -2,7 +2,9 @@ import { OpenNoteRequest, SearchHistoryRequest, SetThreadTaskGroupRequest } from
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
+import { formatAge, formatStamp } from "@/components/inbox/inboxUtils"
 import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -12,6 +14,8 @@ import {
 	countByKind,
 	filterRows,
 	fromServerResults,
+	MESSAGE_AUTHOR_FILTERS,
+	type MessageAuthorFilter,
 	mergeResults,
 	SEARCH_FILTERS,
 	type SearchFilter,
@@ -82,6 +86,8 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 	const { taskHistory, taskGroups, navigateToTaskGroup } = useExtensionState()
 	const [query, setQuery] = useState(initialQuery)
 	const [filter, setFilter] = useState<SearchFilter>("all")
+	const [author, setAuthor] = useState<MessageAuthorFilter>("anyone")
+	const now = Date.now()
 	// Tagged with the (trimmed) query they answered, so rows from an older query never show.
 	const [server, setServer] = useState<{ query: string; rows: SearchRow[] }>({ query: "", rows: [] })
 	const [searching, setSearching] = useState(false)
@@ -116,6 +122,10 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		return () => clearTimeout(timer)
 	}, [query])
 
+	// Back to search reopens it with the last query.
+	const reportSearch = useNavigationHistory()?.reportSearch
+	useEffect(() => reportSearch?.(true, query), [reportSearch, query])
+
 	const groups = taskGroups ?? []
 	const groupsById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups])
 	const localRows = useMemo(() => searchLocal(query, groups, taskHistory ?? []), [query, groups, taskHistory])
@@ -125,7 +135,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		[localRows, server, query],
 	)
 	const counts = useMemo(() => countByKind(rows), [rows])
-	const visible = useMemo(() => filterRows(rows, filter), [rows, filter])
+	const visible = useMemo(() => filterRows(rows, filter, author), [rows, filter, author])
 
 	const addToTask = (threadId: string, group: TaskGroupSummary) => {
 		setAdded((current) => ({ ...current, [threadId]: group.id }))
@@ -152,7 +162,8 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 				return
 			case "thread":
 			case "message":
-				onClose()
+				// ChatView leaves search once the thread opens; closing first would
+				// flash home and record it as a stop in Back's history.
 				openTask(row.threadId ?? row.id)
 		}
 	}
@@ -166,6 +177,11 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		if (row.kind === "message" && row.snippet) {
 			return (
 				<span className="ph-no-capture truncate">
+					{row.author && (
+						<span className={cn("font-medium", row.author === "you" ? "text-foreground" : "text-description")}>
+							{row.author === "you" ? "You: " : "Agent: "}
+						</span>
+					)}
 					“<Highlighted query={query} text={row.snippet} />”
 				</span>
 			)
@@ -193,7 +209,9 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 				{row.kind === "thread" && (
 					<span className="truncate">
 						{row.tags?.length ? "· " : ""}
-						{where ? `in ${where}` : "not in a task"}
+						{[where ? `in ${where}` : "not in a task", row.settled ? "settled" : undefined, row.modelId]
+							.filter(Boolean)
+							.join(" · ")}
 					</span>
 				)}
 			</>
@@ -259,6 +277,31 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 						</button>
 					))}
 				</div>
+				{filter === "messages" && (
+					<div
+						aria-label="Messages from"
+						className="flex items-center gap-1 text-[11px] text-description"
+						data-testid="search-author-filter"
+						role="group">
+						<span>From</span>
+						{MESSAGE_AUTHOR_FILTERS.map(({ filter: value, label }) => (
+							<button
+								aria-pressed={author === value}
+								className={cn(
+									"flex h-4.5 cursor-pointer items-center rounded-xs border-0 px-1.5 text-[11px] focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+									author === value
+										? "bg-(--vscode-list-activeSelectionBackground) text-(--vscode-list-activeSelectionForeground)"
+										: "bg-transparent text-description hover:bg-list-hover hover:text-foreground",
+								)}
+								data-testid={`search-author-${value}`}
+								key={value}
+								onClick={() => setAuthor(value)}
+								type="button">
+								{label}
+							</button>
+						))}
+					</div>
+				)}
 			</div>
 			<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
 				{query.trim() && (
@@ -331,8 +374,18 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 										</button>
 									)
 								)}
-								<span className="text-[10px] uppercase tracking-wide text-description">
-									{KIND_LABEL[row.kind]}
+								<span className="flex flex-col items-end gap-0.5">
+									{row.ts > 0 && (
+										<span
+											className="text-[10px] text-description tabular-nums"
+											data-testid="search-row-time"
+											title={`${row.kind === "message" ? "Sent" : row.kind === "note" ? "Updated" : "Last active"} ${formatStamp(row.ts, now)}`}>
+											{formatAge(row.ts, now) === "now" ? "just now" : `${formatAge(row.ts, now)} ago`}
+										</span>
+									)}
+									<span className="text-[10px] uppercase tracking-wide text-description">
+										{KIND_LABEL[row.kind]}
+									</span>
 								</span>
 							</div>
 						</div>

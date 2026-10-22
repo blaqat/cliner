@@ -1,3 +1,4 @@
+import { normalizeProvenance } from "@shared/composer-provenance"
 import { Empty } from "@shared/proto/cline/common"
 import { AskResponseRequest } from "@shared/proto/cline/task"
 import { Logger } from "@/shared/services/Logger"
@@ -42,6 +43,7 @@ export async function askResponse(controller: Controller, request: AskResponseRe
 			request.images,
 			request.files,
 			request.decisionId,
+			normalizeProvenance(request.provenance),
 		)
 
 		return Empty.create()

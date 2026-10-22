@@ -1595,6 +1595,78 @@ describe("AgentRuntime", () => {
 		expect(result.messages[0]?.role).toBe("user");
 	});
 
+	describe("lifecycle.emptyResponseCompletes", () => {
+		const presentTool = (fail = false): AgentTool<unknown, string> => ({
+			name: "present",
+			description: "Display something",
+			inputSchema: { type: "object" },
+			lifecycle: { emptyResponseCompletes: true },
+			async execute() {
+				if (fail) throw new Error("nope");
+				return "shown";
+			},
+		});
+		const callPresent = () => [
+			{
+				type: "tool-call-delta" as const,
+				toolCallId: "call_present",
+				toolName: "present",
+				inputText: "{}",
+			},
+			{ type: "finish" as const, reason: "tool-calls" as const },
+		];
+		const empty = () => [{ type: "finish" as const, reason: "stop" as const }];
+
+		it("completes the run when the model returns nothing right after a successful call", async () => {
+			const model = new ScriptedModel([callPresent, empty]);
+			const runtime = new AgentRuntime({ model, tools: [presentTool()] });
+
+			const result = await runtime.run("Show it");
+
+			expect(result.status).toBe("completed");
+			expect(result.error).toBeUndefined();
+			expect(model.requests).toHaveLength(2);
+			expect(result.messages.at(-1)?.role).toBe("tool");
+		});
+
+		it("still fails an empty response after a failed call", async () => {
+			const model = new ScriptedModel([callPresent, empty]);
+			const runtime = new AgentRuntime({ model, tools: [presentTool(true)] });
+
+			const result = await runtime.run("Show it");
+
+			expect(result.status).toBe("failed");
+			expect(result.error?.message).toBe("Model returned empty response");
+		});
+
+		it("still fails an empty response from tools without the flag", async () => {
+			const model = new ScriptedModel([callPresent, empty]);
+			const plain = { ...presentTool(), lifecycle: undefined };
+			const runtime = new AgentRuntime({ model, tools: [plain] });
+
+			const result = await runtime.run("Show it");
+
+			expect(result.status).toBe("failed");
+			expect(result.error?.message).toBe("Model returned empty response");
+		});
+
+		it("does not excuse a later empty response once the model has spoken", async () => {
+			const model = new ScriptedModel([
+				callPresent,
+				() => [
+					{ type: "text-delta", text: "Done." },
+					{ type: "finish", reason: "stop" },
+				],
+			]);
+			const runtime = new AgentRuntime({ model, tools: [presentTool()] });
+
+			const result = await runtime.run("Show it");
+
+			expect(result.status).toBe("completed");
+			expect(result.outputText).toBe("Done.");
+		});
+	});
+
 	it("treats a media-only model turn as content", async () => {
 		// A model that answers with only a generated file (e.g. an
 		// image-output model) must not fail as "Model returned empty
@@ -1874,6 +1946,80 @@ describe("AgentRuntime", () => {
 			"execute:a",
 			"execute:b",
 		]);
+	});
+
+	it.each([
+		"reject",
+		"abort",
+	])("records every result when a mixed approval batch is %s", async (action) => {
+		const pending = Promise.withResolvers<void>();
+		const decision = Promise.withResolvers<{
+			approved: boolean;
+			reason?: string;
+		}>();
+		const read = vi.fn(async () => "contents");
+		const command = vi.fn(async () => "ran");
+		const runtime = new AgentRuntime({
+			model: new ScriptedModel([
+				() => [
+					...(["read_files", "run_commands"] as const).map((name) => ({
+						type: "tool-call-delta" as const,
+						toolCallId: name,
+						toolName: name,
+						inputText: "{}",
+					})),
+					{ type: "finish", reason: "tool-calls" },
+				],
+				() => [
+					{ type: "text-delta", text: "continued" },
+					{ type: "finish", reason: "stop" },
+				],
+			]),
+			tools: [
+				{
+					name: "read_files",
+					description: "read",
+					inputSchema: { type: "object" },
+					executionMode: "parallel",
+					execute: read,
+				},
+				{
+					name: "run_commands",
+					description: "command",
+					inputSchema: { type: "object" },
+					executionMode: "parallel",
+					execute: command,
+				},
+			],
+			toolPolicies: {
+				read_files: { autoApprove: true },
+				run_commands: { autoApprove: false },
+			},
+			requestToolApproval: () => {
+				pending.resolve();
+				return decision.promise;
+			},
+		});
+		const run = runtime.run("change app.js");
+		await pending.promise;
+		if (action === "abort") runtime.abort("Task cancelled");
+		else
+			decision.resolve({
+				approved: false,
+				reason: "The user skipped this command",
+			});
+		const result = await run;
+		expect(result.status).toBe(action === "abort" ? "aborted" : "completed");
+		const results = result.messages
+			.flatMap((message) => message.content)
+			.filter((part) => part.type === "tool-result");
+		expect(results.map((part) => part.toolCallId)).toEqual([
+			"read_files",
+			"run_commands",
+		]);
+		expect(command).not.toHaveBeenCalled();
+		if (action === "reject") expect(read).toHaveBeenCalledOnce();
+		else expect(read).not.toHaveBeenCalled();
 	});
 
 	it("executes a tool call and continues the loop", async () => {

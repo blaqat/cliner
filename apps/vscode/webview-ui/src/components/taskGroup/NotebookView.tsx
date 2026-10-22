@@ -4,6 +4,7 @@ import { type FormEvent, useMemo, useState } from "react"
 import { formatAge } from "@/components/inbox/inboxUtils"
 import { Button } from "@/components/ui/button"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
+import { NotebookNoteView } from "./NotebookNoteView"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { consumeNewNoteRequest, formatNoteSize, openNote, useTaskGroup } from "./useTaskGroup"
 
@@ -31,6 +32,7 @@ interface NotebookViewProps {
 /** A task's notebook as a list. Notes open as markdown files in the editor; `＋ New note` creates one inline. */
 export const NotebookView = ({ taskGroupId, now = Date.now() }: NotebookViewProps) => {
 	const { details, missing, refresh } = useTaskGroup(taskGroupId)
+	const [selected, setSelected] = useState<NotebookNoteMeta>()
 	const [filter, setFilter] = useState("")
 	const [creating, setCreating] = useState(consumeNewNoteRequest)
 
@@ -40,6 +42,20 @@ export const NotebookView = ({ taskGroupId, now = Date.now() }: NotebookViewProp
 			.sort((a, b) => b.updatedAt - a.updatedAt)
 			.filter((note) => !query || `${note.name}\n${note.description}`.toLowerCase().includes(query))
 	}, [details?.notes, filter])
+
+	if (selected && details)
+		return (
+			<NotebookNoteView
+				key={selected.slug}
+				note={selected}
+				onBack={() => {
+					setSelected(undefined)
+					refresh()
+				}}
+				taskGroupId={taskGroupId}
+				taskTitle={details.group.title}
+			/>
+		)
 
 	return (
 		<div className="flex flex-1 flex-col overflow-hidden" data-testid="notebook-view">
@@ -86,8 +102,8 @@ export const NotebookView = ({ taskGroupId, now = Date.now() }: NotebookViewProp
 								<button
 									className="flex w-full cursor-pointer items-start gap-2 rounded-xs border border-transparent bg-transparent px-2 py-1.5 text-left hover:border-editor-group-border hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 									data-testid="notebook-note-row"
-									onClick={() => openNote(taskGroupId, note.slug)}
-									title={`Open ${note.name}`}
+									onClick={() => setSelected(note)}
+									title={`View ${note.name}`}
 									type="button">
 									<span
 										aria-hidden
@@ -150,7 +166,6 @@ function NewNoteForm({ taskGroupId, onCreated, onCancel }: { taskGroupId: string
 				Name
 			</label>
 			<input
-				autoFocus
 				className={FIELD_CLASS}
 				id="new-note-name"
 				onChange={(event) => setName(event.target.value)}

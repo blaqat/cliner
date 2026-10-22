@@ -1,0 +1,208 @@
+import { EmptyRequest } from "@shared/proto/cline/common"
+import { CreateWorktreeRequest, SwitchWorktreeRequest } from "@shared/proto/cline/worktree"
+import { VSCodeButton, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
+import { Loader2 } from "lucide-react"
+import { memo, useCallback, useEffect, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { WorktreeServiceClient } from "@/services/grpc-client"
+import { WorktreeCard } from "./WorktreeCard"
+
+interface CreateWorktreeFormProps {
+	open: boolean
+	onClose: () => void
+	/** When true, opens the worktree in a new window after creation */
+	openAfterCreate?: boolean
+	/** Called after successful creation (and opening if openAfterCreate is true) */
+	onSuccess?: () => void
+}
+
+const CreateWorktreeForm = ({ open, onClose, openAfterCreate = false, onSuccess }: CreateWorktreeFormProps) => {
+	const [newWorktreePath, setNewWorktreePath] = useState("")
+	const [newBranchName, setNewBranchName] = useState("")
+	const [isCreating, setIsCreating] = useState(false)
+	const [createError, setCreateError] = useState<string | null>(null)
+	const [isLoadingDefaults, setIsLoadingDefaults] = useState(false)
+	const [hasWorktreeInclude, setHasWorktreeInclude] = useState<boolean | null>(null)
+
+	// Load defaults and check .worktreeinclude status when form opens
+	const loadDefaults = useCallback(async () => {
+		setIsLoadingDefaults(true)
+		try {
+			const [defaults, includeStatus] = await Promise.all([
+				WorktreeServiceClient.getWorktreeDefaults(EmptyRequest.create({})),
+				WorktreeServiceClient.getWorktreeIncludeStatus(EmptyRequest.create({})),
+			])
+			setNewBranchName(defaults.suggestedBranch)
+			setNewWorktreePath(defaults.suggestedPath)
+			setHasWorktreeInclude(includeStatus.exists)
+		} catch (err) {
+			console.error("Failed to load worktree defaults:", err)
+		} finally {
+			setIsLoadingDefaults(false)
+		}
+	}, [])
+
+	useEffect(() => {
+		if (open) {
+			loadDefaults()
+		}
+	}, [open, loadDefaults])
+
+	// Reset form state when form closes
+	useEffect(() => {
+		if (!open) {
+			setNewWorktreePath("")
+			setNewBranchName("")
+			setCreateError(null)
+			setHasWorktreeInclude(null)
+		}
+	}, [open])
+
+	const handleCreateWorktree = useCallback(async () => {
+		if (!newWorktreePath || !newBranchName) {
+			return
+		}
+
+		setIsCreating(true)
+		setCreateError(null)
+		try {
+			const result = await WorktreeServiceClient.createWorktree(
+				CreateWorktreeRequest.create({
+					path: newWorktreePath,
+					branch: newBranchName,
+					createNewBranch: true,
+				}),
+			)
+
+			if (!result.success) {
+				setCreateError(result.message)
+			} else {
+				// If openAfterCreate is true, open the worktree in a new window
+				if (openAfterCreate && result.worktree?.path) {
+					await WorktreeServiceClient.switchWorktree(
+						SwitchWorktreeRequest.create({
+							path: result.worktree.path,
+							newWindow: true,
+						}),
+					)
+				}
+				onSuccess?.()
+				onClose()
+			}
+		} catch (err) {
+			setCreateError(err instanceof Error ? err.message : "Failed to create worktree")
+		} finally {
+			setIsCreating(false)
+		}
+	}, [newWorktreePath, newBranchName, openAfterCreate, onSuccess, onClose])
+
+	if (!open) {
+		return null
+	}
+
+	const title = openAfterCreate ? "New Worktree" : "Create New Worktree"
+	const buttonText = openAfterCreate ? "Create & Open" : "Create Worktree"
+	const creatingText = openAfterCreate ? "Creating & Opening..." : "Creating..."
+	const description = openAfterCreate
+		? "This will create a copy of your project on a new branch and open in a separate window."
+		: "This will create a copy of your project on a new branch."
+
+	return (
+		<WorktreeCard icon="git-branch" label="Create worktree" onClose={onClose} title={title}>
+			<p className="text-sm text-[var(--vscode-descriptionForeground)] mt-0 mb-4">{description}</p>
+			{hasWorktreeInclude === false && (
+				<InlineNotice className="mb-3" tone="warning">
+					No .worktreeinclude detected.{" "}
+					<a
+						className="text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)]"
+						href="https://docs.cline.bot/features/worktrees#worktreeinclude"
+						rel="noopener noreferrer"
+						style={{ fontSize: "inherit" }}
+						target="_blank">
+						Learn more
+					</a>
+				</InlineNotice>
+			)}
+			<div className="flex flex-col">
+				<div>
+					<label className="block text-sm font-medium mb-1">Branch Name *</label>
+					<VSCodeTextField
+						className="w-full"
+						onInput={(e) => setNewBranchName((e.target as HTMLInputElement).value)}
+						placeholder="feature/my-feature"
+						value={newBranchName}>
+						{newBranchName && (
+							<div
+								aria-label="Clear"
+								className="input-icon-button codicon codicon-close"
+								onClick={() => setNewBranchName("")}
+								slot="end"
+								style={{
+									display: "flex",
+									justifyContent: "center",
+									alignItems: "center",
+									height: "100%",
+								}}
+							/>
+						)}
+					</VSCodeTextField>
+					<p className="text-xs text-[var(--vscode-descriptionForeground)] mt-1">
+						Your new copy will be checked out to this branch.
+					</p>
+				</div>
+				<div>
+					<label className="block text-sm font-medium mb-1">Folder Path *</label>
+					<VSCodeTextField
+						className="w-full"
+						onInput={(e) => setNewWorktreePath((e.target as HTMLInputElement).value)}
+						placeholder="../my-feature-worktree"
+						value={newWorktreePath}>
+						{newWorktreePath && (
+							<div
+								aria-label="Clear"
+								className="input-icon-button codicon codicon-close"
+								onClick={() => setNewWorktreePath("")}
+								slot="end"
+								style={{
+									display: "flex",
+									justifyContent: "center",
+									alignItems: "center",
+									height: "100%",
+								}}
+							/>
+						)}
+					</VSCodeTextField>
+					<p className="text-xs text-[var(--vscode-descriptionForeground)] mt-1">
+						Where the project will be copied for the worktree.
+					</p>
+				</div>
+				{createError && (
+					<InlineNotice className="mb-3" tone="error">
+						{createError}
+					</InlineNotice>
+				)}
+				<div className="flex justify-end gap-2">
+					<VSCodeButton
+						disabled={!newWorktreePath || !newBranchName || isCreating || isLoadingDefaults}
+						onClick={handleCreateWorktree}>
+						{isLoadingDefaults ? (
+							<>
+								<Loader2 className="w-4 h-4 mr-1 animate-spin" />
+								Loading...
+							</>
+						) : isCreating ? (
+							<>
+								<Loader2 className="w-4 h-4 mr-1 animate-spin" />
+								{creatingText}
+							</>
+						) : (
+							buttonText
+						)}
+					</VSCodeButton>
+				</div>
+			</div>
+		</WorktreeCard>
+	)
+}
+
+export default memo(CreateWorktreeForm)

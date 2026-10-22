@@ -77,6 +77,7 @@ enum ClineSay {
   COMPACTION = 37;
   PLAN_COMPLETION_RESULT = 38;
   NOTEBOOK_CHANGES = 39;
+  WALKTHROUGH_READY = 40;
 }
 
 // Enum for ClineSayTool tool types
@@ -234,6 +235,10 @@ message ClineMessage {
   // epoch = conversation/replica fence (older epoch is dropped by the webview)
   int64 seq = 24;
   int64 epoch = 25;
+
+  // Index into the SDK transcript — the stable anchor message links target.
+  // Optional: unset for rows that have no transcript position (minted UI rows).
+  optional int64 sdk_message_index = 26;
 }
 
 message ShowWebviewEvent {
@@ -297,6 +302,10 @@ service UiService {
   // Subscribe to show webview events
   rpc subscribeToShowWebview(EmptyRequest) returns (stream ShowWebviewEvent);
 
+  // Subscribe to stash shortcut events (⌘S / Ctrl+S while the Cline view is
+  // focused; the workbench keybinding claims the key so it can't save a file)
+  rpc subscribeToStashShortcut(EmptyRequest) returns (stream Empty);
+
   // Returns the HTML for the webview index page. This is only used by external clients, not by the vscode webview.
   rpc getWebviewHtml(EmptyRequest) returns (String);
 
@@ -306,6 +315,25 @@ service UiService {
   // Opens the Cline walkthrough
   rpc openWalkthrough(EmptyRequest) returns (Empty);
 
+  // Subscribe to message deep-link events (a vscode:// link opened the thread
+  // at a specific message; the webview scrolls to and flashes it)
+  rpc subscribeToOpenMessage(EmptyRequest) returns (stream OpenMessageEvent);
+
   // Tracks intent signals before task creation or first model activity
   rpc trackIntent(IntentEvent) returns (Empty);
+
+  // Subscribe to VS Code window focus changes; sends the current state first
+  rpc subscribeToWindowFocus(EmptyRequest) returns (stream Boolean);
+}
+
+// A message deep link was opened: show thread_id scrolled to the message.
+// message_index is its index into the SDK transcript (sdkMessageIndex); text
+// is a display fallback for rows that have no stamped index yet.
+message OpenMessageEvent {
+  string thread_id = 1;
+  int64 message_index = 2;
+  string text = 3;
+  // Row anchor (see ResolveMessageLinkRequest): tool call id or sibling ordinal.
+  optional string tool_call_id = 4;
+  optional int32 block = 5;
 }

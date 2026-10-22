@@ -109,6 +109,7 @@ function convertClineSayToProtoEnum(say: AppClineSay | undefined): ClineSay | un
 		subagent_usage: ClineSay.SUBAGENT_USAGE,
 		compaction: ClineSay.COMPACTION,
 		notebook_changes: ClineSay.NOTEBOOK_CHANGES,
+		walkthrough_ready: ClineSay.WALKTHROUGH_READY,
 	}
 
 	const result = mapping[say]
@@ -160,6 +161,7 @@ function convertProtoEnumToClineSay(say: ClineSay): AppClineSay | undefined {
 		[ClineSay.SUBAGENT_USAGE]: "subagent_usage",
 		[ClineSay.COMPACTION]: "compaction",
 		[ClineSay.NOTEBOOK_CHANGES]: "notebook_changes",
+		[ClineSay.WALKTHROUGH_READY]: "walkthrough_ready",
 	}
 
 	return mapping[say]
@@ -206,6 +208,7 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 					endIndex: message.conversationHistoryDeletedRange[1],
 				}
 			: undefined,
+		sdkMessageIndex: message.sdkMessageIndex,
 		// Additional optional fields for specific ask/say types
 		sayTool: undefined,
 		sayBrowserAction: undefined,
@@ -290,6 +293,12 @@ export function convertProtoToClineMessage(protoMessage: ProtoClineMessage): App
 	}
 	if (protoMessage.epoch && protoMessage.epoch !== 0) {
 		message.epoch = protoMessage.epoch
+	}
+
+	// Stable transcript index for message deep links. Optional field — 0 is a
+	// real index, so check presence, not truthiness.
+	if (protoMessage.sdkMessageIndex !== undefined) {
+		message.sdkMessageIndex = protoMessage.sdkMessageIndex
 	}
 
 	return message

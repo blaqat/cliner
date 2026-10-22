@@ -14,11 +14,13 @@ import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusC
 import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_MCP_DISPLAY_MODE, McpDisplayMode } from "@shared/McpDisplayMode"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
+import type { ModelProfile, ProfilesMigrationState, ThreadSelectionStamp } from "@shared/model-profiles"
 import { GlobalInstructionsFile } from "@shared/remote-config/schema"
 import { Mode } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { UserInfo } from "@shared/UserInfo"
 import { LanguageModelChatSelector } from "vscode"
+import type { TerminalEnvironmentSettings } from "../terminal-environment"
 import { type BlobStoreSettings } from "./types"
 
 // ============================================================================
@@ -70,7 +72,21 @@ const GLOBAL_STATE_FIELDS = {
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },
 	promptStash: {
-		default: [] as Array<{ id: string; text: string; quotes: { text: string; note: string }[]; ts: number; taskId?: string }>,
+		default: [] as Array<{
+			id: string
+			text: string
+			quotes: { text: string; note: string; source?: string }[]
+			messageTags?: {
+				threadId: string
+				messageIndex: number
+				toolCallId?: string
+				block?: number
+				text: string
+				source: string
+			}[]
+			ts: number
+			taskId?: string
+		}>,
 	},
 	taskHistory: { default: [] as HistoryItem[], isAsync: true },
 	userInfo: { default: undefined as UserInfo | undefined },
@@ -106,6 +122,47 @@ const GLOBAL_STATE_FIELDS = {
 	apiConfigProfiles: { default: [] as ApiConfigProfile[] },
 	askProfileId: { default: undefined as string | undefined },
 	actProfileId: { default: undefined as string | undefined },
+	// Named profiles (configuration + effort) on the Profiles page. Unset
+	// until the one-time migration from configuration-based settings runs.
+	profiles: { default: undefined as ModelProfile[] | undefined },
+	// Thread defaults: one profile for both modes unless the switch is on.
+	// They are applied to askProfileId/actProfileId + mode efforts so new
+	// threads start on them.
+	threadDefaultProfileId: { default: undefined as string | undefined },
+	threadSeparateAskActProfiles: { default: false as boolean },
+	threadAskProfileId: { default: undefined as string | undefined },
+	threadActProfileId: { default: undefined as string | undefined },
+	// Features that run on a profile. Ids refer to `profiles` entries;
+	// "parent" in subagentAllowedModelProfileIds means the agent may also
+	// inherit the thread's own model. These are separate from the legacy
+	// subagentDefaultProfileId / subagentAllowedProfileIds /
+	// walkthroughGenerateProfileId / threadTitlesProfileId keys (below), which
+	// hold saved-configuration ids for older releases: this release never
+	// writes them, so a downgrade keeps working and an upgrade can tell what
+	// the older release changed.
+	subagentProfilesEnabled: { default: false as boolean },
+	subagentDefaultModelProfileId: { default: undefined as string | undefined },
+	subagentAllowedModelProfileIds: { default: [] as string[] },
+	// Off by default: generating a title costs a model call per new thread.
+	threadTitlesEnabled: { default: false as boolean },
+	threadTitlesModelProfileId: { default: undefined as string | undefined },
+	// Last profile picked for the walkthrough Generate button (step 9 reads it).
+	walkthroughGenerateModelProfileId: { default: undefined as string | undefined },
+	// Legacy configuration-id references written by earlier releases. Read
+	// only by the profile migration; subagentReasoningEffort is also still the
+	// effort for subagents that inherit the thread's model.
+	subagentDefaultProfileId: { default: undefined as string | undefined },
+	subagentReasoningEffort: { default: undefined as string | undefined },
+	subagentAllowedProfileIds: { default: [] as string[] },
+	threadTitlesProfileId: { default: undefined as string | undefined },
+	walkthroughGenerateProfileId: { default: undefined as string | undefined },
+	// Profile migration bookkeeping: the version and the legacy values last
+	// reconciled, plus the Ask/Act selection this release last wrote. An older
+	// release changing either shows up as a difference at the next startup.
+	profilesMigration: { default: undefined as ProfilesMigrationState | undefined },
+	threadSelectionStamp: { default: undefined as ThreadSelectionStamp | undefined },
+	// Global terminal environment (variables, .env path, PATH additions).
+	terminalEnvironment: { default: undefined as TerminalEnvironmentSettings | undefined },
 } satisfies FieldDefinitions
 
 // Fields that map directly to ApiHandlerOptions in @shared/api.ts
@@ -278,6 +335,8 @@ const USER_SETTINGS_FIELDS = {
 	globalClineRulesToggles: { default: {} as ClineRulesToggles },
 	globalWorkflowToggles: { default: {} as ClineRulesToggles },
 	globalSkillsToggles: { default: {} as Record<string, boolean> },
+	// Script files in ~/.cline/scripts, keyed by path. Missing means on.
+	globalScriptToggles: { default: {} as Record<string, boolean> },
 	browserSettings: {
 		default: DEFAULT_BROWSER_SETTINGS as BrowserSettings,
 		transform: (v: any) => ({ ...DEFAULT_BROWSER_SETTINGS, ...v }),
@@ -303,6 +362,10 @@ const USER_SETTINGS_FIELDS = {
 	backgroundEditEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },
 	showFeatureTips: { default: false as boolean },
+	threadToastsEnabled: { default: true as boolean },
+	threadToastSeconds: { default: 5 as number },
+	// Switching to Act right after an Ask answer also continues it. Off: only the answer's Continue in Act button does.
+	continueAnswerOnActSwitch: { default: true as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },
@@ -383,12 +446,17 @@ const SECRETS_KEYS = [
 // WARNING, these are not ALL of the local state keys in practice. For example, FileContextTracker
 // uses dynamic keys like pendingFileContextWarning_${taskId}.
 export const LocalStateKeys = [
+	"worktreeToggles",
 	"localClineRulesToggles",
 	"localCursorRulesToggles",
 	"localWindsurfRulesToggles",
 	"localAgentsRulesToggles",
 	"localSkillsToggles",
 	"workflowToggles",
+	"scriptToggles",
+	// Workspace terminal environment overrides — kept in workspace state so
+	// machine-local values never land in the repo.
+	"terminalEnvironment",
 ] as const
 
 // ============================================================================
@@ -411,7 +479,11 @@ export type RemoteConfigFields = GlobalStateAndSettings & RemoteConfigExtra
 // ============================================================================
 
 export type Secrets = { [K in (typeof SecretKeys)[number]]: string | undefined }
-export type LocalState = { [K in (typeof LocalStateKeys)[number]]: ClineRulesToggles }
+export type LocalState = {
+	[K in (typeof LocalStateKeys)[number]]: K extends "terminalEnvironment"
+		? TerminalEnvironmentSettings | undefined
+		: ClineRulesToggles
+}
 export type SecretKey = (typeof SecretKeys)[number]
 export type GlobalStateKey = keyof GlobalState
 export type LocalStateKey = keyof LocalState

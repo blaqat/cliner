@@ -4,10 +4,16 @@ import getFolderSize from "get-folder-size"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
+import reopenedCompletedThread from "./__fixtures__/reopened-completed-thread.json"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
-import { historyItemToSessionMetadata, SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import {
+	historyItemToSessionMetadata,
+	SdkTaskHistory,
+	sanitizeSdkUserMessagesForDisplay,
+	sessionHistoryRecordToHistoryItem,
+} from "./sdk-task-history"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 vi.mock("@/core/storage/disk", () => ({
@@ -93,12 +99,89 @@ describe("SdkTaskHistory", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("shows a persisted message_reference block as a tag on the bubble, never as text", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const messages = sdkMessagesToClineMessages(
+			sanitizeSdkUserMessagesForDisplay([
+				{ role: "user", content: `<user_input mode="act">${block}\n\nfirst question</user_input>` },
+				{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+				{ role: "user", content: [{ type: "text", text: `<user_input mode="act">${block}\n\nsecond</user_input>` }] },
+			] as never),
+		)
+		const user = messages.filter((row) => row.say === "task" || row.say === "user_feedback")
+		expect(user.map((row) => row.text)).toEqual(["first question", "second"])
+		for (const row of user) {
+			expect(row.messageReferences).toEqual([
+				{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports at 10k rows" },
+			])
+		}
+		expect(JSON.stringify(messages.map((row) => row.text))).not.toContain("message_reference")
+	})
+
+	it("derives a thread title and preview without the message_reference block", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const item = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task-1", { prompt: `<user_input mode="act">${block}\n\nFix the login loop</user_input>` }),
+		)
+		expect(item.task).toBe("Fix the login loop")
+	})
+
 	it("round trips settle and aside metadata", () => {
 		const item = makeHistoryItem("aside", { isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
 		const result = sessionHistoryRecordToHistoryItem(
 			makeSessionRecord("aside", { metadata: historyItemToSessionMetadata(item) }),
 		)
 		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+	})
+
+	describe("threads left by regular Cline or older builds", () => {
+		it("settles idle records that carry no settle flag, but not ones still running", () => {
+			const done = sessionHistoryRecordToHistoryItem(makeSessionRecord("done", { metadata: {} }))
+			const running = sessionHistoryRecordToHistoryItem(makeSessionRecord("run", { status: "running", metadata: {} }))
+			const explicitlyOpen = sessionHistoryRecordToHistoryItem(
+				makeSessionRecord("open", { metadata: { isSettled: false } }),
+			)
+
+			expect(done.isSettled).toBe(true)
+			expect(running.isSettled).toBe(false)
+			expect(explicitlyOpen.isSettled).toBe(false)
+		})
+
+		it("keeps a thread whose display text formats down to nothing", () => {
+			const raw = "<environment_details>\nonly wrapper\n</environment_details>"
+			const item = sessionHistoryRecordToHistoryItem(makeSessionRecord("odd", { prompt: raw, metadata: {} }))
+
+			expect(item.task).toBeTruthy()
+		})
+
+		it("lists unmigrated Cline threads as settled, with every fork field absent", async () => {
+			legacyStateReaderMock.taskHistory = [
+				{ id: "1700000000001", ts: 1_700_000_000_001, task: "old thread", tokensIn: 1, tokensOut: 1, totalCost: 0 },
+			]
+			const { history } = makeHistory([])
+
+			const [record] = await history.listHistory({ hydrate: false, includeSubagents: true })
+			const item = sessionHistoryRecordToHistoryItem(record)
+
+			expect(item).toMatchObject({ id: "1700000000001", task: "old thread", isSettled: true })
+		})
+
+		it("lists unmigrated threads from another workspace and every SDK record past 100", async () => {
+			legacyStateReaderMock.taskHistory = [
+				makeHistoryItem("elsewhere", { task: "other repo", cwdOnTaskInitialization: "/other/workspace" }),
+			]
+			const records = Array.from({ length: 250 }, (_, i) =>
+				makeSessionRecord(`sdk-${i}`, { updatedAt: new Date(Date.UTC(2026, 0, 2, 0, i)).toISOString() }),
+			)
+			const { history } = makeHistory(records)
+
+			const listed = await history.listHistory({ hydrate: false, includeSubagents: true, limit: 10_000 })
+
+			expect(listed).toHaveLength(251)
+			expect(listed.map((record) => record.sessionId)).toContain("elsewhere")
+		})
 	})
 
 	it("round trips the persisted subagent count", () => {
@@ -162,6 +245,15 @@ describe("SdkTaskHistory", () => {
 		)
 		expect(malformed.tags).toEqual([])
 		expect(malformed.taskGroupId).toBeUndefined()
+	})
+
+	it("flushes the final thread status before history disposal", async () => {
+		const { history, getSession } = makeHistory([makeSessionRecord("task-1")])
+		const running = history.saveThreadStatus("task-1", "running")
+		const waiting = history.saveThreadStatus("task-1", "waiting")
+		await history.dispose()
+		await Promise.all([running, waiting])
+		expect((await getSession("task-1"))?.metadata?.vscodeThreadStatus).toBe("waiting")
 	})
 
 	it("serializes owned metadata changes against stale activity and usage snapshots", async () => {
@@ -271,7 +363,7 @@ describe("SdkTaskHistory", () => {
 	})
 
 	it("toggles settle and automatically clears it on activity", async () => {
-		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: false } })])
 		await history.toggleTaskSettled("task-1")
 		expect((await history.findHistoryItem("task-1"))?.isSettled).toBe(true)
 		expect((await history.findHistoryItem("task-1"))?.settledAt).toBeGreaterThan(0)
@@ -287,8 +379,11 @@ describe("SdkTaskHistory", () => {
 
 	it("keeps last-activity time when settling and only bumps it on activity", async () => {
 		const { history } = makeHistory([
-			makeSessionRecord("task-1", { updatedAt: "2026-01-02T00:00:00.000Z", metadata: { lastActivityTs: 1234 } }),
-			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z" }),
+			makeSessionRecord("task-1", {
+				updatedAt: "2026-01-02T00:00:00.000Z",
+				metadata: { lastActivityTs: 1234, isSettled: false },
+			}),
+			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z", metadata: { isSettled: false } }),
 		])
 		await history.toggleTaskSettled("task-1")
 		expect(await history.findHistoryItem("task-1")).toMatchObject({ ts: 1234, lastActivityTs: 1234, isSettled: true })
@@ -558,6 +653,67 @@ describe("SdkTaskHistory", () => {
 
 		expect(result).toContainEqual(expect.objectContaining({ type: "say", say: "text", text: "Answer of unknown outcome" }))
 		expect(result.filter((m) => m.say === "completion_result" || m.say === "plan_completion_result")).toHaveLength(0)
+	})
+
+	describe("reopening a completed thread after a window reload (real QA session)", () => {
+		// The window reload skipped the graceful release, so the SDK record is "idle" — but the
+		// extension had persisted vscodeThreadStatus "done" when the turn finished.
+		const fixtureRecord = (metadata: Record<string, unknown> = reopenedCompletedThread.record.metadata) =>
+			makeSessionRecord(reopenedCompletedThread.record.session_id, {
+				status: reopenedCompletedThread.record.status as SessionHistoryRecord["status"],
+				metadata,
+			})
+
+		async function rebuild(metadata?: Record<string, unknown>) {
+			const { history, readMessages } = makeHistory([fixtureRecord(metadata)])
+			readMessages.mockResolvedValueOnce(reopenedCompletedThread.messages as never)
+			const id = reopenedCompletedThread.record.session_id
+			return { history, id, messages: await history.getClineMessages(id) }
+		}
+
+		it("rebuilds the final message as the completion row, like the live translator", async () => {
+			const { messages } = await rebuild()
+			const finalContent = reopenedCompletedThread.messages.at(-1)?.content as { text?: string }[]
+			const finalText = finalContent[0].text
+
+			const completions = messages.filter((m) => m.say === "completion_result")
+			expect(completions).toHaveLength(1)
+			expect(completions[0]).toMatchObject({ type: "say", text: finalText, partial: false })
+			// Earlier narration stays plain text; the final message is no longer a text row.
+			expect(messages.filter((m) => m.say === "text").map((m) => m.text)).not.toContain(finalText)
+		})
+
+		it("keeps the completion row last among visible rows and linked to its SDK message", async () => {
+			const { messages } = await rebuild()
+			const completion = messages.find((m) => m.say === "completion_result")
+
+			// View Changes / Open walkthrough render only on the last visible, finalized completion
+			// row. Everything after it must be a row the webview hides (empty completion ask).
+			const afterCompletion = messages.slice(messages.indexOf(completion!) + 1)
+			expect(afterCompletion.length).toBeGreaterThan(0)
+			for (const row of afterCompletion) {
+				expect(row).toMatchObject({ type: "ask", ask: "completion_result", text: "" })
+			}
+			// Message links and asides resolve through ts and sdkMessageIndex.
+			expect(completion?.sdkMessageIndex).toBe(reopenedCompletedThread.messages.length - 1)
+			expect(completion?.ts).toBeGreaterThan(0)
+		})
+
+		it("reports the thread completed so the reopened view gets no Resume Task ask", async () => {
+			const { history, id } = await rebuild()
+			expect(await history.getSessionStatus(id)).toBe("completed")
+		})
+
+		it.each([
+			["stopped by the user", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "stopped" }],
+			["still running", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "running" }],
+			["errored", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "error" }],
+			["unrecorded", {}],
+		])("keeps the plain text and the Resume affordance for a thread %s", async (_label, metadata) => {
+			const { history, id, messages } = await rebuild(metadata)
+			expect(messages.filter((m) => m.say === "completion_result")).toHaveLength(0)
+			expect(await history.getSessionStatus(id)).toBe("idle")
+		})
 	})
 
 	it("does not retag a transcript that ends on a dangling tool call", () => {
@@ -936,6 +1092,18 @@ describe("SdkTaskHistory", () => {
 			say: "notebook_changes",
 			text: JSON.stringify(payload),
 		})
+		await history.saveNotebookChangesMessage("root", {
+			ts: 1,
+			type: "say",
+			say: "notebook_changes",
+			text: JSON.stringify({
+				...payload,
+				revision: "r2",
+				changes: [{ ...payload.changes[0], content: "User draft", editedByUser: true }],
+			}),
+		})
+		payload.revision = "r2"
+		expect((await getSession("root"))?.metadata?.notebookChangesMessages).toHaveLength(1)
 		const reopened = await history.getClineMessages("root")
 		const card = reopened.find((message) => message.say === "notebook_changes")!
 		expect(reopened.at(-1)).toBe(card)

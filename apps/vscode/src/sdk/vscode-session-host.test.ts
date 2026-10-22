@@ -82,12 +82,55 @@ describe("VscodeSessionHost telemetry wiring", () => {
 			'# Task notebook\n\nThis thread is part of the task "Fix" (PROJ-1).',
 		)
 		expect(mockInnerStart.mock.calls[0][0].toolPolicies.notebook).toEqual({ enabled: true, autoApprove: true })
+		expect(mockInnerStart.mock.calls[0][0].toolPolicies.present_walkthrough).toEqual({ enabled: true, autoApprove: true })
 		await host.start(gitStartInput)
 		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(
 			expect.anything(),
 			expect.objectContaining({ notebook: undefined }),
 		)
 		expect(mockInnerStart.mock.calls[1][0].config.systemPrompt).toBe("test")
+		expect(mockInnerStart.mock.calls[1][0].toolPolicies.present_walkthrough).toEqual({ enabled: true, autoApprove: true })
+		await host.dispose()
+	})
+
+	it("adds the script tool and always routes it through approval when scripts are available", async () => {
+		const scripts = { store: {}, getWorkspaceRoot: () => "/workspace", resolveEnv: async () => ({}), logDir: "/logs" }
+		const resolveScripts = vi.fn().mockReturnValueOnce(scripts).mockReturnValueOnce(undefined)
+		const host = await VscodeSessionHost.create({ mcpHub: {} as never, resolveScripts: resolveScripts as never })
+		await host.start(gitStartInput)
+		expect(mockCreateVscodeExtraTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ scripts }))
+		expect(mockInnerStart.mock.calls[0][0].toolPolicies.script).toEqual({ enabled: true, autoApprove: false })
+		await host.start(gitStartInput)
+		expect(mockInnerStart.mock.calls[1][0].toolPolicies.script).toBeUndefined()
+		await host.dispose()
+	})
+
+	it("delivers notebook notices at the next turn or tool boundary and preserves existing hook context", async () => {
+		const consumeNotices = vi.fn().mockResolvedValueOnce("user edited Plan").mockResolvedValueOnce("user discarded Plan")
+		const host = await VscodeSessionHost.create({
+			mcpHub: {} as never,
+			resolveNotebook: async () =>
+				({
+					group: { id: "group", title: "Task", tags: [], createdAt: 1, updatedAt: 1 },
+					threadId: "root",
+					rootThreadId: "root",
+					store: { consumeNotices },
+				}) as never,
+		})
+		await host.start({
+			...gitStartInput,
+			config: {
+				...gitStartInput.config,
+				hooks: {
+					beforeRun: async () => ({ appendContext: "existing run" }),
+					beforeTool: async () => ({ appendContext: "existing tool" }),
+				},
+			},
+		})
+		const hooks = mockInnerStart.mock.calls[0][0].config.hooks
+		expect(await hooks.beforeRun({})).toEqual({ appendContext: "existing run\n\nuser edited Plan" })
+		expect(await hooks.beforeTool({})).toEqual({ appendContext: "existing tool\n\nuser discarded Plan" })
+		expect(consumeNotices).toHaveBeenCalledWith("group", "root")
 		await host.dispose()
 	})
 
