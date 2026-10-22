@@ -14,7 +14,25 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 }))
 vi.mock("@/services/grpc-client", () => ({
 	WorktreeServiceClient: {
-		threadWorktreeAction: async () => ({ json: JSON.stringify({ state: mocks.state }) }),
+		threadWorktreeAction: async (request: { action: string }) => ({
+			json: JSON.stringify(
+				request.action === "summary"
+					? {
+							summary: {
+								changedFiles: 1,
+								commits: 0,
+								uncommittedFiles: 1,
+								uncopiedFiles: 1,
+								copied: false,
+								canUndo: false,
+								loseOnRemove: 1,
+								workspaceDirty: false,
+								takenOver: false,
+							},
+						}
+					: { state: mocks.state },
+			),
+		}),
 	},
 }))
 
@@ -100,8 +118,12 @@ it("shows where an existing thread runs instead of a choice", async () => {
 	expect(screen.queryByRole("menuitemradio")).toBeNull()
 	// The worktree's actions live here now, under the branch (not in the thread header).
 	const actions = await screen.findByTestId("worktree-actions")
-	for (const name of ["Open in new window", "Bring here", "Undo bring-in", "Take over branch", "Remove worktree"])
+	await waitFor(() => expect(within(actions).getByTestId("worktree-status")).toHaveTextContent("1 file changed"))
+	for (const name of ["Open in new window", /Copy changes here/, "Switch workspace to this branch", "Remove worktree"])
 		expect(within(actions).getByRole("menuitem", { name })).toBeInTheDocument()
+	// Nothing was copied, so there's no Undo to offer.
+	expect(within(actions).queryByRole("menuitem", { name: "Undo the copy" })).toBeNull()
+	expect(screen.getByTestId("workspace-menu")).toHaveClass("w-72")
 	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Worktree settings")
 })
 

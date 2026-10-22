@@ -84,7 +84,7 @@ it("explains a bring-in that clashes with the workspace's own uncommitted edits,
 	await write(m.cwd, "file.txt", "from the thread\n")
 	await write(workspace, "file.txt", "edited in the workspace\n")
 	await expect(manager.bring("clash")).rejects.toThrow(
-		"Your workspace has its own changes to `file.txt` that clash with this thread's. Commit, stash or undo them in your workspace, then Bring here again.",
+		"Your workspace has its own changes to `file.txt` that clash with this thread's. Commit, stash or undo them in your workspace, then copy again.",
 	)
 	expect(await read(workspace)).toBe("edited in the workspace\n")
 	expect((await manager.get("clash"))!.bringIns).toEqual([])
@@ -106,7 +106,7 @@ it("undo reports overlapping later edits as conflicts and preserves the real ind
 it("warns before taking over a dirty workspace and leaves both branches attached", async () => {
 	const m = await manager.create("dirty", "Dirty", workspace)
 	await write(workspace, "file.txt", "user change\n")
-	expect((await manager.takeOver("dirty")).warning).toContain("workspace has changes")
+	expect((await manager.takeOver("dirty")).warning).toContain("workspace has uncommitted changes")
 	expect(git(workspace, "branch", "--show-current")).toBe("main")
 	expect(git(m.cwd, "branch", "--show-current")).toBe(m.branch)
 }, 60_000)
@@ -119,13 +119,81 @@ it("takes over a committed branch without deleting the isolate", async () => {
 	expect(await read(workspace)).toBe("committed\n")
 	await fs.access(m.cwd)
 }, 60_000)
-it("warns on removal of changes never brought in, including later changes", async () => {
+it("switches the workspace to the branch carrying the worktree's uncommitted edits along", async () => {
+	const m = await manager.create("carry", "Carry", workspace)
+	await write(m.cwd, "file.txt", "committed\n")
+	git(m.cwd, "commit", "-am", "change")
+	await write(m.cwd, "file.txt", "committed\nand edited\n")
+	await write(m.cwd, "untracked.txt", "new\n")
+	const result = await manager.takeOver("carry")
+	expect(result.warning).toBeUndefined()
+	expect(result.files).toBe(2)
+	expect(result.message).toBe("Your workspace is on this branch now, with its 2 uncommitted files")
+	expect(git(workspace, "branch", "--show-current")).toBe(m.branch)
+	expect(await read(workspace)).toBe("committed\nand edited\n")
+	expect(await read(workspace, "untracked.txt")).toBe("new\n")
+	// The carrier stash is gone and the leftover folder is clean and detached.
+	expect(git(workspace, "stash", "list")).toBe("")
+	expect(git(m.cwd, "status", "--porcelain")).toBe("")
+	expect(git(m.cwd, "branch", "--show-current")).toBe("")
+	const summary = await manager.summary("carry")
+	expect(summary).toMatchObject({ takenOver: true, loseOnRemove: 0, workspaceDirty: true })
+	// Nothing would be lost, so the leftover folder goes without asking.
+	expect((await manager.remove("carry")).message).toBe("Removed the leftover worktree folder")
+	expect(await manager.get("carry")).toBeUndefined()
+	expect(await read(workspace)).toBe("committed\nand edited\n")
+}, 60_000)
+it("asks before removing a leftover folder that has edits of its own", async () => {
+	const m = await manager.create("leftover", "Leftover", workspace)
+	await manager.takeOver("leftover")
+	await write(m.cwd, "file.txt", "edited after the switch\n")
+	expect((await manager.remove("leftover")).warning).toContain("leftover worktree folder has edits")
+	expect((await manager.summary("leftover")).loseOnRemove).toBe(1)
+}, 60_000)
+it("summarizes what changed, what's copied and what removal would lose", async () => {
+	const m = await manager.create("sum", "Sum", workspace)
+	expect(await manager.summary("sum")).toMatchObject({
+		changedFiles: 0,
+		commits: 0,
+		uncopiedFiles: 0,
+		canUndo: false,
+		loseOnRemove: 0,
+		workspaceDirty: false,
+		takenOver: false,
+	})
+	await write(m.cwd, "file.txt", "committed\n")
+	git(m.cwd, "commit", "-am", "change")
+	await write(m.cwd, "new.txt", "new\n")
+	expect(await manager.summary("sum")).toMatchObject({
+		changedFiles: 2,
+		commits: 1,
+		uncommittedFiles: 1,
+		uncopiedFiles: 2,
+		copied: false,
+		canUndo: false,
+		loseOnRemove: 2,
+	})
+	expect(await manager.bring("sum")).toMatchObject({ files: 2, message: "Copied 2 files into your workspace" })
+	expect(await manager.summary("sum")).toMatchObject({
+		changedFiles: 2,
+		uncopiedFiles: 0,
+		copied: true,
+		canUndo: true,
+		loseOnRemove: 0,
+		workspaceDirty: true,
+	})
+	await write(m.cwd, "new.txt", "newer\n")
+	expect(await manager.summary("sum")).toMatchObject({ uncopiedFiles: 1, loseOnRemove: 1 })
+	await manager.undo("sum")
+	expect(await manager.summary("sum")).toMatchObject({ copied: false, canUndo: false, workspaceDirty: false })
+}, 60_000)
+it("warns on removal of changes never copied here, including later changes", async () => {
 	const m = await manager.create("remove", "Remove", workspace)
 	await write(m.cwd, "file.txt", "first\n")
-	expect((await manager.remove("remove")).warning).toContain("never brought in")
+	expect((await manager.remove("remove")).warning).toContain("never copied here")
 	await manager.bring("remove")
 	await write(m.cwd, "file.txt", "later\n")
-	expect((await manager.remove("remove")).warning).toContain("never brought in")
+	expect((await manager.remove("remove")).warning).toContain("never copied here")
 	await manager.remove("remove", true)
 	expect(await manager.get("remove")).toBeUndefined()
 }, 60_000)
@@ -220,7 +288,7 @@ for (const mode of ["git", "mm"] as const) {
 		await manager.bring("capture")
 		spy.mockRestore()
 		for (const module of mapping.modules) expect(await read(module.workspacePath)).toBe("captured\n")
-		expect((await manager.remove("capture")).warning).toContain("never brought in")
+		expect((await manager.remove("capture")).warning).toContain("never copied here")
 		for (const module of mapping.modules) expect(await read(module.path)).toBe("later\n")
 	}, 60_000)
 }
@@ -239,10 +307,10 @@ for (const mode of ["git", "mm"] as const) {
 			git(module.path, "add", "file.txt")
 			await write(module.path, "file.txt", "base\n")
 		}
-		expect((await manager.remove("staged-only")).warning).toContain("never brought in")
+		expect((await manager.remove("staged-only")).warning).toContain("never copied here")
 		for (const module of mapping.modules) await write(module.path, "file.txt", "working files\n")
 		await manager.bring("staged-only")
-		expect((await manager.remove("staged-only")).warning).toContain("never brought in")
+		expect((await manager.remove("staged-only")).warning).toContain("never copied here")
 		for (const module of mapping.modules) expect(git(module.path, "show", ":file.txt")).toBe("staged only")
 	}, 60_000)
 }
@@ -355,7 +423,7 @@ for (const mode of ["git", "mm"] as const) {
 		await manager.bring("index-error")
 		const module = mapping.modules[0]
 		await fs.writeFile(path.resolve(module.path, git(module.path, "rev-parse", "--git-path", "index")), "invalid index")
-		expect((await manager.remove("index-error")).warning).toContain("never brought in")
+		expect((await manager.remove("index-error")).warning).toContain("never copied here")
 		expect(await manager.get("index-error")).toBeDefined()
 		await fs.access(mapping.cwd)
 	}, 60_000)

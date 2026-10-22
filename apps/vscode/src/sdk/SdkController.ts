@@ -192,7 +192,7 @@ import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
-import { ThreadWorktreeManager } from "./worktrees/thread-worktree-manager"
+import { ThreadWorktreeManager, threadRunFolder } from "./worktrees/thread-worktree-manager"
 
 /**
  * Log a stub warning and return undefined.
@@ -504,7 +504,7 @@ export class Controller {
 	private readonly seenWorktreeRemovals = new Map<string, number>()
 	private async resolveSessionWorkspace(id: string): Promise<string | undefined> {
 		const mapping = await this.threadWorktrees.get(id)
-		if (mapping) return mapping.cwd
+		if (mapping) return threadRunFolder(mapping)
 		const removed = await this.threadWorktrees.removedWorkspace(id)
 		if (!removed) return undefined
 		if (this.seenWorktreeRemovals.get(id) !== removed.removedAt) {
@@ -647,7 +647,7 @@ export class Controller {
 			prepareStartInput: async (input) => {
 				const id = input.config?.sessionId || createSessionId()
 				const mapping = await this.threadWorktrees.get(id)
-				if (mapping) {
+				if (mapping && !mapping.takenOver) {
 					await this.threadWorktrees.assertPresent(mapping)
 					input = { ...input, config: { ...input.config, cwd: mapping.cwd, workspaceRoot: mapping.cwd } }
 				} else {
@@ -2117,9 +2117,11 @@ export class Controller {
 		mentionRegexGlobal.lastIndex = 0
 
 		try {
-			const mapping = threadId ? await this.threadWorktrees.get(threadId) : undefined
-			const removed = !mapping && threadId ? await this.threadWorktrees.removedWorkspace(threadId) : undefined
-			const cwd = mapping?.cwd ?? removed?.workspace ?? (await this.getWorkspaceRoot())
+			const found = threadId ? await this.threadWorktrees.get(threadId) : undefined
+			// Once the workspace took over the branch, the thread runs (and resolves mentions) there.
+			const mapping = found?.takenOver ? undefined : found
+			const removed = !found && threadId ? await this.threadWorktrees.removedWorkspace(threadId) : undefined
+			const cwd = mapping?.cwd ?? removed?.workspace ?? found?.workspace ?? (await this.getWorkspaceRoot())
 			const urlContentFetcher = new UrlContentFetcher()
 			const workspaceManager = mapping
 				? await WorkspaceRootManager.fromPaths(mapping.modules.map((module) => module.path))
@@ -2659,14 +2661,20 @@ export class Controller {
 				if (!opened.success) throw new Error("Could not open the worktree window")
 				return {}
 			}
+			case "summary":
+				return { summary: { ...(await this.threadWorktrees.summary(id)), running: !!running } }
 			case "bring":
-				if (running) return { warning: "Wait for the thread to finish before bringing changes here." }
+				if (running) return { warning: "Wait for the thread to finish before copying its changes here." }
 				return this.threadWorktrees.bring(id)
 			case "undo":
 				return this.threadWorktrees.undo(id)
-			case "takeOver":
-				if (running) return { warning: "Stop this thread before taking over its branch." }
-				return this.threadWorktrees.takeOver(id)
+			case "takeOver": {
+				if (running) return { warning: "Stop this thread before switching your workspace to its branch." }
+				const result = await this.threadWorktrees.takeOver(id)
+				// The next turn starts a fresh session in the workspace (see threadRunFolder).
+				if (result.mapping?.takenOver) await this.sessions.removeSession(id)
+				return result
+			}
 			case "remove": {
 				if (running) return { warning: "Stop this thread before removing its worktree." }
 				const release = this.sessions.beginTaskDeletion(id)
@@ -3275,7 +3283,7 @@ export class Controller {
 			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
 			// An isolated thread's changes live only in its worktree (one per module with mm), not
 			// in the user's own workspace folders.
-			const rootPaths = worktree ? worktree.modules.map((module) => module.path) : workspace.paths
+			const rootPaths = worktree && !worktree.takenOver ? worktree.modules.map((module) => module.path) : workspace.paths
 			return {
 				taskId,
 				scope,

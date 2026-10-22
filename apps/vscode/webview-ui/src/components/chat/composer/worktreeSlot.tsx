@@ -68,7 +68,8 @@ export function WorkspaceButton() {
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"
-				className={cn("menu-rise w-64 p-1", COMPOSER_MENU_SCROLL_CLASS)}
+				// A little wider for a worktree thread: the branch name and the status line.
+				className={cn("menu-rise p-1", mapping ? "w-72" : "w-64", COMPOSER_MENU_SCROLL_CLASS)}
 				data-testid="workspace-menu"
 				onKeyDown={handleMenuKeyDown}
 				side="top">
@@ -100,35 +101,31 @@ export function WorkspaceButton() {
 							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !enabled && "invisible")} />
 						</button>
 					</div>
+				) : mapping ? (
+					<ThreadWorktreeActions
+						mapping={mapping}
+						onChanged={refresh}
+						onClose={() => setOpen(false)}
+						threadId={threadId}
+					/>
 				) : (
-					<div className="flex h-6 min-w-0 items-center gap-1.5 px-2 text-[12px]" data-testid="workspace-current">
-						<span
-							aria-hidden
-							className={cn(
-								MENU_ICON_CLASS,
-								mapping ? "codicon-repo-forked" : "codicon-folder",
-								"text-description",
-							)}
-						/>
-						{mapping ? (
-							<span className="min-w-0 truncate">
-								Worktree · <code className="ph-no-capture text-[11px]">{mapping.branch}</code>
-							</span>
-						) : (
+					<>
+						<div className="flex h-6 min-w-0 items-center gap-1.5 px-2 text-[12px]" data-testid="workspace-current">
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-folder text-description")} />
 							<span className="min-w-0 truncate">Your workspace</span>
-						)}
-					</div>
+						</div>
+						<p className="m-0 px-2 pb-0.5 text-[11px] text-description">
+							A thread's workspace is picked when it starts.
+						</p>
+					</>
 				)}
-				{threadId && mapping && <ThreadWorktreeActions onChanged={refresh} threadId={threadId} />}
-				{threadId && !mapping && (
-					<p className="m-0 px-2 pb-0.5 text-[11px] text-description">A thread's workspace is picked when it starts.</p>
-				)}
-				{blocker && (
+				{/* A worktree thread already has its worktree; only a failure to read it matters there. */}
+				{(mapping ? error : blocker) && (
 					<p
 						className="m-0 px-2 pt-0.5 text-[11px] text-description"
 						data-testid="workspace-blocker"
 						role={error ? "alert" : undefined}>
-						{blocker}
+						{mapping ? error : blocker}
 					</p>
 				)}
 				<div className={MENU_SEPARATOR_CLASS} />
@@ -140,13 +137,15 @@ export function WorkspaceButton() {
 					type="button">
 					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-gear")} />
 					<span className="min-w-0 flex-1 truncate">
-						{off
-							? "Turn on in Settings"
-							: blocker
-								? mm
-									? "Set up mm in Settings"
-									: "Fix in Settings"
-								: "Worktree settings"}
+						{mapping
+							? "Worktree settings"
+							: off
+								? "Turn on in Settings"
+								: blocker
+									? mm
+										? "Set up mm in Settings"
+										: "Fix in Settings"
+									: "Worktree settings"}
 					</span>
 					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-chevron-right")} />
 				</button>

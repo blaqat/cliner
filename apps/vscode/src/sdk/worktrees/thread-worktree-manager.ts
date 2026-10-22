@@ -2,7 +2,13 @@ import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import path from "node:path"
-import type { ThreadModuleDiff, ThreadWorktree, ThreadWorktreeSettings, WorktreeAvailability } from "@shared/thread-worktrees"
+import type {
+	ThreadModuleDiff,
+	ThreadWorktree,
+	ThreadWorktreeSettings,
+	WorktreeAvailability,
+	WorktreeSummary,
+} from "@shared/thread-worktrees"
 
 import { createWorktree } from "@/utils/git-worktree"
 
@@ -31,9 +37,19 @@ async function run(command: string, args: string[], cwd: string, input?: string,
 	})
 }
 const git = (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) => run("git", args, cwd, input, env)
+const lineCount = (output: string) => output.split("\n").filter((line) => line.trim()).length
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+// The workspace's own changes; its .worktrees folder (where git-mode thread worktrees live) isn't one.
+const workspaceStatus = (workspacePath: string) =>
+	git(workspacePath, ["status", "--porcelain", "--", ".", ":(exclude).worktrees"])
+
+/** The folder a thread runs in: its worktree, or the workspace once the workspace took over its branch. */
+export function threadRunFolder(mapping: ThreadWorktree): string {
+	return mapping.takenOver ? mapping.workspace : mapping.cwd
+}
 
 /**
- * Bring here only applies cleanly onto the files the thread started from. When the workspace has
+ * Copy changes here only applies cleanly onto the files the thread started from. When the workspace has
  * its own edits to the same lines, say which files clash and what to do, not git's raw error.
  */
 export function bringClashMessage(module: string, gitError: string): string {
@@ -47,7 +63,7 @@ export function bringClashMessage(module: string, gitError: string): string {
 		),
 	]
 	const which = files.length ? files.map((file) => `\`${file}\``).join(", ") : "the same files"
-	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then Bring here again.`
+	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then copy again.`
 }
 
 export function parseMmModules(raw: string): string[] {
@@ -350,13 +366,61 @@ export class ThreadWorktreeManager {
 			.update(JSON.stringify(diffs.map((d) => [d.module, d.tree])))
 			.digest("hex")
 	}
+	/** Where the thread's changes stand (see WorktreeSummary). Read-only. */
+	async summary(id: string): Promise<WorktreeSummary> {
+		const mapping = await this.required(id)
+		let workspaceDirty = false
+		for (const module of mapping.modules) if ((await workspaceStatus(module.workspacePath)).trim()) workspaceDirty = true
+		if (mapping.takenOver) {
+			// The branch lives in the workspace now; only edits made in the leftover folder since would be lost.
+			let leftover = 0
+			for (const module of mapping.modules)
+				if (await exists(path.join(module.path, ".git")))
+					leftover += lineCount(await git(module.path, ["status", "--porcelain"]))
+			return {
+				changedFiles: 0,
+				commits: 0,
+				uncommittedFiles: leftover,
+				uncopiedFiles: 0,
+				copied: false,
+				canUndo: false,
+				loseOnRemove: leftover,
+				workspaceDirty,
+				takenOver: true,
+			}
+		}
+		const full = await this.diffs(id)
+		const incremental = await this.diffs(id, true)
+		let commits = 0
+		let uncommittedFiles = 0
+		for (const module of mapping.modules) {
+			commits += Number((await git(module.path, ["rev-list", "--count", `${module.base}..HEAD`])).trim()) || 0
+			uncommittedFiles += lineCount(await git(module.path, ["status", "--porcelain"]))
+		}
+		const changedFiles = full.reduce((count, diff) => count + diff.paths.length, 0)
+		const uncopiedFiles = incremental.reduce((count, diff) => count + diff.paths.length, 0)
+		const copied = mapping.modules.some((module) => module.lastBroughtTree)
+		const kept = !!mapping.transferredDiff && this.fingerprint(full) === mapping.transferredDiff
+		return {
+			changedFiles,
+			commits,
+			uncommittedFiles,
+			uncopiedFiles,
+			copied,
+			canUndo: mapping.bringIns.some((bring) => bring.patches.some((patch) => patch.applied && !patch.undone)),
+			loseOnRemove: changedFiles > 0 && !kept ? uncopiedFiles || changedFiles : 0,
+			workspaceDirty,
+			takenOver: false,
+		}
+	}
 	async bring(id: string) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
 			const captured = await this.diffs(id, true)
 			const diffs = captured.filter((d) => d.patch)
-			if (!diffs.length) return { message: "No changes to bring here" }
+			if (!diffs.length) return { message: "Nothing new to copy here" }
+			const files = diffs.reduce((count, diff) => count + diff.paths.length, 0)
 			for (const diff of diffs) {
 				try {
 					await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
@@ -399,7 +463,7 @@ export class ThreadWorktreeManager {
 			}
 			mapping.transferredDiff = this.fingerprint(captured)
 			await this.save(mapping)
-			return { message: "Brought changes into your workspace. Patches saved.", mapping }
+			return { message: `Copied ${plural(files, "file")} into your workspace`, files, mapping }
 		})
 	}
 	async undo(id: string) {
@@ -407,7 +471,7 @@ export class ThreadWorktreeManager {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
 			const bring = [...mapping.bringIns].reverse().find((b) => b.patches.some((p) => p.applied && !p.undone))
-			if (!bring) return { message: "No bring-in to undo" }
+			if (!bring) return { message: "Nothing to undo" }
 			const conflicts: string[] = []
 			for (const patch of bring.patches.filter((p) => p.applied && !p.undone)) {
 				const module = mapping.modules.find((m) => m.name === patch.module)!
@@ -445,25 +509,29 @@ export class ThreadWorktreeManager {
 			await this.save(mapping)
 			return {
 				message: conflicts.length
-					? "Resolve the conflict markers in your workspace before continuing."
-					: "Bring-in undone",
+					? "Undid the copy. Your later edits overlap it: resolve the conflict markers in your workspace."
+					: "Undid the copy",
 				conflicts,
 				mapping,
 			}
 		})
 	}
+	/**
+	 * Switches the workspace to the thread's branch. The worktree's uncommitted edits come along (stashed
+	 * there, applied here), so the thread's work never has to be committed first. Only the workspace's
+	 * own uncommitted changes block it, since checking out the branch would mix them in.
+	 */
 	async takeOver(id: string) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
 			await this.assertPresent(mapping)
+			if (mapping.takenOver) return { message: "Your workspace is on this branch now", mapping }
 			for (const module of mapping.modules) {
-				if ((await git(module.workspacePath, ["status", "--porcelain", "--", ".", ":(exclude).worktrees"])).trim())
+				if ((await workspaceStatus(module.workspacePath)).trim())
 					return {
-						warning: `Your workspace has changes in ${module.name || "this repository"}. Commit or shelve them before taking over.`,
+						warning: `Your workspace has uncommitted changes${mapping.modules.length > 1 ? ` in ${module.name}` : ""}. Commit or stash them, then switch.`,
 					}
-				if ((await git(module.path, ["status", "--porcelain"])).trim())
-					return { warning: "Commit or bring in the worktree's changes before taking over its branch." }
 			}
 			for (const module of mapping.modules) {
 				const registered = await git(module.workspacePath, ["worktree", "list", "--porcelain", "-z"])
@@ -473,40 +541,78 @@ export class ThreadWorktreeManager {
 						.split("\0\0")
 						.some((entry) => entry.includes(`worktree ${canonical}\0`) && entry.includes("\0locked"))
 				)
-					return { warning: `Unlock ${module.name || "the worktree"} before taking over.` }
+					return { warning: `Unlock ${module.name || "the worktree"} before switching to its branch.` }
 			}
 			const transferredDiff = this.fingerprint(await this.diffs(id))
-			// Git refuses checkout of a branch attached elsewhere. Detach the isolate first.
-			const moved: {
+			// Each step is recorded as it happens so a failure part-way undoes exactly what was done.
+			const steps: {
 				module: ThreadWorktree["modules"][number]
 				original: string
 				isolateBranch: string
 				isolateHead: string
+				stash?: string
+				detached?: boolean
+				switched?: boolean
+				applied?: boolean
 			}[] = []
+			let carried = 0
 			try {
 				for (const module of mapping.modules) {
 					const original =
 						(await git(module.workspacePath, ["branch", "--show-current"])).trim() ||
 						(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
-					const isolateBranch = (await git(module.path, ["branch", "--show-current"])).trim()
-					const isolateHead = (await git(module.path, ["rev-parse", "HEAD"])).trim()
+					const step: (typeof steps)[number] = {
+						module,
+						original,
+						isolateBranch: (await git(module.path, ["branch", "--show-current"])).trim(),
+						isolateHead: (await git(module.path, ["rev-parse", "HEAD"])).trim(),
+					}
+					steps.push(step)
+					const uncommitted = lineCount(await git(module.path, ["status", "--porcelain"]))
+					if (uncommitted) {
+						await this.assertMutationOwner()
+						await git(module.path, [
+							"stash",
+							"push",
+							"--include-untracked",
+							"-m",
+							`Cline: carry ${mapping.branch} into your workspace`,
+						])
+						step.stash = (await git(module.path, ["rev-parse", "refs/stash"])).trim()
+						carried += uncommitted
+					}
+					// Git refuses to check out a branch attached elsewhere. Detach the isolate first.
 					await this.assertMutationOwner()
 					await git(module.path, ["checkout", "--detach"])
-					moved.push({ module, original, isolateBranch, isolateHead })
+					step.detached = true
 					await this.assertMutationOwner()
 					await git(module.workspacePath, ["checkout", mapping.branch])
+					step.switched = true
+					if (step.stash) {
+						await this.assertMutationOwner()
+						step.applied = true
+						await git(module.workspacePath, ["stash", "apply", step.stash])
+					}
 				}
 			} catch (error) {
 				const rollbackErrors: string[] = []
-				for (const entry of moved.reverse()) {
+				for (const step of steps.reverse()) {
 					try {
 						await this.assertMutationOwner()
-						await git(entry.module.workspacePath, ["checkout", entry.original])
-						await this.assertMutationOwner()
-						await git(
-							entry.module.path,
-							entry.isolateBranch ? ["checkout", entry.isolateBranch] : ["checkout", "--detach", entry.isolateHead],
-						)
+						if (step.applied) {
+							// The workspace was clean before, so this only removes what the apply wrote.
+							await git(step.module.workspacePath, ["reset", "--hard", "--quiet"])
+							await git(step.module.workspacePath, ["clean", "-fdq", "--", ".", ":(exclude).worktrees"])
+						}
+						if (step.switched) await git(step.module.workspacePath, ["checkout", step.original])
+						if (step.detached)
+							await git(
+								step.module.path,
+								step.isolateBranch
+									? ["checkout", step.isolateBranch]
+									: ["checkout", "--detach", step.isolateHead],
+							)
+						if (step.stash) await this.popStash(step.module.path, step.stash)
 					} catch (rollbackError) {
 						rollbackErrors.push(String(rollbackError))
 					}
@@ -515,17 +621,49 @@ export class ThreadWorktreeManager {
 					`${String(error)}${rollbackErrors.length ? `\nCould not restore checkout: ${rollbackErrors.join("\n")}` : ""}`,
 				)
 			}
+			// The edits are in the workspace now; their stash entries were only a carrier.
+			for (const step of steps) if (step.stash) await this.dropStash(step.module.path, step.stash).catch(() => {})
 			mapping.transferredDiff = transferredDiff
 			mapping.takenOver = true
 			await this.save(mapping)
-			return { message: "Worktree branch checked out in your workspace", mapping }
+			return {
+				message: carried
+					? `Your workspace is on this branch now, with its ${plural(carried, "uncommitted file")}`
+					: "Your workspace is on this branch now",
+				files: carried,
+				mapping,
+			}
 		})
+	}
+	/** Puts a carried stash back where it came from and removes it from the stash list. */
+	private async popStash(cwd: string, stash: string) {
+		await git(cwd, ["stash", "apply", "--index", stash])
+		await this.dropStash(cwd, stash)
+	}
+	private async dropStash(cwd: string, stash: string) {
+		const index = (await git(cwd, ["stash", "list", "--format=%H"])).split("\n").indexOf(stash)
+		if (index >= 0) await git(cwd, ["stash", "drop", "--quiet", `stash@{${index}}`])
 	}
 	async remove(id: string, confirmed = false) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
-			if (!confirmed) {
+			if (!confirmed && mapping.takenOver) {
+				// The branch is in the workspace; only edits made in the leftover folder since would be lost.
+				let leftover = true
+				try {
+					leftover = false
+					for (const module of mapping.modules)
+						if (
+							(await exists(path.join(module.path, ".git"))) &&
+							(await git(module.path, ["status", "--porcelain"])).trim()
+						)
+							leftover = true
+				} catch {
+					leftover = true
+				}
+				if (leftover) return { warning: "The leftover worktree folder has edits of its own. Remove it and discard them?" }
+			} else if (!confirmed) {
 				let changed = true
 				try {
 					const diffs = await this.diffs(id)
@@ -540,7 +678,7 @@ export class ThreadWorktreeManager {
 					changed = true
 					/* Partial isolates and unreadable indexes still need explicit removal. */
 				}
-				if (changed) return { warning: "Changes were never brought in. Remove this worktree and discard those changes?" }
+				if (changed) return { warning: "Changes were never copied here. Remove this worktree and discard them?" }
 			}
 			if (mapping.mode === "mm") {
 				const settings = await this.settings()
@@ -566,7 +704,11 @@ export class ThreadWorktreeManager {
 				if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
 			await this.write(path.join("removed", this.mappingFile(id)), { workspace: mapping.workspace, removedAt: Date.now() })
 			await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
-			return { message: "Worktree removed. The next turn runs in your workspace. Saved bring-in patches are kept." }
+			return {
+				message: mapping.takenOver
+					? "Removed the leftover worktree folder"
+					: "Worktree removed. The next turn runs in your workspace. Saved copies are kept.",
+			}
 		})
 	}
 }
