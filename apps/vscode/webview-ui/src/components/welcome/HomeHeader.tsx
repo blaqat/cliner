@@ -24,13 +24,13 @@ const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
 	const headingText = "What can I do for you?"
 
 	return (
-		// The original layout (logo over the heading), just smaller: about 110px instead of 190.
+		// The original layout (logo over the heading), just smaller: about 115px instead of 190.
 		<div className="mb-3 flex flex-col items-center">
 			<div className="mt-4 mb-2.5">
-				<LogoComponent className="size-12" environment={environment} />
+				<LogoComponent className="size-14" environment={environment} />
 			</div>
 			<div className="flex items-center justify-center px-4 text-center">
-				<h1 className="m-0 text-lg font-bold">{headingText}</h1>
+				<h1 className="m-0 text-[15px] font-bold">{headingText}</h1>
 			</div>
 			{shouldShowQuickWins && (
 				<div className="mt-3">
