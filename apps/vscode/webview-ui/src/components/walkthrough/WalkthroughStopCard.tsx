@@ -1,18 +1,22 @@
 import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
-import { useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { getCurrentPlatform } from "@/utils/platformUtils"
 import { countChanges, patchToDiffLines, type StopFile, splitInlineCode, stopFiles, syntheticReason } from "./walkthroughUtils"
 
 /** Quick chips from the round 3 mockup; each fills the note box and stays editable. */
 export const QUICK_NOTES = ["Why this approach?", "Add a test for this.", "Rename for clarity."]
 
-/** Pill chips under a note box (also the script helper's choices). */
+/** A quick-note suggestion inside the note box: the composer's chip look (quote and message tags). */
 const CHIP_CLASS =
-	"cursor-pointer rounded-full border border-solid border-editor-group-border bg-transparent px-2 py-px text-[11px] text-description hover:bg-list-hover hover:text-foreground"
+	"inline-flex h-5 cursor-pointer items-center gap-1 rounded-xs border border-solid border-input-border bg-transparent px-1.5 text-[11px] text-description hover:border-border hover:bg-list-hover hover:text-foreground"
+
+/** Tallest the note box grows before it scrolls (about ten lines). */
+const NOTE_MAX_HEIGHT = 160
 
 export interface RevertTarget {
 	fileId: string
@@ -47,7 +51,11 @@ export function InlineCodeProse({ text, className }: { text: string; className?:
 	)
 }
 
-/** A note box with quick chips. Used by each stop and by the overall note. */
+/**
+ * A note box with quick chips, built like the chat composer: one bordered input that lights up
+ * when focused, growing with the text, with its suggestions and Done inside the box. Used by each
+ * stop and by the overall note. Esc or Cmd/Ctrl+Enter finishes.
+ */
 export function NoteEditor({
 	value,
 	placeholder,
@@ -63,12 +71,23 @@ export function NoteEditor({
 	onChange: (value: string) => void
 	onDone: () => void
 }) {
+	const textarea = useRef<HTMLTextAreaElement>(null)
+	// Grows with the text (from two lines) like the composer, then scrolls.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measure whenever the text changes
+	useLayoutEffect(() => {
+		const element = textarea.current
+		if (!element) return
+		element.style.height = "auto"
+		element.style.height = `${Math.min(element.scrollHeight, NOTE_MAX_HEIGHT)}px`
+	}, [value])
 	return (
-		<div className="mt-2 rounded-xs border border-solid border-(--vscode-focusBorder) bg-input-background p-2">
+		<div
+			className="mt-2 rounded-xs border border-solid border-input-border bg-input-background focus-within:border-(--vscode-focusBorder)"
+			data-testid="note-editor">
 			<textarea
 				aria-label={label}
 				autoFocus
-				className="block w-full resize-y border-0 bg-transparent p-0 font-[inherit] text-xs leading-normal text-input-foreground outline-none placeholder:text-input-placeholder"
+				className="block w-full resize-none border-0 bg-transparent px-2 pt-1.5 pb-1 font-[inherit] text-xs leading-normal text-input-foreground outline-none! placeholder:text-input-placeholder"
 				onChange={(event) => onChange(event.target.value)}
 				onKeyDown={(event) => {
 					if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
@@ -78,24 +97,38 @@ export function NoteEditor({
 					}
 				}}
 				placeholder={placeholder}
+				ref={textarea}
 				rows={2}
+				style={{ maxHeight: NOTE_MAX_HEIGHT }}
 				value={value}
 			/>
-			<div className="mt-1.5 flex flex-wrap items-center gap-1">
+			<div className="flex items-center gap-1 px-1.5 pb-1.5">
 				{chips &&
 					QUICK_NOTES.map((text) => (
 						<button
 							className={CHIP_CLASS}
 							key={text}
-							onClick={() => onChange(value.trim() ? `${value.trimEnd()} ${text}` : text)}
+							onClick={() => {
+								onChange(value.trim() ? `${value.trimEnd()} ${text}` : text)
+								textarea.current?.focus()
+							}}
 							type="button">
+							<span aria-hidden className="codicon codicon-add text-[10px]! opacity-70" />
 							{text.replace(/[.?]$/, "")}
 						</button>
 					))}
 				<span className="flex-1" />
-				<Button onClick={onDone} size="xs" variant="secondary">
-					Done
-				</Button>
+				<span aria-hidden className="shrink-0 text-[10.5px] text-description">
+					{getCurrentPlatform() === "mac" ? "⌘↵" : "Ctrl+↵"}
+				</span>
+				<button
+					aria-label="Done"
+					className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground"
+					onClick={onDone}
+					title="Done (Esc)"
+					type="button">
+					<span aria-hidden className="codicon codicon-check text-[14px]!" />
+				</button>
 			</div>
 		</div>
 	)
