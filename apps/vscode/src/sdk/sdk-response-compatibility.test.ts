@@ -32,7 +32,7 @@ function setup(focusedAgent?: string) {
 		postStateToWebview,
 		getPendingDecisionId: Controller.prototype.getPendingDecisionId,
 		sessions: { assertTaskAvailable: vi.fn() },
-		taskHistory: { markTaskActive: vi.fn(async () => {}) },
+		taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
 		turnStateTracker: { get: () => ({ phase: "awaiting_followup" }), set: vi.fn() },
 		messageTranslatorState: { clearTurnOutcome: vi.fn() },
 		subagentThreads: new Map(),

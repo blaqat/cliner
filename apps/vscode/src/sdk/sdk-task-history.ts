@@ -131,6 +131,7 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		// Frozen at the last real interaction; `ts` of a listed item already carries it,
 		// so settle/favorite/metadata rewrites keep the same value.
 		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
+		lastUserMessageTs: item.lastUserMessageTs ?? 0,
 		parentTaskId: item.parentTaskId ?? "",
 		forkedAtTs: item.forkedAtTs ?? 0,
 		subagentCount: item.subagentCount ?? 0,
@@ -285,6 +286,7 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		spawnToolCallId: metadataString(metadata, "spawnToolCallId"),
 		subagentAccess: metadataString(metadata, "subagentAccess") === "write" ? "write" : "read",
 		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
+		lastUserMessageTs: metadataNumber(metadata, "lastUserMessageTs") || undefined,
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
@@ -1133,6 +1135,13 @@ export class SdkTaskHistory {
 		})().finally(() => this.activityWrites.delete(taskId))
 		this.activityWrites.set(taskId, write)
 		return write
+	}
+
+	/** Stamps the time the user sent the thread a message (not the agent's replies). */
+	async markUserMessage(taskId: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateTaskHistoryItem({ ...item, lastUserMessageTs: Date.now() })
 	}
 
 	async updateTaskUsage(taskId: string | undefined, usage: TaskUsage): Promise<void> {

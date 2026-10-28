@@ -10,6 +10,8 @@ import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
 import { cn } from "@/lib/utils"
 import {
 	ACTIVE_PAGE_SIZE,
+	activityTitle,
+	agentLaterAge,
 	buildInbox,
 	DEFAULT_ACTIVE_LIMIT,
 	DEFAULT_SETTLED_LIMIT,
@@ -172,7 +174,10 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 				)}
 				{/* The time and the settle action share one slot: hover swaps them, so no blank space is reserved. */}
 				<div className="relative flex h-4.5 min-w-11 items-center justify-end">
-					<span className="text-[10px] text-description transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0 motion-reduce:transition-none">
+					<span
+						className="text-[10px] text-description transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0 motion-reduce:transition-none"
+						data-testid="inbox-row-time"
+						title={activityTitle(row, now)}>
 						{time}
 					</span>
 					<button
@@ -209,6 +214,7 @@ interface TaskGroupRowViewProps {
 /** A task group row: chevron, title + tags, thread count, newest activity, running count. */
 const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout, settled = false }: TaskGroupRowViewProps) => {
 	const { group, members, activityTs, runningCount } = row
+	const agentLater = settled ? undefined : agentLaterAge(row, now)
 	// Every member shows once expanded past the preview, so any thread can be settled from home.
 	const [showAll, setShowAll] = useState(false)
 	const shown = showAll ? members : members.slice(0, GROUP_PREVIEW_COUNT)
@@ -274,14 +280,23 @@ const TaskGroupRowView = ({ row, now, expanded, onToggle, onOpen, animateLayout,
 						className={cn(
 							"text-[10px] leading-[18px] text-description transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0 motion-reduce:transition-none",
 							menuOpen && "opacity-0",
-						)}>
+						)}
+						data-testid="inbox-task-group-time"
+						title={activityTitle(row, now)}>
 						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
 					</span>
 					<TaskGroupRowMenu onOpenChange={setMenuOpen} settleAll={settleAll} title={group.title} />
-					{runningCount > 0 && (
+					{runningCount > 0 ? (
 						<span className="text-[10px] text-link" data-testid="inbox-task-group-running">
 							{runningCount} running
 						</span>
+					) : (
+						agentLater && (
+							// The task sorts by your last message; this says the agent has done more since.
+							<span className="text-[10px] text-description/80" data-testid="inbox-task-group-agent">
+								agent {agentLater}
+							</span>
+						)
 					)}
 				</div>
 			</div>

@@ -21,6 +21,8 @@ export type HistoryItem = {
 	settledAt?: number
 	/** Last real interaction (message, approval, turn); unaffected by settle/favorite/metadata edits. Mirrored into `ts`. */
 	lastActivityTs?: number
+	/** When the user last sent this thread a message (home orders by it; agent activity shows beside it). */
+	lastUserMessageTs?: number
 	parentTaskId?: string
 	/** Root session that owns the child runtime and persisted artifacts. */
 	runtimeOwnerTaskId?: string

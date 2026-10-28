@@ -331,7 +331,7 @@ describe("SDK remote-config coordination", () => {
 				postStateToWebview: vi.fn(async () => {}),
 				initTask: vi.fn(async () => "task-id"),
 				followups: { askResponse: vi.fn(async () => {}) },
-				taskHistory: { markTaskActive: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
 				cancelTask: vi.fn(async () => {}),
 				askResponse(prompt?: string, images?: string[], files?: string[]) {
 					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)

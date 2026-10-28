@@ -2940,6 +2940,8 @@ export class Controller {
 
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length))
+			await this.taskHistory.markUserMessage(submittedTaskId)
 		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
@@ -4482,6 +4484,7 @@ export class Controller {
 			const resolved = await this.resolveContextMentions(text, undefined, provenance)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
+			await this.taskHistory.markUserMessage(task.taskId)
 			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
 			this.messageTranslatorState.reset()
 			this.messageTranslatorState.clearTurnOutcome()

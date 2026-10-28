@@ -136,6 +136,13 @@ describe("SdkTaskHistory", () => {
 		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
 	})
 
+	it("round trips when the user last sent a message, and leaves it unset on older threads", () => {
+		const item = makeHistoryItem("t", { lastUserMessageTs: 1234 })
+		const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("t", { metadata: historyItemToSessionMetadata(item) }))
+		expect(result.lastUserMessageTs).toBe(1234)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("old", { metadata: {} })).lastUserMessageTs).toBeUndefined()
+	})
+
 	describe("threads left by regular Cline or older builds", () => {
 		it("settles idle records that carry no settle flag, but not ones still running", () => {
 			const done = sessionHistoryRecordToHistoryItem(makeSessionRecord("done", { metadata: {} }))
