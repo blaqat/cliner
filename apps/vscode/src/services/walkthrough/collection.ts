@@ -246,7 +246,9 @@ export async function gitRoots(paths: string[]): Promise<string[]> {
 async function snapshot(root: string, ref: string, file: string): Promise<{ text: string; exists: boolean }> {
 	for (const tree of [ref, `${ref}^3`]) {
 		try {
-			const text = await git(root, ["show", `${tree}:${file}`])
+			// --filters gives the file as checked out (autocrlf, eol, .gitattributes), not the raw
+			// blob: on Windows the blob has LF while the disk has CRLF, and every line would differ.
+			const text = await git(root, ["cat-file", "--filters", `${tree}:${file}`])
 			if (text.length > MAX_FILE) throw new ReviewError(`Checkpoint file exceeds 2 MiB: ${file}`)
 			return { text, exists: true }
 		} catch (error) {
@@ -265,6 +267,19 @@ async function snapshotPaths(root: string, ref: string): Promise<string[]> {
 		/* Plain commits have no third parent. */
 	}
 	return untracked
+}
+
+/**
+ * `before` in the line endings `after` uses, when the two use one style each and they differ.
+ * A file whose only change is its line endings then shows no change, and a revert writes the
+ * file back in the endings it has on disk.
+ */
+export function matchLineEndings(before: string, after: string): string {
+	const crlf = (text: string) => text.includes("\r\n")
+	const lfOnly = (text: string) => /(^|[^\r])\n/.test(text)
+	if (crlf(after) && !lfOnly(after) && !crlf(before)) return before.replace(/\n/g, "\r\n")
+	if (!crlf(after) && crlf(before) && !lfOnly(before)) return before.replace(/\r\n/g, "\n")
+	return before
 }
 
 export async function changesBetween(
@@ -291,8 +306,9 @@ export async function changesBetween(
 		try {
 			const filePath = path.resolve(root, file)
 			const displayPath = modulePath(filePath, roots)
-			const before = await snapshot(root, beforeRef, file)
 			const after = afterRef ? await snapshot(root, afterRef, file) : await readDisk(filePath)
+			const snapshotBefore = await snapshot(root, beforeRef, file)
+			const before = { ...snapshotBefore, text: matchLineEndings(snapshotBefore.text, after.text) }
 			if (before.text !== after.text || before.exists !== after.exists)
 				changes.push({
 					filePath,
@@ -399,7 +415,7 @@ export async function collect(
 			for (const change of changes) {
 				const recorded = turn.changes.find((candidate) => candidate.filePath === change.filePath)
 				if (recorded) {
-					recorded.before = change.before
+					recorded.before = matchLineEndings(change.before, recorded.after)
 					recorded.beforeExists = change.beforeExists
 				} else turn.changes.push({ ...change, turnId: turn.id })
 			}

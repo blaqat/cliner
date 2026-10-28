@@ -511,7 +511,7 @@ export function formatNotes(walk: ChangeWalkthrough, notes: WalkthroughNotes): s
 		if (first < 0 || last < first || last >= body.length) continue
 		const numbers = hunkLineNumbers(hunk)
 		// The lines the reviewer selected, as diff lines (+/−), so the agent sees exactly what they meant.
-		const selected = body.slice(first, Math.min(last + 1, first + 60)).map((line) => excerpt(line, 300))
+		const selected = body.slice(first, Math.min(last + 1, first + 60)).map((line) => excerpt(line.replace(/\r$/, ""), 300))
 		if (last + 1 - first > selected.length) selected.push(`[${last + 1 - first - selected.length} more lines]`)
 		const removed = body.slice(first, last + 1).every((line) => line.startsWith("-"))
 		const where = `${hunk.path}:${numbers[first]}${last > first ? `-${numbers[last]}` : ""}${removed ? ` (removed ${last > first ? "lines" : "line"})` : ""}`

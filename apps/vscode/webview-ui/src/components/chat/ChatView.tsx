@@ -8,6 +8,7 @@ import { useMount } from "react-use"
 import { openTask } from "@/components/inbox/sessionActions"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { SearchView } from "@/components/search/SearchView"
+import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/composerTaskGroup"
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
 import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
@@ -487,6 +488,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		closeThread: messageHandlers.handleTaskCloseButtonClick,
 		onPageOpen: closeSearch,
 	})
+
+	useClearComposerTaskOnLeavingTask(taskGroupView?.id ?? currentTaskItem?.taskGroupId)
 
 	const placeholderText = useMemo(() => {
 		if (taskGroupView && !task) return "New thread in this task…"

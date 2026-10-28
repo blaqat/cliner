@@ -47,6 +47,9 @@ export interface LineNotes {
 	onEdit: (range: (LineRange & { quote?: string }) | undefined) => void
 }
 
+/** A diff line's code: without its +/−/space sign or the CR a CRLF file leaves on every line. */
+const code = (line: string) => line.slice(1).replace(/\r$/, "")
+
 /** The body line a DOM point sits in, if it's one of this diff's lines. */
 function lineAt(node: Node | null, container: HTMLElement): number | undefined {
 	const element = node instanceof Element ? node : node?.parentElement
@@ -99,7 +102,7 @@ export function WalkthroughDiff({
 			// Whole lines need no quote; a part of a line (or of several) keeps exactly what was picked.
 			const whole = body
 				.slice(start, end + 1)
-				.map((line) => line.slice(1))
+				.map((line) => code(line))
 				.join("\n")
 			const quote = text.trim() === whole.trim() ? undefined : text.slice(0, 2000)
 			const rect = range.getBoundingClientRect()
@@ -170,7 +173,7 @@ export function WalkthroughDiff({
 							<span aria-hidden className="w-3 shrink-0 select-none pl-0.5">
 								{sign === "-" ? "−" : sign}
 							</span>
-							<span className="whitespace-pre">{raw.slice(1) || " "}</span>
+							<span className="whitespace-pre">{code(raw) || " "}</span>
 						</div>
 						{ending
 							.filter((saved) => !(editing && editing.start === saved.start && editing.end === saved.end))

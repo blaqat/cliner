@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react"
+import { useEffect, useRef, useSyncExternalStore } from "react"
 
 // The task group picked with the composer's task pill before the first message
 // of a new thread. The send path reads it into NewTaskRequest.task_group_id and
@@ -25,6 +25,18 @@ function subscribe(listener: () => void): () => void {
 
 export function useComposerTaskGroup(): string | undefined {
 	return useSyncExternalStore(subscribe, getComposerTaskGroup)
+}
+
+/**
+ * Leaving a task (its page, or one of its threads) for home drops the composer's task pick, so
+ * home starts without a task. `inTask` is the task on screen, if any.
+ */
+export function useClearComposerTaskOnLeavingTask(inTask: string | undefined): void {
+	const previous = useRef(inTask)
+	useEffect(() => {
+		if (previous.current && !inTask) setComposerTaskGroup(undefined)
+		previous.current = inTask
+	}, [inTask])
 }
 
 // The task page whose composer is showing. While set, every new thread from the

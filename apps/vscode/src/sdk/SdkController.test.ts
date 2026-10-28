@@ -2033,6 +2033,37 @@ describe("task notebook fix round", () => {
 		)
 	})
 
+	it("shows a later turn's notebook changes in a new card at the end, keeping the card for the same revision", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "v2" }]
+		const earlier = {
+			ts: 5,
+			type: "say",
+			say: "notebook_changes",
+			sdkMessageIndex: 3,
+			text: JSON.stringify({ taskGroupId: "A", threadId: "t", revision: "r1", status: "pending", changes }),
+		}
+		let review = { groupId: "A", revision: "r2", changes }
+		controller.taskHistory = { findHistoryItem: vi.fn(async () => ({ id: "t" })), saveNotebookChangesMessage: vi.fn() }
+		controller.notebookStore = { listPending: vi.fn(async () => [review]), reviewDiffs: vi.fn(async (pending) => pending) }
+		let ts = 10
+		const emitHookMessage = vi.fn()
+		controller.getTaskSessionContext = vi.fn(() => ({
+			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }, earlier] } },
+			messages: { emitHookMessage },
+			translator: { nextTs: () => ++ts },
+		}))
+		await controller.emitNotebookChanges("t")
+		// r2 staged more: a new card (new ts), not the r1 card updated in place up the chat.
+		expect(emitHookMessage.mock.calls[0][0].ts).toBe(11)
+		expect(JSON.parse(emitHookMessage.mock.calls[0][0].text).revision).toBe("r2")
+
+		review = { groupId: "A", revision: "r1", changes }
+		await controller.emitNotebookChanges("t")
+		// The same revision again keeps its card where it is.
+		expect(emitHookMessage.mock.calls[1][0]).toMatchObject({ ts: 5, sdkMessageIndex: 3 })
+	})
+
 	it("refreshes branch on focus or HEAD events and posts only changes", async () => {
 		const git = await import("@/utils/git-worktree")
 		const getBranch = vi.spyOn(git, "getCurrentBranch").mockResolvedValue("new-branch")

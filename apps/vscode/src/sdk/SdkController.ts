@@ -4360,7 +4360,11 @@ export class Controller {
 		}
 		for (const pending of reviews) {
 			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
-			const reuse = latest && JSON.parse(latest.text ?? "{}").status === "pending"
+			const shown = latest ? JSON.parse(latest.text ?? "{}") : undefined
+			// Re-showing the same review keeps its card. A new revision (a later turn staged more)
+			// gets a new card at the end, where the user is reading; the old card then shows as
+			// superseded. Updating it in place left the newest changes up in an earlier turn.
+			const reuse = latest && shown?.status === "pending" && shown.revision === pending.revision
 			const message = notebookChangesMessage(
 				{
 					revision: pending.revision,
