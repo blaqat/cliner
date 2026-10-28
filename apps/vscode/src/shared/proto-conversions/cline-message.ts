@@ -219,6 +219,15 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 		askNewTask: undefined,
 		apiReqInfo: undefined,
 		modelInfo: message.modelInfo ?? undefined,
+		messageReferences: (message.messageReferences ?? []).map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author,
+			text: reference.text,
+			messageIndex: reference.messageIndex,
+			toolCallId: reference.toolCallId,
+			block: reference.block,
+		})),
 	}
 
 	return protoMessage
@@ -299,6 +308,19 @@ export function convertProtoToClineMessage(protoMessage: ProtoClineMessage): App
 	// real index, so check presence, not truthiness.
 	if (protoMessage.sdkMessageIndex !== undefined) {
 		message.sdkMessageIndex = protoMessage.sdkMessageIndex
+	}
+
+	// Linked messages on a sent message; dropping them left the bubble without its chips.
+	if (protoMessage.messageReferences?.length) {
+		message.messageReferences = protoMessage.messageReferences.map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author === "user" ? "user" : "assistant",
+			text: reference.text,
+			...(reference.messageIndex !== undefined ? { messageIndex: reference.messageIndex } : {}),
+			...(reference.toolCallId ? { toolCallId: reference.toolCallId } : {}),
+			...(reference.block !== undefined ? { block: reference.block } : {}),
+		}))
 	}
 
 	return message

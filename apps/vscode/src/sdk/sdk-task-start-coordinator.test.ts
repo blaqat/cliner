@@ -88,6 +88,27 @@ describe("SdkTaskStartCoordinator", () => {
 		)
 	})
 
+	it("puts linked messages on the first message as chips once they're resolved", async () => {
+		const { coordinator, options } = makeCoordinator()
+		options.resolveContextMentions.mockResolvedValueOnce(
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user" message_index="2">\nCap exports\n</message_reference>\n\nuse this',
+		)
+		await coordinator.initTask("use this")
+		const [first] = options.messages.appendAndEmit.mock.calls[0][0]
+		expect(options.messages.emitHookMessage).toHaveBeenCalledWith({
+			...first,
+			messageReferences: [
+				{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports", messageIndex: 2 },
+			],
+		})
+	})
+
+	it("leaves the first message alone when nothing was linked", async () => {
+		const { coordinator, options } = makeCoordinator()
+		await coordinator.initTask("hello")
+		expect(options.messages.emitHookMessage).not.toHaveBeenCalled()
+	})
+
 	it("overrides SDK cwd and workspace root and persists the isolate cwd", async () => {
 		const { options } = makeCoordinator()
 		const prepareWorkspace = vi.fn().mockResolvedValue("/isolate")
@@ -112,7 +133,7 @@ describe("SdkTaskStartCoordinator", () => {
 	it("starts a chat in the background without clearing or focusing the view", async () => {
 		const { options, state } = makeCoordinator()
 		const contextTask = createTaskProxy("", vi.fn(), vi.fn())
-		const contextMessages = { appendAndEmit: vi.fn() }
+		const contextMessages = { appendAndEmit: vi.fn(), emitHookMessage: vi.fn() }
 		const createTaskContext = vi.fn((taskId: string) => {
 			contextTask.taskId = taskId
 			return { task: contextTask, messages: contextMessages }
@@ -423,6 +444,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 		messages: {
 			appendAndEmit: vi.fn(),
+			emitHookMessage: vi.fn(),
 			emitSessionEvents: vi.fn(),
 		},
 		taskHistory: {
@@ -469,6 +491,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		messages: SdkTaskStartCoordinatorOptions["messages"] & {
 			appendAndEmit: ReturnType<typeof vi.fn>
+			emitHookMessage: ReturnType<typeof vi.fn>
 			emitSessionEvents: ReturnType<typeof vi.fn>
 		}
 		taskHistory: SdkTaskStartCoordinatorOptions["taskHistory"] & {

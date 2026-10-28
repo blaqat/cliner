@@ -5,6 +5,7 @@ import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { parseMessageReferences } from "@shared/message-references"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
 import { captureTaskApiSelection } from "@/core/controller/models/apiProfiles"
@@ -59,7 +60,7 @@ export interface SdkTaskStartCoordinatorOptions {
 		task?: TaskProxy,
 	) => {
 		task: TaskProxy
-		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
+		messages: Pick<SdkMessageCoordinator, "appendAndEmit" | "emitHookMessage">
 	}
 	onAskResponse: (
 		text?: string,
@@ -200,8 +201,9 @@ export class SdkTaskStartCoordinator {
 			const task = context?.task ?? this.createAndSetTask(taskSessionId)
 			// Before the first state post, so the thread shows in its task right away.
 			if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
-			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit"> = context?.messages ?? this.options.messages
-			this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
+			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit" | "emitHookMessage"> =
+				context?.messages ?? this.options.messages
+			const taskMessage = this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
 
 			// The turn phase was already set to "streaming" (in SdkController.initTask), but the
 			// webview only learns the phase through a full state post. Ship one now, in parallel
@@ -236,6 +238,9 @@ export class SdkTaskStartCoordinator {
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
 				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.provenance)
+				// Linked messages are only known once resolved: put them on the first message as chips.
+				const { references } = parseMessageReferences(resolvedTask)
+				if (references.length) messageTarget.emitHookMessage({ ...taskMessage, messageReferences: references })
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -325,7 +330,7 @@ export class SdkTaskStartCoordinator {
 		task: string,
 		images?: string[],
 		files?: string[],
-	): void {
+	): ClineMessage {
 		// Attachments must ride on the authoritative task message: the webview's
 		// optimistic pending copy is only cleared once an identical message (text
 		// AND images/files) arrives from the extension. Omitting them left the
@@ -344,6 +349,7 @@ export class SdkTaskStartCoordinator {
 			type: "status",
 			payload: { sessionId, status: "running" },
 		})
+		return taskMessage
 	}
 
 	private handleInitError(

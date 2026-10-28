@@ -239,6 +239,22 @@ message ClineMessage {
   // Index into the SDK transcript — the stable anchor message links target.
   // Optional: unset for rows that have no transcript position (minted UI rows).
   optional int64 sdk_message_index = 26;
+
+  // Messages the user linked when sending (shown as chips on the bubble).
+  repeated MessageReference message_references = 27;
+}
+
+// One linked message attached to a sent message (see MessageReferenceInfo).
+message MessageReference {
+  string thread_id = 1;
+  string thread_title = 2;
+  // "user" or "assistant".
+  string author = 3;
+  string text = 4;
+  // Where the message is, when known: index into the SDK transcript plus a row anchor.
+  optional int64 message_index = 5;
+  optional string tool_call_id = 6;
+  optional int32 block = 7;
 }
 
 message ShowWebviewEvent {
