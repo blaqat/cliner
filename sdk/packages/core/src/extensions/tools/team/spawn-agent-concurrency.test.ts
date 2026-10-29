@@ -71,7 +71,11 @@ it.each([
 						type: "tool-call-delta",
 						toolCallId: task,
 						toolName: "spawn_agent",
-						inputText: JSON.stringify({ task, systemPrompt: "test" }),
+						inputText: JSON.stringify({
+							task,
+							wait: true,
+							systemPrompt: "test",
+						}),
 					};
 				yield { type: "finish", reason: "tool-calls" };
 			} else {

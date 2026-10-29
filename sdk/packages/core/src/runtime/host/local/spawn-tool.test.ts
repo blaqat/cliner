@@ -382,7 +382,12 @@ describe("subagent settings enforcement", () => {
 			context,
 		);
 		const child = agentConstructorSpy.mock.calls.at(-1)![0];
-		expect(child.tools).toEqual([read, shell, mcp]);
+		expect(child.tools).toEqual([
+			read,
+			shell,
+			mcp,
+			expect.objectContaining({ name: "message_parent" }),
+		]);
 		expect(child.tools.map((tool: AgentTool) => tool.name)).not.toContain(
 			"editor",
 		);
@@ -395,7 +400,10 @@ describe("subagent settings enforcement", () => {
 			"root",
 			TOOL_EXECUTORS,
 		).execute(input, context);
-		expect(agentConstructorSpy.mock.calls.at(-1)![0].tools).toEqual([read]);
+		expect(agentConstructorSpy.mock.calls.at(-1)![0].tools).toEqual([
+			read,
+			expect.objectContaining({ name: "message_parent" }),
+		]);
 	});
 
 	it("reserves concurrency atomically across nested tools and releases it after errors", async () => {
@@ -413,7 +421,10 @@ describe("subagent settings enforcement", () => {
 					rejectRun = reject;
 				}),
 		);
-		const first = tool.execute(input, context) as Promise<unknown>;
+		const first = tool.execute(
+			{ ...input, wait: true },
+			context,
+		) as Promise<unknown>;
 		await vi.waitFor(() => expect(rejectRun).toBeDefined());
 		expect(await tool.execute(input, context)).toEqual({
 			error: expect.stringContaining("Maximum concurrent subagents (1)"),
@@ -433,7 +444,9 @@ describe("subagent settings enforcement", () => {
 			finishReason: "completed",
 			usage: { inputTokens: 1, outputTokens: 1 },
 		});
-		expect(await tool.execute(input, context)).toMatchObject({ text: "done" });
+		expect(await tool.execute({ ...input, wait: true }, context)).toMatchObject(
+			{ text: "done" },
+		);
 	});
 });
 
@@ -488,4 +501,43 @@ describe("child lifecycle notification", () => {
 			}),
 		);
 	});
+});
+
+it("holds a detached concurrency slot until the child finishes", async () => {
+	const input = { systemPrompt: "sub", task: "work" };
+	const context = { agentId: "parent", conversationId: "conv", iteration: 1 };
+	const { createSessionSpawnTool } = await import("./spawn-tool.js");
+	const deps: SpawnToolDeps = { ...makeDeps(), agentRegistries: new Map() };
+	const config = makeConfig({ subagentSettings: { maxConcurrent: 1 } });
+	const tool = createSessionSpawnTool(deps, config, "root", TOOL_EXECUTORS);
+	let finish!: (value: unknown) => void;
+	runMock.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+	);
+	expect(await tool.execute(input, context)).toMatchObject({
+		agentId: "a1",
+		status: "running",
+	});
+	expect(await tool.execute(input, context)).toHaveProperty("error");
+	finish({
+		text: "done",
+		iterations: 1,
+		finishReason: "completed",
+		usage: { inputTokens: 1, outputTokens: 1 },
+	});
+	await deps.agentRegistries!.get("root")!.agents.get("a1")!.completion;
+	runMock.mockResolvedValue({
+		text: "next",
+		iterations: 1,
+		finishReason: "completed",
+		usage: { inputTokens: 1, outputTokens: 1 },
+	});
+	expect(await tool.execute(input, context)).toMatchObject({
+		agentId: "a2",
+		status: "running",
+	});
+	await deps.agentRegistries!.get("root")!.agents.get("a2")!.completion;
 });

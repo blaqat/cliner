@@ -1,3 +1,4 @@
+import { agentControlTools } from "../../extensions/tools/team/async-agents";
 import { supportsModelTool } from "@cline/llms";
 import type {
 	AgentTool,
@@ -799,6 +800,7 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 
 		if (normalized.enableSpawnAgent && createSpawnTool) {
 			const spawnTool = createSpawnTool();
+			tools.push(...(agentControlTools.get(spawnTool) ?? []));
 			tools.push({
 				...spawnTool,
 				execute: async (spawnInput, context) => {

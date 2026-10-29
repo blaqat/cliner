@@ -84,6 +84,7 @@ export interface BuildDelegatedAgentConfigOptions {
 	) => Promise<ToolApprovalResult> | ToolApprovalResult;
 	role?: string;
 	cwd?: string;
+	consumePendingUserMessage?: AgentConfig["consumePendingUserMessage"];
 }
 
 export function createDelegatedAgentConfigProvider(
@@ -135,6 +136,7 @@ export function buildDelegatedAgentConfig(
 		maxIterations: options.maxIterations ?? runtimeConfig.maxIterations,
 		parentAgentId: options.parentAgentId,
 		abortSignal: options.abortSignal,
+		consumePendingUserMessage: options.consumePendingUserMessage,
 		onEvent: options.onEvent,
 		hooks: runtimeConfig.hooks,
 		extensions: runtimeConfig.extensions,

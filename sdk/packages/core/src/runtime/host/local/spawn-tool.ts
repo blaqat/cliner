@@ -1,3 +1,7 @@
+import {
+	AsyncAgentRegistry,
+	agentControlTools,
+} from "../../../extensions/tools/team/async-agents";
 import type {
 	AgentEvent,
 	AgentTool,
@@ -62,6 +66,15 @@ const activeSubagentCounts = new WeakMap<
 >();
 
 export interface SpawnToolDeps {
+	agentRegistries?: Map<string, AsyncAgentRegistry>;
+	onRegistryChange?: (rootSessionId: string) => void;
+	onSubagentMessage?: (
+		sessionId: string,
+		parentAgentId: string,
+		agentId: string,
+		status: string,
+		message: string,
+	) => void;
 	emit?: (event: CoreSessionEvent) => void;
 	requestToolApproval?: (
 		request: ToolApprovalRequest,
@@ -195,6 +208,9 @@ export function createSessionSubAgentLifecycleCallbacks(
 						context.input.access === "write" && config.mode !== "plan"
 							? "write"
 							: "read",
+					detached: context.detached ?? false,
+					usage: context.usage,
+					result: context.result?.text,
 					status:
 						context.error || context.result?.finishReason === "error"
 							? "failed"
@@ -475,6 +491,7 @@ export function createSessionSpawnTool(
 		return filterToolsByPolicies(
 			filterDisabledTools([
 				...new Map(childTools.map((tool) => [tool.name, tool])).values(),
+				...(config.enableSpawnAgent ? (registry?.tools() ?? []) : []),
 			]),
 			config.toolPolicies,
 		);
@@ -489,7 +506,50 @@ export function createSessionSpawnTool(
 		allowedProfileIds.map((id) => describeProfile(settings, id)).join(", ") ||
 		"(none)";
 
+	const registries =
+		deps.agentRegistries ?? new Map<string, AsyncAgentRegistry>();
+	let registry = registries.get(rootSessionId);
+	if (!registry) {
+		registry = new AsyncAgentRegistry();
+		registries.set(rootSessionId, registry);
+	}
+	registry.onInput = (entry, message) => {
+		if (entry.runtimeId)
+			deps.emit?.({
+				type: "subagent_input",
+				payload: {
+					sessionId: rootSessionId,
+					childSessionId: makeSubSessionId(rootSessionId, entry.runtimeId),
+					text: `Parent: ${message}`,
+				},
+			});
+	};
+	const settledContexts = new WeakSet<object>();
 	const spawnTool = createSpawnAgentTool({
+		registry,
+		getChildSessionId: (id) => makeSubSessionId(rootSessionId, id),
+		onRegistryChange: () => deps.onRegistryChange?.(rootSessionId),
+		onResume: () => {
+			const active = activeCounts.get(rootSessionId) ?? 0;
+			const limit = settings.maxConcurrent ?? 0;
+			if (limit > 0 && active >= limit)
+				throw new Error(`Maximum concurrent subagents (${limit}) reached.`);
+			activeCounts.set(rootSessionId, active + 1);
+		},
+		onMessage: (agentId, status, message, parentId) =>
+			deps.onSubagentMessage?.(
+				rootSessionId,
+				parentId,
+				agentId,
+				status,
+				message,
+			),
+		onRunEnd: (context) => {
+			settledContexts.add(context);
+			const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;
+			if (remaining > 0) activeCounts.set(rootSessionId, remaining);
+			else activeCounts.delete(rootSessionId);
+		},
 		resolveConnectionOverrides: (input) =>
 			selectSubagentProfile(input, settings).overrides,
 		configProvider: {
@@ -593,7 +653,7 @@ export function createSessionSpawnTool(
 			delete inputSchema.properties.reasoningEffort;
 		}
 	}
-	return {
+	const resultTool: AgentTool = {
 		...spawnTool,
 		description,
 		inputSchema,
@@ -628,11 +688,15 @@ export function createSessionSpawnTool(
 					});
 				}
 				return await spawnTool.execute(input, context);
-			} finally {
+			} catch (error) {
+				if (settledContexts.has(context)) throw error;
 				const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;
 				if (remaining > 0) activeCounts.set(rootSessionId, remaining);
 				else activeCounts.delete(rootSessionId);
+				throw error;
 			}
 		},
 	};
+	agentControlTools.set(resultTool, registry.tools());
+	return resultTool;
 }

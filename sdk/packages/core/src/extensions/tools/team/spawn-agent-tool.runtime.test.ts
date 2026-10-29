@@ -44,7 +44,7 @@ vi.mock(
 	},
 );
 
-function startTool(signal: AbortSignal, toolCallId: string) {
+function startTool(signal: AbortSignal, toolCallId: string, wait = true) {
 	return import("./spawn-agent-tool.js").then(({ createSpawnAgentTool }) => {
 		const registry = { register: vi.fn(), unregister: vi.fn() };
 		const onSubAgentEnd = vi.fn();
@@ -62,7 +62,7 @@ function startTool(signal: AbortSignal, toolCallId: string) {
 			onSubAgentEnd,
 		});
 		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
+			{ systemPrompt: "System", task: "Do task", wait },
 			{
 				agentId: "parent-rt",
 				conversationId: "conv-parent",
@@ -76,19 +76,25 @@ function startTool(signal: AbortSignal, toolCallId: string) {
 }
 
 describe("spawn_agent cancellation through the real runtime", () => {
-	it("throws when the parent run aborts mid-stream", async () => {
+	it("returns immediately and survives parent cancellation", async () => {
 		const parent = new AbortController();
 		const { executing, entered, registry, onSubAgentEnd } = await startTool(
 			parent.signal,
 			"call-rt-1",
+			false,
 		);
 		await entered;
 		parent.abort(new Error("Task cancelled"));
 
-		await expect(executing).rejects.toThrow("Task cancelled");
-		expect(registry.unregister).toHaveBeenCalledWith("call-rt-1");
-		expect(onSubAgentEnd.mock.calls[0][0].error).toBeInstanceOf(Error);
-		expect(onSubAgentEnd.mock.calls[0][0].result).toBeUndefined();
+		await expect(executing).resolves.toMatchObject({
+			agentId: "a1",
+			status: "running",
+		});
+		expect(onSubAgentEnd).not.toHaveBeenCalled();
+		expect(registry.unregister).not.toHaveBeenCalled();
+		(registry.register.mock.calls[0][1] as AbortController).abort();
+		await vi.waitFor(() => expect(onSubAgentEnd).toHaveBeenCalled());
+		expect(onSubAgentEnd.mock.calls[0][0].result.finishReason).toBe("aborted");
 	});
 
 	it("returns a stopped result when only this child's handle aborts", async () => {

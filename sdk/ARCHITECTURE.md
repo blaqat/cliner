@@ -1057,3 +1057,26 @@ session’s tool approval policies or approval callback, matching generic subage
 and teammates. The parent’s `subagent_<name>` delegation call still follows the
 parent’s approval policy. Tool allowlists and disabled-tool filtering remain in
 effect when constructing child tools. Inherited runtime hooks are unchanged.
+
+## Detached subagents
+
+`LocalRuntimeHost` owns an `AsyncAgentRegistry` per root session. `spawn_agent`
+returns a short handle, such as `a1`, while its delegated `SessionRuntime` runs
+with its own abort controller. Parent Stop and interjection abort only the parent
+turn. Explicit child cancellation, root runtime teardown, deletion, and host
+disposal stop children. Concurrency reservations last until each child run ends.
+
+`send_to_agent` queues user-role input through `consumePendingUserMessage` while
+a child runs. After completion it calls `SessionRuntime.continue`, retaining the
+same conversation. Children receive `message_parent`. Child completions and
+updates enter the immediate parent's inbox. A running root consumes a batch at
+its next iteration boundary. An idle root wakes through the existing pending
+prompt queue after a one-second debounce. Approval waits retain the inbox until
+resolved. The host adds a display-hidden mode notice listing running children to
+user follow-ups.
+
+Root metadata stores registry snapshots alongside the existing child transcripts.
+Reload restores handles as `ended (reloaded)`. Runtime reconstruction is not
+implemented; sending to a restored handle returns an error requesting a new
+spawn with the needed context. Short handle allocation continues past restored
+handles. Legacy configured-agent tools retain their existing blocking lifecycle.
