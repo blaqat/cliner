@@ -69,6 +69,7 @@ import { parseScriptTool, ScriptToolRow } from "./ScriptToolRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
 import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
+import { SubagentUpdateRow } from "./SubagentUpdateRow"
 import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
 import { WalkthroughReadyRow } from "./WalkthroughReadyRow"
@@ -977,8 +978,11 @@ export const ChatRowContent = memo(
 						)
 					}
 					// The thread's first message renders like every later user message.
+					case "subagent_update":
+						return <SubagentUpdateRow text={message.text ?? ""} />
 					case "task":
 					case "user_feedback":
+						if (message.text?.trim().startsWith("<subagent_update")) return <SubagentUpdateRow text={message.text} />
 						return (
 							<UserMessage
 								canRestoreWorkspace={canRestoreWorkspaceFromMessage(clineMessages, message.ts)}
