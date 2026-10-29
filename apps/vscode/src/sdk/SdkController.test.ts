@@ -1947,7 +1947,7 @@ describe("nested subagent conversation parents", () => {
 			},
 		})
 		expect(bTask.messageStateHandler.getClineMessages().at(-1)?.text).toBe("Nested report")
-		expect(aTask.messageStateHandler.getClineMessages()).toHaveLength(1)
+		expect(aTask.messageStateHandler.getClineMessages().filter((message) => message.say !== "subagent")).toHaveLength(1)
 		bTask.taskState.askResponse = "yesButtonClicked"
 		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "b-approval")
 		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "b-approval")

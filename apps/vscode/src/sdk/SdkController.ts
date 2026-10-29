@@ -1679,6 +1679,14 @@ export class Controller {
 
 	/** Child events are translated once into their own transcript, never into siblings. */
 	private handleSubagentEvent(event: CoreSessionEvent): boolean {
+		if (event.type === "subagent_input") {
+			const context = this.getTaskSessionContext(event.payload.childSessionId)
+			context.messages.appendMessages([
+				{ ts: context.translator.nextTs(), type: "say", say: "user_feedback", text: event.payload.text },
+			])
+			void this.postStateToWebview()
+			return true
+		}
 		if (event.type === "subagent") {
 			const payload = event.payload
 			const owner = this.taskSessions.get(payload.sessionId)
@@ -1733,7 +1741,47 @@ export class Controller {
 					})
 			}
 			const spawn = payload.toolCallId ? parent?.translator.getSpawnAgent(payload.toolCallId) : undefined
-			if (spawn) spawn.childSessionId = item.id
+			if (spawn) {
+				if (payload.result) spawn.result = payload.result
+				spawn.childSessionId = item.id
+				spawn.status =
+					payload.status === "running"
+						? "running"
+						: payload.status === "cancelled"
+							? "stopped"
+							: payload.status === "failed"
+								? "failed"
+								: "completed"
+				const allDone = parent!.translator
+					.getSpawnAgentItems()
+					.every((entry) => entry.status !== "running" && entry.status !== "pending")
+				parent?.messages?.appendMessages([
+					{
+						ts: parent!.translator.getSpawnAgentStatusTs(),
+						type: "say",
+						say: "subagent",
+						text: JSON.stringify(parent!.translator.buildSubagentStatus(allDone ? "completed" : "running")),
+						partial: !allDone,
+					},
+				])
+			}
+			if (payload.detached && payload.usage && payload.status !== "running") {
+				owner.messages?.appendMessages([
+					{
+						ts: owner.translator.nextTs(),
+						type: "say",
+						say: "subagent_usage",
+						text: JSON.stringify({
+							source: "subagents",
+							tokensIn: payload.usage.inputTokens,
+							tokensOut: payload.usage.outputTokens,
+							cacheReads: 0,
+							cacheWrites: 0,
+							cost: payload.usage.totalCost ?? 0,
+						}),
+					},
+				])
+			}
 			this.taskHistory.invalidateMetadataHistoryCache()
 			void this.postStateToWebview()
 			return true

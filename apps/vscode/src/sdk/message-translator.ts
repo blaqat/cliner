@@ -578,7 +578,7 @@ export class MessageTranslatorState {
 		this.streamingCommandOutput = undefined
 		this.clearApprovedToolMessageTs()
 		this.deniedToolApprovalsByCallId.clear()
-		this.clearSpawnAgents()
+		// Detached children and their status row outlive an iteration or parent turn.
 	}
 
 	/**
@@ -1750,7 +1750,10 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 							// "stopped" survives: a user-stopped child still ends its tool
 							// call here (with an abort error), but its entry keeps the
 							// stopped status so the UI can distinguish it from a failure.
-							if (entry.status !== "stopped") {
+							if (
+								entry.status !== "stopped" &&
+								(event.output as { status?: string } | undefined)?.status !== "running"
+							) {
 								if (event.error) {
 									entry.status = "failed"
 									entry.error = event.error
@@ -2332,7 +2335,7 @@ export function translateSessionEvent(
 				result.messages.push({
 					ts: state.nextTs(),
 					type: "say",
-					say: "user_feedback",
+					say: displayPrompt.trim().startsWith("<subagent_update") ? "subagent_update" : "user_feedback",
 					text: displayPrompt,
 					...(references.length > 0 ? { messageReferences: references } : {}),
 					images: userImages,
@@ -2340,6 +2343,17 @@ export function translateSessionEvent(
 					partial: false,
 				})
 			}
+			break
+		}
+
+		case "subagent_update": {
+			result.messages.push({
+				ts: state.nextTs(),
+				type: "say",
+				say: "subagent_update",
+				text: event.payload.text,
+				partial: false,
+			})
 			break
 		}
 

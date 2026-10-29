@@ -4548,7 +4548,7 @@ describe("translateSessionEvent — spawn_agent stop", () => {
 		state.reset()
 		spawnStart(state, "call-2", "two")
 		expect(state.getSpawnAgentTotalCount()).toBe(2)
-		expect(state.getSpawnAgentItems()).toHaveLength(1)
+		expect(state.getSpawnAgentItems()).toHaveLength(2)
 	})
 })
 

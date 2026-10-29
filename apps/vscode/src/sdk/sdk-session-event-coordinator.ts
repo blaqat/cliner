@@ -87,7 +87,6 @@ export class SdkSessionEventCoordinator {
 			void this.options.taskHistory
 				.markTaskActive?.(activeSession.sessionId)
 				.catch((error) => Logger.error("Failed to unsettle active task", error))
-		if (this.options.isTurnCancelled?.()) result.messages = []
 		const agentFailure = this.getAgentFailureTelemetry(event)
 		if (agentFailure && !this.options.messageTranslatorState.isSuppressedToolApprovalDenial(agentFailure.error)) {
 			this.options.captureProviderApiError?.({
@@ -103,6 +102,7 @@ export class SdkSessionEventCoordinator {
 			this.options.sessions.setRunning(true, activeSession.sessionId)
 			this.options.setTurnPhase?.(PROVIDER_FAILURE_PHASE.STREAMING)
 		}
+		if (this.options.isTurnCancelled?.()) result.messages = []
 		this.stampRequestModel(result)
 		const zeroCostPromise = this.zeroCostForFreeClineModel(result)
 		if (zeroCostPromise) {
@@ -209,21 +209,17 @@ export class SdkSessionEventCoordinator {
 	/**
 	 * Recomputes this session's subagent tally from its translator state and
 	 * records it for the inbox. `total` is cumulative across the session; `live`
-	 * counts children still running (forced to 0 when the session isn't running —
-	 * spawn_agent calls are awaited inside their turn, so dead turns have no
-	 * live children even if a content_end never arrived). The total is also
+	 * counts children still running, including while the parent is idle. The total is also
 	 * persisted onto the history item so settled rows keep showing it.
 	 */
-	private updateSubagentCounts(sessionId: string, sessionRunning: boolean): boolean {
+	private updateSubagentCounts(sessionId: string, _sessionRunning: boolean): boolean {
 		const state = this.options.messageTranslatorState
 		const total = state.getSpawnAgentTotalCount()
 		const existing = this.options.sessions.subagentCounts[sessionId]
 		if (total === 0 && !existing) {
 			return false
 		}
-		const live = sessionRunning
-			? state.getSpawnAgentItems().filter((item) => item.status === "running" || item.status === "pending").length
-			: 0
+		const live = state.getSpawnAgentItems().filter((item) => item.status === "running" || item.status === "pending").length
 		const changed = this.options.sessions.setSubagentCounts(sessionId, { total, live })
 		if (changed && total > (existing?.total ?? 0)) {
 			this.options.taskHistory.updateTaskSubagentCount(sessionId, total).catch((error) => {
