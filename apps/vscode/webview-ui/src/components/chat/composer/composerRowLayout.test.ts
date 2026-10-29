@@ -14,20 +14,27 @@ const home: ComposerRowContent = { hasUsage: false, hasCompactNudge: false, hasE
 describe("composerRowLayout", () => {
 	it("shows everything before the row is measured", () => {
 		expect(composerRowLayout(undefined, nearlyFull)).toBe(FULL_COMPOSER_ROW)
-		expect(FULL_COMPOSER_ROW).toEqual({ inlineCompactNudge: true, tightChip: false })
+		expect(FULL_COMPOSER_ROW).toEqual({ inlineCompactNudge: true, compactEffort: false, tightChip: false })
 	})
 
-	it("gives way in order: the Compact label first, then the chip goes tight", () => {
-		const full = composerRowMinWidth(nearlyFull, { inlineCompactNudge: true, tightChip: false })
-		const iconNudge = composerRowMinWidth(nearlyFull, { inlineCompactNudge: false, tightChip: false })
-		const tight = composerRowMinWidth(nearlyFull, { inlineCompactNudge: false, tightChip: true })
+	it("gives way in order: the Compact label, then the effort text, then the chip goes tight", () => {
+		const fullRow = { inlineCompactNudge: true, compactEffort: false, tightChip: false }
+		const iconNudgeRow = { inlineCompactNudge: false, compactEffort: false, tightChip: false }
+		const compactRow = { inlineCompactNudge: false, compactEffort: true, tightChip: false }
+		const tightRow = { inlineCompactNudge: false, compactEffort: true, tightChip: true }
+		const full = composerRowMinWidth(nearlyFull, fullRow)
+		const iconNudge = composerRowMinWidth(nearlyFull, iconNudgeRow)
+		const compact = composerRowMinWidth(nearlyFull, compactRow)
+		const tight = composerRowMinWidth(nearlyFull, tightRow)
 		expect(full).toBeGreaterThan(iconNudge)
-		expect(iconNudge).toBeGreaterThan(tight)
-		expect(composerRowLayout(full, nearlyFull)).toEqual({ inlineCompactNudge: true, tightChip: false })
-		expect(composerRowLayout(full - 1, nearlyFull)).toEqual({ inlineCompactNudge: false, tightChip: false })
-		expect(composerRowLayout(iconNudge - 1, nearlyFull)).toEqual({ inlineCompactNudge: false, tightChip: true })
+		expect(iconNudge).toBeGreaterThan(compact)
+		expect(compact).toBeGreaterThan(tight)
+		expect(composerRowLayout(full, nearlyFull)).toEqual(fullRow)
+		expect(composerRowLayout(full - 1, nearlyFull)).toEqual(iconNudgeRow)
+		expect(composerRowLayout(iconNudge - 1, nearlyFull)).toEqual(compactRow)
+		expect(composerRowLayout(compact - 1, nearlyFull)).toEqual(tightRow)
 		// Nothing fits: the most collapsed row, never a wrap.
-		expect(composerRowLayout(120, nearlyFull)).toEqual({ inlineCompactNudge: false, tightChip: true })
+		expect(composerRowLayout(120, nearlyFull)).toEqual(tightRow)
 	})
 
 	it("fits the whole row, Compact label included, in a 340px sidebar", () => {

@@ -1724,14 +1724,14 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								fontSize: "var(--vscode-editor-font-size)",
 								lineHeight: "var(--vscode-editor-line-height)",
 								borderRadius: 2,
-								padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING + thumbnailsHeight}px 9px`,
+								padding: `${7 + quoteRowHeight}px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING + thumbnailsHeight}px 9px`,
 							}}
 						/>
 						<DynamicTextArea
 							autoFocus={true}
 							data-testid="chat-input"
 							maxRows={10}
-							minRows={2}
+							minRows={1}
 							onBlur={handleBlur}
 							onChange={(e) => {
 								handleInputChange(e)
@@ -1788,7 +1788,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
 								// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
 								// Less at the bottom: the action row sits right under the text, inside the card.
-								padding: `9px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING}px 9px`,
+								padding: `7px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING}px 9px`,
 								cursor: "text",
 								flex: 1,
 								zIndex: 1,
@@ -1854,7 +1854,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						</div>
 					</div>
 					<div
-						className="flex items-center gap-1.5 flex-nowrap min-w-0 px-1.5 pt-0.5 pb-1.5"
+						className="flex items-center gap-1.5 flex-nowrap min-w-0 px-1.5 pb-1"
 						data-testid="composer-bottom-row"
 						ref={bottomRowRef}>
 						<AttachButton
@@ -1869,8 +1869,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							</div>
 						)}
 						{/* The model name gives way first; the effort text and Send keep their size. */}
-						<ShrinkSlot floor={rowLayout.tightChip ? 72 : 104}>
+						<ShrinkSlot floor={rowLayout.tightChip ? 56 : rowLayout.compactEffort ? 76 : 104}>
 							<ModelEffortChip
+								compactEffort={rowLayout.compactEffort}
 								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								fallbackLabel={modelDisplayName}
 								mode={mode}

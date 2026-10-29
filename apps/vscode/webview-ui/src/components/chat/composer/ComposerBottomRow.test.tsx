@@ -274,15 +274,27 @@ describe("composer bottom row", () => {
 			expect(renderMeter).toHaveBeenLastCalledWith(FULL_COMPOSER_ROW)
 		})
 
-		it("drops the Compact label, then goes tight, on narrow rows", () => {
+		it("drops the Compact label, then folds the effort text into ⌄, on narrow rows", () => {
 			stubRowWidth(260)
 			const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 			renderComposer(usageSlot(renderMeter, true))
 			expect(renderMeter).toHaveBeenLastCalledWith(
 				composerRowLayout(260, { hasUsage: true, hasCompactNudge: true, hasEffort: true }),
 			)
-			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, tightChip: true })
-			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "72")
+			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: false })
+			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "76")
+			// The effort still opens from its ⌄, and says what it is.
+			const effort = screen.getByTestId("reasoning-effort-picker")
+			expect(effort).toHaveTextContent(/^$/)
+			expect(effort).toHaveAttribute("aria-label", expect.stringMatching(/^Reasoning effort: /))
+		})
+
+		it("goes tight only after the effort text is gone", () => {
+			stubRowWidth(200)
+			const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
+			renderComposer(usageSlot(renderMeter, true))
+			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: true })
+			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "56")
 		})
 
 		it("lays the row out in normal flow, the meter beside the chip", () => {

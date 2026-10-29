@@ -53,6 +53,8 @@ interface ModelEffortChipProps {
 	modelId: string | undefined
 	modelInfo: ModelInfo | undefined
 	defaultEffort?: OpenaiReasoningEffort
+	/** A narrow row: the effort text folds into the ⌄ so the model name keeps its letters. */
+	compactEffort?: boolean
 }
 
 /**
@@ -62,7 +64,14 @@ interface ModelEffortChipProps {
  * shows the permissions icon in place of the effort. With Full access on, an error-colored
  * shield sits before the model text.
  */
-const ModelEffortChip = ({ mode, fallbackLabel, modelId, modelInfo, defaultEffort = "none" }: ModelEffortChipProps) => {
+const ModelEffortChip = ({
+	mode,
+	fallbackLabel,
+	modelId,
+	modelInfo,
+	defaultEffort = "none",
+	compactEffort = false,
+}: ModelEffortChipProps) => {
 	const { autoApprovalSettings } = useExtensionState()
 	const config = useConfigSelection(mode, fallbackLabel)
 	const effort = useEffortSelection(mode, { modelId, modelInfo, defaultEffort })
@@ -147,13 +156,13 @@ const ModelEffortChip = ({ mode, fallbackLabel, modelId, modelInfo, defaultEffor
 				{fullAccess && (
 					<ShieldOffIcon aria-hidden className="shrink-0 text-error" data-testid="full-access-icon" size={12} />
 				)}
-				<span className={cn("min-w-0 truncate", open === "model" && aligned && "invisible")} ref={modelTextRef}>
+				<span className={cn("min-w-[3ch] truncate", open === "model" && aligned && "invisible")} ref={modelTextRef}>
 					{config.label}
 				</span>
 				{config.pending && <span className="shrink-0 opacity-60">(pending)</span>}
 				{config.nextMessageOnly && <span className="shrink-0 opacity-60">next message</span>}
 			</button>
-			{effort.available && (
+			{effort.available && !compactEffort && (
 				<span aria-hidden className="shrink-0 opacity-60">
 					·
 				</span>
@@ -173,10 +182,13 @@ const ModelEffortChip = ({ mode, fallbackLabel, modelId, modelInfo, defaultEffor
 				title={effort.available ? `${effort.description} · ${permissionsLabel}` : permissionsLabel}
 				type="button">
 				{effort.available ? (
-					<span className={cn("truncate", open === "effort" && aligned && "invisible")} ref={effortTextRef}>
-						{formatEffortShort(effort.selected)}
-						{effort.pending ? " (pending)" : ""}
-					</span>
+					// A narrow row folds the effort text into the ⌄; the wheel then opens from the button.
+					!compactEffort && (
+						<span className={cn("truncate", open === "effort" && aligned && "invisible")} ref={effortTextRef}>
+							{formatEffortShort(effort.selected)}
+							{effort.pending ? " (pending)" : ""}
+						</span>
+					)
 				) : (
 					<PermissionIcon aria-hidden className={cn("shrink-0", fullAccess && "text-error")} size={12} />
 				)}
