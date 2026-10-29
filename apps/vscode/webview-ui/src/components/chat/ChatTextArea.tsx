@@ -5,12 +5,10 @@ import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import type { ScriptValues } from "@shared/scripts"
 import { type SlashCommand } from "@shared/slashCommands"
-import { Mode } from "@shared/storage/types"
-import { SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
+import { SendToBackIcon, TriangleAlertIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
-import styled, { css, keyframes } from "styled-components"
 import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
@@ -36,7 +34,7 @@ import {
 	shouldShowContextMenu,
 } from "@/utils/context-mentions"
 import { useMetaKeyDetection, useShortcut } from "@/utils/hooks"
-import { isSafari } from "@/utils/platformUtils"
+import { isSafari, modKeyLabel } from "@/utils/platformUtils"
 import {
 	getMatchingSlashCommands,
 	insertSlashCommand,
@@ -49,19 +47,18 @@ import {
 } from "@/utils/slash-commands"
 import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
+import { USE_SCRIPT_EVENT } from "../topbar/topBarPanels"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
-import ApprovalsMenu from "./composer/ApprovalsMenu"
-import { McpServersButton, RulesButton } from "./composer/ComposerPanelButtons"
-import ConfigPicker from "./composer/ConfigPicker"
+import AttachButton from "./composer/AttachButton"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
+import ModelEffortChip from "./composer/ModelEffortChip"
 import { modelHasReasoning } from "./composer/modelSelection"
-import PlusMenu from "./composer/PlusMenu"
-import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
+import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
-import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
+import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import { WorkspaceButton } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
@@ -135,11 +132,10 @@ export interface ChatTextAreaProps {
 	/** Sends as interject / aside / background. Steer and normal sends go through `onSend`. */
 	onSendAs?: (kind: Exclude<SendKind, "send" | "steer">) => void
 	/**
-	 * Context usage + cost meter at the right of the bottom row, before the Ask/Act toggle. The row
-	 * collapses its optional parts (`hasCost`, `hasCompactNudge`) when narrow; `render` gets the result.
+	 * The context ring (and, near the limit, the Compact chip) left of the model chip. The row
+	 * collapses the Compact chip to its icon when narrow; `render` gets the result.
 	 */
 	usageIndicator?: {
-		hasCost: boolean
 		hasCompactNudge: boolean
 		render: (layout: ComposerRowLayout) => React.ReactNode
 	}
@@ -157,131 +153,6 @@ interface GitCommit {
 }
 
 const QUOTE_ROW_HEIGHT = 24
-
-const PLAN_MODE_COLOR = "var(--vscode-activityWarningBadge-background)"
-const ACT_MODE_COLOR = "var(--vscode-focusBorder)"
-
-const modeSwitchFlash = keyframes`
-	0% {
-		box-shadow: 0 0 0 0 var(--vscode-focusBorder);
-	}
-	100% {
-		box-shadow: 0 0 0 7px transparent;
-	}
-`
-
-const SwitchContainer = styled.div.withConfig({
-	shouldForwardProp: (prop) => prop !== "$flash",
-})<{ disabled: boolean; $flash?: boolean }>`
-	display: flex;
-	align-items: center;
-	background-color: transparent;
-	border: 1px solid var(--vscode-input-border);
-	border-radius: 12px;
-	overflow: hidden;
-	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
-	opacity: ${(props) => (props.disabled ? 0.5 : 1)};
-	transform: scale(1);
-	transform-origin: right center;
-	margin-left: 0;
-	user-select: none; // Prevent text selection
-	animation: ${(props) => (props.$flash ? css`${modeSwitchFlash} 0.7s ease-out` : "none")};
-
-	@media (prefers-reduced-motion: reduce) {
-		animation: none;
-	}
-	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
-	body.vscode-reduce-motion & {
-		animation: none;
-	}
-`
-
-const Slider = styled.div.withConfig({
-	shouldForwardProp: (prop) => !["isAct", "isPlan"].includes(prop),
-})<{ isAct: boolean; isPlan?: boolean }>`
-	position: absolute;
-	height: 100%;
-	width: 50%;
-	background-color: ${(props) => (props.isPlan ? PLAN_MODE_COLOR : ACT_MODE_COLOR)};
-	transition:
-		transform 0.22s cubic-bezier(0.3, 0.7, 0.2, 1),
-		background-color 0.22s ease;
-	transform: translateX(${(props) => (props.isAct ? "100%" : "0%")});
-
-	@media (prefers-reduced-motion: reduce) {
-		transition: none;
-	}
-	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
-	body.vscode-reduce-motion & {
-		transition: none;
-	}
-`
-
-const ButtonGroup = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	flex: 1;
-	min-width: 0;
-	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
-	overflow-x: clip;
-	/* The icon buttons and the shield keep their size; the where pill and the configuration and effort pickers truncate to their min-width. */
-	& > * {
-		flex-shrink: 0;
-	}
-	& > [data-shrink] {
-		flex-shrink: 1;
-	}
-`
-
-interface RunningSendButtonsProps {
-	disabled: boolean
-	enterSendsAs: EnterSendsAs
-	metaKeyChar: string
-	onSteer: () => void
-	onInterject: () => void
-}
-
-/** While the agent runs, send splits into steer (queue after this turn) and interject (stop and send now). */
-const RunningSendButtons = ({ disabled, enterSendsAs, metaKeyChar, onSteer, onInterject }: RunningSendButtonsProps) => {
-	const keyFor = (kind: EnterSendsAs) => (kind === enterSendsAs ? "Enter" : `${metaKeyChar}+Enter`)
-	const buttons = [
-		{
-			kind: "steer" as const,
-			label: "Steer",
-			tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
-			icon: <SendHorizontalIcon size={13} />,
-			onClick: onSteer,
-		},
-		{
-			kind: "interject" as const,
-			label: "Interject",
-			tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
-			icon: <ZapIcon size={13} />,
-			onClick: onInterject,
-		},
-	]
-	return (
-		<div className="flex items-center gap-0.5">
-			{buttons.map((button) => (
-				<button
-					aria-label={button.label}
-					className={cn(
-						"flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer hover:bg-toolbar-hover disabled:cursor-not-allowed disabled:opacity-50",
-						button.kind === enterSendsAs ? "text-link" : "text-description hover:text-foreground",
-					)}
-					data-testid={`${button.kind}-button`}
-					disabled={disabled}
-					key={button.kind}
-					onClick={button.onClick}
-					title={button.tooltip}
-					type="button">
-					{button.icon}
-				</button>
-			))}
-		</div>
-	)
-}
 
 const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
@@ -391,6 +262,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			},
 			[inputValue, setInputValue],
 		)
+		// "Use" on a script in the title bar's Rules & workflows overlay.
+		useEffect(() => {
+			const onUseScript = (event: Event) => startScriptDraft((event as CustomEvent<string>).detail)
+			document.addEventListener(USE_SCRIPT_EVENT, onUseScript)
+			return () => document.removeEventListener(USE_SCRIPT_EVENT, onUseScript)
+		}, [startScriptDraft])
 		const [isMouseDownOnMenu, setIsMouseDownOnMenu] = useState(false)
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
@@ -400,8 +277,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
 		const bottomRowRef = useRef<HTMLDivElement>(null)
-
-		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
 		// `#note` mentions search every task's notes; the task this composer's
 		// thread (or task page) belongs to ranks first and inserts bare `#slug`.
@@ -495,11 +370,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
 		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
-		// Leave room for the stash icon next to send while the stash has entries.
+		// Leave room in the corner for the stash and start-in-background icons.
 		const showRunningSendButtons = isRunning && !!onSendAs
 		const showHomeBackgroundButton = isHome && !isRunning && !!onSendAs
-		const inputPaddingRight =
-			(stashEntries.length > 0 ? 48 : 28) + (showRunningSendButtons ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
+		// Send lives on the bottom row; the corner keeps the stash and home's start-in-background.
+		const inputPaddingRight = 9 + (stashEntries.length > 0 ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
 		const unsupportedImagesAttached = selectedImages.length > 0 && !modelSupportsImages
 
 		// Fetch git commits when Git is selected or when typing a hash
@@ -1434,47 +1309,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			return () => clearTimeout(timer)
 		}, [modeSwitchFlash])
 
-		const handleContextButtonClick = useCallback(() => {
-			// Focus the textarea first
-			textAreaRef.current?.focus()
-
-			// If input is empty, just insert @
-			if (!inputValue.trim()) {
-				const event = {
-					target: {
-						value: "@",
-						selectionStart: 1,
-					},
-				} as React.ChangeEvent<HTMLTextAreaElement>
-				handleInputChange(event)
-				updateHighlights()
-				return
-			}
-
-			// If input ends with space or is empty, just append @
-			if (inputValue.endsWith(" ")) {
-				const event = {
-					target: {
-						value: inputValue + "@",
-						selectionStart: inputValue.length + 1,
-					},
-				} as React.ChangeEvent<HTMLTextAreaElement>
-				handleInputChange(event)
-				updateHighlights()
-				return
-			}
-
-			// Otherwise add space then @
-			const event = {
-				target: {
-					value: inputValue + " @",
-					selectionStart: inputValue.length + 2,
-				},
-			} as React.ChangeEvent<HTMLTextAreaElement>
-			handleInputChange(event)
-			updateHighlights()
-		}, [inputValue, handleInputChange, updateHighlights])
-
 		const handleModelButtonClick = () => {
 			navigateToSettingsModelPicker({ targetSection: "api-config" })
 		}
@@ -1755,18 +1589,16 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				),
 			)
 		}
-		// Replace Meta with the platform specific key and uppercase the command letter.
+		// Replace Meta with ⌘ (mac) or Ctrl and uppercase the command letter.
 		const togglePlanActKeys = usePlatform()
-			.togglePlanActKeys.replace("Meta", metaKeyChar)
+			.togglePlanActKeys.replace("Meta", modKeyLabel())
 			.replace(/.$/, (match) => match.toUpperCase())
 
-		const whereHasTask = useWherePillHasTask()
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
-			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
-			hasTask: whereHasTask,
+			running: showRunningSendButtons,
 		})
 
 		return (
@@ -1990,54 +1822,23 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									onRestore={onRestoreStash}
 								/>
 							)}
-							{showRunningSendButtons && onSendAs ? (
-								<RunningSendButtons
-									disabled={sendDisabled}
-									enterSendsAs={enterSendsAs}
-									metaKeyChar={metaKeyChar}
-									onInterject={() => onSendAs("interject")}
-									onSteer={onSend}
-								/>
-							) : (
-								<div className="flex items-center gap-0.5">
-									{showHomeBackgroundButton && (
-										<Tooltip>
-											<TooltipContent side="top">
-												Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay
-												here
-											</TooltipContent>
-											<TooltipTrigger asChild>
-												<button
-													aria-label="Start in background"
-													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-													data-testid="send-background-button"
-													disabled={sendDisabled}
-													onClick={() => onSendAs("background")}
-													type="button">
-													<SendToBackIcon size={13} />
-												</button>
-											</TooltipTrigger>
-										</Tooltip>
-									)}
-									<div
-										className={cn(
-											"input-icon-button",
-											{ disabled: sendDisabled },
-											"codicon codicon-send text-sm",
-										)}
-										data-testid="send-button"
-										onClick={() => {
-											if (!sendDisabled) {
-												onSend()
-											}
-										}}
-										title={
-											isHome
-												? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
-												: "Send (Enter) · Aside (Alt+Enter)"
-										}
-									/>
-								</div>
+							{showHomeBackgroundButton && onSendAs && (
+								<Tooltip>
+									<TooltipContent side="top">
+										Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay here
+									</TooltipContent>
+									<TooltipTrigger asChild>
+										<button
+											aria-label="Start in background"
+											className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+											data-testid="send-background-button"
+											disabled={sendDisabled}
+											onClick={() => onSendAs("background")}
+											type="button">
+											<SendToBackIcon size={13} />
+										</button>
+									</TooltipTrigger>
+								</Tooltip>
 							)}
 						</div>
 					</div>
@@ -2070,97 +1871,66 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
 					data-testid="composer-bottom-row"
 					ref={bottomRowRef}>
-					<ButtonGroup className="h-5" data-testid="composer-pickers">
-						<PlusMenu
-							filesDisabled={shouldDisableFilesAndImages}
-							foldedPanels={!rowLayout.inlinePanelButtons}
-							onAddFiles={() => {
-								if (!shouldDisableFilesAndImages) {
-									onSelectFilesAndImages()
-								}
-							}}
-							onMention={handleContextButtonClick}
-							onUseScript={startScriptDraft}
+					<AttachButton
+						disabled={shouldDisableFilesAndImages}
+						max={MAX_IMAGES_AND_FILES_PER_MESSAGE}
+						onAddFiles={onSelectFilesAndImages}
+					/>
+					<div aria-hidden className="min-w-0 flex-1" />
+					{usageIndicator && (
+						<div className="flex items-center shrink-0" data-testid="composer-usage">
+							{usageIndicator.render(rowLayout)}
+						</div>
+					)}
+					{/* The model name gives way first; the effort text and Send keep their size. */}
+					<ShrinkSlot floor={rowLayout.tightChip ? 72 : 104}>
+						<ModelEffortChip
+							defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
+							fallbackLabel={modelDisplayName}
+							mode={mode}
+							modelId={selectedModelId}
+							modelInfo={selectedModelInfo}
 						/>
-						{rowLayout.inlinePanelButtons && (
-							<>
-								<McpServersButton />
-								<RulesButton onUseScript={startScriptDraft} />
-							</>
-						)}
-						<WorkspaceButton />
-						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
-						{whereHasTask ? (
-							<ShrinkSlot floor={rowLayout.tightPills ? 22 : 52}>
-								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
-							</ShrinkSlot>
-						) : (
-							<span className="flex shrink-0 empty:hidden">
-								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
-							</span>
-						)}
-						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
-						<ShrinkSlot floor={rowLayout.tightPills ? 40 : 72}>
-							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
-						</ShrinkSlot>
-						{/* Effort labels are short ("Default", "Med"): the long model name gives way first. */}
-						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60} shrink={0.2}>
-							<ReasoningEffortPicker
-								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-								mode={mode}
-								modelId={selectedModelId}
-								modelInfo={selectedModelInfo}
-							/>
-						</ShrinkSlot>
-					</ButtonGroup>
-					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
-					{/* The approvals shield sits with the Ask/Act switch: both decide how much Cline does on its own. */}
-					<div className="flex shrink-0 items-center gap-1" data-testid="composer-mode-controls">
-						<ApprovalsMenu />
-						{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
-						<Tooltip>
-							<TooltipContent
-								className="text-xs px-2 flex flex-col gap-1"
-								hidden={shownTooltipMode === null}
-								side="top">
-								{shownTooltipMode === "act"
-									? "In Act mode, Cline will complete the task immediately"
-									: "In Ask mode, Cline will answer questions and explore the codebase"}
-								<p className="text-description/80 text-xs mb-0">
-									Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
-								</p>
-							</TooltipContent>
-							<TooltipTrigger className="shrink-0">
-								<SwitchContainer
-									$flash={modeSwitchFlash}
-									data-testid="mode-switch"
-									disabled={false}
-									onClick={onModeToggle}>
-									<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
-									{(
-										[
-											{ value: "plan", label: "Ask" },
-											{ value: "act", label: "Act" },
-										] as const
-									).map((m) => (
-										<div
-											aria-checked={mode === m.value}
-											className={cn(
-												"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
-												mode === m.value ? "text-button-foreground" : "text-input-foreground",
-											)}
-											key={m.value}
-											onMouseLeave={() => setShownTooltipMode(null)}
-											onMouseOver={() => setShownTooltipMode(m.value)}
-											role="switch">
-											{m.label}
-										</div>
-									))}
-								</SwitchContainer>
-							</TooltipTrigger>
-						</Tooltip>
-					</div>
+					</ShrinkSlot>
+					<SendSplitButton
+						disabled={sendDisabled}
+						flash={modeSwitchFlash}
+						mode={mode}
+						onPickMode={(next) => {
+							if (next !== mode) onModeToggle()
+						}}
+						onSend={() => {
+							if (!sendDisabled) onSend()
+						}}
+						running={
+							showRunningSendButtons && onSendAs
+								? {
+										enterSendsAs,
+										modKey: metaKeyChar,
+										onSteer: onSend,
+										onInterject: () => onSendAs("interject"),
+									}
+								: undefined
+						}
+						sendTitle={
+							isHome
+								? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
+								: "Send (Enter) · Aside (Alt+Enter)"
+						}
+						toggleKeys={togglePlanActKeys}
+					/>
 				</div>
+				{/* A new thread picks where it runs and which task it goes into; inside a thread both live in the header. */}
+				{!currentTaskItem && (
+					<div
+						className="flex min-w-0 items-center gap-0.5 -mt-1 px-3 pb-2 text-[11px] text-description"
+						data-testid="new-thread-line">
+						<span className="shrink-0 px-0.5 opacity-70">In</span>
+						<WorkspaceButton />
+						<span className="shrink-0 px-0.5 opacity-70">for</span>
+						<WherePill onOpenTaskGroup={onOpenTaskGroup} />
+					</div>
+				)}
 			</div>
 		)
 	},

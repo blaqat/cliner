@@ -1,8 +1,10 @@
 import { RefreshedScripts, ScriptInfo, ScriptOptionInfo } from "@shared/proto/cline/file"
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, act as reactAct, render, screen, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { resetScriptsForTest } from "@/hooks/useScripts"
+import { TopBarPanelOverlay } from "../topbar/TopBarPanelOverlay"
+import { openTopBarPanel } from "../topbar/topBarPanels"
 import ChatTextArea from "./ChatTextArea"
 
 const mocks = vi.hoisted(() => ({ refreshScripts: vi.fn(), onScriptRun: vi.fn() }))
@@ -249,13 +251,14 @@ describe("ChatTextArea scripts", () => {
 		expect(textarea.value).toBe("/test-module module:web ")
 	})
 
-	it("starts a script draft from the rules button's Scripts tab, keeping what was typed as a note", async () => {
+	it("starts a script draft from the title bar's Rules & workflows overlay, keeping what was typed as a note", async () => {
+		render(<TopBarPanelOverlay />)
 		const { textarea } = await renderComposer("then fix the failures")
-		fireEvent.click(screen.getByTestId("rules-button"))
+		reactAct(() => openTopBarPanel("rules"))
 		fireEvent.click(within(screen.getByTestId("rules-panel")).getByRole("button", { name: "Scripts" }))
 		fireEvent.click(await screen.findByTestId("script-use-test-module"))
 		await waitFor(() => expect(textarea.value).toBe("/test-module \nthen fix the failures"))
-		expect(screen.queryByTestId("rules")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("top-bar-panel")).not.toBeInTheDocument()
 		expect(await screen.findByTestId("script-helper")).toBeInTheDocument()
 	})
 })

@@ -7,7 +7,6 @@ import { ContextUsageIndicator, useComposerContextUsage } from "@/components/cha
 import {
 	canCompactNow,
 	contextUsagePercent,
-	formatChatCost,
 	isCompactionRunning,
 	showsCompactNudge,
 } from "@/components/chat/composer/contextUsage"
@@ -278,12 +277,11 @@ export const InputSection: React.FC<InputSectionProps> = ({
 			usageIndicator={
 				currentTaskItem && apiMetrics
 					? {
-							hasCost: formatChatCost(usage.cost) !== undefined,
 							hasCompactNudge: showsCompactNudge(
 								canCompact,
 								contextUsagePercent(lastApiReqTotalTokens, usage.contextWindow),
 							),
-							render: ({ showCost, inlineCompactNudge }) => (
+							render: ({ inlineCompactNudge }) => (
 								<ContextUsageIndicator
 									{...usage}
 									autoCompact={useAutoCondense !== false}
@@ -297,7 +295,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 											.compactTask()
 											.catch((err) => console.error("Failed to compact task:", err))
 									}
-									showCost={showCost}
+									// The ring stands alone by the model chip; the cost is in its details.
+									showCost={false}
 									tokensIn={apiMetrics.totalTokensIn}
 									tokensOut={apiMetrics.totalTokensOut}
 									usedTokens={lastApiReqTotalTokens}

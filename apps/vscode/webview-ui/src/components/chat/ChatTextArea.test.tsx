@@ -209,10 +209,20 @@ describe("ChatTextArea stash and mode toggle", () => {
 		expect(screen.getByTestId("stash-button")).toHaveAccessibleName("Stashed prompts (2)")
 	})
 
-	it("labels the modes Ask and Act", () => {
+	it("labels the modes Ask and Act on the Send button's mode menu", () => {
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			},
+		)
 		renderComposer()
-		const switches = screen.getAllByRole("switch")
-		expect(switches.map((el) => el.textContent)).toEqual(["Ask", "Act"])
+		expect(screen.getByTestId("send-button")).toHaveTextContent(/^Act$/)
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		const items = screen.getAllByRole("menuitemradio")
+		expect(items.map((el) => el.textContent?.split("Cline")[0])).toEqual(["Act", "Ask"])
 	})
 })
 
@@ -320,8 +330,8 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		const { onSend, onSendAs } = renderComposer({ isRunning: true, enterSendsAs: "interject" })
 
 		expect(screen.queryByTestId("send-button")).toBeNull()
-		expect(screen.getByTestId("interject-button")).toHaveClass("text-link")
-		expect(screen.getByTestId("steer-button")).not.toHaveClass("text-link")
+		expect(screen.getByTestId("interject-button")).toHaveAttribute("data-default", "true")
+		expect(screen.getByTestId("steer-button")).not.toHaveAttribute("data-default")
 
 		fireEvent.click(screen.getByTestId("steer-button"))
 		fireEvent.click(screen.getByTestId("interject-button"))
@@ -336,8 +346,8 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 	})
 })
 
-describe("ChatTextArea mode slider reduced motion", () => {
-	it("disables the slider transition under VS Code's reduce-motion body class", () => {
+describe("ChatTextArea mode flash reduced motion", () => {
+	it("drops the Send button's mode flash under VS Code's reduce-motion body class", () => {
 		renderTextArea()
 
 		const rules = Array.from(document.querySelectorAll("style")).flatMap((style) => {
@@ -348,6 +358,6 @@ describe("ChatTextArea mode slider reduced motion", () => {
 			}
 		})
 
-		expect(rules.some((rule) => rule.includes("vscode-reduce-motion") && rule.includes("transition"))).toBe(true)
+		expect(rules.some((rule) => rule.includes("vscode-reduce-motion") && rule.includes("animation"))).toBe(true)
 	})
 })

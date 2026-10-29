@@ -5,11 +5,10 @@ import ChatTextArea from "../ChatTextArea"
 import { ContextUsageIndicator } from "./ContextUsageIndicator"
 
 /**
- * The composer's bottom row at sidebar widths, with the widest content: ＋, MCP servers, rules, the
- * where pill, a long configuration name with its effort, approvals, the chat cost, the 85% Compact
- * pill and Ask/Act. Used to check that the pills truncate, the cost and the Compact pill hide, the
- * pills go tight and only then the MCP and rules buttons fold into ＋, never wrapping or
- * overlapping: the play function checks real bounds.
+ * The composer's bottom row at sidebar widths, with the widest content: the paperclip, the Compact
+ * chip near the limit, the context ring, a long model name with its effort and the Send button that
+ * carries the mode. Used to check that the model name truncates and the Compact chip drops to its
+ * icon, never wrapping or overlapping: the play function checks real bounds.
  */
 const meta: Meta<typeof ChatTextArea> = {
 	title: "Views/Components/ComposerBottomRow",
@@ -50,7 +49,6 @@ const Composer = ({ width }: { width: number }) => (
 			setSelectedImages={noop}
 			shouldDisableFilesAndImages={false}
 			usageIndicator={{
-				hasCost: true,
 				hasCompactNudge: true,
 				render: (layout) => (
 					<ContextUsageIndicator
@@ -60,7 +58,7 @@ const Composer = ({ width }: { width: number }) => (
 						inlineCompactNudge={layout.inlineCompactNudge}
 						modelLabel="OpenAI · gpt-5.1"
 						onCompact={noop}
-						showCost={layout.showCost}
+						showCost={false}
 						tokensIn={150_000}
 						tokensOut={20_000}
 						usedTokens={180_000}
@@ -90,19 +88,11 @@ export const SidebarWidths: Story = {
 				await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
 				await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
 			}
-			// No overlap, and the Ask/Act toggle stays inside the row.
+			// No overlap, and Send stays inside the row.
 			for (let i = 1; i < items.length; i++) {
 				await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
 			}
 			await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
-			// Nothing inside the picker group is clipped.
-			const group = row.querySelector('[data-testid="composer-pickers"]')
-			await expect(group).not.toBeNull()
-			for (const picker of group?.children ?? []) {
-				await expect(picker.getBoundingClientRect().right).toBeLessThanOrEqual(
-					(group as Element).getBoundingClientRect().right + 0.5,
-				)
-			}
 		}
 	},
 }

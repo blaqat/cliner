@@ -179,6 +179,13 @@ describe("ContextUsageIndicator", () => {
 		expect(onCompact).toHaveBeenCalledTimes(1)
 	})
 
+	it("reads Compact and the tokens in use, in the composer's chip style", () => {
+		renderIndicator({ usedTokens: 190_000 })
+		const nudge = screen.getByTestId("compact-nudge")
+		expect(nudge).toHaveTextContent("Compact190k")
+		expect(nudge).toHaveClass("rounded-xs", "bg-toolbar-hover")
+	})
+
 	it("hides the nudge while compaction isn't allowed (mid-turn or already compacting)", () => {
 		renderIndicator({ usedTokens: 190_000, canCompact: false })
 		expect(screen.queryByTestId("compact-nudge")).not.toBeInTheDocument()
@@ -196,7 +203,7 @@ describe("ContextUsageIndicator", () => {
 		renderIndicator({ usedTokens: 190_000, inlineCompactNudge: false })
 		const nudge = screen.getByTestId("compact-nudge")
 		expect(nudge).toHaveAttribute("data-icon-only", "true")
-		expect(nudge).toHaveAccessibleName("Compact context")
+		expect(nudge).toHaveAccessibleName("Compact context (190k used)")
 		expect(nudge).not.toHaveTextContent("Compact")
 		fireEvent.click(nudge)
 		expect(onCompact).toHaveBeenCalledTimes(1)

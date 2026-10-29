@@ -9,9 +9,9 @@ import { cn } from "@/lib/utils"
 import { McpServiceClient } from "@/services/grpc-client"
 
 /**
- * MCP server toggles, shown in the composer's MCP servers popover (or the ＋ menu when that button
- * is folded in). Fetches the latest servers when it
- * mounts, so render it only while that panel is open.
+ * MCP server toggles, shown in the overlay the view title bar's MCP servers button opens. Its
+ * "MCP server settings…" link reaches the full MCP page. Fetches the latest servers when it mounts,
+ * so render it only while the overlay is open.
  */
 const McpServersPanel = ({ onOpenSettings }: { onOpenSettings: () => void }) => {
 	const { mcpServers, navigateToMcp, setMcpServers } = useExtensionState()

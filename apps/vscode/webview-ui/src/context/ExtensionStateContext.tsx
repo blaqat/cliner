@@ -31,6 +31,7 @@ import {
 	type SettingsNavigationRequest,
 	type SettingsNavigationTarget,
 } from "../components/settings/settingsTargets"
+import { openTopBarPanel } from "../components/topbar/topBarPanels"
 import { McpServiceClient, ModelsServiceClient, StateServiceClient, UiServiceClient } from "../services/grpc-client"
 
 export type ProviderId = string
@@ -507,6 +508,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const accountButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const settingsButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const worktreesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
+	const rulesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const windowFocusSubscriptionRef = useRef<(() => void) | null>(null)
 	const partialMessageUnsubscribeRef = useRef<(() => void) | null>(null)
 	const openRouterModelsUnsubscribeRef = useRef<(() => void) | null>(null)
@@ -607,8 +609,8 @@ export const ExtensionStateContextProvider: React.FC<{
 			{},
 			{
 				onResponse: () => {
-					console.log("[DEBUG] Received mcpButtonClicked event from gRPC stream")
-					navigateToMarketplace()
+					// The title bar's MCP servers button opens the servers overlay (its "MCP server settings…" reaches the full page).
+					openTopBarPanel("mcp")
 				},
 				onError: (error: any) => {
 					console.error("Error in mcpButtonClicked subscription:", error)
@@ -712,6 +714,15 @@ export const ExtensionStateContextProvider: React.FC<{
 				},
 			},
 		)
+
+		// The title bar's Rules & workflows button opens the rules overlay.
+		rulesButtonClickedSubscriptionRef.current = UiServiceClient.subscribeToRulesButtonClicked(EmptyRequest.create({}), {
+			onResponse: () => openTopBarPanel("rules"),
+			onError: (error: any) => {
+				console.error("Error in rules button clicked subscription:", error)
+			},
+			onComplete: () => {},
+		})
 
 		windowFocusSubscriptionRef.current = UiServiceClient.subscribeToWindowFocus(EmptyRequest.create({}), {
 			onResponse: (response) => setWindowFocused(!!response.value),
@@ -890,6 +901,8 @@ export const ExtensionStateContextProvider: React.FC<{
 				worktreesButtonClickedSubscriptionRef.current()
 				worktreesButtonClickedSubscriptionRef.current = null
 			}
+			rulesButtonClickedSubscriptionRef.current?.()
+			rulesButtonClickedSubscriptionRef.current = null
 			if (partialMessageUnsubscribeRef.current) {
 				partialMessageUnsubscribeRef.current()
 				partialMessageUnsubscribeRef.current = null

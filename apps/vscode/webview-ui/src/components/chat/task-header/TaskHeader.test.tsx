@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 	resize: undefined as ((width: number) => void) | undefined,
 	openImage: vi.fn(),
 	openFile: vi.fn(),
+	setThreadTaskGroup: vi.fn(),
+	worktreeState: {} as Record<string, unknown>,
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
@@ -31,6 +33,15 @@ vi.mock("@/services/grpc-client", () => ({
 	FileServiceClient: {
 		openImage: (request: unknown) => mocks.openImage(request),
 		openFile: (request: unknown) => mocks.openFile(request),
+	},
+	TaskGroupServiceClient: {
+		setThreadTaskGroup: (request: unknown) => mocks.setThreadTaskGroup(request),
+		updateTaskGroup: vi.fn(async () => ({})),
+	},
+	WorktreeServiceClient: {
+		threadWorktreeAction: async (request: { action: string }) => ({
+			json: JSON.stringify(request.action === "state" ? { state: mocks.worktreeState } : { summary: undefined }),
+		}),
 	},
 }))
 
@@ -66,6 +77,8 @@ describe("TaskHeader", () => {
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.renameTask.mockReset().mockResolvedValue({})
 		mocks.setThreadTags.mockReset().mockResolvedValue({})
+		mocks.setThreadTaskGroup.mockReset().mockResolvedValue({})
+		mocks.worktreeState = {}
 		const current = item("t1")
 		mocks.state = {
 			currentTaskItem: current,
@@ -111,8 +124,62 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 		const items = within(screen.getByRole("menu")).getAllByRole("menuitem")
-		expect(items.map((row) => row.textContent)).toEqual(["Walkthrough", "Copy first message"])
+		expect(items.map((row) => row.textContent)).toEqual(["File into a task…", "Walkthrough", "Copy first message"])
 		expect(screen.queryByText(firstMessage)).toBeNull()
+	})
+
+	it("moves the thread to another task from ⋯ › Move to task (the composer no longer has the task pill)", () => {
+		const groups = [
+			{ id: "sso", title: "SSO redirect loop", tags: [], createdAt: 0, updatedAt: 2, noteCount: 0 },
+			{ id: "bulk", title: "Bulk export", tags: [], createdAt: 0, updatedAt: 1, noteCount: 0 },
+		]
+		const current = item("t1", { taskGroupId: "sso" })
+		mocks.state = { ...mocks.state, currentTaskItem: current, taskHistory: [current], taskGroups: groups }
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
+		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
+		fireEvent.click(screen.getByTestId("move-to-task"))
+		const menu = screen.getByTestId("task-header-menu")
+		expect(menu).toHaveTextContent("Move to task")
+		// Escape steps back to the menu first.
+		fireEvent.keyDown(menu, { key: "Escape" })
+		expect(screen.getByTestId("move-to-task")).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("move-to-task"))
+		fireEvent.click(within(screen.getByTestId("task-header-menu")).getByRole("menuitemradio", { name: /Bulk export/ }))
+		expect(mocks.setThreadTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t1", taskGroupId: "bulk" }))
+		expect(screen.queryByTestId("task-header-menu")).toBeNull()
+	})
+
+	it("shows the branch chip for a thread in its own worktree", async () => {
+		mocks.worktreeState = {
+			settings: { mode: "git", mmPath: "", nodePath: "node" },
+			availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+			settled: [],
+			mapping: {
+				threadId: "t1",
+				mode: "git",
+				branch: "cline/worktree-menu",
+				workspace: "/w",
+				cwd: "/i",
+				modules: [],
+				createdAt: 1,
+				bringIns: [],
+			},
+		}
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
+		const chip = await screen.findByTestId("thread-branch-chip")
+		expect(within(screen.getByTestId("task-header")).getByTestId("thread-branch-chip")).toBe(chip)
+		expect(chip).toHaveTextContent("cline/worktree-menu")
+	})
+
+	it("has no branch chip for a thread in your workspace", async () => {
+		mocks.worktreeState = {
+			settings: { mode: "git", mmPath: "", nodePath: "node" },
+			availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+			settled: [],
+		}
+		render(<TaskHeader onClose={vi.fn()} task={task} />)
+		await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+		expect(screen.queryByTestId("thread-branch-chip")).toBeNull()
 	})
 
 	it("opens the walkthrough from the thread menu", () => {

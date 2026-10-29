@@ -2,7 +2,7 @@ import type { WorktreeState } from "@shared/thread-worktrees"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
-import { WorkspaceButton } from "./worktreeSlot"
+import { ThreadBranchChip, WorkspaceButton } from "./worktreeSlot"
 
 const mocks = vi.hoisted(() => ({
 	state: {} as WorktreeState,
@@ -65,14 +65,17 @@ beforeEach(() => {
 it("lets a new thread pick a worktree, and the button and send path follow the pick", async () => {
 	render(<WorkspaceButton />)
 	expect(screen.getByTestId("workspace-button")).toHaveAccessibleName("Workspace: your workspace")
-	// The worktree icon either way; only its color says a worktree is on.
-	expect(screen.getByTestId("workspace-button").querySelector(".codicon-repo-forked")).not.toBeNull()
+	// "Your workspace" with a folder; a picked worktree reads "New worktree" with the green worktree icon.
+	expect(screen.getByTestId("workspace-button")).toHaveTextContent(/^Your workspace$/)
+	expect(screen.getByTestId("workspace-button").querySelector(".codicon-folder")).not.toBeNull()
 	await openMenu()
 	const worktree = screen.getByRole("menuitemradio", { name: /New worktree/ })
 	await waitFor(() => expect(worktree).not.toBeDisabled())
 	fireEvent.click(worktree)
 	expect(getDraftRunInWorktree()).toBe(true)
 	expect(screen.getByTestId("workspace-button")).toHaveAttribute("data-worktree", "true")
+	expect(screen.getByTestId("workspace-button")).toHaveTextContent(/^New worktree$/)
+	expect(screen.getByTestId("workspace-button").querySelector(".codicon-repo-forked")).not.toBeNull()
 })
 
 it("never leaves the user stuck: worktrees off still opens a menu with a link to Settings", async () => {
@@ -96,7 +99,7 @@ it("explains an mm setup gap and links to set it up", async () => {
 	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Set up mm in Settings")
 })
 
-it("shows where an existing thread runs instead of a choice", async () => {
+it("in a worktree thread the header's branch chip opens the worktree menu", async () => {
 	mocks.currentTaskItem = { id: "t1" }
 	mocks.state = {
 		...withMode("git"),
@@ -111,12 +114,17 @@ it("shows where an existing thread runs instead of a choice", async () => {
 			bringIns: [],
 		},
 	}
-	render(<WorkspaceButton />)
-	await waitFor(() => expect(screen.getByTestId("workspace-button")).toHaveAccessibleName("Workspace: worktree cline/t1"))
-	await openMenu()
+	render(<ThreadBranchChip />)
+	const chip = await screen.findByTestId("thread-branch-chip")
+	expect(chip).toHaveAccessibleName("Worktree: cline/t1")
+	expect(chip).toHaveTextContent(/^cline\/t1$/)
+	expect(chip.querySelector(".font-mono")).toHaveTextContent("cline/t1")
+	expect(chip.querySelector(".codicon-git-branch")).toHaveClass("text-(--vscode-charts-green)")
+	fireEvent.click(chip)
+	await screen.findByTestId("workspace-menu")
 	expect(screen.getByTestId("workspace-current")).toHaveTextContent("cline/t1")
 	expect(screen.queryByRole("menuitemradio")).toBeNull()
-	// The worktree's actions live here now, under the branch (not in the thread header).
+	// The worktree's actions, under the branch.
 	const actions = await screen.findByTestId("worktree-actions")
 	await waitFor(() => expect(within(actions).getByTestId("worktree-status")).toHaveTextContent("1 file changed"))
 	for (const name of ["Open in new window", /Copy changes here/, "Switch workspace to this branch", "Remove worktree"])
@@ -129,6 +137,20 @@ it("shows where an existing thread runs instead of a choice", async () => {
 
 it("is hidden in subagent threads, which run where their parent does", () => {
 	mocks.currentTaskItem = { id: "sub", isSubagent: true }
-	const { container } = render(<WorkspaceButton />)
+	const { container } = render(
+		<>
+			<WorkspaceButton />
+			<ThreadBranchChip />
+		</>,
+	)
 	expect(container).toBeEmptyDOMElement()
+})
+
+it("has no branch chip for a thread in your workspace, or with no thread", async () => {
+	const { container, rerender } = render(<ThreadBranchChip />)
+	expect(container).toBeEmptyDOMElement()
+	mocks.currentTaskItem = { id: "t2" }
+	rerender(<ThreadBranchChip />)
+	// Its state loads, and still no worktree: nothing to show.
+	await waitFor(() => expect(container).toBeEmptyDOMElement())
 })
