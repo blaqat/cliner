@@ -143,6 +143,33 @@ describe("composer bottom row", () => {
 		expect(screen.getByTestId("send-button")).toHaveTextContent(/^Act$/)
 	})
 
+	it("sits inside the composer card with the text, which draws the focus border", () => {
+		mocks.inThread = true
+		renderComposer(usageSlot())
+		const card = screen.getByTestId("composer-card")
+		const input = screen.getByTestId("chat-input")
+		const row = screen.getByTestId("composer-bottom-row")
+		expect(card).toContainElement(input)
+		expect(card).toContainElement(row)
+		expect(follows(input, row)).toBe(true)
+		// The textarea is borderless inside; the card's border takes the focus color.
+		expect(input.style.outline).toBe("none")
+		fireEvent.blur(input)
+		expect(card).toHaveClass("border-input-border")
+		expect(card).not.toHaveAttribute("data-focused")
+		fireEvent.focus(input)
+		expect(card).toHaveAttribute("data-focused", "true")
+		expect(card.style.borderColor).toBe("var(--vscode-focusBorder)")
+	})
+
+	it("keeps the new thread's In … for … line under the card, not in it", () => {
+		renderComposer()
+		const card = screen.getByTestId("composer-card")
+		const line = screen.getByTestId("new-thread-line")
+		expect(card).not.toContainElement(line)
+		expect(follows(card, line)).toBe(true)
+	})
+
 	it("no longer has ＋, MCP servers, rules, the shield, the Ask/Act switch or separate pickers", () => {
 		renderComposer(usageSlot())
 		for (const id of [

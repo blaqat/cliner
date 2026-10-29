@@ -152,6 +152,8 @@ interface GitCommit {
 	description: string
 }
 
+/** Text-to-action-row gap inside the composer card (the row sits right under the text). */
+const TEXT_BOTTOM_PADDING = 4
 const QUOTE_ROW_HEIGHT = 24
 
 const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
@@ -1617,230 +1619,297 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						script={scriptInput.script}
 					/>
 				)}
+				{/* One card: the text on top, the action row (📎 … chip, Send) inside the same border at its bottom edge. */}
 				<div
-					className="relative flex transition-colors ease-in-out duration-100 px-3.5 py-2.5"
+					className={cn(
+						"relative mx-3.5 mt-2.5 mb-2 rounded-xs border bg-input-background transition-colors ease-in-out duration-100 motion-reduce:transition-none",
+						!isTextAreaFocused && "border-input-border",
+					)}
+					data-focused={isTextAreaFocused || undefined}
+					data-testid="composer-card"
 					onDragEnter={handleDragEnter}
 					onDragLeave={handleDragLeave}
 					onDragOver={onDragOver}
-					onDrop={onDrop}>
-					{showDimensionError && (
-						<div className="absolute inset-2.5 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
-							<span className="text-error font-bold text-xs text-center">Image dimensions exceed 7500px</span>
-						</div>
-					)}
-					{showUnsupportedFileError && (
-						<div className="absolute inset-2.5 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
-							<span className="text-error font-bold text-xs">Files other than images are currently disabled</span>
-						</div>
-					)}
-					{showSlashCommandsMenu && (
-						<div ref={slashCommandsMenuContainerRef}>
-							<SlashCommandMenu
-								globalWorkflowToggles={globalWorkflowToggles}
-								localWorkflowToggles={localWorkflowToggles}
-								mcpServers={mcpServers}
-								onMouseDown={handleMenuMouseDown}
-								onSelect={handleSlashCommandsSelect}
-								query={slashCommandsQuery}
-								remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
-								remoteWorkflowToggles={remoteWorkflowToggles}
-								scriptCommands={menuScriptCommands}
-								selectedIndex={selectedSlashCommandsIndex}
-								setSelectedIndex={setSelectedSlashCommandsIndex}
-							/>
-						</div>
-					)}
-
-					{showNoteMentionMenu && (
-						<NoteMentionMenu
-							notes={noteMatches}
-							onSelect={handleNoteMentionSelect}
-							selectedIndex={selectedNoteIndex}
-							setSelectedIndex={setSelectedNoteIndex}
-						/>
-					)}
-
-					{showThreadMentionMenu && (
-						<ThreadMentionMenu
-							onSelect={handleThreadMentionSelect}
-							selectedIndex={selectedThreadIndex}
-							setSelectedIndex={setSelectedThreadIndex}
-							threads={threadMatches}
-						/>
-					)}
-
-					{showContextMenu && (
-						<div ref={contextMenuContainerRef}>
-							<ContextMenu
-								dynamicSearchResults={fileSearchResults}
-								isLoading={searchLoading}
-								onMouseDown={handleMenuMouseDown}
-								onSelect={handleMentionSelect}
-								queryItems={queryItems}
-								searchQuery={searchQuery}
-								selectedIndex={selectedMenuIndex}
-								selectedType={selectedType}
-								setSelectedIndex={setSelectedMenuIndex}
-							/>
-						</div>
-					)}
-					<div
-						className={cn(
-							"absolute bottom-2.5 top-2.5 whitespace-pre-wrap break-words rounded-xs overflow-hidden bg-input-background",
-							isTextAreaFocused ? "left-3.5 right-3.5" : "left-3.5 right-3.5 border border-input-border",
+					onDrop={onDrop}
+					style={{
+						borderColor: isTextAreaFocused
+							? mode === "plan"
+								? PLAN_MODE_COLOR
+								: "var(--vscode-focusBorder)"
+							: undefined,
+						outline:
+							isDraggingOver && !showUnsupportedFileError // Only show drag outline if not showing error
+								? "2px dashed var(--vscode-focusBorder)"
+								: "none",
+						outlineOffset: isDraggingOver && !showUnsupportedFileError ? "1px" : "0px",
+					}}>
+					<div className="relative flex">
+						{showDimensionError && (
+							<div className="absolute inset-0 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
+								<span className="text-error font-bold text-xs text-center">Image dimensions exceed 7500px</span>
+							</div>
 						)}
-						ref={highlightLayerRef}
-						style={{
-							position: "absolute",
-							pointerEvents: "none",
-							whiteSpace: "pre-wrap",
-							wordWrap: "break-word",
-							color: "transparent",
-							overflow: "hidden",
-							fontFamily: "var(--vscode-font-family)",
-							fontSize: "var(--vscode-editor-font-size)",
-							lineHeight: "var(--vscode-editor-line-height)",
-							borderRadius: 2,
-							borderLeft: isTextAreaFocused ? 0 : undefined,
-							borderRight: isTextAreaFocused ? 0 : undefined,
-							borderTop: isTextAreaFocused ? 0 : undefined,
-							borderBottom: isTextAreaFocused ? 0 : undefined,
-							padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${9 + thumbnailsHeight}px 9px`,
-						}}
-					/>
-					<DynamicTextArea
-						autoFocus={true}
-						data-testid="chat-input"
-						maxRows={10}
-						minRows={3}
-						onBlur={handleBlur}
-						onChange={(e) => {
-							handleInputChange(e)
-							updateHighlights()
-						}}
-						onFocus={() => {
-							setIsTextAreaFocused(true)
-							onFocusChange?.(true) // Call prop on focus
-						}}
-						onHeightChange={(height) => {
-							if (textAreaBaseHeight === undefined || height < textAreaBaseHeight) {
-								setTextAreaBaseHeight(height)
-							}
-							onHeightChange?.(height)
-						}}
-						onKeyDown={handleKeyDown}
-						onKeyUp={handleKeyUp}
-						onMouseUp={updateCursorPosition}
-						onPaste={handlePaste}
-						onScroll={() => updateHighlights()}
-						onSelect={updateCursorPosition}
-						placeholder={showUnsupportedFileError || showDimensionError ? "" : placeholderText}
-						ref={(el) => {
-							if (typeof ref === "function") {
-								ref(el)
-							} else if (ref) {
-								ref.current = el
-							}
-							textAreaRef.current = el
-						}}
-						style={{
-							width: "100%",
-							boxSizing: "border-box",
-							backgroundColor: "transparent",
-							color: "var(--vscode-input-foreground)",
-							//border: "1px solid var(--vscode-input-border)",
-							borderRadius: 2,
-							fontFamily: "var(--vscode-font-family)",
-							fontSize: "var(--vscode-editor-font-size)",
-							lineHeight: "var(--vscode-editor-line-height)",
-							resize: "none",
-							overflowX: "hidden",
-							overflowY: "scroll",
-							scrollbarWidth: "none",
-							// Since we have maxRows, when text is long enough it starts to overflow the bottom padding, appearing behind the thumbnails. To fix this, we use a transparent border to push the text up instead. (https://stackoverflow.com/questions/42631947/maintaining-a-padding-inside-of-text-area/52538410#52538410)
-							// borderTop: "9px solid transparent",
-							borderLeft: 0,
-							borderRight: 0,
-							borderTop: `${quoteRowHeight}px solid transparent`,
-							borderBottom: `${thumbnailsHeight}px solid transparent`,
-							borderColor: "transparent",
-							// borderRight: "54px solid transparent",
-							// borderLeft: "9px solid transparent", // NOTE: react-textarea-autosize doesn't calculate correct height when using borderLeft/borderRight so we need to use horizontal padding instead
-							// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
-							// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
-							padding: `9px ${inputPaddingRight}px 9px 9px`,
-							cursor: "text",
-							flex: 1,
-							zIndex: 1,
-							outline:
-								isDraggingOver && !showUnsupportedFileError // Only show drag outline if not showing error
-									? "2px dashed var(--vscode-focusBorder)"
-									: isTextAreaFocused
-										? `1px solid ${mode === "plan" ? PLAN_MODE_COLOR : "var(--vscode-focusBorder)"}`
-										: "none",
-							outlineOffset: isDraggingOver && !showUnsupportedFileError ? "1px" : "0px", // Add offset for drag-over outline
-						}}
-						value={inputValue}
-					/>
-					{quoteTags && (
-						<div className="absolute top-3.5 left-5.5 right-5.5 z-2 h-5" data-testid="composer-quote-row">
-							{quoteTags}
-						</div>
-					)}
-					{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
-						<div className="text-xs absolute bottom-5 left-6.5 right-16 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
-							Type @ for context, / for slash commands & workflows, hold shift to drag in files/images
-						</div>
-					)}
-					{(selectedImages.length > 0 || selectedFiles.length > 0) && (
-						<Thumbnails
-							files={selectedFiles}
-							images={selectedImages}
-							imagesUnsupported={unsupportedImagesAttached}
-							onHeightChange={handleThumbnailsHeightChange}
-							setFiles={setSelectedFiles}
-							setImages={setSelectedImages}
-							style={{
-								position: "absolute",
-								paddingTop: 4,
-								bottom: 14,
-								left: 22,
-								right: 47, // (54 + 9) + 4 extra padding
-								zIndex: 2,
-							}}
-						/>
-					)}
-					<div
-						className="absolute flex items-end bottom-4.5 right-5 z-10 h-8 text-xs"
-						style={{ height: textAreaBaseHeight }}>
-						<div className="flex flex-row items-center">
-							{onRestoreStash && onDeleteStash && (
-								<PromptStashButton
-									entries={stashEntries}
-									modKey={metaKeyChar}
-									onDelete={onDeleteStash}
-									onRestore={onRestoreStash}
+						{showUnsupportedFileError && (
+							<div className="absolute inset-0 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
+								<span className="text-error font-bold text-xs">
+									Files other than images are currently disabled
+								</span>
+							</div>
+						)}
+						{/* The menus are placed for the card's old padded box (bottom: 100% − 10px, left: 15px); this anchor keeps that box. */}
+						<div className="absolute -top-2.5 -left-3.5 -right-3.5 h-0 z-1000">
+							{showSlashCommandsMenu && (
+								<div ref={slashCommandsMenuContainerRef}>
+									<SlashCommandMenu
+										globalWorkflowToggles={globalWorkflowToggles}
+										localWorkflowToggles={localWorkflowToggles}
+										mcpServers={mcpServers}
+										onMouseDown={handleMenuMouseDown}
+										onSelect={handleSlashCommandsSelect}
+										query={slashCommandsQuery}
+										remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
+										remoteWorkflowToggles={remoteWorkflowToggles}
+										scriptCommands={menuScriptCommands}
+										selectedIndex={selectedSlashCommandsIndex}
+										setSelectedIndex={setSelectedSlashCommandsIndex}
+									/>
+								</div>
+							)}
+
+							{showNoteMentionMenu && (
+								<NoteMentionMenu
+									notes={noteMatches}
+									onSelect={handleNoteMentionSelect}
+									selectedIndex={selectedNoteIndex}
+									setSelectedIndex={setSelectedNoteIndex}
 								/>
 							)}
-							{showHomeBackgroundButton && onSendAs && (
-								<Tooltip>
-									<TooltipContent side="top">
-										Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay here
-									</TooltipContent>
-									<TooltipTrigger asChild>
-										<button
-											aria-label="Start in background"
-											className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-											data-testid="send-background-button"
-											disabled={sendDisabled}
-											onClick={() => onSendAs("background")}
-											type="button">
-											<SendToBackIcon size={13} />
-										</button>
-									</TooltipTrigger>
-								</Tooltip>
+
+							{showThreadMentionMenu && (
+								<ThreadMentionMenu
+									onSelect={handleThreadMentionSelect}
+									selectedIndex={selectedThreadIndex}
+									setSelectedIndex={setSelectedThreadIndex}
+									threads={threadMatches}
+								/>
+							)}
+
+							{showContextMenu && (
+								<div ref={contextMenuContainerRef}>
+									<ContextMenu
+										dynamicSearchResults={fileSearchResults}
+										isLoading={searchLoading}
+										onMouseDown={handleMenuMouseDown}
+										onSelect={handleMentionSelect}
+										queryItems={queryItems}
+										searchQuery={searchQuery}
+										selectedIndex={selectedMenuIndex}
+										selectedType={selectedType}
+										setSelectedIndex={setSelectedMenuIndex}
+									/>
+								</div>
 							)}
 						</div>
+						<div
+							className="absolute inset-0 whitespace-pre-wrap break-words rounded-xs overflow-hidden"
+							ref={highlightLayerRef}
+							style={{
+								position: "absolute",
+								pointerEvents: "none",
+								whiteSpace: "pre-wrap",
+								wordWrap: "break-word",
+								color: "transparent",
+								overflow: "hidden",
+								fontFamily: "var(--vscode-font-family)",
+								fontSize: "var(--vscode-editor-font-size)",
+								lineHeight: "var(--vscode-editor-line-height)",
+								borderRadius: 2,
+								padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING + thumbnailsHeight}px 9px`,
+							}}
+						/>
+						<DynamicTextArea
+							autoFocus={true}
+							data-testid="chat-input"
+							maxRows={10}
+							minRows={3}
+							onBlur={handleBlur}
+							onChange={(e) => {
+								handleInputChange(e)
+								updateHighlights()
+							}}
+							onFocus={() => {
+								setIsTextAreaFocused(true)
+								onFocusChange?.(true) // Call prop on focus
+							}}
+							onHeightChange={(height) => {
+								if (textAreaBaseHeight === undefined || height < textAreaBaseHeight) {
+									setTextAreaBaseHeight(height)
+								}
+								onHeightChange?.(height)
+							}}
+							onKeyDown={handleKeyDown}
+							onKeyUp={handleKeyUp}
+							onMouseUp={updateCursorPosition}
+							onPaste={handlePaste}
+							onScroll={() => updateHighlights()}
+							onSelect={updateCursorPosition}
+							placeholder={showUnsupportedFileError || showDimensionError ? "" : placeholderText}
+							ref={(el) => {
+								if (typeof ref === "function") {
+									ref(el)
+								} else if (ref) {
+									ref.current = el
+								}
+								textAreaRef.current = el
+							}}
+							style={{
+								width: "100%",
+								boxSizing: "border-box",
+								backgroundColor: "transparent",
+								color: "var(--vscode-input-foreground)",
+								//border: "1px solid var(--vscode-input-border)",
+								borderRadius: 2,
+								fontFamily: "var(--vscode-font-family)",
+								fontSize: "var(--vscode-editor-font-size)",
+								lineHeight: "var(--vscode-editor-line-height)",
+								resize: "none",
+								overflowX: "hidden",
+								overflowY: "scroll",
+								scrollbarWidth: "none",
+								// Since we have maxRows, when text is long enough it starts to overflow the bottom padding, appearing behind the thumbnails. To fix this, we use a transparent border to push the text up instead. (https://stackoverflow.com/questions/42631947/maintaining-a-padding-inside-of-text-area/52538410#52538410)
+								// borderTop: "9px solid transparent",
+								borderLeft: 0,
+								borderRight: 0,
+								borderTop: `${quoteRowHeight}px solid transparent`,
+								borderBottom: `${thumbnailsHeight}px solid transparent`,
+								borderColor: "transparent",
+								// borderRight: "54px solid transparent",
+								// borderLeft: "9px solid transparent", // NOTE: react-textarea-autosize doesn't calculate correct height when using borderLeft/borderRight so we need to use horizontal padding instead
+								// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
+								// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
+								// Less at the bottom: the action row sits right under the text, inside the card.
+								padding: `9px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING}px 9px`,
+								cursor: "text",
+								flex: 1,
+								zIndex: 1,
+								// The card draws the focus border (and the drag outline).
+								outline: "none",
+							}}
+							value={inputValue}
+						/>
+						{quoteTags && (
+							<div className="absolute top-1 left-2 right-2 z-2 h-5" data-testid="composer-quote-row">
+								{quoteTags}
+							</div>
+						)}
+						{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
+							<div className="text-xs absolute bottom-1 left-3 right-12 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
+								Type @ for context, / for slash commands & workflows, hold shift to drag in files/images
+							</div>
+						)}
+						{(selectedImages.length > 0 || selectedFiles.length > 0) && (
+							<Thumbnails
+								files={selectedFiles}
+								images={selectedImages}
+								imagesUnsupported={unsupportedImagesAttached}
+								onHeightChange={handleThumbnailsHeightChange}
+								setFiles={setSelectedFiles}
+								setImages={setSelectedImages}
+								style={{
+									position: "absolute",
+									paddingTop: 4,
+									bottom: 0,
+									left: 8,
+									right: 33, // Clear of the stash / background buttons
+									zIndex: 2,
+								}}
+							/>
+						)}
+						<div
+							className="absolute flex items-end bottom-0.5 right-1.5 z-10 h-8 text-xs"
+							style={{ height: textAreaBaseHeight }}>
+							<div className="flex flex-row items-center">
+								{onRestoreStash && onDeleteStash && (
+									<PromptStashButton
+										entries={stashEntries}
+										modKey={metaKeyChar}
+										onDelete={onDeleteStash}
+										onRestore={onRestoreStash}
+									/>
+								)}
+								{showHomeBackgroundButton && onSendAs && (
+									<Tooltip>
+										<TooltipContent side="top">
+											Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay here
+										</TooltipContent>
+										<TooltipTrigger asChild>
+											<button
+												aria-label="Start in background"
+												className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+												data-testid="send-background-button"
+												disabled={sendDisabled}
+												onClick={() => onSendAs("background")}
+												type="button">
+												<SendToBackIcon size={13} />
+											</button>
+										</TooltipTrigger>
+									</Tooltip>
+								)}
+							</div>
+						</div>
+					</div>
+					<div
+						className="flex items-center gap-1.5 flex-nowrap min-w-0 px-1.5 pt-0.5 pb-1.5"
+						data-testid="composer-bottom-row"
+						ref={bottomRowRef}>
+						<AttachButton
+							disabled={shouldDisableFilesAndImages}
+							max={MAX_IMAGES_AND_FILES_PER_MESSAGE}
+							onAddFiles={onSelectFilesAndImages}
+						/>
+						<div aria-hidden className="min-w-0 flex-1" />
+						{usageIndicator && (
+							<div className="flex items-center shrink-0" data-testid="composer-usage">
+								{usageIndicator.render(rowLayout)}
+							</div>
+						)}
+						{/* The model name gives way first; the effort text and Send keep their size. */}
+						<ShrinkSlot floor={rowLayout.tightChip ? 72 : 104}>
+							<ModelEffortChip
+								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
+								fallbackLabel={modelDisplayName}
+								mode={mode}
+								modelId={selectedModelId}
+								modelInfo={selectedModelInfo}
+							/>
+						</ShrinkSlot>
+						<SendSplitButton
+							disabled={sendDisabled}
+							flash={modeSwitchFlash}
+							mode={mode}
+							onPickMode={(next) => {
+								if (next !== mode) onModeToggle()
+							}}
+							onSend={() => {
+								if (!sendDisabled) onSend()
+							}}
+							running={
+								showRunningSendButtons && onSendAs
+									? {
+											enterSendsAs,
+											modKey: metaKeyChar,
+											onSteer: onSend,
+											onInterject: () => onSendAs("interject"),
+										}
+									: undefined
+							}
+							sendTitle={
+								isHome
+									? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
+									: "Send (Enter) · Aside (Alt+Enter)"
+							}
+							toggleKeys={togglePlanActKeys}
+						/>
 					</div>
 				</div>
 				{unsupportedImagesAttached && (
@@ -1867,59 +1936,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				)}
 				<DetectedTicketChips text={inputValue} />
 				<ComposerTaskGroupSheet draftText={inputValue} />
-				<div
-					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
-					data-testid="composer-bottom-row"
-					ref={bottomRowRef}>
-					<AttachButton
-						disabled={shouldDisableFilesAndImages}
-						max={MAX_IMAGES_AND_FILES_PER_MESSAGE}
-						onAddFiles={onSelectFilesAndImages}
-					/>
-					<div aria-hidden className="min-w-0 flex-1" />
-					{usageIndicator && (
-						<div className="flex items-center shrink-0" data-testid="composer-usage">
-							{usageIndicator.render(rowLayout)}
-						</div>
-					)}
-					{/* The model name gives way first; the effort text and Send keep their size. */}
-					<ShrinkSlot floor={rowLayout.tightChip ? 72 : 104}>
-						<ModelEffortChip
-							defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-							fallbackLabel={modelDisplayName}
-							mode={mode}
-							modelId={selectedModelId}
-							modelInfo={selectedModelInfo}
-						/>
-					</ShrinkSlot>
-					<SendSplitButton
-						disabled={sendDisabled}
-						flash={modeSwitchFlash}
-						mode={mode}
-						onPickMode={(next) => {
-							if (next !== mode) onModeToggle()
-						}}
-						onSend={() => {
-							if (!sendDisabled) onSend()
-						}}
-						running={
-							showRunningSendButtons && onSendAs
-								? {
-										enterSendsAs,
-										modKey: metaKeyChar,
-										onSteer: onSend,
-										onInterject: () => onSendAs("interject"),
-									}
-								: undefined
-						}
-						sendTitle={
-							isHome
-								? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
-								: "Send (Enter) · Aside (Alt+Enter)"
-						}
-						toggleKeys={togglePlanActKeys}
-					/>
-				</div>
 				{/* A new thread picks where it runs and which task it goes into; inside a thread both live in the header. */}
 				{!currentTaskItem && (
 					<div
