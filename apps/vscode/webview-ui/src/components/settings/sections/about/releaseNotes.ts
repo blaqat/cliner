@@ -17,12 +17,14 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–41",
+		builds: "test builds fork.39–42",
 		date: "2026-10-29",
 		notes: [
+			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them",
 			"One view (beta, Settings › Features › Layout): your threads beside the chat, or as a strip across the top when the panel is narrow; rows show status and the last line, search filters the list in place, and the header is Task › Thread",
-			"Simpler composer: the buttons sit inside the box, Send carries Ask/Act, and one Model · Effort chip opens a wheel for each; the effort wheel holds four permission presets",
-			"MCP servers and Rules & workflows moved to the title bar as a larger overlay; the composer's 📎 is files and images only",
+			'Simpler composer: the buttons sit inside the box, one click on Act ⇄ switches mode, and "Opus 4.5 High" rolls in place to change the model or effort; the five approvals are toggles above the effort',
+			"Tasks can be stashed and settled like threads, and a row's Stash and Settle replace its time instead of covering the title",
+			"MCP servers and Rules & workflows moved to the title bar and open in a panel from the top right (click again to close); the composer's 📎 is files and images only",
 			"New chats pick the workspace and task on a line under the composer; inside a thread the branch shows in the header",
 			"Stash threads you'll come back to: they leave Active, keep running, and come back when you message them",
 			"Home orders threads and tasks by your last message, and shows when the agent last replied",
