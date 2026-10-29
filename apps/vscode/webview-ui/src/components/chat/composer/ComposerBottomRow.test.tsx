@@ -139,7 +139,7 @@ describe("composer bottom row", () => {
 		]
 		for (const element of order) expect(row).toContainElement(element)
 		for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
-		// No "·": the model and effort read as words, spaced by the parts' padding.
+		// No "·": the model and effort read as words, spaced by the chip's gap.
 		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent(/^Opus 4\.5High$/)
 		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
 		expect(follows(screen.getByTestId("mode-switch"), screen.getByTestId("send-button"))).toBe(true)
@@ -275,7 +275,7 @@ describe("composer bottom row", () => {
 			expect(renderMeter).toHaveBeenLastCalledWith(FULL_COMPOSER_ROW)
 		})
 
-		it("drops the Compact label, then folds the effort text into ⌄, on narrow rows", () => {
+		it("drops the Compact label, then hides the effort word from the chip, on narrow rows", () => {
 			stubRowWidth(260)
 			const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 			renderComposer(usageSlot(renderMeter, true))
@@ -284,10 +284,11 @@ describe("composer bottom row", () => {
 			)
 			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: false })
 			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "76")
-			// The effort still opens from its ⌄, and says what it is.
-			const effort = screen.getByTestId("reasoning-effort-picker")
-			expect(effort).toHaveTextContent(/^$/)
-			expect(effort).toHaveAttribute("aria-label", expect.stringMatching(/^Reasoning effort: /))
+			// The chip is one button: the effort word is gone from its text, but it still names the effort.
+			const chip = screen.getByTestId("model-effort-chip")
+			expect(chip).toHaveTextContent(/^Opus 4\.5$/)
+			expect(screen.queryByTestId("chip-effort")).toBeNull()
+			expect(chip).toHaveAccessibleName(/effort High/)
 		})
 
 		it("goes tight only after the effort text is gone", () => {

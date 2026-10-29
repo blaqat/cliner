@@ -1,19 +1,21 @@
 import type { ModelInfo } from "@shared/api"
-import {
-	isOpenaiReasoningEffort,
-	type Mode,
-	OPENAI_REASONING_EFFORT_OPTIONS,
-	type OpenaiReasoningEffort,
-} from "@shared/storage/types"
-import { ShieldIcon, ShieldOffIcon } from "lucide-react"
-import type React from "react"
-import { memo, useCallback, useRef, useState } from "react"
+import { type Mode, OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort } from "@shared/storage/types"
+import { ShieldOffIcon } from "lucide-react"
+import { memo, useRef, useState } from "react"
+import { COMPOSER_MENU_SCROLL_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
-import { ApprovalToggles } from "./ApprovalToggles"
+import { ApprovalTiles } from "./ApprovalTiles"
 import { approvalsLabel, summarizeApprovals } from "./approvals"
-import { formatEffort, formatEffortShort, useConfigSelection, useEffortSelection } from "./modelSelection"
-import { type WheelItem, WheelPopup } from "./WheelPopup"
+import { DoubleWheel, type WheelItem } from "./DoubleWheel"
+import {
+	type ComposerSelectionChanges,
+	formatEffort,
+	formatEffortShort,
+	useConfigSelection,
+	useEffortSelection,
+} from "./modelSelection"
 
 /** The chip's codicon chevron, as on the other composer chips. */
 export const ChipChevron = () => <span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />
@@ -21,24 +23,30 @@ export const ChipChevron = () => <span aria-hidden className="codicon codicon-ch
 /** Stands in for the current pick when it isn't one of the saved models (none assigned yet). */
 const UNSAVED_VALUE = "__unsaved__"
 
-// Text-only feedback: each part brightens on its own hover, focus or open; no background highlight.
-const PART_CLASS =
-	"flex h-5 min-w-0 cursor-pointer items-center gap-1 rounded-xs border-0 bg-transparent py-0 text-xs text-inherit transition-colors duration-100 hover:text-foreground focus-visible:text-foreground motion-reduce:transition-none focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-60"
+/** Why a locked choice can't change. */
+export const LOCKED_REASON = "A next-message-only choice can't change while Cline is working"
 
-const ACTION_BUTTON_CLASS =
-	"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:text-foreground focus-visible:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
+// Text-only feedback: the chip brightens on hover, focus or open; no background highlight.
+const CHIP_CLASS =
+	"flex h-5 min-w-0 cursor-pointer items-center gap-[0.3em] rounded-xs border-0 bg-transparent px-1 py-0 text-xs text-description transition-colors duration-100 hover:text-foreground focus-visible:text-foreground motion-reduce:transition-none focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) data-[state=open]:text-foreground"
 
-/** A quiet icon action beside the rolling text; its name is its tooltip. */
-const WheelAction = ({
-	icon,
-	label,
-	className,
-	...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon: string; label: string }) => (
-	<button aria-label={label} className={cn(ACTION_BUTTON_CLASS, className)} title={label} type="button" {...props}>
-		<span aria-hidden className={`codicon codicon-${icon} text-[12px]!`} />
-	</button>
-)
+const FOOTER_BUTTON_CLASS =
+	"flex h-5 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border-0 bg-transparent px-1 text-[11px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-description"
+
+/** The wheel's names for the efforts: "none" reads "Default" (its tooltip says whose). */
+const EFFORT_ITEMS: WheelItem[] = OPENAI_REASONING_EFFORT_OPTIONS.map((option) => ({
+	value: option,
+	label: option === "none" ? "Default" : formatEffort(option),
+	detail: option === "none" ? "Provider default" : undefined,
+}))
+
+/** What the menu's wheels show; nothing is saved until the menu closes with it kept. */
+interface Draft {
+	profile: string
+	effort: OpenaiReasoningEffort
+	/** The effort was rolled by hand: a model change keeps it instead of taking that model's own. */
+	effortTouched: boolean
+}
 
 interface ModelEffortChipProps {
 	mode: Mode
@@ -47,16 +55,16 @@ interface ModelEffortChipProps {
 	modelId: string | undefined
 	modelInfo: ModelInfo | undefined
 	defaultEffort?: OpenaiReasoningEffort
-	/** A narrow row: the effort text folds into the ⌄ so the model name keeps its letters. */
+	/** A narrow row: the effort word hides from the chip so the model name keeps its letters. */
 	compactEffort?: boolean
 }
 
 /**
- * The composer's one readable chip, "Opus 4.5 High": the model text and the effort text are two
- * click targets, each rolling its own wheel in place of the text you clicked. The effort wheel
- * has the auto-approve toggles just above it. A model without reasoning control shows the
- * approvals' shield in place of the effort. With every action auto-approved, an error-colored
- * shield sits before the model text.
+ * The composer's one readable chip, "Opus 4.5 High". A click opens one menu above it: the five
+ * auto-approve tiles, then a double wheel (model | effort) whose middle row is the choice, then
+ * Reset, Next message only and the Models page. Enter, a click outside or Tab away keep what the
+ * wheels show; Escape puts the previous choice back. With every action auto-approved, an
+ * error-colored shield sits before the chip text.
  */
 const ModelEffortChip = ({
 	mode,
@@ -70,15 +78,17 @@ const ModelEffortChip = ({
 	const config = useConfigSelection(mode, fallbackLabel)
 	const effort = useEffortSelection(mode, { modelId, modelInfo, defaultEffort })
 	const fullAccess = summarizeApprovals(autoApprovalSettings).approveAll
-	const [open, setOpen] = useState<"model" | "effort" | null>(null)
-	const [aligned, setAligned] = useState(false)
-	const modelButtonRef = useRef<HTMLButtonElement>(null)
-	const modelTextRef = useRef<HTMLSpanElement>(null)
-	const effortButtonRef = useRef<HTMLButtonElement>(null)
-	const effortTextRef = useRef<HTMLSpanElement>(null)
+	const permissionsLabel = approvalsLabel(autoApprovalSettings)
+	const [draft, setDraftState] = useState<Draft | null>(null)
+	const draftRef = useRef<Draft | null>(null)
+	const escapingRef = useRef(false)
+	const wheelsRef = useRef<HTMLDivElement>(null)
+	const open = draft !== null
 
-	const close = useCallback(() => setOpen(null), [])
-	const toggle = (which: "model" | "effort") => setOpen((current) => (current === which ? null : which))
+	const setDraft = (next: Draft | null) => {
+		draftRef.current = next
+		setDraftState(next)
+	}
 
 	// The model wheel: the saved models (as the old picker listed them); a current pick that isn't saved goes first.
 	const modelItems: WheelItem[] = config.profiles.map((profile) => ({
@@ -94,165 +104,193 @@ const ModelEffortChip = ({
 			detail: config.profiles.length ? "not saved" : undefined,
 		})
 	}
-	const effortItems: WheelItem[] = OPENAI_REASONING_EFFORT_OPTIONS.map((option) => ({
-		value: option,
-		label: formatEffort(option),
-	}))
 
-	const nextMessageButton = (
-		selection: { hasChat: boolean; busy: boolean; nextMessageOnly: boolean; toggleNextMessageOnly: () => void },
-		trigger: React.RefObject<HTMLButtonElement | null>,
-	) =>
-		selection.hasChat && (
-			<WheelAction
-				data-testid="wheel-next-message"
-				disabled={selection.busy}
-				icon={selection.nextMessageOnly ? "pinned" : "arrow-right"}
-				label={
-					selection.busy
-						? "Can't change while Cline is working"
-						: selection.nextMessageOnly
-							? "Keep for this chat"
-							: "Next message only"
-				}
-				onClick={() => {
-					selection.toggleNextMessageOnly()
-					close()
-					trigger.current?.focus()
-				}}
-			/>
-		)
+	/** The effort a saved model brings with it when picked (the extension applies the same). */
+	const profileEffort = (id: string): OpenaiReasoningEffort =>
+		id === modelValue ? effort.selected : (config.profiles.find((profile) => profile.id === id)?.reasoningEffort ?? "none")
+	// Only the current model's info is known here; another saved model is offered its efforts.
+	const effortAvailableFor = (id: string) => (id === modelValue ? effort.available : true)
 
-	const PermissionIcon = fullAccess ? ShieldOffIcon : ShieldIcon
-	const permissionsLabel = approvalsLabel(autoApprovalSettings)
+	/** Saves what the wheels show (plus `extra`) in one request, only what changed. */
+	const commit = (extra: ComposerSelectionChanges = {}) => {
+		const current = draftRef.current
+		const changes: ComposerSelectionChanges = { ...extra }
+		if (current) {
+			const modelChanged = !config.locked && current.profile !== modelValue && current.profile !== UNSAVED_VALUE
+			if (modelChanged) changes.profileId = current.profile
+			const baseline = modelChanged ? profileEffort(current.profile) : effort.selected
+			if (!effort.locked && effortAvailableFor(current.profile) && current.effort !== baseline) {
+				changes.reasoningEffort = current.effort
+			}
+		}
+		if (Object.keys(changes).length > 0) config.assign(changes)
+	}
+
+	const openMenu = () => {
+		escapingRef.current = false
+		setDraft({ profile: modelValue, effort: effort.selected, effortTouched: false })
+	}
+	const closeMenu = (keep: boolean) => {
+		if (!draftRef.current) return
+		if (keep) commit()
+		setDraft(null)
+	}
+
+	const draftProfile = draft?.profile ?? modelValue
+	const draftEffort = draft?.effort ?? effort.selected
+	const showEffort = effortAvailableFor(draftProfile)
+	const note = config.locked ? LOCKED_REASON : config.profiles.length === 0 ? "No saved models yet" : undefined
+
+	const chipLabel = [
+		`${config.modeLabel} model: ${config.label}`,
+		effort.available ? `, effort ${formatEffort(effort.selected)}` : "",
+		`; ${permissionsLabel}`,
+	].join("")
 
 	return (
-		<div className="flex h-5 min-w-0 items-center rounded-xs text-xs text-description" data-testid="model-effort-chip">
-			<button
-				aria-expanded={open === "model"}
-				aria-haspopup="dialog"
-				aria-label={`${config.modeLabel} model: ${config.label}${fullAccess ? " (every action auto-approved)" : ""}`}
-				// The two parts read as words ("Opus 4.5 High"): about a space between them.
-				className={cn(PART_CLASS, "shrink pr-[0.3em] pl-1", open === "model" && "text-foreground")}
-				data-testid="config-picker"
-				disabled={config.locked}
-				onClick={() => toggle("model")}
-				ref={modelButtonRef}
-				title={config.locked ? "A next-message-only choice can't change while Cline is working" : config.description}
-				type="button">
-				{fullAccess && (
-					<ShieldOffIcon aria-hidden className="shrink-0 text-error" data-testid="full-access-icon" size={12} />
-				)}
-				<span className={cn("min-w-[3ch] truncate", open === "model" && aligned && "invisible")} ref={modelTextRef}>
-					{config.label}
-				</span>
-				{config.pending && <span className="shrink-0 opacity-60">(pending)</span>}
-				{config.nextMessageOnly && <span className="shrink-0 opacity-60">next message</span>}
-			</button>
-			<button
-				aria-expanded={open === "effort"}
-				aria-haspopup="dialog"
-				aria-label={
-					effort.available
-						? `Reasoning effort: ${formatEffort(effort.selected)}; ${permissionsLabel}`
-						: permissionsLabel
-				}
-				className={cn(PART_CLASS, "shrink-0 pr-1 pl-0", open === "effort" && "text-foreground")}
-				data-testid={effort.available ? "reasoning-effort-picker" : "permissions-picker"}
-				onClick={() => toggle("effort")}
-				ref={effortButtonRef}
-				title={effort.available ? `${effort.description} · ${permissionsLabel}` : permissionsLabel}
-				type="button">
-				{effort.available ? (
-					// A narrow row folds the effort text into the ⌄; the wheel then opens from the button.
-					!compactEffort && (
-						// The model wheel's rolling text may run over it: it steps aside while that wheel is open.
-						<span
-							className={cn("truncate", ((open === "effort" && aligned) || open === "model") && "invisible")}
-							ref={effortTextRef}>
+		<Popover onOpenChange={(next) => (next ? openMenu() : closeMenu(!escapingRef.current))} open={open}>
+			<PopoverTrigger asChild>
+				<button
+					aria-label={chipLabel}
+					className={CHIP_CLASS}
+					data-testid="model-effort-chip"
+					title={[config.description, effort.available && effort.description, permissionsLabel]
+						.filter(Boolean)
+						.join("\n")}
+					type="button">
+					{fullAccess && (
+						<ShieldOffIcon aria-hidden className="shrink-0 text-error" data-testid="full-access-icon" size={12} />
+					)}
+					<span className="min-w-[3ch] truncate" data-testid="chip-model">
+						{config.label}
+					</span>
+					{config.pending && <span className="shrink-0 opacity-60">(pending)</span>}
+					{config.nextMessageOnly && <span className="shrink-0 opacity-60">next message</span>}
+					{/* A narrow row hides the effort word; the menu still has it. */}
+					{effort.available && !compactEffort && (
+						<span className="shrink-0 whitespace-nowrap" data-testid="chip-effort">
 							{formatEffortShort(effort.selected)}
 							{effort.pending ? " (pending)" : ""}
 						</span>
-					)
-				) : (
-					<PermissionIcon aria-hidden className={cn("shrink-0", fullAccess && "text-error")} size={12} />
+					)}
+					<ChipChevron />
+				</button>
+			</PopoverTrigger>
+			<PopoverContent
+				align="end"
+				aria-label={`${config.modeLabel} model, effort and auto-approve`}
+				className={cn("menu-rise w-[260px] max-w-[calc(100vw-8px)] p-1.5 text-xs", COMPOSER_MENU_SCROLL_CLASS)}
+				collisionPadding={4}
+				data-testid="model-menu"
+				onEscapeKeyDown={() => {
+					escapingRef.current = true
+				}}
+				onOpenAutoFocus={(event) => {
+					// Focus lands on the wheels (the column with the tab stop), not the first tile.
+					event.preventDefault()
+					wheelsRef.current
+						?.querySelector<HTMLElement>('[role="listbox"][tabindex="0"]')
+						?.focus({ preventScroll: true })
+				}}
+				role="dialog"
+				side="top"
+				sideOffset={6}>
+				<ApprovalTiles />
+				<hr className={MENU_SEPARATOR_CLASS} />
+				<DoubleWheel
+					effort={
+						showEffort
+							? {
+									label: "Reasoning effort",
+									items: EFFORT_ITEMS,
+									index: Math.max(0, OPENAI_REASONING_EFFORT_OPTIONS.indexOf(draftEffort)),
+									onSelect: (index) => {
+										const current = draftRef.current
+										if (current)
+											setDraft({
+												...current,
+												effort: OPENAI_REASONING_EFFORT_OPTIONS[index],
+												effortTouched: true,
+											})
+									},
+									disabled: effort.locked,
+									disabledReason: LOCKED_REASON,
+								}
+							: undefined
+					}
+					model={{
+						label: `${config.modeLabel} model`,
+						items: modelItems,
+						index: Math.max(
+							0,
+							modelItems.findIndex((item) => item.value === draftProfile),
+						),
+						onSelect: (index) => {
+							const current = draftRef.current
+							const profile = modelItems[index]?.value
+							if (!current || !profile) return
+							setDraft({
+								...current,
+								profile,
+								effort: current.effortTouched ? current.effort : profileEffort(profile),
+							})
+						},
+						disabled: config.locked,
+						disabledReason: LOCKED_REASON,
+					}}
+					onEnter={() => closeMenu(true)}
+					wheelsRef={wheelsRef}
+				/>
+				{note && (
+					<p
+						className="m-0 flex items-center gap-1 px-1 pt-1 text-[11px] text-description"
+						data-testid="model-menu-note">
+						{config.locked && <span aria-hidden className="codicon codicon-lock text-[11px]!" />}
+						{note}
+					</p>
 				)}
-				<ChipChevron />
-			</button>
-
-			<WheelPopup
-				actions={
-					<>
-						<WheelAction
-							data-testid="wheel-reset"
-							icon="discard"
-							label="Reset to default"
+				<div className="mt-1 flex flex-wrap items-center gap-x-1 border-0 border-t border-solid border-menu-foreground/10 pt-1">
+					<button
+						aria-label="Reset to default"
+						className={FOOTER_BUTTON_CLASS}
+						data-testid="menu-reset"
+						onClick={() => {
+							setDraft(null)
+							config.reset()
+						}}
+						title="Reset to default"
+						type="button">
+						Reset
+					</button>
+					{config.hasChat && (
+						<button
+							className={FOOTER_BUTTON_CLASS}
+							data-testid="menu-next-message"
+							disabled={config.busy}
 							onClick={() => {
-								config.reset()
-								close()
-								modelButtonRef.current?.focus()
+								commit({ nextMessageOnly: !config.nextMessageOnly })
+								setDraft(null)
 							}}
-						/>
-						{nextMessageButton(config, modelButtonRef)}
-						<WheelAction
-							data-testid="wheel-models-page"
-							icon="settings-gear"
-							label="Models page"
-							onClick={() => {
-								close()
-								config.manage()
-							}}
-						/>
-					</>
-				}
-				anchorRef={modelTextRef}
-				items={modelItems}
-				label={`${config.modeLabel} model`}
-				note={config.profiles.length === 0 ? "No saved models yet" : undefined}
-				onAlignedChange={setAligned}
-				onClose={close}
-				onPick={(value) => {
-					if (value !== UNSAVED_VALUE) config.select(value)
-				}}
-				open={open === "model"}
-				testId="model-wheel"
-				triggerRef={modelButtonRef}
-				value={modelValue}
-			/>
-			<WheelPopup
-				actions={
-					effort.available ? (
-						<>
-							<WheelAction
-								data-testid="wheel-reset"
-								icon="discard"
-								label="Reset to default"
-								onClick={() => {
-									effort.reset()
-									close()
-									effortButtonRef.current?.focus()
-								}}
-							/>
-							{nextMessageButton(effort, effortButtonRef)}
-						</>
-					) : undefined
-				}
-				anchorRef={effort.available ? effortTextRef : effortButtonRef}
-				header={<ApprovalToggles />}
-				items={effort.available && !effort.locked ? effortItems : undefined}
-				label={effort.available ? "Reasoning effort and auto-approve" : "Auto-approve"}
-				note={effort.available && effort.locked ? "Effort can't change while Cline is working" : undefined}
-				onAlignedChange={setAligned}
-				onClose={close}
-				onPick={(value) => {
-					if (isOpenaiReasoningEffort(value)) effort.select(value)
-				}}
-				open={open === "effort"}
-				testId="effort-wheel"
-				triggerRef={effortButtonRef}
-				value={effort.selected}
-			/>
-		</div>
+							title={config.busy ? "Can't change while Cline is working" : undefined}
+							type="button">
+							{config.nextMessageOnly ? "Keep for this chat" : "Next message only"}
+						</button>
+					)}
+					<button
+						className={cn(FOOTER_BUTTON_CLASS, "ml-auto text-link hover:text-link-hover")}
+						data-testid="menu-models-page"
+						onClick={() => {
+							closeMenu(true)
+							config.manage()
+						}}
+						title="Open the Models page"
+						type="button">
+						Models
+						<span aria-hidden className="codicon codicon-chevron-right text-[10px]!" />
+					</button>
+				</div>
+			</PopoverContent>
+		</Popover>
 	)
 }
 

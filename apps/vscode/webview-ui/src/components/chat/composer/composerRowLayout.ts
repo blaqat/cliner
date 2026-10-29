@@ -7,15 +7,15 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  * 1. The model name in the chip truncates (CSS, down to the minimum below).
  * 2. The Compact chip drops its label and token count, keeping its icon (it never hides while the
  *    context is nearly full).
- * 3. The effort text folds into the chip's ⌄ (it still opens the effort wheel), so the model name
- *    keeps its letters.
+ * 3. The effort word hides from the chip (the chip is one button; its menu still has the effort),
+ *    so the model name keeps its letters.
  * 4. The chip goes tight: the model name may drop to a few characters.
  * 📎, the ring and Send never hide.
  */
 export interface ComposerRowLayout {
 	/** The Compact chip shows "Compact 699k"; when false it is its icon alone. */
 	inlineCompactNudge: boolean
-	/** The effort text hides; its ⌄ still opens the effort wheel. */
+	/** The effort word hides from the chip; the chip's menu still has the effort wheel. */
 	compactEffort: boolean
 	/** The model/effort chip may shrink below its usual minimum. */
 	tightChip: boolean
@@ -54,13 +54,13 @@ export const COMPOSER_ROW_WIDTHS = {
 	compactNudge: 92,
 	/** The Compact chip as its icon. */
 	compactNudgeIcon: 22,
-	/** The model chip at a still-readable name ("Opus 4…") and its effort text ("· High ⌄"). */
+	/** The model chip at a still-readable name ("Opus 4…") and its effort word ("High ⌄"). */
 	chipMin: 104,
-	/** Effort folded into ⌄: a readable name ("Opus 4…") and the chevron. */
+	/** Effort word hidden: a readable name ("Opus 4…") and the chevron. */
 	chipCompact: 76,
 	/** Tight: a few characters of the model name. */
 	chipTight: 56,
-	/** Without effort the chip ends in the permissions icon instead of "· High". */
+	/** Without reasoning the chip has no effort word. */
 	effortSaving: 24,
 	/** "Act ↑ | ⌄". */
 	send: 62,

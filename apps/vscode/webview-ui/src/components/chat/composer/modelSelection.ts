@@ -33,10 +33,10 @@ export const formatEffort = (effort: string) =>
 export const formatEffortShort = (effort: string) =>
 	effort === "none" ? "Default" : effort === "medium" ? "Med" : formatEffort(effort)
 
-/**
- * Updates this chat's (or the next chat's) configuration for `mode` without touching Settings.
- * Shared by the configuration and effort pickers so both go through the same RPC.
- */
+/** What one composer change sets: a saved model, an effort, and/or next-message-only. */
+export type ComposerSelectionChanges = Pick<Partial<AssignApiProfileRequest>, "profileId" | "reasoningEffort" | "nextMessageOnly">
+
+/** Updates this chat's (or the next chat's) configuration for `mode` without touching Settings. */
 function useAssignApiProfile(mode: Mode) {
 	const { currentTaskItem } = useExtensionState()
 	return (changes: Partial<AssignApiProfileRequest>) =>
@@ -105,11 +105,9 @@ export function useConfigSelection(mode: Mode, fallbackLabel: string) {
 		busy,
 		hasChat: !!currentTaskItem,
 		nextMessageOnly: !!composerNextMessageOnly,
-		select: (profileId: string) => {
-			if (profileId !== currentId) update({ profileId })
-		},
+		/** One request for a model, an effort and/or next-message-only (a model brings its own effort unless one is given). */
+		assign: (changes: ComposerSelectionChanges) => update(changes),
 		reset: () => update({ resetToDefault: true }),
-		toggleNextMessageOnly: () => update({ nextMessageOnly: !composerNextMessageOnly }),
 		manage: () => navigateToSettings("api-config"),
 	}
 }
@@ -128,11 +126,9 @@ export function useEffortSelection(mode: Mode, { modelId, modelInfo, defaultEffo
 		actProfileId,
 		composerApiSelection,
 		composerNextMessageOnly,
-		currentTaskItem,
 		turnState,
 		focusedSessionModels,
 	} = useExtensionState()
-	const update = useAssignApiProfile(mode)
 	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
 	const modeFields = getModeSpecificFields(apiConfiguration, mode)
 	const storedEffort = composerApiSelection ? composerApiSelection[`${mode}ModeReasoningEffort`] : modeFields.reasoningEffort
@@ -157,13 +153,5 @@ export function useEffortSelection(mode: Mode, { modelId, modelInfo, defaultEffo
 			: `Reasoning effort: ${formatEffort(selected)}`,
 		/** A next-message-only choice can't change while a turn runs. */
 		locked: !!composerNextMessageOnly && busy,
-		busy,
-		hasChat: !!currentTaskItem,
-		nextMessageOnly: !!composerNextMessageOnly,
-		select: (effort: OpenaiReasoningEffort) => {
-			if (effort !== selected) update({ reasoningEffort: effort })
-		},
-		reset: () => update({ resetToDefault: true }),
-		toggleNextMessageOnly: () => update({ nextMessageOnly: !composerNextMessageOnly }),
 	}
 }
