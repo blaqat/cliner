@@ -17,9 +17,15 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–40",
-		date: "2026-10-28",
+		builds: "test builds fork.39–41",
+		date: "2026-10-29",
 		notes: [
+			"One view (beta, Settings › Features › Layout): your threads beside the chat, or as a strip across the top when the panel is narrow; rows show status and the last line, search filters the list in place, and the header is Task › Thread",
+			"Simpler composer: the buttons sit inside the box, Send carries Ask/Act, and one Model · Effort chip opens a wheel for each; the effort wheel holds four permission presets",
+			"MCP servers and Rules & workflows moved to the title bar as a larger overlay; the composer's 📎 is files and images only",
+			"New chats pick the workspace and task on a line under the composer; inside a thread the branch shows in the header",
+			"Stash threads you'll come back to: they leave Active, keep running, and come back when you message them",
+			"Home orders threads and tasks by your last message, and shows when the agent last replied",
 			"Walkthroughs on Windows show only real edits, and Revert keeps a file's line endings",
 			"A later turn's notebook changes get a new review card at the end of the chat",
 			"Going home from a task clears the task picked in the composer",
