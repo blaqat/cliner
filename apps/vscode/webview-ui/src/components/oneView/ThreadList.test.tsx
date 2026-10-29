@@ -1,6 +1,7 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { expectCenteredSpine } from "@/components/inbox/treeGeometry.testUtils"
 import { ThreadList } from "./ThreadList"
 
 const mocks = vi.hoisted(() => ({
@@ -202,5 +203,60 @@ describe("ThreadList", () => {
 		mocks.state = { taskHistory: [], sessionStatuses: {}, taskGroups: [] }
 		renderList()
 		expect(screen.getByTestId("one-view-empty")).toHaveTextContent("No threads yet — start one in the composer")
+	})
+
+	it("renders a task like the home inbox: chevron, task icon, thread count, threads on a centered connector", () => {
+		renderList()
+		const task = screen.getByTestId("one-view-task")
+		const row = within(task).getByTestId("one-view-task-row")
+		expect(row).toHaveTextContent("1 thread")
+		expect(row).toHaveAttribute("data-list-row")
+		expect(within(task).getByTestId("inbox-task-group-waiting")).toHaveTextContent("1 needs you")
+		expectCenteredSpine(task, "one-view-task-row", "one-view-row")
+		fireEvent.click(within(row).getByRole("button", { name: "Collapse Release 3" }))
+		expect(within(task).queryByTestId("task-spine")).toBeNull()
+		expect(within(task).queryByTestId("one-view-row")).toBeNull()
+	})
+
+	it("stashes and settles a whole task from its row", async () => {
+		mocks.state.taskHistory = [
+			...(mocks.state.taskHistory as HistoryItem[]),
+			item("second", { title: "Second", taskGroupId: "g1" }),
+		]
+		const handlers = renderList()
+		const row = screen.getByTestId("one-view-task-row")
+		fireEvent.click(within(row).getByRole("button", { name: "Stash Release 3" }))
+		await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(2))
+		expect(mocks.toggleTaskStashed.mock.calls.map(([request]) => request.taskId)).toEqual(["wait", "second"])
+		fireEvent.click(within(row).getByRole("button", { name: "Settle Release 3" }))
+		// The waiting thread is live: settle leaves it open and says so.
+		await waitFor(() =>
+			expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Settled 1 · 1 still running"),
+		)
+		expect(handlers.onOpenTaskGroup).not.toHaveBeenCalled()
+	})
+
+	it("lists a fully stashed task under Stashed with Unstash", () => {
+		mocks.state.taskHistory = (mocks.state.taskHistory as HistoryItem[]).map((entry) =>
+			entry.taskGroupId === "g1" ? { ...entry, isStashed: true } : entry,
+		)
+		renderList()
+		expect(screen.queryByTestId("one-view-task-row")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "Expand stashed" }))
+		const stashed = screen.getByTestId("one-view-task-row").closest("[data-section]")
+		expect(stashed).toHaveAttribute("data-section", "stashed")
+		expect(screen.getByRole("button", { name: "Unstash Release 3" })).toBeInTheDocument()
+	})
+
+	it("swaps the time for the row actions on hover instead of covering the title", () => {
+		renderList()
+		const row = rowFor("done")
+		expect(within(row).getByTestId("one-view-row-time")).toHaveClass("group-hover:hidden", "group-focus-within:hidden")
+		const actions = within(row).getByTestId("row-actions")
+		expect(actions).toHaveClass("hidden", "group-hover:flex", "group-focus-within:flex")
+		expect(actions).not.toHaveClass("absolute")
+		// In the title's line, after the title, so the title truncates before them.
+		expect(actions.parentElement).toBe(within(row).getByText("Fix CRLF diffs").parentElement)
+		expect(within(actions).getByRole("button", { name: "Stash Fix CRLF diffs" })).toHaveAttribute("title", "Stash")
 	})
 })

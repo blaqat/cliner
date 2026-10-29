@@ -39,7 +39,8 @@ export interface NavigationHistory {
 	reportSettingsSection: (section: string | undefined) => void
 }
 
-const NavigationHistoryContext = createContext<NavigationHistory | undefined>(undefined)
+/** Exported for stories and tests that stand in a history; the app uses NavigationHistoryProvider. */
+export const NavigationHistoryContext = createContext<NavigationHistory | undefined>(undefined)
 
 /** The history layer, or undefined outside the provider (isolated component tests). */
 export function useNavigationHistory(): NavigationHistory | undefined {

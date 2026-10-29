@@ -209,7 +209,7 @@ describe("ChatTextArea stash and mode toggle", () => {
 		expect(screen.getByTestId("stash-button")).toHaveAccessibleName("Stashed prompts (2)")
 	})
 
-	it("labels the modes Ask and Act on the Send button's mode menu", () => {
+	it("labels the mode Act on its one-click toggle beside the send icon", () => {
 		vi.stubGlobal(
 			"ResizeObserver",
 			class {
@@ -219,10 +219,10 @@ describe("ChatTextArea stash and mode toggle", () => {
 			},
 		)
 		renderComposer()
-		expect(screen.getByTestId("send-button")).toHaveTextContent(/^Act$/)
-		fireEvent.click(screen.getByTestId("mode-switch"))
-		const items = screen.getAllByRole("menuitemradio")
-		expect(items.map((el) => el.textContent?.split("Cline")[0])).toEqual(["Act", "Ask"])
+		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
+		expect(screen.getByTestId("mode-switch").title).toMatch(/^Switch to Ask \(/)
+		expect(screen.getByTestId("send-button").querySelector(".codicon-send")).not.toBeNull()
+		expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0)
 	})
 })
 

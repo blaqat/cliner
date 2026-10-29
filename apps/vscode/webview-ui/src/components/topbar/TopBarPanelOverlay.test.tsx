@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { TopBarPanelOverlay } from "./TopBarPanelOverlay"
-import { openTopBarPanel, USE_SCRIPT_EVENT } from "./topBarPanels"
+import { getTopBarPanel, openTopBarPanel, toggleTopBarPanel, USE_SCRIPT_EVENT } from "./topBarPanels"
 
 vi.mock("@/components/chat/composer/McpServersPanel", () => ({
 	default: ({ onOpenSettings }: { onOpenSettings: () => void }) => (
@@ -90,5 +90,42 @@ describe("TopBarPanelOverlay", () => {
 		expect(screen.queryByRole("dialog")).toBeNull()
 		expect((onUseScript.mock.calls[0][0] as CustomEvent<string>).detail).toBe("deploy")
 		document.removeEventListener(USE_SCRIPT_EVENT, onUseScript)
+	})
+
+	it("clicking the same title bar button again closes it; the other one switches the content", () => {
+		render(<TopBarPanelOverlay />)
+		act(() => toggleTopBarPanel("mcp"))
+		expect(screen.getByRole("dialog", { name: "MCP servers" })).toBeInTheDocument()
+		act(() => toggleTopBarPanel("rules"))
+		expect(screen.getByRole("dialog", { name: "Rules & workflows" })).toBeInTheDocument()
+		expect(screen.getByTestId("rules-panel")).toBeInTheDocument()
+		expect(screen.queryByTestId("mcp-servers-panel")).toBeNull()
+		act(() => toggleTopBarPanel("rules"))
+		expect(getTopBarPanel()).toBeNull()
+		expect(screen.queryByRole("dialog")).toBeNull()
+		act(() => toggleTopBarPanel("rules"))
+		expect(screen.getByRole("dialog", { name: "Rules & workflows" })).toBeInTheDocument()
+	})
+
+	it("is anchored top-right, under the title bar icons, and grows from that corner", () => {
+		render(<TopBarPanelOverlay />)
+		open("mcp")
+		const panel = screen.getByTestId("top-bar-panel")
+		expect(panel).toHaveAttribute("data-anchor", "top-right")
+		expect(panel).toHaveClass("top-1", "right-1", "origin-top-right")
+		expect(panel).not.toHaveClass("mx-auto")
+		expect(panel.className).toContain("data-[state=open]:zoom-in-90")
+	})
+
+	it("drops the corner animation under reduced motion", () => {
+		document.body.classList.add("vscode-reduce-motion")
+		try {
+			render(<TopBarPanelOverlay />)
+			open("rules")
+			expect(screen.getByTestId("top-bar-panel").className).not.toContain("animate-in")
+			expect(screen.getByTestId("top-bar-panel-backdrop").className).not.toContain("animate-in")
+		} finally {
+			document.body.classList.remove("vscode-reduce-motion")
+		}
 	})
 })

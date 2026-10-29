@@ -31,7 +31,7 @@ import {
 	type SettingsNavigationRequest,
 	type SettingsNavigationTarget,
 } from "../components/settings/settingsTargets"
-import { openTopBarPanel } from "../components/topbar/topBarPanels"
+import { toggleTopBarPanel } from "../components/topbar/topBarPanels"
 import { McpServiceClient, ModelsServiceClient, StateServiceClient, UiServiceClient } from "../services/grpc-client"
 
 export type ProviderId = string
@@ -610,8 +610,8 @@ export const ExtensionStateContextProvider: React.FC<{
 			{},
 			{
 				onResponse: () => {
-					// The title bar's MCP servers button opens the servers overlay (its "MCP server settings…" reaches the full page).
-					openTopBarPanel("mcp")
+					// The title bar's MCP servers button opens the servers overlay, or closes it when open (its "MCP server settings…" reaches the full page).
+					toggleTopBarPanel("mcp")
 				},
 				onError: (error: any) => {
 					console.error("Error in mcpButtonClicked subscription:", error)
@@ -716,9 +716,9 @@ export const ExtensionStateContextProvider: React.FC<{
 			},
 		)
 
-		// The title bar's Rules & workflows button opens the rules overlay.
+		// The title bar's Rules & workflows button opens the rules overlay (again: closes it).
 		rulesButtonClickedSubscriptionRef.current = UiServiceClient.subscribeToRulesButtonClicked(EmptyRequest.create({}), {
-			onResponse: () => openTopBarPanel("rules"),
+			onResponse: () => toggleTopBarPanel("rules"),
 			onError: (error: any) => {
 				console.error("Error in rules button clicked subscription:", error)
 			},

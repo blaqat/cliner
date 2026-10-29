@@ -12,6 +12,14 @@ export function openTopBarPanel(panel: TopBarPanel | null): void {
 	for (const listener of listeners) listener()
 }
 
+/**
+ * A title bar button: opens its panel, or closes it when it is already the one open (clicking the
+ * same icon again). The other button switches the content.
+ */
+export function toggleTopBarPanel(panel: TopBarPanel): void {
+	openTopBarPanel(openPanel === panel ? null : panel)
+}
+
 export function getTopBarPanel(): TopBarPanel | null {
 	return openPanel
 }

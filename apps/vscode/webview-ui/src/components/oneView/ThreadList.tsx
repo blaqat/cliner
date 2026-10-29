@@ -8,12 +8,13 @@ import {
 	type InboxEntry,
 	SETTLED_PAGE_SIZE,
 } from "@/components/inbox/inboxUtils"
+import { TaskGroupBlock, TaskGroupMembers, TaskGroupRow } from "@/components/inbox/TaskGroupRow"
 import type { SearchRow } from "@/components/search/searchUtils"
 import { openNote } from "@/components/taskGroup/useTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { getCurrentPlatform } from "@/utils/platformUtils"
-import { NoteRow, ROW_ATTR, TaskRow, ThreadRow } from "./ThreadListRows"
+import { Hit, NoteRow, ROW_ATTR, ThreadRow } from "./ThreadListRows"
 import {
 	filterList,
 	isActiveMember,
@@ -249,19 +250,25 @@ export const ThreadList = ({
 			const shown = showAll ? members : members.filter(isActiveMember)
 			const hiddenSettled = members.length - shown.length
 			return (
-				<div data-testid="one-view-task" key={`group:${group.id}`}>
-					<TaskRow
+				<TaskGroupBlock
+					expanded={expanded}
+					key={`group:${group.id}`}
+					spine={shown.length > 0 || hiddenSettled > 0}
+					testId="one-view-task">
+					<TaskGroupRow
 						current={group.id === currentTaskGroupId}
 						expanded={expanded}
 						now={now}
-						onOpen={onOpenTaskGroup}
+						onOpen={() => onOpenTaskGroup(group.id)}
 						onToggle={() => toggleTask(group.id, expanded)}
-						query={searching ? query.trim() : ""}
 						row={entry.row}
+						rowAttrs={{ [ROW_ATTR]: "" }}
 						settled={settled}
+						testId="one-view-task-row"
+						titleNode={searching ? <Hit query={query.trim()} text={group.title} /> : undefined}
 					/>
 					{expanded && (shown.length > 0 || hiddenSettled > 0) && (
-						<div className="ml-3.5 border-l border-editor-group-border pl-1">
+						<TaskGroupMembers testId="one-view-task-members">
 							{shown.map((member) => (
 								<ThreadRow
 									current={member.item.id === currentRowId}
@@ -281,9 +288,9 @@ export const ThreadList = ({
 									Show {hiddenSettled} settled
 								</button>
 							)}
-						</div>
+						</TaskGroupMembers>
 					)}
-				</div>
+				</TaskGroupBlock>
 			)
 		})
 

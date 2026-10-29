@@ -2,6 +2,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import InboxList from "./InboxList"
+import { expectCenteredSpine } from "./treeGeometry.testUtils"
 
 const mocks = vi.hoisted(() => ({
 	showTaskWithId: vi.fn(),
@@ -418,38 +419,57 @@ describe("InboxList task groups", () => {
 		expect(onOpenTaskGroup).toHaveBeenCalledWith("g")
 	})
 
-	describe("Settle all", () => {
+	describe("task row Stash and Settle", () => {
 		beforeEach(() => {
 			mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
-			vi.stubGlobal(
-				"ResizeObserver",
-				class {
-					observe() {}
-					unobserve() {}
-					disconnect() {}
-				},
-			)
+			mocks.toggleTaskStashed.mockReset().mockResolvedValue({})
 		})
+		const ids = (mock: typeof mocks.toggleTaskSettled) =>
+			mock.mock.calls.map(([request]) => (request as { taskId: string }).taskId)
 
-		it("settles every idle thread in the task from the row's menu, skips running ones and says so", async () => {
+		it("Settle settles every idle thread in the task without opening it, skips running ones and says so", async () => {
 			const onOpenTaskGroup = vi.fn()
 			render(<InboxList now={NOW} onOpenTaskGroup={onOpenTaskGroup} showHistoryView={vi.fn()} />)
-
-			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
-			fireEvent.click(screen.getByRole("menuitem", { name: "Settle all" }))
+			const row = screen.getByTestId("inbox-task-group-row")
+			fireEvent.click(within(row).getByRole("button", { name: "Settle Bulk invoice export" }))
 
 			expect(onOpenTaskGroup).not.toHaveBeenCalled()
 			await waitFor(() =>
 				expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Settled 3 · 1 still running"),
 			)
-			expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => (request as { taskId: string }).taskId)).toEqual([
-				"m2",
-				"m3",
-				"m4",
-			])
+			expect(ids(mocks.toggleTaskSettled)).toEqual(["m2", "m3", "m4"])
 		})
 
-		it("offers Unsettle all when every thread is settled", async () => {
+		it("Stash stashes every thread in the task, running ones included", async () => {
+			mocks.state.taskHistory = [
+				...(mocks.state.taskHistory as HistoryItem[]),
+				item("sub", NOW, { taskGroupId: "g", parentTaskId: "m1", isSubagent: true }),
+			]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			fireEvent.click(screen.getByRole("button", { name: "Stash Bulk invoice export" }))
+			await waitFor(() => expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Stashed 4"))
+			// Subagents belong to their parent thread; they aren't stashed on their own.
+			expect(ids(mocks.toggleTaskStashed)).toEqual(["m1", "m2", "m3", "m4"])
+		})
+
+		it("a task whose threads are all stashed sits under Stashed and offers Unstash for all of them", async () => {
+			mocks.state.sessionStatuses = {}
+			mocks.state.taskHistory = [
+				item("m1", NOW - 60_000, { taskGroupId: "g", isStashed: true }),
+				item("m2", NOW - 120_000, { taskGroupId: "g", isStashed: true }),
+				item("loose", NOW, { task: "Loose" }),
+			]
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			fireEvent.click(screen.getByRole("button", { name: "Expand stashed chats" }))
+			const row = screen.getByTestId("inbox-task-group-row")
+			expect(isAfter(row, screen.getByRole("button", { name: "Collapse stashed chats" }))).toBe(true)
+			fireEvent.click(within(row).getByRole("button", { name: "Unstash Bulk invoice export" }))
+			await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(2))
+			expect(ids(mocks.toggleTaskStashed)).toEqual(["m1", "m2"])
+			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unstashed 2")
+		})
+
+		it("offers Unsettle on a settled task, which unsettles every thread", async () => {
 			mocks.state.sessionStatuses = {}
 			mocks.state.taskHistory = [
 				item("m1", NOW - 60_000, { taskGroupId: "g", isSettled: true }),
@@ -457,19 +477,37 @@ describe("InboxList task groups", () => {
 			]
 			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
-			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
-			fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
+			fireEvent.click(screen.getByRole("button", { name: "Unsettle Bulk invoice export" }))
 			await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
 			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unsettled 2")
 		})
 
-		it("disables the action for a task with no threads", () => {
+		it("disables both for a task with no threads, and says why", () => {
 			mocks.state.taskHistory = [item("loose", NOW, { task: "Loose" })]
 			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
-			fireEvent.click(screen.getByRole("button", { name: "Actions for Bulk invoice export" }))
-			expect(screen.getByRole("menuitem", { name: "Settle all" })).toBeDisabled()
+			const settle = screen.getByRole("button", { name: "Settle Bulk invoice export" })
+			const stash = screen.getByRole("button", { name: "Stash Bulk invoice export" })
+			expect(settle).toBeDisabled()
+			expect(stash).toBeDisabled()
+			expect(settle).toHaveAttribute("title", "This task has no threads yet")
 		})
+	})
+
+	it("swaps the time for icon actions on hover, never over the title", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		for (const row of [screen.getByTestId("inbox-task-group-row"), ...screen.getAllByTestId("inbox-row")]) {
+			const actions = within(row).getByTestId("row-actions")
+			expect(actions).toHaveClass("hidden", "group-hover:flex", "group-focus-within:flex")
+			expect(actions).not.toHaveClass("absolute")
+			expect(actions.parentElement?.querySelector("[data-testid$='-time']")).toHaveClass("group-hover:hidden")
+		}
+	})
+
+	it("draws the task connector through the task icon column's center, with threads indented past it", () => {
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Expand Bulk invoice export" }))
+		expectCenteredSpine(screen.getByTestId("inbox-task-group"), "inbox-task-group-row", "inbox-row")
 	})
 })
 

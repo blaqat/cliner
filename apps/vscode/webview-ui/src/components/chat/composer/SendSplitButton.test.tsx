@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import SendSplitButton, { type SendSplitButtonProps } from "./SendSplitButton"
+import SendSplitButton, { type SendSplitButtonProps, shortcutGlyphs } from "./SendSplitButton"
 
 const renderButton = (props: Partial<SendSplitButtonProps> = {}) => {
 	const onSend = vi.fn()
@@ -31,46 +31,47 @@ describe("SendSplitButton", () => {
 		)
 	})
 
-	it("says what Send will do and sends", () => {
-		const { onSend } = renderButton()
+	it("sends from the send icon part, saying what Send will do", () => {
+		const { onSend, onPickMode } = renderButton()
 		const send = screen.getByTestId("send-button")
-		expect(send).toHaveTextContent(/^Act$/)
-		expect(send).toHaveAccessibleName("Act: send")
+		expect(send.querySelector(".codicon-send")).not.toBeNull()
+		expect(send).toHaveAccessibleName("Send (Act)")
 		expect(send.title).toContain("Send (Enter) · Aside (Alt+Enter)")
 		expect(send.title).toContain("In Act mode, Cline will complete the task immediately")
 		fireEvent.click(send)
 		expect(onSend).toHaveBeenCalledOnce()
+		expect(onPickMode).not.toHaveBeenCalled()
 	})
 
-	it("reads Ask in Ask mode, filled with the Ask color", () => {
-		renderButton({ mode: "plan" })
-		expect(screen.getByTestId("send-button")).toHaveTextContent(/^Ask$/)
+	it("switches mode in one click on its label, with the shortcut in the tooltip", () => {
+		const { onPickMode, onSend } = renderButton({ toggleKeys: "⌘+Shift+A" })
+		const toggle = screen.getByTestId("mode-switch")
+		expect(toggle).toHaveTextContent(/^Act$/)
+		expect(toggle.title.split("\n")[0]).toBe("Switch to Ask (⌘⇧A)")
+		expect(toggle).toHaveAccessibleName("Mode: Act. Switch to Ask (⌘⇧A)")
+		fireEvent.click(toggle)
+		expect(onPickMode).toHaveBeenCalledWith("plan")
+		expect(onSend).not.toHaveBeenCalled()
+		// No menu in between.
+		expect(screen.queryByRole("menu")).toBeNull()
+		expect(screen.queryByTestId("mode-menu")).toBeNull()
+	})
+
+	it("reads Ask in Ask mode, toggles back to Act, and fills send with the Ask color", () => {
+		const { onPickMode } = renderButton({ mode: "plan" })
+		const toggle = screen.getByTestId("mode-switch")
+		expect(toggle).toHaveTextContent(/^Ask$/)
+		expect(toggle.title.split("\n")[0]).toBe("Switch to Act (Ctrl+Shift+A)")
+		fireEvent.click(toggle)
+		expect(onPickMode).toHaveBeenCalledWith("act")
 		expect(screen.getByTestId("send-split")).toHaveAttribute("data-mode", "plan")
 		expect(screen.getByTestId("send-split").style.background).toContain("--vscode-activityWarningBadge-background")
 	})
 
-	it("its ⌄ switches the mode from a small menu that shows the toggle shortcut", () => {
-		const { onPickMode, onSend } = renderButton()
-		const toggle = screen.getByTestId("mode-switch")
-		expect(toggle).toHaveAccessibleName("Mode: Act. Switch Ask/Act (Ctrl+Shift+A)")
-		fireEvent.click(toggle)
-		const menu = screen.getByTestId("mode-menu")
-		const items = within(menu).getAllByRole("menuitemradio")
-		expect(items.map((item) => item.getAttribute("aria-checked"))).toEqual(["true", "false"])
-		expect(items[1]).toHaveTextContent("Ask")
-		expect(items[1]).toHaveTextContent("Cline will answer questions and explore the codebase")
-		expect(within(menu).getByTestId("mode-shortcut")).toHaveTextContent("Ctrl+Shift+A")
-		fireEvent.click(items[1])
-		expect(onPickMode).toHaveBeenCalledWith("plan")
-		expect(onSend).not.toHaveBeenCalled()
-		expect(screen.queryByTestId("mode-menu")).toBeNull()
-	})
-
-	it("picking the current mode changes nothing", () => {
-		const { onPickMode } = renderButton()
-		fireEvent.click(screen.getByTestId("mode-switch"))
-		fireEvent.click(screen.getByTestId("mode-option-act"))
-		expect(onPickMode).not.toHaveBeenCalled()
+	it("styles the toggle as a quiet segment and send as the filled one", () => {
+		renderButton()
+		expect(screen.getByTestId("mode-switch")).toHaveClass("bg-button-secondary-background")
+		expect(screen.getByTestId("send-button")).not.toHaveClass("bg-button-secondary-background")
 	})
 
 	it("blocks sending, not switching, while send is disabled", () => {
@@ -81,23 +82,30 @@ describe("SendSplitButton", () => {
 		fireEvent.click(send)
 		expect(onSend).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByTestId("mode-switch"))
-		fireEvent.click(screen.getByTestId("mode-option-plan"))
 		expect(onPickMode).toHaveBeenCalledWith("plan")
 	})
 
-	it("while running, splits send into steer and interject and keeps the mode's name", () => {
+	it("while running, splits send into steer and interject and keeps the one-click mode toggle", () => {
 		const onSteer = vi.fn()
 		const onInterject = vi.fn()
-		renderButton({ running: { enterSendsAs: "interject", modKey: "Ctrl", onSteer, onInterject } })
+		const { onPickMode } = renderButton({ running: { enterSendsAs: "interject", modKey: "Ctrl", onSteer, onInterject } })
 		expect(screen.queryByTestId("send-button")).toBeNull()
 		expect(screen.getByTestId("interject-button")).toHaveAttribute("data-default", "true")
 		expect(screen.getByTestId("interject-button").title).toBe("Interject (Enter): stop the current turn and send now")
 		expect(screen.getByTestId("steer-button").title).toBe("Steer (Ctrl+Enter): queue this message for after the current turn")
+		expect(screen.getByTestId("steer-button").querySelector(".codicon-send")).not.toBeNull()
 		expect(screen.getByTestId("mode-switch")).toHaveTextContent("Act")
 		fireEvent.click(screen.getByTestId("steer-button"))
 		fireEvent.click(screen.getByTestId("interject-button"))
 		expect(onSteer).toHaveBeenCalledOnce()
 		expect(onInterject).toHaveBeenCalledOnce()
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		expect(onPickMode).toHaveBeenCalledWith("plan")
+	})
+
+	it("writes the shortcut with macOS glyphs only on macOS", () => {
+		expect(shortcutGlyphs("⌘+Shift+A")).toBe("⌘⇧A")
+		expect(shortcutGlyphs("Ctrl+Shift+A")).toBe("Ctrl+Shift+A")
 	})
 
 	it("flashes on a mode change, but not under reduced motion", () => {

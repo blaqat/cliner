@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { BackButton } from "./BackButton"
+import { BACK_LABEL_MAX_WIDTH, BackButton } from "./BackButton"
 import { NavigationHistoryProvider, useNavigationHistory } from "./NavigationHistoryContext"
 import { locationKey } from "./navHistory"
 
@@ -175,6 +175,13 @@ describe("navigation history", () => {
 		// came from thread A, which isn't in B's crumbs
 		expect(screen.getByTestId("crumb-back-label")).toHaveTextContent("Thread A")
 		expect(screen.getByTestId("crumb-back-bar")).toBeInTheDocument()
+		// A long name ellipsizes early (about 14 characters) instead of taking half the header; the tooltip has it all.
+		const label = screen.getByTestId("crumb-back-label")
+		expect(label).toHaveClass("truncate")
+		expect(label.style.maxWidth).toBe(BACK_LABEL_MAX_WIDTH)
+		expect(BACK_LABEL_MAX_WIDTH).toBe("min(14ch, 110px)")
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Thread A"))
+		expect(screen.getByTestId("crumb-back").className).not.toContain("max-w-[45%]")
 	})
 
 	it("Back between authored walkthroughs of one thread restores the authoredId", () => {

@@ -139,8 +139,10 @@ describe("composer bottom row", () => {
 		]
 		for (const element of order) expect(row).toContainElement(element)
 		for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
-		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent("Opus 4.5·High")
-		expect(screen.getByTestId("send-button")).toHaveTextContent(/^Act$/)
+		// No "·": the model and effort read as words, spaced by the parts' padding.
+		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent(/^Opus 4\.5High$/)
+		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
+		expect(follows(screen.getByTestId("mode-switch"), screen.getByTestId("send-button"))).toBe(true)
 	})
 
 	it("sits inside the composer card with the text, which draws the focus border", () => {
@@ -229,10 +231,9 @@ describe("composer bottom row", () => {
 			expect(props.onSend).toHaveBeenCalledOnce()
 		})
 
-		it("switches to Ask from the ⌄ menu", () => {
+		it("switches to Ask in one click on the mode label", () => {
 			renderComposer()
 			fireEvent.click(screen.getByTestId("mode-switch"))
-			fireEvent.click(screen.getByTestId("mode-option-plan"))
 			expect(mocks.togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: PlanActMode.PLAN }))
 		})
 
@@ -242,9 +243,9 @@ describe("composer bottom row", () => {
 		])("shows the toggle shortcut with %s", (modKey, keys) => {
 			mocks.modKey = modKey
 			renderComposer()
-			expect(screen.getByTestId("mode-switch")).toHaveAccessibleName(`Mode: Act. Switch Ask/Act (${keys})`)
-			fireEvent.click(screen.getByTestId("mode-switch"))
-			expect(screen.getByTestId("mode-shortcut")).toHaveTextContent(keys)
+			const shown = modKey === "⌘" ? "⌘⇧A" : keys
+			expect(screen.getByTestId("mode-switch")).toHaveAccessibleName(`Mode: Act. Switch to Ask (${shown})`)
+			expect(screen.getByTestId("mode-switch").title).toContain(`Switch to Ask (${shown})`)
 		})
 
 		it("keeps start-in-background on the home composer", () => {

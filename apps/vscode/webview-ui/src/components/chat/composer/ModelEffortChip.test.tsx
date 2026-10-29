@@ -58,13 +58,26 @@ beforeEach(() => {
 })
 
 describe("ModelEffortChip", () => {
-	it("reads Model · Effort, with two click targets", () => {
+	it("reads Model Effort as words (no ·), with two click targets", () => {
 		renderChip()
 		const chip = screen.getByTestId("model-effort-chip")
-		expect(chip).toHaveTextContent("Claude work·High")
+		expect(chip).toHaveTextContent(/^Claude workHigh$/)
+		expect(chip.textContent).not.toContain("·")
 		expect(screen.getByTestId("config-picker")).toHaveTextContent(/^Claude work$/)
 		expect(screen.getByTestId("reasoning-effort-picker")).toHaveTextContent(/^High$/)
 		expect(screen.queryByTestId("full-access-icon")).toBeNull()
+	})
+
+	it("hovering a part only brightens its own text: no background highlight on the chip", () => {
+		renderChip()
+		const chip = screen.getByTestId("model-effort-chip")
+		expect(chip.className).not.toMatch(/hover:bg-|bg-toolbar-hover/)
+		for (const part of [screen.getByTestId("config-picker"), screen.getByTestId("reasoning-effort-picker")]) {
+			expect(part).toHaveClass("hover:text-foreground", "focus-visible:text-foreground", "bg-transparent")
+			expect(part.className).not.toMatch(/hover:bg-/)
+			// Keyboard users still get the focus ring.
+			expect(part.className).toContain("focus-visible:outline-(--vscode-focusBorder)")
+		}
 	})
 
 	describe("model wheel", () => {
@@ -72,14 +85,13 @@ describe("ModelEffortChip", () => {
 			renderChip()
 			fireEvent.click(screen.getByTestId("config-picker"))
 			const wheel = await screen.findByTestId("model-wheel")
-			expect(options(wheel).map((option) => option.textContent)).toEqual([
-				"Claude workclaude-sonnet",
-				"Local vLLMqwen",
-				"Opus 4.5claude-opus",
-			])
+			// Just the names, in the chip's font; the model id is in each row's tooltip.
+			expect(options(wheel).map((option) => option.textContent)).toEqual(["Claude work", "Local vLLM", "Opus 4.5"])
+			expect(options(wheel)[0]).toHaveAttribute("title", "Claude work · claude-sonnet")
 			expect(selected(wheel)).toHaveTextContent("Claude work")
-			// The current row sits at the center slot: the track is shifted so index 0 is two rows down.
-			expect(screen.getByTestId("model-wheel-list").style.transform).toBe("translateY(48px)")
+			// The current row sits where the chip text was: the track is shifted so index 0 is `above` rows down.
+			const above = Number(wheel.dataset.above)
+			expect(screen.getByTestId("model-wheel-list").style.transform).toBe(`translateY(${above * 20}px)`)
 			await waitFor(() => expect(screen.getByTestId("model-wheel-list")).toHaveFocus())
 			expect(screen.getByTestId("config-picker")).toHaveAttribute("aria-expanded", "true")
 		})
@@ -92,7 +104,8 @@ describe("ModelEffortChip", () => {
 			fireEvent.keyDown(list, { key: "ArrowDown" })
 			fireEvent.keyDown(list, { key: "ArrowDown" }) // stops at the last row
 			expect(selected(screen.getByTestId("model-wheel"))).toHaveTextContent("Opus 4.5")
-			expect(list.style.transform).toBe("translateY(0px)")
+			const above = Number(screen.getByTestId("model-wheel").dataset.above)
+			expect(list.style.transform).toBe(`translateY(${(above - 2) * 20}px)`)
 			fireEvent.keyDown(list, { key: "ArrowUp" })
 			fireEvent.keyDown(list, { key: "Enter" })
 			expect(screen.queryByTestId("model-wheel")).toBeNull()
@@ -152,6 +165,46 @@ describe("ModelEffortChip", () => {
 			expect(screen.getByTestId("model-wheel")).toBeInTheDocument()
 			fireEvent.click(screen.getByTestId("config-picker"))
 			expect(screen.queryByTestId("model-wheel")).toBeNull()
+		})
+
+		it("is the rolling text itself: no menu box, border, shadow or highlight band", async () => {
+			renderChip()
+			fireEvent.click(screen.getByTestId("config-picker"))
+			const wheel = await screen.findByTestId("model-wheel")
+			for (const element of [wheel, ...wheel.querySelectorAll<HTMLElement>("*")]) {
+				expect(element.className).not.toMatch(/(^|\s)(shadow\S*|border|border-solid|bg-menu)(\s|$)/)
+			}
+			expect(screen.queryByTestId("model-wheel-band")).toBeNull()
+			expect(selected(wheel)).toHaveClass("text-foreground")
+			expect(options(wheel)[1]).toHaveClass("text-description")
+			// Neighbours fade with distance; each row covers only its own text, on the composer's color.
+			const texts = within(wheel).getAllByTestId("wheel-option-text")
+			expect(Number(texts[0].style.opacity)).toBe(1)
+			expect(Number(texts[1].style.opacity)).toBeLessThan(1)
+			expect(options(wheel)[1]).toHaveClass("w-max", "bg-input-background")
+		})
+
+		it("keeps its actions as icon buttons beside the pick, reachable by Shift+Tab", async () => {
+			mocks.state.currentTaskItem = { id: "chat" }
+			renderChip()
+			fireEvent.click(screen.getByTestId("config-picker"))
+			const actions = await screen.findByTestId("model-wheel-actions")
+			const buttons = within(actions).getAllByRole("button")
+			expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+				"Reset to default",
+				"Next message only",
+				"Models page",
+			])
+			for (const button of buttons) {
+				expect(button.title).toBe(button.getAttribute("aria-label"))
+				expect(button.tabIndex).not.toBe(-1)
+			}
+			// Left of the pick: Shift+Tab from the wheel reaches them.
+			const list = screen.getByTestId("model-wheel-list")
+			expect(list.compareDocumentPosition(buttons[2]) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+			// Tabbing between the wheel and its actions keeps it open.
+			fireEvent.blur(list, { relatedTarget: buttons[0] })
+			expect(screen.getByTestId("model-wheel")).toBeInTheDocument()
 		})
 
 		it("links to the Models page and keeps Reset and next-message-only", async () => {
@@ -223,85 +276,71 @@ describe("ModelEffortChip", () => {
 			expect(screen.getByTestId("reasoning-effort-picker")).toHaveFocus()
 		})
 
-		it("holds the permissions above the wheel: Custom when no preset matches", async () => {
+		it("shows the five auto-approve actions as toggles just above the wheel", async () => {
 			renderChip()
 			fireEvent.click(screen.getByTestId("reasoning-effort-picker"))
 			const wheel = await screen.findByTestId("effort-wheel")
-			const presets = within(wheel).getAllByRole("radio")
-			expect(presets.map((preset) => preset.getAttribute("aria-label"))).toEqual([
-				"Ask first",
-				"Edit files",
-				"Safe commands",
-				"Full access",
+			const toggles = within(within(wheel).getByTestId("approval-toggles")).getAllByRole("button")
+			expect(toggles.map((toggle) => toggle.textContent)).toEqual(["Read", "Edit", "Commands", "Web Fetch", "MCP"])
+			// Defaults: everything but commands is on.
+			expect(toggles.map((toggle) => toggle.getAttribute("aria-pressed"))).toEqual([
+				"true",
+				"true",
+				"false",
+				"true",
+				"true",
 			])
-			expect(presets.every((preset) => preset.getAttribute("aria-checked") === "false")).toBe(true)
-			expect(screen.getByTestId("permissions-summary")).toHaveTextContent("Custom · 4 of 5 on")
+			expect(
+				within(wheel).getByTestId("approval-toggles").compareDocumentPosition(within(wheel).getByRole("listbox")) &
+					Node.DOCUMENT_POSITION_FOLLOWING,
+			).toBeTruthy()
+			// No presets, summary or per-action expansion any more.
+			expect(within(wheel).queryByRole("radio")).toBeNull()
+			expect(within(wheel).queryByTestId("permissions-summary")).toBeNull()
+			expect(within(wheel).queryByTestId("pick-each-action")).toBeNull()
 		})
 
-		it("applies a preset onto the approval settings and keeps the popup open", async () => {
+		it("each toggle changes its own setting at once and keeps the wheel open", async () => {
 			renderChip()
 			fireEvent.click(screen.getByTestId("reasoning-effort-picker"))
-			fireEvent.click(await screen.findByTestId("permission-preset-edit"))
+			fireEvent.click(await screen.findByTestId("approval-executeSafeCommands"))
 			expect(mocks.updateAutoApprovalSettings).toHaveBeenCalledWith(
 				expect.objectContaining({
 					actions: expect.objectContaining({
 						readFiles: true,
 						editFiles: true,
-						executeSafeCommands: false,
-						useBrowser: false,
-						useMcp: false,
+						executeSafeCommands: true,
+						useBrowser: true,
+						useMcp: true,
 					}),
 				}),
+			)
+			fireEvent.click(screen.getByTestId("approval-useMcp"))
+			expect(mocks.updateAutoApprovalSettings).toHaveBeenLastCalledWith(
+				expect.objectContaining({ actions: expect.objectContaining({ useMcp: false }) }),
 			)
 			expect(screen.getByTestId("effort-wheel")).toBeInTheDocument()
 		})
 
-		it("names the matching preset", async () => {
-			mocks.state.autoApprovalSettings = {
-				...DEFAULT_AUTO_APPROVAL_SETTINGS,
-				actions: { ...DEFAULT_AUTO_APPROVAL_SETTINGS.actions, useMcp: false, executeSafeCommands: true },
-			}
-			renderChip()
-			fireEvent.click(screen.getByTestId("reasoning-effort-picker"))
-			await screen.findByTestId("effort-wheel")
-			expect(screen.getByTestId("permission-preset-commands")).toHaveAttribute("aria-checked", "true")
-			expect(screen.getByTestId("permissions-summary")).toHaveTextContent("Safe commands")
-		})
-
-		it("Pick each action swaps the wheel for the per-action list, keeping one scroll area", async () => {
-			renderChip()
-			fireEvent.click(screen.getByTestId("reasoning-effort-picker"))
-			const wheel = await screen.findByTestId("effort-wheel")
-			fireEvent.click(within(wheel).getByTestId("pick-each-action"))
-			expect(within(wheel).getByTestId("approvals-menu")).toBeInTheDocument()
-			expect(within(wheel).queryByRole("listbox")).toBeNull()
-			// Only the popup itself may scroll.
-			const scrollers = [wheel, ...wheel.querySelectorAll<HTMLElement>("*")].filter((element) =>
-				/\boverflow-(y-)?(auto|scroll)\b/.test(element.className),
-			)
-			expect(scrollers).toEqual([wheel])
-			fireEvent.click(within(wheel).getByTestId("pick-each-action"))
-			expect(within(wheel).getByRole("listbox")).toBeInTheDocument()
-		})
-
-		it("with Full access, the chip shows the error-colored shield before the model", async () => {
+		it("with every action on, the chip and the row show the error-colored shield", async () => {
 			mocks.state.autoApprovalSettings = FULL
 			renderChip()
 			expect(screen.getByTestId("full-access-icon")).toHaveClass("text-error")
-			expect(screen.getByTestId("config-picker")).toHaveAccessibleName(/Full access on/)
+			expect(screen.getByTestId("config-picker")).toHaveAccessibleName(/every action auto-approved/)
 			fireEvent.click(screen.getByTestId("reasoning-effort-picker"))
-			expect(await screen.findByTestId("permission-preset-full")).toHaveClass("text-error")
+			expect(await screen.findByTestId("approvals-all-on")).toHaveClass("text-error")
+			expect(screen.getByTestId("approval-useMcp")).toHaveClass("text-error")
 		})
 
-		it("a model without reasoning shows no effort, only the permissions", async () => {
+		it("a model without reasoning shows no effort, only the approvals", async () => {
 			renderChip({ modelInfo: {}, modelId: undefined })
 			expect(screen.queryByTestId("reasoning-effort-picker")).toBeNull()
 			const permissions = screen.getByTestId("permissions-picker")
-			expect(permissions).toHaveAccessibleName("Permissions: Custom")
+			expect(permissions).toHaveAccessibleName("Auto-approve: 4 of 5")
 			fireEvent.click(permissions)
 			const popup = await screen.findByTestId("effort-wheel")
 			expect(within(popup).queryByRole("listbox")).toBeNull()
-			expect(within(popup).getByTestId("permission-presets")).toBeInTheDocument()
+			expect(within(popup).getByTestId("approval-toggles")).toBeInTheDocument()
 		})
 
 		it("drops the slide under reduced motion", async () => {

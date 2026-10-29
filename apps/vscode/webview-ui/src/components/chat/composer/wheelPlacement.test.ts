@@ -1,71 +1,81 @@
 import { describe, expect, it } from "vitest"
-import { placeWheel, WHEEL_ROW_HEIGHT, wheelRowCount } from "./wheelPlacement"
+import { placeWheel, WHEEL_ROW_HEIGHT } from "./wheelPlacement"
 
 const viewport = { width: 400, height: 800 }
-const popup = { width: 240, above: 5, below: 30 }
-
-describe("wheelRowCount", () => {
-	it.each([
-		[1000, 5],
-		[120, 5],
-		[119, 3],
-		[96, 3],
-		[72, 3],
-		[71, 1],
-		[10, 1],
-	])("fits %ipx with %i rows (odd, never more than five)", (available, rows) => {
-		expect(wheelRowCount(available)).toBe(rows)
-	})
-})
+const popup = { width: 200, header: 0 }
+/** The middle of the pick's row. */
+const pickMiddle = (top: number, above: number) => top + above * WHEEL_ROW_HEIGHT + WHEEL_ROW_HEIGHT / 2
 
 describe("placeWheel", () => {
-	it("puts the center row's text exactly over the chip text", () => {
+	it("puts the pick's text exactly over the chip text, two neighbours each side", () => {
 		const anchor = { left: 100, top: 400, height: 16 }
-		const placed = placeWheel({ anchor, viewport, popup, rowInset: 9 })
-		expect(placed.rows).toBe(5)
+		const placed = placeWheel({ anchor, viewport, popup, rowInset: 4 })
+		expect(placed).toMatchObject({ above: 2, below: 2, aligned: true })
+		expect(pickMiddle(placed.top, placed.above)).toBe(anchor.top + anchor.height / 2)
+		expect(placed.left + 4).toBe(anchor.left)
+	})
+
+	it("with no room below (composer at the window bottom) shows more rows above, text still in place", () => {
+		const anchor = { left: 100, top: 776, height: 16 }
+		const placed = placeWheel({ anchor, viewport, popup, rowInset: 4, count: 5, index: 4 })
+		expect(placed.below).toBe(0)
+		expect(placed.above).toBe(4)
 		expect(placed.aligned).toBe(true)
-		// Center row: below the part above the wheel and two rows; its middle is the anchor's middle.
-		const centerMiddle = placed.top + popup.above + 2 * WHEEL_ROW_HEIGHT + WHEEL_ROW_HEIGHT / 2
-		expect(centerMiddle).toBe(anchor.top + anchor.height / 2)
-		expect(placed.left + 9).toBe(anchor.left)
+		expect(pickMiddle(placed.top, placed.above)).toBe(anchor.top + anchor.height / 2)
+		expect(placed.top + (placed.above + 1) * WHEEL_ROW_HEIGHT).toBeLessThanOrEqual(viewport.height - 4)
 	})
 
-	it("shifts up near the bottom edge and stays fully on screen", () => {
-		const anchor = { left: 100, top: 780, height: 16 }
-		const placed = placeWheel({ anchor, viewport, popup, rowInset: 9 })
-		const height = popup.above + placed.rows * WHEEL_ROW_HEIGHT + popup.below
-		expect(placed.top + height).toBeLessThanOrEqual(viewport.height - 4)
-		expect(placed.rows).toBe(5)
-		expect(placed.aligned).toBe(false)
+	it("without room below rolls upside down when more choices follow the pick, so they show above", () => {
+		const anchor = { left: 100, top: 776, height: 16 }
+		expect(placeWheel({ anchor, viewport, popup, rowInset: 4, count: 4, index: 0 })).toMatchObject({
+			above: 3,
+			below: 0,
+			flip: true,
+		})
+		// More before the pick: the usual order already shows them above.
+		expect(placeWheel({ anchor, viewport, popup, rowInset: 4, count: 5, index: 3 }).flip).toBe(false)
+		// With room below it never flips.
+		expect(
+			placeWheel({ anchor: { left: 100, top: 400, height: 16 }, viewport, popup, rowInset: 4, count: 4, index: 0 }).flip,
+		).toBe(false)
 	})
 
-	it("never goes above the top edge", () => {
-		const placed = placeWheel({ anchor: { left: 100, top: 2, height: 16 }, viewport, popup, rowInset: 9 })
-		expect(placed.top).toBe(4)
+	it("puts the icon actions left of the rolling text, keeping the text on the chip", () => {
+		const anchor = { left: 200, top: 400, height: 16 }
+		const placed = placeWheel({ anchor, viewport, popup, rowInset: 4, lead: 60 })
+		expect(placed.left + 60 + 4).toBe(anchor.left)
+		expect(placed.aligned).toBe(true)
 	})
 
-	it("shows fewer rows in a short window rather than clipping", () => {
-		const short = { width: 400, height: 140 }
-		const placed = placeWheel({ anchor: { left: 100, top: 100, height: 16 }, viewport: short, popup, rowInset: 9 })
-		expect(placed.rows).toBe(3)
-		const height = popup.above + placed.rows * WHEEL_ROW_HEIGHT + popup.below
-		expect(placed.top).toBeGreaterThanOrEqual(4)
-		expect(placed.top + height).toBeLessThanOrEqual(short.height - 4)
+	it("one row of room below: one neighbour below, three above", () => {
+		const anchor = { left: 100, top: 754, height: 16 }
+		expect(placeWheel({ anchor, viewport, popup, rowInset: 4, count: 5, index: 3 })).toMatchObject({
+			above: 3,
+			below: 1,
+			flip: false,
+		})
 	})
 
-	it("keeps the wheel column under the chip text when the popup moves left to stay on screen", () => {
-		const anchor = { left: 250, top: 400, height: 16 }
-		const placed = placeWheel({ anchor, viewport, popup, rowInset: 9 })
+	it("leaves room for the approvals row above the wheel", () => {
+		const anchor = { left: 100, top: 60, height: 16 }
+		const placed = placeWheel({ anchor, viewport, popup: { width: 200, header: 26 }, rowInset: 4 })
+		// The approvals row hangs above the wheel and stays on screen.
+		expect(placed.top - 26).toBeGreaterThanOrEqual(4)
+		expect(placed.above).toBe(1)
+		expect(pickMiddle(placed.top, placed.above)).toBe(anchor.top + anchor.height / 2)
+	})
+
+	it("shifts left only as far as needed to stay on screen", () => {
+		const anchor = { left: 300, top: 400, height: 16 }
+		const placed = placeWheel({ anchor, viewport, popup, rowInset: 4 })
 		expect(placed.left + popup.width).toBeLessThanOrEqual(viewport.width - 4)
-		expect(placed.left + placed.columnOffset + 9).toBe(anchor.left)
-		expect(placed.aligned).toBe(true)
+		expect(placed.aligned).toBe(false)
 	})
 
-	it("opens above the anchor like a menu without a wheel", () => {
+	it("opens just above the anchor without a wheel", () => {
 		const anchor = { left: 100, top: 500, height: 16 }
-		const placed = placeWheel({ anchor, viewport, popup: { width: 240, above: 200, below: 0 }, rowInset: 9, noWheel: true })
-		expect(placed.rows).toBe(0)
-		expect(placed.top + 200).toBeLessThanOrEqual(anchor.top)
-		expect(placed.aligned).toBe(false)
+		const placed = placeWheel({ anchor, viewport, popup: { width: 200, header: 30 }, rowInset: 4, noWheel: true })
+		expect(placed).toMatchObject({ above: 0, below: 0, aligned: false })
+		expect(placed.top + 30).toBeLessThanOrEqual(anchor.top)
 	})
 })

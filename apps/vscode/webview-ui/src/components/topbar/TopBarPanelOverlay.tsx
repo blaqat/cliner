@@ -3,6 +3,8 @@ import { useLayoutEffect, useRef } from "react"
 import McpServersPanel from "@/components/chat/composer/McpServersPanel"
 import { HEADER_ICON_BUTTON_CLASS } from "@/components/chat/task-header/HeaderIconButton"
 import ClineRulesPanel from "@/components/cline-rules/ClineRulesPanel"
+import { useReducedMotionPreference } from "@/hooks/useReducedMotionPreference"
+import { cn } from "@/lib/utils"
 import { openTopBarPanel, requestScriptDraft, type TopBarPanel, useTopBarPanel } from "./topBarPanels"
 
 const TITLES: Record<TopBarPanel, { title: string; icon: string; description: string }> = {
@@ -15,13 +17,16 @@ const TITLES: Record<TopBarPanel, { title: string; icon: string; description: st
 }
 
 /**
- * The view title bar's MCP servers and Rules & workflows buttons open their panels here: a large,
- * dismissable overlay over the webview (Escape, ✕ or a click on the backdrop closes it). Focus
- * stays inside while it is open and goes back where it was after. The panels scroll inside; the
- * overlay itself never does, so there is one scrollbar.
+ * The view title bar's MCP servers and Rules & workflows buttons open their panels here: a large
+ * panel anchored to the webview's top-right corner, right under those title bar icons, that grows
+ * down and out from that corner (no motion under reduced motion). Clicking the same icon again
+ * closes it; the other icon switches the content. Escape, ✕ or a click on the backdrop close it
+ * too. Focus stays inside while it is open and goes back where it was after. The panels scroll
+ * inside; the overlay itself never does, so there is one scrollbar.
  */
 export function TopBarPanelOverlay() {
 	const panel = useTopBarPanel()
+	const reduceMotion = useReducedMotionPreference()
 	const close = () => openTopBarPanel(null)
 	// Opened from the title bar, the dialog has no trigger to return to: remember what had focus.
 	const returnFocusRef = useRef<HTMLElement | null>(null)
@@ -29,7 +34,11 @@ export function TopBarPanelOverlay() {
 	useLayoutEffect(() => {
 		if (isOpen) returnFocusRef.current = document.activeElement as HTMLElement | null
 	}, [isOpen])
-	const meta = panel ? TITLES[panel] : undefined
+	// Keep showing the last panel while the overlay animates out.
+	const lastPanelRef = useRef(panel)
+	if (panel) lastPanelRef.current = panel
+	const shown = panel ?? lastPanelRef.current
+	const meta = shown ? TITLES[shown] : undefined
 
 	return (
 		<DialogPrimitive.Root
@@ -39,12 +48,23 @@ export function TopBarPanelOverlay() {
 			open={!!panel}>
 			<DialogPrimitive.Portal>
 				<DialogPrimitive.Overlay
-					className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none"
+					className={cn(
+						"fixed inset-0 z-50 bg-black/40",
+						!reduceMotion &&
+							"data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 motion-reduce:animate-none",
+					)}
 					data-testid="top-bar-panel-backdrop"
 				/>
 				<DialogPrimitive.Content
 					aria-describedby={undefined}
-					className="fixed inset-x-2 top-2 bottom-2 z-50 mx-auto flex max-h-[720px] max-w-[560px] flex-col overflow-hidden rounded-xs border border-solid border-menu-foreground/10 bg-menu text-menu-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none"
+					className={cn(
+						// Top-right, under the title bar icons; as large as the webview allows, up to 560×720.
+						"fixed top-1 right-1 z-50 flex w-[min(560px,calc(100vw-8px))] h-[min(720px,calc(100vh-8px))] origin-top-right flex-col overflow-hidden rounded-xs border border-solid border-menu-foreground/10 bg-menu text-menu-foreground shadow-md outline-none",
+						!reduceMotion &&
+							"data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-90 data-[state=open]:slide-in-from-top-2 data-[state=open]:slide-in-from-right-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:duration-200 data-[state=closed]:duration-150 motion-reduce:animate-none",
+					)}
+					data-anchor="top-right"
+					data-panel={shown ?? undefined}
 					data-testid="top-bar-panel"
 					onCloseAutoFocus={(event) => {
 						event.preventDefault()
@@ -52,7 +72,7 @@ export function TopBarPanelOverlay() {
 						returnFocusRef.current = null
 						if (target?.isConnected && target !== document.body) target.focus()
 					}}>
-					{panel && meta && (
+					{shown && meta && (
 						<>
 							<div className="flex shrink-0 items-center gap-2 border-b border-solid border-x-0 border-t-0 border-menu-foreground/10 py-1.5 pr-1.5 pl-3">
 								<span aria-hidden className={`codicon codicon-${meta.icon} text-[14px]! text-description`} />
@@ -69,8 +89,8 @@ export function TopBarPanelOverlay() {
 									<span aria-hidden className="codicon codicon-close text-[14px]!" />
 								</DialogPrimitive.Close>
 							</div>
-							{panel === "mcp" && <McpServersPanel onOpenSettings={close} />}
-							{panel === "rules" && (
+							{shown === "mcp" && <McpServersPanel onOpenSettings={close} />}
+							{shown === "rules" && (
 								<ClineRulesPanel
 									onUseScript={(name) => {
 										close()

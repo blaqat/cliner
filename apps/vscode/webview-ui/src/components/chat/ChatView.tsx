@@ -41,6 +41,7 @@ import {
 	withTaskMessage,
 } from "./chat-view"
 import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
+import { composerPlaceholder } from "./chat-view/utils/composerPlaceholder"
 import { findOpenMessageIndex } from "./chat-view/utils/openMessageUtils"
 import {
 	hasPendingMessageConfirmation,
@@ -527,11 +528,10 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		void openTask(previous)
 	}
 
-	const placeholderText = useMemo(() => {
-		// One hint, in the box itself: what @ and / do.
-		if (taskGroupView && !task) return "New thread in this task · @ for context, / for commands"
-		return "@ for context, / for commands & workflows, shift-drag files in"
-	}, [task, taskGroupView])
+	const placeholderText = useMemo(
+		() => composerPlaceholder({ inThread: !!task, onTaskPage: !!taskGroupView }),
+		[task, taskGroupView],
+	)
 
 	const messagesArea = task && !taskGroupView && (
 		<MessagesArea
