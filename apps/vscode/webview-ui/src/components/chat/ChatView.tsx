@@ -528,9 +528,9 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	}
 
 	const placeholderText = useMemo(() => {
-		if (taskGroupView && !task) return "New thread in this task…"
-		const text = task ? "Type a message..." : "Type your task here..."
-		return text
+		// One hint, in the box itself: what @ and / do.
+		if (taskGroupView && !task) return "New thread in this task · @ for context, / for commands"
+		return "@ for context, / for commands & workflows, shift-drag files in"
 	}, [task, taskGroupView])
 
 	const messagesArea = task && !taskGroupView && (

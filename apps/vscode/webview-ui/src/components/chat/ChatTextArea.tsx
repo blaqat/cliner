@@ -1731,7 +1731,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							autoFocus={true}
 							data-testid="chat-input"
 							maxRows={10}
-							minRows={3}
+							minRows={2}
 							onBlur={handleBlur}
 							onChange={(e) => {
 								handleInputChange(e)
@@ -1800,11 +1800,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						{quoteTags && (
 							<div className="absolute top-1 left-2 right-2 z-2 h-5" data-testid="composer-quote-row">
 								{quoteTags}
-							</div>
-						)}
-						{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
-							<div className="text-xs absolute bottom-1 left-3 right-12 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
-								Type @ for context, / for slash commands & workflows, hold shift to drag in files/images
 							</div>
 						)}
 						{(selectedImages.length > 0 || selectedFiles.length > 0) && (

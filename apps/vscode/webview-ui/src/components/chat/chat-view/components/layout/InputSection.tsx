@@ -14,6 +14,7 @@ import { MessageTagList, sameMessageTag } from "@/components/chat/MessageTag"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { modKeyLabel } from "@/utils/platformUtils"
 import { usePromptStash } from "../../hooks/usePromptStash"
 import { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
 
@@ -105,8 +106,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
 	const usage = useComposerContextUsage(mode, apiMetrics?.totalCost)
 	const runningPlaceholder =
 		enterSendsAs === "interject"
-			? "Interject with Enter, steer with Ctrl/⌘+Enter"
-			: "Steer with Enter, interject with Ctrl/⌘+Enter"
+			? `Interject with Enter, steer with ${modKeyLabel()}+Enter`
+			: `Steer with Enter, interject with ${modKeyLabel()}+Enter`
 
 	// Open the note editor of a quote only when it was just added, not when quotes are restored in bulk.
 	const prevQuoteCountRef = useRef(quotes.length)
