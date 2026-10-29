@@ -41,6 +41,7 @@ service TaskService {
   // Toggles the favorite status of a task
   rpc toggleTaskFavorite(TaskFavoriteRequest) returns (Empty);
   rpc toggleTaskSettled(TaskSettledRequest) returns (Empty);
+  rpc toggleTaskStashed(TaskSettledRequest) returns (Empty);
   rpc forkTaskAt(ForkTaskAtRequest) returns (String);
   rpc interjectPrompt(InterjectPromptRequest) returns (Empty);
   rpc stopSubagent(StopSubagentRequest) returns (Empty);
@@ -117,6 +118,12 @@ message StopSubagentRequest {
   string subagent_id = 3;
 }
 
+// Latest complete conversational message.
+message LastLine {
+  string author = 1;
+  string text = 2;
+}
+
 // Response for task details
 message TaskResponse {
   string id = 1;
@@ -135,6 +142,9 @@ message TaskResponse {
   optional int64 settled_at = 15;
   optional string parent_task_id = 16;
   optional int64 forked_at_ts = 17;
+  optional bool is_stashed = 22;
+  optional int64 stashed_at = 23;
+  LastLine last_line = 24;
 }
 
 // Request for getting task history with filtering
@@ -172,6 +182,9 @@ message TaskItem {
   optional int64 settled_at = 15;
   optional string parent_task_id = 16;
   optional int64 forked_at_ts = 17;
+  optional bool is_stashed = 22;
+  optional int64 stashed_at = 23;
+  LastLine last_line = 24;
   // Provider id the task ran on. Empty for tasks recorded before this
   // field existed and for legacy imports; consumers show cost in that case.
   string api_provider = 13;

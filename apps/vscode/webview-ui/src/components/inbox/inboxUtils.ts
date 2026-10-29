@@ -67,6 +67,9 @@ export interface InboxGroups {
 	settled: InboxSettledEntry[]
 	/** All settled entries, including those cut by the settled limit. */
 	settledTotal: number
+	stashed: InboxEntry[]
+	stashedTotal: number
+	stashedNeedingYou: number
 	/** Active rows past the active limit; the list offers "Show more" for them. */
 	hiddenCount: number
 }
@@ -102,8 +105,9 @@ export function buildInbox(
 	{
 		activeLimit = DEFAULT_ACTIVE_LIMIT,
 		settledLimit = DEFAULT_SETTLED_LIMIT,
+		stashedLimit = DEFAULT_SETTLED_LIMIT,
 		taskGroups = [],
-	}: { activeLimit?: number; settledLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
+	}: { activeLimit?: number; settledLimit?: number; stashedLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
 	const byId = new Map(valid.map((item) => [item.id, item]))
@@ -213,13 +217,21 @@ export function buildInbox(
 		.sort((a, b) => b.activityTs - a.activityTs)
 
 	const isGroupSettled = (row: InboxTaskGroupRow) => row.members.every((member) => member.settled && !isRowWorking(member))
-	const groups = allGroups.filter((row) => !isGroupSettled(row))
+	const isGroupStashed = (row: InboxTaskGroupRow) => {
+		const members = valid.filter((item) => !item.isSubagent && item.taskGroupId === row.group.id)
+		return members.length > 0 && members.every((item) => item.isStashed)
+	}
+	const groups = allGroups.filter((row) => !isGroupStashed(row) && !isGroupSettled(row))
+	const stashed: InboxEntry[] = [
+		...unfiled.filter((row) => row.item.isStashed).map((row) => ({ kind: "thread" as const, row })),
+		...allGroups.filter(isGroupStashed).map((row) => ({ kind: "group" as const, row })),
+	].sort((a, b) => b.row.activityTs - a.row.activityTs)
 
-	const active = unfiled.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
+	const active = unfiled.filter((row) => !row.item.isStashed && !row.settled).sort((a, b) => b.activityTs - a.activityTs)
 	const settledTs = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.ts : entry.row.activityTs)
 	const settled: InboxSettledEntry[] = [
-		...unfiled.filter((row) => row.settled).map((row) => ({ kind: "thread" as const, row })),
-		...allGroups.filter(isGroupSettled).map((row) => ({ kind: "group" as const, row })),
+		...unfiled.filter((row) => !row.item.isStashed && row.settled).map((row) => ({ kind: "thread" as const, row })),
+		...allGroups.filter((row) => !isGroupStashed(row) && isGroupSettled(row)).map((row) => ({ kind: "group" as const, row })),
 	].sort((a, b) => settledTs(b) - settledTs(a))
 
 	const shownActive = active.slice(0, activeLimit)
@@ -234,6 +246,11 @@ export function buildInbox(
 		activeEntries,
 		settled: settled.slice(0, settledLimit),
 		settledTotal: settled.length,
+		stashed: stashed.slice(0, stashedLimit),
+		stashedTotal: stashed.length,
+		stashedNeedingYou: valid.filter(
+			(item) => !item.isSubagent && item.isStashed && statusFor(statuses, item.id) === "waiting",
+		).length,
 		hiddenCount: Math.max(0, active.length - activeLimit),
 	}
 }

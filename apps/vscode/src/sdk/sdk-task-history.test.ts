@@ -369,6 +369,55 @@ describe("SdkTaskHistory", () => {
 		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 3 })
 	})
 
+	it("round trips stash and preview metadata", () => {
+		const original = makeHistoryItem("task-1", {
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: { author: "agent", text: "done" },
+		})
+		const metadata = historyItemToSessionMetadata(original)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("task-1", { metadata }))).toMatchObject({
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: original.lastLine,
+		})
+	})
+
+	it("keeps stash through agent activity and waiting, clears it on user messages or settle", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: true } })])
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, isSettled: false, settledAt: undefined })
+		await history.markTaskActive("task-1")
+		await history.saveThreadStatus("task-1", "waiting")
+		await history.recordLastLine("task-1", { author: "ask", text: "approve tool use" })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, lastLine: { author: "ask" } })
+		await history.markUserMessage("task-1", "  hello\n  again  ")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: false,
+			stashedAt: undefined,
+			lastLine: { author: "user", text: "hello again" },
+		})
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: true, isStashed: false, stashedAt: undefined })
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: false, stashedAt: undefined })
+	})
+
+	it("does not overwrite newer stash or preview with an older usage snapshot", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isStashed: false } })])
+		const stale = await history.findHistoryItem("task-1")
+		await history.toggleTaskStashed("task-1")
+		await history.recordLastLine("task-1", { author: "agent", text: "Finished" })
+		await history.updateTaskHistoryItem({ ...stale!, tokensIn: 42 })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: true,
+			tokensIn: 42,
+			lastLine: { author: "agent", text: "Finished" },
+		})
+	})
+
 	it("toggles settle and automatically clears it on activity", async () => {
 		const { history, updateSession } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: false } })])
 		await history.toggleTaskSettled("task-1")

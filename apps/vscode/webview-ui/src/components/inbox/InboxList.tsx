@@ -27,7 +27,7 @@ import {
 	writeExpandedTaskGroups,
 } from "./inboxUtils"
 import { SessionStatusIcon } from "./SessionStatusIcon"
-import { openTask, toggleTaskSettled } from "./sessionActions"
+import { openTask, toggleTaskSettled, toggleTaskStashed } from "./sessionActions"
 import { TaskGroupRowMenu } from "./TaskGroupRowMenu"
 
 interface CountBadgeProps {
@@ -180,6 +180,17 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 						title={activityTitle(row, now)}>
 						{time}
 					</span>
+					<button
+						aria-label={`${item.isStashed ? "Unstash" : "Stash"} ${item.title || item.task}`}
+						className="absolute right-16 top-0 flex h-4.5 items-center gap-1 whitespace-nowrap rounded-xs border border-editor-group-border bg-button-secondary-background px-1.5 text-[10px] text-button-secondary-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 hover:bg-button-secondary-background-hover motion-reduce:transition-none"
+						onClick={(event) => {
+							event.stopPropagation()
+							void toggleTaskStashed(item.id)
+						}}
+						type="button">
+						<span className="codicon codicon-archive text-[10px]" />
+						{item.isStashed ? "Unstash" : "Stash"}
+					</button>
 					<button
 						aria-label={settled ? `Unsettle ${item.title || item.task}` : `Settle ${item.title || item.task}`}
 						className={cn(
@@ -384,11 +395,25 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 	const reduceMotion = useReducedMotionPreference()
 	const [activeLimit, setActiveLimit] = useState(DEFAULT_ACTIVE_LIMIT)
 	const [settledLimit, setSettledLimit] = useState(DEFAULT_SETTLED_LIMIT)
+	const [stashedCollapsed, setStashedCollapsed] = useState(() => {
+		try {
+			return localStorage.getItem("inbox.stashedCollapsed") !== "0"
+		} catch {
+			return true
+		}
+	})
+	const [stashedLimit, setStashedLimit] = useState(DEFAULT_SETTLED_LIMIT)
 	const [settledCollapsed, setSettledCollapsed] = useState(readCollapsed)
 	const [expandedGroups, setExpandedGroups] = useState(readExpandedTaskGroups)
-	const { activeEntries, settled, settledTotal, hiddenCount } = useMemo(
-		() => buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, { activeLimit, settledLimit, taskGroups }),
-		[taskHistory, sessionStatuses, subagentCounts, activeLimit, settledLimit, taskGroups],
+	const { activeEntries, settled, settledTotal, stashed, stashedTotal, stashedNeedingYou, hiddenCount } = useMemo(
+		() =>
+			buildInbox(taskHistory ?? [], sessionStatuses, subagentCounts, {
+				activeLimit,
+				settledLimit,
+				stashedLimit,
+				taskGroups,
+			}),
+		[taskHistory, sessionStatuses, subagentCounts, activeLimit, settledLimit, stashedLimit, taskGroups],
 	)
 	// A group created elsewhere (the new-task sheet) opens expanded.
 	useEffect(() => {
@@ -404,6 +429,15 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 			return next
 		})
 	}, [])
+	const toggleStashedCollapsed = () =>
+		setStashedCollapsed((collapsed) => {
+			try {
+				localStorage.setItem("inbox.stashedCollapsed", collapsed ? "0" : "1")
+			} catch {
+				/* Best effort. */
+			}
+			return !collapsed
+		})
 	const toggleSettledCollapsed = useCallback(() => {
 		setSettledCollapsed((collapsed) => {
 			try {
@@ -415,7 +449,7 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 		})
 	}, [])
 
-	if (activeEntries.length === 0 && settledTotal === 0) {
+	if (activeEntries.length === 0 && settledTotal === 0 && stashedTotal === 0) {
 		return null
 	}
 
@@ -462,6 +496,89 @@ const InboxList = ({ showHistoryView, onOpenTaskGroup, now = Date.now() }: Inbox
 				)
 			) : (
 				<div className="px-2 py-1.5 text-xs text-description">Nothing active.</div>
+			)}
+			{stashedTotal > 0 && (
+				<>
+					<button
+						aria-expanded={!stashedCollapsed}
+						aria-label={`${stashedCollapsed ? "Expand" : "Collapse"} stashed chats`}
+						className={cn(
+							sectionClass,
+							"w-full cursor-pointer border-0 bg-transparent text-left hover:text-foreground",
+						)}
+						onClick={toggleStashedCollapsed}
+						type="button">
+						<span
+							className={cn(
+								"codicon codicon-chevron-down text-[12px] transition-transform duration-150 motion-reduce:transition-none",
+								stashedCollapsed && "-rotate-90",
+							)}
+						/>
+						<span>Stashed</span>
+						<span className="opacity-70">{stashedTotal}</span>
+						{stashedNeedingYou > 0 && (
+							<span
+								className="flex items-center gap-1 text-(--vscode-editorWarning-foreground)"
+								data-testid="inbox-stashed-attention">
+								<span className="h-1.5 w-1.5 rounded-full bg-current" />
+								{stashedNeedingYou}
+							</span>
+						)}
+					</button>
+					<AnimatePresence initial={false}>
+						{!stashedCollapsed && (
+							<motion.div
+								animate={reduceMotion ? undefined : { height: "auto", opacity: 1 }}
+								exit={reduceMotion ? undefined : { height: 0, opacity: 0 }}
+								initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+								key="stashed-rows"
+								style={{ overflow: "hidden" }}
+								transition={{ duration: 0.18, ease: "easeOut" }}>
+								{stashed.map((entry) =>
+									entry.kind === "group" ? (
+										<TaskGroupRowView
+											animateLayout={!reduceMotion}
+											expanded={expandedGroups.has(entry.row.group.id)}
+											key={`group:${entry.row.group.id}`}
+											now={now}
+											onOpen={onOpenTaskGroup}
+											onToggle={() => toggleGroup(entry.row.group.id)}
+											row={entry.row}
+										/>
+									) : (
+										<InboxRowView
+											animateLayout={!reduceMotion}
+											key={entry.row.item.id}
+											now={now}
+											row={entry.row}
+											tags={effectiveThreadTags(entry.row.item, taskHistory, taskGroups)}
+										/>
+									),
+								)}
+								{(stashedTotal > stashed.length || stashedLimit > DEFAULT_SETTLED_LIMIT) && (
+									<div className="flex gap-3 px-2 py-1">
+										{stashedTotal > stashed.length && (
+											<button
+												className={moreClass}
+												onClick={() => setStashedLimit((limit) => limit + SETTLED_PAGE_SIZE)}
+												type="button">
+												Show more ({stashedTotal - stashed.length})
+											</button>
+										)}
+										{stashedLimit > DEFAULT_SETTLED_LIMIT && (
+											<button
+												className={moreClass}
+												onClick={() => setStashedLimit(DEFAULT_SETTLED_LIMIT)}
+												type="button">
+												Show fewer
+											</button>
+										)}
+									</div>
+								)}
+							</motion.div>
+						)}
+					</AnimatePresence>
+				</>
 			)}
 			{settledTotal > 0 && (
 				<>

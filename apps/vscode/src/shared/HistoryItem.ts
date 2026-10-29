@@ -19,6 +19,9 @@ export type HistoryItem = {
 	isFavorited?: boolean
 	isSettled?: boolean
 	settledAt?: number
+	isStashed?: boolean
+	stashedAt?: number
+	lastLine?: { author: "user" | "agent" | "ask"; text: string }
 	/** Last real interaction (message, approval, turn); unaffected by settle/favorite/metadata edits. Mirrored into `ts`. */
 	lastActivityTs?: number
 	/** When the user last sent this thread a message (home orders by it; agent activity shows beside it). */

@@ -184,6 +184,7 @@ import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-stor
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
+import { messageLastLine } from "./thread-last-line"
 import { maybeGenerateThreadTitle, type ThreadTitleSource } from "./thread-title"
 import { TurnActivityWatchdog } from "./turn-activity-watchdog"
 import { TurnStateTracker } from "./turn-state-tracker"
@@ -236,6 +237,9 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		isFavorited: item.isFavorited ?? false,
 		isSettled: item.isSettled,
 		settledAt: item.settledAt,
+		isStashed: item.isStashed,
+		stashedAt: item.stashedAt,
+		lastLine: item.lastLine,
 		parentTaskId: item.parentTaskId,
 		forkedAtTs: item.forkedAtTs,
 		size: item.size ?? 0,
@@ -1697,6 +1701,7 @@ export class Controller {
 				cacheReads: existing?.cacheReads ?? 0,
 				cacheWrites: existing?.cacheWrites ?? 0,
 				subagentToolCalls: existing?.subagentToolCalls ?? 0,
+				lastLine: existing?.lastLine,
 				isSubagent: true,
 				parentTaskId,
 				runtimeOwnerTaskId: payload.sessionId,
@@ -1720,7 +1725,13 @@ export class Controller {
 						? "error"
 						: "done",
 			)
-			if (payload.status !== "running") owner.interactions?.clearPending("Subagent ended", payload.agentId)
+			if (payload.status !== "running") {
+				owner.interactions?.clearPending("Subagent ended", payload.agentId)
+				if (item.lastLine)
+					void this.taskHistory.recordLastLine(item.id, item.lastLine).catch((error) => {
+						Logger.warn(`Failed to save child preview: ${error}`)
+					})
+			}
 			const spawn = payload.toolCallId ? parent?.translator.getSpawnAgent(payload.toolCallId) : undefined
 			if (spawn) spawn.childSessionId = item.id
 			this.taskHistory.invalidateMetadataHistoryCache()
@@ -1780,6 +1791,26 @@ export class Controller {
 			getTask: () => context.task,
 			getMinter: () => translator.getMinter(),
 			isFocused: () => this.task?.taskId === id,
+			onMessages: (updates) => {
+				const line = updates
+					.map(messageLastLine)
+					.filter((line) => line !== undefined)
+					.at(-1)
+				const child = this.subagentThreads?.get(id)
+				if (child && line) {
+					// The SDK owns child metadata while it runs. Publish its preview live,
+					// then persist after the terminal subagent event has saved usage totals.
+					child.lastLine = line
+					return
+				}
+				if (line)
+					void this.taskHistory
+						.recordLastLine?.(id, line)
+						.then(() => this.postStateToWebview())
+						.catch((error) => {
+							Logger.warn(`Failed to save thread preview: ${error}`)
+						})
+			},
 		})
 		messages.onSessionEvent((updates, event) => {
 			if (event.type === "status" && event.payload.status === "error") setPhase("error")
@@ -2941,7 +2972,7 @@ export class Controller {
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
 		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length))
-			await this.taskHistory.markUserMessage(submittedTaskId)
+			await this.taskHistory.markUserMessage(submittedTaskId, prompt)
 		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
@@ -3662,6 +3693,9 @@ export class Controller {
 				isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
 				isSettled: metadataBoolean(metadata, "isSettled"),
 				settledAt: metadataNumber(metadata, "settledAt") || undefined,
+				isStashed: metadataBoolean(metadata, "isStashed"),
+				stashedAt: metadataNumber(metadata, "stashedAt") || undefined,
+				lastLine: sessionHistoryRecordToHistoryItem(item).lastLine,
 				parentTaskId: metadataString(metadata, "parentTaskId"),
 				forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
 				size: metadataNumber(metadata, "size") ?? 0,
@@ -3695,6 +3729,9 @@ export class Controller {
 					isFavorited: false,
 					isSettled: undefined,
 					settledAt: undefined,
+					isStashed: undefined,
+					stashedAt: undefined,
+					lastLine: undefined,
 					parentTaskId: undefined,
 					forkedAtTs: undefined,
 					size: 0,
@@ -3918,6 +3955,11 @@ export class Controller {
 		await this.showTaskWithId(threadId)
 		const { sendOpenMessageEvent } = await import("@/core/controller/ui/subscribeToOpenMessage")
 		await sendOpenMessageEvent(threadId, messageIndex, info.text, anchor)
+	}
+
+	async toggleTaskStashed(taskId: string): Promise<void> {
+		await this.taskHistory.toggleTaskStashed(taskId)
+		await this.postStateToWebview()
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
@@ -4484,7 +4526,7 @@ export class Controller {
 			const resolved = await this.resolveContextMentions(text, undefined, provenance)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
-			await this.taskHistory.markUserMessage(task.taskId)
+			await this.taskHistory.markUserMessage(task.taskId, text)
 			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
 			this.messageTranslatorState.reset()
 			this.messageTranslatorState.clearTurnOutcome()

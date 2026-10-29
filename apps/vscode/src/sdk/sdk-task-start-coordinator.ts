@@ -230,6 +230,7 @@ export class SdkTaskStartCoordinator {
 				...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
 				// The first message is the user's.
 				lastUserMessageTs: Date.now(),
+				lastLine: { author: "user" as const, text: (prompt ?? "").replace(/\s+/g, " ").trim().slice(0, 160) },
 				apiSelection,
 				taskGroupId: options?.taskGroupId,
 			}

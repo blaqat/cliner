@@ -6,6 +6,7 @@ import InboxList from "./InboxList"
 const mocks = vi.hoisted(() => ({
 	showTaskWithId: vi.fn(),
 	toggleTaskSettled: vi.fn(),
+	toggleTaskStashed: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 
@@ -14,6 +15,7 @@ vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
 		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
 		toggleTaskSettled: (request: unknown) => mocks.toggleTaskSettled(request),
+		toggleTaskStashed: (request: unknown) => mocks.toggleTaskStashed(request),
 	},
 }))
 
@@ -29,7 +31,27 @@ const item = (id: string, ts: number, extra: Partial<HistoryItem> = {}): History
 })
 
 describe("InboxList", () => {
+	it("stashes without opening a thread and shows attention in the collapsed section", () => {
+		mocks.state.taskHistory = [item("a", NOW), item("b", NOW, { isStashed: true })]
+		mocks.state.sessionStatuses = { b: "waiting" }
+		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+		fireEvent.click(screen.getByRole("button", { name: "Stash task a" }))
+		expect(mocks.toggleTaskStashed).toHaveBeenCalledWith(expect.objectContaining({ taskId: "a" }))
+		expect(mocks.showTaskWithId).not.toHaveBeenCalled()
+		expect(screen.queryByText("task b")).toBeNull()
+		expect(screen.getByTestId("inbox-stashed-attention")).toHaveTextContent("1")
+		fireEvent.click(screen.getByRole("button", { name: "Expand stashed chats" }))
+		fireEvent.click(screen.getByRole("button", { name: "Unstash task b" }))
+		expect(mocks.toggleTaskStashed).toHaveBeenLastCalledWith(expect.objectContaining({ taskId: "b" }))
+		expect(localStorage.getItem("inbox.stashedCollapsed")).toBe("0")
+	})
 	beforeEach(() => {
+		const stashStore = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => stashStore.get(key) ?? null,
+			setItem: (key: string, value: string) => void stashStore.set(key, value),
+		})
+		mocks.toggleTaskStashed.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
 		mocks.state = {
@@ -255,6 +277,7 @@ describe("InboxList task groups", () => {
 			getItem: (key: string) => store.get(key) ?? null,
 			setItem: (key: string, value: string) => void store.set(key, value),
 		})
+		mocks.toggleTaskStashed.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
 		mocks.state = {
 			taskHistory: [

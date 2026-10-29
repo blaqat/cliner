@@ -28,6 +28,34 @@ function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): History
 const settledId = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.id : `group:${entry.row.group.id}`)
 
 describe("buildInbox", () => {
+	it("keeps stashed running and waiting threads out of Active and Settled", () => {
+		const result = buildInbox(
+			[
+				item("running", NOW, { isStashed: true }),
+				item("waiting", NOW - MIN, { isStashed: true, isSettled: true }),
+				item("active", NOW),
+			],
+			{ running: "running", waiting: "waiting" },
+		)
+		expect(result.active.map((row) => row.item.id)).toEqual(["active"])
+		expect(result.settled).toEqual([])
+		expect(result.stashed.map(settledId)).toEqual(["running", "waiting"])
+		expect(result.stashedTotal).toBe(2)
+		expect(result.stashedNeedingYou).toBe(1)
+	})
+
+	it("stashes a task group only when all its threads are stashed", () => {
+		const taskGroups: TaskGroupSummary[] = [{ id: "g", title: "Group", tags: [], createdAt: NOW, updatedAt: NOW }]
+		const history = [
+			item("a", NOW, { taskGroupId: "g", isStashed: true }),
+			item("b", NOW, { taskGroupId: "g", isStashed: true }),
+		]
+		expect(buildInbox(history, {}, undefined, { taskGroups }).stashed.map(settledId)).toEqual(["group:g"])
+		history[1].isStashed = false
+		const mixed = buildInbox(history, {}, undefined, { taskGroups })
+		expect(mixed.stashedTotal).toBe(0)
+		expect(mixed.activeEntries).toHaveLength(1)
+	})
 	it("puts unsettled chats on top by recency and settled chats below by last activity (not settle time)", () => {
 		const history = [
 			item("old", NOW - 50 * MIN),

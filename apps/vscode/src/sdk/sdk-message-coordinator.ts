@@ -9,6 +9,7 @@ export type SessionEventListener = (messages: ClineMessage[], event: CoreSession
 
 export interface SdkMessageCoordinatorOptions {
 	getTask: () => TaskProxy | undefined
+	onMessages?: (messages: ClineMessage[]) => void
 	isFocused?: () => boolean
 	/**
 	 * The process-wide id/seq/epoch authority. When provided, every message flowing to the
@@ -83,6 +84,7 @@ export class SdkMessageCoordinator {
 		}
 
 		task.messageStateHandler.addMessages(messages)
+		this.options.onMessages?.(messages)
 	}
 
 	replaceMessages(messages: ClineMessage[]): void {

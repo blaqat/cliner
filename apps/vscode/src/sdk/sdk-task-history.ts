@@ -29,6 +29,21 @@ import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
 import { clineMessagesToTranscript, sdkMessagesToTranscript, type TranscriptEntry } from "./task-groups/thread-transcript"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
+export function makeLastLine(
+	author: NonNullable<HistoryItem["lastLine"]>["author"],
+	text: string,
+): NonNullable<HistoryItem["lastLine"]> {
+	return { author, text: text.replace(/\s+/g, " ").trim().slice(0, 160) }
+}
+
+function readLastLine(value: unknown): HistoryItem["lastLine"] {
+	if (!value || typeof value !== "object") return undefined
+	const { author, text } = value as Record<string, unknown>
+	return (author === "user" || author === "agent" || author === "ask") && typeof text === "string"
+		? makeLastLine(author, text)
+		: undefined
+}
+
 export interface TaskUsage {
 	tokensIn: number
 	tokensOut: number
@@ -128,6 +143,9 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		isFavorited: item.isFavorited ?? false,
 		isSettled: item.isSettled ?? false,
 		settledAt: item.settledAt ?? 0,
+		isStashed: item.isStashed ?? false,
+		stashedAt: item.stashedAt ?? 0,
+		lastLine: item.lastLine ?? null,
 		// Frozen at the last real interaction; `ts` of a listed item already carries it,
 		// so settle/favorite/metadata rewrites keep the same value.
 		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
@@ -277,6 +295,9 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		// left for the user to review, so an idle one is settled; only a running one stays open.
 		isSettled: metadataBoolean(metadata, "isSettled") ?? (item.status !== "running" && item.status !== "pending"),
 		settledAt: metadataNumber(metadata, "settledAt") || undefined,
+		isStashed: metadataBoolean(metadata, "isStashed") ?? false,
+		stashedAt: metadataNumber(metadata, "stashedAt") || undefined,
+		lastLine: readLastLine(metadata?.lastLine),
 		parentTaskId: item.isSubagent
 			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
 			: metadataString(metadata, "parentTaskId"),
@@ -789,6 +810,12 @@ export class SdkTaskHistory {
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// Preserve previews and stash flags when an activity/usage snapshot predates them.
+				...Object.fromEntries(
+					["lastLine", "isStashed", "stashedAt"].flatMap((key) =>
+						existing?.metadata?.[key] !== undefined ? [[key, existing.metadata[key]]] : [],
+					),
+				),
 				// User-owned fields are changed only by their dedicated operations.
 				...Object.fromEntries(
 					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags", "referencedThreadIds"].map((key) => [
@@ -985,9 +1012,37 @@ export class SdkTaskHistory {
 		const item = await this.findHistoryItem(taskId)
 		if (!item) return
 		this.activityUnsettled.delete(taskId)
-		item.isSettled = !item.isSettled
-		item.settledAt = item.isSettled ? Date.now() : undefined
-		await this.updateTaskHistoryItem(item)
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const isSettled = !(metadata.isSettled ?? item.isSettled)
+			return {
+				lastActivityTs: metadata.lastActivityTs ?? item.ts,
+				isSettled,
+				settledAt: isSettled ? Date.now() : 0,
+				...(isSettled ? { isStashed: false, stashedAt: 0 } : {}),
+			}
+		})
+	}
+
+	async toggleTaskStashed(taskId: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const isStashed = !metadata.isStashed
+			return {
+				lastActivityTs: metadata.lastActivityTs ?? item.ts,
+				isStashed,
+				stashedAt: isStashed ? Date.now() : 0,
+				...(isStashed ? { isSettled: false, settledAt: 0 } : {}),
+			}
+		})
+	}
+
+	async recordLastLine(taskId: string, lastLine: HistoryItem["lastLine"]): Promise<void> {
+		if (!lastLine) return
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const previous = readLastLine(metadata.lastLine)
+			return previous?.author === lastLine.author && previous.text === lastLine.text ? undefined : { lastLine }
+		})
 	}
 
 	async flushMetadataWrites(): Promise<void> {
@@ -1138,10 +1193,13 @@ export class SdkTaskHistory {
 	}
 
 	/** Stamps the time the user sent the thread a message (not the agent's replies). */
-	async markUserMessage(taskId: string): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		await this.updateTaskHistoryItem({ ...item, lastUserMessageTs: Date.now() })
+	async markUserMessage(taskId: string, text?: string): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({
+			isStashed: false,
+			stashedAt: 0,
+			lastUserMessageTs: Date.now(),
+			...(text?.trim() ? { lastLine: makeLastLine("user", text) } : {}),
+		}))
 	}
 
 	async updateTaskUsage(taskId: string | undefined, usage: TaskUsage): Promise<void> {

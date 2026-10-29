@@ -352,6 +352,7 @@ describe("subagents through the real parent session", () => {
 			for (const child of children) {
 				const saved = await controller.taskHistory.findHistoryItem(child.id)
 				const turns = cancel ? 2 : 3
+				if (!cancel) expect(saved?.lastLine).toMatchObject({ author: "agent", text: expect.stringContaining("Report") })
 				expect(saved).toMatchObject({
 					tokensIn: 100 * turns,
 					tokensOut: 20 * turns,
