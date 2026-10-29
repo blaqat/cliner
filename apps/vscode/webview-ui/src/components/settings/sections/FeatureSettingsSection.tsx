@@ -82,6 +82,7 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 		threadToastsEnabled,
 		threadToastSeconds,
 		continueAnswerOnActSwitch,
+		oneViewEnabled,
 	} = useExtensionState()
 	// The duration field commits on blur, like other number settings.
 	const [toastSecondsDraft, setToastSecondsDraft] = useState<string>()
@@ -179,6 +180,17 @@ const FeatureSettingsSection = ({ renderSectionHeader }: FeatureSettingsSectionP
 						</div>
 					</div>
 				</div>
+
+				{/* Layout */}
+				<FeatureGroup id="layout-features" title="Layout">
+					<FeatureRow
+						checked={oneViewEnabled === true}
+						description="Show your threads beside the chat instead of on a separate home page."
+						id="one-view"
+						label="One view (beta)"
+						onChange={(checked) => updateSetting("oneViewEnabled", checked)}
+					/>
+				</FeatureGroup>
 
 				{/* Notifications */}
 				<FeatureGroup id="notification-features" title="Notifications">

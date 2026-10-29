@@ -389,6 +389,9 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 		if (request.continueAnswerOnActSwitch !== undefined) {
 			controller.stateManager.setGlobalState("continueAnswerOnActSwitch", request.continueAnswerOnActSwitch)
 		}
+		if (request.oneViewEnabled !== undefined) {
+			controller.stateManager.setGlobalState("oneViewEnabled", request.oneViewEnabled)
+		}
 		if (request.threadToastSeconds !== undefined) {
 			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
 				throw new Error("Toast duration must be a whole number of seconds, at least 1.")

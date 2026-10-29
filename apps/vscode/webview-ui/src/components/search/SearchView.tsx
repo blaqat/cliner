@@ -32,7 +32,8 @@ const SERVER_LIMIT = 25
 const KIND_LABEL: Record<SearchResultKind, string> = { task: "Task", thread: "Thread", note: "Note", message: "Message" }
 const KIND_ICON: Record<SearchResultKind, string> = { task: "tasklist", thread: "comment", note: "book", message: "quote" }
 
-async function fetchServerRows(query: string): Promise<SearchRow[]> {
+/** Note and message hits from the host for `query` (each kind capped); failures resolve empty. */
+export async function fetchServerRows(query: string): Promise<SearchRow[]> {
 	const kinds = ["notes", "messages"] as const
 	const responses = await Promise.all(
 		kinds.map((kind) =>

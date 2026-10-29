@@ -300,6 +300,7 @@ message Settings {
   optional int32 thread_toast_seconds = 196;
   optional string global_script_toggles = 197;
   optional bool continue_answer_on_act_switch = 198;
+  optional bool one_view_enabled = 199;
 }
 
 message State {
@@ -470,6 +471,8 @@ message UpdateSettingsRequest {
   optional bool thread_separate_ask_act_profiles = 65;
   optional string thread_ask_profile_id = 66;
   optional string thread_act_profile_id = 67;
+  // One view (beta): the thread list beside the chat instead of a separate home page.
+  optional bool one_view_enabled = 69;
 }
 
 // A named profile: a saved model configuration run at a reasoning effort.

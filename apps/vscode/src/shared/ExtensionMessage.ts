@@ -235,6 +235,8 @@ export interface ExtensionState {
 	threadToastSeconds?: number
 	/** Switching to Act right after an Ask answer also continues it (default on). */
 	continueAnswerOnActSwitch?: boolean
+	/** One view (beta): the thread list beside the chat instead of a separate home page (default off). */
+	oneViewEnabled?: boolean
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	openAiCodexIsAuthenticated?: boolean

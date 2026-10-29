@@ -401,6 +401,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		threadToastsEnabled: true,
 		threadToastSeconds: 5,
 		continueAnswerOnActSwitch: true,
+		oneViewEnabled: false,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
 		apiConfigProfiles: [],

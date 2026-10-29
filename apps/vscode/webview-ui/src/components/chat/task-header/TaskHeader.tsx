@@ -8,6 +8,7 @@ import { ThreadBranchChip } from "@/components/chat/composer/worktreeSlot"
 import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -55,6 +56,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 		taskHistory,
 		taskGroups,
 	} = useExtensionState()
+	// One view: no Home crumb or Close (the list is home); its list toggle leads the header.
+	const oneView = useOneView()
 	const [menuOpen, setMenuOpen] = useState(false)
 	// The ⋯ menu's "Move to task…" swaps the menu for the task picker in the same popover.
 	const [menuView, setMenuView] = useState<"menu" | "task">("menu")
@@ -83,7 +86,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 		const ancestors = path.threads.slice(0, -1)
 		const groupId = path.taskGroupId
 		return [
-			{ id: "home", kind: "home", label: "Home", onSelect: onClose },
+			...(oneView.enabled ? [] : [{ id: "home", kind: "home" as const, label: "Home", onSelect: onClose }]),
 			...(groupId
 				? [
 						{
@@ -103,7 +106,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 			})),
 			{ id: taskId ?? "current", kind: "thread", label: title, sub: !!currentTaskItem?.parentTaskId },
 		]
-	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup])
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup, oneView.enabled])
 
 	const rename = useCallback(
 		(next: string) => {
@@ -130,6 +133,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-header"
 				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
+				{oneView.listToggle}
 				<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
 				{(imageCount > 0 || fileCount > 0) && (
 					<span
@@ -252,7 +256,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 										/>
 										{copied ? "Copied" : "Copy first message"}
 									</button>
-									{backgroundRunning > 0 && (
+									{backgroundRunning > 0 && !oneView.enabled && (
 										<button
 											className={MENU_ITEM_CLASS}
 											onClick={() => {
@@ -287,12 +291,14 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 							)}
 						</PopoverContent>
 					</Popover>
-					<HeaderIconButton
-						icon="close"
-						label="Close"
-						onClick={onClose}
-						tooltip="Close: back to home, the chat keeps running"
-					/>
+					{!oneView.enabled && (
+						<HeaderIconButton
+							icon="close"
+							label="Close"
+							onClick={onClose}
+							tooltip="Close: back to home, the chat keeps running"
+						/>
+					)}
 				</div>
 			</div>
 			{/* Subagent threads are read-only, so they get no tag row. */}

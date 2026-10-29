@@ -366,6 +366,8 @@ const USER_SETTINGS_FIELDS = {
 	threadToastSeconds: { default: 5 as number },
 	// Switching to Act right after an Ask answer also continues it. Off: only the answer's Continue in Act button does.
 	continueAnswerOnActSwitch: { default: true as boolean },
+	// One view (beta): the thread list sits beside the chat instead of on a separate home page.
+	oneViewEnabled: { default: false as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },

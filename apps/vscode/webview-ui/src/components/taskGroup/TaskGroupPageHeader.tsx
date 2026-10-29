@@ -1,5 +1,6 @@
 import type React from "react"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 
 interface TaskGroupPageHeaderProps {
@@ -25,8 +26,10 @@ export const TaskGroupPageHeader = ({
 	renameSignal,
 }: TaskGroupPageHeaderProps) => {
 	const { hideTaskGroupView, navigateToTaskGroup } = useExtensionState()
+	// One view: the list is home, so no Home crumb; its list toggle leads the header.
+	const oneView = useOneView()
 	const crumbs: Crumb[] = [
-		{ id: "home", kind: "home", label: "Home", onSelect: hideTaskGroupView },
+		...(oneView.enabled ? [] : [{ id: "home", kind: "home" as const, label: "Home", onSelect: hideTaskGroupView }]),
 		{
 			id: `task:${taskGroupId}`,
 			kind: "task",
@@ -40,6 +43,7 @@ export const TaskGroupPageHeader = ({
 			<div
 				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-group-header">
+				{oneView.listToggle}
 				<Breadcrumb crumbs={crumbs} onRename={notebook ? undefined : onRename} renameSignal={renameSignal} />
 				{children && <div className="flex shrink-0 items-center gap-0.5">{children}</div>}
 			</div>

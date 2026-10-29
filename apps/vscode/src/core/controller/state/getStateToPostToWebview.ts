@@ -218,6 +218,7 @@ export async function getStateToPostToWebview(controller: {
 		threadToastsEnabled: stateManager.getGlobalSettingsKey("threadToastsEnabled"),
 		threadToastSeconds: stateManager.getGlobalSettingsKey("threadToastSeconds"),
 		continueAnswerOnActSwitch: stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch"),
+		oneViewEnabled: stateManager.getGlobalSettingsKey("oneViewEnabled"),
 		banners,
 		welcomeBanners,
 		openAiCodexIsAuthenticated,
