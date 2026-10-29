@@ -31,7 +31,7 @@ interface ActionButtonsProps {
  */
 export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, chatState, mode, messageHandlers }) => {
 	const { getDraftSnapshot, setSendingDisabled } = chatState
-	const { turnState, foregroundCommandRunning } = useExtensionState()
+	const { turnState, foregroundCommandRunning, oneViewEnabled } = useExtensionState()
 
 	// Tracks the ask the user last acted on. Clicking a footer button latches this so the
 	// buttons disable immediately (and survive the trailing bookkeeping re-renders before the
@@ -104,7 +104,9 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, ch
 	}
 
 	const { primaryText, secondaryText, primaryAction, secondaryAction, enableButtons } = buttonConfig
-	const hasButtons = primaryText || secondaryText
+	// One view's list already has ✎ New: a lone "Start New Task" after a finished thread would repeat it.
+	const onlyStartsNewTask = primaryAction === "new_task" && !secondaryText && primaryText === "Start New Task"
+	const hasButtons = (primaryText || secondaryText) && !(oneViewEnabled && onlyStartsNewTask)
 	const isStreaming = task.partial === true
 	const canInteract = enableButtons && !isProcessing && !messageHandlers.recoveryActionInFlight
 
