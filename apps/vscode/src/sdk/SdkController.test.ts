@@ -1209,6 +1209,98 @@ describe("task deletion fence", () => {
 	})
 })
 
+describe("deleting the open thread", () => {
+	const proto = SdkController.prototype as unknown as {
+		openThreadClosedBy: (ids: readonly string[]) => Promise<unknown>
+	}
+	/** Stands in for a Controller whose delete clears the open task the way beforeDeleteSession does. */
+	function makeController(options: {
+		openId?: string
+		items?: Record<string, { id: string; taskGroupId?: string; parentTaskId?: string; isSubagent?: boolean }>
+		subagentThreads?: Map<string, unknown>
+		clearsTask?: boolean
+	}) {
+		const controller: Record<string, unknown> = {
+			task: options.openId ? { taskId: options.openId } : undefined,
+			subagentThreads: options.subagentThreads ?? new Map(),
+			taskSessions: new Map(),
+			deletedOpenThread: undefined,
+			openThreadClosedBy: proto.openThreadClosedBy,
+			taskHistory: {
+				findHistoryItem: async (id: string) => options.items?.[id],
+				deleteTasksFromState: vi.fn(async () => {
+					if (options.clearsTask !== false) controller.task = undefined
+					return []
+				}),
+			},
+		}
+		return controller
+	}
+	const remove = (controller: Record<string, unknown>, ids: string[]) =>
+		SdkController.prototype.deleteTasksFromState.call(controller as never, ids)
+
+	it("records the open thread and its task so the webview can leave it", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } } })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t1", taskGroupId: "g1", seq: 1 })
+	})
+
+	it("bumps seq on every such delete", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" }, t2: { id: "t2" } } })
+		await remove(controller, ["t1"])
+		controller.task = { taskId: "t2" }
+		await remove(controller, ["t2"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t2", taskGroupId: undefined, seq: 2 })
+	})
+
+	it("records nothing when a different thread is deleted", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } }, clearsTask: false })
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records nothing when no thread is open", async () => {
+		const controller = makeController({})
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records an open subagent thread when its owning parent is deleted, filed under the parent's task", async () => {
+		const child = { id: "child", parentTaskId: "parent", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { child, parent: { id: "parent", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["parent"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("resolves a live subagent's task through its runtime owner when it has no history row", async () => {
+		const child = { id: "child", parentTaskId: "ancestor", runtimeOwnerTaskId: "owner", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { owner: { id: "owner", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["owner"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("keeps the event sequence unchanged when deleting another thread later", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		controller.deletedOpenThread = { id: "older", seq: 5 }
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toEqual({ id: "older", seq: 5 })
+	})
+
+	it("records nothing when the delete left the thread open", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+})
+
 describe("task configuration races", () => {
 	it("uses live selection when history was read before a picker change inside the transition lock", async () => {
 		const controller = Object.create(SdkController.prototype)

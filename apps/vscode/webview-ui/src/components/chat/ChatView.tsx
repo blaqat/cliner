@@ -35,6 +35,7 @@ import {
 	TaskSection,
 	ThreadStrip,
 	useChatState,
+	useLeaveDeletedThread,
 	useMessageHandlers,
 	useScrollBehavior,
 	WelcomeSection,
@@ -81,6 +82,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		taskGroupView,
 		oneViewEnabled,
 		hideTaskGroupView,
+		navigateToChat,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -496,16 +498,25 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 
 	useClearComposerTaskOnLeavingTask(taskGroupView?.id ?? currentTaskItem?.taskGroupId)
 
-	// One view: ✎ New / the new-task shortcut open a new chat; Esc in an empty one returns to the last thread.
+	// One view: Esc in an empty new chat returns to the last thread.
 	const lastThreadIdRef = useRef<string | undefined>(undefined)
 	useEffect(() => {
 		if (currentTaskItem?.id) lastThreadIdRef.current = currentTaskItem.id
 	}, [currentTaskItem?.id])
-	const openNewChat = useCallback(() => {
-		if (taskGroupView) hideTaskGroupView()
-		if (task) void messageHandlers.startNewTask()
+	// Deleting the open thread lands on its task page, else home, with the composer ready for a new thread.
+	const goHomeAfterDelete = useCallback(() => {
+		closeSearch()
+		navigateToChat()
 		setTimeout(() => textAreaRef.current?.focus(), 0)
-	}, [taskGroupView, hideTaskGroupView, task, messageHandlers.startNewTask, textAreaRef])
+	}, [closeSearch, navigateToChat, textAreaRef])
+	const openTaskGroupAfterDelete = useCallback(
+		(taskGroupId: string) => {
+			openTaskGroup(taskGroupId)
+			setTimeout(() => textAreaRef.current?.focus(), 0)
+		},
+		[openTaskGroup, textAreaRef],
+	)
+	useLeaveDeletedThread({ openTaskGroup: openTaskGroupAfterDelete, goHome: goHomeAfterDelete })
 	const openThreadFromList = useCallback(
 		(threadId: string) => {
 			if (threadId === currentTaskItem?.id && !taskGroupView) return
@@ -593,7 +604,6 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 				currentTaskGroupId={taskGroupView?.id}
 				currentThreadId={currentTaskItem?.id}
 				hidden={isHidden}
-				onNewChat={openNewChat}
 				onOpenTaskGroup={openTaskGroup}
 				onOpenThread={openThreadFromList}>
 				{/* biome-ignore lint/a11y/noStaticElementInteractions: Esc in an empty new chat returns to the last thread */}

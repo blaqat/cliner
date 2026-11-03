@@ -37,7 +37,14 @@ import {
 	normalizeProvenance,
 } from "@shared/composer-provenance"
 import { mentionRegexGlobal } from "@shared/context-mentions"
-import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
+import type {
+	ClineApiReqInfo,
+	ClineMessage,
+	ClineSay,
+	DeletedOpenThread,
+	ExtensionState,
+	TurnPhase,
+} from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
 import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
@@ -345,6 +352,8 @@ export class Controller {
 	private readonly providerCatalog: ProviderCatalog
 	private readonly providerConfigStoreSubscription: Disposable
 	private providerConfigStatePostScheduled = false
+	/** Last open thread a delete removed; posted in state (see ExtensionState.deletedOpenThread). */
+	private deletedOpenThread?: DeletedOpenThread
 	// Debounces/coalesces postStateToWebview() calls — see StatePostDebouncer.
 	private static readonly STATE_POST_DEBOUNCE_MS = 50
 	private readonly statePostDebouncer: StatePostDebouncer
@@ -3813,11 +3822,34 @@ export class Controller {
 	}
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
-		return this.taskHistory.deleteTaskFromState(id)
+		return this.deleteTasksFromState([id])
 	}
 
 	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
-		return this.taskHistory.deleteTasksFromState(ids)
+		const openThread = await this.openThreadClosedBy(ids)
+		const history = await this.taskHistory.deleteTasksFromState(ids)
+		// beforeDeleteSession cleared the open thread; the next state post tells the webview where to land.
+		if (openThread && !this.task) {
+			this.deletedOpenThread = { ...openThread, seq: (this.deletedOpenThread?.seq ?? 0) + 1 }
+		}
+		return history
+	}
+
+	/**
+	 * The open thread, when deleting `ids` removes it: it is one of them, or its owning parent is
+	 * (the same rule beforeDeleteSession clears the task by). Its task is read before the rows go.
+	 */
+	private async openThreadClosedBy(ids: readonly string[]): Promise<{ id: string; taskGroupId?: string } | undefined> {
+		const openId = this.task?.taskId
+		if (!openId) return undefined
+		const child = this.subagentThreads?.get(openId)
+		const ownerId = child?.runtimeOwnerTaskId ?? child?.parentTaskId
+		if (!ids.includes(openId) && !(ownerId && ids.includes(ownerId))) return undefined
+		const find = (id: string) => this.taskHistory.findHistoryItem(id).catch(() => undefined)
+		const item = (await find(openId)) ?? child
+		const taskGroupId =
+			(item ? await resolveEffectiveTaskGroupId(item, find) : undefined) ?? this.taskSessions?.get(openId)?.taskGroupId
+		return { id: openId, taskGroupId }
 	}
 
 	async deleteAllTaskHistory(): Promise<DeleteAllTaskHistoryCount> {
@@ -4893,6 +4925,7 @@ export class Controller {
 				currentTaskItem: snapshotTask?.taskId
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
+				deletedOpenThread: this.deletedOpenThread,
 				taskHistory: processedTaskHistory,
 				// Optional-called: unit tests drive getStateToPostToWebview with
 				// partial controller stubs that don't carry these members.

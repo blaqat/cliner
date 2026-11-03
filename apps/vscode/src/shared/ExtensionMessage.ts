@@ -42,6 +42,14 @@ export const DEFAULT_PLATFORM = "unknown"
 
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
+/** See {@link ExtensionState.deletedOpenThread}. */
+export interface DeletedOpenThread {
+	id: string
+	/** The task (group) the thread was filed in, resolved before the delete. */
+	taskGroupId?: string
+	seq: number
+}
+
 export interface ExtensionState {
 	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
@@ -143,6 +151,11 @@ export interface ExtensionState {
 	 */
 	epoch?: number
 	currentTaskItem?: HistoryItem
+	/**
+	 * The last open thread a delete removed, with the task it was in (if any). `seq` grows per
+	 * deletion so the webview leaves the dead thread once: for that task's page, else home.
+	 */
+	deletedOpenThread?: DeletedOpenThread
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
 	planActSeparateModelsSetting: boolean
