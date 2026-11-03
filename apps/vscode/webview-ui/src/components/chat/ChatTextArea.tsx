@@ -5,7 +5,7 @@ import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import type { ScriptValues } from "@shared/scripts"
 import { type SlashCommand } from "@shared/slashCommands"
-import { SendToBackIcon, TriangleAlertIcon } from "lucide-react"
+import { TriangleAlertIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
@@ -16,7 +16,6 @@ import Thumbnails from "@/components/common/Thumbnails"
 import ScriptHelper from "@/components/scripts/ScriptHelper"
 import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
@@ -372,11 +371,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
 		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
-		// Leave room in the corner for the stash and start-in-background icons.
 		const showRunningSendButtons = isRunning && !!onSendAs
-		const showHomeBackgroundButton = isHome && !isRunning && !!onSendAs
-		// Send lives on the bottom row; the corner keeps the stash and home's start-in-background.
-		const inputPaddingRight = 9 + (stashEntries.length > 0 ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
+		// Leave room in the corner for the stash button.
+		const inputPaddingRight = 9 + (stashEntries.length > 0 ? 22 : 0)
 		const unsupportedImagesAttached = selectedImages.length > 0 && !modelSupportsImages
 
 		// Fetch git commits when Git is selected or when typing a hash
@@ -1815,7 +1812,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									paddingTop: 4,
 									bottom: 0,
 									left: 8,
-									right: 33, // Clear of the stash / background buttons
+									right: 33, // Clear of the stash button
 									zIndex: 2,
 								}}
 							/>
@@ -1831,24 +1828,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 										onDelete={onDeleteStash}
 										onRestore={onRestoreStash}
 									/>
-								)}
-								{showHomeBackgroundButton && onSendAs && (
-									<Tooltip>
-										<TooltipContent side="top">
-											Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay here
-										</TooltipContent>
-										<TooltipTrigger asChild>
-											<button
-												aria-label="Start in background"
-												className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-												data-testid="send-background-button"
-												disabled={sendDisabled}
-												onClick={() => onSendAs("background")}
-												type="button">
-												<SendToBackIcon size={13} />
-											</button>
-										</TooltipTrigger>
-									</Tooltip>
 								)}
 							</div>
 						</div>

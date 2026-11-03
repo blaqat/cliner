@@ -254,7 +254,8 @@ describe("composer bottom row", () => {
 			const onSendAs = vi.fn()
 			renderComposer(undefined, { isHome: true, onSendAs, inputValue: "hi" })
 			expect(screen.getByTestId("send-button").title).toContain("Start in background (⌘+Enter)")
-			fireEvent.click(screen.getByTestId("send-background-button"))
+			expect(screen.queryByTestId("send-background-button")).toBeNull()
+			fireEvent.keyDown(screen.getByPlaceholderText("Type a message"), { key: "Enter", metaKey: true })
 			expect(onSendAs).toHaveBeenCalledWith("background")
 		})
 

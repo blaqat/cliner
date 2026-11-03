@@ -125,21 +125,21 @@ describe("ModelEffortChip", () => {
 	})
 
 	describe("the menu", () => {
-		it("opens from a click on the chip: the lists, the footer, then the tiles nearest the chip", async () => {
+		it("opens from a click on the chip: the tiles, lists, then footer", async () => {
 			renderChip()
 			const menu = await openMenu()
 			expect(chip()).toHaveAttribute("aria-expanded", "true")
 			expect(menu).toHaveClass("bg-menu", "border", "shadow-md")
 			const order = [
+				within(menu).getByTestId("approval-tiles"),
 				within(menu).getByTestId("model-effort-lists"),
 				within(menu).getByTestId("menu-reset"),
 				within(menu).getByTestId("menu-models-page"),
-				within(menu).getByTestId("approval-tiles"),
 			]
 			for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
-			// The tiles are the menu's last block (the menu opens above the chip); only the popover's arrow follows.
+			// The tiles are the menu's first block.
 			const blocks = [...menu.children].filter((child) => child.tagName === "DIV" || child.tagName === "HR")
-			expect(blocks.at(-1)).toContainElement(within(menu).getByTestId("approval-tiles"))
+			expect(blocks[0]).toContainElement(within(menu).getByTestId("approval-tiles"))
 			// Focus lands on the model list.
 			await waitFor(() => expect(modelColumn()).toHaveFocus())
 			// A click on the chip again closes it.

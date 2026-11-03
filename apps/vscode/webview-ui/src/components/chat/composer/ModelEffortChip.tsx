@@ -222,6 +222,10 @@ const ModelEffortChip = ({
 				role="dialog"
 				side="top"
 				sideOffset={6}>
+				<div className="shrink-0">
+					<ApprovalTiles />
+				</div>
+				<hr className={cn(MENU_SEPARATOR_CLASS, "shrink-0")} />
 				{/* The one scroll region: a long model list scrolls here, both columns together. */}
 				<div className="min-h-0 shrink overflow-y-auto overscroll-contain" data-testid="model-menu-scroll">
 					<ModelEffortLists
@@ -337,11 +341,6 @@ const ModelEffortChip = ({
 						Models
 						<span aria-hidden className="codicon codicon-chevron-right text-[10px]!" />
 					</button>
-				</div>
-				{/* Auto-approve last: nearest the chip, a short reach from it. */}
-				<hr className={cn(MENU_SEPARATOR_CLASS, "shrink-0")} />
-				<div className="shrink-0">
-					<ApprovalTiles />
 				</div>
 			</PopoverContent>
 		</Popover>

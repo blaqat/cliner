@@ -285,10 +285,9 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		expect(onSendAs).not.toHaveBeenCalled()
 	})
 
-	it("offers a Start in background button on home only", () => {
-		const { onSendAs } = renderComposer({ isHome: true })
-		fireEvent.click(screen.getByTestId("send-background-button"))
-		expect(onSendAs).toHaveBeenCalledWith("background")
+	it("does not show a background button on home", () => {
+		renderComposer({ isHome: true })
+		expect(screen.queryByTestId("send-background-button")).toBeNull()
 	})
 
 	it("hides the background button inside a chat", () => {

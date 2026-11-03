@@ -45,7 +45,10 @@ const MODE_FILL: Record<Mode, { background: string; color: string }> = {
 }
 
 const SWITCH_CLASS =
-	"relative flex h-5 shrink-0 cursor-pointer select-none items-stretch overflow-hidden rounded-full border border-solid border-input-border bg-transparent p-0 text-[11px] font-medium focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
+	"relative flex h-5 shrink-0 cursor-pointer select-none items-center overflow-hidden rounded-full border border-solid border-input-border bg-transparent p-0 text-[11px] leading-none font-medium focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
+
+/** A label trimmed to its capitals, so centering it centers the letters (a line box sits them low). */
+const LABEL_TRIM_CLASS = "block [text-box:trim-both_cap_alphabetic]"
 
 const SLIDE_CLASS =
 	"transition-transform duration-200 ease-out motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none"
@@ -90,7 +93,7 @@ export function ModeSwitch({ mode, onToggle, keys, compact = false }: ModeSwitch
 					)}
 					data-testid="mode-switch-thumb"
 					style={{ ...fill, transform: plan ? "translateX(0)" : "translateX(0.9em)" }}>
-					{MODE_LABELS[mode]}
+					<span className={LABEL_TRIM_CLASS}>{MODE_LABELS[mode]}</span>
 				</span>
 			) : (
 				<>
@@ -104,13 +107,13 @@ export function ModeSwitch({ mode, onToggle, keys, compact = false }: ModeSwitch
 						<span
 							aria-hidden
 							className={cn(
-								"relative flex items-center justify-center px-1.5 transition-colors duration-200 motion-reduce:transition-none",
+								"relative flex h-full items-center justify-center px-1.5 transition-colors duration-200 motion-reduce:transition-none",
 								option !== mode && "text-description hover:text-foreground",
 							)}
 							data-active={option === mode || undefined}
 							key={option}
 							style={option === mode ? { color: fill.color } : undefined}>
-							{MODE_LABELS[option]}
+							<span className={LABEL_TRIM_CLASS}>{MODE_LABELS[option]}</span>
 						</span>
 					))}
 				</>
