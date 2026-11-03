@@ -26,7 +26,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Walkthrough diffs are syntax highlighted for the file's language",
 			"Deleting the thread you're in takes you back to its task, or home",
 			"Settings toggles update faster: a change no longer resends your whole history",
-			'Simpler composer: the buttons sit inside the box, Ask/Act is a sliding switch, and "Opus 4.5 High" opens one menu: models and efforts side by side with your picks highlighted, the five auto-approvals as icon tiles at the bottom, and a Next message only switch',
+			'Simpler composer: the buttons sit inside the box, Ask/Act is a sliding switch, and "Opus 4.5 High" opens one menu: models and efforts side by side with your picks highlighted, the five auto-approvals as icon tiles on top, and a Next message only switch',
 			"Tasks can be stashed and settled like threads, and a row's Stash and Settle replace its time instead of covering the title",
 			"MCP servers and Rules & workflows moved to the title bar and open in a panel from the top right (click again to close); the composer's 📎 is files and images only",
 			"New chats pick the workspace and task on a line under the composer; inside a thread the branch shows in the header",
