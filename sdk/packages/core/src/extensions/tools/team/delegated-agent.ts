@@ -1,3 +1,4 @@
+import { workToolsOnly } from "./subagent-policy";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -132,7 +133,7 @@ export function buildDelegatedAgentConfig(
 		distinctId: runtimeConfig.distinctId,
 		sessionId: runtimeConfig.sessionId,
 		systemPrompt,
-		tools: options.tools,
+		tools: workToolsOnly(options.tools),
 		maxIterations: options.maxIterations ?? runtimeConfig.maxIterations,
 		parentAgentId: options.parentAgentId,
 		abortSignal: options.abortSignal,

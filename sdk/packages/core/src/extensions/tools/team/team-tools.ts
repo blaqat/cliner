@@ -1,3 +1,4 @@
+import { SUBAGENT_SPAWN_ERROR } from "./subagent-policy";
 import type { AgentResult } from "@cline/shared";
 import {
 	type AgentTool,
@@ -345,7 +346,17 @@ export function createAgentTeamsTools(
 	}
 
 	if (!includeManagementTools) {
-		return tools;
+		return tools.map((tool) =>
+			["team_spawn_teammate", "team_run_task"].includes(tool.name)
+				? {
+						...tool,
+						execute: async (input, context) =>
+							context.snapshot?.parentAgentId
+								? { error: SUBAGENT_SPAWN_ERROR }
+								: tool.execute(input, context),
+					}
+				: tool,
+		);
 	}
 
 	tools.push(
@@ -860,7 +871,17 @@ export function createAgentTeamsTools(
 		}) as AgentTool,
 	);
 
-	return tools;
+	return tools.map((tool) =>
+		["team_spawn_teammate", "team_run_task"].includes(tool.name)
+			? {
+					...tool,
+					execute: async (input, context) =>
+						context.snapshot?.parentAgentId
+							? { error: SUBAGENT_SPAWN_ERROR }
+							: tool.execute(input, context),
+				}
+			: tool,
+	);
 }
 
 export function reviveTeamStateDates(

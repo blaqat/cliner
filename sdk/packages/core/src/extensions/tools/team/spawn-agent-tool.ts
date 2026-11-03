@@ -1,3 +1,4 @@
+import { SUBAGENT_SPAWN_ERROR } from "./subagent-policy";
 /**
  * Reusable spawn_agent tool for delegating tasks to sub-agents.
  */
@@ -204,18 +205,22 @@ export function createSpawnAgentTool(
 	config: SpawnAgentToolConfig,
 ): AgentTool<
 	SpawnAgentInput,
-	SpawnAgentOutput | { agentId: string; status: "running" }
+	SpawnAgentOutput | { error: string } | { agentId: string; status: "running" }
 > {
 	const registry = config.registry ?? new AsyncAgentRegistry();
 	return createTool<
 		SpawnAgentInput,
-		SpawnAgentOutput | { agentId: string; status: "running" }
+		| SpawnAgentOutput
+		| { error: string }
+		| { agentId: string; status: "running" }
 	>({
 		name: "spawn_agent",
 		executionMode: "parallel",
 		description: `Spawn a sub-agent with custom instructions for a specialized task. Returns immediately with agentId and status running. Results arrive later as messages; do not poll in a loop. Use wait=true only when you need its result before continuing. Use send_to_agent to steer or continue a child, cancel_agent to stop it, list_agents for status, and wait_for_agents when you have no other work. Set access="write" when the task requires the sub-agent to edit files or make changes; leave it at the default "read" for investigation, search, and analysis tasks. A write-capable sub-agent is downgraded to read-only when you are in a read-only mode.`,
 		inputSchema: zodToJsonSchema(SpawnAgentInputSchema),
 		execute: async (input, context) => {
+			if (context.snapshot?.parentAgentId)
+				return { error: SUBAGENT_SPAWN_ERROR };
 			const agentId = registry.nextId();
 			let entry: AsyncAgentEntry;
 			const tools = config.createSubAgentTools

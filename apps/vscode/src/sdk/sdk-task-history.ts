@@ -154,6 +154,8 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
 		lastUserMessageTs: item.lastUserMessageTs ?? 0,
 		parentTaskId: item.parentTaskId ?? "",
+		isSubagent: item.isSubagent ?? false,
+		runtimeOwnerTaskId: item.runtimeOwnerTaskId ?? "",
 		forkedAtTs: item.forkedAtTs ?? 0,
 		subagentCount: item.subagentCount ?? 0,
 		size: item.size ?? 0,

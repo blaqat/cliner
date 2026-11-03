@@ -416,7 +416,11 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			toolExecutors,
 		} = input;
 		const onTeamEvent = input.onTeamEvent ?? (() => {});
-		const normalized = normalizeConfig(config);
+		const normalized = normalizeConfig(
+			config.parentAgentId
+				? { ...config, enableSpawnAgent: false, enableAgentTeams: false }
+				: config,
+		);
 		const modelTools: ModelTool[] = [];
 		if (
 			normalized.enableTools &&

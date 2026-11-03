@@ -1603,3 +1603,14 @@ it("reopens a nested child with its immediate parent and separate runtime owner"
 		spawnToolCallId: "spawn-b",
 	})
 })
+
+it("preserves ownership when resuming old nested subagent history", () => {
+	const item = makeHistoryItem("grandchild", { isSubagent: true, parentTaskId: "child", runtimeOwnerTaskId: "main" })
+	expect(historyItemToSessionMetadata(item)).toMatchObject({
+		isSubagent: true,
+		parentTaskId: "child",
+		runtimeOwnerTaskId: "main",
+	})
+	const aside = historyItemToSessionMetadata(makeHistoryItem("aside", { parentTaskId: "main", forkedAtTs: 42 }))
+	expect(aside).toMatchObject({ isSubagent: false, runtimeOwnerTaskId: "" })
+})

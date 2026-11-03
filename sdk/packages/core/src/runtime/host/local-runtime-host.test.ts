@@ -8249,3 +8249,106 @@ describe("LocalRuntimeHost", () => {
 		});
 	});
 });
+
+it.each([
+	"parent",
+	"old.child.grandchild",
+])("restores agent ownership from stored lineage: %s", async (parentAgentId) => {
+	const sessionId = "sess-team-resume";
+	const manifest = createManifest(sessionId);
+	const sessionService = {
+		ensureSessionsDir: vi.fn().mockReturnValue("/tmp/sessions"),
+		createRootSessionWithArtifacts: vi.fn().mockResolvedValue({
+			manifestPath: "/tmp/manifest.json",
+			messagesPath: "/tmp/messages.json",
+			manifest,
+		}),
+		persistSessionMessages: vi.fn(),
+		updateSessionStatus: vi.fn().mockResolvedValue({
+			updated: true,
+			endedAt: "2026-01-01T00:00:05.000Z",
+		}),
+		writeSessionManifest: vi.fn(),
+		listSessions: vi.fn().mockResolvedValue([
+			{
+				sessionId,
+				source: SessionSource.CLI,
+				pid: process.pid,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				exitCode: null,
+				status: "running",
+				statusLock: 0,
+				interactive: true,
+				provider: "mock-provider",
+				model: "mock-model",
+				cwd: "/tmp/project",
+				workspaceRoot: "/tmp/project",
+				teamName: "persisted-team",
+				enableTools: true,
+				enableSpawn: true,
+				enableTeams: true,
+				parentSessionId: "root",
+				parentAgentId,
+				agentId: null,
+				conversationId: null,
+				isSubagent: true,
+				prompt: null,
+				metadata: null,
+				messagesPath: "/tmp/messages.json",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			},
+		]),
+		deleteSession: vi.fn().mockResolvedValue({ deleted: true }),
+	};
+	const runtimeBuilder = {
+		build: vi.fn().mockReturnValue({
+			tools: [],
+			teamRuntime: {
+				getTeamId: vi.fn().mockReturnValue("team_persisted-team"),
+				getTeamName: vi.fn().mockReturnValue("persisted-team"),
+			},
+			teamRestoredFromPersistence: true,
+			shutdown: vi.fn(),
+		}),
+	};
+	const agent = {
+		run: vi.fn().mockResolvedValue(createResult()),
+		continue: vi.fn().mockResolvedValue(createResult()),
+		getMessages: vi.fn().mockReturnValue([]),
+		getAgentId: vi.fn().mockReturnValue("agent-root-1"),
+		getConversationId: vi.fn().mockReturnValue("conv-root-1"),
+		abort: vi.fn(),
+		subscribeEvents: vi.fn().mockReturnValue(() => {}),
+		canStartRun: vi.fn().mockReturnValue(true),
+		shutdown: vi.fn().mockResolvedValue(undefined),
+	};
+	const createAgent = vi.fn(() => agent as never);
+	const manager = new RuntimeHostUnderTest({
+		distinctId,
+		sessionService: sessionService as never,
+		runtimeBuilder: runtimeBuilder as never,
+		createAgent,
+	});
+
+	await manager.startSession(
+		normalizeStartInput({
+			config: createConfig({ sessionId, teamName: undefined }),
+		}),
+	);
+
+	expect(runtimeBuilder.build).toHaveBeenCalledWith(
+		expect.objectContaining({
+			config: expect.objectContaining({
+				sessionId,
+				parentAgentId,
+				enableSpawnAgent: false,
+				enableAgentTeams: false,
+			}),
+		}),
+	);
+	expect(sessionService.createRootSessionWithArtifacts).not.toHaveBeenCalled();
+	expect(createAgent).toHaveBeenCalledWith(
+		expect.objectContaining({ parentAgentId }),
+	);
+});

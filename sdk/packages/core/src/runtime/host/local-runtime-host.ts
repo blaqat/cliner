@@ -1,3 +1,4 @@
+import { subagentParent } from "../../extensions/tools/team/subagent-policy";
 import { AsyncAgentRegistry } from "../../extensions/tools/team/async-agents";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -544,6 +545,20 @@ export class LocalRuntimeHost implements RuntimeHost {
 		const startedAt = nowIso();
 		const startInput: ResolvedStartSessionInput =
 			await this.applyInitialOAuthCredentials(input);
+		const storedSession = wasSessionIdRequested
+			? await this.getSession(sessionId)
+			: undefined;
+		const parentAgentId =
+			subagentParent(storedSession) ??
+			subagentParent({ metadata: startInput.sessionMetadata }) ??
+			startInput.config.parentAgentId;
+		if (parentAgentId)
+			startInput.config = {
+				...startInput.config,
+				parentAgentId,
+				enableSpawnAgent: false,
+				enableAgentTeams: false,
+			};
 		const initialMessages = startInput.initialMessages ?? [];
 		const initialUsage =
 			initialMessages.length > 0
@@ -760,6 +775,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 				{
 					...(resumedArtifacts?.manifest.metadata ?? {}),
 					...(startInput.sessionMetadata ?? {}),
+					...(parentAgentId ? { parentAgentId } : {}),
 				},
 				bootstrap.gitState,
 			),
@@ -887,6 +903,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		});
 
 		const agentConfig = {
+			parentAgentId,
 			distinctId: this.distinctId,
 			sessionId,
 			providerId: providerConfig.providerId,

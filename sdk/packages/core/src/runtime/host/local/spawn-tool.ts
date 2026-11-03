@@ -1,3 +1,4 @@
+import { SUBAGENT_SPAWN_ERROR } from "../../../extensions/tools/team/subagent-policy";
 import {
 	AsyncAgentRegistry,
 	agentControlTools,
@@ -431,16 +432,6 @@ export function createSessionSpawnTool(
 					executors: toolExecutors,
 				})
 			: [];
-		if (config.enableSpawnAgent) {
-			tools.push(
-				createSessionSpawnTool(
-					deps,
-					{ ...config, mode: access === "read" ? "plan" : "act" },
-					rootSessionId,
-					toolExecutors,
-				),
-			);
-		}
 		// Use the parent's actual tools, including host replacements and MCP,
 		// rather than recreating tools the parent does not have.
 		const parentTools = deps.getSession(rootSessionId)?.runtime.tools;
@@ -464,34 +455,27 @@ export function createSessionSpawnTool(
 				allowedNames.add(tool.name);
 			}
 		}
-		const childTools = available
-			.filter((tool) => {
-				const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];
-				if (isMcp) return config.enableTools && settings.allowMcp !== false;
-				if (!allowedNames.has(tool.name)) return false;
-				if (tool.name === "run_commands" && settings.allowCommands === false)
-					return false;
-				if (
-					[
-						"fetch_web_content",
-						"web_fetch",
-						"web_search",
-						"browser_action",
-					].includes(tool.name) &&
-					settings.allowWeb === false
-				)
-					return false;
-				return true;
-			})
-			.map((tool) =>
-				tool.name === "spawn_agent"
-					? tools.find((child) => child.name === "spawn_agent")!
-					: tool,
-			);
+		const childTools = available.filter((tool) => {
+			const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];
+			if (isMcp) return config.enableTools && settings.allowMcp !== false;
+			if (!allowedNames.has(tool.name)) return false;
+			if (tool.name === "run_commands" && settings.allowCommands === false)
+				return false;
+			if (
+				[
+					"fetch_web_content",
+					"web_fetch",
+					"web_search",
+					"browser_action",
+				].includes(tool.name) &&
+				settings.allowWeb === false
+			)
+				return false;
+			return true;
+		});
 		return filterToolsByPolicies(
 			filterDisabledTools([
 				...new Map(childTools.map((tool) => [tool.name, tool])).values(),
-				...(config.enableSpawnAgent ? (registry?.tools() ?? []) : []),
 			]),
 			config.toolPolicies,
 		);
@@ -658,6 +642,13 @@ export function createSessionSpawnTool(
 		description,
 		inputSchema,
 		execute: async (rawInput, context) => {
+			if (
+				config.parentAgentId ||
+				deps.getSession(rootSessionId)?.config?.parentAgentId ||
+				context.snapshot?.parentAgentId
+			) {
+				return { error: SUBAGENT_SPAWN_ERROR };
+			}
 			const input = rawInput as SpawnAgentInput;
 			if (input.access === "write" && settings.allowWrite === false) {
 				return {

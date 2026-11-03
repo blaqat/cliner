@@ -1,3 +1,4 @@
+import { workToolsOnly } from "../../extensions/tools/team/subagent-policy";
 /**
  * Per-session `SessionRuntime` orchestrator.
  *
@@ -963,7 +964,11 @@ export class SessionRuntime {
 			Array.from(mergedToolsByName.values()),
 			this.config.toolPolicies,
 		);
-		const tools = toolCallingDisabled ? [] : availableTools;
+		const tools = toolCallingDisabled
+			? []
+			: this.parentAgentId
+				? workToolsOnly(availableTools)
+				: availableTools;
 		const systemPrompt = await this.composeSystemPrompt(
 			new Set(tools.map((tool) => tool.name)),
 		);

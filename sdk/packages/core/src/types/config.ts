@@ -309,6 +309,9 @@ export interface CoreSessionConfig
 			| "missionLogIntervalMs"
 			| "maxConsecutiveMistakes"
 		> {
+	/** Stored agent ownership; user-created asides do not set this. */
+	parentAgentId?: string;
+
 	/** When false, this session owns its provider settings and ignores providers.json. */
 	inheritProviderSettings?: boolean;
 
