@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { StateServiceClient } from "@/services/grpc-client"
 import ChatTextArea from "./ChatTextArea"
 
 const mocks = vi.hoisted(() => ({
@@ -207,6 +208,30 @@ describe("ChatTextArea stash and mode toggle", () => {
 			],
 		})
 		expect(screen.getByTestId("stash-button")).toHaveAccessibleName("Stashed prompts (2)")
+	})
+
+	it("retains text, images and files when the host does not consume the mode-toggle draft", async () => {
+		vi.mocked(StateServiceClient.togglePlanActModeProto).mockResolvedValueOnce({ value: false })
+		const setInputValue = vi.fn()
+		const setSelectedImages = vi.fn()
+		const setSelectedFiles = vi.fn()
+		const textarea = renderComposer({
+			inputValue: "keep this draft",
+			selectedImages: [PNG_DATA_URL],
+			selectedFiles: ["/tmp/file.txt"],
+			setInputValue,
+			setSelectedImages,
+			setSelectedFiles,
+		})
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		await waitFor(() => expect(StateServiceClient.togglePlanActModeProto).toHaveBeenCalled())
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 150))
+		})
+		expect(textarea).toHaveValue("keep this draft")
+		expect(setInputValue).not.toHaveBeenCalledWith("")
+		expect(setSelectedImages.mock.calls.some(([update]) => update([PNG_DATA_URL]).length === 0)).toBe(false)
+		expect(setSelectedFiles.mock.calls.some(([update]) => update(["/tmp/file.txt"]).length === 0)).toBe(false)
 	})
 
 	it("shows the mode on a sliding Ask | Act switch beside the send icon", () => {
