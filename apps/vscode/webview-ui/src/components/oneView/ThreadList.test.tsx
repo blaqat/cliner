@@ -36,7 +36,7 @@ const item = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
 })
 
 const renderList = (props: Partial<Parameters<typeof ThreadList>[0]> = {}) => {
-	const handlers = { onOpenThread: vi.fn(), onOpenTaskGroup: vi.fn(), onNewChat: vi.fn() }
+	const handlers = { onOpenThread: vi.fn(), onOpenTaskGroup: vi.fn() }
 	render(<ThreadList now={NOW} {...handlers} {...props} />)
 	return handlers
 }
@@ -120,8 +120,7 @@ describe("ThreadList", () => {
 		expect(handlers.onOpenThread).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Expand stashed" }))
 		expect(within(rowFor("stashed")).getByRole("button", { name: "Unstash Try Bun 1.5" })).toBeInTheDocument()
-		fireEvent.click(screen.getByTestId("one-view-new"))
-		expect(handlers.onNewChat).toHaveBeenCalled()
+		expect(screen.queryByTestId("one-view-new")).toBeNull()
 	})
 
 	it("moves between rows with ↑/↓ and opens with Enter", () => {
@@ -258,5 +257,49 @@ describe("ThreadList", () => {
 		// In the title's line, after the title, so the title truncates before them.
 		expect(actions.parentElement).toBe(within(row).getByText("Fix CRLF diffs").parentElement)
 		expect(within(actions).getByRole("button", { name: "Stash Fix CRLF diffs" })).toHaveAttribute("title", "Stash")
+	})
+	it("opens filters without text, selects inherited tags, and clears an empty result", () => {
+		mocks.state.taskGroups = [
+			{ id: "g1", title: "Release 3", tags: [{ kind: "label", value: "release" }], createdAt: NOW, updatedAt: NOW },
+		]
+		renderList()
+		expect(screen.queryByText("Active")).toBeNull()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "release" }))
+		expect(rowFor("wait")).toBeInTheDocument()
+		expect(screen.queryByText("Home ordering")).toBeNull()
+		expect(screen.getByTestId("one-view-filter-count")).toHaveTextContent("1")
+		fireEvent.click(screen.getByRole("button", { name: "Custom" }))
+		fireEvent.change(screen.getByLabelText("From"), { target: { value: "2027-01-01" } })
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("with these filters")
+		fireEvent.click(screen.getByTestId("one-view-no-matches-clear"))
+		expect(screen.getByText("Home ordering")).toBeInTheDocument()
+	})
+	it("filters typed tags without a text search request", () => {
+		mocks.state.taskHistory = [item("tagged", { tags: [{ kind: "label", value: "release" }] }), item("other")]
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "#release" } })
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(screen.queryByText("task other")).toBeNull()
+		expect(mocks.searchHistory).not.toHaveBeenCalled()
+	})
+	it("keeps filtered settled results collapsible without an Active header", () => {
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "Old thread" } })
+		expect(screen.queryByText("Old thread")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "Expand settled" }))
+		expect(screen.getByText("Old thread")).toBeInTheDocument()
+		expect(screen.queryByText("Active")).toBeNull()
+	})
+	it("caps tags with a working more link", () => {
+		mocks.state.taskHistory = Array.from({ length: 10 }, (_, i) =>
+			item(`t${i}`, { tags: [{ kind: "label", value: `label${i}` }] }),
+		)
+		renderList()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		const tags = screen.getByRole("group", { name: "Tags" })
+		expect(within(tags).getAllByRole("button")).toHaveLength(9)
+		fireEvent.click(within(tags).getByText("+2 more"))
+		expect(within(tags).getByRole("button", { name: "label9" })).toBeInTheDocument()
 	})
 })

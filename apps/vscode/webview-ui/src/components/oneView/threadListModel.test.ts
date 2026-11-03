@@ -12,7 +12,19 @@ import {
 	resolvePlacement,
 	WIDE_MIN_WIDTH,
 } from "./layoutPrefs"
-import { filterList, focusSnippet, mapSearchRows, rowLine, stripThreads, topThreadId, visibleStripChips } from "./threadListModel"
+import {
+	dateBounds,
+	filterList,
+	fitStripEntries,
+	focusSnippet,
+	mapSearchRows,
+	NO_FILTER,
+	parseListQuery,
+	rowLine,
+	stripEntries,
+	tagsInUse,
+	topThreadId,
+} from "./threadListModel"
 
 const NOW = Date.UTC(2026, 9, 29, 12)
 const item = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
@@ -152,11 +164,15 @@ describe("search mapping", () => {
 		expect(all.sections.map((section) => section.id)).toEqual(["active", "stashed", "settled"])
 		expect(all.count).toBe(7)
 
-		const threadsOnly = filterList(inbox, matches, { kinds: new Set(["threads"]), states: new Set(["settled"]) })
+		const threadsOnly = filterList(inbox, matches, {
+			...NO_FILTER,
+			kinds: new Set(["threads"]),
+			states: new Set(["settled"]),
+		})
 		expect(threadsOnly.sections.map((section) => section.id)).toEqual(["settled"])
 		expect(threadsOnly.notes).toEqual([])
 
-		const tasksOnly = filterList(inbox, matches, { kinds: new Set(["tasks"]), states: new Set() })
+		const tasksOnly = filterList(inbox, matches, { ...NO_FILTER, kinds: new Set(["tasks"]), states: new Set() })
 		expect(tasksOnly.sections.flatMap((section) => section.entries.map((entry) => entry.kind))).toEqual(["group"])
 	})
 
@@ -171,14 +187,24 @@ describe("strip chips", () => {
 	it("lists active threads and always includes the open one", () => {
 		const history = [item("a"), item("b", { ts: NOW - 120_000 }), item("s", { isStashed: true })]
 		const inbox = buildInbox(history, {}, undefined, {})
-		expect(stripThreads(inbox, undefined, history).map((entry) => entry.item.id)).toEqual(["a", "b"])
-		expect(stripThreads(inbox, "s", history).map((entry) => entry.item.id)).toEqual(["s", "a", "b"])
+		expect(stripEntries(inbox, undefined, history).map((entry) => entry.kind === "thread" && entry.row.item.id)).toEqual([
+			"a",
+			"b",
+		])
+		expect(stripEntries(inbox, "s", history).map((entry) => entry.kind === "thread" && entry.row.item.id)).toEqual([
+			"s",
+			"a",
+			"b",
+		])
 	})
 
 	it("swaps the open thread into the last visible slot", () => {
-		const rows = ["a", "b", "c", "d"].map((id) => ({ ...row(), item: item(id) }))
-		expect(visibleStripChips(rows, 2, "d").map((entry) => entry.item.id)).toEqual(["a", "d"])
-		expect(visibleStripChips(rows, 0, undefined)).toHaveLength(1)
+		const rows = ["a", "b", "c", "d"].map((id) => ({ kind: "thread" as const, row: { ...row(), item: item(id) } }))
+		expect(fitStripEntries(rows, 2, "d").shown.map((entry) => entry.kind === "thread" && entry.row.item.id)).toEqual([
+			"a",
+			"d",
+		])
+		expect(fitStripEntries(rows, 0, undefined).shown).toHaveLength(1)
 	})
 })
 
@@ -200,5 +226,59 @@ describe("layout", () => {
 		expect(dockAt(400, 50, rect)).toBe("top")
 		expect(dockAt(100, 300, rect)).toBe("left")
 		expect(dockAt(700, 300, rect)).toBe("right")
+	})
+})
+
+describe("tag and date filters", () => {
+	it("parses typed tags without sending them to text search", () => {
+		expect(parseListQuery("fix #Release #release #bug")).toEqual({ text: "fix", tags: ["release", "bug"] })
+	})
+	it("deduplicates tag values and orders by use", () => {
+		expect(
+			tagsInUse(
+				[item("a", { tags: [{ kind: "label", value: "bug" }] }), item("b", { tags: [{ kind: "ticket", value: "BUG" }] })],
+				[{ ...group("g"), tags: [{ kind: "label", value: "release" }] }],
+			).map((tag) => [tag.key, tag.count]),
+		).toEqual([
+			["bug", 2],
+			["release", 1],
+		])
+	})
+	it("filters without text and inherits task tags", () => {
+		const inbox = buildInbox(
+			[item("a", { taskGroupId: "g" }), item("b", { tags: [{ kind: "label", value: "bug" }] }), item("c")],
+			{},
+			undefined,
+			{ taskGroups: [{ ...group("g"), tags: [{ kind: "label", value: "bug" }] }] },
+		)
+		const result = filterList(inbox, undefined, { ...NO_FILTER, tags: new Set(["bug"]) })
+		expect(result.sections[0].entries).toHaveLength(2)
+		expect(result.sections[0].entries.find((entry) => entry.kind === "group")?.row).toMatchObject({
+			members: [{ item: { id: "a" } }],
+		})
+		expect(filterList(inbox, undefined, NO_FILTER, { typedTags: ["bu"] }).count).toBe(result.count)
+	})
+	it("uses last activity ts even when the user's last message is older", () => {
+		const inbox = buildInbox(
+			[item("new", { lastUserMessageTs: NOW - 20 * 86400000 }), item("old", { ts: NOW - 10 * 86400000 })],
+			{},
+			undefined,
+			{},
+		)
+		expect(
+			filterList(inbox, undefined, { ...NO_FILTER, date: { range: "7d" } }, { now: NOW }).sections[0].entries.map(
+				(entry) => entry.kind === "thread" && entry.row.item.id,
+			),
+		).toEqual(["new"])
+	})
+	it("includes the entire custom end day in local time", () => {
+		const bounds = dateBounds({ range: "custom", from: "2026-10-01", to: "2026-10-02" }, NOW)
+		expect(bounds).toEqual({ start: new Date(2026, 9, 1).getTime(), end: new Date(2026, 9, 3).getTime() - 1 })
+	})
+	it("starts Today at local midnight and applies rolling day windows", () => {
+		const now = new Date(2026, 9, 29, 12).getTime()
+		expect(dateBounds({ range: "today" }, now).start).toBe(new Date(2026, 9, 29).getTime())
+		expect(dateBounds({ range: "30d" }, now).start).toBe(now - 30 * 86400000)
+		expect(dateBounds({ range: "7d" }, now).start).toBe(now - 7 * 86400000)
 	})
 })

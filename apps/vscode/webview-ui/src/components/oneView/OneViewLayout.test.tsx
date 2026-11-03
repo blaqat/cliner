@@ -27,7 +27,7 @@ const item = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
 const Header = () => <div data-testid="header">{useOneView().listToggle}</div>
 
 const renderLayout = (props: Partial<Parameters<typeof OneViewLayout>[0]> = {}) => {
-	const handlers = { onOpenThread: vi.fn(), onOpenTaskGroup: vi.fn(), onNewChat: vi.fn() }
+	const handlers = { onOpenThread: vi.fn(), onOpenTaskGroup: vi.fn() }
 	const utils = render(
 		<OneViewLayout hidden={false} now={NOW} {...handlers} {...props}>
 			<Header />
@@ -170,5 +170,17 @@ describe("OneViewLayout", () => {
 	it("covers nothing while a full-page view is open", () => {
 		renderLayout({ hidden: true })
 		expect(screen.getByTestId("one-view")).toHaveStyle({ display: "none" })
+	})
+	it("preserves task groups and the selected thread when docked on top", () => {
+		localStorage.setItem("oneView.dock", "top")
+		mocks.state.taskHistory = [item("a", { title: "Alpha", taskGroupId: "g" }), item("b", { title: "Beta" })]
+		mocks.state.taskGroups = [{ id: "g", title: "Release", tags: [], createdAt: NOW, updatedAt: NOW }]
+		renderLayout({ currentThreadId: "a" })
+		expect(screen.getByTestId("one-view-strip-task")).toHaveTextContent("Release")
+		expect(screen.getAllByTestId("one-view-strip-chip").find((chip) => chip.textContent === "Alpha")).toHaveAttribute(
+			"aria-current",
+			"true",
+		)
+		expect(screen.queryByTestId("one-view-strip-new")).toBeNull()
 	})
 })

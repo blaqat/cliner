@@ -123,6 +123,8 @@ interface TaskGroupRowProps {
 	testId?: string
 	/** Extra attributes for the row element (one view's keyboard-nav marker, data ids). */
 	rowAttrs?: Record<string, string | undefined>
+	/** Overrides the time slot's text and tooltip (one view shows dates after a few days). */
+	time?: { text: string; title: string }
 }
 
 /**
@@ -143,6 +145,7 @@ export const TaskGroupRow = ({
 	titleNode,
 	testId = "inbox-task-group-row",
 	rowAttrs,
+	time,
 }: TaskGroupRowProps) => {
 	const { group, members, activityTs, runningCount } = row
 	const waitingCount = members.filter((member) => member.status === "waiting" && !member.settled).length
@@ -212,8 +215,8 @@ export const TaskGroupRow = ({
 					<span
 						className={cn("text-[10px] leading-[18px] text-description tabular-nums", ROW_META_CLASS)}
 						data-testid="inbox-task-group-time"
-						title={activityTitle(row, now)}>
-						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
+						title={time?.title ?? activityTitle(row, now)}>
+						{time?.text ?? (settled ? formatStamp(activityTs, now) : formatAge(activityTs, now))}
 					</span>
 					<RowActions
 						actions={[

@@ -1,6 +1,6 @@
 import { CheckIcon } from "lucide-react"
 import type { KeyboardEvent, ReactNode } from "react"
-import { activityTitle, formatAge, formatStamp, type InboxRow } from "@/components/inbox/inboxUtils"
+import type { InboxRow } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { toggleTaskSettled, toggleTaskStashed } from "@/components/inbox/sessionActions"
 import { ROW_META_CLASS, RowActions, threadRowActions } from "@/components/inbox/TaskGroupRow"
@@ -9,6 +9,7 @@ import { treeRowStyle } from "@/components/inbox/treeGeometry"
 import type { SearchRow } from "@/components/search/searchUtils"
 import { cn } from "@/lib/utils"
 import { findSubstringRegions } from "@/utils/highlight"
+import { formatListTime, listTimeTitle } from "./listTime"
 import { focusSnippet, type RowLine, rowLine, type ThreadHit } from "./threadListModel"
 
 /** Focusable list row: ↑/↓ move between these, Enter/Space opens. */
@@ -119,8 +120,8 @@ export const ThreadRow = ({ row, now, current, onOpen, hit, query = "" }: Thread
 					<span
 						className={cn("shrink-0 text-[10px] text-description tabular-nums", ROW_META_CLASS)}
 						data-testid="one-view-row-time"
-						title={activityTitle(row, now)}>
-						{settled ? formatStamp(activityTs, now) : formatAge(activityTs, now)}
+						title={listTimeTitle(row, now)}>
+						{formatListTime(activityTs, now)}
 					</span>
 					{/* Hover or focus swaps the time for Stash and Settle; the title's ellipsis moves left for them. */}
 					<RowActions

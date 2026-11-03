@@ -37,7 +37,7 @@ import {
 import { OneViewContext, type OneViewState } from "./OneViewContext"
 import { ThreadList } from "./ThreadList"
 import { ThreadStripBar } from "./ThreadStripBar"
-import { stripThreads, topThreadId } from "./threadListModel"
+import { stripEntries, topThreadId } from "./threadListModel"
 
 /** Pointer travel before a press on the grip becomes a drag (below it, it's a click: the dock menu). */
 const DRAG_THRESHOLD = 5
@@ -52,7 +52,6 @@ interface OneViewLayoutProps {
 	currentTaskGroupId?: string
 	onOpenThread: (threadId: string) => void
 	onOpenTaskGroup: (taskGroupId: string) => void
-	onNewChat: () => void
 	/** The main region: new chat, a thread, or a task page. */
 	children: ReactNode
 	/** Clock override for tests and stories. */
@@ -70,7 +69,6 @@ export const OneViewLayout = ({
 	currentTaskGroupId,
 	onOpenThread,
 	onOpenTaskGroup,
-	onNewChat,
 	children,
 	now,
 }: OneViewLayoutProps) => {
@@ -118,7 +116,7 @@ export const OneViewLayout = ({
 			stashedLimit: Number.MAX_SAFE_INTEGER,
 			taskGroups,
 		})
-		return stripThreads(inbox, currentThreadId, history)
+		return stripEntries(inbox, currentThreadId, history)
 	}, [side, history, sessionStatuses, subagentCounts, taskGroups, currentThreadId])
 
 	const changeDock = useCallback((next: Dock) => {
@@ -322,10 +320,6 @@ export const OneViewLayout = ({
 		setDropdownOpen(false)
 		onOpenTaskGroup(id)
 	}
-	const newChat = () => {
-		setDropdownOpen(false)
-		onNewChat()
-	}
 
 	const main = (
 		<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="one-view-main" key="main">
@@ -350,7 +344,6 @@ export const OneViewLayout = ({
 				focusSearchSignal={focusSearchSignal}
 				grip={grip}
 				now={now}
-				onNewChat={newChat}
 				onOpenTaskGroup={openTaskGroup}
 				onOpenThread={openThread}
 			/>
@@ -378,16 +371,15 @@ export const OneViewLayout = ({
 		<div className="relative z-20 shrink-0" data-testid="one-view-strip-region" key="strip" ref={stripRef}>
 			<ThreadStripBar
 				currentRowId={currentRowId}
+				entries={stripRows}
 				grip={grip}
 				listOpen={dropdownOpen}
-				onNewChat={newChat}
 				onOpenThread={openThread}
 				onSearch={() => {
 					setDropdownOpen(true)
 					setFocusSearchSignal((signal) => signal + 1)
 				}}
 				onToggleList={() => setDropdownOpen((open) => !open)}
-				rows={stripRows}
 			/>
 			{dropdownOpen && (
 				<div
@@ -401,7 +393,6 @@ export const OneViewLayout = ({
 						focusSearchSignal={focusSearchSignal}
 						now={now}
 						onEscape={() => setDropdownOpen(false)}
-						onNewChat={newChat}
 						onOpenTaskGroup={openTaskGroup}
 						onOpenThread={openThread}
 					/>

@@ -14,16 +14,19 @@ import { openNote } from "@/components/taskGroup/useTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { getCurrentPlatform } from "@/utils/platformUtils"
+import { formatListTime, listTimeTitle } from "./listTime"
+import { ActiveFilters, FilterPanel } from "./ThreadListFilters"
 import { Hit, NoteRow, ROW_ATTR, ThreadRow } from "./ThreadListRows"
 import {
+	countFilters,
 	filterList,
 	isActiveMember,
-	KIND_CHIPS,
-	type KindChip,
 	type ListFilter,
 	NO_FILTER,
-	STATE_CHIPS,
+	parseListQuery,
 	type StateChip,
+	stripTagTokens,
+	tagsInUse,
 } from "./threadListModel"
 import { useListSearch } from "./useListSearch"
 
@@ -62,19 +65,13 @@ function readTaskFolds(): Record<string, boolean> {
 const SECTION_CLASS =
 	"flex w-full items-center gap-1.5 border-0 bg-transparent px-2 pt-2.5 pb-1 text-left text-[10.5px] font-medium uppercase tracking-wider text-description"
 const MORE_CLASS = "cursor-pointer border-0 bg-transparent p-0 text-xs text-description hover:text-foreground"
-
-const CHIP_CLASS =
-	"flex h-5 cursor-pointer items-center rounded-full border px-2 text-[11px] focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-const CHIP_ON =
-	"border-(--vscode-focusBorder) bg-(--vscode-list-activeSelectionBackground) text-(--vscode-list-activeSelectionForeground)"
-const CHIP_OFF = "border-editor-group-border bg-transparent text-foreground hover:bg-list-hover"
+const LINK_CLASS = "cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
 
 export interface ThreadListProps {
 	currentThreadId?: string
 	currentTaskGroupId?: string
 	onOpenThread: (threadId: string) => void
 	onOpenTaskGroup: (taskGroupId: string) => void
-	onNewChat: () => void
 	/** Leading header control: the dock grip. */
 	grip?: ReactNode
 	/** Bumped to focus the search field (⌘K / Ctrl+K, the strip's search button). */
@@ -86,16 +83,15 @@ export interface ThreadListProps {
 }
 
 /**
- * One view's thread list: search (filters the list in place), then Active (tasks with their
- * threads, and loose threads), a collapsed Stashed section and a collapsed, paged Settled one.
- * Each thread row shows its status and last line; hovering adds Stash and Settle.
+ * One view's thread list: search and filters (both narrow the list in place; `#tag` in the field
+ * filters by tag), then the active tasks and threads, a collapsed Stashed section and a collapsed,
+ * paged Settled one. Each thread row shows its status and last line; hovering adds Stash and Settle.
  */
 export const ThreadList = ({
 	currentThreadId,
 	currentTaskGroupId,
 	onOpenThread,
 	onOpenTaskGroup,
-	onNewChat,
 	grip,
 	focusSearchSignal,
 	onEscape,
@@ -116,22 +112,32 @@ export const ThreadList = ({
 	const inputRef = useRef<HTMLInputElement>(null)
 	const bodyRef = useRef<HTMLDivElement>(null)
 
-	const search = useListSearch(query)
-	const searching = search.active
+	// `#tag` tokens filter by tag; only the rest is searched as text.
+	const parsed = useMemo(() => parseListQuery(query), [query])
+	const search = useListSearch(parsed.text)
+	const text = parsed.text
+	// Panel filters plus typed `#tags`: what "Clear filters" resets.
+	const filterCount = countFilters(filter) + parsed.tags.length
+	// Search text, a `#tag` or any chip narrows the list; the full list otherwise.
+	const filtering = search.active || filterCount > 0
 	const history = useMemo(() => taskHistory ?? [], [taskHistory])
+	const tags = useMemo(() => tagsInUse(history, taskGroups ?? []), [history, taskGroups])
 	const inbox = useMemo(
 		() =>
 			buildInbox(history, sessionStatuses, subagentCounts, {
-				activeLimit: searching ? UNLIMITED : activeLimit,
-				settledLimit: searching ? UNLIMITED : settledLimit,
-				stashedLimit: searching ? UNLIMITED : stashedLimit,
+				activeLimit: filtering ? UNLIMITED : activeLimit,
+				settledLimit: filtering ? UNLIMITED : settledLimit,
+				stashedLimit: filtering ? UNLIMITED : stashedLimit,
 				taskGroups,
 			}),
-		[history, sessionStatuses, subagentCounts, taskGroups, searching, activeLimit, settledLimit, stashedLimit],
+		[history, sessionStatuses, subagentCounts, taskGroups, filtering, activeLimit, settledLimit, stashedLimit],
 	)
 	const filtered = useMemo(
-		() => (searching ? filterList(inbox, search.matches, filter) : undefined),
-		[searching, inbox, search.matches, filter],
+		() =>
+			filtering
+				? filterList(inbox, search.active ? search.matches : undefined, filter, { typedTags: parsed.tags, now })
+				: undefined,
+		[filtering, inbox, search.active, search.matches, filter, parsed.tags, now],
 	)
 
 	// The thread on screen may be an aside or subagent: its top-level row is the one highlighted.
@@ -164,20 +170,19 @@ export const ThreadList = ({
 		bodyRef.current?.querySelector<HTMLElement>("[data-current]")?.scrollIntoView?.({ block: "nearest" })
 	}, [currentRowId, currentTaskGroupId])
 
-	const changeQuery = (next: string) => {
-		// Chips belong to a search: clearing the field resets them.
-		if (!next.trim()) {
-			setFilter(NO_FILTER)
-			setFilterOpen(false)
-		}
-		setQuery(next)
+	const changeQuery = (next: string) => setQuery(next)
+
+	// Chips off and `#tags` out of the field; the search text stays.
+	const clearFilters = () => {
+		setFilter(NO_FILTER)
+		setQuery((current) => (parseListQuery(current).tags.length ? stripTagTokens(current) : current))
 	}
 
-	const toggleChip = <T extends KindChip | StateChip>(group: "kinds" | "states", id: T) =>
-		setFilter((current) => {
-			const next = new Set(current[group] as ReadonlySet<T>)
-			if (!next.delete(id)) next.add(id)
-			return { ...current, [group]: next }
+	const toggleFilterPanel = () =>
+		setFilterOpen((open) => {
+			// The panel sits at the top of the list's scroll area.
+			if (!open) bodyRef.current?.scrollTo?.({ top: 0 })
+			return !open
 		})
 
 	const toggleSection = (key: string, set: (update: (value: boolean) => boolean) => void) =>
@@ -187,7 +192,7 @@ export const ThreadList = ({
 		})
 
 	const isExpanded = (id: string, sectionDefault: boolean) =>
-		searching || id === currentGroupId || (taskFolds[id] ?? sectionDefault)
+		filtering || id === currentGroupId || (taskFolds[id] ?? sectionDefault)
 	const toggleTask = (id: string, expanded: boolean) =>
 		setTaskFolds((current) => {
 			const next = { ...current, [id]: !expanded }
@@ -238,7 +243,7 @@ export const ThreadList = ({
 						key={entry.row.item.id}
 						now={now}
 						onOpen={onOpenThread}
-						query={searching ? query.trim() : ""}
+						query={text}
 						row={entry.row}
 					/>
 				)
@@ -246,7 +251,7 @@ export const ThreadList = ({
 			const { group, members } = entry.row
 			const settled = section === "settled"
 			const expanded = isExpanded(group.id, section === "active")
-			const showAll = searching || showSettledIn.has(group.id)
+			const showAll = filtering || showSettledIn.has(group.id)
 			const shown = showAll ? members : members.filter(isActiveMember)
 			const hiddenSettled = members.length - shown.length
 			return (
@@ -265,7 +270,8 @@ export const ThreadList = ({
 						rowAttrs={{ [ROW_ATTR]: "" }}
 						settled={settled}
 						testId="one-view-task-row"
-						titleNode={searching ? <Hit query={query.trim()} text={group.title} /> : undefined}
+						time={{ text: formatListTime(entry.row.activityTs, now), title: listTimeTitle(entry.row, now) }}
+						titleNode={text ? <Hit query={text} text={group.title} /> : undefined}
 					/>
 					{expanded && (shown.length > 0 || hiddenSettled > 0) && (
 						<TaskGroupMembers testId="one-view-task-members">
@@ -276,7 +282,7 @@ export const ThreadList = ({
 									key={member.item.id}
 									now={now}
 									onOpen={onOpenThread}
-									query={searching ? query.trim() : ""}
+									query={text}
 									row={member}
 								/>
 							))}
@@ -330,45 +336,76 @@ export const ThreadList = ({
 	const shortcut = getCurrentPlatform() === "mac" ? "⌘K" : "Ctrl+K"
 	const trimmed = query.trim()
 
+	// The panel is the first thing in the list's scroll area, so the menu never has two scrollbars.
+	const filterPanel = filterOpen && (
+		<FilterPanel canClear={filterCount > 0} filter={filter} onChange={setFilter} onClear={clearFilters} tags={tags} />
+	)
+
+	// Why nothing is shown, and the way back.
+	const noMatches = (
+		<div className="flex flex-col items-start gap-1 px-2 py-3 text-xs text-description" data-testid="one-view-no-matches">
+			<span>
+				{text ? `No matches for “${text}”` : "No threads, tasks or notes match"}
+				{filterCount > 0 ? " with these filters" : ""}.
+			</span>
+			<span className="flex gap-3">
+				{text && (
+					<button
+						className={LINK_CLASS}
+						onClick={() => changeQuery(parsed.tags.map((tag) => `#${tag}`).join(" "))}
+						type="button">
+						Clear search
+					</button>
+				)}
+				{filterCount > 0 && (
+					<button className={LINK_CLASS} data-testid="one-view-no-matches-clear" onClick={clearFilters} type="button">
+						Clear filters
+					</button>
+				)}
+			</span>
+		</div>
+	)
+
 	const body = filtered ? (
 		<>
+			{filterPanel}
 			{filtered.sections.map((section) => (
 				<div data-section={section.id} key={section.id}>
-					{sectionHeader(sectionLabel[section.id], section.entries.length)}
-					{renderEntries(section.entries, section.id)}
+					{/* Active rows just sit at the top. */}
+					{section.id !== "active" &&
+						sectionHeader(sectionLabel[section.id], section.entries.length, {
+							collapsed: section.id === "stashed" ? stashedCollapsed : settledCollapsed,
+							onToggle: () =>
+								section.id === "stashed"
+									? toggleSection(STASHED_KEY, setStashedCollapsed)
+									: toggleSection(SETTLED_KEY, setSettledCollapsed),
+						})}
+					{(section.id === "active" || !(section.id === "stashed" ? stashedCollapsed : settledCollapsed)) &&
+						renderEntries(section.entries, section.id)}
 				</div>
 			))}
 			{filtered.notes.length > 0 && (
 				<div data-section="notes">
 					{sectionHeader("Notes", filtered.notes.length)}
 					{filtered.notes.map((row) => (
-						<NoteRow key={`note:${row.taskGroupId}:${row.id}`} onOpen={openNoteRow} query={trimmed} row={row} />
+						<NoteRow key={`note:${row.taskGroupId}:${row.id}`} onOpen={openNoteRow} query={text} row={row} />
 					))}
 				</div>
 			)}
 			{filtered.count === 0 &&
-				(search.searching ? (
-					<div className="px-2 py-3 text-xs text-description">Searching…</div>
-				) : (
-					<div className="px-2 py-3 text-xs text-description" data-testid="one-view-no-matches">
-						No matches for “{trimmed}”.{" "}
-						<button
-							className="cursor-pointer border-0 bg-transparent p-0 text-xs text-link hover:text-link-hover"
-							onClick={() => changeQuery("")}
-							type="button">
-							Clear search
-						</button>
-					</div>
-				))}
+				(search.searching ? <div className="px-2 py-3 text-xs text-description">Searching…</div> : noMatches)}
 		</>
 	) : isEmpty ? (
-		<div className="px-2 py-3 text-xs text-description" data-testid="one-view-empty">
-			No threads yet — start one in the composer.
-		</div>
+		<>
+			{filterPanel}
+			<div className="px-2 py-3 text-xs text-description" data-testid="one-view-empty">
+				No threads yet — start one in the composer.
+			</div>
+		</>
 	) : (
 		<>
+			{filterPanel}
 			<div data-section="active">
-				{sectionHeader("Active", inbox.activeEntries.length + inbox.hiddenCount)}
 				{inbox.activeEntries.length > 0 ? (
 					renderEntries(inbox.activeEntries, "active")
 				) : (
@@ -478,8 +515,11 @@ export const ThreadList = ({
 							if (event.key !== "Escape") return
 							event.preventDefault()
 							event.stopPropagation()
-							if (query) changeQuery("")
-							else onEscape?.()
+							if (query || filterCount > 0 || filterOpen) {
+								setQuery("")
+								setFilter(NO_FILTER)
+								setFilterOpen(false)
+							} else onEscape?.()
 						}}
 						placeholder="Search"
 						ref={inputRef}
@@ -501,52 +541,21 @@ export const ThreadList = ({
 					)}
 				</label>
 				<HeaderIconButton
-					aria-disabled={!trimmed || undefined}
 					aria-pressed={filterOpen}
-					className={cn(
-						filterOpen && "bg-toolbar-hover text-foreground",
-						!trimmed && "opacity-50 hover:bg-transparent",
-					)}
+					className={cn((filterOpen || filterCount > 0) && "bg-toolbar-hover text-foreground")}
 					data-testid="one-view-filter"
-					icon={filterOpen ? "filter-filled" : "filter"}
+					icon={filterCount > 0 || filterOpen ? "filter-filled" : "filter"}
 					label="Filter results"
-					onClick={() => {
-						if (trimmed) setFilterOpen((open) => !open)
-						else inputRef.current?.focus()
-					}}
-					tooltip={
-						trimmed
-							? "Filter: Threads, Tasks, Notes · Active, Stashed, Settled"
-							: "Type in search first, then filter the results"
-					}
+					onClick={toggleFilterPanel}
+					tooltip="Filter by kind, state, tags or last activity"
 				/>
-				<HeaderIconButton data-testid="one-view-new" icon="edit" label="New chat" onClick={onNewChat} />
+				{filterCount > 0 && (
+					<span className="text-[11px] text-description" data-testid="one-view-filter-count">
+						{filterCount}
+					</span>
+				)}
 			</div>
-			{filterOpen && trimmed && (
-				<div className="flex shrink-0 flex-wrap gap-1 px-2 pb-1.5" data-testid="one-view-filter-chips">
-					{KIND_CHIPS.map((chip) => (
-						<button
-							aria-pressed={filter.kinds.has(chip.id)}
-							className={cn(CHIP_CLASS, filter.kinds.has(chip.id) ? CHIP_ON : CHIP_OFF)}
-							key={chip.id}
-							onClick={() => toggleChip("kinds", chip.id)}
-							type="button">
-							{chip.label}
-						</button>
-					))}
-					<span aria-hidden className="mx-0.5 w-px self-stretch bg-editor-group-border" />
-					{STATE_CHIPS.map((chip) => (
-						<button
-							aria-pressed={filter.states.has(chip.id)}
-							className={cn(CHIP_CLASS, filter.states.has(chip.id) ? CHIP_ON : CHIP_OFF)}
-							key={chip.id}
-							onClick={() => toggleChip("states", chip.id)}
-							type="button">
-							{chip.label}
-						</button>
-					))}
-				</div>
-			)}
+			{!filterOpen && <ActiveFilters filter={filter} onChange={setFilter} onClear={clearFilters} tags={tags} />}
 			<div
 				className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-2"
 				data-testid="one-view-list-body"
