@@ -94,6 +94,8 @@ export function useConfigSelection(mode: Mode, fallbackLabel: string) {
 		/** The picker's label: the configuration's name, or the model when none is assigned. */
 		label: current?.name ?? fallbackLabel,
 		scopeLabel,
+		/** This chat (or the next one) uses the default model and effort: Reset has nothing to undo. */
+		isDefault,
 		pending,
 		description: effective
 			? `${modeLabel} currently uses ${modelLabel}${pending ? `; ${current?.name} change pending` : ""}`

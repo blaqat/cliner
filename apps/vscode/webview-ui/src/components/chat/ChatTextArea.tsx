@@ -1880,6 +1880,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							/>
 						</ShrinkSlot>
 						<SendSplitButton
+							compactMode={rowLayout.tightChip}
 							disabled={sendDisabled}
 							flash={modeSwitchFlash}
 							mode={mode}

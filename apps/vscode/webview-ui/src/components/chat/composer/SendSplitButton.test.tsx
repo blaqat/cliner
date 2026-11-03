@@ -43,10 +43,13 @@ describe("SendSplitButton", () => {
 		expect(onPickMode).not.toHaveBeenCalled()
 	})
 
-	it("switches mode in one click on its label, with the shortcut in the tooltip", () => {
+	it("switches mode in one click on the sliding switch, with the shortcut in the tooltip", () => {
 		const { onPickMode, onSend } = renderButton({ toggleKeys: "⌘+Shift+A" })
 		const toggle = screen.getByTestId("mode-switch")
-		expect(toggle).toHaveTextContent(/^Act$/)
+		expect(toggle).toHaveAttribute("role", "switch")
+		expect(toggle).toHaveAttribute("aria-checked", "true")
+		// Both labels, the current one over the thumb.
+		expect(toggle).toHaveTextContent(/^AskAct$/)
 		expect(toggle.title.split("\n")[0]).toBe("Switch to Ask (⌘⇧A)")
 		expect(toggle).toHaveAccessibleName("Mode: Act. Switch to Ask (⌘⇧A)")
 		fireEvent.click(toggle)
@@ -57,10 +60,12 @@ describe("SendSplitButton", () => {
 		expect(screen.queryByTestId("mode-menu")).toBeNull()
 	})
 
-	it("reads Ask in Ask mode, toggles back to Act, and fills send with the Ask color", () => {
+	it("slides the thumb under Ask in Ask mode, toggles back to Act, and fills send with the Ask color", () => {
 		const { onPickMode } = renderButton({ mode: "plan" })
 		const toggle = screen.getByTestId("mode-switch")
-		expect(toggle).toHaveTextContent(/^Ask$/)
+		expect(toggle).toHaveAttribute("aria-checked", "false")
+		expect(screen.getByTestId("mode-switch-thumb").style.transform).toBe("translateX(0)")
+		expect(screen.getByTestId("mode-switch-thumb").style.background).toContain("--vscode-activityWarningBadge-background")
 		expect(toggle.title.split("\n")[0]).toBe("Switch to Act (Ctrl+Shift+A)")
 		fireEvent.click(toggle)
 		expect(onPickMode).toHaveBeenCalledWith("act")
@@ -68,10 +73,28 @@ describe("SendSplitButton", () => {
 		expect(screen.getByTestId("send-split").style.background).toContain("--vscode-activityWarningBadge-background")
 	})
 
-	it("styles the toggle as a quiet segment and send as the filled one", () => {
+	it("draws a pill switch beside the filled send part: the thumb under Act in the button color", () => {
 		renderButton()
-		expect(screen.getByTestId("mode-switch")).toHaveClass("bg-button-secondary-background")
-		expect(screen.getByTestId("send-button")).not.toHaveClass("bg-button-secondary-background")
+		const toggle = screen.getByTestId("mode-switch")
+		expect(toggle).toHaveClass("rounded-full", "border-input-border", "bg-transparent")
+		const thumb = screen.getByTestId("mode-switch-thumb")
+		expect(thumb.style.transform).toBe("translateX(100%)")
+		expect(thumb.style.background).toContain("--vscode-button-background")
+		expect(thumb).toHaveClass("motion-reduce:transition-none", "[.vscode-reduce-motion_&]:transition-none")
+		// The switch sits outside the filled send part, before it.
+		expect(screen.getByTestId("send-split")).not.toContainElement(toggle)
+		expect(toggle.compareDocumentPosition(screen.getByTestId("send-split")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		expect(screen.getByTestId("send-split").style.background).toContain("--vscode-button-background")
+	})
+
+	it("on the tightest row shows only the current mode, still one click", () => {
+		const { onPickMode } = renderButton({ compactMode: true, mode: "plan" })
+		const toggle = screen.getByTestId("mode-switch")
+		expect(toggle).toHaveAttribute("data-compact", "true")
+		expect(toggle).toHaveTextContent(/^Ask$/)
+		expect(toggle).toHaveAccessibleName("Mode: Ask. Switch to Act (Ctrl+Shift+A)")
+		fireEvent.click(toggle)
+		expect(onPickMode).toHaveBeenCalledWith("act")
 	})
 
 	it("blocks sending, not switching, while send is disabled", () => {
@@ -85,7 +108,7 @@ describe("SendSplitButton", () => {
 		expect(onPickMode).toHaveBeenCalledWith("plan")
 	})
 
-	it("while running, splits send into steer and interject and keeps the one-click mode toggle", () => {
+	it("while running, splits send into steer and interject and keeps the one-click mode switch", () => {
 		const onSteer = vi.fn()
 		const onInterject = vi.fn()
 		const { onPickMode } = renderButton({ running: { enterSendsAs: "interject", modKey: "Ctrl", onSteer, onInterject } })

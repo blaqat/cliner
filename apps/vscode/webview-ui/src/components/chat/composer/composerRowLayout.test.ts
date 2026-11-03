@@ -37,8 +37,10 @@ describe("composerRowLayout", () => {
 		expect(composerRowLayout(120, nearlyFull)).toEqual(tightRow)
 	})
 
-	it("fits the whole row, Compact label included, in a 340px sidebar", () => {
-		expect(composerRowLayout(340, nearlyFull)).toEqual(FULL_COMPOSER_ROW)
+	it("fits the whole row, Compact label and Ask | Act switch included, in a 370px sidebar", () => {
+		expect(composerRowLayout(370, nearlyFull)).toEqual(FULL_COMPOSER_ROW)
+		// At 340 only the Compact label gives way.
+		expect(composerRowLayout(340, nearlyFull)).toEqual({ inlineCompactNudge: false, compactEffort: false, tightChip: false })
 		expect(composerRowLayout(300, chat)).toEqual(FULL_COMPOSER_ROW)
 		expect(composerRowLayout(260, home)).toEqual(FULL_COMPOSER_ROW)
 	})
@@ -61,5 +63,14 @@ describe("composerRowLayout", () => {
 		expect(
 			composerRowMinWidth({ ...chat, running: true }, FULL_COMPOSER_ROW) - composerRowMinWidth(chat, FULL_COMPOSER_ROW),
 		).toBe(COMPOSER_ROW_WIDTHS.sendRunning - COMPOSER_ROW_WIDTHS.send)
+	})
+
+	it("shrinks the Ask | Act switch to the current mode only on the tightest row", () => {
+		const w = COMPOSER_ROW_WIDTHS
+		const compactRow = { inlineCompactNudge: false, compactEffort: true, tightChip: false }
+		const tightRow = { inlineCompactNudge: false, compactEffort: true, tightChip: true }
+		expect(composerRowMinWidth(chat, compactRow) - composerRowMinWidth(chat, tightRow)).toBe(
+			w.chipCompact - w.chipTight + w.modeSwitch - w.modeSwitchCompact,
+		)
 	})
 })

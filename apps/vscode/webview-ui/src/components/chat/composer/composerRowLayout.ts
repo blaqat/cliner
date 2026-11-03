@@ -2,22 +2,23 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
 
 /**
  * What the composer's bottom row shows at its current width. The row is 📎 on the left, then on
- * the right the Compact chip (near the limit), the context ring, the "Model · Effort" chip and the
- * Send button that carries the mode. In the order things give way:
+ * the right the Compact chip (near the limit), the context ring, the "Model · Effort" chip, the
+ * Ask/Act switch and Send. In the order things give way:
  * 1. The model name in the chip truncates (CSS, down to the minimum below).
  * 2. The Compact chip drops its label and token count, keeping its icon (it never hides while the
  *    context is nearly full).
  * 3. The effort word hides from the chip (the chip is one button; its menu still has the effort),
  *    so the model name keeps its letters.
- * 4. The chip goes tight: the model name may drop to a few characters.
- * 📎, the ring and Send never hide.
+ * 4. The chip goes tight (the model name may drop to a few characters) and the Ask/Act switch
+ *    shows only the current mode on its thumb.
+ * 📎, the ring, the switch and Send never hide.
  */
 export interface ComposerRowLayout {
 	/** The Compact chip shows "Compact 699k"; when false it is its icon alone. */
 	inlineCompactNudge: boolean
 	/** The effort word hides from the chip; the chip's menu still has the effort wheel. */
 	compactEffort: boolean
-	/** The model/effort chip may shrink below its usual minimum. */
+	/** The model/effort chip may shrink below its usual minimum; the mode switch shows one label. */
 	tightChip: boolean
 }
 
@@ -62,10 +63,16 @@ export const COMPOSER_ROW_WIDTHS = {
 	chipTight: 56,
 	/** Without reasoning the chip has no effort word. */
 	effortSaving: 24,
-	/** "Act ↑ | ⌄". */
-	send: 62,
-	/** Steer, interject and "Act ⌄" while running. */
-	sendRunning: 82,
+	/** The "( Ask | Act )" switch. */
+	modeSwitch: 62,
+	/** The tightest row's switch: the current mode on a short track. */
+	modeSwitchCompact: 37,
+	/** gap-1 between the switch and Send. */
+	switchGap: 4,
+	/** The send icon. */
+	send: 26,
+	/** Steer and interject while running. */
+	sendRunning: 46,
 } as const
 
 /** Smallest row width (border box) that fits `content` in `layout`. */
@@ -81,7 +88,18 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		: layout.compactEffort
 			? w.chipCompact
 			: w.chipMin - (content.hasEffort ? 0 : w.effortSaving)
-	return w.padding + w.attach + usage + w.rowGap + chip + w.rowGap + (content.running ? w.sendRunning : w.send)
+	const modeSwitch = layout.tightChip ? w.modeSwitchCompact : w.modeSwitch
+	return (
+		w.padding +
+		w.attach +
+		usage +
+		w.rowGap +
+		chip +
+		w.rowGap +
+		modeSwitch +
+		w.switchGap +
+		(content.running ? w.sendRunning : w.send)
+	)
 }
 
 /** The fullest layout that fits a measured row width; unknown widths (not laid out yet, jsdom) get the full row. */

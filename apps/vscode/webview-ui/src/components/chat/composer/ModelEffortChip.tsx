@@ -2,13 +2,13 @@ import type { ModelInfo } from "@shared/api"
 import { type Mode, OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort } from "@shared/storage/types"
 import { ShieldOffIcon } from "lucide-react"
 import { memo, useRef, useState } from "react"
-import { COMPOSER_MENU_SCROLL_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { ApprovalTiles } from "./ApprovalTiles"
 import { approvalsLabel, summarizeApprovals } from "./approvals"
-import { DoubleWheel, type WheelItem } from "./DoubleWheel"
+import { type ListItem, ModelEffortLists } from "./ModelEffortLists"
 import {
 	type ComposerSelectionChanges,
 	formatEffort,
@@ -26,25 +26,49 @@ const UNSAVED_VALUE = "__unsaved__"
 /** Why a locked choice can't change. */
 export const LOCKED_REASON = "A next-message-only choice can't change while Cline is working"
 
+/** Why Reset is off. */
+export const RESET_DISABLED_REASON = "Nothing to reset: this already uses the default model and effort"
+
+/** What the Next message only switch does, by state. */
+export const NEXT_MESSAGE_TIPS = {
+	on: "Next message only is on: the model and effort apply to your next message, then this chat goes back to its own. Turn off to keep them for this chat.",
+	off: "Next message only is off: model and effort changes stay for this chat. Turn on to use them for your next message only.",
+	busy: "Can't change while Cline is working",
+} as const
+
 // Text-only feedback: the chip brightens on hover, focus or open; no background highlight.
 const CHIP_CLASS =
 	"flex h-5 min-w-0 cursor-pointer items-center gap-[0.3em] rounded-xs border-0 bg-transparent px-1 py-0 text-xs text-description transition-colors duration-100 hover:text-foreground focus-visible:text-foreground motion-reduce:transition-none focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) data-[state=open]:text-foreground"
 
-const FOOTER_BUTTON_CLASS =
-	"flex h-5 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border-0 bg-transparent px-1 text-[11px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-description"
+const FOCUS_RING =
+	"focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
 
-/** The wheel's names for the efforts: "none" reads "Default" (its tooltip says whose). */
-const EFFORT_ITEMS: WheelItem[] = OPENAI_REASONING_EFFORT_OPTIONS.map((option) => ({
+const FOOTER_BUTTON_CLASS = cn(
+	"flex h-5 cursor-pointer items-center gap-1 whitespace-nowrap rounded-xs border-0 bg-transparent px-1 text-[11px] text-description hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-description",
+	FOCUS_RING,
+)
+
+/** Reset: a square icon button, like the composer's other icon buttons. */
+const ICON_BUTTON_CLASS = cn(
+	"flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-description",
+	FOCUS_RING,
+)
+
+const SLIDE_CLASS =
+	"transition-[transform,background-color,border-color] duration-150 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none"
+
+/** The lists' names for the efforts: "none" reads "Default" (its tooltip says whose). */
+const EFFORT_ITEMS: ListItem[] = OPENAI_REASONING_EFFORT_OPTIONS.map((option) => ({
 	value: option,
 	label: option === "none" ? "Default" : formatEffort(option),
 	detail: option === "none" ? "Provider default" : undefined,
 }))
 
-/** What the menu's wheels show; nothing is saved until the menu closes with it kept. */
+/** What the menu's lists show; nothing is saved until the menu closes with it kept. */
 interface Draft {
 	profile: string
 	effort: OpenaiReasoningEffort
-	/** The effort was rolled by hand: a model change keeps it instead of taking that model's own. */
+	/** The effort was picked by hand: a model change keeps it instead of taking that model's own. */
 	effortTouched: boolean
 }
 
@@ -60,11 +84,12 @@ interface ModelEffortChipProps {
 }
 
 /**
- * The composer's one readable chip, "Opus 4.5 High". A click opens one menu above it: the five
- * auto-approve tiles, then a double wheel (model | effort) whose middle row is the choice, then
- * Reset, Next message only and the Models page. Enter, a click outside or Tab away keep what the
- * wheels show; Escape puts the previous choice back. With every action auto-approved, an
- * error-colored shield sits before the chip text.
+ * The composer's one readable chip, "Opus 4.5 High". A click opens one menu above it: two plain
+ * lists (models | efforts, every option on show, the chosen rows banded), then Reset, the Next
+ * message only switch and the Models page, and at the bottom, nearest the chip, the five
+ * auto-approve tiles. The menu stays inside the viewport and only the lists scroll, as one region.
+ * Enter, a click outside or Tab away keep what the lists show; Escape puts the previous choice
+ * back. With every action auto-approved, an error-colored shield sits before the chip text.
  */
 const ModelEffortChip = ({
 	mode,
@@ -82,7 +107,7 @@ const ModelEffortChip = ({
 	const [draft, setDraftState] = useState<Draft | null>(null)
 	const draftRef = useRef<Draft | null>(null)
 	const escapingRef = useRef(false)
-	const wheelsRef = useRef<HTMLDivElement>(null)
+	const listsRef = useRef<HTMLDivElement>(null)
 	const open = draft !== null
 
 	const setDraft = (next: Draft | null) => {
@@ -90,8 +115,8 @@ const ModelEffortChip = ({
 		setDraftState(next)
 	}
 
-	// The model wheel: the saved models (as the old picker listed them); a current pick that isn't saved goes first.
-	const modelItems: WheelItem[] = config.profiles.map((profile) => ({
+	// The model list: the saved models (as the old picker listed them); a current pick that isn't saved goes first.
+	const modelItems: ListItem[] = config.profiles.map((profile) => ({
 		value: profile.id,
 		label: profile.name,
 		detail: profile.modelId,
@@ -111,7 +136,7 @@ const ModelEffortChip = ({
 	// Only the current model's info is known here; another saved model is offered its efforts.
 	const effortAvailableFor = (id: string) => (id === modelValue ? effort.available : true)
 
-	/** Saves what the wheels show (plus `extra`) in one request, only what changed. */
+	/** Saves what the lists show (plus `extra`) in one request, only what changed. */
 	const commit = (extra: ComposerSelectionChanges = {}) => {
 		const current = draftRef.current
 		const changes: ComposerSelectionChanges = { ...extra }
@@ -140,6 +165,10 @@ const ModelEffortChip = ({
 	const draftEffort = draft?.effort ?? effort.selected
 	const showEffort = effortAvailableFor(draftProfile)
 	const note = config.locked ? LOCKED_REASON : config.profiles.length === 0 ? "No saved models yet" : undefined
+	// Reset has something to undo: a saved choice off the default, a one-message choice, or a moved list.
+	const draftMoved = !!draft && (draft.profile !== modelValue || draft.effort !== effort.selected)
+	const canReset = !config.isDefault || config.nextMessageOnly || draftMoved
+	const nextOn = config.nextMessageOnly
 
 	const chipLabel = [
 		`${config.modeLabel} model: ${config.label}`,
@@ -179,101 +208,121 @@ const ModelEffortChip = ({
 			<PopoverContent
 				align="end"
 				aria-label={`${config.modeLabel} model, effort and auto-approve`}
-				className={cn("menu-rise w-[260px] max-w-[calc(100vw-8px)] p-1.5 text-xs", COMPOSER_MENU_SCROLL_CLASS)}
+				className="menu-rise flex max-h-(--radix-popover-content-available-height) w-[260px] max-w-[calc(100vw-8px)] flex-col overflow-y-auto overscroll-contain p-1.5 text-xs"
 				collisionPadding={4}
 				data-testid="model-menu"
 				onEscapeKeyDown={() => {
 					escapingRef.current = true
 				}}
 				onOpenAutoFocus={(event) => {
-					// Focus lands on the wheels (the column with the tab stop), not the first tile.
+					// Focus lands on the lists (the column with the tab stop), not the first button.
 					event.preventDefault()
-					wheelsRef.current
-						?.querySelector<HTMLElement>('[role="listbox"][tabindex="0"]')
-						?.focus({ preventScroll: true })
+					listsRef.current?.querySelector<HTMLElement>('[role="listbox"][tabindex="0"]')?.focus({ preventScroll: true })
 				}}
 				role="dialog"
 				side="top"
 				sideOffset={6}>
-				<ApprovalTiles />
-				<hr className={MENU_SEPARATOR_CLASS} />
-				<DoubleWheel
-					effort={
-						showEffort
-							? {
-									label: "Reasoning effort",
-									items: EFFORT_ITEMS,
-									index: Math.max(0, OPENAI_REASONING_EFFORT_OPTIONS.indexOf(draftEffort)),
-									onSelect: (index) => {
-										const current = draftRef.current
-										if (current)
-											setDraft({
-												...current,
-												effort: OPENAI_REASONING_EFFORT_OPTIONS[index],
-												effortTouched: true,
-											})
-									},
-									disabled: effort.locked,
-									disabledReason: LOCKED_REASON,
-								}
-							: undefined
-					}
-					model={{
-						label: `${config.modeLabel} model`,
-						items: modelItems,
-						index: Math.max(
-							0,
-							modelItems.findIndex((item) => item.value === draftProfile),
-						),
-						onSelect: (index) => {
-							const current = draftRef.current
-							const profile = modelItems[index]?.value
-							if (!current || !profile) return
-							setDraft({
-								...current,
-								profile,
-								effort: current.effortTouched ? current.effort : profileEffort(profile),
-							})
-						},
-						disabled: config.locked,
-						disabledReason: LOCKED_REASON,
-					}}
-					onEnter={() => closeMenu(true)}
-					wheelsRef={wheelsRef}
-				/>
+				{/* The one scroll region: a long model list scrolls here, both columns together. */}
+				<div className="min-h-0 shrink overflow-y-auto overscroll-contain" data-testid="model-menu-scroll">
+					<ModelEffortLists
+						effort={
+							showEffort
+								? {
+										label: "Reasoning effort",
+										items: EFFORT_ITEMS,
+										index: Math.max(0, OPENAI_REASONING_EFFORT_OPTIONS.indexOf(draftEffort)),
+										onSelect: (index) => {
+											const current = draftRef.current
+											if (current)
+												setDraft({
+													...current,
+													effort: OPENAI_REASONING_EFFORT_OPTIONS[index],
+													effortTouched: true,
+												})
+										},
+										disabled: effort.locked,
+										disabledReason: LOCKED_REASON,
+									}
+								: undefined
+						}
+						listsRef={listsRef}
+						model={{
+							label: `${config.modeLabel} model`,
+							items: modelItems,
+							index: Math.max(
+								0,
+								modelItems.findIndex((item) => item.value === draftProfile),
+							),
+							onSelect: (index) => {
+								const current = draftRef.current
+								const profile = modelItems[index]?.value
+								if (!current || !profile) return
+								setDraft({
+									...current,
+									profile,
+									effort: current.effortTouched ? current.effort : profileEffort(profile),
+								})
+							},
+							disabled: config.locked,
+							disabledReason: LOCKED_REASON,
+						}}
+						onEnter={() => closeMenu(true)}
+					/>
+				</div>
 				{note && (
 					<p
-						className="m-0 flex items-center gap-1 px-1 pt-1 text-[11px] text-description"
+						className="m-0 flex shrink-0 items-center gap-1 px-1 pt-1 text-[11px] text-description"
 						data-testid="model-menu-note">
 						{config.locked && <span aria-hidden className="codicon codicon-lock text-[11px]!" />}
 						{note}
 					</p>
 				)}
-				<div className="mt-1 flex flex-wrap items-center gap-x-1 border-0 border-t border-solid border-menu-foreground/10 pt-1">
+				<div className="mt-1 flex shrink-0 items-center gap-x-1 border-0 border-t border-solid border-menu-foreground/10 pt-1">
 					<button
-						aria-label="Reset to default"
-						className={FOOTER_BUTTON_CLASS}
+						aria-label={canReset ? "Reset to default" : `Reset to default. ${RESET_DISABLED_REASON}`}
+						className={ICON_BUTTON_CLASS}
 						data-testid="menu-reset"
+						disabled={!canReset}
 						onClick={() => {
 							setDraft(null)
 							config.reset()
 						}}
-						title="Reset to default"
+						title={canReset ? "Reset to the default model and effort" : RESET_DISABLED_REASON}
 						type="button">
-						Reset
+						<span aria-hidden className="codicon codicon-discard text-[13px]!" />
 					</button>
 					{config.hasChat && (
+						// Saves at once, like the tiles; what the lists show is still kept or dropped on close.
 						<button
-							className={FOOTER_BUTTON_CLASS}
+							aria-checked={nextOn}
+							className={cn(FOOTER_BUTTON_CLASS, "gap-1.5", nextOn && "text-foreground")}
+							data-state={nextOn ? "on" : "off"}
 							data-testid="menu-next-message"
 							disabled={config.busy}
-							onClick={() => {
-								commit({ nextMessageOnly: !config.nextMessageOnly })
-								setDraft(null)
-							}}
-							title={config.busy ? "Can't change while Cline is working" : undefined}
+							onClick={() => config.assign({ nextMessageOnly: !nextOn })}
+							role="switch"
+							title={config.busy ? NEXT_MESSAGE_TIPS.busy : NEXT_MESSAGE_TIPS[nextOn ? "on" : "off"]}
 							type="button">
-							{config.nextMessageOnly ? "Keep for this chat" : "Next message only"}
+							<span
+								aria-hidden
+								className={cn(
+									"relative inline-block h-[12px] w-[22px] shrink-0 rounded-full border border-solid",
+									SLIDE_CLASS,
+									nextOn
+										? "border-(--vscode-focusBorder) bg-(--vscode-focusBorder)"
+										: "border-description bg-transparent",
+								)}
+								data-testid="next-message-track">
+								<span
+									className={cn(
+										"absolute top-[2px] left-[2px] size-[6px] rounded-full",
+										SLIDE_CLASS,
+										nextOn ? "translate-x-[10px] bg-button-foreground" : "bg-description",
+									)}
+									data-testid="next-message-thumb"
+								/>
+							</span>
+							Next message only
 						</button>
 					)}
 					<button
@@ -288,6 +337,11 @@ const ModelEffortChip = ({
 						Models
 						<span aria-hidden className="codicon codicon-chevron-right text-[10px]!" />
 					</button>
+				</div>
+				{/* Auto-approve last: nearest the chip, a short reach from it. */}
+				<hr className={cn(MENU_SEPARATOR_CLASS, "shrink-0")} />
+				<div className="shrink-0">
+					<ApprovalTiles />
 				</div>
 			</PopoverContent>
 		</Popover>

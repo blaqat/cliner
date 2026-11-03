@@ -35,12 +35,89 @@ const Shell = styled.div.withConfig({ shouldForwardProp: (prop) => prop !== "$fl
 const PART_CLASS =
 	"flex h-full cursor-pointer items-center gap-1 border-0 px-1.5 text-xs focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-2 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50"
 
-/** The quiet toggle segment: secondary colors, so it reads as a switch beside the filled send. */
-const MODE_CLASS =
-	"bg-button-secondary-background text-button-secondary-foreground hover:bg-button-secondary-background-hover pl-2 pr-1.5 font-medium"
-
-/** The filled send segment(s): the mode's color, as the old switch's slider was. */
+/** The filled send segment(s): the mode's color, as the switch's thumb is. */
 const SEND_CLASS = "bg-transparent text-inherit hover:bg-(--vscode-toolbar-hoverBackground) disabled:hover:bg-transparent"
+
+/** Each mode's fill and text on the switch's thumb and the send part. */
+const MODE_FILL: Record<Mode, { background: string; color: string }> = {
+	plan: { background: PLAN_MODE_COLOR, color: PLAN_MODE_FOREGROUND },
+	act: { background: "var(--vscode-button-background)", color: "var(--vscode-button-foreground)" },
+}
+
+const SWITCH_CLASS =
+	"relative flex h-5 shrink-0 cursor-pointer select-none items-stretch overflow-hidden rounded-full border border-solid border-input-border bg-transparent p-0 text-[11px] font-medium focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
+
+const SLIDE_CLASS =
+	"transition-transform duration-200 ease-out motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none"
+
+const MODES: readonly Mode[] = ["plan", "act"]
+
+interface ModeSwitchProps {
+	mode: Mode
+	onToggle: () => void
+	/** "⌘⇧A" / "Ctrl+Shift+A". */
+	keys: string
+	/** The tightest row: only the current mode's name, on a thumb that slides across a short track. */
+	compact?: boolean
+}
+
+/**
+ * `( Ask | Act )`: a sliding switch, as upstream's Plan/Act one was. The thumb sits under the current
+ * mode in that mode's color; a click anywhere on it (or the shortcut) flips to the other mode.
+ */
+export function ModeSwitch({ mode, onToggle, keys, compact = false }: ModeSwitchProps) {
+	const plan = mode === "plan"
+	const other: Mode = plan ? "act" : "plan"
+	const fill = MODE_FILL[mode]
+	return (
+		<button
+			aria-checked={!plan}
+			aria-label={`Mode: ${MODE_LABELS[mode]}. Switch to ${MODE_LABELS[other]} (${keys})`}
+			className={cn(SWITCH_CLASS, compact ? "w-[3.3em]" : "grid grid-cols-2")}
+			data-compact={compact || undefined}
+			data-mode={mode}
+			data-testid="mode-switch"
+			onClick={onToggle}
+			role="switch"
+			title={`Switch to ${MODE_LABELS[other]} (${keys})\n${MODE_DESCRIPTIONS[mode]}`}
+			type="button">
+			{compact ? (
+				<span
+					aria-hidden
+					className={cn(
+						"absolute inset-y-0 left-0 flex w-[2.4em] items-center justify-center rounded-full",
+						SLIDE_CLASS,
+					)}
+					data-testid="mode-switch-thumb"
+					style={{ ...fill, transform: plan ? "translateX(0)" : "translateX(0.9em)" }}>
+					{MODE_LABELS[mode]}
+				</span>
+			) : (
+				<>
+					<span
+						aria-hidden
+						className={cn("absolute inset-y-0 left-0 w-1/2 rounded-full", SLIDE_CLASS)}
+						data-testid="mode-switch-thumb"
+						style={{ background: fill.background, transform: plan ? "translateX(0)" : "translateX(100%)" }}
+					/>
+					{MODES.map((option) => (
+						<span
+							aria-hidden
+							className={cn(
+								"relative flex items-center justify-center px-1.5 transition-colors duration-200 motion-reduce:transition-none",
+								option !== mode && "text-description hover:text-foreground",
+							)}
+							data-active={option === mode || undefined}
+							key={option}
+							style={option === mode ? { color: fill.color } : undefined}>
+							{MODE_LABELS[option]}
+						</span>
+					))}
+				</>
+			)}
+		</button>
+	)
+}
 
 /** "⌘+Shift+A" → "⌘⇧A" on macOS; "Ctrl+Shift+A" stays as is. */
 export function shortcutGlyphs(keys: string): string {
@@ -64,6 +141,8 @@ export interface SendSplitButtonProps {
 	toggleKeys: string
 	/** What the send part does, with its keys ("Send (Enter) · Aside (Alt+Enter)"). */
 	sendTitle: string
+	/** The tightest row: the mode switch shows only the current mode. */
+	compactMode?: boolean
 	/** While the agent runs, the send part splits into steer and interject. */
 	running?: {
 		enterSendsAs: EnterSendsAs
@@ -74,10 +153,9 @@ export interface SendSplitButtonProps {
 }
 
 /**
- * `[ Act ⇄ | ➤ ]`: the mode's name is a one-click toggle (Act ↔ Ask, also the shortcut), styled as
- * a quiet secondary segment; the filled segment with the send icon sends. Ask fills the send part
- * with the Ask color. While running, the send part becomes steer and interject (the one Enter does
- * is highlighted) and the mode toggle stays one click.
+ * `( Ask | Act ) [ ➤ ]`: the sliding mode switch (Ask ↔ Act, also the shortcut), then the filled
+ * send part in the mode's color. While running, the send part becomes steer and interject (the one
+ * Enter does is highlighted) and the switch stays one click.
  */
 const SendSplitButton = ({
 	mode,
@@ -87,6 +165,7 @@ const SendSplitButton = ({
 	flash = false,
 	toggleKeys,
 	sendTitle,
+	compactMode = false,
 	running,
 }: SendSplitButtonProps) => {
 	const label = MODE_LABELS[mode]
@@ -96,75 +175,65 @@ const SendSplitButton = ({
 	const keyFor = (kind: EnterSendsAs) => (running && kind === running.enterSendsAs ? "Enter" : `${running?.modKey}+Enter`)
 
 	return (
-		<Shell
-			$flash={flash}
-			className="flex h-5.5 shrink-0 items-stretch overflow-hidden rounded-xs"
-			data-mode={mode}
-			data-testid="send-split"
-			style={{
-				background: plan ? PLAN_MODE_COLOR : "var(--vscode-button-background)",
-				color: plan ? PLAN_MODE_FOREGROUND : "var(--vscode-button-foreground)",
-			}}>
-			<button
-				aria-label={`Mode: ${label}. Switch to ${MODE_LABELS[other]} (${keys})`}
-				className={cn(PART_CLASS, MODE_CLASS)}
-				data-testid="mode-switch"
-				onClick={() => onPickMode(other)}
-				title={`Switch to ${MODE_LABELS[other]} (${keys})\n${MODE_DESCRIPTIONS[mode]}`}
-				type="button">
-				{label}
-				<span aria-hidden className="codicon codicon-arrow-swap text-[10px]! opacity-60" />
-			</button>
-			{running ? (
-				(
-					[
-						{
-							kind: "steer" as const,
-							label: "Steer",
-							tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
-							icon: "send",
-							onClick: running.onSteer,
-						},
-						{
-							kind: "interject" as const,
-							label: "Interject",
-							tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
-							icon: "zap",
-							onClick: running.onInterject,
-						},
-					] as const
-				).map((button) => (
+		<div className="flex shrink-0 items-center gap-1" data-testid="mode-and-send">
+			<ModeSwitch compact={compactMode} keys={keys} mode={mode} onToggle={() => onPickMode(other)} />
+			<Shell
+				$flash={flash}
+				className="flex h-5.5 shrink-0 items-stretch overflow-hidden rounded-xs"
+				data-mode={mode}
+				data-testid="send-split"
+				style={MODE_FILL[mode]}>
+				{running ? (
+					(
+						[
+							{
+								kind: "steer" as const,
+								label: "Steer",
+								tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
+								icon: "send",
+								onClick: running.onSteer,
+							},
+							{
+								kind: "interject" as const,
+								label: "Interject",
+								tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
+								icon: "zap",
+								onClick: running.onInterject,
+							},
+						] as const
+					).map((button) => (
+						<button
+							aria-label={button.label}
+							className={cn(
+								PART_CLASS,
+								SEND_CLASS,
+								"px-1.5",
+								button.kind !== running.enterSendsAs && "opacity-70 hover:opacity-100",
+							)}
+							data-default={button.kind === running.enterSendsAs ? "true" : undefined}
+							data-testid={`${button.kind}-button`}
+							disabled={disabled}
+							key={button.kind}
+							onClick={button.onClick}
+							title={button.tooltip}
+							type="button">
+							<span aria-hidden className={`codicon codicon-${button.icon} text-[13px]!`} />
+						</button>
+					))
+				) : (
 					<button
-						aria-label={button.label}
-						className={cn(
-							PART_CLASS,
-							SEND_CLASS,
-							"px-1.5",
-							button.kind !== running.enterSendsAs && "opacity-70 hover:opacity-100",
-						)}
-						data-default={button.kind === running.enterSendsAs ? "true" : undefined}
-						data-testid={`${button.kind}-button`}
+						aria-label={`Send (${label})`}
+						className={cn(PART_CLASS, SEND_CLASS, "px-2", { disabled })}
+						data-testid="send-button"
 						disabled={disabled}
-						key={button.kind}
-						onClick={button.onClick}
-						title={button.tooltip}
+						onClick={onSend}
+						title={`${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`}
 						type="button">
-						<span aria-hidden className={`codicon codicon-${button.icon} text-[13px]!`} />
+						<span aria-hidden className="codicon codicon-send text-[13px]!" />
 					</button>
-				))
-			) : (
-				<button
-					aria-label={`Send (${label})`}
-					className={cn(PART_CLASS, SEND_CLASS, "px-2", { disabled })}
-					data-testid="send-button"
-					disabled={disabled}
-					onClick={onSend}
-					title={`${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`}
-					type="button">
-					<span aria-hidden className="codicon codicon-send text-[13px]!" />
-				</button>
-			)}
-		</Shell>
+				)}
+			</Shell>
+		</div>
 	)
 }
 

@@ -141,7 +141,9 @@ describe("composer bottom row", () => {
 		for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
 		// No "·": the model and effort read as words, spaced by the chip's gap.
 		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent(/^Opus 4\.5High$/)
-		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
+		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^AskAct$/)
+		expect(screen.getByTestId("mode-switch")).toHaveAttribute("aria-checked", "true")
+		expect(follows(screen.getByTestId("model-effort-chip"), screen.getByTestId("mode-switch"))).toBe(true)
 		expect(follows(screen.getByTestId("mode-switch"), screen.getByTestId("send-button"))).toBe(true)
 	})
 
@@ -172,7 +174,7 @@ describe("composer bottom row", () => {
 		expect(follows(card, line)).toBe(true)
 	})
 
-	it("no longer has ＋, MCP servers, rules, the shield, the Ask/Act switch or separate pickers", () => {
+	it("no longer has ＋, MCP servers, rules, the shield or separate pickers; one switch, for the mode", () => {
 		renderComposer(usageSlot())
 		for (const id of [
 			"plus-menu-button",
@@ -185,7 +187,7 @@ describe("composer bottom row", () => {
 		]) {
 			expect(screen.queryByTestId(id)).not.toBeInTheDocument()
 		}
-		expect(screen.queryAllByRole("switch")).toHaveLength(0)
+		expect(screen.getAllByRole("switch")).toEqual([screen.getByTestId("mode-switch")])
 	})
 
 	it("📎 opens the file picker", () => {
@@ -231,7 +233,7 @@ describe("composer bottom row", () => {
 			expect(props.onSend).toHaveBeenCalledOnce()
 		})
 
-		it("switches to Ask in one click on the mode label", () => {
+		it("switches to Ask in one click on the mode switch", () => {
 			renderComposer()
 			fireEvent.click(screen.getByTestId("mode-switch"))
 			expect(mocks.togglePlanActModeProto).toHaveBeenCalledWith(expect.objectContaining({ mode: PlanActMode.PLAN }))
@@ -276,14 +278,16 @@ describe("composer bottom row", () => {
 		})
 
 		it("drops the Compact label, then hides the effort word from the chip, on narrow rows", () => {
-			stubRowWidth(260)
+			stubRowWidth(275)
 			const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 			renderComposer(usageSlot(renderMeter, true))
 			expect(renderMeter).toHaveBeenLastCalledWith(
-				composerRowLayout(260, { hasUsage: true, hasCompactNudge: true, hasEffort: true }),
+				composerRowLayout(275, { hasUsage: true, hasCompactNudge: true, hasEffort: true }),
 			)
 			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: false })
 			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "76")
+			// The mode switch keeps both labels until the tightest row.
+			expect(screen.getByTestId("mode-switch")).not.toHaveAttribute("data-compact")
 			// The chip is one button: the effort word is gone from its text, but it still names the effort.
 			const chip = screen.getByTestId("model-effort-chip")
 			expect(chip).toHaveTextContent(/^Opus 4\.5$/)
@@ -297,6 +301,9 @@ describe("composer bottom row", () => {
 			renderComposer(usageSlot(renderMeter, true))
 			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: true })
 			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "56")
+			// The mode switch goes compact with it: the current mode only.
+			expect(screen.getByTestId("mode-switch")).toHaveAttribute("data-compact", "true")
+			expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
 		})
 
 		it("lays the row out in normal flow, the meter beside the chip", () => {

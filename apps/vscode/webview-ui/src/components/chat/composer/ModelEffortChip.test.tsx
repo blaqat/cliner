@@ -1,7 +1,7 @@
 import { type AutoApprovalSettings, DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import ModelEffortChip, { LOCKED_REASON } from "./ModelEffortChip"
+import ModelEffortChip, { LOCKED_REASON, NEXT_MESSAGE_TIPS, RESET_DISABLED_REASON } from "./ModelEffortChip"
 
 const mocks = vi.hoisted(() => ({
 	assignApiProfile: vi.fn(),
@@ -44,8 +44,9 @@ const renderChip = (props: Partial<React.ComponentProps<typeof ModelEffortChip>>
 const chip = () => screen.getByTestId("model-effort-chip")
 const options = (column: HTMLElement) => within(column).getAllByRole("option")
 const selected = (column: HTMLElement) => within(column).getByRole("option", { selected: true })
-const modelColumn = () => screen.getByTestId("model-wheel")
-const effortColumn = () => screen.getByTestId("effort-wheel")
+const modelColumn = () => screen.getByTestId("model-list")
+const effortColumn = () => screen.getByTestId("effort-list")
+const follows = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
 async function openMenu() {
 	fireEvent.click(chip())
@@ -124,28 +125,46 @@ describe("ModelEffortChip", () => {
 	})
 
 	describe("the menu", () => {
-		it("opens from a click on the chip: tiles, then the double wheel, then the footer, on a menu surface", async () => {
+		it("opens from a click on the chip: the lists, the footer, then the tiles nearest the chip", async () => {
 			renderChip()
 			const menu = await openMenu()
 			expect(chip()).toHaveAttribute("aria-expanded", "true")
 			expect(menu).toHaveClass("bg-menu", "border", "shadow-md")
 			const order = [
-				within(menu).getByTestId("approval-tiles"),
-				within(menu).getByTestId("double-wheel"),
+				within(menu).getByTestId("model-effort-lists"),
 				within(menu).getByTestId("menu-reset"),
 				within(menu).getByTestId("menu-models-page"),
+				within(menu).getByTestId("approval-tiles"),
 			]
-			for (let i = 1; i < order.length; i++) {
-				expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-			}
-			// Focus lands on the model wheel.
+			for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
+			// The tiles are the menu's last block (the menu opens above the chip); only the popover's arrow follows.
+			const blocks = [...menu.children].filter((child) => child.tagName === "DIV" || child.tagName === "HR")
+			expect(blocks.at(-1)).toContainElement(within(menu).getByTestId("approval-tiles"))
+			// Focus lands on the model list.
 			await waitFor(() => expect(modelColumn()).toHaveFocus())
 			// A click on the chip again closes it.
 			fireEvent.click(chip())
 			expect(screen.queryByTestId("model-menu")).toBeNull()
 		})
 
-		it("centres the current model and effort on the selection band, with a + between them", async () => {
+		it("stays inside the viewport with one scroll region holding both lists", async () => {
+			renderChip()
+			const menu = await openMenu()
+			expect(menu).toHaveClass("max-h-(--radix-popover-content-available-height)", "flex", "flex-col")
+			const scroll = screen.getByTestId("model-menu-scroll")
+			expect(scroll).toHaveClass("overflow-y-auto", "min-h-0")
+			expect(scroll).toContainElement(modelColumn())
+			expect(scroll).toContainElement(effortColumn())
+			// The columns never scroll on their own.
+			for (const column of [modelColumn(), effortColumn()]) {
+				expect(column.className).not.toMatch(/overflow-(y-)?(auto|scroll|hidden)/)
+			}
+			// No wheel: nothing slides, nothing is masked.
+			expect(screen.queryByTestId("double-wheel")).toBeNull()
+			expect(scroll.querySelector("[style*=translate]")).toBeNull()
+		})
+
+		it("lists every model and effort, banding the chosen ones", async () => {
 			renderChip()
 			await openMenu()
 			expect(options(modelColumn()).map((option) => option.textContent)).toEqual(["Claude work", "Local vLLM", "Opus 4.5"])
@@ -160,24 +179,21 @@ describe("ModelEffortChip", () => {
 			])
 			expect(options(effortColumn())[0]).toHaveAttribute("title", "Default · Provider default")
 			expect(selected(effortColumn())).toHaveTextContent("High")
-			// The middle of five 24px rows: index 0 sits two rows down, index 3 one row up.
-			expect(screen.getByTestId("model-wheel-track").style.transform).toBe("translateY(48px)")
-			expect(screen.getByTestId("effort-wheel-track").style.transform).toBe("translateY(-24px)")
-			expect(screen.getByTestId("wheel-band")).toHaveClass("bg-selection")
-			expect(screen.getByTestId("wheel-band").style.top).toBe("48px")
-			expect(screen.getByTestId("wheel-joiner")).toHaveTextContent(/^\+$/)
+			expect(selected(modelColumn())).toHaveClass("bg-selection", "text-selection-foreground")
+			expect(selected(effortColumn())).toHaveClass("bg-selection", "text-selection-foreground")
+			for (const option of options(effortColumn()).filter((o) => o.getAttribute("aria-selected") !== "true")) {
+				expect(option).not.toHaveClass("bg-selection")
+			}
 		})
 
-		it("right-aligns the model wheel and left-aligns the effort wheel, so they meet at the +", async () => {
+		it("right-aligns the models and left-aligns the efforts, so they meet in the middle", async () => {
 			renderChip()
 			await openMenu()
 			expect(modelColumn()).toHaveAttribute("data-align", "end")
 			expect(effortColumn()).toHaveAttribute("data-align", "start")
 			for (const option of options(modelColumn())) expect(option).toHaveClass("text-right")
 			for (const option of options(effortColumn())) expect(option).toHaveClass("text-left")
-			const joiner = screen.getByTestId("wheel-joiner")
-			expect(modelColumn().compareDocumentPosition(joiner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-			expect(joiner.compareDocumentPosition(effortColumn()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+			expect(follows(modelColumn(), effortColumn())).toBe(true)
 		})
 
 		it("↑/↓ move the focused column, ←/→ switch columns, Enter keeps both in one request", async () => {
@@ -206,6 +222,17 @@ describe("ModelEffortChip", () => {
 			await waitFor(() => expect(chip()).toHaveFocus())
 		})
 
+		it("keeps the keyed row in view as a long list moves", async () => {
+			const scrollIntoView = vi.fn()
+			Element.prototype.scrollIntoView = scrollIntoView
+			renderChip()
+			await openMenu()
+			scrollIntoView.mockClear()
+			fireEvent.keyDown(modelColumn(), { key: "End" })
+			expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
+			expect(scrollIntoView.mock.contexts.map((row) => (row as HTMLElement).textContent)).toContain("Opus 4.5")
+		})
+
 		it("Escape puts the previous choice back", async () => {
 			renderChip()
 			await openMenu()
@@ -223,42 +250,31 @@ describe("ModelEffortChip", () => {
 			expect(selected(effortColumn())).toHaveTextContent("High")
 		})
 
-		it("scrolls each column on its own: one row per notch, trackpad deltas add up; a click outside keeps", async () => {
-			renderChip()
-			await openMenu()
-			fireEvent.wheel(effortColumn(), { deltaY: -100 })
-			expect(selected(effortColumn())).toHaveTextContent("Medium")
-			expect(selected(modelColumn())).toHaveTextContent("Claude work")
-			fireEvent.wheel(modelColumn(), { deltaY: 100 })
-			expect(selected(modelColumn())).toHaveTextContent("Local vLLM")
-			fireEvent.wheel(modelColumn(), { deltaY: 10 })
-			expect(selected(modelColumn())).toHaveTextContent("Local vLLM")
-			fireEvent.wheel(modelColumn(), { deltaY: 20 })
-			expect(selected(modelColumn())).toHaveTextContent("Opus 4.5")
-			// The effort was rolled by hand, so the new model doesn't replace it with its own.
-			expect(selected(effortColumn())).toHaveTextContent("Medium")
-			fireEvent.wheel(modelColumn(), { deltaY: -100 })
-			expect(selected(modelColumn())).toHaveTextContent("Local vLLM")
-			fireEvent.pointerDown(document.body)
-			expect(screen.queryByTestId("model-menu")).toBeNull()
-			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
-				expect.objectContaining({ profileId: "p2", reasoningEffort: "medium" }),
-			)
-		})
-
-		it("a click on a row brings it to the middle and keeps the menu open", async () => {
+		it("a click on a row picks it and keeps the menu open; a click outside keeps", async () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(within(modelColumn()).getByRole("option", { name: "Opus 4.5" }))
 			expect(selected(modelColumn())).toHaveTextContent("Opus 4.5")
-			expect(screen.getByTestId("model-wheel-track").style.transform).toBe("translateY(0px)")
 			// Opus 4.5 brings its own effort.
 			expect(selected(effortColumn())).toHaveTextContent("Medium")
 			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
-			fireEvent.keyDown(modelColumn(), { key: "Enter" })
+			fireEvent.pointerDown(document.body)
+			expect(screen.queryByTestId("model-menu")).toBeNull()
 			// Only the model: the extension applies its effort.
 			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ profileId: "p3" }))
 			expect(mocks.assignApiProfile.mock.calls[0][0].reasoningEffort).toBeUndefined()
+		})
+
+		it("an effort picked by hand survives a model change", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(within(effortColumn()).getByRole("option", { name: "Low" }))
+			fireEvent.click(within(modelColumn()).getByRole("option", { name: "Opus 4.5" }))
+			expect(selected(effortColumn())).toHaveTextContent("Low")
+			fireEvent.keyDown(modelColumn(), { key: "Enter" })
+			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ profileId: "p3", reasoningEffort: "low" }),
+			)
 		})
 
 		it("keeping the same choice sends nothing", async () => {
@@ -270,25 +286,13 @@ describe("ModelEffortChip", () => {
 			expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 		})
 
-		it("drops the slide under reduced motion", async () => {
-			renderChip()
-			await openMenu()
-			for (const id of ["model-wheel-track", "effort-wheel-track"]) {
-				expect(screen.getByTestId(id)).toHaveClass(
-					"motion-reduce:transition-none",
-					"[.vscode-reduce-motion_&]:transition-none",
-				)
-			}
-		})
-
-		it("a model without reasoning: no effort word, a lone disabled — and no +", async () => {
+		it("a model without reasoning: no effort word, a lone disabled —", async () => {
 			renderChip({ modelInfo: {}, modelId: undefined })
 			expect(chip()).toHaveTextContent(/^Claude work$/)
 			expect(chip()).toHaveAccessibleName("Act model: Claude work; Auto-approve: 4 of 5")
 			await openMenu()
 			expect(options(effortColumn()).map((option) => option.textContent)).toEqual(["—"])
 			expect(effortColumn()).toHaveAttribute("aria-disabled", "true")
-			expect(screen.getByTestId("wheel-joiner")).toHaveTextContent(/^$/)
 			// → has nowhere to go.
 			fireEvent.keyDown(modelColumn(), { key: "ArrowRight" })
 			expect(effortColumn()).not.toHaveFocus()
@@ -310,7 +314,7 @@ describe("ModelEffortChip", () => {
 	})
 
 	describe("approval tiles", () => {
-		it("are five icon-only tiles with names, pressed state and a count", async () => {
+		it("are five icon-only tiles with names and pressed state, and no count", async () => {
 			renderChip()
 			await openMenu()
 			const tiles = within(screen.getByTestId("approval-tiles")).getAllByRole("button")
@@ -326,7 +330,9 @@ describe("ModelEffortChip", () => {
 			expect(tiles.map((tile) => tile.getAttribute("aria-pressed"))).toEqual(["true", "true", "false", "true", "true"])
 			expect(tiles[0]).toHaveClass("bg-(--vscode-focusBorder)/25", "text-foreground")
 			expect(tiles[2]).toHaveClass("bg-code", "text-description")
-			expect(screen.getByTestId("approvals-count")).toHaveTextContent("4 of 5")
+			// The lit tiles say how many are on: no "4 of 5".
+			expect(screen.getByTestId("approval-tiles")).not.toHaveTextContent(/of 5/)
+			expect(screen.queryByTestId("approvals-count")).toBeNull()
 			expect(screen.queryByTestId("approvals-all-on")).toBeNull()
 		})
 
@@ -353,7 +359,7 @@ describe("ModelEffortChip", () => {
 			expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 		})
 
-		it("with all five on, the tiles stay blue and the count becomes an error-colored All on", async () => {
+		it("with all five on, the tiles stay blue and the heading gets an error-colored All on", async () => {
 			mocks.state.autoApprovalSettings = FULL
 			renderChip()
 			await openMenu()
@@ -370,25 +376,71 @@ describe("ModelEffortChip", () => {
 	})
 
 	describe("footer and locked states", () => {
-		it("Reset to default resets and closes", async () => {
+		it("Reset is an icon button that resets and closes", async () => {
+			mocks.state.composerApiSelection = { actProfileId: "p2" }
 			renderChip()
 			await openMenu()
-			fireEvent.keyDown(modelColumn(), { key: "ArrowDown" })
-			fireEvent.click(screen.getByTestId("menu-reset"))
+			const reset = screen.getByTestId("menu-reset")
+			expect(reset).toHaveTextContent(/^$/)
+			expect(reset.querySelector(".codicon-discard")).not.toBeNull()
+			expect(reset).toHaveAccessibleName("Reset to default")
+			expect(reset).toHaveAttribute("title", "Reset to the default model and effort")
+			expect(reset).toBeEnabled()
+			fireEvent.click(reset)
 			expect(screen.queryByTestId("model-menu")).toBeNull()
 			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ resetToDefault: true }))
 		})
 
-		it("Next message only arms what the wheels show for one message", async () => {
+		it("Reset is off, and says why, when nothing has changed; moving a list turns it on", async () => {
+			renderChip()
+			await openMenu()
+			const reset = screen.getByTestId("menu-reset")
+			expect(reset).toBeDisabled()
+			expect(reset).toHaveAttribute("title", RESET_DISABLED_REASON)
+			expect(reset).toHaveAccessibleName(`Reset to default. ${RESET_DISABLED_REASON}`)
+			fireEvent.keyDown(modelColumn(), { key: "ArrowDown" })
+			expect(reset).toBeEnabled()
+		})
+
+		it("Next message only is a switch that shows off and on at a glance, with a tooltip", async () => {
+			mocks.state.currentTaskItem = { id: "chat" }
+			renderChip()
+			await openMenu()
+			const toggle = screen.getByRole("switch", { name: "Next message only" })
+			expect(toggle).toBe(screen.getByTestId("menu-next-message"))
+			expect(toggle).toHaveAttribute("aria-checked", "false")
+			expect(toggle).toHaveAttribute("data-state", "off")
+			expect(toggle).toHaveAttribute("title", NEXT_MESSAGE_TIPS.off)
+			expect(screen.getByTestId("next-message-thumb")).not.toHaveClass("translate-x-[10px]")
+		})
+
+		it("reads on when armed", async () => {
+			mocks.state.currentTaskItem = { id: "chat" }
+			mocks.state.composerNextMessageOnly = true
+			renderChip()
+			await openMenu()
+			const toggle = screen.getByTestId("menu-next-message")
+			expect(toggle).toHaveAttribute("aria-checked", "true")
+			expect(toggle).toHaveAttribute("title", NEXT_MESSAGE_TIPS.on)
+			expect(screen.getByTestId("next-message-track")).toHaveClass("bg-(--vscode-focusBorder)")
+			expect(screen.getByTestId("next-message-thumb")).toHaveClass("translate-x-[10px]")
+			fireEvent.click(toggle)
+			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ nextMessageOnly: false }))
+		})
+
+		it("flipping it saves at once and keeps the menu open; the lists still save on close", async () => {
 			mocks.state.currentTaskItem = { id: "chat" }
 			renderChip()
 			await openMenu()
 			fireEvent.keyDown(modelColumn(), { key: "ArrowDown" })
 			fireEvent.click(screen.getByTestId("menu-next-message"))
-			expect(screen.queryByTestId("model-menu")).toBeNull()
+			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
 			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
-				expect.objectContaining({ taskId: "chat", chatOverride: true, nextMessageOnly: true, profileId: "p2" }),
+				expect.objectContaining({ taskId: "chat", chatOverride: true, nextMessageOnly: true }),
 			)
+			expect(mocks.assignApiProfile.mock.calls[0][0].profileId).toBeFalsy()
+			fireEvent.keyDown(modelColumn(), { key: "Enter" })
+			expect(mocks.assignApiProfile).toHaveBeenLastCalledWith(expect.objectContaining({ profileId: "p2" }))
 		})
 
 		it("has no Next message only before there's a chat", async () => {
@@ -397,7 +449,7 @@ describe("ModelEffortChip", () => {
 			expect(screen.queryByTestId("menu-next-message")).toBeNull()
 		})
 
-		it("a next-message choice can't change while Cline works: the wheels are inert and the menu says why", async () => {
+		it("a next-message choice can't change while Cline works: the lists are inert and the menu says why", async () => {
 			mocks.state.currentTaskItem = { id: "chat" }
 			mocks.state.composerNextMessageOnly = true
 			mocks.state.turnState = { phase: "streaming" }
@@ -410,11 +462,13 @@ describe("ModelEffortChip", () => {
 			expect(modelColumn()).toHaveAttribute("title", LOCKED_REASON)
 			expect(effortColumn()).toHaveAttribute("aria-disabled", "true")
 			fireEvent.keyDown(modelColumn(), { key: "ArrowDown" })
-			fireEvent.wheel(effortColumn(), { deltaY: 100 })
+			fireEvent.click(within(effortColumn()).getByRole("option", { name: "Low" }))
 			fireEvent.click(within(modelColumn()).getByRole("option", { name: "Opus 4.5" }))
 			expect(selected(modelColumn())).toHaveTextContent("Claude work")
 			expect(selected(effortColumn())).toHaveTextContent("High")
-			expect(screen.getByTestId("menu-next-message")).toBeDisabled()
+			const toggle = screen.getByTestId("menu-next-message")
+			expect(toggle).toBeDisabled()
+			expect(toggle).toHaveAttribute("title", NEXT_MESSAGE_TIPS.busy)
 			// The approvals still work.
 			fireEvent.click(screen.getByTestId("approval-readFiles"))
 			expect(mocks.updateAutoApprovalSettings).toHaveBeenCalled()

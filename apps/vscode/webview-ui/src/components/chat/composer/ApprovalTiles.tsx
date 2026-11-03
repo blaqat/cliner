@@ -14,15 +14,15 @@ const TILE_ON_CLASS = "border-(--vscode-focusBorder)/60 bg-(--vscode-focusBorder
 const TILE_OFF_CLASS = "border-transparent bg-code text-description hover:text-foreground"
 
 /**
- * The top of the model menu: "Auto-approve … N of 5" over the five auto-approve actions as equal
- * icon-only tiles in one row (each tile's name is its tooltip and accessible name). Each click
- * saves that setting at once. With all five on, the tiles stay blue and the count becomes an
- * error-colored shield with "All on".
+ * The bottom of the model menu, nearest the chip: "Auto-approve" over the five auto-approve actions
+ * as equal icon-only tiles in one row (each tile's name is its tooltip and accessible name; the lit
+ * tiles say how many are on). Each click saves that setting at once. With all five on, the tiles
+ * stay blue and an error-colored shield with "All on" sits beside the heading.
  */
 export function ApprovalTiles() {
 	const { autoApprovalSettings } = useExtensionState()
 	const { isChecked, updateAction } = useAutoApproveActions()
-	const { approveAll, enabledCount, total } = summarizeApprovals(autoApprovalSettings)
+	const { approveAll } = summarizeApprovals(autoApprovalSettings)
 	const actions = approvalActions()
 	const headingId = useId()
 	return (
@@ -30,14 +30,10 @@ export function ApprovalTiles() {
 			<div className="flex items-center gap-1.5 px-0.5 pb-1 text-[11px] text-description">
 				<span aria-hidden className="codicon codicon-shield text-[12px]!" />
 				<span id={headingId}>Auto-approve</span>
-				{approveAll ? (
+				{approveAll && (
 					<span className="ml-auto flex items-center gap-1 text-error" data-testid="approvals-all-on">
 						<ShieldOffIcon aria-hidden size={12} />
 						All on
-					</span>
-				) : (
-					<span className="ml-auto" data-testid="approvals-count">
-						{enabledCount} of {total}
 					</span>
 				)}
 			</div>
