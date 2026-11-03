@@ -5,6 +5,7 @@ import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CL
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
+import { Box } from "./WalkthroughReviewNotes"
 
 /** A profile as the ▾ menu shows it: name over its model and effort. */
 export interface GenerateProfileOption {
@@ -23,6 +24,9 @@ interface GenerateControlProps {
 	generating: boolean
 	onGenerate: () => void
 	onOpenProfiles: () => void
+	/** "Add review notes": Generate also asks Cline for its notes. Remembered by the page. */
+	reviewNotes: boolean
+	onReviewNotes: (on: boolean) => void
 }
 
 /** Both halves share one height, radius and separator so they read as one split button. */
@@ -41,6 +45,8 @@ export function GenerateControl({
 	generating,
 	onGenerate,
 	onOpenProfiles,
+	reviewNotes,
+	onReviewNotes,
 }: GenerateControlProps) {
 	const [menuOpen, setMenuOpen] = useState(false)
 	const profile = profiles.find((p) => p.id === profileId)
@@ -58,7 +64,11 @@ export function GenerateControl({
 				disabled={disabled || generating}
 				onClick={() => (profile ? onGenerate() : setMenuOpen(true))}
 				size="xs"
-				title={profile ? `Generate with ${profile.name}` : "Choose a profile first"}>
+				title={
+					profile
+						? `Generate with ${profile.name}${reviewNotes ? ", with Cline's review notes" : ""}`
+						: "Choose a profile first"
+				}>
 				<span
 					aria-hidden
 					className={cn(
@@ -102,6 +112,24 @@ export function GenerateControl({
 								</span>
 							</button>
 						))}
+						<div className={MENU_SEPARATOR_CLASS} role="separator" />
+						<button
+							aria-checked={reviewNotes}
+							className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
+							data-testid="walkthrough-generate-review-notes"
+							onClick={() => onReviewNotes(!reviewNotes)}
+							role="menuitemcheckbox"
+							type="button">
+							<span className="mt-0.5">
+								<Box on={reviewNotes} />
+							</span>
+							<span className="min-w-0 flex-1">
+								<span className="block">Add review notes</span>
+								<span className="block text-[11px] text-description">
+									Risks, suggestions and questions. Same request, a bit more output.
+								</span>
+							</span>
+						</button>
 						<div className={MENU_SEPARATOR_CLASS} role="separator" />
 						<button
 							className={cn(MENU_ITEM_CLASS, "text-description")}

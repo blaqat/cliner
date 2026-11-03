@@ -1,4 +1,11 @@
-import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughLineNote, WalkthroughScope } from "@shared/Walkthrough"
+import type {
+	ChangeWalkthrough,
+	WalkthroughHunk,
+	WalkthroughLineNote,
+	WalkthroughReviewResponse,
+	WalkthroughScope,
+} from "@shared/Walkthrough"
+import { responseToSend } from "./reviewNotes"
 
 /** Notes and reviewed marks for one walkthrough layout. Stop ids are only stable within a source. */
 export interface StopReview {
@@ -10,6 +17,8 @@ export interface ReviewRecord {
 	overallNote?: string
 	/** Notes on selections inside a hunk, keyed by lineNoteKey. Hunks are the same in every layout, so these are shared. */
 	lineNotes?: Record<string, LineNoteEntry>
+	/** Answers to Cline's review notes (Fix, Reply, Dismiss), by note id. */
+	reviewResponses?: Record<string, WalkthroughReviewResponse>
 	fallback?: StopReview
 	generated?: StopReview
 	authored?: StopReview
@@ -81,12 +90,16 @@ export const lineNoteEntry = (value: LineNoteEntry | string | undefined): LineNo
 const filledLineNotes = (notes: ReviewRecord["lineNotes"] = {}) =>
 	Object.values(notes).filter((value) => lineNoteEntry(value).note.trim()).length
 const marked = (reviewed: Record<string, boolean> = {}) => Object.values(reviewed).filter(Boolean).length
+/** Fixes and replies waiting for Send. */
+const answered = (responses: ReviewRecord["reviewResponses"] = {}) =>
+	Object.values(responses).filter((response) => responseToSend(response)).length
 
 export function hasContent(record: ReviewRecord | undefined): boolean {
 	if (!record) return false
 	return (
 		!!record.overallNote?.trim() ||
 		filledLineNotes(record.lineNotes) > 0 ||
+		Object.values(record.reviewResponses ?? {}).some((response) => response.dismissed || responseToSend(response)) ||
 		[record.fallback, record.generated, record.authored].some(
 			(review) => filled(review?.notes) + marked(review?.reviewed) > 0,
 		)
@@ -105,6 +118,7 @@ export function summarizeStale(store: ReviewStore, fingerprint: string): { notes
 		notes +=
 			(record.overallNote?.trim() ? 1 : 0) +
 			filledLineNotes(record.lineNotes) +
+			answered(record.reviewResponses) +
 			filled(record.fallback?.notes) +
 			filled(record.generated?.notes) +
 			filled(record.authored?.notes)
@@ -164,11 +178,18 @@ const sameSet = (a: string[], b: string[]) => a.length > 0 && a.length === b.len
  * never dropped silently.
  */
 export function migrateRegeneratedReview(store: ReviewStore, before: ChangeWalkthrough, after: ChangeWalkthrough): ReviewStore {
-	const old = store[before.fingerprint]?.generated
+	const old =
+		store[before.fingerprint]?.generated ?? (store[before.fingerprint]?.reviewResponses ? EMPTY_STOP_REVIEW : undefined)
 	if (!old || before.source !== "generated" || before.fingerprint !== after.fingerprint) return store
 	const target = allStops(after)
 	const moved: StopReview = { notes: {}, reviewed: {} }
 	const unplaced: Record<string, string> = {}
+	// The new review is new notes (ids are reused for other notes): fixes go, replies wait in the banner.
+	for (const [id, response] of Object.entries(store[before.fingerprint]?.reviewResponses ?? {})) {
+		const reply = responseToSend(response)?.reply
+		const title = before.review?.notes.find((note) => note.id === id)?.title
+		if (reply) unplaced[`review:${id}`] = title ? `Reply to Cline's "${title}": ${reply}` : reply
+	}
 	for (const stop of allStops(before)) {
 		const note = old.notes[stop.id]?.trim() ? old.notes[stop.id].trim() : undefined
 		const reviewed = !!old.reviewed[stop.id]
@@ -188,7 +209,8 @@ export function migrateRegeneratedReview(store: ReviewStore, before: ChangeWalkt
 	}
 	const next: ReviewStore = { ...store }
 	const pendingKey = previousLayoutKey(after.fingerprint)
-	next[after.fingerprint] = { ...next[after.fingerprint], generated: moved }
+	const { reviewResponses: _dropped, ...kept } = next[after.fingerprint] ?? {}
+	next[after.fingerprint] = { ...kept, generated: moved }
 	if (Object.keys(unplaced).length) {
 		const existing = next[pendingKey]?.generated?.notes ?? {}
 		const prefix = Object.keys(existing).length
@@ -234,19 +256,39 @@ export function carryOverReview(store: ReviewStore, before: ChangeWalkthrough, a
 		if (surviving.has(parseLineNoteKey(key)?.fingerprint ?? "")) lineNotes[key] = lineNoteEntry(value)
 		else lost = true
 	}
+	// Answers follow their note when the new document has the same note (same id and title).
+	const reviewResponses: Record<string, WalkthroughReviewResponse> = {}
+	for (const [id, response] of Object.entries(old.reviewResponses ?? {})) {
+		const was = before.review?.notes.find((note) => note.id === id)
+		const same = after.review?.notes.find((note) => note.id === id && note.title === was?.title)
+		if (same) reviewResponses[id] = response
+		else if (responseToSend(response)?.reply) lost = true
+	}
 	const next: ReviewStore = { ...store }
 	if (!lost) delete next[before.fingerprint]
 	next[after.fingerprint] = {
 		...next[after.fingerprint],
 		overallNote: old.overallNote,
 		...(Object.keys(lineNotes).length ? { lineNotes } : {}),
+		...(Object.keys(reviewResponses).length ? { reviewResponses } : {}),
 		[after.source]: moved,
 	}
 	if (!lost) return next
 	// The overall note and surviving line notes moved over; don't count them twice in the stale record.
 	const stale = Object.fromEntries(Object.entries(old.lineNotes ?? {}).filter(([key]) => !(key in lineNotes)))
-	next[before.fingerprint] = { ...old, overallNote: undefined, lineNotes: Object.keys(stale).length ? stale : undefined }
+	const staleResponses = Object.fromEntries(
+		Object.entries(old.reviewResponses ?? {}).filter(
+			([id, response]) => !(id in reviewResponses) && responseToSend(response),
+		),
+	)
+	next[before.fingerprint] = {
+		...old,
+		overallNote: undefined,
+		lineNotes: Object.keys(stale).length ? stale : undefined,
+		reviewResponses: Object.keys(staleResponses).length ? staleResponses : undefined,
+	}
 	if (!next[before.fingerprint].lineNotes) delete next[before.fingerprint].lineNotes
+	if (!next[before.fingerprint].reviewResponses) delete next[before.fingerprint].reviewResponses
 	return next
 }
 
@@ -256,6 +298,7 @@ export function notesToSend(
 	review: StopReview,
 	overallNote: string | undefined,
 	lineNotes: ReviewRecord["lineNotes"] = {},
+	reviewResponses: ReviewRecord["reviewResponses"] = {},
 ) {
 	const stopIds = new Set(allStops(walk).map((stop) => stop.id))
 	const stopNotes = Object.fromEntries(
@@ -282,10 +325,22 @@ export function notesToSend(
 	const order = new Map(walk.hunks.map((hunk, index) => [hunk.id, index]))
 	lines.sort((a, b) => (order.get(a.hunkId) ?? 0) - (order.get(b.hunkId) ?? 0) || a.line - b.line)
 	const overall = overallNote?.trim()
+	// Fixes and replies to notes this document has, in Cline's order. Dismissed and untouched notes stay out.
+	const responses: Record<string, WalkthroughReviewResponse> = {}
+	for (const note of walk.review?.notes ?? []) {
+		const response = responseToSend(reviewResponses[note.id])
+		if (response) responses[note.id] = response
+	}
+	const answers = Object.values(responses)
+	const notes = Object.keys(stopNotes).length + lines.length + (overall ? 1 : 0)
 	return {
 		stopNotes,
 		lineNotes: lines,
 		overallNote: overall || undefined,
-		count: Object.keys(stopNotes).length + lines.length + (overall ? 1 : 0),
+		reviewResponses: answers.length ? responses : undefined,
+		notes,
+		fixes: answers.filter((answer) => answer.fix).length,
+		replies: answers.filter((answer) => answer.reply).length,
+		count: notes + answers.length,
 	}
 }

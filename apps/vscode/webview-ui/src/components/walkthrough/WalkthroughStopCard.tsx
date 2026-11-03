@@ -1,10 +1,11 @@
 import type { ChangeWalkthrough, WalkthroughAnnotation, WalkthroughHunk, WalkthroughStop } from "@shared/Walkthrough"
-import { useState } from "react"
+import { Fragment, type ReactNode, useEffect, useState } from "react"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { type LineNotes, WalkthroughDiff } from "./WalkthroughDiff"
+import type { PlacedReviewNote } from "./reviewNotes"
+import { type DiffReview, type LineNotes, WalkthroughDiff } from "./WalkthroughDiff"
 import { InlineCodeProse, NoteEditor, NoteQuote } from "./WalkthroughNote"
 import { countChanges, type StopFile, stopFiles, syntheticReason } from "./walkthroughUtils"
 
@@ -26,6 +27,20 @@ export interface StopActions {
 	annotations: (hunk: WalkthroughHunk) => WalkthroughAnnotation[]
 	/** The reviewer's notes on this hunk's lines. */
 	lineNotes: (hunk: WalkthroughHunk) => LineNotes
+	/** Cline's notes on this hunk's lines, when the walkthrough has a review. */
+	review?: (hunk: WalkthroughHunk) => DiffReview | undefined
+}
+
+/** Cline's notes on one stop, as its card shows them. */
+export interface StopReviewNotes {
+	/** Notes on the stop itself (no lines, or lines that weren't found). */
+	stopNotes: PlacedReviewNote[]
+	/** Notes anywhere in the stop that aren't dismissed: what a folded stop's title keeps. */
+	openCount: number
+	/** The stop's own notes are listed under its prose. */
+	open: boolean
+	onToggle: () => void
+	renderNote: (placed: PlacedReviewNote) => ReactNode
 }
 
 /** A compact codicon action inside file and hunk headers. */
@@ -89,7 +104,12 @@ function HunkBlock({
 			</div>
 			{open && (
 				<div className="border-t border-solid border-x-0 border-b-0 border-editor-group-border">
-					<WalkthroughDiff annotations={actions.annotations(hunk)} hunk={hunk} notes={actions.lineNotes(hunk)} />
+					<WalkthroughDiff
+						annotations={actions.annotations(hunk)}
+						hunk={hunk}
+						notes={actions.lineNotes(hunk)}
+						review={actions.review?.(hunk)}
+					/>
 				</div>
 			)}
 		</div>
@@ -191,6 +211,10 @@ interface WalkthroughStopCardProps {
 	onEditing: (editing: boolean) => void
 	onNote: (note: string) => void
 	onReviewed: (reviewed: boolean) => void
+	/** Cline's notes here, when the walkthrough has a review and they're shown. */
+	review?: StopReviewNotes
+	/** Bumped to open a folded reviewed stop (a jump from Cline's review). */
+	reveal?: number
 }
 
 /**
@@ -210,10 +234,15 @@ export function WalkthroughStopCard({
 	onEditing,
 	onNote,
 	onReviewed,
+	review,
+	reveal,
 }: WalkthroughStopCardProps) {
 	const [expanded, setExpanded] = useState(false)
 	// A reviewed stop shows only its title until it's opened again.
 	const [peek, setPeek] = useState(false)
+	useEffect(() => {
+		if (reveal) setPeek(true)
+	}, [reveal])
 	const files = stopFiles(walk, stop)
 	const hasNote = !!note.trim()
 	const folded = reviewed && !peek && !editing
@@ -275,6 +304,14 @@ export function WalkthroughStopCard({
 								{notes} {notes === 1 ? "note" : "notes"}
 							</span>
 						)}
+						{folded && !!review?.openCount && (
+							<span
+								className="inline-flex shrink-0 items-center gap-1 text-[11px]"
+								data-testid="walkthrough-stop-cline-count">
+								<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+								{review.openCount} from Cline
+							</span>
+						)}
 						<span
 							aria-hidden
 							className={`codicon codicon-chevron-${folded ? "right" : "down"} shrink-0 text-[12px]!`}
@@ -282,6 +319,22 @@ export function WalkthroughStopCard({
 					</button>
 				) : (
 					<h3 className="m-0 min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold">{stop.title}</h3>
+				)}
+				{!folded && !!review?.stopNotes.length && (
+					<button
+						aria-expanded={review.open}
+						aria-label={`${review.stopNotes.length} ${review.stopNotes.length === 1 ? "note" : "notes"} from Cline on this stop`}
+						className={cn(
+							"inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-full border border-solid border-editor-group-border bg-transparent px-1.5 font-[inherit] text-[11px] text-description hover:bg-list-hover hover:text-foreground",
+							review.open && "bg-list-hover text-foreground",
+						)}
+						data-testid="walkthrough-stop-cline"
+						onClick={review.onToggle}
+						title="Cline's notes on this stop"
+						type="button">
+						<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+						{review.stopNotes.length}
+					</button>
 				)}
 			</div>
 			{!folded && (
@@ -300,6 +353,13 @@ export function WalkthroughStopCard({
 							type="button">
 							{expanded ? "Show less" : "Show more"}
 						</button>
+					)}
+					{review?.open && review.stopNotes.length > 0 && (
+						<div className="mt-2 flex flex-col gap-1.5" data-testid="walkthrough-stop-cline-notes">
+							{review.stopNotes.map((placed) => (
+								<Fragment key={placed.note.id}>{review.renderNote(placed)}</Fragment>
+							))}
+						</div>
 					)}
 					{files.length > 0 && (
 						<div className="mt-2 flex flex-col gap-2">
