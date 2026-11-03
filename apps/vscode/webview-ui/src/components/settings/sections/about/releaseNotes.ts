@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–44",
+		builds: "test builds fork.39–45",
 		date: "2026-10-29",
 		notes: [
 			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them",
