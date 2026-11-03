@@ -82,6 +82,9 @@ const fixture: ChangeWalkthrough = {
 const response = (walk: ChangeWalkthrough) => ({ value: JSON.stringify(walk) })
 const sent = (fn: ReturnType<typeof vi.fn>, call = 0) => JSON.parse(fn.mock.calls[call][0].value)
 const stop = (title: string) => screen.getByRole("article", { name: title })
+// Syntax tokens split a code line across spans; match the complete line text.
+const codeLine = (pattern: RegExp) => (_text: string, element: Element | null) =>
+	!!element?.classList.contains("whitespace-pre") && pattern.test(element.textContent ?? "")
 
 const baseState = () => ({
 	apiConfigProfiles: [
@@ -149,7 +152,7 @@ describe("WalkthroughView", () => {
 		await renderPage()
 		expect(screen.getByRole("navigation")).toHaveTextContent("Home › Bulk invoice export › Implement steps 1–2 › Walkthrough")
 		expect(screen.getByRole("heading", { name: "Cap bulk exports at 10k rows" })).toBeVisible()
-		expect(screen.getByText("MAX_EXPORT_ROWS").tagName).toBe("CODE")
+		expect(screen.getByText("MAX_EXPORT_ROWS", { selector: "code" }).tagName).toBe("CODE")
 		expect(screen.getByRole("region", { name: "Runtime" })).toBeVisible()
 		expect(screen.getByRole("region", { name: "UI" })).toBeVisible()
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
@@ -159,11 +162,11 @@ describe("WalkthroughView", () => {
 		// Two hunks of one file sit under one file header.
 		const first = stop("Stop the request waiting")
 		expect(within(first).getAllByTestId("walkthrough-file")).toHaveLength(1)
-		expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
+		expect(within(first).getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 		// The sign sits beside the code (outside the selectable text), shown as − for removals.
 		expect(
 			within(first)
-				.getByText(/const csv = await buildCsv/)
+				.getByText(codeLine(/const csv = await buildCsv/))
 				.closest("[data-line-index]")?.textContent,
 		).toMatch(/^2−/)
 
@@ -183,8 +186,8 @@ describe("WalkthroughView", () => {
 		await renderPage()
 		const first = stop("Stop the request waiting")
 		fireEvent.click(within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ }))
-		expect(within(first).queryByText(/const job = await jobs.enqueue/)).toBeNull()
-		expect(within(first).getByText(/jobId: job.id/)).toBeVisible()
+		expect(within(first).queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
+		expect(within(first).getByText(codeLine(/jobId: job.id/))).toBeVisible()
 		fireEvent.click(within(first).getByRole("button", { name: "Open diff" }))
 		await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(1))
 		expect(sent(mocks.open)).toEqual({
@@ -294,8 +297,19 @@ describe("WalkthroughView", () => {
 		Range.prototype.getBoundingClientRect ??= () => new DOMRect(0, 0, 10, 10)
 		// Select from inside the removed line to inside the added one.
 		const range = document.createRange()
-		range.setStart(lines[1].lastChild?.firstChild as Node, 8)
-		range.setEnd(lines[2].lastChild?.firstChild as Node, 13)
+		const pointAt = (row: HTMLElement, offset: number): [Node, number] => {
+			const walker = document.createTreeWalker(row.lastChild!, NodeFilter.SHOW_TEXT)
+			let node = walker.nextNode()
+			while (node) {
+				const length = node.textContent?.length ?? 0
+				if (offset <= length) return [node, offset]
+				offset -= length
+				node = walker.nextNode()
+			}
+			throw new Error("Selection offset exceeds code line")
+		}
+		range.setStart(...pointAt(lines[1], 8))
+		range.setEnd(...pointAt(lines[2], 13))
 		window.getSelection()?.removeAllRanges()
 		window.getSelection()?.addRange(range)
 		fireEvent.mouseUp(within(first).getAllByTestId("walkthrough-diff")[0])
@@ -660,10 +674,10 @@ describe("WalkthroughView", () => {
 			const hunk = within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ })
 			expect(hunk).toHaveAttribute("aria-expanded", "true")
 			fireEvent.click(hunk)
-			expect(within(first).queryByText(/const job = await jobs.enqueue/)).toBeNull()
-			expect(within(first).getByText(/jobId: job.id/)).toBeVisible()
+			expect(within(first).queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
+			expect(within(first).getByText(codeLine(/jobId: job.id/))).toBeVisible()
 			fireEvent.click(within(first).getByRole("button", { name: /Expand hunk @@ -1,2/ }))
-			expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
+			expect(within(first).getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 		})
 
 		it("collapses and expands everything from the ⋯ menu and the header toggle", async () => {
@@ -676,12 +690,12 @@ describe("WalkthroughView", () => {
 			// Reopening one chapter shows its stops with their hunks folded.
 			fireEvent.click(chapterToggle("Runtime"))
 			expect(stop("Stop the request waiting")).toBeVisible()
-			expect(screen.queryByText(/const job = await jobs.enqueue/)).toBeNull()
+			expect(screen.queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
 
 			fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 			fireEvent.click(await screen.findByRole("menuitem", { name: "Expand all" }))
 			expect(screen.getAllByTestId("walkthrough-stop")).toHaveLength(3)
-			expect(screen.getByText(/const job = await jobs.enqueue/)).toBeVisible()
+			expect(screen.getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 
 			// The header toggle flips between the two.
 			fireEvent.click(screen.getByRole("button", { name: "Collapse all" }))

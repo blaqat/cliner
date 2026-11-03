@@ -1,6 +1,8 @@
 import { hunkBodyLines, hunkLineNumbers, type WalkthroughAnnotation, type WalkthroughHunk } from "@shared/Walkthrough"
-import { Fragment, useRef, useState } from "react"
+import { Fragment, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import "../common/codeblock-parser.css"
+import { diffCode as code, highlightDiff } from "./diffHighlight"
 import type { LineRange } from "./reviewState"
 import { InlineCodeProse, NoteEditor } from "./WalkthroughNote"
 
@@ -47,9 +49,6 @@ export interface LineNotes {
 	onEdit: (range: (LineRange & { quote?: string }) | undefined) => void
 }
 
-/** A diff line's code: without its +/−/space sign or the CR a CRLF file leaves on every line. */
-const code = (line: string) => line.slice(1).replace(/\r$/, "")
-
 /** The body line a DOM point sits in, if it's one of this diff's lines. */
 function lineAt(node: Node | null, container: HTMLElement): number | undefined {
 	const element = node instanceof Element ? node : node?.parentElement
@@ -72,7 +71,8 @@ export function WalkthroughDiff({
 	annotations: WalkthroughAnnotation[]
 	notes: LineNotes
 }) {
-	const body = hunkBodyLines(hunk.patch)
+	const body = useMemo(() => hunkBodyLines(hunk.patch), [hunk.patch])
+	const highlighted = useMemo(() => highlightDiff(body, hunk.path), [body, hunk.path])
 	const numbers = hunkLineNumbers(hunk)
 	const container = useRef<HTMLDivElement>(null)
 	// A selection waiting for its Note button: the lines, the exact text, and where to put the button.
@@ -173,7 +173,9 @@ export function WalkthroughDiff({
 							<span aria-hidden className="w-3 shrink-0 select-none pl-0.5">
 								{sign === "-" ? "−" : sign}
 							</span>
-							<span className="whitespace-pre">{code(raw) || " "}</span>
+							<span className="whitespace-pre">
+								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
+							</span>
 						</div>
 						{ending
 							.filter((saved) => !(editing && editing.start === saved.start && editing.end === saved.end))
