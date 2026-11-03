@@ -24,6 +24,7 @@ import { buildStateTaskHistory } from "./stateTaskHistory"
  * Extracted from the classic Controller.getStateToPostToWebview().
  */
 export async function getStateToPostToWebview(controller: {
+	deferTaskHistory?: boolean
 	task?: any
 	stateManager: any
 	mcpHub?: any
@@ -85,16 +86,19 @@ export async function getStateToPostToWebview(controller: {
 	const localAgentsRulesToggles = stateManager.getWorkspaceStateKey("localAgentsRulesToggles")
 	const workflowToggles = stateManager.getWorkspaceStateKey("workflowToggles")
 
-	const currentTaskItem = controller.task?.taskId
-		? (taskHistory || []).find((item: any) => item.id === controller.task?.taskId)
-		: undefined
+	const currentTaskItem =
+		!controller.deferTaskHistory && controller.task?.taskId
+			? (taskHistory || []).find((item: any) => item.id === controller.task?.taskId)
+			: undefined
 	const clineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
 	const checkpointRestoreInput = controller.checkpointRestoreInput
 
-	const processedTaskHistory = buildStateTaskHistory(
-		(taskHistory || []).filter((item: any) => item.ts && item.task).sort((a: any, b: any) => b.ts - a.ts),
-		[controller.task?.taskId],
-	)
+	const processedTaskHistory = controller.deferTaskHistory
+		? (taskHistory ?? [])
+		: buildStateTaskHistory(
+				(taskHistory || []).filter((item: any) => item.ts && item.task).sort((a: any, b: any) => b.ts - a.ts),
+				[controller.task?.taskId],
+			)
 
 	const latestAnnouncementId = getLatestAnnouncementId()
 	const shouldShowAnnouncement = lastShownAnnouncementId !== latestAnnouncementId

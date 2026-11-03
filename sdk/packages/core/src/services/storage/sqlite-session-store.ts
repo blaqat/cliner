@@ -23,6 +23,10 @@ export interface SqliteSessionStoreOptions {
 }
 
 export class SqliteSessionStore implements SessionStore {
+	// Shared across store instances: runtime, subagents, imports and history
+	// adapters can all write the same database through different connections.
+	static historyRevision = 0;
+
 	private readonly sessionsDirPath: string;
 	private db: SqliteDb | undefined;
 
@@ -62,9 +66,17 @@ export class SqliteSessionStore implements SessionStore {
 	}
 
 	run(sql: string, params: unknown[] = []): { changes?: number } {
-		return this.getRawDb()
+		const result = this.getRawDb()
 			.prepare(sql)
 			.run(...params);
+		if (
+			result.changes &&
+			/\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql) &&
+			/\bsessions\b/i.test(sql)
+		) {
+			SqliteSessionStore.historyRevision++;
+		}
+		return result;
 	}
 
 	queryOne<T>(sql: string, params: unknown[] = []): T | undefined {

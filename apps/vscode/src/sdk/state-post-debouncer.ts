@@ -41,6 +41,12 @@ export class StatePostDebouncer {
 		}
 		return new Promise<void>((resolve, reject) => {
 			this.pendingResolvers.push({ resolve, reject })
+			// The running flush already provides a coalescing window. Queue the
+			// fresh snapshot immediately rather than adding another timer behind it.
+			if (this.inFlight) {
+				this.queued = true
+				return
+			}
 			if (this.debounceTimer) {
 				return
 			}

@@ -335,6 +335,15 @@ export class Controller {
 	private interactions: SdkInteractionCoordinator
 	private diffEdits: SdkDiffEditCoordinator
 	private sessionConfigBuilder: SdkSessionConfigBuilder
+	private historyProjectionCache?: {
+		revision: number
+		legacy: HistoryItem[]
+		liveKey: string
+		records: SessionHistoryRecord[]
+		history: HistoryItem[]
+		statuses: ExtensionState["sessionStatuses"]
+		counts: ExtensionState["subagentCounts"]
+	}
 	private taskHistory: SdkTaskHistory
 	private mode: SdkModeCoordinator
 	private mcpTools: SdkMcpCoordinator
@@ -4650,8 +4659,8 @@ export class Controller {
 	 * Request a webview state update.
 	 *
 	 * Callers fire this very frequently (notably the session event coordinator,
-	 * once per streamed message/turn boundary), and each rebuild walks the full
-	 * task history. StatePostDebouncer coalesces bursts into a single trailing
+	 * once per streamed message/turn boundary). Unchanged history projections
+	 * are reused. StatePostDebouncer coalesces bursts into a single trailing
 	 * rebuild to avoid hammering the extension host. The returned promise
 	 * resolves once a snapshot reflecting this request has been shipped, or
 	 * rejects if that rebuild failed.
@@ -4692,101 +4701,162 @@ export class Controller {
 			const snapshotEpoch = this.messageTranslatorState.getMinter().epoch
 			syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
 			const { getStateToPostToWebview: buildBaseState } = await import("@core/controller/state/getStateToPostToWebview")
-			const state = await buildBaseState({
-				task: snapshotTask,
-				stateManager: this.stateManager,
-				mcpHub: this.mcpHub,
-				backgroundCommandRunning: this.backgroundCommandRunning,
-				backgroundCommandTaskId: this.backgroundCommandTaskId,
-				foregroundCommandRunning: this.foregroundCommands.isRunning,
-				isRemoteConfigAvailable: this.isRemoteConfigAvailable,
-				currentRemoteConfigRevision: this.currentRemoteConfigRevision,
-				// Without this the webview always receives workspaceRoots: [] on the
-				// SDK path (classic Controller exposes a public workspaceManager;
-				// SdkController builds one lazily). The task-header working-directory
-				// badge and anything else keyed on workspaceRoots depend on it.
-				workspaceManager: await this.ensureWorkspaceManager(),
-			})
-			const sdkHistoryRecords = await this.taskHistory.listHistory({
-				limit: 10_000,
-				hydrate: false,
-				includeSubagents: true,
-			})
-			const sdkTaskHistory = sdkHistoryRecords
-				.map(sessionHistoryRecordToHistoryItem)
-				.filter((item) => item.ts && item.task)
-				.sort((a, b) => b.ts - a.ts)
-			const legacyTaskHistory = state.taskHistory ?? []
-			const mergedTaskHistoryById = new Map<string, HistoryItem>()
-
-			// Keep the SDK records authoritative for migrated/new tasks, but append
-			// legacy persisted history so pre-migration tasks still appear in the UI.
-			for (const item of legacyTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-			for (const item of sdkTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-
-			// A just-started task may not be visible in SDK persisted history yet (the
-			// history adapter can lag behind the active in-memory TaskProxy). Classic
-			// state included the current task immediately, and the testing platform
-			// asserts that taskHistory reflects newTask before the model turn completes.
-			if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
-				const taskMessage = snapshotTask.messageStateHandler
-					.getClineMessages()
-					.find((message) => message.type === "say" && message.say === "task" && message.text)
-				if (taskMessage?.text) {
-					mergedTaskHistoryById.set(snapshotTask.taskId, {
-						id: snapshotTask.taskId,
-						ts: taskMessage.ts || Date.now(),
-						task: taskMessage.text,
-						tokensIn: 0,
-						tokensOut: 0,
-						cacheWrites: 0,
-						cacheReads: 0,
-						totalCost: 0,
-						modelId: snapshotTask.api?.getModel?.().id,
-						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
-						taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
-					})
-				}
-			}
-
-			// The same persistence lag applies to every OTHER live session: closing
-			// (X) a just-started chat, or starting one in the background, unfocuses
-			// it while it keeps running. Without a synthesized row the inbox drops
-			// the chat entirely — it looks deleted and cannot be reopened.
-			for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
-				if (mergedTaskHistoryById.has(session.sessionId)) continue
-				const item = this.liveTaskHistoryItem(session.sessionId)
-				if (item) {
-					item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
-					mergedTaskHistoryById.set(session.sessionId, item)
-				}
-			}
-
-			for (const child of this.subagentThreads?.values() ?? []) {
-				mergedTaskHistoryById.set(child.id, child)
-			}
-			// Asides show their parent's task, including ones filed wrong before the cascade existed.
-			const sortedHistory = withEffectiveTaskGroups(
-				Array.from(mergedTaskHistoryById.values())
-					.filter((item) => item.ts && item.task)
-					.sort((a, b) => b.ts - a.ts),
+			const baseStatePromise = this.ensureWorkspaceManager().then((workspaceManager) =>
+				buildBaseState({
+					deferTaskHistory: true,
+					task: snapshotTask,
+					stateManager: this.stateManager,
+					mcpHub: this.mcpHub,
+					backgroundCommandRunning: this.backgroundCommandRunning,
+					backgroundCommandTaskId: this.backgroundCommandTaskId,
+					foregroundCommandRunning: this.foregroundCommands.isRunning,
+					isRemoteConfigAvailable: this.isRemoteConfigAvailable,
+					currentRemoteConfigRevision: this.currentRemoteConfigRevision,
+					// Without this the webview always receives workspaceRoots: [] on the
+					// SDK path (classic Controller exposes a public workspaceManager;
+					// SdkController builds one lazily). The task-header working-directory
+					// badge and anything else keyed on workspaceRoots depend on it.
+					workspaceManager,
+				}),
 			)
-			const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
-			const processedTaskHistory = buildStateTaskHistory(sortedHistory, [
-				focusedItem?.isSubagent ? undefined : focusedItem?.id,
-				focusedItem?.parentTaskId,
+			const groupsPromise = this.listTaskGroups?.().catch((error) => {
+				Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
+				return undefined
+			})
+			const branchPromise = this.resolveCurrentBranch?.().catch(() => undefined)
+			const promptsPromise = snapshotSession
+				? Promise.resolve()
+						.then(() => snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId }))
+						.catch((error) => {
+							Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+							return []
+						})
+				: Promise.resolve([])
+			const revision = this.taskHistory.revision
+			// Only live rows are inspected here; persisted history is keyed by its store revision.
+			// Include values because child previews/usage are updated in place.
+			const liveKey = JSON.stringify([
+				snapshotTask?.taskId,
+				snapshotTask?.messageStateHandler.getClineMessages().find((message) => message.say === "task"),
+				Array.from((this.sessions.getSessions?.() ?? new Map()).keys(), (id) => [id, this.liveTaskHistoryItem?.(id)]),
+				Array.from(this.subagentThreads?.values() ?? []),
 			])
+			const legacy = this.stateManager.getGlobalStateKey?.("taskHistory")
+			const cached = this.historyProjectionCache
+			const reuse =
+				revision !== undefined && cached?.revision === revision && cached.legacy === legacy && cached.liveKey === liveKey
+			const recordsPromise = reuse
+				? Promise.resolve(cached.records)
+				: this.taskHistory.listHistory({
+						limit: 10_000,
+						hydrate: false,
+						includeSubagents: true,
+					})
+			const [state, sdkHistoryRecords, taskGroups, currentBranch, queuedPrompts] = await Promise.all([
+				baseStatePromise,
+				recordsPromise,
+				groupsPromise,
+				branchPromise,
+				promptsPromise,
+			])
+			let processedTaskHistory: HistoryItem[]
+			let historyStatuses: ExtensionState["sessionStatuses"]
+			let historyCounts: ExtensionState["subagentCounts"]
+			if (reuse) {
+				processedTaskHistory = cached.history
+				historyStatuses = cached.statuses
+				historyCounts = cached.counts
+			} else {
+				const sdkTaskHistory = sdkHistoryRecords
+					.map(sessionHistoryRecordToHistoryItem)
+					.filter((item) => item.ts && item.task)
+					.sort((a, b) => b.ts - a.ts)
+				const legacyTaskHistory = state.taskHistory ?? []
+				const mergedTaskHistoryById = new Map<string, HistoryItem>()
 
-			let queuedPrompts: ExtensionState["queuedPrompts"] = []
-			if (snapshotSession) {
-				try {
-					queuedPrompts = await snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId })
-				} catch (error) {
-					Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+				// Keep the SDK records authoritative for migrated/new tasks, but append
+				// legacy persisted history so pre-migration tasks still appear in the UI.
+				for (const item of legacyTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
+				}
+				for (const item of sdkTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
+				}
+
+				// A just-started task may not be visible in SDK persisted history yet (the
+				// history adapter can lag behind the active in-memory TaskProxy). Classic
+				// state included the current task immediately, and the testing platform
+				// asserts that taskHistory reflects newTask before the model turn completes.
+				if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
+					const taskMessage = snapshotTask.messageStateHandler
+						.getClineMessages()
+						.find((message) => message.type === "say" && message.say === "task" && message.text)
+					if (taskMessage?.text) {
+						mergedTaskHistoryById.set(snapshotTask.taskId, {
+							id: snapshotTask.taskId,
+							ts: taskMessage.ts || Date.now(),
+							task: taskMessage.text,
+							tokensIn: 0,
+							tokensOut: 0,
+							cacheWrites: 0,
+							cacheReads: 0,
+							totalCost: 0,
+							modelId: snapshotTask.api?.getModel?.().id,
+							cwdOnTaskInitialization: await this.getWorkspaceRoot(),
+							taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
+						})
+					}
+				}
+
+				// The same persistence lag applies to every OTHER live session: closing
+				// (X) a just-started chat, or starting one in the background, unfocuses
+				// it while it keeps running. Without a synthesized row the inbox drops
+				// the chat entirely — it looks deleted and cannot be reopened.
+				for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
+					if (mergedTaskHistoryById.has(session.sessionId)) continue
+					const item = this.liveTaskHistoryItem(session.sessionId)
+					if (item) {
+						item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
+						mergedTaskHistoryById.set(session.sessionId, item)
+					}
+				}
+
+				for (const child of this.subagentThreads?.values() ?? []) {
+					mergedTaskHistoryById.set(child.id, child)
+				}
+				// Asides show their parent's task, including ones filed wrong before the cascade existed.
+				const sortedHistory = withEffectiveTaskGroups(
+					Array.from(mergedTaskHistoryById.values())
+						.filter((item) => item.ts && item.task)
+						.sort((a, b) => b.ts - a.ts),
+				)
+				const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
+				processedTaskHistory = buildStateTaskHistory(sortedHistory, [
+					focusedItem?.isSubagent ? undefined : focusedItem?.id,
+					focusedItem?.parentTaskId,
+				])
+
+				historyStatuses = {
+					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
+					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
+				}
+				historyCounts = Object.fromEntries(
+					processedTaskHistory
+						.filter((item) => (item.subagentCount ?? 0) > 0)
+						.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
+				)
+
+				// Do not cache a build that raced a persistence write.
+				if (revision !== undefined && revision === this.taskHistory.revision) {
+					this.historyProjectionCache = {
+						revision,
+						legacy,
+						liveKey,
+						records: sdkHistoryRecords,
+						history: processedTaskHistory,
+						statuses: historyStatuses,
+						counts: historyCounts,
+					}
 				}
 			}
 
@@ -4929,12 +4999,8 @@ export class Controller {
 				taskHistory: processedTaskHistory,
 				// Optional-called: unit tests drive getStateToPostToWebview with
 				// partial controller stubs that don't carry these members.
-				taskGroups:
-					(await this.listTaskGroups?.().catch((error) => {
-						Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
-						return undefined
-					})) ?? [],
-				currentBranch: await this.resolveCurrentBranch?.().catch(() => undefined),
+				taskGroups: taskGroups ?? [],
+				currentBranch,
 				turnState:
 					childTurn ??
 					(decision
@@ -4946,19 +5012,14 @@ export class Controller {
 						: this.turnStateTracker.get()),
 				queuedPrompts,
 				sessionStatuses: {
-					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
-					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
+					...historyStatuses,
 					...this.sessions.sessionStatuses,
 					...childDecisionStatuses,
 				},
 				// Live sessions report total + running; persisted history totals fill
 				// in settled tasks whose sessions are gone.
 				subagentCounts: {
-					...Object.fromEntries(
-						processedTaskHistory
-							.filter((item) => (item.subagentCount ?? 0) > 0)
-							.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
-					),
+					...historyCounts,
 					...this.sessions.subagentCounts,
 				},
 				stateVersion: minter.nextSeq(),

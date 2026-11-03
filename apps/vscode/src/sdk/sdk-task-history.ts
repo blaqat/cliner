@@ -1,13 +1,14 @@
-import { existsSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
 import path from "node:path"
-import type { ClineCoreListHistoryOptions, SessionHistoryRecord } from "@cline/core"
+import { type ClineCoreListHistoryOptions, type SessionHistoryRecord, SqliteSessionStore } from "@cline/core"
 import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
-import { resolveSessionDataDir } from "@cline/shared/storage"
+import { resolveDbDataDir, resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage, ClineSaySubagentStatus, ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
+import { resolveDataDirFromEnv } from "@shared/storage/storage-context"
 import type { TaskTag } from "@shared/task-groups"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
@@ -53,6 +54,8 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	/** Database directory to observe when the host uses custom storage. */
+	databaseDir?: string
 	resolveNotebookChanges?: (taskId: string, messages: ClineMessage[]) => Promise<ClineMessage[]>
 	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
@@ -333,6 +336,42 @@ export class SdkTaskHistory {
 		hostLimit: number
 		createdAt: number
 	}
+	private projectionRevision = 0
+	private storeRevision = SqliteSessionStore.historyRevision
+
+	private historyFileVersion?: string
+
+	/** Check file metadata only, so an idle settings post never re-enumerates history. */
+	get revision(): number {
+		const databasePath = path.join(this.options.databaseDir ?? resolveDbDataDir(), "sessions.db")
+		const paths = [databasePath, `${databasePath}-wal`, path.join(resolveDataDirFromEnv(), "state", "taskHistory.json")]
+		if (this.options.legacyExtensionStorageDir) {
+			paths.push(path.join(this.options.legacyExtensionStorageDir.trim(), "state", "taskHistory.json"))
+		}
+		// The counter covers every in-process session write. File stamps also
+		// catch external writers, imports and database replacement without a TTL
+		// that forces an expensive read when nothing has changed.
+		const fileVersion = paths
+			.map((file) => {
+				try {
+					const stat = statSync(file, { bigint: true })
+					return `${file}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+				} catch {
+					return file
+				}
+			})
+			.join("|")
+		if (
+			this.storeRevision !== SqliteSessionStore.historyRevision ||
+			(this.historyFileVersion !== undefined && this.historyFileVersion !== fileVersion)
+		) {
+			this.storeRevision = SqliteSessionStore.historyRevision
+			this.invalidateMetadataHistoryCache()
+		}
+		this.historyFileVersion = fileVersion
+		return this.projectionRevision
+	}
+
 	private disposed = false
 	private readonly activityUnsettled = new Set<string>()
 	private readonly activityWrites = new Map<string, Promise<void>>()
@@ -464,6 +503,7 @@ export class SdkTaskHistory {
 	}
 
 	invalidateMetadataHistoryCache(): void {
+		this.projectionRevision++
 		this.metadataHistoryCache = undefined
 	}
 
@@ -482,6 +522,7 @@ export class SdkTaskHistory {
 		sessionId: string,
 		updates: { prompt: string; metadata: Record<string, unknown>; updatedAt: string },
 	): void {
+		this.projectionRevision++
 		const cache = this.metadataHistoryCache
 		if (!cache) {
 			return
@@ -522,6 +563,7 @@ export class SdkTaskHistory {
 	}
 
 	async listHistory(options: SdkTaskHistoryListOptions = {}): Promise<SessionHistoryRecord[]> {
+		void this.revision
 		const offset = Math.max(0, Math.floor(options.offset ?? 0))
 		const limit = Math.max(0, Math.floor(options.limit ?? 10_000))
 		const hostLimit = offset + limit

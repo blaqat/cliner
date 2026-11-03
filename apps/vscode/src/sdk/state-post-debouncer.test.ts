@@ -32,6 +32,25 @@ describe("StatePostDebouncer", () => {
 		expect(flush).toHaveBeenCalledTimes(1)
 	})
 
+	it("queues a post during a build without a second debounce delay", async () => {
+		let finish!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		const flush = vi
+			.fn()
+			.mockImplementationOnce(() => gate)
+			.mockResolvedValue(undefined)
+		const debouncer = new StatePostDebouncer({ debounceMs: 50, flush })
+		const first = debouncer.post()
+		await vi.advanceTimersByTimeAsync(50)
+		const second = debouncer.post()
+		finish()
+		await Promise.all([first, second])
+		expect(flush).toHaveBeenCalledTimes(2)
+		await debouncer.dispose()
+	})
+
 	it("rejects all callers of the batch when flush() fails, instead of swallowing the error", async () => {
 		// Before this fix, runDebouncedStatePost() caught the flush error, logged
 		// it, and resolved every pending caller — so postStateToWebview() callers
