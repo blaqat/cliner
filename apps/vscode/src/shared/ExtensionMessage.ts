@@ -163,6 +163,8 @@ export interface ExtensionState {
 	platform: Platform
 	environment?: Environment
 	shouldShowAnnouncement: boolean
+	/** Opaque projection version. Absent on legacy full snapshots. */
+	taskHistoryVersion?: string
 	taskHistory: HistoryItem[]
 	/** Task groups ("Tasks" in the UI) with note counts, from ~/.cline/data/task-groups. */
 	taskGroups: TaskGroupSummary[]
@@ -545,3 +547,6 @@ export interface ClineSubagentUsageInfo {
 type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled" | "retries_exhausted"
 
 export const COMPLETION_RESULT_CHANGES_FLAG = "HAS_CHANGES"
+
+/** JSON state transport supports omitted, unchanged fields and partial posts. */
+export type ExtensionStateUpdate = Partial<ExtensionState>

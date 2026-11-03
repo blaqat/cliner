@@ -1,13 +1,49 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
 import { State } from "@shared/proto/cline/state"
 import { telemetryService } from "@/services/telemetry"
-import { ExtensionState } from "@/shared/ExtensionMessage"
+import type { ExtensionStateUpdate } from "@/shared/ExtensionMessage"
 import { Logger } from "@/shared/services/Logger"
 import { getRequestRegistry, StreamingResponseHandler } from "../grpc-handler"
 import { Controller } from "../index"
 
 // Keep track of active state subscriptions
-const activeStateSubscriptions = new Set<StreamingResponseHandler<State>>()
+interface StateSubscription {
+	stream: StreamingResponseHandler<State>
+	pending: Promise<void>
+	historyVersion?: string
+	// Live statuses/counts can change independently of the persisted history.
+	derived: Partial<Record<"sessionStatuses" | "subagentCounts" | "taskGroups", string>>
+}
+const activeStateSubscriptions = new Map<StreamingResponseHandler<State>, StateSubscription>()
+
+function deliver(subscription: StateSubscription, snapshot: ExtensionStateUpdate | Promise<ExtensionStateUpdate>): Promise<void> {
+	subscription.pending = subscription.pending
+		.then(async () => {
+			if (activeStateSubscriptions.get(subscription.stream) !== subscription) return
+			const state = await snapshot
+			const update = { ...state }
+			const version = state.taskHistoryVersion
+			if (version !== undefined && version === subscription.historyVersion) delete update.taskHistory
+			const derived = { ...subscription.derived }
+			for (const key of ["sessionStatuses", "subagentCounts", "taskGroups"] as const) {
+				if (state[key] === undefined) continue
+				const json = JSON.stringify(state[key])
+				if (version !== undefined && json === derived[key]) delete update[key]
+				derived[key] = json
+			}
+			const stateJson = JSON.stringify(update)
+			recordStateSizeTelemetry(Buffer.byteLength(stateJson, "utf8"))
+			await subscription.stream({ stateJson }, false)
+			// Advance only after delivery succeeds. A partial post cannot establish history.
+			if (state.taskHistory !== undefined) subscription.historyVersion = version
+			subscription.derived = derived
+		})
+		.catch((error) => {
+			Logger.error("Error sending state update:", error)
+			activeStateSubscriptions.delete(subscription.stream)
+		})
+	return subscription.pending
+}
 
 /**
  * Subscribe to state updates
@@ -23,7 +59,8 @@ export async function subscribeToState(
 	requestId?: string,
 ): Promise<void> {
 	// Add this subscription to the active subscriptions
-	activeStateSubscriptions.add(responseStream)
+	const subscription: StateSubscription = { stream: responseStream, pending: Promise.resolve(), derived: {} }
+	activeStateSubscriptions.set(responseStream, subscription)
 
 	// Register cleanup when the connection is closed
 	const cleanup = () => {
@@ -36,52 +73,17 @@ export async function subscribeToState(
 	}
 
 	// Send the initial state
-	const initialState = await controller.getStateToPostToWebview()
-	const initialStateJson = JSON.stringify(initialState)
-
-	recordStateSizeTelemetry(Buffer.byteLength(initialStateJson, "utf8"))
-
-	try {
-		await responseStream(
-			{
-				stateJson: initialStateJson,
-			},
-			false, // Not the last message
-		)
-	} catch (error) {
-		Logger.error("Error sending initial state:", error)
-		activeStateSubscriptions.delete(responseStream)
-	}
+	await deliver(subscription, controller.getStateToPostToWebview())
 }
 
 /**
  * Send a state update to all active subscribers
  * @param state The state to send
  */
-export async function sendStateUpdate(state: ExtensionState): Promise<void> {
-	let stateJson: string
-	try {
-		stateJson = JSON.stringify(state)
-	} catch (error) {
-		Logger.error("Error serializing state update:", error)
-		return
-	}
-
-	recordStateSizeTelemetry(Buffer.byteLength(stateJson, "utf8"))
-
-	// FIRE-AND-FORGET: do not await delivery to the webview (it may be hidden/reloaded/closed
-	// and postMessage can hang or resolve false). The webview reconciles convergently from
-	// whatever state snapshots it receives, gated by stateVersion/epoch.
-	for (const responseStream of activeStateSubscriptions) {
-		responseStream(
-			{
-				stateJson,
-			},
-			false, // Not the last message
-		).catch((error) => {
-			Logger.error("Error sending state update:", error)
-			activeStateSubscriptions.delete(responseStream)
-		})
+export async function sendStateUpdate(state: ExtensionStateUpdate): Promise<void> {
+	// Queue independently per subscription; a hidden panel must not block settings RPCs.
+	for (const subscription of activeStateSubscriptions.values()) {
+		void deliver(subscription, state)
 	}
 }
 

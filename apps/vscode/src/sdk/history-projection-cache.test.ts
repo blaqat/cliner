@@ -89,6 +89,8 @@ describe("history projection cache", () => {
 			const first = await f.controller.getStateToPostToWebview()
 			f.controller.stateManager.setGlobalState("oneViewEnabled", true)
 			const second = await f.controller.getStateToPostToWebview()
+			expect(second.taskHistoryVersion).toBe(first.taskHistoryVersion)
+			expect(first.taskHistoryVersion).toEqual(expect.any(String))
 			expect(second.taskHistory).toBe(first.taskHistory)
 			expect(f.list).toHaveBeenCalledTimes(1)
 		} finally {
@@ -119,6 +121,7 @@ describe("history projection cache", () => {
 			f.store.getRawDb().prepare("UPDATE sessions SET prompt = ? WHERE session_id = ?").run("External prompt", "root")
 			const second = await f.controller.getStateToPostToWebview()
 			expect(second.taskHistory[0].task).toBe("External prompt")
+			expect(second.taskHistoryVersion).not.toBe(first.taskHistoryVersion)
 			expect(second.taskHistory).not.toBe(first.taskHistory)
 		} finally {
 			await f.close()
@@ -134,6 +137,7 @@ describe("history projection cache", () => {
 			expect((await f.controller.getStateToPostToWebview()).taskHistory).toBe(first.taskHistory)
 			writer.update({ sessionId: "root", metadata: { size: 0, threadTitle: "Other writer" } })
 			const second = await f.controller.getStateToPostToWebview()
+			expect(second.taskHistoryVersion).not.toBe(first.taskHistoryVersion)
 			expect(second.taskHistory).not.toBe(first.taskHistory)
 			expect(second.taskHistory[0].title).toBe("Other writer")
 		} finally {
@@ -208,6 +212,7 @@ describe("history projection cache", () => {
 					break
 			}
 			const second = await f.controller.getStateToPostToWebview()
+			expect(second.taskHistoryVersion).not.toBe(first.taskHistoryVersion)
 			expect(second.taskHistory).not.toBe(first.taskHistory)
 			if (kind === "delete" || kind === "deleteAll") expect(second.taskHistory).toHaveLength(0)
 			else if (["new thread", "subagent spawn", "import", "live subagent"].includes(kind))

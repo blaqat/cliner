@@ -1,6 +1,6 @@
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
-import { DEFAULT_PLATFORM, type ExtensionState } from "@shared/ExtensionMessage"
+import { DEFAULT_PLATFORM, type ExtensionState, type ExtensionStateUpdate } from "@shared/ExtensionMessage"
 import { DEFAULT_MCP_DISPLAY_MODE } from "@shared/McpDisplayMode"
 import type { UserInfo } from "@shared/proto/cline/account"
 import { EmptyRequest } from "@shared/proto/cline/common"
@@ -33,6 +33,8 @@ import {
 } from "../components/settings/settingsTargets"
 import { toggleTopBarPanel } from "../components/topbar/topBarPanels"
 import { McpServiceClient, ModelsServiceClient, StateServiceClient, UiServiceClient } from "../services/grpc-client"
+
+const EMPTY_TOGGLES: Record<string, boolean> = Object.freeze({})
 
 export type ProviderId = string
 
@@ -545,7 +547,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			onResponse: (response: any) => {
 				if (response.stateJson) {
 					try {
-						const stateData = JSON.parse(response.stateJson) as ExtensionState
+						const stateData = JSON.parse(response.stateJson) as ExtensionStateUpdate
 						setState((prevState) => {
 							// Versioning logic for autoApprovalSettings
 							const incomingVersion = stateData.autoApprovalSettings?.version ?? 1
@@ -571,10 +573,21 @@ export const ExtensionStateContextProvider: React.FC<{
 							stateData.turnState = replicaRef.current.turnState
 
 							const newState = {
+								// Full snapshots still clear absent optional values such as
+								// currentTaskItem. Partial posts preserve the rest of state.
+								...("version" in stateData ? (stateData as ExtensionState) : prevState),
 								...stateData,
-								autoApprovalSettings: shouldUpdateAutoApproval
-									? stateData.autoApprovalSettings
-									: prevState.autoApprovalSettings,
+								taskHistory: stateData.taskHistory ?? prevState.taskHistory,
+								sessionStatuses: stateData.sessionStatuses ?? prevState.sessionStatuses,
+								subagentCounts: stateData.subagentCounts ?? prevState.subagentCounts,
+								taskGroups: stateData.taskGroups ?? prevState.taskGroups,
+								// An unversioned snapshot is a legacy full update. Do not
+								// retain its predecessor's version across that boundary.
+								taskHistoryVersion: stateData.taskHistoryVersion,
+								autoApprovalSettings:
+									shouldUpdateAutoApproval && stateData.autoApprovalSettings
+										? stateData.autoApprovalSettings
+										: prevState.autoApprovalSettings,
 							}
 
 							// Update welcome screen state based on API configuration if welcome view not in progress
@@ -1044,15 +1057,15 @@ export const ExtensionStateContextProvider: React.FC<{
 		walkthroughAuthoredId,
 		taskGroupView,
 		showAnnouncement,
-		globalClineRulesToggles: state.globalClineRulesToggles || {},
-		localClineRulesToggles: state.localClineRulesToggles || {},
-		localCursorRulesToggles: state.localCursorRulesToggles || {},
-		localWindsurfRulesToggles: state.localWindsurfRulesToggles || {},
-		localAgentsRulesToggles: state.localAgentsRulesToggles || {},
-		localWorkflowToggles: state.localWorkflowToggles || {},
-		globalWorkflowToggles: state.globalWorkflowToggles || {},
-		remoteRulesToggles: state.remoteRulesToggles || {},
-		remoteWorkflowToggles: state.remoteWorkflowToggles || {},
+		globalClineRulesToggles: state.globalClineRulesToggles || EMPTY_TOGGLES,
+		localClineRulesToggles: state.localClineRulesToggles || EMPTY_TOGGLES,
+		localCursorRulesToggles: state.localCursorRulesToggles || EMPTY_TOGGLES,
+		localWindsurfRulesToggles: state.localWindsurfRulesToggles || EMPTY_TOGGLES,
+		localAgentsRulesToggles: state.localAgentsRulesToggles || EMPTY_TOGGLES,
+		localWorkflowToggles: state.localWorkflowToggles || EMPTY_TOGGLES,
+		globalWorkflowToggles: state.globalWorkflowToggles || EMPTY_TOGGLES,
+		remoteRulesToggles: state.remoteRulesToggles || EMPTY_TOGGLES,
+		remoteWorkflowToggles: state.remoteWorkflowToggles || EMPTY_TOGGLES,
 		enableCheckpointsSetting: state.enableCheckpointsSetting,
 
 		// Navigation functions

@@ -40,6 +40,6 @@ describe("one view setting", () => {
 		expect((await getStateToPostToWebview(controller as never)).oneViewEnabled).toBe(true)
 		await updateSettings(controller as never, UpdateSettingsRequest.create({ oneViewEnabled: false }))
 		expect((await getStateToPostToWebview(controller as never)).oneViewEnabled).toBe(false)
-		expect(controller.postStateToWebview).toHaveBeenCalled()
+		expect(controller.postStateToWebview).toHaveBeenCalledWith(true)
 	})
 })

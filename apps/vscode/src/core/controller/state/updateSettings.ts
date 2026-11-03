@@ -400,7 +400,7 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 		}
 
 		// Post updated state to webview
-		await controller.postStateToWebview()
+		await controller.postStateToWebview(true)
 
 		return Empty.create()
 	} catch (error) {

@@ -5,6 +5,7 @@
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
 
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -336,6 +337,7 @@ export class Controller {
 	private diffEdits: SdkDiffEditCoordinator
 	private sessionConfigBuilder: SdkSessionConfigBuilder
 	private historyProjectionCache?: {
+		version: string
 		revision: number
 		legacy: HistoryItem[]
 		liveKey: string
@@ -4665,11 +4667,11 @@ export class Controller {
 	 * resolves once a snapshot reflecting this request has been shipped, or
 	 * rejects if that rebuild failed.
 	 */
-	postStateToWebview(): Promise<void> {
+	postStateToWebview(immediate = false): Promise<void> {
 		if (this.isDisposed) {
 			return Promise.resolve()
 		}
-		return this.statePostDebouncer.post()
+		return this.statePostDebouncer.post(immediate)
 	}
 
 	/** Build the current ExtensionState and push it to the webview immediately. */
@@ -4849,6 +4851,7 @@ export class Controller {
 				// Do not cache a build that raced a persistence write.
 				if (revision !== undefined && revision === this.taskHistory.revision) {
 					this.historyProjectionCache = {
+						version: randomUUID(),
 						revision,
 						legacy,
 						liveKey,
@@ -4997,6 +5000,11 @@ export class Controller {
 					: undefined,
 				deletedOpenThread: this.deletedOpenThread,
 				taskHistory: processedTaskHistory,
+				taskHistoryVersion: reuse
+					? cached.version
+					: this.historyProjectionCache?.history === processedTaskHistory
+						? this.historyProjectionCache.version
+						: randomUUID(),
 				// Optional-called: unit tests drive getStateToPostToWebview with
 				// partial controller stubs that don't carry these members.
 				taskGroups: taskGroups ?? [],

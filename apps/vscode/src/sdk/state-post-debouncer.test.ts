@@ -10,6 +10,18 @@ vi.mock("@/shared/services/Logger", () => ({
 }))
 
 describe("StatePostDebouncer", () => {
+	it("flushes settings immediately and absorbs a pending trailing batch", async () => {
+		const flush = vi.fn().mockResolvedValue(undefined)
+		const debouncer = new StatePostDebouncer({ debounceMs: 50, flush })
+		const trailing = debouncer.post()
+		await debouncer.post(true)
+		await trailing
+		expect(flush).toHaveBeenCalledTimes(1)
+		await vi.advanceTimersByTimeAsync(50)
+		expect(flush).toHaveBeenCalledTimes(1)
+		await debouncer.dispose()
+	})
+
 	beforeEach(() => {
 		vi.useFakeTimers()
 	})
