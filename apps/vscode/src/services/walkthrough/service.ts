@@ -87,7 +87,7 @@ export class WalkthroughService {
 				effort: resolved.reasoningEffort,
 				endpoint: provider.baseUrl,
 			}
-			const cache = cacheKey(walk, identity, turns)
+			const cache = cacheKey(walk, identity, turns, request.reviewNotes)
 			const directory = path.join(await ensureTaskDirectoryExists(request.taskId), "walkthrough-cache")
 			const cacheFile = path.join(directory, `${cache}.json`)
 			if (!request.regenerate) {
@@ -106,7 +106,12 @@ export class WalkthroughService {
 							},
 							walk,
 						)
-						const result = { ...normalized, profileId: profile.id, cacheHit: true }
+						const result = {
+							...normalized,
+							review: request.reviewNotes ? cached.review : undefined,
+							profileId: profile.id,
+							cacheHit: true,
+						}
 						this.documents.set(this.key(request), result)
 						rememberWalkthroughProfileId(this.controller, profile.id)
 						return result
@@ -117,7 +122,13 @@ export class WalkthroughService {
 			}
 			const previous = this.documents.get(this.key(request))
 			const result = {
-				...(await generate(walk, turns, buildApiHandler(config, "act"), request.regenerate ? previous : undefined)),
+				...(await generate(
+					walk,
+					turns,
+					buildApiHandler(config, "act"),
+					request.regenerate ? previous : undefined,
+					request.reviewNotes,
+				)),
 				profileId: profile.id,
 				cacheHit: false,
 			}
@@ -180,6 +191,7 @@ export class WalkthroughService {
 			stopNotes: request.stopNotes ?? {},
 			lineNotes: Array.isArray(request.lineNotes) ? request.lineNotes : [],
 			overallNote: request.overallNote,
+			reviewResponses: request.reviewResponses,
 		})
 		this.validate(request)
 		await this.controller.task!.handleWebviewAskResponse("messageResponse", message, [], [])

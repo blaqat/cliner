@@ -78,6 +78,45 @@ export function hunkLineNumbers(hunk: Pick<WalkthroughHunk, "patch" | "oldStart"
 	})
 }
 
+/** Cline's review notes: four kinds; only "high" severity is marked. */
+export type WalkthroughReviewKind = "risk" | "suggestion" | "question" | "nice"
+
+/**
+ * A note Cline wrote about the change (separate from the reviewer's own notes and from "why"
+ * annotations, which only explain). It points at the whole change (no stopId), a stop, or lines
+ * in one hunk (line/endLine index hunkBodyLines, like WalkthroughLineNote).
+ */
+export interface WalkthroughReviewNote {
+	id: string
+	kind: WalkthroughReviewKind
+	severity?: "high"
+	title: string
+	text: string
+	stopId?: string
+	hunkId?: string
+	line?: number
+	endLine?: number
+}
+
+export interface WalkthroughReview {
+	summary?: string
+	notes: WalkthroughReviewNote[]
+}
+
+/** Caps Cline is asked to stay under, enforced when a review is parsed. */
+export const REVIEW_NOTES_PER_STOP = 3
+export const REVIEW_NOTES_TOTAL = 10
+
+/**
+ * The reviewer's answer to one of Cline's notes. Fix and reply go into Send under the note;
+ * dismissed notes (and notes left alone) are left out of Send.
+ */
+export interface WalkthroughReviewResponse {
+	fix?: boolean
+	reply?: string
+	dismissed?: boolean
+}
+
 export interface ChangeWalkthrough {
 	version: 1
 	taskId: string
@@ -91,6 +130,8 @@ export interface ChangeWalkthrough {
 	hunks: WalkthroughHunk[]
 	/** Notes inside the diff (see WalkthroughAnnotation). */
 	annotations?: WalkthroughAnnotation[]
+	/** Cline's review notes, when asked for (Generate "Add review notes", or the agent's present_walkthrough). */
+	review?: WalkthroughReview
 	warnings: string[]
 	profileId?: string
 	cacheHit?: boolean
@@ -122,6 +163,22 @@ export interface AuthoredWalkthroughInput {
 			hunks: Array<{ path: string; patch: string }>
 		}>
 	}>
+	/** Only when the user asked for review notes. Lines are anchored by their exact text, like "why" notes. */
+	review?: {
+		summary?: string
+		notes: Array<{
+			kind: WalkthroughReviewKind
+			severity?: "high"
+			title: string
+			text: string
+			/** The stop's title; omit for a note on the whole change. */
+			stop?: string
+			/** With `lines`: the file the lines are in. */
+			path?: string
+			/** Exact text of the line(s) the note is about, copied from the patch. */
+			lines?: string
+		}>
+	}
 }
 
 /** Payload of the `walkthrough_ready` chat row (JSON in ClineMessage.text). */
@@ -131,12 +188,17 @@ export interface WalkthroughReadyMessage {
 	origin?: WalkthroughOrigin
 	stopCount: number
 	fileCount: number
+	/** Cline's review notes, for the card's "8 notes · 1 high". */
+	reviewCount?: number
+	reviewHighCount?: number
 }
 
 export interface WalkthroughNotes {
 	stopNotes: Record<string, string>
 	lineNotes?: WalkthroughLineNote[]
 	overallNote?: string
+	/** Answers to Cline's review notes, by note id. */
+	reviewResponses?: Record<string, WalkthroughReviewResponse>
 }
 
 /** JSON payloads for TaskService's walkthrough RPCs. No file content from the webview is trusted. */
@@ -152,6 +214,9 @@ export interface WalkthroughRequest {
 	stopNotes?: Record<string, string>
 	lineNotes?: WalkthroughLineNote[]
 	overallNote?: string
+	reviewResponses?: Record<string, WalkthroughReviewResponse>
+	/** Generate: also write review notes (the webview remembers the choice). */
+	reviewNotes?: boolean
 	/** With scope "authored": which stored walkthrough. */
 	authoredId?: string
 }

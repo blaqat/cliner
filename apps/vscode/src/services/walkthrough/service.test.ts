@@ -50,6 +50,18 @@ mock.module("@/sdk/sdk-api-handler", () => ({
 						arguments: {
 							title: "Validate input",
 							focus: "Reject empty input.",
+							review: {
+								notes: [
+									{
+										kind: "risk",
+										title: "Guard the value",
+										text: "The value is used directly.",
+										stop: "Reject empty input",
+										path: "a.ts",
+										lines: "new",
+									},
+								],
+							},
 							chapters: [
 								{
 									title: "Parser",
@@ -139,6 +151,24 @@ function service() {
 const request = { taskId: "task", scope: "thread" as const }
 
 describe("walkthrough service", () => {
+	it("keys generated caches by review mode", async () => {
+		const host = service()
+		await host.generate({ ...request, profileId: "chosen" })
+		const reviewed = await host.generate({ ...request, profileId: "chosen", reviewNotes: true })
+		expect(requests).toBe(2)
+		const reopened = service()
+		const cached = await reopened.generate({ ...request, profileId: "chosen", reviewNotes: true })
+		expect(requests).toBe(2)
+		expect(cached.review).toEqual(reviewed.review)
+		const id = cached.review!.notes[0].id
+		await reopened.sendNotes({
+			...request,
+			fingerprint: cached.fingerprint,
+			reviewResponses: { [id]: { fix: true, reply: "Keep this API." } },
+		})
+		expect(askResponse.mock.calls[0][0]).toContain("Please fix this.")
+		expect(askResponse.mock.calls[0][0]).toContain("Reply: Keep this API.")
+	})
 	it("opens the free walkthrough without constructing a model request", async () => {
 		const walk = await service().get(request)
 		expect(walk.source).toBe("fallback")

@@ -108,3 +108,28 @@ Authored RPC payloads use the existing `StringRequest` JSON envelope:
 Get and send require the requested thread to remain focused. Unknown document IDs and stale fingerprints fail. No shared-type, protobuf, or setting changes are required.
 
 The tool result tells the model the walkthrough is shown and to finish with one short sentence. The tool is declared with `lifecycle.emptyResponseCompletes`, so if the model then returns an empty response, the SDK agent runtime completes the run instead of failing with "Model returned empty response". That applies only when the conversation ends directly with a successful result from such a tool.
+
+## Cline's review notes
+
+Review notes are separate from user notes and explanatory `why` annotations. `present_walkthrough` accepts optional `review: { summary?, notes }` only when the user asks for review or improvement notes. Each note has `kind` (`risk`, `suggestion`, `question`, `nice`), optional `severity: "high"`, `title`, `text`, and optional `stop` (exact title), `path`, and `lines` (exact patch text). High severity is reserved for real problems. No notes is a valid answer.
+
+`review.ts` validates both authored and generated reviews. It resolves text to host-owned hunk body indexes and stop IDs. Missing line anchors fall back to the known stop; otherwise the note applies to the whole change. IDs hash the normalized note, so the same note keeps its ID. Notes are ordered high first, then in source order. Duplicate notes are removed; at most three notes per stop and ten total survive. Authored document fingerprints include review content. Ready cards carry `reviewCount` and `reviewHighCount` when review exists, including zero counts for an empty review. The existing SDK translator preserves those fields in live and reconstructed cards.
+
+`generateChangeWalkthrough` accepts `reviewNotes?: boolean`. Only `true` adds a separate review instruction and schema to the existing single Generate call. Walkthrough prose and why notes still must not invent bugs, tests, validation or risks. Review instructions permit only real concerns supported by the supplied diff or context and forbid speculative problems. The review flag participates in the disk cache key. Cached reviews retain their IDs and anchors.
+
+`sendWalkthroughNotes` accepts `reviewResponses: Record<noteId, { fix?, reply?, dismissed? }>`. The webview persists these alongside stop, line and overall notes with the same task/scope/fingerprint lifecycle. The backend resolves response IDs against the current host-owned document. Dismissed and untouched notes are omitted. A selected note is grouped under its stop, quoted with its title, anchor and text, then followed by the user's actions:
+
+```text
+Review notes for the change walkthrough:
+
+> Stop: Validate input
+> Cline's risk: Missing guard
+> a.ts:1-2
+> The value is used without a guard.
+
+Please fix this.
+
+Reply: Keep the current API.
+```
+
+`Please fix this.` appears only for Fix, and `Reply:` only for a nonempty reply. Stop-only notes quote `Stop: <title>` as their anchor; whole-change notes quote `Whole change`. Existing user notes and the overall note remain in the same message. Review responses never trigger another provider request.

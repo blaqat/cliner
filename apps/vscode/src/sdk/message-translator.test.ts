@@ -4609,7 +4609,15 @@ describe("child transcript routing", () => {
 })
 
 describe("authored walkthrough ready cards", () => {
-	const ready = { authoredId: "a1", title: "Review remote changes", origin: { label: "MR !12" }, stopCount: 2, fileCount: 1 }
+	const ready = {
+		authoredId: "a1",
+		title: "Review remote changes",
+		origin: { label: "MR !12" },
+		stopCount: 2,
+		fileCount: 1,
+		reviewCount: 3,
+		reviewHighCount: 1,
+	}
 	const output = JSON.stringify({ walkthroughReady: ready, message: "Ready for review" })
 	it("emits a live ready card after success, with no partial generic tool row", () => {
 		const state = new MessageTranslatorState()

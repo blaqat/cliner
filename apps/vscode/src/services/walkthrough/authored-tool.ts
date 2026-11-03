@@ -1,15 +1,18 @@
 import { createTool } from "@cline/shared"
 import type { AuthoredWalkthroughInput } from "@shared/Walkthrough"
 import { saveAuthoredWalkthrough, walkthroughReady } from "./authored"
+import { REVIEW_INSTRUCTIONS, reviewSchema } from "./review"
 
 export function createPresentWalkthroughTool() {
 	return createTool<AuthoredWalkthroughInput, string>({
 		name: "present_walkthrough",
 		description:
-			"Present a change set the user should review, such as a merge request fetched through MCP. Copy unified diff hunks verbatim from the source. Group stops into conceptual chapters. Use 2–6 word stop titles and short prose with inline code only. Narrative stops may have no hunks. Limits: 8 chapters, 60 stops, 400 hunks, 300000 total patch characters. This displays a review page and does not change local files. After success, do not repeat its content.",
+			"Present a change set the user should review, such as a merge request fetched through MCP. Copy unified diff hunks verbatim from the source. Group stops into conceptual chapters. Use 2–6 word stop titles and short prose with inline code only. Narrative stops may have no hunks. Limits: 8 chapters, 60 stops, 400 hunks, 300000 total patch characters. This displays a review page and does not change local files. After success, do not repeat its content. " +
+			REVIEW_INSTRUCTIONS,
 		inputSchema: {
 			type: "object",
 			properties: {
+				review: reviewSchema,
 				title: { type: "string" },
 				focus: { type: "string" },
 				origin: {
