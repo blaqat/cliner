@@ -1,4 +1,4 @@
-import { createHandler } from "@cline/llms"
+import { createHandler, supportsModelTool } from "@cline/llms"
 import { modelSupportsImageInput, modelSupportsToolCalling } from "@cline/shared"
 import { createDefaultModelSettings, type ModelSettings, ModelSettingsSchema } from "@shared/model-settings"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -240,6 +240,45 @@ describe("Azure API version", () => {
 			{ secrets: noSecrets(), environment },
 		)
 	}
+	it("Responses stays this provider, so OpenAI's built-in tools aren't added to a gateway's requests", async () => {
+		const config = await configFor("https://gw.test/team/openai/deployments/gpt", "responses")
+		expect(config).toMatchObject({ providerId: "openai-compatible", routingProviderId: "openai-native" })
+		for (const tool of ["image_generation", "web_search"] as const)
+			expect(supportsModelTool({ providerId: config.providerId, modelId: "gpt-6-sol" }, tool), tool).toBe(false)
+		const { url, body } = await capture(config)
+		expect(new URL(url).pathname).toBe("/team/openai/responses")
+		expect(body.model).toBe("gpt")
+	})
+	it.each([
+		["https://gw.test/team/openai", "/team/openai/deployments/gpt/chat/completions"],
+		["https://r.openai.azure.com/openai", "/openai/deployments/gpt/chat/completions"],
+		["https://r.openai.azure.com", "/openai/deployments/gpt/chat/completions"],
+		["https://gw.test/team/openai/deployments/fixed", "/team/openai/deployments/fixed/chat/completions"],
+		["https://gw.test/v1", "/v1/chat/completions"],
+	])("adding models to %s posts chat to %s", async (base, path) => {
+		const { url } = await capture(await configFor(base, "chat"))
+		expect(new URL(url).pathname).toBe(path)
+	})
+	it("a bare Azure base with no version uses the versionless API", async () => {
+		const { url } = await capture(await configFor("https://r.openai.azure.com/openai", "chat", null))
+		expect(new URL(url).pathname).toBe("/openai/v1/chat/completions")
+	})
+	it("sends a key as api-key to an Azure host", async () => {
+		const connection = {
+			...compatibleConnection({ kind: "keychain", secretRef: "settings:v1:connection:connection:apiKey" }),
+			baseUrl: "https://r.openai.azure.com/openai",
+			azureApiVersion: "2025-01-01-preview",
+		} as Connection
+		const secrets = noSecrets()
+		await secrets.set("settings:v1:connection:connection:apiKey", "azure-key")
+		const config = await configuredProviderConfig(
+			settingsFor(connection, "gpt"),
+			{ modelId: "row", levelId: "default" },
+			{ secrets, environment },
+		)
+		const { headers } = await capture(config)
+		expect(headers.get("api-key")).toBe("azure-key")
+	})
 	const formats = ["chat", "responses"] as const
 	const bases = [
 		"https://r.openai.azure.com/openai/deployments/gpt",

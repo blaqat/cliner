@@ -131,6 +131,31 @@ export function resolveAzureResponsesEndpoint(
 	};
 }
 
+/**
+ * Azure OpenAI serves Chat Completions per deployment, so a base URL that stops at `/openai` (behind a
+ * gateway or not), or a bare Azure host, posts to a path that doesn't exist there. This is the one that
+ * does, with the model as the deployment. Undefined when the URL already goes somewhere real.
+ */
+export function resolveAzureChatUrl(url: URL, model: string | undefined, apiVersion?: string): URL | undefined {
+	const atOpenAi = /^(.*)\/openai\/chat\/completions\/?$/.exec(url.pathname);
+	const azureHost = isAzureOpenAIHost(url.toString());
+	const atRoot = azureHost && /^\/chat\/completions\/?$/.test(url.pathname);
+	if ((!atOpenAi && !atRoot) || (!apiVersion && !azureHost)) {
+		return undefined;
+	}
+	const prefix = atOpenAi?.[1] ?? "";
+	const next = new URL(url);
+	if (apiVersion) {
+		if (!model) {
+			return undefined;
+		}
+		next.pathname = `${prefix}/openai/deployments/${encodeURIComponent(model)}/chat/completions`;
+	} else {
+		next.pathname = `${prefix}/openai/v1/chat/completions`;
+	}
+	return next;
+}
+
 /** Azure's versionless v1 API rejects `api-version`; every other path gets the one that was asked for. */
 export function acceptsApiVersion(pathname: string): boolean {
 	return !/\/openai\/v1(\/|$)/.test(pathname);

@@ -172,7 +172,11 @@ export async function configuredProviderConfig(
 	if (answeredNo && !capabilities.length) capabilities.push("text")
 	return {
 		[requestPolicyGuard]: guard,
-		providerId: prepared.config.providerId,
+		// Responses on a compatible connection only borrows OpenAI's adapter. Staying this provider keeps
+		// OpenAI's own built-in tools (image generation, web search) off servers that refuse them.
+		...(resolved.connection.kind === "openai-compatible"
+			? { providerId: "openai-compatible", routingProviderId: prepared.config.providerId }
+			: { providerId: prepared.config.providerId }),
 		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
 		settingsModelLevels: resolved.values.levels,
 		settingsFetchAtLevel: prepared.fetchAtLevel,
