@@ -19,6 +19,8 @@ import {
 } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
+import { captureThreadModelSelection, migrateThreadModelSelection } from "@/sdk/model-settings-resolver"
 
 /**
  * Saved API configuration profiles (plan §1b).
@@ -582,6 +584,10 @@ export async function ensureApiConfigProfiles(stateManager: ApiProfileStore): Pr
 export function captureTaskApiSelection(
 	stateManager: Pick<ApiProfileStore, "getGlobalStateKey" | "getApiConfiguration">,
 ): TaskApiSelection {
+	if (modelSettingsRolloutEnabled() && stateManager.getGlobalStateKey("modelSettingsMigration")?.status === "complete") {
+		const settings = stateManager.getGlobalStateKey("modelSettings")
+		if (settings) return { modelSelectionV1: captureThreadModelSelection(settings) }
+	}
 	const config = stateManager.getApiConfiguration()
 	const selection: TaskApiSelection = {
 		askProfileId: stateManager.getGlobalStateKey("askProfileId"),
@@ -611,9 +617,43 @@ function taskSelectionEffort(selection: TaskApiSelection | undefined, mode: Mode
  */
 export function resolveTaskApiSelection(
 	stateManager: Pick<ApiProfileStore, "getGlobalStateKey">,
-	item: { apiSelection?: TaskApiSelection; apiProvider?: string; modelId?: string },
+	item: {
+		apiSelection?: TaskApiSelection
+		apiProvider?: string
+		modelId?: string
+		modelSelectionV1?: import("@shared/model-settings").ThreadModelSelection
+	},
 	mode: Mode,
 ): TaskApiSelection {
+	if (modelSettingsRolloutEnabled()) {
+		const journal = stateManager.getGlobalStateKey("modelSettingsMigration")
+		if (journal?.status === "complete") {
+			let selection = item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1
+			if (!selection && item.apiSelection) selection = migrateThreadModelSelection(item.apiSelection, journal)
+			if (!selection) {
+				const settings = stateManager.getGlobalStateKey("modelSettings")
+				const matches =
+					settings?.models.filter(
+						(model) =>
+							model.upstreamId === item.modelId &&
+							settings.connections.some(
+								(connection) =>
+									connection.id === model.connectionId &&
+									(connection.kind === "provider"
+										? toLegacyApiProvider(connection.providerId) ===
+											toLegacyApiProvider(item.apiProvider ?? "")
+										: toLegacyApiProvider(item.apiProvider ?? "") === "openai"),
+							),
+					) ?? []
+				const pick = {
+					modelId: matches.length === 1 ? matches[0].id : `missing:history:${item.modelId ?? "unknown"}`,
+					levelId: "default",
+				}
+				selection = { version: 1, ask: pick, act: pick }
+			}
+			return { ...item.apiSelection, modelSelectionV1: selection }
+		}
+	}
 	const profiles = readApiConfigProfiles(stateManager)
 	const known = new Set(profiles.map((p) => p.id))
 	const resolved: TaskApiSelection = { ...item.apiSelection }

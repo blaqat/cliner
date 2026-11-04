@@ -8,10 +8,11 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { parseMessageReferences } from "@shared/message-references"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
-import { captureTaskApiSelection } from "@/core/controller/models/apiProfiles"
+import { captureTaskApiSelection, resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import { isDirectory } from "@/utils/fs"
+import { useModelSettings } from "./model-settings/background"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE, type ProviderFailureTelemetry } from "./provider-failure-telemetry"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -282,7 +283,9 @@ export class SdkTaskStartCoordinator {
 			// workspace root instead.
 			const storedCwd = historyItem.cwdOnTaskInitialization
 			const cwd = storedCwd && (await isDirectory(storedCwd)) ? storedCwd : await this.options.getWorkspaceRoot()
-			const apiSelection = historyItem.apiSelection ?? captureTaskApiSelection(this.options.stateManager)
+			const apiSelection = useModelSettings(this.options.stateManager)
+				? resolveTaskApiSelection(this.options.stateManager, historyItem, "act")
+				: (historyItem.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
 			const config = await this.options.sessionConfigBuilder.build({
 				cwd,
 				mode: "act",

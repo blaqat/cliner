@@ -1,4 +1,5 @@
 import type { ApiProvider } from "./api"
+import { ThreadModelSelectionSchema } from "./model-settings"
 import { isOpenaiReasoningEffort, type OpenaiReasoningEffort } from "./storage/types"
 
 /**
@@ -53,6 +54,7 @@ export interface ApiConfigProfile {
  * `apiSelection` key and mirrored onto HistoryItem.
  */
 export interface TaskApiSelection {
+	modelSelectionV1?: import("./model-settings").ThreadModelSelection
 	/** Profile id assigned to Ask (internal "plan") mode. */
 	askProfileId?: string
 	/** Profile id assigned to Act mode. */
@@ -68,6 +70,8 @@ export function readTaskApiSelection(value: unknown): TaskApiSelection | undefin
 	}
 	const record = value as Record<string, unknown>
 	const selection: TaskApiSelection = {}
+	const parsed = ThreadModelSelectionSchema.safeParse(record.modelSelectionV1)
+	if (parsed.success) selection.modelSelectionV1 = parsed.data
 	if (typeof record.askProfileId === "string" && record.askProfileId.trim()) {
 		selection.askProfileId = record.askProfileId
 	}
@@ -89,6 +93,7 @@ export function taskApiSelectionsEqual(a: TaskApiSelection | undefined, b: TaskA
 		return a === b
 	}
 	return (
+		JSON.stringify(a.modelSelectionV1) === JSON.stringify(b.modelSelectionV1) &&
 		a.askProfileId === b.askProfileId &&
 		a.actProfileId === b.actProfileId &&
 		a.planModeReasoningEffort === b.planModeReasoningEffort &&

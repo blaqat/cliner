@@ -96,6 +96,7 @@ export interface SessionConfigInput {
 	 */
 	apiConfiguration?: ApiConfiguration
 	apiSelection?: TaskApiSelection
+	configuredProvider?: import("@cline/llms").ProviderConfig
 }
 
 /** In-memory only. Connection secrets must never be written to task metadata. */
@@ -892,6 +893,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	const mode: Mode = input.mode ?? "act"
 	const sdkLogger = createSdkLogger()
 	const distinctId = getDistinctId()
+	const configured = input.configuredProvider
 
 	let providerId: string | undefined
 	let modelId: string | undefined
@@ -908,71 +910,72 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	let ollamaProviderConfig: ReturnType<typeof resolveOllamaProviderConfig> | undefined
 	let azureProviderConfig: Pick<ProviderSettings, "azure"> | undefined
 
-	try {
-		const stateManager = StateManager.get()
-		apiConfig = input.apiConfiguration ?? stateManager.getApiConfiguration(mode)
+	if (!configured)
+		try {
+			const stateManager = StateManager.get()
+			apiConfig = input.apiConfiguration ?? stateManager.getApiConfiguration(mode)
 
-		// Resolve the provider for the current mode. State written by older
-		// builds or other hosts may carry SDK catalog spellings (e.g.
-		// `openai-compatible`); fold them back to the legacy spelling the
-		// provider-keyed maps below are keyed by.
-		const modeProvider = mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
-		providerId = modeProvider ? toLegacyApiProvider(modeProvider) : modeProvider
+			// Resolve the provider for the current mode. State written by older
+			// builds or other hosts may carry SDK catalog spellings (e.g.
+			// `openai-compatible`); fold them back to the legacy spelling the
+			// provider-keyed maps below are keyed by.
+			const modeProvider = mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
+			providerId = modeProvider ? toLegacyApiProvider(modeProvider) : modeProvider
 
-		if (providerId) {
-			// Resolve API key
-			apiKey = resolveApiKey(providerId, apiConfig)
+			if (providerId) {
+				// Resolve API key
+				apiKey = resolveApiKey(providerId, apiConfig)
 
-			// Resolve model ID
-			modelId = resolveModelId(providerId, mode, apiConfig)
+				// Resolve model ID
+				modelId = resolveModelId(providerId, mode, apiConfig)
 
-			// Resolve base URL
-			baseUrl = resolveBaseUrl(providerId, apiConfig)
+				// Resolve base URL
+				baseUrl = resolveBaseUrl(providerId, apiConfig)
 
-			// Resolve the regional API line (Qwen/Moonshot/Z AI/MiniMax). The
-			// SDK gateway routes to the line's regional endpoint when no
-			// explicit base URL is set.
-			apiLine = resolveApiLine(providerId, apiConfig)
+				// Resolve the regional API line (Qwen/Moonshot/Z AI/MiniMax). The
+				// SDK gateway routes to the line's regional endpoint when no
+				// explicit base URL is set.
+				apiLine = resolveApiLine(providerId, apiConfig)
 
-			// Resolve Bedrock region + AWS authentication options from the legacy
-			// ApiConfiguration (StateManager is the VSCode source of truth, not
-			// providers.json).
-			if (providerId === "bedrock") {
-				bedrockProviderConfig = buildBedrockProviderConfig(apiConfig, mode)
+				// Resolve Bedrock region + AWS authentication options from the legacy
+				// ApiConfiguration (StateManager is the VSCode source of truth, not
+				// providers.json).
+				if (providerId === "bedrock") {
+					bedrockProviderConfig = buildBedrockProviderConfig(apiConfig, mode)
+				}
+
+				if (providerId === "vertex") {
+					vertexProviderConfig = resolveVertexProviderConfig(apiConfig)
+				}
+
+				if (providerId === "sapaicore") {
+					sapProviderConfig = buildSapProviderConfig(apiConfig, mode)
+					baseUrl = sapProviderConfig.baseUrl
+				}
+
+				if (providerId === "ollama") {
+					ollamaProviderConfig = resolveOllamaProviderConfig(apiConfig, modelId)
+				}
+
+				// The OpenAI Compatible provider is spelled "openai" after the
+				// legacy fold above; keep the SDK spelling as a defensive alias.
+				if (providerId === "openai" || providerId === "openai-compatible") {
+					azureProviderConfig = resolveAzureProviderConfig(apiConfig)
+				}
+
+				Logger.log(
+					`[SessionFactory] Resolved from StateManager: provider=${providerId}, model=${modelId}, hasApiKey=${!!apiKey}`,
+				)
 			}
-
-			if (providerId === "vertex") {
-				vertexProviderConfig = resolveVertexProviderConfig(apiConfig)
-			}
-
-			if (providerId === "sapaicore") {
-				sapProviderConfig = buildSapProviderConfig(apiConfig, mode)
-				baseUrl = sapProviderConfig.baseUrl
-			}
-
-			if (providerId === "ollama") {
-				ollamaProviderConfig = resolveOllamaProviderConfig(apiConfig, modelId)
-			}
-
-			// The OpenAI Compatible provider is spelled "openai" after the
-			// legacy fold above; keep the SDK spelling as a defensive alias.
-			if (providerId === "openai" || providerId === "openai-compatible") {
-				azureProviderConfig = resolveAzureProviderConfig(apiConfig)
-			}
-
-			Logger.log(
-				`[SessionFactory] Resolved from StateManager: provider=${providerId}, model=${modelId}, hasApiKey=${!!apiKey}`,
-			)
+		} catch (error) {
+			Logger.warn("[SessionFactory] StateManager credential resolution failed:", error)
 		}
-	} catch (error) {
-		Logger.warn("[SessionFactory] StateManager credential resolution failed:", error)
-	}
 
 	// Fallback: try SDK's ProviderSettingsManager only when StateManager did not
 	// resolve a provider at all. If the user selected a provider but credentials
 	// are missing, keep that provider/model so the UI can surface the right auth
 	// state instead of silently switching to a previous provider.
-	if (!providerId) {
+	if (!configured && !providerId) {
 		try {
 			const dataDir = resolveDataDir()
 			const manager = getProviderSettingsManager(dataDir)
@@ -995,6 +998,12 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		}
 	}
 
+	if (configured) {
+		providerId = configured.providerId
+		modelId = configured.modelId
+		apiKey = configured.apiKey
+		baseUrl = configured.baseUrl
+	}
 	// Final defaults. Keep this aligned with the provider catalog so the UI and
 	// session factory share one source of truth for default models.
 	providerId = providerId ?? DEFAULT_PROVIDER_ID
@@ -1018,22 +1027,26 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	}
 	apiKey = apiKey ?? ""
 	const profileAssigned = apiConfig !== undefined && hasAssignedApiProfile(apiConfig)
-	const committedRuntimeModel = profileAssigned
-		? resolveAssignedProfileRuntimeModel(providerId, mode, modelId, apiConfig)
-		: resolveCommittedRuntimeModel(providerId, mode, modelId)
+	const committedRuntimeModel = configured
+		? undefined
+		: profileAssigned
+			? resolveAssignedProfileRuntimeModel(providerId, mode, modelId, apiConfig)
+			: resolveCommittedRuntimeModel(providerId, mode, modelId)
 	const overriddenMaxTokens = committedRuntimeModel?.overrides?.maxTokens
 	const maxTokensPerTurn =
 		positiveFiniteNumber(overriddenMaxTokens) ??
 		(providerId === "openai" ? resolveOpenAiCompatibleMaxTokens(apiConfig, mode) : undefined)
 	const temperature = nonNegativeFiniteNumber(committedRuntimeModel?.overrides?.temperature)
 	const profileEffort = mode === "plan" ? apiConfig?.planModeReasoningEffort : apiConfig?.actModeReasoningEffort
-	const reasoningConfig = profileAssigned
-		? isReasoningEffort(profileEffort)
-			? { reasoningEffort: profileEffort }
-			: {}
-		: providerId === "oca"
-			? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
-			: resolveProviderReasoningConfig(providerId)
+	const reasoningConfig = configured
+		? {}
+		: profileAssigned
+			? isReasoningEffort(profileEffort)
+				? { reasoningEffort: profileEffort }
+				: {}
+			: providerId === "oca"
+				? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
+				: resolveProviderReasoningConfig(providerId)
 
 	// Include rich workspace metadata so Cline API observability can extract
 	// git remotes and the latest commit hash from the system message.
@@ -1095,34 +1108,36 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	const hostIdentity = await resolveHostIdentity()
 	const isMultiRoot = await resolveIsMultiRootWorkspace()
 	let knownModels: Awaited<ReturnType<typeof getModelsForProvider>> | undefined
-	try {
-		// Constructing the settings manager loads providers.json and models.json into
-		// the @cline/llms registry. Reading models from that registry ensures custom
-		// model overrides are included in the inference provider config, not just in
-		// the webview/display path.
-		getProviderSettingsManager(resolveDataDir())
-		knownModels = await getModelsForProvider(sdkProviderId)
-		// Only inject host-resolved metadata that carries real information
-		// (catalog/state base or user overrides). Pure fallback fabrications
-		// must not reach the runtime; the SDK's own resolution handles those.
-		const isPureFallbackModel = committedRuntimeModel?.modelInfoSource === "fallback" && !committedRuntimeModel.overrides
-		// A profile's model info is user-authored and never lands in the
-		// models.json registry, so it must overlay catalog entries too. The
-		// committed-selection path can rely on the registry already carrying
-		// stored overrides and only needs to inject models the catalog lacks.
-		const profileOverridesCatalog = profileAssigned && committedRuntimeModel?.overrides !== undefined
-		if (committedRuntimeModel && !isPureFallbackModel && (!knownModels?.[modelId] || profileOverridesCatalog)) {
-			knownModels = {
-				...(knownModels ?? {}),
-				[modelId]: {
-					...(knownModels?.[modelId] ?? {}),
-					...toSdkModelInfo(committedRuntimeModel),
-				},
+	if (configured) knownModels = configured.knownModels
+	else
+		try {
+			// Constructing the settings manager loads providers.json and models.json into
+			// the @cline/llms registry. Reading models from that registry ensures custom
+			// model overrides are included in the inference provider config, not just in
+			// the webview/display path.
+			getProviderSettingsManager(resolveDataDir())
+			knownModels = await getModelsForProvider(sdkProviderId)
+			// Only inject host-resolved metadata that carries real information
+			// (catalog/state base or user overrides). Pure fallback fabrications
+			// must not reach the runtime; the SDK's own resolution handles those.
+			const isPureFallbackModel = committedRuntimeModel?.modelInfoSource === "fallback" && !committedRuntimeModel.overrides
+			// A profile's model info is user-authored and never lands in the
+			// models.json registry, so it must overlay catalog entries too. The
+			// committed-selection path can rely on the registry already carrying
+			// stored overrides and only needs to inject models the catalog lacks.
+			const profileOverridesCatalog = profileAssigned && committedRuntimeModel?.overrides !== undefined
+			if (committedRuntimeModel && !isPureFallbackModel && (!knownModels?.[modelId] || profileOverridesCatalog)) {
+				knownModels = {
+					...(knownModels ?? {}),
+					[modelId]: {
+						...(knownModels?.[modelId] ?? {}),
+						...toSdkModelInfo(committedRuntimeModel),
+					},
+				}
 			}
+		} catch (error) {
+			Logger.warn(`[SessionFactory] Failed to resolve known models for provider=${sdkProviderId}:`, error)
 		}
-	} catch (error) {
-		Logger.warn(`[SessionFactory] Failed to resolve known models for provider=${sdkProviderId}:`, error)
-	}
 
 	// Always pass a providerConfig so the proxy/CA-aware fetch reaches the SDK
 	// gateway; without it the agent loop uses bare global fetch and corporate
@@ -1163,10 +1178,11 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		// otherwise falls back to a small default output cap (CLINE-2911).
 		...(maxTokensPerTurn !== undefined ? { maxOutputTokens: maxTokensPerTurn } : {}),
 		fetch,
+		...configured,
 	}
 
 	const config: CoreSessionConfig = {
-		inheritProviderSettings: apiConfig ? !hasAssignedApiProfile(apiConfig) : true,
+		inheritProviderSettings: configured ? false : apiConfig ? !hasAssignedApiProfile(apiConfig) : true,
 		providerId: sdkProviderId,
 		modelId,
 		apiKey,

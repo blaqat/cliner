@@ -4,6 +4,7 @@ import { Logger } from "@shared/services/Logger"
 import type { Mode } from "@shared/storage/types"
 import { type ApiProfileStore, resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
 import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/controller/models/modelProfiles"
+import { backgroundHandler, useModelSettings } from "./model-settings/background"
 import { buildApiHandler } from "./sdk-api-handler"
 
 /**
@@ -82,7 +83,12 @@ export async function maybeGenerateThreadTitle(
 	thread?: ThreadTitleSource,
 ): Promise<void> {
 	const { store, applyTitle, getTitleState } = deps
-	if (store.getGlobalStateKey("threadTitlesEnabled") !== true) return
+	if (
+		useModelSettings(store)
+			? !store.getGlobalStateKey("modelSettings")?.roles.background.titlesEnabled
+			: store.getGlobalStateKey("threadTitlesEnabled") !== true
+	)
+		return
 	const message = firstMessage.trim()
 	if (!message) return
 	try {
@@ -91,7 +97,10 @@ export async function maybeGenerateThreadTitle(
 		const titleState = await getTitleState(taskId)
 		if (titleState.hasTitle || titleState.generated) return
 		const { configuration, mode, reasoning } = resolveTitleApiConfiguration(store, thread)
-		const handler = buildApiHandler(configuration, mode, { disableReasoning: !reasoning })
+		const handler = useModelSettings(store)
+			? await backgroundHandler(store, "titles")
+			: buildApiHandler(configuration, mode, { disableReasoning: !reasoning })
+		if (!handler) return
 		const stream = handler.createMessage(SYSTEM_PROMPT, [
 			{ role: "user", content: `Name this conversation:\n\n${message.slice(0, MAX_PROMPT_CHARS)}` },
 		])

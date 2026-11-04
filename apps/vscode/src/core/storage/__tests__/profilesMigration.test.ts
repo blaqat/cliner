@@ -282,3 +282,12 @@ it("preserves an unrelated process write racing the real migration commit", asyn
 	expect(disk.profilesMigration.version).toBe(1)
 	expect(disk.profiles.map((profile: { name: string }) => profile.name)).toEqual(["Claude", "Local"])
 })
+
+it("rollout off keeps activation on legacy stores without populating model settings", async () => {
+	const window = openWindow()
+	await window.start()
+	const data = readDisk()
+	expect(data.modelSettings).toBeUndefined()
+	expect(data.modelSettingsBackupV1).toBeUndefined()
+	expect(data.modelSettingsMigration).toBeUndefined()
+})

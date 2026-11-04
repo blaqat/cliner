@@ -20,6 +20,8 @@ import { type StorageLockOptions, StorageLockTimeoutError } from "@shared/storag
 import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
 import type { ConnectionSecretStore } from "@/sdk/model-settings/connection-secret-store"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
+import { readSdkMigrationInput } from "@/sdk/model-settings/sdk-migration-input"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
@@ -27,6 +29,7 @@ import { ensureModelProfiles, THREAD_SELECTION_KEYS, threadSelectionStamp } from
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
+import { migrateModelSettings } from "./model-settings-migration"
 import { filterAllowedRemoteConfigFields } from "./remote-config/utils"
 import { readGlobalStateFromStorage, readSecretsFromStorage, readWorkspaceStateFromStorage } from "./utils/state-helpers"
 export interface PersistenceErrorEvent {
@@ -168,8 +171,23 @@ export class StateManager {
 			await this.storage.globalStateBackingStore.withLock(async () => {
 				acquired = true
 				await this.reloadPersistedState()
-				await ensureApiConfigProfiles(this)
-				ensureModelProfiles(this)
+				if (modelSettingsRolloutEnabled()) {
+					try {
+						await migrateModelSettings({
+							state: this.storage.globalState,
+							sdkInput: await readSdkMigrationInput(this.storage.dataDir),
+							secrets: this.connectionSecrets,
+							legacySecretKeys: this.storage.secrets.keys(),
+							readLegacySecret: (key) => this.storage.secrets.get(key),
+						})
+						await this.populateFromStorage()
+					} catch {
+						Logger.warn("[ModelSettings] Migration deferred; legacy settings retained. Retry on next activation.")
+					}
+				} else {
+					await ensureApiConfigProfiles(this)
+					ensureModelProfiles(this)
+				}
 				await this.flushPendingState()
 			}, options)
 		} catch (error) {

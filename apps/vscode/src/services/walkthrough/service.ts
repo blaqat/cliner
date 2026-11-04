@@ -5,6 +5,7 @@ import type { Controller } from "@/core/controller"
 import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/controller/models/modelProfiles"
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { HostProvider } from "@/hosts/host-provider"
+import { backgroundHandler, useModelSettings } from "@/sdk/model-settings/background"
 import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
 import { readAuthoredWalkthrough } from "./authored"
 import { collect, gitRoots, revertChange } from "./collection"
@@ -69,6 +70,44 @@ export class WalkthroughService {
 		try {
 			const { walk, turns } = await this.current(request)
 			if (!walk.hunks.length) return this.get(request)
+			if (useModelSettings(this.controller.stateManager)) {
+				const handler = await backgroundHandler(this.controller.stateManager, "generate")
+				if (!handler) throw new Error("Choose a Background text model in Settings > Models")
+				const settings = this.controller.stateManager.getGlobalStateKey("modelSettings")!
+				const identity = { settings }
+				const cache = cacheKey(walk, identity, turns, request.reviewNotes)
+				const directory = path.join(await ensureTaskDirectoryExists(request.taskId), "walkthrough-cache")
+				const cacheFile = path.join(directory, `${cache}.json`)
+				if (!request.regenerate) {
+					try {
+						const cached = JSON.parse(await readFile(cacheFile, "utf8")) as ChangeWalkthrough
+						if (
+							cached.version === 1 &&
+							cached.fingerprint === walk.fingerprint &&
+							Array.isArray(cached.chapters) &&
+							Array.isArray(cached.support)
+						) {
+							const result = { ...cached, cacheHit: true }
+							this.documents.set(this.key(request), result)
+							return result
+						}
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error
+					}
+				}
+				const previous = this.documents.get(this.key(request))
+				const result = {
+					...(await generate(walk, turns, handler, request.regenerate ? previous : undefined, request.reviewNotes)),
+					cacheHit: false,
+				}
+				const latest = await this.current(request)
+				if (latest.walk.fingerprint !== walk.fingerprint)
+					throw new Error("Changes moved while generating. Refresh and Generate again.")
+				await mkdir(directory, { recursive: true })
+				await writeFile(cacheFile, JSON.stringify(result), "utf8")
+				this.documents.set(this.key(request), result)
+				return result
+			}
 			const profileId = request.profileId?.trim() || readRememberedWalkthroughProfileId(this.controller)
 			const resolved = resolveModelProfile(this.controller.stateManager, profileId)
 			if (!resolved) throw new Error("Choose a profile for Generate")
