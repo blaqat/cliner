@@ -374,3 +374,50 @@ describe("ModelPickButton", () => {
 		expect(screen.getByTestId("model-menu-empty")).toBeInTheDocument()
 	})
 })
+
+describe("a very short window", () => {
+	const setHeights = (available: number) => {
+		const real = window.getComputedStyle
+		vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+			const style = real(element)
+			return new Proxy(style, {
+				get: (target, name) => {
+					if (name === "getPropertyValue") {
+						return (key: string) =>
+							key === "--radix-popover-content-available-height" ? `${available}px` : target.getPropertyValue(key)
+					}
+					const value = Reflect.get(target, name)
+					return typeof value === "function" ? value.bind(target) : value
+				},
+			})
+		})
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(80)
+		vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(80)
+		vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(400)
+	}
+
+	const openWith = async (available: number) => {
+		setHeights(available)
+		renderSelector({ top: <div>tiles</div>, footer: () => <div>footer</div> })
+		fireEvent.click(screen.getByRole("button", { name: "open" }))
+		return screen.findByTestId("model-menu")
+	}
+
+	it("the whole menu scrolls and the lists keep their full height, so one scrollbar and the lists stay reachable", async () => {
+		const menu = await openWith(170)
+		await waitFor(() => expect(menu).toHaveAttribute("data-menu-scroll", "whole"))
+		expect(menu).toHaveClass("overflow-y-auto")
+		const lists = screen.getByTestId("model-menu-scroll")
+		expect(lists).toHaveClass("shrink-0")
+		expect(lists.className).not.toMatch(/overflow|min-h-0/)
+		vi.restoreAllMocks()
+	})
+
+	it("with room to spare the lists scroll on their own and the menu doesn't", async () => {
+		const menu = await openWith(900)
+		await waitFor(() => expect(menu).toHaveAttribute("data-menu-scroll", "lists"))
+		expect(menu).toHaveClass("overflow-hidden")
+		expect(screen.getByTestId("model-menu-scroll")).toHaveClass("overflow-y-auto", "min-h-0")
+		vi.restoreAllMocks()
+	})
+})

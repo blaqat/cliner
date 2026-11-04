@@ -32,13 +32,15 @@ ModelPickChip.displayName = "ModelPickChip"
 
 interface ModelPickButtonProps extends Omit<ModelSelectorProps, "trigger" | "top" | "footer" | "align"> {
 	className?: string
+	/** The trigger's id, so a row's label and a fix link can reach it. */
+	id?: string
 }
 
 /**
  * A settings row's model pick: the compact chip that opens the same selector as the composer, with
  * none of the composer's extras. With no models set up it still opens, to say so and link to the fix.
  */
-export function ModelPickButton({ className, ...selector }: ModelPickButtonProps) {
+export function ModelPickButton({ className, id, ...selector }: ModelPickButtonProps) {
 	const { model, level, levelOffered } = describePick(selector.rows, selector.pick)
 	return (
 		<ModelSelector
@@ -50,6 +52,7 @@ export function ModelPickButton({ className, ...selector }: ModelPickButtonProps
 					badLevel={!levelOffered}
 					className={className}
 					data-testid="model-pick-button"
+					id={id}
 					level={level}
 					model={model}
 				/>

@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import SettingsView from "./SettingsView"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 
 // The old tabs read this once, at import.
 vi.hoisted(() => {
@@ -69,7 +70,7 @@ describe("with modelSettings absent", () => {
 
 describe("with modelSettings present", () => {
 	beforeEach(() => {
-		mocks.state = { ...mocks.state, modelSettings: { settings: { revision: 1 }, managed: [] } }
+		mocks.state = { ...mocks.state, modelSettings: modelSettingsFixture() }
 	})
 
 	it("is the new shell", () => {

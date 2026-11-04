@@ -1,9 +1,9 @@
 import type { ReactElement, ReactNode } from "react"
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
-import { type ListItem, ModelEffortLists } from "./ModelEffortLists"
+import { LIST_ROW_HEIGHT, type ListItem, ModelEffortLists } from "./ModelEffortLists"
 
 /** One choice in the level list. */
 export interface SelectorLevel {
@@ -88,6 +88,60 @@ export interface ModelSelectorProps {
 const NOTE_LINK_CLASS =
 	"cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:text-link-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder)"
 
+/** The lists never get less room than this while they have more to show: about four rows. */
+const MIN_LISTS_HEIGHT = LIST_ROW_HEIGHT * 4
+
+/**
+ * Whether the lists can have their own scroll region in the height the window leaves. In a very short
+ * window they can't: the top and bottom would squeeze them to nothing. Then the whole menu scrolls
+ * instead, lists at full height. Either way, one scrollbar.
+ */
+const useMenuScrollsAsOne = (open: boolean, deps: unknown) => {
+	// State, not a ref: the lists mount in the menu's portal after `open` flips, and measuring has to wait for them.
+	const [lists, listsRef] = useState<HTMLDivElement | null>(null)
+	const [asOne, setAsOne] = useState(false)
+
+	useEffect(() => {
+		const menu = lists?.parentElement
+		if (!open || !lists || !menu) {
+			setAsOne(false)
+			return
+		}
+		const measure = () => {
+			const style = window.getComputedStyle(menu)
+			const available = Number.parseFloat(style.getPropertyValue("--radix-popover-content-available-height"))
+			if (!Number.isFinite(available)) {
+				return
+			}
+			const px = (value: string) => Number.parseFloat(value) || 0
+			// Everything in the menu that takes up room and isn't the lists. The arrow is positioned, so it doesn't.
+			const chrome = [...menu.children].reduce(
+				(sum, child) => {
+					const box = window.getComputedStyle(child)
+					return child === lists || box.position === "absolute"
+						? sum
+						: sum + (child as HTMLElement).offsetHeight + px(box.marginTop) + px(box.marginBottom)
+				},
+				menu.offsetHeight - menu.clientHeight + px(style.paddingTop) + px(style.paddingBottom),
+			)
+			const needed = Math.min(MIN_LISTS_HEIGHT, lists.scrollHeight)
+			setAsOne(available - chrome < needed)
+		}
+		measure()
+		const frame = requestAnimationFrame(measure)
+		window.addEventListener("resize", measure)
+		const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure)
+		observer?.observe(menu)
+		return () => {
+			cancelAnimationFrame(frame)
+			window.removeEventListener("resize", measure)
+			observer?.disconnect()
+		}
+	}, [open, lists, deps])
+
+	return { listsRef, asOne }
+}
+
 /** What the lists show; nothing is saved until the menu closes with it kept. */
 interface Draft {
 	rowId: string | null
@@ -158,6 +212,7 @@ export function ModelSelector({
 	const escapingRef = useRef(false)
 	const listsRef = useRef<HTMLDivElement>(null)
 	const open = draft !== null
+	const { listsRef: scrollRef, asOne } = useMenuScrollsAsOne(open, draft?.rowId)
 
 	const setDraft = (next: Draft | null) => {
 		draftRef.current = next
@@ -259,8 +314,12 @@ export function ModelSelector({
 			<PopoverContent
 				align={align}
 				aria-label={menuLabel ?? modelsLabel}
-				className="menu-rise flex max-h-(--radix-popover-content-available-height) w-[260px] max-w-[calc(100vw-8px)] flex-col overflow-y-auto overscroll-contain p-1.5 text-xs"
+				className={cn(
+					"menu-rise flex max-h-(--radix-popover-content-available-height) w-[260px] max-w-[calc(100vw-8px)] flex-col overscroll-contain p-1.5 text-xs",
+					asOne ? "overflow-y-auto" : "overflow-hidden",
+				)}
 				collisionPadding={4}
+				data-menu-scroll={asOne ? "whole" : "lists"}
 				data-testid="model-menu"
 				onEscapeKeyDown={() => {
 					escapingRef.current = true
@@ -286,8 +345,11 @@ export function ModelSelector({
 						No models set up yet. {fixLink("Add one in Settings › Models")}
 					</p>
 				) : (
-					// The one scroll region: a long model list scrolls here, both columns together.
-					<div className="min-h-0 shrink overflow-y-auto overscroll-contain" data-testid="model-menu-scroll">
+					// The one scroll region: a long model list scrolls here, both columns together, unless the window is too short for that.
+					<div
+						className={asOne ? "shrink-0" : "min-h-0 shrink overflow-y-auto overscroll-contain"}
+						data-testid="model-menu-scroll"
+						ref={scrollRef}>
 						<ModelEffortLists
 							effort={
 								row?.levels

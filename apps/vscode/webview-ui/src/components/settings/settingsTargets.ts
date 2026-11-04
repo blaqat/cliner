@@ -92,6 +92,31 @@ export const settingsModelElementId = (modelId: string, field?: string) =>
 export const settingsConnectionElementId = (connectionId: string) => `settings-connection-${connectionId}`
 export const settingsRoleElementId = (role: string) => `settings-role-${role}`
 
+/** Role names a `role:` fix link can use, and the row each one opens. */
+const ROLE_TARGET_ROWS: Readonly<Record<string, SettingsRowId>> = {
+	chat: "models.chat",
+	ask: "models.ask",
+	subagents: "models.subagents",
+	background: "models.background",
+	titles: "models.background.titles",
+	commitMessages: "models.background.commit-messages",
+	generate: "models.background.generate",
+}
+
+/** The host's structured fix target, as the string the shell parses. */
+export const settingsTargetFromHost = (target: { page?: string; modelId?: string; field?: string; connectionId?: string; role?: string }) => {
+	if (target.modelId) {
+		return target.field ? (`model:${target.modelId}:${target.field}` as const) : (`model:${target.modelId}` as const)
+	}
+	if (target.connectionId) {
+		return `connection:${target.connectionId}` as const
+	}
+	if (target.role) {
+		return `role:${target.role}` as const
+	}
+	return "models" as const
+}
+
 export interface ParsedSettingsTarget {
 	pageId?: SettingsPageId
 	rowId?: string
@@ -120,10 +145,12 @@ export const parseSettingsTarget = (target: string | undefined): ParsedSettingsT
 			return { pageId: "models", elementId, focusElementId: field ? `${elementId}-control` : undefined }
 		}
 		if (kind === "connection") {
-			return { pageId: "models", elementId: settingsConnectionElementId(rest) }
+			const elementId = settingsConnectionElementId(rest)
+			return { pageId: "models", elementId, focusElementId: `${elementId}-control` }
 		}
 		if (kind === "role") {
-			return { pageId: "models", elementId: settingsRoleElementId(rest) }
+			const rowId = ROLE_TARGET_ROWS[rest]
+			return rowId ? { pageId: "models", rowId } : { pageId: "models", elementId: settingsRoleElementId(rest) }
 		}
 	}
 	const prefix = canonical.split(".")[0]
