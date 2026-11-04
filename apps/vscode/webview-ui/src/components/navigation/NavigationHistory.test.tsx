@@ -102,6 +102,36 @@ describe("navigation history", () => {
 		expect(entries()).toBe("home > task:t:home > thread:a")
 	})
 
+	it("names Settings by the old tab while the shell is off", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "features", requestId: 1 } } as never)
+		expect(entries()).toBe("home > settings:features")
+	})
+
+	it("names Settings by the shell's page when it's on", () => {
+		const { go } = setup()
+		go({ modelSettings: {}, showSettings: true } as never)
+		expect(entries()).toBe("home > settings:models")
+	})
+
+	it("reads a deep link as the page it opens when the shell is on", () => {
+		const { go } = setup()
+		go({ modelSettings: {}, showSettings: true, settingsNavigationRequest: { target: "worktrees", requestId: 1 } } as never)
+		expect(entries()).toBe("home > settings:tools")
+	})
+
+	it("Back to an entry saved under an old tab name opens the page it became", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "terminal", requestId: 1 } } as never)
+		go({ showSettings: false, currentTaskItem: { id: "a" }, settingsNavigationRequest: undefined } as never)
+		expect(entries()).toBe("home > settings:terminal > thread:a")
+
+		go({ modelSettings: {} } as never)
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(actions.navigateToSettings).toHaveBeenCalledWith("tools")
+		expect(entries()).toBe("home > settings:tools")
+	})
+
 	it("Back restores the previous place and ignores screens on the way", () => {
 		const { go } = setup()
 		go({ currentTaskItem: { id: "a" } })

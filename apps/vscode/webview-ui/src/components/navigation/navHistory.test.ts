@@ -2,6 +2,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { describe, expect, it } from "vitest"
 import {
 	backTarget,
+	canonicalSettingsLocation,
 	crumbIdFor,
 	describeLocation,
 	HOME,
@@ -130,5 +131,37 @@ describe("describeLocation", () => {
 			label: "Settings",
 			detail: "Features",
 		})
+	})
+})
+
+describe("settings places", () => {
+	it.each([
+		["models", "Models"],
+		["agent", "Agent"],
+		["tools", "Tools"],
+		["layout", "Layout"],
+		["data", "Data & privacy"],
+		["api-config", "Models"],
+		["general", "General"],
+	])("names %s", (section, detail) => {
+		expect(describeLocation({ kind: "settings", section }, [], []).detail).toBe(detail)
+	})
+
+	it.each([
+		["api-config", "models"],
+		["profiles", "models"],
+		["features", "agent"],
+		["general", "agent"],
+		["terminal", "tools"],
+		["remote-config", "about"],
+		["agent", "agent"],
+	])("reads the old %s entry as %s", (section, page) => {
+		expect(canonicalSettingsLocation({ kind: "settings", section })).toEqual({ kind: "settings", section: page })
+	})
+
+	it("leaves other places and an unnamed section alone", () => {
+		expect(canonicalSettingsLocation(HOME)).toBe(HOME)
+		const bare: NavLocation = { kind: "settings" }
+		expect(canonicalSettingsLocation(bare)).toBe(bare)
 	})
 })

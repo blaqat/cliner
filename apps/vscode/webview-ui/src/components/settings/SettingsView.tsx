@@ -36,6 +36,7 @@ import { RemoteConfigSection } from "./sections/RemoteConfigSection"
 import SubagentsSettingsSection from "./sections/SubagentsSettingsSection"
 import TerminalSettingsSection from "./sections/TerminalSettingsSection"
 import { getNextSettingsNavigationRequestId, resolveSettingsTarget, type SettingsNavigationRequest } from "./settingsTargets"
+import { SettingsShell } from "./shell/SettingsShell"
 
 const IS_DEV = process.env.IS_DEV
 
@@ -151,7 +152,7 @@ const renderSectionHeader = (tabId: string) => {
 	)
 }
 
-const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
+const LegacySettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 	const initialTarget = resolveSettingsTarget(navigationRequest?.target)
 	// Memoize to avoid recreation
 	const TAB_CONTENT_MAP: Record<SettingsTabID, React.FC<any>> = useMemo(
@@ -312,6 +313,12 @@ const SettingsView = ({ navigationRequest, onDone }: SettingsViewProps) => {
 			</div>
 		</Tab>
 	)
+}
+
+/** The new shell ships with the new settings store: without `modelSettings`, Settings is what it was. */
+const SettingsView = (props: SettingsViewProps) => {
+	const { modelSettings } = useExtensionState()
+	return modelSettings ? <SettingsShell {...props} /> : <LegacySettingsView {...props} />
 }
 
 export default SettingsView

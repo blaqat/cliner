@@ -1,6 +1,7 @@
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { settingsPageForTarget } from "@/components/settings/settingsTargets"
 
 /** A place the sidebar can show. Back walks a stack of these. */
 export type NavLocation =
@@ -86,6 +87,13 @@ export function pushLocation(entries: readonly NavLocation[], location: NavLocat
 	return [...entries, location].slice(-MAX_NAV_ENTRIES)
 }
 
+/** Entries saved under an old settings tab name open, and read, as the shell page it became. */
+export function canonicalSettingsLocation(location: NavLocation): NavLocation {
+	if (location.kind !== "settings") return location
+	const section = settingsPageForTarget(location.section)
+	return section ? { kind: "settings", section } : location
+}
+
 /** The stack after Back, or undefined when there is nowhere to go. */
 export function popLocation(entries: readonly NavLocation[]): NavLocation[] | undefined {
 	return entries.length > 1 ? resetAtHome(entries.slice(0, -1)) : undefined
@@ -112,6 +120,11 @@ export function shouldNameBack(target: NavLocation | undefined, crumbIds: readon
 }
 
 const SETTINGS_SECTION_NAMES: Record<string, string> = {
+	models: "Models",
+	agent: "Agent",
+	tools: "Tools",
+	layout: "Layout",
+	data: "Data & privacy",
 	"api-config": "Models",
 	profiles: "Profiles",
 	features: "Features",
