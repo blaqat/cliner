@@ -1119,6 +1119,10 @@ export type {
 	CoreRuntimeFeatures,
 	CoreSessionConfig,
 	SubagentProfileConnection,
+	SubagentModelConnection,
+	SubagentModelLevel,
+	SubagentModelRecord,
+	SubagentModelPolicyV1,
 	SubagentSettings,
 } from "./types/config";
 export { INHERIT_SUBAGENT_PROFILE } from "./runtime/host/local/spawn-tool";

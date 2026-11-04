@@ -83,7 +83,7 @@ export class AsyncAgentRegistry {
 		for (const entry of this.agents.values())
 			if (entry.status === "running") entry.cancel();
 	}
-	tools(): AgentTool[] {
+	tools(blocking?: () => string | undefined): AgentTool[] {
 		const tool = (
 			name: string,
 			description: string,
@@ -95,7 +95,14 @@ export class AsyncAgentRegistry {
 				timeoutMs: name === "wait_for_agents" ? 125000 : 30000,
 				description,
 				inputSchema: zodToJsonSchema(schema),
-				execute: async (input, context) => execute(input, context),
+				execute: async (input, context) => {
+					if (name === "wait_for_agents" && blocking?.() === "never")
+						return {
+							error:
+								"Blocking subagents is disabled. Continue working; results arrive as messages.",
+						};
+					return execute(input, context);
+				},
 			});
 		const id = z.object({ agentId: z.string() });
 		return [
@@ -144,7 +151,12 @@ export class AsyncAgentRegistry {
 						try {
 							entry.completion = entry.resume(`Parent: ${input.message}`);
 						} catch (error) {
-							return { error: String(error) };
+							return {
+								error:
+									blocking?.() && error instanceof Error
+										? error.message
+										: String(error),
+							};
 						}
 					}
 					return { agentId: entry.agentId, status: entry.status };
@@ -185,7 +197,9 @@ export class AsyncAgentRegistry {
 					};
 				},
 			),
-		];
+		].filter(
+			(tool) => tool.name !== "wait_for_agents" || blocking?.() !== "never",
+		);
 	}
 }
 

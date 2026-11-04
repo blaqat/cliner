@@ -98,3 +98,37 @@ describe("buildSubagentProfileSettings", () => {
 		expect(settings?.profileNames).toEqual({ a: "Review", b: "Review" })
 	})
 })
+
+it("builds an opt-in model policy without calling legacy provider writers", async () => {
+	const { buildSubagentModelSettings } = await import("./subagent-profiles")
+	const { createDefaultModelSettings } = await import("@shared/model-settings")
+	const settings = createDefaultModelSettings()
+	const resolve = vi.fn()
+	const defaults = await buildSubagentModelSettings(settings, resolve)
+	expect(defaults).toMatchObject({
+		maxConcurrent: 3,
+		modelPolicy: { version: 1, default: { model: "parent", level: "inherit" }, allowed: [], blocking: "parent-decides" },
+	})
+	expect(resolve).not.toHaveBeenCalled()
+	settings.models.push({
+		id: "configured",
+		connectionId: "connection",
+		upstreamId: "custom",
+		name: "Custom",
+		kind: "chat",
+		overrides: {},
+		providerOptions: {},
+	})
+	settings.subagents.allowed = [{ kind: "model", modelId: "configured", levels: ["low"] }]
+	settings.roles.subagents = { kind: "model", pick: { modelId: "configured", levelId: "low" } }
+	const connection = { providerId: "openai-compatible", modelId: "custom", apiKey: "resolved-only" }
+	const levels = [{ id: "low", label: "Low", rank: 0, request: { kind: "effort", value: "low" } }]
+	resolve.mockResolvedValue({ connection, levels })
+	const mapped = await buildSubagentModelSettings(settings, resolve)
+	expect(resolve).toHaveBeenCalledTimes(1)
+	expect(mapped.modelPolicy).toMatchObject({
+		models: { configured: { id: "configured", name: "Custom", connection, levels } },
+		default: { model: "configured", level: "low" },
+		allowed: [{ model: "configured", levels: ["low"] }],
+	})
+})

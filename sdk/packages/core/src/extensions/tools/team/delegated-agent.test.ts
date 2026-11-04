@@ -67,6 +67,7 @@ it.each([
 		tools: names.map((name) => ({ name }) as AgentTool),
 		configProvider: createDelegatedAgentConfigProvider({
 			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
 		}),
 		parentAgentId: "parent",
 	});

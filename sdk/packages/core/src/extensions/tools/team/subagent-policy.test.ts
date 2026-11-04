@@ -1,3 +1,4 @@
+import type { AgentTool } from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import { subagentParent } from "./subagent-policy";
 
@@ -31,7 +32,10 @@ it("returns a tool error and lets a child continue after an old spawn call", asy
 	);
 	const { SUBAGENT_SPAWN_ERROR } = await import("./subagent-policy");
 	const spawn = createSpawnAgentTool({
-		configProvider: createDelegatedAgentConfigProvider({ providerId: "test" }),
+		configProvider: createDelegatedAgentConfigProvider({
+			providerId: "test",
+			modelId: "test",
+		}),
 	});
 	let turns = 0;
 	const runtime = new AgentRuntime(
@@ -41,11 +45,11 @@ it("returns a tool error and lets a child continue after an old spawn call", asy
 				modelId: "test",
 				parentAgentId: "persisted-parent",
 				systemPrompt: "Work",
-				tools: [spawn],
+				tools: [spawn as AgentTool],
 			},
 			parentAgentId: "persisted-parent",
 			agentId: "child",
-			tools: [spawn],
+			tools: [spawn as AgentTool],
 			completionPolicy: null,
 			model: {
 				async *stream() {

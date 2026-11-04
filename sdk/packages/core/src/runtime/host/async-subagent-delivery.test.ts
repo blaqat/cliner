@@ -9,6 +9,17 @@ function fixture() {
 			notifyPendingUserMessage: vi.fn(),
 		},
 		runtime: {},
+		config: {
+			subagentSettings: {
+				modelPolicy: {
+					version: 1,
+					models: {},
+					default: { model: "parent", level: "inherit" },
+					allowed: [],
+					blocking: "never",
+				},
+			},
+		},
 		status: "idle",
 		aborting: false,
 	};
@@ -39,7 +50,7 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe("subagent delivery", () => {
-	it("debounces multiple completions into one idle parent turn", async () => {
+	it("Never debounces multiple completions into one idle parent turn", async () => {
 		vi.useFakeTimers();
 		const { host, send } = fixture();
 		send("a1", "one");
@@ -79,6 +90,28 @@ describe("subagent delivery", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(host.runTurn).not.toHaveBeenCalled();
 	});
+	it("Never retains a cancellation while Stop is pending and wakes exactly once when idle", async () => {
+		vi.useFakeTimers();
+		const { host, session } = fixture();
+		session.aborting = true;
+		Reflect.get(host, "queueSubagentUpdate").call(
+			host,
+			"root",
+			"parent",
+			"a1",
+			"cancelled",
+			"Stopped by user",
+		);
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(host.runTurn).not.toHaveBeenCalled();
+		session.aborting = false;
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(host.runTurn).toHaveBeenCalledTimes(1);
+		expect(host.runTurn.mock.calls[0][0].prompt).toContain("Stopped by user");
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(host.runTurn).toHaveBeenCalledTimes(1);
+	});
+
 	it("disposal cancels children and removes scheduled wakes", async () => {
 		vi.useFakeTimers();
 		const { host, send } = fixture();
@@ -97,6 +130,8 @@ describe("subagent delivery", () => {
 		send("a1", "one");
 		Reflect.get(host, "disposeSubagents").call(host, "root");
 		expect(cancel).toHaveBeenCalled();
+		host.sessions.delete("root");
+		send("a1", "late completion after shutdown");
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(host.runTurn).not.toHaveBeenCalled();
 	});

@@ -48,6 +48,10 @@ export const SpawnAgentInputSchema = z.object({
 		.describe(
 			'Tool access for the sub-agent: "read" (default) gives it read-only investigation tools; "write" gives it the full editing toolset. Choose "write" only when the task requires the sub-agent to modify files. A write request is downgraded to read when the parent is in a read-only mode, and the child never receives tools the parent lacks.',
 		),
+	model: z
+		.string()
+		.optional()
+		.describe("Configured model id or unique name. Omit to use the default."),
 	profile: z
 		.string()
 		.optional()
@@ -121,6 +125,7 @@ export interface SpawnAgentToolConfig {
 	) => void;
 	onRunEnd?: (context: AgentToolContext) => void;
 	onResume?: () => void;
+	suppressBlockingCompletionMessage?: boolean;
 	onRegistryChange?: () => void;
 	configProvider: DelegatedAgentConfigProvider;
 	defaultMaxIterations?: number;
@@ -217,7 +222,11 @@ export function createSpawnAgentTool(
 		name: "spawn_agent",
 		executionMode: "parallel",
 		description: `Spawn a sub-agent with custom instructions for a specialized task. Returns immediately with agentId and status running. Results arrive later as messages; do not poll in a loop. Use wait=true only when you need its result before continuing. Use send_to_agent to steer or continue a child, cancel_agent to stop it, list_agents for status, and wait_for_agents when you have no other work. Set access="write" when the task requires the sub-agent to edit files or make changes; leave it at the default "read" for investigation, search, and analysis tasks. A write-capable sub-agent is downgraded to read-only when you are in a read-only mode.`,
-		inputSchema: zodToJsonSchema(SpawnAgentInputSchema),
+		inputSchema: zodToJsonSchema(
+			config.suppressBlockingCompletionMessage
+				? SpawnAgentInputSchema.omit({ profile: true })
+				: SpawnAgentInputSchema.omit({ model: true }),
+		),
 		execute: async (input, context) => {
 			if (context.snapshot?.parentAgentId)
 				return { error: SUBAGENT_SPAWN_ERROR };
@@ -420,12 +429,18 @@ export function createSpawnAgentTool(
 				entry.lastResult = output?.text ?? String(error);
 				config.onRunEnd?.(context);
 				config.onRegistryChange?.();
-				config.onMessage?.(
-					agentId,
-					entry.status,
-					`${entry.lastResult}\n\nFinish reason: ${output?.finishReason ?? "error"}`,
-					context.agentId,
-				);
+				if (
+					!config.suppressBlockingCompletionMessage ||
+					continuing ||
+					!input.wait ||
+					context.signal?.aborted
+				)
+					config.onMessage?.(
+						agentId,
+						entry.status,
+						`${entry.lastResult}\n\nFinish reason: ${output?.finishReason ?? "error"}`,
+						context.agentId,
+					);
 				if (entry.pending.length && entry.status !== "cancelled") {
 					const pending = entry.pending.join("\n\n");
 					try {
@@ -475,7 +490,27 @@ export function createSpawnAgentTool(
 				entry.lastResult = String(error);
 			});
 			if (input.wait) {
-				const output = await completion;
+				let onAbort: (() => void) | undefined;
+				const aborted = new Promise<undefined>((resolve) => {
+					onAbort = () => resolve(undefined);
+					if (context.signal?.aborted) onAbort();
+					else
+						context.signal?.addEventListener("abort", onAbort, { once: true });
+				});
+				const output = await (config.suppressBlockingCompletionMessage
+					? Promise.race([completion, aborted])
+					: completion
+				).finally(() => {
+					if (onAbort) context.signal?.removeEventListener("abort", onAbort);
+				});
+				if (
+					config.suppressBlockingCompletionMessage &&
+					context.signal?.aborted &&
+					!output
+				)
+					return {
+						error: "Stopped waiting for subagent. The child remains active.",
+					};
 				if (!output) throw new Error(entry.lastResult);
 				return output;
 			}

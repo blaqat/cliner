@@ -1,3 +1,4 @@
+import { selectSubagentModel } from "./subagent-model-policy";
 import { SUBAGENT_SPAWN_ERROR } from "../../../extensions/tools/team/subagent-policy";
 import {
 	AsyncAgentRegistry,
@@ -408,6 +409,26 @@ export function createSessionSpawnTool(
 		rootSessionId,
 	);
 	const settings = config.subagentSettings ?? {};
+	const policy = settings.modelPolicy;
+	const selectModel = (input: SpawnAgentInput) =>
+		policy
+			? selectSubagentModel(
+					input,
+					policy,
+					(() => {
+						const parent = deps
+							.getSession(rootSessionId)
+							?.runtime.delegatedAgentConfigProvider?.getConnectionConfig();
+						return parent
+							? {
+									...parent,
+									providerConfig:
+										parent.providerConfig as CoreSessionConfig["providerConfig"],
+								}
+							: config;
+					})(),
+				)
+			: selectSubagentProfile(input, settings);
 	let counts = activeSubagentCounts.get(deps.subAgentStarts);
 	if (!counts) {
 		counts = new Map();
@@ -511,13 +532,22 @@ export function createSessionSpawnTool(
 	const settledContexts = new WeakSet<object>();
 	const spawnTool = createSpawnAgentTool({
 		registry,
+		suppressBlockingCompletionMessage: !!policy,
 		getChildSessionId: (id) => makeSubSessionId(rootSessionId, id),
 		onRegistryChange: () => deps.onRegistryChange?.(rootSessionId),
 		onResume: () => {
 			const active = activeCounts.get(rootSessionId) ?? 0;
-			const limit = settings.maxConcurrent ?? 0;
+			const current =
+				deps.getSession(rootSessionId)?.config?.subagentSettings ?? settings;
+			const limit = current.maxConcurrent ?? (current.modelPolicy ? 3 : 0);
+			if (current.modelPolicy && (!Number.isSafeInteger(limit) || limit < 0))
+				throw new Error("Invalid subagent concurrency limit.");
 			if (limit > 0 && active >= limit)
-				throw new Error(`Maximum concurrent subagents (${limit}) reached.`);
+				throw new Error(
+					current.modelPolicy
+						? `Maximum concurrent subagents (${limit}) reached. Wait for an active subagent to finish before spawning another.`
+						: `Maximum concurrent subagents (${limit}) reached.`,
+				);
 			activeCounts.set(rootSessionId, active + 1);
 		},
 		onMessage: (agentId, status, message, parentId) =>
@@ -534,8 +564,11 @@ export function createSessionSpawnTool(
 			if (remaining > 0) activeCounts.set(rootSessionId, remaining);
 			else activeCounts.delete(rootSessionId);
 		},
-		resolveConnectionOverrides: (input) =>
-			selectSubagentProfile(input, settings).overrides,
+		resolveConnectionOverrides: (input) => {
+			const selection = selectModel(input);
+			if (policy && selection.error) throw new Error(selection.error);
+			return selection.overrides;
+		},
 		configProvider: {
 			getRuntimeConfig: () =>
 				deps
@@ -550,6 +583,14 @@ export function createSessionSpawnTool(
 					providerConfig: config.providerConfig,
 					knownModels: config.knownModels,
 					thinking: config.thinking,
+					...(policy
+						? {
+								reasoningEffort: config.reasoningEffort,
+								thinkingBudgetTokens: config.thinkingBudgetTokens,
+								maxTokensPerTurn: config.maxTokensPerTurn,
+								temperature: config.temperature,
+							}
+						: {}),
 					maxIterations: config.maxIterations,
 					hooks: config.hooks,
 					extensions: config.extensions,
@@ -568,6 +609,14 @@ export function createSessionSpawnTool(
 					providerConfig: config.providerConfig,
 					knownModels: config.knownModels,
 					thinking: config.thinking,
+					...(policy
+						? {
+								reasoningEffort: config.reasoningEffort,
+								thinkingBudgetTokens: config.thinkingBudgetTokens,
+								maxTokensPerTurn: config.maxTokensPerTurn,
+								temperature: config.temperature,
+							}
+						: {}),
 				},
 			updateConnectionDefaults: () => {},
 		},
@@ -625,7 +674,24 @@ export function createSessionSpawnTool(
 	};
 	const profileSchema = inputSchema.properties?.profile;
 	let description = spawnTool.description;
-	if (profilesEnabled) {
+	if (policy) {
+		if (inputSchema.properties) {
+			delete inputSchema.properties.profile;
+			if (policy.blocking !== "parent-decides")
+				delete inputSchema.properties.wait;
+			if (!policy.allowed.length) {
+				delete inputSchema.properties.model;
+				delete inputSchema.properties.reasoningEffort;
+			} else {
+				inputSchema.properties.model!.description =
+					`Allowed models and level IDs: ${policy.allowed.map((e) => `${e.model} (${e.levels.join(", ")})`).join(", ")}. Default: ${policy.default.model} at ${policy.default.level}.`;
+				inputSchema.properties.reasoningEffort!.description =
+					"Allowed level ID for the chosen model. Omit for its lowest allowed level.";
+			}
+		}
+		description = `Spawn a subagent. ${policy.blocking === "always" ? "Waits for its result with no overall deadline." : policy.blocking === "never" ? "Returns immediately; results arrive as messages. Blocking is disabled." : "Use wait=true to wait for its result."} Default model: ${policy.default.model} at ${policy.default.level}. ${inputSchema.properties?.model?.description ?? "Omit model and reasoningEffort to use the default."}`;
+	} else if (profilesEnabled) {
+		if (inputSchema.properties) delete inputSchema.properties.model;
 		if (profileSchema) {
 			profileSchema.enum = allowedProfileIds;
 			profileSchema.description = `Sub-agent model profile id to run on. Allowed profiles (name (id)): ${allowedProfileList}. Pass the id; a name is accepted only when it is unique. Omit to use the configured default, or "parent" to inherit your model.`;
@@ -634,6 +700,7 @@ export function createSessionSpawnTool(
 	} else {
 		if (inputSchema.properties) {
 			delete inputSchema.properties.profile;
+			delete inputSchema.properties.model;
 			delete inputSchema.properties.reasoningEffort;
 		}
 	}
@@ -649,19 +716,33 @@ export function createSessionSpawnTool(
 			) {
 				return { error: SUBAGENT_SPAWN_ERROR };
 			}
-			const input = rawInput as SpawnAgentInput;
+			const input = { ...(rawInput as SpawnAgentInput) };
+			if (
+				policy &&
+				settings.maxConcurrent !== undefined &&
+				(!Number.isSafeInteger(settings.maxConcurrent) ||
+					settings.maxConcurrent < 0)
+			)
+				return { error: "Invalid subagent concurrency limit." };
+			if (policy)
+				input.wait =
+					policy.blocking === "always"
+						? true
+						: policy.blocking === "never"
+							? false
+							: input.wait;
 			if (input.access === "write" && settings.allowWrite === false) {
 				return {
 					error:
 						"Write subagents are disabled in Subagents settings. Use access=read.",
 				};
 			}
-			const selection = selectSubagentProfile(input, settings);
+			const selection = selectModel(input);
 			if (selection.error) {
 				return { error: selection.error };
 			}
 			const active = activeCounts.get(rootSessionId) ?? 0;
-			const limit = settings.maxConcurrent ?? 0;
+			const limit = settings.maxConcurrent ?? (policy ? 3 : 0);
 			if (limit > 0 && active >= limit) {
 				return {
 					error: `Maximum concurrent subagents (${limit}) reached. Wait for an active subagent to finish before spawning another.`,
@@ -674,7 +755,9 @@ export function createSessionSpawnTool(
 				// attaches these fields to the matching spawn_agent entry.
 				if (selection.profileName || selection.reasoningEffort) {
 					context.emitUpdate?.({
-						profile: selection.profileName,
+						...(policy
+							? { model: selection.profileName, modelId: selection.profileId }
+							: { profile: selection.profileName }),
 						reasoningEffort: selection.reasoningEffort,
 					});
 				}
@@ -688,6 +771,15 @@ export function createSessionSpawnTool(
 			}
 		},
 	};
-	agentControlTools.set(resultTool, registry.tools());
+	agentControlTools.set(
+		resultTool,
+		registry.tools(
+			() =>
+				(
+					deps.getSession(rootSessionId)?.config?.subagentSettings ??
+					config.subagentSettings
+				)?.modelPolicy?.blocking,
+		),
+	);
 	return resultTool;
 }

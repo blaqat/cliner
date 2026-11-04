@@ -16,7 +16,12 @@ export type ProviderClient = Llms.ProviderClient;
 export type ProviderProtocol = Llms.ProviderProtocol;
 export type ProviderId = Llms.ProviderId;
 export type ProviderCapability = Llms.ProviderCapability;
-export type ProviderConfig = Llms.ProviderConfig;
+export type ProviderConfig = Llms.ProviderConfig & {
+	/** Resolved opt-in settings request, applied by the core gateway adapter. */
+	settingsRequestIntent?: import("@cline/llms").ModelRequestIntent;
+	/** Effective thread levels, resolved with its current connection. */
+	settingsModelLevels?: import("../../types/config").SubagentModelLevel[];
+};
 export type BuiltInProviderId = Llms.BuiltInProviderId;
 
 export const BUILT_IN_PROVIDER = Llms.BUILT_IN_PROVIDER;

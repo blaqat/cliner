@@ -804,7 +804,13 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 
 		if (normalized.enableSpawnAgent && createSpawnTool) {
 			const spawnTool = createSpawnTool();
-			tools.push(...(agentControlTools.get(spawnTool) ?? []));
+			tools.push(
+				...(agentControlTools.get(spawnTool) ?? []).filter(
+					(tool) =>
+						tool.name !== "wait_for_agents" ||
+						config.subagentSettings?.modelPolicy?.blocking !== "never",
+				),
+			);
 			tools.push({
 				...spawnTool,
 				execute: async (spawnInput, context) => {

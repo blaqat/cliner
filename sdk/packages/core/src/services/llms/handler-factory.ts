@@ -281,6 +281,12 @@ export function createAgentModelFromConfig(
 			modelId: normalizedProviderConfig.modelId,
 		},
 		{
+			metadata: normalizedProviderConfig.settingsRequestIntent
+				? {
+						settingsRequestIntent:
+							normalizedProviderConfig.settingsRequestIntent,
+					}
+				: undefined,
 			maxTokens: normalizedProviderConfig.maxOutputTokens,
 			temperature: normalizedProviderConfig.temperature,
 		},
