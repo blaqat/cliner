@@ -8,6 +8,8 @@ import type { Mode } from "@shared/storage/types"
 import { resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -291,6 +293,9 @@ export class SdkModeCoordinator {
 				return false
 			}
 
+			const builtSelection = useModelSettings(this.options.stateManager)
+				? (getSessionApiSnapshot(config)?.selection ?? selection)
+				: selection
 			const startInput = this.options.buildStartSessionInput(config, {
 				cwd,
 				mode: newMode,
@@ -305,7 +310,7 @@ export class SdkModeCoordinator {
 				onReplaced: async (sessionId) => {
 					sessionReplaced = true
 					this.recordModeSwitchNotice(sessionId, previousMode, newMode)
-					await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
+					await this.options.onModeRebuilt?.(oldSessionId, newMode, builtSelection)
 					committed = true
 				},
 			})
@@ -325,7 +330,7 @@ export class SdkModeCoordinator {
 
 			sessionReplaced = true
 			const { sdkHost, startResult } = rebuildResult
-			if (!committed) await this.options.onModeRebuilt?.(oldSessionId, newMode, selection)
+			if (!committed) await this.options.onModeRebuilt?.(oldSessionId, newMode, builtSelection)
 			const task = this.options.getTask()
 			if (task && task.taskId !== startResult.sessionId) {
 				Logger.warn(

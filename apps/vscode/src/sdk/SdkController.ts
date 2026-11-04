@@ -990,6 +990,7 @@ export class Controller {
 						.map((server) => [server.name, (server.tools ?? []).map((tool) => tool.name).sort()]),
 				),
 			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -1005,6 +1006,7 @@ export class Controller {
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
 			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -1040,6 +1042,7 @@ export class Controller {
 			rebuilds: this.sessionRebuilds,
 		})
 		this.followups = new SdkFollowupCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
@@ -1170,6 +1173,7 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 		})
 		this.compaction = new SdkCompactionCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,

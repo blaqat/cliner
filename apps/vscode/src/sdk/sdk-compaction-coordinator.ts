@@ -30,7 +30,9 @@ import type { ClineCompactionInfo, ClineMessage } from "@shared/ExtensionMessage
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
 import { buildCompactionMessage, parseCompactionNoticeMetadata } from "./message-translator"
+import { useModelSettings } from "./model-settings/background"
 import { compactSessionMessages } from "./sdk-compaction"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -48,6 +50,7 @@ const COMPACTION_TURN_RUNNING_MESSAGE =
 export interface SdkCompactionCoordinatorOptions {
 	stateManager: StateManager
 	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	sessions: SdkSessionLifecycle
 	rebuilds: SdkSessionRebuildScheduler
 	messages: SdkMessageCoordinator
@@ -184,6 +187,8 @@ export class SdkCompactionCoordinator {
 					interactive: true,
 				})
 				sessionId = startResult.sessionId
+				const selection = getSessionApiSnapshot(resumeStart.config)?.selection
+				if (selection && useModelSettings(this.options.stateManager)) this.options.onSelectionRebuilt?.(taskId, selection)
 				// Starting may persist legacy conversion. Once it succeeds, complete
 				// compaction even if navigation changes the displayed/active task. The
 				// isolated host owns this session, while UI emitters fence stale rows.

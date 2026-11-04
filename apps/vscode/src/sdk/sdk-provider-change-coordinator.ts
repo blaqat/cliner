@@ -10,6 +10,7 @@ import {
 import type { StateManager } from "@/core/storage/StateManager"
 import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
 import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -153,6 +154,9 @@ export class SdkProviderChangeCoordinator {
 				mode,
 				...(apiConfiguration ? { apiConfiguration, apiSelection: selection } : {}),
 			})
+			const builtSelection = useModelSettings(this.options.stateManager)
+				? (getSessionApiSnapshot(config)?.selection ?? selection)
+				: selection
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -168,7 +172,7 @@ export class SdkProviderChangeCoordinator {
 					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "providerChange",
 				onReplaced: () => {
-					if (selection) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+					if (builtSelection) this.options.onSelectionRebuilt?.(oldSessionId, builtSelection, requestedSelection)
 					selectionCommitted = true
 				},
 			})
@@ -185,7 +189,8 @@ export class SdkProviderChangeCoordinator {
 			}
 
 			const { startResult } = restartResult
-			if (selection && !selectionCommitted) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+			if (builtSelection && !selectionCommitted)
+				this.options.onSelectionRebuilt?.(oldSessionId, builtSelection, requestedSelection)
 			const task = this.options.getTask()
 			if (task?.taskId === oldSessionId && task.taskId !== startResult.sessionId) {
 				Logger.warn(

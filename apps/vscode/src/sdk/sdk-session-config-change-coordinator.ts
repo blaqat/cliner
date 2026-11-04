@@ -1,7 +1,10 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -23,6 +26,7 @@ export interface SdkSessionConfigChangeCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	loadInitialMessages: (sdkHost: SdkSessionHost, sessionId: string) => Promise<unknown[] | undefined>
 	buildStartSessionInput: (config: SessionConfig, input: { cwd: string; mode: Mode }) => StartInput
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
 }
@@ -166,12 +170,21 @@ export class SdkSessionConfigChangeCoordinator {
 			const replaceSession = sessionId
 				? this.options.sessions.replaceSession.bind(this.options.sessions)
 				: this.options.sessions.replaceActiveSession.bind(this.options.sessions)
+			let selectionCommitted = false
+			const commitSelection = () => {
+				if (selectionCommitted) return
+				selectionCommitted = true
+				const selection = getSessionApiSnapshot(config)?.selection
+				if (selection && useModelSettings(this.options.stateManager))
+					this.options.onSelectionRebuilt?.(oldSessionId, selection)
+			}
 			const restartResult = await replaceSession({
 				expectedSession: activeSession,
 				startInput,
 				loadInitialMessages: async () =>
 					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: details.disposeReason,
+				...(useModelSettings(this.options.stateManager) ? { onReplaced: commitSelection } : {}),
 			})
 			if (!restartResult) {
 				if (
@@ -183,6 +196,7 @@ export class SdkSessionConfigChangeCoordinator {
 				return
 			}
 
+			commitSelection()
 			const { startResult } = restartResult
 			if (startResult.sessionId !== oldSessionId) {
 				Logger.warn(

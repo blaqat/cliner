@@ -6,6 +6,8 @@ import type { Mode } from "@shared/storage/types"
 import type { ClineAskResponse } from "@shared/WebviewMessage"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -30,6 +32,7 @@ const TASK_RESUMPTION_PROMPT = "[TASK RESUMPTION] Please continue where you left
 
 export interface SdkFollowupCoordinatorOptions {
 	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	stateManager: StateManager
 	interactions: SdkInteractionCoordinator
 	sessions: SdkSessionLifecycle
@@ -284,6 +287,10 @@ export class SdkFollowupCoordinator {
 			sessionMetadata: { ...resumeStart.sessionMetadata, taskResumed: true },
 			interactive: true,
 		})
+
+		const builtSelection = getSessionApiSnapshot(resumeStart.config)?.selection
+		if (builtSelection && useModelSettings(this.options.stateManager))
+			this.options.onSelectionRebuilt?.(taskId, builtSelection)
 
 		if (this.options.getTask()?.taskId !== taskId) {
 			await this.endStartedResume(sdkHost, startResult.sessionId)
