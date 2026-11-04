@@ -27,7 +27,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Background text has its own model for thread titles, commit messages and Generate, and a level a model doesn't offer won't start until you change it; both say why and link to the fix",
 			"Subagents have one page: on or off, default model and level, a cap of 3 per thread, access, whether they can block the parent, and in Advanced which models and levels the parent can choose",
 			"Layout is a picture to pick (Classic, Side Bar or Tab bar), and Reset now removes every saved key and sign-in",
-			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them",
+			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them; only threads you start can start subagents, so they can't nest",
 			"One view (beta, Settings › Layout): your threads beside the chat, or as tabs across the top grouped by task; rows show status, the last line and a date once a thread is 5 days old; search filters the list in place, and the filter adds tags (or type #tag) and a date range",
 			"Walkthroughs can include Cline's review notes (Generate ▾ › Add review notes, or ask for them on a PR): markers in the diff and a review panel up top; Fix, Reply or Dismiss each one, and Send carries your fixes and replies",
 			"Walkthrough diffs are syntax highlighted for the file's language",
