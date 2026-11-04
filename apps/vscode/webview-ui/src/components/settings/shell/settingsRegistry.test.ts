@@ -180,7 +180,7 @@ describe("search", () => {
 	})
 
 	it("matches aliases, page names and parent features", () => {
-		expect(ids("telemetry")).toEqual(["data.reporting"])
+		expect(ids("telemetry")).toEqual(["data.reporting.otel", "data.reporting"])
 		expect(ids("privacy")).toContain("data.reporting")
 		expect(ids("toasts seconds")).toEqual(["layout.toasts.seconds"])
 	})

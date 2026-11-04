@@ -55,6 +55,7 @@ export function readDock(): Dock {
 
 export function writeDock(dock: Dock): void {
 	write(DOCK_KEY, dock)
+	window.dispatchEvent(new Event("cline:dock-changed"))
 }
 
 export function readListWidth(): number {

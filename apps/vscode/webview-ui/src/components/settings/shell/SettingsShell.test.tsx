@@ -1,3 +1,6 @@
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
+import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
+import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -22,7 +25,13 @@ vi.mock("@/components/navigation/NavigationHistoryContext", () => ({
 vi.mock("@/components/common/ViewHeader", () => ({ default: () => <div>Settings</div> }))
 vi.mock("../utils/settingsHandlers", () => ({ updateSetting: mocks.update }))
 vi.mock("@/services/grpc-client", () => ({
-	ModelsServiceClient: { getModelSettings: mocks.getModelSettings, setSubagentPolicy: mocks.setSubagentPolicy },
+	ModelsServiceClient: {
+		getModelSettings: mocks.getModelSettings,
+		getModelSettingsMigrationStatus: vi
+			.fn()
+			.mockResolvedValue({ json: JSON.stringify({ status: "complete", retryable: false }) }),
+		setSubagentPolicy: mocks.setSubagentPolicy,
+	},
 	StateServiceClient: { updateTerminalConnectionTimeout: vi.fn(), resetState: vi.fn() },
 }))
 vi.mock("../sections/ApiConfigurationSection", () => ({ default: () => <div>api configuration panel</div> }))
@@ -36,7 +45,19 @@ vi.mock("@/components/worktrees/WorktreeSettings", () => ({ WorktreeSettings: ()
 const policy = { enabled: true, maxConcurrent: 3, access: { write: true, commands: true, web: true, mcp: true } }
 
 const baseState = () => ({
-	modelSettings: { settings: { revision: 4, subagents: policy }, managed: [] as string[] },
+	modelSettings: {
+		...modelSettingsFixture(),
+		settings: {
+			...modelSettingsFixture().settings,
+			roles: { ...modelSettingsFixture().settings.roles, subagents: { kind: "thread", level: "inherit" } },
+			revision: 4,
+			subagents: { ...policy, blocking: "parent-decides", allowed: [] },
+		},
+		managed: [] as string[],
+	},
+	autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
+	browserSettings: DEFAULT_BROWSER_SETTINGS,
+	worktreesEnabled: { featureFlag: true, user: false },
 	remoteConfigSettings: {},
 	telemetrySetting: "unset",
 	platform: "darwin",
@@ -183,7 +204,7 @@ describe("search", () => {
 		fireEvent.keyDown(screen.getByLabelText("Search settings"), { key: "Enter" })
 		expect(visiblePage()).toBe("settings-page-data")
 		await flushFrame()
-		expect(row("data.reporting")).toHaveClass("settings-target-highlight")
+		expect(row("data.reporting.otel")).toHaveClass("settings-target-highlight")
 	})
 
 	it("says when nothing matches and offers to clear", () => {
@@ -304,7 +325,11 @@ describe("Changed and Reset", () => {
 	it("resets a subagent row through the policy store, against the latest revision", async () => {
 		mocks.state = {
 			...baseState(),
-			modelSettings: { settings: { revision: 4, subagents: { ...policy, enabled: false } }, managed: [] },
+			modelSettings: {
+				...modelSettingsFixture(),
+				settings: { ...modelSettingsFixture().settings, revision: 4, subagents: { ...policy, enabled: false } },
+				managed: [],
+			},
 		}
 		renderShell("subagents")
 		fireEvent.click(within(row("subagents.enabled") as HTMLElement).getByRole("button", { name: "Reset Subagents" }))
@@ -386,7 +411,11 @@ describe("managed rows", () => {
 	it("also honors the host's managed list", () => {
 		mocks.state = {
 			...baseState(),
-			modelSettings: { settings: { revision: 1, subagents: policy }, managed: ["subagentsMaxConcurrent"] },
+			modelSettings: {
+				...modelSettingsFixture(),
+				settings: { ...modelSettingsFixture().settings, revision: 1, subagents: policy },
+				managed: ["subagentsMaxConcurrent"],
+			},
 		}
 		renderShell("subagents")
 		const target = row("subagents.cap") as HTMLElement
@@ -531,5 +560,53 @@ describe("dev and admin gates", () => {
 		expect(visiblePage()).toBe("settings-page-about")
 		expect(screen.queryByText("remote config panel")).toBeNull()
 		expect(screen.queryByRole("button", { name: /^Advanced/ })).toBeNull()
+	})
+})
+
+describe("Phase 7 pages", () => {
+	it("keeps compaction controls inline and omits removed settings", () => {
+		renderShell("agent")
+		expect(screen.queryByText("Compaction strategy")).toBeNull()
+		fireEvent.click(within(row("agent.compact")!).getByRole("button", { name: /Advanced/ }))
+		expect(screen.getByText("Compaction strategy")).toBeVisible()
+		expect(screen.queryByText("Compact at")).toBeNull()
+		expect(screen.queryByText("Generate thread titles")).toBeNull()
+		expect(screen.queryByText("Add review notes")).toBeNull()
+	})
+	it("renders the cap and all three blocking choices", () => {
+		renderShell("subagents")
+		expect(screen.getByRole("textbox", { name: "At most, per thread" })).toHaveValue("3")
+		fireEvent.click(screen.getByRole("combobox", { name: "Can block the parent" }))
+		expect(screen.getByRole("option", { name: "Never" })).toBeVisible()
+		expect(screen.getByRole("option", { name: "Always wait" })).toBeVisible()
+	})
+	it("uses the existing dock for its selected card and reacts to a drag", () => {
+		mocks.state = { ...baseState(), oneViewEnabled: true }
+		const dockStorage = new Map<string, string>([["oneView.dock", "left"]])
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => dockStorage.get(key) ?? null,
+			setItem: (key: string, value: string) => dockStorage.set(key, value),
+		})
+		renderShell("layout")
+		expect(screen.getByRole("radio", { name: "Side Bar" })).toHaveAttribute("aria-checked", "true")
+		act(() => {
+			localStorage.setItem("oneView.dock", "top")
+			window.dispatchEvent(new Event("cline:dock-changed"))
+		})
+		expect(screen.getByRole("radio", { name: "Tab bar" })).toHaveAttribute("aria-checked", "true")
+		fireEvent.click(screen.getByRole("radio", { name: "Classic" }))
+		expect(mocks.update).toHaveBeenCalledWith("oneViewEnabled", false)
+	})
+	it("keeps workspace environment editing inside Terminal Advanced", () => {
+		renderShell("tools")
+		fireEvent.click(within(row("tools.terminal")!).getByRole("button", { name: /Advanced/ }))
+		expect(screen.getByText("env editor")).toBeVisible()
+	})
+	it("confirms clearing history inside the row and has no settings export", () => {
+		renderShell("data")
+		fireEvent.click(screen.getByRole("button", { name: "History", exact: true }))
+		expect(within(row("data.history")!).getByRole("button", { name: "Confirm clear" })).toBeVisible()
+		expect(screen.queryByRole("dialog")).toBeNull()
+		expect(screen.queryByText("Export settings as a file")).toBeNull()
 	})
 })
