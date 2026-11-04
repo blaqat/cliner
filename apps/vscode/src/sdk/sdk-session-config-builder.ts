@@ -1,4 +1,5 @@
 import type { CoreSessionConfig } from "@cline/core"
+import type { ModelSettings } from "@shared/model-settings"
 import {
 	captureTaskApiSelection,
 	cloneApiProfileConfiguration,
@@ -63,47 +64,50 @@ export class SdkSessionConfigBuilder {
 			})
 			if (transient) Object.assign(config, { [transientAdmission]: transient.commit })
 			config.enableSpawnAgent = settings.subagents.enabled
-			const subagentGuards: Array<() => Promise<void>> = []
-			config.subagentSettings = await buildSubagentModelSettings(settings, async (modelId) => {
-				const provider = await configuredProviderConfig(
-					settings,
-					{ modelId, levelId: "default" },
-					modelAuthDependencies(state),
-					{ state },
-				)
-				if (provider[requestPolicyGuard]) subagentGuards.push(provider[requestPolicyGuard]!)
-				return {
-					connection: {
-						providerId: provider.providerId,
-						modelId: provider.modelId!,
-						apiKey: provider.apiKey,
-						baseUrl: provider.baseUrl,
-						headers: provider.headers,
-						providerConfig: provider,
-					},
-					levels: provider.settingsModelLevels,
-				}
-			})
+			const buildSubagents = (current: ModelSettings) =>
+				buildSubagentModelSettings(current, async (modelId) => {
+					const levels = current.models.find((row) => row.id === modelId)?.overrides.levels
+					const provider = await configuredProviderConfig(
+						current,
+						{ modelId, levelId: levels && !levels.some((l) => l.id === "default") ? levels[0]!.id : "default" },
+						modelAuthDependencies(state),
+						{ state },
+					)
+					return {
+						connection: {
+							providerId: provider.providerId,
+							modelId: provider.modelId!,
+							apiKey: provider.apiKey,
+							baseUrl: provider.baseUrl,
+							headers: provider.headers,
+							providerConfig: provider,
+						},
+						levels: provider.settingsModelLevels,
+					}
+				})
+			config.subagentSettings = settings.subagents.enabled ? await buildSubagents(settings) : undefined
 			if (this.options.onConsecutiveMistakeLimitReached)
 				config.onConsecutiveMistakeLimitReached = this.options.onConsecutiveMistakeLimitReached
 			config.hooks = buildAgentHooks(state, this.options.emitHookMessage, input.cwd)
 			const beforeModel = config.hooks.beforeModel
 			config.hooks.beforeModel = async (ctx) => {
 				await configuredProvider[requestPolicyGuard]?.()
-				if (ctx.snapshot?.parentAgentId) for (const guard of subagentGuards) await guard()
 				return beforeModel?.(ctx)
 			}
 			const beforeTool = config.hooks.beforeTool
 			config.hooks.beforeTool = async (ctx) => {
 				if (ctx.toolCall.toolName === "spawn_agent") {
-					const current = state.getGlobalStateKey("modelSettings")!
-					if (
-						JSON.stringify(current.subagents) !== JSON.stringify(settings.subagents) ||
-						JSON.stringify(current.roles.subagents) !== JSON.stringify(settings.roles.subagents)
-					)
-						throw new Error("Subagent settings changed. Retry after rebuilding the session.")
-					for (const guard of subagentGuards) await guard()
 					await configuredProvider[requestPolicyGuard]?.()
+					const current = state.getGlobalStateKey("modelSettings")!
+					if (!current.subagents.enabled) throw new Error("Subagents are turned off. Open Settings > Subagents.")
+					// The spawn tool holds this policy object, so a call inside a running
+					// turn is checked against today's settings and today's keys.
+					const live = config.subagentSettings
+					if (live?.modelPolicy) {
+						const { modelPolicy, ...rest } = await buildSubagents(structuredClone(current))
+						Object.assign(live, rest)
+						Object.assign(live.modelPolicy, modelPolicy)
+					}
 				}
 				return beforeTool?.(ctx)
 			}

@@ -21,6 +21,10 @@ export type ProviderConfig = Llms.ProviderConfig & {
 	settingsRequestIntent?: import("@cline/llms").ModelRequestIntent;
 	/** Effective thread levels, resolved with its current connection. */
 	settingsModelLevels?: import("../../types/config").SubagentModelLevel[];
+	/** The connection's own request wrapper, built at a chosen level. */
+	settingsFetchAtLevel?: (
+		level: import("@cline/llms").LevelRequest,
+	) => typeof globalThis.fetch;
 };
 export type BuiltInProviderId = Llms.BuiltInProviderId;
 

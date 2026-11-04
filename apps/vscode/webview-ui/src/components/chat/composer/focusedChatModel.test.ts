@@ -1,4 +1,5 @@
 import type { ApiConfigProfile } from "@shared/api-profiles"
+import { createCompatibleConnection, createDefaultModelSettings, resolveModelValues } from "@shared/model-settings"
 import { describe, expect, it } from "vitest"
 import { isTaskCostVisible } from "@/hooks/useTaskCostVisible"
 import { effectiveContextWindow, type FocusedChatState, resolveFocusedChatModel } from "./focusedChatModel"
@@ -14,6 +15,67 @@ const local: ApiConfigProfile = {
 		planModeOpenAiModelInfo: { contextWindow: 32_000, inputPrice: 0.5, outputPrice: 1.5, supportsPromptCache: false },
 	},
 }
+
+describe("with the new store in use", () => {
+	const published = (images: "yes" | "no" = "yes") => {
+		const settings = createDefaultModelSettings()
+		settings.connections.push({ ...createCompatibleConnection("c"), apiFormat: "responses" })
+		settings.models.push(
+			{ id: "m", connectionId: "c", upstreamId: "local", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+			{ id: "n", connectionId: "c", upstreamId: "other", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+		)
+		settings.roles.chat = { modelId: "m", levelId: "default" }
+		return {
+			settings,
+			effective: {
+				m: resolveModelValues({ images, contextWindow: 64_000, inputPrice: 2, outputPrice: 4 }, undefined, {}),
+				n: resolveModelValues({}, undefined, {}),
+			},
+		} as never
+	}
+	// The old selection names another provider; it says nothing about what runs.
+	const stale = {
+		apiConfiguration: { actModeApiProvider: "anthropic", actModeApiModelId: "claude-sonnet" },
+	} as FocusedChatState
+	const oldFallback = { provider: "anthropic" as const, modelId: "claude-sonnet" }
+
+	it("reads the role's configured model, not the old configuration", () => {
+		const model = resolveFocusedChatModel("act", { ...stale, modelSettings: published() }, oldFallback)
+		expect(model).toMatchObject({ provider: "openai", modelId: "local", openAiCompatibleApiType: "responses" })
+		expect(model.customModelInfo).toMatchObject({ contextWindow: 64_000, inputPrice: 2, outputPrice: 4 })
+		expect(isTaskCostVisible(model.provider, model.customModelInfo, undefined, 1)).toBe(true)
+	})
+	it("reads this chat's pick over the role", () => {
+		const model = resolveFocusedChatModel(
+			"act",
+			{
+				...stale,
+				modelSettings: published(),
+				composerApiSelection: { modelSelectionV1: { version: 1, act: { modelId: "n", levelId: "default" }, ask: null } },
+			} as FocusedChatState,
+			oldFallback,
+		)
+		expect(model.modelId).toBe("other")
+	})
+	it("a live session wins, without another model's facts", () => {
+		const model = resolveFocusedChatModel(
+			"act",
+			{
+				...stale,
+				modelSettings: published(),
+				focusedSessionModels: { act: { provider: "anthropic", modelId: "running" } },
+			} as FocusedChatState,
+			oldFallback,
+		)
+		expect(model).toMatchObject({ provider: "anthropic", modelId: "running" })
+		expect(model.customModelInfo).toBeUndefined()
+	})
+	it("with nothing picked, nothing is borrowed from the old selection", () => {
+		const modelSettings = published() as { settings: { roles: { chat: unknown } } }
+		modelSettings.settings.roles.chat = null
+		expect(resolveFocusedChatModel("act", { ...stale, modelSettings } as never, oldFallback).modelId).toBe("")
+	})
+})
 
 /** Settings default is the Anthropic profile; this chat overrides Act to the local OpenAI Compatible one. */
 const overriddenChat: FocusedChatState = {

@@ -1,4 +1,5 @@
 import type { ApiConfiguration } from "@shared/api"
+import type { ModelSettingsMigrationIssue, ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -29,7 +30,7 @@ import { ensureModelProfiles, THREAD_SELECTION_KEYS, threadSelectionStamp } from
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
-import { migrateModelSettings } from "./model-settings-migration"
+import { migrateModelSettings, redactedMigrationCause } from "./model-settings-migration"
 import { filterAllowedRemoteConfigFields } from "./remote-config/utils"
 import { readGlobalStateFromStorage, readSecretsFromStorage, readWorkspaceStateFromStorage } from "./utils/state-helpers"
 export interface PersistenceErrorEvent {
@@ -167,8 +168,22 @@ export class StateManager {
 	 */
 	private modelMigrationStatus: "disabled" | "pending" | "complete" | "failed" = "disabled"
 
-	getModelSettingsMigrationStatus() {
-		return { status: this.modelMigrationStatus, retryable: this.modelMigrationStatus === "failed" }
+	private modelMigrationCause?: string
+
+	getModelSettingsMigrationStatus(): ModelSettingsMigrationStatus {
+		const journal = this.globalStateCache.modelSettingsMigration as { issues?: ModelSettingsMigrationIssue[] } | undefined
+		return {
+			status: this.modelMigrationStatus,
+			retryable: this.modelMigrationStatus === "failed",
+			...(this.modelMigrationCause ? { cause: this.modelMigrationCause } : {}),
+			...(journal?.issues?.length ? { issues: journal.issues } : {}),
+		}
+	}
+
+	private failModelSettingsMigration(cause: string): void {
+		this.modelMigrationStatus = "failed"
+		this.modelMigrationCause = cause
+		Logger.warn(`[ModelSettings] Migration failed: ${cause}. Legacy settings retained.`)
 	}
 
 	async retryModelSettingsMigration(): Promise<void> {
@@ -183,19 +198,22 @@ export class StateManager {
 				await this.reloadPersistedState()
 				if (modelSettingsRolloutEnabled()) {
 					this.modelMigrationStatus = "pending"
+					this.modelMigrationCause = undefined
 					try {
 						await migrateModelSettings({
 							state: this.storage.globalState,
-							sdkInput: await readSdkMigrationInput(this.storage.dataDir),
+							sdkInput: () => readSdkMigrationInput(this.storage.dataDir),
 							secrets: this.connectionSecrets,
 							legacySecretKeys: this.storage.secrets.keys(),
 							readLegacySecret: (key) => this.storage.secrets.get(key),
 						})
 						await this.populateFromStorage()
 						this.modelMigrationStatus = "complete"
-					} catch {
-						this.modelMigrationStatus = "failed"
-						Logger.warn("[ModelSettings] Migration deferred; legacy settings retained. Retry on next activation.")
+					} catch (error) {
+						this.failModelSettingsMigration(redactedMigrationCause(error))
+						// Legacy stays the runtime until a retry succeeds, so it keeps its own upkeep.
+						await ensureApiConfigProfiles(this)
+						ensureModelProfiles(this)
 					}
 				} else {
 					await ensureApiConfigProfiles(this)
@@ -207,6 +225,8 @@ export class StateManager {
 			if (acquired || !(error instanceof StorageLockTimeoutError)) throw error
 			Logger.warn("[StateManager] Could not take the settings lock; deferring profile migration.")
 			await this.reloadPersistedState()
+			if (modelSettingsRolloutEnabled() && this.globalStateCache.modelSettingsMigration?.status !== "complete")
+				this.failModelSettingsMigration("Another window held the settings lock")
 		}
 	}
 

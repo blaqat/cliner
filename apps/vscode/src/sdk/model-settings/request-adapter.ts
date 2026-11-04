@@ -1,4 +1,4 @@
-import { applyCompatibleRequestIntent, applyNativeRequestIntent, type ModelRequestIntent } from "@cline/llms"
+import { applyCompatibleRequestIntent, applyNativeRequestIntent, type LevelRequest, type ModelRequestIntent } from "@cline/llms"
 import type { GatewayProviderContext, GatewayResolvedProviderConfig, GatewayStreamRequest } from "@cline/shared"
 import {
 	type Connection,
@@ -11,10 +11,13 @@ import {
 import type { ConnectionSecretStore } from "./connection-secret-store"
 import { connectionProviderOptions } from "./provider-options"
 
+const FIX = "Open Settings > Models to fix it."
+
 export interface ConnectionAuthDependencies {
 	secrets: ConnectionSecretStore
 	environment: Readonly<Record<string, string | undefined>>
 	sdkAccount?: (providerId: string) => Promise<GatewayResolvedProviderConfig>
+	/** Optional token source. Without one an identity connection sends no credential, as the legacy path does. */
 	azureIdentity?: () => Promise<string>
 }
 /** Construct per-request config. Never looks up a provider-wide key except an explicit sdk-account. */
@@ -39,9 +42,7 @@ export async function resolveConnectionConfig(
 			account = await deps.sdkAccount(connection.auth.providerId)
 			break
 		case "azure-identity":
-			if (!deps.azureIdentity) throw new Error("Azure identity resolver is unavailable")
-			apiKey = await deps.azureIdentity()
-			if (!apiKey.trim()) throw new Error("Azure identity token is empty")
+			apiKey = (await deps.azureIdentity?.()) ?? ""
 			break
 		case "none":
 			break
@@ -61,7 +62,7 @@ export async function resolveConnectionConfig(
 			if (value === undefined) throw new Error("Provider credential is missing")
 			options[field] = value
 		}
-	if (connection.auth.kind === "azure-identity") headers.Authorization = `Bearer ${apiKey}`
+	if (connection.auth.kind === "azure-identity" && apiKey.trim()) headers.Authorization = `Bearer ${apiKey}`
 	return {
 		...account,
 		providerId:
@@ -79,19 +80,29 @@ export async function resolveConnectionConfig(
 		timeoutMs: connection.requestTimeoutMs ?? undefined,
 	}
 }
-export async function prepareModelRequest(
-	input: {
-		connection: Connection
-		model: ModelRow
-		values: ModelValues
-		levelId: string
-		request: GatewayStreamRequest
-		context: GatewayProviderContext
-		requestTimeoutMs: number | null
-		fetch?: typeof fetch
-	},
-	deps: ConnectionAuthDependencies,
-) {
+type PrepareModelRequestInput = {
+	connection: Connection
+	model: ModelRow
+	values: ModelValues
+	levelId: string
+	request: GatewayStreamRequest
+	context: GatewayProviderContext
+	requestTimeoutMs: number | null
+	fetch?: typeof fetch
+}
+/** Every refusal names the model and where to fix it. */
+export async function prepareModelRequest(input: PrepareModelRequestInput, deps: ConnectionAuthDependencies) {
+	try {
+		return await assembleModelRequest(input, deps)
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error)
+		throw new Error(
+			`${input.model.name || input.model.upstreamId}: ${message}${/Open Settings/.test(message) ? "" : `. ${FIX}`}`,
+			{ cause: error },
+		)
+	}
+}
+async function assembleModelRequest(input: PrepareModelRequestInput, deps: ConnectionAuthDependencies) {
 	const { connection, model, levelId } = input
 	ModelRowSchema.parse(model)
 	if (model.kind === "non-chat") throw new Error("This model does not support chat")
@@ -120,27 +131,54 @@ export async function prepareModelRequest(
 	const request = { ...input.request, providerId: config.providerId, modelId: model.upstreamId, reasoning: undefined }
 	const format = values.apiFormat ?? (connection.kind === "openai-compatible" ? connection.apiFormat : null)
 	const transportFetch = input.fetch ?? globalThis.fetch
-	const baseFetch: typeof fetch = (async (url, init) => {
+	// A rotated key is used by the next request, even one already inside a running turn.
+	const builtKey = connection.auth.kind === "keychain" ? config.apiKey : undefined
+	const withCurrentKey = async (init: RequestInit | undefined): Promise<RequestInit | undefined> => {
+		if (connection.auth.kind !== "keychain" || !builtKey) return init
+		const current = await deps.secrets.get(connection.auth.secretRef)
+		if (!current?.trim()) throw new Error(`Connection key is missing. ${FIX}`)
+		if (current === builtKey) return init
+		const headers = new Headers(init?.headers)
+		const stale: Array<[string, string]> = []
+		headers.forEach((value, name) => {
+			if (value.includes(builtKey)) stale.push([name, value])
+		})
+		for (const [name, value] of stale) headers.set(name, value.replaceAll(builtKey, current))
+		return { ...init, headers }
+	}
+	const baseFetch: typeof fetch = (async (url, requestInit) => {
+		const init = await withCurrentKey(requestInit)
 		if (config.timeoutMs === undefined) return transportFetch(url, init)
 		const timeout = AbortSignal.timeout(config.timeoutMs)
 		return transportFetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout })
 	}) as typeof fetch
+	// Only what the SDK added for a missing key goes. A header the user configured is theirs to send.
+	const configuredHeaders = new Set(Object.keys(config.headers ?? {}).map((name) => name.toLowerCase()))
+	const dropUnconfiguredAuth = (headers: Headers) => {
+		for (const name of ["authorization", "api-key"]) if (!configuredHeaders.has(name)) headers.delete(name)
+	}
 	if (connection.kind === "openai-compatible") {
+		const sendsNoCredential =
+			connection.auth.kind === "none" ||
+			(connection.auth.kind === "azure-identity" && !configuredHeaders.has("authorization"))
 		// The final vendor body is the single assembly used for sending and preview.
-		applyCompatibleRequestIntent({}, format!, intent, input.context)
+		// A subagent builds this at its own level, so only that level reaches the wire.
+		const fetchAtLevel = (selected: LevelRequest): typeof fetch => {
+			if (values.reasoning !== "yes" && selected.kind !== "default") throw new Error("Reasoning is unknown or unsupported")
+			const levelIntent = { ...intent, level: selected }
+			applyCompatibleRequestIntent({}, format!, levelIntent, input.context)
+			return (async (url, init) => {
+				if (typeof init?.body !== "string") throw new Error("Expected a serialized compatible request")
+				const body = applyCompatibleRequestIntent(JSON.parse(init.body), format!, levelIntent, input.context)
+				const headers = new Headers(init.headers)
+				if (sendsNoCredential) dropUnconfiguredAuth(headers)
+				return baseFetch(url, { ...init, headers, body: JSON.stringify(body) })
+			}) as typeof fetch
+		}
+		config.fetch = fetchAtLevel(level.request)
 		config.providerId = format === "responses" ? "openai-native" : "openai-compatible"
 		request.providerId = config.providerId
-		config.fetch = (async (url, init) => {
-			if (typeof init?.body !== "string") throw new Error("Expected a serialized compatible request")
-			const body = applyCompatibleRequestIntent(JSON.parse(init.body), format!, intent, input.context)
-			const headers = new Headers(init.headers)
-			if (connection.auth.kind === "none") {
-				headers.delete("authorization")
-				headers.delete("api-key")
-			}
-			return baseFetch(url, { ...init, headers, body: JSON.stringify(body) })
-		}) as typeof fetch
-		return { connectionId: connection.id, modelId: model.id, request, config, intent }
+		return { connectionId: connection.id, modelId: model.id, request, config, intent, fetchAtLevel }
 	}
 	const nativeFetch = (async (url, init) => {
 		if (
@@ -153,8 +191,7 @@ export async function prepareModelRequest(
 			)
 		) {
 			const headers = new Headers(init?.headers)
-			headers.delete("authorization")
-			headers.delete("api-key")
+			dropUnconfiguredAuth(headers)
 			init = { ...init, headers }
 		}
 		if (typeof init?.body !== "string" || !Object.keys(intent.extraBody).length) return baseFetch(url, init)
@@ -167,6 +204,7 @@ export async function prepareModelRequest(
 		request: applyNativeRequestIntent(request, context, intent),
 		config: { ...config, fetch: nativeFetch },
 		intent,
+		fetchAtLevel: undefined,
 	}
 }
 /** Mask headers and credential fields recursively before showing request diagnostics. */

@@ -1,5 +1,6 @@
 import { getProviderCollectionSync } from "@cline/llms"
 import type { Connection, ModelRow } from "@shared/model-settings"
+import type { SecretKey } from "@shared/storage/state-keys"
 
 // Legacy option names remain the form contract; this is the one-way adapter to SDK config.
 export const providerOptionMappings: Record<string, Record<string, string>> = {
@@ -80,21 +81,48 @@ export function connectionProviderOptions(
 	return result
 }
 
+// Spelled out, not derived: "openrouter" is stored as openRouterApiKey, and the type checks every name.
+const PROVIDER_SECRET_FIELDS: Record<string, readonly SecretKey[]> = {
+	aihubmix: ["aihubmixApiKey"],
+	anthropic: ["apiKey"],
+	asksage: ["asksageApiKey"],
+	baseten: ["basetenApiKey"],
+	bedrock: ["awsAccessKey", "awsSecretKey", "awsSessionToken", "awsBedrockApiKey"],
+	cerebras: ["cerebrasApiKey"],
+	cline: ["clineApiKey"],
+	deepseek: ["deepSeekApiKey"],
+	dify: ["difyApiKey"],
+	doubao: ["doubaoApiKey"],
+	fireworks: ["fireworksApiKey"],
+	gemini: ["geminiApiKey"],
+	groq: ["groqApiKey"],
+	hicap: ["hicapApiKey"],
+	"huawei-cloud-maas": ["huaweiCloudMaasApiKey"],
+	huggingface: ["huggingFaceApiKey"],
+	litellm: ["liteLlmApiKey"],
+	minimax: ["minimaxApiKey"],
+	mistral: ["mistralApiKey"],
+	moonshot: ["moonshotApiKey"],
+	nebius: ["nebiusApiKey"],
+	nousResearch: ["nousResearchApiKey"],
+	oca: ["ocaApiKey"],
+	ollama: ["ollamaApiKey"],
+	openai: ["openAiApiKey"],
+	"openai-compatible": ["openAiApiKey"],
+	"openai-native": ["openAiNativeApiKey"],
+	openrouter: ["openRouterApiKey"],
+	qwen: ["qwenApiKey"],
+	requesty: ["requestyApiKey"],
+	sambanova: ["sambanovaApiKey"],
+	sapaicore: ["sapAiCoreClientId", "sapAiCoreClientSecret"],
+	together: ["togetherApiKey"],
+	"vercel-ai-gateway": ["vercelAiGatewayApiKey"],
+	wandb: ["wandbApiKey"],
+	xai: ["xaiApiKey"],
+	zai: ["zaiApiKey"],
+	"zai-coding-plan": ["zaiApiKey"],
+}
+
 export function providerSecretFields(provider: string): string[] {
-	if (provider === "bedrock") return ["awsAccessKey", "awsSecretKey", "awsSessionToken", "awsBedrockApiKey"]
-	if (provider === "sapaicore") return ["sapAiCoreClientId", "sapAiCoreClientSecret"]
-	const keys: Record<string, string> = {
-		anthropic: "apiKey",
-		openai: "openAiApiKey",
-		"openai-compatible": "openAiApiKey",
-		"openai-native": "openAiNativeApiKey",
-		cline: "clineApiKey",
-		deepseek: "deepSeekApiKey",
-		litellm: "liteLlmApiKey",
-		huggingface: "huggingFaceApiKey",
-		"vercel-ai-gateway": "vercelAiGatewayApiKey",
-		nousResearch: "nousResearchApiKey",
-		"zai-coding-plan": "zaiApiKey",
-	}
-	return [keys[provider] ?? `${provider.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}ApiKey`]
+	return [...(PROVIDER_SECRET_FIELDS[provider] ?? [])]
 }

@@ -22,8 +22,8 @@ interface ClinePassHintProps {
  */
 export const ClinePassHint = ({ selectedProvider, currentMode }: ClinePassHintProps) => {
 	// Covers self-hosted mode and org-managed provider allowlists.
-	const { isClinePassEnabled } = useClinePassPromo()
-	const { dismissedBanners } = useExtensionState()
+	const { isClinePassEnabled, switchToClinePassProvider } = useClinePassPromo()
+	const { dismissedBanners, modelSettings } = useExtensionState()
 	const { handleModeFieldChange } = useApiConfigurationHandlers()
 	// Seeded from the session-scoped record so the dismissal survives unmounts.
 	const [locallyDismissed, setLocallyDismissed] = useState(() => isBannerDismissedForSession(CLINE_PASS_SETTINGS_HINT_ID))
@@ -44,6 +44,10 @@ export const ClinePassHint = ({ selectedProvider, currentMode }: ClinePassHintPr
 	// Mirror the provider dropdown: only touch the current mode's provider when
 	// plan/act use separate models, otherwise update both.
 	const handleTryIt = () => {
+		if (modelSettings) {
+			void switchToClinePassProvider()
+			return
+		}
 		handleModeFieldChange(
 			{ plan: "planModeApiProvider", act: "actModeApiProvider" },
 			CLINE_PASS_PROVIDER_ID,

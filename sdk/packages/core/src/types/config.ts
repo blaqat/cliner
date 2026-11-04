@@ -90,6 +90,8 @@ export interface SubagentModelRecord {
 export interface SubagentModelPolicyV1 {
 	version: 1;
 	models: Record<string, SubagentModelRecord>;
+	/** Models that could not be resolved, reported only when the parent uses one. */
+	unavailable?: Record<string, { name: string; reason: string }>;
 	default: { model: string; level: string };
 	allowed: Array<{ model: string; levels: string[] }>;
 	blocking: "never" | "parent-decides" | "always";

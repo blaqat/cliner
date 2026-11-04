@@ -1,8 +1,4 @@
-import {
-	getReasoningDefaultOnMetadata,
-	providerReasoningRouteMatches,
-	supportsOpenAINoneReasoningEffort,
-} from "../model-facts";
+import { supportsOpenAINoneReasoningEffort } from "../model-facts";
 import {
 	buildAnthropicCompatibleReasoningOptions,
 	resolveReasoningRoute,
@@ -105,10 +101,10 @@ export function validateModelRequestIntent(intent: ModelRequestIntent): void {
 	)
 		throw new Error("Invalid temperature");
 }
-/** Native intent uses the existing catalog normalization and codecs. Reject lossy normalization. */
+/** Native intent uses the existing catalog normalization and codecs. Only refuses what no codec can express. */
 export function applyNativeRequestIntent(
 	request: GatewayStreamRequest,
-	context: GatewayProviderContext,
+	_context: GatewayProviderContext,
 	intent: ModelRequestIntent,
 ): GatewayStreamRequest {
 	validateModelRequestIntent(intent);
@@ -148,47 +144,15 @@ export function applyNativeRequestIntent(
 					? { enabled: false }
 					: { effort: level.value as ReasoningEffort }
 				: undefined;
-	const next = {
+	// Whether this route can honor the level or temperature is left to the
+	// gateway's normalization and the vendor codec, the same as a request built
+	// without intent. Unsupported controls are dropped there, not refused here.
+	return {
 		...request,
 		reasoning,
 		temperature: intent.temperature ?? undefined,
 		maxTokens: intent.maxOutputTokens ?? undefined,
 		defaultedMaxTokens: intent.maxOutputTokens === null ? undefined : false,
-	};
-	if (
-		intent.temperature !== null &&
-		!nativeNone &&
-		((request.providerId === "openai-native" &&
-			context.model.capabilities?.includes("reasoning")) ||
-			(getReasoningDefaultOnMetadata(context) === true &&
-				(request.providerId === "anthropic" ||
-					providerReasoningRouteMatches("anthropic-thinking", next, context))))
-	)
-		throw new Error(
-			"Temperature conflicts with this native model's default reasoning",
-		);
-	if (reasoning || level.kind === "thinking-level") {
-		if (!context.model.capabilities?.includes("reasoning"))
-			throw new Error("Model does not advertise reasoning");
-		const normalized = normalizeReasoningRequest(next, context).reasoning;
-		if (
-			(reasoning?.effort && normalized?.effort !== reasoning.effort) ||
-			(reasoning?.budgetTokens !== undefined &&
-				normalized?.budgetTokens !== reasoning.budgetTokens)
-		)
-			throw new Error("Saved reasoning control is unsupported by this route");
-		if (
-			intent.temperature !== null &&
-			(providerReasoningRouteMatches("anthropic-thinking", next, context) ||
-				request.providerId === "anthropic" ||
-				(request.providerId === "openai-native" && !nativeNone))
-		)
-			throw new Error(
-				"Explicit temperature with native reasoning needs a supported route",
-			);
-	}
-	return {
-		...next,
 		metadata: { ...request.metadata, settingsRequestIntent: intent },
 	};
 }
@@ -291,7 +255,10 @@ export function buildNativeIntentOptions(
 	if (request.providerId === "openai-native")
 		return {
 			openai: {
-				systemMessageMode: intent.systemRole,
+				// "system" is the unset value; the codec picks the role for the model.
+				...(intent.systemRole === "developer"
+					? { systemMessageMode: "developer" }
+					: {}),
 				...(intent.verbosity !== null
 					? { textVerbosity: intent.verbosity }
 					: {}),

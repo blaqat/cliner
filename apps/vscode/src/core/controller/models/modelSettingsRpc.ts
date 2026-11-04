@@ -12,8 +12,11 @@ import {
 } from "@shared/model-settings"
 import { z } from "zod"
 import {
+	assertConnectionAllowed,
 	assertModelSettingsUnlocked,
 	connectionSecretRefs,
+	managedConnectionForSave,
+	managedModelRow,
 	modelDependencies,
 	readModelSettingsState,
 	savedThreadsUsingModels,
@@ -75,10 +78,11 @@ export async function mutateSettings(
 	const parsed = schemas[operation].parse(JSON.parse(payload))
 	if (operation === "duplicateConfiguredModel") {
 		const stored = controller.stateManager.getGlobalStateKey("modelSettings")
-		if (stored) assertModelSettingsUnlocked(controller.stateManager, stored)
 		const input = schemas.duplicateConfiguredModel.parse(parsed)
-		const row = controller.stateManager.getGlobalStateKey("modelSettings")?.models.find((m) => m.id === input.modelId)
-		if (!row) throw new Error("Configured model is missing")
+		const row = stored?.models.find((m) => m.id === input.modelId)
+		const source = stored?.connections.find((c) => c.id === row?.connectionId)
+		if (!row || !source) throw new Error("Configured model is missing")
+		assertConnectionAllowed(controller.stateManager, source)
 		const draft = { ...structuredClone(row), id: randomUUID(), upstreamId: "", name: "" }
 		delete draft.legacyMetadata
 		return { draft }
@@ -92,7 +96,8 @@ export async function mutateSettings(
 			case "saveConnection": {
 				const input = schemas.saveConnection.parse(parsed)
 				previousConnection = next.connections.find((c) => c.id === input.connection.id)
-				const connection = applyConnectionPatch(previousConnection, input.connection)
+				const patched = applyConnectionPatch(previousConnection, input.connection)
+				const connection = previousConnection ? patched : managedConnectionForSave(controller.stateManager, patched)
 				validateConnectionSecretRefs(connection)
 				const index = next.connections.findIndex((c) => c.id === input.connection.id)
 				if (index < 0) next.connections.push(connection)
@@ -108,7 +113,8 @@ export async function mutateSettings(
 					if (row.legacyMetadata !== undefined && JSON.stringify(row.legacyMetadata) !== JSON.stringify(historical))
 						throw new Error("Historical model metadata is read-only")
 					const saved = historical ? { ...row, legacyMetadata: historical } : row
-					if (index < 0) next.models.push(saved)
+					const owner = next.connections.find((c) => c.id === row.connectionId)
+					if (index < 0) next.models.push(owner ? managedModelRow(controller.stateManager, saved, owner) : saved)
 					else next.models[index] = saved
 				}
 				break
@@ -230,6 +236,8 @@ export async function mutateSettings(
 		return rollback
 	})
 	cancelModelSettingsDiagnostics(controller.stateManager)
+	// Idle sessions rebuild now, ahead of the next send; running ones when their turn ends.
+	controller.handleApiConfigurationChanged?.({}, {})
 	await controller.postStateToWebview(true)
 	return readModelSettingsState(controller.stateManager)
 }

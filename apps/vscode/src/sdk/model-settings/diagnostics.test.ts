@@ -113,6 +113,21 @@ describe("configured connection diagnostics", () => {
 })
 
 describe("request preview headers", () => {
+	it("sends the organization's locked values but keeps them redacted", async () => {
+		const f = fixture()
+		f.state.getRemoteConfigSettings = () =>
+			({ openAiBaseUrl: "https://managed.invalid/v1", openAiHeaders: { "X-Org": "org-value" } }) as never
+		const preview = (await modelSettingsDiagnostic(
+			f.controller as never,
+			"previewConfiguredModelRequest",
+			JSON.stringify({ expectedRevision: f.settings.revision, pick: { modelId: "m", levelId: "default" } }),
+			true,
+		)) as { exact: boolean; request?: { url: string; headers: Record<string, string> } }
+		expect(preview.exact).toBe(true)
+		expect(preview.request?.url).toContain("managed.invalid")
+		expect(preview.request?.headers["x-org"]).toBe("[redacted]")
+		expect(JSON.stringify(preview)).not.toContain("org-value")
+	})
 	it("shows every line, masking anything sensitive or secret", async () => {
 		const f = fixture()
 		const connection = f.settings.connections[0]

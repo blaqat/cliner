@@ -1,19 +1,20 @@
 import { createGateway, createHandler } from "@cline/llms"
 import { type Connection, ModelPickSchema } from "@shared/model-settings"
 import { z } from "zod"
+import { modelAuthDependencies } from "@/sdk/model-settings/auth-dependencies"
 import {
 	assertConfiguredModelRequestAllowed,
-	assertModelSettingsUnlocked,
+	assertConnectionAllowed,
 	catalogModelValues,
+	managedConnection,
 	rememberDetectedModelMetadata,
 	resolveEffectiveConfiguredPick,
 } from "@/sdk/model-settings/host-settings"
-import { modelAuthDependencies } from "@/sdk/model-settings/auth-dependencies"
 import { prepareModelRequest, redactModelRequest, resolveConnectionConfig } from "@/sdk/model-settings/request-adapter"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import { configuredProviderConfig } from "@/sdk/model-settings/runtime-config"
 import { ModelSettingsStore } from "@/sdk/model-settings/store"
 import { fetch } from "@/shared/net"
-import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import type { Controller } from ".."
 
 const connectionRequest = z.object({ connectionId: z.string().min(1), expectedRevision: z.number().int().nonnegative() }).strict()
@@ -70,10 +71,11 @@ export async function modelSettingsDiagnostic(
 			if (new ModelSettingsStore(state).get().revision !== settings.revision)
 				throw new Error("Settings changed during this request. Try again.")
 		}
-		assertModelSettingsUnlocked(state, settings)
 		if ("connectionId" in input) {
-			const connection = settings.connections.find((c) => c.id === input.connectionId)
-			if (!connection) throw new Error("Connection is unavailable")
+			const stored = settings.connections.find((c) => c.id === input.connectionId)
+			if (!stored) throw new Error("Connection is unavailable")
+			assertConnectionAllowed(state, stored)
+			const connection = managedConnection(state, stored)
 			const providerId = connection.kind === "provider" ? connection.providerId : "openai-compatible"
 			const nativeBases: Record<string, string> = {
 				anthropic: "https://api.anthropic.com/v1",
@@ -189,7 +191,7 @@ export async function modelSettingsDiagnostic(
 			return { status: "ok", models }
 		}
 		await assertConfiguredModelRequestAllowed(state, settings, input.pick)
-		const config = await configuredProviderConfig(settings, input.pick, modelAuthDependencies(state))
+		const config = await configuredProviderConfig(settings, input.pick, modelAuthDependencies(state), { state })
 		current()
 		const transportFetch = config.fetch ?? fetch
 		config.fetch = ((url, init) =>
@@ -280,7 +282,10 @@ export async function modelSettingsDiagnostic(
 							method: init?.method ?? (url instanceof Request ? url.method : "GET"),
 							headers: previewHeaders(
 								init?.headers ?? (url instanceof Request ? url.headers : undefined),
-								resolved.connection,
+								// A locked header's value stays the organization's: it never counts as plain text the person typed.
+								state.getRemoteConfigSettings().openAiHeaders === undefined
+									? resolved.connection
+									: { ...resolved.connection, headers: [] },
 							),
 							body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
 						}

@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react"
 import BannerCarousel, { BannerData } from "@/components/common/BannerCarousel"
 import WhatsNewModal from "@/components/common/WhatsNewModal"
 import InboxList from "@/components/inbox/InboxList"
+import { moveToAccountModel } from "@/components/settings/models/configuredModelActions"
 import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -76,6 +77,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 		banners,
 		welcomeBanners,
 		taskGroups,
+		modelSettings,
+		currentTaskItem,
 	} = useExtensionState()
 	const { handleFieldsChange } = useApiConfigurationHandlers()
 	const { isClinePassEnabled, isUsingClinePass, openSubscribePage, switchToClinePassProvider } = useClinePassPromo()
@@ -175,6 +178,18 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 				case BannerActionType.SetModel: {
 					const modelId = action.arg || "anthropic/claude-sonnet-4.5"
 					const initialModelTab = action.tab || "recommended"
+					if (modelSettings) {
+						moveToAccountModel({
+							providerId: "cline",
+							providerName: "Cline",
+							upstreamId: modelId,
+							modes: ["act", "plan"],
+							taskId: currentTaskItem?.id ?? "",
+						})
+							.catch((error) => console.error("Failed to switch to the banner's model:", error))
+							.finally(() => navigateToSettings("models"))
+						break
+					}
 					handleFieldsChange({
 						planModeOpenRouterModelId: modelId,
 						actModeOpenRouterModelId: modelId,
@@ -192,6 +207,11 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					break
 
 				case BannerActionType.ShowApiSettings:
+					if (modelSettings) {
+						// The page has no provider to preselect: providers are added from it.
+						navigateToSettings("models")
+						break
+					}
 					if (action.arg) {
 						// Pre-select the provider before navigating
 						handleFieldsChange({
@@ -216,7 +236,14 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					console.warn("Unknown banner action:", action.action)
 			}
 		},
-		[handleFieldsChange, openRouterModels, navigateToSettings, navigateToSettingsModelPicker],
+		[
+			currentTaskItem?.id,
+			handleFieldsChange,
+			modelSettings,
+			openRouterModels,
+			navigateToSettings,
+			navigateToSettingsModelPicker,
+		],
 	)
 
 	/**

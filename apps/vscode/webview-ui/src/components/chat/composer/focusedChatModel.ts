@@ -4,6 +4,7 @@ import type { ExtensionState } from "@shared/ExtensionMessage"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import type { Mode } from "@shared/storage/types"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
+import { selectedConfiguredModel } from "./selectedConfiguredModel"
 
 export type FocusedChatState = Pick<
 	ExtensionState,
@@ -14,6 +15,7 @@ export type FocusedChatState = Pick<
 	| "composerApiSelection"
 	| "composerApiConfiguration"
 	| "focusedSessionModels"
+	| "modelSettings"
 >
 
 export interface FocusedChatModel {
@@ -44,6 +46,24 @@ export function resolveFocusedChatModel(
 	fallback: { provider: ApiProvider; modelId?: string },
 ): FocusedChatModel {
 	const live = state.focusedSessionModels?.[mode]
+	if (state.modelSettings) {
+		const configured = selectedConfiguredModel(state, mode)
+		const compatible = configured?.connection.kind === "openai-compatible" ? configured.connection : undefined
+		const provider = toLegacyApiProvider(live?.provider ?? configured?.provider ?? "openai") as ApiProvider
+		const modelId = live?.modelId ?? configured?.model.upstreamId ?? ""
+		const values = configured?.model.upstreamId === modelId ? configured.effective : undefined
+		return {
+			provider,
+			modelId,
+			customModelInfo: values && {
+				...openAiModelInfoSafeDefaults,
+				contextWindow: values.contextWindow.value ?? openAiModelInfoSafeDefaults.contextWindow,
+				inputPrice: values.inputPrice.value ?? 0,
+				outputPrice: values.outputPrice.value ?? 0,
+			},
+			openAiCompatibleApiType: compatible?.apiFormat,
+		}
+	}
 	const selection = state.composerApiSelection ?? { askProfileId: state.askProfileId, actProfileId: state.actProfileId }
 	const profileId = live ? live.profileId : mode === "plan" ? selection.askProfileId : selection.actProfileId
 	const assigned = profileId ? state.apiConfigProfiles?.find((profile) => profile.id === profileId) : undefined

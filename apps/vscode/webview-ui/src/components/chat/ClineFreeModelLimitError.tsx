@@ -3,11 +3,13 @@ import { CommitModelSelectionRequest } from "@shared/proto/cline/models"
 import type { Mode } from "@shared/storage/types"
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import { useMemo, useState } from "react"
+import { moveToAccountModel } from "@/components/settings/models/configuredModelActions"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useProviderModels } from "@/hooks/useProviderModels"
 import { ModelsServiceClient } from "@/services/grpc-client"
+import { selectedConfiguredModel } from "./composer/selectedConfiguredModel"
 
 interface ClineFreeModelLimitErrorProps {
 	message: string
@@ -47,7 +49,7 @@ function findPaidModelId(freeModelId: string | undefined, clineModelIds: string[
 }
 
 const ClineFreeModelLimitError = ({ message }: ClineFreeModelLimitErrorProps) => {
-	const { apiConfiguration, mode } = useExtensionState()
+	const { apiConfiguration, composerApiSelection, currentTaskItem, mode, modelSettings } = useExtensionState()
 	const { models: clineModels } = useProviderModels(CLINE_PROVIDER_ID)
 	const { handleModeFieldsChange } = useApiConfigurationHandlers()
 	const [isSwitching, setIsSwitching] = useState(false)
@@ -59,8 +61,12 @@ const ClineFreeModelLimitError = ({ message }: ClineFreeModelLimitErrorProps) =>
 	const modeFields = getModeSpecificFields(apiConfiguration, currentMode)
 	// Free models are selectable on both the cline and cline-pass providers, so
 	// read the model id from whichever provider is currently selected.
-	const selectedFreeModelId =
-		modeFields.apiProvider === "cline-pass"
+	const configured = selectedConfiguredModel({ modelSettings, composerApiSelection }, currentMode)
+	const selectedFreeModelId = modelSettings
+		? configured?.provider === "cline-pass" || configured?.provider === CLINE_PROVIDER_ID
+			? configured.model.upstreamId
+			: undefined
+		: modeFields.apiProvider === "cline-pass"
 			? modeFields.clinePassModelId
 			: modeFields.apiProvider === CLINE_PROVIDER_ID
 				? modeFields.clineModelId
@@ -77,6 +83,18 @@ const ClineFreeModelLimitError = ({ message }: ClineFreeModelLimitErrorProps) =>
 		setIsSwitching(true)
 		setSwitchError(undefined)
 		try {
+			if (modelSettings) {
+				await moveToAccountModel({
+					providerId: CLINE_PROVIDER_ID,
+					providerName: "Cline",
+					upstreamId: paidModelId,
+					modes: [currentMode],
+					taskId: currentTaskItem?.id ?? "",
+					leaving: configured?.model.id,
+				})
+				setDidSwitch(true)
+				return
+			}
 			const modelInfo = clineModels?.[paidModelId] ?? {
 				...openAiModelInfoSafeDefaults,
 				name: paidModelId,
@@ -115,7 +133,9 @@ const ClineFreeModelLimitError = ({ message }: ClineFreeModelLimitErrorProps) =>
 			setDidSwitch(true)
 		} catch (error) {
 			console.error("Failed to switch to the paid model:", error)
-			setSwitchError(`Failed to switch model. Select ${paidModelId} in API Configuration settings.`)
+			setSwitchError(
+				`Failed to switch model. Select ${paidModelId} in ${modelSettings ? "Settings > Models" : "API Configuration settings"}.`,
+			)
 		} finally {
 			setIsSwitching(false)
 		}

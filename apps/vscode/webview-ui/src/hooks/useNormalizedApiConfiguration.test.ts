@@ -1,3 +1,4 @@
+import { createCompatibleConnection, createDefaultModelSettings, resolveModelValues } from "@shared/model-settings"
 import { ApiFormat, ResolveModelInfoResponse } from "@shared/proto/cline/models"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -19,6 +20,75 @@ vi.mock("@/services/grpc-client", () => ({
 const mockUseExtensionState = vi.mocked(useExtensionState)
 const mockResolveModelInfo = vi.mocked(ModelsServiceClient.resolveModelInfo)
 const mockResolveProviderModels = vi.mocked(ModelsServiceClient.resolveProviderModels)
+
+describe("the composer with the new store in use", () => {
+	const published = (models: Record<string, "yes" | "no" | "unknown">) => {
+		const settings = createDefaultModelSettings()
+		settings.connections.push(createCompatibleConnection("c"))
+		const effective: Record<string, unknown> = {}
+		for (const [id, images] of Object.entries(models)) {
+			settings.models.push({
+				id,
+				connectionId: "c",
+				upstreamId: `up-${id}`,
+				name: "",
+				kind: "chat",
+				overrides: {},
+				providerOptions: {},
+			})
+			effective[id] = resolveModelValues({ images, contextWindow: 64_000 }, undefined, {})
+		}
+		settings.roles.chat = { modelId: Object.keys(models)[0], levelId: "default" }
+		return { settings, effective }
+	}
+	const open = async (state: Record<string, unknown>) => {
+		mockUseExtensionState.mockReturnValue({
+			// The old selection would answer that images are fine on another model entirely.
+			apiConfiguration: { actModeApiProvider: "anthropic", actModeApiModelId: "claude" },
+			...state,
+		} as never)
+		mockResolveModelInfo.mockResolvedValue(
+			ResolveModelInfoResponse.create({ providerId: "openai", modelId: "up", source: "unknown" }) as never,
+		)
+		const { result } = renderHook(() => useNormalizedApiConfiguration("act", true))
+		await waitFor(() => expect(mockResolveModelInfo).toHaveBeenCalled())
+		return result
+	}
+	beforeEach(() => vi.clearAllMocks())
+
+	it("gates images on the selected configured model and asks about that model", async () => {
+		const result = await open({ modelSettings: published({ m: "no" }) })
+		expect(result.current.selectedModelInfo.supportsImages).toBe(false)
+		expect(result.current.selectedModelId).toBe("up-m")
+		expect(result.current.selectedModelInfo.contextWindow).toBe(64_000)
+		expect(mockResolveModelInfo.mock.calls[0][0]).toMatchObject({ providerId: "openai", modelId: "up-m" })
+	})
+	it("follows this chat's pick over the role", async () => {
+		const result = await open({
+			modelSettings: published({ m: "no", n: "yes" }),
+			composerApiSelection: { modelSelectionV1: { version: 1, act: { modelId: "n", levelId: "default" }, ask: null } },
+		})
+		expect(result.current.selectedModelId).toBe("up-n")
+		expect(result.current.selectedModelInfo.supportsImages).toBe(true)
+	})
+	it("unknown image support fails open", async () => {
+		const result = await open({ modelSettings: published({ m: "unknown" }) })
+		expect(result.current.selectedModelInfo.supportsImages).toBe(true)
+	})
+	it("Settings' own reader (not the composer) stays on the old configuration", async () => {
+		mockUseExtensionState.mockReturnValue({
+			apiConfiguration: { actModeApiProvider: "anthropic", actModeApiModelId: "claude" },
+			modelSettings: published({ m: "no" }),
+		} as never)
+		mockResolveModelInfo.mockResolvedValue(
+			ResolveModelInfoResponse.create({ providerId: "anthropic", source: "unknown" }) as never,
+		)
+		renderHook(() => useNormalizedApiConfiguration("act"))
+		await waitFor(() =>
+			expect(mockResolveModelInfo.mock.calls[0][0]).toMatchObject({ providerId: "anthropic", modelId: "claude" }),
+		)
+	})
+})
 
 function setApiConfiguration(apiConfiguration: Record<string, unknown>) {
 	mockUseExtensionState.mockReturnValue({ apiConfiguration } as ReturnType<typeof useExtensionState>)

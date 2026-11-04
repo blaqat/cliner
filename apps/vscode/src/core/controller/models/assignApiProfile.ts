@@ -1,5 +1,6 @@
 import { Empty } from "@shared/proto/cline/common"
 import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { assignApiConfigProfile } from "./apiProfiles"
@@ -15,6 +16,7 @@ import { parseModeRequest } from "./providerCatalogShared"
  */
 export async function assignApiProfile(controller: Controller, request: AssignApiProfileRequest): Promise<Empty> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Assigning an API configuration")
 		const mode = parseModeRequest(request.mode)
 		if (request.chatOverride) {
 			await controller.updateChatApiSelection(mode, request)

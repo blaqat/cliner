@@ -37,6 +37,7 @@ import {
 	ToggleMarketplaceLocalInstalledEntryRequest,
 } from "@shared/proto/cline/marketplace"
 import { HostProvider } from "@/hosts/host-provider"
+import { configuredActiveModel } from "@/sdk/model-settings/legacy-settings"
 import type { Controller } from "../index"
 
 type MarketplaceType = "mcp" | "skill" | "plugin"
@@ -518,6 +519,8 @@ async function getWorkspacePath(): Promise<string | undefined> {
 
 function getActiveProviderAndModel(controller: Controller): { providerId?: string; modelId?: string } {
 	const mode = controller.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+	const configured = configuredActiveModel(controller.stateManager, mode)
+	if (configured) return configured
 	const apiConfiguration = controller.stateManager.getApiConfiguration()
 	const providerId = mode === "plan" ? apiConfiguration.planModeApiProvider : apiConfiguration.actModeApiProvider
 	const modelId = resolveActiveModelIdFromApiConfiguration(apiConfiguration, mode)

@@ -1,17 +1,17 @@
 import type { ProviderConnection } from "@shared/model-settings"
 import { EmptyRequest } from "@shared/proto/cline/common"
-import { ResolveProviderModelsRequest } from "@shared/proto/cline/models"
 import type { ProviderListing } from "@shared/proto/cline/models"
+import { ResolveProviderModelsRequest } from "@shared/proto/cline/models"
 import { useEffect, useMemo, useState } from "react"
 import { Input } from "@/components/ui/input"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useProviderListings } from "@/hooks/useProviderListings"
 import { AccountServiceClient, ModelsServiceClient, OcaAccountServiceClient } from "@/services/grpc-client"
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import { AddModelsPanel } from "./AddModelsPanel"
 import { SecretField } from "./ConnectionForm"
 import { Field, FieldGrid, Hint, LinkButton, SmallButton, Why } from "./fields"
-import { useModelsPage } from "./modelsPageContext"
 import type { DiscoveredModel } from "./modelSettingsClient"
+import { useModelsPage } from "./modelsPageContext"
 import { isValidUrl, newId, secretRef } from "./modelsView"
 import { ProviderFieldControl } from "./ProviderFields"
 import {
@@ -98,7 +98,8 @@ const ProviderSetup = ({
 	const catalog = useCatalogModels(connection ? listing.id : undefined)
 
 	const visible = spec.fields.filter((field) => isFieldVisible(field, options))
-	const asked = visible.filter((field) => field.required)
+	// A locked value is the organization's: there's nothing for the person to fill in.
+	const asked = visible.filter((field) => field.required && !page.managedKey(field.id))
 	const later = spec.fields.filter((field) => !field.required).map((field) => field.label)
 
 	const connect = async () => {

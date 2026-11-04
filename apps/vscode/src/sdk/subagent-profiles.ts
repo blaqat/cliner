@@ -104,10 +104,17 @@ export async function buildSubagentModelSettings(
 	const ids = new Set(policy.allowed.flatMap((entry) => (entry.kind === "model" ? [entry.modelId] : [])))
 	if (settings.roles.subagents.kind === "model") ids.add(settings.roles.subagents.pick.modelId)
 	const models: Record<string, import("@cline/core").SubagentModelRecord> = {}
+	// One broken model can't stop a chat. It's reported when the parent tries to use it.
+	const unavailable: Record<string, { name: string; reason: string }> = {}
 	for (const id of ids) {
 		const row = settings.models.find((model) => model.id === id)
-		if (!row) throw new Error(`Model "${id}" is allowed but not configured. Open Settings > Models to fix it.`)
-		models[id] = { id, name: row.name || row.upstreamId, ...(await resolveModel(id)) }
+		if (!row) continue
+		const name = row.name || row.upstreamId
+		try {
+			models[id] = { id, name, ...(await resolveModel(id)) }
+		} catch (error) {
+			unavailable[id] = { name, reason: error instanceof Error ? error.message : String(error) }
+		}
 	}
 	const pick = settings.roles.subagents
 	return {
@@ -119,6 +126,7 @@ export async function buildSubagentModelSettings(
 		modelPolicy: {
 			version: 1,
 			models,
+			unavailable,
 			default:
 				pick.kind === "model"
 					? { model: pick.pick.modelId, level: pick.pick.levelId }

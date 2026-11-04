@@ -2,7 +2,11 @@ import type { StateManager } from "@/core/storage/StateManager"
 import { getProviderSettingsManager } from "../provider-migration"
 import type { ConnectionAuthDependencies } from "./request-adapter"
 
-/** Account access is explicit; keychain connections never enter this branch. */
+/**
+ * Account access is explicit; keychain connections never enter this branch.
+ * No azureIdentity token source: the legacy path only records useIdentity and
+ * nothing acquires an Entra token, so an identity connection sends no key.
+ */
 export function modelAuthDependencies(state: Pick<StateManager, "connectionSecrets">): ConnectionAuthDependencies {
 	if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
 	return {

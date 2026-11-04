@@ -3,6 +3,7 @@ import { Empty } from "@/shared/proto/cline/common"
 import { CommitModelSelectionRequest } from "@/shared/proto/cline/models"
 import { getProviderModelIdKey } from "@/shared/storage/provider-keys"
 import {
+	assertLegacyProviderWrite,
 	hasProviderCatalogStateController,
 	type ProviderCatalogController,
 	parseModeRequest,
@@ -14,6 +15,7 @@ export async function commitModelSelection(
 	controller: ProviderCatalogController,
 	request: CommitModelSelectionRequest,
 ): Promise<Empty> {
+	assertLegacyProviderWrite(controller, "Committing a model selection")
 	const providerId = parseProviderIdRequest(request.providerId)
 	const mode = parseModeRequest(request.mode)
 	const selection = toModelSelection(request, providerId)

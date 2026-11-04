@@ -1,5 +1,6 @@
 import { Empty } from "@shared/proto/cline/common"
 import type { DeleteApiProfileRequest } from "@shared/proto/cline/models"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { deleteApiConfigProfile } from "./apiProfiles"
@@ -12,6 +13,7 @@ import { applyThreadDefaultProfiles } from "./modelProfiles"
  */
 export async function deleteApiProfile(controller: Controller, request: DeleteApiProfileRequest): Promise<Empty> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Deleting an API configuration")
 		const previous = controller.stateManager.getApiConfiguration()
 		const id = request.id?.trim()
 		if (!id) {

@@ -97,14 +97,14 @@ describe("Phase 2 migration", () => {
 		expect(legacy).toHaveBeenCalledOnce()
 		expect(settings).not.toHaveBeenCalled()
 	})
-	it("retries after every durable write using the same IDs and retains downgrade data", async () => {
+	it("retries after every durable write using the same IDs and leaves legacy data in place", async () => {
 		const baseline = fixture(seed())
 		await migrateModelSettings(baseline.deps)
 		const total = baseline.writes()
 		for (let n = 1; n <= total; n++) {
 			const f = fixture(seed())
 			f.interrupt(n)
-			await expect(migrateModelSettings(f.deps)).rejects.toThrow("interrupted")
+			await expect(migrateModelSettings(f.deps)).rejects.toThrow(/interrupted|keychain/)
 			f.interrupt(Infinity)
 			await migrateModelSettings(f.deps)
 			expect(f.data.modelSettings).toEqual(baseline.data.modelSettings)
@@ -134,11 +134,13 @@ describe("Phase 2 migration", () => {
 		await migrateModelSettings(f.deps)
 		expect(f.data.modelSettingsMigration).toMatchObject({ status: "complete" })
 	})
-	it("rejects malformed JSON shapes, accepts empty arrays, and preserves missing refs", async () => {
-		for (const bad of ["[]", {}, [null]]) {
+	it("drops malformed JSON shapes with a record, accepts empty arrays, and preserves missing refs", async () => {
+		for (const bad of ["[]", [null]]) {
 			const f = fixture({ apiConfigProfiles: bad })
-			await expect(migrateModelSettings(f.deps)).rejects.toThrow("Invalid legacy")
-			expect(f.data.modelSettings).toBeUndefined()
+			await migrateModelSettings(f.deps)
+			expect((f.data.modelSettingsMigration as { status: string }).status).toBe("complete")
+			expect((f.data.modelSettings as ModelSettings).models).toEqual([])
+			expect(JSON.stringify(f.data.modelSettingsMigration)).toContain('"kind":"dropped"')
 		}
 		const empty = fixture({ apiConfigProfiles: [], profiles: [] })
 		await migrateModelSettings(empty.deps)
@@ -151,15 +153,6 @@ describe("Phase 2 migration", () => {
 		const f = fixture({ apiConfigProfiles: [configuration("a", "gemini")] })
 		await migrateModelSettings(f.deps)
 		expect((f.data.modelSettings as ModelSettings).connections[0]).toMatchObject({ kind: "provider", providerId: "gemini" })
-	})
-	it("imports downgrade additions without replacing new roles", async () => {
-		const f = fixture(seed())
-		await migrateModelSettings(f.deps)
-		const roles = structuredClone((f.data.modelSettings as ModelSettings).roles)
-		;(f.data.apiConfigProfiles as unknown[]).push(configuration("c"))
-		await migrateModelSettings(f.deps)
-		expect((f.data.modelSettings as ModelSettings).models).toHaveLength(3)
-		expect((f.data.modelSettings as ModelSettings).roles).toEqual(roles)
 	})
 })
 
@@ -335,22 +328,6 @@ describe("Phase 2 follow-up migration", () => {
 		await migrateModelSettings(f.deps)
 		expect(f.data).toEqual(before)
 	})
-	it("imports secret-only edits without replacing roles or original credentials", async () => {
-		const f = fixture(seed())
-		await migrateModelSettings(f.deps)
-		const original = structuredClone(f.data.modelSettings) as ModelSettings
-		f.keys["profile:a:openAiApiKey"] = "replacement"
-		await migrateModelSettings(f.deps)
-		const updated = f.data.modelSettings as ModelSettings
-		expect(updated.models).toHaveLength(original.models.length + 1)
-		expect(updated.roles).toEqual(original.roles)
-		const auth = original.connections[0].auth
-		if (auth.kind === "keychain") expect(await f.secrets.get(auth.secretRef)).toBe("own-a")
-		const before = structuredClone(f.data)
-		await migrateModelSettings(f.deps)
-		expect(f.data).toEqual(before)
-		expect(JSON.stringify(f.data)).not.toContain("replacement")
-	})
 	it("reconciles models.json without promoting differing model limits", async () => {
 		const f = fixture({ apiConfigProfiles: [configuration("a"), { ...configuration("b"), modelId: "second" }] })
 		f.keys["profile:b:openAiApiKey"] = "own-a"
@@ -428,34 +405,6 @@ it("keeps a next-message pick armed when admission is cancelled", async () => {
 	).rejects.toThrow()
 	expect(await next.admit("thread", "act", thread, async (p) => p?.modelId)).toBe("b")
 	expect(await next.admit("other", "act", thread, async (p) => p?.modelId)).toBe("a")
-})
-
-it("imports changed transport and locked headers once while retaining immutable historical mappings", async () => {
-	const a = {
-		...configuration("a"),
-		options: { ...configuration("a").options, openAiHeaders: { Authorization: "header-one" } },
-	}
-	const f = fixture({ apiConfigProfiles: [a] })
-	await migrateModelSettings(f.deps)
-	const before = structuredClone(f.data.modelSettingsMigration)
-	f.data.apiConfigProfiles = [{ ...a, options: { ...a.options, openAiHeaders: { Authorization: "header-two" } } }]
-	await migrateModelSettings(f.deps)
-	expect((f.data.modelSettings as ModelSettings).models).toHaveLength(2)
-	expect((f.data.modelSettingsMigration as { configurationModels: unknown }).configurationModels).toEqual(
-		(before as { configurationModels: unknown }).configurationModels,
-	)
-	const snapshot = structuredClone(f.data)
-	await migrateModelSettings(f.deps)
-	expect(f.data).toEqual(snapshot)
-	f.data.apiConfigProfiles = [{ ...a, options: { ...a.options, openAiBaseUrl: "https://changed.test/v1" } }]
-	await migrateModelSettings(f.deps)
-	expect((f.data.modelSettings as ModelSettings).models).toHaveLength(3)
-	expect(JSON.stringify([f.data.modelSettings, f.data.modelSettingsBackupV1, f.data.modelSettingsMigration])).not.toContain(
-		"header-one",
-	)
-	expect(JSON.stringify([f.data.modelSettings, f.data.modelSettingsBackupV1, f.data.modelSettingsMigration])).not.toContain(
-		"header-two",
-	)
 })
 
 it("preserves every compatible form override and nested SDK metadata through migration and request assembly", async () => {
@@ -590,108 +539,6 @@ it("preserves every compatible form override and nested SDK metadata through mig
 		reasoning_effort: "high",
 	})
 })
-
-for (const variant of [
-	"addition",
-	"model",
-	"limits",
-	"url",
-	"format",
-	"azure",
-	"plain-header",
-	"locked-header",
-	"key",
-	"sdk-metadata",
-	"removal",
-	"roles-only",
-] as const) {
-	it(`retries each durable downgrade-import write: ${variant}`, async () => {
-		const setup = async () => {
-			const f = fixture(seed())
-			const sdkInput = {
-				models: { version: 1, providers: { "openai-compatible": { models: {} as Record<string, unknown> } } },
-			}
-			await migrateModelSettings({ ...f.deps, sdkInput })
-			const original = structuredClone(f.data.modelSettings) as ModelSettings
-			const backup = structuredClone(f.data.modelSettingsBackupV1)
-			const journal = structuredClone(f.data.modelSettingsMigration)
-			const configs = f.data.apiConfigProfiles as Array<ReturnType<typeof configuration>>
-			switch (variant) {
-				case "addition":
-					configs.push(configuration("c"))
-					break
-				case "model":
-					configs[0].modelId = "new-model"
-					break
-				case "limits":
-					Object.assign(configs[0].options, { actModeOpenAiModelInfo: { contextWindow: 64000, maxTokens: 4321 } })
-					break
-				case "url":
-					configs[0].options.openAiBaseUrl = "https://new.test/v1"
-					break
-				case "format":
-					Object.assign(configs[0].options, { openAiCompatibleApiType: "responses" })
-					break
-				case "azure":
-					Object.assign(configs[0].options, { azureApiVersion: "new-version" })
-					break
-				case "plain-header":
-					Object.assign(configs[0].options, { openAiHeaders: { "X-Custom": "new" } })
-					break
-				case "locked-header":
-					Object.assign(configs[0].options, { openAiHeaders: { Authorization: "private-new-header" } })
-					break
-				case "key":
-					f.keys["profile:a:openAiApiKey"] = "private-new-key"
-					break
-				case "sdk-metadata":
-					sdkInput.models.providers["openai-compatible"].models["same-model"] = {
-						pricing: { input: 7 },
-						metadata: { custom: true },
-					}
-					break
-				case "removal":
-					configs.splice(0, 1)
-					break
-				case "roles-only":
-					f.data.threadDefaultProfileId = "b"
-					break
-			}
-			f.interrupt(Infinity)
-			return { f, original, backup, journal, sdkInput }
-		}
-		const baseline = await setup()
-		await migrateModelSettings({ ...baseline.f.deps, sdkInput: baseline.sdkInput })
-		const writes = baseline.f.writes()
-		for (let n = 1; n <= writes; n++) {
-			const { f, original, backup, journal, sdkInput } = await setup()
-			f.interrupt(n)
-			await expect(migrateModelSettings({ ...f.deps, sdkInput })).rejects.toThrow("interrupted")
-			f.interrupt(Infinity)
-			await migrateModelSettings({ ...f.deps, sdkInput })
-			expect(f.data.modelSettings).toEqual(baseline.f.data.modelSettings)
-			expect(f.data.modelSettingsBackupV1).toEqual(backup)
-			const updated = f.data.modelSettings as ModelSettings
-			expect(updated.roles).toEqual(original.roles)
-			for (const row of original.models) expect(updated.models).toContainEqual(row)
-			expect(f.data.modelSettingsMigration).toMatchObject({
-				status: "complete",
-				configurationModels: (journal as { configurationModels: unknown }).configurationModels,
-			})
-			for (const connection of original.connections)
-				if (connection.auth.kind === "keychain")
-					expect(await f.secrets.get(connection.auth.secretRef)).toBe(
-						connection.id.includes(original.models[0].id) ? "own-a" : "own-b",
-					)
-			const before = structuredClone(f.data)
-			await migrateModelSettings({ ...f.deps, sdkInput })
-			expect(f.data).toEqual(before)
-			expect(
-				JSON.stringify([f.data.modelSettings, f.data.modelSettingsMigration, f.data.modelSettingsBackupV1]),
-			).not.toContain("private-new")
-		}
-	})
-}
 
 it("admits SAP client credentials without a fictitious API key and preserves SDK-generated authorization", async () => {
 	const { configuredProviderConfig } = await import("./runtime-config")

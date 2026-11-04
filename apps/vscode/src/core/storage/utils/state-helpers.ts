@@ -113,6 +113,14 @@ export async function resetWorkspaceState() {
 export async function resetGlobalState() {
 	// TODO: Reset all workspace states?
 	const stateManager = StateManager.get()
+	const { connectionSecretRefs, forgetModelSettingsSnapshot } = await import("@/sdk/model-settings/host-settings")
+	const store = stateManager.connectionSecrets
+	if (store) {
+		// Keys go first: if the keychain refuses, the settings that name them are still there to retry from.
+		const named = stateManager.getGlobalStateKey("modelSettings")?.connections.flatMap(connectionSecretRefs) ?? []
+		for (const ref of new Set([...named, ...(await store.list())])) await store.delete(ref)
+	}
+	forgetModelSettingsSnapshot(stateManager)
 	GlobalStateAndSettingKeys.map((key) => stateManager.setGlobalState(key, undefined))
 	SecretKeys.map((key) => stateManager.setSecret(key, undefined))
 	await stateManager.reInitialize()

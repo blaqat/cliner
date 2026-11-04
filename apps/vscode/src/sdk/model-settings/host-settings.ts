@@ -1,21 +1,23 @@
 import { createGateway } from "@cline/llms"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import {
+	ConnectionOptionsSchema,
 	ConnectionSchema,
 	createDefaultModelSettings,
 	type ModelLevel,
 	type ModelPick,
-	type ModelSettings,
-	type ModelValues,
+	ModelProviderOptionsSchema,
 	type ModelRow,
+	type ModelSettings,
 	ModelSettingsSchema,
+	type ModelValues,
 	resolveModelValues,
 } from "@shared/model-settings"
 import type { ModelSettingsFixTarget, ModelSettingsState } from "@shared/model-settings-state"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import type { StateManager } from "@/core/storage/StateManager"
-import { connectionProviderOptions } from "./provider-options"
 import { resolveConfiguredPick } from "../model-settings-resolver"
+import { connectionProviderOptions } from "./provider-options"
 
 const detectedMetadata = new WeakMap<StateManager, Map<string, { revision: number; values: Partial<ModelValues> }>>()
 /** Detection suggestions are metadata, scoped to the settings revision that produced them. */
@@ -46,6 +48,10 @@ export function readModelSettingsState(state: StateManager): Promise<ModelSettin
 	})
 	return value
 }
+/** A reset can leave a new store at the revision the old one had, so its projection can't be reused. */
+export function forgetModelSettingsSnapshot(state: StateManager): void {
+	snapshots.delete(state)
+}
 async function buildModelSettingsState(state: StateManager): Promise<ModelSettingsState> {
 	const settings = ModelSettingsSchema.parse(state.getGlobalStateKey("modelSettings") ?? createDefaultModelSettings())
 	const configuredSecrets: Record<string, boolean> = {}
@@ -72,7 +78,7 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 		let reason: string | undefined
 		try {
 			await assertConfiguredModelRequestAllowed(state, settings, { modelId: row.id, levelId: "default" })
-			if (connectionSecretRefs(connection).some((ref) => !configuredSecrets[ref]))
+			if (connectionSecretRefs(managedConnection(state, connection)).some((ref) => !configuredSecrets[ref]))
 				reason = "Connection credentials are missing"
 			if (connection.auth.kind === "environment" && !process.env[connection.auth.variable])
 				reason = "Connection environment variable is empty"
@@ -145,18 +151,123 @@ export function validateConnectionSecretRefs(connection: ModelSettings["connecti
 		throw new Error("Invalid connection secret reference")
 }
 
-/** Existing remote provider controls remain authoritative at the host boundary. */
+type Managed = Record<string, unknown>
+const MANAGED_OPTION_PREFIXES: Record<string, string> = { bedrock: "aws", vertex: "vertex", litellm: "liteLlm" }
+const managedProviderKeys = (managed: Managed, providerId: string) => {
+	const prefix = MANAGED_OPTION_PREFIXES[toLegacyApiProvider(providerId)]
+	return prefix ? Object.keys(managed).filter((key) => key.startsWith(prefix)) : []
+}
+
+/**
+ * The connection a request runs on: the organization's value wherever one is locked, as legacy overlaid at
+ * read time. A stored copy from before the lock, or from another organization, is left alone but never used.
+ */
+export function managedConnection(
+	state: StateManager,
+	connection: ModelSettings["connections"][number],
+): ModelSettings["connections"][number] {
+	const managed = state.getRemoteConfigSettings() as Managed
+	const next = structuredClone(connection)
+	if (next.kind === "openai-compatible") {
+		if (typeof managed.openAiBaseUrl === "string") next.baseUrl = managed.openAiBaseUrl
+		if (typeof managed.azureApiVersion === "string") next.azureApiVersion = managed.azureApiVersion
+		if (managed.azureIdentity === true) next.auth = { kind: "azure-identity" }
+		if (managed.azureIdentity === false && next.auth.kind === "azure-identity")
+			next.auth = { kind: "keychain", secretRef: `settings:v1:connection:${next.id}:apiKey` }
+		if (managed.openAiHeaders && typeof managed.openAiHeaders === "object")
+			next.headers = Object.entries(managed.openAiHeaders as Record<string, string>).map(([name, value]) => ({
+				id: `managed:${name}`,
+				name,
+				storage: "plain" as const,
+				value,
+			}))
+		return next
+	}
+	if (next.providerId === "anthropic" && typeof managed.anthropicBaseUrl === "string") next.baseUrl = managed.anthropicBaseUrl
+	for (const key of managedProviderKeys(managed, next.providerId))
+		if (Object.hasOwn(ConnectionOptionsSchema.shape, key)) Object.assign(next.options, { [key]: managed[key] })
+	return next
+}
+
+/** The model-level half of {@link managedConnection}. */
+export function managedModelRow(state: StateManager, row: ModelRow, connection: ModelSettings["connections"][number]): ModelRow {
+	if (connection.kind !== "provider") return row
+	const managed = state.getRemoteConfigSettings() as Managed
+	const next = structuredClone(row)
+	for (const key of managedProviderKeys(managed, connection.providerId))
+		if (Object.hasOwn(ModelProviderOptionsSchema.shape, key)) Object.assign(next.providerOptions, { [key]: managed[key] })
+	return next
+}
+
+/** A new connection starts on the locked values. Locked headers stay out of the store: they only apply at request time. */
+export function managedConnectionForSave(
+	state: StateManager,
+	connection: ModelSettings["connections"][number],
+): ModelSettings["connections"][number] {
+	return { ...managedConnection(state, connection), headers: connection.headers }
+}
+
+/** Refuses a connection the organization's provider allowlist leaves out. */
+export function assertConnectionAllowed(state: StateManager, connection: ModelSettings["connections"][number]): void {
+	const providers = state.getRemoteConfigSettings().remoteConfiguredProviders ?? []
+	const provider = connection.kind === "provider" ? connection.providerId : "openai"
+	if (providers.length && !providers.includes(toLegacyApiProvider(provider) as never))
+		throw new Error("This provider is not allowed by your organization")
+}
+
+const pickedModelIds = (settings: ModelSettings) =>
+	new Set(
+		[
+			settings.roles.chat,
+			settings.roles.ask.pick,
+			settings.roles.background.pick,
+			...Object.values(settings.roles.background.overrides),
+			settings.roles.subagents.kind === "model" ? settings.roles.subagents.pick : null,
+			...settings.subagents.allowed.map((entry) => (entry.kind === "model" ? { modelId: entry.modelId } : null)),
+		].flatMap((pick) => (pick ? [pick.modelId] : [])),
+	)
+
+/**
+ * Existing remote provider controls remain authoritative at the host boundary. Only what this change
+ * touches is judged, so something outside policy from before can still be moved away from and removed.
+ * Requests check everything, every time: see {@link assertConfiguredModelRequestAllowed}.
+ */
 export function assertModelSettingsUnlocked(state: StateManager, next: ModelSettings): void {
 	const managed = state.getRemoteConfigSettings()
-	const providers = managed.remoteConfiguredProviders ?? []
-	for (const connection of next.connections) {
-		const provider = connection.kind === "provider" ? connection.providerId : "openai"
-		if (providers.length && !providers.includes(toLegacyApiProvider(provider) as never))
-			throw new Error("This provider is not allowed by your organization")
-	}
-
 	const before = state.getGlobalStateKey("modelSettings") ?? createDefaultModelSettings()
 	const changed = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b)
+	const lockedValue = (key: string) => (managed as Managed)[key]
+	/** A locked value can stay as it was or become the organization's; anything else is refused. */
+	const assertLock = (key: string, previous: unknown, value: unknown, matchesLock = !changed(lockedValue(key), value)) => {
+		if (lockedValue(key) !== undefined && changed(previous, value) && !matchesLock)
+			throw new Error(`Setting "${key}" is managed by your organization`)
+	}
+	const connectionOf = (settings: ModelSettings, modelId: string) => {
+		const model = settings.models.find((row) => row.id === modelId)
+		return { model, connection: settings.connections.find((c) => c.id === model?.connectionId) }
+	}
+
+	for (const connection of next.connections) {
+		const previous = before.connections.find((c) => c.id === connection.id)
+		if (changed(previous, connection)) assertConnectionAllowed(state, connection)
+	}
+	for (const model of next.models) {
+		const { connection } = connectionOf(next, model.id)
+		if (
+			connection &&
+			changed(
+				before.models.find((row) => row.id === model.id),
+				model,
+			)
+		)
+			assertConnectionAllowed(state, connection)
+	}
+	const pickedBefore = pickedModelIds(before)
+	for (const modelId of pickedModelIds(next)) {
+		const { connection } = connectionOf(next, modelId)
+		if (connection && !pickedBefore.has(modelId)) assertConnectionAllowed(state, connection)
+	}
+
 	const policyLocks = {
 		subagentsEnabled: [before.subagents.enabled, next.subagents.enabled],
 		subagentsMaxConcurrent: [before.subagents.maxConcurrent, next.subagents.maxConcurrent],
@@ -165,9 +276,7 @@ export function assertModelSettingsUnlocked(state: StateManager, next: ModelSett
 		subagentsAllowWeb: [before.subagents.access.web, next.subagents.access.web],
 		subagentsAllowMcp: [before.subagents.access.mcp, next.subagents.access.mcp],
 	}
-	for (const [key, [previous, value]] of Object.entries(policyLocks))
-		if (managed[key as keyof typeof managed] !== undefined && changed(previous, value))
-			throw new Error(`Setting "${key}" is managed by your organization`)
+	for (const [key, [previous, value]] of Object.entries(policyLocks)) assertLock(key, previous, value)
 	for (const connection of next.connections) {
 		const previous = before.connections.find((c) => c.id === connection.id)
 		const options = connection.kind === "provider" ? connection.options : {}
@@ -175,64 +284,66 @@ export function assertModelSettingsUnlocked(state: StateManager, next: ModelSett
 			const previousModel = before.models.find((row) => row.id === model.id)
 			const previousOptions = previousModel?.providerOptions ?? {}
 			for (const key of new Set([...Object.keys(previousOptions), ...Object.keys(model.providerOptions)]))
-				if (
-					managed[key as keyof typeof managed] !== undefined &&
-					changed(
-						previousOptions[key as keyof typeof previousOptions],
-						model.providerOptions[key as keyof typeof model.providerOptions],
-					)
+				assertLock(
+					key,
+					previousOptions[key as keyof typeof previousOptions],
+					model.providerOptions[key as keyof typeof model.providerOptions],
 				)
-					throw new Error(`Setting "${key}" is managed by your organization`)
 		}
 		const previousOptions = previous?.kind === "provider" ? previous.options : {}
 		for (const key of new Set([...Object.keys(options), ...Object.keys(previousOptions)]))
-			if (
-				managed[key as keyof typeof managed] !== undefined &&
-				changed(previousOptions[key as keyof typeof previousOptions], options[key as keyof typeof options])
-			)
-				throw new Error(`Setting "${key}" is managed by your organization`)
+			assertLock(key, previousOptions[key as keyof typeof previousOptions], options[key as keyof typeof options])
 
-		const lockedFields: Record<string, [unknown, unknown]> =
-			connection.kind === "openai-compatible"
-				? {
-						openAiBaseUrl: [previous?.baseUrl, connection.baseUrl],
-						azureApiVersion: [
-							previous?.kind === "openai-compatible" ? previous.azureApiVersion : undefined,
-							connection.azureApiVersion,
-						],
-						azureIdentity: [previous?.auth.kind === "azure-identity", connection.auth.kind === "azure-identity"],
-						openAiHeaders: [previous?.headers, connection.headers],
-					}
-				: connection.providerId === "anthropic"
-					? { anthropicBaseUrl: [previous?.baseUrl, connection.baseUrl] }
-					: {}
-		for (const [key, [oldValue, value]] of Object.entries(lockedFields)) {
-			if (managed[key as keyof typeof managed] !== undefined && changed(oldValue, value))
-				throw new Error(`Setting "${key}" is managed by your organization`)
+		if (connection.kind === "openai-compatible") {
+			const compatible = previous?.kind === "openai-compatible" ? previous : undefined
+			assertLock("openAiBaseUrl", compatible?.baseUrl ?? null, connection.baseUrl)
+			assertLock("azureApiVersion", compatible?.azureApiVersion ?? null, connection.azureApiVersion)
+			assertLock("azureIdentity", compatible?.auth.kind === "azure-identity", connection.auth.kind === "azure-identity")
+			assertLock(
+				"openAiHeaders",
+				compatible?.headers ?? [],
+				connection.headers,
+				headersMatch(lockedValue("openAiHeaders"), connection.headers),
+			)
+		} else if (connection.providerId === "anthropic") {
+			assertLock("anthropicBaseUrl", previous?.baseUrl ?? null, connection.baseUrl)
 		}
 		if (previous && connection.kind === "provider" && previous.kind === "provider") {
 			for (const key of new Set([...Object.keys(previous.secretRefs), ...Object.keys(connection.secretRefs)]))
-				if (
-					managed[key as keyof typeof managed] !== undefined &&
-					changed(previous.secretRefs[key], connection.secretRefs[key])
-				)
+				if (lockedValue(key) !== undefined && changed(previous.secretRefs[key], connection.secretRefs[key]))
 					throw new Error(`Setting "${key}" is managed by your organization`)
 		}
 	}
-	for (const [mode, pick] of [
-		["act", next.roles.chat],
-		["plan", next.roles.ask.enabled ? next.roles.ask.pick : next.roles.chat],
-	] as const) {
-		if (!pick) continue
-		const model = next.models.find((m) => m.id === pick.modelId)
-		const connection = next.connections.find((c) => c.id === model?.connectionId)
-		if (!model || !connection) continue
+	const rolePicks = (settings: ModelSettings) =>
+		[
+			["act", settings.roles.chat],
+			["plan", settings.roles.ask.enabled ? settings.roles.ask.pick : settings.roles.chat],
+		] as const
+	const previousPicks = rolePicks(before)
+	rolePicks(next).forEach(([mode, pick], index) => {
+		if (!pick) return
+		const { model, connection } = connectionOf(next, pick.modelId)
+		if (!model || !connection) return
+		const previousPick = previousPicks[index][1]
+		const previousModel = previousPick ? connectionOf(before, previousPick.modelId).model : undefined
+		if (previousPick?.modelId === pick.modelId && previousModel?.upstreamId === model.upstreamId) return
 		const provider = toLegacyApiProvider(connection.kind === "provider" ? connection.providerId : "openai")
-		const key = getProviderModelIdKey(provider, mode)
-		const lockedId = managed[key]
+		const lockedId = managed[getProviderModelIdKey(provider, mode)]
 		if (typeof lockedId === "string" && model.upstreamId !== lockedId)
 			throw new Error("This model is managed by your organization")
-	}
+	})
+}
+
+/** Plain headers whose names and values are exactly the organization's. A saved secret can't be read here. */
+const headersMatch = (locked: unknown, headers: ModelSettings["connections"][number]["headers"]) => {
+	if (!locked || typeof locked !== "object") return false
+	const expected = Object.entries(locked as Record<string, string>).map(([name, value]) => [name.toLowerCase(), value] as const)
+	return (
+		headers.length === expected.length &&
+		expected.every(([name, value]) =>
+			headers.some((h) => h.name.toLowerCase() === name && h.storage === "plain" && h.value === value),
+		)
+	)
 }
 
 export function modelDependencies(
@@ -442,8 +553,13 @@ export function resolveEffectiveConfiguredPick(state: StateManager, settings: Mo
 	const model = settings.models.find((row) => row.id === pick?.modelId)
 	const connection = settings.connections.find((row) => row.id === model?.connectionId)
 	if (!model || !connection) return resolveConfiguredPick(settings, pick)
+	const effective: ModelSettings = {
+		...settings,
+		connections: settings.connections.map((c) => (c.id === connection.id ? managedConnection(state, c) : c)),
+		models: settings.models.map((row) => (row.id === model.id ? managedModelRow(state, row, connection) : row)),
+	}
 	return resolveConfiguredPick(
-		settings,
+		effective,
 		pick,
 		configuredModelMetadata(state, settings, model, connection),
 		managedModelValues(state, model, connection),
@@ -505,9 +621,7 @@ export async function assertConfiguredModelRequestAllowed(
 				fail()
 		}
 	} else {
-		const prefix: Record<string, string> = { bedrock: "aws", vertex: "vertex", litellm: "liteLlm" }
-		for (const key of Object.keys(managed)) {
-			if (!prefix[provider] || !key.startsWith(prefix[provider])) continue
+		for (const key of managedProviderKeys(managed, provider)) {
 			if (key in connection.options) equal(key, connection.options[key as keyof typeof connection.options])
 			else if (key in model.providerOptions) equal(key, model.providerOptions[key as keyof typeof model.providerOptions])
 			else fail()

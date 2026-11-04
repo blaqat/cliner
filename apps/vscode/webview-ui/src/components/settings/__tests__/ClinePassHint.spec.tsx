@@ -45,6 +45,20 @@ const mockPromo = (overrides: Partial<ReturnType<typeof useClinePassPromo>> = {}
 	} as any)
 }
 
+describe("ClinePassHint with the new store in use", () => {
+	it("opens the new connection instead of writing the old provider", () => {
+		vi.clearAllMocks()
+		const switchToClinePassProvider = vi.fn()
+		mockExtensionState({ modelSettings: {} })
+		mockPromo({ switchToClinePassProvider } as never)
+		vi.mocked(useApiConfigurationHandlers).mockReturnValue({ handleModeFieldChange: mockHandleModeFieldChange } as never)
+		render(<ClinePassHint currentMode="act" selectedProvider="anthropic" />)
+		fireEvent.click(screen.getByText("Try it"))
+		expect(switchToClinePassProvider).toHaveBeenCalled()
+		expect(mockHandleModeFieldChange).not.toHaveBeenCalled()
+	})
+})
+
 describe("ClinePassHint", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()

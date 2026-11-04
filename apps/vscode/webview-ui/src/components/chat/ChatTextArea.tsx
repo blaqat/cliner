@@ -57,6 +57,7 @@ import ModelEffortChip from "./composer/ModelEffortChip"
 import { modelHasReasoning } from "./composer/modelSelection"
 import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
+import { selectedModelOffersLevels } from "./composer/selectedConfiguredModel"
 import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import { WorkspaceButton } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
@@ -192,6 +193,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const {
 			mode,
 			apiConfiguration,
+			composerApiSelection,
+			modelSettings,
 			openRouterModels,
 			platform,
 			localWorkflowToggles,
@@ -1596,7 +1599,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
-			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
+			hasEffort: modelSettings
+				? selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode)
+				: modelHasReasoning(selectedModelId, selectedModelInfo),
 			running: showRunningSendButtons,
 		})
 

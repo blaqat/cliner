@@ -1,5 +1,7 @@
 import { useCallback, useMemo } from "react"
+import { selectedConfiguredModel } from "@/components/chat/composer/selectedConfiguredModel"
 import { buildClinePassSubscribeUrl, buildClinePassSubscriptionPageUrl } from "@/components/onboarding/clinePassSubscribe"
+import { ensureAccountConnection } from "@/components/settings/models/configuredModelActions"
 import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
 import { useClineAuth } from "@/context/ClineAuthContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -15,8 +17,16 @@ export const CLINE_PASS_PROVIDER_ID = "cline-pass"
  * organization disallows.
  */
 export function useClinePassPromo() {
-	const { apiConfiguration, environment, navigateToSettings, remoteConfigSettings, mode, planActSeparateModelsSetting } =
-		useExtensionState()
+	const {
+		apiConfiguration,
+		composerApiSelection,
+		environment,
+		modelSettings,
+		navigateToSettings,
+		remoteConfigSettings,
+		mode,
+		planActSeparateModelsSetting,
+	} = useExtensionState()
 	const { clineUser } = useClineAuth()
 	const { handleModeFieldChange } = useApiConfigurationHandlers()
 
@@ -28,10 +38,12 @@ export function useClinePassPromo() {
 	// Mirrors the switch action's scope: with separate plan/act models the
 	// promos only affect (and therefore only reflect) the current mode.
 	const currentModeProvider = mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
-	const isUsingClinePass = planActSeparateModelsSetting
-		? currentModeProvider === CLINE_PASS_PROVIDER_ID
-		: apiConfiguration?.planModeApiProvider === CLINE_PASS_PROVIDER_ID ||
-			apiConfiguration?.actModeApiProvider === CLINE_PASS_PROVIDER_ID
+	const isUsingClinePass = modelSettings
+		? selectedConfiguredModel({ modelSettings, composerApiSelection }, mode)?.provider === CLINE_PASS_PROVIDER_ID
+		: planActSeparateModelsSetting
+			? currentModeProvider === CLINE_PASS_PROVIDER_ID
+			: apiConfiguration?.planModeApiProvider === CLINE_PASS_PROVIDER_ID ||
+				apiConfiguration?.actModeApiProvider === CLINE_PASS_PROVIDER_ID
 
 	const subscribeUrl = useMemo(() => buildClinePassSubscribeUrl(clineUser?.appBaseUrl), [clineUser?.appBaseUrl])
 	const manageSubscriptionUrl = useMemo(() => buildClinePassSubscriptionPageUrl(clineUser?.appBaseUrl), [clineUser?.appBaseUrl])
@@ -68,10 +80,20 @@ export function useClinePassPromo() {
 	// provider update succeeded, so a failure doesn't strand the user on the
 	// settings page with their old provider still selected.
 	const switchToClinePassProvider = useCallback(async () => {
+		if (modelSettings) {
+			// Models live on the page it lands on: the person picks one there. Nothing here changes what runs.
+			try {
+				navigateToSettings(`connection:${await ensureAccountConnection(CLINE_PASS_PROVIDER_ID, "ClinePass")}`)
+			} catch (error) {
+				console.error("Failed to add the ClinePass connection:", error)
+				navigateToSettings("models")
+			}
+			return
+		}
 		if (await selectClinePassProvider()) {
 			navigateToSettings("api-config")
 		}
-	}, [selectClinePassProvider, navigateToSettings])
+	}, [modelSettings, selectClinePassProvider, navigateToSettings])
 
 	return {
 		isClinePassEnabled,

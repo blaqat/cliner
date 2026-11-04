@@ -6,6 +6,7 @@ import { OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
 import { Logger } from "@/shared/services/Logger"
@@ -17,6 +18,29 @@ import { applyThreadDefaultProfiles, findModelProfile, saveModelProfiles } from 
 import { normalizeProviderSwitchModel } from "../models/providerSwitchNormalization"
 import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "../models/taskApiModel"
 
+/** Fields the new store owns. The new pages write them through ModelsService, so these only come from old callers. */
+const LEGACY_MODEL_SETTINGS = [
+	"apiConfiguration",
+	"planActSeparateModelsSetting",
+	"subagentsEnabled",
+	"subagentsAllowWrite",
+	"subagentsAllowCommands",
+	"subagentsAllowMcp",
+	"subagentsAllowWeb",
+	"subagentsMaxConcurrent",
+	"profiles",
+	"threadDefaultProfileId",
+	"threadSeparateAskActProfiles",
+	"threadAskProfileId",
+	"threadActProfileId",
+	"subagentProfilesEnabled",
+	"subagentDefaultProfileId",
+	"subagentAllowedProfileIds",
+	"threadTitlesEnabled",
+	"threadTitlesProfileId",
+	"walkthroughGenerateProfileId",
+] as const
+
 /**
  * Updates multiple extension settings in a single request
  * @param controller The controller instance
@@ -25,6 +49,9 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
  */
 export async function updateSettings(controller: Controller, request: UpdateSettingsRequest): Promise<Empty> {
 	try {
+		for (const key of LEGACY_MODEL_SETTINGS) {
+			if (request[key] !== undefined) assertLegacySettingsWrite(controller.stateManager, `Setting ${key}`)
+		}
 		// Refuse managed fields before applying any part of this request.
 		const managed = Object.keys(request).some(
 			(key) => key.startsWith("openTelemetry") && request[key as keyof UpdateSettingsRequest] !== undefined,

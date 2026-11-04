@@ -18,7 +18,7 @@ export async function resetState(controller: Controller, request: ResetStateRequ
 		if (request.global) {
 			HostProvider.window.showMessage({
 				type: ShowMessageType.INFORMATION,
-				message: "Resetting global state...",
+				message: "Removing every connection and model, the keys saved for them, and all other settings...",
 			})
 			await resetGlobalState()
 		} else {
@@ -36,7 +36,9 @@ export async function resetState(controller: Controller, request: ResetStateRequ
 
 		HostProvider.window.showMessage({
 			type: ShowMessageType.INFORMATION,
-			message: "State reset",
+			message: request.global
+				? "Settings reset. Connections, models and their saved keys were removed. Add a model in Settings > Models to run again."
+				: "Workspace state reset",
 		})
 		await controller.postStateToWebview()
 

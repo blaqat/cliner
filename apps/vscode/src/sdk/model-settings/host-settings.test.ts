@@ -7,8 +7,8 @@ import {
 } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
 import { DependencyError, mutateSettings, savedThreadUsage } from "@/core/controller/models/modelSettingsRpc"
-import { InMemoryConnectionSecretStore } from "./connection-secret-store"
 import { resolveConfiguredPick, resolveThreadPick } from "@/sdk/model-settings-resolver"
+import { InMemoryConnectionSecretStore } from "./connection-secret-store"
 import {
 	assertConfiguredModelRequestAllowed,
 	catalogModelValues,
@@ -16,6 +16,7 @@ import {
 	managedModelValues,
 	readModelSettingsState,
 	rememberDetectedModelMetadata,
+	resolveEffectiveConfiguredPick,
 } from "./host-settings"
 
 vi.mock("@/shared/services/Logger", () => ({ Logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
@@ -247,10 +248,7 @@ describe("managed RPC mutation matrix", () => {
 		"saveConnection",
 		"saveConfiguredModels",
 		"duplicateConfiguredModel",
-		"deleteConfiguredModel",
-		"deleteConnection",
 		"setModelRoles",
-		"setSubagentPolicy",
 		"makeModelDefault",
 	] as const)("%s cannot bypass managed provider restrictions", async (operation) => {
 		const f = fixture()
@@ -263,14 +261,213 @@ describe("managed RPC mutation matrix", () => {
 			saveConnection: { expectedRevision: 2, connection: { id: "c", name: "Changed" } },
 			saveConfiguredModels: { expectedRevision: 2, models: [{ ...row, upstreamId: "other" }] },
 			duplicateConfiguredModel: { modelId: "m" },
-			deleteConfiguredModel: { expectedRevision: 2, modelId: "m" },
-			deleteConnection: { expectedRevision: 2, connectionId: "c" },
 			setModelRoles: { expectedRevision: 2, roles: { ...f.get().roles, chat: { modelId: "m", levelId: "default" } } },
-			setSubagentPolicy: { expectedRevision: 2, subagents: { ...f.get().subagents, maxConcurrent: 0 } },
 			makeModelDefault: { expectedRevision: 2, mode: "act", pick: { modelId: "m", levelId: "default" } },
 		}
 		await expect(f.call(operation, cases[operation])).rejects.toThrow()
 		expect(f.get().revision).toBe(2)
+	})
+})
+
+describe("a connection outside the organization's allowlist", () => {
+	const row = (id: string, connectionId: string) => ({
+		id,
+		connectionId,
+		upstreamId: id,
+		name: "",
+		kind: "chat",
+		overrides: {},
+		providerOptions: {},
+	})
+	/** A migrated connection from before the policy, with Chat running on it, beside one that's allowed. */
+	const seeded = async () => {
+		const f = fixture()
+		const allowed = {
+			...createCompatibleConnection("ok"),
+			kind: "provider" as const,
+			providerId: "anthropic",
+			options: {},
+			secretRefs: {},
+		}
+		delete (allowed as { apiFormat?: unknown }).apiFormat
+		delete (allowed as { azureApiVersion?: unknown }).azureApiVersion
+		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("old") })
+		await f.call("saveConnection", { expectedRevision: 1, connection: allowed })
+		await f.call("saveConfiguredModels", { expectedRevision: 2, models: [row("gone", "old"), row("fine", "ok")] })
+		await f.call("setModelRoles", {
+			expectedRevision: 3,
+			roles: { ...f.get().roles, chat: { modelId: "gone", levelId: "default" } },
+		})
+		f.managed.remoteConfiguredProviders = ["anthropic"]
+		return f
+	}
+	it("doesn't block edits to anything else", async () => {
+		const f = await seeded()
+		await f.call("saveConfiguredModels", { expectedRevision: 4, models: [{ ...row("fine", "ok"), name: "Renamed" }] })
+		await f.call("setSubagentPolicy", { expectedRevision: 5, subagents: { ...f.get().subagents, maxConcurrent: 2 } })
+		await f.call("saveConnection", { expectedRevision: 6, connection: { id: "ok", name: "Renamed" } })
+		expect(f.get().revision).toBe(7)
+	})
+	it("lets a role move off it, then lets it be deleted", async () => {
+		const f = await seeded()
+		await expect(f.call("deleteConnection", { expectedRevision: 4, connectionId: "old" })).rejects.toBeInstanceOf(
+			DependencyError,
+		)
+		await f.call("makeModelDefault", { expectedRevision: 4, mode: "act", pick: { modelId: "fine", levelId: "default" } })
+		await f.call("deleteConfiguredModel", { expectedRevision: 5, modelId: "gone" })
+		await f.call("deleteConnection", { expectedRevision: 6, connectionId: "old" })
+		expect(f.get().connections.map((c) => c.id)).toEqual(["ok"])
+	})
+	it("still can't be picked, edited, added to or tested", async () => {
+		const f = await seeded()
+		await expect(f.call("saveConnection", { expectedRevision: 4, connection: { id: "old", name: "x" } })).rejects.toThrow(
+			/not allowed/,
+		)
+		await expect(f.call("saveConfiguredModels", { expectedRevision: 4, models: [row("more", "old")] })).rejects.toThrow(
+			/not allowed/,
+		)
+		await f.call("makeModelDefault", { expectedRevision: 4, mode: "act", pick: { modelId: "fine", levelId: "default" } })
+		await expect(
+			f.call("makeModelDefault", { expectedRevision: 5, mode: "act", pick: { modelId: "gone", levelId: "default" } }),
+		).rejects.toThrow(/not allowed/)
+		await expect(
+			f.call("setSubagentPolicy", {
+				expectedRevision: 5,
+				subagents: { ...f.get().subagents, allowed: [{ kind: "model", modelId: "gone", levels: ["default"] }] },
+			}),
+		).rejects.toThrow(/not allowed/)
+		await expect(
+			assertConfiguredModelRequestAllowed(f.state as never, f.get(), { modelId: "gone", levelId: "default" }),
+		).rejects.toThrow(/organization/)
+	})
+	it("a role already outside a locked model ID doesn't block other edits, but moving to one is refused", async () => {
+		const f = await seeded()
+		f.managed.remoteConfiguredProviders = []
+		f.managed.actModeOpenAiModelId = "managed-model"
+		await f.call("saveConfiguredModels", { expectedRevision: 4, models: [{ ...row("fine", "ok"), name: "Renamed" }] })
+		await f.call("saveConfiguredModels", { expectedRevision: 5, models: [row("wrong", "old")] })
+		await expect(
+			f.call("makeModelDefault", { expectedRevision: 6, mode: "act", pick: { modelId: "wrong", levelId: "default" } }),
+		).rejects.toThrow(/managed/)
+	})
+})
+
+describe("a value the organization locks", () => {
+	const row = { id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} }
+	const pick = { modelId: "m", levelId: "default" }
+	const compatible = async () => {
+		const f = fixture()
+		const connection = createCompatibleConnection("c")
+		connection.baseUrl = "https://mine.invalid"
+		connection.headers = [{ id: "h", name: "X-Mine", storage: "plain", value: "mine" }]
+		await f.call("saveConnection", { expectedRevision: 0, connection })
+		await f.call("saveConfiguredModels", { expectedRevision: 1, models: [row] })
+		return f
+	}
+	it("a stored copy takes the managed value at request time instead of failing", async () => {
+		const f = await compatible()
+		f.managed.openAiBaseUrl = "https://managed.invalid"
+		f.managed.azureApiVersion = "2024-01"
+		f.managed.openAiHeaders = { "X-Org": "locked" }
+		await expect(assertConfiguredModelRequestAllowed(f.state as never, f.get(), pick)).resolves.toBeUndefined()
+		const { connection } = resolveEffectiveConfiguredPick(f.state as never, f.get(), pick)
+		expect(connection.baseUrl).toBe("https://managed.invalid")
+		expect(connection).toMatchObject({ azureApiVersion: "2024-01" })
+		expect(connection.headers).toEqual([expect.objectContaining({ name: "X-Org", value: "locked" })])
+		expect(f.get().connections[0].baseUrl).toBe("https://mine.invalid")
+	})
+	it("saving the correct managed value succeeds; any other is still refused", async () => {
+		const f = await compatible()
+		f.managed.openAiBaseUrl = "https://managed.invalid"
+		f.managed.openAiHeaders = { "X-Org": "locked" }
+		await expect(
+			f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", baseUrl: "https://other.invalid" } }),
+		).rejects.toThrow(/managed/)
+		await f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", baseUrl: "https://managed.invalid" } })
+		await f.call("saveConnection", {
+			expectedRevision: 3,
+			connection: { id: "c", headers: [{ id: "h", name: "x-org", storage: "plain", value: "locked" }] },
+		})
+		expect(f.get().connections[0].baseUrl).toBe("https://managed.invalid")
+		await expect(
+			f.call("saveConnection", {
+				expectedRevision: 4,
+				connection: { id: "c", headers: [{ id: "h", name: "x-org", storage: "plain", value: "mine" }] },
+			}),
+		).rejects.toThrow(/managed/)
+	})
+	it("an edit that leaves a stale locked value alone goes through", async () => {
+		const f = await compatible()
+		f.managed.openAiBaseUrl = "https://managed.invalid"
+		await f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", name: "Renamed" } })
+		expect(f.get().connections[0].name).toBe("Renamed")
+	})
+	it("a new connection starts on the managed values and needs none of its own", async () => {
+		const f = fixture()
+		f.managed.openAiBaseUrl = "https://managed.invalid"
+		f.managed.azureApiVersion = "2024-01"
+		f.managed.openAiHeaders = { "X-Org": "locked" }
+		const connection = createCompatibleConnection("c")
+		connection.baseUrl = "https://typed.invalid"
+		await f.call("saveConnection", { expectedRevision: 0, connection })
+		expect(f.get().connections[0]).toMatchObject({
+			baseUrl: "https://managed.invalid",
+			azureApiVersion: "2024-01",
+			headers: [],
+		})
+		await f.call("saveConfiguredModels", { expectedRevision: 1, models: [row] })
+		await expect(assertConfiguredModelRequestAllowed(f.state as never, f.get(), pick)).resolves.toBeUndefined()
+	})
+	it.each([
+		["bedrock", { awsRegion: "us-east-1", awsBedrockEndpoint: "https://vpc.invalid" }, { awsUseCrossRegionInference: true }],
+		["vertex", { vertexProjectId: "p", vertexRegion: "r" }, {}],
+		["litellm", { liteLlmBaseUrl: "https://lite.invalid" }, {}],
+	] as const)("a %s connection takes managed keys it doesn't have", async (providerId, options, modelOptions) => {
+		const f = fixture()
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection: {
+				id: "c",
+				name: "",
+				kind: "provider",
+				providerId,
+				baseUrl: null,
+				auth: { kind: "none" },
+				headers: [],
+				requestTimeoutMs: null,
+				defaults: {},
+				options: {},
+				secretRefs: {},
+			},
+		})
+		await f.call("saveConfiguredModels", { expectedRevision: 1, models: [row] })
+		Object.assign(f.managed, options, modelOptions)
+		await expect(assertConfiguredModelRequestAllowed(f.state as never, f.get(), pick)).resolves.toBeUndefined()
+		const resolved = resolveEffectiveConfiguredPick(f.state as never, f.get(), pick)
+		expect(resolved.connection).toMatchObject({ options })
+		expect(resolved.model.providerOptions).toMatchObject(modelOptions)
+	})
+	it("a managed key this settings store has no field for still fails closed", async () => {
+		const f = fixture()
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection: {
+				id: "c",
+				name: "",
+				kind: "provider",
+				providerId: "bedrock",
+				baseUrl: null,
+				auth: { kind: "none" },
+				headers: [],
+				requestTimeoutMs: null,
+				defaults: {},
+				options: {},
+				secretRefs: {},
+			},
+		})
+		await f.call("saveConfiguredModels", { expectedRevision: 1, models: [row] })
+		f.managed.awsSomethingNew = "x"
+		await expect(assertConfiguredModelRequestAllowed(f.state as never, f.get(), pick)).rejects.toThrow(/organization/)
 	})
 })
 
@@ -487,7 +684,7 @@ describe("managed and metadata request projections", () => {
 		expect(catalogModelValues(row, connection).contextWindow).toBe(model.contextWindow)
 		expect(row.overrides).toEqual({})
 	})
-	it("projects managed cache policy and refuses changed organization URL at request time", async () => {
+	it("projects managed cache policy and runs on the organization URL at request time", async () => {
 		const f = fixture()
 		const connection = createCompatibleConnection("c")
 		connection.baseUrl = "https://old.invalid"
@@ -501,7 +698,7 @@ describe("managed and metadata request projections", () => {
 		f.managed.openAiBaseUrl = "https://managed.invalid"
 		await expect(
 			assertConfiguredModelRequestAllowed(f.state as never, f.get(), { modelId: "m", levelId: "default" }),
-		).rejects.toThrow(/managed/)
+		).resolves.toBeUndefined()
 		f.managed.awsBedrockUsePromptCache = false
 		expect(
 			managedModelValues(f.state as never, f.get().models[0], {

@@ -8,6 +8,7 @@ import {
 	fromProtobufOpenAiCompatibleModelInfo,
 } from "@shared/proto-conversions/models/typeConversion"
 import { OpenaiReasoningEffort } from "@shared/storage/types"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import type { ApiConfiguration } from "@/shared/api"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
@@ -25,6 +26,7 @@ export async function updateApiConfigurationProto(
 	request: UpdateApiConfigurationRequest,
 ): Promise<Empty> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Changing the API configuration")
 		if (!request.apiConfiguration) {
 			Logger.log("[APICONFIG: updateApiConfigurationProto] API configuration is required")
 			throw new Error("API configuration is required")

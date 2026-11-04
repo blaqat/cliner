@@ -1,7 +1,7 @@
 import { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { UpdateSettingsRequest } from "@shared/proto/cline/state"
 import { AlertCircleIcon } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import ClineLogoWhite from "@/assets/ClineLogoWhite"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient, StateServiceClient } from "@/services/grpc-client"
@@ -13,6 +13,8 @@ import {
 	type ProfileDraft,
 	validateProfileDraftConfig,
 } from "../settings/apiProfiles/profileDraft"
+import { newId } from "../settings/models/modelsView"
+import { type FirstModelIds, saveFirstModel } from "./firstModel"
 
 const ONBOARDING_PAGE = "byok_provider_config"
 
@@ -22,7 +24,10 @@ const ONBOARDING_PAGE = "byok_provider_config"
  * configuration and assigned to both Ask and Act.
  */
 const OnboardingView = () => {
-	const { hideAccount, hideSettings, setShowWelcome } = useExtensionState()
+	const { hideAccount, hideSettings, modelSettings, setShowWelcome } = useExtensionState()
+	const usesModelSettings = !!modelSettings
+	// A retry after a failed step saves over what the last try wrote, rather than adding another.
+	const firstModelIds = useRef<Record<string, FirstModelIds>>({})
 	const [draft, setDraft] = useState<ProfileDraft>(() => ({
 		...newProfileDraft(),
 		name: PROVIDER_LABELS[newProfileDraft().provider],
@@ -62,17 +67,22 @@ const OnboardingView = () => {
 			setIsSaving(true)
 			setError(undefined)
 			try {
-				const response = await ModelsServiceClient.saveApiProfile(buildSaveRequest(next))
-				const profileId = response.profile?.id
-				if (!profileId) {
-					throw new Error("The configuration was not saved.")
+				if (usesModelSettings) {
+					firstModelIds.current[next.provider] ??= { connectionId: newId(), modelId: newId() }
+					await saveFirstModel(next, firstModelIds.current[next.provider])
+				} else {
+					const response = await ModelsServiceClient.saveApiProfile(buildSaveRequest(next))
+					const profileId = response.profile?.id
+					if (!profileId) {
+						throw new Error("The configuration was not saved.")
+					}
+					// Ask and Act share the saved configuration created here.
+					await StateServiceClient.updateSettings(UpdateSettingsRequest.create({ planActSeparateModelsSetting: true }))
+					await Promise.all([
+						ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "plan", profileId })),
+						ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "act", profileId })),
+					])
 				}
-				// Ask and Act share the saved configuration created here.
-				await StateServiceClient.updateSettings(UpdateSettingsRequest.create({ planActSeparateModelsSetting: true }))
-				await Promise.all([
-					ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "plan", profileId })),
-					ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "act", profileId })),
-				])
 				await StateServiceClient.setWelcomeViewCompleted({ value: true }).catch(() => {})
 				setShowWelcome(false)
 				hideAccount()
@@ -90,7 +100,7 @@ const OnboardingView = () => {
 				setIsSaving(false)
 			}
 		},
-		[hideAccount, hideSettings, setShowWelcome],
+		[hideAccount, hideSettings, setShowWelcome, usesModelSettings],
 	)
 
 	return (
@@ -99,7 +109,9 @@ const OnboardingView = () => {
 				<ClineLogoWhite className="size-16 flex-shrink-0" />
 				<h2 className="text-lg font-semibold p-0 flex-shrink-0">Configure your provider</h2>
 				<p className="text-foreground text-sm text-center m-0 p-0 flex-shrink-0">
-					Create an API configuration to get started. It is used for both Ask and Act.
+					{usesModelSettings
+						? "Set up your first model to get started. It runs your chats and background text."
+						: "Create an API configuration to get started. It is used for both Ask and Act."}
 				</p>
 
 				<div className="flex-1 w-full flex max-w-lg overflow-y-auto min-h-0">

@@ -18,8 +18,14 @@ export function selectSubagentModel(
 	policy: SubagentModelPolicyV1,
 	parent: SubagentModelConnection,
 ): SubagentProfileSelection {
-	const unavailable = (id: string) =>
-		`Model "${id}" is allowed but not configured. Open Settings > Models to fix it.`;
+	const unavailable = (id: string) => {
+		const broken = policy.unavailable?.[id];
+		return broken
+			? `Model "${broken.name}" can't run: ${broken.reason}`
+			: `Model "${id}" is allowed but not configured. Open Settings > Models to fix it.`;
+	};
+	const levelUnavailable = (name: string, level: string) =>
+		`Saved level is unavailable: ${name} doesn't offer "${level}". Open Settings > Subagents to fix it.`;
 	if (input.profile !== undefined)
 		return {
 			error: "The profile parameter is no longer supported. Use model instead.",
@@ -41,17 +47,13 @@ export function selectSubagentModel(
 			)
 				throw new Error("Invalid subagent model policy.");
 		}
-		for (const entry of policy.allowed) {
-			if (!entry.levels.length) throw new Error("Saved level is unavailable");
-			if (entry.model !== "parent") {
-				const record = policy.models[entry.model];
-				if (!record) throw new Error(unavailable(entry.model));
-				if (entry.levels.some((id) => !record.levels.some((l) => l.id === id)))
-					throw new Error("Saved level is unavailable");
-			}
-		}
-		const resolve = (id: string, level: string): SubagentProfileSelection => {
-			const record = id === "parent" ? undefined : policy.models[id];
+		const resolve = (
+			id: string,
+			savedLevel: string,
+			isDefault = false,
+		): SubagentProfileSelection => {
+			let level = savedLevel;
+			let record = id === "parent" ? undefined : policy.models[id];
 			if (id !== "parent" && !record) throw new Error(unavailable(id));
 			if (id === "parent" && level === "inherit") {
 				return {
@@ -73,43 +75,36 @@ export function selectSubagentModel(
 					known?.reasoningOptions?.flatMap((o) =>
 						o.type === "effort" ? o.values : [],
 					) ?? [];
-				const runtimeLevel = parent.providerConfig?.settingsModelLevels?.find(
-					(l) => l.id === level,
-				);
-				if (!runtimeLevel && !efforts.some((e) => e === level))
-					throw new Error("Saved level is unavailable");
-				const synthetic: SubagentModelPolicyV1 = {
-					...policy,
-					models: {
-						thread: {
-							id: "thread",
-							name: "parent",
-							connection: parent,
-							levels: [
-								{
-									id: level,
-									label: level,
-									rank: 0,
-									request:
-										runtimeLevel?.request ??
-										(level === "default"
-											? { kind: "default" }
-											: { kind: "effort", value: level }),
-								},
-							],
+				const offered = (id: string) =>
+					parent.providerConfig?.settingsModelLevels?.find((l) => l.id === id);
+				if (!offered(level) && !efforts.some((e) => e === level)) {
+					// The parent changes per thread, so a saved default can't name a level
+					// for every model. It runs at the model's default; never above it.
+					if (level !== "default" && !isDefault)
+						throw new Error(levelUnavailable("the parent model", level));
+					level = "default";
+				}
+				const runtimeLevel = offered(level);
+				record = {
+					id: "thread",
+					name: "parent",
+					connection: parent,
+					levels: [
+						{
+							id: level,
+							label: level,
+							rank: 0,
+							request:
+								runtimeLevel?.request ??
+								(level === "default"
+									? { kind: "default" }
+									: { kind: "effort", value: level }),
 						},
-					},
-					default: { model: "thread", level },
-					allowed: [],
-				};
-				return {
-					...selectSubagentModel({}, synthetic, parent),
-					profileId: "parent",
-					profileName: "parent",
+					],
 				};
 			}
 			const selected = record!.levels.find((l) => l.id === level);
-			if (!selected) throw new Error("Saved level is unavailable");
+			if (!selected) throw new Error(levelUnavailable(record!.name, level));
 			const connection = record!.connection;
 			const pc = {
 				...connection.providerConfig,
@@ -148,7 +143,13 @@ export function selectSubagentModel(
 					thinking: undefined,
 				},
 			} as SubagentModelConnection;
-			if (compatible) {
+			if (pc.settingsFetchAtLevel) {
+				// The connection's fetch already applies its own level. Build it at the
+				// selected one rather than wrapping it, or that level is sent instead.
+				overrides.providerConfig!.fetch = pc.settingsFetchAtLevel(
+					selected.request,
+				);
+			} else if (compatible) {
 				const format =
 					pc.routingProviderId === "openai-native" ? "responses" : "chat";
 				applyCompatibleRequestIntent({}, format, intent);
@@ -192,7 +193,7 @@ export function selectSubagentModel(
 						);
 				if (!model) {
 					if (selected.request.kind !== "default")
-						throw new Error("Saved level is unavailable");
+						throw new Error(levelUnavailable(record!.name, level));
 				} else {
 					const request = applyNativeRequestIntent(
 						{
@@ -225,12 +226,35 @@ export function selectSubagentModel(
 				overrides,
 			};
 		};
-		// Validate the saved default even when the call chooses another model.
-		const fallback = resolve(policy.default.model, policy.default.level);
-		if (fallback.error) return fallback;
+		const usable = (entries: SubagentModelPolicyV1["allowed"]) =>
+			entries.flatMap((entry) => {
+				const known = policy.models[entry.model];
+				if (entry.model === "parent") return [entry];
+				if (!known) return [];
+				const levels = entry.levels.filter((id) =>
+					known.levels.some((l) => l.id === id),
+				);
+				return levels.length ? [{ ...entry, levels }] : [];
+			});
+		const describe = (entries: SubagentModelPolicyV1["allowed"]) =>
+			entries.map((e) => `${e.model} (${e.levels.join(", ")})`).join(", ");
 		const explicit =
 			input.model !== undefined || input.reasoningEffort !== undefined;
-		if (!explicit) return fallback;
+		// A stale default or allowed entry only affects a call that asks for it.
+		if (!explicit) {
+			try {
+				return resolve(policy.default.model, policy.default.level, true);
+			} catch (error) {
+				const others = usable(policy.allowed);
+				throw new Error(
+					`The default subagent model can't start. ${error instanceof Error ? error.message : String(error)}${
+						others.length
+							? ` Pass model to use one of these instead: ${describe(others)}.`
+							: ""
+					}`,
+				);
+			}
+		}
 		if (!policy.allowed.length)
 			return {
 				error:
@@ -250,8 +274,18 @@ export function selectSubagentModel(
 				levels: [policy.default.level],
 			});
 		let id = input.model ?? policy.default.model;
-		if (!(id in policy.models) && id !== "parent") {
-			const named = Object.values(policy.models).filter((m) => m.name === id);
+		if (
+			!(id in policy.models) &&
+			!(id in (policy.unavailable ?? {})) &&
+			id !== "parent"
+		) {
+			const named = [
+				...Object.values(policy.models),
+				...Object.entries(policy.unavailable ?? {}).map(([modelId, broken]) => ({
+					id: modelId,
+					name: broken.name,
+				})),
+			].filter((m) => m.name === id);
 			if (named.length > 1)
 				return {
 					error: `Model name "${id}" is ambiguous. Pass the model id: ${named.map((m) => `${m.name} (${m.id})`).join(", ")}.`,
@@ -261,8 +295,10 @@ export function selectSubagentModel(
 		const entry = allowed.find((e) => e.model === id);
 		if (!entry)
 			return {
-				error: `Model "${input.model}" is not allowed. Allowed: ${allowed.map((e) => `${e.model} (${e.levels.join(", ")})`).join(", ")}. Omit model to use the default: ${policy.default.model} at ${policy.default.level}.`,
+				error: `Model "${input.model}" is not allowed. Allowed: ${describe(usable(allowed))}. Omit model to use the default: ${policy.default.model} at ${policy.default.level}.`,
 			};
+		if (id !== "parent" && !policy.models[id])
+			return { error: unavailable(id) };
 		const parentRanks = [
 			"default",
 			"minimal",
@@ -274,7 +310,9 @@ export function selectSubagentModel(
 		];
 		const rank = (level: string): number => {
 			if (id !== "parent")
-				return policy.models[id]!.levels.find((l) => l.id === level)!.rank;
+				return (
+					policy.models[id]!.levels.find((l) => l.id === level)?.rank ?? Infinity
+				);
 			const inherited = parent.providerConfig?.settingsRequestIntent?.level;
 			const runtimeLevel = parent.providerConfig?.settingsModelLevels?.find(
 				(l) => l.id === level,
@@ -297,13 +335,31 @@ export function selectSubagentModel(
 			return parentRanks.indexOf(level);
 		};
 		const levels = [...entry.levels].sort((a, b) => rank(a) - rank(b));
-		const level = input.reasoningEffort ?? levels[0]!;
-		if (!levels.includes(level))
-			return {
-				error: `Reasoning effort "${level}" is not allowed for ${id}. Allowed: ${entry.levels.join(", ")}.`,
-			};
-		return resolve(id, level);
+		if (input.reasoningEffort !== undefined) {
+			if (!levels.includes(input.reasoningEffort))
+				return {
+					error: `Reasoning effort "${input.reasoningEffort}" is not allowed for ${id}. Allowed: ${entry.levels.join(", ")}.`,
+				};
+			return resolve(id, input.reasoningEffort);
+		}
+		// Named with no level: the lowest allowed one this model still offers.
+		let lastError: unknown = new Error(
+			`No level is allowed for ${id}. Open Settings > Subagents to fix it.`,
+		);
+		for (const level of levels) {
+			try {
+				return resolve(id, level);
+			} catch (error) {
+				lastError = error;
+			}
+		}
+		throw lastError;
 	} catch (error) {
-		return { error: error instanceof Error ? error.message : String(error) };
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			error: /Open Settings/.test(message)
+				? message
+				: `${message.replace(/\.$/, "")}. Open Settings > Subagents to fix it.`,
+		};
 	}
 }

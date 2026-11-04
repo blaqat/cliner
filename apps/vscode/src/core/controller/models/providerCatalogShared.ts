@@ -1,4 +1,5 @@
 import type { ApiConfiguration, ModelInfo } from "@shared/api"
+import type { StateManager } from "@/core/storage/StateManager"
 import { filterChatModelMap, resolveChatModelDefault } from "@/sdk/model-catalog/chat-models"
 import type {
 	EffectiveProviderConfig,
@@ -14,6 +15,7 @@ import type {
 	ResolvedModelSelection,
 } from "@/sdk/model-catalog/contracts"
 import { parseProviderId } from "@/sdk/model-catalog/provider-id"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import {
 	AwsProviderConfig,
 	CatalogErrorInfo,
@@ -44,6 +46,12 @@ export interface ProviderCatalogStateController extends ProviderCatalogControlle
 	}
 	handleApiConfigurationChanged?(previous: ApiConfiguration, next: ApiConfiguration): void
 	postStateToWebview?(): Promise<void>
+}
+
+/** Test controllers often carry no state manager; a real one refuses the write once the new store is in use. */
+export function assertLegacyProviderWrite(controller: ProviderCatalogController, what: string): void {
+	const state = (controller as { stateManager?: Partial<Pick<StateManager, "getGlobalStateKey">> }).stateManager
+	if (state?.getGlobalStateKey) assertLegacySettingsWrite(state as Pick<StateManager, "getGlobalStateKey">, what)
 }
 
 export function hasProviderCatalogStateController(

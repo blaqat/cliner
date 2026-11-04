@@ -113,6 +113,15 @@ describe("first visit", () => {
 		expect(host.callsTo("saveConnection")).toHaveLength(0)
 	})
 
+	it("a URL the organization locks can't be typed, so it doesn't hold up a new connection", async () => {
+		setup({ managed: ["openAiBaseUrl"] })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Test connection" }))
+		await flush()
+		expect(page().queryByText("Add a base URL first.")).toBeNull()
+		expect(host.callsTo("saveConnection")[0].connection).toMatchObject({ baseUrl: null, name: "Managed connection" })
+	})
+
 	it("won't test a connection without a URL, and says why", async () => {
 		setup()
 		await flush()
@@ -989,6 +998,18 @@ describe("other providers", () => {
 		expect(chooser.queryByRole("button", { name: "Amazon Bedrock" })).toBeNull()
 	})
 
+	it("a required field the organization locks isn't asked for", async () => {
+		const chooser = await openChooser({ discovery: {}, managed: ["liteLlmBaseUrl"] })
+		fireEvent.click(chooser.getByRole("button", { name: "LiteLLM" }))
+		await flush()
+		const setupForm = within(screen.getByTestId("provider-setup-litellm"))
+		change("API key", "sk-lite", setupForm)
+		await flush()
+		fireEvent.click(setupForm.getByRole("button", { name: "Connect" }))
+		await flush()
+		expect(host.callsTo("saveConnection")[0].connection).toMatchObject({ kind: "provider", providerId: "litellm" })
+	})
+
 	it("connects with its own fields, then its models join the same list; roles stay put", async () => {
 		const chooser = await openChooser({
 			catalog: { anthropic: { "opus-4.5": { name: "Opus 4.5" }, "sonnet-4.5": { name: "Sonnet 4.5" } } },
@@ -1436,7 +1457,9 @@ describe("the Changed chip", () => {
 		fireEvent.click(chip())
 		await flush()
 		fireEvent.click(
-			within(screen.getByTestId("settings-result-model:sol:temperature")).getByRole("button", { name: "GPT-6 Sol: Temperature" }),
+			within(screen.getByTestId("settings-result-model:sol:temperature")).getByRole("button", {
+				name: "GPT-6 Sol: Temperature",
+			}),
 		)
 		await flushFrame()
 		await flush()

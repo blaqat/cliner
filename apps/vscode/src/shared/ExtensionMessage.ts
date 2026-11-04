@@ -52,6 +52,7 @@ export interface DeletedOpenThread {
 
 export interface ExtensionState {
 	modelSettings?: import("./model-settings-state").ModelSettingsState
+	modelSettingsMigrationStatus?: import("./model-settings-migration-status").ModelSettingsMigrationStatus
 	focusChainSettings?: import("./FocusChainSettings").FocusChainSettings
 	openTelemetrySettings?: Pick<
 		import("./proto/cline/state").Settings,

@@ -1,5 +1,6 @@
 import { Empty } from "@shared/proto/cline/common"
 import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import { ApiHandlerOptions, ApiProvider } from "@/shared/api"
 import { UpdateApiConfigurationRequestNew } from "@/shared/proto/index.cline"
 import { Logger } from "@/shared/services/Logger"
@@ -57,6 +58,7 @@ function getAlternateModeField(fieldName: string): string | null {
  */
 export async function updateApiConfiguration(controller: Controller, request: UpdateApiConfigurationRequestNew): Promise<Empty> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Changing the API configuration")
 		const { updates, updateMask } = request
 
 		if (!updates) {

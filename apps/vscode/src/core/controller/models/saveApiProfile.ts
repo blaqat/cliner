@@ -3,6 +3,7 @@ import {
 	SaveApiProfileRequest,
 	SaveApiProfileResponse,
 } from "@shared/proto/cline/models"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { listProfileSecretKeys, upsertApiConfigProfile } from "./apiProfiles"
@@ -13,6 +14,7 @@ import { listProfileSecretKeys, upsertApiConfigProfile } from "./apiProfiles"
  */
 export async function saveApiProfile(controller: Controller, request: SaveApiProfileRequest): Promise<SaveApiProfileResponse> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Saving an API configuration")
 		const previous = controller.stateManager.getApiConfiguration()
 		let options: Record<string, unknown> | undefined
 		if (request.optionsJson) {

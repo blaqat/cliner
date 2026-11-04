@@ -12,6 +12,7 @@ import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo } from "@/registry"
 import { useModelSettings } from "@/sdk/model-settings/background"
 import { readModelSettingsState } from "@/sdk/model-settings/host-settings"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import { BannerService } from "@/services/banner/BannerService"
 import { featureFlagsService } from "@/services/feature-flags"
 import { getDistinctId } from "@/services/logging/distinctId"
@@ -123,6 +124,10 @@ export async function getStateToPostToWebview(controller: {
 
 	return {
 		...(useModelSettings(stateManager) ? { modelSettings: await readModelSettingsState(stateManager) } : {}),
+		// Not gated on the journal: a failed first migration has no modelSettings, and this is how it can be retried.
+		...(modelSettingsRolloutEnabled()
+			? { modelSettingsMigrationStatus: stateManager.getModelSettingsMigrationStatus() }
+			: {}),
 		version,
 		extensionVariant: getExtensionVariant(),
 		apiConfiguration,

@@ -1,5 +1,6 @@
+import { action, preference, state, stored } from "../shell/rowFactories"
 import { updateSetting } from "../utils/settingsHandlers"
-import { stored, action, state, preference } from "../shell/rowFactories"
+
 const TELEMETRY_LABELS: Record<string, string> = { enabled: "On", disabled: "Off", unset: "Not chosen" }
 export const DATA_ROWS = [
 	action({
@@ -7,7 +8,11 @@ export const DATA_ROWS = [
 		label: "History",
 		description: "Export threads from History, or clear history and checkpoints. Settings and notebook stay.",
 	}),
-	action({ id: "data.reset", label: "Reset all extension settings", description: "Return extension state to its defaults." }),
+	action({
+		id: "data.reset",
+		label: "Reset all extension settings",
+		description: "Removes every connection and model, the keys saved for them, and all other settings.",
+	}),
 	state({
 		id: "data.reporting.otel",
 		parent: "data.reporting",

@@ -1,3 +1,4 @@
+import { assertLegacySettingsWrite, configuredActiveModel } from "./model-settings/legacy-settings"
 import { NextMessageModelSelections } from "./model-settings-resolver"
 // Replaces classic src/core/controller/index.ts (see origin/main)
 //
@@ -1428,11 +1429,13 @@ export class Controller {
 		const { useModelSettings } = await import("./model-settings/background")
 		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
 		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
-		const { captureThreadModelSelection, resolveConfiguredPick } = await import("./model-settings-resolver")
+		const { captureThreadModelSelection } = await import("./model-settings-resolver")
 		const settings = this.stateManager.getGlobalStateKey("modelSettings")!
-		resolveConfiguredPick(settings, input.pick)
-		const { assertModelSettingsUnlocked } = await import("./model-settings/host-settings")
-		assertModelSettingsUnlocked(this.stateManager, settings)
+		const { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } = await import(
+			"./model-settings/host-settings"
+		)
+		resolveEffectiveConfiguredPick(this.stateManager, settings, input.pick)
+		await assertConfiguredModelRequestAllowed(this.stateManager, settings, input.pick, input.mode)
 		if (input.nextMessageOnly) {
 			const session = this.sessions.getSession(input.taskId)
 			if (session?.isRunning || session?.queuedPromptCount)
@@ -1469,6 +1472,7 @@ export class Controller {
 
 	/** Composer RPC. Only the Settings branch of assignApiProfile writes defaults. */
 	async updateChatApiSelection(mode: Mode, request: AssignApiProfileRequest): Promise<void> {
+		assertLegacySettingsWrite(this.stateManager, "Changing a chat's API configuration")
 		const taskId = this.task?.taskId
 		if ((request.taskId || undefined) !== taskId) throw new Error("Focused chat changed during selection")
 		const defaults = captureTaskApiSelection(this.stateManager)
@@ -2584,9 +2588,14 @@ export class Controller {
 	 */
 	private getActiveProviderId(): string | undefined {
 		try {
-			const apiConfig = this.stateManager.getApiConfiguration()
 			const modeValue = this.stateManager.getGlobalSettingsKey("mode")
 			const mode = modeValue === "plan" ? "plan" : "act"
+			const taskId = this.task?.taskId
+			const context = taskId ? this.getTaskSessionContext(taskId) : undefined
+			const selection = context?.pendingApiSelection ?? context?.apiSelection ?? this.draftApiSelection
+			const configured = configuredActiveModel(this.stateManager, mode, selection?.modelSelectionV1)
+			if (configured) return configured.providerId
+			const apiConfig = this.stateManager.getApiConfiguration()
 			return mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
 		} catch {
 			return undefined
@@ -3740,6 +3749,8 @@ export class Controller {
 	// ---- Provider auth callbacks ----
 
 	private persistProviderApiKeyFromState(provider: string): void {
+		// The sign-in went to the connection's keychain entry; the old provider store has nothing to persist.
+		if (configuredActiveModel(this.stateManager, "act")) return
 		const providerId = parseProviderId(provider)
 		const apiKey = this.providerConfigStore.read(providerId).apiKey
 
@@ -3752,19 +3763,19 @@ export class Controller {
 	}
 
 	async handleOpenRouterCallback(code: string): Promise<void> {
-		await this.authService.handleOpenRouterCallback(code)
+		await this.authService.handleOpenRouterCallback(code, this)
 		this.persistProviderApiKeyFromState("openrouter")
 		await this.postStateToWebview()
 	}
 
 	async handleRequestyCallback(code: string): Promise<void> {
-		await this.authService.handleRequestyCallback(code)
+		await this.authService.handleRequestyCallback(code, this)
 		this.persistProviderApiKeyFromState("requesty")
 		await this.postStateToWebview()
 	}
 
 	async handleHicapCallback(code: string): Promise<void> {
-		await this.authService.handleHicapCallback(code)
+		await this.authService.handleHicapCallback(code, this)
 		this.persistProviderApiKeyFromState("hicap")
 		await this.postStateToWebview()
 	}

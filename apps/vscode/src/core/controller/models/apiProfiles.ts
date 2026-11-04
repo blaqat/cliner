@@ -629,27 +629,25 @@ export function resolveTaskApiSelection(
 		const journal = stateManager.getGlobalStateKey("modelSettingsMigration")
 		if (journal?.status === "complete") {
 			let selection = item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1
-			if (!selection && item.apiSelection) selection = migrateThreadModelSelection(item.apiSelection, journal)
+			const settings = stateManager.getGlobalStateKey("modelSettings")
+			if (!selection && item.apiSelection) selection = migrateThreadModelSelection(item.apiSelection, journal, settings)
 			if (!selection) {
-				const settings = stateManager.getGlobalStateKey("modelSettings")
-				const matches =
-					settings?.models.filter(
-						(model) =>
-							model.upstreamId === item.modelId &&
-							settings.connections.some(
-								(connection) =>
-									connection.id === model.connectionId &&
-									(connection.kind === "provider"
-										? toLegacyApiProvider(connection.providerId) ===
-											toLegacyApiProvider(item.apiProvider ?? "")
-										: toLegacyApiProvider(item.apiProvider ?? "") === "openai"),
-							),
-					) ?? []
-				const pick = {
-					modelId: matches.length === 1 ? matches[0].id : `missing:history:${item.modelId ?? "unknown"}`,
-					levelId: "default",
-				}
-				selection = { version: 1, ask: pick, act: pick }
+				// As legacy: the first row for the recorded provider and model, for this mode only. The rest is the current selection.
+				const matched = settings?.models.find(
+					(model) =>
+						model.upstreamId === item.modelId &&
+						settings.connections.some(
+							(connection) =>
+								connection.id === model.connectionId &&
+								(connection.kind === "provider"
+									? toLegacyApiProvider(connection.providerId) === toLegacyApiProvider(item.apiProvider ?? "")
+									: toLegacyApiProvider(item.apiProvider ?? "") === "openai"),
+						),
+				)
+				const current = settings ? captureThreadModelSelection(settings) : { version: 1 as const, ask: null, act: null }
+				selection = matched
+					? { ...current, [mode === "plan" ? "ask" : "act"]: { modelId: matched.id, levelId: "default" } }
+					: current
 			}
 			return { ...item.apiSelection, modelSelectionV1: selection }
 		}

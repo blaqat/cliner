@@ -1,6 +1,7 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
 import {
 	type BackgroundUse,
+	BUILTIN_MODEL_VALUES,
 	type ModelMetadata,
 	type ModelPick,
 	type ModelSettings,
@@ -12,6 +13,7 @@ import {
 	ThreadModelSelectionSchema,
 } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
+import { BASE_URL_NEEDED, closestOfferedLevel, MODEL_ID_NEEDED } from "./model-settings/legacy-values"
 import { type ConnectionAuthDependencies, prepareModelRequest } from "./model-settings/request-adapter"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 
@@ -23,20 +25,43 @@ export function captureThreadModelSelection(settings: ModelSettings): ThreadMode
 		ask: settings.roles.ask.enabled ? settings.roles.ask.pick : settings.roles.chat,
 	})
 }
-/** Missing historical references remain explicit unavailable picks. Never borrow today's default. */
-export function migrateThreadModelSelection(selection: TaskApiSelection, journal: ModelSettingsMigration): ThreadModelSelection {
-	const pick = (id: string | undefined, effort: string | undefined): ModelPick | null => {
-		if (!id) return null
-		const saved = journal.profilePicks[id]
-		return {
-			modelId: saved?.modelId ?? journal.configurationModels[id] ?? `missing:${id}`,
-			levelId: effort ? (effort === "none" ? "default" : effort) : (saved?.levelId ?? "default"),
+/** The level a migrated thread runs at. A saved effort never stops it, so it moves to the closest one offered. */
+function offeredThreadLevel(settings: ModelSettings, modelId: string, levelId: string): string {
+	const model = settings.models.find((m) => m.id === modelId)
+	if (!model) return levelId
+	const connection = settings.connections.find((c) => c.id === model.connectionId)
+	const levels = model.overrides.levels ?? connection?.defaults.levels ?? BUILTIN_MODEL_VALUES.levels
+	return closestOfferedLevel(levels, levelId)
+}
+/**
+ * Missing historical references remain explicit unavailable picks. A mode the thread never recorded falls back
+ * to the current selection at its recorded effort, as legacy did, when `settings` is given.
+ */
+export function migrateThreadModelSelection(
+	selection: TaskApiSelection,
+	journal: ModelSettingsMigration,
+	settings?: ModelSettings,
+): ThreadModelSelection {
+	const current = settings && captureThreadModelSelection(settings)
+	const level = (effort: string) => (effort === "none" ? "default" : effort)
+	const pick = (
+		id: string | undefined,
+		effort: string | undefined,
+		fallback: ModelPick | null | undefined,
+	): ModelPick | null => {
+		if (!id) {
+			if (!fallback || !settings) return fallback ?? null
+			return effort ? { ...fallback, levelId: offeredThreadLevel(settings, fallback.modelId, level(effort)) } : fallback
 		}
+		const saved = journal.profilePicks[id]
+		const modelId = saved?.modelId ?? journal.configurationModels[id] ?? `missing:${id}`
+		const levelId = effort ? level(effort) : (saved?.levelId ?? "default")
+		return { modelId, levelId: settings ? offeredThreadLevel(settings, modelId, levelId) : levelId }
 	}
 	return {
 		version: 1,
-		ask: pick(selection.askProfileId, selection.planModeReasoningEffort),
-		act: pick(selection.actProfileId, selection.actModeReasoningEffort),
+		ask: pick(selection.askProfileId, selection.planModeReasoningEffort, current?.ask),
+		act: pick(selection.actProfileId, selection.actModeReasoningEffort, current?.act),
 	}
 }
 export function resolveThreadPick(selection: ThreadModelSelection, mode: Mode, next?: NextMessageSelection): ModelPick | null {
@@ -61,6 +86,9 @@ export function resolveConfiguredPick(
 	const connection = settings.connections.find((c) => c.id === model.connectionId)
 	if (!connection) throw new Error(`Saved connection '${model.connectionId}' is unavailable. ${fix}`)
 	if (model.kind === "non-chat") throw new Error(`Saved model does not support chat. ${fix}`)
+	if (model.upstreamId === MODEL_ID_NEEDED) throw new Error(`This model has no model ID. Add it in Settings > Models.`)
+	if (connection.baseUrl === BASE_URL_NEEDED)
+		throw new Error(`This connection's base URL isn't valid. Fix it in Settings > Models.`)
 	const fields = resolveModelValues(
 		model.overrides,
 		metadata?.modelId === model.id ? metadata.values : undefined,

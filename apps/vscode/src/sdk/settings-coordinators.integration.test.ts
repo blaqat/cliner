@@ -1,6 +1,7 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ModelSettings } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
+import { mutateSettings } from "@/core/controller/models/modelSettingsRpc"
 import { getSessionApiSnapshot } from "./cline-session-factory"
 import { InMemoryConnectionSecretStore } from "./model-settings/connection-secret-store"
 import { NextMessageModelSelections } from "./model-settings-resolver"
@@ -8,10 +9,10 @@ import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
 import { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
-import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkSessionConfigChangeCoordinator } from "./sdk-session-config-change-coordinator"
-import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
+import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { prepareTaskResumeStartInput } from "./sdk-task-resume"
+import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 
 vi.mock("@/shared/services/Logger", () => ({ Logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock("./model-settings/rollout", () => ({ modelSettingsRolloutEnabled: () => true }))
@@ -244,7 +245,7 @@ it("passes configured subagent allowlist, cap, blocking and access through the s
 	const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
 	settings.roles.subagents = { kind: "model", pick: ask }
 	settings.subagents = {
-		enabled: false,
+		enabled: true,
 		maxConcurrent: 2,
 		blocking: "always",
 		access: { write: false, commands: false, web: true, mcp: false },
@@ -255,7 +256,7 @@ it("passes configured subagent allowlist, cap, blocking and access through the s
 	}
 	const builder = new SdkSessionConfigBuilder({ stateManager: f.state as never, emitHookMessage: vi.fn() })
 	const config = await builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
-	expect(config.enableSpawnAgent).toBe(false)
+	expect(config.enableSpawnAgent).toBe(true)
 	expect(config.subagentSettings).toMatchObject({
 		maxConcurrent: 2,
 		allowWrite: false,
@@ -585,6 +586,155 @@ it("uses managed remote model values and refuses an obsolete projection in a liv
 	expect(config.providerConfig?.knownModels?.act.contextWindow).toBe(42000)
 	managed.remoteProviderSettings = { OpenAiCompatible: { models: [{ id: "act", contextWindow: 32000 }] } }
 	await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/settings changed/i)
+})
+
+describe("editing settings under a live session", () => {
+	/** The real RPC, scheduler and coordinator around one thread. */
+	function live() {
+		const f = fixture()
+		const settings = f.settings
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: f.options.sessions as never })
+		const coordinator = new SdkProviderChangeCoordinator({ ...f.options, rebuilds: scheduler } as never)
+		f.options.getTaskApiSelection = () => stable as never
+		f.session.apiSnapshot = { selection: stable as never, configuration: {} }
+		Object.assign(f.state, {
+			getModelSettingsMigrationStatus: () => ({ status: "complete", retryable: false }),
+			mutateModelSettings: async (revision: number, mutate: (value: ModelSettings) => Promise<unknown>) => {
+				if (revision !== settings.revision) throw new Error("revision")
+				const next = structuredClone(settings)
+				await mutate(next)
+				Object.assign(settings, next, { revision: revision + 1 })
+			},
+		})
+		const controller = {
+			stateManager: f.state,
+			postStateToWebview: vi.fn(),
+			handleApiConfigurationChanged: () => coordinator.handleApiConfigurationChanged({}, {}),
+		}
+		const editAct = (overrides: object) =>
+			mutateSettings(
+				controller as never,
+				"saveConfiguredModels",
+				JSON.stringify({
+					expectedRevision: settings.revision,
+					models: [{ ...settings.models.find((m) => m.id === "act"), overrides }],
+				}),
+				true,
+			)
+		const build = () => f.builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
+		const send = (config: { hooks?: { beforeModel?: (ctx: never) => unknown } }) =>
+			scheduler.runExclusive(async () => config.hooks!.beforeModel!({} as never))
+		return { ...f, scheduler, editAct, build, send }
+	}
+	const latest = (f: ReturnType<typeof live>) => f.replace.mock.calls.at(-1)?.[0].startInput.config
+
+	it("edit, then send, succeeds on the rebuilt session with no mode switch or reload", async () => {
+		const f = live()
+		await f.build()
+		await f.editAct({ temperature: 0.5 })
+		// A send waits on the same boundary as the rebuild, so it lands on the new runtime.
+		await f.send({ hooks: { beforeModel: async () => {} } })
+		expect(f.replace).toHaveBeenCalledOnce()
+		const rebuilt = latest(f)
+		expect(rebuilt.providerConfig.temperature).toBe(0.5)
+		await expect(rebuilt.hooks.beforeModel({})).resolves.toBeUndefined()
+	})
+
+	it("an already built session doesn't refuse requests after an edit, so a retry can't get stuck", async () => {
+		const f = live()
+		const config = await f.build()
+		await f.editAct({ temperature: 0.5 })
+		await expect(config.hooks!.beforeModel!({} as never)).resolves.toBeUndefined()
+		await expect(config.hooks!.beforeModel!({} as never)).resolves.toBeUndefined()
+	})
+
+	it("a running turn finishes on what it started with and rebuilds when it goes idle", async () => {
+		const f = live()
+		const config = await f.build()
+		f.session.isRunning = true
+		await f.editAct({ temperature: 0.5 })
+		await new Promise((resolve) => setImmediate(resolve))
+		expect(f.replace).not.toHaveBeenCalled()
+		await expect(config.hooks!.beforeModel!({} as never)).resolves.toBeUndefined()
+		f.session.isRunning = false
+		f.scheduler.sessionBecameIdle()
+		await f.send(config)
+		expect(latest(f).providerConfig.temperature).toBe(0.5)
+	})
+
+	it("still refuses a request whose row was deleted, saying how to fix it", async () => {
+		const f = live()
+		const config = await f.build()
+		f.settings.models = f.settings.models.filter((m) => m.id !== "act")
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/unavailable.*Open Settings > Models/)
+	})
+
+	it("spawn_agent applies a subagent policy edit to the running session instead of refusing", async () => {
+		const f = live()
+		const config = await f.build()
+		const spawn = () => config.hooks!.beforeTool!({ toolCall: { toolName: "spawn_agent" } } as never)
+		f.settings.subagents = { ...f.settings.subagents, maxConcurrent: 7, blocking: "never" }
+		f.settings.roles.subagents = { kind: "model", pick: ask }
+		await expect(spawn()).resolves.toBeUndefined()
+		expect(config.subagentSettings?.maxConcurrent).toBe(7)
+		expect(config.subagentSettings?.modelPolicy).toMatchObject({
+			blocking: "never",
+			default: { model: "ask", level: "default" },
+		})
+		expect(config.subagentSettings?.modelPolicy?.models.ask).toBeDefined()
+		f.settings.subagents.enabled = false
+		await expect(spawn()).rejects.toThrow("Subagents are turned off. Open Settings > Subagents.")
+	})
+})
+
+describe("a broken subagent model never stops the chat", () => {
+	function withBrokenModel() {
+		const f = fixture()
+		f.settings.connections.push({
+			...f.settings.connections[0],
+			id: "no-key",
+			auth: { kind: "keychain", secretRef: "settings:v1:connection:no-key:apiKey" },
+		} as ModelSettings["connections"][number])
+		f.settings.models.push({ ...f.settings.models[0], id: "broken", name: "Broken", connectionId: "no-key" })
+		f.settings.subagents.allowed = [
+			{ kind: "model", modelId: "broken", levels: ["default"] },
+			{ kind: "model", modelId: "ask", levels: ["default"] },
+		]
+		return f
+	}
+	const build = (f: ReturnType<typeof fixture>) =>
+		f.builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
+
+	it("doesn't build subagent models at all when subagents are off", async () => {
+		const f = withBrokenModel()
+		f.settings.subagents.enabled = false
+		const config = await build(f)
+		expect(config.enableSpawnAgent).toBe(false)
+		expect(config.subagentSettings).toBeUndefined()
+	})
+
+	it("leaves the broken model out and names it only when it's asked for", async () => {
+		const f = withBrokenModel()
+		const policy = (await build(f)).subagentSettings!.modelPolicy!
+		expect(Object.keys(policy.models)).toEqual(["ask"])
+		expect(policy.unavailable?.broken.name).toBe("Broken")
+		expect(policy.unavailable?.broken.reason).toContain("Connection key is missing")
+		expect(policy.unavailable?.broken.reason).toContain("Open Settings > Models")
+	})
+
+	it("a broken default still builds the session", async () => {
+		const f = withBrokenModel()
+		f.settings.roles.subagents = { kind: "model", pick: { modelId: "broken", levelId: "default" } }
+		const config = await build(f)
+		expect(config.modelId).toBe("act")
+		expect(config.subagentSettings?.modelPolicy?.unavailable?.broken).toBeDefined()
+	})
+
+	it("a broken allowed model doesn't block the parent's other spawns", async () => {
+		const f = withBrokenModel()
+		const config = await build(f)
+		await expect(config.hooks!.beforeTool!({ toolCall: { toolName: "spawn_agent" } } as never)).resolves.toBeUndefined()
+	})
 })
 
 it("collects persisted, pending, home and next-message deletion dependencies without the UI projection", async () => {

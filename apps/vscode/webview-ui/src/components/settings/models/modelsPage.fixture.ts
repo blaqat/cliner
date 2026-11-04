@@ -3,6 +3,7 @@ import {
 	type Connection,
 	createDefaultModelSettings,
 	type ModelLevel,
+	type ModelPick,
 	type ModelRow,
 	type ModelSettings,
 	ModelSettingsSchema,
@@ -302,6 +303,18 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 				next.roles = payload.roles as ModelSettings["roles"]
 				if (payload.requestTimeoutMs !== undefined) next.requestTimeoutMs = payload.requestTimeoutMs as number | null
 			})
+		},
+		makeModelDefault: async (request: { json: string }) => {
+			const payload = decode("makeModelDefault", request)
+			return commit(payload, (next) => {
+				const pick = payload.pick as ModelPick
+				if (payload.mode === "plan" && next.roles.ask.enabled) next.roles.ask.pick = pick
+				else next.roles.chat = pick
+			})
+		},
+		setThreadModelSelection: async (request: { json: string }) => {
+			decode("setThreadModelSelection", request)
+			return reply({ applied: true })
 		},
 		setSubagentPolicy: async (request: { json: string }) => {
 			const payload = decode("setSubagentPolicy", request)

@@ -42,38 +42,49 @@ export type PreviewResult =
 /** A mutation either wrote and returned the store, or a delete was refused for these reasons. */
 export type DeleteResult = ModelSettingsState | { dependencies: string[] }
 
+type SettingsRpc = {
+	[K in keyof typeof ModelsServiceClient]: (typeof ModelsServiceClient)[K] extends (
+		request: ModelSettingsRequestV1,
+	) => Promise<{ json: string }>
+		? K
+		: never
+}[keyof typeof ModelsServiceClient]
+
 /** Every ModelsService settings call carries one JSON string each way. Encoded and decoded exactly once, here. */
-const call = async <T>(method: (request: ModelSettingsRequestV1) => Promise<{ json: string }>, payload: unknown) => {
-	const response = await method.call(ModelsServiceClient, ModelSettingsRequestV1.create({ json: JSON.stringify(payload) }))
+const call = async <T>(method: SettingsRpc, payload: unknown) => {
+	const send = ModelsServiceClient[method] as (request: ModelSettingsRequestV1) => Promise<{ json: string }>
+	const response = await send.call(ModelsServiceClient, ModelSettingsRequestV1.create({ json: JSON.stringify(payload) }))
 	return JSON.parse(response.json) as T
 }
 
-const client = ModelsServiceClient
-
 export const modelSettingsClient = {
-	get: () => call<ModelSettingsState>(client.getModelSettings, {}),
+	get: () => call<ModelSettingsState>("getModelSettings", {}),
 	saveConnection: (expectedRevision: number, connection: ConnectionPatch | Connection, secrets: SecretMutation[] = []) =>
-		call<ModelSettingsState>(client.saveConnection, { expectedRevision, connection, secrets }),
+		call<ModelSettingsState>("saveConnection", { expectedRevision, connection, secrets }),
 	saveModels: (expectedRevision: number, models: ModelRow[]) =>
-		call<ModelSettingsState>(client.saveConfiguredModels, { expectedRevision, models }),
-	duplicateModel: (modelId: string) => call<{ draft: ModelRow }>(client.duplicateConfiguredModel, { modelId }),
+		call<ModelSettingsState>("saveConfiguredModels", { expectedRevision, models }),
+	duplicateModel: (modelId: string) => call<{ draft: ModelRow }>("duplicateConfiguredModel", { modelId }),
 	deleteModel: (expectedRevision: number, modelId: string) =>
-		call<DeleteResult>(client.deleteConfiguredModel, { expectedRevision, modelId }),
+		call<DeleteResult>("deleteConfiguredModel", { expectedRevision, modelId }),
 	deleteConnection: (expectedRevision: number, connectionId: string) =>
-		call<DeleteResult>(client.deleteConnection, { expectedRevision, connectionId }),
+		call<DeleteResult>("deleteConnection", { expectedRevision, connectionId }),
 	setRoles: (expectedRevision: number, roles: RoleSettings) =>
-		call<ModelSettingsState>(client.setModelRoles, { expectedRevision, roles }),
+		call<ModelSettingsState>("setModelRoles", { expectedRevision, roles }),
+	makeDefault: (expectedRevision: number, mode: "plan" | "act", pick: ModelPick) =>
+		call<ModelSettingsState>("makeModelDefault", { expectedRevision, mode, pick }),
+	setThreadModel: (input: { taskId: string; mode: "plan" | "act"; pick: ModelPick; nextMessageOnly: boolean }) =>
+		call<{ applied: true }>("setThreadModelSelection", input),
 	setPolicy: (expectedRevision: number, subagents: SubagentPolicy) =>
-		call<ModelSettingsState>(client.setSubagentPolicy, { expectedRevision, subagents }),
+		call<ModelSettingsState>("setSubagentPolicy", { expectedRevision, subagents }),
 	discover: (expectedRevision: number, connectionId: string) =>
-		call<DiscoveryResult>(client.discoverConnectionModels, { expectedRevision, connectionId }),
+		call<DiscoveryResult>("discoverConnectionModels", { expectedRevision, connectionId }),
 	testConnection: (expectedRevision: number, connectionId: string) =>
-		call<DiscoveryResult>(client.testConnection, { expectedRevision, connectionId }),
+		call<DiscoveryResult>("testConnection", { expectedRevision, connectionId }),
 	detect: (expectedRevision: number, pick: ModelPick) =>
-		call<DetectResult>(client.detectConfiguredModel, { expectedRevision, pick }),
+		call<DetectResult>("detectConfiguredModel", { expectedRevision, pick }),
 	testModel: (expectedRevision: number, pick: ModelPick) =>
-		call<{ status: "ok" | "inference-failed" }>(client.testConfiguredModel, { expectedRevision, pick }),
-	savedThreadUsage: (modelIds: string[]) => call<{ savedThreads: number }>(client.getModelSavedThreadUsage, { modelIds }),
+		call<{ status: "ok" | "inference-failed" }>("testConfiguredModel", { expectedRevision, pick }),
+	savedThreadUsage: (modelIds: string[]) => call<{ savedThreads: number }>("getModelSavedThreadUsage", { modelIds }),
 	preview: (expectedRevision: number, pick: ModelPick) =>
-		call<PreviewResult>(client.previewConfiguredModelRequest, { expectedRevision, pick }),
+		call<PreviewResult>("previewConfiguredModelRequest", { expectedRevision, pick }),
 }

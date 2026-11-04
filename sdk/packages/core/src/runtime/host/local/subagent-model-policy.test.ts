@@ -187,7 +187,7 @@ describe("versioned subagent model policy", () => {
 			"A model and level can't be chosen here. Omit them to use the default.",
 		);
 	});
-	it("includes the implicit default pair and validates it before starting", () => {
+	it("includes the implicit default pair and validates it when it is used", () => {
 		const p = policy();
 		p.allowed = [{ model: "parent", levels: ["inherit"] }];
 		expect(
@@ -195,26 +195,96 @@ describe("versioned subagent model policy", () => {
 		).toBe("high");
 		p.default.level = "removed";
 		expect(selectSubagentModel({ model: "parent" }, p, parent).error).toBe(
-			"Saved level is unavailable",
+			undefined,
+		);
+		expect(selectSubagentModel({}, p, parent).error).toBe(
+			`The default subagent model can't start. Saved level is unavailable: Fast doesn't offer "removed". Open Settings > Subagents to fix it. Pass model to use one of these instead: parent (inherit).`,
 		);
 	});
-	it("rejects malformed records, missing allowed models and invalid native controls", () => {
+	it("a stale allowed entry only affects the call that asks for it", () => {
+		const p = policy();
+		p.allowed.push(
+			{ model: "missing", levels: ["low"] },
+			{ model: "empty", levels: [] },
+		);
+		p.allowed[0]!.levels.push("removed");
+		expect(selectSubagentModel({}, p, parent).reasoningEffort).toBe("high");
+		expect(selectSubagentModel({ model: "fast" }, p, parent)).toMatchObject({
+			reasoningEffort: "low",
+		});
+		expect(selectSubagentModel({ model: "parent" }, p, parent).error).toBe(
+			undefined,
+		);
+		expect(selectSubagentModel({ model: "missing" }, p, parent).error).toBe(
+			'Model "missing" is allowed but not configured. Open Settings > Models to fix it.',
+		);
+		expect(
+			selectSubagentModel({ model: "fast", reasoningEffort: "removed" }, p, parent)
+				.error,
+		).toContain('Fast doesn\'t offer "removed". Open Settings > Subagents');
+		expect(selectSubagentModel({ model: "rogue" }, p, parent).error).toBe(
+			'Model "rogue" is not allowed. Allowed: fast (high, low), parent (inherit). Omit model to use the default: fast at high.',
+		);
+	});
+	it("names a broken model only when the parent uses it, by id or name", () => {
+		const p = policy();
+		p.allowed.push({ model: "broken", levels: ["low"] });
+		p.unavailable = {
+			broken: { name: "Broken", reason: "Connection key is missing." },
+		};
+		expect(selectSubagentModel({}, p, parent).error).toBeUndefined();
+		const expected = `Model "Broken" can't run: Connection key is missing.`;
+		expect(selectSubagentModel({ model: "broken" }, p, parent).error).toBe(
+			expected,
+		);
+		expect(selectSubagentModel({ model: "Broken" }, p, parent).error).toBe(
+			expected,
+		);
+		p.default = { model: "broken", level: "low" };
+		const defaultError = selectSubagentModel({}, p, parent).error!;
+		expect(defaultError).toContain(expected);
+		expect(defaultError).toContain("Pass model to use one of these instead: fast");
+		expect(selectSubagentModel({ model: "fast" }, p, parent).error).toBeUndefined();
+	});
+	it("runs a saved parent default the model doesn't offer at its default, never higher", () => {
+		const p = policy();
+		p.allowed = [];
+		p.default = { model: "parent", level: "low" };
+		const noLow = {
+			providerId: "openai-native",
+			modelId: "unlisted",
+			reasoningEffort: "xhigh" as const,
+		};
+		const selected = selectSubagentModel({}, p, noLow);
+		expect(selected.error).toBeUndefined();
+		expect(selected.reasoningEffort).toBe("default");
+		expect(selected.overrides?.reasoningEffort).toBeUndefined();
+	});
+	it("builds a connection's own wrapper at the selected level instead of wrapping it", () => {
+		const atLevel = vi.fn(() => globalThis.fetch);
+		const p = policy();
+		p.models.fast!.connection.providerConfig!.settingsFetchAtLevel = atLevel;
+		const selected = selectSubagentModel({}, p, parent);
+		expect(atLevel).toHaveBeenCalledExactlyOnceWith({
+			kind: "effort",
+			value: "high",
+		});
+		expect(
+			(selected.overrides as SubagentModelConnection).providerConfig!.fetch,
+		).toBe(globalThis.fetch);
+	});
+	it("rejects malformed records and invalid native controls, linking to the fix", () => {
 		const p = policy();
 		p.models.fast!.id = "other";
 		expect(selectSubagentModel({}, p, parent).error).toBe(
-			"Invalid subagent model policy.",
-		);
-		const missing = policy();
-		missing.allowed.push({ model: "missing", levels: ["low"] });
-		expect(selectSubagentModel({}, missing, parent).error).toBe(
-			'Model "missing" is allowed but not configured. Open Settings > Models to fix it.',
+			"Invalid subagent model policy. Open Settings > Subagents to fix it.",
 		);
 		const native = policy();
 		native.models.fast!.connection = parent;
 		native.default.level = "low";
-		expect(selectSubagentModel({}, native, parent).error).toBe(
-			"Unsupported native reasoning effort",
-		);
+		const error = selectSubagentModel({}, native, parent).error!;
+		expect(error).toContain("Unsupported native reasoning effort");
+		expect(error).toContain("Open Settings > Subagents to fix it.");
 	});
 	it.each([
 		"never",
@@ -422,14 +492,16 @@ it("checks parent levels against its live runtime connection", () => {
 			p,
 			changed,
 		).error,
-	).toBe("Saved level is unavailable");
+	).toContain("Saved level is unavailable");
 });
 
 it("a rejected default cannot reserve a concurrency slot", async () => {
 	const p = policy();
 	p.default.level = "missing";
 	const f = fixture(p, 1);
-	expect(await f.call()).toEqual({ error: "Saved level is unavailable" });
+	expect(await f.call()).toEqual({
+		error: expect.stringContaining("Saved level is unavailable"),
+	});
 	p.default.level = "high";
 	expect(await f.call({ wait: true })).toMatchObject({ text: "done" });
 });

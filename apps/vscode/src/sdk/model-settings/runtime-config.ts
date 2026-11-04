@@ -1,10 +1,16 @@
-import { createGateway, getProviderCollectionSync, hasRegisteredHandler, type ProviderConfig } from "@cline/llms"
+import {
+	createGateway,
+	getProviderCollectionSync,
+	hasRegisteredHandler,
+	type LevelRequest,
+	type ProviderConfig,
+} from "@cline/llms"
 import { ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
 import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
 import type { StateManager } from "@/core/storage/StateManager"
-import { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } from "./host-settings"
 import { fetch } from "@/shared/net"
 import { resolveConfiguredPick } from "../model-settings-resolver"
+import { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } from "./host-settings"
 import { type ConnectionAuthDependencies, prepareModelRequest } from "./request-adapter"
 
 export const requestPolicyGuard = Symbol("requestPolicyGuard")
@@ -15,19 +21,28 @@ export async function configuredProviderConfig(
 	pick: ModelPick | null,
 	dependencies: ConnectionAuthDependencies,
 	policy?: { state: StateManager; mode?: "act" | "plan" },
-): Promise<ProviderConfig & { settingsModelLevels: ModelLevel[]; [requestPolicyGuard]?: () => Promise<void> }> {
+): Promise<
+	ProviderConfig & {
+		settingsModelLevels: ModelLevel[]
+		settingsFetchAtLevel?: (level: LevelRequest) => typeof fetch
+		[requestPolicyGuard]?: () => Promise<void>
+	}
+> {
 	const resolved = policy ? resolveEffectiveConfiguredPick(policy.state, settings, pick) : resolveConfiguredPick(settings, pick)
 	if (policy && pick) await assertConfiguredModelRequestAllowed(policy.state, settings, pick, policy.mode)
 	const projection = JSON.stringify(resolved)
+	const built = policy && pick ? structuredClone(settings) : settings
+	// A user edit reaches this session through its scheduled rebuild, so a running
+	// turn finishes on what it started with. Refuse only what must stop now: the
+	// row is gone or locked, or the organization changed this build's own values.
 	const guard =
 		policy && pick
 			? async () => {
 					const current = policy.state.getGlobalStateKey("modelSettings")!
 					await assertConfiguredModelRequestAllowed(policy.state, current, pick, policy.mode)
-					const effective = resolveEffectiveConfiguredPick(policy.state, current, pick)
-					if (JSON.stringify(effective) !== projection)
+					if (JSON.stringify(resolveEffectiveConfiguredPick(policy.state, built, pick)) !== projection)
 						throw new Error(
-							"Model settings changed. Retry the request to rebuild its configuration. Open Settings > Models.",
+							"Model settings changed by your organization. Reload the window to apply them, or open Settings > Models.",
 						)
 				}
 			: undefined
@@ -53,13 +68,24 @@ export async function configuredProviderConfig(
 				}
 			: undefined)
 	if (!provider) throw new Error(`Provider '${providerId}' is unavailable. Open Settings > Models.`)
-	const model = (gatewayProvider
+	const catalogModel = (gatewayProvider
 		? gateway.listModels(providerId).find((m) => m.id === resolved.model.upstreamId)
 		: undefined) ?? {
 		id: resolved.model.upstreamId,
 		providerId,
 		name: resolved.model.name,
 		capabilities: [],
+	}
+	// The row's own answer outranks the catalog; deployments and ARNs are never listed.
+	const model = {
+		...catalogModel,
+		capabilities:
+			resolved.values.reasoning === "unknown"
+				? catalogModel.capabilities
+				: [
+						...(catalogModel.capabilities ?? []).filter((c) => c !== "reasoning"),
+						...(resolved.values.reasoning === "yes" ? ["reasoning" as const] : []),
+					],
 	}
 	const prepared = await prepareModelRequest(
 		{
@@ -109,6 +135,7 @@ export async function configuredProviderConfig(
 		providerId: prepared.config.providerId,
 		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
 		settingsModelLevels: resolved.values.levels,
+		settingsFetchAtLevel: prepared.fetchAtLevel,
 		settingsProviderOptions: prepared.config.options,
 		modelId,
 		apiKey: prepared.config.apiKey ?? "",
@@ -155,7 +182,11 @@ export async function configuredProviderConfig(
 				...savedInfo,
 				id: modelId,
 				name: savedInfo.name ?? (resolved.model.name || resolved.model.upstreamId),
-				contextWindow: contextWindow ?? model.contextWindow ?? 128000,
+				// The 128K planning default is for compatible servers, whose body carries no
+				// synthesized limit. On a native route it would raise the output cap sent for
+				// an unlisted model past what that model accepts.
+				contextWindow:
+					contextWindow ?? model.contextWindow ?? (resolved.connection.kind === "provider" ? undefined : 128000),
 				pricing: {
 					...savedInfo.pricing,
 					input: resolved.values.inputPrice ?? undefined,
@@ -163,7 +194,7 @@ export async function configuredProviderConfig(
 					cacheRead: resolved.values.cacheReadPrice ?? undefined,
 					cacheWrite: resolved.values.cacheWritePrice ?? undefined,
 				},
-				maxTokens: resolved.values.maxOutputTokens ?? undefined,
+				maxTokens: resolved.values.maxOutputTokens ?? model.maxOutputTokens ?? savedInfo.maxTokens,
 				capabilities: [
 					...(savedInfo.capabilities ?? [])
 						.flatMap((c) => {

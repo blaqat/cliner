@@ -1,8 +1,8 @@
 import type { Connection, ModelRow } from "@shared/model-settings"
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
-import type { SecretMutation } from "./modelSettingsClient"
-import { canRunAfter, type ConnectionTest, hostOf, isValidUrl } from "./modelsView"
 import { useSettingsShell } from "../shell/SettingsShellContext"
+import type { SecretMutation } from "./modelSettingsClient"
+import { type ConnectionTest, canRunAfter, hostOf, isValidUrl } from "./modelsView"
 import { type ModelsStore, useModelsStore } from "./useModelsStore"
 
 export const createDraftConnection = (id: string): Connection => ({
@@ -110,16 +110,18 @@ export const useModelsPageState = () => {
 	/** A connection has to exist on the host before the host can test it. A draft is saved here, then tested. */
 	const saveAndTestDraft = useCallback(
 		async (draft: Connection): Promise<string | undefined> => {
-			if (!draft.baseUrl) {
+			// A locked URL can't be typed: the host starts the connection on the organization's.
+			const urlLocked = !!store.state?.managed.includes("openAiBaseUrl")
+			if (!draft.baseUrl && !urlLocked) {
 				return "Add a base URL first."
 			}
-			if (!isValidUrl(draft.baseUrl)) {
+			if (draft.baseUrl && !isValidUrl(draft.baseUrl)) {
 				return "That isn't a URL. It starts with http:// or https://."
 			}
 			if (draft.auth.kind === "environment" && !draft.auth.variable) {
 				return "Name the env var first."
 			}
-			const named = { ...draft, name: draft.name || hostOf(draft.baseUrl) }
+			const named = { ...draft, name: draft.name || (draft.baseUrl ? hostOf(draft.baseUrl) : "Managed connection") }
 			const outcome = await store.saveConnection(named, draftSecrets.current[draft.id] ?? [])
 			if (!outcome.ok) {
 				return outcome.message

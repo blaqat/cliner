@@ -1,6 +1,7 @@
 import { Empty } from "@shared/proto/cline/common"
 import { UpdateApiConfigurationPartialRequest } from "@shared/proto/cline/models"
 import { convertProtoToApiConfiguration } from "@shared/proto-conversions/models/api-configuration-conversion"
+import { assertLegacySettingsWrite } from "@/sdk/model-settings/legacy-settings"
 import { Logger } from "@/shared/services/Logger"
 import type { Controller } from "../index"
 import { clearOrganizationForClinePassProviderSelection } from "./handleClinePassProviderSelection"
@@ -22,6 +23,7 @@ export async function updateApiConfigurationPartial(
 	request: UpdateApiConfigurationPartialRequest,
 ): Promise<Empty> {
 	try {
+		assertLegacySettingsWrite(controller.stateManager, "Changing the API configuration")
 		// Validate request
 		if (!request.updateMask || request.updateMask.length === 0) {
 			throw new Error("update_mask is required and must contain at least one field")

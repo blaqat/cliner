@@ -222,11 +222,22 @@ it("rejects explicit temperature that the native adapter would silently drop", (
 		},
 		config: { providerId: "openai-native" },
 	};
-	expect(() =>
+	expect(
 		applyNativeRequestIntent(
 			{ providerId: "openai-native", modelId: "gpt-5", messages: [] },
 			context,
 			{ ...base, temperature: 0.5 },
-		),
-	).toThrow("Temperature conflicts");
+		).temperature,
+	).toBe(0.5);
+	// An unlisted model and a level the route can't honor stay for the gateway to normalize.
+	expect(
+		applyNativeRequestIntent(
+			{ providerId: "bedrock", modelId: "arn:aws:bedrock:custom", messages: [] },
+			{
+				...context,
+				model: { ...context.model, id: "arn", capabilities: [] },
+			},
+			{ ...base, level: { kind: "effort", value: "high" } },
+		).reasoning,
+	).toEqual({ effort: "high" });
 });
