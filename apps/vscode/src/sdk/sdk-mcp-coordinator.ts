@@ -135,16 +135,19 @@ export class SdkMcpCoordinator {
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode,
-				...(activeSession.apiSnapshot
-					? {
-							apiConfiguration: activeSession.apiSnapshot.configuration,
-							apiSelection: activeSession.apiSnapshot.selection,
-						}
-					: {}),
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(activeSession.apiSnapshot
+						? {
+								apiConfiguration: activeSession.apiSnapshot.configuration,
+								apiSelection: activeSession.apiSnapshot.selection,
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })

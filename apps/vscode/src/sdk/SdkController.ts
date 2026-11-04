@@ -784,16 +784,7 @@ export class Controller {
 				this.taskSessions.delete(id)
 			},
 			deferSend: (id, prompt, images, files, delivery) => this.deferOneTurnFollowup(id, prompt, images, files, delivery),
-			onSendAdmission: (id) => {
-				const config = this.sessions.getSession(id)?.startConfig
-				const commit = config && this.sessionConfigBuilder.admission(config)
-				return commit
-					? () => {
-							commit()
-							this.providerChanges.handleApiConfigurationChanged({}, {})
-						}
-					: undefined
-			},
+			onSendAdmission: (id) => this.configuredModelAdmission(id),
 			onSendStart: (id, delivery) => {
 				const temporary = this.taskSessions.get(id)?.nextMessageSelection
 				if (temporary && !temporary.started) temporary.started = true
@@ -1175,9 +1166,9 @@ export class Controller {
 				this.draftApiSelection = undefined
 				return draft
 			},
+			transferDraftModelPick: (id) => this.configuredNextMessageSelections.move("", id),
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
-				this.configuredNextMessageSelections.move("", taskId)
 				this.recordTaskApiSelection(taskId, selection)
 			},
 			recordTaskGroup: (taskId, taskGroupId) => {
@@ -1289,6 +1280,7 @@ export class Controller {
 	 * One-turn choices are armed while idle, retain the prior selection in history,
 	 * and restore it before deferred follow-ups are sent, including after cancel/error.
 	 */
+	private readonly admittedConfiguredRuntimes = new WeakSet<object>()
 	private readonly configuredDeferredSends = new Map<string, Array<{ prompt: string; images?: string[]; files?: string[] }>>()
 	private readonly configuredNextMessageSelections = new NextMessageModelSelections()
 	private draftApiSelection?: TaskApiSelection
@@ -1332,6 +1324,18 @@ export class Controller {
 		return snapshot
 	}
 
+	private configuredModelAdmission(id: string): (() => void) | undefined {
+		const config = this.sessions.getSession(id)?.startConfig
+		const commit = config && this.sessionConfigBuilder.admission(config)
+		return commit
+			? () => {
+					commit()
+					this.admittedConfiguredRuntimes.add(config!)
+					this.providerChanges.handleApiConfigurationChanged({}, {})
+				}
+			: undefined
+	}
+
 	private deferOneTurnFollowup(
 		id: string,
 		prompt: string,
@@ -1341,7 +1345,7 @@ export class Controller {
 	): boolean {
 		const temporary = this.taskSessions.get(id)?.nextMessageSelection
 		const config = this.sessions.getSession(id)?.startConfig
-		if (delivery && config && this.sessionConfigBuilder.admission(config)) {
+		if (config && this.sessionConfigBuilder.admission(config) && (delivery || this.admittedConfiguredRuntimes.has(config))) {
 			const deferred = this.configuredDeferredSends.get(id) ?? []
 			deferred.push({ prompt, images, files })
 			this.configuredDeferredSends.set(id, deferred)
@@ -1434,7 +1438,11 @@ export class Controller {
 			if (session?.isRunning || session?.queuedPromptCount)
 				throw new Error("Wait for this turn to finish before arming a next-message pick")
 			this.configuredNextMessageSelections.set(input.taskId, input.mode, input.pick)
-			if (session) this.providerChanges.handleApiConfigurationChanged({}, {})
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+				// Arming must finish installing its runtime before the next RPC sends.
+				await this.sessionRebuilds.runExclusive(async () => {})
+			}
 			await this.postStateToWebview(true)
 			return
 		}
@@ -2951,6 +2959,8 @@ export class Controller {
 		// turn land on the wrong side of the UI mode. (Full fence-before-abort epoch bump lands
 		// in S6; this sets the authoritative phase now.)
 		this.turnStateTracker.set("resumable")
+		const id = this.task?.taskId
+		if (id) this.configuredDeferredSends.delete(id)
 		await this.taskControl.cancelTask()
 	}
 

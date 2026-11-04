@@ -41,25 +41,39 @@ describe("SdkSessionLifecycle", () => {
 		"aborted-result",
 		"error-result",
 		"success",
-	])("retains a transient choice after %s admission unless send succeeds", async (outcome) => {
+	])("consumes on admission for %s and retains a rejected send", async (outcome) => {
 		const next = new NextMessageModelSelections()
 		const pick = { modelId: "temporary", levelId: "default" }
 		next.set("session-123", "act", pick)
 		next.set("other", "act", pick)
+		const listeners = new Set<(event: never) => void>()
 		const send = vi.fn(async () => {
+			if (["aborted-result", "error-result", "success"].includes(outcome)) {
+				for (const listener of listeners)
+					listener({ type: "status", payload: { sessionId: "session-123", status: "running" } } as never)
+				expect(next.peek("session-123", "act")).toBeUndefined()
+			}
 			if (outcome === "aborted-result") return { finishReason: "aborted" }
 			if (outcome === "error-result") return { finishReason: "error" }
 			if (outcome === "failed") throw new Error("admission failed")
 			if (outcome === "cancelled") throw Object.assign(new Error("aborted"), { name: "AbortError" })
 			return undefined
 		})
-		const host = makeSdkHost({ send })
+		const host = makeSdkHost({
+			send,
+			subscribe: (listener: (event: never) => void) => {
+				listeners.add(listener)
+				return () => listeners.delete(listener)
+			},
+		})
 		mockCreateSessionHost.mockResolvedValue(host)
 		const lifecycle = makeLifecycle({ onSendAdmission: (id) => next.admission(id, "act")?.commit })
 		await lifecycle.startNewSession({} as StartInput)
 		lifecycle.fireAndForgetSend(host as never, "session-123", "hello")
 		await vi.waitFor(() => expect(lifecycle.getActiveSession()?.isRunning).toBe(false))
-		expect(next.peek("session-123", "act")).toEqual(outcome === "success" ? undefined : pick)
+		expect(next.peek("session-123", "act")).toEqual(
+			["aborted-result", "error-result", "success"].includes(outcome) ? undefined : pick,
+		)
 		expect(next.peek("other", "act")).toEqual(pick)
 		await lifecycle.dispose()
 	})
@@ -1516,7 +1530,13 @@ it("does not refresh a cancelled submission after delayed lease admission", asyn
 	const admission = Promise.withResolvers<() => Promise<void>>()
 	const acquireSessionLease = vi.fn().mockResolvedValueOnce(release).mockReturnValueOnce(admission.promise)
 	const resolveSessionWorkspace = vi.fn(async () => "/original-workspace")
-	const lifecycle = makeLifecycle({ acquireSessionLease, resolveSessionWorkspace })
+	const next = new NextMessageModelSelections()
+	next.set("session-123", "act", { modelId: "temporary", levelId: "default" })
+	const lifecycle = makeLifecycle({
+		acquireSessionLease,
+		resolveSessionWorkspace,
+		onSendAdmission: (id) => next.admission(id, "act")?.commit,
+	})
 	await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
 	lifecycle.setRunning(false)
 	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
@@ -1528,5 +1548,6 @@ it("does not refresh a cancelled submission after delayed lease admission", asyn
 	await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
 	expect(resolveSessionWorkspace).not.toHaveBeenCalled()
 	expect(host.send).not.toHaveBeenCalled()
+	expect(next.peek("session-123", "act")?.modelId).toBe("temporary")
 	await lifecycle.dispose()
 })

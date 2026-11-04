@@ -47,6 +47,7 @@ export interface PrepareTaskResumeStartDeps {
 export async function prepareTaskResumeStartInput(
 	deps: PrepareTaskResumeStartDeps,
 	taskId: string,
+	forMessage = false,
 ): Promise<TaskResumeStartInput> {
 	const historyItem = await deps.taskHistory.findHistoryItem(taskId)
 	const cwd = historyItem?.cwdOnTaskInitialization ?? (await deps.getWorkspaceRoot())
@@ -58,7 +59,10 @@ export async function prepareTaskResumeStartInput(
 		(useModelSettings(deps.stateManager)
 			? resolveTaskApiSelection(deps.stateManager, historyItem ?? {}, mode)
 			: historyItem?.apiSelection)
-	const config = await deps.sessionConfigBuilder.build({ cwd, mode, ...(apiSelection ? { apiSelection } : {}) })
+	const config = await deps.sessionConfigBuilder.build(
+		{ cwd, mode, ...(apiSelection ? { apiSelection } : {}) },
+		...(forMessage && useModelSettings(deps.stateManager) ? ([taskId] as const) : []),
+	)
 	config.sessionId = taskId
 
 	const isLegacyTask = await deps.taskHistory.isLegacyTask(taskId)

@@ -940,21 +940,36 @@ export class SdkSessionLifecycle {
 			.filter(Boolean)
 			.join("\n")
 		this.options.onSendStart?.(sessionId, delivery)
-		const send = () => {
+		const send = async () => {
 			const admitted = this.options.onSendAdmission?.(sessionId)
-			return sdkHost
-				.send({
+			// Core emits running only after preparation, validation and persistence.
+			// Listen before send: a turn promise resolves much later than admission.
+			let received = false
+			const unsubscribe = admitted
+				? sdkHost.subscribe((event) => {
+						if (
+							!received &&
+							event.type === "status" &&
+							event.payload.sessionId === sessionId &&
+							event.payload.status === "running" &&
+							!isSuperseded("admission")
+						) {
+							received = true
+							admitted()
+						}
+					})
+				: undefined
+			try {
+				return await sdkHost.send({
 					sessionId,
 					prompt: [this.options.consumeWorkspaceNotice?.(sessionId), noticedPrompt].filter(Boolean).join("\n"),
 					userImages: images,
 					userFiles: files,
 					delivery,
 				})
-				.then((result) => {
-					if (result?.finishReason !== "aborted" && result?.finishReason !== "error" && !isSuperseded("admission"))
-						admitted?.()
-					return result
-				})
+			} finally {
+				unsubscribe?.()
+			}
 		}
 		const sending = this.options.acquireSessionLease
 			? this.ensureLease(sessionId).then(async () => {

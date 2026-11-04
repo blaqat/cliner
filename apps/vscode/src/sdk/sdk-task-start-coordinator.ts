@@ -87,6 +87,7 @@ export interface SdkTaskStartCoordinatorOptions {
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
 	prepareWorkspace?: (id: string, title: string, workspace: string, enabled?: boolean) => Promise<string>
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
+	transferDraftModelPick?: (taskId: string) => void
 	/**
 	 * Remembers the task group a new thread starts in. Core writes the session
 	 * record only when the first send lands, so the history row synthesized for
@@ -168,17 +169,20 @@ export class SdkTaskStartCoordinator {
 					cwd = isolatedCwd
 					Object.assign(
 						config,
-						await this.options.sessionConfigBuilder.build({
-							prompt,
-							images,
-							files,
-							historyItem,
-							taskSettings,
-							cwd,
-							workspaceRoot: cwd,
-							mode,
-							apiSelection,
-						}),
+						await this.options.sessionConfigBuilder.build(
+							{
+								prompt,
+								images,
+								files,
+								historyItem,
+								taskSettings,
+								cwd,
+								workspaceRoot: cwd,
+								mode,
+								apiSelection,
+							},
+							...(useModelSettings(this.options.stateManager) && !background ? ([""] as const) : []),
+						),
 					)
 				}
 			}
@@ -222,6 +226,7 @@ export class SdkTaskStartCoordinator {
 				Logger.error("[SdkController] Failed to post state after emitting initial task message:", error)
 			})
 
+			if (!background) this.options.transferDraftModelPick?.(taskSessionId)
 			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 			const { startResult, sdkHost } = background
 				? await this.options.sessions.startNewSession(startInput, { focus: false })

@@ -138,7 +138,8 @@ describe("SdkTaskStartCoordinator", () => {
 			contextTask.taskId = taskId
 			return { task: contextTask, messages: contextMessages }
 		})
-		const coordinator = new SdkTaskStartCoordinator({ ...options, createTaskContext })
+		const transferDraftModelPick = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, createTaskContext, transferDraftModelPick })
 
 		const sessionId = await coordinator.initTask("quiet task", ["image.png"], [], undefined, undefined, {
 			background: true,
@@ -147,6 +148,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(sessionId).toEqual(expect.any(String))
 		// The view is untouched: no clear, no focused task, and the task message is
 		// written into the background task's own transcript, not the visible one.
+		expect(transferDraftModelPick).not.toHaveBeenCalled()
 		expect(options.clearTask).not.toHaveBeenCalled()
 		expect(options.setTask).not.toHaveBeenCalled()
 		expect(state.task).toBeUndefined()

@@ -269,7 +269,7 @@ export class SdkFollowupCoordinator {
 		Logger.log(`[SdkController] Resuming session from task: ${taskId}`)
 
 		const historyItem = await this.options.taskHistory.findHistoryItem(taskId)
-		const resumeStart = await prepareTaskResumeStartInput(this.options, taskId)
+		const resumeStart = await prepareTaskResumeStartInput(this.options, taskId, true)
 		// Targeting checks below compare by taskId (logical identity): reloading
 		// the same task allocates a new TaskProxy and must not cancel the
 		// follow-up. Cleanup (endStartedResume) uses object identity instead.
