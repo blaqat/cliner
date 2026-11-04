@@ -64,17 +64,20 @@ export class WalkthroughService {
 		return result
 	}
 
-	async generate(request: WalkthroughRequest): Promise<ChangeWalkthrough> {
+	async generate(
+		request: WalkthroughRequest,
+		oneCall?: import("@shared/model-settings").ModelPick,
+	): Promise<ChangeWalkthrough> {
 		if (this.generating) throw new Error("A walkthrough is already generating")
 		this.generating = true
 		try {
 			const { walk, turns } = await this.current(request)
 			if (!walk.hunks.length) return this.get(request)
 			if (useModelSettings(this.controller.stateManager)) {
-				const handler = await backgroundHandler(this.controller.stateManager, "generate")
+				const handler = await backgroundHandler(this.controller.stateManager, "generate", oneCall)
 				if (!handler) throw new Error("Choose a Background text model in Settings > Models")
 				const settings = this.controller.stateManager.getGlobalStateKey("modelSettings")!
-				const identity = { settings }
+				const identity = { settings, oneCall }
 				const cache = cacheKey(walk, identity, turns, request.reviewNotes)
 				const directory = path.join(await ensureTaskDirectoryExists(request.taskId), "walkthrough-cache")
 				const cacheFile = path.join(directory, `${cache}.json`)

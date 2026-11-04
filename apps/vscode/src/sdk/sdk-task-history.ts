@@ -166,6 +166,9 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
 		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
+		...((item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1)
+			? { modelSelectionV1: item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1 }
+			: {}),
 		// The user-set thread title persists as "threadTitle": metadata "title"
 		// already carries the first-message task text.
 		threadTitle: item.title ?? "",
@@ -316,7 +319,13 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
-		apiSelection: readTaskApiSelection(metadata?.apiSelection),
+		apiSelection: readTaskApiSelection({
+			...readTaskApiSelection(metadata?.apiSelection),
+			...(readTaskApiSelection({ modelSelectionV1: metadata?.modelSelectionV1 }) ?? {}),
+		}),
+		modelSelectionV1:
+			readTaskApiSelection({ modelSelectionV1: metadata?.modelSelectionV1 })?.modelSelectionV1 ??
+			readTaskApiSelection(metadata?.apiSelection)?.modelSelectionV1,
 		title: metadataString(metadata, "threadTitle"),
 		taskGroupId: metadataString(metadata, "taskGroupId"),
 		tags: metadataTaskTags(metadata, "tags"),
@@ -789,11 +798,18 @@ export class SdkTaskHistory {
 	private readonly selectionWrites = new Map<string, Promise<void>>()
 
 	setTaskApiSelection(taskId: string, selection: TaskApiSelection): Promise<void> {
-		const captured = { ...selection }
+		const captured = structuredClone(selection)
 		return this.serializeMetadataWrite(taskId, async () => {
 			await this.withHistoryHost(async (host) => {
 				const record = await host.get(taskId)
-				if (record) await host.update(taskId, { metadata: { ...record.metadata, apiSelection: captured } })
+				if (record)
+					await host.update(taskId, {
+						metadata: {
+							...record.metadata,
+							apiSelection: captured,
+							...(captured.modelSelectionV1 ? { modelSelectionV1: captured.modelSelectionV1 } : {}),
+						},
+					})
 			})
 			this.invalidateMetadataHistoryCache()
 		})
@@ -813,7 +829,10 @@ export class SdkTaskHistory {
 
 	async getTaskApiSelection(taskId: string): Promise<TaskApiSelection | undefined> {
 		const record = await this.getSdkRecord(taskId)
-		return readTaskApiSelection(record?.metadata?.apiSelection)
+		return readTaskApiSelection({
+			...readTaskApiSelection(record?.metadata?.apiSelection),
+			...(readTaskApiSelection({ modelSelectionV1: record?.metadata?.modelSelectionV1 }) ?? {}),
+		})
 	}
 
 	async isLegacyTask(taskId: string): Promise<boolean> {
@@ -871,6 +890,7 @@ export class SdkTaskHistory {
 				// History reads may predate live picker changes. Only explicit selection
 				// writes may replace an existing authoritative selection.
 				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
+				...(existing?.metadata?.modelSelectionV1 ? { modelSelectionV1: existing.metadata.modelSelectionV1 } : {}),
 			}
 			if (item.size === undefined) {
 				const existingSize = existing?.metadata?.size

@@ -12,6 +12,7 @@ import { captureTaskApiSelection, resolveTaskApiSelection } from "@/core/control
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import { isDirectory } from "@/utils/fs"
+import { getSessionApiSnapshot } from "./cline-session-factory"
 import { useModelSettings } from "./model-settings/background"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE, type ProviderFailureTelemetry } from "./provider-failure-telemetry"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
@@ -119,7 +120,7 @@ export class SdkTaskStartCoordinator {
 
 			let cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
-			const apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
+			let apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
 			const config = await this.options.sessionConfigBuilder.build({
 				prompt,
@@ -131,6 +132,7 @@ export class SdkTaskStartCoordinator {
 				mode,
 				apiSelection,
 			})
+			apiSelection = getSessionApiSnapshot(config)?.selection ?? apiSelection
 			providerId = config.providerId
 			modelId = config.modelId
 

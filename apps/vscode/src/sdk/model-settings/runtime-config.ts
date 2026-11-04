@@ -1,5 +1,6 @@
 import { createGateway, type ProviderConfig } from "@cline/llms"
-import type { ModelPick, ModelSettings } from "@shared/model-settings"
+import { ModelCapabilitySchema } from "@cline/shared"
+import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
 import { fetch } from "@/shared/net"
 import { resolveConfiguredPick } from "../model-settings-resolver"
 import { type ConnectionAuthDependencies, prepareModelRequest } from "./request-adapter"
@@ -9,7 +10,7 @@ export async function configuredProviderConfig(
 	settings: ModelSettings,
 	pick: ModelPick | null,
 	dependencies: ConnectionAuthDependencies,
-): Promise<ProviderConfig> {
+): Promise<ProviderConfig & { settingsModelLevels: ModelLevel[] }> {
 	const resolved = resolveConfiguredPick(settings, pick)
 	const providerId =
 		resolved.connection.kind === "provider"
@@ -36,16 +37,12 @@ export async function configuredProviderConfig(
 		},
 		dependencies,
 	)
-	if (
-		resolved.connection.kind === "provider" &&
-		(prepared.intent.level.kind === "thinking-level" ||
-			prepared.intent.verbosity !== null ||
-			prepared.intent.systemRole !== "system")
-	)
-		throw new Error("This native setting requires request-intent runtime support. Open Settings > Models.")
 	const options = prepared.config.options ?? {}
 	return {
 		providerId: prepared.config.providerId,
+		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
+		settingsModelLevels: resolved.values.levels,
+		settingsProviderOptions: prepared.config.options,
 		modelId: resolved.model.upstreamId,
 		apiKey: prepared.config.apiKey ?? "",
 		apiKeyEnv: [],
@@ -57,6 +54,7 @@ export async function configuredProviderConfig(
 		thinking: prepared.request.reasoning?.enabled,
 		thinkingBudgetTokens: prepared.request.reasoning?.budgetTokens,
 		maxOutputTokens: resolved.values.maxOutputTokens ?? undefined,
+		maxInputTokens: resolved.values.maxInputTokens ?? resolved.values.contextWindow ?? undefined,
 		temperature: resolved.values.temperature ?? undefined,
 		region: typeof options.region === "string" ? options.region : undefined,
 		aws:
@@ -86,9 +84,25 @@ export async function configuredProviderConfig(
 			[resolved.model.upstreamId]: {
 				id: resolved.model.upstreamId,
 				name: resolved.model.name || resolved.model.upstreamId,
-				contextWindow: resolved.values.contextWindow ?? 128000,
+				contextWindow: resolved.values.contextWindow ?? model.contextWindow ?? 128000,
+				pricing: {
+					input: resolved.values.inputPrice ?? undefined,
+					output: resolved.values.outputPrice ?? undefined,
+					cacheRead: resolved.values.cacheReadPrice ?? undefined,
+					cacheWrite: resolved.values.cacheWritePrice ?? undefined,
+				},
 				maxTokens: resolved.values.maxOutputTokens ?? undefined,
 				capabilities: [
+					...(model.capabilities ?? [])
+						.flatMap((c) => {
+							const parsed = ModelCapabilitySchema.safeParse(c)
+							return parsed.success ? [parsed.data] : []
+						})
+						.filter(
+							(c) =>
+								!(c === "images" && resolved.values.images !== "unknown") &&
+								!(c === "reasoning" && resolved.values.reasoning !== "unknown"),
+						),
 					...(resolved.values.images === "yes" ? ["images" as const] : []),
 					...(resolved.values.reasoning === "yes" ? ["reasoning" as const] : []),
 				],

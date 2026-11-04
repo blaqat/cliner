@@ -1269,7 +1269,13 @@ export function buildStartSessionInput(config: CoreSessionConfig, input: Session
 	return {
 		config,
 		mode: input.mode,
-		sessionMetadata: { apiSelection: getSessionApiSnapshot(config)?.selection, taskMode: input.mode },
+		sessionMetadata: {
+			apiSelection: getSessionApiSnapshot(config)?.selection,
+			...(getSessionApiSnapshot(config)?.selection.modelSelectionV1
+				? { modelSelectionV1: getSessionApiSnapshot(config)?.selection.modelSelectionV1 }
+				: {}),
+			taskMode: input.mode,
+		},
 		// Do NOT pass prompt here — start() should return immediately.
 		// The prompt is sent separately via core.send() after session creation.
 		prompt: undefined,

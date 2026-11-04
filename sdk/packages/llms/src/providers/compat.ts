@@ -415,6 +415,9 @@ function buildGatewayRequest(
 		messages: toGatewayRequestMessages(messages),
 		tools: toGatewayTools(tools),
 		maxTokens: config.maxOutputTokens,
+		metadata: config.settingsRequestIntent
+			? { settingsRequestIntent: config.settingsRequestIntent }
+			: undefined,
 		reasoning:
 			config.thinking !== undefined ||
 			config.reasoningEffort ||
@@ -532,6 +535,7 @@ function buildGatewayConfig(config: ProviderConfig) {
 			...config.claudeCode,
 			...config.opencode,
 			...config.sap,
+			...config.settingsProviderOptions,
 		},
 	};
 }

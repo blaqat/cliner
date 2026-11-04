@@ -281,6 +281,10 @@ export const HeaderSchema = z
 	)
 // Explicitly partition legacy provider fields. Credentials only appear as secretRefs.
 const connectionOptionShape = {
+	openRouterProviderSorting: z.string(),
+	liteLlmBaseUrl: z.string(),
+	liteLlmUsePromptCache: z.boolean(),
+	requestyBaseUrl: z.string(),
 	awsRegion: z.string(),
 	awsAuthentication: z.string(),
 	awsUseProfile: z.boolean(),
@@ -304,6 +308,7 @@ const connectionOptionShape = {
 	minimaxApiLine: z.string(),
 	ocaMode: z.string(),
 	aihubmixBaseUrl: z.string(),
+	aihubmixAppCode: z.string(),
 }
 export const ConnectionOptionsSchema = z.object(connectionOptionShape).partial().strict()
 export const ModelProviderOptionsSchema = z

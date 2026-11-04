@@ -1614,3 +1614,16 @@ it("preserves ownership when resuming old nested subagent history", () => {
 	const aside = historyItemToSessionMetadata(makeHistoryItem("aside", { parentTaskId: "main", forkedAtTs: 42 }))
 	expect(aside).toMatchObject({ isSubagent: false, runtimeOwnerTaskId: "" })
 })
+
+it("mirrors exact configured picks between top-level metadata, apiSelection and HistoryItem", () => {
+	const modelSelectionV1 = {
+		version: 1 as const,
+		ask: { modelId: "ask-row", levelId: "custom-low" },
+		act: { modelId: "act-row", levelId: "custom-high" },
+	}
+	const metadata = historyItemToSessionMetadata(makeHistoryItem("task", { apiSelection: { modelSelectionV1 } }))
+	expect(metadata.modelSelectionV1).toEqual(modelSelectionV1)
+	const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("task", { metadata: { modelSelectionV1 } }))
+	expect(result.modelSelectionV1).toEqual(modelSelectionV1)
+	expect(result.apiSelection?.modelSelectionV1).toEqual(modelSelectionV1)
+})

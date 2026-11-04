@@ -2,9 +2,10 @@ import { getProviderCollectionSync } from "@cline/llms"
 import type { Connection, ModelRow } from "@shared/model-settings"
 
 // Legacy option names remain the form contract; this is the one-way adapter to SDK config.
-const mappings: Record<string, Record<string, string>> = {
+export const providerOptionMappings: Record<string, Record<string, string>> = {
 	bedrock: {
 		awsRegion: "region",
+		awsUseProfile: "authentication",
 		awsAuthentication: "authentication",
 		awsProfile: "profile",
 		awsBedrockEndpoint: "endpoint",
@@ -18,6 +19,9 @@ const mappings: Record<string, Record<string, string>> = {
 		awsUseGlobalInference: "useGlobalInference",
 		awsBedrockUsePromptCache: "usePromptCache",
 	},
+	openrouter: { openRouterProviderSorting: "openRouterProviderSorting" },
+	litellm: { liteLlmBaseUrl: "baseUrl", liteLlmUsePromptCache: "usePromptCache" },
+	requesty: { requestyBaseUrl: "baseUrl" },
 	vertex: { vertexProjectId: "project", vertexRegion: "location" },
 	gemini: { geminiBaseUrl: "baseUrl" },
 	"claude-code": { claudeCodePath: "path" },
@@ -53,7 +57,7 @@ export function connectionProviderOptions(
 	if (connection.kind !== "provider") return values
 	const manifest = getProviderCollectionSync(connection.providerId)?.provider
 	if (!manifest) throw new Error(`Unknown SDK provider ${connection.providerId}`)
-	const map = mappings[connection.providerId] ?? {}
+	const map = providerOptionMappings[connection.providerId] ?? {}
 	const result: Record<string, unknown> = {}
 	for (const [key, value] of Object.entries({ ...values, ...model?.providerOptions })) {
 		// awsUseProfile is a legacy selector, normalized to the explicit SDK auth mode.
@@ -67,4 +71,23 @@ export function connectionProviderOptions(
 	}
 	if (result.authentication === "credentials") result.authentication = "iam"
 	return result
+}
+
+export function providerSecretFields(provider: string): string[] {
+	if (provider === "bedrock") return ["awsAccessKey", "awsSecretKey", "awsSessionToken", "awsBedrockApiKey"]
+	if (provider === "sapaicore") return ["sapAiCoreClientId", "sapAiCoreClientSecret"]
+	const keys: Record<string, string> = {
+		anthropic: "apiKey",
+		openai: "openAiApiKey",
+		"openai-compatible": "openAiApiKey",
+		"openai-native": "openAiNativeApiKey",
+		cline: "clineApiKey",
+		deepseek: "deepSeekApiKey",
+		litellm: "liteLlmApiKey",
+		huggingface: "huggingFaceApiKey",
+		"vercel-ai-gateway": "vercelAiGatewayApiKey",
+		nousResearch: "nousResearchApiKey",
+		"zai-coding-plan": "zaiApiKey",
+	}
+	return [keys[provider] ?? `${provider.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}ApiKey`]
 }

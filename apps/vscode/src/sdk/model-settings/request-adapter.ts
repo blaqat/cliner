@@ -23,14 +23,6 @@ export async function resolveConnectionConfig(
 	deps: ConnectionAuthDependencies,
 ): Promise<GatewayResolvedProviderConfig> {
 	ConnectionSchema.parse(connection)
-	if (
-		connection.auth.kind === "none" &&
-		connection.kind === "provider" &&
-		["bedrock", "vertex", "claude-code", "openai-codex", "qwen-code", "opencode"].includes(connection.providerId)
-	)
-		throw new Error(
-			"This native adapter requires identity authentication; use a compatible connection for an unauthenticated server",
-		)
 	let account: GatewayResolvedProviderConfig | undefined
 	let apiKey = ""
 	switch (connection.auth.kind) {
@@ -151,7 +143,13 @@ export async function prepareModelRequest(
 		return { connectionId: connection.id, modelId: model.id, request, config, intent }
 	}
 	const nativeFetch = (async (url, init) => {
-		if (connection.auth.kind === "none") {
+		if (
+			connection.auth.kind === "none" &&
+			!(
+				connection.kind === "provider" &&
+				["bedrock", "vertex", "claude-code", "qwen-code", "openai-codex", "opencode"].includes(connection.providerId)
+			)
+		) {
 			const headers = new Headers(init?.headers)
 			headers.delete("authorization")
 			headers.delete("api-key")

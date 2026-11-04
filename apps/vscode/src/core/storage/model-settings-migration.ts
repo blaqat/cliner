@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import {
+	BUILTIN_MODEL_VALUES,
 	type Connection,
 	ConnectionOptionsSchema,
 	createDefaultModelSettings,
@@ -14,9 +15,17 @@ import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import { ApiHandlerSettingsKeys, SecretKeys } from "@shared/storage/state-keys"
 import { toSdkProviderId } from "@/sdk/model-catalog/sdk-provider-id"
 import type { ConnectionSecretStore } from "@/sdk/model-settings/connection-secret-store"
-import { legacyModelValues } from "@/sdk/model-settings/legacy-values"
+import { legacyModelValues, sdkModelValues } from "@/sdk/model-settings/legacy-values"
+import { providerOptionMappings, providerSecretFields } from "@/sdk/model-settings/provider-options"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 
+function stable(value: unknown): string {
+	return JSON.stringify(value, (_, v) =>
+		v && typeof v === "object" && !Array.isArray(v)
+			? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)))
+			: v,
+	)
+}
 type RecordValue = Record<string, unknown>
 const object = (v: unknown): RecordValue => {
 	if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("Invalid legacy settings object")
@@ -78,10 +87,6 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const legacy = nonsecret(raw) as RecordValue
 	const fingerprint = digest([legacy, nonsecret(deps.sdkInput ?? {})])
 	const existing = state.get<ModelSettings>("modelSettings")
-	if (previous?.status === "complete" && previous.legacyFingerprint === fingerprint) {
-		ModelSettingsSchema.parse(existing)
-		return "complete"
-	}
 	const backupId = "settings-backup-v1"
 	if (!state.get("modelSettingsBackupV1"))
 		await state.update("modelSettingsBackupV1", {
@@ -111,6 +116,21 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				options: { openAiBaseUrl: saved.baseUrl, openAiHeaders: saved.headers },
 			})
 			if (sdk.lastUsedProvider === provider) sdkDefault = sourceId
+		}
+	}
+	const sdkModels = deps.sdkInput?.models ? object(object(deps.sdkInput.models).providers ?? {}) : {}
+	for (const [provider, entry] of Object.entries(sdkModels)) {
+		const record = object(entry)
+		for (const modelId of Object.keys(object(record.models ?? {}))) {
+			if (configurations.some((c) => toSdkProviderId(String(c.provider)) === provider && c.modelId === modelId)) continue
+			configurations.push({
+				id: `sdk-model-${provider}-${modelId}`,
+				name: modelId,
+				provider,
+				modelId,
+				sdkAccount: true,
+				options: { openAiBaseUrl: record.provider ? object(record.provider).baseUrl : undefined },
+			})
 		}
 	}
 	for (const mode of ["plan", "act"] as const) {
@@ -144,36 +164,87 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const provider = text(config.provider)
 		const upstreamId = text(config.modelId)
 		if (!sourceId || !provider || !upstreamId) throw new Error("Invalid saved configuration identity")
+		const sdkEntry = sdkModels[toSdkProviderId(provider)]
+		const sdkInfo = sdkEntry ? object(object(sdkEntry).models ?? {})[upstreamId] : undefined
 		// Include nonsecret content to import changed configurations after downgrade without replacing new rows.
-		const id = `legacy-${digest([
+		let id = `legacy-${digest([
 			sourceId,
 			nonsecret(config),
+			nonsecret(sdkInfo),
 			profiles
 				.filter((p) => p.configurationId === sourceId)
 				.map((p) => p.reasoningEffort)
 				.sort(),
 		]).slice(0, 32)}`
+		// Credential revisions are numbered from persisted rows, never derived from a secret.
+		const baseId = id
+		const allowedSecrets = providerSecretFields(toSdkProviderId(provider))
+		const sourceFields = (
+			config.mode === undefined
+				? deps.legacySecretKeys
+						.filter((k) => k.startsWith(`profile:${sourceId}:`))
+						.map((k) => k.slice(`profile:${sourceId}:`.length))
+				: [...SecretKeys]
+		).filter((k) => allowedSecrets.includes(k))
+		const credentialValues = Object.fromEntries(
+			sourceFields
+				.map((k) => [k, deps.readLegacySecret(config.mode === undefined ? `profile:${sourceId}:${k}` : k)])
+				.filter(([, v]) => v !== undefined),
+		)
+		let revision = 0
+		while (settings.models.some((m) => m.id === id)) {
+			const row = settings.models.find((m) => m.id === id)!
+			const old = settings.connections.find((c) => c.id === row.connectionId)!
+			const refs = old.kind === "provider" ? { ...old.secretRefs } : {}
+			if (old.auth.kind === "keychain") refs[old.auth.secretRef.split(":").at(-1)!] = old.auth.secretRef
+			const saved = Object.fromEntries(
+				await Promise.all(Object.entries(refs).map(async ([k, ref]) => [k, await deps.secrets?.get(ref)])),
+			)
+			const oldHeaders = await Promise.all(
+				old.headers.map(async (h) => [
+					h.name.toLowerCase(),
+					h.storage === "plain" ? h.value : await deps.secrets?.get(h.secretRef),
+				]),
+			)
+			const configOptions = config.options === undefined ? {} : object(config.options)
+			const newHeaders = Object.entries(object(configOptions.openAiHeaders ?? {})).map(([name, value]) => [
+				name.toLowerCase(),
+				String(value),
+			])
+			if (stable(saved) === stable(credentialValues) && stable(oldHeaders.sort()) === stable(newHeaders.sort())) break
+			id = `${baseId}-credentials-${++revision}`
+		}
 		const connectionId = `${id}-connection`
 		const options = config.options === undefined ? {} : object(config.options)
 		const mode = config.mode === "plan" ? "plan" : "act"
 		const normalized = { ...options }
 		for (const [key, value] of Object.entries(options))
 			if (key.startsWith(`${mode}Mode`)) normalized[`actMode${key.slice(`${mode}Mode`.length)}`] = value
-		const baseUrl =
-			text(
-				options.openAiBaseUrl ??
-					options.anthropicBaseUrl ??
-					options.ollamaBaseUrl ??
-					options.lmStudioBaseUrl ??
-					options.geminiBaseUrl,
-			) ?? null
+		const baseUrlFields: Record<string, string> = {
+			openai: "openAiBaseUrl",
+			"openai-compatible": "openAiBaseUrl",
+			anthropic: "anthropicBaseUrl",
+			ollama: "ollamaBaseUrl",
+			lmstudio: "lmStudioBaseUrl",
+			gemini: "geminiBaseUrl",
+			litellm: "liteLlmBaseUrl",
+			requesty: "requestyBaseUrl",
+			asksage: "tasksageApiUrl",
+			sapaicore: "sapAiCoreBaseUrl",
+			dify: "difyBaseUrl",
+			oca: "ocaBaseUrl",
+			aihubmix: "aihubmixBaseUrl",
+		}
+		const baseUrl = text(options[config.sdkAccount === true ? "openAiBaseUrl" : baseUrlFields[provider]]) ?? null
 		const prefix = `settings:v1:connection:${connectionId}:`
 		const own = config.mode === undefined
-		const fields = own
-			? deps.legacySecretKeys
-					.filter((k) => k.startsWith(`profile:${sourceId}:`))
-					.map((k) => k.slice(`profile:${sourceId}:`.length))
-			: [...SecretKeys]
+		const fields = (
+			own
+				? deps.legacySecretKeys
+						.filter((k) => k.startsWith(`profile:${sourceId}:`))
+						.map((k) => k.slice(`profile:${sourceId}:`.length))
+				: [...SecretKeys]
+		).filter((k) => allowedSecrets.includes(k))
 		const secrets: Record<string, string> = {}
 		for (const field of fields) {
 			const value = deps.readLegacySecret(own ? `profile:${sourceId}:${field}` : field)
@@ -184,7 +255,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			}
 		}
 		const keyField =
-			provider === "openai"
+			provider === "openai" || provider === "openai-compatible"
 				? "openAiApiKey"
 				: provider === "openai-native"
 					? "openAiNativeApiKey"
@@ -199,11 +270,17 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			auth:
 				config.sdkAccount === true
 					? { kind: "sdk-account", providerId: toSdkProviderId(provider) }
-					: keyRef
-						? { kind: "keychain", secretRef: keyRef }
-						: provider === "ollama" || provider === "lmstudio"
-							? { kind: "none" }
-							: { kind: "keychain", secretRef: `${prefix}${keyField ?? "apiKey"}` },
+					: options.azureIdentity === true
+						? { kind: "azure-identity" }
+						: keyRef
+							? { kind: "keychain", secretRef: keyRef }
+							: provider === "ollama" ||
+									provider === "lmstudio" ||
+									["bedrock", "vertex", "claude-code", "qwen-code", "openai-codex", "opencode"].includes(
+										provider,
+									)
+								? { kind: "none" }
+								: { kind: "keychain", secretRef: `${prefix}${keyField ?? "apiKey"}` },
 			headers: Object.entries(object(options.openAiHeaders ?? {})).map(([name, value], i) => {
 				const headerId = `header-${i}`
 				if (/authorization|api.?key|token|secret/i.test(name)) {
@@ -216,24 +293,39 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			}),
 			requestTimeoutMs: null,
 			defaults: {},
-			...(provider === "openai"
+			...(provider === "openai" || provider === "openai-compatible"
 				? {
 						kind: "openai-compatible" as const,
-						apiFormat: config.openAiCompatibleApiType === "responses" ? ("responses" as const) : ("chat" as const),
+						apiFormat:
+							(config.openAiCompatibleApiType ?? options.openAiCompatibleApiType) === "responses"
+								? ("responses" as const)
+								: ("chat" as const),
 						azureApiVersion: text(options.azureApiVersion) ?? null,
 					}
 				: {
 						kind: "provider" as const,
 						providerId: toSdkProviderId(provider),
 						options: ConnectionOptionsSchema.parse(
-							Object.fromEntries(Object.entries(normalized).filter(([k]) => k in ConnectionOptionsSchema.shape)),
+							Object.fromEntries(
+								Object.entries(normalized).filter(
+									([k]) =>
+										k in ConnectionOptionsSchema.shape &&
+										k in (providerOptionMappings[toSdkProviderId(provider)] ?? {}),
+								),
+							),
 						),
 						secretRefs: Object.fromEntries(Object.entries(secrets).filter(([k]) => k !== keyField)),
 					}),
 		}
 		const effort = text(config.reasoningEffort)
+		const thinkingLevel = text(options[`gemini${mode === "plan" ? "Plan" : "Act"}ModeThinkingLevel`])
 		const levels = [
-			{ id: "default", label: "Default", rank: 0, request: { kind: "default" as const } },
+			{
+				id: "default",
+				label: "Default",
+				rank: 0,
+				request: thinkingLevel ? { kind: "thinking-level" as const, value: thinkingLevel } : { kind: "default" as const },
+			},
 			...Array.from(
 				new Set([effort, ...profiles.filter((p) => p.configurationId === sourceId).map((p) => text(p.reasoningEffort))]),
 			)
@@ -246,21 +338,32 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				id,
 				connectionId,
 				upstreamId,
-				name: text(config.name) ?? "",
-				kind: "unknown",
-				overrides: { ...legacyModelValues(options, mode), levels, ...(levels.length > 1 ? { reasoning: "yes" } : {}) },
+				name: text(config.name) ?? (sdkInfo ? text(object(sdkInfo).name) : undefined) ?? "",
+				kind: sdkInfo && object(sdkInfo).operation && object(sdkInfo).operation !== "language" ? "non-chat" : "unknown",
+				overrides: {
+					...(sdkInfo ? sdkModelValues(object(sdkInfo)) : {}),
+					...legacyModelValues(options, mode),
+					levels,
+					...(levels.length > 1 || thinkingLevel ? { reasoning: "yes" } : {}),
+				},
 				providerOptions: ModelProviderOptionsSchema.parse(
-					Object.fromEntries(Object.entries(normalized).filter(([k]) => k in ModelProviderOptionsSchema.shape)),
+					Object.fromEntries(
+						Object.entries(normalized).filter(
+							([k]) =>
+								k in ModelProviderOptionsSchema.shape &&
+								k in (providerOptionMappings[toSdkProviderId(provider)] ?? {}),
+						),
+					),
 				),
 			})
 		}
-		journal.configurationModels[sourceId] = id
+		journal.configurationModels[sourceId] ??= id
 		picks[sourceId] = { modelId: id, levelId: !effort || effort === "none" ? "default" : effort }
 	}
 	for (const p of profiles) {
 		const id = text(p.id)
 		if (!id || !text(p.configurationId)) throw new Error("Invalid model profile")
-		journal.profilePicks[id] = {
+		journal.profilePicks[id] ??= {
 			modelId: journal.configurationModels[String(p.configurationId)] ?? `missing:${p.configurationId}`,
 			levelId: !p.reasoningEffort || p.reasoningEffort === "none" ? "default" : String(p.reasoningEffort),
 		}
@@ -365,7 +468,65 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			},
 		})
 	}
+	// Compare resolved credentials only in memory. Missing keys must never establish identity.
+	const readSecret = async (ref: string) =>
+		[...copies].reverse().find(([key]) => key === ref)?.[1] ?? (await deps.secrets?.get(ref))
+	const identity = async (c: Connection) => {
+		const auth = c.auth.kind === "keychain" ? { kind: "keychain", value: await readSecret(c.auth.secretRef) } : c.auth
+		if (auth.kind === "keychain" && !("value" in auth && auth.value)) return undefined
+		const headers = await Promise.all(
+			c.headers.map(async (h) => [h.name.toLowerCase(), h.storage === "plain" ? h.value : await readSecret(h.secretRef)]),
+		)
+		const credentials =
+			c.kind === "provider"
+				? Object.fromEntries(
+						await Promise.all(Object.entries(c.secretRefs).map(async ([k, ref]) => [k, await readSecret(ref)])),
+					)
+				: {}
+		return stable({
+			kind: c.kind,
+			provider: c.kind === "provider" ? c.providerId : "openai-compatible",
+			baseUrl: c.baseUrl,
+			auth,
+			headers: headers.sort(),
+			credentials,
+			options: c.kind === "provider" ? c.options : { apiFormat: c.apiFormat, azureApiVersion: c.azureApiVersion },
+		})
+	}
+	const groups = new Map<string, Connection>()
+	for (const connection of [...settings.connections]) {
+		const key = await identity(connection)
+		if (key === undefined) continue
+		const prior = groups.get(key)
+		if (!prior) {
+			groups.set(key, connection)
+			continue
+		}
+		for (const model of settings.models)
+			if (model.connectionId === connection.id) {
+				for (const field of Object.keys(prior.defaults) as Array<keyof typeof prior.defaults>) {
+					if (model.overrides[field] === undefined)
+						Object.assign(model.overrides, { [field]: connection.defaults[field] ?? BUILTIN_MODEL_VALUES[field] })
+				}
+				model.connectionId = prior.id
+			}
+		settings.connections = settings.connections.filter((c) => c.id !== connection.id)
+	}
+	// Only new connections acquire common defaults; never rewrite authored defaults on reactivation.
+	for (const connection of settings.connections) {
+		if (existing?.connections.some((c) => c.id === connection.id)) continue
+		const rows = settings.models.filter((m) => m.connectionId === connection.id)
+		if (rows.length < 2) continue
+		for (const key of Object.keys(rows[0].overrides) as Array<keyof (typeof rows)[0]["overrides"]>) {
+			const value = rows[0].overrides[key]
+			if (value === undefined || !rows.every((m) => stable(m.overrides[key]) === stable(value))) continue
+			Object.assign(connection.defaults, { [key]: value })
+			for (const row of rows) delete row.overrides[key]
+		}
+	}
 	ModelSettingsSchema.parse(settings)
+	if (previous?.status === "complete" && previous.legacyFingerprint === fingerprint && stable(existing) === stable(settings))
+		return "complete"
 	await state.update("modelSettingsMigration", journal)
 	if (copies.length && !deps.secrets) throw new Error("Connection keychain is unavailable; migration will retry")
 	for (const [ref, value] of copies) {

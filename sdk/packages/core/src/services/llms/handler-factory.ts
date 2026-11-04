@@ -91,7 +91,7 @@ function buildGatewayProviderOptions(
 		Object.assign(options, config.sap);
 	}
 
-	return compactOptions(options);
+	return compactOptions({ ...options, ...config.settingsProviderOptions });
 }
 
 function readPositiveInteger(value: unknown): number | undefined {

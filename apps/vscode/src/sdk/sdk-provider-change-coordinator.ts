@@ -10,6 +10,7 @@ import {
 import type { StateManager } from "@/core/storage/StateManager"
 import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 import { Logger } from "@/shared/services/Logger"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -65,6 +66,14 @@ export class SdkProviderChangeCoordinator {
 			this.options.sessions.getSessions?.().values() ??
 			[this.options.sessions.getActiveSession()].filter((session) => session !== undefined)
 		for (const session of sessions) {
+			if (useModelSettings(this.options.stateManager)) {
+				this.options.rebuilds.request(
+					"provider",
+					(context) => this.performRestartActiveSessionForProviderChange(session.sessionId, context.isCurrent),
+					session.sessionId,
+				)
+				continue
+			}
 			const mode = session.startConfig?.mode ?? this.getCurrentMode()
 			const selection = this.options.getTaskApiSelection?.(session.sessionId) ?? session.apiSnapshot?.selection
 			const beforeSelection = previousSelections?.has(session.sessionId)
@@ -210,6 +219,7 @@ export class SdkProviderChangeCoordinator {
 	}
 
 	private reconcileSelection(selection: TaskApiSelection): TaskApiSelection {
+		if (useModelSettings(this.options.stateManager)) return structuredClone(selection)
 		const profiles = readApiConfigProfiles(this.options.stateManager)
 		const known = new Set(profiles.map((profile) => profile.id))
 		const resolved = { ...selection }

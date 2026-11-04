@@ -321,3 +321,139 @@ it("consumes next-message picks only after successful admission and preserves ot
 	expect(await next.admit("first", "act", thread, async (p) => p?.modelId)).toBe("a")
 	expect(await next.admit("first", "plan", thread, async (p) => p?.modelId)).toBe("c")
 })
+
+describe("Phase 2 follow-up migration", () => {
+	it("groups models by actual credentials and preserves IDs on retry", async () => {
+		const f = fixture({ apiConfigProfiles: [configuration("a"), { ...configuration("b"), modelId: "second" }] })
+		f.keys["profile:b:openAiApiKey"] = "own-a"
+		await migrateModelSettings(f.deps)
+		const s = f.data.modelSettings as ModelSettings
+		expect(s.connections).toHaveLength(1)
+		expect(s.models).toHaveLength(2)
+		expect(s.models[0].connectionId).toBe(s.models[1].connectionId)
+		const before = structuredClone(f.data)
+		await migrateModelSettings(f.deps)
+		expect(f.data).toEqual(before)
+	})
+	it("imports secret-only edits without replacing roles or original credentials", async () => {
+		const f = fixture(seed())
+		await migrateModelSettings(f.deps)
+		const original = structuredClone(f.data.modelSettings) as ModelSettings
+		f.keys["profile:a:openAiApiKey"] = "replacement"
+		await migrateModelSettings(f.deps)
+		const updated = f.data.modelSettings as ModelSettings
+		expect(updated.models).toHaveLength(original.models.length + 1)
+		expect(updated.roles).toEqual(original.roles)
+		const auth = original.connections[0].auth
+		if (auth.kind === "keychain") expect(await f.secrets.get(auth.secretRef)).toBe("own-a")
+		const before = structuredClone(f.data)
+		await migrateModelSettings(f.deps)
+		expect(f.data).toEqual(before)
+		expect(JSON.stringify(f.data)).not.toContain("replacement")
+	})
+	it("reconciles models.json without promoting differing model limits", async () => {
+		const f = fixture({ apiConfigProfiles: [configuration("a"), { ...configuration("b"), modelId: "second" }] })
+		f.keys["profile:b:openAiApiKey"] = "own-a"
+		const sdkInput = {
+			models: {
+				version: 1,
+				providers: {
+					"openai-compatible": {
+						models: {
+							"same-model": { contextWindow: 32000, maxTokens: 2000, inputPrice: 1, supportsVision: true },
+							second: { contextWindow: 64000, maxTokens: 4000, inputPrice: 2 },
+						},
+					},
+				},
+			},
+		}
+		const snapshot = JSON.stringify(sdkInput)
+		await migrateModelSettings({ ...f.deps, sdkInput })
+		const s = f.data.modelSettings as ModelSettings
+		expect(s.connections).toHaveLength(1)
+		expect(s.connections[0].defaults.contextWindow).toBeUndefined()
+		expect(s.models.map((m) => m.overrides.contextWindow)).toEqual([32000, 64000])
+		expect(s.models[0].overrides.images).toBe("yes")
+		expect(JSON.stringify(sdkInput)).toBe(snapshot)
+	})
+})
+
+it("keeps transport differences separate and retries grouped writes deterministically", async () => {
+	const input = { apiConfigProfiles: [configuration("a"), { ...configuration("b"), modelId: "second" }] }
+	const baseline = fixture(input)
+	baseline.keys["profile:b:openAiApiKey"] = "own-a"
+	await migrateModelSettings(baseline.deps)
+	for (let n = 1; n <= baseline.writes(); n++) {
+		const f = fixture(input)
+		f.keys["profile:b:openAiApiKey"] = "own-a"
+		f.interrupt(n)
+		await expect(migrateModelSettings(f.deps)).rejects.toThrow()
+		f.interrupt(Infinity)
+		await migrateModelSettings(f.deps)
+		expect(f.data.modelSettings).toEqual(baseline.data.modelSettings)
+	}
+	for (const options of [
+		{ openAiBaseUrl: "https://other.test/v1" },
+		{ azureApiVersion: "test-version" },
+		{ openAiHeaders: { "X-Test": "different" } },
+	]) {
+		const f = fixture({
+			apiConfigProfiles: [
+				configuration("a"),
+				{ ...configuration("b"), options: { ...configuration("b").options, ...options } },
+			],
+		})
+		f.keys["profile:b:openAiApiKey"] = "own-a"
+		await migrateModelSettings(f.deps)
+		expect((f.data.modelSettings as ModelSettings).connections).toHaveLength(2)
+	}
+})
+
+it("keeps a next-message pick armed when admission is cancelled", async () => {
+	const next = new NextMessageModelSelections()
+	const thread = captureThreadModelSelection(settings())
+	next.set("thread", "act", { modelId: "b", levelId: "default" })
+	const cancel = new AbortController()
+	await expect(
+		next.admit(
+			"thread",
+			"act",
+			thread,
+			async () => {
+				cancel.abort()
+				return "ignored"
+			},
+			cancel.signal,
+		),
+	).rejects.toThrow()
+	expect(await next.admit("thread", "act", thread, async (p) => p?.modelId)).toBe("b")
+	expect(await next.admit("other", "act", thread, async (p) => p?.modelId)).toBe("a")
+})
+
+it("imports changed transport and locked headers once while retaining immutable historical mappings", async () => {
+	const a = {
+		...configuration("a"),
+		options: { ...configuration("a").options, openAiHeaders: { Authorization: "header-one" } },
+	}
+	const f = fixture({ apiConfigProfiles: [a] })
+	await migrateModelSettings(f.deps)
+	const before = structuredClone(f.data.modelSettingsMigration)
+	f.data.apiConfigProfiles = [{ ...a, options: { ...a.options, openAiHeaders: { Authorization: "header-two" } } }]
+	await migrateModelSettings(f.deps)
+	expect((f.data.modelSettings as ModelSettings).models).toHaveLength(2)
+	expect((f.data.modelSettingsMigration as { configurationModels: unknown }).configurationModels).toEqual(
+		(before as { configurationModels: unknown }).configurationModels,
+	)
+	const snapshot = structuredClone(f.data)
+	await migrateModelSettings(f.deps)
+	expect(f.data).toEqual(snapshot)
+	f.data.apiConfigProfiles = [{ ...a, options: { ...a.options, openAiBaseUrl: "https://changed.test/v1" } }]
+	await migrateModelSettings(f.deps)
+	expect((f.data.modelSettings as ModelSettings).models).toHaveLength(3)
+	expect(JSON.stringify([f.data.modelSettings, f.data.modelSettingsBackupV1, f.data.modelSettingsMigration])).not.toContain(
+		"header-one",
+	)
+	expect(JSON.stringify([f.data.modelSettings, f.data.modelSettingsBackupV1, f.data.modelSettingsMigration])).not.toContain(
+		"header-two",
+	)
+})

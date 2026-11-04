@@ -301,6 +301,10 @@ export interface ProviderConfig
 		RegionConfig,
 		CloudConfig,
 		ProviderOptions {
+	/** Opt-in resolved settings intent. Omitted by legacy callers. */
+	settingsRequestIntent?: import("./routing/request-intent").ModelRequestIntent;
+	/** Provider-registry options resolved by a host adapter. */
+	settingsProviderOptions?: Record<string, unknown>;
 	/** Client type - determines which handler to use - OpenAI-Compatible deafult */
 	clientType?: ProviderClient;
 

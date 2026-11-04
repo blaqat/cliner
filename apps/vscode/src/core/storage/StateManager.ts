@@ -165,6 +165,16 @@ export class StateManager {
 	 * a window that arrives second finds the first one's committed result and
 	 * changes nothing, and never writes back values that were saved meanwhile.
 	 */
+	private modelMigrationStatus: "disabled" | "pending" | "complete" | "failed" = "disabled"
+
+	getModelSettingsMigrationStatus() {
+		return { status: this.modelMigrationStatus, retryable: this.modelMigrationStatus === "failed" }
+	}
+
+	async retryModelSettingsMigration(): Promise<void> {
+		await this.reconcileProfilesUnderLock()
+	}
+
 	private async reconcileProfilesUnderLock(options?: StorageLockOptions): Promise<void> {
 		let acquired = false
 		try {
@@ -172,6 +182,7 @@ export class StateManager {
 				acquired = true
 				await this.reloadPersistedState()
 				if (modelSettingsRolloutEnabled()) {
+					this.modelMigrationStatus = "pending"
 					try {
 						await migrateModelSettings({
 							state: this.storage.globalState,
@@ -181,7 +192,9 @@ export class StateManager {
 							readLegacySecret: (key) => this.storage.secrets.get(key),
 						})
 						await this.populateFromStorage()
+						this.modelMigrationStatus = "complete"
 					} catch {
+						this.modelMigrationStatus = "failed"
 						Logger.warn("[ModelSettings] Migration deferred; legacy settings retained. Retry on next activation.")
 					}
 				} else {
