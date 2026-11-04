@@ -1,4 +1,4 @@
-import { createGateway, type ProviderConfig } from "@cline/llms"
+import { createGateway, getProviderCollectionSync, hasRegisteredHandler, type ProviderConfig } from "@cline/llms"
 import { ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
 import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
 import { fetch } from "@/shared/net"
@@ -19,9 +19,24 @@ export async function configuredProviderConfig(
 				? "openai-native"
 				: "openai-compatible"
 	const gateway = createGateway()
-	const provider = gateway.listProviders().find((p) => p.id === providerId)
+	const gatewayProvider = gateway.listProviders().find((p) => p.id === providerId)
+	// Host handlers are registered in the SDK compatibility registry rather
+	// than the gateway's builtins. They still need configured admission.
+	const hostProvider = hasRegisteredHandler(providerId) ? getProviderCollectionSync(providerId)?.provider : undefined
+	const provider =
+		gatewayProvider ??
+		(hostProvider
+			? {
+					id: providerId,
+					name: hostProvider.name,
+					defaultModelId: hostProvider.defaultModelId,
+					models: [],
+				}
+			: undefined)
 	if (!provider) throw new Error(`Provider '${providerId}' is unavailable. Open Settings > Models.`)
-	const model = gateway.listModels(providerId).find((m) => m.id === resolved.model.upstreamId) ?? {
+	const model = (gatewayProvider
+		? gateway.listModels(providerId).find((m) => m.id === resolved.model.upstreamId)
+		: undefined) ?? {
 		id: resolved.model.upstreamId,
 		providerId,
 		name: resolved.model.name,
@@ -38,6 +53,23 @@ export async function configuredProviderConfig(
 		dependencies,
 	)
 	const options = prepared.config.options ?? {}
+	// Ollama's native routing rule consumes the resolved model context, not
+	// config.options.num_ctx. The explicit provider field wins over defaults.
+	const contextWindow =
+		providerId === "ollama"
+			? typeof options.num_ctx === "number"
+				? options.num_ctx
+				: (resolved.values.maxInputTokens ?? resolved.values.contextWindow)
+			: resolved.values.contextWindow
+	// The host's VS Code LM handler consumes a positional, URI-encoded selector
+	// through modelId. Preserve empty positions, including an id without version.
+	const selector = providerId === "vscode-lm" ? options.selector : undefined
+	const modelId =
+		selector && typeof selector === "object"
+			? ["vendor", "family", "version", "id"]
+					.map((key) => encodeURIComponent(String((selector as Record<string, unknown>)[key] ?? "")))
+					.join("/")
+			: resolved.model.upstreamId
 	const savedInfo = ModelInfoSchema.parse({
 		...model,
 		capabilities: model.capabilities?.flatMap((c) => {
@@ -53,7 +85,7 @@ export async function configuredProviderConfig(
 		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
 		settingsModelLevels: resolved.values.levels,
 		settingsProviderOptions: prepared.config.options,
-		modelId: resolved.model.upstreamId,
+		modelId,
 		apiKey: prepared.config.apiKey ?? "",
 		apiKeyEnv: [],
 		baseUrl: prepared.config.baseUrl,
@@ -64,7 +96,10 @@ export async function configuredProviderConfig(
 		thinking: prepared.request.reasoning?.enabled,
 		thinkingBudgetTokens: prepared.request.reasoning?.budgetTokens,
 		maxOutputTokens: resolved.values.maxOutputTokens ?? undefined,
-		maxInputTokens: resolved.values.maxInputTokens ?? resolved.values.contextWindow ?? undefined,
+		maxInputTokens:
+			providerId === "ollama"
+				? (contextWindow ?? undefined)
+				: (resolved.values.maxInputTokens ?? contextWindow ?? undefined),
 		temperature: resolved.values.temperature ?? undefined,
 		region: typeof options.region === "string" ? options.region : undefined,
 		aws:
@@ -91,11 +126,11 @@ export async function configuredProviderConfig(
 					}
 				: undefined,
 		knownModels: {
-			[resolved.model.upstreamId]: {
+			[modelId]: {
 				...savedInfo,
-				id: resolved.model.upstreamId,
+				id: modelId,
 				name: savedInfo.name ?? (resolved.model.name || resolved.model.upstreamId),
-				contextWindow: resolved.values.contextWindow ?? model.contextWindow ?? 128000,
+				contextWindow: contextWindow ?? model.contextWindow ?? 128000,
 				pricing: {
 					...savedInfo.pricing,
 					input: resolved.values.inputPrice ?? undefined,

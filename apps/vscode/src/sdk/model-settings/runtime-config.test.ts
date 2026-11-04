@@ -1,4 +1,4 @@
-import { createGateway, createHandler } from "@cline/llms"
+import { createGateway, createHandler, registerHandler, registerProvider } from "@cline/llms"
 import { ConnectionOptionsSchema, createDefaultModelSettings, ModelProviderOptionsSchema } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
 import { InMemoryConnectionSecretStore } from "./connection-secret-store"
@@ -338,3 +338,215 @@ for (const [providerId, options, expected] of [
 		expect(config.settingsProviderOptions).toMatchObject(expected)
 	})
 }
+
+// These fixtures opt into configured admission directly. No production rollout
+// flag, shared provider store, environment credential lookup or keychain is used.
+async function providerWireFixture(
+	providerId: string,
+	options: Record<string, unknown> = {},
+	providerOptions: Record<string, unknown> = {},
+	maxInputTokens?: number,
+) {
+	const settings = createDefaultModelSettings()
+	settings.connections.push({
+		id: "wire",
+		name: providerId,
+		kind: "provider",
+		providerId,
+		baseUrl: "https://provider-wire.test/v1",
+		auth: { kind: "environment", variable: "WIRE_KEY" },
+		headers: [],
+		requestTimeoutMs: null,
+		defaults: {},
+		options,
+		secretRefs: {},
+	})
+	settings.models.push({
+		id: "wire-model",
+		connectionId: "wire",
+		upstreamId: providerId === "ollama" ? "test-local" : "anthropic/claude-3-7-sonnet-20250219",
+		name: "Wire test",
+		kind: "chat",
+		overrides: { contextWindow: 16384, ...(maxInputTokens !== undefined ? { maxInputTokens } : {}) },
+		providerOptions,
+	})
+	return configuredProviderConfig(
+		settings,
+		{ modelId: "wire-model", levelId: "default" },
+		{
+			secrets: new InMemoryConnectionSecretStore(),
+			environment: { WIRE_KEY: "fake" },
+		},
+	)
+}
+
+async function captureProviderWire(config: Awaited<ReturnType<typeof providerWireFixture>>) {
+	transport.mockClear()
+	transport.mockImplementation(
+		async () =>
+			new Response(JSON.stringify({ error: { message: "test rejection" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			}),
+	)
+	try {
+		for await (const _chunk of createHandler(config).createMessage("Cacheable system", [
+			{ role: "user", content: "Hello" },
+		])) {
+			/* drain */
+		}
+	} catch {
+		/* Intentional HTTP rejection after request construction. */
+	}
+	expect(transport).toHaveBeenCalledOnce()
+	const [, init] = transport.mock.calls[0] as unknown as [unknown, RequestInit]
+	const headers: Record<string, string> = {}
+	new Headers(init.headers).forEach((value, key) => {
+		headers[key] = value
+	})
+	return { body: JSON.parse(String(init.body)), headers }
+}
+
+describe("configured provider option consumers", () => {
+	it.each([true, false])("consumes OCA usePromptCache=%s at HTTP boundary", async (enabled) => {
+		const config = await providerWireFixture("oca", { ocaUsePromptCache: enabled })
+		const { body } = await captureProviderWire(config)
+		expect(JSON.stringify(body).includes('"cache_control"')).toBe(enabled)
+	})
+
+	// These legacy fields have no SDK request consumer today. Retain them for
+	// fidelity, but do not invent a new header, body field or limit policy.
+	it.each([
+		["openrouter", { openRouterProviderSorting: "throughput" }, {}],
+		["aihubmix", { aihubmixAppCode: "test-app" }, {}],
+		["fireworks", {}, { fireworksModelMaxCompletionTokens: 1234, fireworksModelMaxTokens: 5678 }],
+		["lmstudio", {}, { lmStudioMaxTokens: "4321" }],
+	] as const)("records unused %s legacy options without inventing wire behavior", async (provider, options, modelOptions) => {
+		const baseline = await captureProviderWire(await providerWireFixture(provider))
+		const config = await providerWireFixture(provider, options, modelOptions)
+		expect(config.settingsProviderOptions).toEqual(
+			connectionProviderOptions(
+				{
+					id: "wire",
+					name: provider,
+					kind: "provider",
+					providerId: provider,
+					baseUrl: null,
+					auth: { kind: "none" },
+					headers: [],
+					requestTimeoutMs: null,
+					defaults: {},
+					options: {},
+					secretRefs: {},
+				},
+				{ ...options, ...modelOptions },
+			),
+		)
+		expect(await captureProviderWire(config)).toEqual(baseline)
+	})
+
+	it("uses explicit Ollama num_ctx as the resolved context and native HTTP option", async () => {
+		const config = await providerWireFixture("ollama", {}, { ollamaApiOptionsCtxNum: "65536" })
+		expect(config.maxInputTokens).toBe(65536)
+		expect(config.knownModels?.[config.modelId!].contextWindow).toBe(65536)
+		const { body } = await captureProviderWire(config)
+		expect(body.options.num_ctx).toBe(65536)
+	})
+	it("preserves the generic input cap fallback while explicit Ollama context takes priority", async () => {
+		const fallback = await providerWireFixture("ollama", {}, {}, 8192)
+		expect((await captureProviderWire(fallback)).body.options.num_ctx).toBe(8192)
+		const explicit = await providerWireFixture("ollama", {}, { ollamaApiOptionsCtxNum: "65536" }, 8192)
+		expect((await captureProviderWire(explicit)).body.options.num_ctx).toBe(65536)
+	})
+
+	it("uses resolved Ollama context when its explicit option is absent", async () => {
+		const { body } = await captureProviderWire(await providerWireFixture("ollama"))
+		expect(body.options.num_ctx).toBe(16384)
+	})
+
+	it.each([
+		"0",
+		"-1",
+		"broken",
+		"1.5",
+		"Infinity",
+	])("refuses invalid explicit Ollama context %s before transport", async (value) => {
+		transport.mockClear()
+		await expect(providerWireFixture("ollama", {}, { ollamaApiOptionsCtxNum: value })).rejects.toThrow(
+			"Ollama context must be a positive integer",
+		)
+		expect(transport).not.toHaveBeenCalled()
+	})
+	it("treats an empty Ollama context field as unset", async () => {
+		const { body } = await captureProviderWire(await providerWireFixture("ollama", {}, { ollamaApiOptionsCtxNum: "" }))
+		expect(body.options.num_ctx).toBe(16384)
+	})
+
+	it.each([true, false])("records unused LiteLLM prompt cache=%s without inventing a cache route", async (enabled) => {
+		const { body } = await captureProviderWire(await providerWireFixture("litellm", { liteLlmUsePromptCache: enabled }))
+		expect(JSON.stringify(body).includes('"cache_control"')).toBe(false)
+	})
+	it.each([true, false])("consumes Bedrock prompt cache=%s", async (enabled) => {
+		const config = await providerWireFixture(
+			"bedrock",
+			{
+				awsAuthentication: "api-key",
+				awsRegion: "us-east-1",
+			},
+			{
+				awsBedrockUsePromptCache: enabled,
+			},
+		)
+		const { body } = await captureProviderWire(config)
+		expect(JSON.stringify(body).includes('"cachePoint"')).toBe(enabled)
+	})
+	it.each([
+		"oca",
+		"litellm",
+		"bedrock",
+	])("keeps %s legacy cache behavior without configured request intent", async (provider) => {
+		const options =
+			provider === "oca"
+				? { ocaUsePromptCache: false }
+				: provider === "litellm"
+					? { liteLlmUsePromptCache: false }
+					: { awsAuthentication: "api-key", awsRegion: "us-east-1" }
+		const config = await providerWireFixture(
+			provider,
+			options,
+			provider === "bedrock" ? { awsBedrockUsePromptCache: false } : {},
+		)
+		const { body } = await captureProviderWire({ ...config, settingsRequestIntent: undefined })
+		expect(JSON.stringify(body).includes(provider === "bedrock" ? '"cachePoint"' : '"cache_control"')).toBe(
+			provider !== "litellm",
+		)
+	})
+})
+
+vi.mock("vscode", () => ({ lm: { selectChatModels: vi.fn(async () => []) } }))
+vi.mock("@/shared/services/Logger", () => ({ Logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
+
+describe("configured VS Code LM selector consumer", () => {
+	it.each([
+		{ vendor: "copilot", family: "openai/gpt-4o", version: "1.0", id: "model/id" },
+		{ vendor: "copilot", family: "claude-sonnet", id: "model/id" },
+		{ id: "model/id" },
+	])("passes the complete selector to vscode.lm.selectChatModels: %j", async (selector) => {
+		const { VSCODE_LM_PROVIDER_COLLECTION } = await import("../vscode-lm/register-vscode-lm")
+		const { VsCodeLmHandler } = await import("../vscode-lm/vscode-lm-handler")
+		const vscode = await import("vscode")
+		registerProvider(VSCODE_LM_PROVIDER_COLLECTION)
+		registerHandler("vscode-lm", (config) => new VsCodeLmHandler(config))
+		vi.mocked(vscode.lm.selectChatModels).mockClear()
+		const config = await providerWireFixture("vscode-lm", {}, { actModeVsCodeLmModelSelector: selector })
+		// A no-model reply stops before sendRequest while exercising the real
+		// SDK registered handler and the host selection API boundary.
+		await expect(async () => {
+			for await (const _chunk of createHandler(config).createMessage("System", [])) {
+				/* drain */
+			}
+		}).rejects.toThrow("No VS Code language model matched selector")
+		expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith(selector)
+		expect(config.knownModels?.[config.modelId!].id).toBe(config.modelId)
+	})
+})

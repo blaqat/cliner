@@ -67,6 +67,13 @@ export function connectionProviderOptions(
 		}
 		const slot = map[key]
 		if (!slot) throw new Error(`Option ${key} does not belong to ${connection.providerId}`)
+		if (connection.providerId === "ollama" && slot === "num_ctx") {
+			if (typeof value === "string" && value.trim() === "") continue
+			const numCtx = Number(value)
+			if (!Number.isSafeInteger(numCtx) || numCtx <= 0) throw new Error("Ollama context must be a positive integer")
+			result[slot] = numCtx
+			continue
+		}
 		result[slot] = value
 	}
 	if (result.authentication === "credentials") result.authentication = "iam"
