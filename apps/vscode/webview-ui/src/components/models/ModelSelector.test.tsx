@@ -105,6 +105,14 @@ describe("ModelSelector", () => {
 			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "sol", levelId: "low" })
 		})
 
+		it("saves a model without levels when nothing was picked yet", async () => {
+			renderSelector({ pick: null })
+			await openMenu()
+			fireEvent.click(option(models(), "acme-tuned-coder"))
+			fireEvent.pointerDown(document.body)
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "tuned", levelId: "default" })
+		})
+
 		it("Escape discards, and the next open starts from the saved pick", async () => {
 			renderSelector()
 			await openMenu()
@@ -308,7 +316,7 @@ describe("ModelSelector", () => {
 			renderSelector({
 				top: <div data-testid="top-slot" />,
 				footer: ({ moved, close }) => (
-					<button data-testid="foot-slot" data-moved={moved} onClick={() => close(false)} type="button" />
+					<button data-moved={moved} data-testid="foot-slot" onClick={() => close(false)} type="button" />
 				),
 			})
 			await openMenu()

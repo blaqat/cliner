@@ -78,6 +78,41 @@ describe("configured runtime projection", () => {
 		const body = JSON.parse(String(call[1].body))
 		expect(body.text.verbosity).toBe("low")
 	})
+	it("keeps tools and images usable when another capability is answered and they aren't", async () => {
+		const capabilitiesFor = async (overrides: Record<string, unknown>) => {
+			const settings = createDefaultModelSettings()
+			settings.connections.push({
+				id: "gateway",
+				name: "Gateway",
+				kind: "openai-compatible",
+				baseUrl: "https://example.test/v1",
+				auth: { kind: "none" },
+				headers: [],
+				requestTimeoutMs: null,
+				defaults: {},
+				apiFormat: "chat",
+				azureApiVersion: null,
+			} as never)
+			settings.models.push({
+				id: "row",
+				connectionId: "gateway",
+				upstreamId: "tuned",
+				name: "",
+				kind: "unknown",
+				providerOptions: {},
+				overrides,
+			} as never)
+			const config = await configuredProviderConfig(
+				settings,
+				{ modelId: "row", levelId: "default" },
+				{ secrets: new InMemoryConnectionSecretStore(), environment: {} },
+			)
+			return config.knownModels?.[config.modelId!].capabilities
+		}
+		expect(await capabilitiesFor({})).toEqual([])
+		expect(await capabilitiesFor({ reasoning: "yes" })).toEqual(["reasoning", "tools", "images"])
+		expect(await capabilitiesFor({ reasoning: "yes", tools: "no", images: "no" })).toEqual(["reasoning"])
+	})
 	it("supports identity-only Vertex and projects all resolved options into the SDK config", async () => {
 		const settings = createDefaultModelSettings()
 		settings.connections.push({

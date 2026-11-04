@@ -5,7 +5,7 @@ import {
 	type LevelRequest,
 	type ProviderConfig,
 } from "@cline/llms"
-import { ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
+import { type ModelCapability, ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
 import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
 import type { StateManager } from "@/core/storage/StateManager"
 import { fetch } from "@/shared/net"
@@ -138,6 +138,35 @@ export async function configuredProviderConfig(
 		...resolved.model.legacyMetadata?.modelInfo,
 		id: resolved.model.upstreamId,
 	})
+	const capabilities: ModelCapability[] = [
+		...(savedInfo.capabilities ?? [])
+			.flatMap((c) => {
+				const parsed = ModelCapabilitySchema.safeParse(c)
+				return parsed.success ? [parsed.data] : []
+			})
+			.filter(
+				(c) =>
+					!(c === "images" && resolved.values.images !== "unknown") &&
+					!(c === "reasoning" && resolved.values.reasoning !== "unknown") &&
+					!(c === "tools" && resolved.values.tools !== "unknown") &&
+					!(c === "streaming" && resolved.values.streaming !== "unknown") &&
+					!(c === "files" && resolved.values.files !== "unknown") &&
+					!(c === "prompt-cache" && resolved.values.promptCache !== "unknown"),
+			),
+		...(resolved.values.images === "yes" ? ["images" as const] : []),
+		...(resolved.values.reasoning === "yes" ? ["reasoning" as const] : []),
+		...(resolved.values.tools === "yes" ? ["tools" as const] : []),
+		...(resolved.values.streaming === "yes" ? ["streaming" as const] : []),
+		...(resolved.values.files === "yes" ? ["files" as const] : []),
+		...(resolved.values.promptCache === "yes" ? ["prompt-cache" as const] : []),
+	]
+	// The SDK reads a populated list as authoritative: leaving "tools" out removes every tool. Answers
+	// about something else mustn't turn an unanswered Tools or Images into a no, unless saved or
+	// catalog metadata already says what the model can do.
+	if (capabilities.length && !(savedInfo.capabilities ?? []).some((c) => c !== "reasoning")) {
+		if (resolved.values.tools === "unknown") capabilities.push("tools")
+		if (resolved.values.images === "unknown") capabilities.push("images")
+	}
 	return {
 		[requestPolicyGuard]: guard,
 		providerId: prepared.config.providerId,
@@ -203,28 +232,7 @@ export async function configuredProviderConfig(
 					cacheWrite: resolved.values.cacheWritePrice ?? undefined,
 				},
 				maxTokens: resolved.values.maxOutputTokens ?? model.maxOutputTokens ?? savedInfo.maxTokens,
-				capabilities: [
-					...(savedInfo.capabilities ?? [])
-						.flatMap((c) => {
-							const parsed = ModelCapabilitySchema.safeParse(c)
-							return parsed.success ? [parsed.data] : []
-						})
-						.filter(
-							(c) =>
-								!(c === "images" && resolved.values.images !== "unknown") &&
-								!(c === "reasoning" && resolved.values.reasoning !== "unknown") &&
-								!(c === "tools" && resolved.values.tools !== "unknown") &&
-								!(c === "streaming" && resolved.values.streaming !== "unknown") &&
-								!(c === "files" && resolved.values.files !== "unknown") &&
-								!(c === "prompt-cache" && resolved.values.promptCache !== "unknown"),
-						),
-					...(resolved.values.images === "yes" ? ["images" as const] : []),
-					...(resolved.values.reasoning === "yes" ? ["reasoning" as const] : []),
-					...(resolved.values.tools === "yes" ? ["tools" as const] : []),
-					...(resolved.values.streaming === "yes" ? ["streaming" as const] : []),
-					...(resolved.values.files === "yes" ? ["files" as const] : []),
-					...(resolved.values.promptCache === "yes" ? ["prompt-cache" as const] : []),
-				],
+				capabilities,
 			},
 		},
 	}

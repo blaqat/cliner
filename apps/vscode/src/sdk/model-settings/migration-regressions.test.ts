@@ -122,6 +122,11 @@ describe("M2: roles match legacy resolution", () => {
 		await f.run()
 		return f.settings().roles
 	}
+	it("adds no commit message override that only repeats Background text", async () => {
+		const { settings, run } = fixture(threadDefault)
+		await run()
+		expect(settings().roles.background.overrides).toEqual({})
+	})
 	it("applies the thread default to both modes and leaves Ask off", async () => {
 		const { chat, ask } = await roles(threadDefault)
 		expect(chat?.levelId).toBe("high")

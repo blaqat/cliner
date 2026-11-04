@@ -161,9 +161,10 @@ const findRow = (rows: SelectorRow[], id: string | null) => rows.find((row) => r
 
 /** The draft as a pick: a row without levels saves its fixed level, not the one carried across. */
 function draftPick(draft: Draft, rows: SelectorRow[]): SelectorPick | null {
-	if (draft.rowId === null || draft.levelId === null) return null
+	if (draft.rowId === null) return null
 	const row = findRow(rows, draft.rowId)
-	return { rowId: draft.rowId, levelId: row?.levels ? draft.levelId : (row?.noLevelId ?? draft.levelId) }
+	const levelId = row?.levels ? draft.levelId : (row?.noLevelId ?? draft.levelId)
+	return levelId === null ? null : { rowId: draft.rowId, levelId }
 }
 
 /**

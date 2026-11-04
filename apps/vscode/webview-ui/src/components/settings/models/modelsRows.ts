@@ -108,6 +108,8 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 		defaultValue: () => ({ enabled: false, pick: null }),
 		read: (ctx) => rolesOf(ctx)?.ask ?? { enabled: false, pick: null },
 		write: (ask) => updateRoles((roles) => ({ ...roles, ask })),
+		// Switched off, the pick it keeps is only there for switching back on.
+		isOverride: (ctx) => rolesOf(ctx)?.ask.enabled ?? false,
 		format: (ask) => (ask.enabled ? "Its own model" : "Same as Chat"),
 	}),
 	useOverride("commitMessages", "models.background.commit-messages", "Commit messages", [

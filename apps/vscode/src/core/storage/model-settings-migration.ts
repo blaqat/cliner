@@ -705,7 +705,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	if (!titles && settings.roles.chat && JSON.stringify(settings.roles.background.pick) !== JSON.stringify(settings.roles.chat))
 		settings.roles.background.overrides.titles = settings.roles.chat
 	if (generate) settings.roles.background.overrides.generate = generate
-	if (settings.roles.chat) settings.roles.background.overrides.commitMessages = settings.roles.chat
+	if (settings.roles.chat && JSON.stringify(settings.roles.background.pick) !== JSON.stringify(settings.roles.chat))
+		settings.roles.background.overrides.commitMessages = settings.roles.chat
 	settings.subagents.enabled = raw.subagentsEnabled !== false
 	const cap = raw.subagentsMaxConcurrent
 	if (cap !== undefined && (!Number.isInteger(cap) || (cap as number) < 0))

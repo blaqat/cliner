@@ -1,7 +1,7 @@
-import { action, preference, state, stored } from "../shell/rowFactories"
+import { action, preference, state } from "../shell/rowFactories"
 import { updateSetting } from "../utils/settingsHandlers"
 
-const TELEMETRY_LABELS: Record<string, string> = { enabled: "On", disabled: "Off", unset: "Not chosen" }
+const TELEMETRY_LABELS: Record<string, string> = { enabled: "On", disabled: "Off" }
 export const DATA_ROWS = [
 	action({
 		id: "data.history",
@@ -155,12 +155,16 @@ export const DATA_ROWS = [
 		read: (ctx) => ctx.state.openTelemetrySettings?.openTelemetryLogMaxQueueSize ?? 2048,
 		write: (value) => updateSetting("openTelemetryLogMaxQueueSize", value),
 	}),
-	stored<string>("telemetrySetting", "unset", {
+	// On startup the host mirrors the shared setting here, so "unset" only means "on, not yet mirrored".
+	preference<string>({
 		id: "data.reporting",
 		label: "Error and usage reporting",
 		description: "Help improve Cline. No code, prompts or personal information are ever sent.",
 		aliases: ["telemetry", "privacy", "analytics"],
 		managedKeys: ["telemetrySetting"],
+		defaultValue: () => "enabled",
+		read: (ctx) => (ctx.state.telemetrySetting === "disabled" ? "disabled" : "enabled"),
+		write: (value) => updateSetting("telemetrySetting", value),
 		format: (value) => TELEMETRY_LABELS[value] ?? value,
 	}),
 ]

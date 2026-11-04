@@ -180,7 +180,9 @@ export async function modelSettingsDiagnostic(
 						? m.modalities.output.includes("text")
 							? "chat"
 							: "non-chat"
-						: /^(?:text-embedding-|embedding-|embed-|nomic-embed-)/i.test(m.id)
+						: /^(?:text-embedding-|embedding-|embed-|nomic-embed-|whisper-|tts-|dall-e-|text-moderation-|omni-moderation-)/i.test(
+									m.id,
+								)
 							? "non-chat"
 							: "unknown"
 				return classified === "non-chat"

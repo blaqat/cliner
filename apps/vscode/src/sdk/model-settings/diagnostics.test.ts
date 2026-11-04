@@ -41,6 +41,9 @@ describe("configured connection diagnostics", () => {
 			Response.json({
 				data: [
 					{ id: "text-embedding-3-small" },
+					{ id: "whisper-1" },
+					{ id: "tts-1" },
+					{ id: "text-moderation-latest" },
 					{ id: "unknown" },
 					{ id: "chat", operation: "language" },
 					{ id: "image", modalities: { output: ["image"] } },
