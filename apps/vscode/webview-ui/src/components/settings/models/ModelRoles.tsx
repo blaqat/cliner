@@ -8,9 +8,18 @@ import { type SettingsNavigationTarget, settingsTargetFromHost } from "../settin
 import { AdvancedFold } from "../shell/AdvancedFold"
 import { SettingBlock, SettingGroup, SettingRow, ToggleRow } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
-import { CommitInput, GroupHeading, Hint, LinkButton, parseSeconds, Why } from "./fields"
+import { CommitInput, GroupHeading, Hint, LinkButton, Notice, parseSeconds, Why } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
-import { connectionName, levelTitle, type RoleKey, roleRowId } from "./modelsView"
+import {
+	connectionName,
+	connectionProblem,
+	levelTitle,
+	listWords,
+	ROLE_LABELS,
+	type RoleKey,
+	rolePick,
+	roleRowId,
+} from "./modelsView"
 
 const MANAGE_ROW = "models.connections"
 
@@ -48,19 +57,13 @@ const PickWhy = ({
 	const effective = state.effective[row.id]
 	const availability = state.availability[row.id]
 	const hostTarget = state.availability[use]?.target
-	if (availability && !availability.available && connection) {
+	// A connection's own problem shows once, above these rows.
+	if (availability && !availability.available && connection && !connectionProblem(availability)) {
 		const target = availability.target ?? { page: "models", connectionId: connection.id }
-		const words =
-			target.field === "upstreamId"
-				? "no model ID"
-				: target.field === "baseUrl"
-					? "base URL isn't valid"
-					: /credentials are missing/i.test(availability.reason ?? "")
-						? "key missing"
-						: availability.reason?.replace(/\.$/, "").toLowerCase()
+		const words = target.field === "upstreamId" ? "no model ID" : availability.reason?.replace(/\.$/, "").toLowerCase()
 		return (
 			<Why tone="bad">
-				{connectionName(connection)}: {words}, so threads on this pick won't start.{" "}
+				{connectionName(connection)}: {words}, so this pick won't start.{" "}
 				<LinkButton
 					onClick={() => {
 						page.setOpenConnection(connection.id)
@@ -100,6 +103,43 @@ const PickWhy = ({
 		)
 	}
 	return null
+}
+
+/** One line per connection with a problem, naming the picks it stops, so a missing key isn't repeated on every row. */
+const ConnectionProblems = ({ state }: { state: ModelSettingsState }) => {
+	const page = useModelsPage()
+	const { openRow } = useSettingsShell()
+	const { connections, models, roles } = state.settings
+	return (
+		<>
+			{connections.map((connection) => {
+				const stopped = (Object.keys(ROLE_LABELS) as RoleKey[]).flatMap((role) => {
+					const pick = rolePick(roles, role)
+					const row = pick && models.find((model) => model.id === pick.modelId && model.connectionId === connection.id)
+					const problem = row ? connectionProblem(state.availability[row.id]) : undefined
+					return row && problem ? [{ role, problem, target: state.availability[row.id]?.target }] : []
+				})
+				if (!stopped.length) {
+					return null
+				}
+				const [{ problem, target }] = stopped
+				return (
+					<Notice key={connection.id} tone="warn">
+						{connectionName(connection)}: {problem}, so {listWords(stopped.map(({ role }) => ROLE_LABELS[role]))}{" "}
+						won't start.{" "}
+						<LinkButton
+							onClick={() => {
+								page.setOpenConnection(connection.id)
+								page.setEditingConnection(connection.id, true)
+								openRow(settingsTargetFromHost(target ?? { page: "models", connectionId: connection.id }))
+							}}>
+							Fix it
+						</LinkButton>
+					</Notice>
+				)
+			})}
+		</>
+	)
 }
 
 const sameRow = (id: string, label: string, levelLabel: string): SelectorRow => ({
@@ -170,169 +210,175 @@ export const ModelRoles = () => {
 	}
 
 	return (
-		<SettingGroup title="What runs where">
-			<SettingRow
-				control={({ id, disabled }) => (
-					<ModelPickButton
-						disabledReason={disabled ? "Your organization manages this." : undefined}
-						id={id}
-						ladder={ladder}
-						modelsLabel="Chat"
-						onCommit={(next) => void setRoles("chat", (current) => ({ ...current, chat: fromPick(next) }))}
-						onManage={onManage}
-						pick={toPick(roles.chat)}
-						rows={rows}
-					/>
-				)}
-				rowId={roleRowId.chat}>
-				{rows.length > 0 && !roles.chat && <Hint error>Threads can't start until you pick one.</Hint>}
-				<PickWhy onFixLevel={() => focusRole("chat")} pick={roles.chat} state={state} use="role.chat" />
-				{roleError("chat")}
-			</SettingRow>
-			<SettingRow<SubagentPick>
-				control={({ id, disabled }) => (
-					<ModelPickButton
-						disabledReason={disabled ? "Your organization manages this." : undefined}
-						id={id}
-						ladder={ladder}
-						modelsLabel="Subagents"
-						onCommit={(next) =>
-							void setRoles("subagents", (current) => ({
-								...current,
-								subagents:
-									next.rowId === "thread"
-										? { kind: "thread", level: next.levelId }
-										: { kind: "model", pick: fromPick(next) },
-							}))
-						}
-						onManage={onManage}
-						pick={subagentPick}
-						rows={[sameAsThreadRow(ladder), ...rows]}
-					/>
-				)}
-				rowId={roleRowId.subagents}>
-				<div className="text-[12px] text-description">
-					What helpers run on. <LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
-				</div>
-				{roles.subagents.kind === "model" && (
-					<PickWhy
-						onFixLevel={() => focusRole("subagents")}
-						pick={roles.subagents.pick}
-						state={state}
-						use="role.subagents"
-					/>
-				)}
-				{roleError("subagents")}
-			</SettingRow>
-			<SettingRow
-				control={({ id, disabled }) => (
-					<ModelPickButton
-						disabledReason={disabled ? "Your organization manages this." : undefined}
-						id={id}
-						ladder={ladder}
-						modelsLabel="Background text"
-						onCommit={(next) =>
-							void setRoles("background", (current) => ({
-								...current,
-								background: { ...current.background, pick: fromPick(next) },
-							}))
-						}
-						onManage={onManage}
-						pick={toPick(roles.background.pick)}
-						rows={rows}
-					/>
-				)}
-				rowId={roleRowId.background}>
-				{rows.length > 0 && !roles.background.pick && (
-					<Hint error>Commit messages, thread titles and Generate have nothing to run on until you pick one.</Hint>
-				)}
-				<PickWhy
-					onFixLevel={() => focusRole("background")}
-					pick={roles.background.pick}
-					state={state}
-					use="role.background"
-				/>
-				{roleError("background")}
-			</SettingRow>
-			<ToggleRow rowId="models.background.titles-enabled" />
-			<SettingBlock rowId="models.advanced">
-				<div className="pb-3">
-					<AdvancedFold
-						featureId="models.advanced"
-						summary="different model for Ask, background text one by one, request timeout">
-						<GroupHeading>Chat</GroupHeading>
-						<SettingRow
-							control={({ id, disabled }) => {
-								const pick = roles.ask.enabled ? toPick(roles.ask.pick) : { rowId: "same", levelId: "same" }
-								return (
-									<ModelPickButton
-										disabledReason={disabled ? "Your organization manages this." : undefined}
-										id={id}
-										ladder={ladder}
-										modelsLabel="Different model for Ask"
-										onCommit={(next) =>
-											void setRoles("ask", (current) => ({
-												...current,
-												ask:
-													next.rowId === "same"
-														? { enabled: false, pick: null }
-														: { enabled: true, pick: fromPick(next) },
-											}))
-										}
-										onManage={onManage}
-										pick={pick}
-										rows={[sameRow("same", "Same as Chat", "Chat's level"), ...rows]}
-									/>
-								)
-							}}
-							rowId={roleRowId.ask}>
-							{roles.ask.enabled && (
-								<PickWhy onFixLevel={() => focusRole("ask")} pick={roles.ask.pick} state={state} use="role.ask" />
-							)}
-							{roleError("ask")}
-						</SettingRow>
-						<GroupHeading>Background text</GroupHeading>
-						{useLine("commitMessages", "Commit messages")}
-						{useLine("generate", "Walkthrough Generate")}
-						{useLine(
-							"titles",
-							"Thread titles",
-							!roles.background.titlesEnabled && (
-								<div className="text-[12px] text-description">
-									Only with{" "}
-									<LinkButton onClick={() => openRow("models.background.titles-enabled")}>
-										Generate thread titles
-									</LinkButton>{" "}
-									on.
-								</div>
-							),
-						)}
-						<GroupHeading>Every request</GroupHeading>
-						<SettingRow<number | null>
-							control={({ id, disabled, label, value, write }) => (
-								<CommitInput
-									className="w-[72px] text-right"
-									disabled={disabled}
-									id={id}
-									label={label}
-									mono
-									onCommit={(text) => {
-										const parsed = parseSeconds(text)
-										if ("error" in parsed) {
-											return parsed.error
-										}
-										write(parsed.value)
-										return undefined
-									}}
-									placeholder="Default"
-									value={value == null ? "" : String(value / 1000)}
-								/>
-							)}
-							rowId="models.timeout"
+		<>
+			<ConnectionProblems state={state} />
+			<SettingGroup title="What runs where">
+				<SettingRow
+					control={({ id, disabled }) => (
+						<ModelPickButton
+							disabledReason={disabled ? "Your organization manages this." : undefined}
+							id={id}
+							ladder={ladder}
+							modelsLabel="Chat"
+							onCommit={(next) => void setRoles("chat", (current) => ({ ...current, chat: fromPick(next) }))}
+							onManage={onManage}
+							pick={toPick(roles.chat)}
+							rows={rows}
 						/>
-					</AdvancedFold>
-				</div>
-			</SettingBlock>
-		</SettingGroup>
+					)}
+					rowId={roleRowId.chat}>
+					{rows.length > 0 && !roles.chat && <Hint error>Threads can't start until you pick one.</Hint>}
+					<PickWhy onFixLevel={() => focusRole("chat")} pick={roles.chat} state={state} use="role.chat" />
+					{roleError("chat")}
+				</SettingRow>
+				<SettingRow<SubagentPick>
+					control={({ id, disabled }) => (
+						<ModelPickButton
+							disabledReason={disabled ? "Your organization manages this." : undefined}
+							id={id}
+							ladder={ladder}
+							modelsLabel="Subagents"
+							onCommit={(next) =>
+								void setRoles("subagents", (current) => ({
+									...current,
+									subagents:
+										next.rowId === "thread"
+											? { kind: "thread", level: next.levelId }
+											: { kind: "model", pick: fromPick(next) },
+								}))
+							}
+							onManage={onManage}
+							pick={subagentPick}
+							rows={[sameAsThreadRow(ladder), ...rows]}
+						/>
+					)}
+					rowId={roleRowId.subagents}>
+					<div className="text-[12px] text-description">
+						What helpers run on. <LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
+					</div>
+					{roles.subagents.kind === "model" && (
+						<PickWhy
+							onFixLevel={() => focusRole("subagents")}
+							pick={roles.subagents.pick}
+							state={state}
+							use="role.subagents"
+						/>
+					)}
+					{roleError("subagents")}
+				</SettingRow>
+				<SettingRow
+					control={({ id, disabled }) => (
+						<ModelPickButton
+							disabledReason={disabled ? "Your organization manages this." : undefined}
+							id={id}
+							ladder={ladder}
+							modelsLabel="Background text"
+							onCommit={(next) =>
+								void setRoles("background", (current) => ({
+									...current,
+									background: { ...current.background, pick: fromPick(next) },
+								}))
+							}
+							onManage={onManage}
+							pick={toPick(roles.background.pick)}
+							rows={rows}
+						/>
+					)}
+					rowId={roleRowId.background}>
+					{rows.length > 0 && !roles.background.pick && (
+						<Hint error>Commit messages, thread titles and Generate have nothing to run on until you pick one.</Hint>
+					)}
+					<PickWhy
+						onFixLevel={() => focusRole("background")}
+						pick={roles.background.pick}
+						state={state}
+						use="role.background"
+					/>
+					{roleError("background")}
+				</SettingRow>
+				<ToggleRow rowId="models.background.titles-enabled" />
+				<SettingBlock rowId="models.advanced">
+					<div className="pb-3">
+						<AdvancedFold featureId="models.advanced" summary="Ask model, background text, timeout">
+							<GroupHeading>Chat</GroupHeading>
+							<SettingRow
+								control={({ id, disabled }) => {
+									const pick = roles.ask.enabled ? toPick(roles.ask.pick) : { rowId: "same", levelId: "same" }
+									return (
+										<ModelPickButton
+											disabledReason={disabled ? "Your organization manages this." : undefined}
+											id={id}
+											ladder={ladder}
+											modelsLabel="Different model for Ask"
+											onCommit={(next) =>
+												void setRoles("ask", (current) => ({
+													...current,
+													ask:
+														next.rowId === "same"
+															? { enabled: false, pick: null }
+															: { enabled: true, pick: fromPick(next) },
+												}))
+											}
+											onManage={onManage}
+											pick={pick}
+											rows={[sameRow("same", "Same as Chat", "Chat's level"), ...rows]}
+										/>
+									)
+								}}
+								rowId={roleRowId.ask}>
+								{roles.ask.enabled && (
+									<PickWhy
+										onFixLevel={() => focusRole("ask")}
+										pick={roles.ask.pick}
+										state={state}
+										use="role.ask"
+									/>
+								)}
+								{roleError("ask")}
+							</SettingRow>
+							<GroupHeading>Background text</GroupHeading>
+							{useLine("commitMessages", "Commit messages")}
+							{useLine("generate", "Walkthrough Generate")}
+							{useLine(
+								"titles",
+								"Thread titles",
+								!roles.background.titlesEnabled && (
+									<div className="text-[12px] text-description">
+										Only with{" "}
+										<LinkButton onClick={() => openRow("models.background.titles-enabled")}>
+											Generate thread titles
+										</LinkButton>{" "}
+										on.
+									</div>
+								),
+							)}
+							<GroupHeading>Every request</GroupHeading>
+							<SettingRow<number | null>
+								control={({ id, disabled, label, value, write }) => (
+									<CommitInput
+										className="w-[72px] text-right"
+										disabled={disabled}
+										id={id}
+										label={label}
+										mono
+										onCommit={(text) => {
+											const parsed = parseSeconds(text)
+											if ("error" in parsed) {
+												return parsed.error
+											}
+											write(parsed.value)
+											return undefined
+										}}
+										placeholder="Default"
+										value={value == null ? "" : String(value / 1000)}
+									/>
+								)}
+								rowId="models.timeout"
+							/>
+						</AdvancedFold>
+					</div>
+				</SettingBlock>
+			</SettingGroup>
+		</>
 	)
 }

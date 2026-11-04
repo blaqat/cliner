@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react"
 import { ManagedTag } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import {
+	ActionButton,
 	CAPABILITY_OPTIONS,
 	CommitInput,
 	ControlRow,
@@ -27,16 +28,13 @@ import {
 	parseAmount,
 	parseTokens,
 	Segmented,
-	SmallButton,
 	SmallSwitch,
 	Why,
 } from "./fields"
-import { ModelCatalogPresets } from "./ModelCatalogPresets"
 import type { PreviewResult } from "./modelSettingsClient"
 import { useModelsPage } from "./modelsPageContext"
 import {
 	DEFAULT_OFFERED,
-	detectedFills,
 	type Effective,
 	fieldAnchor,
 	fieldControl,
@@ -46,11 +44,10 @@ import {
 	listWords,
 	MORE_FIELD_KEYS,
 	overridesShared,
+	previewPick,
 	ROLE_LABELS,
 	roleRowId,
 	rolesUsingLevel,
-	testPick,
-	unknownsOf,
 	withOverride,
 	withoutOverride,
 } from "./modelsView"
@@ -70,13 +67,9 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 	const effective: Effective =
 		published && !isDraft ? published : resolveModelValues(row.overrides, undefined, connection.defaults)
 	const [error, setError] = useState<string>()
-	const [presetsOpen, setPresetsOpen] = useState(false)
 	const [blockedBy, setBlockedBy] = useState<{ text: string; roles: (keyof typeof ROLE_LABELS)[] }>()
-	const [action, setAction] = useState<{ tone: "ok" | "bad" | "none"; text: string }>()
-	const [busy, setBusy] = useState<"detect" | "test">()
 	const moreOpen = page.isMoreOpen(row.id)
 
-	const unknown = unknownsOf(effective)
 	const apiFormat = effective.apiFormat.value ?? (connection.kind === "openai-compatible" ? connection.apiFormat : null)
 	const effortName = apiFormat === "responses" ? "reasoning.effort" : "reasoning_effort"
 	const hasId = !!row.upstreamId
@@ -123,15 +116,11 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 	/** A field left empty says what it follows, or that nobody knows. Some have a real answer for "not set". */
 	const placeholderFor = (key: keyof ModelValues, whenEmpty?: string) => {
 		const inherited = effective[key].value
-		if (inherited !== null && !hasOverride(row, key)) {
-			return { placeholder: String(inherited), unknown: false }
-		}
-		return whenEmpty ? { placeholder: whenEmpty, unknown: false } : { placeholder: "unknown", unknown: true }
+		return inherited !== null && !hasOverride(row, key) ? String(inherited) : (whenEmpty ?? "unknown")
 	}
 
 	const numberField = (key: keyof ModelValues, label: string, kind: "tokens" | "amount", hint?: string, whenEmpty?: string) => {
 		const own = hasOverride(row, key) ? row.overrides[key] : undefined
-		const empty = placeholderFor(key, whenEmpty)
 		return (
 			<Field hint={hint} id={fieldAnchor(row.id, key)} label={label} tag={tag(key, label)}>
 				<CommitInput
@@ -146,18 +135,17 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						}
 						return parsed.value === null ? reset(key) : set(key, parsed.value as never)
 					}}
-					placeholder={empty.placeholder}
-					unknown={empty.unknown}
+					placeholder={placeholderFor(key, whenEmpty)}
 					value={own == null ? "" : String(own)}
 				/>
 			</Field>
 		)
 	}
 
-	const capabilityRow = (key: "images" | "tools", label: string, whenOff: string) => {
+	const capabilityRow = (key: "images" | "tools", label: string) => {
 		const on = effective[key].value === "yes"
 		return (
-			<ControlRow description={on ? undefined : whenOff} id={fieldAnchor(row.id, key)} label={label} tag={tag(key, label)}>
+			<ControlRow id={fieldAnchor(row.id, key)} label={label} tag={tag(key, label)}>
 				<Segmented<"yes" | "no">
 					controlId={fieldControl(row.id, key)}
 					disabled={isManagedField(key)}
@@ -205,7 +193,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 			roles.some(() => rolesUsingLevel(store.state!.settings.roles, row.id, candidate.id).length),
 		)
 		setBlockedBy({
-			text: `${listWords(roles.map((role) => ROLE_LABELS[role]))} ${roles.length === 1 ? "is" : "are"} on ${levelTitle(level?.label ?? "this level")}. Pick another level there first, so nothing is left on a level this model doesn't offer.`,
+			text: `${listWords(roles.map((role) => ROLE_LABELS[role]))} ${roles.length === 1 ? "is" : "are"} on ${levelTitle(level?.label ?? "this level")}. Pick another level there first.`,
 			roles,
 		})
 		return true
@@ -267,57 +255,17 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 		)
 	}
 
-	const test = async () => {
-		setBusy("test")
-		setAction(undefined)
-		const started = performance.now()
-		const outcome = await store.testModel(testPick(row, effective))
-		const ms = Math.round(performance.now() - started)
-		setBusy(undefined)
-		setAction(
-			!outcome.ok
-				? { tone: "bad", text: outcome.message }
-				: outcome.value.status === "ok"
-					? { tone: "ok", text: `${row.upstreamId} answered in ${ms} ms.` }
-					: {
-							tone: "bad",
-							text: `${row.upstreamId} didn't answer. Check the ID, the key and the connection's API type.`,
-						},
-		)
-	}
-
-	const detect = async () => {
-		setBusy("detect")
-		setAction(undefined)
-		const before = unknown.length
-		const outcome = await store.detect(testPick(row, effective))
+	const duplicate = async () => {
+		setError(undefined)
+		const outcome = await store.duplicate(row.id)
 		if (!outcome.ok) {
-			setBusy(undefined)
-			setAction({ tone: "bad", text: outcome.message })
+			setError(outcome.message)
 			return
 		}
-		if (outcome.value.status === "no-list") {
-			setBusy(undefined)
-			setAction({ tone: "none", text: "This provider doesn't report details for this model. Fill in what you know." })
-			return
-		}
-		// The host's detected facts last until the next settings change, so keep what it found on the model.
-		const found = detectedFills(row, effective, outcome.value.metadata ?? {})
-		const count = Object.keys(found).length
-		if (count) {
-			const failed = await commit((current) => ({ ...current, overrides: { ...current.overrides, ...found } }))
-			if (failed) {
-				setBusy(undefined)
-				return
-			}
-		}
-		setBusy(undefined)
-		setAction({
-			tone: "none",
-			text: count
-				? `Detect found ${count}. ${Math.max(0, before - count)} still unknown.`
-				: `Detect found nothing new. ${before} still unknown.`,
-		})
+		page.setDraftModels((current) => [...current, outcome.value.draft])
+		page.setOpenConnection(connection.id)
+		page.setOpenModel(outcome.value.draft.id)
+		page.setFocusId(fieldControl(outcome.value.draft.id, "upstreamId"))
 	}
 
 	const noIdWhy = "Type the model ID first."
@@ -327,16 +275,9 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 	const modelFields = spec?.modelFields?.filter((field) => isFieldVisible(field, providerOptions)) ?? []
 
 	return (
-		<div className="pb-1.5 pl-[18px]" data-testid={`model-form-${row.id}`}>
-			<FieldGrid>
-				<Field
-					hint={
-						<>
-							Sent as <code>model</code>.
-						</>
-					}
-					id={fieldAnchor(row.id, "upstreamId")}
-					label="Model ID">
+		<div className="mb-2.5 rounded-md border border-editor-group-border p-3" data-testid={`model-form-${row.id}`}>
+			<FieldGrid className="mt-0">
+				<Field id={fieldAnchor(row.id, "upstreamId")} label="Model ID">
 					<CommitInput
 						id={fieldControl(row.id, "upstreamId")}
 						label="Model ID"
@@ -352,7 +293,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						value={row.upstreamId}
 					/>
 				</Field>
-				<Field hint="What the selector shows." id={fieldAnchor(row.id, "name")} label="Display name">
+				<Field id={fieldAnchor(row.id, "name")} label="Display name">
 					<CommitInput
 						id={fieldControl(row.id, "name")}
 						label="Display name"
@@ -361,25 +302,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						value={row.name}
 					/>
 				</Field>
-			</FieldGrid>
-			{hasId && row.kind !== "non-chat" && effective.tools.value !== "yes" && (
-				<Why tone="warn">
-					Tools are off, so this model can only chat. It can't read or edit files or run commands.{" "}
-					{!isManagedField("tools") && <LinkButton onClick={() => void set("tools", "yes")}>Turn tools on</LinkButton>}
-				</Why>
-			)}
-
-			<GroupHeading>Limits</GroupHeading>
-			<FieldGrid className="mt-0.5">
-				{numberField(
-					"contextWindow",
-					"Context window",
-					"tokens",
-					effective.contextWindow.value === null
-						? "Unknown: Cline plans with 128K and marks the ring with ~."
-						: undefined,
-				)}
-				{numberField("maxOutputTokens", "Max output tokens", "tokens")}
 			</FieldGrid>
 
 			<div className="mt-3 scroll-my-2 rounded-xs" id={fieldAnchor(row.id, "levels")}>
@@ -394,7 +316,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						value={effective.reasoning.value}
 					/>
 				</ControlRow>
-				{effective.reasoning.value === "yes" ? (
+				{effective.reasoning.value === "yes" && (
 					<LevelTable
 						connection={connection}
 						effortName={effortName}
@@ -404,10 +326,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						onToggle={toggleLevel}
 						row={row}
 					/>
-				) : effective.reasoning.value === "no" ? (
-					<Hint>The selector shows no levels for this model.</Hint>
-				) : (
-					<Hint>The selector can't offer levels until you say whether it can reason. Detect tries it.</Hint>
 				)}
 				{blockedBy && (
 					<Why tone="warn">
@@ -421,71 +339,97 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				)}
 			</div>
 
-			<GroupHeading>Price · USD per 1M tokens</GroupHeading>
-			<FieldGrid className="mt-0">
-				{numberField("inputPrice", "Input", "amount")}
-				{numberField("outputPrice", "Output", "amount")}
+			<GroupHeading>Price and limits</GroupHeading>
+			<FieldGrid className="mt-0.5">
+				{numberField("inputPrice", "Input $/1M", "amount")}
+				{numberField("outputPrice", "Output $/1M", "amount")}
+				{numberField("contextWindow", "Context window", "tokens")}
+				{numberField("maxOutputTokens", "Max output tokens", "tokens")}
 			</FieldGrid>
-			{(effective.inputPrice.value === null || effective.outputPrice.value === null) && (
-				<Hint>Cost shows “unknown” until both are set, never $0.</Hint>
-			)}
 
-			<RequestPreview disabledReason={hasId ? undefined : noIdWhy} effective={effective} row={row} />
-
-			<FoldHeader
-				onToggle={() => page.setMoreOpen(row.id)}
-				open={moreOpen}
-				summary={`${setInMore ? `${setInMore} set · ` : ""}images, tools, temperature, verbosity, extra body, and more`}
-				title="More"
-			/>
+			<div className="mt-3">
+				<FoldHeader
+					onToggle={() => page.setMoreOpen(row.id)}
+					open={moreOpen}
+					summary={setInMore ? `${setInMore} set` : undefined}
+					title="More"
+				/>
+			</div>
 			{moreOpen && (
-				<>
-					<div className="mt-1.5">
-						<SmallButton aria-expanded={presetsOpen} onClick={() => setPresetsOpen((current) => !current)}>
-							Start from a preset
-							<Icon className="text-[11px]!" name={presetsOpen ? "chevron-up" : "chevron-down"} />
-						</SmallButton>
-					</div>
-					{presetsOpen && (
-						<ModelCatalogPresets
-							onApply={(fills) => {
-								setPresetsOpen(false)
-								const next = { ...fills }
-								for (const key of Object.keys(next) as (keyof ModelValues)[]) {
-									if (hasOverride(row, key)) {
-										delete next[key]
+				<div className="pb-1">
+					<div>
+						<ControlRow
+							id={fieldAnchor(row.id, "temperature")}
+							label="Temperature"
+							tag={tag("temperature", "Temperature")}>
+							<CommitInput
+								className="w-[96px] text-right"
+								disabled={isManagedField("temperature")}
+								id={fieldControl(row.id, "temperature")}
+								label="Temperature"
+								mono
+								onCommit={(text) => {
+									const parsed = parseAmount(text)
+									if ("error" in parsed) {
+										return parsed.error
 									}
+									return parsed.value === null ? reset("temperature") : set("temperature", parsed.value)
+								}}
+								placeholder={placeholderFor("temperature", "Not sent")}
+								value={
+									hasOverride(row, "temperature") && row.overrides.temperature != null
+										? String(row.overrides.temperature)
+										: ""
 								}
-								void commit((current) => ({ ...current, overrides: { ...current.overrides, ...next } }))
-							}}
-						/>
-					)}
-					{capabilityRow("images", "Images", "Off, attachments are turned off for this model.")}
-					{capabilityRow("tools", "Tools", "Off, this model can only chat: no reading or editing files, no commands.")}
-					<FieldGrid className="mt-0.5">
-						{numberField(
-							"temperature",
-							"Temperature",
-							"amount",
-							"Blank sends none, unless Shared defaults set one. 0 and 1 are sent as typed.",
-							"Not sent",
+							/>
+						</ControlRow>
+						{knowledgeRow("streaming", "Streaming")}
+						{knowledgeRow("promptCache", "Prompt cache")}
+						{effective.promptCache.value === "yes" && (
+							<FieldGrid className="mt-0 mb-1">
+								{numberField("cacheReadPrice", "Cache read price", "amount")}
+								{numberField("cacheWritePrice", "Cache write price", "amount")}
+							</FieldGrid>
 						)}
+						{knowledgeRow("files", "Can read files")}
+						{capabilityRow("tools", "Can use tools")}
+						{capabilityRow("images", "Can see images")}
+						<ControlRow id={fieldAnchor(row.id, "verbosity")} label="Verbosity" tag={tag("verbosity", "Verbosity")}>
+							<Segmented<"default" | "low" | "medium" | "high">
+								controlId={fieldControl(row.id, "verbosity")}
+								label="Verbosity"
+								onChange={(value) => void (value === "default" ? reset("verbosity") : set("verbosity", value))}
+								options={[
+									{ value: "default", label: "Default", quiet: true },
+									{ value: "low", label: "Low" },
+									{ value: "medium", label: "Medium" },
+									{ value: "high", label: "High" },
+								]}
+								value={effective.verbosity.value ?? "default"}
+								wrap
+							/>
+						</ControlRow>
+						{connection.kind === "openai-compatible" && (
+							<ControlRow id={fieldAnchor(row.id, "apiFormat")} label="API type" tag={tag("apiFormat", "API type")}>
+								<Segmented<"same" | "chat" | "responses">
+									controlId={fieldControl(row.id, "apiFormat")}
+									label="API type"
+									onChange={(value) => void (value === "same" ? reset("apiFormat") : set("apiFormat", value))}
+									options={[
+										{ value: "same", label: "Default", quiet: true },
+										{ value: "chat", label: "Chat" },
+										{ value: "responses", label: "Responses" },
+									]}
+									value={effective.apiFormat.value ?? "same"}
+									wrap
+								/>
+							</ControlRow>
+						)}
+					</div>
+					<FieldGrid>
+						{numberField("maxInputTokens", "Max input tokens", "tokens", undefined, "No limit")}
+						{numberField("thinkingBudgetTokens", "Thinking budget", "tokens", undefined, "From the level")}
 					</FieldGrid>
-					<ControlRow id={fieldAnchor(row.id, "verbosity")} label="Verbosity" tag={tag("verbosity", "Verbosity")}>
-						<Segmented<"default" | "low" | "medium" | "high">
-							controlId={fieldControl(row.id, "verbosity")}
-							label="Verbosity"
-							onChange={(value) => void (value === "default" ? reset("verbosity") : set("verbosity", value))}
-							options={[
-								{ value: "default", label: "Default" },
-								{ value: "low", label: "Low" },
-								{ value: "medium", label: "Medium" },
-								{ value: "high", label: "High" },
-							]}
-							value={effective.verbosity.value ?? "default"}
-							wrap
-						/>
-					</ControlRow>
 					<ExtraBodyEditor onSave={(extraBody) => set("extraBody", extraBody)} value={effective.extraBody.value} />
 					{modelFields.length > 0 && (
 						<>
@@ -518,97 +462,33 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 							</FieldGrid>
 						</>
 					)}
-					<FieldGrid className="mt-0">
-						{numberField(
-							"maxInputTokens",
-							"Max input tokens",
-							"tokens",
-							"If the server limits input apart from the context window.",
-							"No limit of its own",
-						)}
-						{numberField(
-							"thinkingBudgetTokens",
-							"Thinking budget",
-							"tokens",
-							"Tokens. Empty follows the level.",
-							"From the level",
-						)}
-					</FieldGrid>
-					{knowledgeRow("streaming", "Streaming")}
-					{knowledgeRow("promptCache", "Prompt cache")}
-					{effective.promptCache.value === "yes" && (
-						<FieldGrid className="mt-0">
-							{numberField("cacheReadPrice", "Cache read price", "amount")}
-							{numberField("cacheWritePrice", "Cache write price", "amount")}
-						</FieldGrid>
-					)}
-					{knowledgeRow("files", "Files", "Attach documents, not just images.")}
-					<ControlRow id={fieldAnchor(row.id, "systemRole")} label="System role" tag={tag("systemRole", "System role")}>
-						<Segmented<"system" | "developer">
-							controlId={fieldControl(row.id, "systemRole")}
-							label="System role"
-							onChange={(value) => void set("systemRole", value)}
-							options={[
-								{ value: "system", label: "system" },
-								{ value: "developer", label: "developer" },
-							]}
-							value={effective.systemRole.value}
-						/>
-					</ControlRow>
-					{connection.kind === "openai-compatible" && (
-						<ControlRow id={fieldAnchor(row.id, "apiFormat")} label="API type" tag={tag("apiFormat", "API type")}>
-							<Segmented<"same" | "chat" | "responses">
-								controlId={fieldControl(row.id, "apiFormat")}
-								label="API type"
-								onChange={(value) => void (value === "same" ? reset("apiFormat") : set("apiFormat", value))}
-								options={[
-									{ value: "same", label: "Same as connection" },
-									{ value: "chat", label: "Chat" },
-									{ value: "responses", label: "Responses" },
-								]}
-								value={effective.apiFormat.value ?? "same"}
-								wrap
-							/>
-						</ControlRow>
-					)}
-				</>
-			)}
-
-			{action && (
-				<div
-					className={
-						action.tone === "bad"
-							? "mt-1 text-[12px] text-error"
-							: action.tone === "ok"
-								? "mt-1 text-[12px] text-success"
-								: "mt-1 text-[12px] text-description"
-					}
-					role="status">
-					{action.text}
 				</div>
 			)}
+
+			<RequestPreview disabledReason={hasId ? undefined : noIdWhy} effective={effective} row={row} />
+
 			{error && <Why tone="bad">{error}</Why>}
-			<div className="mt-4 flex flex-wrap items-center gap-2">
-				<SmallButton disabled={!hasId || busy === "test"} onClick={test} title={hasId ? undefined : noIdWhy}>
-					{busy === "test" ? "Testing…" : "Test this model"}
-				</SmallButton>
-				<SmallButton disabled={!hasId || busy === "detect"} onClick={detect} title={hasId ? undefined : noIdWhy}>
-					<Icon className="text-[12px]!" name="zap" />
-					{busy === "detect" ? "Detecting…" : "Detect"}
-				</SmallButton>
+			<div className="mt-3 flex flex-wrap items-center justify-end gap-2">
 				{isDraft ? (
-					<LinkButton onClick={() => page.setDraftModels((current) => current.filter((draft) => draft.id !== row.id))}>
+					<ActionButton
+						danger
+						icon="trash"
+						onClick={() => page.setDraftModels((current) => current.filter((draft) => draft.id !== row.id))}>
 						Remove
-					</LinkButton>
+					</ActionButton>
 				) : (
-					<RemoveFlow
-						label="Remove"
-						modelIds={[row.id]}
-						onRemove={() => store.deleteModel(row.id)}
-						onRemoved={() => page.setOpenModel(null)}
-						question={`Remove ${row.name || row.upstreamId}?`}
-						removedName={row.name || row.upstreamId}
-					/>
+					<>
+						<ActionButton icon="files" onClick={() => void duplicate()}>
+							Duplicate
+						</ActionButton>
+						<RemoveFlow
+							label="Remove"
+							modelIds={[row.id]}
+							onRemove={() => store.deleteModel(row.id)}
+							onRemoved={() => page.setOpenModel(null)}
+							question={`Remove ${row.name || row.upstreamId}?`}
+						/>
+					</>
 				)}
 			</div>
 		</div>
@@ -636,13 +516,13 @@ const LevelTable = ({
 	const lastOn = levels.length === 1
 	const firstEnabled = rows.find((entry) => !(lastOn && entry.offered))?.level.id
 	return (
-		<div className="mt-0.5 mb-1 rounded-[5px] border border-editor-group-border px-2 py-1.5" data-testid="level-table">
+		<div className="mt-1 mb-1" data-testid="level-table">
 			{overridesShared(row, connection, "levels") && (
 				<div className="mb-1 flex items-center gap-1.5">
 					<OverrideTag label="Levels" onReset={onReset} />
 				</div>
 			)}
-			<div className="grid grid-cols-[52px_44px_minmax(0,1fr)] items-center gap-x-2 gap-y-[3px] text-[12.5px]">
+			<div className="grid auto-rows-[1.75rem] grid-cols-[52px_44px_minmax(0,1fr)] items-center gap-x-2 gap-y-[3px] text-[12.5px]">
 				<span className="text-[11px] text-description">Level</span>
 				<span className="text-[11px] text-description">Offered</span>
 				<span className="min-w-0 text-[11px] text-description [overflow-wrap:anywhere]" data-testid="level-table-sent-as">
@@ -749,9 +629,8 @@ const ExtraBodyEditor = ({
 
 	return (
 		<div data-testid="extra-body">
-			<div className="mt-4 flex flex-wrap items-center gap-x-1.5 text-[12px] text-foreground">
+			<div className="mt-4 flex flex-wrap items-center gap-x-1.5 text-[13px] text-foreground">
 				<span>Extra body params</span>
-				<span className="opacity-70">merged into every request</span>
 			</div>
 			{entries.map((entry) => (
 				<div className="mt-1.5 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1.5" key={entry.key}>
@@ -837,11 +716,12 @@ const ExtraBodyEditor = ({
 					</button>
 				</div>
 			))}
-			<div className="mt-1.5">
-				<LinkButton onClick={() => setPending((current) => [...current, { id: Date.now(), key: "", text: "" }])}>
-					<Icon className="text-[12px]!" name="add" />
+			<div className="mt-2">
+				<ActionButton
+					icon="add"
+					onClick={() => setPending((current) => [...current, { id: Date.now(), key: "", text: "" }])}>
 					Add param
-				</LinkButton>
+				</ActionButton>
 			</div>
 		</div>
 	)
@@ -853,7 +733,7 @@ const RequestPreview = ({ row, effective, disabledReason }: { row: ModelRow; eff
 	const [open, setOpen] = useState(false)
 	const [preview, setPreview] = useState<{ result?: PreviewResult; error?: string; loading: boolean }>({ loading: false })
 	const revision = store.state?.settings.revision
-	const pick = testPick(row, effective)
+	const pick = previewPick(row, effective)
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: refetches when the store changes or the pick does, not each render.
 	useEffect(() => {
@@ -888,12 +768,7 @@ const RequestPreview = ({ row, effective, disabledReason }: { row: ModelRow; eff
 
 	return (
 		<div data-testid="request-preview">
-			<FoldHeader
-				onToggle={() => setOpen((current) => !current)}
-				open={open}
-				summary="exactly what gets sent"
-				title="Preview the request"
-			/>
+			<FoldHeader onToggle={() => setOpen((current) => !current)} open={open} title="Request preview" />
 			{open && disabledReason && <Hint>{disabledReason}</Hint>}
 			{open && !disabledReason && preview.loading && !text && <Hint>Building it…</Hint>}
 			{open && !disabledReason && preview.error && <Why tone="bad">{preview.error}</Why>}

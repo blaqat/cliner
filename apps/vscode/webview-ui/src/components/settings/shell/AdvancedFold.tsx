@@ -34,7 +34,7 @@ export const AdvancedFold = ({ featureId, summary, children }: { featureId: stri
 				)}
 			</button>
 			{open && (
-				<div className="mt-1.5 ml-[5px] min-w-0 border-l-2 border-editor-group-border pl-3.5" id={bodyId}>
+				<div className="mt-1 min-w-0 pl-[15px]" id={bodyId}>
 					{children}
 				</div>
 			)}

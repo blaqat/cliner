@@ -114,7 +114,6 @@ describe("first visit", () => {
 		await flush()
 		expect(page().getByText(/Nothing can run yet/)).toBeInTheDocument()
 		expect(page().getByLabelText("Base URL")).toBeInTheDocument()
-		expect(page().getByRole("button", { name: "vLLM" })).toBeInTheDocument()
 		expect(page().getAllByTestId("model-pick-button")[0]).toHaveTextContent("No models yet")
 		expect(host.callsTo("saveConnection")).toHaveLength(0)
 	})
@@ -122,19 +121,10 @@ describe("first visit", () => {
 	it("a URL the organization locks can't be typed, so it doesn't hold up a new connection", async () => {
 		setup({ managed: ["openAiBaseUrl"] })
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Test connection" }))
+		fireEvent.click(page().getByRole("button", { name: "Save connection" }))
 		await flush()
 		expect(page().queryByText("Add a base URL first.")).toBeNull()
 		expect(host.callsTo("saveConnection")[0].connection).toMatchObject({ baseUrl: null, name: "Managed connection" })
-	})
-
-	it("won't test a connection without a URL, and says why", async () => {
-		setup()
-		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Test connection" }))
-		await flush()
-		expect(page().getByText("Add a base URL first.")).toBeInTheDocument()
-		expect(host.callsTo("saveConnection")).toHaveLength(0)
 	})
 })
 
@@ -142,15 +132,14 @@ describe("adding many models from one base URL", () => {
 	const startDraft = async (options: FakeHostOptions = {}) => {
 		setup(options)
 		await flush()
-		change("Base URL", "https://gw.example/v1")
 		change("API key", "sk-live-1234")
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Test connection" }))
+		change("Base URL", "https://gw.example/v1")
 		await flush()
 		await flush()
 	}
 
-	it("saves the draft, tests it, then ticks from /models with the same URL and key", async () => {
+	it("saves the draft on URL blur with its earlier key, then adds models", async () => {
 		await startDraft()
 		const [saved] = host.callsTo("saveConnection")
 		expect(saved.connection).toMatchObject({
@@ -159,6 +148,10 @@ describe("adding many models from one base URL", () => {
 			kind: "openai-compatible",
 		})
 		expect(saved.secrets).toEqual([{ field: "apiKey", operation: "set", value: "sk-live-1234" }])
+		expect(screen.getByTestId(`connection-form-${host.state().settings.connections[0].id}`)).toBeInTheDocument()
+		expect(page().getByLabelText("API key")).toHaveValue("")
+		expect(page().getByLabelText("API key")).toHaveAttribute("placeholder", "Saved")
+		expect(host.secrets[`settings:v1:connection:${host.state().settings.connections[0].id}:apiKey`]).toBe("sk-live-1234")
 		const add = within(screen.getByTestId("add-models"))
 		await waitFor(() => expect(add.getByRole("checkbox", { name: /gpt-6-sol/ })).toBeInTheDocument())
 		fireEvent.click(add.getByRole("checkbox", { name: /gpt-6-sol/ }))
@@ -169,7 +162,7 @@ describe("adding many models from one base URL", () => {
 		const models = host.callsTo("saveConfiguredModels")[0].models as { upstreamId: string; connectionId: string }[]
 		expect(models.map((row) => row.upstreamId)).toEqual(["gpt-6-sol", "gpt-5.4"])
 		expect(new Set(models.map((row) => row.connectionId)).size).toBe(1)
-		expect(page().getByText(/Added 2 models/)).toBeInTheDocument()
+		expect(screen.queryByTestId("add-models")).toBeNull()
 	})
 
 	it("the first model added leaves Chat and Background text blank, and says why nothing can run", async () => {
@@ -177,14 +170,14 @@ describe("adding many models from one base URL", () => {
 		const add = within(screen.getByTestId("add-models"))
 		await waitFor(() => expect(add.getByRole("checkbox", { name: /gpt-6-sol/ })).toBeInTheDocument())
 		fireEvent.click(add.getByRole("checkbox", { name: /gpt-6-sol/ }))
-		fireEvent.click(add.getByRole("button", { name: "Add 1 model" }))
+		fireEvent.click(add.getByRole("button", { name: "Add model" }))
 		await flush()
 		await flush()
 		expect(host.callsTo("setModelRoles")).toHaveLength(0)
 		expect(host.state().settings.roles.chat).toBeNull()
 		expect(host.state().settings.roles.background.pick).toBeNull()
 		expect(page().getByText(/Threads need a Chat model/)).toBeInTheDocument()
-		expect(page().getByText(/need a Background text model/)).toBeInTheDocument()
+		expect(page().getByText(/Background text needs a model/)).toBeInTheDocument()
 		expect(page().getAllByRole("button", { name: "Pick one" })).toHaveLength(2)
 	})
 
@@ -209,27 +202,26 @@ describe("adding many models from one base URL", () => {
 			},
 		})
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add model" }))
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
 		await flush()
 		const panel = within(screen.getByTestId("add-models"))
 		await waitFor(() => expect(panel.getByRole("checkbox", { name: /gpt-9/ })).toBeInTheDocument())
 		expect(panel.queryByText("text-embedding-3-large")).toBeNull()
 	})
 
-	it("a connection with no /models says so and takes a pasted list of IDs", async () => {
+	it("a connection with no /models silently takes a pasted list of IDs", async () => {
 		setup({
 			settings: gatewaySettings(),
 			availability: envAvailable,
 			discovery: { gateway: { status: "no-list", manualEntry: true, models: [] } },
 		})
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add model" }))
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
 		await flush()
 		const panel = within(screen.getByTestId("add-models"))
-		expect(panel.getByText(/has no \/models, so type or paste IDs/)).toBeInTheDocument()
-		const input = panel.getByLabelText("Type or paste model IDs")
-		fireEvent.paste(input, { clipboardData: { getData: () => "model-a\nmodel-b, model-c model-a" } })
-		await flush()
+		expect(panel.queryByRole("status")).toBeNull()
+		expect(panel.getByRole("button", { name: "Add model" })).toBeDisabled()
+		fireEvent.change(panel.getByLabelText("Model IDs"), { target: { value: "model-a\nmodel-b, model-c model-a" } })
 		fireEvent.click(panel.getByRole("button", { name: "Add 3 models" }))
 		await flush()
 		await flush()
@@ -241,107 +233,46 @@ describe("adding many models from one base URL", () => {
 	it("an ID typed that isn't listed can still be added", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add model" }))
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
 		await flush()
 		const panel = within(screen.getByTestId("add-models"))
 		await waitFor(() => expect(panel.getByRole("checkbox", { name: /qwen3-coder/ })).toBeInTheDocument())
-		fireEvent.change(panel.getByLabelText("Filter /models, or paste IDs"), { target: { value: "secret-model" } })
-		fireEvent.click(panel.getByRole("button", { name: /Add “secret-model” by ID/ }))
+		fireEvent.change(panel.getByLabelText("Model IDs"), { target: { value: "secret-model" } })
+		fireEvent.keyDown(panel.getByLabelText("Model IDs"), { key: "Enter" })
 		await flush()
 		expect(panel.getByRole("checkbox", { name: /secret-model/ })).toBeInTheDocument()
-		expect(panel.getByText("not on /models")).toBeInTheDocument()
-		expect(panel.getByRole("button", { name: "Add 1 model" })).toBeInTheDocument()
+		expect(panel.getByRole("button", { name: "Add model" })).toBeInTheDocument()
 	})
 
-	it("auth and network failures while listing say different things and still allow manual IDs", async () => {
-		setup({ settings: gatewaySettings(), availability: envAvailable, discovery: { gateway: { status: "auth", models: [] } } })
+	it.each(["auth", "network"] as const)("a %s listing failure is silent and still allows manual IDs", async (status) => {
+		setup({ settings: gatewaySettings(), availability: envAvailable, discovery: { gateway: { status, models: [] } } })
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add model" }))
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
 		await flush()
-		expect(screen.getByText(/turned the key down/)).toBeInTheDocument()
-		expect(within(screen.getByTestId("add-models")).getByLabelText("Type or paste model IDs")).toBeInTheDocument()
-	})
-})
-
-describe("connection test", () => {
-	const testResult = async (status: "ok" | "auth" | "network" | "no-list") => {
-		setup({
-			settings: gatewaySettings(),
-			availability: envAvailable,
-			test: {
-				gateway: {
-					status,
-					models:
-						status === "ok"
-							? [{ upstreamId: "gpt-6-sol", name: "x", classification: "unknown", source: "discovered" }]
-							: [],
-				},
-			},
-		})
-		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Test" }))
-		await flush()
-		await flush()
-		return within(screen.getByTestId("connection-test-result"))
-	}
-
-	it("ok says what it proved", async () => {
-		const result = await testResult("ok")
-		expect(result.getByText(/Reached ai\.acme\.example in \d+ ms/)).toBeInTheDocument()
-		expect(result.getByText("Key from AI_GATEWAY_KEY accepted")).toBeInTheDocument()
-		expect(result.getByText("/models lists 1 model you can add")).toBeInTheDocument()
-	})
-	it("auth says the key was refused and offers the fix", async () => {
-		const result = await testResult("auth")
-		expect(result.getByText(/AI_GATEWAY_KEY is empty in this window, or the server refused it/)).toBeInTheDocument()
-		expect(result.getByRole("button", { name: "Edit the key" })).toBeInTheDocument()
-		expect(page().getByText("Key refused")).toBeInTheDocument()
-	})
-	it("network says it can't reach the server", async () => {
-		const result = await testResult("network")
-		expect(result.getByText(/Can't reach ai\.acme\.example/)).toBeInTheDocument()
-		expect(result.getByRole("button", { name: "Edit the URL" })).toBeInTheDocument()
-		expect(page().getByText("Can't reach it")).toBeInTheDocument()
-	})
-	it("no-list is fine, and doesn't claim the key works", async () => {
-		const result = await testResult("no-list")
-		expect(result.getByText(/has no \/models \(404\)/)).toBeInTheDocument()
-		expect(result.queryByText(/accepted/)).toBeNull()
-		expect(page().getByText("No /models")).toBeInTheDocument()
-	})
-	it("after a list, a model that's gone says so and can be kept", async () => {
-		await testResult("ok")
-		expect(within(screen.getByTestId("model-row-g54")).getByText("Not on /models")).toBeInTheDocument()
-		fireEvent.click(within(screen.getByTestId("model-row-g54")).getByRole("button", { name: "Keep it" }))
-		await flush()
-		expect(within(screen.getByTestId("model-row-g54")).queryByText("Not on /models")).toBeNull()
+		expect(screen.queryByText(/turned the key down/)).toBeNull()
+		expect(within(screen.getByTestId("add-models")).getByLabelText("Model IDs")).toBeInTheDocument()
 	})
 })
 
 describe("the list", () => {
-	it("shows every model under its connection, with levels, status and Duplicate", async () => {
+	it("shows model names, known details and switches under their connection", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const sol = within(screen.getByTestId("model-row-sol"))
 		expect(sol.getByText("GPT-6 Sol")).toBeInTheDocument()
-		expect(sol.getByText("Low–XHigh")).toBeInTheDocument()
-		expect(sol.getByText(/gpt-6-sol · 400K · \$5 \/ \$20/)).toBeInTheDocument()
-		expect(sol.getByText("Ready")).toBeInTheDocument()
-		expect(sol.getByRole("button", { name: "Duplicate GPT-6 Sol" })).toBeInTheDocument()
-		expect(within(screen.getByTestId("model-row-mini")).getByText("Low–High")).toBeInTheDocument()
-		expect(page().getByText("All 4 show in the composer and every selector.")).toBeInTheDocument()
+		expect(sol.getByText(/Low–XHigh/)).toBeInTheDocument()
+		expect(sol.getByText(/gpt-6-sol · Low–XHigh · 400K · \$5 \/ \$20/)).toBeInTheDocument()
+
+		expect(within(screen.getByTestId("model-row-mini")).getByText(/Low–High/)).toBeInTheDocument()
 	})
 
-	it("an unknown context window runs at ~128K, marked, and never saves 128K", async () => {
+	it("an unknown context window uses the planning fallback without displaying or saving it", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const row = screen.getByTestId("model-row-tuned")
-		expect(within(row).getByText("~128K")).toHaveAttribute("title", expect.stringContaining("plans with 128K"))
-		expect(within(row).getByText("Ready")).toBeInTheDocument()
-		expect(within(row).queryByText(/\d unknown/)).toBeNull()
-		expect(within(row).getByText("Levels unknown")).toBeInTheDocument()
+		expect(within(row).queryByText(/128K|unknown/i)).toBeNull()
+		expect(host.state().planning.tuned).toEqual({ contextWindowKnown: false, planningContextWindow: 128000 })
 		const form = await openModel("tuned")
-		expect(form.getByText(/Unknown: Cline plans with 128K and marks the ring with ~/)).toBeInTheDocument()
 		expect(form.getByLabelText("Context window")).toHaveValue("")
 		expect(host.state().settings.models.find((model) => model.id === "tuned")?.overrides.contextWindow).toBeUndefined()
 	})
@@ -414,8 +345,23 @@ describe("role rows", () => {
 		})
 		await flush()
 		const row = document.getElementById(settingsRowElementId("models.chat")) as HTMLElement
-		expect(within(row).getByText(/Company gateway: key missing, so threads on this pick won't start/)).toBeInTheDocument()
-		expect(within(row).getByRole("button", { name: "Fix it" })).toBeInTheDocument()
+		expect(page().getByText(/Company gateway: key missing, so Chat won't start/)).toBeInTheDocument()
+		expect(page().getByRole("button", { name: "Fix it" })).toBeInTheDocument()
+		expect(within(row).queryByText(/key missing/)).toBeNull()
+	})
+
+	it("a missing key says so once, naming every pick it stops", async () => {
+		const settings = gatewaySettings()
+		settings.roles.background.pick = { modelId: "sol", levelId: "default" }
+		settings.roles.ask = { enabled: true, pick: { modelId: "sol", levelId: "default" } }
+		setup({
+			settings,
+			availability: { ...envAvailable, sol: { available: false, reason: "Connection credentials are missing" } },
+		})
+		await flush()
+		expect(page().getAllByText(/key missing/)).toHaveLength(1)
+		expect(page().getAllByRole("button", { name: "Fix it" })).toHaveLength(1)
+		expect(page().getByText(/so Chat, Different model for Ask and Background text won't start/)).toBeInTheDocument()
 	})
 
 	it("Advanced holds Ask, per-use overrides and a writable timeout", async () => {
@@ -474,28 +420,23 @@ describe("the model form", () => {
 		expect(savedRow("tuned")?.overrides).toMatchObject({ maxOutputTokens: 9000, contextWindow: 200000, tools: "yes" })
 	})
 
-	it("has every 6b field", async () => {
+	it("keeps model fields up front and additional controls under More", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
 		// Up front: what you set a model up with.
-		for (const label of ["Model ID", "Display name", "Context window", "Max output tokens", "Input", "Output"]) {
+		for (const label of ["Model ID", "Display name", "Context window", "Max output tokens", "Input $/1M", "Output $/1M"]) {
 			expect(form.getByLabelText(label)).toBeInTheDocument()
 		}
 		expect(form.getByRole("radiogroup", { name: "Reasoning" })).toBeInTheDocument()
 		expect(screen.getByTestId("request-preview")).toBeInTheDocument()
-		expect(form.getByRole("button", { name: "Detect" })).toBeInTheDocument()
-		expect(form.getByRole("button", { name: "Test this model" })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Remove" })).toBeInTheDocument()
 		// Everything else waits under More.
 		expect(form.queryByLabelText("Temperature")).toBeNull()
-		for (const group of ["Images", "Tools", "Verbosity"]) {
+		for (const group of ["Can see images", "Can use tools", "Verbosity"]) {
 			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
 		}
-		expect(form.queryByRole("button", { name: /Start from a preset/ })).toBeNull()
 		expect(form.queryByRole("button", { name: "Add param" })).toBeNull()
-		// Free is gone.
-		expect(form.queryByRole("switch", { name: "Free" })).toBeNull()
 		// How each level maps.
 		const table = within(form.getByTestId("level-table"))
 		expect(table.getByText("reasoning.effort")).toBeInTheDocument()
@@ -508,24 +449,22 @@ describe("the model form", () => {
 		expect(table.getByLabelText("High is sent as")).toHaveValue("high")
 		// More.
 		await openMore(form)
-		for (const group of ["Images", "Tools", "Verbosity"]) {
+		for (const group of ["Can see images", "Can use tools", "Verbosity"]) {
 			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
 		}
 		// Images and tools are a plain yes or no.
-		for (const group of ["Images", "Tools"]) {
+		for (const group of ["Can see images", "Can use tools"]) {
 			const options = within(form.getByRole("radiogroup", { name: group })).getAllByRole("radio")
 			expect(options.map((option) => option.textContent)).toEqual(["Yes", "No"])
 		}
 		expect(form.getByLabelText("Temperature")).toBeInTheDocument()
-		expect(form.getByRole("button", { name: /Start from a preset/ })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Add param" })).toBeInTheDocument()
 		for (const label of ["Max input tokens", "Thinking budget", "Cache read price", "Cache write price"]) {
 			expect(form.getByLabelText(label)).toBeInTheDocument()
 		}
-		for (const group of ["Streaming", "Prompt cache", "Files", "System role", "API type"]) {
+		for (const group of ["Streaming", "Prompt cache", "Can read files", "API type"]) {
 			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
 		}
-		expect(form.getByRole("radio", { name: "developer" })).toHaveAttribute("aria-checked", "true")
 	})
 
 	it("edits write the whole row, keep explicit values, and clear to inherit", async () => {
@@ -549,13 +488,11 @@ describe("the model form", () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("tuned")
-		expect(form.getByText(/can't offer levels until you say whether it can reason/)).toBeInTheDocument()
 		fireEvent.click(within(form.getByRole("radiogroup", { name: "Reasoning" })).getByRole("radio", { name: "Yes" }))
 		await flush()
 		await flush()
 		expect(savedRow("tuned")?.overrides.reasoning).toBe("yes")
 		expect(savedRow("tuned")?.overrides.levels?.map((level) => level.id)).toEqual(["default", "low", "medium", "high"])
-		expect(within(screen.getByTestId("model-row-tuned")).getByText("Low–High")).toBeInTheDocument()
 		const table = within(screen.getByTestId("level-table"))
 		change("Low is sent as", "minimal", table)
 		await flush()
@@ -594,72 +531,11 @@ describe("the model form", () => {
 		expect(savedRow("sol")?.overrides.extraBody).toEqual({ top_p: 0.5 })
 	})
 
-	it("a preset fills from the catalog, never prices and never what's set", async () => {
-		setup({
-			settings: gatewaySettings(),
-			availability: envAvailable,
-			catalog: {
-				anthropic: {
-					"opus-4.5": {
-						name: "Opus 4.5",
-						contextWindow: 200000,
-						maxTokens: 8192,
-						supportsImages: true,
-						inputPrice: 5,
-						outputPrice: 25,
-						supportsReasoning: true,
-					} as never,
-				},
-			},
-		})
-		await flush()
-		const form = await openModel("tuned")
-		await openMore(form)
-		fireEvent.click(form.getByRole("button", { name: /Start from a preset/ }))
-		await flush()
-		await flush()
-		expect(form.getByText(/Presets never fill in prices/)).toBeInTheDocument()
-		fireEvent.click(within(form.getByTestId("model-presets")).getByRole("button", { name: "Opus 4.5" }))
-		await flush()
-		await flush()
-		const overrides = savedRow("tuned")?.overrides
-		expect(overrides).toMatchObject({
-			contextWindow: 200000,
-			maxOutputTokens: 8192,
-			reasoning: "yes",
-		})
-		expect(overrides).toMatchObject({ images: "yes" })
-		expect(overrides).not.toHaveProperty("inputPrice")
-		expect(overrides).not.toHaveProperty("outputPrice")
-	})
-
-	it("Detect fills unknowns only, and never what's set", async () => {
-		setup({
-			settings: gatewaySettings(),
-			availability: envAvailable,
-			detected: { contextWindow: 200000, tools: "no", maxOutputTokens: 8000 },
-		})
-		await flush()
-		const form = await openModel("tuned")
-		fireEvent.click(form.getByRole("button", { name: "Detect" }))
-		await flush()
-		await flush()
-		expect(savedRow("tuned")?.overrides.contextWindow).toBe(200000)
-		expect(savedRow("tuned")?.overrides.maxOutputTokens).toBe(8000)
-		expect(savedRow("tuned")?.overrides.tools).toBe("yes")
-		expect(form.getByRole("status")).toHaveTextContent(/Detect found 2/)
-	})
-
-	it("Test this model and the request preview call the real RPCs and show what they return", async () => {
-		setup({ settings: gatewaySettings(), availability: envAvailable, modelTest: "inference-failed" })
+	it("the request preview calls the host and shows its request", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
-		fireEvent.click(form.getByRole("button", { name: "Test this model" }))
-		await flush()
-		await flush()
-		expect(host.callsTo("testConfiguredModel")[0].pick).toEqual({ modelId: "sol", levelId: "xhigh" })
-		expect(form.getByRole("status")).toHaveTextContent(/gpt-6-sol didn't answer/)
-		fireEvent.click(form.getByRole("button", { name: /Preview the request/ }))
+		fireEvent.click(form.getByRole("button", { name: "Request preview" }))
 		await flush()
 		await flush()
 		const preview = within(form.getByTestId("request-preview"))
@@ -675,7 +551,7 @@ describe("the model form", () => {
 		})
 		await flush()
 		const form = await openModel("sol")
-		fireEvent.click(form.getByRole("button", { name: /Preview the request/ }))
+		fireEvent.click(form.getByRole("button", { name: "Request preview" }))
 		await flush()
 		await flush()
 		expect(
@@ -694,7 +570,7 @@ describe("shared defaults", () => {
 		const shared = within(screen.getByTestId("shared-defaults-gateway"))
 		fireEvent.click(shared.getByRole("button", { name: /Shared defaults/ }))
 		await flush()
-		change("Shared Input, per 1M", "3", shared)
+		change("Shared Input", "3", shared)
 		await flush()
 		expect(within(screen.getByTestId("model-row-g54")).getByText(/\$3 \/ \$8/)).toBeInTheDocument()
 		expect(within(screen.getByTestId("model-row-mini")).getByText(/\$3 \/ \$8/)).toBeInTheDocument()
@@ -707,15 +583,15 @@ describe("shared defaults", () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
-		fireEvent.click(form.getByRole("button", { name: "Reset Input" }))
+		fireEvent.click(form.getByRole("button", { name: "Reset Input $/1M" }))
 		await flush()
 		await flush()
 		expect(savedRow("sol")?.overrides).not.toHaveProperty("inputPrice")
 		expect(savedRow("sol")?.overrides.outputPrice).toBe(20)
-		expect(form.queryByRole("button", { name: "Reset Input" })).toBeNull()
-		expect(form.getByLabelText("Input")).toHaveValue("")
-		expect(form.getByLabelText("Input")).toHaveAttribute("placeholder", "2")
-		expect(form.getByRole("button", { name: "Reset Output" })).toBeInTheDocument()
+		expect(form.queryByRole("button", { name: "Reset Input $/1M" })).toBeNull()
+		expect(form.getByLabelText("Input $/1M")).toHaveValue("")
+		expect(form.getByLabelText("Input $/1M")).toHaveAttribute("placeholder", "2")
+		expect(form.getByRole("button", { name: "Reset Output $/1M" })).toBeInTheDocument()
 	})
 
 	it("an inherited capability is marked as inherited", async () => {
@@ -736,19 +612,17 @@ describe("duplicate", () => {
 	it("makes a blank-ID copy in place, saves nothing until it has an ID, copies no secrets and assigns no roles", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
-		fireEvent.click(within(screen.getByTestId("model-row-sol")).getByRole("button", { name: "Duplicate GPT-6 Sol" }))
+		const original = await openModel("sol")
+		fireEvent.click(original.getByRole("button", { name: "Duplicate" }))
 		await flush()
 		await flush()
 		expect(host.callsTo("duplicateConfiguredModel")[0]).toEqual({ modelId: "sol" })
 		expect(host.callsTo("saveConfiguredModels")).toHaveLength(0)
-		expect(page().getByText("Copied GPT-6 Sol. Type the new ID.")).toBeInTheDocument()
 		const input = page()
 			.getAllByLabelText("Model ID")
 			.find((box) => (box as HTMLInputElement).value === "") as HTMLInputElement
 		expect(input).toHaveFocus()
 		const form = within(input.closest("[data-testid^=model-form-]") as HTMLElement)
-		expect(form.getByRole("button", { name: "Test this model" })).toBeDisabled()
-		expect(form.getByRole("button", { name: "Test this model" })).toHaveAttribute("title", "Type the model ID first.")
 		change("Context window", "1000", form)
 		await flush()
 		expect(host.callsTo("saveConfiguredModels")).toHaveLength(0)
@@ -770,7 +644,8 @@ describe("duplicate", () => {
 	it("a copy with no ID can be dropped without touching the host", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
-		fireEvent.click(within(screen.getByTestId("model-row-sol")).getByRole("button", { name: "Duplicate GPT-6 Sol" }))
+		const original = await openModel("sol")
+		fireEvent.click(original.getByRole("button", { name: "Duplicate" }))
 		await flush()
 		await flush()
 		const form = within(screen.getAllByTestId(/^model-form-/)[0])
@@ -797,7 +672,7 @@ describe("secrets", () => {
 		const input = page().getByLabelText("API key")
 		expect(input).toHaveValue("")
 		expect(input).toHaveAttribute("type", "password")
-		expect(input).toHaveAttribute("placeholder", "Saved in the keychain. Type to replace it.")
+		expect(input).toHaveAttribute("placeholder", "Saved")
 		expect(document.body.innerHTML).not.toContain("sk-super-secret")
 	})
 
@@ -812,6 +687,37 @@ describe("secrets", () => {
 		expect(saved.connection).toEqual({ id: "gateway", name: "Gateway" })
 		expect(saved.secrets).toEqual([])
 		expect(host.wire()).not.toContain("sk-super-secret")
+	})
+
+	it("a missing key's Fix it lands on the key field", async () => {
+		setup({
+			settings: keyedSettings(),
+			availability: { ...envAvailable, sol: { available: false, reason: "Connection credentials are missing" } },
+		})
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Fix it" }))
+		await flushFrame()
+		await flush()
+		expect(document.activeElement).toBe(page().getByLabelText("API key"))
+	})
+
+	it("a key that moved over under its old field name shows as saved, and replaces and removes in place", async () => {
+		const ref = "settings:v1:connection:gateway:openAiApiKey"
+		const settings = gatewaySettings()
+		settings.connections[0].auth = { kind: "keychain", secretRef: ref }
+		setup({ settings, secrets: { [ref]: "sk-moved" } })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		expect(page().getByLabelText("API key")).toHaveAttribute("placeholder", "Saved")
+		change("API key", "sk-new")
+		await flush()
+		expect(host.callsTo("saveConnection")[0].secrets).toEqual([{ field: "openAiApiKey", operation: "set", value: "sk-new" }])
+		expect(host.secrets[ref]).toBe("sk-new")
+		fireEvent.click(page().getByRole("button", { name: "Remove API key" }))
+		await flush()
+		expect(host.secrets[ref]).toBeUndefined()
+		expect(host.state().settings.connections[0].auth).toEqual({ kind: "none" })
 	})
 
 	it("a new key goes one way, and the box empties", async () => {
@@ -843,7 +749,7 @@ describe("secrets", () => {
 		await flush()
 		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Remove the saved value" }))
+		fireEvent.click(page().getByRole("button", { name: "Remove API key" }))
 		await flush()
 		expect(host.callsTo("saveConnection")[0].secrets).toEqual([{ field: "apiKey", operation: "delete" }])
 		expect(host.secrets["settings:v1:connection:gateway:apiKey"]).toBeUndefined()
@@ -895,7 +801,7 @@ describe("secrets", () => {
 
 		it("removes an optional secret and its reference in one save", async () => {
 			await open()
-			fireEvent.click(page().getByRole("button", { name: "Remove the saved value" }))
+			fireEvent.click(page().getByRole("button", { name: /^Remove .*session token/i }))
 			await flush()
 			const [saved] = host.callsTo("saveConnection")
 			expect(saved.secrets).toEqual([{ field: "awsSessionToken", operation: "delete" }])
@@ -907,8 +813,8 @@ describe("secrets", () => {
 
 		it("a secret the connection can't work without says so, and only offers replacing it", async () => {
 			await open()
-			expect(page().getAllByRole("button", { name: "Remove the saved value" })).toHaveLength(1)
-			expect(page().getByText(/can't work without it/)).toBeInTheDocument()
+			expect(page().getAllByRole("button", { name: /^Remove .*(session token|access key|secret)/i })).toHaveLength(1)
+			expect(page().getAllByText("Required. Type a new one to replace it.").length).toBeGreaterThan(0)
 		})
 
 		it("clearing an option removes it instead of saving an empty string", async () => {
@@ -988,7 +894,7 @@ describe("other providers", () => {
 	const openChooser = async (options: FakeHostOptions = {}) => {
 		setup({ settings: gatewaySettings(), availability: envAvailable, ...options })
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add a model from another provider" }))
+		fireEvent.click(page().getByRole("button", { name: "Add provider" }))
 		await flush()
 		await flush()
 		return within(screen.getByTestId("provider-chooser"))
@@ -1025,7 +931,7 @@ describe("other providers", () => {
 			remoteConfigSettings: { remoteConfiguredProviders: ["anthropic"] },
 		})
 		await flush()
-		fireEvent.click(page().getByRole("button", { name: "Add a model from another provider" }))
+		fireEvent.click(page().getByRole("button", { name: "Add provider" }))
 		await flush()
 		await flush()
 		const chooser = within(screen.getByTestId("provider-chooser"))
@@ -1068,7 +974,7 @@ describe("other providers", () => {
 		const panel = within(screen.getByTestId("add-models"))
 		await waitFor(() => expect(panel.getByRole("checkbox", { name: /sonnet-4\.5/ })).toBeInTheDocument())
 		fireEvent.click(panel.getByRole("checkbox", { name: /sonnet-4\.5/ }))
-		fireEvent.click(panel.getByRole("button", { name: "Add 1 model" }))
+		fireEvent.click(panel.getByRole("button", { name: "Add model" }))
 		await flush()
 		await flush()
 		await flush()
@@ -1182,35 +1088,40 @@ describe("other providers", () => {
 })
 
 describe("removing", () => {
-	it("shows what depends on a model in place, and lets each be fixed", async () => {
+	it("removes an in-use model with one confirmation and clears every reference in that save", async () => {
 		const settings = gatewaySettings()
-		settings.subagents.allowed = [{ kind: "model", modelId: "mini", levels: ["low"] }]
-		settings.roles.background.overrides = { titles: { modelId: "mini", levelId: "low" } }
-		setup({ settings, availability: envAvailable, threadDependencies: { mini: ["t1", "t2"] } })
+		const pick = { modelId: "sol", levelId: "medium" }
+		settings.roles.chat = pick
+		settings.roles.ask = { enabled: true, pick }
+		settings.roles.subagents = { kind: "model", pick }
+		settings.roles.background.pick = pick
+		settings.roles.background.overrides = { titles: pick, commitMessages: pick, generate: pick }
+		settings.subagents.allowed = [{ kind: "model", modelId: "sol", levels: ["medium"] }]
+		setup({ settings, availability: envAvailable, threadDependencies: { sol: ["t1", "t2"] } })
 		await flush()
-		const form = await openModel("mini")
+		const form = await openModel("sol")
 		fireEvent.click(form.getByRole("button", { name: "Remove" }))
 		await flush()
-		fireEvent.click(within(screen.getByTestId("remove-flow")).getByRole("button", { name: "Remove" }))
+		const flow = within(screen.getByTestId("remove-flow"))
+		expect(flow.getByText(/Also clears it from Chat/)).toHaveTextContent(/Background text/)
+		expect(flow.getByText("2 saved threads will ask for a new model.")).toBeInTheDocument()
+		expect(savedRow("sol")).toBeDefined()
+		expect(host.callsTo("deleteConfiguredModel")).toHaveLength(0)
+		fireEvent.click(flow.getByRole("button", { name: "Remove" }))
 		await flush()
-		await flush()
-		const list = within(screen.getByTestId("remove-dependencies"))
-		expect(list.getByText("Background text uses it.")).toBeInTheDocument()
-		expect(list.getByText("Thread titles uses it.")).toBeInTheDocument()
-		expect(list.getByText(/It's on the list of models subagents can choose/)).toBeInTheDocument()
-		expect(list.queryByRole("button", { name: "Open history" })).toBeNull()
-		expect(host.state().settings.models.some((model) => model.id === "mini")).toBe(true)
-		// Fix them one at a time.
-		fireEvent.click(list.getAllByRole("button", { name: "Clear it" })[0])
-		await flush()
-		await flush()
-		expect(host.state().settings.roles.background.pick).toBeNull()
-		expect(list.queryByText("Background text uses it.")).toBeNull()
-		fireEvent.click(list.getByRole("button", { name: "Take it off the list" }))
-		await flush()
-		await flush()
+		expect(savedRow("sol")).toBeUndefined()
+		expect(screen.queryByTestId("model-row-sol")).toBeNull()
+		expect(host.state().settings.roles).toMatchObject({
+			chat: null,
+			ask: { enabled: false, pick: null },
+			subagents: { kind: "thread", level: "inherit" },
+			background: { pick: null, overrides: {} },
+		})
 		expect(host.state().settings.subagents.allowed).toEqual([])
-		expect(list.getAllByRole("listitem").length).toBeGreaterThan(0)
+		expect(host.callsTo("deleteConfiguredModel")).toHaveLength(1)
+		expect(host.callsTo("setModelRoles")).toHaveLength(0)
+		expect(host.callsTo("setSubagentPolicy")).toHaveLength(0)
+		expect(screen.queryByTestId("remove-flow")).toBeNull()
 	})
 
 	it("says how many saved threads use a model, and deletes it anyway", async () => {
@@ -1221,7 +1132,7 @@ describe("removing", () => {
 		await flush()
 		await flush()
 		const flow = within(screen.getByTestId("remove-flow"))
-		expect(flow.getByText(/3 saved threads use this\. They'll ask you to pick a model when reopened\./)).toBeInTheDocument()
+		expect(flow.getByText("3 saved threads will ask for a new model.")).toBeInTheDocument()
 		fireEvent.click(flow.getByRole("button", { name: "Remove" }))
 		await flush()
 		await flush()
@@ -1251,29 +1162,29 @@ describe("removing", () => {
 		expect(screen.queryByTestId("model-row-tuned")).toBeNull()
 	})
 
-	it("a connection has to lose its models first: offers that, then removes it", async () => {
+	it("removes an in-use connection and its models with one confirmation", async () => {
 		const settings = gatewaySettings()
-		settings.roles.chat = null
-		settings.roles.background.pick = null
-		setup({ settings, availability: envAvailable })
+		settings.subagents.allowed = [{ kind: "model", modelId: "mini", levels: ["low"] }]
+		setup({ settings, availability: envAvailable, threadDependencies: { sol: ["t1", "t2"], mini: ["t2", "t3"] } })
 		await flush()
 		fireEvent.click(page().getByRole("button", { name: "Remove connection" }))
 		await flush()
-		expect(screen.getByText("Remove Company gateway and its 4 models?")).toBeInTheDocument()
-		fireEvent.click(within(screen.getByTestId("remove-flow")).getByRole("button", { name: "Remove" }))
+		const flow = within(screen.getByTestId("remove-flow"))
+		expect(flow.getByText("Remove Company gateway and its 4 models?")).toBeInTheDocument()
+		expect(flow.getByText("Also clears it from Chat, Background text and the subagents' list.")).toBeInTheDocument()
+		expect(flow.getByText("3 saved threads will ask for a new model.")).toBeInTheDocument()
+		expect(host.state().settings.models).toHaveLength(4)
+		fireEvent.click(flow.getByRole("button", { name: "Remove" }))
 		await flush()
-		await flush()
-		const list = within(screen.getByTestId("remove-dependencies"))
-		expect(list.getByText(/Its 4 models have to go first/)).toBeInTheDocument()
-		fireEvent.click(list.getByRole("button", { name: "Remove them" }))
-		await flush()
-		await flush()
-		await flush()
-		expect(host.state().settings.models).toHaveLength(0)
-		fireEvent.click(within(screen.getByTestId("remove-flow")).getByRole("button", { name: "Try removing again" }))
-		await flush()
-		await flush()
-		expect(host.state().settings.connections).toHaveLength(0)
+		expect(host.state().settings.models).toEqual([])
+		expect(host.state().settings.connections).toEqual([])
+		expect(host.state().settings.roles.chat).toBeNull()
+		expect(host.state().settings.roles.background.pick).toBeNull()
+		expect(host.state().settings.subagents.allowed).toEqual([])
+		expect(host.callsTo("deleteConnection")).toHaveLength(1)
+		expect(host.callsTo("deleteConfiguredModel")).toHaveLength(0)
+		expect(host.callsTo("setModelRoles")).toHaveLength(0)
+		expect(screen.queryByTestId("connection-gateway")).toBeNull()
 	})
 
 	it("Cancel leaves everything", async () => {
@@ -1401,8 +1312,6 @@ describe("the model switch", () => {
 		await flush()
 		await flush()
 		expect(savedRow("g54")?.enabled).toBe(false)
-		expect(row().getByText(/Off, hidden from model pickers/)).toBeInTheDocument()
-		expect(page().getByText(/3 of 4 show in the composer/)).toBeInTheDocument()
 		expect(selectorDataFromModelSettings(host.state()).rows.map((entry) => entry.id)).not.toContain("g54")
 		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
 		await flush()
@@ -1417,56 +1326,71 @@ describe("the model switch", () => {
 		expect(selectorDataFromModelSettings(state).rows.map((entry) => entry.id)).not.toContain("g54")
 		expect(selectorDataFromModelSettings(state, ["g54"]).rows.map((entry) => entry.id)).toContain("g54")
 	})
-	it("won't turn off a model on the subagents' allowed list", async () => {
+	it("turning off a model clears its allowed entry without changing unrelated entries", async () => {
 		const settings = gatewaySettings()
+		settings.subagents.allowed = [
+			{ kind: "model", modelId: "g54", levels: [] },
+			{ kind: "model", modelId: "sol", levels: ["medium"] },
+		]
+		setup({ settings, availability: envAvailable })
+		await flush()
+		fireEvent.click(row().getByRole("switch", { name: "Use GPT-5.4" }))
+		await flush()
+		expect(savedRow("g54")?.enabled).toBe(false)
+		expect(host.state().settings.subagents.allowed).toEqual([{ kind: "model", modelId: "sol", levels: ["medium"] }])
+		expect(host.callsTo("saveConfiguredModels")).toHaveLength(1)
+		expect(host.callsTo("setSubagentPolicy")).toHaveLength(0)
+	})
+	it("turning off a model clears all role picks and its allowed entry in the same save", async () => {
+		const settings = gatewaySettings()
+		const pick = { modelId: "g54", levelId: "default" }
+		settings.roles.chat = pick
+		settings.roles.ask = { enabled: true, pick }
+		settings.roles.subagents = { kind: "model", pick }
+		settings.roles.background.pick = pick
+		settings.roles.background.overrides = { titles: pick, commitMessages: pick, generate: pick }
 		settings.subagents.allowed = [{ kind: "model", modelId: "g54", levels: [] }]
 		setup({ settings, availability: envAvailable })
 		await flush()
-		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
+		fireEvent.click(row().getByRole("switch", { name: "Use GPT-5.4" }))
 		await flush()
-		await flush()
-		expect(savedRow("g54")?.enabled).toBeUndefined()
-		expect(row().getByRole("button", { name: "Subagents" })).toBeInTheDocument()
-	})
-	it("won't turn off a model a role uses: says who and links there", async () => {
-		const settings = gatewaySettings()
-		settings.roles.chat = { modelId: "g54", levelId: "default" }
-		setup({ settings, availability: envAvailable })
-		await flush()
-		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
-		await flush()
-		await flush()
-		expect(savedRow("g54")?.enabled).toBeUndefined()
-		expect(row().getByText(/Still in use, so it stays on/)).toBeInTheDocument()
-		expect(row().getByRole("button", { name: "Chat" })).toBeInTheDocument()
-	})
-})
-
-describe("tools off", () => {
-	it("a model the catalog doesn't know says it can only chat, in the list and the form, with the way out", async () => {
-		const settings = gatewaySettings()
-		settings.models.find((row) => row.id === "sol")!.overrides.tools = "unknown"
-		setup({ settings, availability: envAvailable })
-		await flush()
-		expect(within(screen.getByTestId("model-row-sol")).getByText("No tools")).toBeInTheDocument()
-		const form = await openModel("sol")
-		expect(form.getByText(/Tools are off, so this model can only chat/)).toBeInTheDocument()
-		fireEvent.click(form.getByRole("button", { name: "Turn tools on" }))
-		await flush()
-		await flush()
-		expect(savedRow("sol")?.overrides.tools).toBe("yes")
-		expect(within(screen.getByTestId("model-row-sol")).queryByText("No tools")).toBeNull()
+		expect(savedRow("g54")?.enabled).toBe(false)
+		expect(row().getByRole("switch", { name: "Use GPT-5.4" })).toHaveAttribute("aria-checked", "false")
+		expect(host.state().settings.roles).toMatchObject({
+			chat: null,
+			ask: { enabled: false, pick: null },
+			subagents: { kind: "thread", level: "inherit" },
+			background: { pick: null, overrides: {} },
+		})
+		expect(host.state().settings.subagents.allowed).toEqual([])
+		expect(host.callsTo("saveConfiguredModels")).toHaveLength(1)
+		expect(host.callsTo("setModelRoles")).toHaveLength(0)
+		expect(host.callsTo("setSubagentPolicy")).toHaveLength(0)
 	})
 })
 
 describe("the connection header", () => {
 	it("puts Edit connection under the status, outside the row that opens and closes", async () => {
-		setup({ settings: gatewaySettings(), availability: envAvailable })
+		const settings = gatewaySettings()
+		settings.connections[0].auth = { kind: "keychain", secretRef: "settings:v1:connection:gateway:apiKey" }
+		setup({ settings })
 		await flush()
 		const card = screen.getByTestId("connection-gateway")
 		const edit = within(card).getByRole("button", { name: "Edit connection" })
 		expect(edit.closest("button[aria-expanded]")).toBeNull()
-		expect(edit.parentElement?.previousElementSibling).toHaveTextContent(/Key missing|Not tested|Connected/)
+		expect(edit.previousElementSibling).toHaveTextContent("Key missing")
+		expect(edit.parentElement).toHaveClass("flex-col", "items-end")
+		expect(page().getAllByText("Key missing")).toHaveLength(1)
+		for (const row of screen.getAllByTestId(/^model-row-/)) {
+			expect(within(row).queryByText("Key missing")).toBeNull()
+			expect(within(row).queryByText("Can't run")).toBeNull()
+		}
+		fireEvent.click(edit)
+		await flush()
+		expect(page().queryByText("Key missing")).toBeNull()
+		fireEvent.click(within(card).getByRole("button", { name: "Done editing" }))
+		await flush()
+		expect(page().getAllByText("Key missing")).toHaveLength(1)
 	})
 
 	it("has Edit connection up top, open or not, and it opens the form", async () => {
@@ -1482,7 +1406,6 @@ describe("the connection header", () => {
 		fireEvent.click(card().getByRole("button", { name: "Done editing" }))
 		await flush()
 		expect(card().queryByTestId("connection-form-gateway")).toBeNull()
-		expect(card().getByRole("button", { name: "Test" })).toBeInTheDocument()
 	})
 })
 
@@ -1505,28 +1428,6 @@ describe("host errors", () => {
 		expect(savedRow("tuned")?.overrides.maxOutputTokens).toBe(9000)
 		expect(form.queryByText(/nothing was saved/)).toBeNull()
 		mocks.host.saveConfiguredModels = original
-	})
-
-	it("a save doesn't wait behind a running connection test", async () => {
-		setup({ settings: gatewaySettings(), availability: envAvailable })
-		await flush()
-		const original = mocks.host.testConnection
-		let finishTest: (() => void) | undefined
-		mocks.host.testConnection = (request: { json: string }) =>
-			new Promise((resolve) => {
-				finishTest = () => resolve(original(request))
-			})
-		fireEvent.click(page().getByRole("button", { name: "Test" }))
-		await flush()
-		expect(finishTest).toBeDefined()
-		const form = await openModel("tuned")
-		change("Max output tokens", "9000", form)
-		await flush()
-		await flush()
-		expect(savedRow("tuned")?.overrides.maxOutputTokens).toBe(9000)
-		finishTest?.()
-		await flush()
-		mocks.host.testConnection = original
 	})
 
 	it("says a test stopped because settings changed, not that something wasn't saved", () => {
@@ -1561,7 +1462,7 @@ describe("host errors", () => {
 describe("shared defaults", () => {
 	const open = async () => {
 		const settings = gatewaySettings()
-		settings.connections[0].defaults = { contextWindow: 100000, temperature: 0.5, images: "yes", free: true }
+		settings.connections[0].defaults = { contextWindow: 100000, temperature: 0.5, images: "yes" }
 		setup({ settings, availability: envAvailable })
 		await flush()
 		const shared = within(screen.getByTestId("shared-defaults-gateway"))
@@ -1582,7 +1483,9 @@ describe("shared defaults", () => {
 
 	it("a shared No clears the key so the catalog still decides; a shared 0 stays an answer", async () => {
 		const shared = await open()
-		fireEvent.click(within(shared.getByRole("radiogroup", { name: "Shared Images" })).getByRole("radio", { name: "No" }))
+		fireEvent.click(
+			within(shared.getByRole("radiogroup", { name: "Shared Can see images" })).getByRole("radio", { name: "No" }),
+		)
 		await flush()
 		await flush()
 		expect(Object.hasOwn(defaults(), "images")).toBe(false)
@@ -1590,7 +1493,6 @@ describe("shared defaults", () => {
 		await flush()
 		await flush()
 		expect(defaults().temperature).toBe(0)
-		expect(shared.queryByRole("switch", { name: "Shared Free" })).toBeNull()
 	})
 })
 
@@ -1664,8 +1566,7 @@ describe("host fix targets", () => {
 			},
 		})
 		await flush()
-		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
-		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
+		fireEvent.click(page().getByRole("button", { name: "Fix it" }))
 		await flushFrame()
 		await flush()
 		expect(document.activeElement?.id).toBe(`${settingsConnectionElementId("gateway")}-control`)
@@ -1687,7 +1588,7 @@ describe("host fix targets", () => {
 		})
 		await flush()
 		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
-		expect(within(row).getByText(/no model ID, so threads on this pick won't start/)).toBeInTheDocument()
+		expect(within(row).getByText(/no model ID, so this pick won't start/)).toBeInTheDocument()
 		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
 		await flushFrame()
 		await flush()
@@ -1710,9 +1611,8 @@ describe("host fix targets", () => {
 			},
 		})
 		await flush()
-		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
-		expect(within(row).getByText(/base URL isn't valid, so threads on this pick won't start/)).toBeInTheDocument()
-		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
+		expect(page().getByText(/base URL isn't valid, so Chat.* won't start/)).toBeInTheDocument()
+		fireEvent.click(page().getByRole("button", { name: "Fix it" }))
 		await flushFrame()
 		await flush()
 		expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Base URL" }))
@@ -1751,5 +1651,187 @@ describe("host fix targets", () => {
 		await flush()
 		const form = await openModel("sol")
 		expect(form.queryByRole("button", { name: "Reset Reasoning" })).toBeNull()
+	})
+})
+
+describe("form layout", () => {
+	const expectOrder = (elements: HTMLElement[]) => {
+		for (let index = 1; index < elements.length; index++) {
+			expect(elements[index - 1].compareDocumentPosition(elements[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		}
+	}
+
+	it("orders the model sections, More fields and footer actions", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const form = await openModel("sol")
+		await openMore(form)
+		expectOrder([
+			form.getByLabelText("Model ID"),
+			form.getByLabelText("Display name"),
+			form.getByRole("radiogroup", { name: "Reasoning" }),
+			form.getByText("Price and limits"),
+			form.getByLabelText("Input $/1M"),
+			form.getByLabelText("Output $/1M"),
+			form.getByLabelText("Context window"),
+			form.getByLabelText("Max output tokens"),
+			form.getByRole("button", { name: /^More/ }),
+			form.getByLabelText("Temperature"),
+			form.getByRole("radiogroup", { name: "Streaming" }),
+			form.getByRole("radiogroup", { name: "Prompt cache" }),
+			form.getByLabelText("Cache read price"),
+			form.getByLabelText("Cache write price"),
+			...["Can read files", "Can use tools", "Can see images", "Verbosity", "API type"].map((name) =>
+				form.getByRole("radiogroup", { name }),
+			),
+			form.getByLabelText("Max input tokens"),
+			form.getByLabelText("Thinking budget"),
+			form.getByText("Extra body params"),
+			form.getByRole("button", { name: "Request preview" }),
+			form.getByRole("button", { name: "Duplicate" }),
+			form.getByRole("button", { name: "Remove" }),
+		])
+		expect(form.getByRole("button", { name: "Duplicate" }).parentElement).toBe(
+			form.getByRole("button", { name: "Remove" }).parentElement,
+		)
+	})
+
+	it("orders shared defaults like the model form and labels their inputs separately", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const shared = within(screen.getByTestId("shared-defaults-gateway"))
+		fireEvent.click(shared.getByRole("button", { name: /Shared defaults/ }))
+		await flush()
+		expectOrder([
+			shared.getByRole("radiogroup", { name: "Shared Reasoning" }),
+			shared.getByText("Price and limits"),
+			shared.getByLabelText("Shared Input"),
+			shared.getByLabelText("Shared Output"),
+			shared.getByLabelText("Shared Context window"),
+			shared.getByLabelText("Shared Max output tokens"),
+			shared.getByLabelText("Shared Temperature"),
+			shared.getByRole("radiogroup", { name: "Shared Can use tools" }),
+			shared.getByRole("radiogroup", { name: "Shared Can see images" }),
+		])
+	})
+})
+
+describe("manual model IDs", () => {
+	const openPanel = async () => {
+		setup({
+			settings: gatewaySettings(),
+			availability: envAvailable,
+			discovery: { gateway: { status: "no-list", models: [] } },
+		})
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
+		await flush()
+		const panel = within(screen.getByTestId("add-models"))
+		return { panel, input: panel.getByLabelText("Model IDs") }
+	}
+
+	it("Shift+Enter starts a new line and Enter adds every ID in the box", async () => {
+		const { panel, input } = await openPanel()
+		fireEvent.change(input, { target: { value: "model-a" } })
+		fireEvent.keyDown(input, { key: "Enter", shiftKey: true })
+		await flush()
+		expect(host.callsTo("saveConfiguredModels")).toHaveLength(0)
+		fireEvent.change(input, { target: { value: "model-a\nmodel-b" } })
+		expect(panel.getByRole("button", { name: "Add 2 models" })).toBeEnabled()
+		fireEvent.keyDown(input, { key: "Enter" })
+		await flush()
+		const models = host.callsTo("saveConfiguredModels")[0].models as { upstreamId: string }[]
+		expect(models.map((row) => row.upstreamId)).toEqual(["model-a", "model-b"])
+	})
+
+	it("a pasted list with no connection list stays in the box to edit", async () => {
+		const { input } = await openPanel()
+		const notPrevented = fireEvent.paste(input, { clipboardData: { getData: () => "model-a\nmodel-b" } })
+		expect(notPrevented).toBe(true)
+	})
+
+	it("says when an ID is already added, instead of a disabled button with no reason", async () => {
+		const { panel, input } = await openPanel()
+		const taken = host.state().settings.models[0].upstreamId
+		fireEvent.change(input, { target: { value: taken } })
+		expect(panel.getByRole("button", { name: "Add model" })).toBeDisabled()
+		expect(panel.getByText(`${taken} is already added.`)).toBeInTheDocument()
+		fireEvent.change(input, { target: { value: `${taken}, brand-new` } })
+		expect(panel.getByRole("button", { name: "Add model" })).toBeEnabled()
+	})
+
+	it.each(["button", "Enter"])("adds a typed ID with no list via %s", async (submit) => {
+		setup({
+			settings: gatewaySettings(),
+			availability: envAvailable,
+			discovery: { gateway: { status: "no-list", models: [] } },
+		})
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Add models" }))
+		await flush()
+		const panel = within(screen.getByTestId("add-models"))
+		expect(panel.getByRole("button", { name: "Add model" })).toBeDisabled()
+		const input = panel.getByLabelText("Model IDs")
+		fireEvent.change(input, { target: { value: "private/model" } })
+		expect(panel.getByRole("button", { name: "Add model" })).toBeEnabled()
+		if (submit === "Enter") fireEvent.keyDown(input, { key: "Enter" })
+		else fireEvent.click(panel.getByRole("button", { name: "Add model" }))
+		await flush()
+		expect(host.callsTo("saveConfiguredModels")).toHaveLength(1)
+		expect(host.callsTo("saveConfiguredModels")[0].models).toEqual([
+			expect.objectContaining({ upstreamId: "private/model", connectionId: "gateway" }),
+		])
+		expect(host.state().settings.models).toHaveLength(5)
+		expect(screen.queryByTestId("add-models")).toBeNull()
+	})
+})
+
+describe("connection problems", () => {
+	it("shows an empty env var once on the header and hides it while editing", async () => {
+		setup({
+			settings: gatewaySettings(),
+			availability: Object.fromEntries(
+				["sol", "g54", "mini", "tuned"].map((id) => [
+					id,
+					{ available: false, reason: "Connection environment variable is empty" },
+				]),
+			),
+		})
+		await flush()
+		expect(page().getAllByText("Env var empty")).toHaveLength(1)
+		for (const row of screen.getAllByTestId(/^model-row-/)) {
+			expect(within(row).queryByText(/Env var empty|Can't run/)).toBeNull()
+		}
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		expect(page().queryByText("Env var empty")).toBeNull()
+	})
+
+	it("keeps a saved draft and its key after reopening Settings", async () => {
+		const view = setup()
+		await flush()
+		change("API key", "sk-before-url")
+		await flush()
+		expect(host.callsTo("saveConnection")).toHaveLength(0)
+		change("Base URL", "bad-url")
+		await flush()
+		expect(host.callsTo("saveConnection")).toHaveLength(0)
+		expect(page().getByText(/That isn't a URL/)).toBeInTheDocument()
+		change("Base URL", "https://saved.example/v1")
+		await flush()
+		expect(host.callsTo("saveConnection")).toHaveLength(1)
+		const id = host.state().settings.connections[0].id
+		expect(screen.getByTestId(`connection-form-${id}`)).toBeInTheDocument()
+		expect(screen.getByTestId("add-models")).toBeInTheDocument()
+		view.unmount()
+		mocks.state.modelSettings = host.state()
+		render(<SettingsShell onDone={() => {}} />)
+		await flush()
+		expect(screen.getByTestId(`connection-${id}`)).toHaveTextContent("https://saved.example/v1")
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		expect(page().getByLabelText("API key")).toHaveAttribute("placeholder", "Saved")
+		expect(host.secrets[`settings:v1:connection:${id}:apiKey`]).toBe("sk-before-url")
+		expect(host.callsTo("saveConnection")).toHaveLength(1)
 	})
 })

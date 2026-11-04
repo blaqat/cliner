@@ -4,12 +4,12 @@ import { settingsConnectionElementId } from "../settingsTargets"
 import { SecretField } from "./ConnectionForm"
 import { CommitInput, ControlRow, Field, FieldGrid, Hint, LockedIcon, SmallSwitch } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
-import { isValidUrl, secretRef } from "./modelsView"
+import { isValidUrl, secretField, secretRef } from "./modelsView"
 import { isFieldVisible, type ProviderField, type ProviderSpec } from "./providerSpecs"
 
 type Values = Record<string, unknown>
 
-const REQUIRED_SECRET_NOTE = "This connection can't work without it. Type a new one to replace it, or remove the connection."
+const REQUIRED_SECRET_NOTE = "Required. Type a new one to replace it."
 
 /**
  * One provider field. A dropdown, a switch or a text box, with its Remote Config lock in the row.
@@ -155,7 +155,9 @@ export const ProviderConnectionFields = ({
 	}
 
 	const key = spec.auth === "keychain" || spec.auth === "optional-key"
-	const keyRef = secretRef(connection.id, "apiKey")
+	// A connection that moved over keeps its key under its old field name.
+	const keyRef = connection.auth.kind === "keychain" ? connection.auth.secretRef : secretRef(connection.id, "apiKey")
+	const keyField = secretField(keyRef)
 	const firstField = spec.fields.find((field) => isFieldVisible(field, options))
 	// A flagged URL is the one thing to fix here, so the connection's fix link lands on it.
 	const flaggedUrl =
@@ -168,7 +170,6 @@ export const ProviderConnectionFields = ({
 		<FieldGrid>
 			{key && (
 				<Field
-					hint="Saved in VS Code's keychain."
 					label={spec.auth === "optional-key" ? "API key (optional)" : "API key"}
 					tag={managedKey("apiKey") ? <LockedIcon title="Managed" /> : undefined}>
 					<SecretField
@@ -180,16 +181,16 @@ export const ProviderConnectionFields = ({
 							spec.auth === "optional-key"
 								? () =>
 										save({ id: connection.id, auth: { kind: "none" } }, [
-											{ field: "apiKey", operation: "delete" },
+											{ field: keyField, operation: "delete" },
 										])
 								: undefined
 						}
 						onSet={(value) =>
 							save({ id: connection.id, auth: { kind: "keychain", secretRef: keyRef } }, [
-								{ field: "apiKey", operation: "set", value },
+								{ field: keyField, operation: "set", value },
 							])
 						}
-						placeholder="Saved in VS Code's keychain"
+						placeholder="Paste key"
 						requiredNote={spec.auth === "optional-key" ? undefined : REQUIRED_SECRET_NOTE}
 					/>
 				</Field>
@@ -220,7 +221,7 @@ export const ProviderConnectionFields = ({
 											{ field: field.id, operation: "set", value },
 										])
 									}
-									placeholder="Saved in VS Code's keychain"
+									placeholder="Paste value"
 									requiredNote={field.required ? REQUIRED_SECRET_NOTE : undefined}
 								/>
 							</Field>

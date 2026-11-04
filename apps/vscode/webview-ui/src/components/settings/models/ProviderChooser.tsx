@@ -9,7 +9,7 @@ import { useProviderListings } from "@/hooks/useProviderListings"
 import { AccountServiceClient, ModelsServiceClient, OcaAccountServiceClient } from "@/services/grpc-client"
 import { AddModelsPanel } from "./AddModelsPanel"
 import { SecretField } from "./ConnectionForm"
-import { Field, FieldGrid, Hint, LinkButton, SmallButton, Why } from "./fields"
+import { ActionButton, Field, FieldGrid, Hint, LinkButton, SmallButton, Why } from "./fields"
 import type { DiscoveredModel } from "./modelSettingsClient"
 import { useModelsPage } from "./modelsPageContext"
 import { isValidUrl, newId, secretRef } from "./modelsView"
@@ -100,7 +100,6 @@ const ProviderSetup = ({
 	const visible = spec.fields.filter((field) => isFieldVisible(field, options))
 	// A locked value is the organization's: there's nothing for the person to fill in.
 	const asked = visible.filter((field) => field.required && !page.managedKey(field.id))
-	const later = spec.fields.filter((field) => !field.required).map((field) => field.label)
 
 	const connect = async () => {
 		const empty =
@@ -164,7 +163,6 @@ const ProviderSetup = ({
 					page.setOpenConnection(connection.id)
 					onDone(connection.id)
 				}}
-				showShared={false}
 			/>
 		)
 	}
@@ -180,7 +178,7 @@ const ProviderSetup = ({
 						setSecrets((current) => ({ ...current, [field.id]: value }))
 						return undefined
 					}}
-					placeholder="Saved in VS Code's keychain"
+					placeholder="Paste value"
 				/>
 			</Field>
 		) : (
@@ -225,17 +223,12 @@ const ProviderSetup = ({
 								setSecrets((current) => ({ ...current, apiKey: value }))
 								return undefined
 							}}
-							placeholder="Saved in VS Code's keychain"
+							placeholder="Paste key"
 						/>
 					</Field>
 				)}
 				{visible.map(controlFor)}
 			</FieldGrid>
-			{later.length > 0 && spec.auth !== "fields" && (
-				<Hint>
-					Later, under {listing.name} › Edit, too: {later.join(", ")}.
-				</Hint>
-			)}
 			{signingIn && <Hint>{signingIn}</Hint>}
 			{error && <Why tone="bad">{error}</Why>}
 			<div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -251,7 +244,7 @@ const ProviderSetup = ({
 						{spec.auth === "keychain" || spec.fields.length ? "Connect" : "Use it"}
 					</SmallButton>
 				)}
-				<LinkButton onClick={onBack}>Other providers</LinkButton>
+				<ActionButton onClick={onBack}>Back</ActionButton>
 			</div>
 		</div>
 	)
@@ -272,7 +265,7 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 	const shown = filter || showAll ? hits : hits.slice(0, FIRST_PROVIDER_COUNT)
 
 	return (
-		<div className="mt-1.5 rounded-[5px] border border-editor-group-border px-2 py-1.5" data-testid="provider-chooser">
+		<div className="mt-1.5 rounded-md border border-editor-group-border px-2.5 py-2" data-testid="provider-chooser">
 			{picked ? (
 				<ProviderSetup key={picked.id} listing={picked} onBack={() => setPicked(undefined)} onDone={onClose} />
 			) : (
@@ -281,7 +274,7 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 						aria-label="Filter providers"
 						autoComplete="off"
 						autoFocus
-						className="h-6 rounded-xs px-[7px] py-0 text-[12.5px] md:text-[12.5px]"
+						className="h-7 rounded-xs px-2 py-0 text-[12.5px] md:text-[12.5px]"
 						onChange={(event) => setQuery(event.target.value)}
 						placeholder={all.length ? `Filter ${all.length} providers` : "Filter providers"}
 						spellCheck={false}
@@ -318,8 +311,8 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 				</>
 			)}
 			{!picked && (
-				<div className="mt-1.5">
-					<LinkButton onClick={onClose}>Cancel</LinkButton>
+				<div className="mt-2">
+					<ActionButton onClick={onClose}>Cancel</ActionButton>
 				</div>
 			)}
 		</div>

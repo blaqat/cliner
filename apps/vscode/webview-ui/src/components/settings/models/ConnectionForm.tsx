@@ -4,13 +4,14 @@ import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { settingsConnectionElementId } from "../settingsTargets"
 import {
+	ActionButton,
 	CommitInput,
+	ControlRow,
 	Field,
 	FieldGrid,
 	FoldHeader,
 	Hint,
 	Icon,
-	LinkButton,
 	LockedIcon,
 	parseSeconds,
 	Segmented,
@@ -19,20 +20,12 @@ import {
 } from "./fields"
 import type { SecretMutation } from "./modelSettingsClient"
 import { useModelsPage } from "./modelsPageContext"
-import { canRunAfter, isAzureUrl, isValidUrl, newId, secretField, secretRef } from "./modelsView"
-
-/** Starting points that only fill in the form. URLs are the servers' own defaults; nothing here is a model fact. */
-const PRESETS: { label: string; change: Partial<CompatibleConnection> }[] = [
-	{ label: "vLLM", change: { name: "vLLM", baseUrl: "http://localhost:8000/v1", auth: { kind: "none" }, apiFormat: "chat" } },
-	{ label: "LiteLLM proxy", change: { name: "LiteLLM", baseUrl: "http://localhost:4000/v1", apiFormat: "chat" } },
-	{ label: "Azure OpenAI", change: { name: "Azure OpenAI", auth: { kind: "azure-identity" }, apiFormat: "chat" } },
-	{ label: "A gateway", change: { name: "Company gateway", apiFormat: "chat" } },
-]
+import { isAzureUrl, isValidUrl, newId, secretField, secretRef } from "./modelsView"
 
 const AUTH_OPTIONS = [
 	{ value: "keychain", label: "API key" },
 	{ value: "environment", label: "Env var" },
-	{ value: "azure-identity", label: "Azure identity" },
+	{ value: "azure-identity", label: "Azure ID" },
 	{ value: "none", label: "None" },
 ] as const
 
@@ -77,22 +70,22 @@ export const SecretField = ({
 				}
 				return MASKED.test(value) ? "Type the whole value, not a masked one." : onSet(value)
 			}}
-			placeholder={configured ? "Saved in the keychain. Type to replace it." : placeholder}
+			placeholder={configured ? "Saved" : placeholder}
 			secret
 			value=""
 		/>
 		{configured && requiredNote && <Hint>{requiredNote}</Hint>}
 		{configured && onRemove && (
-			<Hint>
-				<LinkButton disabled={disabled} onClick={() => void onRemove()}>
-					Remove the saved value
-				</LinkButton>
-			</Hint>
+			<div className="mt-1.5">
+				<ActionButton danger disabled={disabled} icon="trash" onClick={() => void onRemove()}>
+					Remove {label}
+				</ActionButton>
+			</div>
 		)}
 	</>
 )
 
-/** The connection's own fields. A draft edits locally until Test saves it; a saved connection writes each field as it's left. */
+/** The connection's own fields. A draft becomes a saved connection as soon as it has a base URL; after that each field writes as it's left. */
 export const ConnectionForm = ({ connection, isDraft }: { connection: CompatibleConnection; isDraft: boolean }) => {
 	const page = useModelsPage()
 	const { store, managedKey, organization } = page
@@ -100,7 +93,6 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 	const [moreOpen, setMoreOpen] = useState(false)
 	const [error, setError] = useState<string>()
 	const [pendingHeaders, setPendingHeaders] = useState<{ id: string; name: string; value: string }[]>([])
-	const [testError, setTestError] = useState<string>()
 
 	const urlLocked = managedKey("openAiBaseUrl")
 	const headersLocked = managedKey("openAiHeaders")
@@ -109,13 +101,14 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 	const lockedWords = [urlLocked && "base URL", headersLocked && "headers", versionLocked && "Azure version"].filter(Boolean)
 
 	const anchor = settingsConnectionElementId(connection.id)
-	const test = page.tests[connection.id]
 
 	const save = async (change: Partial<CompatibleConnection>, secrets?: SecretMutation[]): Promise<string | undefined> => {
 		setError(undefined)
 		if (isDraft) {
 			page.updateDraft(connection.id, change, secrets)
-			return undefined
+			// Once it has somewhere to go it's real, so a reload can't lose it.
+			const next = { ...connection, ...change }
+			return next.baseUrl && isValidUrl(next.baseUrl) ? page.commitDraft(next) : undefined
 		}
 		const outcome = await store.saveConnection({ id: connection.id, ...change }, secrets ?? [])
 		if (!outcome.ok) {
@@ -126,7 +119,9 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 	}
 
 	const authKind: AuthKind = authDraft ?? (connection.auth.kind === "sdk-account" ? "keychain" : connection.auth.kind)
-	const keyRef = secretRef(connection.id, "apiKey")
+	// A connection that moved over keeps its key under its old field name.
+	const keyRef = connection.auth.kind === "keychain" ? connection.auth.secretRef : secretRef(connection.id, "apiKey")
+	const keyField = secretField(keyRef)
 	const keyConfigured = !!store.state?.configuredSecrets[keyRef]
 
 	const changeAuth = async (kind: AuthKind) => {
@@ -138,7 +133,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		const auth: ConnectionAuth = kind === "keychain" ? { kind: "keychain", secretRef: keyRef } : { kind }
 		// A key left behind would sit in the keychain with nothing pointing at it.
 		if (!isDraft && connection.auth.kind === "keychain" && kind !== "keychain" && keyConfigured) {
-			const removed = await store.saveConnection({ id: connection.id }, [{ field: "apiKey", operation: "delete" }])
+			const removed = await store.saveConnection({ id: connection.id }, [{ field: keyField, operation: "delete" }])
 			if (!removed.ok) {
 				setError(removed.message)
 				return
@@ -213,19 +208,6 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		await saveHeaders(connection.headers.filter((entry) => entry.id !== header.id))
 	}
 
-	const runTest = async () => {
-		setTestError(undefined)
-		if (authKind === "environment" && connection.auth.kind !== "environment") {
-			setTestError("Name the env var first.")
-			return
-		}
-		if (isDraft) {
-			setTestError(await page.saveAndTestDraft(connection))
-			return
-		}
-		await page.runTest(connection.id, !!store.state?.settings.models.some((model) => model.connectionId === connection.id))
-	}
-
 	// A gateway in front of Azure has its own host, and a saved version has to stay reachable to clear it.
 	const azure =
 		isAzureUrl(connection.baseUrl) ||
@@ -233,26 +215,12 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		connection.auth.kind === "azure-identity" ||
 		!!connection.azureApiVersion
 	const inputIds = `${anchor}-control`
+	// A fix link lands on what needs fixing: the key, once the URL is fine.
+	const keyNeeded = authKind === "keychain" && !keyConfigured && !!connection.baseUrl && isValidUrl(connection.baseUrl)
 
 	return (
 		<div data-testid={`connection-form-${connection.id}`}>
-			{isDraft && !connection.baseUrl && (
-				<>
-					<div className="mt-1.5 text-[12px] text-description">Start from</div>
-					<div className="mt-0.5 flex flex-wrap gap-1">
-						{PRESETS.map((preset) => (
-							<button
-								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground"
-								key={preset.label}
-								onClick={() => void save(preset.change)}
-								type="button">
-								{preset.label}
-							</button>
-						))}
-					</div>
-				</>
-			)}
-			<FieldGrid>
+			<FieldGrid className="mt-0 grid-cols-[repeat(auto-fit,minmax(180px,1fr))]">
 				<Field label="Name">
 					<CommitInput
 						label="Connection name"
@@ -261,8 +229,6 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 						value={connection.name}
 					/>
 				</Field>
-			</FieldGrid>
-			<FieldGrid>
 				<Field
 					label={
 						<span className="inline-flex items-center gap-1">
@@ -271,7 +237,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					}>
 					<CommitInput
 						disabled={urlLocked}
-						id={inputIds}
+						id={keyNeeded ? undefined : inputIds}
 						label="Base URL"
 						mono
 						onCommit={(text) => {
@@ -292,84 +258,74 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					{lockedWords.length === 1 ? "it" : "them"}.
 				</Why>
 			)}
-			<div className="mt-4 mb-1.5 text-[12px] text-foreground">Key</div>
-			<Segmented<AuthKind>
-				disabled={identityLocked}
-				label="Key"
-				onChange={(kind) => void changeAuth(kind)}
-				options={AUTH_OPTIONS}
-				value={authKind}
-				wrap
-			/>
-			<div className="mt-1">
-				{authKind === "keychain" && (
-					<Field hint="Saved in VS Code's keychain." label="API key">
-						<SecretField
-							configured={keyConfigured}
-							label="API key"
-							onRemove={() => save({ auth: { kind: "none" } }, [{ field: "apiKey", operation: "delete" }])}
-							onSet={(value) =>
-								save({ auth: { kind: "keychain", secretRef: keyRef } }, [
-									{ field: "apiKey", operation: "set", value },
-								])
-							}
-							placeholder="sk-…"
-						/>
-					</Field>
-				)}
-				{authKind === "environment" && (
-					<Field hint="Read from this window's environment." label="Env var name">
-						<CommitInput
-							label="Env var name"
-							mono
-							onCommit={async (text) => {
-								const variable = text.trim()
-								if (!ENV_NAME.test(variable)) {
-									return "Letters, digits and _, not starting with a digit."
-								}
-								if (!isDraft && connection.auth.kind === "keychain" && keyConfigured) {
-									const removed = await store.saveConnection({ id: connection.id }, [
-										{ field: "apiKey", operation: "delete" },
-									])
-									if (!removed.ok) {
-										return removed.message
-									}
-								}
-								const failed = await save({ auth: { kind: "environment", variable } })
-								if (!failed) {
-									setAuthDraft(undefined)
-								}
-								return failed
-							}}
-							placeholder="MY_GATEWAY_KEY"
-							value={connection.auth.kind === "environment" ? connection.auth.variable : ""}
-						/>
-					</Field>
-				)}
-				{authKind === "azure-identity" && <Hint>Uses your Azure sign-in (Azure Identity). No key is stored.</Hint>}
-				{authKind === "none" && <Hint>For local servers that don't check a key.</Hint>}
+			<div className="mt-2">
+				<ControlRow label="Key">
+					<Segmented<AuthKind>
+						disabled={identityLocked}
+						label="Key"
+						onChange={(kind) => void changeAuth(kind)}
+						options={AUTH_OPTIONS}
+						value={authKind}
+						wrap
+					/>
+				</ControlRow>
 			</div>
-			<div className="mt-4 mb-1.5 text-[12px] text-foreground">API type</div>
-			<Segmented<"chat" | "responses">
-				label="API type"
-				onChange={(apiFormat) => void save({ apiFormat })}
-				options={[
-					{ value: "chat", label: "Chat Completions" },
-					{ value: "responses", label: "Responses" },
-				]}
-				value={connection.apiFormat}
-				wrap
-			/>
-			<Hint>
-				Chat Completions fits most servers and local models. Use Responses when the server offers it. A model can override
-				this.
-			</Hint>
+			{authKind === "keychain" && (
+				<SecretField
+					configured={keyConfigured}
+					id={keyNeeded ? inputIds : undefined}
+					label="API key"
+					onRemove={() => save({ auth: { kind: "none" } }, [{ field: keyField, operation: "delete" }])}
+					onSet={(value) =>
+						save({ auth: { kind: "keychain", secretRef: keyRef } }, [{ field: keyField, operation: "set", value }])
+					}
+					placeholder="sk-…"
+				/>
+			)}
+			{authKind === "environment" && (
+				<CommitInput
+					label="Env var name"
+					mono
+					onCommit={async (text) => {
+						const variable = text.trim()
+						if (!ENV_NAME.test(variable)) {
+							return "Letters, digits and _, not starting with a digit."
+						}
+						if (!isDraft && connection.auth.kind === "keychain" && keyConfigured) {
+							const removed = await store.saveConnection({ id: connection.id }, [
+								{ field: keyField, operation: "delete" },
+							])
+							if (!removed.ok) {
+								return removed.message
+							}
+						}
+						const failed = await save({ auth: { kind: "environment", variable } })
+						if (!failed) {
+							setAuthDraft(undefined)
+						}
+						return failed
+					}}
+					placeholder="MY_GATEWAY_KEY"
+					value={connection.auth.kind === "environment" ? connection.auth.variable : ""}
+				/>
+			)}
+			<div className="mt-2">
+				<ControlRow label="API type">
+					<Segmented<"chat" | "responses">
+						label="API type"
+						onChange={(apiFormat) => void save({ apiFormat })}
+						options={[
+							{ value: "chat", label: "Chat" },
+							{ value: "responses", label: "Responses" },
+						]}
+						value={connection.apiFormat}
+						wrap
+					/>
+				</ControlRow>
+			</div>
 
-			<div className="mt-4 flex flex-wrap items-center gap-x-1.5 text-[12px] text-foreground">
+			<div className="mt-3 flex flex-wrap items-center gap-x-1.5 text-[13px] text-foreground">
 				<span>Custom headers</span>
-				{connection.headers.some((header) => header.storage === "secret") && (
-					<span className="opacity-70">locked values stay in the keychain</span>
-				)}
 			</div>
 			{connection.headers.map((header) => (
 				<div
@@ -423,11 +379,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 						)}
 						disabled={headersLocked}
 						onClick={() => void lockHeader(header)}
-						title={
-							header.storage === "secret"
-								? "Locked: in the keychain, masked everywhere. Unlock to keep it as plain text."
-								: "Lock it: keeps the value in the keychain"
-						}
+						title={header.storage === "secret" ? "Locked. Click to unlock." : "Lock this value"}
 						type="button">
 						<Icon name="lock" />
 					</button>
@@ -479,20 +431,15 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 			))}
 			{!headersLocked && (
 				<div className="mt-2">
-					<LinkButton
+					<ActionButton
+						icon="add"
 						onClick={() => setPendingHeaders((current) => [...current, { id: newId(), name: "", value: "" }])}>
-						<Icon className="text-[12px]!" name="add" />
 						Add header
-					</LinkButton>
+					</ActionButton>
 				</div>
 			)}
 
-			<FoldHeader
-				onToggle={() => setMoreOpen((current) => !current)}
-				open={moreOpen}
-				summary={azure ? "Azure API version, request timeout" : "request timeout"}
-				title="More"
-			/>
+			<FoldHeader onToggle={() => setMoreOpen((current) => !current)} open={moreOpen} title="More" />
 			{moreOpen && (
 				<FieldGrid className="mt-0">
 					{azure && (
@@ -502,7 +449,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 								label="Azure API version"
 								mono
 								onCommit={(text) => save({ azureApiVersion: text.trim() || null })}
-								placeholder={`e.g. ${azureOpenAiDefaultApiVersion}. Blank sends none`}
+								placeholder={`e.g. ${azureOpenAiDefaultApiVersion}`}
 								value={connection.azureApiVersion ?? ""}
 							/>
 						</Field>
@@ -510,18 +457,18 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					<RequestTimeoutField connection={connection} onSave={(requestTimeoutMs) => save({ requestTimeoutMs })} />
 				</FieldGrid>
 			)}
-			<div className="mt-4 flex flex-wrap items-center gap-2">
-				<SmallButton disabled={test?.state === "testing"} onClick={runTest} primary>
-					{test?.state === "testing" ? "Testing…" : "Test connection"}
-				</SmallButton>
-				{!isDraft && canRunAfter(test) && (
-					<LinkButton onClick={() => page.setEditingConnection(connection.id, false)}>Done</LinkButton>
-				)}
-				{isDraft && (store.state?.settings.connections.length ?? 0) + page.drafts.length > 1 && (
-					<LinkButton onClick={() => page.dropDraft(connection.id)}>Cancel</LinkButton>
-				)}
-			</div>
-			{testError && <Why tone="warn">{testError}</Why>}
+			{isDraft && (urlLocked || (store.state?.settings.connections.length ?? 0) + page.drafts.length > 1) && (
+				<div className="mt-3 flex flex-wrap items-center gap-2">
+					{urlLocked && (
+						<SmallButton onClick={() => void page.commitDraft(connection).then(setError)} primary>
+							Save connection
+						</SmallButton>
+					)}
+					{(store.state?.settings.connections.length ?? 0) + page.drafts.length > 1 && (
+						<ActionButton onClick={() => page.dropDraft(connection.id)}>Cancel</ActionButton>
+					)}
+				</div>
+			)}
 			{error && <Why tone="bad">{error}</Why>}
 		</div>
 	)
@@ -536,7 +483,7 @@ export const RequestTimeoutField = ({
 	onSave: (milliseconds: number | null) => Promise<string | undefined>
 	id?: string
 }) => (
-	<Field id={id} label="Request timeout">
+	<Field id={id} label="Request timeout (seconds)">
 		<CommitInput
 			label="Request timeout"
 			mono
@@ -544,7 +491,7 @@ export const RequestTimeoutField = ({
 				const parsed = parseSeconds(text)
 				return "error" in parsed ? parsed.error : onSave(parsed.value)
 			}}
-			placeholder="Seconds. Empty uses Models › Advanced"
+			placeholder="Default"
 			value={connection.requestTimeoutMs == null ? "" : String(connection.requestTimeoutMs / 1000)}
 		/>
 	</Field>

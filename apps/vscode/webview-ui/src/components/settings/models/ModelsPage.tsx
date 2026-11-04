@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useState } from "react"
-import { SettingBlock } from "../shell/SettingRow"
+import { cn } from "@/lib/utils"
+import { SETTING_GROUP_TITLE_CLASS, SettingBlock } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { ConnectionCard } from "./ConnectionCard"
-import { Icon, LinkButton, Notice, Why } from "./fields"
+import { ActionButton, LinkButton, Notice, Why } from "./fields"
 import { ModelRoles } from "./ModelRoles"
 import { ModelsPageContext, useModelsPage, useModelsPageState } from "./modelsPageContext"
 import { isMoreField, roleRowId } from "./modelsView"
@@ -18,8 +19,8 @@ const NothingCanRun = () => {
 	if (!settings.models.length) {
 		return (
 			<Notice tone="warn">
-				<b className="font-semibold">Nothing can run yet.</b> Add a model below. Background text needs one too, or commit
-				messages have nothing to run on.
+				<b className="font-semibold">Nothing can run yet.</b>{" "}
+				{settings.connections.length ? "Add a model below." : "Add a connection below."}
 			</Notice>
 		)
 	}
@@ -37,8 +38,7 @@ const NothingCanRun = () => {
 			)}
 			{!settings.roles.background.pick && (
 				<div>
-					Commit messages, thread titles and Generate need a Background text model.{" "}
-					<LinkButton onClick={() => openRow(roleRowId.background)}>Pick one</LinkButton>
+					Background text needs a model. <LinkButton onClick={() => openRow(roleRowId.background)}>Pick one</LinkButton>
 				</div>
 			)}
 		</Notice>
@@ -51,28 +51,28 @@ const AddLines = () => {
 	const compatibleAllowed = !page.managedKey("remoteConfiguredProviders")
 	return (
 		<>
-			<div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+			<div className="mt-3 flex flex-wrap gap-2">
 				<SettingBlock rowId="models.add-connection">
-					<LinkButton
+					<ActionButton
 						disabled={!compatibleAllowed}
+						icon="add"
 						id="setting-models-add-connection-control"
 						onClick={() => {
 							page.addDraft()
 							setChooserOpen(false)
 						}}
 						title={compatibleAllowed ? undefined : `${page.organization} chooses the providers here.`}>
-						<Icon className="text-[12px]!" name="add" />
-						Add a connection
-					</LinkButton>
+						Add connection
+					</ActionButton>
 				</SettingBlock>
 				<SettingBlock rowId="models.add-provider">
-					<LinkButton
+					<ActionButton
 						aria-expanded={chooserOpen}
+						icon="add"
 						id="setting-models-add-provider-control"
 						onClick={() => setChooserOpen((open) => !open)}>
-						<Icon className="text-[12px]!" name="add" />
-						Add a model from another provider
-					</LinkButton>
+						Add provider
+					</ActionButton>
 				</SettingBlock>
 			</div>
 			{!compatibleAllowed && <Why>{page.organization} chooses the providers here, so a new connection may be refused.</Why>}
@@ -134,37 +134,23 @@ const ModelsList = () => {
 	if (!settings) {
 		return <Why>The model settings aren't ready. Reopen Settings to try again.</Why>
 	}
-	const count = settings.models.length
-	const showing = settings.models.filter((model) => model.enabled !== false).length
+	const saved = settings.connections.map((connection) => ({ connection, isDraft: false }))
+	// One keyed list: a new connection saved mid-form stays the same card, so what's being typed isn't lost.
+	const unsaved = page.drafts
+		.filter((draft) => !settings.connections.some((connection) => connection.id === draft.id))
+		.map((connection) => ({ connection, isDraft: true }))
+	const cards = [...saved, ...unsaved]
 	return (
 		<>
 			<NothingCanRun />
 			<ModelRoles />
 			<SettingBlock rowId="models.connections">
-				{(count > 0 || settings.connections.length > 0) && (
-					<div className="mt-5 mb-2 text-[13px] font-semibold text-foreground">Set-up models</div>
-				)}
-				{settings.connections.map((connection) => (
-					<ConnectionCard connection={connection} isDraft={false} key={connection.id} />
-				))}
-				{page.drafts.map((connection) => (
-					<ConnectionCard connection={connection} isDraft key={connection.id} />
+				{cards.length > 0 && <h3 className={cn(SETTING_GROUP_TITLE_CLASS, "mt-5")}>Connections</h3>}
+				{cards.map(({ connection, isDraft }) => (
+					<ConnectionCard connection={connection} isDraft={isDraft} key={connection.id} />
 				))}
 			</SettingBlock>
 			<AddLines />
-			{count > 0 && (
-				<div className="mt-2.5 flex items-start gap-1.5 text-[12px] text-description">
-					<Icon className="mt-px text-[12px]! opacity-70" name="chip" />
-					<span>
-						{showing === count
-							? count === 1
-								? "This model shows"
-								: `All ${count} show`
-							: `${showing} of ${count} show`}{" "}
-						in the composer and every selector.
-					</span>
-				</div>
-			)}
 		</>
 	)
 }

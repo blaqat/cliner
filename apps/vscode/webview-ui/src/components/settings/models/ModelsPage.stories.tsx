@@ -70,7 +70,7 @@ export const GatewayWithFourModels = story({ settings: gatewaySettings(), availa
 
 export const AddingFromModels = story({ settings: gatewaySettings(), availability: ready }, async ({ canvasElement }) => {
 	const canvas = canvasOf(canvasElement)
-	await userEvent.click(await canvas.findByRole("button", { name: "Add model" }))
+	await userEvent.click(await canvas.findByRole("button", { name: "Add models" }))
 	const list = await canvas.findByTestId("add-models-list")
 	await userEvent.click(await within(list).findByRole("checkbox", { name: /gpt-5\.6-nano/ }))
 	await userEvent.click(await within(list).findByRole("checkbox", { name: /qwen3-coder/ }))
@@ -83,7 +83,7 @@ export const NoListConnection = story(
 		discovery: { gateway: { status: "no-list", manualEntry: true, models: [] } },
 	},
 	async ({ canvasElement }) => {
-		await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add model" }))
+		await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add models" }))
 	},
 )
 
@@ -92,14 +92,14 @@ export const OpenModelForm = story({ settings: gatewaySettings(), availability: 
 	const row = await canvas.findByTestId("model-row-sol")
 	await userEvent.click(within(row).getAllByRole("button")[0])
 	await userEvent.click(await canvas.findByRole("button", { name: /^More/ }))
-	await userEvent.click(await canvas.findByRole("button", { name: /Preview the request/ }))
+	await userEvent.click(await canvas.findByRole("button", { name: "Request preview" }))
 })
 
 export const UnknownModelForm = story({ settings: gatewaySettings(), availability: ready }, async ({ canvasElement }) => {
 	const canvas = canvasOf(canvasElement)
 	const row = await canvas.findByTestId("model-row-tuned")
 	await userEvent.click(within(row).getAllByRole("button")[0])
-	await userEvent.click(await canvas.findByRole("button", { name: "What happens" }))
+	await userEvent.click(await canvas.findByRole("button", { name: "Request preview" }))
 })
 
 export const SharedDefaultsOpen = story({ settings: gatewaySettings(), availability: ready }, async ({ canvasElement }) => {
@@ -111,7 +111,7 @@ export const ConnectionForm = story({ settings: gatewaySettings(), availability:
 })
 
 export const ChooserOpen = story({ settings: gatewaySettings(), availability: ready }, async ({ canvasElement }) => {
-	await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add a model from another provider" }))
+	await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add provider" }))
 })
 
 export const LongPage = story({ settings: manyModels(), availability: ready })
@@ -119,24 +119,23 @@ export const LongPage = story({ settings: manyModels(), availability: ready })
 export const LongDiscovery = story(
 	{ settings: gatewaySettings(), availability: ready, discovery: { gateway: longDiscovery } },
 	async ({ canvasElement }) => {
-		await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add model" }))
+		await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Add models" }))
 	},
 )
 
-export const DeleteDependencies = story(
+export const RemovalConfirmation = story(
 	{ settings: gatewaySettings(), availability: ready, threadDependencies: { mini: ["t1", "t2"] } },
 	async ({ canvasElement }) => {
 		const canvas = canvasOf(canvasElement)
 		const row = await canvas.findByTestId("model-row-mini")
 		await userEvent.click(within(row).getAllByRole("button")[0])
 		await userEvent.click(await canvas.findByRole("button", { name: "Remove" }))
-		const flow = await canvas.findByTestId("remove-flow")
-		await userEvent.click(within(flow).getByRole("button", { name: "Remove" }))
+		await canvas.findByTestId("remove-flow")
 	},
 )
 
 export const BedrockSetup = story({ settings: gatewaySettings(), availability: ready }, async ({ canvasElement }) => {
 	const canvas = canvasOf(canvasElement)
-	await userEvent.click(await canvas.findByRole("button", { name: "Add a model from another provider" }))
+	await userEvent.click(await canvas.findByRole("button", { name: "Add provider" }))
 	await userEvent.click(await canvas.findByRole("button", { name: "Amazon Bedrock" }))
 })

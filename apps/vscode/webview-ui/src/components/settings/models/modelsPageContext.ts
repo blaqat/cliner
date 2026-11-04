@@ -2,7 +2,7 @@ import type { Connection, ModelRow } from "@shared/model-settings"
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import type { SecretMutation } from "./modelSettingsClient"
-import { type ConnectionTest, canRunAfter, hostOf, isValidUrl } from "./modelsView"
+import { hostOf, isValidUrl } from "./modelsView"
 import { type ModelsStore, useModelsStore } from "./useModelsStore"
 
 export const createDraftConnection = (id: string): Connection => ({
@@ -32,9 +32,6 @@ export const useModelsPageState = () => {
 	const [drafts, setDrafts] = useState<Connection[]>([])
 	const draftSecrets = useRef<Record<string, SecretMutation[]>>({})
 	const [draftModels, setDraftModels] = useState<ModelRow[]>([])
-	const [tests, setTests] = useState<Record<string, ConnectionTest>>({})
-	const [notes, setNotes] = useState<Record<string, string>>({})
-	const [keptAnyway, setKeptAnyway] = useState<Toggle>({})
 	const [focusId, setFocusId] = useState<string>()
 
 	const settings = store.state?.settings
@@ -84,31 +81,11 @@ export const useModelsPageState = () => {
 		delete draftSecrets.current[id]
 	}, [])
 
-	const runTest = useCallback(
-		async (connectionId: string, hasModels: boolean) => {
-			setTests((current) => ({ ...current, [connectionId]: { state: "testing" } }))
-			const started = performance.now()
-			const outcome = await store.testConnection(connectionId)
-			const ms = Math.max(1, Math.round(performance.now() - started))
-			const test: ConnectionTest = outcome.ok
-				? {
-						state: "done",
-						result: outcome.value.status,
-						ms,
-						listed: outcome.value.models.length,
-						models: outcome.value.models.map((model) => model.upstreamId),
-					}
-				: { state: "error", message: outcome.message }
-			setTests((current) => ({ ...current, [connectionId]: test }))
-			if (canRunAfter(test) && !hasModels) {
-				setAdding((current) => ({ ...current, [connectionId]: true }))
-			}
-		},
-		[store],
-	)
-
-	/** A connection has to exist on the host before the host can test it. A draft is saved here, then tested. */
-	const saveAndTestDraft = useCallback(
+	/**
+	 * Saves a new connection as soon as it has somewhere to go, so nothing typed is lost to a reload.
+	 * It stays open on its form, with the box for adding models ready.
+	 */
+	const commitDraft = useCallback(
 		async (draft: Connection): Promise<string | undefined> => {
 			// A locked URL can't be typed: the host starts the connection on the organization's.
 			const urlLocked = !!store.state?.managed.includes("openAiBaseUrl")
@@ -128,10 +105,11 @@ export const useModelsPageState = () => {
 			}
 			dropDraft(draft.id)
 			setOpenConnection(draft.id)
-			await runTest(draft.id, false)
+			setEditing((current) => ({ ...current, [draft.id]: true }))
+			setAdding((current) => ({ ...current, [draft.id]: true }))
 			return undefined
 		},
-		[dropDraft, runTest, store],
+		[dropDraft, store],
 	)
 
 	const flip = useCallback(
@@ -166,24 +144,9 @@ export const useModelsPageState = () => {
 			addDraft,
 			updateDraft,
 			dropDraft,
-			saveAndTestDraft,
+			commitDraft,
 			draftModels,
 			setDraftModels,
-			tests,
-			runTest,
-			notes,
-			setNote: (id: string, note: string | undefined) =>
-				setNotes((current) => {
-					const next = { ...current }
-					if (note) {
-						next[id] = note
-					} else {
-						delete next[id]
-					}
-					return next
-				}),
-			keptAnyway,
-			keepAnyway: (id: string) => flip(setKeptAnyway, id, true),
 			focusId,
 			setFocusId,
 			managedKey,
@@ -200,12 +163,8 @@ export const useModelsPageState = () => {
 			addDraft,
 			updateDraft,
 			dropDraft,
-			saveAndTestDraft,
+			commitDraft,
 			draftModels,
-			tests,
-			runTest,
-			notes,
-			keptAnyway,
 			focusId,
 			managedKey,
 			ctx.activeOrganization?.name,

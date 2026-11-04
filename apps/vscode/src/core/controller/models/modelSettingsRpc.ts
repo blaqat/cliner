@@ -3,9 +3,9 @@ import {
 	applyConnectionPatch,
 	type Connection,
 	ConnectionPatchSchema,
+	clearModelReferences,
 	ModelPickSchema,
 	ModelRowSchema,
-	type ModelSettings,
 	ModelSettingsSchema,
 	RoleSettingsSchema,
 	SubagentPolicySchema,
@@ -18,7 +18,6 @@ import {
 	followSharedDefaults,
 	managedConnectionForSave,
 	managedModelRow,
-	modelDependencies,
 	readModelSettingsState,
 	savedThreadsUsingModels,
 	validateConnectionSecretRefs,
@@ -88,6 +87,7 @@ export async function mutateSettings(
 		assertConnectionAllowed(controller.stateManager, source)
 		const draft = { ...structuredClone(row), id: randomUUID(), upstreamId: "", name: "" }
 		delete draft.legacyMetadata
+		delete draft.enabled
 		return { draft }
 	}
 	const expectedRevision = (parsed as { expectedRevision: number }).expectedRevision
@@ -135,27 +135,26 @@ export async function mutateSettings(
 					if (index < 0) next.models.push(owner ? managedModelRow(controller.stateManager, saved, owner) : saved)
 					else next.models[index] = saved
 				}
+				// A model turned off stops being offered, so nothing should be left running on it.
+				clearModelReferences(
+					next,
+					input.models.filter((m) => m.enabled === false).map((m) => m.id),
+				)
 				break
 			}
 			case "deleteConfiguredModel": {
 				const { modelId } = schemas.deleteConfiguredModel.parse(parsed)
-				const dependencies = blockingDependencies(controller.stateManager, next, [modelId])
-				if (dependencies.length) throw new DependencyError(dependencies)
+				clearModelReferences(next, [modelId])
 				next.models = next.models.filter((m) => m.id !== modelId)
 				break
 			}
 			case "deleteConnection": {
 				const { connectionId } = schemas.deleteConnection.parse(parsed)
-				const rows = next.models.filter((m) => m.connectionId === connectionId)
-				const dependencies = [
-					...rows.map((m) => `model:${m.id}`),
-					...blockingDependencies(
-						controller.stateManager,
-						next,
-						rows.map((m) => m.id),
-					),
-				]
-				if (dependencies.length) throw new DependencyError(dependencies)
+				clearModelReferences(
+					next,
+					next.models.filter((m) => m.connectionId === connectionId).map((m) => m.id),
+				)
+				next.models = next.models.filter((m) => m.connectionId !== connectionId)
 				next.connections = next.connections.filter((c) => c.id !== connectionId)
 				break
 			}
@@ -264,11 +263,6 @@ export async function mutateSettings(
 	return readModelSettingsState(controller.stateManager)
 }
 
-/** Roles and the subagent policy have to be repointed first. A saved thread doesn't block: reopened, it asks for a pick. */
-function blockingDependencies(state: Controller["stateManager"], settings: ModelSettings, ids: string[]): string[] {
-	return modelDependencies(state, settings, ids).filter((path) => !path.startsWith("thread:"))
-}
-
 /** What deleting these models would touch without stopping it, so the confirmation can say so. */
 export async function savedThreadUsage(controller: Controller, payload: string, enabled?: boolean) {
 	if (!modelSettingsRolloutEnabled(enabled)) throw new Error("Model settings rollout is disabled")
@@ -278,10 +272,4 @@ export async function savedThreadUsage(controller: Controller, payload: string, 
 		.parse(JSON.parse(payload))
 	const history = await controller.getModelSelectionDependencies()
 	return { savedThreads: savedThreadsUsingModels(controller.stateManager, modelIds, history).length }
-}
-
-export class DependencyError extends Error {
-	constructor(readonly dependencies: string[]) {
-		super("This item is still in use")
-	}
 }

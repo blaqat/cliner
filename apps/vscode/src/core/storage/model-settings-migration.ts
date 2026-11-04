@@ -301,6 +301,22 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		await repairMovedSettings(state, finished)
 		return "complete"
 	}
+	// The move's own result starts at revision 0, so anything later is someone's edits. Moving again would lose them.
+	const kept = state.get<ModelSettings>("modelSettings")
+	if (kept && kept.revision > 0) {
+		await state.update("modelSettingsMigration", {
+			version: 1,
+			backupId: "settings-kept",
+			configurationModels: {},
+			profilePicks: {},
+			legacyFingerprint: "settings-kept",
+			...finished,
+			status: "complete",
+			completedAt: Date.now(),
+			repairs: [MOVED_TEMPERATURE_REPAIR],
+		})
+		return "complete"
+	}
 	const sdkInput = typeof deps.sdkInput === "function" ? await deps.sdkInput() : (deps.sdkInput ?? {})
 	const raw = Object.fromEntries(
 		state

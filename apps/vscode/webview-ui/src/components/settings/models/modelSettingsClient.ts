@@ -1,12 +1,4 @@
-import type {
-	Connection,
-	ConnectionPatch,
-	ModelPick,
-	ModelRow,
-	ModelValues,
-	RoleSettings,
-	SubagentPolicy,
-} from "@shared/model-settings"
+import type { Connection, ConnectionPatch, ModelPick, ModelRow, RoleSettings, SubagentPolicy } from "@shared/model-settings"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import { ModelsServiceClient } from "@/services/grpc-client"
@@ -28,21 +20,9 @@ export interface DiscoveryResult {
 	manualEntry?: boolean
 }
 
-export interface DetectResult {
-	modelId: string
-	source: string
-	status?: "no-list"
-	manualEntry?: boolean
-	metadata: Partial<ModelValues>
-	fetchedAt: number
-}
-
 export type PreviewResult =
 	| { exact: true; request: { url: string; method: string; headers: Record<string, string>; body: unknown } }
 	| { exact: false; reason: string }
-
-/** A mutation either wrote and returned the store, or a delete was refused for these reasons. */
-export type DeleteResult = ModelSettingsState | { dependencies: string[] }
 
 type SettingsRpc = {
 	[K in keyof typeof ModelsServiceClient]: (typeof ModelsServiceClient)[K] extends (
@@ -87,9 +67,9 @@ export const modelSettingsClient = {
 		call<ModelSettingsState>("saveConfiguredModels", { expectedRevision, models }),
 	duplicateModel: (modelId: string) => call<{ draft: ModelRow }>("duplicateConfiguredModel", { modelId }),
 	deleteModel: (expectedRevision: number, modelId: string) =>
-		call<DeleteResult>("deleteConfiguredModel", { expectedRevision, modelId }),
+		call<ModelSettingsState>("deleteConfiguredModel", { expectedRevision, modelId }),
 	deleteConnection: (expectedRevision: number, connectionId: string) =>
-		call<DeleteResult>("deleteConnection", { expectedRevision, connectionId }),
+		call<ModelSettingsState>("deleteConnection", { expectedRevision, connectionId }),
 	setRoles: (expectedRevision: number, roles: RoleSettings) =>
 		call<ModelSettingsState>("setModelRoles", { expectedRevision, roles }),
 	makeDefault: (expectedRevision: number, mode: "plan" | "act", pick: ModelPick) =>
@@ -100,12 +80,6 @@ export const modelSettingsClient = {
 		call<ModelSettingsState>("setSubagentPolicy", { expectedRevision, subagents }),
 	discover: (expectedRevision: number, connectionId: string) =>
 		call<DiscoveryResult>("discoverConnectionModels", { expectedRevision, connectionId }),
-	testConnection: (expectedRevision: number, connectionId: string) =>
-		call<DiscoveryResult>("testConnection", { expectedRevision, connectionId }),
-	detect: (expectedRevision: number, pick: ModelPick) =>
-		call<DetectResult>("detectConfiguredModel", { expectedRevision, pick }),
-	testModel: (expectedRevision: number, pick: ModelPick) =>
-		call<{ status: "ok" | "inference-failed" }>("testConfiguredModel", { expectedRevision, pick }),
 	savedThreadUsage: (modelIds: string[]) => call<{ savedThreads: number }>("getModelSavedThreadUsage", { modelIds }),
 	preview: (expectedRevision: number, pick: ModelPick) =>
 		call<PreviewResult>("previewConfiguredModelRequest", { expectedRevision, pick }),

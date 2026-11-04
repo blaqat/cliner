@@ -133,7 +133,7 @@ export const SettingRow = <T = unknown>({ rowId, control, children }: SettingRow
 					)}
 				</div>
 				{control && (
-					<div className="flex min-h-[20px] shrink-0 items-center gap-2">
+					<div className="ml-auto flex min-h-[20px] shrink-0 items-center gap-2">
 						{control({
 							id: controlId,
 							label: row.label,

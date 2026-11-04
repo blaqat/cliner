@@ -6,6 +6,7 @@ import {
 	type ModelLevel,
 	type ModelPick,
 	type ModelRow,
+	type ModelSettings,
 	type ModelValues,
 	type RoleSettings,
 	resolveModelValues,
@@ -19,8 +20,6 @@ export type Effective = ModelSettingsState["effective"][string]
 /** The field a saved secret reference names; a moved header's differs from one locked here. */
 export const secretField = (ref: string) => ref.slice(ref.lastIndexOf(":") + 1)
 export const secretRef = (connectionId: string, field: string) => `settings:v1:connection:${connectionId}:${field}`
-
-export const PLANNING_CONTEXT = "~128K"
 
 export const newId = () => crypto.randomUUID()
 
@@ -52,8 +51,6 @@ export const connectionName = (connection: Connection, providerName?: string) =>
 	connection.name || providerName || (connection.kind === "provider" ? connection.providerId : hostOf(connection.baseUrl))
 
 export const formatTokens = (value: number) => (value >= 1000 ? `${Math.round(value / 1000)}K` : String(value))
-
-export const API_LABELS = { chat: "Chat Completions", responses: "Responses" } as const
 
 /** Levels offered by every new model that says it can reason. Lowest first; ids double as the wire value. */
 export const STANDARD_LADDER: ModelLevel[] = [
@@ -111,22 +108,27 @@ export const levelRange = (effective: Effective | undefined): string => {
 export const priceSummary = (effective: Effective | undefined) => {
 	const input = effective?.inputPrice.value
 	const output = effective?.outputPrice.value
-	return input == null || output == null ? "price unknown" : `$${input} / $${output}`
+	return input == null || output == null ? "" : `$${input} / $${output}`
 }
 
-export type UnknownKey = "context window" | "max output" | "reasoning" | "prices"
+/** Keys belong to the connection, so a missing one shows there once, not on every model or pick. */
+export const KEY_MISSING = /credentials are missing/i
+export const ENV_EMPTY = /environment variable/i
 
-export const unknownsOf = (effective: Effective | undefined): UnknownKey[] => {
-	if (!effective) {
-		return []
+export const connectionProblem = (
+	availability: { available: boolean; reason?: string; target?: { field?: string } } | undefined,
+): string | undefined => {
+	if (!availability || availability.available) {
+		return undefined
 	}
-	const missing: (UnknownKey | false)[] = [
-		effective.contextWindow.value === null && "context window",
-		effective.maxOutputTokens.value === null && "max output",
-		effective.reasoning.value === "unknown" && "reasoning",
-		(effective.inputPrice.value === null || effective.outputPrice.value === null) && "prices",
-	]
-	return missing.filter((entry): entry is UnknownKey => !!entry)
+	const reason = availability.reason ?? ""
+	return KEY_MISSING.test(reason)
+		? "key missing"
+		: ENV_EMPTY.test(reason)
+			? "env var empty"
+			: availability.target?.field === "baseUrl"
+				? "base URL isn't valid"
+				: undefined
 }
 
 export const listWords = (words: string[]) =>
@@ -220,22 +222,8 @@ export const newModelRow = (
 	providerOptions: {},
 })
 
-/** Detect fills what's still unknown and nothing else: never what someone set, or what's inherited. */
-export const detectedFills = (row: ModelRow, effective: Effective | undefined, metadata: Partial<ModelValues>) => {
-	const fills: Partial<ModelValues> = {}
-	for (const key of Object.keys(metadata) as (keyof ModelValues)[]) {
-		if (metadata[key] === undefined || hasOverride(row, key)) {
-			continue
-		}
-		if (!effective || effective[key].source === "builtin") {
-			Object.assign(fills, { [key]: metadata[key] })
-		}
-	}
-	return fills
-}
-
 /** The pick used to test or preview a model: its strongest level, so the mapping shows. */
-export const testPick = (row: ModelRow, effective: Effective | undefined): ModelPick => {
+export const previewPick = (row: ModelRow, effective: Effective | undefined): ModelPick => {
 	if (effective?.reasoning.value !== "yes") {
 		return { modelId: row.id, levelId: "default" }
 	}
@@ -305,73 +293,47 @@ export const rolesUsingLevel = (roles: RoleSettings, modelId: string, levelId: s
 		return pick?.modelId === modelId && pick.levelId === levelId
 	})
 
-/** Every role this model is picked for, at any level. */
-export const rolesUsingModel = (roles: RoleSettings, modelId: string) =>
-	(Object.keys(ROLE_LABELS) as RoleKey[]).filter((role) => rolePick(roles, role)?.modelId === modelId)
-
-export type DependencyLine =
-	| { kind: "role"; role: RoleKey }
-	| { kind: "model"; modelId: string }
-	| { kind: "allowed"; index: number }
-	| { kind: "other"; path: string }
-
-const ROLE_PATHS: Record<string, RoleKey> = {
-	"roles.chat": "chat",
-	"roles.ask.pick": "ask",
-	"roles.subagents.pick": "subagents",
-	"roles.background.pick": "background",
-	"roles.background.overrides.titles": "titles",
-	"roles.background.overrides.commitMessages": "commitMessages",
-	"roles.background.overrides.generate": "generate",
-}
-
-/** The host's dependency paths, as what a person can act on. */
-export const readDependencies = (paths: string[]): DependencyLine[] => {
-	const lines: DependencyLine[] = []
-	for (const path of paths) {
-		if (ROLE_PATHS[path]) {
-			lines.push({ kind: "role", role: ROLE_PATHS[path] })
-		} else if (path.startsWith("model:")) {
-			lines.push({ kind: "model", modelId: path.slice("model:".length) })
-		} else if (path.startsWith("subagents.allowed")) {
-			lines.push({ kind: "allowed", index: Number(path.split(".")[2]) || 0 })
-		} else {
-			lines.push({ kind: "other", path })
-		}
-	}
-	return lines
+/** Where these models are picked, in words, for the confirmation that clears them. */
+export const usedBy = (settings: ModelSettings, ids: readonly string[]): string[] => {
+	const roles = (Object.keys(ROLE_LABELS) as RoleKey[]).filter((role) => {
+		const pick = rolePick(settings.roles, role)
+		return !!pick && ids.includes(pick.modelId)
+	})
+	const listed = settings.subagents.allowed.some((entry) => entry.kind === "model" && ids.includes(entry.modelId))
+	return [...roles.map((role) => ROLE_LABELS[role]), ...(listed ? ["the subagents' list"] : [])]
 }
 
 /** Fields that open the form's More fold. A fix link to one of these has to open it too. */
 export const MORE_FIELD_KEYS: (keyof ModelValues)[] = [
-	"images",
-	"tools",
 	"temperature",
-	"verbosity",
-	"extraBody",
-	"maxInputTokens",
-	"thinkingBudgetTokens",
 	"streaming",
 	"promptCache",
 	"cacheReadPrice",
 	"cacheWritePrice",
 	"files",
-	"systemRole",
+	"tools",
+	"images",
+	"verbosity",
 	"apiFormat",
+	"maxInputTokens",
+	"thinkingBudgetTokens",
+	"extraBody",
 ]
-const MORE_FIELDS = new Set<string>(MORE_FIELD_KEYS)
-export const isMoreField = (field: string | undefined) => !!field && MORE_FIELDS.has(field)
+/** What a model's form shows without opening More. Anything else a fix link names is under More. */
+const FRONT_FIELDS = new Set([
+	"upstreamId",
+	"name",
+	"reasoning",
+	"levels",
+	"inputPrice",
+	"outputPrice",
+	"contextWindow",
+	"maxOutputTokens",
+])
+export const isMoreField = (field: string | undefined) => !!field && !FRONT_FIELDS.has(field)
 
 export const fieldAnchor = (modelId: string, field: string) => settingsModelElementId(modelId, field)
 export const fieldControl = (modelId: string, field: string) => `${settingsModelElementId(modelId, field)}-control`
-
-export type ConnectionTest =
-	| { state: "testing" }
-	| { state: "done"; result: "ok" | "catalog" | "auth" | "network" | "no-list"; ms: number; listed: number; models: string[] }
-	| { state: "error"; message: string }
-
-export const canRunAfter = (test: ConnectionTest | undefined) =>
-	test?.state === "done" && (test.result === "ok" || test.result === "no-list" || test.result === "catalog")
 
 export const friendlyError = (error: unknown) => {
 	const message = error instanceof Error ? error.message : String(error)

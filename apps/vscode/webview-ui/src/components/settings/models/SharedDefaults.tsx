@@ -2,12 +2,13 @@ import type { Connection, Knowledge, ModelLevel, ModelValues } from "@shared/mod
 import { useState } from "react"
 import {
 	CAPABILITY_OPTIONS,
+	Chevron,
 	CommitInput,
 	ControlRow,
 	Field,
 	FieldGrid,
-	FoldHeader,
-	Hint,
+	GroupHeading,
+	Icon,
 	KNOWLEDGE_OPTIONS,
 	parseAmount,
 	parseTokens,
@@ -43,26 +44,28 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 					return "error" in parsed ? parsed.error : save({ [key]: parsed.value })
 				}}
 				placeholder="unknown"
-				unknown
 				value={defaults[key] == null ? "" : String(defaults[key])}
 			/>
 		</Field>
 	)
 
-	const amountField = (key: "temperature" | "inputPrice" | "outputPrice", label: string, placeholder = "unknown") => (
-		<Field label={label}>
-			<CommitInput
-				label={`Shared ${label}`}
-				mono
-				onCommit={(text) => {
-					const parsed = parseAmount(text)
-					return "error" in parsed ? parsed.error : save({ [key]: parsed.value })
-				}}
-				placeholder={placeholder}
-				unknown={placeholder === "unknown"}
-				value={defaults[key] == null ? "" : String(defaults[key])}
-			/>
-		</Field>
+	const amountInput = (
+		key: "temperature" | "inputPrice" | "outputPrice",
+		label: string,
+		placeholder: string,
+		className?: string,
+	) => (
+		<CommitInput
+			className={className}
+			label={`Shared ${label}`}
+			mono
+			onCommit={(text) => {
+				const parsed = parseAmount(text)
+				return "error" in parsed ? parsed.error : save({ [key]: parsed.value })
+			}}
+			placeholder={placeholder}
+			value={defaults[key] == null ? "" : String(defaults[key])}
+		/>
 	)
 
 	const capability = (key: "images" | "tools", label: string) => (
@@ -104,20 +107,22 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 	}
 
 	return (
-		<div data-testid={`shared-defaults-${connection.id}`}>
-			<FoldHeader
-				onToggle={() => setOpen((current) => !current)}
-				open={open}
-				summary={sharedSummary(defaults)}
-				title="Shared defaults"
-			/>
+		<div
+			className="mt-3 rounded-md border border-editor-group-border bg-(--vscode-sideBar-background)"
+			data-testid={`shared-defaults-${connection.id}`}>
+			<button
+				aria-expanded={open}
+				className="flex min-h-9 w-full min-w-0 cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+				onClick={() => setOpen((current) => !current)}
+				type="button">
+				<Chevron open={open} />
+				<Icon className="text-description" name="settings" />
+				<span className="shrink-0 text-[13px]">Shared defaults</span>
+				<span className="ml-auto min-w-0 truncate text-[12px] text-description">{sharedSummary(defaults)}</span>
+			</button>
 			{open && (
-				<div className="mb-1.5 rounded-[5px] border border-editor-group-border px-2 pb-2">
-					<FieldGrid>
-						{numberField("contextWindow", "Context window")}
-						{numberField("maxOutputTokens", "Max output tokens")}
-					</FieldGrid>
-					{knowledge("reasoning", "Reasoning")}
+				<div className="border-t border-editor-group-border px-2.5 pb-3">
+					<div className="mt-2">{knowledge("reasoning", "Reasoning")}</div>
 					{defaults.reasoning === "yes" && (
 						<div className="mb-1 flex flex-wrap gap-1">
 							{STANDARD_LADDER.filter((level) => level.id !== "default").map((level) => {
@@ -125,7 +130,7 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 								return (
 									<button
 										aria-checked={on}
-										className={`h-[22px] cursor-pointer rounded-full border border-solid border-editor-group-border px-2 text-[12px] ${on ? "bg-selection text-selection-foreground" : "bg-transparent text-description"}`}
+										className={`m-0 h-[22px] cursor-pointer rounded-full border border-solid border-editor-group-border px-2 text-[12px] ${on ? "bg-selection text-selection-foreground" : "bg-transparent text-description"}`}
 										key={level.id}
 										onClick={() => toggleLevel(level)}
 										role="checkbox"
@@ -136,17 +141,21 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 							})}
 						</div>
 					)}
-					{capability("images", "Images")}
-					{capability("tools", "Tools")}
-					<FieldGrid className="mt-0.5">{amountField("temperature", "Temperature", "Not sent")}</FieldGrid>
+					<GroupHeading>Price and limits</GroupHeading>
 					<FieldGrid className="mt-0.5">
-						{amountField("inputPrice", "Input, per 1M")}
-						{amountField("outputPrice", "Output, per 1M")}
+						<Field label="Input $/1M">{amountInput("inputPrice", "Input", "unknown")}</Field>
+						<Field label="Output $/1M">{amountInput("outputPrice", "Output", "unknown")}</Field>
+						{numberField("contextWindow", "Context window")}
+						{numberField("maxOutputTokens", "Max output tokens")}
 					</FieldGrid>
-					<Hint>
-						A model uses these for anything it doesn't know itself. A value set on a model wins. Change one here and
-						every model that didn't set its own follows.
-					</Hint>
+					<GroupHeading>More</GroupHeading>
+					<div>
+						<ControlRow label="Temperature">
+							{amountInput("temperature", "Temperature", "Not sent", "w-[96px] text-right")}
+						</ControlRow>
+						{capability("tools", "Can use tools")}
+						{capability("images", "Can see images")}
+					</div>
 					{error && <Why tone="bad">{error}</Why>}
 				</div>
 			)}

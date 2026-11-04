@@ -101,8 +101,8 @@ describe("OnboardingView", () => {
 	it("offers every way to add a model, not four providers", () => {
 		start(createFakeHost())
 		render(<OnboardingView />)
-		expect(screen.getByRole("button", { name: /OpenAI-compatible|Add a connection/i })).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: /other provider|another provider|Add a provider/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /OpenAI-compatible|Add connection/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /other provider|another provider|Add provider/i })).toBeInTheDocument()
 	})
 
 	it("Continue runs Chat and Background text on the first model, through the new store only", async () => {

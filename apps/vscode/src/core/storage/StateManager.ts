@@ -201,6 +201,7 @@ export class StateManager {
 					this.modelMigrationStatus = "pending"
 					this.modelMigrationCause = undefined
 					try {
+						const moved = this.globalStateCache.modelSettingsMigration?.status !== "complete"
 						await migrateModelSettings({
 							state: this.storage.globalState,
 							sdkInput: () => readSdkMigrationInput(this.storage.dataDir),
@@ -210,6 +211,10 @@ export class StateManager {
 						})
 						await this.populateFromStorage()
 						this.modelMigrationStatus = "complete"
+						const settings = this.globalStateCache.modelSettings
+						Logger.info(
+							`[ModelSettings] ${moved ? "Moved settings" : "Loaded saved settings"}: revision ${settings?.revision ?? "none"}, ${settings?.models.length ?? 0} models`,
+						)
 					} catch (error) {
 						this.failModelSettingsMigration(redactedMigrationCause(error))
 						// Legacy stays the runtime until a retry succeeds, so it keeps its own upkeep.

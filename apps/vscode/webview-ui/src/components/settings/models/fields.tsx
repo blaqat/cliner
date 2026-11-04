@@ -31,6 +31,27 @@ export const SmallButton = ({
 	/>
 )
 
+/** Every secondary action on the page, so icon and text sit on one line and nothing is bare link text. */
+export const ActionButton = ({
+	icon,
+	danger,
+	className,
+	children,
+	...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon?: string; danger?: boolean }) => (
+	<button
+		className={cn(
+			"inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xs border border-solid border-editor-group-border bg-transparent px-2.5 text-[12.5px] leading-none text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:opacity-50",
+			danger && "hover:border-error/50 hover:text-error",
+			className,
+		)}
+		type="button"
+		{...props}>
+		{icon && <i aria-hidden className={cn("codicon text-[12px]! leading-none!", `codicon-${icon}`)} />}
+		{children}
+	</button>
+)
+
 export const Icon = ({ name, className }: { name: string; className?: string }) => (
 	<i aria-hidden className={cn("codicon shrink-0 text-[13px]!", `codicon-${name}`, className)} />
 )
@@ -87,7 +108,7 @@ export const Notice = ({
 }) => (
 	<div
 		className={cn(
-			"my-1.5 flex items-start gap-2 rounded-[5px] border px-2 py-1.5 text-[12.5px]",
+			"mt-3 mb-2 flex items-start gap-2 rounded-md border px-2.5 py-2 text-[12.5px]",
 			tone === "warn"
 				? "border-warning/40 bg-warning/10"
 				: tone === "bad"
@@ -152,7 +173,7 @@ export const Field = ({
 	children: ReactNode
 }) => (
 	<div className={cn("min-w-0 scroll-my-2 rounded-xs", className)} id={id}>
-		<div className="mb-1.5 flex min-h-4 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-foreground">
+		<div className="mb-1.5 flex min-h-4 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] text-foreground">
 			<span>{label}</span>
 			{tag}
 		</div>
@@ -177,7 +198,6 @@ export const CommitInput = ({
 	value,
 	onCommit,
 	mono,
-	unknown,
 	secret,
 	label,
 	placeholder,
@@ -189,8 +209,6 @@ export const CommitInput = ({
 	value: string
 	onCommit: (text: string) => CommitResult | Promise<CommitResult>
 	mono?: boolean
-	/** The placeholder says this value isn't known. */
-	unknown?: boolean
 	secret?: boolean
 	label: string
 	placeholder?: string
@@ -231,7 +249,6 @@ export const CommitInput = ({
 				className={cn(
 					"h-7 rounded-xs px-2 py-0 text-[12.5px] md:text-[12.5px]",
 					mono && "font-mono text-[12px] md:text-[12px]",
-					unknown && "placeholder:text-warning",
 					error && "border-error",
 					className,
 				)}
@@ -269,7 +286,8 @@ export const Segmented = <T extends string>({
 	wrap,
 }: {
 	value: T | null
-	options: readonly { value: T; label: string; warn?: boolean }[]
+	/** `quiet` is a choice that isn't really an answer, so it doesn't shout like one. */
+	options: readonly { value: T; label: string; quiet?: boolean }[]
 	onChange: (value: T) => void
 	label: string
 	disabled?: boolean
@@ -281,8 +299,8 @@ export const Segmented = <T extends string>({
 	<div
 		aria-label={label}
 		className={cn(
-			"inline-flex shrink-0 overflow-hidden rounded-xs border border-editor-group-border text-[12px]",
-			wrap && "flex-wrap",
+			"inline-flex overflow-hidden rounded-xs border border-editor-group-border text-[12px]",
+			wrap ? "max-w-full flex-wrap" : "shrink-0",
 		)}
 		role="radiogroup">
 		{options.map((option, index) => {
@@ -291,14 +309,13 @@ export const Segmented = <T extends string>({
 				<button
 					aria-checked={on}
 					className={cn(
-						"cursor-pointer border-0 bg-transparent px-2 py-0.5 text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed",
+						"m-0 min-h-[26px] cursor-pointer whitespace-nowrap border-0 bg-transparent px-2 py-0 text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed",
 						index > 0 && "border-l border-solid border-editor-group-border",
+						wrap && "flex-1",
 						on &&
-							(option.warn
-								? "bg-warning/20 text-warning hover:text-warning"
-								: inherited
-									? "bg-button-background/40 text-foreground"
-									: "bg-button-background text-button-foreground hover:text-button-foreground"),
+							(inherited || option.quiet
+								? "bg-button-background/40 text-foreground"
+								: "bg-button-background text-button-foreground hover:text-button-foreground"),
 					)}
 					disabled={disabled}
 					id={on ? controlId : undefined}
@@ -323,7 +340,7 @@ export const CAPABILITY_OPTIONS = [
 export const KNOWLEDGE_OPTIONS = [
 	{ value: "yes", label: "Yes" },
 	{ value: "no", label: "No" },
-	{ value: "unknown", label: "Unknown", warn: true },
+	{ value: "unknown", label: "Unknown", quiet: true },
 ] as const
 
 /** One setting on one line: what it is on the left, the control on the right. Wraps in a narrow panel. */
@@ -340,8 +357,8 @@ export const ControlRow = ({
 	id?: string
 	children: ReactNode
 }) => (
-	<div className="flex scroll-my-2 flex-wrap items-center justify-between gap-x-2.5 gap-y-1 rounded-xs py-[5px]" id={id}>
-		<div className="min-w-[110px] flex-1">
+	<div className="flex scroll-my-2 flex-wrap items-center justify-between gap-x-2.5 gap-y-1 rounded-xs py-2" id={id}>
+		<div className="min-w-[90px] flex-1">
 			<div className="flex flex-wrap items-center gap-1.5 text-[13px]">
 				<span>{label}</span>
 				{tag}
@@ -395,8 +412,10 @@ export const FoldHeader = ({
 	</button>
 )
 
-export const GroupHeading = ({ children }: { children: ReactNode }) => (
-	<div className="pt-[9px] pb-px text-[11px] uppercase tracking-[0.06em] text-description opacity-80">{children}</div>
+export const GroupHeading = ({ children, className }: { children: ReactNode; className?: string }) => (
+	<div className={cn("pt-5 pb-1 text-[11px] uppercase tracking-[0.06em] text-description opacity-80", className)}>
+		{children}
+	</div>
 )
 
 /** Positive whole numbers, the shape the host wants for tokens. Empty is `null`. */

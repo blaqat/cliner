@@ -1,12 +1,10 @@
 import type { Connection, ModelRow } from "@shared/model-settings"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { Hint, Icon, LinkButton, SmallButton, Why } from "./fields"
+import { ActionButton, Icon, LinkButton, SmallButton, Why } from "./fields"
 import type { DiscoveredModel, DiscoveryResult } from "./modelSettingsClient"
 import { useModelsPage } from "./modelsPageContext"
-import { connectionName, detectedFills, hostOf, newModelRow, parseModelIds, testPick } from "./modelsView"
-import { SharedDefaults } from "./SharedDefaults"
+import { newModelRow, parseModelIds } from "./modelsView"
 
 /** A long /models scrolls the page, not a box of its own: one scrollbar per pane. The filter is the fast way through. */
 const PAGE_SIZE = 40
@@ -14,36 +12,33 @@ const PAGE_SIZE = 40
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
 /**
- * Adds to a connection that already has its URL and key: tick from /models, or paste a list of IDs.
+ * Adds to a connection that already has its URL and key: tick from /models, or enter a list of IDs.
  * `extraModels` is a provider's maintained catalog, which counts as a list even when /models doesn't exist.
  */
 export const AddModelsPanel = ({
 	connection,
 	extraModels,
 	onClose,
-	showShared = true,
 }: {
 	connection: Connection
 	extraModels?: DiscoveredModel[]
 	onClose: () => void
-	showShared?: boolean
 }) => {
-	const { store, setNote, setEditingConnection, setOpenModel } = useModelsPage()
+	const { store, setOpenModel } = useModelsPage()
 	const [discovery, setDiscovery] = useState<{ result?: DiscoveryResult; error?: string; loading: boolean }>({ loading: true })
 	const [query, setQuery] = useState("")
 	const [ticks, setTicks] = useState<Record<string, boolean>>({})
 	const [pasted, setPasted] = useState<string[]>([])
-	const [status, setStatus] = useState<string>()
 	const [error, setError] = useState<string>()
 	const [showAll, setShowAll] = useState(false)
 	const [adding, setAdding] = useState(false)
-	const inputRef = useRef<HTMLInputElement>(null)
-	const name = connectionName(connection)
+	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	const load = async () => {
 		setDiscovery({ loading: true })
 		const outcome = await store.discover(connection.id)
-		setDiscovery(outcome.ok ? { result: outcome.value, loading: false } : { error: outcome.message, loading: false })
+		// No list is normal for a gateway: the box takes IDs either way, so a failure here isn't worth a word.
+		setDiscovery(outcome.ok ? { result: outcome.value, loading: false } : { loading: false })
 	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: lists once per open, not on every store change.
 	useEffect(() => {
@@ -88,116 +83,75 @@ export const AddModelsPanel = ({
 			return next
 		})
 		setQuery("")
-		const hasList = listed.size > 0
-		setStatus(
-			ids.length > 1 || (hasList && offList.length)
-				? `Pasted ${plural(ids.length, "ID")}.${hasList && offList.length ? ` ${offList.length} ${offList.length === 1 ? "isn't" : "aren't"} on /models; Cline will still send ${offList.length === 1 ? "it" : "them"}.` : ""}`
-				: undefined,
-		)
 	}
 
+	// With nothing left to filter, what's entered is the IDs, so there's no step between entering them and adding them.
+	const entered = rows.length ? [] : parseModelIds(query)
+	const already = entered.filter(isAdded)
+	const toAdd = [...new Set([...ticked, ...entered.filter((id) => !isAdded(id))])]
+
 	const add = async () => {
-		if (!ticked.length) {
-			setStatus("Tick a model first, or paste some IDs.")
+		if (!toAdd.length) {
 			return
 		}
 		setAdding(true)
 		setError(undefined)
-		const added: ModelRow[] = ticked.map((id) => {
+		const added: ModelRow[] = toAdd.map((id) => {
 			const known = listed.get(id)
 			return newModelRow(connection.id, id, known?.name ?? "", known?.classification === "chat" ? "chat" : "unknown")
 		})
 		// Roles stay as they are: the first model added doesn't become Chat or Background text.
 		const saved = await store.saveModels(added)
+		setAdding(false)
 		if (!saved.ok) {
-			setAdding(false)
 			setError(saved.message)
 			return
 		}
-		// Detect runs once per model at this revision, then one save holds what it found.
-		const fills: ModelRow[] = []
-		await Promise.all(
-			added.map(async (row) => {
-				const state = store.latest()
-				const detected = await store.detect(testPick(row, state?.effective[row.id]))
-				if (!detected.ok) {
-					return
-				}
-				const found = detectedFills(row, state?.effective[row.id], detected.value.metadata ?? {})
-				if (Object.keys(found).length) {
-					fills.push({ ...row, overrides: { ...row.overrides, ...found } })
-				}
-			}),
-		)
-		if (fills.length) {
-			await store.saveModels(fills)
-		}
-		setAdding(false)
-		setNote(connection.id, `Added ${plural(added.length, "model")}.`)
 		setOpenModel(null)
 		onClose()
 	}
 
-	const result = discovery.result
-	const host = hostOf(connection.baseUrl)
-	const why = discovery.loading ? (
-		<Hint>Asking {host} what it has…</Hint>
-	) : discovery.error ? (
-		<Why tone="bad">
-			{discovery.error} <LinkButton onClick={load}>Try again</LinkButton>
-		</Why>
-	) : result?.status === "auth" ? (
-		<Why tone="warn">
-			{host} turned the key down, so there's no list.{" "}
-			<LinkButton onClick={() => setEditingConnection(connection.id, true)}>Check the key</LinkButton>, or type or paste
-			IDs.
-		</Why>
-	) : result?.status === "network" ? (
-		<Why tone="warn">
-			Can't reach {host}, so there's no list. Type or paste IDs, or <LinkButton onClick={load}>try again</LinkButton>.
-		</Why>
-	) : result?.status === "no-list" && !listed.size ? (
-		<Hint>This connection has no /models, so type or paste IDs.</Hint>
-	) : null
-
 	return (
-		<div className="mt-1.5 rounded-[5px] border border-editor-group-border px-2 py-1.5" data-testid="add-models">
-			<div className="mb-1 text-[13px] font-medium">Add to {name}</div>
-			<Input
-				aria-label={listed.size ? "Filter /models, or paste IDs" : "Type or paste model IDs"}
+		<div className="mb-2 rounded-md border border-editor-group-border p-2.5" data-testid="add-models">
+			<textarea
+				aria-label="Model IDs"
 				autoComplete="off"
-				className="h-7 rounded-xs px-2 py-0 font-mono text-[12px] md:text-[12px]"
+				className="block min-h-[46px] w-full resize-none rounded-xs border border-input-foreground/20 bg-input-background px-2 py-1 font-mono text-[12px] leading-[18px] text-input-foreground shadow-sm [field-sizing:content] placeholder:text-input-placeholder focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-input-border"
 				onChange={(event) => setQuery(event.target.value)}
 				onKeyDown={(event) => {
-					if (event.key === "Enter") {
+					if (event.key === "Enter" && !event.shiftKey) {
 						event.preventDefault()
-						applyIds(query)
+						if (listed.size && query.trim()) {
+							applyIds(query)
+						} else {
+							void add()
+						}
 					}
 				}}
 				onPaste={(event) => {
+					// With no list, a pasted list stays in the box, where it can be read and edited.
 					const text = event.clipboardData.getData("text")
-					if (/[\s,]/.test(text.trim())) {
+					if (listed.size && /[\s,]/.test(text.trim())) {
 						event.preventDefault()
 						applyIds(text)
 					}
 				}}
-				placeholder={listed.size ? "Filter /models, or paste IDs" : "Type or paste model IDs"}
+				placeholder={listed.size ? "Filter, or enter model IDs" : "Model IDs, one per line or separated by commas"}
 				ref={inputRef}
+				rows={2}
 				spellCheck={false}
 				value={query}
 			/>
-			{why}
-			{(rows.length > 0 || (filter && !rows.length)) && (
-				<div className="mt-1.5 rounded-xs border border-editor-group-border py-0.5" data-testid="add-models-list">
+			{shown.length > 0 && (
+				<div className="mt-2 rounded-xs border border-editor-group-border py-0.5" data-testid="add-models-list">
 					{shown.map((id) => {
-						const known = listed.get(id)
 						const added = isAdded(id)
 						const on = added || !!ticks[id]
 						return (
 							<button
 								aria-checked={on}
 								className={cn(
-									"flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left text-[12px] outline-none hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent",
+									"m-0 flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2 py-1 text-left text-[12px] text-foreground hover:bg-list-hover disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent",
 								)}
 								disabled={added}
 								key={id}
@@ -212,58 +166,36 @@ export const AddModelsPanel = ({
 									{on && <Icon className="text-[12px]!" name="check" />}
 								</span>
 								<span className="min-w-0 flex-1 truncate font-mono">{id}</span>
-								{added ? (
-									<span className="shrink-0 text-[11.5px] text-description">added</span>
-								) : !known && listed.size > 0 ? (
-									<span className="shrink-0 text-[11.5px] text-description">not on /models</span>
-								) : known && known.name !== id && known.name ? (
-									<span className="shrink-0 truncate text-[11.5px] text-description">{known.name}</span>
-								) : null}
 							</button>
 						)
 					})}
-					{filter && !rows.length && (
-						<button
-							className="flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left font-mono text-[12px] hover:bg-list-hover"
-							onClick={() => applyIds(query)}
-							type="button">
-							<Icon className="text-[12px]!" name="add" />
-							Add “{query.trim()}” by ID
-						</button>
-					)}
 					{!showAll && !filter && rows.length > PAGE_SIZE && (
-						<div className="px-1.5 py-[3px]">
+						<div className="px-2 py-1">
 							<LinkButton onClick={() => setShowAll(true)}>Show all {rows.length}</LinkButton>
 						</div>
 					)}
 				</div>
 			)}
-			{status && (
-				<div className="mt-1 text-[12px] text-description" role="status">
-					{status}
-				</div>
+			{already.length > 0 && (
+				<Why>
+					{already.length === 1 ? `${already[0]} is already added.` : `${already.length} of these are already added.`}
+				</Why>
 			)}
-			<Hint>
-				{showShared
-					? "New models start from this connection's shared defaults, then Detect fills in what the server reports."
-					: "Detect fills in what the server reports. The rest stays unknown until you set it."}
-			</Hint>
-			{showShared && <SharedDefaults connection={connection} />}
 			{error && <Why tone="bad">{error}</Why>}
-			<div className="mt-1.5 flex flex-wrap items-center gap-2">
-				<SmallButton disabled={adding} onClick={add} primary={ticked.length > 0}>
-					{adding ? "Adding…" : ticked.length ? `Add ${plural(ticked.length, "model")}` : "Tick a model to add"}
+			<div className="mt-2 flex flex-wrap items-center gap-2">
+				<SmallButton disabled={adding || !toAdd.length} onClick={() => void add()} primary>
+					{adding ? "Adding…" : toAdd.length > 1 ? `Add ${plural(toAdd.length, "model")}` : "Add model"}
 				</SmallButton>
 				{free.length > 1 && (
-					<LinkButton
+					<ActionButton
 						onClick={() => {
 							const on = !free.every((id) => ticks[id])
 							setTicks((current) => ({ ...current, ...Object.fromEntries(free.map((id) => [id, on])) }))
 						}}>
-						{free.every((id) => ticks[id]) ? "Clear" : "Tick all"}
-					</LinkButton>
+						{free.every((id) => ticks[id]) ? "Untick all" : "Tick all"}
+					</ActionButton>
 				)}
-				<LinkButton onClick={onClose}>Cancel</LinkButton>
+				<ActionButton onClick={onClose}>Cancel</ActionButton>
 			</div>
 		</div>
 	)

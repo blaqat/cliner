@@ -68,6 +68,23 @@ const base = () => ({
 })
 const keys = () => ({ "profile:p1:openAiApiKey": "K1", "profile:p2:openAiApiKey": "K2", openAiApiKey: "GLOBAL" })
 
+describe("settings someone has edited", () => {
+	it("are never moved over, even with no finished journal, and the move stays finished", async () => {
+		const f = fixture(base(), keys())
+		await f.run()
+		const edited = f.settings()
+		edited.models = edited.models.slice(0, 1)
+		edited.revision = 7
+		const before = structuredClone(edited)
+		delete f.data.modelSettingsMigration
+		expect(await f.run()).toBe("complete")
+		expect(f.settings()).toEqual(before)
+		expect(f.journal().status).toBe("complete")
+		expect(await f.run()).toBe("complete")
+		expect(f.settings()).toEqual(before)
+	})
+})
+
 describe("a moved temperature of 0", () => {
 	const withInfo = (temperature: number, extra: Record<string, unknown> = {}) => ({
 		apiConfigProfiles: [

@@ -122,7 +122,7 @@ export function describePick(
 	const row = rows.find((candidate) => candidate.id === pick?.rowId)
 	if (!row || !pick) return { model: rows.length ? "Pick a model" : "No models yet", levelOffered: true, picked: false }
 	if (!row.levels) return { model: row.label, levelOffered: true, picked: true }
-	if (pick.levelId === "inherit") return { model: row.label, levelOffered: true, picked: true }
+	if (pick.levelId === "inherit" || pick.levelId === "same") return { model: row.label, levelOffered: true, picked: true }
 	const level = row.levels.find((candidate) => candidate.id === pick.levelId)
 	return {
 		model: row.label,

@@ -1,6 +1,7 @@
 import {
 	applyConnectionPatch,
 	type Connection,
+	clearModelReferences,
 	createDefaultModelSettings,
 	type ModelLevel,
 	type ModelPick,
@@ -111,10 +112,7 @@ export interface FakeHostOptions {
 	/** Keychain values by reference. Tests read these; the webview never sees them. */
 	secrets?: Record<string, string>
 	discovery?: Record<string, DiscoveryResult>
-	test?: Record<string, DiscoveryResult>
-	modelTest?: "ok" | "inference-failed"
 	preview?: PreviewResult
-	detected?: Partial<ModelValues>
 	/** Catalog facts the host reports as metadata, by configured model ID. */
 	metadata?: Record<string, Partial<ModelValues>>
 	availability?: Record<string, { available: boolean; reason?: string }>
@@ -155,7 +153,7 @@ const DEFAULT_DISCOVERY: DiscoveryResult = {
 
 /**
  * A stand-in for the extension host's ModelsService, following the contract: revision checks, patch
- * merging, schema validation, write-only secrets and dependency refusals. Everything the Models page is
+ * merging, schema validation, write-only secrets and reference clearing. Everything the Models page is
  * tested against goes through this, not a real host.
  */
 export const createFakeHost = (options: FakeHostOptions = {}) => {
@@ -213,18 +211,6 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 		return reply(state())
 	}
 
-	const dependencies = (ids: string[]) => {
-		const found: string[] = []
-		const visit = (value: unknown, path: string) => {
-			if (!value || typeof value !== "object") return
-			if ("modelId" in value && ids.includes(String(value.modelId))) found.push(path)
-			for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`)
-		}
-		visit(settings.roles, "roles")
-		visit(settings.subagents.allowed, "subagents.allowed")
-		return found
-	}
-
 	const client = {
 		getModelSettings: async (request: { json: string }) => {
 			decode("getModelSettings", request)
@@ -276,6 +262,10 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 					if (index < 0) next.models.push(row)
 					else next.models[index] = row
 				}
+				clearModelReferences(
+					next,
+					(payload.models as ModelRow[]).filter((row) => row.enabled === false).map((row) => row.id),
+				)
 			})
 		},
 		duplicateConfiguredModel: async (request: { json: string }) => {
@@ -286,9 +276,8 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 		},
 		deleteConfiguredModel: async (request: { json: string }) => {
 			const payload = decode("deleteConfiguredModel", request)
-			const found = dependencies([payload.modelId as string])
-			if (found.length) return reply({ dependencies: found })
 			return commit(payload, (next) => {
+				clearModelReferences(next, [payload.modelId as string])
 				next.models = next.models.filter((model) => model.id !== payload.modelId)
 			})
 		},
@@ -300,9 +289,9 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 		deleteConnection: async (request: { json: string }) => {
 			const payload = decode("deleteConnection", request)
 			const rows = settings.models.filter((model) => model.connectionId === payload.connectionId).map((model) => model.id)
-			const found = [...rows.map((id) => `model:${id}`), ...dependencies(rows)]
-			if (found.length) return reply({ dependencies: found })
 			return commit(payload, (next) => {
+				clearModelReferences(next, rows)
+				next.models = next.models.filter((model) => model.connectionId !== payload.connectionId)
 				next.connections = next.connections.filter((connection) => connection.id !== payload.connectionId)
 			})
 		},
@@ -334,22 +323,6 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 		discoverConnectionModels: async (request: { json: string }) => {
 			const payload = decode("discoverConnectionModels", request)
 			return reply(options.discovery?.[payload.connectionId as string] ?? DEFAULT_DISCOVERY)
-		},
-		testConnection: async (request: { json: string }) => {
-			const payload = decode("testConnection", request)
-			return reply(
-				options.test?.[payload.connectionId as string] ??
-					options.discovery?.[payload.connectionId as string] ??
-					DEFAULT_DISCOVERY,
-			)
-		},
-		detectConfiguredModel: async (request: { json: string }) => {
-			const payload = decode("detectConfiguredModel", request) as { pick: { modelId: string } }
-			return reply({ modelId: payload.pick.modelId, source: "detected", metadata: options.detected ?? {}, fetchedAt: 1 })
-		},
-		testConfiguredModel: async (request: { json: string }) => {
-			decode("testConfiguredModel", request)
-			return reply({ status: options.modelTest ?? "ok" })
 		},
 		previewConfiguredModelRequest: async (request: { json: string }) => {
 			decode("previewConfiguredModelRequest", request)

@@ -2,7 +2,7 @@ import type { Connection, ConnectionPatch, ModelPick, ModelRow, RoleSettings, Su
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { useCallback, useMemo, useRef, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { modelSettingsClient as client, type DeleteResult, isStaleSettings, type SecretMutation } from "./modelSettingsClient"
+import { modelSettingsClient as client, isStaleSettings, type SecretMutation } from "./modelSettingsClient"
 import { friendlyError } from "./modelsView"
 
 export type Outcome<T> = { ok: true; value: T } | { ok: false; message: string }
@@ -71,19 +71,6 @@ export const useModelsStore = () => {
 		[run],
 	)
 
-	const remove = useCallback(
-		(work: (revision: number) => Promise<DeleteResult>) =>
-			run(async (revision) => {
-				const result = await work(revision)
-				if (!("dependencies" in result)) {
-					stateRef.current = result
-					setReturned(result)
-				}
-				return result
-			}),
-		[run],
-	)
-
 	return useMemo(
 		() => ({
 			state,
@@ -100,8 +87,8 @@ export const useModelsStore = () => {
 					}
 					return client.saveModels(revision, [change(current)])
 				}),
-			deleteModel: (modelId: string) => remove((revision) => client.deleteModel(revision, modelId)),
-			deleteConnection: (connectionId: string) => remove((revision) => client.deleteConnection(revision, connectionId)),
+			deleteModel: (modelId: string) => mutate((revision) => client.deleteModel(revision, modelId)),
+			deleteConnection: (connectionId: string) => mutate((revision) => client.deleteConnection(revision, connectionId)),
 			setRoles: (change: (roles: RoleSettings) => RoleSettings) =>
 				mutate((revision) => client.setRoles(revision, change(stateRef.current?.settings.roles as RoleSettings))),
 			setPolicy: (change: (policy: SubagentPolicy) => SubagentPolicy) =>
@@ -109,12 +96,9 @@ export const useModelsStore = () => {
 			savedThreadUsage: (modelIds: string[]) => lookup(() => client.savedThreadUsage(modelIds)),
 			duplicate: (modelId: string) => lookup(() => client.duplicateModel(modelId)),
 			discover: (connectionId: string) => lookup((revision) => client.discover(revision, connectionId)),
-			testConnection: (connectionId: string) => lookup((revision) => client.testConnection(revision, connectionId)),
-			testModel: (pick: ModelPick) => lookup((revision) => client.testModel(revision, pick)),
-			detect: (pick: ModelPick) => lookup((revision) => client.detect(revision, pick)),
 			preview: (pick: ModelPick) => lookup((revision) => client.preview(revision, pick)),
 		}),
-		[state, mutate, remove, run, lookup],
+		[state, mutate, run, lookup],
 	)
 }
 

@@ -573,6 +573,20 @@ export const ModelSettingsSchema = z
 		for (const a of s.subagents.allowed)
 			if (a.kind === "model") for (const levelId of a.levels) check({ modelId: a.modelId, levelId })
 	})
+/** Takes these models out of everything that points at them, so removing one is a single step. */
+export function clearModelReferences(settings: ModelSettings, ids: readonly string[]): void {
+	const gone = (pick: ModelPick | null | undefined) => !!pick && ids.includes(pick.modelId)
+	const { roles } = settings
+	if (gone(roles.chat)) roles.chat = null
+	if (gone(roles.ask.pick)) roles.ask = { enabled: false, pick: null }
+	if (roles.subagents.kind === "model" && gone(roles.subagents.pick)) roles.subagents = { kind: "thread", level: "inherit" }
+	if (gone(roles.background.pick)) roles.background.pick = null
+	const { overrides } = roles.background
+	for (const use of ["titles", "commitMessages", "generate"] as const) if (gone(overrides[use])) delete overrides[use]
+	settings.subagents.allowed = settings.subagents.allowed.filter(
+		(entry) => entry.kind !== "model" || !ids.includes(entry.modelId),
+	)
+}
 export function createDefaultModelSettings(): ModelSettings {
 	return {
 		version: 1,

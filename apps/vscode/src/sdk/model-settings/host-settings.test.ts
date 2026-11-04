@@ -9,7 +9,7 @@ import {
 	ModelValuesSchema,
 } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
-import { DependencyError, mutateSettings, savedThreadUsage } from "@/core/controller/models/modelSettingsRpc"
+import { mutateSettings, savedThreadUsage } from "@/core/controller/models/modelSettingsRpc"
 import { resolveConfiguredPick, resolveThreadPick } from "@/sdk/model-settings-resolver"
 import { InMemoryConnectionSecretStore } from "./connection-secret-store"
 import {
@@ -176,7 +176,7 @@ describe("new settings host mutations", () => {
 		expect(copy.draft.id).not.toBe("m")
 		expect(f.get().models).toHaveLength(1)
 	})
-	it("routes Make default for Ask and reports dependencies instead of silently replacing picks", async () => {
+	it("routes Make default for Ask", async () => {
 		const f = fixture()
 		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
 		await f.call("saveConfiguredModels", {
@@ -188,18 +188,79 @@ describe("new settings host mutations", () => {
 		const pick = { modelId: "m", levelId: "default" }
 		await f.call("makeModelDefault", { expectedRevision: 2, mode: "plan", pick })
 		expect(f.get().roles.chat).toEqual(pick)
-		await expect(f.call("deleteConfiguredModel", { expectedRevision: 3, modelId: "m" })).rejects.toBeInstanceOf(
-			DependencyError,
-		)
-		expect(f.get().models).toHaveLength(1)
-		await expect(f.call("deleteConnection", { expectedRevision: 3, connectionId: "c" })).rejects.toBeInstanceOf(
-			DependencyError,
-		)
 		const roles = { ...f.get().roles, chat: null, ask: { enabled: true, pick: null } }
 		await f.call("setModelRoles", { expectedRevision: 3, roles })
 		await f.call("makeModelDefault", { expectedRevision: 4, mode: "plan", pick })
 		expect(f.get().roles.ask.pick).toEqual(pick)
-		expect(f.get().roles.chat).toBeNull()
+	})
+	describe("removing is one step", () => {
+		const everywhere = async () => {
+			const f = fixture()
+			await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
+			await f.call("saveConfiguredModels", {
+				expectedRevision: 1,
+				models: ["m", "n"].map((id) => ({
+					id,
+					connectionId: "c",
+					upstreamId: id,
+					name: "",
+					kind: "chat",
+					overrides: {},
+					providerOptions: {},
+				})),
+			})
+			const pick = { modelId: "m", levelId: "default" }
+			f.get().roles = {
+				chat: pick,
+				ask: { enabled: true, pick },
+				subagents: { kind: "model", pick },
+				background: { pick, titlesEnabled: true, overrides: { titles: pick, generate: pick } },
+			}
+			f.get().subagents.allowed = [
+				{ kind: "model", modelId: "m", levels: ["default"] },
+				{ kind: "thread", levels: ["default"] },
+			]
+			return f
+		}
+		const clearedEverywhere = (f: Awaited<ReturnType<typeof everywhere>>) => {
+			expect(f.get().roles).toEqual({
+				chat: null,
+				ask: { enabled: false, pick: null },
+				subagents: { kind: "thread", level: "inherit" },
+				background: { pick: null, titlesEnabled: true, overrides: {} },
+			})
+			expect(f.get().subagents.allowed).toEqual([{ kind: "thread", levels: ["default"] }])
+		}
+		it("a model takes every pick of it along", async () => {
+			const f = await everywhere()
+			await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
+			expect(f.get().models.map((row) => row.id)).toEqual(["n"])
+			clearedEverywhere(f)
+		})
+		it("a connection takes its models and their picks along", async () => {
+			const f = await everywhere()
+			await f.call("deleteConnection", { expectedRevision: 2, connectionId: "c" })
+			expect(f.get().connections).toEqual([])
+			expect(f.get().models).toEqual([])
+			clearedEverywhere(f)
+		})
+		it("turning a model off clears its picks in the same save, and on again doesn't bring them back", async () => {
+			const f = await everywhere()
+			const row = f.get().models[0]
+			await f.call("saveConfiguredModels", { expectedRevision: 2, models: [{ ...row, enabled: false }] })
+			expect(f.get().models[0].enabled).toBe(false)
+			clearedEverywhere(f)
+			await f.call("saveConfiguredModels", { expectedRevision: 3, models: [{ ...row }] })
+			expect(f.get().models[0].enabled).toBeUndefined()
+			expect(f.get().roles.chat).toBeNull()
+		})
+		it("a duplicate of a model that's off starts on", async () => {
+			const f = await everywhere()
+			const row = f.get().models[0]
+			await f.call("saveConfiguredModels", { expectedRevision: 2, models: [{ ...row, enabled: false }] })
+			const { draft } = (await f.call("duplicateConfiguredModel", { modelId: "m" })) as { draft: ModelRow }
+			expect(draft).not.toHaveProperty("enabled")
+		})
 	})
 })
 
@@ -227,7 +288,7 @@ describe("Phase 4 host boundaries", () => {
 			defaults: { contextWindow: null, temperature: 0, free: false },
 		})
 	})
-	it("saved threads warn but don't block; roles and policy still do; a reopened thread refuses with the route", async () => {
+	it("saved threads warn but don't block, and a reopened thread refuses with the route", async () => {
 		const f = fixture()
 		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
 		await f.call("saveConfiguredModels", {
@@ -251,16 +312,6 @@ describe("Phase 4 host boundaries", () => {
 		await expect(savedThreadUsage(f.controller as never, JSON.stringify({ modelIds: ["m"] }), false)).rejects.toThrow(
 			/rollout/,
 		)
-		f.get().roles.chat = pick
-		f.get().subagents.allowed = [{ kind: "model", modelId: "m", levels: ["default"] }]
-		try {
-			await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
-			throw new Error("expected dependency refusal")
-		} catch (error) {
-			expect((error as DependencyError).dependencies).toEqual(["roles.chat", "subagents.allowed.0"])
-		}
-		f.get().roles.chat = null
-		f.get().subagents.allowed = []
 		await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
 		expect(() => resolveConfiguredPick(f.get(), resolveThreadPick(selection, "act"))).toThrow(/Settings > Models/)
 	})
@@ -351,15 +402,11 @@ describe("a connection outside the organization's allowlist", () => {
 		await f.call("saveConnection", { expectedRevision: 6, connection: { id: "ok", name: "Renamed" } })
 		expect(f.get().revision).toBe(7)
 	})
-	it("lets a role move off it, then lets it be deleted", async () => {
+	it("can be deleted while a role still points at it", async () => {
 		const f = await seeded()
-		await expect(f.call("deleteConnection", { expectedRevision: 4, connectionId: "old" })).rejects.toBeInstanceOf(
-			DependencyError,
-		)
-		await f.call("makeModelDefault", { expectedRevision: 4, mode: "act", pick: { modelId: "fine", levelId: "default" } })
-		await f.call("deleteConfiguredModel", { expectedRevision: 5, modelId: "gone" })
-		await f.call("deleteConnection", { expectedRevision: 6, connectionId: "old" })
+		await f.call("deleteConnection", { expectedRevision: 4, connectionId: "old" })
 		expect(f.get().connections.map((c) => c.id)).toEqual(["ok"])
+		expect(f.get().roles.chat).toBeNull()
 	})
 	it("still can't be picked, edited, added to or tested", async () => {
 		const f = await seeded()

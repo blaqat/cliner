@@ -136,8 +136,8 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	}),
 	state({
 		id: "models.connections",
-		label: "Set-up models",
-		description: "Every model you've set up, under its connection. Base URLs, API keys, levels, prices.",
+		label: "Connections",
+		description: "Your models, under where they run. Base URLs, API keys, levels, prices.",
 		aliases: [
 			"models",
 			"connections",
@@ -163,13 +163,13 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	}),
 	action({
 		id: "models.add-connection",
-		label: "Add a connection",
+		label: "Add connection",
 		description: "A base URL and key, for any server that speaks the OpenAI API.",
 		aliases: ["openai compatible", "gateway", "vllm", "litellm", "azure", "endpoint"],
 	}),
 	action({
 		id: "models.add-provider",
-		label: "Add a model from another provider",
+		label: "Add provider",
 		description: "Anthropic, Bedrock, Vertex, OpenRouter, Ollama and the rest of the catalog.",
 		aliases: ["provider", "anthropic", "bedrock", "vertex", "gemini", "openrouter", "ollama", "lm studio", "sign in"],
 	}),
