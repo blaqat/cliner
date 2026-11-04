@@ -52,6 +52,7 @@ type FieldDefinitions = Record<string, FieldDefinition<any>>
 
 export type ConfiguredAPIKeys = Partial<Record<ApiProvider, boolean>>
 const REMOTE_CONFIG_EXTRA_FIELDS = {
+	remoteProviderSettings: { default: undefined as import("../remote-config/schema").RemoteConfig["providerSettings"] },
 	remoteConfiguredProviders: { default: [] as ApiProvider[] },
 	allowedMCPServers: { default: [] as Array<{ id: string }> },
 	remoteMCPServers: { default: undefined as Array<{ name: string; url: string; alwaysEnabled?: boolean }> | undefined },

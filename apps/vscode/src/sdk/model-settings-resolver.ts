@@ -111,6 +111,12 @@ export class NextMessageModelSelections {
 		modes[mode] = structuredClone(pick)
 		this.threads.set(threadId, modes)
 	}
+	snapshot(): Array<{ id: string; modelSelectionV1: unknown }> {
+		return [...this.threads].map(([id, modes]) => ({
+			id: `${id || "home"}:next-message`,
+			modelSelectionV1: structuredClone(modes),
+		}))
+	}
 	peek(threadId: string, mode: Mode): ModelPick | undefined {
 		const pick = this.threads.get(threadId)?.[mode]
 		return pick ? structuredClone(pick) : undefined

@@ -12,6 +12,7 @@ import {
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import type { StateManager } from "@/core/storage/StateManager"
+import { connectionProviderOptions } from "./provider-options"
 import { resolveConfiguredPick } from "../model-settings-resolver"
 
 const detectedMetadata = new WeakMap<StateManager, Map<string, { revision: number; values: Partial<ModelValues> }>>()
@@ -234,6 +235,25 @@ export function modelDependencies(
 	return [...new Set(dependencies)]
 }
 
+/** Same metadata and managed precedence for publication and request construction. */
+export function configuredModelMetadata(
+	state: StateManager,
+	settings: ModelSettings,
+	model: ModelRow,
+	connection: ModelSettings["connections"][number],
+) {
+	const detected = detectedMetadata.get(state)?.get(model.id)
+	return {
+		modelId: model.id,
+		source: "catalog" as const,
+		fetchedAt: Date.now(),
+		values: {
+			...catalogModelValues(model, connection),
+			...(detected?.revision === settings.revision ? detected.values : {}),
+		},
+	}
+}
+
 /** Maintained catalog facts remain metadata, never user overrides. */
 export function catalogModelValues(row: ModelRow, connection: ModelSettings["connections"][number]): Partial<ModelValues> {
 	const providerId = connection.kind === "provider" ? connection.providerId : "openai-compatible"
@@ -261,6 +281,21 @@ export function catalogModelValues(row: ModelRow, connection: ModelSettings["con
 		),
 	}
 }
+function remoteProviderTable(state: StateManager, connection: ModelSettings["connections"][number]) {
+	const names: Record<string, string> = {
+		openai: "OpenAiCompatible",
+		bedrock: "AwsBedrock",
+		cline: "Cline",
+		vertex: "Vertex",
+		litellm: "LiteLLM",
+		anthropic: "Anthropic",
+	}
+	const provider = toLegacyApiProvider(connection.kind === "provider" ? connection.providerId : "openai")
+	const tables = state.getRemoteConfigSettings().remoteProviderSettings as
+		| Record<string, { models?: Array<Record<string, unknown>>; customModels?: Array<Record<string, unknown>> }>
+		| undefined
+	return tables?.[names[provider]]
+}
 export function managedModelValues(
 	state: StateManager,
 	row: ModelRow,
@@ -268,6 +303,23 @@ export function managedModelValues(
 ): Partial<ModelValues> {
 	const managed = state.getRemoteConfigSettings() as Record<string, unknown>
 	const values: Partial<ModelValues> = {}
+	const table = remoteProviderTable(state, connection)
+	const entry = [...(table?.models ?? []), ...(table?.customModels ?? [])].find(
+		(entry) => (entry.id ?? entry.name) === row.upstreamId,
+	)
+	if (entry) {
+		for (const [source, target] of [
+			["contextWindow", "contextWindow"],
+			["maxTokens", "maxOutputTokens"],
+			["temperature", "temperature"],
+			["inputPrice", "inputPrice"],
+			["outputPrice", "outputPrice"],
+			["thinkingBudgetTokens", "thinkingBudgetTokens"],
+		] as const)
+			if (typeof entry[source] === "number") Object.assign(values, { [target]: entry[source] })
+		if (typeof entry.supportsImages === "boolean") values.images = entry.supportsImages ? "yes" : "no"
+		if (typeof entry.promptCachingEnabled === "boolean") values.promptCache = entry.promptCachingEnabled ? "yes" : "no"
+	}
 	if (
 		connection.kind === "provider" &&
 		connection.providerId === "bedrock" &&
@@ -295,6 +347,23 @@ export function managedModelValues(
 	return values
 }
 
+/** Validate levels against the same effective fields used to construct the request. */
+export function resolveEffectiveConfiguredPick(
+	state: StateManager,
+	settings: ModelSettings,
+	pick: import("@shared/model-settings").ModelPick | null,
+) {
+	const model = settings.models.find((row) => row.id === pick?.modelId)
+	const connection = settings.connections.find((row) => row.id === model?.connectionId)
+	if (!model || !connection) return resolveConfiguredPick(settings, pick)
+	return resolveConfiguredPick(
+		settings,
+		pick,
+		configuredModelMetadata(state, settings, model, connection),
+		managedModelValues(state, model, connection),
+	)
+}
+
 /** Validate the selected request against current organization policy, including policy updates after save. */
 export async function assertConfiguredModelRequestAllowed(
 	state: StateManager,
@@ -302,7 +371,7 @@ export async function assertConfiguredModelRequestAllowed(
 	pick: { modelId: string; levelId: string },
 	mode?: "act" | "plan",
 ): Promise<void> {
-	const { model, connection } = resolveConfiguredPick(settings, pick)
+	const { model, connection } = resolveEffectiveConfiguredPick(state, settings, pick)
 	const managed = state.getRemoteConfigSettings() as Record<string, unknown>
 	const provider = toLegacyApiProvider(connection.kind === "provider" ? connection.providerId : "openai")
 	const providers = managed.remoteConfiguredProviders as string[] | undefined
@@ -310,6 +379,19 @@ export async function assertConfiguredModelRequestAllowed(
 		throw new Error("This model configuration is managed by your organization. Open Settings > Models.")
 	}
 	if (providers?.length && !providers.includes(provider)) fail()
+	const table = remoteProviderTable(state, connection)
+	if (
+		table &&
+		(table.models !== undefined || table.customModels !== undefined) &&
+		![...(table.models ?? []), ...(table.customModels ?? [])].some((entry) => (entry.id ?? entry.name) === model.upstreamId)
+	)
+		fail()
+	const customModel = table?.customModels?.find((entry) => entry.name === model.upstreamId)
+	if (
+		customModel?.baseModelId !== undefined &&
+		connectionProviderOptions(connection, {}, model).customModelBaseId !== customModel.baseModelId
+	)
+		fail()
 	const modes = mode ? [mode] : (["act", "plan"] as const)
 	const lockedIds = modes
 		.map((m) => managed[getProviderModelIdKey(provider, m)])

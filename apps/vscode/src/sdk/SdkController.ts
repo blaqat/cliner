@@ -3769,6 +3769,24 @@ export class Controller {
 		await this.postStateToWebview()
 	}
 
+	async getModelSelectionDependencies() {
+		const { backgroundSelectionDependencies } = await import("./model-settings/background")
+		const records = await this.taskHistory.listModelSelectionDependencies()
+		const history = records.map(sessionHistoryRecordToHistoryItem)
+		const add = (id: string, selection: TaskApiSelection | undefined) => {
+			if (selection) history.push({ id, modelSelectionV1: selection.modelSelectionV1 } as (typeof history)[number])
+		}
+		add("home:draft", this.draftApiSelection)
+		for (const [id, context] of this.taskSessions) {
+			add(`${id}:live`, context.apiSelection)
+			add(`${id}:pending`, context.pendingApiSelection)
+			add(`${id}:previous`, context.nextMessageSelection?.previous)
+		}
+		history.push(...(this.configuredNextMessageSelections.snapshot() as typeof history))
+		history.push(...(backgroundSelectionDependencies(this.stateManager) as unknown as typeof history))
+		return history
+	}
+
 	async getTaskHistory(request: GetTaskHistoryRequest): Promise<TaskHistoryArray> {
 		const { favoritesOnly, currentWorkspaceOnly, searchQuery, sortBy } = request
 		const limit = request.limit > 0 ? Math.min(request.limit, 100) : 50

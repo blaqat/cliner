@@ -573,6 +573,20 @@ export class SdkTaskHistory {
 		}
 	}
 
+	/** Deletion must bypass display pagination and its projection cache. */
+	async listModelSelectionDependencies(): Promise<SessionHistoryRecord[]> {
+		const records = await this.withHistoryHost((host) =>
+			host.listHistory({ hydrate: false, includeSubagents: true, limit: Number.MAX_SAFE_INTEGER }),
+		)
+		const ids = new Set(records.map((record) => record.sessionId))
+		return [
+			...records,
+			...this.readAllLegacyTaskHistory()
+				.filter(({ item }) => !ids.has(item.id))
+				.map(({ item }) => historyItemToSessionHistoryRecord(item)),
+		]
+	}
+
 	async listHistory(options: SdkTaskHistoryListOptions = {}): Promise<SessionHistoryRecord[]> {
 		void this.revision
 		const offset = Math.max(0, Math.floor(options.offset ?? 0))

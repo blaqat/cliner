@@ -79,6 +79,7 @@ function fixture() {
 	}
 	const legacy: TaskApiSelection = { askProfileId: "old-ask", actProfileId: "old-act" }
 	let mode = "act"
+	const managed: Record<string, unknown> = {}
 	const state = {
 		connectionSecrets: new InMemoryConnectionSecretStore(),
 		getGlobalStateKey: (key: string): unknown =>
@@ -98,7 +99,7 @@ function fixture() {
 			mode = value
 		},
 		getApiConfiguration: () => ({}),
-		getRemoteConfigSettings: () => ({}),
+		getRemoteConfigSettings: () => managed,
 	}
 	const builder = new SdkSessionConfigBuilder({ stateManager: state as never, emitHookMessage: vi.fn() })
 	const session = {
@@ -541,4 +542,77 @@ describe("next-message admission integration", () => {
 		h.builder.admission(message.config)!()
 		expect((await prepareTaskResumeStartInput(deps as never, "thread", true)).config.modelId).toBe("act")
 	})
+})
+
+// All admissions share the runtime builder; policy is also checked after construction.
+it.each([
+	"send",
+	"resume",
+	"mode-switch",
+	"background-text",
+	"subagent",
+] as const)("rechecks current policy at %s admission", async (path) => {
+	const f = fixture()
+	const state = f.state as never
+	const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
+	const managed = f.state.getRemoteConfigSettings() as Record<string, unknown>
+	const mode = path === "mode-switch" ? "plan" : "act"
+	settings.roles.background.pick = act
+	settings.roles.background.titlesEnabled = true
+	settings.roles.subagents = { kind: "model", pick: ask }
+	const builder = new SdkSessionConfigBuilder({ stateManager: state, emitHookMessage: vi.fn() })
+	const config = await builder.build({ cwd: "/tmp", mode, apiSelection: { modelSelectionV1: stable } } as never)
+	managed.remoteConfiguredProviders = ["anthropic"]
+	if (path === "background-text") {
+		const { backgroundHandler } = await import("./model-settings/background")
+		await expect(backgroundHandler(state, "generate")).rejects.toThrow(/organization/)
+	} else if (path === "subagent") {
+		await expect(config.hooks!.beforeTool!({ toolCall: { toolName: "spawn_agent" } } as never)).rejects.toThrow(
+			/organization/,
+		)
+	} else {
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/organization/)
+	}
+})
+
+it("uses managed remote model values and refuses an obsolete projection in a live session", async () => {
+	const f = fixture()
+	const managed = f.state.getRemoteConfigSettings() as Record<string, unknown>
+	managed.remoteProviderSettings = { OpenAiCompatible: { models: [{ id: "act", contextWindow: 42000, maxTokens: 1000 }] } }
+	const builder = new SdkSessionConfigBuilder({ stateManager: f.state as never, emitHookMessage: vi.fn() })
+	const config = await builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
+	expect(config.providerConfig?.maxOutputTokens).toBe(1000)
+	expect(config.providerConfig?.knownModels?.act.contextWindow).toBe(42000)
+	managed.remoteProviderSettings = { OpenAiCompatible: { models: [{ id: "act", contextWindow: 32000 }] } }
+	await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/settings changed/i)
+})
+
+it("collects persisted, pending, home and next-message deletion dependencies without the UI projection", async () => {
+	const { Controller } = await import("./SdkController")
+	const controller = Object.create(Controller.prototype) as InstanceType<typeof Controller>
+	const next = new NextMessageModelSelections()
+	next.set("old-thread", "plan", { modelId: "next", levelId: "default" })
+	Object.assign(controller, {
+		stateManager: fixture().state,
+		taskHistory: { listModelSelectionDependencies: async () => [] },
+		configuredNextMessageSelections: next,
+		draftApiSelection: { modelSelectionV1: { version: 1, ask: null, act: { modelId: "home", levelId: "default" } } },
+		taskSessions: new Map([
+			[
+				"live",
+				{
+					apiSelection: { modelSelectionV1: stable },
+					pendingApiSelection: {
+						modelSelectionV1: { version: 1, ask: ask, act: { modelId: "pending", levelId: "default" } },
+					},
+				},
+			],
+		]),
+	})
+	const history = await controller.getModelSelectionDependencies()
+	const { modelDependencies } = await import("./model-settings/host-settings")
+	const settings = fixture().state.getGlobalStateKey("modelSettings") as ModelSettings
+	expect(modelDependencies(controller.stateManager, settings, ["home", "next", "pending"], history)).toEqual(
+		expect.arrayContaining(["thread:home:draft.act", "thread:old-thread:next-message.plan", "thread:live:pending.act"]),
+	)
 })

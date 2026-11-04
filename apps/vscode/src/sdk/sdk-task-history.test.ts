@@ -99,6 +99,20 @@ describe("SdkTaskHistory", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("reads model dependencies beyond every display page without hydration", async () => {
+		const records = Array.from({ length: 10025 }, (_, i) =>
+			makeSessionRecord(`thread-${i}`, {
+				metadata: { modelSelectionV1: { version: 1, act: { modelId: `model-${i}`, levelId: "default" }, ask: null } },
+			}),
+		)
+		const { history, listHistory } = makeHistory(records)
+		listHistory.mockImplementation(async (options?: { limit?: number }) => records.slice(0, options?.limit ?? 200))
+		const result = await history.listModelSelectionDependencies()
+		expect(result).toHaveLength(10025)
+		expect(result[10024].metadata?.modelSelectionV1).toMatchObject({ act: { modelId: "model-10024" } })
+		expect(listHistory).toHaveBeenCalledWith({ hydrate: false, includeSubagents: true, limit: Number.MAX_SAFE_INTEGER })
+	})
+
 	it("shows a persisted message_reference block as a tag on the bubble, never as text", () => {
 		const block =
 			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'

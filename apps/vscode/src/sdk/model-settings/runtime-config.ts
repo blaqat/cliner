@@ -1,17 +1,36 @@
 import { createGateway, getProviderCollectionSync, hasRegisteredHandler, type ProviderConfig } from "@cline/llms"
 import { ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
 import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
+import type { StateManager } from "@/core/storage/StateManager"
+import { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } from "./host-settings"
 import { fetch } from "@/shared/net"
 import { resolveConfiguredPick } from "../model-settings-resolver"
 import { type ConnectionAuthDependencies, prepareModelRequest } from "./request-adapter"
+
+export const requestPolicyGuard = Symbol("requestPolicyGuard")
 
 /** Resolve a configured row without invoking any provider-wide selection or persistence APIs. */
 export async function configuredProviderConfig(
 	settings: ModelSettings,
 	pick: ModelPick | null,
 	dependencies: ConnectionAuthDependencies,
-): Promise<ProviderConfig & { settingsModelLevels: ModelLevel[] }> {
-	const resolved = resolveConfiguredPick(settings, pick)
+	policy?: { state: StateManager; mode?: "act" | "plan" },
+): Promise<ProviderConfig & { settingsModelLevels: ModelLevel[]; [requestPolicyGuard]?: () => Promise<void> }> {
+	const resolved = policy ? resolveEffectiveConfiguredPick(policy.state, settings, pick) : resolveConfiguredPick(settings, pick)
+	if (policy && pick) await assertConfiguredModelRequestAllowed(policy.state, settings, pick, policy.mode)
+	const projection = JSON.stringify(resolved)
+	const guard =
+		policy && pick
+			? async () => {
+					const current = policy.state.getGlobalStateKey("modelSettings")!
+					await assertConfiguredModelRequestAllowed(policy.state, current, pick, policy.mode)
+					const effective = resolveEffectiveConfiguredPick(policy.state, current, pick)
+					if (JSON.stringify(effective) !== projection)
+						throw new Error(
+							"Model settings changed. Retry the request to rebuild its configuration. Open Settings > Models.",
+						)
+				}
+			: undefined
 	const providerId =
 		resolved.connection.kind === "provider"
 			? resolved.connection.providerId
@@ -48,7 +67,12 @@ export async function configuredProviderConfig(
 			requestTimeoutMs: settings.requestTimeoutMs,
 			request: { providerId, modelId: model.id, messages: [] },
 			context: { provider, model, config: { providerId } },
-			fetch,
+			fetch: guard
+				? ((async (url, init) => {
+						await guard()
+						return fetch(url, init)
+					}) as typeof fetch)
+				: fetch,
 		},
 		dependencies,
 	)
@@ -81,6 +105,7 @@ export async function configuredProviderConfig(
 		id: resolved.model.upstreamId,
 	})
 	return {
+		[requestPolicyGuard]: guard,
 		providerId: prepared.config.providerId,
 		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
 		settingsModelLevels: resolved.values.levels,

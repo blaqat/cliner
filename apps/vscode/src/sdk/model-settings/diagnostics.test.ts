@@ -233,3 +233,30 @@ describe("native and revision diagnostics", () => {
 		await refusal
 	})
 })
+
+it("does not invent a listing endpoint for a native provider with a custom base URL", async () => {
+	const f = fixture()
+	f.settings.connections[0] = {
+		id: "c",
+		name: "Native",
+		auth: { kind: "none" },
+		headers: [],
+		defaults: {},
+		requestTimeoutMs: null,
+		kind: "provider",
+		providerId: "bedrock",
+		options: {},
+		secretRefs: {},
+		baseUrl: "https://example.invalid",
+	} as never
+	transport.mockClear()
+	expect(
+		await modelSettingsDiagnostic(
+			f.controller as never,
+			"discoverConnectionModels",
+			JSON.stringify({ connectionId: "c", expectedRevision: 0 }),
+			true,
+		),
+	).toEqual({ status: "no-list", manualEntry: true, models: [] })
+	expect(transport).not.toHaveBeenCalled()
+})

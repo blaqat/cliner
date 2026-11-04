@@ -9,7 +9,7 @@ import { buildSessionConfig, type SessionConfigInput } from "./cline-session-fac
 import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
 import { modelAuthDependencies } from "./model-settings/auth-dependencies"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
-import { configuredProviderConfig } from "./model-settings/runtime-config"
+import { configuredProviderConfig, requestPolicyGuard } from "./model-settings/runtime-config"
 import {
 	captureThreadModelSelection,
 	migrateThreadModelSelection,
@@ -56,18 +56,22 @@ export class SdkSessionConfigBuilder {
 				settings,
 				transient?.pick ?? resolveThreadPick(thread, input.mode ?? "act"),
 				modelAuthDependencies(state),
+				{ state, mode: input.mode ?? "act" },
 			)
 			const config = Object.assign(await buildSessionConfig({ ...input, configuredProvider }), {
 				apiSnapshot: { selection: { ...selection, modelSelectionV1: thread }, configuration: {} },
 			})
 			if (transient) Object.assign(config, { [transientAdmission]: transient.commit })
 			config.enableSpawnAgent = settings.subagents.enabled
+			const subagentGuards: Array<() => Promise<void>> = []
 			config.subagentSettings = await buildSubagentModelSettings(settings, async (modelId) => {
 				const provider = await configuredProviderConfig(
 					settings,
 					{ modelId, levelId: "default" },
 					modelAuthDependencies(state),
+					{ state },
 				)
+				if (provider[requestPolicyGuard]) subagentGuards.push(provider[requestPolicyGuard]!)
 				return {
 					connection: {
 						providerId: provider.providerId,
@@ -83,6 +87,26 @@ export class SdkSessionConfigBuilder {
 			if (this.options.onConsecutiveMistakeLimitReached)
 				config.onConsecutiveMistakeLimitReached = this.options.onConsecutiveMistakeLimitReached
 			config.hooks = buildAgentHooks(state, this.options.emitHookMessage, input.cwd)
+			const beforeModel = config.hooks.beforeModel
+			config.hooks.beforeModel = async (ctx) => {
+				await configuredProvider[requestPolicyGuard]?.()
+				if (ctx.snapshot?.parentAgentId) for (const guard of subagentGuards) await guard()
+				return beforeModel?.(ctx)
+			}
+			const beforeTool = config.hooks.beforeTool
+			config.hooks.beforeTool = async (ctx) => {
+				if (ctx.toolCall.toolName === "spawn_agent") {
+					const current = state.getGlobalStateKey("modelSettings")!
+					if (
+						JSON.stringify(current.subagents) !== JSON.stringify(settings.subagents) ||
+						JSON.stringify(current.roles.subagents) !== JSON.stringify(settings.roles.subagents)
+					)
+						throw new Error("Subagent settings changed. Retry after rebuilding the session.")
+					for (const guard of subagentGuards) await guard()
+					await configuredProvider[requestPolicyGuard]?.()
+				}
+				return beforeTool?.(ctx)
+			}
 			return config
 		}
 		const configuration = cloneApiProfileConfiguration(

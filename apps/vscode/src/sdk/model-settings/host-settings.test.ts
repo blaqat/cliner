@@ -36,7 +36,7 @@ function fixture() {
 	const controller = {
 		stateManager: state,
 		postStateToWebview,
-		getStateToPostToWebview: async () => ({ taskHistory: history }),
+		getModelSelectionDependencies: async () => history,
 	}
 	const call = (operation: Parameters<typeof mutateSettings>[1], input: unknown) =>
 		mutateSettings(controller as never, operation, JSON.stringify(input), true)
@@ -328,4 +328,64 @@ it("publishes detected metadata only for its producing revision", async () => {
 	})
 	await f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", name: "new revision" } })
 	expect((await readModelSettingsState(f.state as never)).effective.m.contextWindow).toEqual({ value: null, source: "builtin" })
+})
+
+it("retains schema-managed provider model tables and applies only declared fields", async () => {
+	const { transformRemoteConfigToStateShape } = await import("@/core/storage/remote-config/utils")
+	const { RemoteConfigSchema } = await import("@shared/remote-config/schema")
+	const remote = RemoteConfigSchema.parse({
+		version: "v1",
+		providerSettings: {
+			OpenAiCompatible: {
+				models: [{ id: "test", contextWindow: 12345, temperature: 0, supportsImages: false, invented: true }],
+			},
+		},
+	})
+	const transformed = transformRemoteConfigToStateShape(remote)
+	expect(transformed.remoteProviderSettings?.OpenAiCompatible?.models?.[0]).toEqual({
+		id: "test",
+		contextWindow: 12345,
+		temperature: 0,
+		supportsImages: false,
+	})
+})
+
+it.each([
+	["OpenAiCompatible", "openai"],
+	["AwsBedrock", "bedrock"],
+	["Cline", "cline"],
+	["Vertex", "vertex"],
+	["LiteLLM", "litellm"],
+	["Anthropic", "anthropic"],
+])("enforces the existing %s remote model allowlist", async (table, providerId) => {
+	const f = fixture()
+	const settings = createDefaultModelSettings()
+	settings.connections = [
+		providerId === "openai"
+			? createCompatibleConnection("c")
+			: ({
+					id: "c",
+					name: "Native",
+					kind: "provider",
+					providerId,
+					baseUrl: null,
+					auth: { kind: "none" },
+					headers: [],
+					defaults: {},
+					requestTimeoutMs: null,
+					options: {},
+					secretRefs: {},
+				} as never),
+	]
+	settings.models = [
+		{ id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+	]
+	f.managed.remoteProviderSettings = { [table]: { models: [{ id: "other" }] } }
+	await expect(
+		assertConfiguredModelRequestAllowed(f.state as never, settings, { modelId: "m", levelId: "default" }),
+	).rejects.toThrow(/organization/)
+	f.managed.remoteProviderSettings = { [table]: { models: [{ id: "test" }] } }
+	await expect(
+		assertConfiguredModelRequestAllowed(f.state as never, settings, { modelId: "m", levelId: "default" }),
+	).resolves.toBeUndefined()
 })

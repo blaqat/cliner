@@ -78,7 +78,7 @@ export async function mutateSettings(
 	let dependencies: string[] = []
 	const history =
 		operation === "deleteConfiguredModel" || operation === "deleteConnection"
-			? ((await controller.getStateToPostToWebview?.())?.taskHistory ?? [])
+			? await controller.getModelSelectionDependencies()
 			: []
 	await controller.stateManager.mutateModelSettings(expectedRevision, async (settings) => {
 		const next = structuredClone(settings)

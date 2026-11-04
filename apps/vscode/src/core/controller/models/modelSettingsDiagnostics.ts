@@ -61,14 +61,6 @@ export async function modelSettingsDiagnostic(
 		if ("connectionId" in input) {
 			const connection = settings.connections.find((c) => c.id === input.connectionId)
 			if (!connection) throw new Error("Connection is unavailable")
-			let config: Awaited<ReturnType<typeof resolveConnectionConfig>>
-			try {
-				config = await resolveConnectionConfig(connection, modelAuthDependencies(state))
-			} catch {
-				current()
-				return { status: "auth", models: [] }
-			}
-
 			const providerId = connection.kind === "provider" ? connection.providerId : "openai-compatible"
 			const nativeBases: Record<string, string> = {
 				anthropic: "https://api.anthropic.com/v1",
@@ -81,10 +73,18 @@ export async function modelSettingsDiagnostic(
 				ollama: "http://localhost:11434/api",
 				lmstudio: "http://localhost:1234/v1",
 			}
-			if (connection.kind === "provider" && !nativeBases[providerId] && !config.baseUrl) {
+			if (connection.kind === "provider" && !nativeBases[providerId]) {
 				current()
 				return { status: "no-list", manualEntry: true, models: [] }
 			}
+			let config: Awaited<ReturnType<typeof resolveConnectionConfig>>
+			try {
+				config = await resolveConnectionConfig(connection, modelAuthDependencies(state))
+			} catch {
+				current()
+				return { status: "auth", models: [] }
+			}
+
 			config.baseUrl ??= typeof config.options?.baseUrl === "string" ? config.options.baseUrl : nativeBases[providerId]
 
 			if (!config.baseUrl) throw new Error("Connection URL is missing")
@@ -222,6 +222,15 @@ export async function modelSettingsDiagnostic(
 				}
 			}
 			current()
+			if (resolved.connection.kind === "provider" && !model)
+				return {
+					modelId: input.pick.modelId,
+					status: "no-list",
+					manualEntry: true,
+					source: "unknown",
+					metadata: {},
+					fetchedAt: Date.now(),
+				}
 			// Catalog facts are returned as suggestions; user overrides are never overwritten.
 			return {
 				modelId: input.pick.modelId,
