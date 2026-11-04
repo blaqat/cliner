@@ -1,3 +1,4 @@
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { describe, expect, it, vi } from "vitest"
 import { SETTINGS_TARGET_REDIRECTS, settingsRowElementId } from "../settingsTargets"
 import {
@@ -51,13 +52,18 @@ describe("the row registry", () => {
 	})
 
 	it("every redirect lands on a real page or row", () => {
-		const ctx = { ...context({}, true), activeOrganization: { roles: ["admin"] } } as unknown as SettingsRowContext
+		const ctx = {
+			...context({ modelSettings: modelSettingsFixture() }, true),
+			activeOrganization: { roles: ["admin"] },
+		} as unknown as SettingsRowContext
 		for (const [alias, destination] of Object.entries(SETTINGS_TARGET_REDIRECTS)) {
 			const resolved = resolveShellTarget(SETTINGS_ROWS, alias, ctx)
 			expect(resolved?.pageId, alias).toBeDefined()
 			if (destination.includes(".")) {
 				expect(findRow(SETTINGS_ROWS, destination), alias).toBeDefined()
-				expect(resolved?.elementId, alias).toBe(settingsRowElementId(destination))
+				expect(resolved?.elementId, alias).toBe(
+					findRow(SETTINGS_ROWS, destination)?.elementId ?? settingsRowElementId(destination),
+				)
 			}
 		}
 	})

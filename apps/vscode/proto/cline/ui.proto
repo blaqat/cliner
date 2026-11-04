@@ -274,6 +274,8 @@ message IntentEvent {
 
 // UiService provides methods for managing UI interactions
 service UiService {
+  // Shows the Cline output channel.
+  rpc openLogs(EmptyRequest) returns (Empty);
   // Scrolls to a specific settings section in the settings view
   rpc scrollToSettings(StringRequest) returns (KeyValuePair);
 

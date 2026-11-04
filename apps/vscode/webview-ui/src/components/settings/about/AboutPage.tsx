@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ModelsServiceClient } from "@/services/grpc-client"
+import { ModelsServiceClient, UiServiceClient, FileServiceClient } from "@/services/grpc-client"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { RELEASE_NOTES } from "../sections/about/releaseNotes"
@@ -73,6 +73,24 @@ export const AboutPage = () => {
 					</AdvancedFold>
 				</div>
 			)}
+			<div className="flex gap-2 pt-2">
+				<Button
+					size="sm"
+					variant="secondary"
+					onClick={() =>
+						void FileServiceClient.copyToClipboard({
+							value: JSON.stringify({ version, extensionVariant, migration: migration?.status }, null, 2),
+						}).catch(() => setError("Could not copy diagnostics. Try again."))
+					}>
+					Copy diagnostics
+				</Button>
+				<Button
+					size="sm"
+					variant="secondary"
+					onClick={() => void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))}>
+					Open logs
+				</Button>
+			</div>
 			<h3 className="mt-3 mb-1 text-[13px]">Cline {version}</h3>
 			<p className="text-[11px] text-description">{extensionVariant ?? "VS Code"}</p>
 			<h3 className="mt-3 mb-1 text-[12px]">What's new</h3>

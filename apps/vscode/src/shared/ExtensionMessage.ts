@@ -52,6 +52,26 @@ export interface DeletedOpenThread {
 
 export interface ExtensionState {
 	modelSettings?: import("./model-settings-state").ModelSettingsState
+	focusChainSettings?: import("./FocusChainSettings").FocusChainSettings
+	openTelemetrySettings?: Pick<
+		import("./proto/cline/state").Settings,
+		| "openTelemetryEnabled"
+		| "openTelemetryMetricsExporter"
+		| "openTelemetryLogsExporter"
+		| "openTelemetryTracesExporter"
+		| "openTelemetryOtlpProtocol"
+		| "openTelemetryOtlpEndpoint"
+		| "openTelemetryOtlpMetricsProtocol"
+		| "openTelemetryOtlpMetricsEndpoint"
+		| "openTelemetryOtlpLogsProtocol"
+		| "openTelemetryOtlpLogsEndpoint"
+		| "openTelemetryMetricExportInterval"
+		| "openTelemetryOtlpInsecure"
+		| "openTelemetryLogBatchSize"
+		| "openTelemetryLogBatchTimeout"
+		| "openTelemetryLogMaxQueueSize"
+	>
+
 	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
 	subagentView?: {

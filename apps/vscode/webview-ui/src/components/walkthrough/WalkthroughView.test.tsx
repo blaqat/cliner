@@ -1,3 +1,4 @@
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -845,4 +846,21 @@ describe("WalkthroughView", () => {
 			expect(localStorage.getItem(reviewStorageKey("task", "thread"))).toBeNull()
 		})
 	})
+})
+
+it("Generate sends the shared model pick when modelSettings is present", async () => {
+	const settings = modelSettingsFixture()
+	settings.settings.roles.background.overrides.generate = { modelId: "sol", levelId: "medium" }
+	mocks.state = { ...baseState(), modelSettings: settings }
+	await renderPage()
+	fireEvent.click(screen.getByRole("button", { name: /^Generate model:/ }))
+	fireEvent.click(within(await screen.findByTestId("model-list")).getByRole("option", { name: "GPT-5.4" }))
+	fireEvent.click(within(screen.getByTestId("effort-list")).getByRole("option", { name: "High" }))
+	fireEvent.keyDown(screen.getByTestId("model-list"), { key: "Enter" })
+	fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+	await waitFor(() => expect(mocks.generate).toHaveBeenCalled())
+	const body = JSON.parse(mocks.generate.mock.calls[0][0].value)
+	expect(body.pick).toEqual({ modelId: "g54", levelId: "high" })
+	expect(body).not.toHaveProperty("profileId")
+	expect(screen.queryByRole("button", { name: "Choose Generate profile" })).toBeNull()
 })

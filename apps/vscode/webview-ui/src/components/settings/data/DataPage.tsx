@@ -1,9 +1,10 @@
+import { Input } from "@/components/ui/input"
 import { useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { TaskServiceClient, StateServiceClient } from "@/services/grpc-client"
 import { Button } from "@/components/ui/button"
 import { AdvancedFold } from "../shell/AdvancedFold"
-import { SettingRow, ToggleRow } from "../shell/SettingRow"
+import { SettingRow, ToggleRow, NumberRow } from "../shell/SettingRow"
 export function DataPage() {
 	const { navigateToHistory, remoteConfigSettings } = useExtensionState()
 	const [confirm, setConfirm] = useState<string>()
@@ -30,19 +31,158 @@ export function DataPage() {
 				toValue={(on) => (on ? "enabled" : "disabled")}>
 				<AdvancedFold featureId="data.reporting" summary="OpenTelemetry">
 					<SettingRow rowId="data.reporting.otel">
-						<dl className="text-[11px] text-description break-all">
-							{Object.entries(remoteConfigSettings ?? {})
-								.filter(([key]) => key.startsWith("openTelemetry"))
-								.map(([key, value]) => (
-									<div key={key}>
-										<dt>{key.replace("openTelemetry", "")}</dt>
-										<dd className="m-0">
-											{/headers/i.test(key) ? "Managed headers, values hidden" : String(value)}
-										</dd>
-									</div>
-								))}
-						</dl>
+						<p className="text-[11px] text-description">
+							Collector headers are masked and managed separately. Reload the extension after changing exporters.
+						</p>
 					</SettingRow>
+					<ToggleRow rowId="data.reporting.openTelemetryEnabled" />
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryMetricsExporter"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryLogsExporter"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryTracesExporter"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpProtocol"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpEndpoint"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpMetricsProtocol"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpMetricsEndpoint"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpLogsProtocol"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<SettingRow<string>
+						rowId="data.reporting.openTelemetryOtlpLogsEndpoint"
+						control={({ id, value, write, disabled }) => (
+							<Input
+								id={id}
+								disabled={disabled}
+								className="h-6 w-40"
+								defaultValue={value}
+								onBlur={(e) => {
+									if (e.target.value !== value) write(e.target.value)
+								}}
+							/>
+						)}
+					/>
+					<NumberRow
+						rowId="data.reporting.openTelemetryMetricExportInterval"
+						invalid="A positive whole number"
+						parse={(s) => (/^\d+$/.test(s) && Number(s) > 0 ? Number(s) : undefined)}
+					/>
+					<ToggleRow rowId="data.reporting.openTelemetryOtlpInsecure" />
+					<NumberRow
+						rowId="data.reporting.openTelemetryLogBatchSize"
+						invalid="A positive whole number"
+						parse={(s) => (/^\d+$/.test(s) && Number(s) > 0 ? Number(s) : undefined)}
+					/>
+					<NumberRow
+						rowId="data.reporting.openTelemetryLogBatchTimeout"
+						invalid="A positive whole number"
+						parse={(s) => (/^\d+$/.test(s) && Number(s) > 0 ? Number(s) : undefined)}
+					/>
+					<NumberRow
+						rowId="data.reporting.openTelemetryLogMaxQueueSize"
+						invalid="A positive whole number"
+						parse={(s) => (/^\d+$/.test(s) && Number(s) > 0 ? Number(s) : undefined)}
+					/>
 				</AdvancedFold>
 			</ToggleRow>
 			{["history", "reset"].map((kind) => (

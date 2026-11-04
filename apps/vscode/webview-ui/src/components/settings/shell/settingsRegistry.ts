@@ -64,7 +64,7 @@ export interface SettingsPageMeta {
 }
 
 export const SETTINGS_PAGE_META: readonly SettingsPageMeta[] = [
-	{ id: "models", name: "Models", description: "What thinks, and how hard." },
+	{ id: "models", name: "Models", description: "Every model you've set up, under where it runs." },
 	{ id: "agent", name: "Agent", description: "How Cline works in a thread." },
 	{ id: "subagents", name: "Subagents", description: "Helpers a thread can start." },
 	{ id: "tools", name: "Tools", description: "What Cline can reach and run." },

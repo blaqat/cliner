@@ -17,8 +17,8 @@ import {
 import type { PreferenceRow, SettingsRow } from "./settingsRegistry"
 import { useSettingsShell } from "./SettingsShellContext"
 
-const TAG_CLASS = "inline-flex h-4 items-center gap-0.5 whitespace-nowrap rounded-[3px] border px-1 text-[10px] leading-none"
-const RESET_CLASS =
+export const TAG_CLASS = "inline-flex h-4 items-center gap-0.5 whitespace-nowrap rounded-[3px] border px-1 text-[10px] leading-none"
+export const RESET_CLASS =
 	"cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline disabled:cursor-not-allowed disabled:text-description disabled:no-underline"
 
 export const ManagedTag = () => (

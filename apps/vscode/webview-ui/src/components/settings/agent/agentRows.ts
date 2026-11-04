@@ -28,16 +28,12 @@ export const AGENT_ROWS = [
 	}),
 	preference<boolean>({
 		id: "agent.progress",
-		disabledReason: (ctx) =>
-			(ctx.state as ProgressState).focusChainSettings
-				? undefined
-				: "This host does not publish task progress settings yet. Update the extension to change them.",
 		label: "Task progress list",
 		description: "Cline keeps a checklist on longer work.",
 		defaultValue: () => true,
 		read: (ctx) => (ctx.state as ProgressState).focusChainSettings?.enabled ?? true,
 		write: (enabled, ctx) =>
-			updateSetting("focusChainSettings", { ...(ctx.state as ProgressState).focusChainSettings, enabled }),
+			updateSetting("focusChainSettings", { remindClineInterval: 6, ...ctx.state.focusChainSettings, enabled }),
 	}),
 	preference<number>({
 		id: "agent.progress.interval",
@@ -47,7 +43,7 @@ export const AGENT_ROWS = [
 		defaultValue: () => 6,
 		read: (ctx) => (ctx.state as ProgressState).focusChainSettings?.remindClineInterval ?? 6,
 		write: (remindClineInterval, ctx) =>
-			updateSetting("focusChainSettings", { ...(ctx.state as ProgressState).focusChainSettings, remindClineInterval }),
+			updateSetting("focusChainSettings", { enabled: true, ...ctx.state.focusChainSettings, remindClineInterval }),
 		disabledReason: (ctx) =>
 			(ctx.state as ProgressState).focusChainSettings?.enabled === false
 				? "Turn on Task progress list above to use reminders."

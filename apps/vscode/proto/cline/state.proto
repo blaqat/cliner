@@ -473,6 +473,21 @@ message UpdateSettingsRequest {
   optional string thread_act_profile_id = 67;
   // One view (beta): the thread list beside the chat instead of a separate home page.
   optional bool one_view_enabled = 69;
+  optional bool open_telemetry_enabled = 70;
+  optional string open_telemetry_metrics_exporter = 71;
+  optional string open_telemetry_logs_exporter = 72;
+  optional string open_telemetry_traces_exporter = 73;
+  optional string open_telemetry_otlp_protocol = 74;
+  optional string open_telemetry_otlp_endpoint = 75;
+  optional string open_telemetry_otlp_metrics_protocol = 76;
+  optional string open_telemetry_otlp_metrics_endpoint = 77;
+  optional string open_telemetry_otlp_logs_protocol = 78;
+  optional string open_telemetry_otlp_logs_endpoint = 79;
+  optional int32 open_telemetry_metric_export_interval = 80;
+  optional bool open_telemetry_otlp_insecure = 81;
+  optional int32 open_telemetry_log_batch_size = 82;
+  optional int32 open_telemetry_log_batch_timeout = 83;
+  optional int32 open_telemetry_log_max_queue_size = 84;
 }
 
 // A named profile: a saved model configuration run at a reasoning effort.

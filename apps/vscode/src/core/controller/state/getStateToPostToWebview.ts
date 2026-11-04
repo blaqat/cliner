@@ -179,6 +179,24 @@ export async function getStateToPostToWebview(controller: {
 		localSkillsToggles: localSkillsToggles || {},
 		remoteRulesToggles,
 		remoteWorkflowToggles,
+		focusChainSettings: stateManager.getGlobalSettingsKey("focusChainSettings"),
+		openTelemetrySettings: {
+			openTelemetryEnabled: stateManager.getGlobalSettingsKey("openTelemetryEnabled"),
+			openTelemetryMetricsExporter: stateManager.getGlobalSettingsKey("openTelemetryMetricsExporter"),
+			openTelemetryLogsExporter: stateManager.getGlobalSettingsKey("openTelemetryLogsExporter"),
+			openTelemetryTracesExporter: stateManager.getGlobalSettingsKey("openTelemetryTracesExporter"),
+			openTelemetryOtlpProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpProtocol"),
+			openTelemetryOtlpEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpEndpoint"),
+			openTelemetryOtlpMetricsProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpMetricsProtocol"),
+			openTelemetryOtlpMetricsEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpMetricsEndpoint"),
+			openTelemetryOtlpLogsProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpLogsProtocol"),
+			openTelemetryOtlpLogsEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpLogsEndpoint"),
+			openTelemetryMetricExportInterval: stateManager.getGlobalSettingsKey("openTelemetryMetricExportInterval"),
+			openTelemetryOtlpInsecure: stateManager.getGlobalSettingsKey("openTelemetryOtlpInsecure"),
+			openTelemetryLogBatchSize: stateManager.getGlobalSettingsKey("openTelemetryLogBatchSize"),
+			openTelemetryLogBatchTimeout: stateManager.getGlobalSettingsKey("openTelemetryLogBatchTimeout"),
+			openTelemetryLogMaxQueueSize: stateManager.getGlobalSettingsKey("openTelemetryLogMaxQueueSize"),
+		},
 		shellIntegrationTimeout,
 		terminalReuseEnabled,
 		vscodeTerminalExecutionMode,
@@ -214,7 +232,15 @@ export async function getStateToPostToWebview(controller: {
 		hooksEnabled: getHooksEnabledSafe(stateManager.getGlobalSettingsKey("hooksEnabled")),
 		lastDismissedInfoBannerVersion,
 		lastDismissedModelBannerVersion,
-		remoteConfigSettings: stateManager.getRemoteConfigSettings?.(),
+		remoteConfigSettings: (() => {
+			const remote = stateManager.getRemoteConfigSettings?.()
+			if (!remote) return remote
+			const masked = { ...remote }
+			for (const key of ["openTelemetryOtlpHeaders", "otlpMetricsHeaders", "otlpLogsHeaders"] as const) {
+				if (masked[key]) masked[key] = Object.fromEntries(Object.keys(masked[key]!).map((name) => [name, "********"]))
+			}
+			return masked
+		})(),
 		remoteConfigRevision: controller.currentRemoteConfigRevision ?? 0,
 		lastDismissedCliBannerVersion,
 		dismissedBanners,

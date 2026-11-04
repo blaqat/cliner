@@ -23,6 +23,11 @@ function renderIndicator(props: Partial<ContextUsageIndicatorProps> = {}) {
 }
 
 describe("ContextUsageIndicator", () => {
+	it("marks an estimated planning context with ~", () => {
+		renderIndicator({ contextWindow: 128_000, contextWindowEstimated: true })
+		expect(screen.getByLabelText("Estimated context window")).toHaveTextContent("~")
+	})
+
 	beforeEach(() => {
 		onCompact.mockReset()
 		vi.stubGlobal(

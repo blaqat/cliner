@@ -8,6 +8,8 @@ export interface SettingsShellValue {
 	toggleFold: (featureId: string) => void
 	/** Opens the row's page and Advanced folds, then highlights it. */
 	openRow: (rowId: string) => void
+	/** The target being opened right now, so a page can open what its anchor sits inside first. */
+	navigationTarget?: { target: string; requestId: number }
 }
 
 export const SettingsShellContext = createContext<SettingsShellValue | undefined>(undefined)

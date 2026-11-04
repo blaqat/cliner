@@ -25,6 +25,70 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
  */
 export async function updateSettings(controller: Controller, request: UpdateSettingsRequest): Promise<Empty> {
 	try {
+		// Refuse managed fields before applying any part of this request.
+		const managed = Object.keys(request).some(
+			(key) => key.startsWith("openTelemetry") && request[key as keyof UpdateSettingsRequest] !== undefined,
+		)
+			? controller.stateManager.getRemoteConfigSettings()
+			: {}
+		for (const key of Object.keys(request)) {
+			if (
+				key.startsWith("openTelemetry") &&
+				request[key as keyof UpdateSettingsRequest] !== undefined &&
+				managed[key as keyof typeof managed] !== undefined
+			) {
+				throw new Error(`Managed setting cannot be changed: ${key}`)
+			}
+		}
+
+		for (const key of [
+			"openTelemetryMetricExportInterval",
+			"openTelemetryLogBatchSize",
+			"openTelemetryLogBatchTimeout",
+			"openTelemetryLogMaxQueueSize",
+		] as const) {
+			const value = request[key]
+			if (value !== undefined && (!Number.isInteger(value) || value <= 0))
+				throw new Error(`Invalid positive interval or size: ${key}`)
+		}
+
+		if (request.focusChainSettings !== undefined) {
+			const value = request.focusChainSettings
+			if (!Number.isInteger(value.remindClineInterval) || value.remindClineInterval < 1)
+				throw new Error("Invalid task progress reminder interval")
+			controller.stateManager.setGlobalState("focusChainSettings", value)
+		}
+		if (request.openTelemetryEnabled !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryEnabled", request.openTelemetryEnabled)
+		if (request.openTelemetryMetricsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricsExporter", request.openTelemetryMetricsExporter)
+		if (request.openTelemetryLogsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogsExporter", request.openTelemetryLogsExporter)
+		if (request.openTelemetryTracesExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryTracesExporter", request.openTelemetryTracesExporter)
+		if (request.openTelemetryOtlpProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpProtocol", request.openTelemetryOtlpProtocol)
+		if (request.openTelemetryOtlpEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpEndpoint", request.openTelemetryOtlpEndpoint)
+		if (request.openTelemetryOtlpMetricsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsProtocol", request.openTelemetryOtlpMetricsProtocol)
+		if (request.openTelemetryOtlpMetricsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsEndpoint", request.openTelemetryOtlpMetricsEndpoint)
+		if (request.openTelemetryOtlpLogsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsProtocol", request.openTelemetryOtlpLogsProtocol)
+		if (request.openTelemetryOtlpLogsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsEndpoint", request.openTelemetryOtlpLogsEndpoint)
+		if (request.openTelemetryMetricExportInterval !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricExportInterval", request.openTelemetryMetricExportInterval)
+		if (request.openTelemetryOtlpInsecure !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpInsecure", request.openTelemetryOtlpInsecure)
+		if (request.openTelemetryLogBatchSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchSize", request.openTelemetryLogBatchSize)
+		if (request.openTelemetryLogBatchTimeout !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchTimeout", request.openTelemetryLogBatchTimeout)
+		if (request.openTelemetryLogMaxQueueSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogMaxQueueSize", request.openTelemetryLogMaxQueueSize)
+
 		if (request.enterSendsAs !== undefined) {
 			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
 			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)

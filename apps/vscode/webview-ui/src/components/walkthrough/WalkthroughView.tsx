@@ -1,3 +1,4 @@
+import type { ModelPick } from "@shared/model-settings"
 import { StringRequest } from "@shared/proto/cline/common"
 import type {
 	ChangeWalkthrough,
@@ -132,6 +133,7 @@ export default function WalkthroughView({
 	onDone: () => void
 }) {
 	const {
+		modelSettings,
 		apiConfigProfiles,
 		profiles: namedProfiles,
 		walkthroughGenerateProfileId,
@@ -156,6 +158,11 @@ export default function WalkthroughView({
 	const [error, setError] = useState("")
 	// Set when a background check finds a different diff than the one on screen.
 	const [moved, setMoved] = useState(false)
+	const [pickedModel, setPickedModel] = useState<ModelPick>()
+	const generatePick =
+		pickedModel ??
+		modelSettings?.settings.roles.background.overrides.generate ??
+		modelSettings?.settings.roles.background.pick
 	const [pickedProfileId, setPickedProfileId] = useState<string>()
 	// Fold state per scope and layout, kept while the page is open (not persisted).
 	const [foldsByWalk, setFoldsByWalk] = useState<Record<string, Folds>>({})
@@ -287,9 +294,10 @@ export default function WalkthroughView({
 		})
 
 	const generate = async () => {
-		if (!walk || !profileId) return
+		if (!walk || (modelSettings ? !generatePick : !profileId)) return
 		const regenerate = walk.source === "generated"
 		setGenerating(true)
+		setReviewNotesOn(false)
 		setError("")
 		try {
 			const id = ++sequence.current
@@ -299,7 +307,7 @@ export default function WalkthroughView({
 						taskId,
 						scope: activeScope,
 						fingerprint: walk.fingerprint,
-						profileId,
+						...(modelSettings ? { pick: generatePick! } : { profileId }),
 						regenerate,
 						...(reviewNotesOn ? { reviewNotes: true } : {}),
 					}),
@@ -787,10 +795,13 @@ export default function WalkthroughView({
 						</div>
 						<span className="flex-1" />
 						<GenerateControl
+							modelSettings={modelSettings}
+							pick={generatePick}
+							onPick={setPickedModel}
 							disabled={!walk || !walk.hunks.length || busy || moved}
 							generating={generating}
 							onGenerate={() => void generate()}
-							onOpenProfiles={() => navigateToSettings("profiles")}
+							onOpenProfiles={() => navigateToSettings(modelSettings ? "models" : "profiles")}
 							onPickProfile={setPickedProfileId}
 							onReviewNotes={setReviewNotesOn}
 							profileId={profileId}

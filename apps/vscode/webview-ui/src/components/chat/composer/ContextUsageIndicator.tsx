@@ -1,3 +1,4 @@
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import type { CostBreakdownRow } from "@shared/getApiMetrics"
 import type { Mode } from "@shared/storage/types"
 import { FoldVerticalIcon, Minimize2Icon } from "lucide-react"
@@ -16,6 +17,7 @@ export interface ContextUsageIndicatorProps {
 	/** Total tokens of the last request: what currently occupies the context window. */
 	usedTokens?: number
 	contextWindow?: number
+	contextWindowEstimated?: boolean
 	tokensIn: number
 	tokensOut: number
 	cacheReads?: number
@@ -155,6 +157,7 @@ export const ContextUsageIndicator = memo(
 	({
 		usedTokens = 0,
 		contextWindow,
+		contextWindowEstimated,
 		tokensIn,
 		tokensOut,
 		cacheReads,
@@ -227,7 +230,16 @@ export const ContextUsageIndicator = memo(
 							data-testid="context-usage-button"
 							title={summary}
 							type="button">
-							<ContextRing color={levelColor} percent={percent ?? 0} />
+							<span className="relative inline-flex">
+								<ContextRing color={levelColor} percent={percent ?? 0} />
+								{contextWindowEstimated && (
+									<span
+										className="absolute inset-0 flex items-center justify-center text-[9px]"
+										aria-label="Estimated context window">
+										~
+									</span>
+								)}
+							</span>
 							{costLabel && showCost && (
 								<span className="tabular-nums" data-testid="context-usage-cost">
 									{costLabel}
@@ -404,11 +416,19 @@ ContextUsageIndicator.displayName = "ContextUsageIndicator"
 export function useComposerContextUsage(
 	mode: Mode,
 	totalCost: number | undefined,
-): Pick<ContextUsageIndicatorProps, "contextWindow" | "cost" | "modelLabel" | "modelId"> {
+): Pick<ContextUsageIndicatorProps, "contextWindow" | "contextWindowEstimated" | "cost" | "modelLabel" | "modelId"> {
 	const model = useFocusedChatModel(mode)
+	const state = useExtensionState()
+	const settings = state.modelSettings
+	const roles = settings?.settings.roles
+	const pick =
+		state.composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ??
+		(mode === "plan" && roles?.ask.enabled ? roles.ask.pick : roles?.chat)
+	const planning = pick && settings?.planning[pick.modelId]
 	const costVisible = useTaskCostVisible(model, totalCost)
 	return {
-		contextWindow: model.contextWindow,
+		contextWindow: planning ? planning.planningContextWindow : model.contextWindow,
+		contextWindowEstimated: planning ? !planning.contextWindowKnown : false,
 		cost: costVisible ? totalCost : undefined,
 		modelLabel: describeProfile(model),
 		modelId: model.modelId || undefined,

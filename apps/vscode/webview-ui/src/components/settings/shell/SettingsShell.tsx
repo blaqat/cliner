@@ -171,7 +171,7 @@ const PageTab = ({
 			)}
 			data-testid={`tab-${page}`}
 			isSelected={isSelected}
-			onSelect={onSelect}
+			onClick={onSelect}
 			tabIndex={0}
 			value={value}>
 			<Icon aria-hidden className="size-3.5 shrink-0" />
@@ -224,7 +224,7 @@ export const SettingsShell = ({
 	const [query, setQuery] = useState("")
 	const [filter, setFilter] = useState<RowFilter | null>(null)
 	const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set(initial?.foldIds))
-	const [pending, setPending] = useState<{ requestId: number; target: ShellTarget }>()
+	const [pending, setPending] = useState<{ requestId: number; target: ShellTarget; source: string }>()
 	const topRef = useRef<HTMLDivElement>(null)
 
 	const showPage = useCallback((next: SettingsPageId) => {
@@ -252,7 +252,7 @@ export const SettingsShell = ({
 			if (resolved.foldIds.length) {
 				setOpenFolds((current) => new Set([...current, ...resolved.foldIds]))
 			}
-			setPending(resolved.elementId ? { requestId, target: resolved } : undefined)
+			setPending(resolved.elementId ? { requestId, target: resolved, source: target } : undefined)
 		},
 		[clearListing, rows, showPage],
 	)
@@ -322,8 +322,9 @@ export const SettingsShell = ({
 					return next
 				}),
 			openRow: (rowId) => applyTarget(rowId, getNextSettingsNavigationRequestId()),
+			navigationTarget: pending && { target: pending.source, requestId: pending.requestId },
 		}),
-		[rows, ctx, openFolds, applyTarget],
+		[rows, ctx, openFolds, applyTarget, pending],
 	)
 
 	const selectPage = (next: string) => {

@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 	report: vi.fn(),
 	getModelSettings: vi.fn(),
 	setSubagentPolicy: vi.fn(),
+	migration: vi.fn(),
+	retry: vi.fn(),
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
@@ -27,15 +29,12 @@ vi.mock("../utils/settingsHandlers", () => ({ updateSetting: mocks.update }))
 vi.mock("@/services/grpc-client", () => ({
 	ModelsServiceClient: {
 		getModelSettings: mocks.getModelSettings,
-		getModelSettingsMigrationStatus: vi
-			.fn()
-			.mockResolvedValue({ json: JSON.stringify({ status: "complete", retryable: false }) }),
+		getModelSettingsMigrationStatus: mocks.migration,
+		retryModelSettingsMigration: mocks.retry,
 		setSubagentPolicy: mocks.setSubagentPolicy,
 	},
 	StateServiceClient: { updateTerminalConnectionTimeout: vi.fn(), resetState: vi.fn() },
 }))
-vi.mock("../sections/ApiConfigurationSection", () => ({ default: () => <div>api configuration panel</div> }))
-vi.mock("../sections/ProfilesSection", () => ({ default: () => <div>profiles panel</div> }))
 vi.mock("../sections/AboutSection", () => ({ default: () => <div>about panel</div> }))
 vi.mock("../sections/DebugSection", () => ({ default: () => <div>debug panel</div> }))
 vi.mock("../sections/RemoteConfigSection", () => ({ RemoteConfigSection: () => <div>remote config panel</div> }))
@@ -104,6 +103,8 @@ beforeEach(() => {
 			disconnect() {}
 		},
 	)
+	mocks.migration.mockReset().mockResolvedValue({ json: JSON.stringify({ status: "complete", retryable: false }) })
+	mocks.retry.mockReset()
 	mocks.update.mockClear()
 	mocks.report.mockClear()
 	mocks.setSubagentPolicy.mockClear().mockResolvedValue({ json: "{}" })
@@ -154,6 +155,16 @@ describe("pages and nav", () => {
 		expect(tab).toHaveAccessibleName("Agent")
 		fireEvent.focus(tab)
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("Agent")
+	})
+
+	it("switches pages from every icon-only tab", () => {
+		setNarrow(true)
+		renderShell()
+		for (const page of ["agent", "subagents", "tools", "layout", "data", "about", "models"]) {
+			fireEvent.click(screen.getByTestId(`tab-${page}`))
+			expect(visiblePage()).toBe(`settings-page-${page}`)
+			expect(screen.getByTestId(`tab-${page}`)).toHaveAttribute("aria-selected", "true")
+		}
 	})
 
 	it("keeps every nav item reachable by keyboard while a list is showing", () => {
@@ -445,7 +456,6 @@ describe("deep links", () => {
 
 	it("profiles opens Models > Background text > Generate, fold and all", async () => {
 		renderShell("profiles")
-		expect(screen.getByText("profiles panel")).toBeInTheDocument()
 		await flushFrame()
 		expect(row("models.background.generate")).toHaveClass("settings-target-highlight")
 	})
@@ -608,5 +618,46 @@ describe("Phase 7 pages", () => {
 		expect(within(row("data.history")!).getByRole("button", { name: "Confirm clear" })).toBeVisible()
 		expect(screen.queryByRole("dialog")).toBeNull()
 		expect(screen.queryByText("Export settings as a file")).toBeNull()
+	})
+})
+
+describe("Phase 7 recovery", () => {
+	it("preserves migration failure, reports a failed retry, then completes", async () => {
+		mocks.migration.mockResolvedValue({ json: JSON.stringify({ status: "failed", retryable: true }) })
+		mocks.retry
+			.mockRejectedValueOnce(new Error("keychain unavailable"))
+			.mockResolvedValueOnce({ json: JSON.stringify({ status: "complete", retryable: false }) })
+		renderShell("about")
+		fireEvent.click(await screen.findByRole("button", { name: "Retry migration" }))
+		expect(await screen.findByRole("alert")).toHaveTextContent("Your previous setup is preserved")
+		fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
+		expect(await screen.findByText("Profiles moved to Models. Your models and levels were kept.")).toBeVisible()
+		expect(mocks.retry).toHaveBeenCalledTimes(2)
+	})
+	it.each(["add", "edit", "remove"])("writes an allowed-list %s against the latest revision", async (action) => {
+		const initial = action === "add" ? [] : [{ kind: "model", modelId: "sol", levels: ["medium"] }]
+		const state = baseState()
+		state.modelSettings.settings.subagents.allowed = initial as typeof state.modelSettings.settings.subagents.allowed
+		mocks.state = state
+		mocks.getModelSettings.mockResolvedValue({
+			json: JSON.stringify({ ...state.modelSettings, settings: { ...state.modelSettings.settings, revision: 9 } }),
+		})
+		renderShell("subagents.allowed")
+		if (action === "remove") fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+		else {
+			fireEvent.click(
+				screen.getByRole("button", {
+					name: new RegExp(action === "add" ? "^Add allowed model:" : "^Edit allowed model:"),
+				}),
+			)
+			fireEvent.click(within(await screen.findByTestId("model-list")).getByRole("option", { name: "GPT-5.4" }))
+			fireEvent.keyDown(screen.getByTestId("model-list"), { key: "Enter" })
+		}
+		await waitFor(() => expect(mocks.setSubagentPolicy).toHaveBeenCalled())
+		const body = JSON.parse(mocks.setSubagentPolicy.mock.calls[0][0].json)
+		expect(body.expectedRevision).toBe(9)
+		expect(body.subagents.allowed).toEqual(
+			action === "remove" ? [] : [{ kind: "model", modelId: "g54", levels: [expect.any(String)] }],
+		)
 	})
 })

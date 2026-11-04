@@ -20,6 +20,7 @@ vi.mock("@/integrations/openai-codex/oauth", () => ({ openAiCodexOAuthManager: {
 function makeController() {
 	const settings: Record<string, unknown> = {}
 	const stateManager = {
+		getRemoteConfigSettings: () => ({}),
 		getApiConfiguration: () => ({}),
 		getGlobalStateKey: () => undefined,
 		getGlobalSettingsKey: (key: string) => settings[key],
@@ -42,4 +43,44 @@ describe("one view setting", () => {
 		expect((await getStateToPostToWebview(controller as never)).oneViewEnabled).toBe(false)
 		expect(controller.postStateToWebview).toHaveBeenCalledWith(true)
 	})
+})
+
+it("round-trips task progress and telemetry without exposing headers", async () => {
+	const controller = makeController()
+	const request = UpdateSettingsRequest.create({
+		focusChainSettings: { enabled: false, remindClineInterval: 9 },
+		openTelemetryEnabled: false,
+		openTelemetryOtlpEndpoint: "http://localhost:4318",
+		openTelemetryLogBatchSize: 32,
+	})
+	const decoded = UpdateSettingsRequest.decode(UpdateSettingsRequest.encode(request).finish())
+	await updateSettings(controller as never, decoded)
+	const state = await getStateToPostToWebview(controller as never)
+	expect(state.focusChainSettings).toEqual({ enabled: false, remindClineInterval: 9 })
+	expect(state.openTelemetrySettings).toMatchObject({
+		openTelemetryEnabled: false,
+		openTelemetryLogBatchSize: 32,
+		openTelemetryOtlpEndpoint: "http://localhost:4318",
+	})
+	expect(Object.keys(state.openTelemetrySettings!)).not.toContain("openTelemetryOtlpHeaders")
+})
+it("refuses a managed telemetry write before applying changes", async () => {
+	const controller = makeController()
+	controller.stateManager.getRemoteConfigSettings = () => ({ openTelemetryEnabled: true })
+	await expect(
+		updateSettings(controller as never, UpdateSettingsRequest.create({ openTelemetryEnabled: false })),
+	).rejects.toThrow("Managed setting")
+	expect(controller.stateManager.setGlobalState).not.toHaveBeenCalled()
+})
+
+it("masks collector header values in ordinary remote state", async () => {
+	const controller = makeController()
+	controller.stateManager.getRemoteConfigSettings = () => ({
+		openTelemetryOtlpHeaders: { Authorization: "private" },
+		otlpMetricsHeaders: { token: "private" },
+		otlpLogsHeaders: { token: "private" },
+	})
+	const state = await getStateToPostToWebview(controller as never)
+	expect(JSON.stringify(state.remoteConfigSettings)).not.toContain("private")
+	expect(state.remoteConfigSettings?.openTelemetryOtlpHeaders).toEqual({ Authorization: "********" })
 })

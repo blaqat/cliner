@@ -1,3 +1,7 @@
+import type { ModelSettingsState } from "@shared/model-settings-state"
+import type { ModelPick } from "@shared/model-settings"
+import { ModelPickButton } from "@/components/models/ModelPickButton"
+import { selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import { useState } from "react"
 import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { LinkButton } from "@/components/common/LinkButton"
@@ -15,6 +19,9 @@ export interface GenerateProfileOption {
 }
 
 interface GenerateControlProps {
+	modelSettings?: ModelSettingsState
+	pick?: ModelPick | null
+	onPick?: (pick: ModelPick) => void
 	profiles: GenerateProfileOption[]
 	profileId: string | undefined
 	onPickProfile: (profileId: string) => void
@@ -37,6 +44,9 @@ const HALF_CLASS = "h-6 rounded-none py-0 leading-none"
  * Runs only on click; ▾ picks the profile and starts on the remembered one.
  */
 export function GenerateControl({
+	modelSettings,
+	pick,
+	onPick,
 	profiles,
 	profileId,
 	onPickProfile,
@@ -50,7 +60,7 @@ export function GenerateControl({
 }: GenerateControlProps) {
 	const [menuOpen, setMenuOpen] = useState(false)
 	const profile = profiles.find((p) => p.id === profileId)
-	if (!profiles.length)
+	if (!modelSettings && !profiles.length)
 		return (
 			<LinkButton className="text-[11px]" onClick={onOpenProfiles}>
 				Add a profile to Generate
@@ -62,12 +72,14 @@ export function GenerateControl({
 				aria-busy={generating || undefined}
 				className={cn(HALF_CLASS, "gap-1 px-2")}
 				disabled={disabled || generating}
-				onClick={() => (profile ? onGenerate() : setMenuOpen(true))}
+				onClick={() => ((modelSettings ? pick : profile) ? onGenerate() : setMenuOpen(true))}
 				size="xs"
 				title={
-					profile
-						? `Generate with ${profile.name}${reviewNotes ? ", with Cline's review notes" : ""}`
-						: "Choose a profile first"
+					modelSettings
+						? "Generate with selected model"
+						: profile
+							? `Generate with ${profile.name}${reviewNotes ? ", with Cline's review notes" : ""}`
+							: "Choose a profile first"
 				}>
 				<span
 					aria-hidden
@@ -78,10 +90,19 @@ export function GenerateControl({
 				/>
 				{generating ? "Generating…" : regenerate ? "Regenerate" : "Generate"}
 			</Button>
+			{modelSettings && (
+				<ModelPickButton
+					{...selectorDataFromModelSettings(modelSettings)}
+					modelsLabel="Generate model"
+					pick={pick ? { rowId: pick.modelId, levelId: pick.levelId } : null}
+					onCommit={(p) => onPick?.({ modelId: p.rowId, levelId: p.levelId })}
+					onManage={onOpenProfiles}
+				/>
+			)}
 			<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 				<PopoverTrigger asChild>
 					<Button
-						aria-label="Choose Generate profile"
+						aria-label={modelSettings ? "Generate options" : "Choose Generate profile"}
 						className={cn(HALF_CLASS, "w-5 border-y-0 border-r-0 border-l border-solid border-button-separator px-0")}
 						disabled={generating}
 						size="xs">
@@ -91,27 +112,28 @@ export function GenerateControl({
 				<PopoverContent align="end" className="menu-rise w-64 p-1" onKeyDown={handleMenuKeyDown} side="bottom">
 					<div className={MENU_HEADING_CLASS}>Generate with</div>
 					<div className="flex flex-col" role="menu">
-						{profiles.map((p) => (
-							<button
-								aria-checked={p.id === profileId}
-								className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
-								key={p.id}
-								onClick={() => {
-									onPickProfile(p.id)
-									setMenuOpen(false)
-								}}
-								role="menuitemradio"
-								type="button">
-								<span
-									aria-hidden
-									className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
-								/>
-								<span className="min-w-0 flex-1">
-									<span className="block truncate">{p.name}</span>
-									<span className="block truncate text-[11px] text-description">{p.description}</span>
-								</span>
-							</button>
-						))}
+						{!modelSettings &&
+							profiles.map((p) => (
+								<button
+									aria-checked={p.id === profileId}
+									className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
+									key={p.id}
+									onClick={() => {
+										onPickProfile(p.id)
+										setMenuOpen(false)
+									}}
+									role="menuitemradio"
+									type="button">
+									<span
+										aria-hidden
+										className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
+									/>
+									<span className="min-w-0 flex-1">
+										<span className="block truncate">{p.name}</span>
+										<span className="block truncate text-[11px] text-description">{p.description}</span>
+									</span>
+								</button>
+							))}
 						<div className={MENU_SEPARATOR_CLASS} role="separator" />
 						<button
 							aria-checked={reviewNotes}
@@ -140,7 +162,7 @@ export function GenerateControl({
 							role="menuitem"
 							type="button">
 							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-settings-gear")} />
-							Manage profiles…
+							{modelSettings ? "Manage models…" : "Manage profiles…"}
 						</button>
 					</div>
 				</PopoverContent>

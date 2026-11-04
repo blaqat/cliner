@@ -1,3 +1,4 @@
+import { toggleTopBarPanel } from "@/components/topbar/topBarPanels"
 import { Input } from "@/components/ui/input"
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 import { WorktreeSettings } from "@/components/worktrees/WorktreeSettings"
@@ -38,7 +39,7 @@ export const ToolsPage = () => {
 			<SettingRow
 				rowId="tools.rules"
 				control={({ id }) => (
-					<Button id={id} size="sm" variant="secondary" onClick={() => navigateToMcp()}>
+					<Button id={id} size="sm" variant="secondary" onClick={() => toggleTopBarPanel("rules")}>
 						Manage
 					</Button>
 				)}
