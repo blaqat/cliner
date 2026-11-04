@@ -1,28 +1,6 @@
 export const featureSettingElementId = (featureId: string) => `${featureId}-setting`
 export const featureSettingControlId = (featureId: string) => `${featureSettingElementId(featureId)}-control`
 
-export const SETTINGS_NAVIGATION_TARGETS = {
-	"api-config": { tabId: "api-config" },
-	profiles: { tabId: "profiles" },
-	features: { tabId: "features" },
-	subagents: { tabId: "subagents" },
-	checkpoints: {
-		tabId: "features",
-		elementId: featureSettingElementId("checkpoints"),
-		focusElementId: featureSettingControlId("checkpoints"),
-	},
-	worktrees: { tabId: "features", elementId: "worktree-features" },
-	terminal: { tabId: "terminal" },
-	general: { tabId: "general" },
-	about: { tabId: "about" },
-	debug: { tabId: "debug" },
-	"remote-config": { tabId: "remote-config" },
-	// Named for where the shell sends them; on the old tabs they keep today's destination.
-	"mcp-advanced": { tabId: "features" },
-	reporting: { tabId: "general" },
-	"enter-sends-as": { tabId: "general" },
-} as const
-
 export const SETTINGS_PAGE_IDS = ["models", "agent", "subagents", "tools", "layout", "data", "about", "debug"] as const
 export type SettingsPageId = (typeof SETTINGS_PAGE_IDS)[number]
 export const DEFAULT_SETTINGS_PAGE: SettingsPageId = "models"
@@ -31,7 +9,7 @@ export const DEFAULT_SETTINGS_PAGE: SettingsPageId = "models"
 export type SettingsRowId = `${SettingsPageId}.${string}`
 
 export type SettingsNavigationTarget =
-	| keyof typeof SETTINGS_NAVIGATION_TARGETS
+	| keyof typeof SETTINGS_TARGET_REDIRECTS
 	| SettingsPageId
 	| SettingsRowId
 	| `model:${string}`
@@ -52,24 +30,11 @@ export const createSettingsNavigationRequest = (target: SettingsNavigationTarget
 	requestId: getNextSettingsNavigationRequestId(),
 })
 
-export interface ResolvedSettingsTarget {
-	tabId?: string
-	elementId?: string
-	focusElementId?: string
-}
-
-export const resolveSettingsTarget = (target: string | undefined): ResolvedSettingsTarget | undefined => {
-	if (!target) {
-		return undefined
-	}
-	return SETTINGS_NAVIGATION_TARGETS[target as keyof typeof SETTINGS_NAVIGATION_TARGETS] ?? { elementId: target }
-}
-
 /**
  * Old targets, from callers and from navigation history, and where each lands in the shell.
  * Page and row ids pass through as they are.
  */
-export const SETTINGS_TARGET_REDIRECTS: Readonly<Record<string, SettingsPageId | SettingsRowId>> = {
+export const SETTINGS_TARGET_REDIRECTS = {
 	"api-config": "models",
 	profiles: "models.background.generate",
 	features: "agent",
@@ -81,7 +46,7 @@ export const SETTINGS_TARGET_REDIRECTS: Readonly<Record<string, SettingsPageId |
 	reporting: "data.reporting",
 	"enter-sends-as": "layout.enter",
 	"remote-config": "about.remote-config",
-}
+} as const satisfies Readonly<Record<string, SettingsPageId | SettingsRowId>>
 
 export const settingsRowElementId = (rowId: string) => `setting-${rowId.replaceAll(".", "-")}`
 export const settingsRowControlId = (rowId: string) => `${settingsRowElementId(rowId)}-control`
@@ -104,7 +69,13 @@ const ROLE_TARGET_ROWS: Readonly<Record<string, SettingsRowId>> = {
 }
 
 /** The host's structured fix target, as the string the shell parses. */
-export const settingsTargetFromHost = (target: { page?: string; modelId?: string; field?: string; connectionId?: string; role?: string }) => {
+export const settingsTargetFromHost = (target: {
+	page?: string
+	modelId?: string
+	field?: string
+	connectionId?: string
+	role?: string
+}) => {
 	if (target.modelId) {
 		return target.field ? (`model:${target.modelId}:${target.field}` as const) : (`model:${target.modelId}` as const)
 	}
@@ -131,7 +102,7 @@ export const parseSettingsTarget = (target: string | undefined): ParsedSettingsT
 	if (!target) {
 		return undefined
 	}
-	const canonical: string = SETTINGS_TARGET_REDIRECTS[target] ?? target
+	const canonical: string = SETTINGS_TARGET_REDIRECTS[target as keyof typeof SETTINGS_TARGET_REDIRECTS] ?? target
 	if (isPageId(canonical)) {
 		return { pageId: canonical }
 	}

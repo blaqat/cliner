@@ -1,7 +1,7 @@
-import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { reviewStorageKey } from "./reviewState"
 import WalkthroughView from "./WalkthroughView"
 
@@ -88,16 +88,7 @@ const codeLine = (pattern: RegExp) => (_text: string, element: Element | null) =
 	!!element?.classList.contains("whitespace-pre") && pattern.test(element.textContent ?? "")
 
 const baseState = () => ({
-	apiConfigProfiles: [
-		{ id: "cfg-haiku", name: "Haiku", provider: "anthropic", modelId: "haiku" },
-		{ id: "cfg-opus", name: "Opus", provider: "anthropic", modelId: "opus" },
-	],
-	// Generate picks named profiles (Settings › Profiles), not configurations.
-	profiles: [
-		{ id: "fast", name: "Fast", configurationId: "cfg-haiku" },
-		{ id: "deep", name: "Deep", configurationId: "cfg-opus", reasoningEffort: "high" },
-	],
-	walkthroughGenerateProfileId: "deep",
+	modelSettings: modelSettingsFixture(),
 	currentTaskItem: { id: "task", ts: 1, task: "Implement steps", title: "Implement steps 1–2", taskGroupId: "group" },
 	taskHistory: [],
 	taskGroups: [{ id: "group", title: "Bulk invoice export" }],
@@ -477,52 +468,47 @@ describe("WalkthroughView", () => {
 		expect(screen.queryByTestId("walkthrough-moved")).toBeNull()
 	})
 
-	it("never generates on mount; Generate uses the remembered profile, ▾ picks another, then Regenerate", async () => {
+	it("never generates on mount; Generate uses the Background text model, then Regenerate", async () => {
 		await renderPage()
 		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Deep")
-
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		// Each profile shows its model and effort under its name.
-		expect(await screen.findByRole("menuitemradio", { name: /Deep.*Anthropic · opus · high effort/ })).toBeTruthy()
-		fireEvent.click(await screen.findByRole("menuitemradio", { name: /Fast/ }))
-		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Fast")
+		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with selected model")
 
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
-		await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated · Fast"))
+		await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated"))
 		expect(mocks.generate).toHaveBeenCalledTimes(1)
-		expect(sent(mocks.generate)).toMatchObject({ taskId: "task", scope: "thread", profileId: "fast", regenerate: false })
+		const pick = { modelId: "qwen", levelId: "default" }
+		expect(sent(mocks.generate)).toMatchObject({ taskId: "task", scope: "thread", pick, regenerate: false })
 
 		fireEvent.click(screen.getByRole("button", { name: /Regenerate$/ }))
 		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(2))
-		expect(sent(mocks.generate, 1)).toMatchObject({ profileId: "fast", regenerate: true })
+		expect(sent(mocks.generate, 1)).toMatchObject({ pick, regenerate: true })
+	})
+
+	it("says why Generate isn't there before the setup has moved, and links to Settings", async () => {
+		mocks.state = { ...mocks.state, modelSettings: undefined }
+		await renderPage()
+		fireEvent.click(screen.getByRole("button", { name: /Generate isn't available/ }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("models")
 	})
 
 	it("moves through the Generate ▾ menu with the arrow keys, Home and End", async () => {
 		await renderPage()
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		const fast = await screen.findByRole("menuitemradio", { name: /Fast/ })
-		const deep = screen.getByRole("menuitemradio", { name: /Deep/ })
-		const notes = screen.getByRole("menuitemcheckbox", { name: /Add review notes/ })
-		const manage = screen.getByRole("menuitem", { name: "Manage profiles…" })
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
+		const notes = await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })
+		const manage = screen.getByRole("menuitem", { name: "Manage models…" })
 		const menu = screen.getByRole("menu")
-		fast.focus()
-		fireEvent.keyDown(fast, { key: "ArrowDown" })
-		expect(deep).toHaveFocus()
-		fireEvent.keyDown(deep, { key: "ArrowDown" })
-		expect(notes).toHaveFocus()
+		notes.focus()
 		fireEvent.keyDown(notes, { key: "ArrowDown" })
 		expect(manage).toHaveFocus()
 		fireEvent.keyDown(manage, { key: "ArrowDown" })
-		expect(fast).toHaveFocus()
-		fireEvent.keyDown(fast, { key: "ArrowUp" })
+		expect(notes).toHaveFocus()
+		fireEvent.keyDown(notes, { key: "ArrowUp" })
 		expect(manage).toHaveFocus()
 		fireEvent.keyDown(manage, { key: "Home" })
-		expect(fast).toHaveFocus()
-		fireEvent.keyDown(fast, { key: "End" })
+		expect(notes).toHaveFocus()
+		fireEvent.keyDown(notes, { key: "End" })
 		expect(manage).toHaveFocus()
-		expect(within(menu).getAllByRole("separator")).toHaveLength(2)
+		expect(within(menu).getAllByRole("separator")).toHaveLength(1)
 	})
 
 	it("shows a turn's short prose and reveals its full narration with Show more", async () => {
@@ -556,12 +542,12 @@ describe("WalkthroughView", () => {
 		expect(within(stop("Cap at 10k rows")).queryByRole("button", { name: "Show more" })).toBeNull()
 	})
 
-	it("opens Settings › Profiles from Manage profiles… in the Generate ▾ menu", async () => {
+	it("opens Models from Manage models… in the Generate ▾ menu", async () => {
 		await renderPage()
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		fireEvent.click(await screen.findByRole("menuitem", { name: "Manage profiles…" }))
-		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("profiles")
-		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Manage profiles…" })).toBeNull())
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Manage models…" }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("models")
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Manage models…" })).toBeNull())
 		expect(mocks.generate).not.toHaveBeenCalled()
 	})
 
@@ -627,11 +613,11 @@ describe("WalkthroughView", () => {
 	})
 
 	it("shows Generate failures inline and keeps the free walkthrough", async () => {
-		mocks.generate.mockRejectedValue(new Error("Choose a profile for Generate"))
+		mocks.generate.mockRejectedValue(new Error("Choose a model for Generate"))
 		await renderPage()
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
-		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a profile for Generate")
-		expect(sent(mocks.generate).profileId).toBe("deep")
+		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a model for Generate")
+		expect(sent(mocks.generate).pick).toEqual({ modelId: "qwen", levelId: "default" })
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
 	})
 
@@ -639,7 +625,7 @@ describe("WalkthroughView", () => {
 		await renderPage()
 		const split = screen.getByTestId("walkthrough-generate")
 		const main = within(split).getByRole("button", { name: /Generate$/ })
-		const menu = within(split).getByRole("button", { name: "Choose Generate profile" })
+		const menu = within(split).getByRole("button", { name: "Generate options" })
 		for (const half of [main, menu]) expect(half.className).toMatch(/\bh-6\b/)
 		expect(main.className).toMatch(/\brounded-none\b/)
 		expect(menu.className).toMatch(/\brounded-none\b/)
@@ -648,9 +634,6 @@ describe("WalkthroughView", () => {
 		expect(screen.queryByTestId("walkthrough-generate-cost")).toBeNull()
 		expect(screen.queryByText(/only when you click/i)).toBeNull()
 		expect(screen.queryByText(/One call to/i)).toBeNull()
-		// The profile name stays where it helps: the ▾ menu and the Generated badge.
-		fireEvent.click(menu)
-		expect(await screen.findByRole("menuitemradio", { name: /Deep/ })).toHaveAttribute("aria-checked", "true")
 	})
 
 	describe("collapsing", () => {
@@ -862,5 +845,4 @@ it("Generate sends the shared model pick when modelSettings is present", async (
 	const body = JSON.parse(mocks.generate.mock.calls[0][0].value)
 	expect(body.pick).toEqual({ modelId: "g54", levelId: "high" })
 	expect(body).not.toHaveProperty("profileId")
-	expect(screen.queryByRole("button", { name: "Choose Generate profile" })).toBeNull()
 })

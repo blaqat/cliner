@@ -18,7 +18,6 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
-import { describeProfile } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -134,9 +133,6 @@ export default function WalkthroughView({
 }) {
 	const {
 		modelSettings,
-		apiConfigProfiles,
-		profiles: namedProfiles,
-		walkthroughGenerateProfileId,
 		currentTaskItem,
 		taskHistory,
 		taskGroups,
@@ -163,7 +159,6 @@ export default function WalkthroughView({
 		pickedModel ??
 		modelSettings?.settings.roles.background.overrides.generate ??
 		modelSettings?.settings.roles.background.pick
-	const [pickedProfileId, setPickedProfileId] = useState<string>()
 	// Fold state per scope and layout, kept while the page is open (not persisted).
 	const [foldsByWalk, setFoldsByWalk] = useState<Record<string, Folds>>({})
 	const [overallOpen, setOverallOpen] = useState(false)
@@ -188,28 +183,6 @@ export default function WalkthroughView({
 	// Generate finishes long after it starts; it must merge into the latest notes, not a stale render's.
 	const storeRef = useRef(store)
 	storeRef.current = store
-
-	// Generate runs on a profile (Settings › Profiles): its model at its effort.
-	const profiles = useMemo(
-		() =>
-			(namedProfiles ?? []).map((profile) => {
-				const configuration = apiConfigProfiles?.find((c) => c.id === profile.configurationId)
-				return {
-					id: profile.id,
-					name: profile.name,
-					description: [
-						configuration ? describeProfile(configuration) : "Missing model",
-						profile.reasoningEffort && `${profile.reasoningEffort} effort`,
-					]
-						.filter(Boolean)
-						.join(" · "),
-				}
-			}),
-		[namedProfiles, apiConfigProfiles],
-	)
-	const profileId =
-		pickedProfileId ??
-		(profiles.some((p) => p.id === walkthroughGenerateProfileId) ? walkthroughGenerateProfileId : undefined)
 
 	const fetchFree = useCallback(
 		async (forScope: WalkthroughScope) =>
@@ -294,7 +267,7 @@ export default function WalkthroughView({
 		})
 
 	const generate = async () => {
-		if (!walk || (modelSettings ? !generatePick : !profileId)) return
+		if (!walk || !generatePick) return
 		const regenerate = walk.source === "generated"
 		setGenerating(true)
 		setReviewNotesOn(false)
@@ -307,7 +280,7 @@ export default function WalkthroughView({
 						taskId,
 						scope: activeScope,
 						fingerprint: walk.fingerprint,
-						...(modelSettings ? { pick: generatePick! } : { profileId }),
+						pick: generatePick,
 						regenerate,
 						...(reviewNotesOn ? { reviewNotes: true } : {}),
 					}),
@@ -533,7 +506,6 @@ export default function WalkthroughView({
 	const stale = walk ? summarizeStale(store, walk.fingerprint) : { notes: 0, reviewed: 0 }
 	const showMoved = moved || stale.notes + stale.reviewed > 0
 	const unplaced = walk ? unplacedNotes(store, walk.fingerprint) : []
-	const generatedBy = walk?.profileId ? profiles.find((p) => p.id === walk.profileId)?.name : undefined
 	// Numbered up front so a collapsed chapter doesn't renumber the ones after it.
 	const stopNumbers = new Map(mainStops.map((stop, index) => [stop.id, index + 1]))
 	const fileCount = walk ? new Set(walk.hunks.map((h) => h.fileId)).size : 0
@@ -795,17 +767,14 @@ export default function WalkthroughView({
 						</div>
 						<span className="flex-1" />
 						<GenerateControl
-							modelSettings={modelSettings}
-							pick={generatePick}
-							onPick={setPickedModel}
 							disabled={!walk || !walk.hunks.length || busy || moved}
 							generating={generating}
+							modelSettings={modelSettings}
 							onGenerate={() => void generate()}
-							onOpenProfiles={() => navigateToSettings(modelSettings ? "models" : "profiles")}
-							onPickProfile={setPickedProfileId}
+							onOpenModels={() => navigateToSettings("models")}
+							onPick={setPickedModel}
 							onReviewNotes={setReviewNotesOn}
-							profileId={profileId}
-							profiles={profiles}
+							pick={generatePick}
 							regenerate={walk?.source === "generated"}
 							reviewNotes={reviewNotesOn}
 						/>
@@ -915,7 +884,7 @@ export default function WalkthroughView({
 											walk?.source === "generated" ? "codicon-sparkle" : "codicon-history",
 										)}
 									/>
-									{walk?.source === "generated" ? `Generated · ${generatedBy ?? "profile"}` : "From turns"}
+									{walk?.source === "generated" ? "Generated" : "From turns"}
 								</span>
 							)}
 							<span>{plural(fileCount, "file")}</span>

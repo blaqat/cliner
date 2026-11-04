@@ -6,7 +6,6 @@ import {
 	featureSettingControlId,
 	featureSettingElementId,
 	getNextSettingsNavigationRequestId,
-	resolveSettingsTarget,
 } from "./settingsTargets"
 
 describe("settings navigation requests", () => {
@@ -21,10 +20,7 @@ describe("settings navigation requests", () => {
 describe("SettingsTargetHighlight", () => {
 	const scrollIntoView = vi.fn()
 	const onComplete = vi.fn()
-	const target = resolveSettingsTarget("checkpoints")
-	if (!target) {
-		throw new Error("Missing checkpoints settings target")
-	}
+	const target = { elementId: featureSettingElementId("checkpoints"), focusElementId: featureSettingControlId("checkpoints") }
 
 	beforeEach(() => {
 		Element.prototype.scrollIntoView = scrollIntoView

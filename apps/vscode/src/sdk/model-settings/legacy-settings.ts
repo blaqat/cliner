@@ -10,14 +10,6 @@ const runsOnModelSettings = (state: StateReader) =>
 	modelSettingsRolloutEnabled() && state.getGlobalStateKey("modelSettingsMigration")?.status === "complete"
 
 /**
- * Old settings writers change nothing the runtime reads once the new store is in use. Refusing means a
- * path nobody moved over fails where it can be seen, rather than reporting a change that didn't happen.
- */
-export function assertLegacySettingsWrite(state: StateReader, what: string): void {
-	if (runsOnModelSettings(state)) throw new Error(`${what} no longer changes which model runs. Use Settings > Models.`)
-}
-
-/**
  * What runs in `mode` by the new store, for anything that only needs to know the provider or model.
  * Undefined while the old store is in use. With nothing picked it's empty: the old selection isn't what runs.
  */

@@ -125,13 +125,7 @@ const SETTINGS_SECTION_NAMES: Record<string, string> = {
 	tools: "Tools",
 	layout: "Layout",
 	data: "Data & privacy",
-	"api-config": "Models",
-	profiles: "Profiles",
-	features: "Features",
 	subagents: "Subagents",
-	terminal: "Terminal",
-	general: "General",
-	"remote-config": "Remote Config",
 	about: "About",
 	debug: "Debug",
 }
@@ -170,7 +164,11 @@ export function describeLocation(
 				: { label: title, icon: "tasklist" }
 		}
 		case "settings":
-			return { label: "Settings", icon: "settings-gear", detail: SETTINGS_SECTION_NAMES[location.section ?? ""] }
+			return {
+				label: "Settings",
+				icon: "settings-gear",
+				detail: SETTINGS_SECTION_NAMES[settingsPageForTarget(location.section) ?? ""],
+			}
 		case "history":
 			return { label: "History", icon: "history" }
 		case "account":

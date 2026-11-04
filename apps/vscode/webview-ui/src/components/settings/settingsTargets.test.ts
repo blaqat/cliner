@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-	parseSettingsTarget,
-	resolveSettingsTarget,
-	SETTINGS_NAVIGATION_TARGETS,
-	SETTINGS_TARGET_REDIRECTS,
-	settingsModelElementId,
-	settingsPageForTarget,
-} from "./settingsTargets"
+import { parseSettingsTarget, SETTINGS_TARGET_REDIRECTS, settingsModelElementId, settingsPageForTarget } from "./settingsTargets"
 
 describe("shell targets", () => {
 	it.each([
@@ -29,7 +22,7 @@ describe("shell targets", () => {
 	})
 
 	it("every old target has a place to go", () => {
-		for (const target of Object.keys(SETTINGS_NAVIGATION_TARGETS)) {
+		for (const target of Object.keys(SETTINGS_TARGET_REDIRECTS)) {
 			expect(settingsPageForTarget(target), target).toBeDefined()
 		}
 	})
@@ -62,18 +55,5 @@ describe("shell targets", () => {
 	it("anything else is an element on the current page", () => {
 		expect(parseSettingsTarget("some-element")).toEqual({ elementId: "some-element" })
 		expect(parseSettingsTarget(undefined)).toBeUndefined()
-	})
-})
-
-describe("targets on the old tabs", () => {
-	it.each([
-		["mcp-advanced", "features"],
-		["reporting", "general"],
-		["enter-sends-as", "general"],
-		["profiles", "profiles"],
-		["features", "features"],
-		["api-config", "api-config"],
-	])("%s stays on the %s tab", (target, tabId) => {
-		expect(resolveSettingsTarget(target)?.tabId).toBe(tabId)
 	})
 })

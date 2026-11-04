@@ -178,7 +178,7 @@ describe("new settings host mutations", () => {
 
 describe("Phase 4 host boundaries", () => {
 	it("rejects writes with rollout disabled before accessing the store", async () => {
-		await expect(mutateSettings({} as never, "deleteConnection", "{}")).rejects.toThrow("disabled")
+		await expect(mutateSettings({} as never, "deleteConnection", "{}", false)).rejects.toThrow("disabled")
 	})
 	it("patches only present fields and preserves null, false and zero", async () => {
 		const f = fixture()

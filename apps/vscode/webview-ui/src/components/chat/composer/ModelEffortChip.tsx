@@ -1,5 +1,4 @@
-import type { ModelInfo } from "@shared/api"
-import type { Mode, OpenaiReasoningEffort } from "@shared/storage/types"
+import type { Mode } from "@shared/storage/types"
 import { ShieldOffIcon } from "lucide-react"
 import { memo } from "react"
 import { ChipChevron, MODEL_CHIP_CLASS } from "@/components/models/ModelPickButton"
@@ -139,11 +138,8 @@ function ComposerMenuFooter({ selection, context }: { selection: ComposerSelecti
 
 interface ModelEffortChipProps {
 	mode: Mode
-	/** Shown when no saved model is assigned (e.g. before any exist). */
+	/** Names what's running until the store exists. */
 	fallbackLabel: string
-	modelId: string | undefined
-	modelInfo: ModelInfo | undefined
-	defaultEffort?: OpenaiReasoningEffort
 	/** A narrow row: the effort word hides from the chip so the model name keeps its letters. */
 	compactEffort?: boolean
 }
@@ -153,16 +149,9 @@ interface ModelEffortChipProps {
  * with the five auto-approve tiles on top and Reset, the Next message only switch and the Models page
  * below. With every action auto-approved, an error-colored shield sits before the chip text.
  */
-const ModelEffortChip = ({
-	mode,
-	fallbackLabel,
-	modelId,
-	modelInfo,
-	defaultEffort = "none",
-	compactEffort = false,
-}: ModelEffortChipProps) => {
+const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false }: ModelEffortChipProps) => {
 	const { autoApprovalSettings } = useExtensionState()
-	const selection = useComposerSelection(mode, { fallbackLabel, modelId, modelInfo, defaultEffort })
+	const selection = useComposerSelection(mode, fallbackLabel)
 	const { level } = selection
 	const fullAccess = summarizeApprovals(autoApprovalSettings).approveAll
 	const permissionsLabel = approvalsLabel(autoApprovalSettings)

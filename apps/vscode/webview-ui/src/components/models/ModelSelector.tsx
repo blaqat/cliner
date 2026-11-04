@@ -14,7 +14,7 @@ export interface SelectorLevel {
 	detail?: string
 }
 
-/** One choice in the model list: a configured model, a saved profile, or "Same as the thread". */
+/** One choice in the model list: a configured model, or "Same as the thread". */
 export interface SelectorRow {
 	id: string
 	label: string
@@ -346,9 +346,12 @@ export function ModelSelector({
 					</>
 				)}
 				{rows.length === 0 ? (
-					<p className="m-0 shrink-0 px-1 py-1 text-[11px] text-description" data-testid="model-menu-empty">
-						No models set up yet. {fixLink("Add one in Settings › Models")}
-					</p>
+					// A note says why there's nothing better than this line would.
+					!note && (
+						<p className="m-0 shrink-0 px-1 py-1 text-[11px] text-description" data-testid="model-menu-empty">
+							No models set up yet. {fixLink("Add one in Settings › Models")}
+						</p>
+					)
 				) : (
 					// The one scroll region: a long model list scrolls here, both columns together, unless the window is too short for that.
 					<div

@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { ApiConfiguration, ApiProvider } from "@shared/api"
-import {
-	type ApiConfigProfile,
-	isAllowedApiProvider,
-	type OpenAiCompatibleApiType,
-	type TaskApiSelection,
-} from "@shared/api-profiles"
+import { type ApiConfigProfile, type OpenAiCompatibleApiType, type TaskApiSelection } from "@shared/api-profiles"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import {
@@ -551,7 +546,7 @@ export async function ensureApiConfigProfiles(stateManager: ApiProfileStore): Pr
 		updates.actProfileId = actProfileId
 	} else {
 		const known = new Set(profiles.map((p) => p.id))
-		const fallback = profiles.find((p) => isAllowedApiProvider(p.provider))?.id ?? profiles[0]?.id
+		const fallback = profiles[0]?.id
 		if (!askProfileId || !known.has(askProfileId)) {
 			askProfileId = fallback
 			updates.askProfileId = askProfileId

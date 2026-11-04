@@ -413,11 +413,11 @@ message UpdateSettingsRequest {
   reserved 12; // was terminal_output_line_limit (removed; SDK command output limits are character-based)
   reserved 19; // was custom_prompt (removed - compact prompt setting no longer supported)
   reserved "native_tool_call_enabled", "cline_web_tools_enabled", "enable_parallel_tool_calling", "double_check_completion_enabled", "custom_prompt";
+  reserved 2, 4, 29, 48, 49, 50, 51, 52, 55, 56, 57, 58, 59, 60, 61, 63, 64, 65, 66, 67; // model settings moved to ModelsService
+  reserved "api_configuration", "plan_act_separate_models_setting", "subagents_enabled", "subagents_max_concurrent", "subagents_allow_write", "subagents_allow_commands", "subagents_allow_mcp", "subagents_allow_web", "subagent_profiles_enabled", "subagent_default_profile_id", "subagent_reasoning_effort", "subagent_allowed_profile_ids", "thread_titles_enabled", "thread_titles_profile_id", "walkthrough_generate_profile_id", "profiles", "thread_default_profile_id", "thread_separate_ask_act_profiles", "thread_ask_profile_id", "thread_act_profile_id";
 
   Metadata metadata = 1;
-  optional ModelsApiConfiguration api_configuration = 2;
   optional string telemetry_setting = 3;
-  optional bool plan_act_separate_models_setting = 4;
   optional bool enable_checkpoints_setting = 5;
   optional bool mcp_marketplace_enabled = 6;
   optional int32 shell_integration_timeout = 8;
@@ -436,7 +436,6 @@ message UpdateSettingsRequest {
   optional bool hooks_enabled = 26;
   optional string vscode_terminal_execution_mode = 27;
   reserved 28; // was max_consecutive_mistakes (removed; the SDK owns the mistake limit)
-  optional bool subagents_enabled = 29;
   optional int32 subagent_terminal_output_line_limit = 30;
   optional string cline_env = 31;
   optional OnboardingModelGroup onboarding_models = 33;
@@ -449,28 +448,10 @@ message UpdateSettingsRequest {
   optional bool web_search_enabled = 45;
   optional string enter_sends_as = 46;
   optional PromptStash prompt_stash = 47;
-  optional int32 subagents_max_concurrent = 48;
-  optional bool subagents_allow_write = 49;
-  optional bool subagents_allow_commands = 50;
-  optional bool subagents_allow_mcp = 51;
-  optional bool subagents_allow_web = 52;
   optional bool thread_toasts_enabled = 53;
   optional int32 thread_toast_seconds = 54;
   optional bool continue_answer_on_act_switch = 68;
-  optional bool subagent_profiles_enabled = 55;
-  optional string subagent_default_profile_id = 56;
-  optional string subagent_reasoning_effort = 57;
-  optional StringList subagent_allowed_profile_ids = 58;
-  optional bool thread_titles_enabled = 59;
-  optional string thread_titles_profile_id = 60;
-  optional string walkthrough_generate_profile_id = 61;
   optional TerminalEnvironmentUpdate terminal_environment = 62;
-  // Profiles page: the whole profile list, and the Thread defaults.
-  optional ModelProfileList profiles = 63;
-  optional string thread_default_profile_id = 64;
-  optional bool thread_separate_ask_act_profiles = 65;
-  optional string thread_ask_profile_id = 66;
-  optional string thread_act_profile_id = 67;
   // One view (beta): the thread list beside the chat instead of a separate home page.
   optional bool one_view_enabled = 69;
   optional bool open_telemetry_enabled = 70;

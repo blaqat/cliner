@@ -1,6 +1,5 @@
 import { createDefaultModelSettings } from "@shared/model-settings"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createFakeHost, type FakeHost } from "../../settings/models/modelsPage.fixture"
 import OnboardingView from "../OnboardingView"
@@ -13,9 +12,18 @@ const mocks = vi.hoisted(() => ({
 	updateSettings: vi.fn(),
 	setWelcomeViewCompleted: vi.fn(),
 	captureOnboardingProgress: vi.fn(),
+	retry: vi.fn(),
+	openLogs: vi.fn(),
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
+vi.mock("@/context/ClineAuthContext", () => ({ useClineAuth: () => ({ activeOrganization: null, clineUser: null }) }))
+vi.mock("@/components/navigation/NavigationHistoryContext", () => ({ useNavigationHistory: () => undefined }))
+vi.mock("@/hooks/useProviderListings", () => ({ useProviderListings: () => ({ listings: [], error: undefined }) }))
+vi.mock("@/components/settings/sections/DebugSection", () => ({ default: () => null }))
+vi.mock("@/components/settings/sections/RemoteConfigSection", () => ({ RemoteConfigSection: () => null }))
+vi.mock("@/components/settings/environment/TerminalEnvironmentEditor", () => ({ default: () => null }))
+vi.mock("@/components/worktrees/WorktreeSettings", () => ({ WorktreeSettings: () => null }))
 vi.mock("@/services/grpc-client", () => ({
 	ModelsServiceClient: new Proxy(
 		{},
@@ -25,7 +33,9 @@ vi.mock("@/services/grpc-client", () => ({
 					? mocks.saveApiProfile
 					: name === "assignApiProfile"
 						? mocks.assignApiProfile
-						: mocks.host[name],
+						: name === "retryModelSettingsMigration"
+							? mocks.retry
+							: mocks.host[name],
 		},
 	),
 	StateServiceClient: {
@@ -33,174 +43,128 @@ vi.mock("@/services/grpc-client", () => ({
 		setWelcomeViewCompleted: mocks.setWelcomeViewCompleted,
 		captureOnboardingProgress: mocks.captureOnboardingProgress,
 	},
-}))
-vi.mock("@/hooks/useProviderModels", () => ({
-	useProviderModels: () => ({ models: { "claude-x": {}, "claude-y": {} }, defaultModelId: "claude-x" }),
-}))
-vi.mock("@vscode/webview-ui-toolkit/react", () => ({
-	VSCodeButton: ({ children, disabled, onClick, ...rest }: any) => (
-		<button aria-label={rest["aria-label"]} disabled={disabled} onClick={onClick} type="button">
-			{children}
-		</button>
-	),
-	VSCodeDropdown: ({ children, onChange, value, ...rest }: any) => (
-		<select aria-label={rest["aria-label"]} id={rest.id} onChange={onChange} value={value}>
-			{children}
-		</select>
-	),
-	VSCodeOption: ({ children, value }: { children?: ReactNode; value: string }) => <option value={value}>{children}</option>,
-	VSCodeTextField: ({ children, onInput, value, placeholder, ...rest }: any) => (
-		<label>
-			{children}
-			<input data-testid={rest["data-testid"]} onChange={onInput} placeholder={placeholder} value={value} />
-		</label>
-	),
-	VSCodeCheckbox: ({ children }: any) => <label>{children}</label>,
+	UiServiceClient: { openLogs: mocks.openLogs },
 }))
 
-describe("OnboardingView with the new store in use", () => {
-	let host: FakeHost
-	const fill = () => {
-		fireEvent.change(screen.getByTestId("option-openAiBaseUrl"), { target: { value: "http://x/v1" } })
-		fireEvent.change(screen.getByTestId("secret-openAiApiKey"), { target: { value: "sk-1" } })
-		fireEvent.change(screen.getByTestId("model-id-input"), { target: { value: "m1" } })
+const start = (host: FakeHost, extra: Record<string, unknown> = {}) => {
+	mocks.host = host.client
+	mocks.state = {
+		hideAccount: vi.fn(),
+		hideSettings: vi.fn(),
+		setShowWelcome: vi.fn(),
+		remoteConfigSettings: {},
+		modelSettings: host.state(),
+		...extra,
 	}
-	beforeEach(() => {
-		vi.clearAllMocks()
-		host = createFakeHost()
-		mocks.host = host.client
-		mocks.state = { hideAccount: vi.fn(), hideSettings: vi.fn(), setShowWelcome: vi.fn(), modelSettings: host.state() }
-		mocks.setWelcomeViewCompleted.mockResolvedValue({})
+}
+
+const withModel = () => {
+	const settings = createDefaultModelSettings()
+	settings.connections = [
+		{
+			id: "c",
+			kind: "openai-compatible",
+			name: "C",
+			baseUrl: "http://x/v1",
+			auth: { kind: "none" },
+			headers: [],
+			requestTimeoutMs: null,
+			defaults: {},
+			apiFormat: "chat",
+			azureApiVersion: null,
+		},
+	]
+	settings.models = [
+		{ id: "m1", connectionId: "c", upstreamId: "m1", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+	]
+	return settings
+}
+
+beforeEach(() => {
+	vi.clearAllMocks()
+	mocks.setWelcomeViewCompleted.mockResolvedValue({})
+})
+
+describe("OnboardingView", () => {
+	it("is the Models page, with one way out once there's a model", () => {
+		start(createFakeHost())
+		render(<OnboardingView />)
+		expect(screen.getByText("Set up your first model")).toBeVisible()
+		expect(screen.getByTestId("settings-page-models")).toBeInTheDocument()
+		expect(screen.queryByLabelText("Search settings")).toBeNull()
+		const next = screen.getByRole("button", { name: "Continue" })
+		expect(next).toBeDisabled()
+		expect(next).toHaveAttribute("title", "Add a model first")
+		expect(screen.getByText(/Nothing can run yet/)).toBeVisible()
 	})
 
-	it("leaves a connection, a model, and Chat and Background text on it, so a fresh install can run", async () => {
+	it("offers every way to add a model, not four providers", () => {
+		start(createFakeHost())
 		render(<OnboardingView />)
-		fill()
-		fireEvent.click(screen.getByText("Create"))
-		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalledWith(expect.objectContaining({ value: true })))
+		expect(screen.getByRole("button", { name: /OpenAI-compatible|Add a connection/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /other provider|another provider|Add a provider/i })).toBeInTheDocument()
+	})
 
-		const { settings } = host.state()
-		const pick = { modelId: settings.models[0].id, levelId: "default" }
-		expect(settings.connections[0]).toMatchObject({ kind: "openai-compatible", baseUrl: "http://x/v1" })
-		expect(settings.models[0].upstreamId).toBe("m1")
-		expect(settings.roles.chat).toEqual(pick)
-		expect(settings.roles.background.pick).toEqual(pick)
-		expect(host.secrets[`settings:v1:connection:${settings.connections[0].id}:apiKey`]).toBe("sk-1")
+	it("Continue runs Chat and Background text on the first model, through the new store only", async () => {
+		const host = createFakeHost({ settings: withModel() })
+		start(host)
+		render(<OnboardingView />)
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalledWith(expect.objectContaining({ value: true })))
+		const { roles } = host.state().settings
+		expect(roles.chat).toEqual({ modelId: "m1", levelId: "default" })
+		expect(roles.background.pick).toEqual({ modelId: "m1", levelId: "default" })
 		expect(mocks.saveApiProfile).not.toHaveBeenCalled()
 		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
 		expect(mocks.updateSettings).not.toHaveBeenCalled()
 		expect(mocks.state.setShowWelcome).toHaveBeenCalledWith(false)
 	})
 
-	it("Ask runs on it too when Ask has its own role on", async () => {
-		const settings = createDefaultModelSettings()
-		settings.roles.ask.enabled = true
-		host = createFakeHost({ settings })
-		mocks.host = host.client
-		mocks.state = { ...mocks.state, modelSettings: host.state() }
+	it("keeps what was already picked", async () => {
+		const settings = withModel()
+		settings.models.push({ ...settings.models[0], id: "m2", upstreamId: "m2" })
+		settings.roles.chat = { modelId: "m2", levelId: "default" }
+		const host = createFakeHost({ settings })
+		start(host)
 		render(<OnboardingView />)
-		fill()
-		fireEvent.click(screen.getByText("Create"))
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalled())
-		const { roles, models } = host.state().settings
-		expect(roles.ask.pick?.modelId).toBe(models[0].id)
+		const { roles } = host.state().settings
+		expect(roles.chat?.modelId).toBe("m2")
+		expect(roles.background.pick?.modelId).toBe("m2")
 	})
 
-	it("stays on the form when a step fails, and a retry doesn't add a second connection", async () => {
-		const save = host.client.saveConfiguredModels
-		mocks.host = { ...host.client, saveConfiguredModels: () => Promise.reject(new Error("no such model")) }
+	it("Ask runs on it too when Ask has its own role on", async () => {
+		const settings = withModel()
+		settings.roles.ask.enabled = true
+		const host = createFakeHost({ settings })
+		start(host)
 		render(<OnboardingView />)
-		fill()
-		fireEvent.click(screen.getByText("Create"))
-		expect(await screen.findByText("no such model")).toBeTruthy()
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalled())
+		expect(host.state().settings.roles.ask.pick?.modelId).toBe("m1")
+	})
+
+	it("stays put and says why when the save fails", async () => {
+		const host = createFakeHost({ settings: withModel() })
+		start(host)
+		mocks.host = { ...host.client, setModelRoles: () => Promise.reject(new Error("no such model")) }
+		render(<OnboardingView />)
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+		expect(await screen.findByText("no such model")).toBeVisible()
 		expect(mocks.setWelcomeViewCompleted).not.toHaveBeenCalled()
 		expect(mocks.state.setShowWelcome).not.toHaveBeenCalled()
-
-		mocks.host = { ...host.client, saveConfiguredModels: save }
-		fireEvent.click(screen.getByText("Create"))
-		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalled())
-		expect(host.state().settings.connections).toHaveLength(1)
-		expect(host.state().settings.roles.chat).not.toBeNull()
 	})
 
-	it("a level the model doesn't offer is refused where it can be fixed, not saved as a pick that won't start", async () => {
+	it("before the setup has moved, says why and offers the retry instead of a form", () => {
+		start(createFakeHost(), {
+			modelSettings: undefined,
+			modelSettingsMigrationStatus: { status: "failed", retryable: true, cause: "The keychain refused" },
+		})
 		render(<OnboardingView />)
-		fireEvent.change(screen.getByLabelText("API Provider"), { target: { value: "anthropic" } })
-		fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-x" } })
-		fireEvent.change(screen.getByTestId("secret-apiKey"), { target: { value: "sk-2" } })
-		fireEvent.change(screen.getByLabelText("Default reasoning effort"), { target: { value: "high" } })
-		fireEvent.click(screen.getByText("Create"))
-		expect(await screen.findByText(/doesn't offer the high level/)).toBeTruthy()
-		expect(host.state().settings.roles.chat).toBeNull()
-		expect(mocks.setWelcomeViewCompleted).not.toHaveBeenCalled()
-	})
-})
-
-describe("OnboardingView", () => {
-	beforeEach(() => {
-		vi.clearAllMocks()
-		mocks.state = {
-			hideAccount: vi.fn(),
-			hideSettings: vi.fn(),
-			setShowWelcome: vi.fn(),
-		}
-		mocks.saveApiProfile.mockImplementation(async (req: any) => ({ profile: { id: req.id || "saved-1" } }))
-		mocks.assignApiProfile.mockResolvedValue({})
-		mocks.updateSettings.mockResolvedValue({})
-		mocks.setWelcomeViewCompleted.mockResolvedValue({})
-	})
-
-	it("only offers the allowed providers", () => {
-		render(<OnboardingView />)
-		const provider = screen.getByLabelText("API Provider") as HTMLSelectElement
-		expect(Array.from(provider.options).map((option) => option.value)).toEqual([
-			"openai",
-			"bedrock",
-			"anthropic",
-			"openai-native",
-		])
-	})
-
-	it("saves a configuration and assigns it to Ask and Act", async () => {
-		render(<OnboardingView />)
-		fireEvent.change(screen.getByTestId("option-openAiBaseUrl"), { target: { value: "http://x/v1" } })
-		fireEvent.change(screen.getByTestId("secret-openAiApiKey"), { target: { value: "sk-1" } })
-		fireEvent.change(screen.getByTestId("model-id-input"), { target: { value: "m1" } })
-		fireEvent.click(screen.getByText("Create"))
-
-		await waitFor(() => expect(mocks.assignApiProfile).toHaveBeenCalledTimes(2))
-		const request = mocks.saveApiProfile.mock.calls[0][0]
-		expect(request).toMatchObject({ provider: "openai", modelId: "m1" })
-		expect(JSON.parse(request.optionsJson)).toEqual({ openAiBaseUrl: "http://x/v1" })
-		expect(request.secrets).toEqual({ openAiApiKey: "sk-1" })
-		expect(mocks.assignApiProfile.mock.calls.map((call) => call[0])).toEqual([
-			expect.objectContaining({ mode: "plan", profileId: "saved-1" }),
-			expect.objectContaining({ mode: "act", profileId: "saved-1" }),
-		])
-		await waitFor(() => expect(mocks.setWelcomeViewCompleted).toHaveBeenCalledWith(expect.objectContaining({ value: true })))
-	})
-
-	it("blocks completion when the provider is missing required config", async () => {
-		render(<OnboardingView />)
-		fireEvent.change(screen.getByLabelText("API Provider"), { target: { value: "anthropic" } })
-		fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-x" } })
-		fireEvent.click(screen.getByText("Create"))
-
-		expect(await screen.findByText("An API key is required for Anthropic.")).toBeTruthy()
-		expect(mocks.saveApiProfile).not.toHaveBeenCalled()
-		expect(mocks.assignApiProfile).not.toHaveBeenCalled()
-	})
-
-	it("never touches the cline/cline-pass providers", async () => {
-		render(<OnboardingView />)
-		fireEvent.change(screen.getByTestId("option-openAiBaseUrl"), { target: { value: "http://x/v1" } })
-		fireEvent.change(screen.getByTestId("secret-openAiApiKey"), { target: { value: "sk-1" } })
-		fireEvent.change(screen.getByTestId("model-id-input"), { target: { value: "m1" } })
-		fireEvent.click(screen.getByText("Create"))
-
-		await waitFor(() => expect(mocks.saveApiProfile).toHaveBeenCalled())
-		for (const call of [...mocks.saveApiProfile.mock.calls, ...mocks.assignApiProfile.mock.calls]) {
-			expect(JSON.stringify(call)).not.toMatch(/cline(-pass)?/)
-		}
+		expect(screen.getByText("The keychain refused")).toBeVisible()
+		expect(screen.getByRole("button", { name: "Retry" })).toBeVisible()
+		expect(screen.getByRole("button", { name: "Open logs" })).toBeVisible()
+		expect(screen.queryByText("Set up your first model")).toBeNull()
 	})
 })

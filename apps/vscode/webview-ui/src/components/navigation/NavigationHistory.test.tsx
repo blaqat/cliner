@@ -102,31 +102,24 @@ describe("navigation history", () => {
 		expect(entries()).toBe("home > task:t:home > thread:a")
 	})
 
-	it("names Settings by the old tab while the shell is off", () => {
+	it("names Settings by its page", () => {
 		const { go } = setup()
-		go({ showSettings: true, settingsNavigationRequest: { target: "features", requestId: 1 } } as never)
-		expect(entries()).toBe("home > settings:features")
-	})
-
-	it("names Settings by the shell's page when it's on", () => {
-		const { go } = setup()
-		go({ modelSettings: {}, showSettings: true } as never)
+		go({ showSettings: true } as never)
 		expect(entries()).toBe("home > settings:models")
 	})
 
-	it("reads a deep link as the page it opens when the shell is on", () => {
+	it("reads a deep link as the page it opens", () => {
 		const { go } = setup()
-		go({ modelSettings: {}, showSettings: true, settingsNavigationRequest: { target: "worktrees", requestId: 1 } } as never)
+		go({ showSettings: true, settingsNavigationRequest: { target: "worktrees", requestId: 1 } } as never)
 		expect(entries()).toBe("home > settings:tools")
 	})
 
-	it("Back to an entry saved under an old tab name opens the page it became", () => {
+	it("Back to an entry reached by an old target opens the page it became", () => {
 		const { go } = setup()
 		go({ showSettings: true, settingsNavigationRequest: { target: "terminal", requestId: 1 } } as never)
 		go({ showSettings: false, currentTaskItem: { id: "a" }, settingsNavigationRequest: undefined } as never)
-		expect(entries()).toBe("home > settings:terminal > thread:a")
+		expect(entries()).toBe("home > settings:tools > thread:a")
 
-		go({ modelSettings: {} } as never)
 		fireEvent.click(screen.getByTestId("crumb-back"))
 		expect(actions.navigateToSettings).toHaveBeenCalledWith("tools")
 		expect(entries()).toBe("home > settings:tools")
@@ -156,7 +149,7 @@ describe("navigation history", () => {
 		const { go } = setup()
 		go({ currentTaskItem: { id: "a" } })
 		go({ showSettings: true })
-		expect(entries()).toBe("home > thread:a > settings:api-config")
+		expect(entries()).toBe("home > thread:a > settings:models")
 		expect(screen.getByTestId("crumb-back")).toBeInTheDocument()
 
 		// Settings' close (or a Home crumb) lands on Home with no thread open.

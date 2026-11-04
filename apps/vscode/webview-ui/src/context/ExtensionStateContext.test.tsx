@@ -1,6 +1,5 @@
 import { act, cleanup, render } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
-import Features from "@/components/settings/sections/FeatureSettingsSection"
 import { ExtensionStateContextProvider, useExtensionState } from "@/context/ExtensionStateContext"
 
 const h = vi.hoisted(() => ({ receive: null as any }))
@@ -36,10 +35,9 @@ it("preserves history identity and waits for the host value on settings clicks",
 		state = useExtensionState()
 		return null
 	}
-	const { getByRole } = render(
+	render(
 		<ExtensionStateContextProvider>
 			<Probe />
-			<Features renderSectionHeader={() => null} />
 		</ExtensionStateContextProvider>,
 	)
 	const history = [{ id: "one", ts: 1, task: "hello", tokensIn: 0, tokensOut: 0, totalCost: 0 }]
@@ -56,8 +54,6 @@ it("preserves history identity and waits for the host value on settings clicks",
 		}),
 	)
 	const original = state.taskHistory
-	getByRole("switch", { name: "Hooks" }).click()
-	expect(state.hooksEnabled).toBe(false)
 	await act(async () => h.receive({ stateJson: JSON.stringify({ taskHistoryVersion: "1", hooksEnabled: true }) }))
 	expect(state.hooksEnabled).toBe(true)
 	expect(state.taskHistory).toBe(original)

@@ -8,15 +8,11 @@ const mocks = vi.hoisted(() => ({
 	host: {} as Record<string, unknown>,
 	state: {} as Record<string, unknown>,
 	onAction: undefined as undefined | ((action: unknown) => void),
-	handleFieldsChange: vi.fn(),
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/context/ClineAuthContext", () => ({ useClineAuth: () => ({ clineUser: undefined }) }))
 vi.mock("@/hooks/useClinePassPromo", () => ({
 	useClinePassPromo: () => ({ isClinePassEnabled: false, isUsingClinePass: false }),
-}))
-vi.mock("@/components/settings/utils/useApiConfigurationHandlers", () => ({
-	useApiConfigurationHandlers: () => ({ handleFieldsChange: mocks.handleFieldsChange }),
 }))
 vi.mock("@/components/common/BannerCarousel", () => ({ default: () => null }))
 vi.mock("@/components/common/WhatsNewModal", () => ({
@@ -70,13 +66,11 @@ describe("home banners with the new store in use", () => {
 		const chat = settings.models.find((model) => model.id === settings.roles.chat?.modelId)
 		expect(chat?.upstreamId).toBe("vendor/banner-model")
 		expect(settings.connections.find((c) => c.id === chat?.connectionId)).toMatchObject({ providerId: "cline" })
-		expect(mocks.handleFieldsChange).not.toHaveBeenCalled()
 	})
 	it("Show API settings opens Models and writes nothing", () => {
 		const before = host.state().settings.revision
 		open()({ action: BannerActionType.ShowApiSettings, arg: "openrouter" })
 		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("models")
-		expect(mocks.handleFieldsChange).not.toHaveBeenCalled()
 		expect(host.state().settings.revision).toBe(before)
 	})
 })

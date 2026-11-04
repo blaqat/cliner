@@ -107,57 +107,11 @@ const overriddenChat: FocusedChatState = {
 const settingsFallback = { provider: "anthropic" as const, modelId: "claude-sonnet" }
 
 describe("resolveFocusedChatModel", () => {
-	it("describes the chat's override, not the Settings default", () => {
-		const model = resolveFocusedChatModel("act", overriddenChat, settingsFallback)
-		expect(model).toMatchObject({ provider: "openai", modelId: "qwen-coder", openAiCompatibleApiType: "responses" })
-		expect(model.profile?.id).toBe("local")
-		expect(effectiveContextWindow(model.customModelInfo, { contextWindow: 200_000 })).toBe(32_000)
-		// The override's prices make its cost meaningful even though Settings' default is another provider.
-		expect(isTaskCostVisible(model.provider, model.customModelInfo, "unknown", 0.42)).toBe(true)
-	})
-
 	it("uses the Settings default when the chat has no override", () => {
 		const model = resolveFocusedChatModel("act", { ...overriddenChat, composerApiSelection: undefined }, settingsFallback)
 		expect(model).toMatchObject({ provider: "anthropic", modelId: "claude-sonnet" })
 		expect(model.customModelInfo).toBeUndefined()
 		expect(effectiveContextWindow(model.customModelInfo, { contextWindow: 200_000 })).toBe(200_000)
-	})
-
-	it("prefers the live session's model while a picked change is pending", () => {
-		const model = resolveFocusedChatModel(
-			"act",
-			{
-				...overriddenChat,
-				composerApiSelection: { actProfileId: "default" },
-				focusedSessionModels: { act: { profileId: "local", provider: "openai", modelId: "qwen-coder" } },
-			},
-			settingsFallback,
-		)
-		expect(model.profile?.id).toBe("local")
-		expect(model.customModelInfo?.contextWindow).toBe(32_000)
-	})
-
-	it("drops a profile edited since the session was built", () => {
-		const model = resolveFocusedChatModel(
-			"act",
-			{
-				...overriddenChat,
-				focusedSessionModels: { act: { profileId: "local", provider: "openai", modelId: "older-model" } },
-			},
-			settingsFallback,
-		)
-		expect(model).toMatchObject({ provider: "openai", modelId: "older-model" })
-		expect(model.profile).toBeUndefined()
-		expect(model.customModelInfo).toBeUndefined()
-	})
-
-	it("resolves Ask from the chat's Ask selection", () => {
-		const model = resolveFocusedChatModel(
-			"plan",
-			{ ...overriddenChat, composerApiSelection: { askProfileId: "local", actProfileId: "default" } },
-			settingsFallback,
-		)
-		expect(model.profile?.id).toBe("local")
 	})
 
 	it("uses the composer configuration's model info for chats without a saved configuration", () => {

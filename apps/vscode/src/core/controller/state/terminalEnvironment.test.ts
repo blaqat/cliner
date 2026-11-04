@@ -27,6 +27,7 @@ function makeController(initial: { global?: TerminalEnvironmentSettings; workspa
 	const stateManager = {
 		getApiConfiguration: () => ({}),
 		getGlobalStateKey: (key: string) => (key === "terminalEnvironment" ? state.global : undefined),
+		getModelSettingsMigrationStatus: () => ({ status: "pending", retryable: false }),
 		getGlobalSettingsKey: () => undefined,
 		getWorkspaceStateKey: (key: string) => (key === "terminalEnvironment" ? state.workspace : undefined),
 		setGlobalState: vi.fn((_key: string, value: TerminalEnvironmentSettings) => {

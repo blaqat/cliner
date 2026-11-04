@@ -6,13 +6,9 @@ import { useClinePassPromo } from "./useClinePassPromo"
 const mocks = vi.hoisted(() => ({
 	host: {} as Record<string, unknown>,
 	state: {} as Record<string, unknown>,
-	handleModeFieldChange: vi.fn(),
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/context/ClineAuthContext", () => ({ useClineAuth: () => ({ clineUser: undefined }) }))
-vi.mock("@/components/settings/utils/useApiConfigurationHandlers", () => ({
-	useApiConfigurationHandlers: () => ({ handleModeFieldChange: mocks.handleModeFieldChange }),
-}))
 vi.mock("@/services/grpc-client", () => ({
 	ModelsServiceClient: new Proxy({}, { get: (_target, name: string) => mocks.host[name] }),
 	UiServiceClient: {},
@@ -44,7 +40,6 @@ describe("the ClinePass promo with the new store in use", () => {
 		const connection = host.state().settings.connections.find((c) => c.kind === "provider" && c.providerId === "cline-pass")
 		expect(connection).toBeDefined()
 		await waitFor(() => expect(mocks.state.navigateToSettings).toHaveBeenCalledWith(`connection:${connection?.id}`))
-		expect(mocks.handleModeFieldChange).not.toHaveBeenCalled()
 		expect(host.state().settings.roles.chat).toEqual(chat)
 	})
 	it("a refusal still lands on the page, not nowhere", async () => {

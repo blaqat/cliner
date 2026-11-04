@@ -129,7 +129,7 @@ describe("describeLocation", () => {
 		expect(describeLocation(thread("gone"), history, groups).label).toBe("Thread")
 		expect(describeLocation({ kind: "settings", section: "features" }, [], [])).toMatchObject({
 			label: "Settings",
-			detail: "Features",
+			detail: "Agent",
 		})
 	})
 })
@@ -142,7 +142,7 @@ describe("settings places", () => {
 		["layout", "Layout"],
 		["data", "Data & privacy"],
 		["api-config", "Models"],
-		["general", "General"],
+		["general", "Agent"],
 	])("names %s", (section, detail) => {
 		expect(describeLocation({ kind: "settings", section }, [], []).detail).toBe(detail)
 	})

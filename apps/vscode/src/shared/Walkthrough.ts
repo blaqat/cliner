@@ -206,7 +206,6 @@ export interface WalkthroughRequest {
 	pick?: import("./model-settings").ModelPick
 	taskId: string
 	scope: WalkthroughScope
-	profileId?: string
 	regenerate?: boolean
 	fingerprint?: string
 	fileId?: string

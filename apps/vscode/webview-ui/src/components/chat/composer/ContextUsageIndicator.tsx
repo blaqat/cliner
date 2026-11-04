@@ -1,16 +1,16 @@
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import type { CostBreakdownRow } from "@shared/getApiMetrics"
 import type { Mode } from "@shared/storage/types"
 import { FoldVerticalIcon, Minimize2Icon } from "lucide-react"
 import { memo, useState } from "react"
 import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
-import { describeProfile, PROVIDER_LABELS } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useTaskCostVisible } from "@/hooks/useTaskCostVisible"
 import { cn } from "@/lib/utils"
 import { formatLargeNumber } from "@/utils/format"
 import { CONTEXT_USAGE_COLORS, contextUsageLevel, contextUsagePercent, formatChatCost, showsCompactNudge } from "./contextUsage"
+import { describeModel, PROVIDER_LABELS } from "./describeModel"
 import { useFocusedChatModel } from "./useFocusedChatModel"
 
 export interface ContextUsageIndicatorProps {
@@ -234,8 +234,8 @@ export const ContextUsageIndicator = memo(
 								<ContextRing color={levelColor} percent={percent ?? 0} />
 								{contextWindowEstimated && (
 									<span
-										className="absolute inset-0 flex items-center justify-center text-[9px]"
-										aria-label="Estimated context window">
+										aria-label="Estimated context window"
+										className="absolute inset-0 flex items-center justify-center text-[9px]">
 										~
 									</span>
 								)}
@@ -430,7 +430,7 @@ export function useComposerContextUsage(
 		contextWindow: planning ? planning.planningContextWindow : model.contextWindow,
 		contextWindowEstimated: planning ? !planning.contextWindowKnown : false,
 		cost: costVisible ? totalCost : undefined,
-		modelLabel: describeProfile(model),
+		modelLabel: describeModel(model),
 		modelId: model.modelId || undefined,
 	}
 }

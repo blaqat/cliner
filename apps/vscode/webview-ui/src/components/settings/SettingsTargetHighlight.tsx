@@ -1,11 +1,11 @@
 import { useEffect } from "react"
-import type { ResolvedSettingsTarget } from "./settingsTargets"
+import type { ParsedSettingsTarget } from "./settingsTargets"
 
 const HIGHLIGHT_FALLBACK_MS = 2200
 
 interface SettingsTargetHighlightProps {
 	requestId: number
-	target: ResolvedSettingsTarget
+	target: Pick<ParsedSettingsTarget, "elementId" | "focusElementId">
 	onComplete: (requestId: number) => void
 }
 

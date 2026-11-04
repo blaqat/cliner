@@ -66,7 +66,7 @@ Existing SDK checkpoints supply before contents at user-turn boundaries, includi
 
 Generate has no agent loop, retry, or repair call. It requests one `submit_walkthrough` tool, drops unknown and duplicate aliases, and places omissions in `support`. Cache files live in `tasks/<taskId>/walkthrough-cache/<hash>.json`. The hash includes live diff fingerprints, profile/model identity and options, context, prompt, schema, and version. Cache identity excludes the previous walkthrough, so explicit regeneration replaces that diff's result.
 
-`readRememberedWalkthroughProfileId(controller)` in `service.ts` is the single Step 6 integration point. It currently returns `undefined`. The page passes a selected profile ID. No new setting is stored. Explicit profiles keep their selected model for large diffs, matching Codiff's treatment of explicit model selections.
+Generate runs on the Background text model from Settings > Models, or the pick made beside the Generate button for that one call. Nothing is remembered.
 
 Prompt excerpts use 60,000 characters total or 35,000 above 32 files, with per-hunk caps of 8,000, 2,500, or 700. Context is capped at 16,000 characters. Timeouts scale from 90 seconds to five minutes. The manual eval runner is documented in `evals/walkthrough/README.md`.
 

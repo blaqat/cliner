@@ -406,8 +406,6 @@ export const ExtensionStateContextProvider: React.FC<{
 		oneViewEnabled: false,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
-		apiConfigProfiles: [],
-		profiles: [],
 
 		// NEW: Add workspace information with defaults
 		workspaceRoots: [],

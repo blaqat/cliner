@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
 import { expect, waitFor } from "storybook/test"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { createStorybookDecorator } from "@/config/StorybookDecorator"
 import ChatTextArea from "../ChatTextArea"
 import { ContextUsageIndicator } from "./ContextUsageIndicator"
@@ -18,10 +19,7 @@ const meta: Meta<typeof ChatTextArea> = {
 			{
 				mode: "act",
 				apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
-				apiConfigProfiles: [
-					{ id: "work", name: "Work · OpenAI long configuration name", provider: "openai-native", modelId: "gpt-5.1" },
-				],
-				actProfileId: "work",
+				modelSettings: modelSettingsFixture(),
 			},
 			"max-w-none",
 		),

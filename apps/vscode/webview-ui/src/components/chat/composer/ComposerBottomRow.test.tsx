@@ -3,6 +3,7 @@ import { PlanActMode } from "@shared/proto/cline/state"
 import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import type React from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { USE_SCRIPT_EVENT } from "../../topbar/topBarPanels"
 import ChatTextArea, { type ChatTextAreaProps } from "../ChatTextArea"
 import { type ComposerRowLayout, composerRowLayout, FULL_COMPOSER_ROW } from "./composerRowLayout"
@@ -14,15 +15,15 @@ const mocks = vi.hoisted(() => ({
 	// Stable references: a new object every render would re-run effects that depend on it.
 	thread: { id: "thread", taskGroupId: "sso" },
 	taskGroups: [{ id: "sso", title: "SSO redirect loop", tags: [], createdAt: 0, updatedAt: 0, noteCount: 0 }],
-	apiConfigProfiles: [{ id: "p1", name: "Opus 4.5", provider: "anthropic", modelId: "claude-opus" }],
+	modelSettings: undefined as unknown,
 }))
+mocks.modelSettings = modelSettingsFixture()
 
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		mode: "act",
 		apiConfiguration: { actModeReasoningEffort: "high" },
-		apiConfigProfiles: mocks.apiConfigProfiles,
-		actProfileId: "p1",
+		modelSettings: mocks.modelSettings,
 		platform: "darwin",
 		localWorkflowToggles: {},
 		globalWorkflowToggles: {},
@@ -140,7 +141,7 @@ describe("composer bottom row", () => {
 		for (const element of order) expect(row).toContainElement(element)
 		for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
 		// No "·": the model and effort read as words, spaced by the chip's gap.
-		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent(/^Opus 4\.5High$/)
+		expect(screen.getByTestId("model-effort-chip")).toHaveTextContent(/^GPT-6 Sol · Company gatewayMed$/)
 		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^AskAct$/)
 		expect(screen.getByTestId("mode-switch")).toHaveAttribute("aria-checked", "true")
 		expect(follows(screen.getByTestId("model-effort-chip"), screen.getByTestId("mode-switch"))).toBe(true)
@@ -291,9 +292,9 @@ describe("composer bottom row", () => {
 			expect(screen.getByTestId("mode-switch")).not.toHaveAttribute("data-compact")
 			// The chip is one button: the effort word is gone from its text, but it still names the effort.
 			const chip = screen.getByTestId("model-effort-chip")
-			expect(chip).toHaveTextContent(/^Opus 4\.5$/)
+			expect(chip).toHaveTextContent(/^GPT-6 Sol · Company gateway$/)
 			expect(screen.queryByTestId("chip-effort")).toBeNull()
-			expect(chip).toHaveAccessibleName(/effort High/)
+			expect(chip).toHaveAccessibleName(/effort Medium/)
 		})
 
 		it("goes tight only after the effort text is gone", () => {

@@ -1,17 +1,13 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
-import { DeleteApiProfileRequest } from "@shared/proto/cline/models"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type ApiProfileStore,
 	deleteApiConfigProfile,
-	ensureApiConfigProfiles,
 	resolveApiConfigurationForTaskSelection,
 	snapshotApiProfileConfiguration,
 	upsertApiConfigProfile,
 } from "@/core/controller/models/apiProfiles"
-import { deleteApiProfile } from "@/core/controller/models/deleteApiProfile"
 import type { StateManager } from "@/core/storage/StateManager"
-import { buildSdkProviderConfig } from "./sdk-api-handler"
 import { SdkProviderChangeCoordinator, type SdkProviderChangeCoordinatorOptions } from "./sdk-provider-change-coordinator"
 
 vi.mock("./provider-migration", () => ({ getProviderSettingsManager: () => undefined }))
@@ -154,87 +150,6 @@ describe("SdkProviderChangeCoordinator", () => {
 		const after = snapshotApiProfileConfiguration(store, {}, "act")
 		coordinator.handleApiConfigurationChanged(before, after)
 		expect(options.rebuilds.request).toHaveBeenCalledExactlyOnceWith("provider", expect.any(Function), "ask-session")
-	})
-
-	it.each([
-		"assigned",
-		"unassigned",
-	])("deleting an %s profile compares finalized assignments for focused and background sessions", async (assignment) => {
-		const ask = { ...makeActiveSession(), sessionId: "ask-session", startConfig: { mode: "plan" as const } }
-		const act = { ...makeActiveSession(), sessionId: "act-session", startConfig: { mode: "act" as const } }
-		const { coordinator, options } = makeCoordinator({ activeSession: act })
-		const sessions = new Map<string, typeof ask | typeof act>([
-			[ask.sessionId, ask],
-			[act.sessionId, act],
-		])
-		options.sessions.getSessions = () => sessions as never
-		options.sessions.getSession = (id) => sessions.get(id) as never
-		options.sessions.replaceSession = options.sessions.replaceActiveSession
-		const state: Record<string, unknown> = {}
-		const secrets: Record<string, string | undefined> = {}
-		const legacy = {
-			planModeApiProvider: "openai" as const,
-			actModeApiProvider: "openai" as const,
-			planModeOpenAiModelId: "A",
-			actModeOpenAiModelId: "A",
-			openAiBaseUrl: "https://A",
-			openAiApiKey: "a-key",
-			openAiCompatibleApiType: "chat" as const,
-		}
-		const store: ApiProfileStore = {
-			getGlobalStateKey: ((key: string) => state[key]) as ApiProfileStore["getGlobalStateKey"],
-			setGlobalStateBatch: (updates) => {
-				Object.assign(state, updates)
-			},
-			getApiConfiguration: () => snapshotApiProfileConfiguration(store, legacy, "act"),
-			setApiConfiguration: (updates) => {
-				Object.assign(legacy, updates)
-			},
-			getSecretForKey: (key) => secrets[key],
-			setSecretsForKeys: async (updates) => {
-				Object.assign(secrets, updates)
-			},
-			listSecretStorageKeys: () => Object.keys(secrets),
-		}
-		const migrated = (await ensureApiConfigProfiles(store)).profiles[0]
-		const b = await upsertApiConfigProfile(store, {
-			name: "B",
-			provider: "openai",
-			modelId: "B",
-			options: { openAiBaseUrl: "https://b/v1" },
-			secrets: { openAiApiKey: "b-key" },
-		})
-		const builtProviders: unknown[] = []
-		options.sessionConfigBuilder.build.mockImplementation(async ({ mode }) => {
-			builtProviders.push(buildSdkProviderConfig(store.getApiConfiguration(), mode))
-			return { providerId: "openai-compatible", modelId: "B" }
-		})
-		const postState = vi.fn(async () => {
-			expect(state.askProfileId).toBe(assignment === "assigned" ? b.id : migrated.id)
-			expect(state.actProfileId).toBe(state.askProfileId)
-		})
-		await deleteApiProfile(
-			{
-				stateManager: store,
-				handleApiConfigurationChanged: coordinator.handleApiConfigurationChanged.bind(coordinator),
-				postStateToWebview: postState,
-			} as never,
-			DeleteApiProfileRequest.create({ id: assignment === "assigned" ? migrated.id : b.id }),
-		)
-		if (assignment === "unassigned") {
-			expect(options.rebuilds.request).not.toHaveBeenCalled()
-			expect(options.sessionConfigBuilder.build).not.toHaveBeenCalled()
-		} else {
-			await vi.waitFor(() => expect(options.sessions.replaceActiveSession).toHaveBeenCalledTimes(2))
-			expect(options.rebuilds.request).toHaveBeenCalledWith("provider", expect.any(Function), ask.sessionId)
-			expect(options.rebuilds.request).toHaveBeenCalledWith("provider", expect.any(Function), act.sessionId)
-			expect(builtProviders).toEqual([
-				expect.objectContaining({ modelId: "B", baseUrl: "https://b/v1", apiKey: "b-key" }),
-				expect.objectContaining({ modelId: "B", baseUrl: "https://b/v1", apiKey: "b-key" }),
-			])
-			expect(secrets[`profile:${migrated.id}:openAiApiKey`]).toBeUndefined()
-		}
-		expect(postState).toHaveBeenCalledOnce()
 	})
 
 	it("updates the task id when the replacement session id changes", async () => {
@@ -553,6 +468,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
 		} as unknown as StateManager,
 		sessions: {

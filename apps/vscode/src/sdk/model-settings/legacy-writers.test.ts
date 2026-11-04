@@ -7,15 +7,7 @@ import {
 } from "@shared/model-settings"
 import { Empty } from "@shared/proto/cline/common"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { assignApiProfile } from "@/core/controller/models/assignApiProfile"
-import { commitModelSelection } from "@/core/controller/models/commitModelSelection"
 import { connectProviderKey } from "@/core/controller/models/connectProviderKey"
-import { deleteApiProfile } from "@/core/controller/models/deleteApiProfile"
-import { saveApiProfile } from "@/core/controller/models/saveApiProfile"
-import { updateApiConfiguration } from "@/core/controller/models/updateApiConfiguration"
-import { updateApiConfigurationPartial } from "@/core/controller/models/updateApiConfigurationPartial"
-import { updateApiConfigurationProto } from "@/core/controller/models/updateApiConfigurationProto"
-import { writeProviderConfig } from "@/core/controller/models/writeProviderConfig"
 import { resetState } from "@/core/controller/state/resetState"
 import { updateSettings } from "@/core/controller/state/updateSettings"
 import { migrateModelSettings } from "@/core/storage/model-settings-migration"
@@ -24,7 +16,7 @@ import { AuthService as SdkAuthService } from "../auth-service"
 import { Controller as SdkController } from "../SdkController"
 import { InMemoryConnectionSecretStore, VSCodeConnectionSecretStore } from "./connection-secret-store"
 import { readModelSettingsState } from "./host-settings"
-import { assertLegacySettingsWrite, configuredActiveModel } from "./legacy-settings"
+import { configuredActiveModel } from "./legacy-settings"
 
 vi.mock("./rollout", () => ({ modelSettingsRolloutEnabled: () => true }))
 vi.mock("@/shared/services/Logger", () => ({
@@ -33,6 +25,11 @@ vi.mock("@/shared/services/Logger", () => ({
 const host = vi.hoisted(() => ({ state: undefined as unknown, showMessage: vi.fn() }))
 vi.mock("@/core/storage/StateManager", () => ({ StateManager: { get: () => host.state } }))
 vi.mock("@/hosts/host-provider", () => ({ HostProvider: { window: { showMessage: host.showMessage } } }))
+const providerStore = vi.hoisted(() => ({ clear: vi.fn() }))
+vi.mock("../provider-migration", async (original) => ({
+	...(await original<typeof import("../provider-migration")>()),
+	clearProviderCredentials: providerStore.clear,
+}))
 
 function fixture(status: "complete" | "prepared" = "complete") {
 	let settings: ModelSettings | undefined = createDefaultModelSettings()
@@ -86,62 +83,7 @@ function fixture(status: "complete" | "prepared" = "complete") {
 	}
 }
 
-const WRITERS: Array<[string, (controller: never) => Promise<unknown>]> = [
-	["saveApiProfile", (c) => saveApiProfile(c, { name: "n", provider: "openai", modelId: "m", secrets: {} } as never)],
-	["deleteApiProfile", (c) => deleteApiProfile(c, { id: "p" } as never)],
-	["assignApiProfile", (c) => assignApiProfile(c, { mode: "act", profileId: "p" } as never)],
-	["assignApiProfile chat override", (c) => assignApiProfile(c, { mode: "act", chatOverride: true } as never)],
-	[
-		"updateApiConfiguration",
-		(c) => updateApiConfiguration(c, { updates: { options: {} }, updateMask: ["options.x"] } as never),
-	],
-	["updateApiConfigurationProto", (c) => updateApiConfigurationProto(c, { apiConfiguration: {} } as never)],
-	[
-		"updateApiConfigurationPartial",
-		(c) => updateApiConfigurationPartial(c, { apiConfiguration: {}, updateMask: ["x"] } as never),
-	],
-	["commitModelSelection", (c) => commitModelSelection(c, { providerId: "cline", mode: "act", modelId: "m" } as never)],
-	["writeProviderConfig", (c) => writeProviderConfig(c, { providerId: "cline", patch: {} } as never)],
-	...(
-		[
-			"apiConfiguration",
-			"planActSeparateModelsSetting",
-			"subagentsEnabled",
-			"subagentsAllowWrite",
-			"subagentsMaxConcurrent",
-			"profiles",
-			"threadDefaultProfileId",
-			"threadSeparateAskActProfiles",
-			"subagentProfilesEnabled",
-			"subagentDefaultProfileId",
-			"subagentAllowedProfileIds",
-			"threadTitlesEnabled",
-			"threadTitlesProfileId",
-			"walkthroughGenerateProfileId",
-		] as const
-	).map(
-		(key) =>
-			[
-				`updateSettings ${key}`,
-				(c: never) => updateSettings(c, { [key]: key === "subagentsMaxConcurrent" ? 1 : {} } as never),
-			] as [string, (controller: never) => Promise<unknown>],
-	),
-]
-
-describe("old settings writers with the new store in use", () => {
-	it.each(WRITERS)("%s refuses instead of writing old state", async (_name, write) => {
-		const f = fixture()
-		await expect(write(f.controller as never)).rejects.toThrow(/Settings > Models/)
-		for (const spy of Object.values(f.written)) expect(spy).not.toHaveBeenCalled()
-		expect(f.providerStore.write).not.toHaveBeenCalled()
-		expect(f.providerStore.commitSelection).not.toHaveBeenCalled()
-	})
-	it("Controller.updateChatApiSelection refuses", async () => {
-		const f = fixture()
-		await expect(
-			SdkController.prototype.updateChatApiSelection.call({ stateManager: f.state } as never, "act", {} as never),
-		).rejects.toThrow(/Settings > Models/)
-	})
+describe("settings writes with the new store in use", () => {
 	it("a thread can't pick a model outside the organization's allowlist", async () => {
 		const f = fixture()
 		const settings = f.get()
@@ -164,9 +106,6 @@ describe("old settings writers with the new store in use", () => {
 				nextMessageOnly: false,
 			}),
 		).rejects.toThrow(/organization/)
-	})
-	it("lets the old store keep working until the migration completes", () => {
-		expect(() => assertLegacySettingsWrite(fixture("prepared").state as never, "Saving")).not.toThrow()
 	})
 	it("keeps ordinary settings writable", async () => {
 		const f = fixture()
@@ -316,6 +255,18 @@ describe("reset", () => {
 		expect(f.written.setGlobalState).toHaveBeenCalledWith("modelSettingsBackupV1", undefined)
 		expect(f.state.reInitialize).toHaveBeenCalled()
 	})
+	it("clears the keys in providers.json before the settings that retry it", async () => {
+		const f = await stored()
+		providerStore.clear.mockClear()
+		providerStore.clear.mockImplementationOnce(() => {
+			throw new Error("disk full")
+		})
+		await expect(resetGlobalState()).rejects.toThrow("disk full")
+		expect(f.written.setGlobalState).not.toHaveBeenCalled()
+		await resetGlobalState()
+		expect(providerStore.clear).toHaveBeenCalledTimes(2)
+		expect(f.written.setGlobalState).toHaveBeenCalledWith("modelSettings", undefined)
+	})
 	it("clears the saved configurations' own keys", async () => {
 		const f = await stored()
 		f.state.listSecretStorageKeys = () => ["profile:a:openAiApiKey", "profile:b:apiKey", "openAiApiKey"]
@@ -363,7 +314,13 @@ describe("reset", () => {
 	})
 	it("says what the reset removed", async () => {
 		const f = await stored()
+		const deauth = vi.spyOn(SdkAuthService.prototype, "handleDeauth").mockResolvedValue()
+		const codex = vi.spyOn(SdkAuthService.prototype, "clearCodexCredentials").mockResolvedValue()
+		const info = vi.spyOn(SdkAuthService.prototype, "getInfo").mockReturnValue({ user: { uid: "u" } } as never)
 		await resetState({ postStateToWebview: vi.fn() } as never, { global: true } as never)
+		expect(deauth).toHaveBeenCalledOnce()
+		expect(codex).toHaveBeenCalledOnce()
+		for (const spy of [deauth, codex, info]) spy.mockRestore()
 		const said = host.showMessage.mock.calls.map(([call]) => call?.message).join(" ")
 		expect(said).toMatch(/connection/i)
 		expect(said).toMatch(/keys/i)

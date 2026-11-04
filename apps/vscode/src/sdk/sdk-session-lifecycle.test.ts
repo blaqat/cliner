@@ -271,7 +271,7 @@ describe("SdkSessionLifecycle", () => {
 		const coordinator = new SdkMcpCoordinator({
 			sessions: lifecycle,
 			rebuilds: scheduler,
-			stateManager: { getGlobalSettingsKey: () => "act" },
+			stateManager: { getGlobalStateKey: () => undefined, getGlobalSettingsKey: () => "act" },
 			messages,
 			sessionConfigBuilder: { build: async () => input.config },
 			getWorkspaceRoot: async () => "/workspace",

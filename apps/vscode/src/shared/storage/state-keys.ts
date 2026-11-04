@@ -7,7 +7,7 @@ import {
 	type OcaModelInfo,
 	OpenAiCompatibleModelInfo,
 } from "@shared/api"
-import { type ApiConfigProfile, type OpenAiCompatibleApiType, toAllowedApiProvider } from "@shared/api-profiles"
+import type { ApiConfigProfile, OpenAiCompatibleApiType } from "@shared/api-profiles"
 import { BrowserSettings, DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { ClineRulesToggles } from "@shared/cline-rules"
 import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusChainSettings"
@@ -319,13 +319,11 @@ const API_HANDLER_SETTINGS_FIELDS = {
 	// by older builds or other hosts is loaded from disk.
 	planModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		// Fold disallowed providers onto the allowlist so requests, settings
-		// and validation all agree on a provider the fork actually supports.
-		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
+		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
 	},
 	actModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
+		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
 	},
 
 	// Deprecated model settings

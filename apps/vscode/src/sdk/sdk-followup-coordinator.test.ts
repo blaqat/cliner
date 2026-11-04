@@ -634,6 +634,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
 		} as unknown as StateManager,
 		interactions: {

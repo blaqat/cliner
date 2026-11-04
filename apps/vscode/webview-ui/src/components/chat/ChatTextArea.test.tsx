@@ -112,7 +112,7 @@ describe("ChatTextArea image attachments vs. model capability", () => {
 		const chooseModel = screen.getByRole("button", { name: "Choose an image-capable model" })
 		expect(chooseModel.tagName).toBe("BUTTON")
 		fireEvent.click(chooseModel)
-		expect(mocks.navigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "api-config" })
+		expect(mocks.navigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "models" })
 	})
 
 	it("uses singular wording for one image", () => {

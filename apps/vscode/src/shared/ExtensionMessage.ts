@@ -6,7 +6,7 @@ import { RemoteConfigFields } from "@shared/storage/state-keys"
 import type { Environment } from "../config"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration } from "./api"
-import type { ApiConfigProfile, TaskApiSelection } from "./api-profiles"
+import type { TaskApiSelection } from "./api-profiles"
 import { BrowserSettings } from "./BrowserSettings"
 import { ClineFeatureSetting } from "./ClineFeatureSetting"
 import { BannerCardData } from "./cline/banner"
@@ -15,7 +15,6 @@ import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
 import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
-import type { ModelProfile } from "./model-profiles"
 import type { ModelPick } from "./model-settings"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
@@ -108,12 +107,6 @@ export interface ExtensionState {
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined
 	apiConfiguration?: ApiConfiguration
-	/** Saved API configurations (one provider + one model each). */
-	apiConfigProfiles: ApiConfigProfile[]
-	/** Profile id assigned to Ask (plan) mode. */
-	askProfileId?: string
-	/** Profile id assigned to Act mode. */
-	actProfileId?: string
 	/** Immutable model details from the focused session's build, independent of saved profile edits. */
 	/** Composer values are separate from Settings defaults. On home, this is the next-chat draft. */
 	composerApiSelection?: TaskApiSelection
@@ -235,18 +228,7 @@ export interface ExtensionState {
 	subagentsAllowCommands?: boolean
 	subagentsAllowMcp?: boolean
 	subagentsAllowWeb?: boolean
-	/** Named profiles (configuration + effort) and what uses them (Profiles page). */
-	profiles?: ModelProfile[]
-	threadDefaultProfileId?: string
-	threadSeparateAskActProfiles?: boolean
-	threadAskProfileId?: string
-	threadActProfileId?: string
-	subagentProfilesEnabled?: boolean
-	subagentDefaultProfileId?: string
-	subagentAllowedProfileIds?: string[]
 	threadTitlesEnabled?: boolean
-	threadTitlesProfileId?: string
-	walkthroughGenerateProfileId?: string
 	/** Terminal environment per scope; workspace values come from workspace state. */
 	terminalEnvironment?: TerminalEnvironmentWebviewState
 	worktreesEnabled?: ClineFeatureSetting

@@ -393,23 +393,11 @@ describe("B5: the list after moving is what was set up", () => {
 	}
 	const ownerKeys = { "profile:sol:openAiApiKey": "K", "profile:mini:openAiApiKey": "K" }
 
-	it("adds nothing for a provider saved configurations cover, and no extra models.json model", async () => {
+	it("adds nothing from the shared stores once anything is saved, even a provider no configuration covers", async () => {
 		const f = await migrated(owner, ownerKeys, stores)
-		expect(f.rows()).toEqual(["gpt-6-sol", "gpt-6-mini", "claude-opus-4-5-20251101"])
-		expect(f.settings.connections.filter((c) => c.auth.kind === "sdk-account").map((c) => c.name)).toEqual(["anthropic"])
-		expect(f.settings.roles.chat).toEqual({ modelId: f.rowOf("gpt-6-sol").id, levelId: "high" })
-	})
-	it("adds nothing at all once every listed provider is covered", async () => {
-		const seed = {
-			...owner,
-			apiConfigProfiles: [
-				...owner.apiConfigProfiles,
-				{ id: "a", name: "a", provider: "anthropic", modelId: "claude-sonnet-4-6", options: {} },
-			],
-		}
-		const f = await migrated(seed, { ...ownerKeys, "profile:a:apiKey": "A" }, stores)
-		expect(f.rows()).toEqual(["gpt-6-sol", "gpt-6-mini", "claude-sonnet-4-6"])
+		expect(f.rows()).toEqual(["gpt-6-sol", "gpt-6-mini"])
 		expect(f.settings.connections.some((c) => c.auth.kind === "sdk-account")).toBe(false)
+		expect(f.settings.roles.chat).toEqual({ modelId: f.rowOf("gpt-6-sol").id, levelId: "high" })
 	})
 	it("still reads a saved row's details from models.json", async () => {
 		const f = await migrated(owner, ownerKeys, {

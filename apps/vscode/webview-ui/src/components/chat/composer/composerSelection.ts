@@ -1,23 +1,13 @@
-import type { ModelInfo } from "@shared/api"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
-import { type Mode, OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort } from "@shared/storage/types"
+import type { Mode } from "@shared/storage/types"
 import { useEffect, useState } from "react"
 import type { SelectorLevel, SelectorPick, SelectorRow } from "@/components/models/ModelSelector"
 import { describePick, samePick, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import type { SettingsNavigationTarget } from "@/components/settings/settingsTargets"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
-import {
-	type ComposerSelectionChanges,
-	formatEffort,
-	formatEffortShort,
-	useConfigSelection,
-	useEffortSelection,
-} from "./modelSelection"
-
-/** Stands in for the current pick when it isn't one of the saved models (none assigned yet). */
-const UNSAVED_VALUE = "__unsaved__"
+import { formatEffort } from "./modelSelection"
 
 /** Why a locked choice can't change. */
 export const LOCKED_REASON = "A next-message-only choice can't change while Cline is working"
@@ -32,22 +22,7 @@ export const NEXT_MESSAGE_TIPS = {
 	busy: "Can't change while Cline is working",
 } as const
 
-/** The lists' names for the efforts: "none" reads "Default" (its tooltip says whose). */
-const EFFORT_LEVELS: SelectorLevel[] = OPENAI_REASONING_EFFORT_OPTIONS.map((option) => ({
-	id: option,
-	label: option === "none" ? "Default" : formatEffort(option),
-	detail: option === "none" ? "Provider default" : undefined,
-}))
-
-interface ComposerSelectionOptions {
-	/** Shown when no saved model is assigned (e.g. before any exist). */
-	fallbackLabel: string
-	modelId: string | undefined
-	modelInfo: ModelInfo | undefined
-	defaultEffort?: OpenaiReasoningEffort
-}
-
-/** Everything the composer's chip and menu need, whichever store the pick lives in. */
+/** Everything the composer's chip and menu need. */
 export interface ComposerSelection {
 	rows: SelectorRow[]
 	ladder: SelectorLevel[]
@@ -72,7 +47,7 @@ export interface ComposerSelection {
 	setNextMessageOnly: (on: boolean) => void
 	reset: () => void
 	manage: (target?: SettingsNavigationTarget) => void
-	/** Only the new store has a default to set from the composer. */
+	/** Nothing to set before the store exists. */
 	makeDefault?: {
 		/** Says which role the host will set. */
 		tip: string
@@ -81,77 +56,9 @@ export interface ComposerSelection {
 	}
 }
 
-/** Today's saved configurations (API profiles), through today's RPC. */
-function useProfileSelection(mode: Mode, { fallbackLabel, modelId, modelInfo, defaultEffort }: ComposerSelectionOptions) {
-	const config = useConfigSelection(mode, fallbackLabel)
-	const effort = useEffortSelection(mode, { modelId, modelInfo, defaultEffort })
-	const modelValue = config.current?.id ?? UNSAVED_VALUE
-
-	// The model list: the saved models (as the old picker listed them); a current pick that isn't saved goes first.
-	// Only the current model's info is known here; another saved model is offered its efforts.
-	const rows: SelectorRow[] = config.profiles.map((profile) => ({
-		id: profile.id,
-		label: profile.name,
-		detail: profile.modelId,
-		levels: profile.id === modelValue && !effort.available ? null : EFFORT_LEVELS,
-		// The effort a saved model brings with it when picked (the extension applies the same).
-		defaultLevelId: profile.id === modelValue ? effort.selected : (profile.reasoningEffort ?? "none"),
-	}))
-	if (!config.current) {
-		rows.unshift({
-			id: UNSAVED_VALUE,
-			label: fallbackLabel,
-			detail: config.profiles.length ? "not saved" : undefined,
-			levels: effort.available ? EFFORT_LEVELS : null,
-			defaultLevelId: effort.selected,
-		})
-	}
-
-	return (): ComposerSelection => ({
-		rows,
-		ladder: EFFORT_LEVELS,
-		pick: { rowId: modelValue, levelId: effort.selected },
-		modeLabel: config.modeLabel,
-		modelLabel: config.label,
-		pending: config.pending,
-		description: config.description,
-		level: effort.available
-			? {
-					short: formatEffortShort(effort.selected),
-					word: formatEffort(effort.selected),
-					pending: effort.pending,
-					description: effort.description,
-					bad: false,
-				}
-			: undefined,
-		disabledReason: config.locked ? LOCKED_REASON : undefined,
-		note: config.profiles.length === 0 ? "No saved models yet" : undefined,
-		busy: config.busy,
-		hasChat: config.hasChat,
-		nextMessageOnly: config.nextMessageOnly,
-		nextMessageDisabledReason: config.busy ? NEXT_MESSAGE_TIPS.busy : undefined,
-		// Reset has something to undo: a saved choice off the default or a one-message choice.
-		canReset: !config.isDefault || config.nextMessageOnly,
-		resetDisabledReason: RESET_DISABLED_REASON,
-		// Saves what the lists show in one request, only what changed.
-		commit: (next) => {
-			const changes: ComposerSelectionChanges = {}
-			const modelChanged = next.rowId !== modelValue && next.rowId !== UNSAVED_VALUE
-			if (modelChanged) changes.profileId = next.rowId
-			const row = rows.find((candidate) => candidate.id === next.rowId)
-			const baseline = modelChanged ? row?.defaultLevelId : effort.selected
-			if (row?.levels && next.levelId !== baseline) changes.reasoningEffort = next.levelId as OpenaiReasoningEffort
-			if (Object.keys(changes).length > 0) config.assign(changes)
-		},
-		setNextMessageOnly: (on) => config.assign({ nextMessageOnly: on }),
-		reset: config.reset,
-		manage: config.manage,
-	})
-}
-
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-/** The new model settings store, through its RPCs. Undefined while it isn't published. */
+/** The model settings store, through its RPCs. */
 function useModelSettingsSelection(mode: Mode) {
 	const {
 		composerApiSelection,
@@ -264,7 +171,7 @@ function useModelSettingsSelection(mode: Mode) {
 				setArmed(false)
 				send(defaultPick, false)
 			},
-			manage: (target) => navigateToSettings(target ?? "api-config"),
+			manage: (target) => navigateToSettings(target ?? "models"),
 			makeDefault: {
 				tip: askHasOwnModel
 					? "Sets the Ask model: new chats start with this on Ask. Other chats keep theirs."
@@ -297,12 +204,46 @@ function useModelSettingsSelection(mode: Mode) {
 }
 
 /**
- * The one place the composer chooses its store: the new model settings when the host publishes them,
- * otherwise today's saved configurations, data and RPCs.
+ * Before the move has made the store, the chip names what's running and the choices wait for it.
+ * The menu still opens: the approval tiles work either way, and its note links to what's holding things up.
  */
-export function useComposerSelection(mode: Mode, options: ComposerSelectionOptions): ComposerSelection {
-	const { modelSettings } = useExtensionState()
-	const fromProfiles = useProfileSelection(mode, options)
+function unavailableSelection(
+	mode: Mode,
+	runningLabel: string,
+	manage: () => void,
+	busy: boolean,
+	hasChat: boolean,
+): ComposerSelection {
+	const why = "Model choices come back once your setup has moved"
+	return {
+		rows: [],
+		ladder: [],
+		pick: null,
+		modeLabel: mode === "plan" ? "Ask" : "Act",
+		modelLabel: runningLabel,
+		pending: false,
+		description: `Running on your last selection. ${why}.`,
+		note: `Running on your last selection. ${why}. See`,
+		noteLink: "Settings",
+		busy,
+		hasChat,
+		nextMessageOnly: false,
+		nextMessageDisabledReason: why,
+		canReset: false,
+		resetDisabledReason: why,
+		commit: () => {},
+		setNextMessageOnly: () => {},
+		reset: () => {},
+		manage,
+	}
+}
+
+export function useComposerSelection(mode: Mode, runningLabel: string): ComposerSelection {
+	const { currentTaskItem, modelSettings, navigateToSettings, turnState } = useExtensionState()
 	const fromModelSettings = useModelSettingsSelection(mode)
-	return modelSettings ? fromModelSettings(modelSettings) : fromProfiles()
+	if (modelSettings) {
+		return fromModelSettings(modelSettings)
+	}
+	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
+	return unavailableSelection(mode, runningLabel, () => navigateToSettings("models"), busy, !!currentTaskItem)
 }

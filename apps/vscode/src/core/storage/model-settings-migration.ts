@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto"
 import { createGateway } from "@cline/llms"
-import { isAllowedApiProvider } from "@shared/api-profiles"
 import {
 	BASE_URL_NEEDED,
 	type Connection,
@@ -338,31 +337,30 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const readSecretField = (sourceId: string, own: boolean, field: string) =>
 		deps.readLegacySecret(own ? `profile:${sourceId}:${field}` : field) || undefined
 
-	// The list after moving is what the person set up. A saved configuration already covers its provider, so the
-	// shared stores add nothing for it, and their extra models were never picked by anyone here.
-	const savedProviders = new Set(
-		savedConfigurations.flatMap((c) => (text(c.provider) ? [toSdkProviderId(String(c.provider))] : [])),
-	)
+	// The list after moving is what the person set up. Anyone with saved configurations set theirs up there, and
+	// providers.json only holds what the shared store collected along the way, so it adds no rows for them.
 	let sdkDefault: string | undefined
 	const sdkProviders = sdkInput.providers === undefined ? undefined : record(sdkInput.providers)
-	if (sdkInput.providers !== undefined && !sdkProviders) note("dropped", "settings", "providers.json")
-	for (const [provider, entry] of Object.entries(record(sdkProviders?.providers) ?? {})) {
-		const saved = record(record(entry)?.settings)
-		if (!saved) {
-			note("dropped", "settings", `providers.json: ${provider}`)
-			continue
+	if (!savedConfigurations.length) {
+		if (sdkInput.providers !== undefined && !sdkProviders) note("dropped", "settings", "providers.json")
+		for (const [provider, entry] of Object.entries(record(sdkProviders?.providers) ?? {})) {
+			const saved = record(record(entry)?.settings)
+			if (!saved) {
+				note("dropped", "settings", `providers.json: ${provider}`)
+				continue
+			}
+			if (!text(saved.model)) continue
+			const sourceId = `sdk-${provider}`
+			configurations.push({
+				id: sourceId,
+				name: provider,
+				provider,
+				modelId: saved.model,
+				sdkAccount: true,
+				options: { openAiBaseUrl: saved.baseUrl, openAiHeaders: saved.headers },
+			})
+			if (sdkProviders?.lastUsedProvider === provider) sdkDefault = sourceId
 		}
-		if (!text(saved.model) || savedProviders.has(toSdkProviderId(provider))) continue
-		const sourceId = `sdk-${provider}`
-		configurations.push({
-			id: sourceId,
-			name: provider,
-			provider,
-			modelId: saved.model,
-			sdkAccount: true,
-			options: { openAiBaseUrl: saved.baseUrl, openAiHeaders: saved.headers },
-		})
-		if (sdkProviders?.lastUsedProvider === provider) sdkDefault = sourceId
 	}
 	const sdkModelsFile = sdkInput.models === undefined ? undefined : record(sdkInput.models)
 	if (sdkInput.models !== undefined && !sdkModelsFile) note("dropped", "settings", "models.json")
@@ -661,10 +659,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		return null
 	}
 	const savedIds = new Set(savedConfigurations.map((c) => text(c.id)).filter((id) => id && picks[id]))
-	const healedConfiguration = (
-		savedConfigurations.find((c) => savedIds.has(text(c.id)) && isAllowedApiProvider(text(c.provider))) ??
-		savedConfigurations.find((c) => savedIds.has(text(c.id)))
-	)?.id
+	const healedConfiguration = savedConfigurations.find((c) => savedIds.has(text(c.id)))?.id
 	const separate = raw.threadSeparateAskActProfiles === true
 	/**
 	 * What legacy runs in a mode: the thread default profile (modelProfiles.ts), else the assigned configuration at

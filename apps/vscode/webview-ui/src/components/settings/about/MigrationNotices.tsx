@@ -3,19 +3,12 @@ import type { ModelSettingsMigrationIssue, ModelSettingsMigrationStatus } from "
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { ModelsServiceClient } from "@/services/grpc-client"
+import { ModelsServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { LinkButton } from "../models/fields"
 import type { SettingsNavigationTarget } from "../settingsTargets"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 
-/** The first move failed, so the old setup is still what runs. The cause is a fixed description, never a saved value. */
-export const MigrationFailedNotice = ({
-	status,
-	onRetried,
-}: {
-	status: ModelSettingsMigrationStatus
-	onRetried?: (status: ModelSettingsMigrationStatus) => void
-}) => {
+const useMigrationRetry = (onRetried?: (status: ModelSettingsMigrationStatus) => void) => {
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState("")
 	const retry = async () => {
@@ -25,25 +18,64 @@ export const MigrationFailedNotice = ({
 			const response = await ModelsServiceClient.retryModelSettingsMigration({ json: "{}" })
 			onRetried?.(JSON.parse(response.json))
 		} catch {
-			setError("Migration could not finish. Your previous setup is preserved. Retry when ready.")
+			setError("The retry couldn't finish. Your setup is untouched. Try again, or open the logs.")
 		} finally {
 			setBusy(false)
 		}
 	}
+	const openLogs = () => {
+		setError("")
+		void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))
+	}
+	return { busy, error, retry, openLogs }
+}
+
+const MigrationActions = ({ migration }: { migration: ReturnType<typeof useMigrationRetry> }) => (
+	<>
+		<div className="mt-2 flex gap-2">
+			<Button disabled={migration.busy} onClick={() => void migration.retry()} size="sm" variant="secondary">
+				{migration.busy ? "Retrying…" : "Retry"}
+			</Button>
+			<Button onClick={migration.openLogs} size="sm" variant="secondary">
+				Open logs
+			</Button>
+		</div>
+		{migration.error && (
+			<p className="m-0 mt-1 text-error" role="alert">
+				{migration.error}
+			</p>
+		)}
+	</>
+)
+
+/** The move failed, so nothing else in Settings can open yet. The cause is a fixed description, never a saved value. */
+export const MigrationFailedNotice = ({
+	status,
+	onRetried,
+}: {
+	status: ModelSettingsMigrationStatus
+	onRetried?: (status: ModelSettingsMigrationStatus) => void
+}) => {
+	const migration = useMigrationRetry(onRetried)
 	return (
 		<div className="rounded border border-warning p-2 text-[11px]" role="status">
-			<p className="m-0">Models could not be moved. Your previous setup is preserved.</p>
+			<p className="m-0 font-semibold">Your models couldn't be moved to the new Settings.</p>
 			{status.cause && <p className="m-0 mt-1 text-description">{status.cause}</p>}
-			{status.retryable && (
-				<Button className="mt-1.5" disabled={busy} onClick={() => void retry()} size="sm" variant="secondary">
-					{busy ? "Retrying…" : "Retry migration"}
-				</Button>
-			)}
-			{error && (
-				<p className="m-0 mt-1 text-error" role="alert">
-					{error}
-				</p>
-			)}
+			<p className="m-0 mt-1">
+				Nothing is lost, and Cline is still running on your last selection. Settings opens once this works.
+			</p>
+			<MigrationActions migration={migration} />
+		</div>
+	)
+}
+
+/** Normally gone before anyone sees it. Retry and logs stay in reach in case it never finishes. */
+export const MigrationPending = () => {
+	const migration = useMigrationRetry()
+	return (
+		<div className="text-[11px]" role="status">
+			<p className="m-0">Moving your model setup… Cline is still running on your last selection.</p>
+			<MigrationActions migration={migration} />
 		</div>
 	)
 }

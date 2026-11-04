@@ -868,6 +868,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn((key: string) => state[key as "mode"]),
 			setGlobalState: vi.fn(async (key: string, value: string) => {
 				state[key as "mode"] = value as "act" | "plan"

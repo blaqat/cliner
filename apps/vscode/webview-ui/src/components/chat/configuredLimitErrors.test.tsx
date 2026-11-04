@@ -14,9 +14,6 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/hooks/useProviderModels", () => ({ useProviderModels: () => mocks.catalog }))
-vi.mock("@/components/settings/utils/useApiConfigurationHandlers", () => ({
-	useApiConfigurationHandlers: () => ({ handleModeFieldsChange: vi.fn() }),
-}))
 vi.mock("@/services/grpc-client", () => ({
 	ModelsServiceClient: new Proxy(
 		{},

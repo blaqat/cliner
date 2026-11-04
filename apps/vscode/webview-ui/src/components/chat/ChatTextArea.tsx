@@ -54,7 +54,6 @@ import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import AttachButton from "./composer/AttachButton"
 import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
 import ModelEffortChip from "./composer/ModelEffortChip"
-import { modelHasReasoning } from "./composer/modelSelection"
 import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
 import { selectedModelOffersLevels } from "./composer/selectedConfiguredModel"
@@ -1312,7 +1311,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		}, [modeSwitchFlash])
 
 		const handleModelButtonClick = () => {
-			navigateToSettingsModelPicker({ targetSection: "api-config" })
+			navigateToSettingsModelPicker({ targetSection: "models" })
 		}
 
 		// Get model display name
@@ -1599,9 +1598,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const rowLayout = useComposerRowLayout(bottomRowRef, {
 			hasUsage: !!usageIndicator,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
-			hasEffort: modelSettings
-				? selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode)
-				: modelHasReasoning(selectedModelId, selectedModelInfo),
+			hasEffort: selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode),
 			running: showRunningSendButtons,
 		})
 
@@ -1856,11 +1853,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<ShrinkSlot floor={rowLayout.tightChip ? 56 : rowLayout.compactEffort ? 76 : 104}>
 							<ModelEffortChip
 								compactEffort={rowLayout.compactEffort}
-								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
 								fallbackLabel={modelDisplayName}
 								mode={mode}
-								modelId={selectedModelId}
-								modelInfo={selectedModelInfo}
 							/>
 						</ShrinkSlot>
 						<SendSplitButton

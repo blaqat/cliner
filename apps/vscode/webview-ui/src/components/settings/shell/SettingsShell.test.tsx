@@ -35,7 +35,6 @@ vi.mock("@/services/grpc-client", () => ({
 	},
 	StateServiceClient: { updateTerminalConnectionTimeout: vi.fn(), resetState: vi.fn() },
 }))
-vi.mock("../sections/AboutSection", () => ({ default: () => <div>about panel</div> }))
 vi.mock("../sections/DebugSection", () => ({ default: () => <div>debug panel</div> }))
 vi.mock("../sections/RemoteConfigSection", () => ({ RemoteConfigSection: () => <div>remote config panel</div> }))
 vi.mock("../environment/TerminalEnvironmentEditor", () => ({ default: () => <div>env editor</div> }))
@@ -628,10 +627,10 @@ describe("Phase 7 recovery", () => {
 			.mockRejectedValueOnce(new Error("keychain unavailable"))
 			.mockResolvedValueOnce({ json: JSON.stringify({ status: "complete", retryable: false }) })
 		renderShell("about")
-		fireEvent.click(await screen.findByRole("button", { name: "Retry migration" }))
-		expect(await screen.findByRole("alert")).toHaveTextContent("Your previous setup is preserved")
-		fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
-		expect(await screen.findByText("Profiles moved to Models. Your models and levels were kept.")).toBeVisible()
+		fireEvent.click(await screen.findByRole("button", { name: "Retry" }))
+		expect(await screen.findByRole("alert")).toHaveTextContent("Your setup is untouched")
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+		await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull())
 		expect(mocks.retry).toHaveBeenCalledTimes(2)
 	})
 	it("shows why the move failed, and what the finished move flagged", async () => {

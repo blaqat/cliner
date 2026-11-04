@@ -1,39 +1,26 @@
-import { AssignApiProfileRequest } from "@shared/proto/cline/models"
-import { UpdateSettingsRequest } from "@shared/proto/cline/state"
-import { AlertCircleIcon } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import type { ModelPick } from "@shared/model-settings"
+import { useCallback, useEffect, useState } from "react"
 import ClineLogoWhite from "@/assets/ClineLogoWhite"
+import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { ModelsServiceClient, StateServiceClient } from "@/services/grpc-client"
-import ApiProfileEditor from "../settings/apiProfiles/ApiProfileEditor"
-import {
-	buildSaveRequest,
-	newProfileDraft,
-	PROVIDER_LABELS,
-	type ProfileDraft,
-	validateProfileDraftConfig,
-} from "../settings/apiProfiles/profileDraft"
-import { newId } from "../settings/models/modelsView"
-import { type FirstModelIds, saveFirstModel } from "./firstModel"
+import { StateServiceClient } from "@/services/grpc-client"
+import { selectorDataFromModelSettings } from "../models/modelSelectorRows"
+import { MigrationFailedNotice, MigrationPending } from "../settings/about/MigrationNotices"
+import { modelSettingsClient as client } from "../settings/models/modelSettingsClient"
+import { SettingsShell } from "../settings/shell/SettingsShell"
 
 const ONBOARDING_PAGE = "byok_provider_config"
 
+const noop = () => {}
+
 /**
- * Fork onboarding (plan §1b): there is no hosted-account path — the user
- * configures one of the allowed providers, which is saved as an API
- * configuration and assigned to both Ask and Act.
+ * Fork onboarding (plan §1b): there is no hosted-account path. It's the Models page with one way out: the
+ * person sets up a model, and whatever they haven't picked runs on the first one they added.
  */
 const OnboardingView = () => {
-	const { hideAccount, hideSettings, modelSettings, setShowWelcome } = useExtensionState()
-	const usesModelSettings = !!modelSettings
-	// A retry after a failed step saves over what the last try wrote, rather than adding another.
-	const firstModelIds = useRef<Record<string, FirstModelIds>>({})
-	const [draft, setDraft] = useState<ProfileDraft>(() => ({
-		...newProfileDraft(),
-		name: PROVIDER_LABELS[newProfileDraft().provider],
-	}))
+	const { hideAccount, hideSettings, modelSettings, modelSettingsMigrationStatus, setShowWelcome } = useExtensionState()
 	const [isSaving, setIsSaving] = useState(false)
-	const [error, setError] = useState<string | undefined>(undefined)
+	const [error, setError] = useState<string>()
 
 	useEffect(() => {
 		StateServiceClient.captureOnboardingProgress({
@@ -43,97 +30,87 @@ const OnboardingView = () => {
 		})
 	}, [])
 
-	const onDraftChange = useCallback((next: ProfileDraft) => {
-		setDraft((current) => {
-			// Keep the auto-seeded name tracking the provider until the user types one.
-			if (next.provider !== current.provider) {
-				const previousLabel = PROVIDER_LABELS[current.provider]
-				if (!next.name.trim() || next.name === previousLabel) {
-					next = { ...next, name: PROVIDER_LABELS[next.provider] ?? next.name }
-				}
-			}
-			return next
-		})
+	const finish = useCallback(async () => {
+		setIsSaving(true)
 		setError(undefined)
-	}, [])
-
-	const complete = useCallback(
-		async (next: ProfileDraft) => {
-			const configError = validateProfileDraftConfig(next)
-			if (configError) {
-				setError(configError)
-				return
-			}
-			setIsSaving(true)
-			setError(undefined)
-			try {
-				if (usesModelSettings) {
-					firstModelIds.current[next.provider] ??= { connectionId: newId(), modelId: newId() }
-					await saveFirstModel(next, firstModelIds.current[next.provider])
-				} else {
-					const response = await ModelsServiceClient.saveApiProfile(buildSaveRequest(next))
-					const profileId = response.profile?.id
-					if (!profileId) {
-						throw new Error("The configuration was not saved.")
-					}
-					// Ask and Act share the saved configuration created here.
-					await StateServiceClient.updateSettings(UpdateSettingsRequest.create({ planActSeparateModelsSetting: true }))
-					await Promise.all([
-						ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "plan", profileId })),
-						ModelsServiceClient.assignApiProfile(AssignApiProfileRequest.create({ mode: "act", profileId })),
-					])
-				}
-				await StateServiceClient.setWelcomeViewCompleted({ value: true }).catch(() => {})
-				setShowWelcome(false)
-				hideAccount()
-				hideSettings()
-				StateServiceClient.captureOnboardingProgress({
-					step: 0,
-					action: "completed",
-					page: ONBOARDING_PAGE,
-					userType: "byok",
-					completed: true,
+		try {
+			const state = await client.get()
+			const { rows } = selectorDataFromModelSettings(state)
+			const first = rows.find((row) => !row.disabledReason) ?? rows[0]
+			const { roles } = state.settings
+			const pick: ModelPick | null = first && { modelId: first.id, levelId: first.defaultLevelId ?? "default" }
+			const chat = roles.chat ?? pick
+			const background = roles.background.pick ?? chat
+			const ask = roles.ask.enabled ? (roles.ask.pick ?? chat) : roles.ask.pick
+			if (chat !== roles.chat || background !== roles.background.pick || ask !== roles.ask.pick) {
+				await client.setRoles(state.settings.revision, {
+					...roles,
+					chat,
+					ask: { ...roles.ask, pick: ask },
+					background: { ...roles.background, pick: background },
 				})
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Failed to save configuration.")
-			} finally {
-				setIsSaving(false)
 			}
-		},
-		[hideAccount, hideSettings, setShowWelcome, usesModelSettings],
-	)
+			await StateServiceClient.setWelcomeViewCompleted({ value: true }).catch(() => {})
+			setShowWelcome(false)
+			hideAccount()
+			hideSettings()
+			StateServiceClient.captureOnboardingProgress({
+				step: 0,
+				action: "completed",
+				page: ONBOARDING_PAGE,
+				userType: "byok",
+				completed: true,
+			})
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Failed to save your model.")
+		} finally {
+			setIsSaving(false)
+		}
+	}, [hideAccount, hideSettings, setShowWelcome])
 
-	return (
-		<div className="fixed inset-0 p-0 flex flex-col w-full">
-			<div className="h-full px-5 xs:mx-10 overflow-auto flex flex-col gap-4 items-center justify-center">
-				<ClineLogoWhite className="size-16 flex-shrink-0" />
-				<h2 className="text-lg font-semibold p-0 flex-shrink-0">Configure your provider</h2>
-				<p className="text-foreground text-sm text-center m-0 p-0 flex-shrink-0">
-					{usesModelSettings
-						? "Set up your first model to get started. It runs your chats and background text."
-						: "Create an API configuration to get started. It is used for both Ask and Act."}
-				</p>
-
-				<div className="flex-1 w-full flex max-w-lg overflow-y-auto min-h-0">
-					<div className="w-full my-4">
-						<ApiProfileEditor
-							draft={draft}
-							error={error}
-							isSaving={isSaving}
-							onChange={onDraftChange}
-							onSave={complete}
-							usedBy={[]}
-						/>
-					</div>
+	if (!modelSettings) {
+		return (
+			<div className="fixed inset-0 flex flex-col items-center justify-center gap-4 overflow-auto px-5">
+				<ClineLogoWhite className="size-16 shrink-0" />
+				<div className="w-full max-w-lg">
+					{modelSettingsMigrationStatus?.status === "failed" ? (
+						<MigrationFailedNotice status={modelSettingsMigrationStatus} />
+					) : (
+						<MigrationPending />
+					)}
 				</div>
-
-				<footer className="flex w-full max-w-lg flex-col gap-3 my-2 px-2 overflow-hidden flex-shrink-0">
-					<div className="items-center justify-center flex text-sm text-foreground gap-2 mb-3 text-pretty">
-						<AlertCircleIcon className="shrink-0 size-2" /> You can change this later in settings
-					</div>
-				</footer>
 			</div>
-		</div>
+		)
+	}
+
+	const hasModel = modelSettings.settings.models.length > 0
+	return (
+		<SettingsShell
+			onDone={noop}
+			setupIntro={
+				<div className="flex items-center gap-3 border-b border-editor-group-border px-3 py-2.5">
+					<ClineLogoWhite className="size-8 shrink-0" />
+					<div className="min-w-0 flex-1">
+						<h2 className="m-0 text-sm font-semibold">Set up your first model</h2>
+						<p className="m-0 text-[11.5px] text-description">
+							It runs your chats and background text. You can change this later in Settings.
+						</p>
+						{error && (
+							<p className="m-0 text-[11.5px] text-error" role="alert">
+								{error}
+							</p>
+						)}
+					</div>
+					<Button
+						disabled={!hasModel || isSaving}
+						onClick={() => void finish()}
+						size="sm"
+						title={hasModel ? undefined : "Add a model first"}>
+						{isSaving ? "Saving…" : "Continue"}
+					</Button>
+				</div>
+			}
+		/>
 	)
 }
 

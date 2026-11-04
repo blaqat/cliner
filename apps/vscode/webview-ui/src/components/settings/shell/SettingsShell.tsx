@@ -1,5 +1,5 @@
 import type { ExtensionMessage } from "@shared/ExtensionMessage"
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEvent, useMedia } from "react-use"
 import { Tab, TabContent, TabList, TabTrigger } from "@/components/common/Tab"
 import ViewHeader from "@/components/common/ViewHeader"
@@ -28,8 +28,8 @@ import {
 	rowDescription,
 	type SettingsRow,
 	type SettingsRowContext,
-	searchRows,
 	type ShellTarget,
+	searchRows,
 	visiblePages,
 } from "./settingsRegistry"
 import { SETTINGS_ROWS } from "./settingsRows"
@@ -201,12 +201,15 @@ const PageTab = ({
 interface SettingsShellProps {
 	onDone: () => void
 	navigationRequest?: SettingsNavigationRequest
+	/** Onboarding: this above the Models page, with no header, search or nav. */
+	setupIntro?: ReactNode
 }
 
 /** The seven-page Settings. `rows` is for tests and stories that stand in their own registry. */
 export const SettingsShell = ({
 	navigationRequest,
 	onDone,
+	setupIntro,
 	rows = SETTINGS_ROWS,
 }: SettingsShellProps & { rows?: readonly SettingsRow[] }) => {
 	const state = useExtensionState()
@@ -337,80 +340,84 @@ export const SettingsShell = ({
 	return (
 		<SettingsShellContext.Provider value={shellValue}>
 			<Tab className="settings-shell">
-				<ViewHeader environment={state.environment} onDone={onDone} title="Settings" />
-				<div className="flex min-w-0 items-center gap-1 border-b border-editor-group-border px-2 pb-1.5">
-					<label className="flex h-6 min-w-0 flex-1 cursor-text items-center gap-[5px] rounded-xs border border-transparent bg-input-background px-[7px] text-description focus-within:border-(--vscode-focusBorder)">
-						<i aria-hidden className="codicon codicon-search shrink-0 text-[12px]!" />
-						<input
-							aria-label="Search settings"
-							className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-input-foreground outline-none placeholder:text-description"
-							onChange={(event) => setQuery(event.target.value)}
-							onKeyDown={(event) => {
-								if (event.key === "Escape") {
-									setQuery("")
-								} else if (event.key === "Enter" && listed.length) {
-									const first = pages.flatMap((page) => listed.filter((row) => row.page === page.id))[0]
-									if (first) {
-										shellValue.openRow(first.id)
+				{setupIntro ?? <ViewHeader environment={state.environment} onDone={onDone} title="Settings" />}
+				{!setupIntro && (
+					<div className="flex min-w-0 items-center gap-1 border-b border-editor-group-border px-2 pb-1.5">
+						<label className="flex h-6 min-w-0 flex-1 cursor-text items-center gap-[5px] rounded-xs border border-transparent bg-input-background px-[7px] text-description focus-within:border-(--vscode-focusBorder)">
+							<i aria-hidden className="codicon codicon-search shrink-0 text-[12px]!" />
+							<input
+								aria-label="Search settings"
+								className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-input-foreground outline-none placeholder:text-description"
+								onChange={(event) => setQuery(event.target.value)}
+								onKeyDown={(event) => {
+									if (event.key === "Escape") {
+										setQuery("")
+									} else if (event.key === "Enter" && listed.length) {
+										const first = pages.flatMap((page) => listed.filter((row) => row.page === page.id))[0]
+										if (first) {
+											shellValue.openRow(first.id)
+										}
 									}
-								}
-							}}
-							placeholder="Search settings"
-							spellCheck={false}
-							value={query}
-						/>
-						{query && (
+								}}
+								placeholder="Search settings"
+								spellCheck={false}
+								value={query}
+							/>
+							{query && (
+								<button
+									aria-label="Clear"
+									className="grid cursor-pointer border-0 bg-transparent p-0 text-description hover:text-foreground"
+									onClick={() => setQuery("")}
+									type="button">
+									<i aria-hidden className="codicon codicon-close text-[12px]!" />
+								</button>
+							)}
+						</label>
+						<button
+							aria-pressed={filter === "changed"}
+							className={cn(CHIP_CLASS, filter === "changed" && CHIP_ON_CLASS)}
+							onClick={() => setFilter((current) => (current === "changed" ? null : "changed"))}
+							title="Only what differs from the default"
+							type="button">
+							Changed <span className="opacity-70">{changed.length}</span>
+						</button>
+						{managed.length > 0 && (
 							<button
-								aria-label="Clear"
-								className="grid cursor-pointer border-0 bg-transparent p-0 text-description hover:text-foreground"
-								onClick={() => setQuery("")}
+								aria-pressed={filter === "managed"}
+								className={cn(CHIP_CLASS, filter === "managed" && CHIP_ON_CLASS)}
+								onClick={() => setFilter((current) => (current === "managed" ? null : "managed"))}
+								title="What your organization manages"
 								type="button">
-								<i aria-hidden className="codicon codicon-close text-[12px]!" />
+								<i aria-hidden className="codicon codicon-lock text-[11px]!" />
+								Managed <span className="opacity-70">{managed.length}</span>
 							</button>
 						)}
-					</label>
-					<button
-						aria-pressed={filter === "changed"}
-						className={cn(CHIP_CLASS, filter === "changed" && CHIP_ON_CLASS)}
-						onClick={() => setFilter((current) => (current === "changed" ? null : "changed"))}
-						title="Only what differs from the default"
-						type="button">
-						Changed <span className="opacity-70">{changed.length}</span>
-					</button>
-					{managed.length > 0 && (
-						<button
-							aria-pressed={filter === "managed"}
-							className={cn(CHIP_CLASS, filter === "managed" && CHIP_ON_CLASS)}
-							onClick={() => setFilter((current) => (current === "managed" ? null : "managed"))}
-							title="What your organization manages"
-							type="button">
-							<i aria-hidden className="codicon codicon-lock text-[11px]!" />
-							Managed <span className="opacity-70">{managed.length}</span>
-						</button>
-					)}
-				</div>
+					</div>
+				)}
 
 				<div className="flex min-h-0 flex-1 overflow-hidden">
-					<TabList
-						aria-label="Settings pages"
-						aria-orientation="vertical"
-						className={cn(
-							"shrink-0 flex-col gap-px overflow-y-auto border-r border-editor-group-border px-1 py-1.5",
-							narrow ? "w-9" : "w-[136px]",
-						)}
-						onValueChange={selectPage}
-						value={listing ? "" : pageId}>
-						{pages.map((page) => (
-							<PageTab
-								count={trimmed ? hits.filter((row) => row.page === page.id).length : undefined}
-								key={page.id}
-								name={page.name}
-								narrow={narrow}
-								page={page.id}
-								value={page.id}
-							/>
-						))}
-					</TabList>
+					{!setupIntro && (
+						<TabList
+							aria-label="Settings pages"
+							aria-orientation="vertical"
+							className={cn(
+								"shrink-0 flex-col gap-px overflow-y-auto border-r border-editor-group-border px-1 py-1.5",
+								narrow ? "w-9" : "w-[136px]",
+							)}
+							onValueChange={selectPage}
+							value={listing ? "" : pageId}>
+							{pages.map((page) => (
+								<PageTab
+									count={trimmed ? hits.filter((row) => row.page === page.id).length : undefined}
+									key={page.id}
+									name={page.name}
+									narrow={narrow}
+									page={page.id}
+									value={page.id}
+								/>
+							))}
+						</TabList>
+					)}
 
 					<TabContent className="min-w-0">
 						<div ref={topRef} />

@@ -33,9 +33,6 @@ export const AboutPage = () => {
 	const canSeeRemoteConfig = !!remoteRow && isRowVisible(rows, remoteRow, ctx)
 	return (
 		<SettingBlock rowId="about.info">
-			{migration?.status === "complete" && (
-				<p className="text-[11px] text-description">Profiles moved to Models. Your models and levels were kept.</p>
-			)}
 			{migration?.status === "complete" && <MigrationIssues issues={migration.issues} />}
 			{migration?.status === "failed" && <MigrationFailedNotice onRetried={setMigration} status={migration} />}
 			{migration?.status === "pending" && <p role="status">Moving your model setup…</p>}

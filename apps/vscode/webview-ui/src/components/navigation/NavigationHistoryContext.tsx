@@ -3,7 +3,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { openTask } from "@/components/inbox/sessionActions"
 import {
 	DEFAULT_SETTINGS_PAGE,
-	resolveSettingsTarget,
 	type SettingsNavigationTarget,
 	settingsPageForTarget,
 } from "@/components/settings/settingsTargets"
@@ -105,10 +104,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 		currentTaskItem,
 		taskHistory,
 		taskGroups,
-		modelSettings,
 	} = state
-	// The new shell ships with the new settings store; it names its places by page.
-	const shellActive = !!modelSettings
 	const [searchOpen, setSearchOpen] = useState(false)
 	const [settingsSection, setSettingsSection] = useState<string>()
 	const searchQueryRef = useRef("")
@@ -118,11 +114,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 	actionsRef.current = state
 
 	// Before SettingsView reports its tab, it opens on the requested one (or the first).
-	const section =
-		settingsSection ??
-		(shellActive
-			? (settingsPageForTarget(settingsNavigationRequest?.target) ?? DEFAULT_SETTINGS_PAGE)
-			: (resolveSettingsTarget(settingsNavigationRequest?.target)?.tabId ?? "api-config"))
+	const section = settingsSection ?? settingsPageForTarget(settingsNavigationRequest?.target) ?? DEFAULT_SETTINGS_PAGE
 	const current = useMemo(
 		() =>
 			deriveLocation({
@@ -222,11 +214,11 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 	const restore = useCallback(
 		(next: NavLocation[] | undefined) => {
 			if (!next) return
-			const entries = shellActive ? next.map(canonicalSettingsLocation) : next
+			const entries = next.map(canonicalSettingsLocation)
 			setEntries(entries)
 			goTo(entries[entries.length - 1])
 		},
-		[goTo, shellActive],
+		[goTo],
 	)
 
 	const back = useCallback(() => restore(popLocation(entries)), [entries, restore])

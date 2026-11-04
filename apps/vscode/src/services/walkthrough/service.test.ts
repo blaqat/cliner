@@ -11,34 +11,15 @@ let directory = ""
 let requests = 0
 let input: CollectionInput
 let rejectGeneration = false
-const remembered: { id?: string } = {}
-// Settings › Models configuration the "chosen" profile runs on, at its own effort.
-const profile = {
-	id: "cfg",
-	name: "Configuration",
-	provider: "openai",
-	modelId: "fixture-model",
-	reasoningEffort: "high",
-	options: { openAiBaseUrl: "http://example.invalid" },
-}
-const namedProfile = { id: "chosen", name: "Chosen", configurationId: "cfg", reasoningEffort: "low" }
-let generatedWith: Record<string, unknown> | undefined
 const askResponse = mock(async (_text: string) => {})
 let askResponseArgs: unknown[] = []
 const openMultiFileDiff = mock(async (_input: unknown) => ({}))
 mock.module("@/core/storage/disk", () => ({ ensureTaskDirectoryExists: async () => directory }))
 mock.module("@/hosts/host-provider", () => ({ HostProvider: { diff: { openMultiFileDiff } } }))
 mock.module("@/sdk/sdk-api-handler", () => ({
-	buildSdkProviderConfig: (config: unknown) => ({
-		providerId: "openai-compatible",
-		modelId: profile.modelId,
-		baseUrl: profile.options.openAiBaseUrl,
-		config,
-	}),
-	buildApiHandler: (config: Record<string, unknown>) => ({
+	buildApiHandler: () => ({
 		async *createMessage() {
 			requests++
-			generatedWith = config
 			if (rejectGeneration) throw new Error("Provider failed")
 			yield {
 				type: "tool_calls",
@@ -76,7 +57,7 @@ mock.module("@/sdk/sdk-api-handler", () => ({
 		},
 	}),
 }))
-let configuredSettingsEnabled = false
+let configuredSettingsEnabled = true
 const actionPicks: unknown[] = []
 mock.module("@/sdk/model-settings/background", () => ({
 	useModelSettings: () => configuredSettingsEnabled,
@@ -89,12 +70,11 @@ mock.module("@/sdk/model-settings/background", () => ({
 const { WalkthroughService } = await import("./service")
 
 beforeEach(async () => {
-	configuredSettingsEnabled = false
+	configuredSettingsEnabled = true
 	actionPicks.length = 0
 	directory = await realpath(await mkdtemp(path.join(tmpdir(), "walkthrough-service-")))
 	requests = 0
 	rejectGeneration = false
-	remembered.id = undefined
 	askResponse.mockClear()
 	openMultiFileDiff.mockClear()
 	await git(directory, ["init", "-q"])
@@ -138,19 +118,7 @@ function controller() {
 			},
 		},
 		stateManager: {
-			getGlobalStateKey: (key: string) =>
-				key === "apiConfigProfiles"
-					? [profile]
-					: key === "profiles"
-						? [namedProfile]
-						: key === "walkthroughGenerateModelProfileId"
-							? remembered.id
-							: undefined,
-			setGlobalState: (key: string, value: string) => {
-				if (key === "walkthroughGenerateModelProfileId") remembered.id = value
-			},
-			listSecretStorageKeys: () => ["profile:cfg:openAiApiKey"],
-			getSecretForKey: () => "test-credential",
+			getGlobalStateKey: (key: string) => (key === "modelSettings" ? { revision: 1 } : undefined),
 		},
 		postStateToWebview: async () => {},
 		getWalkthroughCollectionInput: async (_taskId: string, scope: CollectionInput["scope"]) => ({ ...input, scope }),
@@ -164,7 +132,6 @@ const request = { taskId: "task", scope: "thread" as const }
 
 describe("walkthrough service", () => {
 	it("uses each Generate action pick without remembering it or changing the next action", async () => {
-		configuredSettingsEnabled = true
 		const { generateChangeWalkthrough } = await import("@/core/controller/task/generateChangeWalkthrough")
 		const host = controller()
 		const first = { modelId: "first", levelId: "high" }
@@ -173,12 +140,10 @@ describe("walkthrough service", () => {
 		await generateChangeWalkthrough(host, { value: JSON.stringify({ ...request, pick: second }) })
 		await generateChangeWalkthrough(host, { value: JSON.stringify(request) })
 		expect(actionPicks).toEqual([first, second, undefined])
-		expect(remembered.id).toBeUndefined()
 		expect(requests).toBe(3)
 	})
 
 	it("rejects a malformed action pick before Generate starts", async () => {
-		configuredSettingsEnabled = true
 		const { generateChangeWalkthrough } = await import("@/core/controller/task/generateChangeWalkthrough")
 		await expect(
 			generateChangeWalkthrough(controller(), { value: JSON.stringify({ ...request, pick: { modelId: "m" } }) }),
@@ -188,11 +153,11 @@ describe("walkthrough service", () => {
 
 	it("keys generated caches by review mode", async () => {
 		const host = service()
-		await host.generate({ ...request, profileId: "chosen" })
-		const reviewed = await host.generate({ ...request, profileId: "chosen", reviewNotes: true })
+		await host.generate(request)
+		const reviewed = await host.generate({ ...request, reviewNotes: true })
 		expect(requests).toBe(2)
 		const reopened = service()
-		const cached = await reopened.generate({ ...request, profileId: "chosen", reviewNotes: true })
+		const cached = await reopened.generate({ ...request, reviewNotes: true })
 		expect(requests).toBe(2)
 		expect(cached.review).toEqual(reviewed.review)
 		const id = cached.review!.notes[0].id
@@ -209,38 +174,20 @@ describe("walkthrough service", () => {
 		expect(walk.source).toBe("fallback")
 		expect(requests).toBe(0)
 	})
-	it("requires an explicitly selected profile", async () => {
-		await expect(service().generate(request)).rejects.toThrow("Choose a profile")
-		// A configuration id is not a profile.
-		await expect(service().generate({ ...request, profileId: "cfg" })).rejects.toThrow("Choose a profile")
+	it("won't generate before the setup has moved, and says where to look", async () => {
+		configuredSettingsEnabled = false
+		await expect(service().generate(request)).rejects.toThrow("Open Settings")
 		expect(requests).toBe(0)
 	})
 	it("caches one paid request, reloads it across services and regenerates only explicitly", async () => {
 		const host = service()
-		const first = await host.generate({ ...request, profileId: "chosen" })
+		const first = await host.generate(request)
 		expect(first.cacheHit).toBe(false)
-		const cached = await service().generate({ ...request, profileId: "chosen" })
+		const cached = await service().generate(request)
 		expect(cached.cacheHit).toBe(true)
 		expect(requests).toBe(1)
-		await host.generate({ ...request, profileId: "chosen", regenerate: true })
+		await host.generate({ ...request, regenerate: true })
 		expect(requests).toBe(2)
-	})
-	it("remembers the profile of a successful Generate and falls back to it", async () => {
-		await service().generate({ ...request, profileId: "chosen" })
-		expect(remembered.id).toBe("chosen")
-		expect((await service().generate(request)).profileId).toBe("chosen")
-	})
-	it("runs the profile's configuration at the profile's effort", async () => {
-		generatedWith = undefined
-		await service().generate({ ...request, profileId: "chosen", regenerate: true })
-		expect(generatedWith).toMatchObject({
-			actModeApiProvider: "openai",
-			actModeOpenAiModelId: "fixture-model",
-			openAiBaseUrl: "http://example.invalid",
-			openAiApiKey: "test-credential",
-			// The profile's effort, not the configuration's default (high).
-			actModeReasoningEffort: "low",
-		})
 	})
 	it("sends one normal user message quoting the host's stops and hunks", async () => {
 		const host = service()
@@ -300,8 +247,7 @@ describe("walkthrough service", () => {
 	it("leaves the fallback usable after generation fails without retrying", async () => {
 		const host = service()
 		rejectGeneration = true
-		await expect(host.generate({ ...request, profileId: "chosen" })).rejects.toThrow("Provider failed")
-		expect(remembered.id).toBeUndefined()
+		await expect(host.generate(request)).rejects.toThrow("Provider failed")
 		expect((await host.get(request)).source).toBe("fallback")
 		expect(requests).toBe(1)
 	})

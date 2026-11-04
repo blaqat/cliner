@@ -28,7 +28,7 @@ vi.mock("@/services/grpc-client", () => ({
 }))
 
 const renderChip = (props: Partial<React.ComponentProps<typeof ModelEffortChip>> = {}) =>
-	render(<ModelEffortChip fallbackLabel="legacy label" mode="act" modelId="m" modelInfo={{}} {...props} />)
+	render(<ModelEffortChip fallbackLabel="legacy label" mode="act" {...props} />)
 
 const chip = () => screen.getByTestId("model-effort-chip")
 const models = () => screen.getByTestId("model-list")
@@ -406,7 +406,7 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(screen.getByTestId("menu-make-default")).toBeDisabled()
 			expect(screen.getByTestId("menu-make-default")).toHaveAttribute("title", "Pick a model first")
 			fireEvent.click(screen.getByTestId("model-menu-fix"))
-			expect(mocks.navigateToSettings).toHaveBeenCalledWith("api-config")
+			expect(mocks.navigateToSettings).toHaveBeenCalledWith("models")
 		})
 
 		it("no role picked: says nothing can run, and links to the pick", async () => {
@@ -418,7 +418,7 @@ describe("ModelEffortChip with the new model settings", () => {
 			await openMenu()
 			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("No Chat model is picked, so nothing can run.")
 			fireEvent.click(screen.getByTestId("model-menu-fix"))
-			expect(mocks.navigateToSettings).toHaveBeenCalledWith("api-config")
+			expect(mocks.navigateToSettings).toHaveBeenCalledWith("models")
 		})
 
 		it("a thread whose model is gone says to pick another", async () => {

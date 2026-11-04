@@ -1,6 +1,7 @@
 import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { reviewStorageKey } from "./reviewState"
 import WalkthroughView from "./WalkthroughView"
 
@@ -102,9 +103,7 @@ const rowTitles = (element: HTMLElement) =>
 const stored = () => JSON.parse(localStorage.getItem(reviewStorageKey("task", "thread")) ?? "{}")["diff-1"] ?? {}
 
 const state = () => ({
-	apiConfigProfiles: [{ id: "cfg", name: "Haiku", provider: "anthropic", modelId: "haiku" }],
-	profiles: [{ id: "fast", name: "Fast", configurationId: "cfg" }],
-	walkthroughGenerateProfileId: "fast",
+	modelSettings: modelSettingsFixture(),
 	currentTaskItem: { id: "task", ts: 1, task: "t", title: "Thread" },
 	taskHistory: [],
 	taskGroups: [],
@@ -290,23 +289,23 @@ describe("Cline's review notes", () => {
 
 	it("sends Add review notes with the next Generate only, and doesn't remember it", async () => {
 		const view = await renderPage({ ...fixture, source: "fallback", review: undefined })
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
 		const option = await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })
 		expect(option).toHaveAttribute("aria-checked", "false")
 		fireEvent.click(option)
 		expect(option).toHaveAttribute("aria-checked", "true")
 		fireEvent.keyDown(option, { key: "Escape" })
 
-		fireEvent.click(screen.getByRole("button", { name: /^Generate/ }))
+		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
 		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(1))
 		expect(sent(mocks.generate).reviewNotes).toBe(true)
 
-		fireEvent.click(await screen.findByRole("button", { name: "Choose Generate profile" }))
+		fireEvent.click(await screen.findByRole("button", { name: "Generate options" }))
 		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "false")
 		view.unmount()
 
 		await renderPage({ ...fixture, source: "fallback", review: undefined })
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
 		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "false")
 	})
 })

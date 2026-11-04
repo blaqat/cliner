@@ -11,6 +11,7 @@
 // - Tagging migrated entries with tokenSource: "migration"
 // - Auto-migration on ProviderSettingsManager construction
 
+import { existsSync } from "node:fs"
 import path from "node:path"
 import { ProviderSettingsManager } from "@cline/core"
 import { Logger } from "@shared/services/Logger"
@@ -109,4 +110,27 @@ export function getProviderSettingsManager(dataDir?: string): ProviderSettingsMa
 	_cachedManager = new ProviderSettingsManager({ filePath, dataDir: resolvedDataDir })
 	_cachedDataDir = resolvedDataDir
 	return _cachedManager
+}
+
+/**
+ * Reset promises saved keys are removed, and a key can sit in providers.json. Only Reset calls this: the entries
+ * keep their model, URL and region, and everything that could authenticate a request goes.
+ */
+export function clearProviderCredentials(dataDir?: string): void {
+	const manager = getProviderSettingsManager(dataDir)
+	if (!existsSync(manager.getFilePath())) return
+	// A file that doesn't parse reads as empty, so writing here also replaces it with a valid one.
+	const state = manager.read()
+	const providers = Object.fromEntries(
+		Object.entries(state.providers).map(([id, entry]) => {
+			const { apiKey: _apiKey, auth: _auth, headers: _headers, ...settings } = entry.settings
+			const { accessKey: _accessKey, secretKey: _secretKey, sessionToken: _sessionToken, ...aws } = settings.aws ?? {}
+			const { clientId: _clientId, clientSecret: _clientSecret, ...sap } = settings.sap ?? {}
+			return [
+				id,
+				{ ...entry, settings: { ...settings, ...(settings.aws ? { aws } : {}), ...(settings.sap ? { sap } : {}) } },
+			]
+		}),
+	)
+	manager.write({ ...state, providers })
 }
