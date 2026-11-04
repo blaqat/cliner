@@ -1,8 +1,16 @@
+import { createGateway } from "@cline/llms"
 import { createCompatibleConnection, createDefaultModelSettings, type ModelSettings } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
 import { DependencyError, mutateSettings } from "@/core/controller/models/modelSettingsRpc"
 import { InMemoryConnectionSecretStore } from "./connection-secret-store"
-import { readModelSettingsState } from "./host-settings"
+import { resolveConfiguredPick, resolveThreadPick } from "@/sdk/model-settings-resolver"
+import {
+	assertConfiguredModelRequestAllowed,
+	catalogModelValues,
+	managedModelValues,
+	readModelSettingsState,
+	rememberDetectedModelMetadata,
+} from "./host-settings"
 
 vi.mock("@/shared/services/Logger", () => ({ Logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 
@@ -10,10 +18,12 @@ function fixture() {
 	let settings = createDefaultModelSettings()
 	const connectionSecrets = new InMemoryConnectionSecretStore()
 	const postStateToWebview = vi.fn()
+	const history: Array<{ id: string; modelSelectionV1: unknown }> = []
+	const managed: Record<string, unknown> = {}
 	const state = {
 		connectionSecrets,
 		getGlobalStateKey: (key: string) => (key === "modelSettings" ? settings : []),
-		getRemoteConfigSettings: () => ({}),
+		getRemoteConfigSettings: () => managed,
 		getModelSettingsMigrationStatus: () => ({ status: "disabled", retryable: false }),
 		mutateModelSettings: async (revision: number, mutate: (value: ModelSettings) => Promise<void>) => {
 			if (revision !== settings.revision) throw new Error("revision")
@@ -23,10 +33,14 @@ function fixture() {
 			settings = next
 		},
 	}
-	const controller = { stateManager: state, postStateToWebview }
+	const controller = {
+		stateManager: state,
+		postStateToWebview,
+		getStateToPostToWebview: async () => ({ taskHistory: history }),
+	}
 	const call = (operation: Parameters<typeof mutateSettings>[1], input: unknown) =>
-		mutateSettings(controller as never, operation, JSON.stringify(input))
-	return { state, controller, call, get: () => settings, connectionSecrets, postStateToWebview }
+		mutateSettings(controller as never, operation, JSON.stringify(input), true)
+	return { history, managed, state, controller, call, get: () => settings, connectionSecrets, postStateToWebview }
 }
 
 describe("new settings host mutations", () => {
@@ -137,4 +151,181 @@ describe("new settings host mutations", () => {
 		expect(f.get().roles.ask.pick).toEqual(pick)
 		expect(f.get().roles.chat).toBeNull()
 	})
+})
+
+describe("Phase 4 host boundaries", () => {
+	it("rejects writes with rollout disabled before accessing the store", async () => {
+		await expect(mutateSettings({} as never, "deleteConnection", "{}")).rejects.toThrow("disabled")
+	})
+	it("patches only present fields and preserves null, false and zero", async () => {
+		const f = fixture()
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection: { ...createCompatibleConnection("c"), defaults: { contextWindow: 1000, free: true, temperature: 1 } },
+		})
+		await f.call("saveConnection", {
+			expectedRevision: 1,
+			connection: { id: "c", defaults: { temperature: 0, free: false }, baseUrl: "https://example.invalid" },
+		})
+		expect(f.get().connections[0].defaults).toEqual({ contextWindow: 1000, temperature: 0, free: false })
+		await f.call("saveConnection", {
+			expectedRevision: 2,
+			connection: { id: "c", baseUrl: null, defaults: { contextWindow: null } },
+		})
+		expect(f.get().connections[0]).toMatchObject({
+			baseUrl: null,
+			defaults: { contextWindow: null, temperature: 0, free: false },
+		})
+	})
+	it("reports SDK/live thread, role and policy references, then refuses a removed thread pick through the resolver", async () => {
+		const f = fixture()
+		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
+		await f.call("saveConfiguredModels", {
+			expectedRevision: 1,
+			models: [
+				{ id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+			],
+		})
+		const pick = { modelId: "m", levelId: "default" }
+		const selection = { version: 1 as const, ask: pick, act: pick }
+		f.history.push({ id: "live", modelSelectionV1: selection })
+		f.get().roles.chat = pick
+		f.get().subagents.allowed = [{ kind: "model", modelId: "m", levels: ["default"] }]
+		try {
+			await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
+			throw new Error("expected dependency refusal")
+		} catch (error) {
+			expect((error as DependencyError).dependencies).toEqual(
+				expect.arrayContaining(["roles.chat", "subagents.allowed.0", "thread:live.ask", "thread:live.act"]),
+			)
+		}
+		f.history.length = 0
+		f.get().roles.chat = null
+		f.get().subagents.allowed = []
+		await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
+		expect(() => resolveConfiguredPick(f.get(), resolveThreadPick(selection, "act"))).toThrow(/Settings > Models/)
+	})
+	it.each([
+		"openAiBaseUrl",
+		"openAiHeaders",
+		"azureApiVersion",
+		"azureIdentity",
+	])("enforces %s on connection patches", async (key) => {
+		const f = fixture()
+		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
+		f.managed[key] = key === "openAiHeaders" ? {} : key === "azureIdentity" ? false : "managed"
+		const patches: Record<string, unknown> = {
+			openAiBaseUrl: { baseUrl: "https://bad.invalid" },
+			openAiHeaders: { headers: [{ id: "h", name: "X-Test", storage: "plain", value: "bad" }] },
+			azureApiVersion: { azureApiVersion: "bad" },
+			azureIdentity: { auth: { kind: "azure-identity" } },
+		}
+		await expect(
+			f.call("saveConnection", { expectedRevision: 1, connection: { id: "c", ...(patches[key] as object) } }),
+		).rejects.toThrow(/managed/)
+		expect(f.get().revision).toBe(1)
+	})
+})
+
+describe("managed RPC mutation matrix", () => {
+	it.each([
+		"saveConnection",
+		"saveConfiguredModels",
+		"duplicateConfiguredModel",
+		"deleteConfiguredModel",
+		"deleteConnection",
+		"setModelRoles",
+		"setSubagentPolicy",
+		"makeModelDefault",
+	] as const)("%s cannot bypass managed provider restrictions", async (operation) => {
+		const f = fixture()
+		const connection = createCompatibleConnection("c")
+		const row = { id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} }
+		await f.call("saveConnection", { expectedRevision: 0, connection })
+		await f.call("saveConfiguredModels", { expectedRevision: 1, models: [row] })
+		f.managed.remoteConfiguredProviders = ["anthropic"]
+		const cases = {
+			saveConnection: { expectedRevision: 2, connection: { id: "c", name: "Changed" } },
+			saveConfiguredModels: { expectedRevision: 2, models: [{ ...row, upstreamId: "other" }] },
+			duplicateConfiguredModel: { modelId: "m" },
+			deleteConfiguredModel: { expectedRevision: 2, modelId: "m" },
+			deleteConnection: { expectedRevision: 2, connectionId: "c" },
+			setModelRoles: { expectedRevision: 2, roles: { ...f.get().roles, chat: { modelId: "m", levelId: "default" } } },
+			setSubagentPolicy: { expectedRevision: 2, subagents: { ...f.get().subagents, maxConcurrent: 0 } },
+			makeModelDefault: { expectedRevision: 2, mode: "act", pick: { modelId: "m", levelId: "default" } },
+		}
+		await expect(f.call(operation, cases[operation])).rejects.toThrow()
+		expect(f.get().revision).toBe(2)
+	})
+})
+
+describe("managed and metadata request projections", () => {
+	it("projects genuine catalog facts without persisting user overrides", () => {
+		const model = createGateway()
+			.listModels("anthropic")
+			.find((m) => m.contextWindow !== undefined)!
+		expect(model).toBeDefined()
+		const connection = {
+			...createCompatibleConnection("c"),
+			kind: "provider" as const,
+			providerId: "anthropic",
+			options: {},
+			secretRefs: {},
+		}
+		const row = {
+			id: "m",
+			connectionId: "c",
+			upstreamId: model.id,
+			name: "",
+			kind: "chat" as const,
+			overrides: {},
+			providerOptions: {},
+		}
+		expect(catalogModelValues(row, connection).contextWindow).toBe(model.contextWindow)
+		expect(row.overrides).toEqual({})
+	})
+	it("projects managed cache policy and refuses changed organization URL at request time", async () => {
+		const f = fixture()
+		const connection = createCompatibleConnection("c")
+		connection.baseUrl = "https://old.invalid"
+		await f.call("saveConnection", { expectedRevision: 0, connection })
+		await f.call("saveConfiguredModels", {
+			expectedRevision: 1,
+			models: [
+				{ id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+			],
+		})
+		f.managed.openAiBaseUrl = "https://managed.invalid"
+		await expect(
+			assertConfiguredModelRequestAllowed(f.state as never, f.get(), { modelId: "m", levelId: "default" }),
+		).rejects.toThrow(/managed/)
+		f.managed.awsBedrockUsePromptCache = false
+		expect(
+			managedModelValues(f.state as never, f.get().models[0], {
+				...connection,
+				kind: "provider",
+				providerId: "bedrock",
+				options: {},
+				secretRefs: {},
+			}),
+		).toEqual({ promptCache: "no" })
+	})
+})
+
+it("publishes detected metadata only for its producing revision", async () => {
+	const f = fixture()
+	await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
+	await f.call("saveConfiguredModels", {
+		expectedRevision: 1,
+		models: [
+			{ id: "m", connectionId: "c", upstreamId: "unknown-id", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+		],
+	})
+	rememberDetectedModelMetadata(f.state as never, "m", 2, { contextWindow: 64000 })
+	expect((await readModelSettingsState(f.state as never)).effective.m.contextWindow).toEqual({
+		value: 64000,
+		source: "metadata",
+	})
+	await f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", name: "new revision" } })
+	expect((await readModelSettingsState(f.state as never)).effective.m.contextWindow).toEqual({ value: null, source: "builtin" })
 })

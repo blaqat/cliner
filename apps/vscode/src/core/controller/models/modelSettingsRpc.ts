@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import {
-	ConnectionSchema,
+	applyConnectionPatch,
+	ConnectionPatchSchema,
 	ModelPickSchema,
 	ModelRowSchema,
 	ModelSettingsSchema,
@@ -15,7 +16,9 @@ import {
 	readModelSettingsState,
 	validateConnectionSecretRefs,
 } from "@/sdk/model-settings/host-settings"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import type { Controller } from ".."
+import { cancelModelSettingsDiagnostics } from "./modelSettingsDiagnostics"
 
 const revision = z.number().int().nonnegative()
 const secretMutation = z.discriminatedUnion("operation", [
@@ -37,7 +40,11 @@ const secretMutation = z.discriminatedUnion("operation", [
 ])
 const schemas = {
 	saveConnection: z
-		.object({ expectedRevision: revision, connection: ConnectionSchema, secrets: z.array(secretMutation).default([]) })
+		.object({
+			expectedRevision: revision,
+			connection: ConnectionPatchSchema,
+			secrets: z.array(secretMutation).default([]),
+		})
 		.strict(),
 	saveConfiguredModels: z.object({ expectedRevision: revision, models: z.array(ModelRowSchema) }).strict(),
 	duplicateConfiguredModel: z.object({ modelId: z.string().min(1) }).strict(),
@@ -49,9 +56,17 @@ const schemas = {
 }
 export type SettingsMutation = keyof typeof schemas
 
-export async function mutateSettings(controller: Controller, operation: SettingsMutation, payload: string): Promise<unknown> {
+export async function mutateSettings(
+	controller: Controller,
+	operation: SettingsMutation,
+	payload: string,
+	enabled?: boolean,
+): Promise<unknown> {
+	if (!modelSettingsRolloutEnabled(enabled)) throw new Error("Model settings rollout is disabled")
 	const parsed = schemas[operation].parse(JSON.parse(payload))
 	if (operation === "duplicateConfiguredModel") {
+		const stored = controller.stateManager.getGlobalStateKey("modelSettings")
+		if (stored) assertModelSettingsUnlocked(controller.stateManager, stored)
 		const input = schemas.duplicateConfiguredModel.parse(parsed)
 		const row = controller.stateManager.getGlobalStateKey("modelSettings")?.models.find((m) => m.id === input.modelId)
 		if (!row) throw new Error("Configured model is missing")
@@ -61,16 +76,24 @@ export async function mutateSettings(controller: Controller, operation: Settings
 	}
 	const expectedRevision = (parsed as { expectedRevision: number }).expectedRevision
 	let dependencies: string[] = []
+	const history =
+		operation === "deleteConfiguredModel" || operation === "deleteConnection"
+			? ((await controller.getStateToPostToWebview?.())?.taskHistory ?? [])
+			: []
 	await controller.stateManager.mutateModelSettings(expectedRevision, async (settings) => {
 		const next = structuredClone(settings)
 		let rollback: (() => Promise<void>) | undefined
 		switch (operation) {
 			case "saveConnection": {
 				const input = schemas.saveConnection.parse(parsed)
-				validateConnectionSecretRefs(input.connection)
+				const connection = applyConnectionPatch(
+					next.connections.find((c) => c.id === input.connection.id),
+					input.connection,
+				)
+				validateConnectionSecretRefs(connection)
 				const index = next.connections.findIndex((c) => c.id === input.connection.id)
-				if (index < 0) next.connections.push(input.connection)
-				else next.connections[index] = input.connection
+				if (index < 0) next.connections.push(connection)
+				else next.connections[index] = connection
 				break
 			}
 			case "saveConfiguredModels": {
@@ -89,7 +112,7 @@ export async function mutateSettings(controller: Controller, operation: Settings
 			}
 			case "deleteConfiguredModel": {
 				const { modelId } = schemas.deleteConfiguredModel.parse(parsed)
-				dependencies = modelDependencies(controller.stateManager, next, [modelId])
+				dependencies = modelDependencies(controller.stateManager, next, [modelId], history)
 				if (dependencies.length) throw new DependencyError(dependencies)
 				next.models = next.models.filter((m) => m.id !== modelId)
 				break
@@ -103,6 +126,7 @@ export async function mutateSettings(controller: Controller, operation: Settings
 						controller.stateManager,
 						next,
 						rows.map((m) => m.id),
+						history,
 					),
 				]
 				if (dependencies.length) throw new DependencyError(dependencies)
@@ -128,7 +152,19 @@ export async function mutateSettings(controller: Controller, operation: Settings
 			const input = schemas.saveConnection.parse(parsed)
 			const store = controller.stateManager.connectionSecrets
 			if (!store) throw new Error("Connection keychain is unavailable")
-			const refs = new Set(connectionSecretRefs(input.connection))
+			const connection = next.connections.find((c) => c.id === input.connection.id)!
+			const managed = controller.stateManager.getRemoteConfigSettings() as Record<string, unknown>
+			for (const mutation of input.secrets) {
+				if (mutation.operation === "keep") continue
+				const ref = `settings:v1:connection:${connection.id}:${mutation.field}`
+				if (
+					managed[mutation.field] !== undefined ||
+					(managed.openAiHeaders !== undefined &&
+						connection.headers.some((h) => h.storage === "secret" && h.secretRef === ref))
+				)
+					throw new Error("Connection credential is managed by your organization")
+			}
+			const refs = new Set(connectionSecretRefs(connection))
 			const touched = new Set<string>()
 			for (const mutation of input.secrets) {
 				const ref = `settings:v1:connection:${input.connection.id}:${mutation.field}`
@@ -185,6 +221,7 @@ export async function mutateSettings(controller: Controller, operation: Settings
 		Object.assign(settings, next)
 		return rollback
 	})
+	cancelModelSettingsDiagnostics(controller.stateManager)
 	await controller.postStateToWebview(true)
 	return readModelSettingsState(controller.stateManager)
 }

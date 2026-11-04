@@ -370,6 +370,39 @@ export const ConnectionSchema = z
 			if (!ref.startsWith(`settings:v1:connection:${connection.id}:`))
 				ctx.addIssue({ code: "custom", message: "Secret reference belongs to another connection" })
 	})
+/** Own properties are patch presence. Nested option/default maps merge by key; arrays replace. */
+export const ConnectionPatchSchema = z
+	.object({
+		id,
+		name: z.string().optional(),
+		kind: z.enum(["provider", "openai-compatible"]).optional(),
+		baseUrl: connectionBase.baseUrl.optional(),
+		auth: ConnectionAuthSchema.optional(),
+		headers: connectionBase.headers.optional(),
+		requestTimeoutMs: token.optional(),
+		defaults: ModelValuesSchema.partial().optional(),
+		apiFormat: z.enum(["chat", "responses"]).optional(),
+		azureApiVersion: z.string().nullable().optional(),
+		providerId: id.optional(),
+		options: ConnectionOptionsSchema.optional(),
+		secretRefs: z.record(id, id).optional(),
+	})
+	.strict()
+export type ConnectionPatch = z.infer<typeof ConnectionPatchSchema>
+export function applyConnectionPatch(previous: Connection | undefined, patch: ConnectionPatch): Connection {
+	const next = { ...previous, ...patch }
+	for (const key of ["defaults", "options", "secretRefs"] as const) {
+		if (Object.hasOwn(patch, key))
+			Object.assign(next, {
+				[key]: {
+					...(previous && key in previous ? (previous as unknown as Record<string, Record<string, unknown>>)[key] : {}),
+					...patch[key],
+				},
+			})
+	}
+	return ConnectionSchema.parse(next)
+}
+
 export const ModelRowSchema = z
 	.object({
 		id,
