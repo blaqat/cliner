@@ -15,7 +15,6 @@ const FIELD_LABELS: Partial<Record<keyof ModelValues, string>> = {
 	temperature: "Temperature",
 	verbosity: "Verbosity",
 	thinkingBudgetTokens: "Thinking budget",
-	free: "Free",
 	inputPrice: "Input price",
 	outputPrice: "Output price",
 	streaming: "Streaming",

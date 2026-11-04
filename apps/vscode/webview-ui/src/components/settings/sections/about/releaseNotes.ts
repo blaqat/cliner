@@ -17,11 +17,12 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–50",
+		builds: "test builds fork.39–51",
 		date: "2026-11-04",
 		notes: [
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
 			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search across them, and a Changed chip that lists what isn't the default and resets it",
+			"A model shows just its ID, name, limits, reasoning, price and request preview, with the rest under More; the Free toggle is gone, and Edit connection sits at the top of each connection",
 			"Custom headers stay as text unless you lock one, and unlocking keeps the value",
 			"A blank temperature sends none; 0 and 1 are sent as typed, and the old form's starting 0 no longer goes out",
 			"An Azure API version you set goes on every request, including Test connection and Detect (except /openai/v1, which refuses it)",

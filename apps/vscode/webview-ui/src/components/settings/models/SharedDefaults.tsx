@@ -11,7 +11,6 @@ import {
 	parseAmount,
 	parseTokens,
 	Segmented,
-	SmallSwitch,
 	Why,
 } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
@@ -128,19 +127,10 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 						</div>
 					)}
 					<FieldGrid className="mt-0.5">{amountField("temperature", "Temperature", "Not sent")}</FieldGrid>
-					<ControlRow description="Self-hosted, or someone else pays." label="Free">
-						<SmallSwitch
-							checked={defaults.free === true}
-							label="Shared Free"
-							onChange={(free) => void save({ free })}
-						/>
-					</ControlRow>
-					{!defaults.free && (
-						<FieldGrid className="mt-0.5">
-							{amountField("inputPrice", "Input, per 1M")}
-							{amountField("outputPrice", "Output, per 1M")}
-						</FieldGrid>
-					)}
+					<FieldGrid className="mt-0.5">
+						{amountField("inputPrice", "Input, per 1M")}
+						{amountField("outputPrice", "Output, per 1M")}
+					</FieldGrid>
 					<Hint>
 						A model uses these for anything it doesn't know itself. A value set on a model wins. Change one here and
 						every model that didn't set its own follows.

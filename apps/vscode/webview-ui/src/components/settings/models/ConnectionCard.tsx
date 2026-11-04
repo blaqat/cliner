@@ -18,7 +18,6 @@ import {
 	modelName,
 	PLANNING_CONTEXT,
 	priceSummary,
-	unknownsOf,
 } from "./modelsView"
 import { signOutProvider } from "./ProviderChooser"
 import { ProviderConnectionFields } from "./ProviderFields"
@@ -257,8 +256,6 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 	const test = page.tests[connection.id]
 	const listIds = test?.state === "done" && test.result === "ok" ? test.models : undefined
 	const onList = listIds && !isDraft && !page.keptAnyway[row.id] ? listIds.includes(row.upstreamId) : undefined
-	// The row's ~ already says context is unknown, so the tag counts the others.
-	const unknown = isDraft ? [] : unknownsOf(effective).filter((entry) => entry !== "context window")
 	const contextKnown = planning?.contextWindowKnown ?? effective?.contextWindow.value != null
 	const contextWindow = effective?.contextWindow.value
 	const free =
@@ -302,11 +299,6 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 					<span className="min-w-0 flex-1">
 						<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
 							<span className="min-w-0 truncate text-[13px]">{modelName(row)}</span>
-							{unknown.length > 0 && row.upstreamId && (
-								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning">
-									{unknown.length} unknown
-								</span>
-							)}
 							{row.kind === "non-chat" && (
 								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-editor-group-border px-1.5 text-[11px] leading-none text-description">
 									not for chat
@@ -377,8 +369,6 @@ const ProviderLine = ({ connection }: { connection: Extract<Connection, { kind: 
 			<div className="mt-2.5 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-description">
 				<span className="min-w-0">{authLine(connection)}</span>
 				<span className="flex-1" />
-				<LinkButton onClick={() => page.setEditingConnection(connection.id)}>{editing ? "Done" : "Edit"}</LinkButton>
-				<LinkButton onClick={() => void page.runTest(connection.id, hasModels)}>Test</LinkButton>
 				{spec.auth === "sign-in" && (
 					<LinkButton
 						onClick={() =>
@@ -474,36 +464,56 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 			)}
 			data-testid={`connection-${connection.id}`}
 			id={anchor}>
-			<button
-				aria-expanded={open}
-				className={cn(
-					"flex w-full min-w-0 cursor-pointer items-start gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
-					open && "border-b border-solid border-editor-group-border",
-				)}
-				onClick={() => {
-					page.setOpenConnection(open ? null : connection.id)
-					page.setOpenModel(null)
-				}}
-				type="button">
-				<span className="mt-[2px]">
-					<Chevron open={open} />
-				</span>
-				<span className="min-w-0 flex-1">
-					<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-						<span className="min-w-0 truncate text-[13px] font-medium">{name}</span>
-						{managedHere && <LockedIcon title={`${page.organization} manages this connection`} />}
-						{notFound > 0 && (
-							<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning">
-								{notFound} not found
-							</span>
+			<div className={cn("flex flex-wrap items-center", open && "border-b border-solid border-editor-group-border")}>
+				<button
+					aria-expanded={open}
+					className={cn(
+						"flex min-w-[220px] flex-1 cursor-pointer items-start gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					)}
+					onClick={() => {
+						page.setOpenConnection(open ? null : connection.id)
+						page.setOpenModel(null)
+					}}
+					type="button">
+					<span className="mt-[2px]">
+						<Chevron open={open} />
+					</span>
+					<span className="min-w-0 flex-1">
+						<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+							<span className="min-w-0 truncate text-[13px] font-medium">{name}</span>
+							{managedHere && <LockedIcon title={`${page.organization} manages this connection`} />}
+							{notFound > 0 && (
+								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning">
+									{notFound} not found
+								</span>
+							)}
+							<span className="ml-auto">{connectionStatus(test, connection, keyMissing)}</span>
+						</span>
+						<span className="mt-1 block truncate font-mono text-[12px] text-description">
+							{meta.filter(Boolean).join(" · ")}
+						</span>
+					</span>
+				</button>
+				{!isDraft && (
+					<div className="flex shrink-0 items-center gap-3 px-3 pb-2.5 text-[12.5px] [&:only-child]:pt-2.5">
+						<LinkButton
+							onClick={() => {
+								const editing = open && page.isEditing(connection.id)
+								page.setOpenConnection(connection.id)
+								page.setEditingConnection(connection.id, !editing)
+							}}>
+							{open && page.isEditing(connection.id) ? "Done editing" : "Edit connection"}
+						</LinkButton>
+						{open && (
+							<LinkButton
+								disabled={test?.state === "testing"}
+								onClick={() => void page.runTest(connection.id, saved.length > 0)}>
+								Test
+							</LinkButton>
 						)}
-						<span className="ml-auto">{connectionStatus(test, connection, keyMissing)}</span>
-					</span>
-					<span className="mt-1 block truncate font-mono text-[12px] text-description">
-						{meta.filter(Boolean).join(" · ")}
-					</span>
-				</span>
-			</button>
+					</div>
+				)}
+			</div>
 			{open && (
 				<div className="px-3 pb-3">
 					{connection.kind === "provider" ? (
@@ -516,15 +526,6 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 								{authLine(connection)} · {API_LABELS[connection.apiFormat]}
 								{connection.headers.length ? ` · ${plural(connection.headers.length, "header")}` : ""}
 							</span>
-							<span className="flex-1" />
-							<LinkButton onClick={() => page.setEditingConnection(connection.id, true)}>
-								Edit connection
-							</LinkButton>
-							<LinkButton
-								disabled={test?.state === "testing"}
-								onClick={() => void page.runTest(connection.id, saved.length > 0)}>
-								Test
-							</LinkButton>
 						</div>
 					)}
 					{connection.kind === "openai-compatible" && test && !isDraft && (

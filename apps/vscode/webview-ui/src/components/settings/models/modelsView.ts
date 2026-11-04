@@ -109,15 +109,12 @@ export const levelRange = (effective: Effective | undefined): string => {
 }
 
 export const priceSummary = (effective: Effective | undefined) => {
-	if (effective?.free.value) {
-		return "free"
-	}
 	const input = effective?.inputPrice.value
 	const output = effective?.outputPrice.value
 	return input == null || output == null ? "price unknown" : `$${input} / $${output}`
 }
 
-export type UnknownKey = "context window" | "max output" | "images" | "tools" | "reasoning" | "prices"
+export type UnknownKey = "context window" | "max output" | "reasoning" | "prices"
 
 export const unknownsOf = (effective: Effective | undefined): UnknownKey[] => {
 	if (!effective) {
@@ -126,21 +123,10 @@ export const unknownsOf = (effective: Effective | undefined): UnknownKey[] => {
 	const missing: (UnknownKey | false)[] = [
 		effective.contextWindow.value === null && "context window",
 		effective.maxOutputTokens.value === null && "max output",
-		effective.images.value === "unknown" && "images",
-		effective.tools.value === "unknown" && "tools",
 		effective.reasoning.value === "unknown" && "reasoning",
-		!effective.free.value && (effective.inputPrice.value === null || effective.outputPrice.value === null) && "prices",
+		(effective.inputPrice.value === null || effective.outputPrice.value === null) && "prices",
 	]
 	return missing.filter((entry): entry is UnknownKey => !!entry)
-}
-
-export const UNKNOWN_EXPLAINED: Record<UnknownKey, string> = {
-	"context window": "Context window: Cline plans with 128K and marks the context ring with ~.",
-	"max output": "Max output: Cline sends no limit.",
-	images: "Images: you can attach them; if the server refuses, the thread says so.",
-	tools: "Tools: Cline tries them; if the server refuses, the thread says so.",
-	reasoning: "Reasoning: no level is sent, and the selector says why.",
-	prices: "Prices: cost shows “unknown”, never $0.",
 }
 
 export const listWords = (words: string[]) =>
@@ -353,17 +339,23 @@ export const readDependencies = (paths: string[]): DependencyLine[] => {
 }
 
 /** Fields that open the form's More fold. A fix link to one of these has to open it too. */
-const MORE_FIELDS = new Set([
+export const MORE_FIELD_KEYS: (keyof ModelValues)[] = [
+	"images",
+	"tools",
+	"temperature",
+	"verbosity",
+	"extraBody",
 	"maxInputTokens",
 	"thinkingBudgetTokens",
 	"streaming",
 	"promptCache",
+	"cacheReadPrice",
+	"cacheWritePrice",
 	"files",
 	"systemRole",
 	"apiFormat",
-	"cacheReadPrice",
-	"cacheWritePrice",
-])
+]
+const MORE_FIELDS = new Set<string>(MORE_FIELD_KEYS)
 export const isMoreField = (field: string | undefined) => !!field && MORE_FIELDS.has(field)
 
 export const fieldAnchor = (modelId: string, field: string) => settingsModelElementId(modelId, field)

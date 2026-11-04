@@ -72,6 +72,10 @@ const openModel = async (id: string) => {
 	await flush()
 	return within(screen.getByTestId(`model-form-${id}`))
 }
+const openMore = async (form: ReturnType<typeof within>) => {
+	fireEvent.click(form.getByRole("button", { name: /^More/ }))
+	await flush()
+}
 const savedRow = (id: string) => host.state().settings.models.find((row) => row.id === id)
 
 const envAvailable = { sol: { available: true }, g54: { available: true }, mini: { available: true }, tuned: { available: true } }
@@ -333,16 +337,12 @@ describe("the list", () => {
 		const row = screen.getByTestId("model-row-tuned")
 		expect(within(row).getByText("~128K")).toHaveAttribute("title", expect.stringContaining("plans with 128K"))
 		expect(within(row).getByText("Ready")).toBeInTheDocument()
-		// The ~ already says it, so context doesn't count in the tag.
-		expect(within(row).getByText("3 unknown")).toBeInTheDocument()
+		expect(within(row).queryByText(/\d unknown/)).toBeNull()
 		expect(within(row).getByText("Levels unknown")).toBeInTheDocument()
 		const form = await openModel("tuned")
 		expect(form.getByText(/Unknown: Cline plans with 128K and marks the ring with ~/)).toBeInTheDocument()
 		expect(form.getByLabelText("Context window")).toHaveValue("")
 		expect(host.state().settings.models.find((model) => model.id === "tuned")?.overrides.contextWindow).toBeUndefined()
-		fireEvent.click(form.getByRole("button", { name: "What happens" }))
-		expect(within(screen.getByTestId("unknown-explained")).getByText(/Cline plans with 128K/)).toBeInTheDocument()
-		expect(within(screen.getByTestId("unknown-explained")).getByText(/Cline sends no limit/)).toBeInTheDocument()
 	})
 
 	it("every model shows in the selector and there are no stars", async () => {
@@ -477,25 +477,24 @@ describe("the model form", () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
-		for (const label of [
-			"Model ID",
-			"Display name",
-			"Context window",
-			"Max output tokens",
-			"Temperature",
-			"Input",
-			"Output",
-		]) {
+		// Up front: what you set a model up with.
+		for (const label of ["Model ID", "Display name", "Context window", "Max output tokens", "Input", "Output"]) {
 			expect(form.getByLabelText(label)).toBeInTheDocument()
 		}
-		for (const group of ["Images", "Tools", "Reasoning", "Verbosity"]) {
-			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
-		}
+		expect(form.getByRole("radiogroup", { name: "Reasoning" })).toBeInTheDocument()
+		expect(screen.getByTestId("request-preview")).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Detect" })).toBeInTheDocument()
-		expect(form.getByRole("button", { name: /Start from a preset/ })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Test this model" })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Remove" })).toBeInTheDocument()
-		expect(form.getByRole("switch", { name: "Free" })).toBeInTheDocument()
+		// Everything else waits under More.
+		expect(form.queryByLabelText("Temperature")).toBeNull()
+		for (const group of ["Images", "Tools", "Verbosity"]) {
+			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
+		}
+		expect(form.queryByRole("button", { name: /Start from a preset/ })).toBeNull()
+		expect(form.queryByRole("button", { name: "Add param" })).toBeNull()
+		// Free is gone.
+		expect(form.queryByRole("switch", { name: "Free" })).toBeNull()
 		// How each level maps.
 		const table = within(form.getByTestId("level-table"))
 		expect(table.getByText("reasoning.effort")).toBeInTheDocument()
@@ -506,10 +505,14 @@ describe("the model form", () => {
 		}
 		expect(table.getByText("Nothing sent")).toBeInTheDocument()
 		expect(table.getByLabelText("High is sent as")).toHaveValue("high")
-		expect(form.getByRole("button", { name: "Add param" })).toBeInTheDocument()
 		// More.
-		fireEvent.click(form.getByRole("button", { name: /^More/ }))
-		await flush()
+		await openMore(form)
+		for (const group of ["Images", "Tools", "Verbosity"]) {
+			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
+		}
+		expect(form.getByLabelText("Temperature")).toBeInTheDocument()
+		expect(form.getByRole("button", { name: /Start from a preset/ })).toBeInTheDocument()
+		expect(form.getByRole("button", { name: "Add param" })).toBeInTheDocument()
 		for (const label of ["Max input tokens", "Thinking budget", "Cache read price", "Cache write price"]) {
 			expect(form.getByLabelText(label)).toBeInTheDocument()
 		}
@@ -570,6 +573,7 @@ describe("the model form", () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
+		await openMore(form)
 		fireEvent.click(form.getByRole("button", { name: "Add param" }))
 		await flush()
 		const extra = within(form.getByTestId("extra-body"))
@@ -604,6 +608,7 @@ describe("the model form", () => {
 		})
 		await flush()
 		const form = await openModel("tuned")
+		await openMore(form)
 		fireEvent.click(form.getByRole("button", { name: /Start from a preset/ }))
 		await flush()
 		await flush()
@@ -715,6 +720,7 @@ describe("shared defaults", () => {
 		setup({ settings, availability: envAvailable })
 		await flush()
 		const form = await openModel("tuned")
+		await openMore(form)
 		const yes = within(form.getByRole("radiogroup", { name: "Images" })).getByRole("radio", { name: "No" })
 		expect(yes).toHaveAttribute("aria-checked", "true")
 		expect(yes).toHaveAttribute("title", "From this connection's shared defaults")
@@ -878,7 +884,7 @@ describe("secrets", () => {
 		const open = async () => {
 			setup({ settings: bedrock(), secrets: providerSecrets })
 			await flush()
-			fireEvent.click(page().getByRole("button", { name: "Edit" }))
+			fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
 			await flush()
 		}
 
@@ -1112,7 +1118,7 @@ describe("other providers", () => {
 		fireEvent.click(card.getAllByRole("button")[0])
 		await flush()
 		const open = within(screen.getByTestId("connection-bed"))
-		fireEvent.click(open.getByRole("button", { name: "Edit" }))
+		fireEvent.click(open.getByRole("button", { name: "Edit connection" }))
 		await flush()
 		expect(open.getByLabelText("Authentication")).toBeInTheDocument()
 		expect(open.getByLabelText("Region")).toHaveValue("us-east-1")
@@ -1127,6 +1133,7 @@ describe("other providers", () => {
 		await flush()
 		expect(host.callsTo("saveConnection")[0].connection).toEqual({ id: "bed", options: { awsRegion: "eu-west-1" } })
 		const form = await openModel("claude")
+		await openMore(form)
 		for (const name of ["Cross-region inference", "Global inference", "Prompt caching", "Use a custom model"]) {
 			expect(form.getByRole("switch", { name })).toBeInTheDocument()
 		}
@@ -1157,7 +1164,7 @@ describe("other providers", () => {
 		fireEvent.click(within(screen.getByTestId("connection-or")).getAllByRole("button")[0])
 		await flush()
 		const open = within(screen.getByTestId("connection-or"))
-		fireEvent.click(open.getByRole("button", { name: "Edit" }))
+		fireEvent.click(open.getByRole("button", { name: "Edit connection" }))
 		await flush()
 		expect(open.queryByText(/sorting/i)).toBeNull()
 		change("API key", "or-key", open)
@@ -1380,6 +1387,24 @@ describe("Remote Config locks", () => {
 	})
 })
 
+describe("the connection header", () => {
+	it("has Edit connection up top, open or not, and it opens the form", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const card = () => within(screen.getByTestId("connection-gateway"))
+		fireEvent.click(card().getAllByRole("button")[0])
+		await flush()
+		expect(card().queryByTestId("connection-form-gateway")).toBeNull()
+		fireEvent.click(card().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		expect(card().getByTestId("connection-form-gateway")).toBeInTheDocument()
+		fireEvent.click(card().getByRole("button", { name: "Done editing" }))
+		await flush()
+		expect(card().queryByTestId("connection-form-gateway")).toBeNull()
+		expect(card().getByRole("button", { name: "Test" })).toBeInTheDocument()
+	})
+})
+
 describe("host errors", () => {
 	it("a change that trips the revision check goes through on the latest settings, with no error", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
@@ -1484,10 +1509,7 @@ describe("shared defaults", () => {
 		await flush()
 		await flush()
 		expect(defaults().temperature).toBe(0)
-		fireEvent.click(shared.getByRole("switch", { name: "Shared Free" }))
-		await flush()
-		await flush()
-		expect(defaults().free).toBe(false)
+		expect(shared.queryByRole("switch", { name: "Shared Free" })).toBeNull()
 	})
 })
 
@@ -1496,7 +1518,7 @@ describe("the request preview", () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const form = await openModel("sol")
-		fireEvent.click(form.getByRole("button", { name: /request/i }))
+		fireEvent.click(within(screen.getByTestId("request-preview")).getAllByRole("button")[0])
 		await flush()
 		await flush()
 		const preview = within(screen.getByTestId("request-preview"))

@@ -43,12 +43,12 @@ import {
 	levelTableRows,
 	levelTitle,
 	listWords,
+	MORE_FIELD_KEYS,
 	overridesShared,
 	ROLE_LABELS,
 	roleRowId,
 	rolesUsingLevel,
 	testPick,
-	UNKNOWN_EXPLAINED,
 	unknownsOf,
 	withOverride,
 	withoutOverride,
@@ -69,7 +69,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 	const effective: Effective =
 		published && !isDraft ? published : resolveModelValues(row.overrides, undefined, connection.defaults)
 	const [error, setError] = useState<string>()
-	const [unknownOpen, setUnknownOpen] = useState(false)
 	const [presetsOpen, setPresetsOpen] = useState(false)
 	const [blockedBy, setBlockedBy] = useState<{ text: string; roles: (keyof typeof ROLE_LABELS)[] }>()
 	const [action, setAction] = useState<{ tone: "ok" | "bad" | "none"; text: string }>()
@@ -308,6 +307,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 	}
 
 	const noIdWhy = "Type the model ID first."
+	const setInMore = MORE_FIELD_KEYS.filter((key) => hasOverride(row, key)).length
 	const spec = connection.kind === "provider" ? providerSpec(connection.providerId) : undefined
 	const providerOptions = row.providerOptions as Record<string, unknown>
 	const modelFields = spec?.modelFields?.filter((field) => isFieldVisible(field, providerOptions)) ?? []
@@ -348,51 +348,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					/>
 				</Field>
 			</FieldGrid>
-			<div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-				<SmallButton disabled={!hasId || busy === "detect"} onClick={detect} title={hasId ? undefined : noIdWhy}>
-					<Icon className="text-[12px]!" name="zap" />
-					{busy === "detect" ? "Detecting…" : "Detect"}
-				</SmallButton>
-				<SmallButton aria-expanded={presetsOpen} onClick={() => setPresetsOpen((current) => !current)}>
-					Start from a preset
-					<Icon className="text-[11px]!" name={presetsOpen ? "chevron-up" : "chevron-down"} />
-				</SmallButton>
-			</div>
-			{presetsOpen && (
-				<ModelCatalogPresets
-					onApply={(fills) => {
-						setPresetsOpen(false)
-						const next = { ...fills }
-						for (const key of Object.keys(next) as (keyof ModelValues)[]) {
-							if (hasOverride(row, key)) {
-								delete next[key]
-							}
-						}
-						void commit((current) => ({ ...current, overrides: { ...current.overrides, ...next } }))
-					}}
-				/>
-			)}
-			{unknown.length > 0 ? (
-				<Why tone="warn">
-					<b className="font-medium">{unknown.length} unknown:</b> {listWords(unknown)}. Cline won't guess.{" "}
-					<LinkButton onClick={() => setUnknownOpen((current) => !current)}>
-						{unknownOpen ? "Hide" : "What happens"}
-					</LinkButton>
-					{unknownOpen && (
-						<ul className="m-0 mt-1 list-disc pl-4" data-testid="unknown-explained">
-							{unknown.map((entry) => (
-								<li key={entry}>{UNKNOWN_EXPLAINED[entry]}</li>
-							))}
-						</ul>
-					)}
-				</Why>
-			) : (
-				<div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-description">
-					<Icon className="text-[12px]!" name="check" />
-					Nothing unknown.
-				</div>
-			)}
-
 			<GroupHeading>Limits</GroupHeading>
 			<FieldGrid className="mt-0.5">
 				{numberField(
@@ -406,10 +361,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				{numberField("maxOutputTokens", "Max output tokens", "tokens")}
 			</FieldGrid>
 
-			<GroupHeading>What it can do</GroupHeading>
-			{knowledgeRow("images", "Images")}
-			{knowledgeRow("tools", "Tools")}
-			<div className="scroll-my-2 rounded-xs" id={fieldAnchor(row.id, "levels")}>
+			<div className="mt-3 scroll-my-2 rounded-xs" id={fieldAnchor(row.id, "levels")}>
 				<ControlRow id={fieldAnchor(row.id, "reasoning")} label="Reasoning" tag={tag("reasoning", "Reasoning")}>
 					<Segmented<Knowledge>
 						controlId={fieldControl(row.id, effective.reasoning.value === "yes" ? "reasoning" : "levels")}
@@ -448,95 +400,103 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				)}
 			</div>
 
-			<GroupHeading>Request</GroupHeading>
-			<FieldGrid className="mt-0.5">
-				{numberField(
-					"temperature",
-					"Temperature",
-					"amount",
-					"Blank sends none, unless Shared defaults set one. 0 and 1 are sent as typed.",
-					"Not sent",
-				)}
-			</FieldGrid>
-			<ControlRow id={fieldAnchor(row.id, "verbosity")} label="Verbosity" tag={tag("verbosity", "Verbosity")}>
-				<Segmented<"default" | "low" | "medium" | "high">
-					controlId={fieldControl(row.id, "verbosity")}
-					label="Verbosity"
-					onChange={(value) => void (value === "default" ? reset("verbosity") : set("verbosity", value))}
-					options={[
-						{ value: "default", label: "Default" },
-						{ value: "low", label: "Low" },
-						{ value: "medium", label: "Medium" },
-						{ value: "high", label: "High" },
-					]}
-					value={effective.verbosity.value ?? "default"}
-					wrap
-				/>
-			</ControlRow>
-			<ExtraBodyEditor onSave={(extraBody) => set("extraBody", extraBody)} value={effective.extraBody.value} />
-
 			<GroupHeading>Price · USD per 1M tokens</GroupHeading>
-			<ControlRow
-				description="Self-hosted, or someone else pays. Cost shows $0."
-				id={fieldAnchor(row.id, "free")}
-				label="Free"
-				tag={tag("free", "Free")}>
-				<SmallSwitch
-					checked={effective.free.value}
-					id={fieldControl(row.id, "free")}
-					label="Free"
-					onChange={(free) => void set("free", free)}
-				/>
-			</ControlRow>
-			{!effective.free.value && (
-				<>
-					<FieldGrid className="mt-0">
-						{numberField("inputPrice", "Input", "amount")}
-						{numberField("outputPrice", "Output", "amount")}
-					</FieldGrid>
-					{(effective.inputPrice.value === null || effective.outputPrice.value === null) && (
-						<Hint>Cost shows “unknown” until both are set, never $0.</Hint>
-					)}
-				</>
+			<FieldGrid className="mt-0">
+				{numberField("inputPrice", "Input", "amount")}
+				{numberField("outputPrice", "Output", "amount")}
+			</FieldGrid>
+			{(effective.inputPrice.value === null || effective.outputPrice.value === null) && (
+				<Hint>Cost shows “unknown” until both are set, never $0.</Hint>
 			)}
 
-			{modelFields.length > 0 && (
-				<>
-					<GroupHeading>{connection.name}</GroupHeading>
-					<FieldGrid className="mt-0.5">
-						{modelFields.map((field) => (
-							<ProviderFieldControl
-								field={field}
-								id={fieldControl(row.id, field.id)}
-								key={field.id}
-								locked={managedKey(field.id)}
-								onChange={(value) => {
-									const cleared = value === "" || value === undefined
-									return commit((current) => {
-										const { [field.id]: _old, ...rest } = current.providerOptions as Record<string, unknown>
-										return {
-											...current,
-											providerOptions: (cleared
-												? rest
-												: { ...rest, [field.id]: value }) as ModelRow["providerOptions"],
-										}
-									})
-								}}
-								value={providerOptions[field.id]}
-							/>
-						))}
-					</FieldGrid>
-				</>
-			)}
+			<RequestPreview disabledReason={hasId ? undefined : noIdWhy} effective={effective} row={row} />
 
 			<FoldHeader
 				onToggle={() => page.setMoreOpen(row.id)}
 				open={moreOpen}
-				summary="max input, streaming, prompt cache, files, system role, API type, thinking budget"
+				summary={`${setInMore ? `${setInMore} set · ` : ""}images, tools, temperature, verbosity, extra body, and more`}
 				title="More"
 			/>
 			{moreOpen && (
 				<>
+					<div className="mt-1.5">
+						<SmallButton aria-expanded={presetsOpen} onClick={() => setPresetsOpen((current) => !current)}>
+							Start from a preset
+							<Icon className="text-[11px]!" name={presetsOpen ? "chevron-up" : "chevron-down"} />
+						</SmallButton>
+					</div>
+					{presetsOpen && (
+						<ModelCatalogPresets
+							onApply={(fills) => {
+								setPresetsOpen(false)
+								const next = { ...fills }
+								for (const key of Object.keys(next) as (keyof ModelValues)[]) {
+									if (hasOverride(row, key)) {
+										delete next[key]
+									}
+								}
+								void commit((current) => ({ ...current, overrides: { ...current.overrides, ...next } }))
+							}}
+						/>
+					)}
+					{knowledgeRow("images", "Images")}
+					{knowledgeRow("tools", "Tools")}
+					<FieldGrid className="mt-0.5">
+						{numberField(
+							"temperature",
+							"Temperature",
+							"amount",
+							"Blank sends none, unless Shared defaults set one. 0 and 1 are sent as typed.",
+							"Not sent",
+						)}
+					</FieldGrid>
+					<ControlRow id={fieldAnchor(row.id, "verbosity")} label="Verbosity" tag={tag("verbosity", "Verbosity")}>
+						<Segmented<"default" | "low" | "medium" | "high">
+							controlId={fieldControl(row.id, "verbosity")}
+							label="Verbosity"
+							onChange={(value) => void (value === "default" ? reset("verbosity") : set("verbosity", value))}
+							options={[
+								{ value: "default", label: "Default" },
+								{ value: "low", label: "Low" },
+								{ value: "medium", label: "Medium" },
+								{ value: "high", label: "High" },
+							]}
+							value={effective.verbosity.value ?? "default"}
+							wrap
+						/>
+					</ControlRow>
+					<ExtraBodyEditor onSave={(extraBody) => set("extraBody", extraBody)} value={effective.extraBody.value} />
+					{modelFields.length > 0 && (
+						<>
+							<GroupHeading>{connection.name}</GroupHeading>
+							<FieldGrid className="mt-0.5">
+								{modelFields.map((field) => (
+									<ProviderFieldControl
+										field={field}
+										id={fieldControl(row.id, field.id)}
+										key={field.id}
+										locked={managedKey(field.id)}
+										onChange={(value) => {
+											const cleared = value === "" || value === undefined
+											return commit((current) => {
+												const { [field.id]: _old, ...rest } = current.providerOptions as Record<
+													string,
+													unknown
+												>
+												return {
+													...current,
+													providerOptions: (cleared
+														? rest
+														: { ...rest, [field.id]: value }) as ModelRow["providerOptions"],
+												}
+											})
+										}}
+										value={providerOptions[field.id]}
+									/>
+								))}
+							</FieldGrid>
+						</>
+					)}
 					<FieldGrid className="mt-0">
 						{numberField(
 							"maxInputTokens",
@@ -555,7 +515,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					</FieldGrid>
 					{knowledgeRow("streaming", "Streaming")}
 					{knowledgeRow("promptCache", "Prompt cache")}
-					{effective.promptCache.value === "yes" && !effective.free.value && (
+					{effective.promptCache.value === "yes" && (
 						<FieldGrid className="mt-0">
 							{numberField("cacheReadPrice", "Cache read price", "amount")}
 							{numberField("cacheWritePrice", "Cache write price", "amount")}
@@ -593,8 +553,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				</>
 			)}
 
-			<RequestPreview disabledReason={hasId ? undefined : noIdWhy} effective={effective} row={row} />
-
 			{action && (
 				<div
 					className={
@@ -613,6 +571,10 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				<SmallButton disabled={!hasId || busy === "test"} onClick={test} title={hasId ? undefined : noIdWhy}>
 					{busy === "test" ? "Testing…" : "Test this model"}
 				</SmallButton>
+				<SmallButton disabled={!hasId || busy === "detect"} onClick={detect} title={hasId ? undefined : noIdWhy}>
+					<Icon className="text-[12px]!" name="zap" />
+					{busy === "detect" ? "Detecting…" : "Detect"}
+				</SmallButton>
 				{isDraft ? (
 					<LinkButton onClick={() => page.setDraftModels((current) => current.filter((draft) => draft.id !== row.id))}>
 						Remove
@@ -627,10 +589,6 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						removedName={row.name || row.upstreamId}
 					/>
 				)}
-			</div>
-			<div className="mt-2 flex items-start gap-1.5 text-[12px] text-description">
-				<Icon className="mt-px text-[12px]! opacity-70" name="chip" />
-				<span>Shows in the composer and every selector.</span>
 			</div>
 		</div>
 	)
