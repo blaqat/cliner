@@ -1,3 +1,4 @@
+import { buildNativeIntentOptions } from "./request-intent";
 import { isClineProvider } from "@cline/shared";
 import { OLLAMA_DEFAULT_CONTEXT_WINDOW } from "../builtins";
 import {
@@ -560,6 +561,15 @@ export const PROVIDER_OPTION_RULES: ReadonlyArray<ProviderOptionRule> = [
 	miniMaxThinkingRule,
 	routedGlmReasoningRule,
 	togetherReasoningToggleRule,
+	{
+		id: "request.isolated-model-intent",
+		phase: "adapter",
+		description:
+			"Explicit isolated request controls use the native provider codec.",
+		applies: (input) =>
+			input.request.metadata?.settingsRequestIntent !== undefined,
+		build: (input) => buildNativeIntentOptions(input.request),
+	},
 ];
 
 export function matchProviderOptionRules(

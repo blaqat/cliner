@@ -162,3 +162,10 @@ export {
 	type StreamingAudioTranscriptionSessionRequest,
 	transcribeAudio,
 } from "./transcription";
+export {
+	type LevelRequest,
+	type ModelRequestIntent,
+	applyNativeRequestIntent,
+	applyCompatibleRequestIntent,
+	validateModelRequestIntent,
+} from "./providers/routing/request-intent";

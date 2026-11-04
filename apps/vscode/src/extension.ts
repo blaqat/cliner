@@ -1,3 +1,4 @@
+import { VSCodeConnectionSecretStore } from "./sdk/model-settings/connection-secret-store"
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 
@@ -90,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// 4. Register services and perform common initialization
 	// IMPORTANT: Must be done after host provider is setup and migrations are complete
-	const webview = (await initialize(storageContext)) as VscodeWebviewProvider
+	const webview = (await initialize(storageContext, new VSCodeConnectionSecretStore(context.secrets))) as VscodeWebviewProvider
 
 	// 5. Register services and commands specific to VS Code
 	// Initialize hook discovery cache for performance optimization

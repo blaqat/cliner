@@ -1,4 +1,5 @@
 import { WebviewProvider } from "./core/webview"
+import type { ConnectionSecretStore } from "./sdk/model-settings/connection-secret-store"
 import "./utils/path" // necessary to have access to String.prototype.toPosix
 
 import { setSdkLogger } from "@cline/core"
@@ -32,7 +33,10 @@ import { arePathsEqual } from "./utils/path"
  * @returns The webview provider
  * @throws ClineConfigurationError if endpoints.json exists but is invalid
  */
-export async function initialize(storageContext: StorageContext): Promise<WebviewProvider> {
+export async function initialize(
+	storageContext: StorageContext,
+	connectionSecrets?: ConnectionSecretStore,
+): Promise<WebviewProvider> {
 	// Configure the shared Logging class to use HostProvider's output channels and debug logger
 	Logger.subscribe((msg: string) => HostProvider.get().logToChannel(msg)) // File system logging
 	Logger.subscribe((msg: string) => HostProvider.env.debugLog({ value: msg })) // Host debug logging
@@ -55,7 +59,7 @@ export async function initialize(storageContext: StorageContext): Promise<Webvie
 	await ClineEndpoint.initialize(HostProvider.get().extensionFsPath)
 
 	try {
-		await StateManager.initialize(storageContext)
+		await StateManager.initialize(storageContext, connectionSecrets)
 	} catch (error) {
 		Logger.error("[Cline] CRITICAL: Failed to initialize StateManager:", error)
 		HostProvider.window.showMessage({

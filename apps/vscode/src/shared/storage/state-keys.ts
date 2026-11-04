@@ -68,6 +68,11 @@ const REMOTE_CONFIG_EXTRA_FIELDS = {
 } satisfies FieldDefinitions
 
 const GLOBAL_STATE_FIELDS = {
+	modelSettings: { default: undefined as import("../model-settings").ModelSettings | undefined },
+	modelSettingsMigration: { default: undefined as import("../model-settings").ModelSettingsMigration | undefined },
+	modelSettingsBackupV1: {
+		default: undefined as { version: 1; backupId: string; createdAt: number; legacyFingerprint: string } | undefined,
+	},
 	clineVersion: { default: undefined as string | undefined },
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },

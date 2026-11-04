@@ -19,6 +19,7 @@ import type { StorageContext } from "@shared/storage/storage-context"
 import { type StorageLockOptions, StorageLockTimeoutError } from "@shared/storage/storage-lock"
 import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
+import type { ConnectionSecretStore } from "@/sdk/model-settings/connection-secret-store"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
@@ -54,6 +55,8 @@ export interface PersistenceErrorEvent {
  * each window typically runs different tasks.
  */
 export class StateManager {
+	public connectionSecrets?: ConnectionSecretStore
+
 	private static instance: StateManager | null = null
 
 	private globalStateCache: GlobalStateAndSettings = {} as GlobalStateAndSettings
@@ -97,7 +100,7 @@ export class StateManager {
 	/**
 	 * Initialize the cache by loading data from the file-backed StorageContext.
 	 */
-	public static async initialize(storage: StorageContext): Promise<StateManager> {
+	public static async initialize(storage: StorageContext, connectionSecrets?: ConnectionSecretStore): Promise<StateManager> {
 		if (!StateManager.instance) {
 			StateManager.instance = new StateManager(storage)
 		}
@@ -107,6 +110,7 @@ export class StateManager {
 		}
 
 		try {
+			StateManager.instance.connectionSecrets = connectionSecrets
 			await initializeDistinctId(storage)
 
 			await StateManager.instance.loadFromStorage()
@@ -693,7 +697,7 @@ export class StateManager {
 		this.dispose()
 
 		// Reinitialize from the same storage context
-		await StateManager.initialize(this.storage)
+		await StateManager.initialize(this.storage, this.connectionSecrets)
 
 		// If there's an active task, reload its settings
 		if (currentTaskId) {
