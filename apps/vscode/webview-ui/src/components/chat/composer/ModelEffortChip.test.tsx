@@ -80,6 +80,23 @@ beforeEach(() => {
 })
 
 describe("ModelEffortChip", () => {
+	describe("with the new model settings absent", () => {
+		it("has no Make this the default line, no connection headings and no new RPCs", async () => {
+			mocks.state.currentTaskItem = { id: "chat" }
+			renderChip()
+			const menu = await openMenu()
+			expect(within(menu).queryByTestId("menu-make-default")).toBeNull()
+			expect(within(menu).queryByTestId("list-group")).toBeNull()
+			expect(within(menu).queryByTestId("model-menu-empty")).toBeNull()
+			// The mocked client has only the old RPC: anything else would throw.
+			fireEvent.keyDown(modelColumn(), { key: "ArrowDown" })
+			fireEvent.keyDown(modelColumn(), { key: "Enter" })
+			expect(mocks.assignApiProfile).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ mode: "act", taskId: "chat", profileId: "p2" }),
+			)
+		})
+	})
+
 	describe("the chip", () => {
 		it("is one button reading Model Effort as words (no · or +)", () => {
 			renderChip()
