@@ -14,6 +14,7 @@ import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/compos
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
 import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
+import WalkthroughView from "@/components/walkthrough/WalkthroughView"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
@@ -81,6 +82,9 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		currentTaskItem,
 		taskGroupView,
 		oneViewEnabled,
+		showWalkthrough,
+		walkthroughAuthoredId,
+		hideWalkthrough,
 		hideTaskGroupView,
 		navigateToChat,
 	} = useExtensionState()
@@ -519,10 +523,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	useLeaveDeletedThread({ openTaskGroup: openTaskGroupAfterDelete, goHome: goHomeAfterDelete })
 	const openThreadFromList = useCallback(
 		(threadId: string) => {
+			// A row leaves the walkthrough for the thread, even the one it belongs to.
+			if (showWalkthrough) hideWalkthrough()
 			if (threadId === currentTaskItem?.id && !taskGroupView) return
 			void openTask(threadId)
 		},
-		[currentTaskItem?.id, taskGroupView],
+		[currentTaskItem?.id, taskGroupView, showWalkthrough, hideWalkthrough],
 	)
 	const returnOnEscape = (event: KeyboardEvent<HTMLDivElement>) => {
 		if (event.key !== "Escape" || event.defaultPrevented || task || taskGroupView) return
@@ -599,15 +605,27 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	if (oneViewEnabled) {
 		// The list is home: no thread and no task page is the new-chat screen.
 		const isNewChat = !task && !taskGroupView
+		// A walkthrough is a page of its thread: it takes the main region and the list stays. The thread stays mounted under it.
+		const walkthroughOpen = !!showWalkthrough && !!currentTaskItem
 		return (
 			<OneViewLayout
 				currentTaskGroupId={taskGroupView?.id}
 				currentThreadId={currentTaskItem?.id}
-				hidden={isHidden}
+				hidden={isHidden && !walkthroughOpen}
 				onOpenTaskGroup={openTaskGroup}
 				onOpenThread={openThreadFromList}>
+				{walkthroughOpen && (
+					<WalkthroughView
+						authoredId={walkthroughAuthoredId}
+						key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}
+						onDone={hideWalkthrough}
+						taskId={currentTaskItem.id}
+					/>
+				)}
 				{/* biome-ignore lint/a11y/noStaticElementInteractions: Esc in an empty new chat returns to the last thread */}
-				<div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" onKeyDown={returnOnEscape}>
+				<div
+					className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", walkthroughOpen && "hidden")}
+					onKeyDown={returnOnEscape}>
 					{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
 					{/* Fixed slots (top, composer, spacer) so the composer never remounts between a new chat and a thread. */}
 					<div

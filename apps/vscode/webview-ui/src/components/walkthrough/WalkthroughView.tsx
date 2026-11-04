@@ -18,6 +18,7 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -142,6 +143,8 @@ export default function WalkthroughView({
 		clineMessages,
 	} = useExtensionState()
 	const navigation = useNavigationHistory()
+	// One view: it sits beside the list, which is home, so no Home crumb and the list toggle leads the header.
+	const oneView = useOneView()
 	const [scope, setScope] = useState<WalkthroughScope>("thread")
 	// An authoredId pins the page to the stored authored doc; the scope switch is not offered.
 	const authored = authoredId !== undefined
@@ -466,12 +469,16 @@ export default function WalkthroughView({
 		const thread = path.threads[path.threads.length - 1]
 		const groupId = path.taskGroupId
 		return [
-			{
-				id: "home",
-				kind: "home",
-				label: "Home",
-				onSelect: () => (navigation ? navigation.navigate({ kind: "home" }) : onDone()),
-			},
+			...(oneView.enabled
+				? []
+				: [
+						{
+							id: "home",
+							kind: "home" as const,
+							label: "Home",
+							onSelect: () => (navigation ? navigation.navigate({ kind: "home" }) : onDone()),
+						},
+					]),
 			...(groupId
 				? [
 						{
@@ -496,7 +503,7 @@ export default function WalkthroughView({
 				label: "Walkthrough",
 			},
 		]
-	}, [currentTaskItem, taskHistory, taskGroups, taskId, authoredId, navigation, navigateToTaskGroup, onDone])
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, authoredId, navigation, navigateToTaskGroup, onDone, oneView.enabled])
 
 	const mainStops = walk?.chapters.flatMap((chapter) => chapter.stops) ?? []
 	// Why Send is off: dismissed and untouched review notes stay out of it.
@@ -698,11 +705,17 @@ export default function WalkthroughView({
 	)
 
 	return (
-		<section className="fixed inset-0 flex flex-col overflow-hidden bg-background" data-testid="walkthrough-page">
+		<section
+			className={cn(
+				"flex flex-col overflow-hidden bg-background",
+				oneView.enabled ? "min-h-0 min-w-0 flex-1" : "fixed inset-0",
+			)}
+			data-testid="walkthrough-page">
 			<div className="px-4 pt-2 pb-1">
 				<div
 					className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 					data-testid="walkthrough-header">
+					{oneView.listToggle}
 					<Breadcrumb crumbs={crumbs} />
 					<div className="flex shrink-0 items-center gap-0.5">
 						{!!walk?.chapters.length && (

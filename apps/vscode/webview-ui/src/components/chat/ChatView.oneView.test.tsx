@@ -49,6 +49,13 @@ vi.mock("react-virtuoso", () => ({
 		),
 	),
 }))
+vi.mock("@/components/walkthrough/WalkthroughView", () => ({
+	default: ({ taskId, onDone }: { taskId: string; onDone: () => void }) => (
+		<button data-testid="walkthrough-page" onClick={onDone} type="button">
+			{taskId}
+		</button>
+	),
+}))
 vi.mock("./chat-view", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./chat-view")>()),
 	ActionButtons: () => null,
@@ -143,6 +150,48 @@ describe("ChatView one view", () => {
 		expect(screen.getByTestId("task-header-title-text")).toHaveTextContent(firstMessage)
 		// The open thread is the highlighted row.
 		expect(screen.getByTestId("one-view-row")).toHaveAttribute("aria-current", "true")
+	})
+
+	describe("in a walkthrough", () => {
+		// App marks the chat hidden whenever a walkthrough is open.
+		const renderWalkthrough = async (extra: Record<string, unknown> = {}) => {
+			const hideWalkthrough = vi.fn()
+			mocks.state = { ...mocks.state, oneViewEnabled: true, showWalkthrough: true, hideWalkthrough, ...extra }
+			render(<ChatView hideAnnouncement={vi.fn()} isHidden showAnnouncement={false} showHistoryView={vi.fn()} />)
+			await act(async () => {})
+			return hideWalkthrough
+		}
+
+		it("keeps the thread list beside it and the thread mounted underneath", async () => {
+			await renderWalkthrough()
+			expect(screen.getByTestId("one-view")).toBeVisible()
+			expect(screen.getByTestId("one-view-side")).toBeVisible()
+			expect(screen.getByTestId("one-view-main")).toContainElement(screen.getByTestId("walkthrough-page"))
+			expect(screen.getByTestId("one-view-content").parentElement).toHaveClass("hidden")
+		})
+
+		it("goes back to the thread when its own row is clicked", async () => {
+			const hideWalkthrough = await renderWalkthrough()
+			fireEvent.click(screen.getByTestId("one-view-row"))
+			expect(hideWalkthrough).toHaveBeenCalled()
+			expect(mocks.showTaskWithId).not.toHaveBeenCalled()
+		})
+
+		it("leaves for another thread when its row is clicked", async () => {
+			const other = item({ id: "t2", task: "Another thread" })
+			const hideWalkthrough = await renderWalkthrough({ taskHistory: [item(), other] })
+			fireEvent.click(screen.getByText("Another thread"))
+			expect(hideWalkthrough).toHaveBeenCalled()
+			expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "t2" }))
+		})
+
+		it("stays hidden with the rest of one view when another full page covers it", async () => {
+			mocks.state = { ...mocks.state, oneViewEnabled: true }
+			render(<ChatView hideAnnouncement={vi.fn()} isHidden showAnnouncement={false} showHistoryView={vi.fn()} />)
+			await act(async () => {})
+			expect(screen.getByTestId("one-view")).not.toBeVisible()
+			expect(screen.queryByTestId("walkthrough-page")).toBeNull()
+		})
 	})
 
 	it("opens a new chat (small logo and prompt) instead of the home page, and Esc goes back to the thread", async () => {

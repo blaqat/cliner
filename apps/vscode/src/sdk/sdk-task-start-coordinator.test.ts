@@ -193,6 +193,27 @@ describe("SdkTaskStartCoordinator", () => {
 		)
 	})
 
+	it("starts a new thread with the ticket tags its first message names", async () => {
+		// The session record doesn't exist until the first send lands, so these can't be written after the start.
+		const { coordinator, options } = makeCoordinator()
+
+		await coordinator.initTask("Fix PROJ-123 and PROJ-124")
+
+		const startInput = options.sessions.startNewSession.mock.calls[0][0]
+		expect(startInput.sessionMetadata.tags).toEqual([
+			{ kind: "ticket", value: "PROJ-123", source: "auto" },
+			{ kind: "ticket", value: "PROJ-124", source: "auto" },
+		])
+	})
+
+	it("adds no tags to a new thread whose first message names no ticket", async () => {
+		const { coordinator, options } = makeCoordinator()
+
+		await coordinator.initTask("no ticket here")
+
+		expect(options.sessions.startNewSession.mock.calls[0][0].sessionMetadata).not.toHaveProperty("tags")
+	})
+
 	it("does not record a task group for an unfiled thread", async () => {
 		const { options } = makeCoordinator()
 		const recordTaskGroup = vi.fn()

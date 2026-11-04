@@ -34,6 +34,7 @@ const AppContent = () => {
 		walkthroughAuthoredId,
 		currentTaskItem,
 		hideWalkthrough,
+		oneViewEnabled,
 		showAnnouncement,
 		setShowAnnouncement,
 		setShouldShowAnnouncement,
@@ -103,7 +104,8 @@ const AppContent = () => {
 				/>
 			)}
 			{showWorktrees && <WorktreesView onDone={hideWorktrees} />}
-			{showWalkthrough && currentTaskItem && (
+			{/* One view keeps the list beside it: ChatView shows it in the main region instead. */}
+			{showWalkthrough && currentTaskItem && !oneViewEnabled && (
 				<WalkthroughView
 					authoredId={walkthroughAuthoredId}
 					key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}

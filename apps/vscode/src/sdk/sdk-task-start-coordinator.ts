@@ -8,6 +8,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { parseMessageReferences } from "@shared/message-references"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
+import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import { captureTaskApiSelection, resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
@@ -220,10 +221,13 @@ export class SdkTaskStartCoordinator {
 				mode,
 			})
 
+			const autoTags = historyItem ? undefined : mergeAutoTicketTags(undefined, extractTicketTags(prompt), undefined)
 			startInput.sessionMetadata = {
 				...startInput.sessionMetadata,
 				apiSelection,
 				...(options?.taskGroupId ? { taskGroupId: options.taskGroupId } : {}),
+				// The record is first saved during the first send, so a write after this start would find nothing to tag.
+				...(autoTags ? { tags: autoTags } : {}),
 			}
 			// Focused starts install the task proxy as the current view; background
 			// starts park it in the per-task context so its transcript and turn state

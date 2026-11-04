@@ -2,6 +2,7 @@ import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
+import { OneViewContext } from "@/components/oneView/OneViewContext"
 import { reviewStorageKey } from "./reviewState"
 import WalkthroughView from "./WalkthroughView"
 
@@ -140,6 +141,21 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe("WalkthroughView", () => {
+	it("fills the main region in one view, with the list toggle and no Home crumb", async () => {
+		render(
+			<OneViewContext.Provider value={{ enabled: true, listToggle: <button type="button">Hide the list</button> }}>
+				<WalkthroughView onDone={vi.fn()} taskId="task" />
+			</OneViewContext.Provider>,
+		)
+		await screen.findByText("Stop the request waiting")
+		expect(screen.getByTestId("walkthrough-page")).not.toHaveClass("fixed")
+		expect(screen.getByRole("navigation")).toHaveTextContent("Bulk invoice export › Implement steps 1–2 › Walkthrough")
+		expect(screen.getByRole("navigation")).not.toHaveTextContent("Home")
+		expect(screen.getByTestId("walkthrough-header").firstElementChild).toBe(
+			screen.getByRole("button", { name: "Hide the list" }),
+		)
+	})
+
 	it("renders chapters, stops and hunks from the document, with support collapsed", async () => {
 		await renderPage()
 		expect(screen.getByRole("navigation")).toHaveTextContent("Home › Bulk invoice export › Implement steps 1–2 › Walkthrough")
