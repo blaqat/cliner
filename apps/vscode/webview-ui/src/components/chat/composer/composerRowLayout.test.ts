@@ -11,6 +11,7 @@ import {
 const nearlyFull: ComposerRowContent = { hasUsage: true, hasCompactNudge: true, hasEffort: true }
 const chat: ComposerRowContent = { hasUsage: true, hasCompactNudge: false, hasEffort: true }
 const home: ComposerRowContent = { hasUsage: false, hasCompactNudge: false, hasEffort: true }
+const COLLAPSED = { inlineCompactNudge: false, compactEffort: true, tightChip: true, bareChip: true, hideModeSwitch: true }
 
 describe("composerRowLayout", () => {
 	it("shows everything before the row is measured", () => {
@@ -34,8 +35,33 @@ describe("composerRowLayout", () => {
 		expect(composerRowLayout(full - 1, nearlyFull)).toEqual(iconNudgeRow)
 		expect(composerRowLayout(iconNudge - 1, nearlyFull)).toEqual(compactRow)
 		expect(composerRowLayout(compact - 1, nearlyFull)).toEqual(tightRow)
+		expect(composerRowLayout(tight, nearlyFull)).toEqual(tightRow)
+	})
+
+	it("past tight, the model name goes, then the Ask | Act switch", () => {
+		const bareRow = { ...COLLAPSED, hideModeSwitch: undefined }
+		const tightRow = { inlineCompactNudge: false, compactEffort: true, tightChip: true }
+		const tight = composerRowMinWidth(chat, tightRow)
+		const bare = composerRowMinWidth(chat, bareRow)
+		expect(bare).toBeLessThan(tight)
+		expect(composerRowMinWidth(chat, COLLAPSED)).toBeLessThan(bare)
+		expect(composerRowLayout(tight - 1, chat)).toEqual(bareRow)
+		expect(composerRowLayout(bare - 1, chat)).toEqual(COLLAPSED)
 		// Nothing fits: the most collapsed row, never a wrap.
-		expect(composerRowLayout(120, nearlyFull)).toEqual(tightRow)
+		expect(composerRowLayout(60, chat)).toEqual(COLLAPSED)
+	})
+
+	it("always leaves Send room, down to VS Code's narrowest sidebar", () => {
+		// Rows are 27px narrower than the sidebar.
+		for (const sidebar of [170, 190, 220, 250]) {
+			for (const content of [home, chat, nearlyFull]) {
+				for (const extra of [{}, { nextMessage: true }, { running: true }, { nextMessage: true, running: true }]) {
+					const row = sidebar - 27
+					const fitted = { ...content, ...extra }
+					expect(composerRowMinWidth(fitted, composerRowLayout(row, fitted))).toBeLessThanOrEqual(row)
+				}
+			}
+		}
 	})
 
 	it("fits the whole row, Compact label and Ask | Act switch included, in a 370px sidebar", () => {

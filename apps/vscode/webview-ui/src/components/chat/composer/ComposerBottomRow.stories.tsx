@@ -31,6 +31,8 @@ type Story = StoryObj<typeof ChatTextArea>
 
 const noop = () => {}
 const WIDTHS = [250, 280, 300, 320, 360, 400, 440, 480]
+/** Down to VS Code's narrowest sidebar: Send has to stay whole and clickable. */
+const NARROW_WIDTHS = [170, 190, 220, 250]
 
 const Composer = ({ width }: { width: number }) => (
 	<div className="border border-(--vscode-panel-border)" data-width={width} style={{ width }}>
@@ -67,48 +69,59 @@ const Composer = ({ width }: { width: number }) => (
 	</div>
 )
 
-const allWidths = () => (
+const sidebars = (widths: readonly number[]) => () => (
 	<div className="flex flex-col gap-4">
-		{WIDTHS.map((width) => (
+		{widths.map((width) => (
 			<Composer key={width} width={width} />
 		))}
 	</div>
 )
+const allWidths = sidebars(WIDTHS)
+const narrowWidths = sidebars(NARROW_WIDTHS)
 
-const fitsEveryWidth: Story["play"] = async ({ canvasElement }) => {
-	const rows = () => [...canvasElement.querySelectorAll<HTMLElement>('[data-testid="composer-bottom-row"]')]
-	await waitFor(() => expect(rows()).toHaveLength(WIDTHS.length))
-	for (const row of rows()) {
-		const bounds = row.getBoundingClientRect()
-		const items = [...row.children].map((child) => child.getBoundingClientRect())
-		// One line: every item shares the row's vertical band.
-		for (const item of items) {
-			await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
-			await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
+const fitsWidths =
+	(widths: readonly number[]): Story["play"] =>
+	async ({ canvasElement }) => {
+		const rows = () => [...canvasElement.querySelectorAll<HTMLElement>('[data-testid="composer-bottom-row"]')]
+		await waitFor(() => expect(rows()).toHaveLength(widths.length))
+		for (const row of rows()) {
+			const bounds = row.getBoundingClientRect()
+			const items = [...row.children].map((child) => child.getBoundingClientRect())
+			// One line: every item shares the row's vertical band.
+			for (const item of items) {
+				await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
+				await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
+			}
+			// No overlap, and Send stays inside the row.
+			for (let i = 1; i < items.length; i++) {
+				await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
+			}
+			await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
 		}
-		// No overlap, and Send stays inside the row.
-		for (let i = 1; i < items.length; i++) {
-			await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
-		}
-		await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
 	}
-}
+
+const fitsEveryWidth = fitsWidths(WIDTHS)
+const fitsNarrowWidths = fitsWidths(NARROW_WIDTHS)
 
 export const SidebarWidths: Story = { render: allWidths, play: fitsEveryWidth }
 
+export const NarrowSidebars: Story = { render: narrowWidths, play: fitsNarrowWidths }
+
+const armed = createStorybookDecorator(
+	{
+		mode: "act",
+		apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
+		modelSettings: modelSettingsFixture(),
+		composerNextMessageOnly: true,
+	},
+	"max-w-none",
+)
+
 /** Next message only is armed: the widest chip there is. */
 export const ArmedNextMessage: Story = {
-	decorators: [
-		createStorybookDecorator(
-			{
-				mode: "act",
-				apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
-				modelSettings: modelSettingsFixture(),
-				composerNextMessageOnly: true,
-			},
-			"max-w-none",
-		),
-	],
+	decorators: [armed],
 	render: allWidths,
 	play: fitsEveryWidth,
 }
+
+export const ArmedNarrowSidebars: Story = { decorators: [armed], render: narrowWidths, play: fitsNarrowWidths }

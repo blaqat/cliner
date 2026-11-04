@@ -1315,7 +1315,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			navigateToSettingsModelPicker({ targetSection: "models" })
 		}
 
-		// Get model display name
+		// What the chip names before the model settings store exists: the model, as its rows do, not a provider-prefixed id.
 		const modelDisplayName = useMemo(() => {
 			const {
 				vsCodeLmModelSelector,
@@ -1331,37 +1331,32 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			if (!apiConfiguration) {
 				return unknownModel
 			}
-			switch (selectedProvider) {
-				case "cline":
-					return `${selectedProvider}:${selectedModelId}`
-				case "cline-pass":
-					// Free models selected on ClinePass go through Cline usage billing,
-					// so label them the same way as the cline provider
-					return selectedModelId.startsWith("cline-pass/")
-						? `${selectedProvider}:${selectedModelId.replace(/^cline-pass\//, "")}`
-						: `cline:${selectedModelId}`
-				case "openai":
-					return `openai-compat:${selectedModelId}`
-				case "vscode-lm":
-					return `vscode-lm:${vsCodeLmModelSelector ? `${vsCodeLmModelSelector.vendor ?? ""}/${vsCodeLmModelSelector.family ?? ""}` : unknownModel}`
-				case "together":
-					return `${selectedProvider}:${togetherModelId}`
-				case "lmstudio":
-					return `${selectedProvider}:${lmStudioModelId}`
-				case "ollama":
-					return `${selectedProvider}:${ollamaModelId}`
-				case "litellm":
-					return `${selectedProvider}:${liteLlmModelId}`
-				case "requesty":
-					return `${selectedProvider}:${requestyModelId}`
-				case "vercel-ai-gateway":
-					return `${selectedProvider}:${vercelAiGatewayModelId || selectedModelId}`
-				case "anthropic":
-				case "openrouter":
-				default:
-					return `${selectedProvider}:${selectedModelId}`
+			if (selectedModelInfo.name) {
+				return selectedModelInfo.name
 			}
-		}, [apiConfiguration, mode, selectedProvider, selectedModelId])
+			switch (selectedProvider) {
+				case "cline-pass":
+					return selectedModelId.replace(/^cline-pass\//, "")
+				case "vscode-lm":
+					return vsCodeLmModelSelector
+						? `${vsCodeLmModelSelector.vendor ?? ""}/${vsCodeLmModelSelector.family ?? ""}`
+						: unknownModel
+				case "together":
+					return togetherModelId || selectedModelId
+				case "lmstudio":
+					return lmStudioModelId || selectedModelId
+				case "ollama":
+					return ollamaModelId || selectedModelId
+				case "litellm":
+					return liteLlmModelId || selectedModelId
+				case "requesty":
+					return requestyModelId || selectedModelId
+				case "vercel-ai-gateway":
+					return vercelAiGatewayModelId || selectedModelId
+				default:
+					return selectedModelId
+			}
+		}, [apiConfiguration, mode, selectedProvider, selectedModelId, selectedModelInfo.name])
 
 		// Function to show error message for unsupported files for drag and drop
 		const showUnsupportedFileErrorMessage = () => {
@@ -1855,6 +1850,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						{/* The model name gives way first; the effort text and Send keep their size. */}
 						<ShrinkSlot floor={composerChipMinWidth(rowContent, rowLayout)}>
 							<ModelEffortChip
+								bareChip={rowLayout.bareChip}
 								compactEffort={rowLayout.compactEffort}
 								fallbackLabel={modelDisplayName}
 								mode={mode}
@@ -1865,6 +1861,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							compactMode={rowLayout.tightChip}
 							disabled={sendDisabled}
 							flash={modeSwitchFlash}
+							hideModeSwitch={rowLayout.hideModeSwitch}
 							mode={mode}
 							onPickMode={(next) => {
 								if (next !== mode) onModeToggle()

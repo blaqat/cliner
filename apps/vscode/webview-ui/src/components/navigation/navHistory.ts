@@ -78,21 +78,33 @@ function resetAtHome(entries: NavLocation[]): NavLocation[] {
  * - Re-reporting the current place is a no-op.
  * - Arriving where Back would take you (A → B → A, e.g. a crumb back to the
  *   page you came from) pops instead of growing a loop.
- * - Settings' pages count as one place to leave: Done returns where you were
- *   before them, and leaves nothing to go Back to Settings for.
+ * - Settings' pages count as one place: moving between them replaces the entry,
+ *   so Back and Done leave Settings for where you were, with nothing to go Back
+ *   to Settings for.
  */
 export function pushLocation(entries: readonly NavLocation[], location: NavLocation): NavLocation[] {
 	const current = entries[entries.length - 1]
 	if (sameLocation(current, location)) return entries as NavLocation[]
 	if (location.kind === "home") return [location]
-	if (current?.kind === "settings" && location.kind !== "settings") {
-		let before = entries.length - 1
-		while (before >= 0 && entries[before].kind === "settings") before--
-		if (before < 0) return [location]
-		if (sameLocation(entries[before], location)) return entries.slice(0, before + 1)
+	if (current?.kind === "settings") {
+		if (location.kind === "settings") return [...entries.slice(0, -1), location]
+		// Settings was the first thing open: nothing to go back to, Settings included.
+		if (entries.length === 1) return [location]
 	}
 	if (sameLocation(entries[entries.length - 2], location)) return entries.slice(0, -1)
 	return [...entries, location].slice(-MAX_NAV_ENTRIES)
+}
+
+/**
+ * Without the threads that have left history since they were visited (a failed start that Retry
+ * replaced, a deleted thread): they can't be opened again. The current place always stays.
+ */
+export function withoutGoneThreads(entries: NavLocation[], history: readonly HistoryItem[]): NavLocation[] {
+	const known = new Set(history.map((item) => item.id))
+	const kept = entries.filter(
+		(location, index) => location.kind !== "thread" || known.has(location.id) || index === entries.length - 1,
+	)
+	return kept.length === entries.length ? entries : kept
 }
 
 /** Entries saved under an old settings tab name open, and read, as the shell page it became. */

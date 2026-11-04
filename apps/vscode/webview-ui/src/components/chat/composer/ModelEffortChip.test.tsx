@@ -27,7 +27,7 @@ const FULL: AutoApprovalSettings = {
 }
 
 const renderChip = (props: Partial<React.ComponentProps<typeof ModelEffortChip>> = {}) =>
-	render(<ModelEffortChip fallbackLabel="anthropic:claude-sonnet" mode="act" {...props} />)
+	render(<ModelEffortChip fallbackLabel="claude-sonnet" mode="act" {...props} />)
 
 const chip = () => screen.getByTestId("model-effort-chip")
 const options = (column: HTMLElement) => within(column).getAllByRole("option")
@@ -78,7 +78,7 @@ describe("ModelEffortChip", () => {
 
 		it("names what's running, and offers no choice and no old RPC", async () => {
 			renderChip()
-			expect(chip()).toHaveTextContent(/^anthropic:claude-sonnet$/)
+			expect(chip()).toHaveTextContent(/^claude-sonnet$/)
 			expect(chip().title).toContain("Running on your last selection")
 			const menu = await openMenu()
 			expect(within(menu).queryByRole("option", { name: /Old profile/ })).toBeNull()

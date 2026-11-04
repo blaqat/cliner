@@ -146,6 +146,8 @@ export interface SendSplitButtonProps {
 	sendTitle: string
 	/** The tightest row: the mode switch shows only the current mode. */
 	compactMode?: boolean
+	/** The narrowest rows: no switch, so Send still fits. Send's color shows the mode; the shortcut and `/ask` still flip it. */
+	hideModeSwitch?: boolean
 	/** While the agent runs, the send part splits into steer and interject. */
 	running?: {
 		enterSendsAs: EnterSendsAs
@@ -169,6 +171,7 @@ const SendSplitButton = ({
 	toggleKeys,
 	sendTitle,
 	compactMode = false,
+	hideModeSwitch = false,
 	running,
 }: SendSplitButtonProps) => {
 	const label = MODE_LABELS[mode]
@@ -179,7 +182,7 @@ const SendSplitButton = ({
 
 	return (
 		<div className="flex shrink-0 items-center gap-1" data-testid="mode-and-send">
-			<ModeSwitch compact={compactMode} keys={keys} mode={mode} onToggle={() => onPickMode(other)} />
+			{!hideModeSwitch && <ModeSwitch compact={compactMode} keys={keys} mode={mode} onToggle={() => onPickMode(other)} />}
 			<Shell
 				$flash={flash}
 				className="flex h-5.5 shrink-0 items-stretch overflow-hidden rounded-xs"

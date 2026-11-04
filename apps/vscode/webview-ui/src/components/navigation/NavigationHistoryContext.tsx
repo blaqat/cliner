@@ -18,6 +18,7 @@ import {
 	popLocation,
 	pushLocation,
 	sameLocation,
+	withoutGoneThreads,
 } from "./navHistory"
 
 /** What ChatView lends the history layer: its thread and search state live there. */
@@ -147,7 +148,8 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 		],
 	)
 
-	const [entries, setEntries] = useState<NavLocation[]>([current])
+	const [visited, setEntries] = useState<NavLocation[]>([current])
+	const entries = useMemo(() => withoutGoneThreads(visited, taskHistory ?? []), [visited, taskHistory])
 
 	useEffect(() => {
 		const pending = pendingRef.current

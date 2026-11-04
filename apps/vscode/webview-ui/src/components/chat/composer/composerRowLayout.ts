@@ -11,7 +11,10 @@ import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
  *    so the model name keeps its letters.
  * 4. The chip goes tight (the model name may drop to a few characters) and the Ask/Act switch
  *    shows only the current mode on its thumb.
- * 📎, the ring, the switch and Send never hide.
+ * 5. The chip loses the model name, keeping its chevron (its tooltip and menu still name the model).
+ * 6. The Ask/Act switch hides (Send's color still shows the mode; the shortcut and `/ask` still flip it),
+ *    and the chip may shrink away before Send moves.
+ * 📎, the ring and Send never hide: Send fits down to VS Code's narrowest sidebar.
  */
 export interface ComposerRowLayout {
 	/** The Compact chip shows "Compact 699k"; when false it is its icon alone. */
@@ -20,6 +23,10 @@ export interface ComposerRowLayout {
 	compactEffort: boolean
 	/** The model/effort chip may shrink below its usual minimum; the mode switch shows one label. */
 	tightChip: boolean
+	/** The chip shows no model name. Set only on the narrowest rows. */
+	bareChip?: boolean
+	/** The Ask/Act switch hides. Set only on the narrowest rows. */
+	hideModeSwitch?: boolean
 }
 
 /** What the row has to fit; absent items need no room. */
@@ -39,14 +46,16 @@ const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
 	{ inlineCompactNudge: false, compactEffort: false, tightChip: false },
 	{ inlineCompactNudge: false, compactEffort: true, tightChip: false },
 	{ inlineCompactNudge: false, compactEffort: true, tightChip: true },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: true, bareChip: true },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: true, bareChip: true, hideModeSwitch: true },
 ]
 
 export const FULL_COMPOSER_ROW = LAYOUT_STEPS[0]
 
 /** Item widths in px (VS Code font, 13px root), measured in Chromium (see ComposerBottomRow.stories). */
 export const COMPOSER_ROW_WIDTHS = {
-	/** px-3 on both sides. */
-	padding: 20,
+	/** px-1.5 on both sides and the gap before the row's spacer. */
+	padding: 15,
 	/** gap-1.5. */
 	rowGap: 5,
 	/** The 📎 button. */
@@ -63,6 +72,8 @@ export const COMPOSER_ROW_WIDTHS = {
 	chipCompact: 76,
 	/** Tight: a few characters of the model name. */
 	chipTight: 56,
+	/** No model name: the chevron, and the armed dot if it has one. */
+	chipBare: 26,
 	/** Without reasoning the chip has no effort word. */
 	effortSaving: 24,
 	/** "next message" and its gap. */
@@ -84,6 +95,9 @@ export const COMPOSER_ROW_WIDTHS = {
 /** The least the chip can take in `layout`: the row squeezes it no further. */
 export function composerChipMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
 	const w = COMPOSER_ROW_WIDTHS
+	// With the switch gone there's nothing left to give way but the chip.
+	if (layout.hideModeSwitch) return 0
+	if (layout.bareChip) return w.chipBare
 	// Tight, "next" takes what the model name would have had.
 	if (layout.tightChip) return w.chipTight
 	const chip = layout.compactEffort ? w.chipCompact : w.chipMin - (content.hasEffort ? 0 : w.effortSaving)
@@ -99,18 +113,8 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 			(content.hasCompactNudge ? w.rowGap + (layout.inlineCompactNudge ? w.compactNudge : w.compactNudgeIcon) : 0)
 		: 0
 	const chip = composerChipMinWidth(content, layout)
-	const modeSwitch = layout.tightChip ? w.modeSwitchCompact : w.modeSwitch
-	return (
-		w.padding +
-		w.attach +
-		usage +
-		w.rowGap +
-		chip +
-		w.rowGap +
-		modeSwitch +
-		w.switchGap +
-		(content.running ? w.sendRunning : w.send)
-	)
+	const modeSwitch = layout.hideModeSwitch ? 0 : (layout.tightChip ? w.modeSwitchCompact : w.modeSwitch) + w.switchGap
+	return w.padding + w.attach + usage + w.rowGap + chip + w.rowGap + modeSwitch + (content.running ? w.sendRunning : w.send)
 }
 
 /** The fullest layout that fits a measured row width; unknown widths (not laid out yet, jsdom) get the full row. */

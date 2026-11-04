@@ -114,6 +114,40 @@ describe("navigation history", () => {
 		expect(entries()).toBe("home > settings:tools")
 	})
 
+	it("switching Settings pages adds no Back to Settings; Done and Back leave for where you were", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "models", requestId: 1 } } as never)
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Home"))
+		go({ settingsNavigationRequest: { target: "agent", requestId: 2 } } as never)
+		expect(entries()).toBe("home > settings:agent")
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Home"))
+		expect(screen.queryByTestId("crumb-back-label")).toBeNull()
+
+		go({ showSettings: false, currentTaskItem: { id: "a" }, settingsNavigationRequest: undefined } as never)
+		go({ showSettings: true, settingsNavigationRequest: { target: "models", requestId: 3 } } as never)
+		go({ settingsNavigationRequest: { target: "agent", requestId: 4 } } as never)
+		expect(entries()).toBe("home > settings:agent > thread:a > settings:agent")
+		expect(screen.getByTestId("crumb-back-label")).toHaveTextContent("Thread A")
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(openTask).not.toHaveBeenCalled()
+		expect(entries()).toBe("home > settings:agent > thread:a")
+	})
+
+	it("a retried failed thread has no Back to the thread Retry replaced", () => {
+		const { go } = setup()
+		const original = state.taskHistory
+		const failed = { id: "failed", ts: 3, task: "Hello" }
+		go({ currentTaskItem: { id: "failed" }, taskHistory: [...original, failed] })
+		expect(entries()).toBe("home > thread:failed")
+		// Retry starts a new session straight from the failed one, which then has no record to open.
+		go({ currentTaskItem: { id: "b" }, taskHistory: original })
+		expect(entries()).toBe("home > thread:b")
+		expect(screen.queryByTestId("crumb-back-label")).toBeNull()
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(openTask).not.toHaveBeenCalled()
+		expect(entries()).toBe("home")
+	})
+
 	it("Back to an entry reached by an old target opens the page it became", () => {
 		const { go } = setup()
 		go({ showSettings: true, settingsNavigationRequest: { target: "terminal", requestId: 1 } } as never)

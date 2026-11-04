@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 	thread: { id: "thread", taskGroupId: "sso" },
 	taskGroups: [{ id: "sso", title: "SSO redirect loop", tags: [], createdAt: 0, updatedAt: 0, noteCount: 0 }],
 	modelSettings: undefined as unknown,
+	selected: { selectedProvider: "anthropic", selectedModelId: "model" },
 }))
 mocks.modelSettings = modelSettingsFixture()
 
@@ -46,8 +47,7 @@ vi.mock("@/utils/platformUtils", async (importOriginal) => ({
 
 vi.mock("@/hooks/useNormalizedApiConfiguration", () => ({
 	useNormalizedApiConfiguration: () => ({
-		selectedProvider: "anthropic",
-		selectedModelId: "model",
+		...mocks.selected,
 		// Reasoning, so the chip has its effort text.
 		selectedModelInfo: { supportsReasoning: true },
 	}),
@@ -298,7 +298,7 @@ describe("composer bottom row", () => {
 		})
 
 		it("goes tight only after the effort text is gone", () => {
-			stubRowWidth(200)
+			stubRowWidth(225)
 			const renderMeter = vi.fn((_layout: ComposerRowLayout) => null)
 			renderComposer(usageSlot(renderMeter, true))
 			expect(renderMeter).toHaveBeenLastCalledWith({ inlineCompactNudge: false, compactEffort: true, tightChip: true })
@@ -306,6 +306,25 @@ describe("composer bottom row", () => {
 			// The mode switch goes compact with it: the current mode only.
 			expect(screen.getByTestId("mode-switch")).toHaveAttribute("data-compact", "true")
 			expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^Act$/)
+		})
+
+		it("gives Send the room on the narrowest rows: the model name goes, then the mode switch", () => {
+			stubRowWidth(150)
+			renderComposer()
+			expect(screen.queryByTestId("chip-model")).toBeNull()
+			expect(screen.getByTestId("mode-switch")).toBeInTheDocument()
+			expect(screen.getByTestId("send-button")).toBeInTheDocument()
+			// The chip is still one button that names the model.
+			expect(screen.getByTestId("model-effort-chip")).toHaveAccessibleName(/GPT-6 Sol/)
+		})
+
+		it("keeps Send and drops the switch at VS Code's narrowest sidebar", () => {
+			stubRowWidth(143)
+			renderComposer(usageSlot(() => <span data-testid="usage-slot">ring</span>, true))
+			expect(screen.queryByTestId("mode-switch")).toBeNull()
+			expect(screen.getByTestId("send-button")).toBeInTheDocument()
+			expect(screen.getByTestId("send-split")).toHaveAttribute("data-mode", "act")
+			expect(screen.getByTestId("model-effort-chip").closest("[data-shrink]")).toHaveAttribute("data-floor", "0")
 		})
 
 		it("lays the row out in normal flow, the meter beside the chip", () => {
@@ -321,6 +340,22 @@ describe("composer bottom row", () => {
 			renderComposer()
 			expect(screen.queryByTestId("composer-usage")).not.toBeInTheDocument()
 			expect(screen.getByTestId("model-effort-chip")).toBeInTheDocument()
+		})
+	})
+
+	describe("before the model settings store exists", () => {
+		const { modelSettings, selected } = mocks
+		afterEach(() => {
+			mocks.modelSettings = modelSettings
+			mocks.selected = selected
+		})
+
+		it("names the model on the chip, not a provider-prefixed id", () => {
+			mocks.modelSettings = undefined
+			mocks.selected = { selectedProvider: "openai", selectedModelId: "mig-high" }
+			renderComposer()
+			expect(screen.getByTestId("chip-model")).toHaveTextContent(/^mig-high$/)
+			expect(screen.getByTestId("model-effort-chip")).toHaveAccessibleName(/model: mig-high/)
 		})
 	})
 

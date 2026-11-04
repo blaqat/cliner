@@ -144,6 +144,8 @@ interface ModelEffortChipProps {
 	compactEffort?: boolean
 	/** The narrowest row: "next" can take the model name's last letters. */
 	tightChip?: boolean
+	/** The narrowest rows: no model name either, just the chevron. The tooltip and menu still name it. */
+	bareChip?: boolean
 }
 
 /**
@@ -151,7 +153,13 @@ interface ModelEffortChipProps {
  * with the five auto-approve tiles on top and Reset, the Next message only switch and the Models page
  * below. With every action auto-approved, an error-colored shield sits before the chip text.
  */
-const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false, tightChip = false }: ModelEffortChipProps) => {
+const ModelEffortChip = ({
+	mode,
+	fallbackLabel,
+	compactEffort = false,
+	tightChip = false,
+	bareChip = false,
+}: ModelEffortChipProps) => {
 	const { autoApprovalSettings } = useExtensionState()
 	const selection = useComposerSelection(mode, fallbackLabel)
 	const { level } = selection
@@ -186,22 +194,39 @@ const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false, tightChip
 					aria-label={chipLabel}
 					className={cn(MODEL_CHIP_CLASS, "overflow-hidden")}
 					data-testid="model-effort-chip"
-					title={[selection.description, level?.description, permissionsLabel].filter(Boolean).join("\n")}
+					title={[
+						selection.description,
+						level?.description,
+						selection.nextMessageOnly ? "Next message only" : undefined,
+						permissionsLabel,
+					]
+						.filter(Boolean)
+						.join("\n")}
 					type="button">
 					{fullAccess && (
 						<ShieldOffIcon aria-hidden className="shrink-0 text-error" data-testid="full-access-icon" size={12} />
 					)}
-					<span
-						className={cn("truncate", tightChip && selection.nextMessageOnly ? "min-w-0" : "min-w-[3ch]")}
-						data-testid="chip-model">
-						{selection.modelLabel}
-					</span>
-					{selection.pending && <span className="shrink-0 opacity-60">(pending)</span>}
-					{selection.nextMessageOnly && (
-						<span className="shrink-0 whitespace-nowrap opacity-60" data-testid="chip-next-message">
-							{compactEffort ? "next" : "next message"}
+					{!bareChip && (
+						<span
+							className={cn("truncate", tightChip && selection.nextMessageOnly ? "min-w-0" : "min-w-[3ch]")}
+							data-testid="chip-model">
+							{selection.modelLabel}
 						</span>
 					)}
+					{selection.pending && !bareChip && <span className="shrink-0 opacity-60">(pending)</span>}
+					{/* With no room for the word, a dot keeps the arming visible; the tooltip says what it means. */}
+					{selection.nextMessageOnly &&
+						(bareChip ? (
+							<span
+								aria-hidden
+								className="size-1.5 shrink-0 rounded-full bg-current opacity-60"
+								data-testid="chip-next-message"
+							/>
+						) : (
+							<span className="shrink-0 whitespace-nowrap opacity-60" data-testid="chip-next-message">
+								{compactEffort ? "next" : "next message"}
+							</span>
+						))}
 					{/* A narrow row hides the effort word; the menu still has it. */}
 					{level && !compactEffort && (
 						<span className={cn("shrink-0 whitespace-nowrap", level.bad && "text-warning")} data-testid="chip-effort">
