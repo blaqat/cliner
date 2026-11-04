@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
 	COMPOSER_ROW_WIDTHS,
 	type ComposerRowContent,
+	composerChipMinWidth,
 	composerRowLayout,
 	composerRowMinWidth,
 	FULL_COMPOSER_ROW,
@@ -43,6 +44,27 @@ describe("composerRowLayout", () => {
 		expect(composerRowLayout(340, nearlyFull)).toEqual({ inlineCompactNudge: false, compactEffort: false, tightChip: false })
 		expect(composerRowLayout(300, chat)).toEqual(FULL_COMPOSER_ROW)
 		expect(composerRowLayout(260, home)).toEqual(FULL_COMPOSER_ROW)
+	})
+
+	it("makes room for the armed marker, so the chip's floor never runs into Ask", () => {
+		const armed = { ...chat, nextMessage: true }
+		const w = COMPOSER_ROW_WIDTHS
+		const fullRow = { inlineCompactNudge: false, compactEffort: false, tightChip: false }
+		const compactRow = { inlineCompactNudge: false, compactEffort: true, tightChip: false }
+		const tightRow = { inlineCompactNudge: false, compactEffort: true, tightChip: true }
+		expect(composerChipMinWidth(armed, fullRow)).toBe(w.chipMin + w.nextMessage)
+		expect(composerChipMinWidth(armed, compactRow)).toBe(w.chipCompact + w.nextMessageShort)
+		// Tight, the marker takes the model name's room, so the armed row is no wider than any other.
+		expect(composerRowMinWidth(armed, tightRow)).toBe(composerRowMinWidth(chat, tightRow))
+		// Rows are 27px narrower than the sidebar. Near the limit, the 250px sidebar is the narrowest one that has to fit.
+		for (const sidebar of [250, 280, 300, 320, 360, 400, 440, 480]) {
+			const content = { ...nearlyFull, nextMessage: true }
+			const width = sidebar - 27
+			expect(composerRowMinWidth(content, composerRowLayout(width, content))).toBeLessThanOrEqual(width)
+		}
+		// Full words only once they fit.
+		expect(composerRowLayout(280, armed).compactEffort).toBe(true)
+		expect(composerRowLayout(370, armed).compactEffort).toBe(false)
 	})
 
 	it("needs room for the ring and the Compact chip only in a chat near the limit", () => {

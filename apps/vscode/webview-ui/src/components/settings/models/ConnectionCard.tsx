@@ -9,9 +9,9 @@ import { ModelForm } from "./ModelForm"
 import { useModelsPage } from "./modelsPageContext"
 import {
 	API_LABELS,
+	type ConnectionTest,
 	canRunAfter,
 	connectionName,
-	type ConnectionTest,
 	formatTokens,
 	hostOf,
 	levelRange,
@@ -20,11 +20,11 @@ import {
 	priceSummary,
 	unknownsOf,
 } from "./modelsView"
+import { signOutProvider } from "./ProviderChooser"
 import { ProviderConnectionFields } from "./ProviderFields"
 import { providerSpec } from "./providerSpecs"
 import { RemoveFlow } from "./RemoveFlow"
 import { SharedDefaults } from "./SharedDefaults"
-import { signOutProvider } from "./ProviderChooser"
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
@@ -155,7 +155,8 @@ const TestResult = ({
 					{line(true, keyLine)}
 					{line(
 						true,
-						test.listed === 0 ? "Listed no chat models" : `/models lists ${plural(test.listed, "chat model")}`,
+						// Models it can't classify count too, so this can't say they're all chat models.
+						test.listed === 0 ? "Listed no chat models" : `/models lists ${plural(test.listed, "model")} you can add`,
 					)}
 				</>,
 			)
@@ -566,8 +567,8 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 					{!isDraft && (
 						<div className="mt-2">
 							<RemoveFlow
-								modelIds={saved.map((row) => row.id)}
 								label={`Remove ${isProvider ? name : "connection"}`}
+								modelIds={saved.map((row) => row.id)}
 								onRemove={() => store.deleteConnection(connection.id)}
 								onRemoved={() => {
 									page.setOpenConnection(null)

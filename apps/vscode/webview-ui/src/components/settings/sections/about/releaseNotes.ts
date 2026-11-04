@@ -18,7 +18,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 		id: "release-3",
 		title: "Release 3",
 		builds: "test builds fork.39–46",
-		date: "2026-10-29",
+		date: "2026-11-04",
 		notes: [
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
 			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search across them, and a Changed chip that lists what isn't the default and resets it",

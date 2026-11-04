@@ -8,6 +8,9 @@ export type ModelSettingsMigrationIssue = {
 	connectionId?: string
 }
 
+/** Sending needs the same lock, so while it's held Cline can't honestly say it's still running. */
+export const SETTINGS_LOCK_HELD_CAUSE = "Another window held the settings lock"
+
 /** Published with webview state whether or not the journal is complete, so a failure can be retried. */
 export type ModelSettingsMigrationStatus = {
 	status: "disabled" | "pending" | "complete" | "failed"

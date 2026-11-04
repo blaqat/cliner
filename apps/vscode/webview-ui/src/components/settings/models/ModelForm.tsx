@@ -9,8 +9,8 @@ import {
 	resolveModelValues,
 } from "@shared/model-settings"
 import { useEffect, useMemo, useState } from "react"
-import { useSettingsShell } from "../shell/SettingsShellContext"
 import { ManagedTag } from "../shell/SettingRow"
+import { useSettingsShell } from "../shell/SettingsShellContext"
 import {
 	CommitInput,
 	ControlRow,
@@ -30,8 +30,9 @@ import {
 	SmallSwitch,
 	Why,
 } from "./fields"
-import { useModelsPage } from "./modelsPageContext"
+import { ModelCatalogPresets } from "./ModelCatalogPresets"
 import type { PreviewResult } from "./modelSettingsClient"
+import { useModelsPage } from "./modelsPageContext"
 import {
 	DEFAULT_OFFERED,
 	detectedFills,
@@ -52,7 +53,6 @@ import {
 	withOverride,
 	withoutOverride,
 } from "./modelsView"
-import { ModelCatalogPresets } from "./ModelCatalogPresets"
 import { ProviderFieldControl } from "./ProviderFields"
 import { isFieldVisible, providerSpec } from "./providerSpecs"
 import { RemoveFlow } from "./RemoveFlow"
@@ -427,9 +427,9 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						effortName={effortName}
 						levels={levels}
 						onMap={mapLevel}
+						onReset={() => void reset("levels")}
 						onToggle={toggleLevel}
 						row={row}
-						onReset={() => void reset("levels")}
 					/>
 				) : effective.reasoning.value === "no" ? (
 					<Hint>The selector shows no levels for this model.</Hint>
@@ -613,8 +613,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					</LinkButton>
 				) : (
 					<RemoveFlow
-						modelIds={[row.id]}
 						label="Remove"
+						modelIds={[row.id]}
 						onRemove={() => store.deleteModel(row.id)}
 						onRemoved={() => page.setOpenModel(null)}
 						question={`Remove ${row.name || row.upstreamId}?`}
@@ -660,7 +660,7 @@ const LevelTable = ({
 			<div className="grid grid-cols-[52px_44px_minmax(0,1fr)] items-center gap-x-2 gap-y-[3px] text-[11.5px]">
 				<span className="text-[10px] text-description">Level</span>
 				<span className="text-[10px] text-description">Offered</span>
-				<span className="text-[10px] text-description">
+				<span className="min-w-0 text-[10px] text-description [overflow-wrap:anywhere]" data-testid="level-table-sent-as">
 					Sent as <code>{effortName}</code>
 				</span>
 				{rows.map(({ level, offered }) => (

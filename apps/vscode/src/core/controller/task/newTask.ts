@@ -75,6 +75,7 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 		runInWorktree: request.runInWorktree,
 		taskGroupId: request.taskGroupId || undefined,
 		provenance: normalizeProvenance(request.provenance),
+		rethrowStartFailure: true,
 	})
 	return String.create({ value: taskId || "" })
 }

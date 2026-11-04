@@ -1,5 +1,9 @@
 import { BASE_URL_NEEDED, MODEL_ID_NEEDED, type ModelSettings } from "@shared/model-settings"
-import type { ModelSettingsMigrationIssue, ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
+import {
+	type ModelSettingsMigrationIssue,
+	type ModelSettingsMigrationStatus,
+	SETTINGS_LOCK_HELD_CAUSE,
+} from "@shared/model-settings-migration-status"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -60,10 +64,16 @@ export const MigrationFailedNotice = ({
 	return (
 		<div className="rounded border border-warning p-2 text-[11px]" role="status">
 			<p className="m-0 font-semibold">Your models couldn't be moved to the new Settings.</p>
-			{status.cause && <p className="m-0 mt-1 text-description">{status.cause}</p>}
-			<p className="m-0 mt-1">
-				Nothing is lost, and Cline is still running on your last selection. Settings opens once this works.
-			</p>
+			{status.cause === SETTINGS_LOCK_HELD_CAUSE ? (
+				<p className="m-0 mt-1">Another window is using settings. Nothing is lost. Retry in a moment.</p>
+			) : (
+				<>
+					{status.cause && <p className="m-0 mt-1 text-description">{status.cause}</p>}
+					<p className="m-0 mt-1">
+						Nothing is lost, and Cline is still running on your last selection. Settings opens once this works.
+					</p>
+				</>
+			)}
 			<MigrationActions migration={migration} />
 		</div>
 	)

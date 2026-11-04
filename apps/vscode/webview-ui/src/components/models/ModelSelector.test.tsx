@@ -283,6 +283,24 @@ describe("ModelSelector", () => {
 			expect(onCommit).not.toHaveBeenCalled()
 		})
 
+		it("never carries a level onto a model without one: saves Default and sends no effort", async () => {
+			renderSelector({ pick: { rowId: "sol", levelId: "high" } })
+			await openMenu()
+			fireEvent.click(option(models(), "acme-tuned-coder"))
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "tuned", levelId: "default" })
+		})
+
+		it("moves a carried level down on a model that only offers Default, and says so", async () => {
+			const defaultOnly: SelectorRow = { id: "plain", label: "Plain", group: "Local", levels: [STANDARD_LEVELS[0]] }
+			renderSelector({ pick: { rowId: "sol", levelId: "low" }, rows: [...rows, defaultOnly] })
+			await openMenu()
+			fireEvent.click(option(models(), "Plain"))
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Moved to Default")
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "plain", levelId: "default" })
+		})
+
 		it("with no pick yet, the first pick takes the middle level", async () => {
 			renderSelector({ pick: null })
 			await openMenu()

@@ -184,14 +184,29 @@ describe("M2: roles match legacy resolution", () => {
 })
 
 describe("M3: saved efforts never stop a migrated thread", () => {
-	it("offers the standard ladder on an unknown model, not only saved efforts", async () => {
+	it("offers the standard ladder on an unknown model with a saved effort, not only that effort", async () => {
 		const f = fixture(base(), keys())
 		await f.run()
-		const pickHigh = { modelId: f.rowOf("m1").id, levelId: "high" }
-		const resolved = resolveConfiguredPick(f.settings(), pickHigh)
+		const row = f.rowOf("m1")
+		expect(row.overrides.levels).toBeUndefined()
+		const f2 = fixture(
+			{
+				...base(),
+				modelProfiles: [{ id: "deep", name: "Deep", configurationId: "p1", reasoningEffort: "high" }],
+			},
+			keys(),
+		)
+		await f2.run()
+		const resolved = resolveConfiguredPick(f2.settings(), { modelId: f2.rowOf("m1").id, levelId: "high" })
 		expect(resolved.values.levels.map((l) => l.id)).toEqual(["default", "low", "medium", "high", "xhigh"])
 	})
-	it("resolves a thread whose effort no configuration saved", async () => {
+	it("offers an assigned model the ladder when its mode ran at a saved effort", async () => {
+		const f = fixture({ ...base(), actModeReasoningEffort: "high" }, keys())
+		await f.run()
+		expect(f.settings().roles.chat).toEqual({ modelId: f.rowOf("m1").id, levelId: "high" })
+		expect(resolveConfiguredPick(f.settings(), f.settings().roles.chat!).levelId).toBe("high")
+	})
+	it("runs a thread whose effort no configuration saved, at Default, rather than refuse it", async () => {
 		const f = fixture(base(), keys())
 		await f.run()
 		const thread = migrateThreadModelSelection(
@@ -199,7 +214,7 @@ describe("M3: saved efforts never stop a migrated thread", () => {
 			f.journal() as never,
 			f.settings(),
 		)
-		expect(resolveConfiguredPick(f.settings(), resolveThreadPick(thread, "act")).levelId).toBe("high")
+		expect(resolveConfiguredPick(f.settings(), resolveThreadPick(thread, "act")).levelId).toBe("default")
 	})
 	it("falls a thread's unrecorded mode back to the current selection", async () => {
 		const f = fixture({ ...base(), askProfileId: "p2", planModeReasoningEffort: "low" }, keys())
@@ -209,7 +224,7 @@ describe("M3: saved efforts never stop a migrated thread", () => {
 		expect(resolveThreadPick(onlyAct, "plan")).toEqual(settings.roles.ask.pick)
 		expect(resolveConfiguredPick(settings, resolveThreadPick(onlyAct, "plan")).model.upstreamId).toBe("m2")
 		const effortOnly = migrateThreadModelSelection({ actModeReasoningEffort: "high" }, f.journal() as never, settings)
-		expect(resolveThreadPick(effortOnly, "act")).toEqual({ modelId: f.rowOf("m1").id, levelId: "high" })
+		expect(resolveThreadPick(effortOnly, "act")).toEqual({ modelId: f.rowOf("m1").id, levelId: "default" })
 	})
 	it("offers only the default on a model known not to reason, and moves the saved effort to it", async () => {
 		const known = createGateway()
@@ -752,8 +767,59 @@ describe("keyless OpenAI-compatible profiles", () => {
 
 describe("migrated levels", () => {
 	const unknownModel = (id: string, url = "https://a.test/v1") => profile(id, id, { options: { openAiBaseUrl: url } })
+	const withEffort = (id: string, effort = "high") => ({ ...unknownModel(id), reasoningEffort: effort })
+	it("gives a model nothing says reasons only Default, with reasoning unknown and no effort to send", async () => {
+		const f = fixture({ apiConfigProfiles: [unknownModel("plain")], actProfileId: "plain" })
+		await f.run()
+		const row = f.rowOf("plain")
+		expect(row.overrides.levels).toBeUndefined()
+		expect(row.overrides.reasoning).toBeUndefined()
+		expect(row.migratedValues).toBeUndefined()
+		expect(f.settings().roles.chat).toEqual({ modelId: row.id, levelId: "default" })
+		const resolved = resolveConfiguredPick(f.settings(), { modelId: row.id, levelId: "default" })
+		expect(resolved.values.reasoning).toBe("unknown")
+		expect(resolved.values.levels.map((l) => l.id)).toEqual(["default"])
+		// A level it doesn't offer is refused, so nothing can send one by accident.
+		expect(() => resolveConfiguredPick(f.settings(), { modelId: row.id, levelId: "low" })).toThrow()
+	})
+	it("takes 'none' as no saved effort", async () => {
+		const f = fixture({ apiConfigProfiles: [withEffort("off", "none")] })
+		await f.run()
+		expect(f.rowOf("off").overrides.levels).toBeUndefined()
+	})
+	it("gives a model the ladder when a profile saved an effort for it", async () => {
+		const f = fixture({
+			apiConfigProfiles: [unknownModel("plain")],
+			modelProfiles: [{ id: "x", name: "X", configurationId: "plain", reasoningEffort: "low" }],
+		})
+		await f.run()
+		expect(f.rowOf("plain").overrides.levels?.length).toBeGreaterThan(1)
+		expect(f.rowOf("plain").overrides.reasoning).toBe("yes")
+	})
+	it("gives a model the catalog's levels when the catalog says it reasons", async () => {
+		const known = createGateway()
+			.listModels("openai-native")
+			.find((m) => m.capabilities?.includes("reasoning"))
+		expect(known).toBeDefined()
+		const f = fixture({
+			apiConfigProfiles: [{ id: "a", name: "a", provider: "openai-native", modelId: known!.id }],
+			actProfileId: "a",
+		})
+		await f.run()
+		expect(f.rowOf(known!.id).overrides.levels?.length).toBeGreaterThan(1)
+	})
+	it("doesn't lend one model's ladder to another on the same connection", async () => {
+		const f = fixture({ apiConfigProfiles: [withEffort("deep"), unknownModel("plain")] })
+		await f.run()
+		expect(f.settings().connections).toHaveLength(1)
+		const deep = resolveConfiguredPick(f.settings(), { modelId: f.rowOf("deep").id, levelId: "high" })
+		expect(deep.levelId).toBe("high")
+		const plain = resolveConfiguredPick(f.settings(), { modelId: f.rowOf("plain").id, levelId: "default" })
+		expect(plain.values.levels.map((l) => l.id)).toEqual(["default"])
+		expect(plain.values.reasoning).toBe("unknown")
+	})
 	it("marks the levels and reasoning it stored, since nobody chose them", async () => {
-		const f = fixture({ apiConfigProfiles: [unknownModel("solo")] })
+		const f = fixture({ apiConfigProfiles: [withEffort("solo")] })
 		await f.run()
 		const row = f.rowOf("solo")
 		expect(row.overrides).toMatchObject({ reasoning: "yes" })
@@ -761,7 +827,7 @@ describe("migrated levels", () => {
 		expect(row.migratedValues).toEqual(["levels", "reasoning"])
 	})
 	it("leaves no marker for what moves up to the connection", async () => {
-		const f = fixture({ apiConfigProfiles: [unknownModel("one"), unknownModel("two")] })
+		const f = fixture({ apiConfigProfiles: [withEffort("one"), withEffort("two")] })
 		await f.run()
 		expect(f.settings().connections).toHaveLength(1)
 		expect(f.settings().connections[0].defaults).toMatchObject({ reasoning: "yes" })

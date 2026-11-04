@@ -306,6 +306,8 @@ function withNextMessagePick(
 interface ClineAuthRetry {
 	task: TaskProxy
 	prompt: string
+	images?: string[]
+	files?: string[]
 	/** What the user explicitly picked or ran in the composer for `prompt`. */
 	provenance?: ComposerProvenance
 	/**
@@ -440,6 +442,14 @@ export class Controller {
 	private backgroundCommandRunning = false
 	private backgroundCommandTaskId?: string
 	private pendingClineAuthRetry?: ClineAuthRetry
+	/** Threads whose first message never got a session. Retry starts them again with that message. */
+	private readonly failedStarts = new WeakMap<TaskProxy, ClineAuthRetry>()
+	/** Follow-ups that never reached a session. Retry sends the same message. */
+	private readonly failedFollowUps = new WeakMap<
+		TaskProxy,
+		{ prompt?: string; images?: string[]; files?: string[]; provenance?: ComposerProvenance }
+	>()
+	private followUpFailure?: string
 	checkpointRestoreInput?: ExtensionState["checkpointRestoreInput"]
 
 	// Timer for periodic remote config fetching (enterprise policy enforcement)
@@ -1076,8 +1086,11 @@ export class Controller {
 			emitClineAuthError: () => this.emitClineAuthErrorWithTelemetry(),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			postStateToWebview: () => this.postStateToWebview(),
-			onResumeFailed: () => {
+			onResumeFailed: (failure) => {
 				this.turnStateTracker.set("error")
+				this.followUpFailure = failure.reason
+				if (this.task && (failure.prompt?.trim() || failure.images?.length || failure.files?.length))
+					this.failedFollowUps.set(this.task, failure)
 			},
 			onFollowUpAbandoned: () => {
 				// Settle the streaming phase askResponse pre-set, unless a turn
@@ -1144,6 +1157,19 @@ export class Controller {
 			},
 			setTask: (task) => {
 				this.task = task
+			},
+			onStartFailed: ({ task, prompt, images, files, provenance, background, reason }) => {
+				this.failedStarts.set(task, { task, prompt: prompt ?? "", images, files, provenance, hasConversation: false })
+				// A background thread isn't on screen, so its row alone would go unseen.
+				if (background)
+					void HostProvider.window
+						.showMessage(
+							ShowMessageRequest.create({
+								type: ShowMessageType.ERROR,
+								message: `Couldn't start the thread: ${reason}`,
+							}),
+						)
+						.catch((error) => Logger.error("[SdkController] Failed to report background start failure:", error))
 			},
 			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
 			onAskResponse: (text, images, files, decisionId, provenance) =>
@@ -2821,7 +2847,13 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
+		options?: {
+			background?: boolean
+			taskGroupId?: string
+			runInWorktree?: boolean
+			provenance?: ComposerProvenance
+			rethrowStartFailure?: boolean
+		},
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A stale pill pick (group deleted between selection and send) starts unfiled.
@@ -2985,6 +3017,7 @@ export class Controller {
 		decisionId?: string,
 		provenance?: ComposerProvenance,
 	): Promise<void> {
+		this.followUpFailure = undefined
 		const decisionResponseType = this.task?.taskState?.askResponse
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
 		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
@@ -3044,12 +3077,22 @@ export class Controller {
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		// The sign-in retry answers only the next response to the task that
 		// showed the error; a task opened since then does not inherit it.
-		const retry = this.pendingClineAuthRetry
+		const failedStart = this.task && this.failedStarts?.get(this.task)
+		const retry = failedStart ?? this.pendingClineAuthRetry
 		this.pendingClineAuthRetry = undefined
+		if (this.task) this.failedStarts?.delete(this.task)
 		if (retry && retry.task === this.task) {
 			const askResponse = decisionResponseType
+			const startFailureOption = failedStart ? { rethrowStartFailure: true } : {}
 			if (askResponse === "yesButtonClicked") {
-				await this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance })
+				await this.initTask(
+					retry.prompt,
+					images?.length ? images : retry.images,
+					files?.length ? files : retry.files,
+					undefined,
+					undefined,
+					{ provenance: retry.provenance, ...startFailureOption },
+				)
 				return
 			}
 			// A task that failed before it had a session has nothing to
@@ -3057,10 +3100,28 @@ export class Controller {
 			// attachments but no text, the original prompt is kept.
 			if (askResponse === "messageResponse" && !retry.hasConversation) {
 				await (prompt?.trim()
-					? this.initTask(prompt, images, files, undefined, undefined, { provenance })
-					: this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance }))
+					? this.initTask(prompt, images, files, undefined, undefined, { provenance, ...startFailureOption })
+					: this.initTask(retry.prompt, images, files, undefined, undefined, {
+							provenance: retry.provenance,
+							...startFailureOption,
+						}))
 				return
 			}
+		}
+		// Retry carries no text of its own: the message is the one that never got through.
+		const failedFollowUp = this.task && this.failedFollowUps?.get(this.task)
+		if (this.task) this.failedFollowUps?.delete(this.task)
+		if (
+			failedFollowUp &&
+			decisionResponseType === "yesButtonClicked" &&
+			!prompt?.trim() &&
+			!images?.length &&
+			!files?.length
+		) {
+			prompt = failedFollowUp.prompt
+			images = failedFollowUp.images
+			files = failedFollowUp.files
+			provenance = failedFollowUp.provenance
 		}
 
 		const submittedTaskId = this.task?.taskId
@@ -3097,6 +3158,13 @@ export class Controller {
 			decisionId,
 			provenance,
 		)
+	}
+
+	/** Why the last follow-up never reached a session. Read once, by the RPC that hands the draft back. */
+	takeFollowUpFailure(): string | undefined {
+		const failure = this.followUpFailure
+		this.followUpFailure = undefined
+		return failure
 	}
 
 	async editMessageAndRegenerate(input: {

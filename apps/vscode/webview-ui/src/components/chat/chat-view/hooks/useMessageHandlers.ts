@@ -78,6 +78,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	)
 	const cancelInFlightRef = useRef(false)
 	const pendingResponseIdRef = useRef(0)
+	// A failed send's text, back in the composer. Retry sends it too, so a success takes it out again.
+	const restoredDraftRef = useRef<string | undefined>(undefined)
 	// The first recovery action for an authoritative turn sequence owns that
 	// sequence until the backend advances it. A ref makes competing click
 	// handlers observe the claim before React can render the mirrored UI state.
@@ -267,6 +269,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					setSelectedFiles(files)
 					setEnableButtons(enableButtons)
 					if (sentAuth) chatState.restoreAuthorization(sentAuth)
+					restoredDraftRef.current = text
 				}
 				const beginPendingResponse = (pendingMessage?: ClineMessage) => {
 					const id = ++pendingResponseIdRef.current
@@ -608,6 +611,17 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						releaseErrorRecoveryClaim()
 						throw error
 					}
+					if (
+						restoredDraftRef.current !== undefined &&
+						chatState.getDraftSnapshot().text === restoredDraftRef.current
+					) {
+						setInputValue("")
+						setQuotes([])
+						setMessageTags([])
+						setSelectedImages([])
+						setSelectedFiles([])
+					}
+					restoredDraftRef.current = undefined
 					break
 				}
 				case "approve":

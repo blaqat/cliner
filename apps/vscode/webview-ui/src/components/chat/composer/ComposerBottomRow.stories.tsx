@@ -67,30 +67,48 @@ const Composer = ({ width }: { width: number }) => (
 	</div>
 )
 
-export const SidebarWidths: Story = {
-	render: () => (
-		<div className="flex flex-col gap-4">
-			{WIDTHS.map((width) => (
-				<Composer key={width} width={width} />
-			))}
-		</div>
-	),
-	play: async ({ canvasElement }) => {
-		const rows = () => [...canvasElement.querySelectorAll<HTMLElement>('[data-testid="composer-bottom-row"]')]
-		await waitFor(() => expect(rows()).toHaveLength(WIDTHS.length))
-		for (const row of rows()) {
-			const bounds = row.getBoundingClientRect()
-			const items = [...row.children].map((child) => child.getBoundingClientRect())
-			// One line: every item shares the row's vertical band.
-			for (const item of items) {
-				await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
-				await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
-			}
-			// No overlap, and Send stays inside the row.
-			for (let i = 1; i < items.length; i++) {
-				await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
-			}
-			await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
+const allWidths = () => (
+	<div className="flex flex-col gap-4">
+		{WIDTHS.map((width) => (
+			<Composer key={width} width={width} />
+		))}
+	</div>
+)
+
+const fitsEveryWidth: Story["play"] = async ({ canvasElement }) => {
+	const rows = () => [...canvasElement.querySelectorAll<HTMLElement>('[data-testid="composer-bottom-row"]')]
+	await waitFor(() => expect(rows()).toHaveLength(WIDTHS.length))
+	for (const row of rows()) {
+		const bounds = row.getBoundingClientRect()
+		const items = [...row.children].map((child) => child.getBoundingClientRect())
+		// One line: every item shares the row's vertical band.
+		for (const item of items) {
+			await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
+			await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
 		}
-	},
+		// No overlap, and Send stays inside the row.
+		for (let i = 1; i < items.length; i++) {
+			await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
+		}
+		await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
+	}
+}
+
+export const SidebarWidths: Story = { render: allWidths, play: fitsEveryWidth }
+
+/** Next message only is armed: the widest chip there is. */
+export const ArmedNextMessage: Story = {
+	decorators: [
+		createStorybookDecorator(
+			{
+				mode: "act",
+				apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
+				modelSettings: modelSettingsFixture(),
+				composerNextMessageOnly: true,
+			},
+			"max-w-none",
+		),
+	],
+	render: allWidths,
+	play: fitsEveryWidth,
 }

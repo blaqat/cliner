@@ -319,6 +319,84 @@ describe("SDK remote-config coordination", () => {
 		})
 	})
 
+	describe("after a thread fails to start or to resume", () => {
+		function controllerWithFailedTask() {
+			const controller = {
+				task: undefined as TaskProxy | undefined,
+				turnStateTracker: { set: vi.fn(), get: () => ({ phase: "error" }) },
+				messageTranslatorState: { clearTurnOutcome: vi.fn() },
+				messages: { appendAndEmit: vi.fn() },
+				sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
+				postStateToWebview: vi.fn(async () => {}),
+				initTask: vi.fn(async () => "task-id"),
+				followups: { askResponse: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
+				cancelTask: vi.fn(async () => {}),
+				failedStarts: new WeakMap(),
+				failedFollowUps: new WeakMap(),
+				askResponse(prompt?: string, images?: string[], files?: string[]) {
+					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
+				},
+			}
+			const task = createTaskProxy("failed", controller.askResponse, controller.cancelTask)
+			controller.task = task
+			return { controller, task }
+		}
+		const startFailure = { prompt: "first message", images: ["img"], files: ["file"], hasConversation: false }
+
+		it("Retry starts the thread again with its first message and attachments, not a resume with nothing", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect(controller.initTask).toHaveBeenCalledWith("first message", ["img"], ["file"], undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+			expect(controller.followups.askResponse).not.toHaveBeenCalled()
+			// Only the first response answers the failure.
+			await task.handleWebviewAskResponse("messageResponse", "and then")
+			expect(controller.followups.askResponse).toHaveBeenCalledOnce()
+		})
+
+		it("a message typed in the composer starts it instead", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("messageResponse", "revised")
+			expect(controller.initTask).toHaveBeenCalledWith("revised", undefined, undefined, undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+		})
+
+		it("Retry sends the follow-up that never got through; a typed message replaces it", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedFollowUps.set(task, { prompt: "lost", images: ["img"], files: [] })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[]).slice(0, 3)).toEqual(["lost", ["img"], []])
+			controller.followups.askResponse.mockClear()
+
+			controller.failedFollowUps.set(task, { prompt: "lost" })
+			await task.handleWebviewAskResponse("messageResponse", "typed")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[])[0]).toBe("typed")
+		})
+
+		it("reports a failed follow-up once, to the RPC that hands the draft back", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.followups.askResponse.mockImplementation(async () => {
+				;(controller as unknown as { followUpFailure: string }).followUpFailure = "Storage is busy"
+			})
+			await task.handleWebviewAskResponse("messageResponse", "hello")
+			const take = SdkController.prototype.takeFollowUpFailure
+			expect(take.call(controller as never)).toBe("Storage is busy")
+			expect(take.call(controller as never)).toBeUndefined()
+			// A later send doesn't inherit a failure nobody read.
+			;(controller as unknown as { followUpFailure: string }).followUpFailure = "stale"
+			controller.followups.askResponse.mockImplementation(async () => {})
+			await task.handleWebviewAskResponse("messageResponse", "hello again")
+			expect(take.call(controller as never)).toBeUndefined()
+		})
+	})
+
 	describe("after a Cline sign-in error offers to retry a prompt", () => {
 		function controllerShowingSignInError(options: { existingTask?: boolean } = {}) {
 			const controller = {

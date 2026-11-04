@@ -1,4 +1,5 @@
 import { type AutoApprovalSettings, DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
+import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
@@ -91,6 +92,15 @@ describe("ModelEffortChip", () => {
 			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Running on your last selection")
 			fireEvent.click(screen.getByTestId("model-menu-fix"))
 			expect(mocks.navigateToSettings).toHaveBeenCalledWith("models")
+		})
+
+		it("doesn't claim it's running on the last selection while another window holds the lock", async () => {
+			mocks.state.modelSettingsMigrationStatus = { status: "failed", retryable: true, cause: SETTINGS_LOCK_HELD_CAUSE }
+			renderChip()
+			expect(chip().title).toContain("Another window is using settings")
+			expect(chip().title).not.toContain("last selection")
+			await openMenu()
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Another window is using settings")
 		})
 
 		it("leaves the approval tiles working", async () => {

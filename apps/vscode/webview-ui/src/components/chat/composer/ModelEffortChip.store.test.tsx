@@ -109,6 +109,27 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(chip()).toHaveTextContent(/Med \(pending\)$/)
 		})
 
+		it("names the model and its connection in the tooltip, not provider:model", () => {
+			const { roles, models: rows } = (mocks.state.modelSettings as ReturnType<typeof modelSettingsFixture>).settings
+			const model = rows.find((row) => row.id === roles.chat?.modelId)!
+			mocks.state.focusedSessionModels = {
+				act: { provider: "openai", modelId: model.upstreamId, pick: roles.chat },
+			}
+			const first = renderChip()
+			expect(chip().title).toContain("Act currently uses GPT-6 Sol · Company gateway on Company gateway")
+			expect(chip().title).not.toContain("openai:")
+			first.unmount()
+			// A build that didn't come from a pick is found by its upstream id.
+			mocks.state.focusedSessionModels = { act: { provider: "openai", modelId: model.upstreamId } }
+			const second = renderChip()
+			expect(chip().title).not.toContain("openai:")
+			expect(chip().title).toContain("on Company gateway")
+			second.unmount()
+			mocks.state.focusedSessionModels = undefined
+			renderChip()
+			expect(chip().title).toContain("Act uses GPT-6 Sol · Company gateway on Company gateway")
+		})
+
 		it("lists every configured chat and unknown model, with no starred filter", async () => {
 			renderChip()
 			await openMenu()
@@ -215,19 +236,68 @@ describe("ModelEffortChip with the new model settings", () => {
 			mocks.state.currentTaskItem = { id: "chat" }
 		})
 
-		it("flipping on saves at once with the current pick, keeps the menu open, and later picks follow it", async () => {
+		it("flipping on shows at once, keeps the menu open, and goes out with what the lists show on close", async () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(screen.getByTestId("menu-next-message"))
 			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
 			expect(screen.getByTestId("menu-next-message")).toHaveAttribute("aria-checked", "true")
 			expect(chip()).toHaveTextContent("next message")
+			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
 			fireEvent.click(option(models(), "Qwen 3"))
 			fireEvent.keyDown(models(), { key: "Enter" })
 			expect(sent(mocks.setThreadModelSelection)).toEqual([
-				{ taskId: "chat", mode: "act", pick: { modelId: "sol", levelId: "medium" }, nextMessageOnly: true },
 				{ taskId: "chat", mode: "act", pick: { modelId: "qwen", levelId: "default" }, nextMessageOnly: true },
 			])
+		})
+
+		it("keeps a flip with the same pick when the menu closes", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(sent(mocks.setThreadModelSelection)).toEqual([
+				{ taskId: "chat", mode: "act", pick: { modelId: "sol", levelId: "medium" }, nextMessageOnly: true },
+			])
+		})
+
+		it("Escape drops the flip along with the picks, and arms nothing on the old model", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			fireEvent.keyDown(screen.getByTestId("model-menu"), { key: "Escape" })
+			await flush()
+			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
+			expect(chip()).not.toHaveTextContent("next message")
+		})
+
+		it("Escape leaves an armed pick armed after flipping it off", async () => {
+			mocks.state.composerNextMessageOnly = true
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			expect(chip()).not.toHaveTextContent("next message")
+			fireEvent.keyDown(screen.getByTestId("model-menu"), { key: "Escape" })
+			await flush()
+			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
+			expect(chip()).toHaveTextContent("next message")
+		})
+
+		it("shortens the marker when the row hides the effort word, and still names it for screen readers", () => {
+			mocks.state.composerNextMessageOnly = true
+			renderChip({ compactEffort: true })
+			expect(screen.getByTestId("chip-next-message")).toHaveTextContent(/^next$/)
+			expect(chip()).toHaveAccessibleName(/next message only/)
+		})
+
+		it("lets the marker take the model name's room only on the tightest row", () => {
+			mocks.state.composerNextMessageOnly = true
+			const first = renderChip({ compactEffort: true })
+			expect(screen.getByTestId("chip-model")).toHaveClass("min-w-[3ch]")
+			first.unmount()
+			renderChip({ compactEffort: true, tightChip: true })
+			expect(screen.getByTestId("chip-model")).toHaveClass("min-w-0")
 		})
 
 		it("reads on when armed; flipping off keeps the pick for this chat", async () => {
@@ -239,6 +309,7 @@ describe("ModelEffortChip with the new model settings", () => {
 			await openMenu()
 			expect(screen.getByTestId("menu-next-message")).toHaveAttribute("title", NEXT_MESSAGE_TIPS.on)
 			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(models(), { key: "Enter" })
 			expect(sent(mocks.setThreadModelSelection)).toEqual([
 				{ taskId: "chat", mode: "act", pick: { modelId: "g54", levelId: "high" }, nextMessageOnly: false },
 			])
@@ -250,7 +321,9 @@ describe("ModelEffortChip with the new model settings", () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(models(), { key: "Enter" })
 			await flush()
+			await openMenu()
 			expect(screen.getByTestId("menu-next-message")).toHaveAttribute("aria-checked", "false")
 			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("not implemented")
 			consoleError.mockRestore()

@@ -69,6 +69,8 @@ export interface ModelSelectorProps {
 	pick: SelectorPick | null
 	/** Enter, a click outside or Tab away, when the lists differ from `pick`. Escape never calls it. */
 	onCommit: (pick: SelectorPick) => void
+	/** The menu closed: `keep` is false for Escape, and `committed` says `onCommit` just ran. */
+	onClose?: (keep: boolean, committed: boolean) => void
 	/** The button that opens the menu. */
 	trigger: ReactElement
 	/** Names the model list; also the menu's accessible name unless `menuLabel` says otherwise. */
@@ -201,6 +203,7 @@ export function ModelSelector({
 	ladder,
 	pick,
 	onCommit,
+	onClose,
 	trigger,
 	modelsLabel,
 	menuLabel,
@@ -231,7 +234,9 @@ export function ModelSelector({
 		const current = draftRef.current
 		if (!current) return
 		const next = draftPick(current, rows)
-		if (keep && next && differs(next)) onCommit(next)
+		const committed = keep && !!next && differs(next)
+		if (committed) onCommit(next)
+		onClose?.(keep, committed)
 		setDraft(null)
 	}
 

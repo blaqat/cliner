@@ -1,5 +1,6 @@
 import type { ApiConfiguration } from "@shared/api"
 import type { ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
+import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -226,7 +227,7 @@ export class StateManager {
 			Logger.warn("[StateManager] Could not take the settings lock; deferring profile migration.")
 			await this.reloadPersistedState()
 			if (modelSettingsRolloutEnabled() && this.globalStateCache.modelSettingsMigration?.status !== "complete")
-				this.failModelSettingsMigration("Another window held the settings lock")
+				this.failModelSettingsMigration(SETTINGS_LOCK_HELD_CAUSE)
 		}
 	}
 

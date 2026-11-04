@@ -1,3 +1,4 @@
+import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
@@ -53,6 +54,17 @@ describe("when the move of model settings failed", () => {
 		expect(screen.getByText(/still running on your last selection/)).toBeInTheDocument()
 		expect(screen.queryByRole("tab")).toBeNull()
 		expect(screen.queryByLabelText("Search settings")).toBeNull()
+	})
+
+	it("says another window has settings when that's the cause, not that Cline is still running", () => {
+		mocks.state = {
+			...mocks.state,
+			modelSettingsMigrationStatus: { ...failed, cause: SETTINGS_LOCK_HELD_CAUSE },
+		}
+		render(<SettingsView onDone={mocks.done} />)
+		expect(screen.getByText(/Another window is using settings/)).toHaveTextContent(/Retry/)
+		expect(screen.queryByText(/still running/)).toBeNull()
+		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
 	})
 
 	it("retries with the existing RPC", async () => {

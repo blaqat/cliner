@@ -56,7 +56,13 @@ export interface SdkFollowupCoordinatorOptions {
 	 * streaming before delegating here, so the failure must move it to a
 	 * terminal phase or the footer stays stuck on Thinking/Cancel.
 	 */
-	onResumeFailed: () => void
+	onResumeFailed: (failure: {
+		prompt?: string
+		images?: string[]
+		files?: string[]
+		provenance?: ComposerProvenance
+		reason: string
+	}) => void
 	/**
 	 * Called when a follow-up ends without starting a turn (the displayed task
 	 * changed, or no session could be chosen). Settles the streaming phase that
@@ -195,11 +201,11 @@ export class SdkFollowupCoordinator {
 	): Promise<void> {
 		const refusal = await this.options.retryRefusedRebuild?.(activeSession.sessionId)
 		if (refusal) {
-			this.options.messages.emitSessionEvents(
-				[{ ts: Date.now(), type: "say", say: "error", text: refusal, partial: false }],
-				{ type: "status", payload: { sessionId: activeSession.sessionId, status: "error" } },
-			)
-			this.options.onResumeFailed()
+			this.options.messages.appendAndEmit([{ ts: Date.now(), type: "say", say: "error", text: refusal, partial: false }], {
+				type: "status",
+				payload: { sessionId: activeSession.sessionId, status: "error" },
+			})
+			this.options.onResumeFailed({ prompt, images, files, provenance, reason: refusal })
 			await this.options.postStateToWebview()
 			return
 		}
@@ -252,7 +258,7 @@ export class SdkFollowupCoordinator {
 			if (isClineAuth) {
 				this.options.emitClineAuthError()
 			} else {
-				this.options.messages.emitSessionEvents(
+				this.options.messages.appendAndEmit(
 					[
 						{
 							ts: Date.now(),
@@ -265,7 +271,7 @@ export class SdkFollowupCoordinator {
 					{ type: "status", payload: { sessionId: task.taskId, status: "error" } },
 				)
 			}
-			this.options.onResumeFailed()
+			this.options.onResumeFailed({ prompt, images, files, provenance, reason: errorMsg })
 			await this.options.postStateToWebview()
 		}
 	}

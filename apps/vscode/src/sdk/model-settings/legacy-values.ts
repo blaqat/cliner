@@ -124,13 +124,15 @@ const effortRank = (effort: string) => {
 }
 
 /**
- * What a migrated model offers: its advertised levels, the standard ladder when nothing is known about it, and
- * only the provider default when it's known not to reason. Saved efforts join the ladder, since an unknown model
- * may well support them; a known list stays as advertised and the pick moves to the closest level instead.
+ * What a migrated model offers: its advertised levels, the standard ladder when something says it reasons, and
+ * otherwise only the provider default, which sends nothing a server could reject. A saved effort says it does, and
+ * joins the ladder; a known list stays as advertised and the pick moves to the closest level instead.
  */
 export function migratedLevels(input: {
 	advertised?: ModelLevel[]
 	withoutReasoning: boolean
+	/** Saved metadata answered yes, though it lists no levels. */
+	saysItReasons?: boolean
 	savedEfforts: string[]
 	thinkingLevel?: string
 }): ModelLevel[] {
@@ -139,12 +141,19 @@ export function migratedLevels(input: {
 		? [DEFAULT_LEVEL]
 		: input.advertised && input.advertised.length > 1
 			? input.advertised
-			: [
-					DEFAULT_LEVEL,
-					...efforts.map(
-						(value, i): ModelLevel => ({ id: value, label: value, rank: i + 1, request: { kind: "effort", value } }),
-					),
-				]
+			: input.saysItReasons || input.savedEfforts.length || input.thinkingLevel
+				? [
+						DEFAULT_LEVEL,
+						...efforts.map(
+							(value, i): ModelLevel => ({
+								id: value,
+								label: value,
+								rank: i + 1,
+								request: { kind: "effort", value },
+							}),
+						),
+					]
+				: [DEFAULT_LEVEL]
 	if (!input.thinkingLevel) return levels
 	const thinking = { kind: "thinking-level" as const, value: input.thinkingLevel }
 	return levels.some((l) => l.id === input.thinkingLevel)

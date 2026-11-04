@@ -70,7 +70,7 @@ function ComposerMenuFooter({ selection, context }: { selection: ComposerSelecti
 					<span aria-hidden className="codicon codicon-discard text-[13px]!" />
 				</button>
 				{selection.hasChat && (
-					// Saves at once, like the tiles; what the lists show is still kept or dropped on close.
+					// Waits for the close, with what the lists show: Escape drops both.
 					<button
 						aria-checked={nextOn}
 						className={cn(FOOTER_BUTTON_CLASS, "gap-1.5", nextOn && "text-foreground")}
@@ -142,6 +142,8 @@ interface ModelEffortChipProps {
 	fallbackLabel: string
 	/** A narrow row: the effort word hides from the chip so the model name keeps its letters. */
 	compactEffort?: boolean
+	/** The narrowest row: "next" can take the model name's last letters. */
+	tightChip?: boolean
 }
 
 /**
@@ -149,7 +151,7 @@ interface ModelEffortChipProps {
  * with the five auto-approve tiles on top and Reset, the Next message only switch and the Models page
  * below. With every action auto-approved, an error-colored shield sits before the chip text.
  */
-const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false }: ModelEffortChipProps) => {
+const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false, tightChip = false }: ModelEffortChipProps) => {
 	const { autoApprovalSettings } = useExtensionState()
 	const selection = useComposerSelection(mode, fallbackLabel)
 	const { level } = selection
@@ -159,6 +161,7 @@ const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false }: ModelEf
 	const chipLabel = [
 		`${selection.modeLabel} model: ${selection.modelLabel}`,
 		level ? `, effort ${level.word}` : "",
+		selection.nextMessageOnly ? ", next message only" : "",
 		`; ${permissionsLabel}`,
 	].join("")
 
@@ -171,6 +174,7 @@ const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false }: ModelEf
 			modelsLabel={`${selection.modeLabel} model`}
 			note={selection.note}
 			noteLink={selection.noteLink}
+			onClose={selection.settleNextMessage}
 			onCommit={selection.commit}
 			onManage={selection.manage}
 			pick={selection.pick}
@@ -180,18 +184,24 @@ const ModelEffortChip = ({ mode, fallbackLabel, compactEffort = false }: ModelEf
 			trigger={
 				<button
 					aria-label={chipLabel}
-					className={MODEL_CHIP_CLASS}
+					className={cn(MODEL_CHIP_CLASS, "overflow-hidden")}
 					data-testid="model-effort-chip"
 					title={[selection.description, level?.description, permissionsLabel].filter(Boolean).join("\n")}
 					type="button">
 					{fullAccess && (
 						<ShieldOffIcon aria-hidden className="shrink-0 text-error" data-testid="full-access-icon" size={12} />
 					)}
-					<span className="min-w-[3ch] truncate" data-testid="chip-model">
+					<span
+						className={cn("truncate", tightChip && selection.nextMessageOnly ? "min-w-0" : "min-w-[3ch]")}
+						data-testid="chip-model">
 						{selection.modelLabel}
 					</span>
 					{selection.pending && <span className="shrink-0 opacity-60">(pending)</span>}
-					{selection.nextMessageOnly && <span className="shrink-0 opacity-60">next message</span>}
+					{selection.nextMessageOnly && (
+						<span className="shrink-0 whitespace-nowrap opacity-60" data-testid="chip-next-message">
+							{compactEffort ? "next" : "next message"}
+						</span>
+					)}
 					{/* A narrow row hides the effort word; the menu still has it. */}
 					{level && !compactEffort && (
 						<span className={cn("shrink-0 whitespace-nowrap", level.bad && "text-warning")} data-testid="chip-effort">

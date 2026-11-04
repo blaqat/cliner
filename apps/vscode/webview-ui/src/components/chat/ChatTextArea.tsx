@@ -52,7 +52,7 @@ import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import AttachButton from "./composer/AttachButton"
-import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
+import { type ComposerRowLayout, composerChipMinWidth, useComposerRowLayout } from "./composer/composerRowLayout"
 import ModelEffortChip from "./composer/ModelEffortChip"
 import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
@@ -193,6 +193,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			mode,
 			apiConfiguration,
 			composerApiSelection,
+			composerNextMessageOnly,
 			modelSettings,
 			openRouterModels,
 			platform,
@@ -1595,12 +1596,14 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			.togglePlanActKeys.replace("Meta", modKeyLabel())
 			.replace(/.$/, (match) => match.toUpperCase())
 
-		const rowLayout = useComposerRowLayout(bottomRowRef, {
+		const rowContent = {
 			hasUsage: !!usageIndicator,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode),
 			running: showRunningSendButtons,
-		})
+			nextMessage: !!composerNextMessageOnly,
+		}
+		const rowLayout = useComposerRowLayout(bottomRowRef, rowContent)
 
 		return (
 			<div>
@@ -1850,11 +1853,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							</div>
 						)}
 						{/* The model name gives way first; the effort text and Send keep their size. */}
-						<ShrinkSlot floor={rowLayout.tightChip ? 56 : rowLayout.compactEffort ? 76 : 104}>
+						<ShrinkSlot floor={composerChipMinWidth(rowContent, rowLayout)}>
 							<ModelEffortChip
 								compactEffort={rowLayout.compactEffort}
 								fallbackLabel={modelDisplayName}
 								mode={mode}
+								tightChip={rowLayout.tightChip}
 							/>
 						</ShrinkSlot>
 						<SendSplitButton

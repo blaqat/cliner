@@ -613,12 +613,37 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("continue")
 
-		expect(options.onResumeFailed).toHaveBeenCalledOnce()
-		expect(options.messages.emitSessionEvents).toHaveBeenCalledWith(
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "continue", reason: "session start failed" }),
+		)
+		// Through appendAndEmit: only stamped, stored messages survive the webview's epoch fence.
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ say: "error", text: expect.stringContaining("session start failed") })],
 			{ type: "status", payload: { sessionId: "task-1", status: "error" } },
 		)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("reports a resume refused by the resolver with the message that didn't get through", async () => {
+		const task = makeTask("task-1")
+		const { coordinator, options } = makeCoordinator({ task })
+		options.sessionConfigBuilder.build.mockRejectedValue(new Error("Storage is busy in another window. Try again shortly."))
+
+		await coordinator.askResponse("continue", ["img"], ["file"])
+
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				prompt: "continue",
+				images: ["img"],
+				files: ["file"],
+				reason: expect.stringContaining("Storage is busy"),
+			}),
+		)
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: expect.stringContaining("Storage is busy") })],
+			expect.anything(),
+		)
 	})
 })
 
@@ -773,11 +798,13 @@ describe("a send to a thread whose rebuild was refused", () => {
 		await coordinator.askResponse("hello")
 		expect(options.retryRefusedRebuild).toHaveBeenCalledWith("session-123")
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
-		expect(options.messages.emitSessionEvents).toHaveBeenCalledWith(
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ say: "error", text: "This model has no model ID. Add it in Settings > Models." })],
 			{ type: "status", payload: { sessionId: "session-123", status: "error" } },
 		)
-		expect(options.onResumeFailed).toHaveBeenCalledOnce()
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "hello", reason: "This model has no model ID. Add it in Settings > Models." }),
+		)
 		expect(options.postStateToWebview).toHaveBeenCalled()
 	})
 	it("sends on the session the retry rebuilt", async () => {

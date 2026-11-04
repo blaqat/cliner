@@ -112,6 +112,9 @@ describe("configured runtime projection", () => {
 		expect(await capabilitiesFor({})).toEqual([])
 		expect(await capabilitiesFor({ reasoning: "yes" })).toEqual(["reasoning", "tools", "images"])
 		expect(await capabilitiesFor({ reasoning: "yes", tools: "no", images: "no" })).toEqual(["reasoning"])
+		expect(await capabilitiesFor({ tools: "no" })).toEqual(["images"])
+		expect(await capabilitiesFor({ images: "no" })).toEqual(["tools"])
+		expect(await capabilitiesFor({ tools: "no", images: "no" })).toEqual(["text"])
 	})
 	it("supports identity-only Vertex and projects all resolved options into the SDK config", async () => {
 		const settings = createDefaultModelSettings()

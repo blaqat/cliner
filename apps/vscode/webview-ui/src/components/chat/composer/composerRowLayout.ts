@@ -30,6 +30,8 @@ export interface ComposerRowContent {
 	hasEffort: boolean
 	/** The agent is running: Send is split into steer and interject. */
 	running?: boolean
+	/** The chip also says "next message", or "next" once its effort word has gone. */
+	nextMessage?: boolean
 }
 
 const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
@@ -63,6 +65,10 @@ export const COMPOSER_ROW_WIDTHS = {
 	chipTight: 56,
 	/** Without reasoning the chip has no effort word. */
 	effortSaving: 24,
+	/** "next message" and its gap. */
+	nextMessage: 76,
+	/** "next" and its gap. */
+	nextMessageShort: 28,
 	/** The "( Ask | Act )" switch. */
 	modeSwitch: 62,
 	/** The tightest row's switch: the current mode on a short track. */
@@ -75,6 +81,15 @@ export const COMPOSER_ROW_WIDTHS = {
 	sendRunning: 46,
 } as const
 
+/** The least the chip can take in `layout`: the row squeezes it no further. */
+export function composerChipMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
+	const w = COMPOSER_ROW_WIDTHS
+	// Tight, "next" takes what the model name would have had.
+	if (layout.tightChip) return w.chipTight
+	const chip = layout.compactEffort ? w.chipCompact : w.chipMin - (content.hasEffort ? 0 : w.effortSaving)
+	return chip + (content.nextMessage ? (layout.compactEffort ? w.nextMessageShort : w.nextMessage) : 0)
+}
+
 /** Smallest row width (border box) that fits `content` in `layout`. */
 export function composerRowMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
 	const w = COMPOSER_ROW_WIDTHS
@@ -83,11 +98,7 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 			w.ring +
 			(content.hasCompactNudge ? w.rowGap + (layout.inlineCompactNudge ? w.compactNudge : w.compactNudgeIcon) : 0)
 		: 0
-	const chip = layout.tightChip
-		? w.chipTight
-		: layout.compactEffort
-			? w.chipCompact
-			: w.chipMin - (content.hasEffort ? 0 : w.effortSaving)
+	const chip = composerChipMinWidth(content, layout)
 	const modeSwitch = layout.tightChip ? w.modeSwitchCompact : w.modeSwitch
 	return (
 		w.padding +
@@ -131,10 +142,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number | un
 /** `composerRowLayout` driven by the row element's measured width. */
 export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
 	const width = useElementWidth(ref)
-	const { hasUsage, hasCompactNudge, hasEffort, running } = content
+	const { hasUsage, hasCompactNudge, hasEffort, running, nextMessage } = content
 	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
 	return useMemo(
-		() => composerRowLayout(width, { hasUsage, hasCompactNudge, hasEffort, running }),
-		[width, hasUsage, hasCompactNudge, hasEffort, running],
+		() => composerRowLayout(width, { hasUsage, hasCompactNudge, hasEffort, running, nextMessage }),
+		[width, hasUsage, hasCompactNudge, hasEffort, running, nextMessage],
 	)
 }

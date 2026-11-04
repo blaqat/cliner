@@ -283,7 +283,7 @@ describe("connection test", () => {
 		const result = await testResult("ok")
 		expect(result.getByText(/Reached ai\.acme\.example in \d+ ms/)).toBeInTheDocument()
 		expect(result.getByText("Key from AI_GATEWAY_KEY accepted")).toBeInTheDocument()
-		expect(result.getByText("/models lists 1 chat model")).toBeInTheDocument()
+		expect(result.getByText("/models lists 1 model you can add")).toBeInTheDocument()
 	})
 	it("auth says the key was refused and offers the fix", async () => {
 		const result = await testResult("auth")
@@ -498,6 +498,8 @@ describe("the model form", () => {
 		// How each level maps.
 		const table = within(form.getByTestId("level-table"))
 		expect(table.getByText("reasoning.effort")).toBeInTheDocument()
+		// A long parameter name wraps inside its column at sidebar width instead of running out of the table.
+		expect(table.getByTestId("level-table-sent-as")).toHaveClass("min-w-0", "[overflow-wrap:anywhere]")
 		for (const level of ["Default", "Low", "Medium", "High", "XHigh"]) {
 			expect(table.getByRole("switch", { name: `Offer ${level}` })).toBeInTheDocument()
 		}

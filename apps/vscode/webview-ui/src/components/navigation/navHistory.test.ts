@@ -35,6 +35,19 @@ describe("pushLocation", () => {
 		])
 	})
 
+	it("treats Settings' pages as one place to leave, so Done leaves no way back into it", () => {
+		const thread: NavLocation = { kind: "thread", id: "t1" }
+		const models: NavLocation = { kind: "settings", section: "models" }
+		const agent: NavLocation = { kind: "settings", section: "agent" }
+		expect(pushLocation([HOME, thread, models, agent], thread)).toEqual([HOME, thread])
+		// Settings was the first thing open: nothing to go back to, Settings included.
+		expect(pushLocation([models, agent], thread)).toEqual([thread])
+		// Leaving for somewhere else still comes back through it.
+		expect(pushLocation([thread, models], { kind: "history" })).toEqual([thread, models, { kind: "history" }])
+		// Inside Settings, pages still stack.
+		expect(pushLocation([thread, models], agent)).toEqual([thread, models, agent])
+	})
+
 	it("keeps distinct sections and pages apart", () => {
 		let entries = pushLocation([HOME], task("t"))
 		entries = pushLocation(entries, task("t", "notebook"))

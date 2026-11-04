@@ -94,6 +94,16 @@ export interface SdkTaskStartCoordinatorOptions {
 	 * the live session needs the group before then.
 	 */
 	recordTaskGroup?: (taskId: string, taskGroupId: string) => void
+	/** A start failed after the thread was shown. Keeps what Retry needs, since nothing reached the session. */
+	onStartFailed?: (failure: {
+		task: TaskProxy
+		prompt?: string
+		images?: string[]
+		files?: string[]
+		provenance?: ComposerProvenance
+		background: boolean
+		reason: string
+	}) => void
 	postStateToWebview: () => Promise<void>
 }
 
@@ -106,7 +116,14 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
+		options?: {
+			background?: boolean
+			taskGroupId?: string
+			runInWorktree?: boolean
+			provenance?: ComposerProvenance
+			/** The caller's composer takes the draft back, so it has to hear that the start failed. */
+			rethrowStartFailure?: boolean
+		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -114,6 +131,8 @@ export class SdkTaskStartCoordinator {
 		let providerId: string | undefined
 		let modelId: string | undefined
 		let context: ReturnType<NonNullable<SdkTaskStartCoordinatorOptions["createTaskContext"]>> | undefined
+		let shownTask: TaskProxy | undefined
+		let sessionStarted = false
 		try {
 			// A background start must not touch the task view: no focus change, no
 			// task-settings overlay drop, no clearing of what the user is looking at.
@@ -212,6 +231,7 @@ export class SdkTaskStartCoordinator {
 			context = background ? this.options.createTaskContext?.(taskSessionId) : undefined
 			if (background && !context) throw new Error("Background task contexts are unavailable")
 			const task = context?.task ?? this.createAndSetTask(taskSessionId)
+			shownTask = task
 			// Before the first state post, so the thread shows in its task right away.
 			if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit" | "emitHookMessage"> =
@@ -231,6 +251,7 @@ export class SdkTaskStartCoordinator {
 			const { startResult, sdkHost } = background
 				? await this.options.sessions.startNewSession(startInput, { focus: false })
 				: await this.options.sessions.startNewSession(startInput)
+			sessionStarted = true
 			if (startResult.sessionId !== taskSessionId) {
 				Logger.warn(
 					`[SdkController] SDK returned session id ${startResult.sessionId} after requested id ${taskSessionId}`,
@@ -272,19 +293,50 @@ export class SdkTaskStartCoordinator {
 				errorType: PROVIDER_FAILURE_ERROR_TYPE.TASK_INIT,
 				failurePhase: PROVIDER_FAILURE_PHASE.PREFLIGHT,
 			})
+			// A failure this early has no thread yet: without one the reason has nowhere to land and
+			// the optimistic message never gets confirmed.
+			if (!shownTask) {
+				taskSessionId ??= createSessionId()
+				if (background) context ??= this.options.createTaskContext?.(taskSessionId)
+				shownTask = context?.task ?? this.createAndSetTask(taskSessionId)
+				this.emitInitialTaskMessage(
+					context?.messages ?? this.options.messages,
+					taskSessionId,
+					prompt ?? "",
+					images,
+					files,
+				)
+			}
+			// The message never reached this session, and Retry starts another one.
+			if (sessionStarted && !background && this.options.sessions.getActiveSession()?.sessionId === taskSessionId) {
+				await this.options.sessions.endActiveSession("taskStartFailed", { awaitStop: true }).catch((endError) => {
+					Logger.error("[SdkController] Failed to end session after init error:", endError)
+				})
+			}
 			this.handleInitError(error, taskSessionId, context?.messages)
+			this.options.onStartFailed?.({
+				task: shownTask,
+				prompt,
+				images,
+				files,
+				provenance: options?.provenance,
+				background,
+				reason: error instanceof Error ? error.message : String(error),
+			})
 			await this.options.postStateToWebview().catch((postError) => {
 				Logger.error("[SdkController] Failed to post state after init error:", postError)
 			})
+			if (options?.rethrowStartFailure) throw error
 			return undefined
 		}
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
+		let historyItem: HistoryItem | undefined
 		try {
 			await this.options.clearTask()
 
-			const historyItem = await this.options.taskHistory.findHistoryItem(taskId)
+			historyItem = await this.options.taskHistory.findHistoryItem(taskId)
 			if (!historyItem) {
 				Logger.error(`[SdkController] Task not found in history: ${taskId}`)
 				return
@@ -323,7 +375,7 @@ export class SdkTaskStartCoordinator {
 
 			Logger.log(`[SdkController] Task resumed: ${taskId} → ${startResult.sessionId}`)
 		} catch (error) {
-			this.handleReinitError(taskId, error)
+			await this.handleReinitError(taskId, error, historyItem)
 		}
 	}
 
@@ -395,7 +447,7 @@ export class SdkTaskStartCoordinator {
 		)
 	}
 
-	private handleReinitError(taskId: string, error: unknown): void {
+	private async handleReinitError(taskId: string, error: unknown, historyItem?: HistoryItem): Promise<void> {
 		Logger.error("[SdkController] Failed to reinit task:", error)
 
 		const reinitErrorMsg = error instanceof Error ? error.message : String(error)
@@ -410,7 +462,10 @@ export class SdkTaskStartCoordinator {
 			return
 		}
 
-		this.options.messages.emitSessionEvents(
+		// clearTask left nothing on screen, so the row needs its thread back to show on. Retry resumes it.
+		this.createAndSetTask(taskId)
+		this.emitInitialTaskMessage(this.options.messages, taskId, historyItem?.task ?? "")
+		this.options.messages.appendAndEmit(
 			[
 				{
 					ts: Date.now(),
@@ -422,5 +477,8 @@ export class SdkTaskStartCoordinator {
 			],
 			{ type: "status", payload: { sessionId: taskId, status: "error" } },
 		)
+		await this.options.postStateToWebview().catch((postError) => {
+			Logger.error("[SdkController] Failed to post state after reinit error:", postError)
+		})
 	}
 }

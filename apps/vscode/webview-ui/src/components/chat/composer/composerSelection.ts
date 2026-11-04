@@ -1,3 +1,4 @@
+import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import type { Mode } from "@shared/storage/types"
@@ -44,7 +45,10 @@ export interface ComposerSelection {
 	canReset: boolean
 	resetDisabledReason: string
 	commit: (pick: SelectorPick) => void
+	/** Shows at once; `settleNextMessage` saves it when the menu closes. */
 	setNextMessageOnly: (on: boolean) => void
+	/** The menu closed. Escape (`keep` false) drops a flip; otherwise it's saved, unless `commit` just sent it. */
+	settleNextMessage: (keep: boolean, committed: boolean) => void
 	reset: () => void
 	manage: (target?: SettingsNavigationTarget) => void
 	/** Nothing to set before the store exists. */
@@ -99,6 +103,15 @@ function useModelSettingsSelection(mode: Mode) {
 				((savedLevel?.request.kind === "default" && liveEffort !== "none") ||
 					(savedLevel?.request.kind === "effort" && liveEffort !== savedLevel.request.value))
 
+		const named = (candidate: { label: string; group?: string }) =>
+			candidate.group ? `${candidate.label} on ${candidate.group}` : candidate.label
+		const liveRow =
+			rows.find((candidate) => candidate.id === live?.pick?.modelId) ??
+			rows.find(
+				(candidate) => candidate.id === state.settings.models.find((other) => other.upstreamId === live?.modelId)?.id,
+			)
+		const liveName = liveRow ? named(liveRow) : live?.modelId
+
 		const send = (next: SelectorPick, nextOnly: boolean) => {
 			setError(undefined)
 			void ModelsServiceClient.setThreadModelSelection(
@@ -134,9 +147,9 @@ function useModelSettingsSelection(mode: Mode) {
 			modelLabel: shown.model,
 			pending,
 			description: live
-				? `${modeLabel} currently uses ${live.provider}:${live.modelId}${pending ? `; ${shown.model} change pending` : ""}`
+				? `${modeLabel} currently uses ${liveName}${pending ? `; ${shown.model} change pending` : ""}`
 				: row
-					? `${modeLabel} uses ${row.label} (${row.detail})`
+					? `${modeLabel} uses ${named(row)}`
 					: "Open Settings › Models",
 			level: shown.level
 				? {
@@ -162,9 +175,11 @@ function useModelSettingsSelection(mode: Mode) {
 				: `Nothing to reset to: no default ${roleLabel} model is set yet`,
 			commit: (next) => send(next, nextMessageOnly),
 			setNextMessageOnly: (on) => {
-				if (!pick) return
-				setArmed(on)
-				send(pick, on)
+				if (pick) setArmed(on)
+			},
+			settleNextMessage: (keep, committed) => {
+				if (!keep) setArmed(null)
+				else if (!committed && pick && nextMessageOnly !== !!composerNextMessageOnly) send(pick, nextMessageOnly)
 			},
 			reset: () => {
 				if (!defaultPick) return
@@ -213,8 +228,10 @@ function unavailableSelection(
 	manage: () => void,
 	busy: boolean,
 	hasChat: boolean,
+	lockHeld = false,
 ): ComposerSelection {
 	const why = "Model choices come back once your setup has moved"
+	const status = lockHeld ? "Another window is using settings. Retry in a moment" : "Running on your last selection"
 	return {
 		rows: [],
 		ladder: [],
@@ -222,8 +239,8 @@ function unavailableSelection(
 		modeLabel: mode === "plan" ? "Ask" : "Act",
 		modelLabel: runningLabel,
 		pending: false,
-		description: `Running on your last selection. ${why}.`,
-		note: `Running on your last selection. ${why}. See`,
+		description: `${status}. ${why}.`,
+		note: `${status}. ${why}. See`,
 		noteLink: "Settings",
 		busy,
 		hasChat,
@@ -233,17 +250,25 @@ function unavailableSelection(
 		resetDisabledReason: why,
 		commit: () => {},
 		setNextMessageOnly: () => {},
+		settleNextMessage: () => {},
 		reset: () => {},
 		manage,
 	}
 }
 
 export function useComposerSelection(mode: Mode, runningLabel: string): ComposerSelection {
-	const { currentTaskItem, modelSettings, navigateToSettings, turnState } = useExtensionState()
+	const { currentTaskItem, modelSettings, modelSettingsMigrationStatus, navigateToSettings, turnState } = useExtensionState()
 	const fromModelSettings = useModelSettingsSelection(mode)
 	if (modelSettings) {
 		return fromModelSettings(modelSettings)
 	}
 	const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
-	return unavailableSelection(mode, runningLabel, () => navigateToSettings("models"), busy, !!currentTaskItem)
+	return unavailableSelection(
+		mode,
+		runningLabel,
+		() => navigateToSettings("models"),
+		busy,
+		!!currentTaskItem,
+		modelSettingsMigrationStatus?.cause === SETTINGS_LOCK_HELD_CAUSE,
+	)
 }

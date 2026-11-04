@@ -580,6 +580,10 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const legacyValues = legacyModelValues(normalized, "act", (f) => flag("normalized", f))
 		const effort = text(config.reasoningEffort)
 		const profileEfforts = profiles.filter((p) => p.configurationId === sourceId).map((p) => text(p.reasoningEffort))
+		// A configuration assigned to a mode ran at that mode's effort.
+		const assignedEfforts = (["plan", "act"] as const)
+			.filter((m) => raw[m === "plan" ? "askProfileId" : "actProfileId"] === sourceId)
+			.map((m) => text(raw[`${m}ModeReasoningEffort`]))
 		const thinkingLevel = text(options[`gemini${mode === "plan" ? "Plan" : "Act"}ModeThinkingLevel`])
 		const catalogModel = gateway.listModels(sdkProvider).find((m) => m.id === upstreamId)
 		const catalogLevels = catalogModel ? catalogReasoningLevels(catalogModel) : undefined
@@ -587,7 +591,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const levels = migratedLevels({
 			advertised: sdkValues.levels ?? catalogLevels,
 			withoutReasoning: reasoning === "no" || (!!catalogModel && !catalogLevels && reasoning !== "yes"),
-			savedEfforts: [effort, ...profileEfforts].filter((e): e is string => !!e && e !== "none"),
+			saysItReasons: reasoning === "yes",
+			savedEfforts: [effort, ...profileEfforts, ...assignedEfforts].filter((e): e is string => !!e && e !== "none"),
 			thinkingLevel,
 		})
 		const { levels: _sdkLevels, ...sdkRest } = sdkValues

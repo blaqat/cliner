@@ -20,6 +20,11 @@ export const ApiFormat = {
 } as const;
 
 export const ModelCapabilitySchema = z.enum([
+	/**
+	 * The model takes text, which every model does. Its use is saying so when nothing else
+	 * applies: `["text"]` is a declared text-only model, where an empty list is unspecified.
+	 */
+	"text",
 	"images",
 	"video",
 	"tools",

@@ -1,6 +1,8 @@
 import { createHandler } from "@cline/llms"
-import { createDefaultModelSettings, type ModelSettings } from "@shared/model-settings"
+import { modelSupportsImageInput, modelSupportsToolCalling } from "@cline/shared"
+import { createDefaultModelSettings, type ModelSettings, ModelSettingsSchema } from "@shared/model-settings"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { buildSubagentModelSettings } from "../subagent-profiles"
 import { InMemoryConnectionSecretStore } from "./connection-secret-store"
 import { configuredProviderConfig } from "./runtime-config"
 
@@ -70,6 +72,25 @@ async function capture(config: Parameters<typeof createHandler>[0]) {
 	expect(transport).toHaveBeenCalled()
 	const [url, init] = transport.mock.calls[0] as unknown as [string, RequestInit]
 	return { url: String(url), headers: new Headers(init.headers), body: JSON.parse(String(init.body)) }
+}
+/** The same, with tools offered and an image in the message. */
+async function captureWithTools(config: Parameters<typeof createHandler>[0]) {
+	transport.mockClear()
+	const tool = { name: "read_file", description: "Read", inputSchema: { type: "object", properties: {} } }
+	const image = { type: "image", mediaType: "image/png", data: "AAAA" } as never
+	const text = { type: "text", text: "Hello" } as never
+	try {
+		for await (const _chunk of createHandler(config).createMessage("System", [{ role: "user", content: [text, image] }], [
+			tool,
+		] as never)) {
+			/* drain */
+		}
+	} catch {
+		/* The rejection below is intentional. */
+	}
+	expect(transport).toHaveBeenCalled()
+	const [, init] = transport.mock.calls[0] as unknown as [string, RequestInit]
+	return JSON.parse(String(init.body))
 }
 // Not a public @cline/core export, and outside this package's rootDir, so typed by hand.
 const policyModule = new URL("../../../../../sdk/packages/core/src/runtime/host/local/subagent-model-policy.ts", import.meta.url)
@@ -306,5 +327,149 @@ describe("subagent levels on the wire", () => {
 		const parent = parentOf(await build("default"))
 		const body = await sent(selectSubagentModel({}, policy("low", "row", row), parent), parent)
 		expect(body).toMatchObject({ reasoning_effort: "low", temperature: 0.3, seed: 7 })
+	})
+})
+
+describe("Tools and Images answers reach the request", () => {
+	const build = (overrides: Record<string, unknown>) =>
+		configuredProviderConfig(
+			settingsFor(compatibleConnection({ kind: "none" }), "local", {
+				reasoning: "unknown",
+				levels: undefined,
+				...overrides,
+			}),
+			{ modelId: "row", levelId: "default" },
+			{ secrets: noSecrets(), environment: {} },
+		)
+	const session = (config: Awaited<ReturnType<typeof build>>) => config.knownModels![config.modelId!]
+	const hasImage = (body: { messages: Array<{ content: unknown }> }) => JSON.stringify(body.messages).includes("image_url")
+
+	it.each([
+		["no", false],
+		["unknown", true],
+		["yes", true],
+	])("Tools=%s alone: tools sent is %s, at both the session gate and the wire", async (tools, sends) => {
+		const config = await build({ tools })
+		// The gate the session runtime uses to build its tool list.
+		expect(modelSupportsToolCalling(session(config))).toBe(sends)
+		const body = await captureWithTools(config)
+		expect(Array.isArray(body.tools) && body.tools.length > 0).toBe(sends)
+	})
+
+	it.each([
+		["no", false],
+		["unknown", true],
+		["yes", true],
+	])("Images=%s alone: images sent is %s, and tools stay", async (images, sends) => {
+		const config = await build({ images })
+		expect(modelSupportsImageInput(session(config))).toBe(sends)
+		const body = await captureWithTools(config)
+		expect(hasImage(body)).toBe(sends)
+		expect(body.tools?.length).toBeGreaterThan(0)
+	})
+
+	it("Tools=No and Images=No together say no to both", async () => {
+		const config = await build({ tools: "no", images: "no" })
+		expect(modelSupportsToolCalling(session(config))).toBe(false)
+		expect(modelSupportsImageInput(session(config))).toBe(false)
+		const body = await captureWithTools(config)
+		expect(body.tools ?? []).toEqual([])
+		expect(hasImage(body)).toBe(false)
+	})
+
+	it("a catalog model set to Tools=No keeps what the catalog says about images", async () => {
+		const settings = settingsFor(nativeConnection("openai-native"), "gpt-5", {
+			tools: "no",
+			reasoning: "unknown",
+			levels: undefined,
+		})
+		const config = await configuredProviderConfig(
+			settings,
+			{ modelId: "row", levelId: "default" },
+			{ secrets: noSecrets(), environment },
+		)
+		expect(modelSupportsToolCalling(config.knownModels![config.modelId!])).toBe(false)
+		expect(modelSupportsImageInput(config.knownModels![config.modelId!])).toBe(true)
+	})
+})
+
+describe("a migrated Default-only row", () => {
+	it("sends no effort and no thinking setting, on either API", async () => {
+		for (const apiFormat of ["chat", "responses"]) {
+			const settings = settingsFor(compatibleConnection({ kind: "none" }), "local", {
+				reasoning: undefined,
+				levels: undefined,
+			})
+			;(settings.connections[0] as { apiFormat: string }).apiFormat = apiFormat
+			const body = (
+				await capture(
+					await configuredProviderConfig(
+						settings,
+						{ modelId: "row", levelId: "default" },
+						{ secrets: noSecrets(), environment: {} },
+					),
+				)
+			).body
+			expect(body).not.toHaveProperty("reasoning_effort")
+			expect(body).not.toHaveProperty("reasoning")
+		}
+	})
+})
+
+describe('"Same as the thread" on the allowed list', () => {
+	const noKey = compatibleConnection({ kind: "none" })
+	const parentFor = async (levelId: string) => {
+		const config = await configuredProviderConfig(
+			settingsFor(noKey, "local"),
+			{ modelId: "row", levelId },
+			{ secrets: noSecrets(), environment: {} },
+		)
+		return {
+			providerId: config.providerId,
+			modelId: config.modelId!,
+			reasoningEffort: config.reasoningEffort,
+			providerConfig: config as never,
+		}
+	}
+	const policyFor = async (levels: string[]) => {
+		const settings = settingsFor(noKey, "local")
+		settings.roles.subagents = { kind: "model", pick: { modelId: "row", levelId: "low" } }
+		// What the picker writes when "Same as the thread" is chosen.
+		settings.subagents.allowed = [{ kind: "thread", levels }]
+		expect(() => ModelSettingsSchema.parse(settings)).not.toThrow()
+		return (
+			await buildSubagentModelSettings(settings, async () => ({
+				connection: { providerId: "openai-compatible", modelId: "local" } as never,
+				levels: high as never,
+			}))
+		).modelPolicy!
+	}
+	const childBody = async (selection: { overrides?: unknown }, parent: Awaited<ReturnType<typeof parentFor>>) => {
+		const overrides = selection.overrides as { providerConfig?: object } | undefined
+		return (await capture({ ...(overrides?.providerConfig ?? parent.providerConfig) } as never)).body
+	}
+
+	it("becomes the parent entry, and the parent can spawn on it at the thread's own level", async () => {
+		const policy = await policyFor(["inherit"])
+		expect(policy.allowed).toEqual([{ model: "parent", levels: ["inherit"] }])
+		const parent = await parentFor("high")
+		const selection = selectSubagentModel({ model: "parent" }, policy, parent)
+		expect(selection.error).toBeUndefined()
+		expect((await childBody(selection, parent)).reasoning_effort).toBe("high")
+	})
+
+	it("at a fixed level, sends that level on the thread's model", async () => {
+		const parent = await parentFor("high")
+		const selection = selectSubagentModel({ model: "parent" }, await policyFor(["low"]), parent)
+		expect(selection.error).toBeUndefined()
+		const body = await childBody(selection, parent)
+		expect(body.model).toBe("local")
+		expect(body.reasoning_effort).toBe("low")
+	})
+
+	it("refuses a level off the list, naming what's allowed", async () => {
+		const parent = await parentFor("high")
+		const selection = selectSubagentModel({ model: "parent", reasoningEffort: "high" }, await policyFor(["low"]), parent)
+		expect(selection.error).toContain("Allowed: low")
 	})
 })
