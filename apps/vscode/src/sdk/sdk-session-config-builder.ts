@@ -49,7 +49,9 @@ export class SdkSessionConfigBuilder {
 			const settings = structuredClone(state.getGlobalStateKey("modelSettings")!)
 			const thread =
 				selection.modelSelectionV1 ??
-				(input.apiSelection ? migrateThreadModelSelection(selection, journal) : captureThreadModelSelection(settings))
+				(input.apiSelection
+					? migrateThreadModelSelection(selection, journal, settings)
+					: captureThreadModelSelection(settings))
 			if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
 			const transient =
 				threadId === undefined ? undefined : this.options.nextMessageSelections?.admission(threadId, input.mode ?? "act")

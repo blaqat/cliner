@@ -1,4 +1,5 @@
 import type { ModelSettings, resolveModelValues } from "./model-settings"
+import type { ModelSettingsMigrationStatus } from "./model-settings-migration-status"
 
 /** Where the control that fixes an unusable pick lives. */
 export type ModelSettingsFixTarget = {
@@ -17,5 +18,5 @@ export type ModelSettingsState = {
 	availability: Record<string, { available: boolean; reason?: string; target?: ModelSettingsFixTarget }>
 	planning: Record<string, { contextWindowKnown: boolean; planningContextWindow: number }>
 	managed: string[]
-	migration: { status: "disabled" | "pending" | "complete" | "failed"; retryable: boolean }
+	migration: ModelSettingsMigrationStatus
 }

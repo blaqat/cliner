@@ -1,11 +1,6 @@
 import { type ModelLevel, type ModelValues, ModelValuesSchema } from "@shared/model-settings"
 import { OPENAI_REASONING_EFFORT_OPTIONS } from "@shared/storage/types"
 
-/** Stands in for a saved value the schema can't hold. The resolver refuses it and says what to fix. */
-export const MODEL_ID_NEEDED = "model-id-needed"
-/** Reserved TLD, so a key can never reach a real host if this is ever sent. */
-export const BASE_URL_NEEDED = "https://base-url-needed.invalid/"
-
 const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
 const STANDARD_EFFORTS = OPENAI_REASONING_EFFORT_OPTIONS.filter((effort) => effort !== "none") as string[]
 const DEFAULT_LEVEL: ModelLevel = { id: "default", label: "Default", rank: 0, request: { kind: "default" } }

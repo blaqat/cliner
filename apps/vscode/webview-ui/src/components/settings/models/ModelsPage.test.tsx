@@ -1488,4 +1488,86 @@ describe("host fix targets", () => {
 		await flush()
 		expect(document.activeElement?.id).toBe(`${settingsConnectionElementId("gateway")}-control`)
 	})
+
+	it("a flagged model's Fix it lands on its Model ID field, not the connection", async () => {
+		const settings = gatewaySettings()
+		settings.models.find((model) => model.id === "sol")!.upstreamId = "model-id-needed"
+		setup({
+			settings,
+			availability: {
+				...envAvailable,
+				sol: {
+					available: false,
+					reason: "This model has no model ID. Add it in Settings > Models.",
+					target: { page: "models", modelId: "sol", field: "upstreamId" },
+				},
+			},
+		})
+		await flush()
+		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
+		expect(within(row).getByText(/no model ID, so threads on this pick won't start/)).toBeInTheDocument()
+		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
+		await flushFrame()
+		await flush()
+		expect(document.activeElement?.id).toBe(`${settingsModelElementId("sol", "upstreamId")}-control`)
+		expect(screen.queryByTestId("connection-form-gateway")).toBeNull()
+	})
+
+	it("a flagged URL's Fix it lands on the Base URL field", async () => {
+		const settings = gatewaySettings()
+		settings.connections[0].baseUrl = "https://base-url-needed.invalid/"
+		setup({
+			settings,
+			availability: {
+				...envAvailable,
+				sol: {
+					available: false,
+					reason: "This connection's base URL isn't valid. Fix it in Settings > Models.",
+					target: { page: "models", connectionId: "gateway", field: "baseUrl" },
+				},
+			},
+		})
+		await flush()
+		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
+		expect(within(row).getByText(/base URL isn't valid, so threads on this pick won't start/)).toBeInTheDocument()
+		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
+		await flushFrame()
+		await flush()
+		expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Base URL" }))
+	})
+
+	it("a provider's flagged URL takes the fix link from its key field", async () => {
+		const settings = gatewaySettings()
+		settings.connections.push({
+			id: "ant",
+			name: "Claude",
+			kind: "provider",
+			providerId: "anthropic",
+			baseUrl: "https://base-url-needed.invalid/",
+			auth: { kind: "keychain", secretRef: "settings:v1:connection:ant:apiKey" },
+			headers: [],
+			requestTimeoutMs: null,
+			defaults: {},
+			options: {},
+			secretRefs: {},
+		})
+		setup({ settings, availability: envAvailable }, "connection:ant")
+		await flush()
+		await flushFrame()
+		await flush()
+		const control = document.getElementById(`${settingsConnectionElementId("ant")}-control`)
+		expect(control).toBe(screen.getByRole("textbox", { name: /Base URL/ }))
+	})
+
+	it("a migrated value isn't tagged, even under a shared default, until it's the user's", async () => {
+		const settings = gatewaySettings()
+		const sol = settings.models.find((model) => model.id === "sol")!
+		settings.connections[0].defaults = { ...settings.connections[0].defaults, reasoning: "no" }
+		sol.overrides = { ...sol.overrides, reasoning: "yes" }
+		sol.migratedValues = ["reasoning"]
+		setup({ settings, availability: envAvailable })
+		await flush()
+		const form = await openModel("sol")
+		expect(form.queryByRole("button", { name: "Reset Reasoning" })).toBeNull()
+	})
 })

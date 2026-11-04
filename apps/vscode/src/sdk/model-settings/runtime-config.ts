@@ -42,7 +42,7 @@ export async function configuredProviderConfig(
 					await assertConfiguredModelRequestAllowed(policy.state, current, pick, policy.mode)
 					if (JSON.stringify(resolveEffectiveConfiguredPick(policy.state, built, pick)) !== projection)
 						throw new Error(
-							"Model settings changed by your organization. Reload the window to apply them, or open Settings > Models.",
+							"Your organization changed this model's settings. Send your message again to use them, or open Settings > Models.",
 						)
 				}
 			: undefined

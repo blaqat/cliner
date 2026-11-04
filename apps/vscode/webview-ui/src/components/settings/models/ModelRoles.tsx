@@ -49,17 +49,25 @@ const PickWhy = ({
 	const availability = state.availability[row.id]
 	const hostTarget = state.availability[use]?.target
 	if (availability && !availability.available && connection) {
-		const words = /credentials are missing/i.test(availability.reason ?? "")
-			? "key missing"
-			: availability.reason?.replace(/\.$/, "").toLowerCase()
+		const target = availability.target ?? { page: "models", connectionId: connection.id }
+		const words =
+			target.field === "upstreamId"
+				? "no model ID"
+				: target.field === "baseUrl"
+					? "base URL isn't valid"
+					: /credentials are missing/i.test(availability.reason ?? "")
+						? "key missing"
+						: availability.reason?.replace(/\.$/, "").toLowerCase()
 		return (
 			<Why tone="bad">
 				{connectionName(connection)}: {words}, so threads on this pick won't start.{" "}
 				<LinkButton
 					onClick={() => {
 						page.setOpenConnection(connection.id)
-						page.setEditingConnection(connection.id, true)
-						openRow(settingsTargetFromHost(availability.target ?? { page: "models", connectionId: connection.id }))
+						if (!target.modelId) {
+							page.setEditingConnection(connection.id, true)
+						}
+						openRow(settingsTargetFromHost(target))
 					}}>
 					Fix it
 				</LinkButton>

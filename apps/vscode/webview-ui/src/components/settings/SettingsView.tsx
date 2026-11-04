@@ -24,6 +24,7 @@ import { isAdminOrOwner } from "../account/helpers"
 import { Tab, TabContent, TabList, TabTrigger } from "../common/Tab"
 import ViewHeader from "../common/ViewHeader"
 import { useNavigationHistory } from "../navigation/NavigationHistoryContext"
+import { MigrationFailedNotice } from "./about/MigrationNotices"
 import SectionHeader from "./SectionHeader"
 import SettingsTargetHighlight from "./SettingsTargetHighlight"
 import AboutSection from "./sections/AboutSection"
@@ -170,7 +171,7 @@ const LegacySettingsView = ({ navigationRequest, onDone }: SettingsViewProps) =>
 		[],
 	) // Empty deps - these imports never change
 
-	const { version, extensionVariant, environment, settingsInitialModelTab } = useExtensionState()
+	const { version, extensionVariant, environment, settingsInitialModelTab, modelSettingsMigrationStatus } = useExtensionState()
 	const { activeOrganization, clineUser } = useClineAuth()
 
 	const [activeTab, setActiveTab] = useState<string>(initialTarget?.tabId || SETTINGS_TABS[0].id)
@@ -296,6 +297,11 @@ const LegacySettingsView = ({ navigationRequest, onDone }: SettingsViewProps) =>
 				</TabList>
 
 				<TabContent className="flex-1 overflow-auto">
+					{modelSettingsMigrationStatus?.status === "failed" && (
+						<div className="p-3 pb-0">
+							<MigrationFailedNotice status={modelSettingsMigrationStatus} />
+						</div>
+					)}
 					{ActiveContent}
 					{pendingTarget &&
 						(() => {

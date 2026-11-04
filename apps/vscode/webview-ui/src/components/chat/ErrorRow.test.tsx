@@ -6,6 +6,7 @@ import ErrorRow from "./ErrorRow"
 const mockSetUserOrganization = vi.hoisted(() => vi.fn())
 const mockUpdateApiConfigurationProto = vi.hoisted(() => vi.fn())
 const mockNavigateToSettingsModelPicker = vi.hoisted(() => vi.fn())
+const mockNavigateToSettings = vi.hoisted(() => vi.fn())
 const mockApiConfiguration = vi.hoisted(() => ({
 	planModeApiProvider: "cline-pass",
 	actModeApiProvider: "cline-pass",
@@ -32,6 +33,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		startProviderModelsRequest: vi.fn(),
 		applyProviderModelsResponse: vi.fn(),
 		navigateToSettingsModelPicker: mockNavigateToSettingsModelPicker,
+		navigateToSettings: mockNavigateToSettings,
 	}),
 }))
 
@@ -438,5 +440,21 @@ describe("ErrorRow", () => {
 
 			expect(screen.getByText("Test error message")).toBeInTheDocument()
 		})
+	})
+})
+
+describe("a refusal about a configured model", () => {
+	const refusal = (text: string) => ({ ts: 1, type: "say", say: "error", text }) as never
+
+	it("links to where the fix is", () => {
+		mockNavigateToSettings.mockClear()
+		render(<ErrorRow errorType="error" message={refusal("This model has no model ID. Add it in Settings > Models.")} />)
+		fireEvent.click(screen.getByRole("button", { name: "Open Settings > Models" }))
+		expect(mockNavigateToSettings).toHaveBeenCalledWith("models")
+	})
+
+	it("adds nothing to any other error", () => {
+		render(<ErrorRow errorType="error" message={refusal("Something else broke.")} />)
+		expect(screen.queryByRole("button", { name: "Open Settings > Models" })).toBeNull()
 	})
 })

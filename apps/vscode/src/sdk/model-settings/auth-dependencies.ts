@@ -7,14 +7,19 @@ import type { ConnectionAuthDependencies } from "./request-adapter"
  * No azureIdentity token source: the legacy path only records useIdentity and
  * nothing acquires an Entra token, so an identity connection sends no key.
  */
-export function modelAuthDependencies(state: Pick<StateManager, "connectionSecrets">): ConnectionAuthDependencies {
+export function modelAuthDependencies(
+	state: Pick<StateManager, "connectionSecrets" | "getSecretKey">,
+): ConnectionAuthDependencies {
 	if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
 	return {
 		secrets: state.connectionSecrets,
 		environment: process.env,
 		sdkAccount: async (providerId) => {
+			// Oracle sign-in writes only the old store, never the SDK's provider file.
+			const token = providerId === "oca" ? state.getSecretKey("ocaApiKey") : undefined
+			if (token) return { providerId, apiKey: token, apiKeyEnv: [] }
 			const config = getProviderSettingsManager().getProviderConfig(providerId)
-			if (!config) throw new Error("SDK account is unavailable")
+			if (!config) throw new Error(providerId === "oca" ? "Not signed in to Oracle" : "SDK account is unavailable")
 			return {
 				providerId: config.providerId,
 				apiKey: config.apiKey,

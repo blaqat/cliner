@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createGateway } from "@cline/llms"
-import type { ModelSettings } from "@shared/model-settings"
+import { type ModelSettings, ModelSettingsMigrationSchema } from "@shared/model-settings"
 import { SecretKeys } from "@shared/storage/state-keys"
 import { describe, expect, it, vi } from "vitest"
 import { resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
@@ -702,5 +702,88 @@ describe("Can follow 1: the backup is an allowlist", () => {
 		f.data.threadTitlesEnabled = true
 		await f.run()
 		expect(f.data.modelSettingsBackupV1).toEqual(backup)
+	})
+})
+
+describe("keyless OpenAI-compatible profiles", () => {
+	it("a URL and no key becomes none, so a local server keeps working", async () => {
+		const f = fixture({ apiConfigProfiles: [profile("local", "m")] }, { openAiApiKey: "provider-key" })
+		await f.run()
+		const connection = f.settings().connections[0]
+		expect(connection.auth).toEqual({ kind: "none" })
+		// The provider key is never picked up, and no other credential lands on the row.
+		expect(connection.headers).toEqual([])
+		expect(await f.secrets.get(`settings:v1:connection:${connection.id}:openAiApiKey`)).toBeUndefined()
+		const config = await resolveConnectionConfig(connection, { secrets: f.secrets, environment: {} })
+		expect(config.apiKey).toBe("")
+	})
+	it("a flat selection with a URL and no key runs keyless too", async () => {
+		const f = fixture({ actModeApiProvider: "openai", actModeOpenAiModelId: "m", openAiBaseUrl: "http://localhost:8000/v1" })
+		await f.run()
+		expect(f.settings().connections[0].auth).toEqual({ kind: "none" })
+	})
+	it("a profile with its own key is unaffected", async () => {
+		const f = fixture(
+			{ apiConfigProfiles: [profile("own", "m")] },
+			{ "profile:own:openAiApiKey": "own-key", openAiApiKey: "provider-key" },
+		)
+		await f.run()
+		const { auth } = f.settings().connections[0]
+		expect(auth.kind).toBe("keychain")
+		if (auth.kind === "keychain") expect(await f.secrets.get(auth.secretRef)).toBe("own-key")
+	})
+	it("a compatible profile with no URL still needs a key, since nothing says it's keyless", async () => {
+		const f = fixture({ apiConfigProfiles: [profile("no-url", "m", { options: {} })] })
+		await f.run()
+		expect(f.settings().connections[0].auth.kind).toBe("keychain")
+	})
+	it("a native provider missing its key still needs one", async () => {
+		const f = fixture({ apiConfigProfiles: [{ id: "n", name: "n", provider: "openai-native", modelId: "gpt-5" }] })
+		await f.run()
+		expect(f.settings().connections[0].auth.kind).toBe("keychain")
+	})
+})
+
+describe("migrated levels", () => {
+	const unknownModel = (id: string, url = "https://a.test/v1") => profile(id, id, { options: { openAiBaseUrl: url } })
+	it("marks the levels and reasoning it stored, since nobody chose them", async () => {
+		const f = fixture({ apiConfigProfiles: [unknownModel("solo")] })
+		await f.run()
+		const row = f.rowOf("solo")
+		expect(row.overrides).toMatchObject({ reasoning: "yes" })
+		expect(row.overrides.levels?.length).toBeGreaterThan(1)
+		expect(row.migratedValues).toEqual(["levels", "reasoning"])
+	})
+	it("leaves no marker for what moves up to the connection", async () => {
+		const f = fixture({ apiConfigProfiles: [unknownModel("one"), unknownModel("two")] })
+		await f.run()
+		expect(f.settings().connections).toHaveLength(1)
+		expect(f.settings().connections[0].defaults).toMatchObject({ reasoning: "yes" })
+		expect(f.rowOf("one").migratedValues).toBeUndefined()
+		expect(f.rowOf("two").migratedValues).toBeUndefined()
+	})
+})
+
+describe("Oracle accounts", () => {
+	it("a saved OCA selection becomes the sign-in account, not a copy of its expiring token", async () => {
+		const f = fixture(
+			{ actModeApiProvider: "oca", actModeOcaModelId: "oca/m" },
+			{ ocaApiKey: "signed-in-token", ocaRefreshToken: "refresh" },
+		)
+		await f.run()
+		const connection = f.settings().connections[0]
+		expect(connection.auth).toEqual({ kind: "sdk-account", providerId: "oca" })
+		expect(JSON.stringify(f.settings())).not.toContain("signed-in-token")
+		expect(await f.secrets.get(`settings:v1:connection:${connection.id}:ocaApiKey`)).toBeUndefined()
+	})
+})
+
+describe("journal issues", () => {
+	it("are part of the journal's strict schema, and are checked by it", async () => {
+		const f = fixture({ apiConfigProfiles: [profile("blank", "")] })
+		await f.run()
+		expect(f.journal().issues?.length).toBeGreaterThan(0)
+		expect(ModelSettingsMigrationSchema.safeParse(f.journal()).success).toBe(true)
+		expect(ModelSettingsMigrationSchema.safeParse({ ...f.journal(), issues: [{ kind: "odd" }] }).success).toBe(false)
 	})
 })

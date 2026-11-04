@@ -1,9 +1,11 @@
 import { createGateway } from "@cline/llms"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import {
+	BASE_URL_NEEDED,
 	ConnectionOptionsSchema,
 	ConnectionSchema,
 	createDefaultModelSettings,
+	MODEL_ID_NEEDED,
 	type ModelLevel,
 	type ModelPick,
 	ModelProviderOptionsSchema,
@@ -87,7 +89,9 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 		}
 		availability[row.id] = {
 			available: !reason,
-			...(reason ? { reason, target: { page: "models", connectionId: connection.id } } : {}),
+			...(reason
+				? { reason, target: flaggedFixTarget(row, connection) ?? { page: "models", connectionId: connection.id } }
+				: {}),
 		}
 	}
 	const { roles } = settings
@@ -126,13 +130,59 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 	}
 }
 
+/** The field a flagged migrated row needs filled in. Nothing else about it can run until then. */
+function flaggedFixTarget(
+	row: ModelRow,
+	connection: ModelSettings["connections"][number] | undefined,
+): ModelSettingsFixTarget | undefined {
+	if (row.upstreamId === MODEL_ID_NEEDED) return { page: "models", modelId: row.id, field: "upstreamId" }
+	if (connection?.baseUrl === BASE_URL_NEEDED) return { page: "models", connectionId: connection.id, field: "baseUrl" }
+	return undefined
+}
+
 /** The control that fixes a pick the resolver refused: the role when its model is gone, otherwise the model. */
 function pickFixTarget(settings: ModelSettings, pick: ModelPick | null, role: string): ModelSettingsFixTarget {
 	const model = settings.models.find((row) => row.id === pick?.modelId)
 	if (!model) return { page: "models", role }
+	const flagged = flaggedFixTarget(
+		model,
+		settings.connections.find((c) => c.id === model.connectionId),
+	)
+	if (flagged) return flagged
 	return model.kind === "non-chat"
 		? { page: "models", modelId: model.id }
 		: { page: "models", modelId: model.id, field: "levels" }
+}
+
+/** A migrated value stays that only while it's exactly what migration stored. Any edit makes it the user's. */
+export function withSettledMigratedValues(row: ModelRow, previous: ModelRow | undefined): ModelRow {
+	const { migratedValues: _claimed, ...rest } = row
+	const kept = previous?.migratedValues?.filter(
+		(key) => JSON.stringify(row.overrides[key]) === JSON.stringify(previous.overrides[key]),
+	)
+	return kept?.length ? { ...rest, migratedValues: kept } : rest
+}
+
+/** A shared default reaches every model that didn't set its own, and a migrated value isn't anyone's own. */
+export function followSharedDefaults(
+	settings: ModelSettings,
+	connection: ModelSettings["connections"][number],
+	previous: ModelSettings["connections"][number] | undefined,
+): void {
+	settings.models = settings.models.map((row) => {
+		if (row.connectionId !== connection.id || !row.migratedValues) return row
+		const yielded = row.migratedValues.filter(
+			(key) =>
+				connection.defaults[key] !== undefined &&
+				JSON.stringify(connection.defaults[key]) !== JSON.stringify(previous?.defaults[key]),
+		)
+		if (!yielded.length) return row
+		const overrides = { ...row.overrides }
+		for (const key of yielded) delete overrides[key]
+		const kept = row.migratedValues.filter((key) => !yielded.includes(key))
+		const { migratedValues: _old, ...rest } = row
+		return { ...rest, overrides, ...(kept.length ? { migratedValues: kept } : {}) }
+	})
 }
 
 export function connectionSecretRefs(connection: ModelSettings["connections"][number]): string[] {

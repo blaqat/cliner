@@ -115,16 +115,19 @@ describe("Phase 2 migration", () => {
 			expect(f.data).toEqual(before)
 		}
 	})
-	it("keeps own-key connections separate and never falls back for missing profile keys", async () => {
+	it("keeps own-key connections separate, and a profile missing its key runs keyless and never borrows the provider key", async () => {
 		const f = fixture({ apiConfigProfiles: [configuration("a"), configuration("b"), configuration("missing")] })
 		await migrateModelSettings(f.deps)
 		const s = f.data.modelSettings as ModelSettings
 		expect(s.connections).toHaveLength(3)
-		for (const [index, expected] of ["own-a", "own-b", undefined].entries()) {
+		for (const [index, expected] of ["own-a", "own-b"].entries()) {
 			const auth = s.connections[index].auth
 			expect(auth.kind).toBe("keychain")
 			if (auth.kind === "keychain") expect(await f.secrets.get(auth.secretRef)).toBe(expected)
 		}
+		expect(s.connections[2].auth).toEqual({ kind: "none" })
+		const stored = await Promise.all((await f.secrets.list()).map((ref) => f.secrets.get(ref)))
+		expect(stored).not.toContain("provider")
 	})
 	it("leaves a retryable prepared journal when keychain is absent", async () => {
 		const f = fixture(seed())

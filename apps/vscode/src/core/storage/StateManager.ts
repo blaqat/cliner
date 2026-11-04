@@ -1,5 +1,5 @@
 import type { ApiConfiguration } from "@shared/api"
-import type { ModelSettingsMigrationIssue, ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
+import type { ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -171,7 +171,7 @@ export class StateManager {
 	private modelMigrationCause?: string
 
 	getModelSettingsMigrationStatus(): ModelSettingsMigrationStatus {
-		const journal = this.globalStateCache.modelSettingsMigration as { issues?: ModelSettingsMigrationIssue[] } | undefined
+		const journal = this.globalStateCache.modelSettingsMigration
 		return {
 			status: this.modelMigrationStatus,
 			retryable: this.modelMigrationStatus === "failed",

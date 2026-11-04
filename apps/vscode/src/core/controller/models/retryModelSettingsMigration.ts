@@ -6,5 +6,6 @@ export async function retryModelSettingsMigration(
 	_request: ModelSettingsRequestV1,
 ): Promise<ModelSettingsResponseV1> {
 	await controller.stateManager.retryModelSettingsMigration()
+	await controller.postStateToWebview()
 	return ModelSettingsResponseV1.create({ json: JSON.stringify(controller.stateManager.getModelSettingsMigrationStatus()) })
 }

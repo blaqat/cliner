@@ -1,3 +1,4 @@
+import { useModelSettings } from "./model-settings/background"
 import { assertLegacySettingsWrite, configuredActiveModel } from "./model-settings/legacy-settings"
 import { NextMessageModelSelections } from "./model-settings-resolver"
 // Replaces classic src/core/controller/index.ts (see origin/main)
@@ -1060,6 +1061,7 @@ export class Controller {
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			runExclusive: (operation) => this.sessionRebuilds.runExclusive(operation),
+			retryRefusedRebuild: (sessionId) => this.providerChanges.retryRefusedRebuild(sessionId),
 			getTask: () => this.task,
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -1426,7 +1428,6 @@ export class Controller {
 		pick: import("@shared/model-settings").ModelPick
 		nextMessageOnly: boolean
 	}): Promise<void> {
-		const { useModelSettings } = await import("./model-settings/background")
 		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
 		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
 		const { captureThreadModelSelection } = await import("./model-settings-resolver")
@@ -1690,6 +1691,7 @@ export class Controller {
 	}
 
 	private async performRemoteConfigRefresh(isCurrent: () => boolean): Promise<boolean> {
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		const refreshed = await refreshSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			isCurrent,
@@ -1701,7 +1703,16 @@ export class Controller {
 		// `.cline/remote-config/`. Refresh the watcher so slash-command expansion
 		// sees them without waiting on filesystem events.
 		await this.refreshUserInstructionWatchers()
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		return refreshed
+	}
+
+	/** Refreshes run on a timer, so only a real change rebuilds. Without one, sessions hold the old values until the request guard refuses them. */
+	private rebuildIfManagedSettingsChanged(managedBefore: string): void {
+		if (!useModelSettings(this.stateManager) || JSON.stringify(this.stateManager.getRemoteConfigSettings()) === managedBefore)
+			return
+		const configuration = this.stateManager.getApiConfiguration()
+		this.handleApiConfigurationChanged(configuration, configuration)
 	}
 
 	setRemoteConfigAvailable(available: boolean): void {
@@ -3721,10 +3732,12 @@ export class Controller {
 		// secret-bearing caches) after the clear. The clear itself runs under the
 		// same publication lock refreshes use, so it cannot interleave either.
 		this.remoteConfigRefreshCoordinator.invalidate()
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		await clearSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			organizationId,
 		})
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		await this.postStateToWebview()
 	}
 

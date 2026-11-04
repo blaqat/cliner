@@ -2,12 +2,13 @@ import {
 	BUILTIN_MODEL_VALUES,
 	type Connection,
 	type ConnectionPatch,
+	type MigratedValue,
 	type ModelLevel,
 	type ModelPick,
 	type ModelRow,
 	type ModelValues,
-	resolveModelValues,
 	type RoleSettings,
+	resolveModelValues,
 } from "@shared/model-settings"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { settingsModelElementId } from "../settingsTargets"
@@ -194,7 +195,7 @@ export const hasOverride = (row: ModelRow, key: keyof ModelValues) => Object.has
 
 /** Changed + Reset: a value of its own where the connection shares one. Reset deletes it, so it follows again. */
 export const overridesShared = (row: ModelRow, connection: Connection, key: keyof ModelValues) =>
-	hasOverride(row, key) && hasSharedValue(connection.defaults, key)
+	hasOverride(row, key) && hasSharedValue(connection.defaults, key) && !row.migratedValues?.includes(key as MigratedValue)
 
 export const withoutOverride = (row: ModelRow, key: keyof ModelValues): ModelRow => {
 	const { [key]: _removed, ...overrides } = row.overrides

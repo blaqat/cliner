@@ -63,6 +63,8 @@ export interface SdkFollowupCoordinatorOptions {
 	 * askResponse pre-set, for the same reason as onResumeFailed.
 	 */
 	onFollowUpAbandoned: () => void
+	/** Before a send reaches an idle session: why that session can't run, if its last rebuild was refused. */
+	retryRefusedRebuild?: (sessionId: string) => Promise<string | undefined>
 }
 
 export class SdkFollowupCoordinator {
@@ -191,7 +193,18 @@ export class SdkFollowupCoordinator {
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
 		provenance?: ComposerProvenance,
 	): Promise<void> {
-		const { sdkHost, sessionId } = activeSession
+		const refusal = await this.options.retryRefusedRebuild?.(activeSession.sessionId)
+		if (refusal) {
+			this.options.messages.emitSessionEvents(
+				[{ ts: Date.now(), type: "say", say: "error", text: refusal, partial: false }],
+				{ type: "status", payload: { sessionId: activeSession.sessionId, status: "error" } },
+			)
+			this.options.onResumeFailed()
+			await this.options.postStateToWebview()
+			return
+		}
+		// The retry may have replaced the session it was asked about.
+		const { sdkHost, sessionId } = this.options.sessions.getActiveSession() ?? activeSession
 		Logger.log(`[SdkController] Continuing idle session for follow-up: ${sessionId}`)
 
 		this.options.sessions.markSendRunning()

@@ -2,12 +2,14 @@ import { createHash } from "node:crypto"
 import { createGateway } from "@cline/llms"
 import { isAllowedApiProvider } from "@shared/api-profiles"
 import {
+	BASE_URL_NEEDED,
 	type Connection,
 	ConnectionOptionsSchema,
 	ConnectionSchema,
 	createDefaultModelSettings,
 	type Header,
 	type Json,
+	MODEL_ID_NEEDED,
 	type ModelLevel,
 	type ModelPick,
 	ModelProviderOptionsSchema,
@@ -23,14 +25,7 @@ import { ApiHandlerSettingsKeys, SecretKeys } from "@shared/storage/state-keys"
 import { toSdkProviderId } from "@/sdk/model-catalog/sdk-provider-id"
 import type { ConnectionSecretStore } from "@/sdk/model-settings/connection-secret-store"
 import { catalogReasoningLevels } from "@/sdk/model-settings/host-settings"
-import {
-	BASE_URL_NEEDED,
-	closestOfferedLevel,
-	legacyModelValues,
-	MODEL_ID_NEEDED,
-	migratedLevels,
-	sdkModelValues,
-} from "@/sdk/model-settings/legacy-values"
+import { closestOfferedLevel, legacyModelValues, migratedLevels, sdkModelValues } from "@/sdk/model-settings/legacy-values"
 import { providerOptionMappings, providerSecretFields } from "@/sdk/model-settings/provider-options"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 
@@ -178,7 +173,9 @@ const NO_KEY_PROVIDERS = [
 	"sapaicore",
 	"vscode-lm",
 ]
-const ACCOUNT_PROVIDERS = ["cline", "cline-pass"]
+const ACCOUNT_PROVIDERS = ["cline", "cline-pass", "oca"]
+/** Signing in keeps refreshing this token in the old store, so a copy would only go stale. */
+const ACCOUNT_TOKEN_FIELDS: Record<string, string> = { oca: "ocaApiKey" }
 const BASE_URL_FIELDS: Record<string, string> = {
 	openai: "openAiBaseUrl",
 	"openai-compatible": "openAiBaseUrl",
@@ -405,7 +402,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	}
 
 	const settings = createDefaultModelSettings()
-	const journal: ModelSettingsMigration & { issues?: ModelSettingsMigrationIssue[] } = {
+	const journal: ModelSettingsMigration = {
 		version: 1,
 		status: "prepared",
 		backupId,
@@ -468,6 +465,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const secrets: Record<string, string> = {}
 		const rowCopies: Array<[string, string]> = []
 		for (const field of secretFields(sourceId, own, provider)) {
+			if (field === ACCOUNT_TOKEN_FIELDS[provider]) continue
 			const value = readSecretField(sourceId, own, field)
 			if (value !== undefined) {
 				secrets[field] = `${prefix}${field}`
@@ -482,6 +480,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 					? "apiKey"
 					: Object.keys(secrets).find((k) => /apiKey$/i.test(k))
 		const keyRef = keyField ? secrets[keyField] : undefined
+		// A compatible server with a URL and no key of its own runs keyless, as it does today. It never borrows one.
+		const keylessServer = isCompatible(provider) && !!savedUrl
 
 		const headers: Header[] = []
 		// The flat store's headers belong to OpenAI Compatible. Another provider must never receive them.
@@ -520,7 +520,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 							? { kind: "keychain", secretRef: keyRef }
 							: ACCOUNT_PROVIDERS.includes(provider)
 								? { kind: "sdk-account", providerId: sdkProvider }
-								: NO_KEY_PROVIDERS.includes(provider)
+								: NO_KEY_PROVIDERS.includes(provider) || keylessServer
 									? { kind: "none" }
 									: { kind: "keychain", secretRef: `${prefix}${keyField ?? "apiKey"}` },
 			headers,
@@ -571,6 +571,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				...legacyValues,
 				...(levels.length > 1 ? { levels, reasoning: "yes" as const } : {}),
 			},
+			...(levels.length > 1 ? { migratedValues: ["levels" as const, "reasoning" as const] } : {}),
 			legacyMetadata: {
 				source: "legacy",
 				...(sdkInfo ? { sdk: withoutSecretNames(sdkInfo) as Record<string, Json> } : {}),
@@ -784,7 +785,11 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			const value = rows[0].overrides[key]
 			if (value === undefined || !rows.every((m) => stable(m.overrides[key]) === stable(value))) continue
 			Object.assign(connection.defaults, { [key]: value })
-			for (const row of rows) delete row.overrides[key]
+			for (const row of rows) {
+				delete row.overrides[key]
+				row.migratedValues = row.migratedValues?.filter((migrated) => migrated !== key)
+				if (!row.migratedValues?.length) delete row.migratedValues
+			}
 		}
 	}
 	const parsed = ModelSettingsSchema.safeParse(settings)

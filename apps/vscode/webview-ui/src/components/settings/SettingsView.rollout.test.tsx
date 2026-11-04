@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import SettingsView from "./SettingsView"
 import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
+import SettingsView from "./SettingsView"
 
 // The old tabs read this once, at import.
 vi.hoisted(() => {
@@ -12,13 +12,17 @@ const mocks = vi.hoisted(() => ({
 	state: {} as Record<string, unknown>,
 	auth: { activeOrganization: null, clineUser: null } as Record<string, unknown>,
 	internal: vi.fn(() => false),
+	retry: vi.fn(),
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/context/ClineAuthContext", () => ({ useClineAuth: () => mocks.auth }))
 vi.mock("@/components/navigation/NavigationHistoryContext", () => ({ useNavigationHistory: () => undefined }))
 vi.mock("@/components/common/ViewHeader", () => ({ default: () => <div>Settings</div> }))
-vi.mock("@/services/grpc-client", () => ({ StateServiceClient: {}, ModelsServiceClient: {} }))
+vi.mock("@/services/grpc-client", () => ({
+	StateServiceClient: {},
+	ModelsServiceClient: { retryModelSettingsMigration: mocks.retry },
+}))
 vi.mock("@shared/internal/account", () => ({ isClineInternalTester: mocks.internal }))
 vi.mock("./sections/ApiConfigurationSection", () => ({ default: () => <div>api configuration panel</div> }))
 vi.mock("./sections/ProfilesSection", () => ({ default: () => <div>profiles panel</div> }))
@@ -65,6 +69,38 @@ describe("with modelSettings absent", () => {
 		mocks.auth = { activeOrganization: null, clineUser: { email: "tester@example.com" } }
 		render(<SettingsView onDone={() => {}} />)
 		expect(tabs()).toContain("debug")
+	})
+})
+
+describe("when the first move of model settings failed", () => {
+	const failed = { status: "failed", retryable: true, cause: "Could not write to the connection keychain" }
+
+	it("says why on the old Settings and retries with the existing RPC", async () => {
+		mocks.state = { ...mocks.state, modelSettingsMigrationStatus: failed }
+		mocks.retry.mockResolvedValue({ json: JSON.stringify({ status: "complete", retryable: false }) })
+		render(<SettingsView onDone={() => {}} />)
+		expect(screen.getByText(/Models could not be moved/)).toBeInTheDocument()
+		expect(screen.getByText("Could not write to the connection keychain")).toBeInTheDocument()
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
+		})
+		expect(mocks.retry).toHaveBeenCalledWith({ json: "{}" })
+	})
+
+	it("says so when the retry itself can't reach the host", async () => {
+		mocks.state = { ...mocks.state, modelSettingsMigrationStatus: failed }
+		mocks.retry.mockRejectedValue(new Error("no"))
+		render(<SettingsView onDone={() => {}} />)
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
+		})
+		expect(screen.getByRole("alert")).toHaveTextContent(/could not finish/)
+	})
+
+	it.each(["pending", "complete", "disabled"])("shows nothing while it's %s", (status) => {
+		mocks.state = { ...mocks.state, modelSettingsMigrationStatus: { status, retryable: false } }
+		render(<SettingsView onDone={() => {}} />)
+		expect(screen.queryByText(/Models could not be moved/)).toBeNull()
 	})
 })
 

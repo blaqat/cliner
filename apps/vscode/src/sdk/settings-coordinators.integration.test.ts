@@ -585,7 +585,7 @@ it("uses managed remote model values and refuses an obsolete projection in a liv
 	expect(config.providerConfig?.maxOutputTokens).toBe(1000)
 	expect(config.providerConfig?.knownModels?.act.contextWindow).toBe(42000)
 	managed.remoteProviderSettings = { OpenAiCompatible: { models: [{ id: "act", contextWindow: 32000 }] } }
-	await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/settings changed/i)
+	await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/changed this model.s settings/i)
 })
 
 describe("editing settings under a live session", () => {
@@ -765,4 +765,135 @@ it("collects persisted, pending, home and next-message deletion dependencies wit
 	expect(modelDependencies(controller.stateManager, settings, ["home", "next", "pending"], history)).toEqual(
 		expect.arrayContaining(["thread:home:draft.act", "thread:old-thread:next-message.plan", "thread:live:pending.act"]),
 	)
+})
+
+describe("a thread with a legacy selection", () => {
+	const legacyPick = (f: ReturnType<typeof fixture>, apiSelection: TaskApiSelection) =>
+		f.builder.build({ cwd: "/tmp", mode: "act", apiSelection } as never).then((config) => {
+			return (config as unknown as { apiSnapshot: { selection: { modelSelectionV1: { act: unknown; ask: unknown } } } })
+				.apiSnapshot.selection.modelSelectionV1
+		})
+
+	it("builds when its saved effort isn't on the model, at the closest level offered", async () => {
+		const f = fixture()
+		const ladder = [
+			{ id: "default", label: "Default", rank: 0, request: { kind: "default" as const } },
+			{ id: "medium", label: "medium", rank: 1, request: { kind: "effort" as const, value: "medium" } },
+		]
+		f.settings.models[0].overrides = { levels: ladder, reasoning: "yes" }
+		const thread = await legacyPick(f, { actProfileId: "old-act", actModeReasoningEffort: "high" })
+		expect(thread.act).toEqual({ modelId: "act", levelId: "medium" })
+	})
+
+	it("builds when it only recorded the other mode, on the current selection", async () => {
+		const f = fixture()
+		const thread = await legacyPick(f, { askProfileId: "old-ask" })
+		expect(thread.ask).toEqual(ask)
+		expect(thread.act).toEqual({ modelId: "new-default", levelId: "default" })
+	})
+})
+
+describe("a thread whose own model is broken, when something else is edited", () => {
+	/** The real RPC, scheduler and coordinator around one thread on a row with no model ID. */
+	function broken() {
+		const f = fixture()
+		const settings = f.settings
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: f.options.sessions as never })
+		const coordinator = new SdkProviderChangeCoordinator({ ...f.options, rebuilds: scheduler } as never)
+		f.options.getTaskApiSelection = () => stable as never
+		f.session.apiSnapshot = { selection: stable as never, configuration: {} }
+		Object.assign(f.state, {
+			getModelSettingsMigrationStatus: () => ({ status: "complete", retryable: false }),
+			mutateModelSettings: async (revision: number, mutate: (value: ModelSettings) => Promise<unknown>) => {
+				const next = structuredClone(settings)
+				await mutate(next)
+				Object.assign(settings, next, { revision: revision + 1 })
+			},
+		})
+		const controller = {
+			stateManager: f.state,
+			postStateToWebview: vi.fn(),
+			handleApiConfigurationChanged: () => coordinator.handleApiConfigurationChanged({}, {}),
+		}
+		const save = (id: string, change: object) =>
+			mutateSettings(
+				controller as never,
+				"saveConfiguredModels",
+				JSON.stringify({
+					expectedRevision: settings.revision,
+					models: [{ ...settings.models.find((m) => m.id === id), ...change }],
+				}),
+				true,
+			)
+		settings.models.find((m) => m.id === "act")!.upstreamId = "model-id-needed"
+		const settled = () => scheduler.runExclusive(async () => {})
+		return { ...f, coordinator, save, settled }
+	}
+
+	it("shows nothing and leaves the thread's status alone", async () => {
+		const f = broken()
+		await f.save("ask", { overrides: { temperature: 0.5 } })
+		await f.settled()
+		expect(f.replace).not.toHaveBeenCalled()
+		expect(f.options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(f.options.sessions.setStatus).not.toHaveBeenCalled()
+	})
+
+	it("refuses only when someone sends, saying how to fix it", async () => {
+		const f = broken()
+		await f.save("ask", { overrides: { temperature: 0.5 } })
+		await f.settled()
+		await expect(f.coordinator.retryRefusedRebuild("thread")).resolves.toMatch(/no model ID.*Settings > Models/)
+		expect(f.options.messages.appendAndEmit).not.toHaveBeenCalled()
+		// Still broken: the next send refuses again.
+		await expect(f.coordinator.retryRefusedRebuild("thread")).resolves.toMatch(/no model ID/)
+	})
+
+	it("once fixed, the edit that fixes it rebuilds the thread and a send has nothing to retry", async () => {
+		const f = broken()
+		await f.save("ask", { overrides: { temperature: 0.5 } })
+		await f.settled()
+		await f.save("act", { upstreamId: "real" })
+		await f.settled()
+		expect(f.replace).toHaveBeenCalledOnce()
+		await expect(f.coordinator.retryRefusedRebuild("thread")).resolves.toBeUndefined()
+		expect(f.replace).toHaveBeenCalledOnce()
+	})
+
+	it("a send fixes a thread nothing has rebuilt since the fix", async () => {
+		const f = broken()
+		await f.save("ask", { overrides: { temperature: 0.5 } })
+		await f.settled()
+		f.settings.models.find((m) => m.id === "act")!.upstreamId = "real"
+		await expect(f.coordinator.retryRefusedRebuild("thread")).resolves.toBeUndefined()
+		expect(f.replace).toHaveBeenCalledOnce()
+	})
+
+	it("a failure replacing the session is still reported", async () => {
+		const f = fixture()
+		const coordinator = new SdkProviderChangeCoordinator({
+			...f.options,
+			rebuilds: {
+				request: (_reason: string, run: (context: unknown) => Promise<void>) => void run({ isCurrent: () => true }),
+			},
+		} as never)
+		f.options.getTaskApiSelection = () => stable as never
+		f.replace.mockRejectedValueOnce(new Error("boom"))
+		coordinator.handleApiConfigurationChanged({}, {})
+		await new Promise((resolve) => setImmediate(resolve))
+		await new Promise((resolve) => setImmediate(resolve))
+		expect(f.options.messages.appendAndEmit).toHaveBeenCalledOnce()
+	})
+})
+
+describe("an organization change under a built session", () => {
+	it("tells people to send again, not to reload", async () => {
+		const f = fixture()
+		const config = await f.builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
+		;(f.state.getRemoteConfigSettings() as Record<string, unknown>).remoteProviderSettings = {
+			OpenAiCompatible: { models: [{ id: "act", contextWindow: 1234 }] },
+		}
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/Send your message again.*Settings > Models/)
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.not.toThrow(/Reload/)
+	})
 })

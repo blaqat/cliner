@@ -22,7 +22,9 @@ export async function backgroundHandler(
 	const pick = resolveBackgroundPick(settings, use, oneCall)
 	if (!pick) return undefined
 	if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
-	const config = await configuredProviderConfig(settings, pick, modelAuthDependencies(state), { state: state as StateManager })
+	const config = await configuredProviderConfig(settings, pick, modelAuthDependencies(state as StateManager), {
+		state: state as StateManager,
+	})
 	const handler = createHandler(config)
 	const createMessage = handler.createMessage.bind(handler)
 	handler.createMessage = async function* (...args) {

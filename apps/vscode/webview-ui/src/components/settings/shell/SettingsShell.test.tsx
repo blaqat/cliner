@@ -1,9 +1,9 @@
-import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { createSettingsNavigationRequest, type SettingsNavigationTarget, settingsRowElementId } from "../settingsTargets"
 import { SettingsShell } from "./SettingsShell"
 import { SETTINGS_ROWS } from "./settingsRows"
@@ -633,6 +633,29 @@ describe("Phase 7 recovery", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
 		expect(await screen.findByText("Profiles moved to Models. Your models and levels were kept.")).toBeVisible()
 		expect(mocks.retry).toHaveBeenCalledTimes(2)
+	})
+	it("shows why the move failed, and what the finished move flagged", async () => {
+		mocks.migration.mockResolvedValueOnce({
+			json: JSON.stringify({ status: "failed", retryable: true, cause: "Could not write to the connection keychain" }),
+		})
+		const { unmount } = renderShell("about")
+		expect(await screen.findByText("Could not write to the connection keychain")).toBeVisible()
+		unmount()
+
+		const state = baseState()
+		const flagged = state.modelSettings.settings.models[0]
+		flagged.upstreamId = "model-id-needed"
+		mocks.state = state
+		mocks.migration.mockResolvedValueOnce({
+			json: JSON.stringify({
+				status: "complete",
+				retryable: false,
+				issues: [{ kind: "normalized", field: "modelId", source: "Local", modelId: flagged.id }],
+			}),
+		})
+		renderShell("about")
+		expect(await screen.findByText(/Local: no model ID was saved/)).toBeVisible()
+		expect(screen.getByRole("button", { name: "Add the model ID" })).toBeVisible()
 	})
 	it.each(["add", "edit", "remove"])("writes an allowed-list %s against the latest revision", async (action) => {
 		const initial = action === "add" ? [] : [{ kind: "model", modelId: "sol", levels: ["medium"] }]

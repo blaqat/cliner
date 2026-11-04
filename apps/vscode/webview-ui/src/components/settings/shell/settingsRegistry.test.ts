@@ -1,5 +1,5 @@
-import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { SETTINGS_TARGET_REDIRECTS, settingsRowElementId } from "../settingsTargets"
 import {
 	changedRows,
@@ -55,6 +55,25 @@ describe("per-model overrides in Changed", () => {
 		const rows = rowsFor(store({ temperature: 0.1 }))
 		expect(rows.map((row) => row.id)).toEqual(["model:m:temperature"])
 		expect(rows[0].label).toBe("Sol: Temperature")
+	})
+
+	it("doesn't count what migration stored, until the marker's gone", () => {
+		const shared = { levels: [], reasoning: "no" }
+		const row = (migratedValues?: string[]) => {
+			const base = store({ levels: [{ id: "default" }], reasoning: "yes" }, shared)
+			return {
+				...base,
+				settings: { ...base.settings, models: [{ ...base.settings.models[0], migratedValues }] },
+				effective: { m: { levels: { source: "model" }, reasoning: { source: "model" } } },
+			}
+		}
+		const ids = (migratedValues?: string[]) =>
+			rowsFor(row(migratedValues))
+				.map((changed) => changed.id)
+				.sort()
+		expect(ids(["levels", "reasoning"])).toEqual([])
+		expect(ids(["reasoning"])).toEqual(["model:m:levels"])
+		expect(ids()).toEqual(["model:m:levels", "model:m:reasoning"])
 	})
 
 	it("doesn't count what the form doesn't tag: no shared default, or a managed value", () => {

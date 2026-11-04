@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { retryModelSettingsMigration } from "../models/retryModelSettingsMigration"
 import { getStateToPostToWebview } from "./getStateToPostToWebview"
 
 vi.mock("@/config", () => ({ ClineEnv: { config: () => ({ environment: "test" }) } }))
@@ -31,5 +32,19 @@ describe("model settings migration status", () => {
 		const state = await getStateToPostToWebview(controller as never)
 		expect(state.modelSettings).toBeUndefined()
 		expect(state.modelSettingsMigrationStatus).toEqual(failed)
+	})
+
+	it("a retry tells the webview, so Settings moves on without a reload", async () => {
+		const order: string[] = []
+		const controller = {
+			stateManager: {
+				retryModelSettingsMigration: async () => void order.push("retry"),
+				getModelSettingsMigrationStatus: () => ({ status: "complete", retryable: false }),
+			},
+			postStateToWebview: async () => void order.push("post"),
+		}
+		const response = await retryModelSettingsMigration(controller as never, {} as never)
+		expect(order).toEqual(["retry", "post"])
+		expect(JSON.parse(response.json)).toEqual({ status: "complete", retryable: false })
 	})
 })

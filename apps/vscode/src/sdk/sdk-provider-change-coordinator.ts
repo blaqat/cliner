@@ -56,6 +56,12 @@ function filterModeConfiguration(resolved: ApiConfiguration, mode: Mode) {
 }
 
 export class SdkProviderChangeCoordinator {
+	/**
+	 * Threads whose own model refused a passive rebuild, so they're still on their old build. Nothing is
+	 * said until someone sends to one: an edit elsewhere in Settings isn't that thread's error to show.
+	 */
+	private readonly refusedRebuilds = new Set<string>()
+
 	constructor(private readonly options: SdkProviderChangeCoordinatorOptions) {}
 
 	handleApiConfigurationChanged(
@@ -70,7 +76,10 @@ export class SdkProviderChangeCoordinator {
 			if (useModelSettings(this.options.stateManager)) {
 				this.options.rebuilds.request(
 					"provider",
-					(context) => this.performRestartActiveSessionForProviderChange(session.sessionId, context.isCurrent),
+					(context) =>
+						this.performRestartActiveSessionForProviderChange(session.sessionId, context.isCurrent, (sessionId) =>
+							this.refusedRebuilds.add(sessionId),
+						),
 					session.sessionId,
 				)
 				continue
@@ -119,7 +128,30 @@ export class SdkProviderChangeCoordinator {
 		await this.performRestartActiveSessionForProviderChange()
 	}
 
-	private async performRestartActiveSessionForProviderChange(sessionId?: string, isCurrent = () => true): Promise<void> {
+	/**
+	 * A send to a thread whose rebuild was refused tries once more, so it can't run on its old build.
+	 * Returns why it still can't start, which is the send's error to show.
+	 */
+	async retryRefusedRebuild(sessionId: string): Promise<string | undefined> {
+		if (!this.refusedRebuilds.delete(sessionId)) return undefined
+		let refusal: string | undefined
+		await this.performRestartActiveSessionForProviderChange(
+			sessionId,
+			() => true,
+			(_id, error) => {
+				this.refusedRebuilds.add(sessionId)
+				refusal = error instanceof Error ? error.message : String(error)
+			},
+		)
+		return refusal
+	}
+
+	/** `onBuildRefused` takes a failure to build the new configuration. Anything after that is always reported. */
+	private async performRestartActiveSessionForProviderChange(
+		sessionId?: string,
+		isCurrent = () => true,
+		onBuildRefused?: (sessionId: string, error: unknown) => void,
+	): Promise<void> {
 		const activeSession = sessionId
 			? (this.options.sessions.getSession?.(sessionId) ??
 				(this.options.sessions.getActiveSession()?.sessionId === sessionId
@@ -136,6 +168,7 @@ export class SdkProviderChangeCoordinator {
 
 		Logger.log(`[SdkController] Restarting session ${oldSessionId} for provider change`)
 
+		let built = false
 		try {
 			// A session pinned to a task selection rebuilds against its own
 			// profile, not whichever configuration is globally selected now.
@@ -157,6 +190,8 @@ export class SdkProviderChangeCoordinator {
 				},
 				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
 			)
+			built = true
+			this.refusedRebuilds.delete(oldSessionId)
 			const builtSelection = useModelSettings(this.options.stateManager)
 				? (getSessionApiSnapshot(config)?.selection ?? selection)
 				: selection
@@ -184,7 +219,8 @@ export class SdkProviderChangeCoordinator {
 				if (isCurrent() && retained === activeSession) {
 					this.options.rebuilds.request(
 						"provider",
-						(context) => this.performRestartActiveSessionForProviderChange(oldSessionId, context.isCurrent),
+						(context) =>
+							this.performRestartActiveSessionForProviderChange(oldSessionId, context.isCurrent, onBuildRefused),
 						oldSessionId,
 					)
 				}
@@ -205,6 +241,13 @@ export class SdkProviderChangeCoordinator {
 			await this.options.postStateToWebview()
 			Logger.log(`[SdkController] Session restarted for provider change: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			if (!built && onBuildRefused) {
+				Logger.warn(
+					`[SdkController] Session ${oldSessionId} keeps its current build: ${error instanceof Error ? error.message : "refused"}`,
+				)
+				onBuildRefused(oldSessionId, error)
+				return
+			}
 			Logger.error("[SdkController] Failed to restart session for provider change:", error)
 			if (this.options.sessions.getActiveSession()?.sessionId === oldSessionId)
 				this.options.messages.appendAndEmit(

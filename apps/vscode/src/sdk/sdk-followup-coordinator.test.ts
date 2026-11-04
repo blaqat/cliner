@@ -764,3 +764,30 @@ it("ignores a stale decision response instead of queuing or resuming a turn", as
 	expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	expect(options.runExclusive).not.toHaveBeenCalled()
 })
+
+describe("a send to a thread whose rebuild was refused", () => {
+	it("refuses with the reason and sends nothing", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		options.retryRefusedRebuild = vi.fn(async () => "This model has no model ID. Add it in Settings > Models.")
+		await coordinator.askResponse("hello")
+		expect(options.retryRefusedRebuild).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.messages.emitSessionEvents).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: "This model has no model ID. Add it in Settings > Models." })],
+			{ type: "status", payload: { sessionId: "session-123", status: "error" } },
+		)
+		expect(options.onResumeFailed).toHaveBeenCalledOnce()
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+	it("sends on the session the retry rebuilt", async () => {
+		const old = makeActiveSession()
+		const rebuilt = { ...makeActiveSession(), sdkHost: { send: vi.fn() } }
+		const { coordinator, options } = makeCoordinator({ activeSession: old })
+		options.retryRefusedRebuild = vi.fn(async () => {
+			options.sessions.getActiveSession.mockReturnValue(rebuilt as never)
+			return undefined
+		})
+		await coordinator.askResponse("hello")
+		expect(options.sessions.fireAndForgetSend.mock.calls[0][0]).toBe(rebuilt.sdkHost)
+	})
+})

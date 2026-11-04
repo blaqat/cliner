@@ -1,8 +1,8 @@
-import type { ProviderConnection } from "@shared/model-settings"
+import { BASE_URL_NEEDED, type ProviderConnection } from "@shared/model-settings"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { settingsConnectionElementId } from "../settingsTargets"
-import { CommitInput, ControlRow, Field, FieldGrid, Hint, LockedIcon, SmallSwitch } from "./fields"
 import { SecretField } from "./ConnectionForm"
+import { CommitInput, ControlRow, Field, FieldGrid, Hint, LockedIcon, SmallSwitch } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
 import { isValidUrl, secretRef } from "./modelsView"
 import { isFieldVisible, type ProviderField, type ProviderSpec } from "./providerSpecs"
@@ -157,6 +157,12 @@ export const ProviderConnectionFields = ({
 	const key = spec.auth === "keychain" || spec.auth === "optional-key"
 	const keyRef = secretRef(connection.id, "apiKey")
 	const firstField = spec.fields.find((field) => isFieldVisible(field, options))
+	// A flagged URL is the one thing to fix here, so the connection's fix link lands on it.
+	const flaggedUrl =
+		connection.baseUrl === BASE_URL_NEEDED
+			? spec.fields.find((field) => isUrlField(field) && isFieldVisible(field, options))
+			: undefined
+	const anchorField = flaggedUrl ?? (key ? undefined : firstField)
 
 	return (
 		<FieldGrid>
@@ -168,7 +174,7 @@ export const ProviderConnectionFields = ({
 					<SecretField
 						configured={!!store.state?.configuredSecrets[keyRef]}
 						disabled={managedKey("apiKey")}
-						id={anchor}
+						id={anchorField ? undefined : anchor}
 						label="API key"
 						onRemove={
 							spec.auth === "optional-key"
@@ -178,20 +184,20 @@ export const ProviderConnectionFields = ({
 										])
 								: undefined
 						}
-						requiredNote={spec.auth === "optional-key" ? undefined : REQUIRED_SECRET_NOTE}
 						onSet={(value) =>
 							save({ id: connection.id, auth: { kind: "keychain", secretRef: keyRef } }, [
 								{ field: "apiKey", operation: "set", value },
 							])
 						}
 						placeholder="Saved in VS Code's keychain"
+						requiredNote={spec.auth === "optional-key" ? undefined : REQUIRED_SECRET_NOTE}
 					/>
 				</Field>
 			)}
 			{spec.fields
 				.filter((field) => isFieldVisible(field, options))
 				.map((field) => {
-					const controlId = !key && field === firstField ? anchor : undefined
+					const controlId = field === anchorField ? anchor : undefined
 					if (field.slot === "secret") {
 						const ref = connection.secretRefs[field.id] ?? secretRef(connection.id, field.id)
 						return (
@@ -209,13 +215,13 @@ export const ProviderConnectionFields = ({
 														{ field: field.id, operation: "delete" },
 													])
 									}
-									requiredNote={field.required ? REQUIRED_SECRET_NOTE : undefined}
 									onSet={(value) =>
 										save({ id: connection.id, secretRefs: { [field.id]: ref } }, [
 											{ field: field.id, operation: "set", value },
 										])
 									}
 									placeholder="Saved in VS Code's keychain"
+									requiredNote={field.required ? REQUIRED_SECRET_NOTE : undefined}
 								/>
 							</Field>
 						)

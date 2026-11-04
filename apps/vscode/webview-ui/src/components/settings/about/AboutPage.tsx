@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react"
-import { ModelsServiceClient, UiServiceClient, FileServiceClient } from "@/services/grpc-client"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { FileServiceClient, ModelsServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { RELEASE_NOTES } from "../sections/about/releaseNotes"
 import { RemoteConfigSection } from "../sections/RemoteConfigSection"
 import { AdvancedFold } from "../shell/AdvancedFold"
 import { SettingBlock } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { findRow, isRowVisible } from "../shell/settingsRegistry"
+import { MigrationFailedNotice, MigrationIssues } from "./MigrationNotices"
 
 const noHeader = () => null
 export const AboutPage = () => {
 	const { version, extensionVariant, modelSettings, navigateToAccount } = useExtensionState()
 	const [migration, setMigration] = useState(modelSettings?.migration)
 	const [error, setError] = useState("")
-	const [busy, setBusy] = useState(false)
 	useEffect(() => {
 		let live = true
 		ModelsServiceClient.getModelSettingsMigrationStatus({ json: "{}" })
@@ -28,18 +28,6 @@ export const AboutPage = () => {
 			live = false
 		}
 	}, [])
-	const retry = async () => {
-		setBusy(true)
-		setError("")
-		try {
-			const r = await ModelsServiceClient.retryModelSettingsMigration({ json: "{}" })
-			setMigration(JSON.parse(r.json))
-		} catch {
-			setError("Migration could not finish. Your previous setup is preserved. Retry when ready.")
-		} finally {
-			setBusy(false)
-		}
-	}
 	const { rows, ctx } = useSettingsShell()
 	const remoteRow = findRow(rows, "about.remote-config")
 	const canSeeRemoteConfig = !!remoteRow && isRowVisible(rows, remoteRow, ctx)
@@ -48,19 +36,11 @@ export const AboutPage = () => {
 			{migration?.status === "complete" && (
 				<p className="text-[11px] text-description">Profiles moved to Models. Your models and levels were kept.</p>
 			)}
-			{migration?.status === "failed" && (
-				<div role="status" className="rounded border border-warning p-2 text-[11px]">
-					Models could not be moved. Your previous setup is preserved.{" "}
-					{migration.retryable && (
-						<Button disabled={busy} size="sm" variant="secondary" onClick={() => void retry()}>
-							{busy ? "Retrying…" : "Retry migration"}
-						</Button>
-					)}
-				</div>
-			)}
+			{migration?.status === "complete" && <MigrationIssues issues={migration.issues} />}
+			{migration?.status === "failed" && <MigrationFailedNotice onRetried={setMigration} status={migration} />}
 			{migration?.status === "pending" && <p role="status">Moving your model setup…</p>}
 			{error && (
-				<p role="alert" className="text-error text-[11px]">
+				<p className="text-error text-[11px]" role="alert">
 					{error}
 				</p>
 			)}
@@ -75,19 +55,19 @@ export const AboutPage = () => {
 			)}
 			<div className="flex gap-2 pt-2">
 				<Button
-					size="sm"
-					variant="secondary"
 					onClick={() =>
 						void FileServiceClient.copyToClipboard({
 							value: JSON.stringify({ version, extensionVariant, migration: migration?.status }, null, 2),
 						}).catch(() => setError("Could not copy diagnostics. Try again."))
-					}>
+					}
+					size="sm"
+					variant="secondary">
 					Copy diagnostics
 				</Button>
 				<Button
+					onClick={() => void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))}
 					size="sm"
-					variant="secondary"
-					onClick={() => void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))}>
+					variant="secondary">
 					Open logs
 				</Button>
 			</div>
@@ -99,7 +79,7 @@ export const AboutPage = () => {
 					<li key={note}>{note}</li>
 				))}
 			</ul>
-			<Button size="sm" variant="secondary" onClick={navigateToAccount}>
+			<Button onClick={navigateToAccount} size="sm" variant="secondary">
 				Cline account
 			</Button>
 			<p className="text-[11px]">

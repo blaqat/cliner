@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { ApiHandlerOptions } from "./api"
+import type { ModelSettingsMigrationIssue } from "./model-settings-migration-status"
 
 export type ConnectionId = string // generated UUID, immutable
 export type ModelId = string // configured row UUID, not the upstream model ID
@@ -9,6 +10,11 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 export type ApiFormat = "chat" | "responses"
 export type Knowledge = "yes" | "no" | "unknown"
 export type { LevelRequest } from "@cline/llms"
+
+/** Stands in for a saved value the schema can't hold. The resolver refuses it and says what to fix. */
+export const MODEL_ID_NEEDED = "model-id-needed"
+/** Reserved TLD, so a key can never reach a real host if this is ever sent. */
+export const BASE_URL_NEEDED = "https://base-url-needed.invalid/"
 
 import type { LevelRequest } from "@cline/llms"
 export type ModelLevel = {
@@ -81,7 +87,13 @@ export type ModelRow = {
 	overrides: Partial<ModelValues>
 	providerOptions: Partial<ApiHandlerOptions> // model-specific settings only
 	legacyMetadata?: { source: "legacy"; sdk?: Record<string, Json>; modelInfo?: Record<string, Json> }
+	/**
+	 * Overrides migration stored so threads resolve without the catalog. Nobody chose them, so they aren't
+	 * tagged Changed and a shared default replaces them. Editing one makes it the user's own value.
+	 */
+	migratedValues?: MigratedValue[]
 }
+export type MigratedValue = "levels" | "reasoning"
 export type ModelPick = { modelId: ModelId; levelId: LevelId }
 export type ThreadModelPick = { kind: "thread"; level: "inherit" | LevelId }
 export type SubagentPick = { kind: "model"; pick: ModelPick } | ThreadModelPick
@@ -139,6 +151,7 @@ export type ModelSettingsMigration = {
 	profilePicks: Record<string, ModelPick>
 	legacyFingerprint: string // nonsecret configuration only
 	completedAt?: number
+	issues?: ModelSettingsMigrationIssue[]
 }
 
 const id = z.string().min(1)
@@ -437,6 +450,7 @@ export const ModelRowSchema = z
 			})
 			.strict()
 			.optional(),
+		migratedValues: z.array(z.enum(["levels", "reasoning"])).optional(),
 	})
 	.strict()
 export const ModelPickSchema = z.object({ modelId: id, levelId: id }).strict()
@@ -499,6 +513,19 @@ export const ModelSettingsMigrationSchema = z
 		profilePicks: z.record(id, ModelPickSchema),
 		legacyFingerprint: z.string(),
 		completedAt: z.number().optional(),
+		issues: z
+			.array(
+				z
+					.object({
+						kind: z.enum(["normalized", "dropped"]),
+						field: z.string(),
+						source: z.string(),
+						modelId: id.optional(),
+						connectionId: id.optional(),
+					})
+					.strict(),
+			)
+			.optional(),
 	})
 	.strict()
 export const ModelSettingsSchema = z

@@ -1,7 +1,9 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
 import {
+	BASE_URL_NEEDED,
 	type BackgroundUse,
 	BUILTIN_MODEL_VALUES,
+	MODEL_ID_NEEDED,
 	type ModelMetadata,
 	type ModelPick,
 	type ModelSettings,
@@ -13,7 +15,7 @@ import {
 	ThreadModelSelectionSchema,
 } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
-import { BASE_URL_NEEDED, closestOfferedLevel, MODEL_ID_NEEDED } from "./model-settings/legacy-values"
+import { closestOfferedLevel } from "./model-settings/legacy-values"
 import { type ConnectionAuthDependencies, prepareModelRequest } from "./model-settings/request-adapter"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 

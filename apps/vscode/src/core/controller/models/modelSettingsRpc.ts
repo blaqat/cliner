@@ -15,12 +15,14 @@ import {
 	assertConnectionAllowed,
 	assertModelSettingsUnlocked,
 	connectionSecretRefs,
+	followSharedDefaults,
 	managedConnectionForSave,
 	managedModelRow,
 	modelDependencies,
 	readModelSettingsState,
 	savedThreadsUsingModels,
 	validateConnectionSecretRefs,
+	withSettledMigratedValues,
 } from "@/sdk/model-settings/host-settings"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import type { Controller } from ".."
@@ -102,6 +104,7 @@ export async function mutateSettings(
 				const index = next.connections.findIndex((c) => c.id === input.connection.id)
 				if (index < 0) next.connections.push(connection)
 				else next.connections[index] = connection
+				followSharedDefaults(next, connection, previousConnection)
 				break
 			}
 			case "saveConfiguredModels": {
@@ -112,7 +115,10 @@ export async function mutateSettings(
 					const historical = index < 0 ? undefined : next.models[index].legacyMetadata
 					if (row.legacyMetadata !== undefined && JSON.stringify(row.legacyMetadata) !== JSON.stringify(historical))
 						throw new Error("Historical model metadata is read-only")
-					const saved = historical ? { ...row, legacyMetadata: historical } : row
+					const saved = withSettledMigratedValues(
+						historical ? { ...row, legacyMetadata: historical } : row,
+						index < 0 ? undefined : next.models[index],
+					)
 					const owner = next.connections.find((c) => c.id === row.connectionId)
 					if (index < 0) next.models.push(owner ? managedModelRow(controller.stateManager, saved, owner) : saved)
 					else next.models[index] = saved

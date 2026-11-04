@@ -1,7 +1,10 @@
 import { createGateway } from "@cline/llms"
 import {
+	BASE_URL_NEEDED,
 	createCompatibleConnection,
 	createDefaultModelSettings,
+	MODEL_ID_NEEDED,
+	type ModelRow,
 	type ModelSettings,
 	ModelValuesSchema,
 } from "@shared/model-settings"
@@ -788,4 +791,111 @@ it.each([
 	await expect(
 		assertConfiguredModelRequestAllowed(f.state as never, settings, { modelId: "m", levelId: "default" }),
 	).resolves.toBeUndefined()
+})
+
+describe("flagged migrated rows", () => {
+	const flagged = (f: ReturnType<typeof fixture>, connection: object, upstreamId: string) => {
+		const settings = f.get()
+		settings.connections.push({ ...createCompatibleConnection("c"), auth: { kind: "none" }, ...connection })
+		settings.models.push({
+			id: "m",
+			connectionId: "c",
+			upstreamId,
+			name: "m",
+			kind: "unknown",
+			overrides: {},
+			providerOptions: {},
+		})
+		settings.roles.chat = { modelId: "m", levelId: "default" }
+	}
+	it("point availability and the role at the model ID field", async () => {
+		const f = fixture()
+		flagged(f, { baseUrl: "https://a.test/v1" }, MODEL_ID_NEEDED)
+		const state = await readModelSettingsState(f.state as never)
+		const target = { page: "models", modelId: "m", field: "upstreamId" }
+		expect(state.availability.m).toMatchObject({ available: false, target })
+		expect(state.availability["role.chat"]).toMatchObject({ available: false, target })
+	})
+	it("point availability and the role at the base URL field", async () => {
+		const f = fixture()
+		flagged(f, { baseUrl: BASE_URL_NEEDED }, "real")
+		const state = await readModelSettingsState(f.state as never)
+		const target = { page: "models", connectionId: "c", field: "baseUrl" }
+		expect(state.availability.m).toMatchObject({ available: false, target })
+		expect(state.availability["role.chat"]).toMatchObject({ available: false, target })
+	})
+	it("publish the migration's issues with its status", async () => {
+		const f = fixture()
+		const issues = [{ kind: "normalized", field: "modelId", source: "blank", modelId: "m" }]
+		f.state.getModelSettingsMigrationStatus = () => ({ status: "complete", retryable: false, issues }) as never
+		expect((await readModelSettingsState(f.state as never)).migration.issues).toEqual(issues)
+	})
+})
+
+describe("migrated values stay out of Changed until edited", () => {
+	const ladder = [
+		{ id: "default", label: "Default", rank: 0, request: { kind: "default" as const } },
+		{ id: "high", label: "high", rank: 1, request: { kind: "effort" as const, value: "high" } },
+	]
+	const migrated = () => {
+		const f = fixture()
+		const settings = f.get()
+		settings.connections.push({ ...createCompatibleConnection("c"), baseUrl: "https://a.test/v1", auth: { kind: "none" } })
+		settings.models.push({
+			id: "m",
+			connectionId: "c",
+			upstreamId: "m",
+			name: "m",
+			kind: "unknown",
+			overrides: { levels: ladder, reasoning: "yes", temperature: 0.2 },
+			providerOptions: {},
+			migratedValues: ["levels", "reasoning"],
+		})
+		return f
+	}
+	const row = (f: ReturnType<typeof fixture>) => f.get().models.find((m) => m.id === "m")!
+	const saveRow = (f: ReturnType<typeof fixture>, change: Partial<ModelRow>) =>
+		f.call("saveConfiguredModels", { expectedRevision: f.get().revision, models: [{ ...row(f), ...change }] })
+
+	it("an unrelated save keeps the marker", async () => {
+		const f = migrated()
+		await saveRow(f, { name: "renamed" })
+		expect(row(f).migratedValues).toEqual(["levels", "reasoning"])
+	})
+	it("editing a value makes that one the user's", async () => {
+		const f = migrated()
+		await saveRow(f, { overrides: { ...row(f).overrides, levels: [ladder[0]] } })
+		expect(row(f).migratedValues).toEqual(["reasoning"])
+		await saveRow(f, { overrides: { temperature: 0.2 } })
+		expect(row(f).migratedValues).toBeUndefined()
+	})
+	it("a save can't claim a marker the stored row doesn't have, and a new row never has one", async () => {
+		const f = migrated()
+		await saveRow(f, { overrides: { ...row(f).overrides, levels: [ladder[0]] } })
+		await saveRow(f, { migratedValues: ["levels", "reasoning"] })
+		expect(row(f).migratedValues).toEqual(["reasoning"])
+		await f.call("saveConfiguredModels", {
+			expectedRevision: f.get().revision,
+			models: [{ ...row(f), id: "copy", migratedValues: ["levels"] }],
+		})
+		expect(f.get().models.find((m) => m.id === "copy")?.migratedValues).toBeUndefined()
+	})
+	it("a shared default replaces the migrated value, so the model follows it, and leaves the user's own", async () => {
+		const f = migrated()
+		await f.call("saveConnection", {
+			expectedRevision: f.get().revision,
+			connection: { id: "c", defaults: { levels: [ladder[0]] } },
+			secrets: [],
+		})
+		expect(row(f).overrides.levels).toBeUndefined()
+		expect(row(f).overrides.reasoning).toBe("yes")
+		expect(row(f).overrides.temperature).toBe(0.2)
+		expect(row(f).migratedValues).toEqual(["reasoning"])
+		await f.call("saveConnection", {
+			expectedRevision: f.get().revision,
+			connection: { id: "c", defaults: { temperature: 0.9 } },
+			secrets: [],
+		})
+		expect(row(f).overrides.temperature).toBe(0.2)
+	})
 })
