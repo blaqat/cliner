@@ -5,6 +5,8 @@ import type { PreferenceRow, SettingsRowContext } from "./settingsRegistry"
 
 /** The fields the model form tags Changed + Reset, by the name it shows them under. */
 const FIELD_LABELS: Partial<Record<keyof ModelValues, string>> = {
+	images: "Images",
+	tools: "Tools",
 	contextWindow: "Context window",
 	maxOutputTokens: "Max output tokens",
 	maxInputTokens: "Max input tokens",

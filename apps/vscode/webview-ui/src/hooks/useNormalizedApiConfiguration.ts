@@ -118,7 +118,7 @@ export function withConfiguredModel(resolved: NormalizedApiConfig, configured: S
 		selectedModelId: configured?.model.upstreamId ?? "",
 		selectedModelInfo: {
 			...resolved.selectedModelInfo,
-			supportsImages: values?.images.value !== "no",
+			supportsImages: values?.images.value === "yes",
 			...(values?.contextWindow.value ? { contextWindow: values.contextWindow.value } : {}),
 			...(values?.maxOutputTokens.value ? { maxTokens: values.maxOutputTokens.value } : {}),
 			...(values?.inputPrice.value != null ? { inputPrice: values.inputPrice.value } : {}),

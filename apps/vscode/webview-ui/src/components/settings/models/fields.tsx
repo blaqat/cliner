@@ -314,6 +314,12 @@ export const Segmented = <T extends string>({
 	</div>
 )
 
+/** Tools and images: off unless the catalog knows the model or someone says yes. */
+export const CAPABILITY_OPTIONS = [
+	{ value: "yes", label: "Yes" },
+	{ value: "no", label: "No" },
+] as const
+
 export const KNOWLEDGE_OPTIONS = [
 	{ value: "yes", label: "Yes" },
 	{ value: "no", label: "No" },

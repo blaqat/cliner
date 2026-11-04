@@ -1,6 +1,7 @@
 import type { Connection, Knowledge, ModelLevel, ModelValues } from "@shared/model-settings"
 import { useState } from "react"
 import {
+	CAPABILITY_OPTIONS,
 	CommitInput,
 	ControlRow,
 	Field,
@@ -64,7 +65,18 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 		</Field>
 	)
 
-	const knowledge = (key: "images" | "tools" | "reasoning", label: string) => (
+	const capability = (key: "images" | "tools", label: string) => (
+		<ControlRow label={label}>
+			<Segmented<"yes" | "no">
+				label={`Shared ${label}`}
+				onChange={(value) => void save({ [key]: value === "yes" ? "yes" : "unknown" })}
+				options={CAPABILITY_OPTIONS}
+				value={defaults[key] === "yes" ? "yes" : "no"}
+			/>
+		</ControlRow>
+	)
+
+	const knowledge = (key: "reasoning", label: string) => (
 		<ControlRow label={label}>
 			<Segmented<Knowledge>
 				label={`Shared ${label}`}
@@ -124,6 +136,8 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 							})}
 						</div>
 					)}
+					{capability("images", "Images")}
+					{capability("tools", "Tools")}
 					<FieldGrid className="mt-0.5">{amountField("temperature", "Temperature", "Not sent")}</FieldGrid>
 					<FieldGrid className="mt-0.5">
 						{amountField("inputPrice", "Input, per 1M")}

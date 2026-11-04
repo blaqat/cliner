@@ -17,12 +17,13 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–52",
+		builds: "test builds fork.39–53",
 		date: "2026-11-04",
 		notes: [
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
 			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search across them, and a Changed chip that lists what isn't the default and resets it",
-			"Images and tools aren't settings any more, and OpenAI's built-in image and web tools only go to OpenAI's own servers, so gateways and Azure stop refusing requests",
+			"Images and tools are Yes or No, and No unless the catalog knows the model, with a warning and a one-click way on when tools are off; OpenAI's built-in image and web tools only go to OpenAI's own servers",
+			"Each model has an on/off switch: off keeps it set up but out of every model picker",
 			"A model shows just its ID, name, limits, reasoning, price and request preview, with the rest under More; the Free toggle is gone, and Edit connection sits at the top of each connection",
 			"Custom headers stay as text unless you lock one, and unlocking keeps the value",
 			"A blank temperature sends none; 0 and 1 are sent as typed, and the old form's starting 0 no longer goes out",

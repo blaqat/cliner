@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react"
 import { ManagedTag } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import {
+	CAPABILITY_OPTIONS,
 	CommitInput,
 	ControlRow,
 	Field,
@@ -150,6 +151,23 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					value={own == null ? "" : String(own)}
 				/>
 			</Field>
+		)
+	}
+
+	const capabilityRow = (key: "images" | "tools", label: string, whenOff: string) => {
+		const on = effective[key].value === "yes"
+		return (
+			<ControlRow description={on ? undefined : whenOff} id={fieldAnchor(row.id, key)} label={label} tag={tag(key, label)}>
+				<Segmented<"yes" | "no">
+					controlId={fieldControl(row.id, key)}
+					disabled={isManagedField(key)}
+					inherited={!hasOverride(row, key) && effective[key].source === "connection"}
+					label={label}
+					onChange={(value) => void set(key, value)}
+					options={CAPABILITY_OPTIONS}
+					value={on ? "yes" : "no"}
+				/>
+			</ControlRow>
 		)
 	}
 
@@ -344,6 +362,13 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					/>
 				</Field>
 			</FieldGrid>
+			{hasId && row.kind !== "non-chat" && effective.tools.value !== "yes" && (
+				<Why tone="warn">
+					Tools are off, so this model can only chat. It can't read or edit files or run commands.{" "}
+					{!isManagedField("tools") && <LinkButton onClick={() => void set("tools", "yes")}>Turn tools on</LinkButton>}
+				</Why>
+			)}
+
 			<GroupHeading>Limits</GroupHeading>
 			<FieldGrid className="mt-0.5">
 				{numberField(
@@ -410,7 +435,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 			<FoldHeader
 				onToggle={() => page.setMoreOpen(row.id)}
 				open={moreOpen}
-				summary={`${setInMore ? `${setInMore} set · ` : ""}temperature, verbosity, extra body, and more`}
+				summary={`${setInMore ? `${setInMore} set · ` : ""}images, tools, temperature, verbosity, extra body, and more`}
 				title="More"
 			/>
 			{moreOpen && (
@@ -425,8 +450,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						<ModelCatalogPresets
 							onApply={(fills) => {
 								setPresetsOpen(false)
-								const { images: _images, tools: _tools, ...next } = fills
-								for (const key of Object.keys(next) as (keyof typeof next)[]) {
+								const next = { ...fills }
+								for (const key of Object.keys(next) as (keyof ModelValues)[]) {
 									if (hasOverride(row, key)) {
 										delete next[key]
 									}
@@ -435,7 +460,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 							}}
 						/>
 					)}
-					<Hint>Images and tools: Cline uses them when the model does. If a server refuses, the thread says so.</Hint>
+					{capabilityRow("images", "Images", "Off, attachments are turned off for this model.")}
+					{capabilityRow("tools", "Tools", "Off, this model can only chat: no reading or editing files, no commands.")}
 					<FieldGrid className="mt-0.5">
 						{numberField(
 							"temperature",

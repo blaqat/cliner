@@ -160,16 +160,9 @@ export async function configuredProviderConfig(
 		...(resolved.values.files === "yes" ? ["files" as const] : []),
 		...(resolved.values.promptCache === "yes" ? ["prompt-cache" as const] : []),
 	]
-	// The SDK reads a populated list as authoritative: leaving "tools" out removes every tool. Answers
-	// about something else mustn't turn an unanswered Tools or Images into a no.
-	const answeredNo = resolved.values.tools === "no" || resolved.values.images === "no"
-	// Nobody sets these any more, so unknown means try: a server that refuses says so in the thread.
-	if (capabilities.length || answeredNo) {
-		if (resolved.values.tools === "unknown") capabilities.push("tools")
-		if (resolved.values.images === "unknown") capabilities.push("images")
-	}
-	// And an empty list is "unspecified", which would turn a No back into a yes.
-	if (answeredNo && !capabilities.length) capabilities.push("text")
+	// The SDK reads a populated list as authoritative, and an empty one as "unspecified", which is a yes.
+	// Tools and images are off unless the catalog knows the model or the person said yes.
+	if (!capabilities.length) capabilities.push("text")
 	return {
 		[requestPolicyGuard]: guard,
 		// Responses on a compatible connection only borrows OpenAI's adapter. Staying this provider keeps

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import {
 	createSettingsNavigationRequest,
 	type SettingsNavigationTarget,
@@ -488,7 +489,9 @@ describe("the model form", () => {
 		expect(form.getByRole("button", { name: "Remove" })).toBeInTheDocument()
 		// Everything else waits under More.
 		expect(form.queryByLabelText("Temperature")).toBeNull()
-		expect(form.queryByRole("radiogroup", { name: "Verbosity" })).toBeNull()
+		for (const group of ["Images", "Tools", "Verbosity"]) {
+			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
+		}
 		expect(form.queryByRole("button", { name: /Start from a preset/ })).toBeNull()
 		expect(form.queryByRole("button", { name: "Add param" })).toBeNull()
 		// Free is gone.
@@ -505,12 +508,14 @@ describe("the model form", () => {
 		expect(table.getByLabelText("High is sent as")).toHaveValue("high")
 		// More.
 		await openMore(form)
-		expect(form.getByRole("radiogroup", { name: "Verbosity" })).toBeInTheDocument()
-		// Images and tools aren't settings.
-		for (const group of ["Images", "Tools"]) {
-			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
+		for (const group of ["Images", "Tools", "Verbosity"]) {
+			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
 		}
-		expect(form.getByText(/Images and tools: Cline uses them when the model does/)).toBeInTheDocument()
+		// Images and tools are a plain yes or no.
+		for (const group of ["Images", "Tools"]) {
+			const options = within(form.getByRole("radiogroup", { name: group })).getAllByRole("radio")
+			expect(options.map((option) => option.textContent)).toEqual(["Yes", "No"])
+		}
 		expect(form.getByLabelText("Temperature")).toBeInTheDocument()
 		expect(form.getByRole("button", { name: /Start from a preset/ })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Add param" })).toBeInTheDocument()
@@ -623,7 +628,7 @@ describe("the model form", () => {
 			maxOutputTokens: 8192,
 			reasoning: "yes",
 		})
-		expect(overrides).not.toHaveProperty("images")
+		expect(overrides).toMatchObject({ images: "yes" })
 		expect(overrides).not.toHaveProperty("inputPrice")
 		expect(overrides).not.toHaveProperty("outputPrice")
 	})
@@ -1387,7 +1392,83 @@ describe("Remote Config locks", () => {
 	})
 })
 
+describe("the model switch", () => {
+	const row = () => within(screen.getByTestId("model-row-g54"))
+	it("off keeps the model but hides it from pickers, and on brings it back", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
+		await flush()
+		await flush()
+		expect(savedRow("g54")?.enabled).toBe(false)
+		expect(row().getByText(/Off, hidden from model pickers/)).toBeInTheDocument()
+		expect(page().getByText(/3 of 4 show in the composer/)).toBeInTheDocument()
+		expect(selectorDataFromModelSettings(host.state()).rows.map((entry) => entry.id)).not.toContain("g54")
+		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
+		await flush()
+		await flush()
+		expect(savedRow("g54")).not.toHaveProperty("enabled")
+		expect(selectorDataFromModelSettings(host.state()).rows.map((entry) => entry.id)).toContain("g54")
+	})
+	it("a thread already on a model that's off still names it, while pickers leave it out", () => {
+		const settings = gatewaySettings()
+		settings.models.find((entry) => entry.id === "g54")!.enabled = false
+		const state = createFakeHost({ settings, availability: envAvailable }).state()
+		expect(selectorDataFromModelSettings(state).rows.map((entry) => entry.id)).not.toContain("g54")
+		expect(selectorDataFromModelSettings(state, ["g54"]).rows.map((entry) => entry.id)).toContain("g54")
+	})
+	it("won't turn off a model on the subagents' allowed list", async () => {
+		const settings = gatewaySettings()
+		settings.subagents.allowed = [{ kind: "model", modelId: "g54", levels: [] }]
+		setup({ settings, availability: envAvailable })
+		await flush()
+		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
+		await flush()
+		await flush()
+		expect(savedRow("g54")?.enabled).toBeUndefined()
+		expect(row().getByRole("button", { name: "Subagents" })).toBeInTheDocument()
+	})
+	it("won't turn off a model a role uses: says who and links there", async () => {
+		const settings = gatewaySettings()
+		settings.roles.chat = { modelId: "g54", levelId: "default" }
+		setup({ settings, availability: envAvailable })
+		await flush()
+		fireEvent.click(row().getByRole("switch", { name: /^Use / }))
+		await flush()
+		await flush()
+		expect(savedRow("g54")?.enabled).toBeUndefined()
+		expect(row().getByText(/Still in use, so it stays on/)).toBeInTheDocument()
+		expect(row().getByRole("button", { name: "Chat" })).toBeInTheDocument()
+	})
+})
+
+describe("tools off", () => {
+	it("a model the catalog doesn't know says it can only chat, in the list and the form, with the way out", async () => {
+		const settings = gatewaySettings()
+		settings.models.find((row) => row.id === "sol")!.overrides.tools = "unknown"
+		setup({ settings, availability: envAvailable })
+		await flush()
+		expect(within(screen.getByTestId("model-row-sol")).getByText("No tools")).toBeInTheDocument()
+		const form = await openModel("sol")
+		expect(form.getByText(/Tools are off, so this model can only chat/)).toBeInTheDocument()
+		fireEvent.click(form.getByRole("button", { name: "Turn tools on" }))
+		await flush()
+		await flush()
+		expect(savedRow("sol")?.overrides.tools).toBe("yes")
+		expect(within(screen.getByTestId("model-row-sol")).queryByText("No tools")).toBeNull()
+	})
+})
+
 describe("the connection header", () => {
+	it("puts Edit connection under the status, outside the row that opens and closes", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const card = screen.getByTestId("connection-gateway")
+		const edit = within(card).getByRole("button", { name: "Edit connection" })
+		expect(edit.closest("button[aria-expanded]")).toBeNull()
+		expect(edit.parentElement?.previousElementSibling).toHaveTextContent(/Key missing|Not tested|Connected/)
+	})
+
 	it("has Edit connection up top, open or not, and it opens the form", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
@@ -1499,10 +1580,12 @@ describe("shared defaults", () => {
 		expect(host.wire()).not.toContain('"contextWindow":null')
 	})
 
-	it("a shared 0 stays an answer, and images and tools aren't offered", async () => {
+	it("a shared No clears the key so the catalog still decides; a shared 0 stays an answer", async () => {
 		const shared = await open()
-		expect(shared.queryByRole("radiogroup", { name: "Shared Images" })).toBeNull()
-		expect(shared.queryByRole("radiogroup", { name: "Shared Tools" })).toBeNull()
+		fireEvent.click(within(shared.getByRole("radiogroup", { name: "Shared Images" })).getByRole("radio", { name: "No" }))
+		await flush()
+		await flush()
+		expect(Object.hasOwn(defaults(), "images")).toBe(false)
 		change("Shared Temperature", "0", shared)
 		await flush()
 		await flush()

@@ -80,13 +80,16 @@ function useModelSettingsSelection(mode: Mode) {
 	useEffect(() => setArmed(null), [composerNextMessageOnly, taskId])
 
 	return (state: ModelSettingsState): ComposerSelection => {
-		const { rows, ladder } = selectorDataFromModelSettings(state)
 		const { roles } = state.settings
 		const askHasOwnModel = mode === "plan" && roles.ask.enabled
 		const defaultModelPick = askHasOwnModel ? roles.ask.pick : roles.chat
 		const defaultPick = defaultModelPick && { rowId: defaultModelPick.modelId, levelId: defaultModelPick.levelId }
 		const threadPick = composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ?? defaultModelPick
 		const pick = threadPick && { rowId: threadPick.modelId, levelId: threadPick.levelId }
+		const { rows, ladder } = selectorDataFromModelSettings(state, [
+			threadPick?.modelId,
+			focusedSessionModels?.[mode]?.pick?.modelId,
+		])
 		const shown = describePick(rows, pick)
 		const row = rows.find((candidate) => candidate.id === pick?.rowId)
 		const model = state.settings.models.find((candidate) => candidate.id === pick?.rowId)

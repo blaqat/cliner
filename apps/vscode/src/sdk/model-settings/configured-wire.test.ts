@@ -320,6 +320,34 @@ describe("OpenAI's built-in tools", () => {
 	})
 })
 
+describe("tools and images a catalog doesn't know", () => {
+	const build = (overrides: Record<string, unknown>) =>
+		configuredProviderConfig(
+			settingsFor(compatibleConnection({ kind: "none" }), "unlisted-model", {
+				reasoning: "no",
+				levels: undefined,
+				...overrides,
+			}),
+			{ modelId: "row", levelId: "default" },
+			{ secrets: noSecrets(), environment },
+		)
+	it.each([
+		[{}, false, false],
+		[{ tools: "unknown", images: "unknown" }, false, false],
+		[{ reasoning: "yes" }, false, false],
+		[{ tools: "yes" }, true, false],
+		[{ images: "yes" }, false, true],
+		[{ tools: "yes", images: "yes" }, true, true],
+	])("with %j, tools %s and images %s", async (overrides, tools, images) => {
+		const config = await build(overrides)
+		const info = config.knownModels!["unlisted-model"]
+		expect(modelSupportsToolCalling(info)).toBe(tools)
+		expect(modelSupportsImageInput(info)).toBe(images)
+		const body = await captureWithTools(config)
+		expect(body.tools?.length ?? 0).toBe(tools ? 1 : 0)
+	})
+})
+
 describe("temperature", () => {
 	const send = async (apiFormat: "chat" | "responses", overrides: Record<string, unknown>, defaults: object = {}) => {
 		const connection = { ...compatibleConnection({ kind: "none" }), apiFormat, defaults } as Connection
@@ -471,7 +499,7 @@ describe("Tools and Images answers reach the request", () => {
 
 	it.each([
 		["no", false],
-		["unknown", true],
+		["unknown", false],
 		["yes", true],
 	])("Tools=%s alone: tools sent is %s, at both the session gate and the wire", async (tools, sends) => {
 		const config = await build({ tools })
@@ -483,10 +511,10 @@ describe("Tools and Images answers reach the request", () => {
 
 	it.each([
 		["no", false],
-		["unknown", true],
+		["unknown", false],
 		["yes", true],
-	])("Images=%s alone: images sent is %s, and tools stay", async (images, sends) => {
-		const config = await build({ images })
+	])("Images=%s with Tools=yes: images sent is %s, and tools stay", async (images, sends) => {
+		const config = await build({ images, tools: "yes" })
 		expect(modelSupportsImageInput(session(config))).toBe(sends)
 		const body = await captureWithTools(config)
 		expect(hasImage(body)).toBe(sends)

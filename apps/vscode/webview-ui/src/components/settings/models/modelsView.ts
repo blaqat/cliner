@@ -305,6 +305,10 @@ export const rolesUsingLevel = (roles: RoleSettings, modelId: string, levelId: s
 		return pick?.modelId === modelId && pick.levelId === levelId
 	})
 
+/** Every role this model is picked for, at any level. */
+export const rolesUsingModel = (roles: RoleSettings, modelId: string) =>
+	(Object.keys(ROLE_LABELS) as RoleKey[]).filter((role) => rolePick(roles, role)?.modelId === modelId)
+
 export type DependencyLine =
 	| { kind: "role"; role: RoleKey }
 	| { kind: "model"; modelId: string }
@@ -340,6 +344,8 @@ export const readDependencies = (paths: string[]): DependencyLine[] => {
 
 /** Fields that open the form's More fold. A fix link to one of these has to open it too. */
 export const MORE_FIELD_KEYS: (keyof ModelValues)[] = [
+	"images",
+	"tools",
 	"temperature",
 	"verbosity",
 	"extraBody",

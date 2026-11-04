@@ -92,6 +92,8 @@ export type ModelRow = {
 	 * tagged Changed and a shared default replaces them. Editing one makes it the user's own value.
 	 */
 	migratedValues?: MigratedValue[]
+	/** False keeps it set up but out of every model picker. Absent is on. */
+	enabled?: boolean
 }
 export type MigratedValue = "levels" | "reasoning"
 export type ModelPick = { modelId: ModelId; levelId: LevelId }
@@ -453,6 +455,8 @@ export const ModelRowSchema = z
 			.strict()
 			.optional(),
 		migratedValues: z.array(z.enum(["levels", "reasoning"])).optional(),
+		/** False keeps it set up but out of every model picker. Absent is on. */
+		enabled: z.boolean().optional(),
 	})
 	.strict()
 export const ModelPickSchema = z.object({ modelId: id, levelId: id }).strict()

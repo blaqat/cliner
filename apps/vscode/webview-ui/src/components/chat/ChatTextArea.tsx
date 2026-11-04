@@ -372,7 +372,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [, metaKeyChar] = useMetaKeyDetection(platform)
 		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
-		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
+		// badge and a notice offers to switch models.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
 		const showRunningSendButtons = isRunning && !!onSendAs
 		// Leave room in the corner for the stash button.

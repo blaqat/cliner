@@ -114,6 +114,7 @@ describe("B1: model info as the editor saves it", () => {
 		contextWindow: 400_000,
 		maxOutputTokens: 9000,
 		temperature: 0.7,
+		images: "no",
 		inputPrice: 3,
 		outputPrice: 15,
 		cacheReadPrice: 0.3,
@@ -133,8 +134,7 @@ describe("B1: model info as the editor saves it", () => {
 			maxTokens: 9000,
 			pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 		})
-		// Images aren't a setting any more: a saved "no" doesn't stop an attachment, the server decides.
-		expect(config.knownModels?.m.capabilities ?? []).toEqual([])
+		expect(config.knownModels?.m.capabilities).not.toContain("images")
 		const { body } = await wire(config)
 		expect(body).toMatchObject({ max_tokens: 9000, temperature: 0.7 })
 	})
@@ -163,7 +163,7 @@ describe("B1: model info as the editor saves it", () => {
 			{ "profile:p:openAiApiKey": "K" },
 		)
 		expect(f.issues).toEqual([])
-		expect(f.values("m")).toMatchObject({ contextWindow: 128_000 })
+		expect(f.values("m")).toMatchObject({ contextWindow: 128_000, images: "yes" })
 		expect(f.values("m").temperature ?? null).toBeNull()
 		await expect(f.build()).resolves.toBeDefined()
 	})

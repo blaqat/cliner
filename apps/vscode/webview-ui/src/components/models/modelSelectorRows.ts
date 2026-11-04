@@ -27,7 +27,11 @@ export const shortLevelLabel = (label: string) => (label === "Medium" ? "Med" : 
  * The selector's rows and level column from the published model settings: every configured chat or
  * unknown model, under its connection, in connection order. No favorites or star filter.
  */
-export function selectorDataFromModelSettings(state: ModelSettingsState): { rows: SelectorRow[]; ladder: SelectorLevel[] } {
+export function selectorDataFromModelSettings(
+	state: ModelSettingsState,
+	/** Turned-off models stay listed here: a thread already on one still names what it's running. */
+	keepIds: readonly (string | undefined)[] = [],
+): { rows: SelectorRow[]; ladder: SelectorLevel[] } {
 	const { connections, models } = state.settings
 	const connectionName = (id: string) => {
 		const connection = connections.find((candidate) => candidate.id === id)
@@ -35,7 +39,12 @@ export function selectorDataFromModelSettings(state: ModelSettingsState): { rows
 		return connection.name || (connection.kind === "provider" ? connection.providerId : connection.baseUrl) || "Connection"
 	}
 	const listed = connections.flatMap((connection) =>
-		models.filter((model) => model.connectionId === connection.id && model.kind !== "non-chat"),
+		models.filter(
+			(model) =>
+				model.connectionId === connection.id &&
+				model.kind !== "non-chat" &&
+				(model.enabled !== false || keepIds.includes(model.id)),
+		),
 	)
 	const displayName = (model: (typeof listed)[number]) => model.name || model.upstreamId
 	const count = (values: string[], value: string) => values.filter((candidate) => candidate === value).length

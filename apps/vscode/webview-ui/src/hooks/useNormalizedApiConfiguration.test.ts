@@ -71,9 +71,9 @@ describe("the composer with the new store in use", () => {
 		expect(result.current.selectedModelId).toBe("up-n")
 		expect(result.current.selectedModelInfo.supportsImages).toBe(true)
 	})
-	it("unknown image support fails open", async () => {
+	it("image support the catalog doesn't know is off", async () => {
 		const result = await open({ modelSettings: published({ m: "unknown" }) })
-		expect(result.current.selectedModelInfo.supportsImages).toBe(true)
+		expect(result.current.selectedModelInfo.supportsImages).toBe(false)
 	})
 	it("Settings' own reader (not the composer) stays on the old configuration", async () => {
 		mockUseExtensionState.mockReturnValue({

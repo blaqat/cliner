@@ -135,6 +135,7 @@ const ModelsList = () => {
 		return <Why>The model settings aren't ready. Reopen Settings to try again.</Why>
 	}
 	const count = settings.models.length
+	const showing = settings.models.filter((model) => model.enabled !== false).length
 	return (
 		<>
 			<NothingCanRun />
@@ -154,7 +155,14 @@ const ModelsList = () => {
 			{count > 0 && (
 				<div className="mt-2.5 flex items-start gap-1.5 text-[12px] text-description">
 					<Icon className="mt-px text-[12px]! opacity-70" name="chip" />
-					<span>{count === 1 ? "This model shows" : `All ${count} show`} in the composer and every selector.</span>
+					<span>
+						{showing === count
+							? count === 1
+								? "This model shows"
+								: `All ${count} show`
+							: `${showing} of ${count} show`}{" "}
+						in the composer and every selector.
+					</span>
 				</div>
 			)}
 		</>

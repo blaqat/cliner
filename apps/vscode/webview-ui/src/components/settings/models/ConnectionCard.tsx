@@ -2,9 +2,10 @@ import type { Connection, ModelRow } from "@shared/model-settings"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { settingsConnectionElementId, settingsModelElementId } from "../settingsTargets"
+import { useSettingsShell } from "../shell/SettingsShellContext"
 import { AddModelsPanel } from "./AddModelsPanel"
 import { ConnectionForm, RequestTimeoutField } from "./ConnectionForm"
-import { Chevron, FieldGrid, Icon, LinkButton, LockedIcon, Status, Why } from "./fields"
+import { Chevron, FieldGrid, Icon, LinkButton, LockedIcon, SmallSwitch, Status, Why } from "./fields"
 import { ModelForm } from "./ModelForm"
 import { useModelsPage } from "./modelsPageContext"
 import {
@@ -18,6 +19,10 @@ import {
 	modelName,
 	PLANNING_CONTEXT,
 	priceSummary,
+	ROLE_LABELS,
+	type RoleKey,
+	roleRowId,
+	rolesUsingModel,
 } from "./modelsView"
 import { signOutProvider } from "./ProviderChooser"
 import { ProviderConnectionFields } from "./ProviderFields"
@@ -249,7 +254,9 @@ const modelStatus = (
 const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection: Connection; isDraft: boolean }) => {
 	const page = useModelsPage()
 	const { store } = page
+	const { openRow } = useSettingsShell()
 	const [error, setError] = useState<string>()
+	const [blockedRoles, setBlockedRoles] = useState<RoleKey[]>([])
 	const open = page.openModel === row.id
 	const effective = store.state?.effective[row.id]
 	const planning = store.state?.planning[row.id]
@@ -267,6 +274,27 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 					),
 			)
 			.slice(0, 2) ?? []
+
+	const enabled = row.enabled !== false
+	const setEnabled = async (on: boolean) => {
+		setError(undefined)
+		const { roles, subagents } = store.state!.settings
+		const onAllowedList = subagents.allowed.some((entry) => entry.kind === "model" && entry.modelId === row.id)
+		const using = on
+			? []
+			: [...new Set<RoleKey>([...rolesUsingModel(roles, row.id), ...(onAllowedList ? ["subagents" as const] : [])])]
+		setBlockedRoles(using)
+		if (using.length) {
+			return
+		}
+		const outcome = await store.updateModel(row.id, ({ enabled: _enabled, ...current }) => ({
+			...current,
+			...(on ? {} : { enabled: false }),
+		}))
+		if (!outcome.ok) {
+			setError(outcome.message)
+		}
+	}
 
 	const duplicate = async () => {
 		setError(undefined)
@@ -298,7 +326,17 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 					</span>
 					<span className="min-w-0 flex-1">
 						<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-							<span className="min-w-0 truncate text-[13px]">{modelName(row)}</span>
+							<span className={cn("min-w-0 truncate text-[13px]", !enabled && "text-description line-through")}>
+								{modelName(row)}
+							</span>
+							{!enabled && <span className="text-[12px] text-description">Off, hidden from model pickers</span>}
+							{row.upstreamId && row.kind !== "non-chat" && enabled && effective?.tools.value !== "yes" && (
+								<span
+									className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning"
+									title="This model can only chat. Open it to turn tools on.">
+									No tools
+								</span>
+							)}
 							{row.kind === "non-chat" && (
 								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-editor-group-border px-1.5 text-[11px] leading-none text-description">
 									not for chat
@@ -324,6 +362,16 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 						</span>
 					</span>
 				</button>
+				{!isDraft && row.kind !== "non-chat" && (
+					<span className="mt-[5px] shrink-0">
+						<SmallSwitch
+							checked={enabled}
+							id={`model-enabled-${row.id}`}
+							label={`Use ${modelName(row)}`}
+							onChange={(on) => void setEnabled(on)}
+						/>
+					</span>
+				)}
 				{!isDraft && (
 					<button
 						aria-label={`Duplicate ${modelName(row)}`}
@@ -336,6 +384,16 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 				)}
 			</div>
 			{error && <Why tone="bad">{error}</Why>}
+			{blockedRoles.length > 0 && (
+				<Why tone="warn">
+					Still in use, so it stays on. Pick another for:{" "}
+					{blockedRoles.map((role) => (
+						<LinkButton key={role} onClick={() => openRow(roleRowId[role])}>
+							{ROLE_LABELS[role]}
+						</LinkButton>
+					))}
+				</Why>
+			)}
 			{onList === false && !open && (
 				<div className="pb-1.5 pl-[18px]">
 					<Why tone="warn">
@@ -464,11 +522,11 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 			)}
 			data-testid={`connection-${connection.id}`}
 			id={anchor}>
-			<div className={cn("flex flex-wrap items-center", open && "border-b border-solid border-editor-group-border")}>
+			<div className={cn("flex flex-wrap items-start", open && "border-b border-solid border-editor-group-border")}>
 				<button
 					aria-expanded={open}
 					className={cn(
-						"flex min-w-[220px] flex-1 cursor-pointer items-start gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+						"flex min-w-[170px] flex-1 cursor-pointer items-start gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
 					)}
 					onClick={() => {
 						page.setOpenConnection(open ? null : connection.id)
@@ -487,32 +545,34 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 									{notFound} not found
 								</span>
 							)}
-							<span className="ml-auto">{connectionStatus(test, connection, keyMissing)}</span>
 						</span>
 						<span className="mt-1 block truncate font-mono text-[12px] text-description">
 							{meta.filter(Boolean).join(" · ")}
 						</span>
 					</span>
 				</button>
-				{!isDraft && (
-					<div className="flex shrink-0 items-center gap-3 px-3 pb-2.5 text-[12.5px] [&:only-child]:pt-2.5">
-						<LinkButton
-							onClick={() => {
-								const editing = open && page.isEditing(connection.id)
-								page.setOpenConnection(connection.id)
-								page.setEditingConnection(connection.id, !editing)
-							}}>
-							{open && page.isEditing(connection.id) ? "Done editing" : "Edit connection"}
-						</LinkButton>
-						{open && (
+				<div className="ml-auto flex shrink-0 flex-col items-end gap-1 py-2.5 pr-3 pl-2 text-[12.5px]">
+					{connectionStatus(test, connection, keyMissing)}
+					{!isDraft && (
+						<div className="flex items-center gap-3">
 							<LinkButton
-								disabled={test?.state === "testing"}
-								onClick={() => void page.runTest(connection.id, saved.length > 0)}>
-								Test
+								onClick={() => {
+									const editing = open && page.isEditing(connection.id)
+									page.setOpenConnection(connection.id)
+									page.setEditingConnection(connection.id, !editing)
+								}}>
+								{open && page.isEditing(connection.id) ? "Done editing" : "Edit connection"}
 							</LinkButton>
-						)}
-					</div>
-				)}
+							{open && (
+								<LinkButton
+									disabled={test?.state === "testing"}
+									onClick={() => void page.runTest(connection.id, saved.length > 0)}>
+									Test
+								</LinkButton>
+							)}
+						</div>
+					)}
+				</div>
 			</div>
 			{open && (
 				<div className="px-3 pb-3">

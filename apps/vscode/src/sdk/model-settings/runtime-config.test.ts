@@ -78,7 +78,7 @@ describe("configured runtime projection", () => {
 		const body = JSON.parse(String(call[1].body))
 		expect(body.text.verbosity).toBe("low")
 	})
-	it("keeps tools and images usable when another capability is answered and they aren't", async () => {
+	it("leaves tools and images off unless someone says yes", async () => {
 		const capabilitiesFor = async (overrides: Record<string, unknown>) => {
 			const settings = createDefaultModelSettings()
 			settings.connections.push({
@@ -109,11 +109,10 @@ describe("configured runtime projection", () => {
 			)
 			return config.knownModels?.[config.modelId!].capabilities
 		}
-		expect(await capabilitiesFor({})).toEqual([])
-		expect(await capabilitiesFor({ reasoning: "yes" })).toEqual(["reasoning", "tools", "images"])
-		expect(await capabilitiesFor({ reasoning: "yes", tools: "no", images: "no" })).toEqual(["reasoning"])
-		expect(await capabilitiesFor({ tools: "no" })).toEqual(["images"])
-		expect(await capabilitiesFor({ images: "no" })).toEqual(["tools"])
+		expect(await capabilitiesFor({})).toEqual(["text"])
+		expect(await capabilitiesFor({ reasoning: "yes" })).toEqual(["reasoning"])
+		expect(await capabilitiesFor({ tools: "yes" })).toEqual(["tools"])
+		expect(await capabilitiesFor({ images: "yes" })).toEqual(["images"])
 		expect(await capabilitiesFor({ tools: "no", images: "no" })).toEqual(["text"])
 	})
 	it("supports identity-only Vertex and projects all resolved options into the SDK config", async () => {
