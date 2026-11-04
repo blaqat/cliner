@@ -68,6 +68,55 @@ const base = () => ({
 })
 const keys = () => ({ "profile:p1:openAiApiKey": "K1", "profile:p2:openAiApiKey": "K2", openAiApiKey: "GLOBAL" })
 
+describe("a moved temperature of 0", () => {
+	const withInfo = (temperature: number, extra: Record<string, unknown> = {}) => ({
+		apiConfigProfiles: [
+			profile("p1", "m1", { options: { openAiBaseUrl: "https://a.test/v1", planModeOpenAiModelInfo: { temperature } } }),
+			profile("p2", "m2", { options: { openAiBaseUrl: "https://a.test/v1", planModeOpenAiModelInfo: { temperature } } }),
+		],
+		...extra,
+	})
+	it("isn't carried over, because the old path never sent it", async () => {
+		const f = fixture(withInfo(0), keys())
+		await f.run()
+		for (const row of f.settings().models) expect(row.overrides).not.toHaveProperty("temperature")
+		for (const connection of f.settings().connections) expect(connection.defaults).not.toHaveProperty("temperature")
+	})
+	it("keeps a value the old path did send", async () => {
+		const f = fixture(withInfo(0.7), keys())
+		await f.run()
+		const connection = f.settings().connections[0]
+		expect(f.rowOf("m1").overrides.temperature ?? connection.defaults.temperature).toBe(0.7)
+	})
+	it("is cleared once from settings already moved, and a 0 chosen later stays", async () => {
+		const f = fixture(base(), keys())
+		await f.run()
+		const moved = f.settings()
+		moved.models[0].overrides.temperature = 0
+		moved.models[1].overrides.temperature = 0.4
+		moved.connections[0].defaults.temperature = 0
+		const before = moved.revision
+		f.data.modelSettingsMigration = { ...f.data.modelSettingsMigration, repairs: undefined }
+		await f.run()
+		expect(f.settings().models[0].overrides).not.toHaveProperty("temperature")
+		expect(f.settings().models[1].overrides.temperature).toBe(0.4)
+		expect(f.settings().connections[0].defaults).not.toHaveProperty("temperature")
+		expect(f.settings().revision).toBe(before + 1)
+		f.settings().models[0].overrides.temperature = 0
+		await f.run()
+		expect(f.settings().models[0].overrides.temperature).toBe(0)
+	})
+	it("leaves a model you added yourself alone", async () => {
+		const f = fixture(base(), keys())
+		await f.run()
+		const own = { ...structuredClone(f.settings().models[0]), id: "mine", overrides: { temperature: 0 } }
+		f.settings().models.push(own)
+		f.data.modelSettingsMigration = { ...f.data.modelSettingsMigration, repairs: undefined }
+		await f.run()
+		expect(f.settings().models.find((row) => row.id === "mine")?.overrides.temperature).toBe(0)
+	})
+})
+
 describe("M1: a complete journal is final", () => {
 	it("brings nothing back after delete, key rotation or legacy edits, and writes nothing", async () => {
 		const f = fixture(base(), keys())

@@ -151,6 +151,8 @@ export type ModelSettingsMigration = {
 	profilePicks: Record<string, ModelPick>
 	legacyFingerprint: string // nonsecret configuration only
 	completedAt?: number
+	/** One-time fixes to already moved settings that have run, so they never touch a later choice. */
+	repairs?: string[]
 	issues?: ModelSettingsMigrationIssue[]
 }
 
@@ -513,6 +515,7 @@ export const ModelSettingsMigrationSchema = z
 		profilePicks: z.record(id, ModelPickSchema),
 		legacyFingerprint: z.string(),
 		completedAt: z.number().optional(),
+		repairs: z.array(z.string()).optional(),
 		issues: z
 			.array(
 				z

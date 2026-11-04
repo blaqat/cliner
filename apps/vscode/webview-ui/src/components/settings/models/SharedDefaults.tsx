@@ -127,7 +127,7 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 							})}
 						</div>
 					)}
-					<FieldGrid className="mt-0.5">{amountField("temperature", "Temperature", "Server default")}</FieldGrid>
+					<FieldGrid className="mt-0.5">{amountField("temperature", "Temperature", "Not sent")}</FieldGrid>
 					<ControlRow description="Self-hosted, or someone else pays." label="Free">
 						<SmallSwitch
 							checked={defaults.free === true}

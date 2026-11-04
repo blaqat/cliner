@@ -450,7 +450,13 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 
 			<GroupHeading>Request</GroupHeading>
 			<FieldGrid className="mt-0.5">
-				{numberField("temperature", "Temperature", "amount", undefined, "Server default")}
+				{numberField(
+					"temperature",
+					"Temperature",
+					"amount",
+					"Blank sends none, unless Shared defaults set one. 0 and 1 are sent as typed.",
+					"Not sent",
+				)}
 			</FieldGrid>
 			<ControlRow id={fieldAnchor(row.id, "verbosity")} label="Verbosity" tag={tag("verbosity", "Verbosity")}>
 				<Segmented<"default" | "low" | "medium" | "high">

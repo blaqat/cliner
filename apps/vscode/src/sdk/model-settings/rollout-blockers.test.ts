@@ -163,7 +163,8 @@ describe("B1: model info as the editor saves it", () => {
 			{ "profile:p:openAiApiKey": "K" },
 		)
 		expect(f.issues).toEqual([])
-		expect(f.values("m")).toMatchObject({ contextWindow: 128_000, images: "yes", temperature: 0 })
+		expect(f.values("m")).toMatchObject({ contextWindow: 128_000, images: "yes" })
+		expect(f.values("m").temperature ?? null).toBeNull()
 		await expect(f.build()).resolves.toBeDefined()
 	})
 	it("keeps a Bedrock custom model captured in Ask", async () => {

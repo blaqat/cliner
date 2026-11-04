@@ -41,6 +41,8 @@ export function legacyModelValues(
 	}
 	for (const [old, key] of Object.entries(mappings))
 		if (info && Object.hasOwn(info, old) && info[old] !== -1) values[key] = info[old]
+	// The old editor saved 0 as its starting value and never sent it; newer models refuse the parameter.
+	if (values.temperature === 0) delete values.temperature
 	for (const [old, key] of Object.entries({
 		supportsImages: "images",
 		supportsPromptCache: "promptCache",

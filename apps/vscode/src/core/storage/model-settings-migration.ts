@@ -14,6 +14,7 @@ import {
 	ModelProviderOptionsSchema,
 	type ModelRow,
 	ModelRowSchema,
+	type ModelSettings,
 	type ModelSettingsMigration,
 	ModelSettingsSchema,
 } from "@shared/model-settings"
@@ -264,10 +265,39 @@ export type MigrationResult = "disabled" | "complete"
  * Runs until complete, always building from legacy state; after that the new settings are the user's and this
  * never reads or writes them again. Edits made in an older version after a downgrade aren't imported.
  */
+const MOVED_TEMPERATURE_REPAIR = "moved-temperature-0"
+
+/**
+ * Settings moved before fork.50 kept the old editor's starting temperature of 0, which the old path
+ * never sent. Runs once, so a 0 chosen afterwards stays. Only rows and connections the move created.
+ */
+async function repairMovedTemperature(state: MigrationDependencies["state"], journal: ModelSettingsMigration) {
+	if (journal.repairs?.includes(MOVED_TEMPERATURE_REPAIR)) return
+	const settings = state.get<ModelSettings>("modelSettings")
+	if (settings) {
+		let changed = false
+		for (const values of [
+			...settings.models.filter((row) => row.id.startsWith("legacy-")).map((row) => row.overrides),
+			...settings.connections.filter((connection) => connection.id.startsWith("legacy-")).map((c) => c.defaults),
+		]) {
+			if (values.temperature === 0) {
+				delete values.temperature
+				changed = true
+			}
+		}
+		if (changed) await state.update("modelSettings", { ...settings, revision: settings.revision + 1 })
+	}
+	await state.update("modelSettingsMigration", { ...journal, repairs: [...(journal.repairs ?? []), MOVED_TEMPERATURE_REPAIR] })
+}
+
 export async function migrateModelSettings(deps: MigrationDependencies): Promise<MigrationResult> {
 	if (!modelSettingsRolloutEnabled(deps.enabled)) return "disabled"
 	const { state } = deps
-	if (state.get<ModelSettingsMigration>("modelSettingsMigration")?.status === "complete") return "complete"
+	const finished = state.get<ModelSettingsMigration>("modelSettingsMigration")
+	if (finished?.status === "complete") {
+		await repairMovedTemperature(state, finished)
+		return "complete"
+	}
 	const sdkInput = typeof deps.sdkInput === "function" ? await deps.sdkInput() : (deps.sdkInput ?? {})
 	const raw = Object.fromEntries(
 		state
@@ -809,6 +839,11 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			throw new ModelSettingsMigrationError("Connection keychain verification failed")
 	}
 	await state.update("modelSettings", settings)
-	await state.update("modelSettingsMigration", { ...journal, status: "complete", completedAt: Date.now() })
+	await state.update("modelSettingsMigration", {
+		...journal,
+		status: "complete",
+		completedAt: Date.now(),
+		repairs: [MOVED_TEMPERATURE_REPAIR],
+	})
 	return "complete"
 }

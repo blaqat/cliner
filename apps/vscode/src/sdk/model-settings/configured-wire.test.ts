@@ -306,6 +306,33 @@ describe("Azure API version", () => {
 	}
 })
 
+describe("temperature", () => {
+	const send = async (apiFormat: "chat" | "responses", overrides: Record<string, unknown>, defaults: object = {}) => {
+		const connection = { ...compatibleConnection({ kind: "none" }), apiFormat, defaults } as Connection
+		return capture(
+			await configuredProviderConfig(
+				settingsFor(connection, "gpt-6-sol", overrides),
+				{ modelId: "row", levelId: "default" },
+				{ secrets: noSecrets(), environment },
+			),
+		)
+	}
+	for (const apiFormat of ["chat", "responses"] as const) {
+		it(`blank sends no temperature on ${apiFormat}`, async () => {
+			expect((await send(apiFormat, {})).body).not.toHaveProperty("temperature")
+		})
+		it(`a blank shared default sends none on ${apiFormat}`, async () => {
+			expect((await send(apiFormat, {}, { temperature: null })).body).not.toHaveProperty("temperature")
+		})
+		it.each([0, 1, 0.7])(`%s is sent as typed on ${apiFormat}`, async (temperature) => {
+			expect((await send(apiFormat, { temperature })).body.temperature).toBe(temperature)
+		})
+		it(`a shared default of 0 is sent on ${apiFormat} when the model leaves it blank`, async () => {
+			expect((await send(apiFormat, {}, { temperature: 0 })).body.temperature).toBe(0)
+		})
+	}
+})
+
 describe("rotated keys", () => {
 	const ref = "settings:v1:connection:connection:apiKey"
 	const keychain = compatibleConnection({ kind: "keychain", secretRef: ref })
