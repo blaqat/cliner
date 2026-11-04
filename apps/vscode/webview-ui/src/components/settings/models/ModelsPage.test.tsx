@@ -407,7 +407,7 @@ describe("role rows", () => {
 		expect(within(row).getByRole("button", { name: "Fix it" })).toBeInTheDocument()
 	})
 
-	it("Advanced holds Ask, the per-use overrides and timeout; timeout says why it's off", async () => {
+	it("Advanced holds Ask, per-use overrides and a writable timeout", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		fireEvent.click(page().getByRole("button", { name: /Advanced/ }))
@@ -416,9 +416,38 @@ describe("role rows", () => {
 		expect(page().getByText("Commit messages")).toBeInTheDocument()
 		expect(page().getByText("Walkthrough Generate")).toBeInTheDocument()
 		expect(page().getByText("Thread titles")).toBeInTheDocument()
-		expect(page().getByLabelText("Request timeout")).toBeDisabled()
-		expect(page().getByText(/Can't be saved here yet/)).toBeInTheDocument()
+		expect(page().getByLabelText("Request timeout")).toBeEnabled()
 		expect(page().getByText(/Only with/)).toBeInTheDocument()
+	})
+
+	it("the request timeout saves in seconds, refuses nonsense, and clears", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: /Advanced/ }))
+		await flush()
+		change("Request timeout", "abc")
+		await flush()
+		expect(page().getByText("A number of seconds, above 0.")).toBeInTheDocument()
+		expect(host.callsTo("setModelRoles")).toEqual([])
+		change("Request timeout", "45")
+		await flush()
+		await flush()
+		expect(host.state().settings.requestTimeoutMs).toBe(45000)
+		expect(host.state().settings.roles).toEqual(gatewaySettings().roles)
+	})
+
+	it("emptying a saved request timeout clears it", async () => {
+		const settings = gatewaySettings()
+		settings.requestTimeoutMs = 45000
+		setup({ settings, availability: envAvailable })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: /Advanced/ }))
+		await flush()
+		expect(page().getByLabelText("Request timeout")).toHaveValue("45")
+		change("Request timeout", "")
+		await flush()
+		await flush()
+		expect(host.state().settings.requestTimeoutMs).toBeNull()
 	})
 })
 
@@ -795,6 +824,82 @@ describe("secrets", () => {
 		await flush()
 		expect(host.callsTo("saveConnection")[0].secrets).toEqual([{ field: "apiKey", operation: "delete" }])
 		expect(host.secrets["settings:v1:connection:gateway:apiKey"]).toBeUndefined()
+		// With no key left the connection says so, rather than pointing at an empty keychain entry.
+		expect(host.state().settings.connections[0].auth).toEqual({ kind: "none" })
+		expect(host.callsTo("saveConnection")).toHaveLength(1)
+	})
+
+	describe("on a provider", () => {
+		const bedrock = () => {
+			const settings = gatewaySettings()
+			settings.models = []
+			settings.roles.chat = null
+			settings.roles.background.pick = null
+			settings.connections = [
+				{
+					id: "aws",
+					name: "Bedrock",
+					kind: "provider",
+					providerId: "bedrock",
+					baseUrl: null,
+					auth: { kind: "none" },
+					headers: [],
+					requestTimeoutMs: null,
+					defaults: {},
+					options: {
+						awsAuthentication: "credentials",
+						awsRegion: "us-east-1",
+						awsBedrockEndpoint: "https://vpc.example",
+					},
+					secretRefs: {
+						awsAccessKey: "settings:v1:connection:aws:awsAccessKey",
+						awsSessionToken: "settings:v1:connection:aws:awsSessionToken",
+					},
+				},
+			]
+			return settings
+		}
+		const providerSecrets = {
+			"settings:v1:connection:aws:awsAccessKey": "AKIA",
+			"settings:v1:connection:aws:awsSessionToken": "token",
+		}
+		const open = async () => {
+			setup({ settings: bedrock(), secrets: providerSecrets })
+			await flush()
+			fireEvent.click(page().getByRole("button", { name: "Edit" }))
+			await flush()
+		}
+
+		it("removes an optional secret and its reference in one save", async () => {
+			await open()
+			fireEvent.click(page().getByRole("button", { name: "Remove the saved value" }))
+			await flush()
+			const [saved] = host.callsTo("saveConnection")
+			expect(saved.secrets).toEqual([{ field: "awsSessionToken", operation: "delete" }])
+			expect(saved.connection).toMatchObject({ remove: { secretRefs: ["awsSessionToken"] } })
+			expect(host.secrets["settings:v1:connection:aws:awsSessionToken"]).toBeUndefined()
+			const connection = host.state().settings.connections[0]
+			expect(connection.kind === "provider" && Object.keys(connection.secretRefs)).toEqual(["awsAccessKey"])
+		})
+
+		it("a secret the connection can't work without says so, and only offers replacing it", async () => {
+			await open()
+			expect(page().getAllByRole("button", { name: "Remove the saved value" })).toHaveLength(1)
+			expect(page().getByText(/can't work without it/)).toBeInTheDocument()
+		})
+
+		it("clearing an option removes it instead of saving an empty string", async () => {
+			await open()
+			change("VPC endpoint", "")
+			await flush()
+			await flush()
+			const connection = host.state().settings.connections[0]
+			expect(connection.kind === "provider" && connection.options).toEqual({
+				awsAuthentication: "credentials",
+				awsRegion: "us-east-1",
+			})
+			expect(host.wire()).not.toContain('awsBedrockEndpoint":""')
+		})
 	})
 
 	it("a header is plain until locked; locking moves its value to the keychain and out of the settings", async () => {
@@ -1035,8 +1140,7 @@ describe("removing", () => {
 		expect(list.getByText("Background text uses it.")).toBeInTheDocument()
 		expect(list.getByText("Thread titles uses it.")).toBeInTheDocument()
 		expect(list.getByText(/It's on the list of models subagents can choose/)).toBeInTheDocument()
-		expect(list.getByText(/2 saved threads use it/)).toBeInTheDocument()
-		expect(list.getByRole("button", { name: "Open history" })).toBeInTheDocument()
+		expect(list.queryByRole("button", { name: "Open history" })).toBeNull()
 		expect(host.state().settings.models.some((model) => model.id === "mini")).toBe(true)
 		// Fix them one at a time.
 		fireEvent.click(list.getAllByRole("button", { name: "Clear it" })[0])
@@ -1049,6 +1153,31 @@ describe("removing", () => {
 		await flush()
 		expect(host.state().settings.subagents.allowed).toEqual([])
 		expect(list.getAllByRole("listitem").length).toBeGreaterThan(0)
+	})
+
+	it("says how many saved threads use a model, and deletes it anyway", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable, threadDependencies: { tuned: ["t1", "t2", "t3"] } })
+		await flush()
+		const form = await openModel("tuned")
+		fireEvent.click(form.getByRole("button", { name: "Remove" }))
+		await flush()
+		await flush()
+		const flow = within(screen.getByTestId("remove-flow"))
+		expect(flow.getByText(/3 saved threads use this\. They'll ask you to pick a model when reopened\./)).toBeInTheDocument()
+		fireEvent.click(flow.getByRole("button", { name: "Remove" }))
+		await flush()
+		await flush()
+		expect(host.state().settings.models.some((model) => model.id === "tuned")).toBe(false)
+	})
+
+	it("says nothing about threads when none use it", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const form = await openModel("tuned")
+		fireEvent.click(form.getByRole("button", { name: "Remove" }))
+		await flush()
+		await flush()
+		expect(screen.getByTestId("remove-flow").textContent).not.toMatch(/saved thread/)
 	})
 
 	it("removes a model nothing depends on", async () => {
@@ -1220,5 +1349,120 @@ describe("host errors", () => {
 		expect(form.getAllByText(/Settings changed elsewhere, so nothing was saved/).length).toBeGreaterThan(0)
 		expect(host.callsTo("getModelSettings").length).toBeGreaterThan(0)
 		mocks.host.saveConfiguredModels = original
+	})
+})
+
+describe("shared defaults", () => {
+	const open = async () => {
+		const settings = gatewaySettings()
+		settings.connections[0].defaults = { contextWindow: 100000, temperature: 0.5, images: "yes", free: true }
+		setup({ settings, availability: envAvailable })
+		await flush()
+		const shared = within(screen.getByTestId("shared-defaults-gateway"))
+		fireEvent.click(shared.getByRole("button", { name: /Shared defaults/ }))
+		await flush()
+		return within(screen.getByTestId("shared-defaults-gateway"))
+	}
+	const defaults = () => host.state().settings.connections[0].defaults
+
+	it("clearing a number removes the key, so models inherit again", async () => {
+		const shared = await open()
+		change("Shared Context window", "", shared)
+		await flush()
+		await flush()
+		expect(Object.hasOwn(defaults(), "contextWindow")).toBe(false)
+		expect(host.wire()).not.toContain('"contextWindow":null')
+	})
+
+	it("Unknown removes the key; zero and false stay answers", async () => {
+		const shared = await open()
+		fireEvent.click(within(shared.getByRole("radiogroup", { name: "Shared Images" })).getByRole("radio", { name: "Unknown" }))
+		await flush()
+		await flush()
+		expect(Object.hasOwn(defaults(), "images")).toBe(false)
+		change("Shared Temperature", "0", shared)
+		await flush()
+		await flush()
+		expect(defaults().temperature).toBe(0)
+		fireEvent.click(shared.getByRole("switch", { name: "Shared Free" }))
+		await flush()
+		await flush()
+		expect(defaults().free).toBe(false)
+	})
+})
+
+describe("the request preview", () => {
+	it("shows the Authorization and custom header lines, masked", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const form = await openModel("sol")
+		fireEvent.click(form.getByRole("button", { name: /request/i }))
+		await flush()
+		await flush()
+		const preview = within(screen.getByTestId("request-preview"))
+		expect(preview.getByText(/authorization: \[redacted\]/)).toBeInTheDocument()
+		expect(preview.getByText(/x-team: platform/)).toBeInTheDocument()
+	})
+})
+
+describe("the Changed chip", () => {
+	const overridden = () => {
+		const settings = gatewaySettings()
+		settings.connections[0].defaults = { temperature: 0.5 }
+		settings.models.find((row) => row.id === "sol")!.overrides.temperature = 0.1
+		settings.models.find((row) => row.id === "g54")!.overrides.temperature = 0.2
+		return settings
+	}
+	const chip = () => screen.getByRole("button", { name: /^Changed/ })
+
+	it("counts each model override once, lists it by model, and Reset takes it off the model", async () => {
+		setup({ settings: overridden(), availability: envAvailable })
+		await flush()
+		expect(chip()).toHaveTextContent("Changed 2")
+		fireEvent.click(chip())
+		await flush()
+		const result = within(screen.getByTestId("settings-result-model:sol:temperature"))
+		expect(result.getByText("GPT-6 Sol: Temperature")).toBeInTheDocument()
+		fireEvent.click(result.getByRole("button", { name: "Reset GPT-6 Sol: Temperature" }))
+		await flush()
+		await flush()
+		expect(savedRow("sol")?.overrides).not.toHaveProperty("temperature")
+		expect(savedRow("g54")?.overrides.temperature).toBe(0.2)
+	})
+
+	it("a model override opens that model's control", async () => {
+		setup({ settings: overridden(), availability: envAvailable })
+		await flush()
+		fireEvent.click(chip())
+		await flush()
+		fireEvent.click(
+			within(screen.getByTestId("settings-result-model:sol:temperature")).getByRole("button", { name: "GPT-6 Sol: Temperature" }),
+		)
+		await flushFrame()
+		await flush()
+		expect(screen.getByTestId("model-form-sol")).toBeInTheDocument()
+	})
+})
+
+describe("host fix targets", () => {
+	it("a pick the host refuses links to the control it names", async () => {
+		const settings = gatewaySettings()
+		setup({
+			settings,
+			availability: {
+				...envAvailable,
+				sol: {
+					available: false,
+					reason: "Connection credentials are missing",
+					target: { page: "models", connectionId: "gateway" },
+				},
+			},
+		})
+		await flush()
+		const row = screen.getByTestId("settings-page-models").querySelector(`[data-row="models.chat"]`) as HTMLElement
+		fireEvent.click(within(row).getByRole("button", { name: "Fix it" }))
+		await flushFrame()
+		await flush()
+		expect(document.activeElement?.id).toBe(`${settingsConnectionElementId("gateway")}-control`)
 	})
 })

@@ -34,6 +34,35 @@ const pref = (id: string, value: unknown, fallback: unknown, extra: Partial<Pref
 	...extra,
 })
 
+describe("per-model overrides in Changed", () => {
+	const store = (
+		overrides: Record<string, unknown>,
+		defaults: Record<string, unknown> = { temperature: 0.5 },
+		source = "model",
+	) => ({
+		settings: {
+			revision: 3,
+			connections: [{ id: "c", defaults }],
+			models: [{ id: "m", connectionId: "c", name: "Sol", upstreamId: "sol", overrides }],
+		},
+		effective: { m: { temperature: { source }, contextWindow: { source: "model" } } },
+		managed: [],
+	})
+	const rowsFor = (modelSettings: unknown) =>
+		changedRows(SETTINGS_ROWS, context({ modelSettings })).filter((row) => row.id.startsWith("model:"))
+
+	it("counts each value set over a shared default once, labelled by the model", () => {
+		const rows = rowsFor(store({ temperature: 0.1 }))
+		expect(rows.map((row) => row.id)).toEqual(["model:m:temperature"])
+		expect(rows[0].label).toBe("Sol: Temperature")
+	})
+
+	it("doesn't count what the form doesn't tag: no shared default, or a managed value", () => {
+		expect(rowsFor(store({ contextWindow: 1000 }))).toEqual([])
+		expect(rowsFor(store({ temperature: 0.1 }, { temperature: 0.5 }, "managed"))).toEqual([])
+	})
+})
+
 describe("the row registry", () => {
 	it("has unique ids, each starting with its page", () => {
 		const ids = SETTINGS_ROWS.map((row) => row.id)

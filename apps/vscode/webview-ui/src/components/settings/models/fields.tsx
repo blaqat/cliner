@@ -403,6 +403,16 @@ export const parseTokens = (text: string): { value: number | null } | { error: s
 	return Number.isSafeInteger(value) && value > 0 ? { value } : { error: "Has to be a whole number above 0." }
 }
 
+/** A timeout typed in seconds, as milliseconds. Empty is `null`. */
+export const parseSeconds = (text: string): { value: number | null } | { error: string } => {
+	const trimmed = text.trim()
+	if (!trimmed) {
+		return { value: null }
+	}
+	const value = Math.round(Number(trimmed) * 1000)
+	return Number.isSafeInteger(value) && value > 0 ? { value } : { error: "A number of seconds, above 0." }
+}
+
 /** Prices and temperature: any number from 0 up. Empty is `null`. */
 export const parseAmount = (text: string): { value: number | null } | { error: string } => {
 	const trimmed = text.trim()

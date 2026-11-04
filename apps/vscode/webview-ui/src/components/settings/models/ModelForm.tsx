@@ -613,6 +613,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					</LinkButton>
 				) : (
 					<RemoveFlow
+						modelIds={[row.id]}
 						label="Remove"
 						onRemove={() => store.deleteModel(row.id)}
 						onRemoved={() => page.setOpenModel(null)}

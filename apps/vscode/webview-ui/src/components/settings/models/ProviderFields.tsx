@@ -9,6 +9,8 @@ import { isFieldVisible, type ProviderField, type ProviderSpec } from "./provide
 
 type Values = Record<string, unknown>
 
+const REQUIRED_SECRET_NOTE = "This connection can't work without it. Type a new one to replace it, or remove the connection."
+
 /**
  * One provider field. A dropdown, a switch or a text box, with its Remote Config lock in the row.
  * Values and locks are read and written through props, so connection options and model options share it.
@@ -148,9 +150,8 @@ export const ProviderConnectionFields = ({
 		}
 		// A URL also set on the connection itself wins over the option, so keep the two together.
 		const alsoBase = isUrlField(field) && connection.baseUrl !== null ? { baseUrl: (value as string) || null } : {}
-		return save({ id: connection.id, ...alsoBase, options: { [field.id]: value } } as Parameters<
-			typeof store.saveConnection
-		>[0])
+		const change = value === "" ? { remove: { options: [field.id] } } : { options: { [field.id]: value } }
+		return save({ id: connection.id, ...alsoBase, ...change } as Parameters<typeof store.saveConnection>[0])
 	}
 
 	const key = spec.auth === "keychain" || spec.auth === "optional-key"
@@ -171,14 +172,13 @@ export const ProviderConnectionFields = ({
 						label="API key"
 						onRemove={
 							spec.auth === "optional-key"
-								? async () => {
-										const failed = await save({ id: connection.id }, [
+								? () =>
+										save({ id: connection.id, auth: { kind: "none" } }, [
 											{ field: "apiKey", operation: "delete" },
 										])
-										return failed ?? save({ id: connection.id, auth: { kind: "none" } })
-									}
 								: undefined
 						}
+						requiredNote={spec.auth === "optional-key" ? undefined : REQUIRED_SECRET_NOTE}
 						onSet={(value) =>
 							save({ id: connection.id, auth: { kind: "keychain", secretRef: keyRef } }, [
 								{ field: "apiKey", operation: "set", value },
@@ -201,6 +201,15 @@ export const ProviderConnectionFields = ({
 									disabled={managedKey(field.id)}
 									id={controlId}
 									label={field.label}
+									onRemove={
+										field.required
+											? undefined
+											: () =>
+													save({ id: connection.id, remove: { secretRefs: [field.id] } }, [
+														{ field: field.id, operation: "delete" },
+													])
+									}
+									requiredNote={field.required ? REQUIRED_SECRET_NOTE : undefined}
 									onSet={(value) =>
 										save({ id: connection.id, secretRefs: { [field.id]: ref } }, [
 											{ field: field.id, operation: "set", value },

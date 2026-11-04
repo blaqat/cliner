@@ -15,7 +15,7 @@ import {
 	Why,
 } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
-import { DEFAULT_OFFERED, levelTitle, sharedSummary, STANDARD_LADDER } from "./modelsView"
+import { DEFAULT_OFFERED, levelTitle, sharedDefaultsPatch, sharedSummary, STANDARD_LADDER } from "./modelsView"
 
 /**
  * A connection's defaults: models use these for anything they don't know themselves. They live on the
@@ -28,7 +28,7 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 	const defaults = connection.defaults
 
 	const save = async (change: Partial<ModelValues>) => {
-		const outcome = await store.saveConnection({ id: connection.id, defaults: change })
+		const outcome = await store.saveConnection(sharedDefaultsPatch(connection.id, change))
 		setError(outcome.ok ? undefined : outcome.message)
 		return outcome.ok ? undefined : outcome.message
 	}

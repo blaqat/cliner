@@ -4,10 +4,11 @@ import { useMemo, useState } from "react"
 import { ModelPickButton } from "@/components/models/ModelPickButton"
 import type { SelectorPick, SelectorRow } from "@/components/models/ModelSelector"
 import { sameAsThreadRow, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
+import { type SettingsNavigationTarget, settingsTargetFromHost } from "../settingsTargets"
 import { AdvancedFold } from "../shell/AdvancedFold"
 import { SettingBlock, SettingRow, ToggleRow } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
-import { CommitInput, GroupHeading, Hint, LinkButton, parseAmount, Why } from "./fields"
+import { CommitInput, GroupHeading, Hint, LinkButton, parseSeconds, Why } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
 import { connectionName, levelTitle, type RoleKey, roleRowId } from "./modelsView"
 
@@ -17,7 +18,18 @@ const toPick = (pick: ModelPick | null): SelectorPick | null => (pick ? { rowId:
 const fromPick = (pick: SelectorPick): ModelPick => ({ modelId: pick.rowId, levelId: pick.levelId })
 
 /** Says why a saved pick won't start, with both ways out right there. Nothing here is silently corrected. */
-const PickWhy = ({ pick, onFixLevel, state }: { pick: ModelPick | null; onFixLevel: () => void; state: ModelSettingsState }) => {
+const PickWhy = ({
+	pick,
+	onFixLevel,
+	state,
+	use,
+}: {
+	pick: ModelPick | null
+	onFixLevel: () => void
+	state: ModelSettingsState
+	/** The host's availability key for this pick, which says what to fix when it refuses one. */
+	use: string
+}) => {
 	const page = useModelsPage()
 	const { openRow } = useSettingsShell()
 	if (!pick) {
@@ -35,6 +47,7 @@ const PickWhy = ({ pick, onFixLevel, state }: { pick: ModelPick | null; onFixLev
 	const name = row.name || row.upstreamId
 	const effective = state.effective[row.id]
 	const availability = state.availability[row.id]
+	const hostTarget = state.availability[use]?.target
 	if (availability && !availability.available && connection) {
 		const words = /credentials are missing/i.test(availability.reason ?? "")
 			? "key missing"
@@ -46,7 +59,7 @@ const PickWhy = ({ pick, onFixLevel, state }: { pick: ModelPick | null; onFixLev
 					onClick={() => {
 						page.setOpenConnection(connection.id)
 						page.setEditingConnection(connection.id, true)
-						openRow(`connection:${connection.id}`)
+						openRow(settingsTargetFromHost(availability.target ?? { page: "models", connectionId: connection.id }))
 					}}>
 					Fix it
 				</LinkButton>
@@ -65,7 +78,13 @@ const PickWhy = ({ pick, onFixLevel, state }: { pick: ModelPick | null; onFixLev
 					onClick={() => {
 						page.setOpenConnection(row.connectionId)
 						page.setOpenModel(row.id)
-						openRow(`model:${row.id}:levels`)
+						openRow(
+							settingsTargetFromHost(
+								hostTarget?.modelId === row.id
+									? hostTarget
+									: { page: "models", modelId: row.id, field: "levels" },
+							),
+						)
 					}}>
 					Edit the model
 				</LinkButton>
@@ -91,7 +110,7 @@ export const ModelRoles = () => {
 	const { rows, ladder } = useMemo(() => selectorDataFromModelSettings(state), [state])
 	const roles = state.settings.roles
 
-	const onManage = () => openRow(MANAGE_ROW)
+	const onManage = (target?: SettingsNavigationTarget) => openRow(target ?? MANAGE_ROW)
 	const focusRole = (role: RoleKey) => openRow(roleRowId[role])
 
 	const setRoles = async (key: string, change: (current: RoleSettings) => RoleSettings) => {
@@ -136,7 +155,7 @@ export const ModelRoles = () => {
 				)}
 				rowId={roleRowId[role]}>
 				{description}
-				{pick && <PickWhy onFixLevel={() => focusRole(role)} pick={pick} state={state} />}
+				{pick && <PickWhy onFixLevel={() => focusRole(role)} pick={pick} state={state} use={`background.${role}`} />}
 				{roleError(role)}
 			</SettingRow>
 		)
@@ -159,7 +178,7 @@ export const ModelRoles = () => {
 				)}
 				rowId={roleRowId.chat}>
 				{rows.length > 0 && !roles.chat && <Hint error>Threads can't start until you pick one.</Hint>}
-				<PickWhy onFixLevel={() => focusRole("chat")} pick={roles.chat} state={state} />
+				<PickWhy onFixLevel={() => focusRole("chat")} pick={roles.chat} state={state} use="role.chat" />
 				{roleError("chat")}
 			</SettingRow>
 			<SettingRow<SubagentPick>
@@ -188,7 +207,12 @@ export const ModelRoles = () => {
 					What helpers run on. <LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
 				</div>
 				{roles.subagents.kind === "model" && (
-					<PickWhy onFixLevel={() => focusRole("subagents")} pick={roles.subagents.pick} state={state} />
+					<PickWhy
+						onFixLevel={() => focusRole("subagents")}
+						pick={roles.subagents.pick}
+						state={state}
+						use="role.subagents"
+					/>
 				)}
 				{roleError("subagents")}
 			</SettingRow>
@@ -214,7 +238,12 @@ export const ModelRoles = () => {
 				{rows.length > 0 && !roles.background.pick && (
 					<Hint error>Commit messages, thread titles and Generate have nothing to run on until you pick one.</Hint>
 				)}
-				<PickWhy onFixLevel={() => focusRole("background")} pick={roles.background.pick} state={state} />
+				<PickWhy
+					onFixLevel={() => focusRole("background")}
+					pick={roles.background.pick}
+					state={state}
+					use="role.background"
+				/>
 				{roleError("background")}
 			</SettingRow>
 			<ToggleRow rowId="models.background.titles-enabled" />
@@ -250,7 +279,7 @@ export const ModelRoles = () => {
 							}}
 							rowId={roleRowId.ask}>
 							{roles.ask.enabled && (
-								<PickWhy onFixLevel={() => focusRole("ask")} pick={roles.ask.pick} state={state} />
+								<PickWhy onFixLevel={() => focusRole("ask")} pick={roles.ask.pick} state={state} use="role.ask" />
 							)}
 							{roleError("ask")}
 						</SettingRow>
@@ -272,7 +301,7 @@ export const ModelRoles = () => {
 						)}
 						<GroupHeading>Every request</GroupHeading>
 						<SettingRow<number | null>
-							control={({ id, disabled, label, value }) => (
+							control={({ id, disabled, label, value, write }) => (
 								<CommitInput
 									className="w-[72px] text-right"
 									disabled={disabled}
@@ -280,8 +309,12 @@ export const ModelRoles = () => {
 									label={label}
 									mono
 									onCommit={(text) => {
-										const parsed = parseAmount(text)
-										return "error" in parsed ? parsed.error : undefined
+										const parsed = parseSeconds(text)
+										if ("error" in parsed) {
+											return parsed.error
+										}
+										write(parsed.value)
+										return undefined
 									}}
 									placeholder="Default"
 									value={value == null ? "" : String(value / 1000)}

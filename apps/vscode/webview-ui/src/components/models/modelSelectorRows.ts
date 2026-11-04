@@ -1,4 +1,5 @@
 import type { ModelSettingsState } from "@shared/model-settings-state"
+import { settingsTargetFromHost } from "@/components/settings/settingsTargets"
 import type { SelectorLevel, SelectorPick, SelectorRow } from "./ModelSelector"
 
 /** Every selector's level column starts from these, so a level a model lacks shows greyed. */
@@ -79,6 +80,8 @@ export function selectorDataFromModelSettings(state: ModelSettingsState): { rows
 				availability && !availability.available
 					? `${availability.reason ?? "This model can't run"}`.replace(/\.?$/, ".")
 					: undefined,
+			fixTarget: availability?.target && settingsTargetFromHost(availability.target),
+			levelsTarget: `model:${model.id}:levels`,
 		}
 	})
 

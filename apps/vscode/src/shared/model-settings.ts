@@ -370,7 +370,20 @@ export const ConnectionSchema = z
 			if (!ref.startsWith(`settings:v1:connection:${connection.id}:`))
 				ctx.addIssue({ code: "custom", message: "Secret reference belongs to another connection" })
 	})
-/** Own properties are patch presence. Nested option/default maps merge by key; arrays replace. */
+const valueKeys = Object.keys(ModelValuesSchema.shape) as [keyof ModelValues, ...Array<keyof ModelValues>]
+const optionKeys = Object.keys(connectionOptionShape) as [
+	keyof typeof connectionOptionShape,
+	...Array<keyof typeof connectionOptionShape>,
+]
+/** Named keys to take out of the nested maps. A set value, even null, false or zero, stays a value. */
+const ConnectionPatchRemoveSchema = z
+	.object({
+		defaults: z.array(z.enum(valueKeys)).optional(),
+		options: z.array(z.enum(optionKeys)).optional(),
+		secretRefs: z.array(id).optional(),
+	})
+	.strict()
+/** Own properties are patch presence. Nested option/default maps merge by key; arrays replace; `remove` deletes by key. */
 export const ConnectionPatchSchema = z
 	.object({
 		id,
@@ -386,19 +399,23 @@ export const ConnectionPatchSchema = z
 		providerId: id.optional(),
 		options: ConnectionOptionsSchema.optional(),
 		secretRefs: z.record(id, id).optional(),
+		remove: ConnectionPatchRemoveSchema.optional(),
 	})
 	.strict()
 export type ConnectionPatch = z.infer<typeof ConnectionPatchSchema>
 export function applyConnectionPatch(previous: Connection | undefined, patch: ConnectionPatch): Connection {
-	const next = { ...previous, ...patch }
+	const { remove, ...values } = patch
+	const next = { ...previous, ...values }
 	for (const key of ["defaults", "options", "secretRefs"] as const) {
-		if (Object.hasOwn(patch, key))
-			Object.assign(next, {
-				[key]: {
-					...(previous && key in previous ? (previous as unknown as Record<string, Record<string, unknown>>)[key] : {}),
-					...patch[key],
-				},
-			})
+		const merged: Record<string, unknown> = {
+			...(previous && key in previous ? (previous as unknown as Record<string, Record<string, unknown>>)[key] : {}),
+			...patch[key],
+		}
+		for (const name of remove?.[key] ?? []) {
+			if (Object.hasOwn(patch[key] ?? {}, name)) throw new Error("Cannot set and remove the same key")
+			delete merged[name]
+		}
+		if (Object.hasOwn(patch, key) || remove?.[key]?.length) Object.assign(next, { [key]: merged })
 	}
 	return ConnectionSchema.parse(next)
 }
@@ -508,9 +525,11 @@ export const ModelSettingsSchema = z
 				issue("Missing model or connection")
 				return
 			}
-			const values = resolveModelValues(m.overrides, undefined, c.defaults)
-			if (!values.levels.value.some((l) => l.id === p.levelId)) issue("Invalid saved level")
-			if (values.reasoning.value !== "yes" && p.levelId !== "default") issue("Reasoning is unknown or unsupported")
+			// Only what the model itself sets is certain here: catalog metadata outranks the connection's
+			// defaults and isn't known to this schema, so the request resolver checks the rest.
+			if (m.overrides.levels && !m.overrides.levels.some((l) => l.id === p.levelId)) issue("Invalid saved level")
+			if (m.overrides.reasoning && m.overrides.reasoning !== "yes" && p.levelId !== "default")
+				issue("Reasoning is unknown or unsupported")
 		}
 		check(s.roles.chat)
 		check(s.roles.ask.pick)

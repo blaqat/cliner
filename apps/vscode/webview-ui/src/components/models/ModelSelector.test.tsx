@@ -232,6 +232,14 @@ describe("ModelSelector", () => {
 			expect(screen.getByTestId("model-menu-fix")).toHaveTextContent("Fix it in Settings › Models")
 		})
 
+		it("the fix link goes to the control the host named", async () => {
+			const fixable = rows.map((row) => (row.id === "off" ? { ...row, fixTarget: "connection:c1" as const } : row))
+			renderSelector({ pick: { rowId: "off", levelId: "default" }, rows: fixable })
+			await openMenu()
+			fireEvent.click(screen.getByTestId("model-menu-fix"))
+			expect(onManage).toHaveBeenCalledWith("connection:c1")
+		})
+
 		it("takes Same as the thread as an ordinary entry, with its own level on top", async () => {
 			renderSelector({ pick: { rowId: "thread", levelId: "inherit" }, rows: [sameAsThreadRow(STANDARD_LEVELS), ...rows] })
 			await openMenu()

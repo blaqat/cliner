@@ -90,6 +90,7 @@ service ModelsService {
   rpc testConnection(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
   rpc testConfiguredModel(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
   rpc previewConfiguredModelRequest(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc getModelSavedThreadUsage(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
 }
 
 // A saved API configuration: one provider + one model. Secrets are stored in

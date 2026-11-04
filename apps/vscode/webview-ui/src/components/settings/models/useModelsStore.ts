@@ -96,6 +96,7 @@ export const useModelsStore = () => {
 				mutate((revision) => client.setRoles(revision, change(stateRef.current?.settings.roles as RoleSettings))),
 			setPolicy: (change: (policy: SubagentPolicy) => SubagentPolicy) =>
 				mutate((revision) => client.setPolicy(revision, change(stateRef.current?.settings.subagents as SubagentPolicy))),
+			savedThreadUsage: (modelIds: string[]) => run(() => client.savedThreadUsage(modelIds)),
 			duplicate: (modelId: string) => run(() => client.duplicateModel(modelId)),
 			discover: (connectionId: string) => run((revision) => client.discover(revision, connectionId)),
 			testConnection: (connectionId: string) => run((revision) => client.testConnection(revision, connectionId)),

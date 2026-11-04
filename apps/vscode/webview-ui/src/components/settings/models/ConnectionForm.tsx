@@ -12,6 +12,7 @@ import {
 	Icon,
 	LinkButton,
 	LockedIcon,
+	parseSeconds,
 	Segmented,
 	SmallButton,
 	Why,
@@ -47,6 +48,7 @@ export const SecretField = ({
 	configured,
 	onSet,
 	onRemove,
+	requiredNote,
 	disabled,
 	placeholder,
 	id,
@@ -55,6 +57,8 @@ export const SecretField = ({
 	configured: boolean
 	onSet: (value: string) => Promise<string | undefined>
 	onRemove?: () => Promise<string | undefined>
+	/** Why this can't be removed. Shown instead of a way to remove it. */
+	requiredNote?: string
 	disabled?: boolean
 	placeholder: string
 	id?: string
@@ -77,6 +81,7 @@ export const SecretField = ({
 			secret
 			value=""
 		/>
+		{configured && requiredNote && <Hint>{requiredNote}</Hint>}
 		{configured && onRemove && (
 			<Hint>
 				<LinkButton disabled={disabled} onClick={() => void onRemove()}>
@@ -297,7 +302,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 						<SecretField
 							configured={keyConfigured}
 							label="API key"
-							onRemove={() => save({}, [{ field: "apiKey", operation: "delete" }])}
+							onRemove={() => save({ auth: { kind: "none" } }, [{ field: "apiKey", operation: "delete" }])}
 							onSet={(value) =>
 								save({ auth: { kind: "keychain", secretRef: keyRef } }, [
 									{ field: "apiKey", operation: "set", value },
@@ -529,14 +534,8 @@ export const RequestTimeoutField = ({
 			label="Request timeout"
 			mono
 			onCommit={(text) => {
-				const trimmed = text.trim()
-				if (!trimmed) {
-					return onSave(null)
-				}
-				const seconds = Number(trimmed)
-				return Number.isFinite(seconds) && seconds > 0
-					? onSave(Math.round(seconds * 1000))
-					: "A number of seconds, above 0."
+				const parsed = parseSeconds(text)
+				return "error" in parsed ? parsed.error : onSave(parsed.value)
 			}}
 			placeholder="Seconds. Empty uses Models › Advanced"
 			value={connection.requestTimeoutMs == null ? "" : String(connection.requestTimeoutMs / 1000)}

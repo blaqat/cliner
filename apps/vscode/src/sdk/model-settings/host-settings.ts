@@ -3,13 +3,15 @@ import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import {
 	ConnectionSchema,
 	createDefaultModelSettings,
+	type ModelLevel,
+	type ModelPick,
 	type ModelSettings,
 	type ModelValues,
 	type ModelRow,
 	ModelSettingsSchema,
 	resolveModelValues,
 } from "@shared/model-settings"
-import type { ModelSettingsState } from "@shared/model-settings-state"
+import type { ModelSettingsFixTarget, ModelSettingsState } from "@shared/model-settings-state"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import type { StateManager } from "@/core/storage/StateManager"
 import { connectionProviderOptions } from "./provider-options"
@@ -77,22 +79,31 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 		} catch (error) {
 			reason = error instanceof Error ? error.message : "Model is unavailable"
 		}
-		availability[row.id] = { available: !reason, ...(reason ? { reason } : {}) }
+		availability[row.id] = {
+			available: !reason,
+			...(reason ? { reason, target: { page: "models", connectionId: connection.id } } : {}),
+		}
 	}
-	for (const [name, pick] of Object.entries({
-		"role.chat": settings.roles.chat,
-		"role.ask": settings.roles.ask.enabled ? settings.roles.ask.pick : settings.roles.chat,
-		"background.generate": settings.roles.background.overrides.generate ?? settings.roles.background.pick,
-		"background.commitMessages": settings.roles.background.overrides.commitMessages ?? settings.roles.background.pick,
-		"background.titles": settings.roles.background.overrides.titles ?? settings.roles.background.pick,
-	})) {
+	const { roles } = settings
+	const backgroundUse = (use: "generate" | "commitMessages" | "titles") =>
+		[roles.background.overrides[use] ?? roles.background.pick, roles.background.overrides[use] ? use : "background"] as const
+	for (const [name, [pick, role]] of Object.entries({
+		"role.chat": [roles.chat, "chat"],
+		"role.ask": roles.ask.enabled ? [roles.ask.pick, "ask"] : [roles.chat, "chat"],
+		"role.background": [roles.background.pick, "background"],
+		...(roles.subagents.kind === "model" ? { "role.subagents": [roles.subagents.pick, "subagents"] } : {}),
+		"background.generate": backgroundUse("generate"),
+		"background.commitMessages": backgroundUse("commitMessages"),
+		"background.titles": backgroundUse("titles"),
+	} as Record<string, readonly [ModelPick | null, string]>)) {
 		try {
-			resolveConfiguredPick(settings, pick)
+			resolveEffectiveConfiguredPick(state, settings, pick)
 			availability[name] = availability[pick!.modelId]
 		} catch (error) {
 			availability[name] = {
 				available: false,
 				reason: error instanceof Error ? error.message : "Choose a model in Settings > Models",
+				target: pickFixTarget(settings, pick, role),
 			}
 		}
 	}
@@ -107,6 +118,15 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 		managed: Object.keys(state.getRemoteConfigSettings()),
 		migration: state.getModelSettingsMigrationStatus(),
 	}
+}
+
+/** The control that fixes a pick the resolver refused: the role when its model is gone, otherwise the model. */
+function pickFixTarget(settings: ModelSettings, pick: ModelPick | null, role: string): ModelSettingsFixTarget {
+	const model = settings.models.find((row) => row.id === pick?.modelId)
+	if (!model) return { page: "models", role }
+	return model.kind === "non-chat"
+		? { page: "models", modelId: model.id }
+		: { page: "models", modelId: model.id, field: "levels" }
 }
 
 export function connectionSecretRefs(connection: ModelSettings["connections"][number]): string[] {
@@ -235,6 +255,31 @@ export function modelDependencies(
 	return [...new Set(dependencies)]
 }
 
+/**
+ * Saved threads whose stored picks name these models. Live, pending and next-message entries belong to
+ * their thread; the home draft and in-flight background calls aren't saved threads.
+ */
+export function savedThreadsUsingModels(
+	state: StateManager,
+	ids: string[],
+	history: Array<{ id: string; modelSelectionV1?: unknown; apiSelection?: { modelSelectionV1?: unknown } }>,
+): string[] {
+	const targets = new Set(ids)
+	const uses = (value: unknown): boolean =>
+		!!value &&
+		typeof value === "object" &&
+		(("modelId" in value && targets.has(String(value.modelId))) || Object.values(value).some(uses))
+	const threads = new Set<string>()
+	for (const item of [...(state.getGlobalStateKey("taskHistory") ?? []), ...history]) {
+		const selection = item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1
+		const [threadId, suffix] = item.id.split(":")
+		const owned = suffix === undefined || THREAD_SELECTION_SUFFIXES.has(suffix)
+		if (threadId && threadId !== "home" && owned && uses(selection)) threads.add(threadId)
+	}
+	return [...threads]
+}
+const THREAD_SELECTION_SUFFIXES = new Set(["live", "pending", "previous", "next-message"])
+
 /** Same metadata and managed precedence for publication and request construction. */
 export function configuredModelMetadata(
 	state: StateManager,
@@ -254,6 +299,49 @@ export function configuredModelMetadata(
 	}
 }
 
+const CATALOG_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"]
+const defaultLevel: ModelLevel = { id: "default", label: "Default", rank: 0, request: { kind: "default" } }
+const effortLevels = (efforts: string[]): ModelLevel[] => [
+	defaultLevel,
+	...efforts.map(
+		(value, index): ModelLevel => ({ id: value, label: value, rank: index + 1, request: { kind: "effort", value } }),
+	),
+]
+/**
+ * Levels a catalog model's reasoning metadata advertises. Effort values map one to one, and a budget range
+ * gets three points inside it. With no metadata the SDK sends only broadly supported efforts, so those are
+ * what's offered. A toggle alone, or an empty list, has nothing to choose between.
+ */
+export function catalogReasoningLevels(model: {
+	capabilities?: readonly string[]
+	reasoningOptions?: ReadonlyArray<{ type: string; values?: ReadonlyArray<string | null>; min?: number; max?: number }>
+}): ModelLevel[] | undefined {
+	if (!model.capabilities?.includes("reasoning")) return undefined
+	if (!model.reasoningOptions) return effortLevels(["low", "medium", "high"])
+	const advertised = model.reasoningOptions.flatMap((option) => (option.type === "effort" ? (option.values ?? []) : []))
+	const efforts = CATALOG_EFFORTS.filter((effort) => advertised.includes(effort))
+	if (efforts.length) return effortLevels(efforts)
+	const budget = model.reasoningOptions.find((option) => option.type === "budget_tokens")
+	if (!budget?.max || budget.max <= 0) return undefined
+	const floor = Math.max(budget.min ?? 1, 1)
+	const points = [
+		["low", "Low", budget.max / 4],
+		["medium", "Medium", budget.max / 2],
+		["high", "High", budget.max],
+	] as const
+	return [
+		defaultLevel,
+		...points.map(
+			([id, label, tokens], index): ModelLevel => ({
+				id,
+				label,
+				rank: index + 1,
+				request: { kind: "thinking-budget", tokens: Math.max(Math.round(tokens), floor) },
+			}),
+		),
+	]
+}
+
 /** Maintained catalog facts remain metadata, never user overrides. */
 export function catalogModelValues(row: ModelRow, connection: ModelSettings["connections"][number]): Partial<ModelValues> {
 	const providerId = connection.kind === "provider" ? connection.providerId : "openai-compatible"
@@ -261,7 +349,9 @@ export function catalogModelValues(row: ModelRow, connection: ModelSettings["con
 		.listModels(providerId)
 		.find((m) => m.id === row.upstreamId)
 	if (!model) return {}
+	const levels = catalogReasoningLevels(model)
 	return {
+		...(levels ? { levels } : {}),
 		...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
 		...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
 		...(model.maxInputTokens !== undefined ? { maxInputTokens: model.maxInputTokens } : {}),
@@ -348,11 +438,7 @@ export function managedModelValues(
 }
 
 /** Validate levels against the same effective fields used to construct the request. */
-export function resolveEffectiveConfiguredPick(
-	state: StateManager,
-	settings: ModelSettings,
-	pick: import("@shared/model-settings").ModelPick | null,
-) {
+export function resolveEffectiveConfiguredPick(state: StateManager, settings: ModelSettings, pick: ModelPick | null) {
 	const model = settings.models.find((row) => row.id === pick?.modelId)
 	const connection = settings.connections.find((row) => row.id === model?.connectionId)
 	if (!model || !connection) return resolveConfiguredPick(settings, pick)

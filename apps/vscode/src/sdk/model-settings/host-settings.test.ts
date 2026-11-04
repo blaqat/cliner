@@ -1,12 +1,18 @@
 import { createGateway } from "@cline/llms"
-import { createCompatibleConnection, createDefaultModelSettings, type ModelSettings } from "@shared/model-settings"
+import {
+	createCompatibleConnection,
+	createDefaultModelSettings,
+	type ModelSettings,
+	ModelValuesSchema,
+} from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
-import { DependencyError, mutateSettings } from "@/core/controller/models/modelSettingsRpc"
+import { DependencyError, mutateSettings, savedThreadUsage } from "@/core/controller/models/modelSettingsRpc"
 import { InMemoryConnectionSecretStore } from "./connection-secret-store"
 import { resolveConfiguredPick, resolveThreadPick } from "@/sdk/model-settings-resolver"
 import {
 	assertConfiguredModelRequestAllowed,
 	catalogModelValues,
+	catalogReasoningLevels,
 	managedModelValues,
 	readModelSettingsState,
 	rememberDetectedModelMetadata,
@@ -177,7 +183,7 @@ describe("Phase 4 host boundaries", () => {
 			defaults: { contextWindow: null, temperature: 0, free: false },
 		})
 	})
-	it("reports SDK/live thread, role and policy references, then refuses a removed thread pick through the resolver", async () => {
+	it("saved threads warn but don't block; roles and policy still do; a reopened thread refuses with the route", async () => {
 		const f = fixture()
 		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
 		await f.call("saveConfiguredModels", {
@@ -188,18 +194,27 @@ describe("Phase 4 host boundaries", () => {
 		})
 		const pick = { modelId: "m", levelId: "default" }
 		const selection = { version: 1 as const, ask: pick, act: pick }
-		f.history.push({ id: "live", modelSelectionV1: selection })
+		f.history.push(
+			{ id: "t1", modelSelectionV1: selection },
+			{ id: "t2:live", modelSelectionV1: selection },
+			{ id: "t2", modelSelectionV1: selection },
+			{ id: "t3:next-message", modelSelectionV1: { act: pick } },
+			{ id: "home:draft", modelSelectionV1: selection },
+			{ id: "other", modelSelectionV1: { version: 1, ask: null, act: { modelId: "n", levelId: "default" } } },
+		)
+		const usage = () => savedThreadUsage(f.controller as never, JSON.stringify({ modelIds: ["m"] }), true)
+		expect(await usage()).toEqual({ savedThreads: 3 })
+		await expect(savedThreadUsage(f.controller as never, JSON.stringify({ modelIds: ["m"] }), false)).rejects.toThrow(
+			/rollout/,
+		)
 		f.get().roles.chat = pick
 		f.get().subagents.allowed = [{ kind: "model", modelId: "m", levels: ["default"] }]
 		try {
 			await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
 			throw new Error("expected dependency refusal")
 		} catch (error) {
-			expect((error as DependencyError).dependencies).toEqual(
-				expect.arrayContaining(["roles.chat", "subagents.allowed.0", "thread:live.ask", "thread:live.act"]),
-			)
+			expect((error as DependencyError).dependencies).toEqual(["roles.chat", "subagents.allowed.0"])
 		}
-		f.history.length = 0
 		f.get().roles.chat = null
 		f.get().subagents.allowed = []
 		await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
@@ -256,6 +271,194 @@ describe("managed RPC mutation matrix", () => {
 		}
 		await expect(f.call(operation, cases[operation])).rejects.toThrow()
 		expect(f.get().revision).toBe(2)
+	})
+})
+
+describe("clearing values and the request timeout", () => {
+	const seeded = async () => {
+		const f = fixture()
+		const connection = {
+			...createCompatibleConnection("c"),
+			kind: "provider" as const,
+			providerId: "bedrock",
+			auth: { kind: "none" as const },
+			options: { awsRegion: "us-east-1", awsProfile: "work" },
+			secretRefs: { awsSessionToken: "settings:v1:connection:c:awsSessionToken" },
+			defaults: { contextWindow: 1000, temperature: 0, free: false },
+		}
+		const { apiFormat: _apiFormat, azureApiVersion: _azure, ...provider } = connection
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection: provider,
+			secrets: [{ field: "awsSessionToken", operation: "set", value: "session-secret" }],
+		})
+		return f
+	}
+
+	it("saves and clears the request timeout without touching roles", async () => {
+		const f = fixture()
+		const roles = f.get().roles
+		await f.call("setModelRoles", { expectedRevision: 0, roles, requestTimeoutMs: 45000 })
+		expect(f.get().requestTimeoutMs).toBe(45000)
+		await f.call("setModelRoles", { expectedRevision: 1, roles })
+		expect(f.get().requestTimeoutMs).toBe(45000)
+		await f.call("setModelRoles", { expectedRevision: 2, roles, requestTimeoutMs: null })
+		expect(f.get().requestTimeoutMs).toBeNull()
+		await expect(f.call("setModelRoles", { expectedRevision: 3, roles, requestTimeoutMs: 0 })).rejects.toThrow()
+	})
+
+	it("removes named keys, keeps null, false and zero, and refuses both at once", async () => {
+		const f = await seeded()
+		await f.call("saveConnection", {
+			expectedRevision: 1,
+			connection: { id: "c", remove: { defaults: ["contextWindow"], options: ["awsProfile"] } },
+		})
+		const saved = f.get().connections[0]
+		expect(saved.defaults).toEqual({ temperature: 0, free: false })
+		expect(saved.kind === "provider" && saved.options).toEqual({ awsRegion: "us-east-1" })
+		await f.call("saveConnection", { expectedRevision: 2, connection: { id: "c", defaults: { maxOutputTokens: null } } })
+		expect(f.get().connections[0].defaults).toEqual({ temperature: 0, free: false, maxOutputTokens: null })
+		await expect(
+			f.call("saveConnection", {
+				expectedRevision: 3,
+				connection: { id: "c", defaults: { temperature: 1 }, remove: { defaults: ["temperature"] } },
+			}),
+		).rejects.toThrow(/set and remove/)
+		expect(f.get().connections[0].defaults.temperature).toBe(0)
+	})
+
+	it("deletes a provider secret and its reference together, so the connection isn't left broken", async () => {
+		const f = await seeded()
+		const ref = "settings:v1:connection:c:awsSessionToken"
+		await f.call("saveConnection", {
+			expectedRevision: 1,
+			connection: { id: "c", remove: { secretRefs: ["awsSessionToken"] } },
+			secrets: [{ field: "awsSessionToken", operation: "delete" }],
+		})
+		const saved = f.get().connections[0]
+		expect(saved.kind === "provider" && saved.secretRefs).toEqual({})
+		expect(await f.connectionSecrets.get(ref)).toBeUndefined()
+		// Setting needs a live reference; a delete with none left is refused too.
+		await expect(
+			f.call("saveConnection", {
+				expectedRevision: 2,
+				connection: { id: "c" },
+				secrets: [{ field: "awsSessionToken", operation: "delete" }],
+			}),
+		).rejects.toThrow(/secret field/)
+	})
+})
+
+describe("catalog levels and fix targets", () => {
+	const levelIds = (options: Parameters<typeof catalogReasoningLevels>[0]) => catalogReasoningLevels(options)?.map((l) => l.id)
+
+	it("derives levels from reasoning metadata", () => {
+		const capabilities = ["reasoning"]
+		expect(levelIds({ capabilities: [] })).toBeUndefined()
+		expect(
+			levelIds({ capabilities, reasoningOptions: [{ type: "effort", values: ["none", "high", "low", "default", null] }] }),
+		).toEqual(["default", "low", "high"])
+		expect(levelIds({ capabilities })).toEqual(["default", "low", "medium", "high"])
+		expect(levelIds({ capabilities, reasoningOptions: [{ type: "toggle" }] })).toBeUndefined()
+		expect(
+			catalogReasoningLevels({ capabilities, reasoningOptions: [{ type: "budget_tokens", min: 2000, max: 4000 }] })?.map(
+				(level) => level.request,
+			),
+		).toEqual([
+			{ kind: "default" },
+			{ kind: "thinking-budget", tokens: 2000 },
+			{ kind: "thinking-budget", tokens: 2000 },
+			{ kind: "thinking-budget", tokens: 4000 },
+		])
+	})
+
+	it("every catalog model projects valid values, and a reasoning one offers real levels", () => {
+		const gateway = createGateway()
+		let withLevels = 0
+		for (const provider of gateway.listProviders()) {
+			const connection = {
+				...createCompatibleConnection("c"),
+				kind: "provider" as const,
+				providerId: provider.id,
+				options: {},
+				secretRefs: {},
+			}
+			const { apiFormat: _apiFormat, azureApiVersion: _azure, ...native } = connection
+			for (const model of gateway.listModels(provider.id)) {
+				const row = {
+					id: "m",
+					connectionId: "c",
+					upstreamId: model.id,
+					name: "",
+					kind: "chat" as const,
+					overrides: {},
+					providerOptions: {},
+				}
+				const levels = catalogModelValues(row, native).levels
+				if (!levels) continue
+				withLevels++
+				expect(ModelValuesSchema.partial().safeParse({ levels }).success, `${provider.id}/${model.id}`).toBe(true)
+			}
+		}
+		expect(withLevels).toBeGreaterThan(0)
+	})
+
+	it("a saved catalog level is usable, and one the catalog doesn't offer points at the model's levels", async () => {
+		const f = fixture()
+		const model = createGateway()
+			.listModels("anthropic")
+			.find((m) => catalogReasoningLevels(m)?.some((level) => level.id === "high"))!
+		const { apiFormat: _apiFormat, azureApiVersion: _azure, ...base } = createCompatibleConnection("c")
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection: {
+				...base,
+				kind: "provider",
+				providerId: "anthropic",
+				options: {},
+				secretRefs: {},
+				auth: { kind: "none" },
+			},
+		})
+		await f.call("saveConfiguredModels", {
+			expectedRevision: 1,
+			models: [
+				{ id: "m", connectionId: "c", upstreamId: model.id, name: "", kind: "chat", overrides: {}, providerOptions: {} },
+			],
+		})
+		const roles = f.get().roles
+		await f.call("setModelRoles", {
+			expectedRevision: 2,
+			roles: {
+				...roles,
+				chat: { modelId: "m", levelId: "high" },
+				background: { ...roles.background, pick: { modelId: "m", levelId: "ultra" } },
+			},
+		})
+		const state = await readModelSettingsState(f.state as never)
+		expect(state.effective.m.levels.source).toBe("metadata")
+		expect(state.availability["role.chat"].available).toBe(true)
+		expect(state.availability["role.background"]).toMatchObject({
+			available: false,
+			target: { page: "models", modelId: "m", field: "levels" },
+		})
+		expect(state.availability["background.titles"].target).toEqual({ page: "models", modelId: "m", field: "levels" })
+	})
+
+	it("an empty role points at the role; a model with no key points at its connection", async () => {
+		const f = fixture()
+		const empty = await readModelSettingsState(f.state as never)
+		expect(empty.availability["role.chat"].target).toEqual({ page: "models", role: "chat" })
+		expect(empty.availability["background.commitMessages"].target).toEqual({ page: "models", role: "background" })
+		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
+		await f.call("saveConfiguredModels", {
+			expectedRevision: 1,
+			models: [
+				{ id: "m", connectionId: "c", upstreamId: "test", name: "", kind: "chat", overrides: {}, providerOptions: {} },
+			],
+		})
+		const state = await readModelSettingsState(f.state as never)
+		expect(state.availability.m.target).toEqual({ page: "models", connectionId: "c" })
 	})
 })
 

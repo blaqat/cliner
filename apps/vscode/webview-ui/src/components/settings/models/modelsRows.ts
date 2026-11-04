@@ -25,12 +25,12 @@ const PROVIDER_MANAGED_KEYS = [
 const rolesOf = (ctx: SettingsRowContext) => ctx.state.modelSettings?.settings.roles
 
 /** Revision-checked against the latest store, not the last published copy. */
-const updateRoles = async (change: (roles: RoleSettings) => RoleSettings) => {
+const updateRoles = async (change: (roles: RoleSettings) => RoleSettings, extra?: { requestTimeoutMs: number | null }) => {
 	const response = await ModelsServiceClient.getModelSettings(ModelSettingsRequestV1.create({ json: "{}" }))
 	const latest = JSON.parse(response.json) as ModelSettingsState
 	await ModelsServiceClient.setModelRoles(
 		ModelSettingsRequestV1.create({
-			json: JSON.stringify({ expectedRevision: latest.settings.revision, roles: change(latest.settings.roles) }),
+			json: JSON.stringify({ expectedRevision: latest.settings.revision, roles: change(latest.settings.roles), ...extra }),
 		}),
 	)
 }
@@ -125,9 +125,7 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 		aliases: ["timeout", "seconds"],
 		defaultValue: () => null,
 		read: (ctx) => ctx.state.modelSettings?.settings.requestTimeoutMs ?? null,
-		// The host has no call that saves this yet, so the row says so and stays off.
-		write: () => undefined,
-		disabledReason: () => "Can't be saved here yet. Each connection can set its own, under its More.",
+		write: (requestTimeoutMs) => updateRoles((roles) => roles, { requestTimeoutMs }),
 		format: (value) => (value == null ? "Default" : `${value / 1000}s`),
 	}),
 	state({

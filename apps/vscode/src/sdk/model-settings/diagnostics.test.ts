@@ -112,6 +112,37 @@ describe("configured connection diagnostics", () => {
 	})
 })
 
+describe("request preview headers", () => {
+	it("shows every line, masking anything sensitive or secret", async () => {
+		const f = fixture()
+		const connection = f.settings.connections[0]
+		const secretRef = "settings:v1:connection:c:header-h2"
+		connection.auth = { kind: "keychain", secretRef: "settings:v1:connection:c:apiKey" }
+		connection.headers = [
+			{ id: "h1", name: "X-Team", storage: "plain", value: "platform" },
+			{ id: "h2", name: "X-Locked", storage: "secret", secretRef },
+			{ id: "h3", name: "X-Api-Key", storage: "plain", value: "typed-into-a-plain-box" },
+		]
+		await f.state.connectionSecrets.set("settings:v1:connection:c:apiKey", "sk-preview-secret")
+		await f.state.connectionSecrets.set(secretRef, "locked-secret")
+		const result = (await modelSettingsDiagnostic(
+			f.controller as never,
+			"previewConfiguredModelRequest",
+			JSON.stringify({ pick: { modelId: "m", levelId: "default" }, expectedRevision: 0 }),
+			true,
+		)) as { exact: boolean; request: { headers: Record<string, string> } }
+		expect(result.exact).toBe(true)
+		expect(result.request.headers).toMatchObject({
+			authorization: "[redacted]",
+			"x-team": "platform",
+			"x-locked": "[redacted]",
+			"x-api-key": "[redacted]",
+		})
+		const wire = JSON.stringify(result)
+		for (const secret of ["sk-preview-secret", "locked-secret", "typed-into-a-plain-box"]) expect(wire).not.toContain(secret)
+	})
+})
+
 describe("native and revision diagnostics", () => {
 	it.each([
 		[401, "auth"],

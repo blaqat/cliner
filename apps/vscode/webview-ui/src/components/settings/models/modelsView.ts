@@ -1,6 +1,7 @@
 import {
 	BUILTIN_MODEL_VALUES,
 	type Connection,
+	type ConnectionPatch,
 	type ModelLevel,
 	type ModelPick,
 	type ModelRow,
@@ -167,9 +168,24 @@ export const sharedSummary = (defaults: Connection["defaults"]) => {
 	return parts.length ? parts.join(" · ") : "none set"
 }
 
+/**
+ * A change to a connection's shared defaults as a patch. Empty (null) and Unknown clear the key, so models
+ * go back to inheriting; false and zero are answers and stay.
+ */
+export const sharedDefaultsPatch = (connectionId: string, change: Partial<ModelValues>): ConnectionPatch => {
+	const entries = Object.entries(change)
+	const cleared = entries.filter(([, value]) => value === null || value === "unknown").map(([key]) => key)
+	const set = entries.filter(([key]) => !cleared.includes(key))
+	return {
+		id: connectionId,
+		...(set.length ? { defaults: Object.fromEntries(set) } : {}),
+		...(cleared.length ? { remove: { defaults: cleared as (keyof ModelValues)[] } } : {}),
+	}
+}
+
 const BUILTIN = BUILTIN_MODEL_VALUES as Record<string, unknown>
 
-/** A shared default that says something: clearing one leaves its builtin value behind, since a patch can't remove a key. */
+/** A shared default that says something, as opposed to one spelling out the builtin value. */
 export const hasSharedValue = (defaults: Connection["defaults"], key: keyof ModelValues) =>
 	Object.hasOwn(defaults, key) && JSON.stringify(defaults[key]) !== JSON.stringify(BUILTIN[key])
 
@@ -304,7 +320,6 @@ export type DependencyLine =
 	| { kind: "role"; role: RoleKey }
 	| { kind: "model"; modelId: string }
 	| { kind: "allowed"; index: number }
-	| { kind: "threads"; ids: string[] }
 	| { kind: "other"; path: string }
 
 const ROLE_PATHS: Record<string, RoleKey> = {
@@ -317,10 +332,9 @@ const ROLE_PATHS: Record<string, RoleKey> = {
 	"roles.background.overrides.generate": "generate",
 }
 
-/** The host's dependency paths, grouped into what a person can act on. Threads collapse into one line. */
+/** The host's dependency paths, as what a person can act on. */
 export const readDependencies = (paths: string[]): DependencyLine[] => {
 	const lines: DependencyLine[] = []
-	const threads = new Set<string>()
 	for (const path of paths) {
 		if (ROLE_PATHS[path]) {
 			lines.push({ kind: "role", role: ROLE_PATHS[path] })
@@ -328,13 +342,11 @@ export const readDependencies = (paths: string[]): DependencyLine[] => {
 			lines.push({ kind: "model", modelId: path.slice("model:".length) })
 		} else if (path.startsWith("subagents.allowed")) {
 			lines.push({ kind: "allowed", index: Number(path.split(".")[2]) || 0 })
-		} else if (path.startsWith("thread:")) {
-			threads.add(path.slice("thread:".length).split(".")[0].split(":")[0])
 		} else {
 			lines.push({ kind: "other", path })
 		}
 	}
-	return threads.size ? [...lines, { kind: "threads", ids: [...threads] }] : lines
+	return lines
 }
 
 /** Fields that open the form's More fold. A fix link to one of these has to open it too. */

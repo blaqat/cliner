@@ -566,6 +566,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 					{!isDraft && (
 						<div className="mt-2">
 							<RemoveFlow
+								modelIds={saved.map((row) => row.id)}
 								label={`Remove ${isProvider ? name : "connection"}`}
 								onRemove={() => store.deleteConnection(connection.id)}
 								onRemoved={() => {

@@ -3,7 +3,9 @@ import { useEffect, useState } from "react"
 import { updateSetting } from "../utils/settingsHandlers"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { AdvancedFold } from "../shell/AdvancedFold"
-import { NumberRow, SelectRow, SettingRow, ToggleRow } from "../shell/SettingRow"
+import { NumberRow, RowStatus, SelectRow, SettingBlock, ToggleRow } from "../shell/SettingRow"
+import { findRow } from "../shell/settingsRegistry"
+import { useSettingsShell } from "../shell/SettingsShellContext"
 
 const positiveInteger = (text: string) => {
 	const n = Number(text)
@@ -11,6 +13,7 @@ const positiveInteger = (text: string) => {
 }
 export const LayoutPage = () => {
 	const { oneViewEnabled } = useExtensionState()
+	const pictureRow = findRow(useSettingsShell().rows, "layout.one-view")
 	const [dock, setDock] = useState(readDock)
 	useEffect(() => {
 		const sync = () => setDock(readDock())
@@ -24,7 +27,11 @@ export const LayoutPage = () => {
 	const selected = !oneViewEnabled ? "classic" : dock === "top" ? "tabs" : "side"
 	return (
 		<>
-			<SettingRow rowId="layout.one-view">
+			{/* The page's own title names this. The tag's line stays reserved so the pictures don't shift. */}
+			<SettingBlock rowId="layout.one-view">
+				<div className="flex min-h-[18px] items-center justify-end gap-1.5">
+					{pictureRow && <RowStatus row={pictureRow} />}
+				</div>
 				<div role="radiogroup" aria-label="Layout" className="grid grid-cols-3 gap-2 py-2">
 					{[
 						["classic", "Classic"],
@@ -62,7 +69,7 @@ export const LayoutPage = () => {
 						</button>
 					))}
 				</div>
-			</SettingRow>
+			</SettingBlock>
 			<SelectRow
 				options={[
 					{ value: "steer", label: "Steer" },

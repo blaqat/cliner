@@ -1,17 +1,17 @@
 import { createGateway, createHandler } from "@cline/llms"
-import { ModelPickSchema } from "@shared/model-settings"
+import { type Connection, ModelPickSchema } from "@shared/model-settings"
 import { z } from "zod"
 import {
 	assertConfiguredModelRequestAllowed,
 	assertModelSettingsUnlocked,
 	catalogModelValues,
 	rememberDetectedModelMetadata,
+	resolveEffectiveConfiguredPick,
 } from "@/sdk/model-settings/host-settings"
 import { modelAuthDependencies } from "@/sdk/model-settings/auth-dependencies"
 import { prepareModelRequest, redactModelRequest, resolveConnectionConfig } from "@/sdk/model-settings/request-adapter"
 import { configuredProviderConfig } from "@/sdk/model-settings/runtime-config"
 import { ModelSettingsStore } from "@/sdk/model-settings/store"
-import { resolveConfiguredPick } from "@/sdk/model-settings-resolver"
 import { fetch } from "@/shared/net"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import type { Controller } from ".."
@@ -24,6 +24,19 @@ export type DiagnosticOperation =
 	| "testConnection"
 	| "testConfiguredModel"
 	| "previewConfiguredModelRequest"
+
+const PREVIEW_SENSITIVE_HEADER = /authorization|key|token|secret|cookie|credential/i
+const PREVIEW_PLAIN_HEADERS = new Set(["accept", "content-type", "user-agent"])
+/** Every header line the request would carry. A value shows only if it's plain text the person typed or a routine one. */
+function previewHeaders(headers: HeadersInit | undefined, connection: Connection): Record<string, string> {
+	const typed = new Set(connection.headers.flatMap((h) => (h.storage === "plain" ? [h.name.toLowerCase()] : [])))
+	const lines: Record<string, string> = {}
+	new Headers(headers).forEach((value, name) => {
+		const shown = !PREVIEW_SENSITIVE_HEADER.test(name) && (PREVIEW_PLAIN_HEADERS.has(name) || typed.has(name))
+		lines[name] = shown ? value : "[redacted]"
+	})
+	return lines
+}
 
 const diagnostics = new WeakMap<object, Set<AbortController>>()
 /** Called only after a committed host mutation. Also drop results from edits in other windows. */
@@ -188,7 +201,7 @@ export async function modelSettingsDiagnostic(
 			const model = createGateway()
 				.listModels(config.providerId)
 				.find((m) => m.id === config.modelId)
-			const resolved = resolveConfiguredPick(settings, input.pick)
+			const resolved = resolveEffectiveConfiguredPick(state, settings, input.pick)
 			if (resolved.connection.kind === "openai-compatible" && config.baseUrl) {
 				const headers = new Headers(config.headers)
 				if (config.apiKey) headers.set("Authorization", `Bearer ${config.apiKey}`)
@@ -246,7 +259,7 @@ export async function modelSettingsDiagnostic(
 			const gateway = createGateway()
 			const provider = gateway.listProviders().find((p) => p.id === config.providerId)
 			if (!provider) throw new Error("Provider is unavailable")
-			const resolved = resolveConfiguredPick(settings, input.pick)
+			const resolved = resolveEffectiveConfiguredPick(state, settings, input.pick)
 			const model = gateway.listModels(config.providerId).find((m) => m.id === config.modelId) ?? {
 				id: config.modelId!,
 				name: config.modelId!,
@@ -263,9 +276,12 @@ export async function modelSettingsDiagnostic(
 					context: { provider, model, config: { providerId: config.providerId } },
 					fetch: (async (url: RequestInfo | URL, init?: RequestInit) => {
 						captured = {
-							url: String(url),
-							method: init?.method ?? "GET",
-							headers: {},
+							url: url instanceof Request ? url.url : String(url),
+							method: init?.method ?? (url instanceof Request ? url.method : "GET"),
+							headers: previewHeaders(
+								init?.headers ?? (url instanceof Request ? url.headers : undefined),
+								resolved.connection,
+							),
 							body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
 						}
 						throw stop
@@ -290,8 +306,8 @@ export async function modelSettingsDiagnostic(
 			url.username = ""
 			url.password = ""
 			result.url = url.toString()
-			for (const key of Object.keys(result.headers)) result.headers[key] = "[redacted]"
-			return { exact: true, request: redactModelRequest(result) }
+			// Masked name by name above, so the redactor's blanket rule for `headers` isn't needed.
+			return { exact: true, request: { ...(redactModelRequest(result) as object), headers: result.headers } }
 		}
 
 		try {

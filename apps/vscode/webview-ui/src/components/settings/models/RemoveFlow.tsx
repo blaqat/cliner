@@ -1,5 +1,4 @@
 import { useState } from "react"
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { LinkButton, SmallButton, Why } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
@@ -18,6 +17,7 @@ export const RemoveFlow = ({
 	onRemove,
 	onRemoved,
 	linkClassName,
+	modelIds = [],
 }: {
 	label: string
 	removedName: string
@@ -25,10 +25,13 @@ export const RemoveFlow = ({
 	onRemove: () => Promise<Outcome<DeleteResult>>
 	onRemoved: () => void
 	linkClassName?: string
+	/** The models this removes, to say which saved threads will ask for a new pick. */
+	modelIds?: string[]
 }) => {
 	const { store } = useModelsPage()
 	const { openRow } = useSettingsShell()
-	const navigateToHistory = useExtensionState().navigateToHistory
+	/** Saved threads never stand in the way; undefined until the host has counted, null if it couldn't. */
+	const [savedThreads, setSavedThreads] = useState<number | null>()
 	const [step, setStep] = useState<"idle" | "confirm">("idle")
 	const [lines, setLines] = useState<DependencyLine[]>()
 	const [error, setError] = useState<string>()
@@ -60,6 +63,16 @@ export const RemoveFlow = ({
 		setLines((current) => current?.filter((candidate) => candidate !== line))
 	}
 
+	const open = () => {
+		setStep("confirm")
+		setSavedThreads(undefined)
+		if (modelIds.length) {
+			void store
+				.savedThreadUsage(modelIds)
+				.then((outcome) => setSavedThreads(outcome.ok ? outcome.value.savedThreads : null))
+		}
+	}
+
 	const close = () => {
 		setStep("idle")
 		setLines(undefined)
@@ -68,7 +81,7 @@ export const RemoveFlow = ({
 
 	if (step === "idle") {
 		return (
-			<LinkButton className={linkClassName} onClick={() => setStep("confirm")}>
+			<LinkButton className={linkClassName} onClick={open}>
 				{label}
 			</LinkButton>
 		)
@@ -105,6 +118,13 @@ export const RemoveFlow = ({
 			className="mt-1.5 grid basis-full gap-1.5 rounded-xs border border-error/35 bg-error/10 px-2 py-1.5 text-[11.5px]"
 			data-testid="remove-flow">
 			{!lines && <span>{question}</span>}
+			{!!savedThreads && (
+				<span>
+					{savedThreads === 1 ? "1 saved thread uses" : `${savedThreads} saved threads use`} this. They'll ask you to
+					pick a model when reopened.
+				</span>
+			)}
+			{savedThreads === null && <span>Saved threads that use this will ask you to pick a model when reopened.</span>}
 			{lines && (
 				<>
 					<span>
@@ -159,18 +179,6 @@ export const RemoveFlow = ({
 											}>
 											Take it off the list
 										</LinkButton>
-									</>
-								)}
-								{line.kind === "threads" && (
-									<>
-										<span className="min-w-0">
-											{line.ids.length === 1
-												? "A saved thread uses"
-												: `${line.ids.length} saved threads use`}{" "}
-											it. Pick another model in {line.ids.length === 1 ? "that thread" : "those threads"},
-											or delete {line.ids.length === 1 ? "it" : "them"}.
-										</span>
-										<LinkButton onClick={() => navigateToHistory?.()}>Open history</LinkButton>
 									</>
 								)}
 								{line.kind === "other" && <span className="min-w-0 font-mono text-[11px]">{line.path}</span>}

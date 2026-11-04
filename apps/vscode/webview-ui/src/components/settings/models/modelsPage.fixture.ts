@@ -221,7 +221,6 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 		}
 		visit(settings.roles, "roles")
 		visit(settings.subagents.allowed, "subagents.allowed")
-		for (const id of ids) found.push(...(options.threadDependencies?.[id] ?? []).map((thread) => `thread:${thread}`))
 		return found
 	}
 
@@ -238,10 +237,12 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 				const previous = next.connections.find((candidate) => candidate.id === input.id)
 				const connection = applyConnectionPatch(previous, input as never)
 				const refs = secretRefsOf(connection)
+				const dropped = previous ? secretRefsOf(previous) : []
 				for (const mutation of mutations) {
 					if (mutation.operation === "set" && /^(?:[*•●]{2,})/.test(mutation.value))
 						throw new Error("Supply a new credential, not a masked placeholder")
-					if (!refs.includes(`settings:v1:connection:${input.id}:${mutation.field}`))
+					const ref = `settings:v1:connection:${input.id}:${mutation.field}`
+					if (!refs.includes(ref) && !(mutation.operation === "delete" && dropped.includes(ref)))
 						throw new Error("Invalid or duplicate secret field")
 				}
 				if (previous) {
@@ -281,6 +282,11 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 				next.models = next.models.filter((model) => model.id !== payload.modelId)
 			})
 		},
+		getModelSavedThreadUsage: async (request: { json: string }) => {
+			const payload = decode("getModelSavedThreadUsage", request) as { modelIds: string[] }
+			const threads = payload.modelIds.flatMap((id) => options.threadDependencies?.[id] ?? [])
+			return reply({ savedThreads: new Set(threads).size })
+		},
 		deleteConnection: async (request: { json: string }) => {
 			const payload = decode("deleteConnection", request)
 			const rows = settings.models.filter((model) => model.connectionId === payload.connectionId).map((model) => model.id)
@@ -294,6 +300,7 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 			const payload = decode("setModelRoles", request)
 			return commit(payload, (next) => {
 				next.roles = payload.roles as ModelSettings["roles"]
+				if (payload.requestTimeoutMs !== undefined) next.requestTimeoutMs = payload.requestTimeoutMs as number | null
 			})
 		},
 		setSubagentPolicy: async (request: { json: string }) => {
@@ -330,7 +337,7 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 					request: {
 						url: "https://ai.acme.example/v1/responses",
 						method: "POST",
-						headers: { Authorization: "[redacted]" },
+						headers: { authorization: "[redacted]", "x-team": "platform" },
 						body: { model: "gpt-6-sol", reasoning: { effort: "xhigh" }, stream: true },
 					},
 				},

@@ -5,6 +5,7 @@ import { type Mode, OPENAI_REASONING_EFFORT_OPTIONS, type OpenaiReasoningEffort 
 import { useEffect, useState } from "react"
 import type { SelectorLevel, SelectorPick, SelectorRow } from "@/components/models/ModelSelector"
 import { describePick, samePick, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
+import type { SettingsNavigationTarget } from "@/components/settings/settingsTargets"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
 import {
@@ -70,7 +71,7 @@ export interface ComposerSelection {
 	commit: (pick: SelectorPick) => void
 	setNextMessageOnly: (on: boolean) => void
 	reset: () => void
-	manage: () => void
+	manage: (target?: SettingsNavigationTarget) => void
 	/** Only the new store has a default to set from the composer. */
 	makeDefault?: {
 		/** Says which role the host will set. */
@@ -262,7 +263,7 @@ function useModelSettingsSelection(mode: Mode) {
 				setArmed(false)
 				send(defaultPick, false)
 			},
-			manage: () => navigateToSettings("api-config"),
+			manage: (target) => navigateToSettings(target ?? "api-config"),
 			makeDefault: {
 				tip: askHasOwnModel
 					? "Sets the Ask model: new chats start with this on Ask. Other chats keep theirs."

@@ -7,6 +7,7 @@ import {
 	settingsRowControlId,
 	settingsRowElementId,
 } from "../settingsTargets"
+import { modelOverrideRows } from "./modelOverrideRows"
 
 export interface SettingsRowContext {
 	state: ExtensionStateContextType
@@ -118,8 +119,10 @@ export const rowDiffers = (row: SettingsRow, ctx: SettingsRowContext): boolean =
 /** Changed means the user's own change: a managed value isn't theirs and can't be reset. */
 export const isRowChanged = (row: SettingsRow, ctx: SettingsRowContext) => rowDiffers(row, ctx) && !isRowManaged(row, ctx)
 
-export const changedRows = (rows: readonly SettingsRow[], ctx: SettingsRowContext) =>
-	rows.filter((row) => row.kind === "preference" && !row.mirrorOf && isRowVisible(rows, row, ctx) && isRowChanged(row, ctx))
+export const changedRows = (rows: readonly SettingsRow[], ctx: SettingsRowContext) => [
+	...rows.filter((row) => row.kind === "preference" && !row.mirrorOf && isRowVisible(rows, row, ctx) && isRowChanged(row, ctx)),
+	...modelOverrideRows(ctx),
+]
 
 export const managedRows = (rows: readonly SettingsRow[], ctx: SettingsRowContext) =>
 	rows.filter((row) => isRowVisible(rows, row, ctx) && isRowManaged(row, ctx))

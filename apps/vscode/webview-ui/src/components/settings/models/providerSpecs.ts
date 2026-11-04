@@ -98,10 +98,10 @@ const SPECS: Record<string, Omit<ProviderSpec, "id">> = {
 			},
 			{ id: "awsRegion", label: "Region", slot: "option", placeholder: "us-east-1", required: true },
 			{ id: "awsProfile", label: "AWS profile", slot: "option", placeholder: "default", shownWhen: bedrockAuth("profile") },
-			{ id: "awsAccessKey", label: "Access key", slot: "secret", shownWhen: bedrockAuth("credentials") },
-			{ id: "awsSecretKey", label: "Secret key", slot: "secret", shownWhen: bedrockAuth("credentials") },
+			{ id: "awsAccessKey", label: "Access key", slot: "secret", required: true, shownWhen: bedrockAuth("credentials") },
+			{ id: "awsSecretKey", label: "Secret key", slot: "secret", required: true, shownWhen: bedrockAuth("credentials") },
 			{ id: "awsSessionToken", label: "Session token", slot: "secret", shownWhen: bedrockAuth("credentials") },
-			{ id: "awsBedrockApiKey", label: "API key", slot: "secret", shownWhen: bedrockAuth("apikey") },
+			{ id: "awsBedrockApiKey", label: "API key", slot: "secret", required: true, shownWhen: bedrockAuth("apikey") },
 			{ id: "awsBedrockEndpoint", label: "VPC endpoint", slot: "option", placeholder: "Default" },
 		],
 		modelFields: [
@@ -158,7 +158,13 @@ const SPECS: Record<string, Omit<ProviderSpec, "id">> = {
 	moonshot: { auth: "keychain", fields: [apiLine("moonshotApiLine")] },
 	zai: { auth: "keychain", fields: [apiLine("zaiApiLine")] },
 	"zai-coding-plan": { auth: "keychain", fields: [apiLine("zaiApiLine")] },
-	minimax: { auth: "keychain", fields: [apiLine("minimaxApiLine")] },
+	minimax: {
+		auth: "keychain",
+		fields: [
+			apiLine("minimaxApiLine"),
+			{ id: "baseUrl", label: "Base URL", slot: "base-url", placeholder: "https://api.minimax.io/anthropic" },
+		],
+	},
 	"qwen-code": {
 		auth: "fields",
 		fields: [{ id: "qwenCodeOauthPath", label: "OAuth path", slot: "option", placeholder: "~/.qwen/oauth_creds.json" }],

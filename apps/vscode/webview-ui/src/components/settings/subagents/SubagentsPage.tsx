@@ -6,6 +6,7 @@ import { selectorDataFromModelSettings, sameAsThreadRow } from "@/components/mod
 import type { SelectorPick } from "@/components/models/ModelSelector"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { Button } from "@/components/ui/button"
+import type { SettingsNavigationTarget } from "../settingsTargets"
 import { AdvancedFold } from "../shell/AdvancedFold"
 import { NumberRow, SelectRow, SettingRow, SettingBlock, RowStatus, ToggleRow } from "../shell/SettingRow"
 export function SubagentsPage() {
@@ -14,7 +15,7 @@ export function SubagentsPage() {
 	if (!modelSettings) return null
 	const data = selectorDataFromModelSettings(modelSettings)
 	const rows = [sameAsThreadRow(data.ladder), ...data.rows]
-	const manage = () => navigateToSettings("models")
+	const manage = (target?: SettingsNavigationTarget) => navigateToSettings(target ?? "models")
 	const allowedPick = (p: SelectorPick): AllowedSubagentModel =>
 		p.rowId === "thread" ? { kind: "thread", levels: [p.levelId] } : { kind: "model", modelId: p.rowId, levels: [p.levelId] }
 	return (

@@ -73,6 +73,7 @@ export const modelSettingsClient = {
 		call<DetectResult>(client.detectConfiguredModel, { expectedRevision, pick }),
 	testModel: (expectedRevision: number, pick: ModelPick) =>
 		call<{ status: "ok" | "inference-failed" }>(client.testConfiguredModel, { expectedRevision, pick }),
+	savedThreadUsage: (modelIds: string[]) => call<{ savedThreads: number }>(client.getModelSavedThreadUsage, { modelIds }),
 	preview: (expectedRevision: number, pick: ModelPick) =>
 		call<PreviewResult>(client.previewConfiguredModelRequest, { expectedRevision, pick }),
 }

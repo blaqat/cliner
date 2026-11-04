@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto"
 import {
 	applyConnectionPatch,
+	type Connection,
 	ConnectionPatchSchema,
 	ModelPickSchema,
 	ModelRowSchema,
+	type ModelSettings,
 	ModelSettingsSchema,
 	RoleSettingsSchema,
 	SubagentPolicySchema,
@@ -14,6 +16,7 @@ import {
 	connectionSecretRefs,
 	modelDependencies,
 	readModelSettingsState,
+	savedThreadsUsingModels,
 	validateConnectionSecretRefs,
 } from "@/sdk/model-settings/host-settings"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
@@ -50,7 +53,13 @@ const schemas = {
 	duplicateConfiguredModel: z.object({ modelId: z.string().min(1) }).strict(),
 	deleteConfiguredModel: z.object({ expectedRevision: revision, modelId: z.string().min(1) }).strict(),
 	deleteConnection: z.object({ expectedRevision: revision, connectionId: z.string().min(1) }).strict(),
-	setModelRoles: z.object({ expectedRevision: revision, roles: RoleSettingsSchema }).strict(),
+	setModelRoles: z
+		.object({
+			expectedRevision: revision,
+			roles: RoleSettingsSchema,
+			requestTimeoutMs: z.number().int().positive().nullable().optional(),
+		})
+		.strict(),
 	setSubagentPolicy: z.object({ expectedRevision: revision, subagents: SubagentPolicySchema }).strict(),
 	makeModelDefault: z.object({ expectedRevision: revision, mode: z.enum(["plan", "act"]), pick: ModelPickSchema }).strict(),
 }
@@ -75,21 +84,15 @@ export async function mutateSettings(
 		return { draft }
 	}
 	const expectedRevision = (parsed as { expectedRevision: number }).expectedRevision
-	let dependencies: string[] = []
-	const history =
-		operation === "deleteConfiguredModel" || operation === "deleteConnection"
-			? await controller.getModelSelectionDependencies()
-			: []
 	await controller.stateManager.mutateModelSettings(expectedRevision, async (settings) => {
 		const next = structuredClone(settings)
 		let rollback: (() => Promise<void>) | undefined
+		let previousConnection: Connection | undefined
 		switch (operation) {
 			case "saveConnection": {
 				const input = schemas.saveConnection.parse(parsed)
-				const connection = applyConnectionPatch(
-					next.connections.find((c) => c.id === input.connection.id),
-					input.connection,
-				)
+				previousConnection = next.connections.find((c) => c.id === input.connection.id)
+				const connection = applyConnectionPatch(previousConnection, input.connection)
 				validateConnectionSecretRefs(connection)
 				const index = next.connections.findIndex((c) => c.id === input.connection.id)
 				if (index < 0) next.connections.push(connection)
@@ -112,7 +115,7 @@ export async function mutateSettings(
 			}
 			case "deleteConfiguredModel": {
 				const { modelId } = schemas.deleteConfiguredModel.parse(parsed)
-				dependencies = modelDependencies(controller.stateManager, next, [modelId], history)
+				const dependencies = blockingDependencies(controller.stateManager, next, [modelId])
 				if (dependencies.length) throw new DependencyError(dependencies)
 				next.models = next.models.filter((m) => m.id !== modelId)
 				break
@@ -120,22 +123,24 @@ export async function mutateSettings(
 			case "deleteConnection": {
 				const { connectionId } = schemas.deleteConnection.parse(parsed)
 				const rows = next.models.filter((m) => m.connectionId === connectionId)
-				dependencies = [
+				const dependencies = [
 					...rows.map((m) => `model:${m.id}`),
-					...modelDependencies(
+					...blockingDependencies(
 						controller.stateManager,
 						next,
 						rows.map((m) => m.id),
-						history,
 					),
 				]
 				if (dependencies.length) throw new DependencyError(dependencies)
 				next.connections = next.connections.filter((c) => c.id !== connectionId)
 				break
 			}
-			case "setModelRoles":
-				next.roles = schemas.setModelRoles.parse(parsed).roles
+			case "setModelRoles": {
+				const input = schemas.setModelRoles.parse(parsed)
+				next.roles = input.roles
+				if (input.requestTimeoutMs !== undefined) next.requestTimeoutMs = input.requestTimeoutMs
 				break
+			}
 			case "setSubagentPolicy":
 				next.subagents = schemas.setSubagentPolicy.parse(parsed).subagents
 				break
@@ -164,11 +169,14 @@ export async function mutateSettings(
 				)
 					throw new Error("Connection credential is managed by your organization")
 			}
+			// A delete can name a reference this same patch drops, so the two land together.
 			const refs = new Set(connectionSecretRefs(connection))
+			const dropped = new Set(previousConnection ? connectionSecretRefs(previousConnection) : [])
 			const touched = new Set<string>()
 			for (const mutation of input.secrets) {
 				const ref = `settings:v1:connection:${input.connection.id}:${mutation.field}`
-				if (!refs.has(ref) || touched.has(ref)) throw new Error("Invalid or duplicate secret field")
+				const known = refs.has(ref) || (mutation.operation === "delete" && dropped.has(ref))
+				if (!known || touched.has(ref)) throw new Error("Invalid or duplicate secret field")
 				touched.add(ref)
 			}
 			// Validate the entire request before the first secret write.
@@ -224,6 +232,22 @@ export async function mutateSettings(
 	cancelModelSettingsDiagnostics(controller.stateManager)
 	await controller.postStateToWebview(true)
 	return readModelSettingsState(controller.stateManager)
+}
+
+/** Roles and the subagent policy have to be repointed first. A saved thread doesn't block: reopened, it asks for a pick. */
+function blockingDependencies(state: Controller["stateManager"], settings: ModelSettings, ids: string[]): string[] {
+	return modelDependencies(state, settings, ids).filter((path) => !path.startsWith("thread:"))
+}
+
+/** What deleting these models would touch without stopping it, so the confirmation can say so. */
+export async function savedThreadUsage(controller: Controller, payload: string, enabled?: boolean) {
+	if (!modelSettingsRolloutEnabled(enabled)) throw new Error("Model settings rollout is disabled")
+	const { modelIds } = z
+		.object({ modelIds: z.array(z.string().min(1)) })
+		.strict()
+		.parse(JSON.parse(payload))
+	const history = await controller.getModelSelectionDependencies()
+	return { savedThreads: savedThreadsUsingModels(controller.stateManager, modelIds, history).length }
 }
 
 export class DependencyError extends Error {

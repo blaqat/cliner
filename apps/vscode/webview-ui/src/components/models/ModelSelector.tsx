@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode } from "react"
 import { useEffect, useRef, useState } from "react"
 import { MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import type { SettingsNavigationTarget } from "@/components/settings/settingsTargets"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { LIST_ROW_HEIGHT, type ListItem, ModelEffortLists } from "./ModelEffortLists"
@@ -35,6 +36,10 @@ export interface SelectorRow {
 	defaultLevelId?: string
 	/** Why it can't be chosen (its connection has no key, say). A full sentence. */
 	disabledReason?: string
+	/** The control that fixes `disabledReason`, when the host names one. */
+	fixTarget?: SettingsNavigationTarget
+	/** The control that edits this row's levels. */
+	levelsTarget?: SettingsNavigationTarget
 }
 
 export interface SelectorPick {
@@ -76,7 +81,7 @@ export interface ModelSelectorProps {
 	/** The note ends with this link to Settings › Models. */
 	noteLink?: string
 	/** Opens Settings › Models: the fix for an empty list or a model that can't run. */
-	onManage: () => void
+	onManage: (target?: SettingsNavigationTarget) => void
 	/** Above the lists (the composer's approval tiles). */
 	top?: ReactNode
 	/** Below the lists (the composer's Reset, Next message only, Models and default lines). */
@@ -267,13 +272,13 @@ export function ModelSelector({
 	const levelIndex = levelItems.findIndex((item) => item.value === shown.levelId)
 	const badLevel = row?.levels && levelIndex >= 0 ? levelItems[levelIndex].disabledReason : undefined
 
-	const fixLink = (label: string) => (
+	const fixLink = (label: string, target?: SettingsNavigationTarget) => (
 		<button
 			className={NOTE_LINK_CLASS}
 			data-testid="model-menu-fix"
 			onClick={() => {
 				close(true)
-				onManage()
+				onManage(target)
 			}}
 			type="button">
 			{label}
@@ -289,11 +294,11 @@ export function ModelSelector({
 		shown.movedNote
 	) : badLevel ? (
 		<span>
-			{badLevel}, so this pick won't start. Pick a level or {fixLink("edit the model")}
+			{badLevel}, so this pick won't start. Pick a level or {fixLink("edit the model", row?.levelsTarget)}
 		</span>
 	) : row?.disabledReason ? (
 		<span>
-			{row.disabledReason} {fixLink("Fix it in Settings › Models")}
+			{row.disabledReason} {fixLink("Fix it in Settings › Models", row.fixTarget)}
 		</span>
 	) : row?.noLevelsNote ? (
 		<span>

@@ -43,6 +43,16 @@ describe("selectorDataFromModelSettings", () => {
 		expect(row("sol")?.disabledReason).toBeUndefined()
 	})
 
+	it("carries the host's fix target, and where a row's levels are edited", () => {
+		const state = modelSettingsFixture()
+		state.availability.g54 = { available: false, reason: "Key missing", target: { page: "models", connectionId: "c1" } }
+		const data = selectorDataFromModelSettings(state)
+		const found = data.rows.find((candidate) => candidate.id === "g54")
+		expect(found?.fixTarget).toBe("connection:c1")
+		expect(found?.levelsTarget).toBe("model:g54:levels")
+		expect(data.rows.find((candidate) => candidate.id !== "g54")?.fixTarget).toBeUndefined()
+	})
+
 	it("tidies imported level tokens and adds levels outside the standard ones", () => {
 		const state = modelSettingsFixture()
 		state.effective.g54.levels.value = [
