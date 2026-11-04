@@ -27,11 +27,9 @@ import { GenerateControl } from "./GenerateControl"
 import {
 	EMPTY_REVIEW_FILTER,
 	groupReviewNotes,
-	loadReviewNotesPref,
 	type PlacedReviewNote,
 	placeReviewNotes,
 	type ReviewFilter,
-	saveReviewNotesPref,
 	shownByFilter,
 } from "./reviewNotes"
 import {
@@ -168,7 +166,8 @@ export default function WalkthroughView({
 	// The selection whose note box is open: its hunk, lines and the exact text picked.
 	const [editingLine, setEditingLine] = useState<{ fingerprint: string } & LineRange & { quote?: string }>()
 	// Cline's review notes: Generate's "Add review notes" (remembered), the kind filter and what's open.
-	const [reviewNotesOn, setReviewNotesOn] = useState(loadReviewNotesPref)
+	// Applies to the next Generate only: notes depend on what's asked for, so the choice isn't remembered.
+	const [reviewNotesOn, setReviewNotesOn] = useState(false)
 	const [reviewFilter, setReviewFilter] = useState<ReviewFilter>(EMPTY_REVIEW_FILTER)
 	const [openCallouts, setOpenCallouts] = useState<Record<string, boolean>>({})
 	const [openStopNotes, setOpenStopNotes] = useState<Record<string, boolean>>({})
@@ -312,6 +311,7 @@ export default function WalkthroughView({
 			if (regenerate) persist(migrateRegeneratedReview(storeRef.current, walk, next))
 			setWalk(next)
 			setMoved(false)
+			setReviewNotesOn(false)
 		} catch (err) {
 			setError(message(err))
 		} finally {
@@ -792,10 +792,7 @@ export default function WalkthroughView({
 							onGenerate={() => void generate()}
 							onOpenProfiles={() => navigateToSettings("profiles")}
 							onPickProfile={setPickedProfileId}
-							onReviewNotes={(on) => {
-								setReviewNotesOn(on)
-								saveReviewNotesPref(on)
-							}}
+							onReviewNotes={setReviewNotesOn}
 							profileId={profileId}
 							profiles={profiles}
 							regenerate={walk?.source === "generated"}

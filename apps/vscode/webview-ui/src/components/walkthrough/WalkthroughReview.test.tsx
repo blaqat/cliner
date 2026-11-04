@@ -288,25 +288,25 @@ describe("Cline's review notes", () => {
 		expect(screen.queryAllByTestId("review-marker")).toHaveLength(0)
 	})
 
-	it("remembers Add review notes in the Generate ▾ menu and sends reviewNotes with Generate", async () => {
+	it("sends Add review notes with the next Generate only, and doesn't remember it", async () => {
 		const view = await renderPage({ ...fixture, source: "fallback", review: undefined })
-		fireEvent.click(screen.getByRole("button", { name: /^Generate/ }))
-		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(1))
-		expect(sent(mocks.generate).reviewNotes).toBeUndefined()
-
 		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
 		const option = await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })
 		expect(option).toHaveAttribute("aria-checked", "false")
 		fireEvent.click(option)
 		expect(option).toHaveAttribute("aria-checked", "true")
 		fireEvent.keyDown(option, { key: "Escape" })
+
+		fireEvent.click(screen.getByRole("button", { name: /^Generate/ }))
+		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(1))
+		expect(sent(mocks.generate).reviewNotes).toBe(true)
+
+		fireEvent.click(await screen.findByRole("button", { name: "Choose Generate profile" }))
+		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "false")
 		view.unmount()
 
 		await renderPage({ ...fixture, source: "fallback", review: undefined })
-		fireEvent.click(screen.getByRole("button", { name: /^Generate/ }))
-		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(2))
-		expect(sent(mocks.generate, 1).reviewNotes).toBe(true)
 		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "true")
+		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "false")
 	})
 })

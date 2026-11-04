@@ -149,23 +149,3 @@ export interface ReviewFilter {
 export const EMPTY_REVIEW_FILTER: ReviewFilter = { hidden: {}, all: false }
 
 export const shownByFilter = (filter: ReviewFilter, placed: PlacedReviewNote) => !filter.all && !filter.hidden[placed.note.kind]
-
-/** Generate's "Add review notes" choice; once ticked it stays on. */
-const REVIEW_NOTES_PREF = "cline.walkthroughReviewNotes"
-
-export function loadReviewNotesPref(): boolean {
-	try {
-		return localStorage.getItem(REVIEW_NOTES_PREF) === "true"
-	} catch {
-		return false
-	}
-}
-
-export function saveReviewNotesPref(on: boolean) {
-	try {
-		if (on) localStorage.setItem(REVIEW_NOTES_PREF, "true")
-		else localStorage.removeItem(REVIEW_NOTES_PREF)
-	} catch {
-		// Storage unavailable: the choice lasts until the page closes.
-	}
-}
