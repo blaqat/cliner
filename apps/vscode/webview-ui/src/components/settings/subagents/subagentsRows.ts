@@ -1,13 +1,13 @@
-import type { SubagentPick, AllowedSubagentModel } from "@shared/model-settings"
-import type { ModelSettingsState } from "@shared/model-settings-state"
+import type { AllowedSubagentModel, SubagentPick } from "@shared/model-settings"
 import { ModelsServiceClient } from "@/services/grpc-client"
+import { withLatestSettings } from "../models/modelSettingsClient"
 import {
-	preference,
-	POLICY_DEFAULTS,
-	updateSubagentPolicy,
-	policyOf,
 	onlyWithSubagents,
+	POLICY_DEFAULTS,
+	policyOf,
+	preference,
 	SUBAGENT_ACCESS,
+	updateSubagentPolicy,
 } from "../shell/rowFactories"
 export const SUBAGENTS_ROWS = [
 	preference<string>({
@@ -27,13 +27,14 @@ export const SUBAGENTS_ROWS = [
 		defaultValue: () => ({ kind: "thread", level: "inherit" }),
 		read: (ctx) => ctx.state.modelSettings?.settings.roles?.subagents ?? { kind: "thread", level: "inherit" },
 		write: async (value) => {
-			const latest = JSON.parse((await ModelsServiceClient.getModelSettings({ json: "{}" })).json) as ModelSettingsState
-			await ModelsServiceClient.setModelRoles({
-				json: JSON.stringify({
-					expectedRevision: latest.settings.revision,
-					roles: { ...latest.settings.roles, subagents: value },
+			await withLatestSettings((latest) =>
+				ModelsServiceClient.setModelRoles({
+					json: JSON.stringify({
+						expectedRevision: latest.settings.revision,
+						roles: { ...latest.settings.roles, subagents: value },
+					}),
 				}),
-			})
+			)
 		},
 		disabledReason: onlyWithSubagents,
 	}),

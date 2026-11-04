@@ -3,7 +3,10 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
+import { friendlyError } from "../models/modelsView"
 import { settingsRowControlId, settingsRowElementId } from "../settingsTargets"
+import { useSettingsShell } from "./SettingsShellContext"
+import type { PreferenceRow, SettingsRow } from "./settingsRegistry"
 import {
 	findRow,
 	isRowChanged,
@@ -14,16 +17,16 @@ import {
 	rowDiffers,
 	writeRow,
 } from "./settingsRegistry"
-import type { PreferenceRow, SettingsRow } from "./settingsRegistry"
-import { useSettingsShell } from "./SettingsShellContext"
 
-export const TAG_CLASS = "inline-flex h-4 items-center gap-0.5 whitespace-nowrap rounded-[3px] border px-1 text-[10px] leading-none"
+export const TAG_CLASS =
+	"inline-flex h-[18px] items-center gap-0.5 whitespace-nowrap rounded-[3px] border px-1.5 text-[11px] leading-none"
+export const SETTING_GROUP_TITLE_CLASS = "m-0 mb-2 text-[13px] font-semibold text-foreground"
 export const RESET_CLASS =
-	"cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline disabled:cursor-not-allowed disabled:text-description disabled:no-underline"
+	"cursor-pointer border-0 bg-transparent p-0 text-[12px] text-link hover:underline disabled:cursor-not-allowed disabled:text-description disabled:no-underline"
 
 export const ManagedTag = () => (
 	<span className={cn(TAG_CLASS, "border-warning/45 text-warning")}>
-		<i aria-hidden className="codicon codicon-lock text-[10px]!" />
+		<i aria-hidden className="codicon codicon-lock text-[11px]!" />
 		Managed
 	</span>
 )
@@ -91,6 +94,7 @@ const preferenceValue = <T,>(row: SettingsRow, ctx: Parameters<PreferenceRow["re
 /** One settings row. Everything it shows besides the control comes from the registry. */
 export const SettingRow = <T = unknown>({ rowId, control, children }: SettingRowProps<T>) => {
 	const { rows, ctx } = useSettingsShell()
+	const [failure, setFailure] = useState<string>()
 	const row = findRow(rows, rowId)
 	if (!row || !isRowVisible(rows, row, ctx)) {
 		return null
@@ -101,30 +105,35 @@ export const SettingRow = <T = unknown>({ rowId, control, children }: SettingRow
 	const description = rowDescription(row, ctx)
 	return (
 		<div
-			className="scroll-my-2 rounded-xs border-b border-editor-group-border py-2 last:border-b-0"
+			className="scroll-my-2 rounded-xs border-b border-editor-group-border py-3.5 last:border-b-0"
 			data-row={row.id}
 			id={row.elementId ?? settingsRowElementId(row.id)}>
-			<div className="flex flex-wrap items-start justify-between gap-x-2.5 gap-y-1">
+			<div className="flex flex-wrap items-start justify-between gap-x-5 gap-y-2">
 				<div className="min-w-[150px] flex-1">
-					<div className="flex min-h-[18px] flex-wrap items-center gap-1.5">
-						<label className="text-foreground" htmlFor={controlId}>
+					<div className="flex min-h-[20px] flex-wrap items-center gap-2">
+						<label className="font-medium text-foreground" htmlFor={controlId}>
 							{row.label}
 						</label>
 						<RowStatus row={row} />
 					</div>
-					{description && <div className="mt-px text-[11px] text-description">{description}</div>}
+					{description && <div className="mt-1 text-[12px] leading-[1.45] text-description">{description}</div>}
 					{managed && (
-						<div className="mt-1 flex items-start gap-1.5 text-[11px] text-description">
-							<i aria-hidden className="codicon codicon-lock text-[11px]! text-warning" />
+						<div className="mt-1 flex items-start gap-1.5 text-[12px] text-description">
+							<i aria-hidden className="codicon codicon-lock text-[12px]! text-warning" />
 							<span>
 								{organizationName(ctx.activeOrganization?.name)} manages this. Ask your admin to change it.
 							</span>
 						</div>
 					)}
-					{!managed && reason && <div className="mt-1 text-[11px] text-description">{reason}</div>}
+					{!managed && reason && <div className="mt-1 text-[12px] text-description">{reason}</div>}
+					{failure && (
+						<div className="mt-1 text-[12px] text-error" role="alert">
+							Not saved: {failure}
+						</div>
+					)}
 				</div>
 				{control && (
-					<div className="flex min-h-[18px] shrink-0 items-center gap-1.5">
+					<div className="flex min-h-[20px] shrink-0 items-center gap-2">
 						{control({
 							id: controlId,
 							label: row.label,
@@ -132,7 +141,8 @@ export const SettingRow = <T = unknown>({ rowId, control, children }: SettingRow
 							value: preferenceValue<T>(row, ctx),
 							write: (value) => {
 								if (row.kind === "preference") {
-									writeRow(row, value, ctx)
+									setFailure(undefined)
+									writeRow(row, value, ctx, (error) => setFailure(friendlyError(error)))
 								}
 							},
 						})}
@@ -144,15 +154,23 @@ export const SettingRow = <T = unknown>({ rowId, control, children }: SettingRow
 	)
 }
 
+/** A titled, outlined set of rows. It goes away when nothing in it applies. */
+export const SettingGroup = ({ title, children }: { title?: string; children: ReactNode }) => (
+	<section className="mt-5 [&:not(:has([data-row]))]:hidden">
+		{title && <h3 className={SETTING_GROUP_TITLE_CLASS}>{title}</h3>}
+		<div className="rounded-md border border-editor-widget-border/50 [&>[data-row]]:px-4">{children}</div>
+	</section>
+)
+
 /** An anchor for a mounted older component, which brings its own labels. */
-export const SettingBlock = ({ rowId, children }: { rowId: string; children: ReactNode }) => {
+export const SettingBlock = ({ rowId, className, children }: { rowId: string; className?: string; children: ReactNode }) => {
 	const { rows, ctx } = useSettingsShell()
 	const row = findRow(rows, rowId)
 	if (!row || !isRowVisible(rows, row, ctx)) {
 		return null
 	}
 	return (
-		<div className="rounded-xs" data-row={row.id} id={row.elementId ?? settingsRowElementId(row.id)}>
+		<div className={cn("rounded-xs", className)} data-row={row.id} id={row.elementId ?? settingsRowElementId(row.id)}>
 			{children}
 		</div>
 	)
@@ -197,7 +215,7 @@ export const SelectRow = ({
 	<SettingRow<string>
 		control={({ id, label, disabled, value, write }) => (
 			<Select disabled={disabled} onValueChange={write} value={value}>
-				<SelectTrigger aria-label={label} className="h-6 w-auto min-w-[110px] max-w-[170px]" id={id}>
+				<SelectTrigger aria-label={label} className="h-7 w-auto min-w-[120px] max-w-[190px]" id={id}>
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
@@ -251,14 +269,14 @@ export const NumberRow = ({
 				return (
 					<>
 						{bad && (
-							<span className="text-[11px] text-error" role="alert">
+							<span className="text-[12px] text-error" role="alert">
 								{invalid}
 							</span>
 						)}
 						<Input
 							aria-invalid={bad}
 							aria-label={label}
-							className="h-6 w-16"
+							className="h-7 w-16"
 							disabled={disabled}
 							id={id}
 							onBlur={commit}

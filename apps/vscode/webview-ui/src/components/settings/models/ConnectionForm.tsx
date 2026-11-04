@@ -17,9 +17,9 @@ import {
 	SmallButton,
 	Why,
 } from "./fields"
-import { useModelsPage } from "./modelsPageContext"
 import type { SecretMutation } from "./modelSettingsClient"
-import { canRunAfter, isAzureUrl, isValidUrl, newId, secretRef } from "./modelsView"
+import { useModelsPage } from "./modelsPageContext"
+import { canRunAfter, isAzureUrl, isValidUrl, newId, secretField, secretRef } from "./modelsView"
 
 /** Starting points that only fill in the form. URLs are the servers' own defaults; nothing here is a model fact. */
 const PRESETS: { label: string; change: Partial<CompatibleConnection> }[] = [
@@ -168,15 +168,15 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 
 	const lockHeader = async (header: Header) => {
 		if (header.storage === "secret") {
-			// Unlocking can't bring the value back: it never leaves the keychain.
+			// The host moves the value back into the header, since this is what asks for it in plain text.
 			if (!isDraft) {
-				const removed = await store.saveConnection({ id: connection.id }, [
-					{ field: `header-${header.id}`, operation: "delete" },
+				const unlocked = await store.saveConnection({ id: connection.id }, [
+					{ field: secretField(header.secretRef), operation: "unlock" },
 				])
-				if (!removed.ok) {
-					setError(removed.message)
-					return
+				if (!unlocked.ok) {
+					setError(unlocked.message)
 				}
+				return
 			}
 			await saveHeaders(
 				connection.headers.map((entry) =>
@@ -203,7 +203,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 	const removeHeader = async (header: Header) => {
 		if (header.storage === "secret" && !isDraft) {
 			const removed = await store.saveConnection({ id: connection.id }, [
-				{ field: `header-${header.id}`, operation: "delete" },
+				{ field: secretField(header.secretRef), operation: "delete" },
 			])
 			if (!removed.ok) {
 				setError(removed.message)
@@ -226,18 +226,23 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		await page.runTest(connection.id, !!store.state?.settings.models.some((model) => model.connectionId === connection.id))
 	}
 
-	const azure = isAzureUrl(connection.baseUrl) || connection.auth.kind === "azure-identity"
+	// A gateway in front of Azure has its own host, and a saved version has to stay reachable to clear it.
+	const azure =
+		isAzureUrl(connection.baseUrl) ||
+		/\/openai(\/|$)/.test(connection.baseUrl ?? "") ||
+		connection.auth.kind === "azure-identity" ||
+		!!connection.azureApiVersion
 	const inputIds = `${anchor}-control`
 
 	return (
 		<div data-testid={`connection-form-${connection.id}`}>
 			{isDraft && !connection.baseUrl && (
 				<>
-					<div className="mt-1.5 text-[11px] text-description">Start from</div>
+					<div className="mt-1.5 text-[12px] text-description">Start from</div>
 					<div className="mt-0.5 flex flex-wrap gap-1">
 						{PRESETS.map((preset) => (
 							<button
-								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[11px] text-description hover:text-foreground"
+								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground"
 								key={preset.label}
 								onClick={() => void save(preset.change)}
 								type="button">
@@ -287,7 +292,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					{lockedWords.length === 1 ? "it" : "them"}.
 				</Why>
 			)}
-			<div className="mt-2 mb-0.5 text-[11px] text-description">Key</div>
+			<div className="mt-4 mb-1.5 text-[12px] text-foreground">Key</div>
 			<Segmented<AuthKind>
 				disabled={identityLocked}
 				label="Key"
@@ -344,7 +349,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 				{authKind === "azure-identity" && <Hint>Uses your Azure sign-in (Azure Identity). No key is stored.</Hint>}
 				{authKind === "none" && <Hint>For local servers that don't check a key.</Hint>}
 			</div>
-			<div className="mt-2 mb-0.5 text-[11px] text-description">API type</div>
+			<div className="mt-4 mb-1.5 text-[12px] text-foreground">API type</div>
 			<Segmented<"chat" | "responses">
 				label="API type"
 				onChange={(apiFormat) => void save({ apiFormat })}
@@ -360,14 +365,16 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 				this.
 			</Hint>
 
-			<div className="mt-2 flex flex-wrap items-center gap-x-1.5 text-[11px] text-description">
+			<div className="mt-4 flex flex-wrap items-center gap-x-1.5 text-[12px] text-foreground">
 				<span>Custom headers</span>
 				{connection.headers.some((header) => header.storage === "secret") && (
 					<span className="opacity-70">locked values stay in the keychain</span>
 				)}
 			</div>
 			{connection.headers.map((header) => (
-				<div className="mt-1 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto_auto] items-center gap-1" key={header.id}>
+				<div
+					className="mt-1.5 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto_auto] items-center gap-1.5"
+					key={header.id}>
 					<CommitInput
 						disabled={headersLocked}
 						label="Header name"
@@ -404,7 +411,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 							configured={!!store.state?.configuredSecrets[header.secretRef]}
 							disabled={headersLocked}
 							label="Header value"
-							onSet={(value) => save({}, [{ field: `header-${header.id}`, operation: "set", value }])}
+							onSet={(value) => save({}, [{ field: secretField(header.secretRef), operation: "set", value }])}
 							placeholder="Value"
 						/>
 					)}
@@ -418,7 +425,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 						onClick={() => void lockHeader(header)}
 						title={
 							header.storage === "secret"
-								? "Locked: in the keychain, masked everywhere. Unlocking forgets the value."
+								? "Locked: in the keychain, masked everywhere. Unlock to keep it as plain text."
 								: "Lock it: keeps the value in the keychain"
 						}
 						type="button">
@@ -436,7 +443,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 				</div>
 			))}
 			{pendingHeaders.map((pending) => (
-				<div className="mt-1 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-start gap-1" key={pending.id}>
+				<div className="mt-1.5 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-start gap-1.5" key={pending.id}>
 					<CommitInput
 						label="Header name"
 						mono
@@ -471,10 +478,10 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 				</div>
 			))}
 			{!headersLocked && (
-				<div className="mt-1.5">
+				<div className="mt-2">
 					<LinkButton
 						onClick={() => setPendingHeaders((current) => [...current, { id: newId(), name: "", value: "" }])}>
-						<Icon className="text-[11px]!" name="add" />
+						<Icon className="text-[12px]!" name="add" />
 						Add header
 					</LinkButton>
 				</div>
@@ -495,7 +502,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 								label="Azure API version"
 								mono
 								onCommit={(text) => save({ azureApiVersion: text.trim() || null })}
-								placeholder={`Default: ${azureOpenAiDefaultApiVersion}`}
+								placeholder={`e.g. ${azureOpenAiDefaultApiVersion}. Blank sends none`}
 								value={connection.azureApiVersion ?? ""}
 							/>
 						</Field>
@@ -503,7 +510,7 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					<RequestTimeoutField connection={connection} onSave={(requestTimeoutMs) => save({ requestTimeoutMs })} />
 				</FieldGrid>
 			)}
-			<div className="mt-1.5 flex flex-wrap items-center gap-2">
+			<div className="mt-4 flex flex-wrap items-center gap-2">
 				<SmallButton disabled={test?.state === "testing"} onClick={runTest} primary>
 					{test?.state === "testing" ? "Testing…" : "Test connection"}
 				</SmallButton>

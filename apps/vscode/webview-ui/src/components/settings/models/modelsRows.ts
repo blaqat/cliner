@@ -1,9 +1,9 @@
 import type { ModelPick, RoleSettings, SubagentPick } from "@shared/model-settings"
-import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import { ModelsServiceClient } from "@/services/grpc-client"
 import { action, preference, state } from "../shell/rowFactories"
 import type { SettingsRow, SettingsRowContext } from "../shell/settingsRegistry"
+import { withLatestSettings } from "./modelSettingsClient"
 
 const PROVIDER_MANAGED_KEYS = [
 	"remoteConfiguredProviders",
@@ -26,12 +26,16 @@ const rolesOf = (ctx: SettingsRowContext) => ctx.state.modelSettings?.settings.r
 
 /** Revision-checked against the latest store, not the last published copy. */
 const updateRoles = async (change: (roles: RoleSettings) => RoleSettings, extra?: { requestTimeoutMs: number | null }) => {
-	const response = await ModelsServiceClient.getModelSettings(ModelSettingsRequestV1.create({ json: "{}" }))
-	const latest = JSON.parse(response.json) as ModelSettingsState
-	await ModelsServiceClient.setModelRoles(
-		ModelSettingsRequestV1.create({
-			json: JSON.stringify({ expectedRevision: latest.settings.revision, roles: change(latest.settings.roles), ...extra }),
-		}),
+	await withLatestSettings((latest) =>
+		ModelsServiceClient.setModelRoles(
+			ModelSettingsRequestV1.create({
+				json: JSON.stringify({
+					expectedRevision: latest.settings.revision,
+					roles: change(latest.settings.roles),
+					...extra,
+				}),
+			}),
+		),
 	)
 }
 

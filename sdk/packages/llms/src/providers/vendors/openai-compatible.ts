@@ -11,7 +11,7 @@ import { wrapLanguageModel } from "ai";
 import { ensureFetch, resolveApiKey } from "../http";
 import { splitToolImagesMiddleware } from "../middleware/split-tool-images";
 import { isOpenAIReasoningEraModelId } from "../model-facts";
-import { withHttpErrorContext } from "./http-error-context";
+import { acceptsApiVersion, withHttpErrorContext } from "./http-error-context";
 import type { ProviderFactoryResult } from "./types";
 
 type FetchInput = Parameters<typeof fetch>[0];
@@ -39,10 +39,7 @@ function readAzureApiVersion(
 }
 
 function shouldAddAzureApiVersion(url: URL): boolean {
-	return (
-		url.pathname.startsWith("/openai/deployments/") &&
-		!url.searchParams.has("api-version")
-	);
+	return acceptsApiVersion(url.pathname) && !url.searchParams.has("api-version");
 }
 
 function withAzureApiVersion(

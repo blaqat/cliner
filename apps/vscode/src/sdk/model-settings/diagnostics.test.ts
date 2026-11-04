@@ -36,6 +36,42 @@ function fixture() {
 	return { controller, settings, state }
 }
 describe("configured connection diagnostics", () => {
+	it.each([
+		["testConnection", "https://example.invalid/team/openai/deployments/gpt", "2025-01-01-preview", "2025-01-01-preview"],
+		["discoverConnectionModels", "https://example.invalid/v1", "2025-01-01-preview", "2025-01-01-preview"],
+		["testConnection", "https://example.invalid/openai/v1", "2025-01-01-preview", null],
+		["testConnection", "https://example.invalid/v1", null, null],
+	] as const)("%s to %s with version %s sends api-version %s", async (operation, baseUrl, version, sent) => {
+		const { controller, settings } = fixture()
+		const connection = settings.connections[0]
+		if (connection.kind !== "openai-compatible") throw new Error("expected a compatible connection")
+		connection.baseUrl = baseUrl
+		connection.azureApiVersion = version
+		transport.mockResolvedValueOnce(Response.json({ data: [] }))
+		await modelSettingsDiagnostic(
+			controller as never,
+			operation,
+			JSON.stringify({ expectedRevision: settings.revision, connectionId: "c" }),
+			true,
+		)
+		const [url] = transport.mock.calls.at(-1)!
+		expect(new URL(String(url)).searchParams.get("api-version")).toBe(sent)
+	})
+	it("detects a model with the connection's api-version", async () => {
+		const { controller, settings } = fixture()
+		const connection = settings.connections[0]
+		if (connection.kind !== "openai-compatible") throw new Error("expected a compatible connection")
+		connection.azureApiVersion = "2025-01-01-preview"
+		transport.mockResolvedValueOnce(Response.json({}))
+		await modelSettingsDiagnostic(
+			controller as never,
+			"detectConfiguredModel",
+			JSON.stringify({ expectedRevision: settings.revision, pick: { modelId: "m", levelId: "default" } }),
+			true,
+		)
+		const [url] = transport.mock.calls.at(-1)!
+		expect(new URL(String(url)).searchParams.get("api-version")).toBe("2025-01-01-preview")
+	})
 	it("hides known embeddings and preserves unknown IDs with classification", async () => {
 		transport.mockResolvedValueOnce(
 			Response.json({

@@ -701,20 +701,15 @@ describe("Can follow 1: the backup is an allowlist", () => {
 		expect(f.data.modelSettingsBackupV1.sdkLegacy.providers.bedrock).toEqual({ model: "m" })
 		expect(f.data.modelSettingsBackupV1.secretKeys).toEqual(["profile:h:openAiApiKey"])
 	})
-	it("locks sensitive-looking headers in the keychain", async () => {
+	it("keeps every header as text, whatever it's called", async () => {
 		const f = fixture(seed, { "profile:h:openAiApiKey": "K" })
 		await migrateModelSettings({ ...f.deps, sdkInput })
 		const connection = f.settings().connections.find((c) => c.headers.some((h) => h.name === "X-Plain"))!
-		for (const header of connection.headers) {
-			if (header.name === "X-Plain") expect(header.storage).toBe("plain")
-			else {
-				expect(header.storage, header.name).toBe("secret")
-				if (header.storage === "secret") expect(await f.secrets.get(header.secretRef)).toBeTruthy()
-			}
-		}
+		expect(connection.headers.length).toBeGreaterThan(1)
+		for (const header of connection.headers) expect(header.storage, header.name).toBe("plain")
 		const stored = JSON.stringify(f.data.modelSettings)
-		for (const value of ["SUBKEY", "AUTHV", "APIK", "sess=1", "AKIAEXAMPLE", "APIKEYV", "HDRV"])
-			expect(stored, value).not.toContain(value)
+		// Credentials that aren't headers still never land in the store.
+		for (const value of ["AKIAEXAMPLE", "APIKEYV", "SEKRET"]) expect(stored, value).not.toContain(value)
 	})
 	it("keeps the backup immutable across a failed then successful run", async () => {
 		const f = fixture(seed, { "profile:h:openAiApiKey": "K" })

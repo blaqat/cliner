@@ -350,12 +350,12 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 			</FieldGrid>
 			<div className="mt-1.5 flex flex-wrap items-center gap-1.5">
 				<SmallButton disabled={!hasId || busy === "detect"} onClick={detect} title={hasId ? undefined : noIdWhy}>
-					<Icon className="text-[11px]!" name="zap" />
+					<Icon className="text-[12px]!" name="zap" />
 					{busy === "detect" ? "Detecting…" : "Detect"}
 				</SmallButton>
 				<SmallButton aria-expanded={presetsOpen} onClick={() => setPresetsOpen((current) => !current)}>
 					Start from a preset
-					<Icon className="text-[10px]!" name={presetsOpen ? "chevron-up" : "chevron-down"} />
+					<Icon className="text-[11px]!" name={presetsOpen ? "chevron-up" : "chevron-down"} />
 				</SmallButton>
 			</div>
 			{presetsOpen && (
@@ -387,8 +387,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					)}
 				</Why>
 			) : (
-				<div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-description">
-					<Icon className="text-[11px]!" name="check" />
+				<div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-description">
+					<Icon className="text-[12px]!" name="check" />
 					Nothing unknown.
 				</div>
 			)}
@@ -593,17 +593,17 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 				<div
 					className={
 						action.tone === "bad"
-							? "mt-1 text-[11px] text-error"
+							? "mt-1 text-[12px] text-error"
 							: action.tone === "ok"
-								? "mt-1 text-[11px] text-success"
-								: "mt-1 text-[11px] text-description"
+								? "mt-1 text-[12px] text-success"
+								: "mt-1 text-[12px] text-description"
 					}
 					role="status">
 					{action.text}
 				</div>
 			)}
 			{error && <Why tone="bad">{error}</Why>}
-			<div className="mt-1.5 flex flex-wrap items-center gap-2">
+			<div className="mt-4 flex flex-wrap items-center gap-2">
 				<SmallButton disabled={!hasId || busy === "test"} onClick={test} title={hasId ? undefined : noIdWhy}>
 					{busy === "test" ? "Testing…" : "Test this model"}
 				</SmallButton>
@@ -622,8 +622,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					/>
 				)}
 			</div>
-			<div className="mt-2 flex items-start gap-1.5 text-[11px] text-description">
-				<Icon className="mt-px text-[11px]! opacity-70" name="chip" />
+			<div className="mt-2 flex items-start gap-1.5 text-[12px] text-description">
+				<Icon className="mt-px text-[12px]! opacity-70" name="chip" />
 				<span>Shows in the composer and every selector.</span>
 			</div>
 		</div>
@@ -657,10 +657,10 @@ const LevelTable = ({
 					<OverrideTag label="Levels" onReset={onReset} />
 				</div>
 			)}
-			<div className="grid grid-cols-[52px_44px_minmax(0,1fr)] items-center gap-x-2 gap-y-[3px] text-[11.5px]">
-				<span className="text-[10px] text-description">Level</span>
-				<span className="text-[10px] text-description">Offered</span>
-				<span className="min-w-0 text-[10px] text-description [overflow-wrap:anywhere]" data-testid="level-table-sent-as">
+			<div className="grid grid-cols-[52px_44px_minmax(0,1fr)] items-center gap-x-2 gap-y-[3px] text-[12.5px]">
+				<span className="text-[11px] text-description">Level</span>
+				<span className="text-[11px] text-description">Offered</span>
+				<span className="min-w-0 text-[11px] text-description [overflow-wrap:anywhere]" data-testid="level-table-sent-as">
 					Sent as <code>{effortName}</code>
 				</span>
 				{rows.map(({ level, offered }) => (
@@ -716,7 +716,7 @@ const LevelRow = ({
 				title={lastOn ? "A model has to offer at least one level." : undefined}
 			/>
 			{request.kind === "default" ? (
-				<span className="text-[11px] text-description opacity-80">Nothing sent</span>
+				<span className="text-[12px] text-description opacity-80">Nothing sent</span>
 			) : (
 				<div className="min-w-0">
 					<CommitInput
@@ -764,12 +764,12 @@ const ExtraBodyEditor = ({
 
 	return (
 		<div data-testid="extra-body">
-			<div className="mt-2 flex flex-wrap items-center gap-x-1.5 text-[11px] text-description">
+			<div className="mt-4 flex flex-wrap items-center gap-x-1.5 text-[12px] text-foreground">
 				<span>Extra body params</span>
 				<span className="opacity-70">merged into every request</span>
 			</div>
 			{entries.map((entry) => (
-				<div className="mt-1 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1" key={entry.key}>
+				<div className="mt-1.5 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1.5" key={entry.key}>
 					<CommitInput
 						label="Param name"
 						mono
@@ -804,7 +804,7 @@ const ExtraBodyEditor = ({
 				</div>
 			))}
 			{pending.map((item) => (
-				<div className="mt-1 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1" key={item.id}>
+				<div className="mt-1.5 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1.5" key={item.id}>
 					<CommitInput
 						label="Param name"
 						mono
@@ -854,7 +854,7 @@ const ExtraBodyEditor = ({
 			))}
 			<div className="mt-1.5">
 				<LinkButton onClick={() => setPending((current) => [...current, { id: Date.now(), key: "", text: "" }])}>
-					<Icon className="text-[11px]!" name="add" />
+					<Icon className="text-[12px]!" name="add" />
 					Add param
 				</LinkButton>
 			</div>
@@ -916,7 +916,7 @@ const RequestPreview = ({ row, effective, disabledReason }: { row: ModelRow; eff
 				<Why>Can't show this one exactly: {preview.result.reason}.</Why>
 			)}
 			{open && !disabledReason && text && (
-				<pre className="m-0 rounded-md border border-editor-group-border bg-input-background px-2.5 py-2 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-words text-description">
+				<pre className="m-0 rounded-md border border-editor-group-border bg-input-background px-2.5 py-2 font-mono text-[12px] leading-[1.55] whitespace-pre-wrap break-words text-description">
 					{text}
 				</pre>
 			)}

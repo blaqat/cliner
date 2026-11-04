@@ -54,7 +54,7 @@ export const ProviderFieldControl = ({
 					value={typeof value === "string" ? value : undefined}>
 					<SelectTrigger
 						aria-label={field.label}
-						className="w-full rounded-xs px-[7px] py-0 text-[11.5px] data-[size=default]:h-6"
+						className="w-full rounded-xs px-[7px] py-0 text-[12.5px] data-[size=default]:h-6"
 						id={id}>
 						<SelectValue placeholder="Choose" />
 					</SelectTrigger>

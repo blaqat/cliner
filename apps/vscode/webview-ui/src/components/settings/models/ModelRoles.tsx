@@ -6,7 +6,7 @@ import type { SelectorPick, SelectorRow } from "@/components/models/ModelSelecto
 import { sameAsThreadRow, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import { type SettingsNavigationTarget, settingsTargetFromHost } from "../settingsTargets"
 import { AdvancedFold } from "../shell/AdvancedFold"
-import { SettingBlock, SettingRow, ToggleRow } from "../shell/SettingRow"
+import { SettingBlock, SettingGroup, SettingRow, ToggleRow } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { CommitInput, GroupHeading, Hint, LinkButton, parseSeconds, Why } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
@@ -170,7 +170,7 @@ export const ModelRoles = () => {
 	}
 
 	return (
-		<>
+		<SettingGroup title="What runs where">
 			<SettingRow
 				control={({ id, disabled }) => (
 					<ModelPickButton
@@ -211,7 +211,7 @@ export const ModelRoles = () => {
 					/>
 				)}
 				rowId={roleRowId.subagents}>
-				<div className="text-[11px] text-description">
+				<div className="text-[12px] text-description">
 					What helpers run on. <LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
 				</div>
 				{roles.subagents.kind === "model" && (
@@ -256,7 +256,7 @@ export const ModelRoles = () => {
 			</SettingRow>
 			<ToggleRow rowId="models.background.titles-enabled" />
 			<SettingBlock rowId="models.advanced">
-				<div className="border-b border-editor-group-border py-1">
+				<div className="pb-3">
 					<AdvancedFold
 						featureId="models.advanced"
 						summary="different model for Ask, background text one by one, request timeout">
@@ -298,7 +298,7 @@ export const ModelRoles = () => {
 							"titles",
 							"Thread titles",
 							!roles.background.titlesEnabled && (
-								<div className="text-[11px] text-description">
+								<div className="text-[12px] text-description">
 									Only with{" "}
 									<LinkButton onClick={() => openRow("models.background.titles-enabled")}>
 										Generate thread titles
@@ -333,6 +333,6 @@ export const ModelRoles = () => {
 					</AdvancedFold>
 				</div>
 			</SettingBlock>
-		</>
+		</SettingGroup>
 	)
 }

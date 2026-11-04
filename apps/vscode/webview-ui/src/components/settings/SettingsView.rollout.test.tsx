@@ -24,7 +24,7 @@ vi.mock("@/components/common/ViewHeader", () => ({
 }))
 vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: {},
-	ModelsServiceClient: { retryModelSettingsMigration: mocks.retry },
+	ModelsServiceClient: { getModelSettings: async () => ({ json: "{}" }), retryModelSettingsMigration: mocks.retry },
 	UiServiceClient: { openLogs: mocks.openLogs },
 }))
 vi.mock("./sections/DebugSection", () => ({ default: () => <div>debug panel</div> }))

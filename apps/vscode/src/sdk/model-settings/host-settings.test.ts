@@ -67,6 +67,33 @@ describe("new settings host mutations", () => {
 		await f.call("deleteConnection", { expectedRevision: 1, connectionId: "c" })
 		expect(await f.connectionSecrets.list()).toEqual(["settings:v1:connection:other:apiKey"])
 	})
+	it("unlocking a moved header keeps its value as text and clears the keychain", async () => {
+		const f = fixture()
+		const secretRef = "settings:v1:connection:c:header-0"
+		const connection = {
+			...createCompatibleConnection("c"),
+			auth: { kind: "none" as const },
+			headers: [
+				{ id: "header-0", name: "X-Api-Key", storage: "secret" as const, secretRef },
+				{ id: "header-1", name: "X-Other", storage: "plain" as const, value: "stays" },
+			],
+		}
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection,
+			secrets: [{ field: "header-0", operation: "set", value: "abc" }],
+		})
+		await f.call("saveConnection", {
+			expectedRevision: 1,
+			connection: { id: "c" },
+			secrets: [{ field: "header-0", operation: "unlock" }],
+		})
+		expect(f.get().connections[0].headers).toEqual([
+			{ id: "header-0", name: "X-Api-Key", storage: "plain", value: "abc" },
+			{ id: "header-1", name: "X-Other", storage: "plain", value: "stays" },
+		])
+		expect(await f.connectionSecrets.get(secretRef)).toBeUndefined()
+	})
 	it("reads defaults without writing and returns no secret values", async () => {
 		const f = fixture()
 		expect((await readModelSettingsState(f.state as never)).settings.revision).toBe(0)

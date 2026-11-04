@@ -93,7 +93,7 @@ const TestResult = ({
 				"flex items-start gap-1.5",
 				ok === true ? "text-success" : ok === false ? "text-error" : "text-description",
 			)}>
-			<Icon className="mt-px text-[11px]!" name={ok === true ? "check" : ok === false ? "close" : "dash"} />
+			<Icon className="mt-px text-[12px]!" name={ok === true ? "check" : ok === false ? "close" : "dash"} />
 			<span className="min-w-0">{text}</span>
 		</div>
 	)
@@ -119,7 +119,7 @@ const TestResult = ({
 	const box = (tone: "ok" | "warn" | "bad" | "none", children: React.ReactNode) => (
 		<div
 			className={cn(
-				"mt-1.5 grid gap-0.5 rounded-[5px] border px-2 py-1.5 text-[11.5px]",
+				"mt-1.5 grid gap-0.5 rounded-[5px] border px-2 py-1.5 text-[12.5px]",
 				tone === "ok"
 					? "border-success/40"
 					: tone === "warn"
@@ -293,7 +293,7 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 			<div className="flex min-w-0 items-start gap-1">
 				<button
 					aria-expanded={open}
-					className="flex min-w-0 flex-1 cursor-pointer items-start gap-1.5 border-0 bg-transparent px-0 py-[5px] text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+					className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 border-0 bg-transparent px-0 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 					onClick={() => page.setOpenModel(open ? null : row.id)}
 					type="button">
 					<span className="mt-[2px]">
@@ -301,23 +301,23 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 					</span>
 					<span className="min-w-0 flex-1">
 						<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-							<span className="min-w-0 truncate text-[12px]">{modelName(row)}</span>
+							<span className="min-w-0 truncate text-[13px]">{modelName(row)}</span>
 							{unknown.length > 0 && row.upstreamId && (
-								<span className="inline-flex h-4 items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1 text-[10px] leading-none text-warning">
+								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning">
 									{unknown.length} unknown
 								</span>
 							)}
 							{row.kind === "non-chat" && (
-								<span className="inline-flex h-4 items-center whitespace-nowrap rounded-[3px] border border-editor-group-border px-1 text-[10px] leading-none text-description">
+								<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-editor-group-border px-1.5 text-[11px] leading-none text-description">
 									not for chat
 								</span>
 							)}
 							<span className="ml-auto flex flex-wrap items-center gap-x-2">
-								<span className="whitespace-nowrap text-[11px] text-description">{levelRange(effective)}</span>
+								<span className="whitespace-nowrap text-[12px] text-description">{levelRange(effective)}</span>
 								{modelStatus(row, isDraft ? undefined : store.state?.availability[row.id], onList)}
 							</span>
 						</span>
-						<span className="mt-px block truncate text-[11px] text-description">
+						<span className="mt-1 block truncate text-[12px] text-description">
 							{row.upstreamId || "No model ID yet"} ·{" "}
 							{contextKnown && contextWindow != null ? (
 								formatTokens(contextWindow)
@@ -374,7 +374,7 @@ const ProviderLine = ({ connection }: { connection: Extract<Connection, { kind: 
 	const hasModels = !!page.store.state?.settings.models.some((model) => model.connectionId === connection.id)
 	return (
 		<>
-			<div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11.5px] text-description">
+			<div className="mt-2.5 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-description">
 				<span className="min-w-0">{authLine(connection)}</span>
 				<span className="flex-1" />
 				<LinkButton onClick={() => page.setEditingConnection(connection.id)}>{editing ? "Done" : "Edit"}</LinkButton>
@@ -469,7 +469,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 	return (
 		<div
 			className={cn(
-				"mt-1.5 min-w-0 scroll-my-2 rounded-md border bg-(--vscode-editor-background)",
+				"mt-3 min-w-0 scroll-my-2 rounded-md border bg-(--vscode-editor-background)",
 				open ? "border-(--vscode-focusBorder)/40" : "border-editor-group-border",
 			)}
 			data-testid={`connection-${connection.id}`}
@@ -477,7 +477,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 			<button
 				aria-expanded={open}
 				className={cn(
-					"flex w-full min-w-0 cursor-pointer items-start gap-1.5 border-0 bg-transparent px-2 py-1.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					"flex w-full min-w-0 cursor-pointer items-start gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
 					open && "border-b border-solid border-editor-group-border",
 				)}
 				onClick={() => {
@@ -490,28 +490,28 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 				</span>
 				<span className="min-w-0 flex-1">
 					<span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-						<span className="min-w-0 truncate text-[12px] font-medium">{name}</span>
+						<span className="min-w-0 truncate text-[13px] font-medium">{name}</span>
 						{managedHere && <LockedIcon title={`${page.organization} manages this connection`} />}
 						{notFound > 0 && (
-							<span className="inline-flex h-4 items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1 text-[10px] leading-none text-warning">
+							<span className="inline-flex h-[18px] items-center whitespace-nowrap rounded-[3px] border border-warning/45 px-1.5 text-[11px] leading-none text-warning">
 								{notFound} not found
 							</span>
 						)}
 						<span className="ml-auto">{connectionStatus(test, connection, keyMissing)}</span>
 					</span>
-					<span className="mt-px block truncate font-mono text-[11px] text-description">
+					<span className="mt-1 block truncate font-mono text-[12px] text-description">
 						{meta.filter(Boolean).join(" · ")}
 					</span>
 				</span>
 			</button>
 			{open && (
-				<div className="px-2 pb-2">
+				<div className="px-3 pb-3">
 					{connection.kind === "provider" ? (
 						<ProviderLine connection={connection} />
 					) : showForm ? (
 						<ConnectionForm connection={connection} isDraft={isDraft} />
 					) : (
-						<div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11.5px] text-description">
+						<div className="mt-2.5 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-description">
 							<span className="min-w-0">
 								{authLine(connection)} · {API_LABELS[connection.apiFormat]}
 								{connection.headers.length ? ` · ${plural(connection.headers.length, "header")}` : ""}
@@ -536,7 +536,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 						/>
 					)}
 					{page.notes[connection.id] && (
-						<div className="mt-1 text-[11px] text-description" role="status">
+						<div className="mt-1 text-[12px] text-description" role="status">
 							{page.notes[connection.id]}
 						</div>
 					)}
@@ -559,7 +559,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 										page.setOpenModel(null)
 										page.setAddingModels(connection.id, true)
 									}}>
-									<Icon className="text-[11px]!" name="add" />
+									<Icon className="text-[12px]!" name="add" />
 									Add model
 								</LinkButton>
 							</div>

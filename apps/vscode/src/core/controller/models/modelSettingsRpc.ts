@@ -32,6 +32,7 @@ const revision = z.number().int().nonnegative()
 const secretMutation = z.discriminatedUnion("operation", [
 	z.object({ field: z.string().min(1), operation: z.literal("keep") }).strict(),
 	z.object({ field: z.string().min(1), operation: z.literal("delete") }).strict(),
+	z.object({ field: z.string().min(1), operation: z.literal("unlock") }).strict(),
 	z
 		.object({
 			field: z.string().min(1),
@@ -100,6 +101,17 @@ export async function mutateSettings(
 				previousConnection = next.connections.find((c) => c.id === input.connection.id)
 				const patched = applyConnectionPatch(previousConnection, input.connection)
 				const connection = previousConnection ? patched : managedConnectionForSave(controller.stateManager, patched)
+				// Asked to keep a locked header as text, so its value comes out of the keychain with it.
+				for (const mutation of input.secrets) {
+					if (mutation.operation !== "unlock") continue
+					const ref = `settings:v1:connection:${input.connection.id}:${mutation.field}`
+					const value = (await controller.stateManager.connectionSecrets?.get(ref)) ?? ""
+					connection.headers = connection.headers.map((header) =>
+						header.storage === "secret" && header.secretRef === ref
+							? { id: header.id, name: header.name, storage: "plain", value }
+							: header,
+					)
+				}
 				validateConnectionSecretRefs(connection)
 				const index = next.connections.findIndex((c) => c.id === input.connection.id)
 				if (index < 0) next.connections.push(connection)
@@ -177,7 +189,8 @@ export async function mutateSettings(
 				if (
 					managed[mutation.field] !== undefined ||
 					(managed.openAiHeaders !== undefined &&
-						connection.headers.some((h) => h.storage === "secret" && h.secretRef === ref))
+						(mutation.operation === "unlock" ||
+							connection.headers.some((h) => h.storage === "secret" && h.secretRef === ref)))
 				)
 					throw new Error("Connection credential is managed by your organization")
 			}
@@ -187,7 +200,7 @@ export async function mutateSettings(
 			const touched = new Set<string>()
 			for (const mutation of input.secrets) {
 				const ref = `settings:v1:connection:${input.connection.id}:${mutation.field}`
-				const known = refs.has(ref) || (mutation.operation === "delete" && dropped.has(ref))
+				const known = refs.has(ref) || (mutation.operation !== "set" && dropped.has(ref))
 				if (!known || touched.has(ref)) throw new Error("Invalid or duplicate secret field")
 				touched.add(ref)
 			}

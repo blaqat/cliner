@@ -313,6 +313,18 @@ describe("Changed and Reset", () => {
 		expect(mocks.update).toHaveBeenCalledWith("enableCheckpointsSetting", true)
 	})
 
+	it("says why under the row when the host refuses a change", async () => {
+		mocks.update.mockRejectedValueOnce(
+			new Error(JSON.stringify([{ path: ["roles", "chat"], message: "Missing model or connection" }])),
+		)
+		renderShell("agent")
+		const target = row("agent.checkpoints") as HTMLElement
+		fireEvent.click(within(target).getByRole("switch"))
+		expect(await within(target).findByRole("alert")).toHaveTextContent(
+			"Not saved: The host refused this: roles.chat: Missing model or connection",
+		)
+	})
+
 	it("a changed row shows the tag and Reset on its page", () => {
 		renderShell("agent")
 		const target = row("agent.checkpoints") as HTMLElement

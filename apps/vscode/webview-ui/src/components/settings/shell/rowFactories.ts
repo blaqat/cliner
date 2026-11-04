@@ -1,9 +1,9 @@
 import { createDefaultModelSettings, type SubagentPolicy } from "@shared/model-settings"
-import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import type { UpdateSettingsRequest } from "@shared/proto/cline/state"
 import type { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
+import { withLatestSettings } from "../models/modelSettingsClient"
 import type { SettingsPageId } from "../settingsTargets"
 import { updateSetting } from "../utils/settingsHandlers"
 import type { InfoRow, PreferenceRow, SettingsRow, SettingsRowContext } from "./settingsRegistry"
@@ -36,12 +36,15 @@ export const POLICY_DEFAULTS = createDefaultModelSettings().subagents
 
 /** Revision-checked against the latest store, not the last published copy. */
 export const updateSubagentPolicy = async (change: (policy: SubagentPolicy) => SubagentPolicy) => {
-	const response = await ModelsServiceClient.getModelSettings(ModelSettingsRequestV1.create({ json: "{}" }))
-	const latest = JSON.parse(response.json) as ModelSettingsState
-	await ModelsServiceClient.setSubagentPolicy(
-		ModelSettingsRequestV1.create({
-			json: JSON.stringify({ expectedRevision: latest.settings.revision, subagents: change(latest.settings.subagents) }),
-		}),
+	await withLatestSettings((latest) =>
+		ModelsServiceClient.setSubagentPolicy(
+			ModelSettingsRequestV1.create({
+				json: JSON.stringify({
+					expectedRevision: latest.settings.revision,
+					subagents: change(latest.settings.subagents),
+				}),
+			}),
+		),
 	)
 }
 

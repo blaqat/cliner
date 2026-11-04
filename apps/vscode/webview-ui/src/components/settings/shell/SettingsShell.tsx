@@ -1,4 +1,5 @@
 import type { ExtensionMessage } from "@shared/ExtensionMessage"
+import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEvent, useMedia } from "react-use"
 import { Tab, TabContent, TabList, TabTrigger } from "@/components/common/Tab"
@@ -8,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useClineAuth } from "@/context/ClineAuthContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
+import { ModelsServiceClient } from "@/services/grpc-client"
 import SettingsTargetHighlight from "../SettingsTargetHighlight"
 import {
 	DEFAULT_SETTINGS_PAGE,
@@ -40,7 +42,7 @@ const NARROW_PANEL_QUERY = "(max-width: 640px)"
 type RowFilter = "changed" | "managed"
 
 const CHIP_CLASS =
-	"inline-flex h-[22px] shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-editor-group-border bg-transparent px-2 text-[11px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+	"inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 const CHIP_ON_CLASS = "border-selection bg-selection text-selection-foreground hover:text-selection-foreground"
 const LINK_CLASS = "cursor-pointer border-0 bg-transparent p-0 text-link hover:underline"
 
@@ -64,9 +66,9 @@ const ResultRow = ({ row, showValue, ctx }: { row: SettingsRow; showValue: boole
 				{ancestors.length > 0 && <AdvancedTag />}
 				<RowStatus row={row} />
 			</div>
-			{ancestors.length > 0 && <div className="mt-px text-[11px] text-description">Under {ancestors[0].label}</div>}
-			{description && <div className="mt-px text-[11px] text-description">{description}</div>}
-			{value && <div className="mt-px text-[11px] text-description">{value}</div>}
+			{ancestors.length > 0 && <div className="mt-px text-[12px] text-description">Under {ancestors[0].label}</div>}
+			{description && <div className="mt-px text-[12px] text-description">{description}</div>}
+			{value && <div className="mt-px text-[12px] text-description">{value}</div>}
 		</div>
 	)
 }
@@ -87,7 +89,7 @@ const SettingsResults = ({
 	const { ctx } = useSettingsShell()
 	if (!rows.length) {
 		return (
-			<div className="grid justify-items-center gap-1.5 px-2.5 pt-7 pb-4 text-center text-[11.5px] text-description">
+			<div className="grid justify-items-center gap-1.5 px-2.5 pt-7 pb-4 text-center text-[12.5px] text-description">
 				{query ? (
 					<>
 						<b className="font-semibold text-foreground">No settings match “{query}”.</b>
@@ -121,10 +123,10 @@ const SettingsResults = ({
 				}
 				return (
 					<Fragment key={page.id}>
-						<div className="flex items-center gap-1.5 pt-3 pb-0.5 text-[10px] uppercase tracking-wider text-description">
+						<div className="flex items-center gap-1.5 pt-3 pb-0.5 text-[11px] uppercase tracking-wider text-description">
 							{page.name}
 							<button
-								className={cn(LINK_CLASS, "ml-auto text-[11px] normal-case tracking-normal")}
+								className={cn(LINK_CLASS, "ml-auto text-[12px] normal-case tracking-normal")}
 								onClick={() => onOpenPage(page.id)}
 								type="button">
 								Open page
@@ -164,9 +166,9 @@ const PageTab = ({
 		<TabTrigger
 			aria-label={name}
 			className={cn(
-				"relative flex h-6 w-full cursor-pointer items-center gap-[7px] rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground focus-visible:outline! focus-visible:outline-1! focus-visible:outline-(--vscode-focusBorder)!",
-				narrow ? "justify-center" : "px-[7px]",
-				isSelected && "bg-selection text-selection-foreground hover:bg-selection hover:text-selection-foreground",
+				"relative flex h-11 w-full cursor-pointer items-center gap-2.5 border-0 border-l-2 border-solid border-transparent bg-transparent p-0 text-foreground opacity-70 hover:bg-list-hover hover:opacity-100 focus-visible:outline! focus-visible:outline-1! focus-visible:outline-(--vscode-focusBorder)!",
+				narrow ? "justify-center" : "px-3.5",
+				isSelected && "border-l-foreground bg-selection text-selection-foreground opacity-100 hover:bg-selection",
 				count === 0 && "opacity-45",
 			)}
 			data-testid={`tab-${page}`}
@@ -174,13 +176,13 @@ const PageTab = ({
 			onClick={onSelect}
 			tabIndex={0}
 			value={value}>
-			<Icon aria-hidden className="size-3.5 shrink-0" />
-			{!narrow && <span className="min-w-0 truncate text-[12px]">{name}</span>}
+			<Icon aria-hidden className="size-4 shrink-0" />
+			{!narrow && <span className="min-w-0 truncate text-[13px]">{name}</span>}
 			{!!count && (
 				<span
 					className={cn(
 						"rounded-lg bg-selection text-selection-foreground",
-						narrow ? "absolute -top-px -right-px px-[3px] text-[9px]" : "ml-auto px-[5px] text-[10.5px]",
+						narrow ? "absolute -top-px -right-px px-[3px] text-[9px]" : "ml-auto px-[5px] text-[11.5px]",
 					)}>
 					{count}
 				</span>
@@ -284,6 +286,13 @@ export const SettingsShell = ({
 		),
 	)
 
+	// Another window may have changed settings since this one last looked.
+	const catchUp = useCallback(() => {
+		void Promise.resolve(ModelsServiceClient.getModelSettings(ModelSettingsRequestV1.create({ json: "{}" }))).catch(() => {})
+	}, [])
+	useEffect(catchUp, [catchUp])
+	useEvent("focus", catchUp)
+
 	// Back history records settings pages as places.
 	const reportSettingsSection = useNavigationHistory()?.reportSettingsSection
 	useEffect(() => reportSettingsSection?.(pageId), [reportSettingsSection, pageId])
@@ -342,12 +351,12 @@ export const SettingsShell = ({
 			<Tab className="settings-shell">
 				{setupIntro ?? <ViewHeader environment={state.environment} onDone={onDone} title="Settings" />}
 				{!setupIntro && (
-					<div className="flex min-w-0 items-center gap-1 border-b border-editor-group-border px-2 pb-1.5">
-						<label className="flex h-6 min-w-0 flex-1 cursor-text items-center gap-[5px] rounded-xs border border-transparent bg-input-background px-[7px] text-description focus-within:border-(--vscode-focusBorder)">
-							<i aria-hidden className="codicon codicon-search shrink-0 text-[12px]!" />
+					<div className="flex min-w-0 items-center gap-2 border-b border-editor-group-border px-3 pb-2.5">
+						<label className="flex h-7 min-w-0 flex-1 cursor-text items-center gap-[5px] rounded-xs border border-transparent bg-input-background px-[7px] text-description focus-within:border-(--vscode-focusBorder)">
+							<i aria-hidden className="codicon codicon-search shrink-0 text-[13px]!" />
 							<input
 								aria-label="Search settings"
-								className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-input-foreground outline-none placeholder:text-description"
+								className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] text-input-foreground outline-none placeholder:text-description"
 								onChange={(event) => setQuery(event.target.value)}
 								onKeyDown={(event) => {
 									if (event.key === "Escape") {
@@ -369,7 +378,7 @@ export const SettingsShell = ({
 									className="grid cursor-pointer border-0 bg-transparent p-0 text-description hover:text-foreground"
 									onClick={() => setQuery("")}
 									type="button">
-									<i aria-hidden className="codicon codicon-close text-[12px]!" />
+									<i aria-hidden className="codicon codicon-close text-[13px]!" />
 								</button>
 							)}
 						</label>
@@ -388,7 +397,7 @@ export const SettingsShell = ({
 								onClick={() => setFilter((current) => (current === "managed" ? null : "managed"))}
 								title="What your organization manages"
 								type="button">
-								<i aria-hidden className="codicon codicon-lock text-[11px]!" />
+								<i aria-hidden className="codicon codicon-lock text-[12px]!" />
 								Managed <span className="opacity-70">{managed.length}</span>
 							</button>
 						)}
@@ -401,8 +410,8 @@ export const SettingsShell = ({
 							aria-label="Settings pages"
 							aria-orientation="vertical"
 							className={cn(
-								"shrink-0 flex-col gap-px overflow-y-auto border-r border-editor-group-border px-1 py-1.5",
-								narrow ? "w-9" : "w-[136px]",
+								"shrink-0 flex-col overflow-y-auto border-r border-editor-group-border",
+								narrow ? "w-11" : "w-[172px]",
 							)}
 							onValueChange={selectPage}
 							value={listing ? "" : pageId}>
@@ -439,9 +448,9 @@ export const SettingsShell = ({
 										data-testid={`settings-page-${page.id}`}
 										hidden={listing || page.id !== pageId}
 										key={page.id}>
-										<div className="px-3 pt-2.5 pb-3.5">
-											<h2 className="m-0 text-[13px] font-semibold">{page.name}</h2>
-											<p className="m-0 mb-1 text-[11.5px] text-description">{page.description}</p>
+										<div className={cn("max-w-[760px] pt-4 pb-6", narrow ? "px-3.5" : "px-6")}>
+											<h2 className="m-0 text-[16px] font-semibold">{page.name}</h2>
+											<p className="m-0 mt-1 mb-2 text-[13px] text-description">{page.description}</p>
 											<Component />
 										</div>
 									</div>

@@ -17,11 +17,14 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–47",
+		builds: "test builds fork.39–48",
 		date: "2026-11-04",
 		notes: [
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
 			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search across them, and a Changed chip that lists what isn't the default and resets it",
+			"Custom headers stay as text unless you lock one, and unlocking keeps the value",
+			"An Azure API version you set goes on every request, including Test connection and Detect (except /openai/v1, which refuses it)",
+			"Settings has roomier tabs and rows, with rows grouped in outlined sections; a change applies on the latest settings even if another window saved first, and a running Test no longer holds up your edits",
 			"Models is the setup page: add a connection, tick what its /models lists to add several at once, share defaults across them, and duplicate a model; every provider is offered, and OpenAI-compatible comes first",
 			"One model selector everywhere: model and level side by side, no stars, and Make this the default at the bottom of the composer's menu",
 			"Background text has its own model for thread titles, commit messages and Generate, and a level a model doesn't offer won't start until you change it; both say why and link to the fix",

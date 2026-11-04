@@ -210,8 +210,8 @@ const ProviderSetup = ({
 
 	return (
 		<div data-testid={`provider-setup-${listing.id}`}>
-			<div className="text-[12px] font-medium">{listing.name}</div>
-			{spec.note && <div className="text-[11px] text-description">{spec.note}</div>}
+			<div className="text-[13px] font-medium">{listing.name}</div>
+			{spec.note && <div className="text-[12px] text-description">{spec.note}</div>}
 			<FieldGrid>
 				{(spec.auth === "keychain" || spec.auth === "optional-key") && (
 					<Field
@@ -244,7 +244,7 @@ const ProviderSetup = ({
 						<SmallButton onClick={signIn} primary>
 							Sign in
 						</SmallButton>
-						<span className="text-[11px] text-description">{signInCopy(spec)}</span>
+						<span className="text-[12px] text-description">{signInCopy(spec)}</span>
 					</>
 				) : (
 					<SmallButton onClick={connect} primary>
@@ -281,7 +281,7 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 						aria-label="Filter providers"
 						autoComplete="off"
 						autoFocus
-						className="h-6 rounded-xs px-[7px] py-0 text-[11.5px] md:text-[11.5px]"
+						className="h-6 rounded-xs px-[7px] py-0 text-[12.5px] md:text-[12.5px]"
 						onChange={(event) => setQuery(event.target.value)}
 						placeholder={all.length ? `Filter ${all.length} providers` : "Filter providers"}
 						spellCheck={false}
@@ -293,7 +293,7 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 					<div className="mt-1.5 flex flex-wrap gap-1">
 						{shown.map((provider) => (
 							<button
-								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[11px] text-description hover:text-foreground"
+								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground"
 								key={provider.id}
 								onClick={() => setPicked(provider)}
 								type="button">
@@ -302,7 +302,7 @@ export const ProviderChooser = ({ onClose, onAddConnection }: { onClose: () => v
 						))}
 						{!filter && !showAll && all.length > FIRST_PROVIDER_COUNT && (
 							<button
-								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[11px] text-description hover:text-foreground"
+								className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground"
 								onClick={() => setShowAll(true)}
 								type="button">
 								{all.length - FIRST_PROVIDER_COUNT} more

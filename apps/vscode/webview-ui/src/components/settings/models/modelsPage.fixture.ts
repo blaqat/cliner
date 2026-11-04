@@ -240,10 +240,19 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 				const refs = secretRefsOf(connection)
 				const dropped = previous ? secretRefsOf(previous) : []
 				for (const mutation of mutations) {
+					if (mutation.operation !== "unlock") continue
+					const ref = `settings:v1:connection:${input.id}:${mutation.field}`
+					connection.headers = connection.headers.map((header) =>
+						header.storage === "secret" && header.secretRef === ref
+							? { id: header.id, name: header.name, storage: "plain", value: secrets[ref] ?? "" }
+							: header,
+					)
+				}
+				for (const mutation of mutations) {
 					if (mutation.operation === "set" && /^(?:[*•●]{2,})/.test(mutation.value))
 						throw new Error("Supply a new credential, not a masked placeholder")
 					const ref = `settings:v1:connection:${input.id}:${mutation.field}`
-					if (!refs.includes(ref) && !(mutation.operation === "delete" && dropped.includes(ref)))
+					if (!refs.includes(ref) && !(mutation.operation !== "set" && dropped.includes(ref)))
 						throw new Error("Invalid or duplicate secret field")
 				}
 				if (previous) {
@@ -255,7 +264,7 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 			for (const mutation of mutations) {
 				const ref = `settings:v1:connection:${input.id}:${mutation.field}`
 				if (mutation.operation === "set") secrets[ref] = mutation.value
-				if (mutation.operation === "delete") delete secrets[ref]
+				if (mutation.operation === "delete" || mutation.operation === "unlock") delete secrets[ref]
 			}
 			return reply(state())
 		},

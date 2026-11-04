@@ -131,6 +131,22 @@ export function resolveAzureResponsesEndpoint(
 	};
 }
 
+/** Azure's versionless v1 API rejects `api-version`; every other path gets the one that was asked for. */
+export function acceptsApiVersion(pathname: string): boolean {
+	return !/\/openai\/v1(\/|$)/.test(pathname);
+}
+
+/** Where a version someone set applies when the base URL has no Azure shape to go on. */
+export function plainApiVersionBase(baseUrl: string | undefined): string | undefined {
+	if (!baseUrl) return undefined;
+	try {
+		const url = new URL(baseUrl);
+		return acceptsApiVersion(url.pathname) ? url.href : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Add `api-version` to requests under `baseUrl` that don't already carry one. */
 export function withApiVersion(
 	baseFetch: typeof fetch,

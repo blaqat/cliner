@@ -158,7 +158,6 @@ function backupSdk(input: RecordValue): RecordValue {
 	}
 }
 
-const LOCKED_HEADER = /auth|cookie|key|token|secret|password|passwd|credential|session|signature/i
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const NO_KEY_PROVIDERS = [
 	"ollama",
@@ -530,12 +529,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				flag("dropped", `header ${i + 1}`)
 				continue
 			}
-			const headerId = `header-${i}`
-			if (LOCKED_HEADER.test(name)) {
-				const secretRef = `${prefix}${headerId}`
-				rowCopies.push([secretRef, value])
-				headers.push({ id: headerId, name, storage: "secret", secretRef })
-			} else headers.push({ id: headerId, name, storage: "plain", value })
+			// Stays as text, as it was. Locking one is the person's choice, on the connection.
+			headers.push({ id: `header-${i}`, name, storage: "plain", value })
 		}
 
 		const connection: Connection = {

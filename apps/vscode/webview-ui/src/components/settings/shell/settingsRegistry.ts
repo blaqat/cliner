@@ -129,11 +129,15 @@ export const managedRows = (rows: readonly SettingsRow[], ctx: SettingsRowContex
 
 const reportFailure = (row: SettingsRow, error: unknown) => console.error(`Failed to update ${row.id}:`, error)
 
-export const writeRow = (row: PreferenceRow, value: unknown, ctx: SettingsRowContext) => {
-	try {
-		void Promise.resolve(row.write(value, ctx)).catch((error) => reportFailure(row, error))
-	} catch (error) {
+export const writeRow = (row: PreferenceRow, value: unknown, ctx: SettingsRowContext, onFailure?: (error: unknown) => void) => {
+	const fail = (error: unknown) => {
 		reportFailure(row, error)
+		onFailure?.(error)
+	}
+	try {
+		void Promise.resolve(row.write(value, ctx)).catch(fail)
+	} catch (error) {
+		fail(error)
 	}
 }
 

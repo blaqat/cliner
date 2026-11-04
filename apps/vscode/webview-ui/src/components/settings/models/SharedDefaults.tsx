@@ -1,10 +1,10 @@
 import type { Connection, Knowledge, ModelLevel, ModelValues } from "@shared/model-settings"
 import { useState } from "react"
 import {
+	CommitInput,
 	ControlRow,
 	Field,
 	FieldGrid,
-	CommitInput,
 	FoldHeader,
 	Hint,
 	KNOWLEDGE_OPTIONS,
@@ -15,7 +15,7 @@ import {
 	Why,
 } from "./fields"
 import { useModelsPage } from "./modelsPageContext"
-import { DEFAULT_OFFERED, levelTitle, sharedDefaultsPatch, sharedSummary, STANDARD_LADDER } from "./modelsView"
+import { DEFAULT_OFFERED, levelTitle, STANDARD_LADDER, sharedDefaultsPatch, sharedSummary } from "./modelsView"
 
 /**
  * A connection's defaults: models use these for anything they don't know themselves. They live on the
@@ -116,7 +116,7 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 								return (
 									<button
 										aria-checked={on}
-										className={`h-[22px] cursor-pointer rounded-full border border-solid border-editor-group-border px-2 text-[11px] ${on ? "bg-selection text-selection-foreground" : "bg-transparent text-description"}`}
+										className={`h-[22px] cursor-pointer rounded-full border border-solid border-editor-group-border px-2 text-[12px] ${on ? "bg-selection text-selection-foreground" : "bg-transparent text-description"}`}
 										key={level.id}
 										onClick={() => toggleLevel(level)}
 										role="checkbox"

@@ -284,6 +284,13 @@ export class StateManager {
 	}
 
 	/** Serialize new settings mutations with migration and other extension windows. */
+	/** Picks up what another window saved. True if the model settings moved. */
+	async refreshModelSettings(): Promise<boolean> {
+		const before = this.getGlobalStateKey("modelSettings")?.revision
+		await this.reloadPersistedState()
+		return this.getGlobalStateKey("modelSettings")?.revision !== before
+	}
+
 	async mutateModelSettings(
 		expectedRevision: number,
 		mutate: (settings: import("@shared/model-settings").ModelSettings) => Promise<void | (() => Promise<void>)>,

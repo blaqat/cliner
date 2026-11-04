@@ -2,13 +2,10 @@ import type { Connection, ConnectionPatch, ModelPick, ModelRow, RoleSettings, Su
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { useCallback, useMemo, useRef, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { modelSettingsClient as client, type DeleteResult, type SecretMutation } from "./modelSettingsClient"
+import { modelSettingsClient as client, type DeleteResult, isStaleSettings, type SecretMutation } from "./modelSettingsClient"
 import { friendlyError } from "./modelsView"
 
 export type Outcome<T> = { ok: true; value: T } | { ok: false; message: string }
-
-const isStale = (error: unknown) =>
-	/another window|settings changed/i.test(error instanceof Error ? error.message : String(error))
 
 const newer = (a: ModelSettingsState | undefined, b: ModelSettingsState | undefined) => {
 	if (!a) return b
@@ -17,9 +14,10 @@ const newer = (a: ModelSettingsState | undefined, b: ModelSettingsState | undefi
 }
 
 /**
- * The published store plus whatever the last call returned, whichever is newer. Calls run one at a
+ * The published store plus whatever the last call returned, whichever is newer. Saves run one at a
  * time, each against the revision the last one left behind, so quick edits never trip the revision check.
- * A real mismatch (another window) refreshes and says so; the person retries.
+ * If settings moved anyway (another window, or an edit that stopped a running test) the call runs once
+ * more on what's there now. Tests and lookups wait for earlier saves but never hold up later ones.
  */
 export const useModelsStore = () => {
 	const published = useExtensionState().modelSettings
@@ -29,26 +27,38 @@ export const useModelsStore = () => {
 	stateRef.current = state
 	const queue = useRef<Promise<unknown>>(Promise.resolve())
 
-	const run = useCallback(<T>(work: (revision: number) => Promise<T>): Promise<Outcome<T>> => {
-		const next = queue.current.then(async (): Promise<Outcome<T>> => {
-			try {
-				return { ok: true, value: await work(stateRef.current?.settings.revision ?? 0) }
-			} catch (error) {
-				if (isStale(error)) {
-					try {
-						const fresh = await client.get()
-						stateRef.current = fresh
-						setReturned(fresh)
-					} catch {
-						// The error below still says what happened.
-					}
-				}
+	const attempt = useCallback(async <T>(work: (revision: number) => Promise<T>): Promise<Outcome<T>> => {
+		const once = async () => ({ ok: true as const, value: await work(stateRef.current?.settings.revision ?? 0) })
+		try {
+			return await once()
+		} catch (error) {
+			if (!isStaleSettings(error)) {
 				return { ok: false, message: friendlyError(error) }
 			}
-		})
-		queue.current = next
-		return next
+			try {
+				const fresh = await client.get()
+				stateRef.current = fresh
+				setReturned(fresh)
+				return await once()
+			} catch (retried) {
+				return { ok: false, message: friendlyError(retried) }
+			}
+		}
 	}, [])
+
+	const run = useCallback(
+		<T>(work: (revision: number) => Promise<T>): Promise<Outcome<T>> => {
+			const next = queue.current.then(() => attempt(work))
+			queue.current = next
+			return next
+		},
+		[attempt],
+	)
+
+	const lookup = useCallback(
+		<T>(work: (revision: number) => Promise<T>): Promise<Outcome<T>> => queue.current.then(() => attempt(work)),
+		[attempt],
+	)
 
 	const mutate = useCallback(
 		(work: (revision: number) => Promise<ModelSettingsState>) =>
@@ -96,15 +106,15 @@ export const useModelsStore = () => {
 				mutate((revision) => client.setRoles(revision, change(stateRef.current?.settings.roles as RoleSettings))),
 			setPolicy: (change: (policy: SubagentPolicy) => SubagentPolicy) =>
 				mutate((revision) => client.setPolicy(revision, change(stateRef.current?.settings.subagents as SubagentPolicy))),
-			savedThreadUsage: (modelIds: string[]) => run(() => client.savedThreadUsage(modelIds)),
-			duplicate: (modelId: string) => run(() => client.duplicateModel(modelId)),
-			discover: (connectionId: string) => run((revision) => client.discover(revision, connectionId)),
-			testConnection: (connectionId: string) => run((revision) => client.testConnection(revision, connectionId)),
-			testModel: (pick: ModelPick) => run((revision) => client.testModel(revision, pick)),
-			detect: (pick: ModelPick) => run((revision) => client.detect(revision, pick)),
-			preview: (pick: ModelPick) => run((revision) => client.preview(revision, pick)),
+			savedThreadUsage: (modelIds: string[]) => lookup(() => client.savedThreadUsage(modelIds)),
+			duplicate: (modelId: string) => lookup(() => client.duplicateModel(modelId)),
+			discover: (connectionId: string) => lookup((revision) => client.discover(revision, connectionId)),
+			testConnection: (connectionId: string) => lookup((revision) => client.testConnection(revision, connectionId)),
+			testModel: (pick: ModelPick) => lookup((revision) => client.testModel(revision, pick)),
+			detect: (pick: ModelPick) => lookup((revision) => client.detect(revision, pick)),
+			preview: (pick: ModelPick) => lookup((revision) => client.preview(revision, pick)),
 		}),
-		[state, mutate, remove, run],
+		[state, mutate, remove, run, lookup],
 	)
 }
 

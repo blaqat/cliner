@@ -1,4 +1,4 @@
-import { createGateway, createHandler } from "@cline/llms"
+import { acceptsApiVersion, createGateway, createHandler } from "@cline/llms"
 import { type Connection, ModelPickSchema } from "@shared/model-settings"
 import { z } from "zod"
 import { modelAuthDependencies } from "@/sdk/model-settings/auth-dependencies"
@@ -25,6 +25,16 @@ export type DiagnosticOperation =
 	| "testConnection"
 	| "testConfiguredModel"
 	| "previewConfiguredModelRequest"
+
+/** Test and Detect ask with the same `api-version` the connection's requests carry. */
+function withConnectionApiVersion(url: string, connection: Connection): string {
+	const version = connection.kind === "openai-compatible" ? connection.azureApiVersion?.trim() : undefined
+	if (!version) return url
+	const parsed = new URL(url)
+	if (!acceptsApiVersion(parsed.pathname)) return url
+	parsed.searchParams.set("api-version", version)
+	return parsed.toString()
+}
 
 const PREVIEW_SENSITIVE_HEADER = /authorization|key|token|secret|cookie|credential/i
 const PREVIEW_PLAIN_HEADERS = new Set(["accept", "content-type", "user-agent"])
@@ -114,7 +124,10 @@ export async function modelSettingsDiagnostic(
 			let response: Response
 			try {
 				response = await fetch(
-					`${config.baseUrl.replace(/\/$/, "")}/${providerId === "ollama" ? "tags" : providerId === "openrouter" && operation === "testConnection" ? "auth/key" : "models"}`,
+					withConnectionApiVersion(
+						`${config.baseUrl.replace(/\/$/, "")}/${providerId === "ollama" ? "tags" : providerId === "openrouter" && operation === "testConnection" ? "auth/key" : "models"}`,
+						connection,
+					),
 					{
 						headers,
 						signal: AbortSignal.any([
@@ -211,7 +224,10 @@ export async function modelSettingsDiagnostic(
 				if (config.apiKey) headers.set("Authorization", `Bearer ${config.apiKey}`)
 				try {
 					const response = await fetch(
-						`${config.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(config.modelId!)}`,
+						withConnectionApiVersion(
+							`${config.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(config.modelId!)}`,
+							resolved.connection,
+						),
 						{
 							headers,
 							signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(config.timeoutMs ?? 30000)]),

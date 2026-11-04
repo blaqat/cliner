@@ -1,9 +1,9 @@
 import { useState } from "react"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { LinkButton, SmallButton, Why } from "./fields"
-import { useModelsPage } from "./modelsPageContext"
 import type { DeleteResult } from "./modelSettingsClient"
-import { clearRole, type DependencyLine, modelName, readDependencies, ROLE_LABELS, roleRowId } from "./modelsView"
+import { useModelsPage } from "./modelsPageContext"
+import { clearRole, type DependencyLine, modelName, ROLE_LABELS, readDependencies, roleRowId } from "./modelsView"
 import type { Outcome } from "./useModelsStore"
 
 /**
@@ -115,7 +115,7 @@ export const RemoveFlow = ({
 
 	return (
 		<div
-			className="mt-1.5 grid basis-full gap-1.5 rounded-xs border border-error/35 bg-error/10 px-2 py-1.5 text-[11.5px]"
+			className="mt-1.5 grid basis-full gap-1.5 rounded-xs border border-error/35 bg-error/10 px-2 py-1.5 text-[12.5px]"
 			data-testid="remove-flow">
 			{!lines && <span>{question}</span>}
 			{!!savedThreads && (
@@ -181,7 +181,7 @@ export const RemoveFlow = ({
 										</LinkButton>
 									</>
 								)}
-								{line.kind === "other" && <span className="min-w-0 font-mono text-[11px]">{line.path}</span>}
+								{line.kind === "other" && <span className="min-w-0 font-mono text-[12px]">{line.path}</span>}
 							</li>
 						))}
 					</ul>

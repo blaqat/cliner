@@ -10,6 +10,7 @@ import {
 } from "../settingsTargets"
 import { SettingsShell } from "../shell/SettingsShell"
 import { createFakeHost, type FakeHost, type FakeHostOptions, gatewaySettings, levelsUpTo, modelRow } from "./modelsPage.fixture"
+import { friendlyError } from "./modelsView"
 
 const mocks = vi.hoisted(() => ({
 	host: {} as Record<string, unknown>,
@@ -932,6 +933,22 @@ describe("secrets", () => {
 		expect(page().getByLabelText("Header value")).toHaveAttribute("type", "password")
 	})
 
+	it("a header the move locked can be unlocked, which keeps its value as text", async () => {
+		const secretRef = "settings:v1:connection:gateway:header-0"
+		const settings = gatewaySettings()
+		settings.connections[0].headers = [{ id: "header-0", name: "X-Api-Key", storage: "secret", secretRef }]
+		setup({ settings, availability: envAvailable, secrets: { [secretRef]: "abc" } })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Unlock X-Api-Key" }))
+		await flush()
+		await flush()
+		expect(host.callsTo("saveConnection")[0].secrets).toEqual([{ field: "header-0", operation: "unlock" }])
+		expect(page().getByLabelText("Header value")).toHaveValue("abc")
+		expect(page().getByLabelText("Header value")).toHaveAttribute("type", "text")
+	})
+
 	it("Azure API version only shows for Azure URLs, and only under More", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
@@ -944,6 +961,12 @@ describe("secrets", () => {
 		change("Base URL", "https://my.openai.azure.com/openai", form)
 		await flush()
 		expect(form.getByLabelText("Azure API version")).toBeInTheDocument()
+		change("Azure API version", "2025-01-01-preview", form)
+		await flush()
+		change("Base URL", "https://gateway.test/v1", form)
+		await flush()
+		// Still set, so it stays where it can be cleared.
+		expect(form.getByLabelText("Azure API version")).toHaveValue("2025-01-01-preview")
 		fireEvent.click(form.getByRole("button", { name: /^More/ }))
 		await flush()
 		expect(form.queryByLabelText("Azure API version")).toBeNull()
@@ -1358,7 +1381,61 @@ describe("Remote Config locks", () => {
 })
 
 describe("host errors", () => {
-	it("a stale revision refreshes and asks to retry, in place", async () => {
+	it("a change that trips the revision check goes through on the latest settings, with no error", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const original = mocks.host.saveConfiguredModels
+		let refusals = 0
+		mocks.host.saveConfiguredModels = async (request: { json: string }) => {
+			if (refusals++ === 0) throw new Error("Settings changed in another window. Refresh and try again.")
+			return original(request)
+		}
+		const form = await openModel("tuned")
+		change("Max output tokens", "9000", form)
+		await flush()
+		await flush()
+		await flush()
+		expect(refusals).toBe(2)
+		expect(savedRow("tuned")?.overrides.maxOutputTokens).toBe(9000)
+		expect(form.queryByText(/nothing was saved/)).toBeNull()
+		mocks.host.saveConfiguredModels = original
+	})
+
+	it("a save doesn't wait behind a running connection test", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const original = mocks.host.testConnection
+		let finishTest: (() => void) | undefined
+		mocks.host.testConnection = (request: { json: string }) =>
+			new Promise((resolve) => {
+				finishTest = () => resolve(original(request))
+			})
+		fireEvent.click(page().getByRole("button", { name: "Test" }))
+		await flush()
+		expect(finishTest).toBeDefined()
+		const form = await openModel("tuned")
+		change("Max output tokens", "9000", form)
+		await flush()
+		await flush()
+		expect(savedRow("tuned")?.overrides.maxOutputTokens).toBe(9000)
+		finishTest?.()
+		await flush()
+		mocks.host.testConnection = original
+	})
+
+	it("says a test stopped because settings changed, not that something wasn't saved", () => {
+		expect(friendlyError(new Error("Settings changed during this request. Try again."))).toBe(
+			"Settings changed while this was running, so it stopped. Try again.",
+		)
+	})
+
+	it("names the field and rule when the host's validation refuses a value", () => {
+		expect(friendlyError(new Error(JSON.stringify([{ path: ["connection", "baseUrl"], message: "Invalid URL" }])))).toBe(
+			"The host refused this: connection.baseUrl: Invalid URL",
+		)
+	})
+
+	it("a stale revision that keeps tripping says so, in place", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()
 		const original = mocks.host.saveConfiguredModels
@@ -1369,7 +1446,7 @@ describe("host errors", () => {
 		change("Max output tokens", "9000", form)
 		await flush()
 		await flush()
-		expect(form.getAllByText(/Settings changed elsewhere, so nothing was saved/).length).toBeGreaterThan(0)
+		expect(form.getAllByText(/Settings kept changing while this saved, so nothing was saved/).length).toBeGreaterThan(0)
 		expect(host.callsTo("getModelSettings").length).toBeGreaterThan(0)
 		mocks.host.saveConfiguredModels = original
 	})

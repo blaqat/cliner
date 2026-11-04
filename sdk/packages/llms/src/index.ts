@@ -111,6 +111,7 @@ export {
 export { buildClineClientHeaders } from "./providers/cline-client-headers";
 export type * from "./providers/gateway";
 export { createGateway, DefaultGateway } from "./providers/gateway";
+export { acceptsApiVersion } from "./providers/vendors/http-error-context";
 export {
 	type ProviderLocalCli,
 	resolveProviderLocalCli,

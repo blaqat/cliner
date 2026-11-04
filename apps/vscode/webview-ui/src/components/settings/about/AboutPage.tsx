@@ -5,7 +5,7 @@ import { FileServiceClient, ModelsServiceClient, UiServiceClient } from "@/servi
 import { RELEASE_NOTES } from "../sections/about/releaseNotes"
 import { RemoteConfigSection } from "../sections/RemoteConfigSection"
 import { AdvancedFold } from "../shell/AdvancedFold"
-import { SettingBlock } from "../shell/SettingRow"
+import { SettingBlock, SettingGroup } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import { findRow, isRowVisible } from "../shell/settingsRegistry"
 import { MigrationFailedNotice, MigrationIssues } from "./MigrationNotices"
@@ -32,62 +32,64 @@ export const AboutPage = () => {
 	const remoteRow = findRow(rows, "about.remote-config")
 	const canSeeRemoteConfig = !!remoteRow && isRowVisible(rows, remoteRow, ctx)
 	return (
-		<SettingBlock rowId="about.info">
-			{migration?.status === "complete" && <MigrationIssues issues={migration.issues} />}
-			{migration?.status === "failed" && <MigrationFailedNotice onRetried={setMigration} status={migration} />}
-			{migration?.status === "pending" && <p role="status">Moving your model setup…</p>}
-			{error && (
-				<p className="text-error text-[11px]" role="alert">
-					{error}
-				</p>
-			)}
-			{canSeeRemoteConfig && (
-				<div className="pb-1">
-					<AdvancedFold featureId="about.info" summary="Remote Config">
-						<SettingBlock rowId="about.remote-config">
-							<RemoteConfigSection renderSectionHeader={noHeader} />
-						</SettingBlock>
-					</AdvancedFold>
+		<SettingGroup>
+			<SettingBlock className="py-3.5" rowId="about.info">
+				{migration?.status === "complete" && <MigrationIssues issues={migration.issues} />}
+				{migration?.status === "failed" && <MigrationFailedNotice onRetried={setMigration} status={migration} />}
+				{migration?.status === "pending" && <p role="status">Moving your model setup…</p>}
+				{error && (
+					<p className="text-error text-[12px]" role="alert">
+						{error}
+					</p>
+				)}
+				{canSeeRemoteConfig && (
+					<div className="pb-1">
+						<AdvancedFold featureId="about.info" summary="Remote Config">
+							<SettingBlock rowId="about.remote-config">
+								<RemoteConfigSection renderSectionHeader={noHeader} />
+							</SettingBlock>
+						</AdvancedFold>
+					</div>
+				)}
+				<div className="flex gap-2 pt-2">
+					<Button
+						onClick={() =>
+							void FileServiceClient.copyToClipboard({
+								value: JSON.stringify({ version, extensionVariant, migration: migration?.status }, null, 2),
+							}).catch(() => setError("Could not copy diagnostics. Try again."))
+						}
+						size="sm"
+						variant="secondary">
+						Copy diagnostics
+					</Button>
+					<Button
+						onClick={() => void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))}
+						size="sm"
+						variant="secondary">
+						Open logs
+					</Button>
 				</div>
-			)}
-			<div className="flex gap-2 pt-2">
-				<Button
-					onClick={() =>
-						void FileServiceClient.copyToClipboard({
-							value: JSON.stringify({ version, extensionVariant, migration: migration?.status }, null, 2),
-						}).catch(() => setError("Could not copy diagnostics. Try again."))
-					}
-					size="sm"
-					variant="secondary">
-					Copy diagnostics
+				<h3 className="mt-3 mb-1 text-[13px]">Cline {version}</h3>
+				<p className="text-[12px] text-description">{extensionVariant ?? "VS Code"}</p>
+				<h3 className="mt-3 mb-1 text-[13px]">What's new</h3>
+				<ul className="pl-4 text-[12px] text-description space-y-2">
+					{RELEASE_NOTES[0]?.notes.map((note) => (
+						<li key={note}>{note}</li>
+					))}
+				</ul>
+				<Button onClick={navigateToAccount} size="sm" variant="secondary">
+					Cline account
 				</Button>
-				<Button
-					onClick={() => void UiServiceClient.openLogs({}).catch(() => setError("Could not open logs. Try again."))}
-					size="sm"
-					variant="secondary">
-					Open logs
-				</Button>
-			</div>
-			<h3 className="mt-3 mb-1 text-[13px]">Cline {version}</h3>
-			<p className="text-[11px] text-description">{extensionVariant ?? "VS Code"}</p>
-			<h3 className="mt-3 mb-1 text-[12px]">What's new</h3>
-			<ul className="pl-4 text-[11px] text-description space-y-2">
-				{RELEASE_NOTES[0]?.notes.map((note) => (
-					<li key={note}>{note}</li>
-				))}
-			</ul>
-			<Button onClick={navigateToAccount} size="sm" variant="secondary">
-				Cline account
-			</Button>
-			<p className="text-[11px]">
-				<a className="text-link" href="https://docs.cline.bot">
-					Documentation
-				</a>{" "}
-				·{" "}
-				<a className="text-link" href="https://github.com/cline/cline/issues">
-					Report an issue
-				</a>
-			</p>
-		</SettingBlock>
+				<p className="text-[12px]">
+					<a className="text-link" href="https://docs.cline.bot">
+						Documentation
+					</a>{" "}
+					·{" "}
+					<a className="text-link" href="https://github.com/cline/cline/issues">
+						Report an issue
+					</a>
+				</p>
+			</SettingBlock>
+		</SettingGroup>
 	)
 }

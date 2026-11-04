@@ -5,6 +5,7 @@ import type { Mode } from "@shared/storage/types"
 import { useEffect, useState } from "react"
 import type { SelectorLevel, SelectorPick, SelectorRow } from "@/components/models/ModelSelector"
 import { describePick, samePick, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
+import { withLatestSettings } from "@/components/settings/models/modelSettingsClient"
 import type { SettingsNavigationTarget } from "@/components/settings/settingsTargets"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
@@ -197,16 +198,16 @@ function useModelSettingsSelection(mode: Mode) {
 				run: (next) => {
 					setError(undefined)
 					void (async () => {
-						const response = await ModelsServiceClient.getModelSettings(ModelSettingsRequestV1.create({ json: "{}" }))
-						const latest = JSON.parse(response.json) as ModelSettingsState
-						await ModelsServiceClient.makeModelDefault(
-							ModelSettingsRequestV1.create({
-								json: JSON.stringify({
-									expectedRevision: latest.settings.revision,
-									mode,
-									pick: { modelId: next.rowId, levelId: next.levelId },
+						await withLatestSettings((latest) =>
+							ModelsServiceClient.makeModelDefault(
+								ModelSettingsRequestV1.create({
+									json: JSON.stringify({
+										expectedRevision: latest.settings.revision,
+										mode,
+										pick: { modelId: next.rowId, levelId: next.levelId },
+									}),
 								}),
-							}),
+							),
 						)
 					})().catch((failure) => {
 						console.error("Failed to make the model the default:", failure)

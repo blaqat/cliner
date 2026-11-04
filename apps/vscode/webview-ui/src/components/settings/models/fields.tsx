@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 import { RESET_CLASS, TAG_CLASS } from "../shell/SettingRow"
 
 export const LINK_CLASS =
-	"inline-flex cursor-pointer items-center gap-[3px] whitespace-nowrap border-0 bg-transparent p-0 text-[11px] text-link hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:text-description disabled:no-underline"
+	"inline-flex cursor-pointer items-center gap-[3px] whitespace-nowrap border-0 bg-transparent p-0 text-[12px] text-link hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-not-allowed disabled:text-description disabled:no-underline"
 
 export const LinkButton = ({ className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
 	<button className={cn(LINK_CLASS, className)} type="button" {...props} />
@@ -21,7 +21,7 @@ export const SmallButton = ({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { primary?: boolean; danger?: boolean }) => (
 	<Button
 		className={cn(
-			"h-[22px] gap-1 rounded-xs px-2.5 py-0 text-[11.5px]",
+			"h-7 gap-1 rounded-xs px-3 py-0 text-[12.5px]",
 			danger && "bg-error/30 text-foreground hover:bg-error/40",
 			className,
 		)}
@@ -32,7 +32,7 @@ export const SmallButton = ({
 )
 
 export const Icon = ({ name, className }: { name: string; className?: string }) => (
-	<i aria-hidden className={cn("codicon shrink-0 text-[12px]!", `codicon-${name}`, className)} />
+	<i aria-hidden className={cn("codicon shrink-0 text-[13px]!", `codicon-${name}`, className)} />
 )
 
 export const Chevron = ({ open }: { open: boolean }) => (
@@ -41,7 +41,7 @@ export const Chevron = ({ open }: { open: boolean }) => (
 
 export const Hint = ({ children, error, id }: { children: ReactNode; error?: boolean; id?: string }) => (
 	<div
-		className={cn("mt-0.5 text-[10.5px] opacity-80", error ? "text-error opacity-100" : "text-description")}
+		className={cn("mt-1 text-[11.5px] leading-[1.4] opacity-80", error ? "text-error opacity-100" : "text-description")}
 		id={id}
 		role={error ? "alert" : undefined}>
 		{children}
@@ -61,7 +61,7 @@ export const Status = ({
 }) => (
 	<span
 		className={cn(
-			"inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]",
+			"inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[12px]",
 			tone === "ok"
 				? "text-success"
 				: tone === "warn"
@@ -71,7 +71,7 @@ export const Status = ({
 						: "text-description",
 		)}
 		title={title}>
-		<Icon className="text-[11px]!" name={icon} />
+		<Icon className="text-[12px]!" name={icon} />
 		{children}
 	</span>
 )
@@ -87,7 +87,7 @@ export const Notice = ({
 }) => (
 	<div
 		className={cn(
-			"my-1.5 flex items-start gap-2 rounded-[5px] border px-2 py-1.5 text-[11.5px]",
+			"my-1.5 flex items-start gap-2 rounded-[5px] border px-2 py-1.5 text-[12.5px]",
 			tone === "warn"
 				? "border-warning/40 bg-warning/10"
 				: tone === "bad"
@@ -106,9 +106,9 @@ export const Notice = ({
 /** A line under a row or control that says why, with the way out in it. */
 export const Why = ({ tone, children }: { tone?: "warn" | "bad"; children: ReactNode }) => (
 	<div
-		className={cn("mt-1 flex items-start gap-1.5 text-[11px]", tone === "bad" ? "text-error" : "text-description")}
+		className={cn("mt-1 flex items-start gap-1.5 text-[12px]", tone === "bad" ? "text-error" : "text-description")}
 		role={tone === "bad" ? "alert" : undefined}>
-		<Icon className={cn("mt-px text-[11px]!", tone === "warn" && "text-warning")} name={tone ? "warning" : "info"} />
+		<Icon className={cn("mt-px text-[12px]!", tone === "warn" && "text-warning")} name={tone ? "warning" : "info"} />
 		<span className="min-w-0">{children}</span>
 	</div>
 )
@@ -130,7 +130,7 @@ export const OverrideTag = ({ label, onReset }: { label: string; onReset: () => 
 
 export const LockedIcon = ({ title }: { title: string }) => (
 	<span title={title}>
-		<Icon className="text-[11px]! text-warning" name="lock" />
+		<Icon className="text-[12px]! text-warning" name="lock" />
 	</span>
 )
 
@@ -152,7 +152,7 @@ export const Field = ({
 	children: ReactNode
 }) => (
 	<div className={cn("min-w-0 scroll-my-2 rounded-xs", className)} id={id}>
-		<div className="mb-0.5 flex min-h-4 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-description">
+		<div className="mb-1.5 flex min-h-4 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-foreground">
 			<span>{label}</span>
 			{tag}
 		</div>
@@ -162,7 +162,7 @@ export const Field = ({
 )
 
 export const FieldGrid = ({ children, className }: { children: ReactNode; className?: string }) => (
-	<div className={cn("mt-1.5 grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-x-2.5 gap-y-2", className)}>
+	<div className={cn("mt-2.5 grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-x-3.5 gap-y-3", className)}>
 		{children}
 	</div>
 )
@@ -229,8 +229,8 @@ export const CommitInput = ({
 				aria-label={label}
 				autoComplete="off"
 				className={cn(
-					"h-6 rounded-xs px-[7px] py-0 text-[11.5px] md:text-[11.5px]",
-					mono && "font-mono text-[11px] md:text-[11px]",
+					"h-7 rounded-xs px-2 py-0 text-[12.5px] md:text-[12.5px]",
+					mono && "font-mono text-[12px] md:text-[12px]",
 					unknown && "placeholder:text-warning",
 					error && "border-error",
 					className,
@@ -281,7 +281,7 @@ export const Segmented = <T extends string>({
 	<div
 		aria-label={label}
 		className={cn(
-			"inline-flex shrink-0 overflow-hidden rounded-xs border border-editor-group-border text-[11px]",
+			"inline-flex shrink-0 overflow-hidden rounded-xs border border-editor-group-border text-[12px]",
 			wrap && "flex-wrap",
 		)}
 		role="radiogroup">
@@ -336,11 +336,11 @@ export const ControlRow = ({
 }) => (
 	<div className="flex scroll-my-2 flex-wrap items-center justify-between gap-x-2.5 gap-y-1 rounded-xs py-[5px]" id={id}>
 		<div className="min-w-[110px] flex-1">
-			<div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+			<div className="flex flex-wrap items-center gap-1.5 text-[13px]">
 				<span>{label}</span>
 				{tag}
 			</div>
-			{description && <div className="text-[11px] text-description">{description}</div>}
+			{description && <div className="text-[12px] text-description">{description}</div>}
 		</div>
 		{children}
 	</div>
@@ -379,18 +379,18 @@ export const FoldHeader = ({
 }) => (
 	<button
 		aria-expanded={open}
-		className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 border-0 bg-transparent px-0 pt-[7px] pb-[5px] text-left text-[11.5px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+		className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 border-0 bg-transparent px-0 pt-[7px] pb-[5px] text-left text-[12.5px] text-description hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 		onClick={onToggle}
 		type="button">
 		<Chevron open={open} />
 		<span className="shrink-0 font-medium text-foreground">{title}</span>
-		{!open && summary && <span className="min-w-0 flex-1 truncate text-[11px] opacity-70">{summary}</span>}
+		{!open && summary && <span className="min-w-0 flex-1 truncate text-[12px] opacity-70">{summary}</span>}
 		{badge}
 	</button>
 )
 
 export const GroupHeading = ({ children }: { children: ReactNode }) => (
-	<div className="pt-[9px] pb-px text-[10px] uppercase tracking-[0.06em] text-description opacity-80">{children}</div>
+	<div className="pt-[9px] pb-px text-[11px] uppercase tracking-[0.06em] text-description opacity-80">{children}</div>
 )
 
 /** Positive whole numbers, the shape the host wants for tokens. Empty is `null`. */

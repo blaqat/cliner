@@ -222,6 +222,51 @@ describe("keyless and identity connections", () => {
 	})
 })
 
+describe("Azure API version", () => {
+	const configFor = (
+		baseUrl: string,
+		apiFormat: "chat" | "responses",
+		azureApiVersion: string | null = "2025-01-01-preview",
+	) => {
+		const connection = {
+			...compatibleConnection({ kind: "none" }),
+			baseUrl,
+			apiFormat,
+			azureApiVersion,
+		} as Connection
+		return configuredProviderConfig(
+			settingsFor(connection, "gpt"),
+			{ modelId: "row", levelId: "default" },
+			{ secrets: noSecrets(), environment },
+		)
+	}
+	const formats = ["chat", "responses"] as const
+	const bases = [
+		"https://r.openai.azure.com/openai/deployments/gpt",
+		"https://r.openai.azure.com/openai",
+		"https://r.openai.azure.com",
+		"https://gw.azure-api.net/team/openai/deployments/gpt",
+		"https://r.services.ai.azure.com/models",
+		"https://gateway.test/v1",
+	]
+	for (const apiFormat of formats) {
+		for (const base of bases) {
+			it(`goes in the query string of a ${apiFormat} POST to ${base}`, async () => {
+				const { url } = await capture(await configFor(base, apiFormat))
+				expect(new URL(url).searchParams.get("api-version")).toBe("2025-01-01-preview")
+			})
+		}
+		it(`stays off a ${apiFormat} POST to /openai/v1, which refuses it`, async () => {
+			const { url } = await capture(await configFor("https://r.openai.azure.com/openai/v1", apiFormat))
+			expect(new URL(url).searchParams.has("api-version")).toBe(false)
+		})
+		it(`isn't sent on ${apiFormat} when left blank`, async () => {
+			const { url } = await capture(await configFor("https://gateway.test/v1", apiFormat, null))
+			expect(new URL(url).searchParams.has("api-version")).toBe(false)
+		})
+	}
+})
+
 describe("rotated keys", () => {
 	const ref = "settings:v1:connection:connection:apiKey"
 	const keychain = compatibleConnection({ kind: "keychain", secretRef: ref })

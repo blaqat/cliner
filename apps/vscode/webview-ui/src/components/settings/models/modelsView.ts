@@ -16,6 +16,8 @@ import { settingsModelElementId } from "../settingsTargets"
 export type Effective = ModelSettingsState["effective"][string]
 
 /** The Connection type's secret field for a compatible key, and the prefix every reference shares. */
+/** The field a saved secret reference names; a moved header's differs from one locked here. */
+export const secretField = (ref: string) => ref.slice(ref.lastIndexOf(":") + 1)
 export const secretRef = (connectionId: string, field: string) => `settings:v1:connection:${connectionId}:${field}`
 
 export const PLANNING_CONTEXT = "~128K"
@@ -377,8 +379,11 @@ export const canRunAfter = (test: ConnectionTest | undefined) =>
 
 export const friendlyError = (error: unknown) => {
 	const message = error instanceof Error ? error.message : String(error)
+	if (/during this request/i.test(message)) {
+		return "Settings changed while this was running, so it stopped. Try again."
+	}
 	if (/expected revision|revision mismatch|settings changed/i.test(message)) {
-		return "Settings changed elsewhere, so nothing was saved. Check the value and try again."
+		return "Settings kept changing while this saved, so nothing was saved. Try again."
 	}
 	if (/Invalid saved level/.test(message)) {
 		return "Something still points at a level this would remove. Pick another level for it first."
@@ -389,8 +394,20 @@ export const friendlyError = (error: unknown) => {
 	if (/rollout is disabled/i.test(message)) {
 		return "The new settings store isn't turned on in this build, so nothing was saved."
 	}
-	if (/^\s*[[{]/.test(message)) {
+	return validationReason(message) ?? message
+}
+
+/** A schema failure arrives as its issues in JSON. Issues name fields and rules, never the rejected value. */
+const validationReason = (message: string) => {
+	if (!/^\s*[[{]/.test(message)) {
+		return undefined
+	}
+	try {
+		const parsed = JSON.parse(message)
+		const issues: Array<{ path?: unknown[]; message?: string }> = Array.isArray(parsed) ? parsed : []
+		const reasons = issues.slice(0, 3).map(({ path, message: why }) => [path?.join("."), why].filter(Boolean).join(": "))
+		return reasons.length ? `The host refused this: ${reasons.join("; ")}` : "The host refused this value."
+	} catch {
 		return "The host refused this value."
 	}
-	return message
 }

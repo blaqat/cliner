@@ -11,7 +11,9 @@ import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import { ModelsServiceClient } from "@/services/grpc-client"
 
-export type SecretMutation = { field: string; operation: "keep" | "delete" } | { field: string; operation: "set"; value: string }
+export type SecretMutation =
+	| { field: string; operation: "keep" | "delete" | "unlock" }
+	| { field: string; operation: "set"; value: string }
 
 export interface DiscoveredModel {
 	upstreamId: string
@@ -55,6 +57,26 @@ const call = async <T>(method: SettingsRpc, payload: unknown) => {
 	const send = ModelsServiceClient[method] as (request: ModelSettingsRequestV1) => Promise<{ json: string }>
 	const response = await send.call(ModelsServiceClient, ModelSettingsRequestV1.create({ json: JSON.stringify(payload) }))
 	return JSON.parse(response.json) as T
+}
+
+/** The revision check tripped. The host has re-read the file, so another try sees what changed. */
+export const isStaleSettings = (error: unknown) =>
+	/another window|settings changed/i.test(error instanceof Error ? error.message : String(error))
+
+/**
+ * A change built on the latest settings. If they move between the read and the write, it's built
+ * again on what's there now: it only touches its own part, so nothing someone else saved is lost.
+ */
+export const withLatestSettings = async <T>(write: (latest: ModelSettingsState) => Promise<T>): Promise<T> => {
+	const attempt = async () => write(await call<ModelSettingsState>("getModelSettings", {}))
+	try {
+		return await attempt()
+	} catch (error) {
+		if (!isStaleSettings(error)) {
+			throw error
+		}
+		return attempt()
+	}
 }
 
 export const modelSettingsClient = {

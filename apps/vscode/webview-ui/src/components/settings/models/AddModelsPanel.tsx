@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { Hint, Icon, LinkButton, SmallButton, Why } from "./fields"
-import { useModelsPage } from "./modelsPageContext"
 import type { DiscoveredModel, DiscoveryResult } from "./modelSettingsClient"
+import { useModelsPage } from "./modelsPageContext"
 import { connectionName, detectedFills, hostOf, newModelRow, parseModelIds, testPick } from "./modelsView"
 import { SharedDefaults } from "./SharedDefaults"
 
@@ -162,11 +162,11 @@ export const AddModelsPanel = ({
 
 	return (
 		<div className="mt-1.5 rounded-[5px] border border-editor-group-border px-2 py-1.5" data-testid="add-models">
-			<div className="mb-1 text-[12px] font-medium">Add to {name}</div>
+			<div className="mb-1 text-[13px] font-medium">Add to {name}</div>
 			<Input
 				aria-label={listed.size ? "Filter /models, or paste IDs" : "Type or paste model IDs"}
 				autoComplete="off"
-				className="h-6 rounded-xs px-[7px] py-0 font-mono text-[11px] md:text-[11px]"
+				className="h-7 rounded-xs px-2 py-0 font-mono text-[12px] md:text-[12px]"
 				onChange={(event) => setQuery(event.target.value)}
 				onKeyDown={(event) => {
 					if (event.key === "Enter") {
@@ -197,7 +197,7 @@ export const AddModelsPanel = ({
 							<button
 								aria-checked={on}
 								className={cn(
-									"flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left text-[11px] outline-none hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent",
+									"flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left text-[12px] outline-none hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--vscode-focusBorder) disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent",
 								)}
 								disabled={added}
 								key={id}
@@ -209,25 +209,25 @@ export const AddModelsPanel = ({
 										"grid size-3.5 shrink-0 place-items-center rounded-[3px] border border-solid border-editor-group-border",
 										on && "border-button-background bg-button-background text-button-foreground",
 									)}>
-									{on && <Icon className="text-[11px]!" name="check" />}
+									{on && <Icon className="text-[12px]!" name="check" />}
 								</span>
 								<span className="min-w-0 flex-1 truncate font-mono">{id}</span>
 								{added ? (
-									<span className="shrink-0 text-[10.5px] text-description">added</span>
+									<span className="shrink-0 text-[11.5px] text-description">added</span>
 								) : !known && listed.size > 0 ? (
-									<span className="shrink-0 text-[10.5px] text-description">not on /models</span>
+									<span className="shrink-0 text-[11.5px] text-description">not on /models</span>
 								) : known && known.name !== id && known.name ? (
-									<span className="shrink-0 truncate text-[10.5px] text-description">{known.name}</span>
+									<span className="shrink-0 truncate text-[11.5px] text-description">{known.name}</span>
 								) : null}
 							</button>
 						)
 					})}
 					{filter && !rows.length && (
 						<button
-							className="flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left font-mono text-[11px] hover:bg-list-hover"
+							className="flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1.5 py-[3px] text-left font-mono text-[12px] hover:bg-list-hover"
 							onClick={() => applyIds(query)}
 							type="button">
-							<Icon className="text-[11px]!" name="add" />
+							<Icon className="text-[12px]!" name="add" />
 							Add “{query.trim()}” by ID
 						</button>
 					)}
@@ -239,7 +239,7 @@ export const AddModelsPanel = ({
 				</div>
 			)}
 			{status && (
-				<div className="mt-1 text-[11px] text-description" role="status">
+				<div className="mt-1 text-[12px] text-description" role="status">
 					{status}
 				</div>
 			)}

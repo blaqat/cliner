@@ -62,7 +62,7 @@ export const MigrationFailedNotice = ({
 }) => {
 	const migration = useMigrationRetry(onRetried)
 	return (
-		<div className="rounded border border-warning p-2 text-[11px]" role="status">
+		<div className="rounded border border-warning p-2 text-[12px]" role="status">
 			<p className="m-0 font-semibold">Your models couldn't be moved to the new Settings.</p>
 			{status.cause === SETTINGS_LOCK_HELD_CAUSE ? (
 				<p className="m-0 mt-1">Another window is using settings. Nothing is lost. Retry in a moment.</p>
@@ -83,7 +83,7 @@ export const MigrationFailedNotice = ({
 export const MigrationPending = () => {
 	const migration = useMigrationRetry()
 	return (
-		<div className="text-[11px]" role="status">
+		<div className="text-[12px]" role="status">
 			<p className="m-0">Moving your model setup… Cline is still running on your last selection.</p>
 			<MigrationActions migration={migration} />
 		</div>
@@ -173,7 +173,7 @@ export const MigrationIssues = ({ issues }: { issues?: ModelSettingsMigrationIss
 		return null
 	}
 	return (
-		<div className="mt-1.5 rounded border border-warning p-2 text-[11px]" data-testid="migration-issues">
+		<div className="mt-1.5 rounded border border-warning p-2 text-[12px]" data-testid="migration-issues">
 			<p className="m-0 mb-1">Some saved values need a look:</p>
 			<ul className="m-0 flex list-none flex-col gap-1 p-0">
 				{rows.map((row) => (

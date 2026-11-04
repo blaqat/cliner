@@ -80,7 +80,7 @@ export const ModelCatalogPresets = ({ onApply }: { onApply: (values: Partial<Mod
 			<div className="mt-1.5 flex flex-wrap gap-1" data-testid="model-presets">
 				{presets.map((preset) => (
 					<button
-						className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[11px] text-description hover:text-foreground"
+						className="h-[22px] cursor-pointer whitespace-nowrap rounded-full border border-solid border-editor-group-border bg-transparent px-2 text-[12px] text-description hover:text-foreground"
 						key={preset.id}
 						onClick={() => onApply(preset.values)}
 						type="button">

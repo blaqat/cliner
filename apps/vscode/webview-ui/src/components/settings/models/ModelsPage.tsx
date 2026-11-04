@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from "react"
-import { useSettingsShell } from "../shell/SettingsShellContext"
 import { SettingBlock } from "../shell/SettingRow"
+import { useSettingsShell } from "../shell/SettingsShellContext"
 import { ConnectionCard } from "./ConnectionCard"
 import { Icon, LinkButton, Notice, Why } from "./fields"
 import { ModelRoles } from "./ModelRoles"
@@ -61,7 +61,7 @@ const AddLines = () => {
 							setChooserOpen(false)
 						}}
 						title={compatibleAllowed ? undefined : `${page.organization} chooses the providers here.`}>
-						<Icon className="text-[11px]!" name="add" />
+						<Icon className="text-[12px]!" name="add" />
 						Add a connection
 					</LinkButton>
 				</SettingBlock>
@@ -70,7 +70,7 @@ const AddLines = () => {
 						aria-expanded={chooserOpen}
 						id="setting-models-add-provider-control"
 						onClick={() => setChooserOpen((open) => !open)}>
-						<Icon className="text-[11px]!" name="add" />
+						<Icon className="text-[12px]!" name="add" />
 						Add a model from another provider
 					</LinkButton>
 				</SettingBlock>
@@ -141,7 +141,7 @@ const ModelsList = () => {
 			<ModelRoles />
 			<SettingBlock rowId="models.connections">
 				{(count > 0 || settings.connections.length > 0) && (
-					<div className="pt-3 pb-0.5 text-[10px] uppercase tracking-[0.06em] text-description">Set-up models</div>
+					<div className="mt-5 mb-2 text-[13px] font-semibold text-foreground">Set-up models</div>
 				)}
 				{settings.connections.map((connection) => (
 					<ConnectionCard connection={connection} isDraft={false} key={connection.id} />
@@ -152,8 +152,8 @@ const ModelsList = () => {
 			</SettingBlock>
 			<AddLines />
 			{count > 0 && (
-				<div className="mt-2.5 flex items-start gap-1.5 text-[11px] text-description">
-					<Icon className="mt-px text-[11px]! opacity-70" name="chip" />
+				<div className="mt-2.5 flex items-start gap-1.5 text-[12px] text-description">
+					<Icon className="mt-px text-[12px]! opacity-70" name="chip" />
 					<span>{count === 1 ? "This model shows" : `All ${count} show`} in the composer and every selector.</span>
 				</div>
 			)}
