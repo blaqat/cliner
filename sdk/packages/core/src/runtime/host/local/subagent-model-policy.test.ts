@@ -156,11 +156,11 @@ describe("versioned subagent model policy", () => {
 		const f = fixture();
 		expect(await f.call({ model: "rogue" })).toEqual({
 			error:
-				'Model "rogue" is not allowed. Allowed: fast (high, low), parent (inherit). Omit model to use the default: fast at high.',
+				'Model "rogue" is not allowed. Allowed: Fast (high, low), parent (inherit). Omit model to use the default: Fast at high.',
 		});
 		expect(await f.call({ model: "fast", reasoningEffort: "xhigh" })).toEqual({
 			error:
-				'Reasoning effort "xhigh" is not allowed for fast. Allowed: high, low.',
+				'Reasoning effort "xhigh" is not allowed for Fast. Allowed: high, low.',
 		});
 		expect(await f.call({ profile: "fast" })).toEqual({
 			error: "The profile parameter is no longer supported. Use model instead.",
@@ -176,6 +176,65 @@ describe("versioned subagent model policy", () => {
 		expect(
 			selectSubagentModel({ model: "fast" }, p, parent).error,
 		).toBeUndefined();
+	});
+	it("takes a model by its provider's id, and refuses one that two models share", () => {
+		const p = policy();
+		expect(
+			selectSubagentModel(
+				{ model: p.models.fast!.connection.modelId },
+				p,
+				parent,
+			).profileId,
+		).toBe("fast");
+		p.models.other = { ...p.models.fast!, id: "other", name: "Other" };
+		p.allowed.push({ model: "other", levels: ["high"] });
+		expect(
+			selectSubagentModel(
+				{ model: p.models.fast!.connection.modelId },
+				p,
+				parent,
+			).error,
+		).toContain("is ambiguous");
+	});
+	it("shows the parent names, and an id only where names collide", () => {
+		const p = policy();
+		p.models["legacy-eed63e8c"] = {
+			...p.models.fast!,
+			id: "legacy-eed63e8c",
+			name: "GPT-5.4",
+		};
+		p.models["legacy-a1"] = {
+			...p.models.fast!,
+			id: "legacy-a1",
+			name: "Twin",
+		};
+		p.models["legacy-a2"] = {
+			...p.models.fast!,
+			id: "legacy-a2",
+			name: "Twin",
+		};
+		p.allowed = [
+			{ model: "legacy-eed63e8c", levels: ["high", "low"] },
+			{ model: "legacy-a1", levels: ["low"] },
+			{ model: "legacy-a2", levels: ["low"] },
+		];
+		p.default = { model: "legacy-eed63e8c", level: "low" };
+		expect(selectSubagentModel({ model: "rogue" }, p, parent).error).toBe(
+			'Model "rogue" is not allowed. Allowed: GPT-5.4 (high, low), Twin [id: legacy-a1] (low), Twin [id: legacy-a2] (low). Omit model to use the default: GPT-5.4 at low.',
+		);
+		expect(
+			selectSubagentModel(
+				{ model: "GPT-5.4", reasoningEffort: "xhigh" },
+				p,
+				parent,
+			).error,
+		).toBe(
+			'Reasoning effort "xhigh" is not allowed for GPT-5.4. Allowed: high, low.',
+		);
+		const { tool } = fixture(p);
+		expect(tool.description).toContain("Default model: GPT-5.4 at low.");
+		expect(JSON.stringify(tool.inputSchema)).toContain("GPT-5.4 (high, low)");
+		expect(tool.description).not.toContain("legacy-eed63e8c");
 	});
 	it("permits only the default when the optional allowlist is empty", () => {
 		const p = policy();
@@ -216,14 +275,17 @@ describe("versioned subagent model policy", () => {
 			undefined,
 		);
 		expect(selectSubagentModel({ model: "missing" }, p, parent).error).toBe(
-			'Model "missing" is allowed but not configured. Open Settings > Models to fix it.',
+			"A model on the allowed list is no longer set up. Open Settings > Models to fix it.",
 		);
 		expect(
-			selectSubagentModel({ model: "fast", reasoningEffort: "removed" }, p, parent)
-				.error,
+			selectSubagentModel(
+				{ model: "fast", reasoningEffort: "removed" },
+				p,
+				parent,
+			).error,
 		).toContain('Fast doesn\'t offer "removed". Open Settings > Subagents');
 		expect(selectSubagentModel({ model: "rogue" }, p, parent).error).toBe(
-			'Model "rogue" is not allowed. Allowed: fast (high, low), parent (inherit). Omit model to use the default: fast at high.',
+			'Model "rogue" is not allowed. Allowed: Fast (high, low), parent (inherit). Omit model to use the default: Fast at high.',
 		);
 	});
 	it("names a broken model only when the parent uses it, by id or name", () => {
@@ -243,8 +305,12 @@ describe("versioned subagent model policy", () => {
 		p.default = { model: "broken", level: "low" };
 		const defaultError = selectSubagentModel({}, p, parent).error!;
 		expect(defaultError).toContain(expected);
-		expect(defaultError).toContain("Pass model to use one of these instead: fast");
-		expect(selectSubagentModel({ model: "fast" }, p, parent).error).toBeUndefined();
+		expect(defaultError).toContain(
+			"Pass model to use one of these instead: Fast",
+		);
+		expect(
+			selectSubagentModel({ model: "fast" }, p, parent).error,
+		).toBeUndefined();
 	});
 	it("runs a saved parent default the model doesn't offer at its default, never higher", () => {
 		const p = policy();

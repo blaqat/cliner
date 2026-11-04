@@ -1,12 +1,14 @@
 import type { CoreSessionConfig } from "@cline/core"
-import type { ModelSettings } from "@shared/model-settings"
+import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
+import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
+import type { Mode, OpenaiReasoningEffort } from "@shared/storage/types"
 import {
 	captureTaskApiSelection,
 	cloneApiProfileConfiguration,
 	resolveApiConfigurationForTaskSelection,
 } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
-import { buildSessionConfig, type SessionConfigInput } from "./cline-session-factory"
+import { buildSessionConfig, type SessionApiSnapshot, type SessionConfigInput } from "./cline-session-factory"
 import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
 import { modelAuthDependencies } from "./model-settings/auth-dependencies"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
@@ -25,6 +27,25 @@ export interface SdkSessionConfigBuilderOptions {
 	emitHookMessage: HookMessageEmitter
 	nextMessageSelections?: NextMessageModelSelections
 	onConsecutiveMistakeLimitReached?: CoreSessionConfig["onConsecutiveMistakeLimitReached"]
+}
+
+/** Named the way the composer compares it: the upstream model and today's provider spelling. */
+function configuredModelSnapshot(
+	settings: ModelSettings,
+	pick: ModelPick,
+	mode: Mode,
+	levels: readonly ModelLevel[],
+): SessionApiSnapshot["configuredModel"] {
+	const model = settings.models.find((row) => row.id === pick.modelId)!
+	const connection = settings.connections.find((row) => row.id === model.connectionId)!
+	const level = levels.find((candidate) => candidate.id === pick.levelId)
+	return {
+		mode,
+		pick,
+		provider: toLegacyApiProvider(connection.kind === "provider" ? connection.providerId : "openai"),
+		modelId: model.upstreamId,
+		reasoningEffort: level?.request.kind === "effort" ? (level.request.value as OpenaiReasoningEffort) : undefined,
+	}
 }
 
 /**
@@ -55,14 +76,18 @@ export class SdkSessionConfigBuilder {
 			if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
 			const transient =
 				threadId === undefined ? undefined : this.options.nextMessageSelections?.admission(threadId, input.mode ?? "act")
-			const configuredProvider = await configuredProviderConfig(
-				settings,
-				transient?.pick ?? resolveThreadPick(thread, input.mode ?? "act"),
-				modelAuthDependencies(state),
-				{ state, mode: input.mode ?? "act" },
-			)
+			const mode = input.mode ?? "act"
+			const pick = transient?.pick ?? resolveThreadPick(thread, mode)
+			const configuredProvider = await configuredProviderConfig(settings, pick, modelAuthDependencies(state), {
+				state,
+				mode,
+			})
 			const config = Object.assign(await buildSessionConfig({ ...input, configuredProvider }), {
-				apiSnapshot: { selection: { ...selection, modelSelectionV1: thread }, configuration: {} },
+				apiSnapshot: {
+					selection: { ...selection, modelSelectionV1: thread },
+					configuration: {},
+					configuredModel: configuredModelSnapshot(settings, pick!, mode, configuredProvider.settingsModelLevels),
+				},
 			})
 			if (transient) Object.assign(config, { [transientAdmission]: transient.commit })
 			config.enableSpawnAgent = settings.subagents.enabled

@@ -70,6 +70,26 @@ describe("with the new store in use", () => {
 		expect(model).toMatchObject({ provider: "anthropic", modelId: "running" })
 		expect(model.customModelInfo).toBeUndefined()
 	})
+	it("a configured session keeps its model's facts for the context ring", () => {
+		const model = resolveFocusedChatModel(
+			"act",
+			{
+				...stale,
+				modelSettings: published(),
+				focusedSessionModels: {
+					act: {
+						provider: "openai",
+						modelId: "local",
+						reasoningEffort: "high",
+						pick: { modelId: "m", levelId: "high" },
+					},
+				},
+			} as FocusedChatState,
+			oldFallback,
+		)
+		expect(model).toMatchObject({ provider: "openai", modelId: "local" })
+		expect(model.customModelInfo).toMatchObject({ contextWindow: 64_000, inputPrice: 2, outputPrice: 4 })
+	})
 	it("with nothing picked, nothing is borrowed from the old selection", () => {
 		const modelSettings = published() as { settings: { roles: { chat: unknown } } }
 		modelSettings.settings.roles.chat = null

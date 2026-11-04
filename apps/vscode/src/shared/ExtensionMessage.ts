@@ -16,6 +16,7 @@ import { McpDisplayMode } from "./McpDisplayMode"
 import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
 import type { ModelProfile } from "./model-profiles"
+import type { ModelPick } from "./model-settings"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
@@ -126,6 +127,8 @@ export interface ExtensionState {
 				provider?: string
 				modelId: string
 				reasoningEffort?: ApiConfiguration["actModeReasoningEffort"]
+				/** The row and level a session on the new settings was built with. */
+				pick?: ModelPick
 			}
 		>
 	>

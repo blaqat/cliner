@@ -29,6 +29,8 @@ export interface SdkSessionConfigChangeCoordinatorOptions {
 	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Threads whose own model refused a rebuild. The send says why; an edit elsewhere isn't that thread's error. */
+	refusedRebuilds?: Set<string>
 }
 
 interface RebuildDetails {
@@ -122,11 +124,13 @@ export class SdkSessionConfigChangeCoordinator {
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
 
+		let building = false
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
+			building = true
 			const config = await this.options.sessionConfigBuilder.build(
 				{
 					cwd,
@@ -140,6 +144,8 @@ export class SdkSessionConfigChangeCoordinator {
 				},
 				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
 			)
+			building = false
+			this.options.refusedRebuilds?.delete(oldSessionId)
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -217,6 +223,13 @@ export class SdkSessionConfigChangeCoordinator {
 				`[SdkController] Session restarted for ${details.description}: ${oldSessionId} -> ${startResult.sessionId}`,
 			)
 		} catch (error) {
+			if (building && this.options.refusedRebuilds && useModelSettings(this.options.stateManager)) {
+				Logger.warn(`[SdkController] Session ${oldSessionId} keeps its current build after ${details.description}`)
+				this.options.refusedRebuilds.add(oldSessionId)
+				messages.emitSessionEvents([], { type: "status", payload: { sessionId: oldSessionId, status: "idle" } })
+				await this.options.postStateToWebview()
+				return
+			}
 			Logger.error(`[SdkController] Failed to restart session for ${details.description}:`, error)
 
 			const errorMessage: ClineMessage = {

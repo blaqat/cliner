@@ -84,9 +84,9 @@ export function resolveConfiguredPick(
 ) {
 	if (!pick) throw new Error(`No model selected. ${fix}`)
 	const model = settings.models.find((m) => m.id === pick.modelId)
-	if (!model) throw new Error(`Saved model '${pick.modelId}' is unavailable. ${fix}`)
+	if (!model) throw new Error(`The model picked here was removed. ${fix}`)
 	const connection = settings.connections.find((c) => c.id === model.connectionId)
-	if (!connection) throw new Error(`Saved connection '${model.connectionId}' is unavailable. ${fix}`)
+	if (!connection) throw new Error(`The connection for '${model.name || model.upstreamId}' was removed. ${fix}`)
 	if (model.kind === "non-chat") throw new Error(`Saved model does not support chat. ${fix}`)
 	if (model.upstreamId === MODEL_ID_NEEDED) throw new Error(`This model has no model ID. Add it in Settings > Models.`)
 	if (connection.baseUrl === BASE_URL_NEEDED)

@@ -42,6 +42,8 @@ export interface SdkProviderChangeCoordinatorOptions {
 	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection, requestedSelection?: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Shared with every other rebuild trigger: whichever was refused, the send is what says so. */
+	refusedRebuilds?: Set<string>
 }
 
 function filterModeConfiguration(resolved: ApiConfiguration, mode: Mode) {
@@ -60,9 +62,11 @@ export class SdkProviderChangeCoordinator {
 	 * Threads whose own model refused a passive rebuild, so they're still on their old build. Nothing is
 	 * said until someone sends to one: an edit elsewhere in Settings isn't that thread's error to show.
 	 */
-	private readonly refusedRebuilds = new Set<string>()
+	private readonly refusedRebuilds: Set<string>
 
-	constructor(private readonly options: SdkProviderChangeCoordinatorOptions) {}
+	constructor(private readonly options: SdkProviderChangeCoordinatorOptions) {
+		this.refusedRebuilds = options.refusedRebuilds ?? new Set()
+	}
 
 	handleApiConfigurationChanged(
 		previous: ApiConfiguration,

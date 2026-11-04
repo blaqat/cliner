@@ -552,6 +552,7 @@ describe("M11: a bad value costs that value", () => {
 			apiConfigProfiles: [good, { id: "x", name: "x" }, null],
 			profiles: [{ name: "broken" }, { id: "ok", configurationId: "good" }],
 			subagentsMaxConcurrent: 2.5,
+			subagentProfilesEnabled: true,
 			subagentAllowedModelProfileIds: "nope",
 			...assigned,
 		})

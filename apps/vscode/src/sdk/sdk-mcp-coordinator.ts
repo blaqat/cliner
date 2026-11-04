@@ -29,6 +29,8 @@ export interface SdkMcpCoordinatorOptions {
 	getMessages?: (sessionId: string) => SdkMessageCoordinator
 	getToolSnapshot?: () => Record<string, string[]>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Threads whose own model refused a rebuild. The send says why; a tool change isn't that thread's error. */
+	refusedRebuilds?: Set<string>
 }
 
 export class SdkMcpCoordinator {
@@ -130,11 +132,13 @@ export class SdkMcpCoordinator {
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
 
+		let building = false
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
+			building = true
 			const config = await this.options.sessionConfigBuilder.build(
 				{
 					cwd,
@@ -148,6 +152,8 @@ export class SdkMcpCoordinator {
 				},
 				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
 			)
+			building = false
+			this.options.refusedRebuilds?.delete(oldSessionId)
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -208,6 +214,13 @@ export class SdkMcpCoordinator {
 			await this.options.postStateToWebview()
 			Logger.log(`[SdkController] Session restarted for MCP tools: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			if (building && this.options.refusedRebuilds && useModelSettings(this.options.stateManager)) {
+				Logger.warn(`[SdkController] Session ${oldSessionId} keeps its current build after MCP tool changes`)
+				this.options.refusedRebuilds.add(oldSessionId)
+				messages.emitSessionEvents([], { type: "status", payload: { sessionId: oldSessionId, status: "idle" } })
+				await this.options.postStateToWebview()
+				return
+			}
 			Logger.error("[SdkController] Failed to restart session for MCP tools:", error)
 
 			if (this.warnedSessions.has(oldSessionId)) return

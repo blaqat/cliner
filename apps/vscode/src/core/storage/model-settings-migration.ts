@@ -218,6 +218,25 @@ function validOptions(
 	)
 }
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "host.docker.internal"])
+/** Several models share it, so no one profile's name fits: it's named for where it points. */
+function groupedConnectionName(
+	connection: Connection,
+	providers: ReadonlyArray<{ id: string; name: string }>,
+	all: readonly Connection[],
+): string {
+	const providerId = connection.kind === "provider" ? connection.providerId : undefined
+	let place = providers.find((p) => p.id === providerId)?.name ?? providerId ?? "OpenAI Compatible"
+	if (connection.baseUrl && validHttpUrl(connection.baseUrl)) {
+		const url = new URL(connection.baseUrl)
+		place = LOCAL_HOSTS.has(url.hostname) ? "Local server" : url.host
+	}
+	const taken = (name: string) => all.some((c) => c !== connection && c.name === name)
+	let name = place
+	for (let n = 2; taken(name); n++) name = `${place} ${n}`
+	return name
+}
+
 /** A failure whose message is safe to show. Anything else is reported by type alone. */
 export class ModelSettingsMigrationError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
@@ -319,6 +338,11 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const readSecretField = (sourceId: string, own: boolean, field: string) =>
 		deps.readLegacySecret(own ? `profile:${sourceId}:${field}` : field) || undefined
 
+	// The list after moving is what the person set up. A saved configuration already covers its provider, so the
+	// shared stores add nothing for it, and their extra models were never picked by anyone here.
+	const savedProviders = new Set(
+		savedConfigurations.flatMap((c) => (text(c.provider) ? [toSdkProviderId(String(c.provider))] : [])),
+	)
 	let sdkDefault: string | undefined
 	const sdkProviders = sdkInput.providers === undefined ? undefined : record(sdkInput.providers)
 	if (sdkInput.providers !== undefined && !sdkProviders) note("dropped", "settings", "providers.json")
@@ -328,7 +352,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			note("dropped", "settings", `providers.json: ${provider}`)
 			continue
 		}
-		if (!text(saved.model)) continue
+		if (!text(saved.model) || savedProviders.has(toSdkProviderId(provider))) continue
 		const sourceId = `sdk-${provider}`
 		configurations.push({
 			id: sourceId,
@@ -343,24 +367,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const sdkModelsFile = sdkInput.models === undefined ? undefined : record(sdkInput.models)
 	if (sdkInput.models !== undefined && !sdkModelsFile) note("dropped", "settings", "models.json")
 	const sdkModels = record(sdkModelsFile?.providers) ?? {}
-	for (const [provider, entry] of Object.entries(sdkModels)) {
-		const providerEntry = record(entry)
-		if (!providerEntry) {
-			note("dropped", "settings", `models.json: ${provider}`)
-			continue
-		}
-		for (const modelId of Object.keys(record(providerEntry.models) ?? {})) {
-			if (configurations.some((c) => toSdkProviderId(String(c.provider)) === provider && c.modelId === modelId)) continue
-			configurations.push({
-				id: `sdk-model-${provider}-${modelId}`,
-				name: modelId,
-				provider,
-				modelId,
-				sdkAccount: true,
-				options: { openAiBaseUrl: record(providerEntry.provider)?.baseUrl },
-			})
-		}
-	}
+	for (const [provider, entry] of Object.entries(sdkModels))
+		if (!record(entry)) note("dropped", "settings", `models.json: ${provider}`)
 	// With no saved configurations legacy would capture each mode's flat selection into one, so it becomes a row.
 	// Once any exist the flat values only mirror an assignment, and a row for them would be clutter.
 	const flat: Partial<Record<"plan" | "act", string>> = {}
@@ -400,6 +408,12 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			})
 		}
 	}
+	// The SDK mirrors the flat selection into providers.json, so a provider with its own flat row is already covered.
+	const flatProviders = new Set(configurations.filter((c) => c.mode).map((c) => toSdkProviderId(String(c.provider))))
+	const usedByFlat = new Set(Object.values(flat))
+	const importedConfigurations = configurations.filter(
+		(c) => c.sdkAccount !== true || usedByFlat.has(String(c.id)) || !flatProviders.has(toSdkProviderId(String(c.provider))),
+	)
 
 	const settings = createDefaultModelSettings()
 	const journal: ModelSettingsMigration = {
@@ -414,15 +428,23 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const picks: Record<string, ModelPick> = {}
 	const rowLevels = new Map<string, ModelLevel[]>()
 	const gateway = createGateway()
-	const levelOn = (modelId: string, level: unknown): string => {
+	const lowered = new Set<string>()
+	const levelOn = (modelId: string, level: unknown, source: string): string => {
 		const wanted = text(level)
 		if (!wanted || wanted === "none") return "default"
-		return closestOfferedLevel(rowLevels.get(modelId) ?? [], wanted)
+		const offered = closestOfferedLevel(rowLevels.get(modelId) ?? [], wanted)
+		if (offered !== wanted && !lowered.has(modelId)) {
+			lowered.add(modelId)
+			const connectionId = settings.models.find((m) => m.id === modelId)?.connectionId
+			note("normalized", "level", source, { modelId, connectionId })
+		}
+		return offered
 	}
 
 	const addConfiguration = (config: RecordValue, index: number) => {
 		const provider = text(config.provider)
-		const label = text(config.name) ?? text(config.id) ?? `Saved configuration ${index + 1}`
+		const flatLabel = config.mode === "plan" ? "Ask" : config.mode === "act" ? "Chat" : undefined
+		const label = text(config.name) ?? flatLabel ?? text(config.id) ?? `Saved configuration ${index + 1}`
 		if (!provider) {
 			note("dropped", "provider", label)
 			return
@@ -446,9 +468,20 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		if (!savedModelId) flag("normalized", "modelId")
 		if (config.options !== undefined && !record(config.options)) flag("dropped", "options")
 		const mode = config.mode === "plan" ? "plan" : "act"
+		// A saved configuration is captured from one mode and runs in either, so legacy applies either prefix
+		// (apiProfiles.ts). The editor only ever writes the plan one. A flat row is one mode's own selection.
+		const prefixes = config.mode ? [`${mode}Mode`] : ["planMode", "actMode"]
 		const normalized = { ...options }
-		for (const [key, value] of Object.entries(options))
-			if (key.startsWith(`${mode}Mode`)) normalized[`actMode${key.slice(`${mode}Mode`.length)}`] = value
+		for (const [key, value] of Object.entries(options)) {
+			const prefix = prefixes.find((p) => key.startsWith(p))
+			if (prefix && value !== undefined) normalized[`actMode${key.slice(prefix.length)}`] = value
+		}
+		// The flat store keeps every provider's model info side by side. Only this provider's describes this row.
+		if (config.mode) {
+			const ownInfo = getProviderModelIdKey(provider, "act").replace(/Id$/, "Info")
+			for (const key of Object.keys(normalized))
+				if (key.startsWith("actMode") && key.endsWith("ModelInfo") && key !== ownInfo) delete normalized[key]
+		}
 
 		let baseUrl: string | null = null
 		if (savedUrl && validHttpUrl(savedUrl)) {
@@ -546,7 +579,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const sdkEntry = record(sdkModels[sdkProvider])
 		const sdkInfo = record(record(sdkEntry?.models)?.[upstreamId])
 		const sdkValues = sdkInfo ? sdkModelValues(sdkInfo, (f) => flag("normalized", f)) : {}
-		const legacyValues = legacyModelValues(options, mode, (f) => flag("normalized", f))
+		const legacyValues = legacyModelValues(normalized, "act", (f) => flag("normalized", f))
 		const effort = text(config.reasoningEffort)
 		const profileEfforts = profiles.filter((p) => p.configurationId === sourceId).map((p) => text(p.reasoningEffort))
 		const thinkingLevel = text(options[`gemini${mode === "plan" ? "Plan" : "Act"}ModeThinkingLevel`])
@@ -576,8 +609,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				source: "legacy",
 				...(sdkInfo ? { sdk: withoutSecretNames(sdkInfo) as Record<string, Json> } : {}),
 				modelInfo: withoutSecretNames(
-					Object.entries(options).find(
-						([k, v]) => k.startsWith(`${mode}Mode`) && k.endsWith("ModelInfo") && v && typeof v === "object",
+					Object.entries(normalized).find(
+						([k, v]) => k.startsWith("actMode") && k.endsWith("ModelInfo") && v && typeof v === "object",
 					)?.[1] ?? {},
 				) as Record<string, Json>,
 			},
@@ -600,9 +633,9 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		settings.models.push(row)
 		rowLevels.set(id, levels)
 		journal.configurationModels[sourceId] ??= id
-		picks[sourceId] = { modelId: id, levelId: levelOn(id, effort ?? thinkingLevel) }
+		picks[sourceId] = { modelId: id, levelId: levelOn(id, effort ?? thinkingLevel, label) }
 	}
-	configurations.forEach(addConfiguration)
+	importedConfigurations.forEach(addConfiguration)
 
 	for (const [index, p] of profiles.entries()) {
 		const id = text(p.id)
@@ -613,16 +646,20 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		}
 		const modelId = journal.configurationModels[configurationId]
 		journal.profilePicks[id] ??= modelId
-			? { modelId, levelId: levelOn(modelId, p.reasoningEffort) }
+			? { modelId, levelId: levelOn(modelId, p.reasoningEffort, text(p.name) ?? id) }
 			: {
 					modelId: `missing:${configurationId}`,
 					levelId: !p.reasoningEffort || p.reasoningEffort === "none" ? "default" : String(p.reasoningEffort),
 				}
 	}
-	const pick = (ref: unknown): ModelPick | null =>
-		typeof ref === "string"
-			? (journal.profilePicks[ref] ?? picks[ref] ?? { modelId: `missing:${ref}`, levelId: "default" })
-			: null
+	/** A reference to something that's gone falls back, as legacy does. It's never a dead row in every selector. */
+	const pick = (ref: unknown, field: string, source: string): ModelPick | null => {
+		if (typeof ref !== "string") return null
+		const found = journal.profilePicks[ref] ?? picks[ref]
+		if (found && !found.modelId.startsWith("missing:")) return found
+		if (!issues.some((issue) => issue.field === field && issue.source === source)) note("dropped", field, source)
+		return null
+	}
 	const savedIds = new Set(savedConfigurations.map((c) => text(c.id)).filter((id) => id && picks[id]))
 	const healedConfiguration = (
 		savedConfigurations.find((c) => savedIds.has(text(c.id)) && isAllowedApiProvider(text(c.provider))) ??
@@ -645,16 +682,16 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		const assigned = text(raw[mode === "plan" ? "askProfileId" : "actProfileId"])
 		if (assigned && savedIds.has(assigned)) {
 			const modelId = picks[assigned].modelId
-			return { pick: { modelId, levelId: levelOn(modelId, effort) }, explicit }
+			return { pick: { modelId, levelId: levelOn(modelId, effort, mode === "plan" ? "Ask" : "Chat") }, explicit }
 		}
 		if (healedConfiguration) return { pick: picks[String(healedConfiguration)], explicit: false }
 		const flatId = flat[mode]
 		if (flatId && picks[flatId]) {
 			const modelId = picks[flatId].modelId
-			return { pick: { modelId, levelId: levelOn(modelId, effort) }, explicit }
+			return { pick: { modelId, levelId: levelOn(modelId, effort, mode === "plan" ? "Ask" : "Chat") }, explicit }
 		}
 		if (sdkDefault && picks[sdkDefault]) return { pick: picks[sdkDefault], explicit: false }
-		return { pick: pick(defaultRef ?? assigned), explicit: false }
+		return { pick: pick(defaultRef ?? assigned, "model", mode === "plan" ? "Ask" : "Chat"), explicit: false }
 	}
 	const chat = effectiveSelection("act")
 	const ask = effectiveSelection("plan")
@@ -663,8 +700,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		!!ask.pick &&
 		(ask.pick.modelId !== chat.pick?.modelId || (ask.pick.levelId !== chat.pick.levelId && ask.explicit && chat.explicit))
 	settings.roles.ask = { enabled: differentAsk, pick: differentAsk ? ask.pick : chat.pick }
-	const titles = pick(raw.threadTitlesModelProfileId ?? raw.threadTitlesProfileId)
-	const generate = pick(raw.walkthroughGenerateModelProfileId ?? raw.walkthroughGenerateProfileId)
+	const titles = pick(raw.threadTitlesModelProfileId ?? raw.threadTitlesProfileId, "model", "Background text")
+	const generate = pick(raw.walkthroughGenerateModelProfileId ?? raw.walkthroughGenerateProfileId, "model", "Background text")
 	settings.roles.background = {
 		pick: titles ?? generate ?? settings.roles.chat,
 		titlesEnabled: raw.threadTitlesEnabled === true,
@@ -685,67 +722,27 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		web: raw.subagentsAllowWeb !== false,
 		mcp: raw.subagentsAllowMcp !== false,
 	}
-	const subagent = pick(raw.subagentDefaultModelProfileId ?? raw.subagentDefaultProfileId)
-	if (raw.subagentProfilesEnabled === true && subagent) settings.roles.subagents = { kind: "model", pick: subagent }
-	else if (text(raw.subagentReasoningEffort) && raw.subagentReasoningEffort !== "none")
+	// Legacy ignores all of the old subagent model settings while this is off (subagent-profiles.ts).
+	const subagentModels = raw.subagentProfilesEnabled === true
+	const subagent = subagentModels
+		? pick(raw.subagentDefaultModelProfileId ?? raw.subagentDefaultProfileId, "default model", "Subagents")
+		: null
+	if (subagent) settings.roles.subagents = { kind: "model", pick: subagent }
+	else if (subagentModels && text(raw.subagentReasoningEffort) && raw.subagentReasoningEffort !== "none")
 		settings.roles.subagents = { kind: "thread", level: String(raw.subagentReasoningEffort) }
-	const allowed = raw.subagentAllowedModelProfileIds ?? raw.subagentAllowedProfileIds ?? []
+	const allowed = subagentModels ? (raw.subagentAllowedModelProfileIds ?? raw.subagentAllowedProfileIds ?? []) : []
 	if (!Array.isArray(allowed)) note("dropped", "subagentAllowedModelProfileIds", "Subagents")
 	for (const ref of Array.isArray(allowed) ? allowed : []) {
 		if (ref === "parent") {
 			settings.subagents.allowed.push({ kind: "thread", levels: ["inherit"] })
 			continue
 		}
-		const selected = pick(ref)
+		const selected = pick(ref, "subagentAllowedModelProfileIds", "Subagents")
 		if (!selected) continue
 		const entry = settings.subagents.allowed.find((a) => a.kind === "model" && a.modelId === selected.modelId)
 		if (entry) {
 			if (!entry.levels.includes(selected.levelId)) entry.levels.push(selected.levelId)
 		} else settings.subagents.allowed.push({ kind: "model", modelId: selected.modelId, levels: [selected.levelId] })
-	}
-	// Only roles need a row to point at. An old thread naming a deleted profile stays an explicit unavailable pick.
-	const referenced = [
-		settings.roles.chat,
-		settings.roles.ask.pick,
-		settings.roles.background.pick,
-		...Object.values(settings.roles.background.overrides),
-		...(settings.roles.subagents.kind === "model" ? [settings.roles.subagents.pick] : []),
-		...settings.subagents.allowed.flatMap((a) =>
-			a.kind === "model" ? a.levels.map((levelId) => ({ modelId: a.modelId, levelId })) : [],
-		),
-	]
-	for (const p of referenced) {
-		if (!p || settings.models.some((m) => m.id === p.modelId)) continue
-		const connectionId = `unavailable-${digest(p.modelId).slice(0, 24)}`
-		settings.connections.push({
-			id: connectionId,
-			name: "Unavailable legacy connection",
-			kind: "provider",
-			providerId: "unavailable-legacy",
-			baseUrl: null,
-			auth: { kind: "keychain", secretRef: `settings:v1:connection:${connectionId}:apiKey` },
-			headers: [],
-			requestTimeoutMs: null,
-			defaults: {},
-			options: {},
-			secretRefs: {},
-		})
-		settings.models.push({
-			id: p.modelId,
-			name: "Unavailable saved model",
-			upstreamId: p.modelId,
-			connectionId,
-			kind: "unknown",
-			providerOptions: {},
-			overrides: {
-				...(p.levelId !== "default"
-					? {
-							reasoning: "yes",
-							levels: [{ id: p.levelId, label: p.levelId, rank: 0, request: { kind: "effort", value: p.levelId } }],
-						}
-					: {}),
-			},
-		})
 	}
 	// Compare resolved credentials only in memory. Missing keys must never establish identity.
 	const readSecret = (ref: string) => copies.find(([key]) => key === ref)?.[1]
@@ -765,6 +762,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			options: c.kind === "provider" ? c.options : { apiFormat: c.apiFormat, azureApiVersion: c.azureApiVersion },
 		})
 	}
+	const mergedAway: string[] = []
 	const groups = new Map<string, Connection>()
 	for (const connection of [...settings.connections]) {
 		const key = identity(connection)
@@ -777,10 +775,12 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		for (const model of settings.models) if (model.connectionId === connection.id) model.connectionId = prior.id
 		for (const issue of issues) if (issue.connectionId === connection.id) issue.connectionId = prior.id
 		settings.connections = settings.connections.filter((c) => c.id !== connection.id)
+		mergedAway.push(`settings:v1:connection:${connection.id}:`)
 	}
 	for (const connection of settings.connections) {
 		const rows = settings.models.filter((m) => m.connectionId === connection.id)
 		if (rows.length < 2) continue
+		connection.name = groupedConnectionName(connection, gateway.listProviders(), settings.connections)
 		for (const key of Object.keys(rows[0].overrides) as Array<keyof (typeof rows)[0]["overrides"]>) {
 			const value = rows[0].overrides[key]
 			if (value === undefined || !rows.every((m) => stable(m.overrides[key]) === stable(value))) continue
@@ -802,7 +802,8 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	await state.update("modelSettingsMigration", journal)
 	if (copies.length && !deps.secrets)
 		throw new ModelSettingsMigrationError("Connection keychain is unavailable; migration will retry")
-	for (const [ref, value] of copies) {
+	// A connection merged away has no owner to remove or rotate its keys, and the one it merged into holds the same.
+	for (const [ref, value] of copies.filter(([key]) => !mergedAway.some((prefix) => key.startsWith(prefix)))) {
 		try {
 			await deps.secrets!.set(ref, value)
 		} catch (error) {

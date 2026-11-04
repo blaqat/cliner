@@ -13,6 +13,37 @@ import type {
 import type { SpawnAgentInput } from "../../../extensions/tools/team/spawn-agent-tool";
 import type { SubagentProfileSelection } from "./spawn-tool";
 
+const policyModelName = (policy: SubagentModelPolicyV1, id: string): string =>
+	policy.models[id]?.name ?? policy.unavailable?.[id]?.name ?? id;
+
+/**
+ * What the parent reads and can pass back. An internal id says nothing to it, so a model reads as its name.
+ * The id only joins a name two models share, since it's then the only thing that tells them apart.
+ */
+export function describeAllowedModels(
+	policy: SubagentModelPolicyV1,
+	entries: SubagentModelPolicyV1["allowed"] = policy.allowed,
+): string {
+	const names = [
+		...Object.values(policy.models).map((m) => m.name),
+		...Object.values(policy.unavailable ?? {}).map((m) => m.name),
+	];
+	return entries
+		.map((e) => {
+			const name = policyModelName(policy, e.model);
+			const shared = names.filter((n) => n === name).length > 1;
+			return `${shared ? `${name} [id: ${e.model}]` : name} (${e.levels.join(", ")})`;
+		})
+		.join(", ");
+}
+
+/** The default as the parent knows it: by name, not by id. */
+export function describeDefaultSubagentModel(
+	policy: SubagentModelPolicyV1,
+): string {
+	return `${policyModelName(policy, policy.default.model)} at ${policy.default.level}`;
+}
+
 export function selectSubagentModel(
 	input: Pick<SpawnAgentInput, "model" | "profile" | "reasoningEffort">,
 	policy: SubagentModelPolicyV1,
@@ -22,7 +53,7 @@ export function selectSubagentModel(
 		const broken = policy.unavailable?.[id];
 		return broken
 			? `Model "${broken.name}" can't run: ${broken.reason}`
-			: `Model "${id}" is allowed but not configured. Open Settings > Models to fix it.`;
+			: "A model on the allowed list is no longer set up. Open Settings > Models to fix it.";
 	};
 	const levelUnavailable = (name: string, level: string) =>
 		`Saved level is unavailable: ${name} doesn't offer "${level}". Open Settings > Subagents to fix it.`;
@@ -237,7 +268,8 @@ export function selectSubagentModel(
 				return levels.length ? [{ ...entry, levels }] : [];
 			});
 		const describe = (entries: SubagentModelPolicyV1["allowed"]) =>
-			entries.map((e) => `${e.model} (${e.levels.join(", ")})`).join(", ");
+			describeAllowedModels(policy, entries);
+		const nameOf = (modelId: string) => policyModelName(policy, modelId);
 		const explicit =
 			input.model !== undefined || input.reasoningEffort !== undefined;
 		// A stale default or allowed entry only affects a call that asks for it.
@@ -279,13 +311,21 @@ export function selectSubagentModel(
 			!(id in (policy.unavailable ?? {})) &&
 			id !== "parent"
 		) {
+			// A model can be asked for by its name or the id its provider knows it by.
 			const named = [
-				...Object.values(policy.models),
-				...Object.entries(policy.unavailable ?? {}).map(([modelId, broken]) => ({
-					id: modelId,
-					name: broken.name,
+				...Object.values(policy.models).map((m) => ({
+					id: m.id,
+					name: m.name,
+					upstream: m.connection.modelId,
 				})),
-			].filter((m) => m.name === id);
+				...Object.entries(policy.unavailable ?? {}).map(
+					([modelId, broken]) => ({
+						id: modelId,
+						name: broken.name,
+						upstream: undefined,
+					}),
+				),
+			].filter((m) => m.name === id || m.upstream === id);
 			if (named.length > 1)
 				return {
 					error: `Model name "${id}" is ambiguous. Pass the model id: ${named.map((m) => `${m.name} (${m.id})`).join(", ")}.`,
@@ -295,7 +335,7 @@ export function selectSubagentModel(
 		const entry = allowed.find((e) => e.model === id);
 		if (!entry)
 			return {
-				error: `Model "${input.model}" is not allowed. Allowed: ${describe(usable(allowed))}. Omit model to use the default: ${policy.default.model} at ${policy.default.level}.`,
+				error: `Model "${input.model}" is not allowed. Allowed: ${describe(usable(allowed))}. Omit model to use the default: ${describeDefaultSubagentModel(policy)}.`,
 			};
 		if (id !== "parent" && !policy.models[id])
 			return { error: unavailable(id) };
@@ -311,7 +351,8 @@ export function selectSubagentModel(
 		const rank = (level: string): number => {
 			if (id !== "parent")
 				return (
-					policy.models[id]!.levels.find((l) => l.id === level)?.rank ?? Infinity
+					policy.models[id]!.levels.find((l) => l.id === level)?.rank ??
+					Infinity
 				);
 			const inherited = parent.providerConfig?.settingsRequestIntent?.level;
 			const runtimeLevel = parent.providerConfig?.settingsModelLevels?.find(
@@ -338,13 +379,13 @@ export function selectSubagentModel(
 		if (input.reasoningEffort !== undefined) {
 			if (!levels.includes(input.reasoningEffort))
 				return {
-					error: `Reasoning effort "${input.reasoningEffort}" is not allowed for ${id}. Allowed: ${entry.levels.join(", ")}.`,
+					error: `Reasoning effort "${input.reasoningEffort}" is not allowed for ${nameOf(id)}. Allowed: ${entry.levels.join(", ")}.`,
 				};
 			return resolve(id, input.reasoningEffort);
 		}
 		// Named with no level: the lowest allowed one this model still offers.
 		let lastError: unknown = new Error(
-			`No level is allowed for ${id}. Open Settings > Subagents to fix it.`,
+			`No level is allowed for ${nameOf(id)}. Open Settings > Subagents to fix it.`,
 		);
 		for (const level of levels) {
 			try {

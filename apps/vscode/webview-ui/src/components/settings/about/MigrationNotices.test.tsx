@@ -41,6 +41,13 @@ describe("a flagged row", () => {
 		expect(migrationIssueRow(issue({}), settings("real", "https://a.test"))).toBeUndefined()
 		expect(migrationIssueRow(issue({ field: "baseUrl" }), settings("real", "https://a.test"))).toBeUndefined()
 	})
+	it("says a lowered reasoning level moved, and links to the model's levels", () => {
+		expect(migrationIssueRow(issue({ field: "level" }), settings("real", "https://a.test"))).toEqual({
+			text: "Local: the saved reasoning level isn't offered by this model, so it moved to the closest lower one.",
+			action: "Change it",
+			target: "model:m:levels",
+		})
+	})
 	it("goes once its row is removed", () => {
 		expect(migrationIssueRow(issue({ modelId: "gone" }), settings("real", "https://a.test"))).toBeUndefined()
 	})

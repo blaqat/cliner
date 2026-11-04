@@ -81,7 +81,7 @@ import {
 	resolveApiConfigurationForTaskSelection,
 	resolveTaskApiSelection,
 } from "@/core/controller/models/apiProfiles"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
+import { createTaskApiModelShim, focusedModelsFromSnapshot } from "@/core/controller/models/taskApiModel"
 import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
@@ -354,6 +354,7 @@ export class Controller {
 	private mcpTools: SdkMcpCoordinator
 	private sessionConfigChanges: SdkSessionConfigChangeCoordinator
 	private providerChanges: SdkProviderChangeCoordinator
+	private readonly refusedRebuilds = new Set<string>()
 	private followups: SdkFollowupCoordinator
 	private taskControl: SdkTaskControlCoordinator
 	private taskStart: SdkTaskStartCoordinator
@@ -1008,6 +1009,7 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
 			getMessages: (id) => this.getTaskSessionContext(id).messages,
@@ -1024,6 +1026,7 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.providerChanges = new SdkProviderChangeCoordinator({
 			stateManager: this.stateManager,
@@ -1045,6 +1048,7 @@ export class Controller {
 				this.commitTaskApiSelection(taskId, selection, requestedSelection),
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.followups = new SdkFollowupCoordinator({
 			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
@@ -2091,7 +2095,8 @@ export class Controller {
 			completeScriptApproval: (request, approved, trust) => this.scripts.completeApproval(request, approved, trust),
 		})
 		const events = new SdkSessionEventCoordinator({
-			onRuntimeActivity: () => {
+			onRuntimeActivity: (event) => {
+				watchdog.observe(event)
 				if (hasActiveTurn()) watchdog.activity()
 			},
 			onTurnComplete: () => this.emitNotebookChanges(id),
@@ -5029,20 +5034,7 @@ export class Controller {
 				pendingSelection ??
 				liveSelection ??
 				(snapshotTask ? this.taskSessions.get(snapshotTask.taskId)?.apiSelection : this.draftApiSelection)
-			const liveConfiguration = snapshotSession?.apiSnapshot?.configuration
-			const focusedSessionModels: ExtensionState["focusedSessionModels"] = liveConfiguration
-				? Object.fromEntries(
-						(["plan", "act"] as const).map((mode) => [
-							mode,
-							{
-								profileId: mode === "plan" ? liveSelection?.askProfileId : liveSelection?.actProfileId,
-								provider: liveConfiguration[`${mode}ModeApiProvider`],
-								modelId: resolveActiveModelIdFromApiConfiguration(liveConfiguration, mode),
-								reasoningEffort: liveConfiguration[`${mode}ModeReasoningEffort`],
-							},
-						]),
-					)
-				: undefined
+			const focusedSessionModels = focusedModelsFromSnapshot(snapshotSession?.apiSnapshot, liveSelection)
 			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
 			const focusedOwner = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : snapshotTask?.taskId
 			const ownerInteractions = focusedOwner ? this.taskSessions.get(focusedOwner)?.interactions : undefined

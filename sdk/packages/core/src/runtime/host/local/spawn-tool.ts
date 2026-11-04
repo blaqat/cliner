@@ -1,4 +1,8 @@
-import { selectSubagentModel } from "./subagent-model-policy";
+import {
+	describeAllowedModels,
+	describeDefaultSubagentModel,
+	selectSubagentModel,
+} from "./subagent-model-policy";
 import { SUBAGENT_SPAWN_ERROR } from "../../../extensions/tools/team/subagent-policy";
 import {
 	AsyncAgentRegistry,
@@ -684,12 +688,12 @@ export function createSessionSpawnTool(
 				delete inputSchema.properties.reasoningEffort;
 			} else {
 				inputSchema.properties.model!.description =
-					`Allowed models and level IDs: ${policy.allowed.map((e) => `${e.model} (${e.levels.join(", ")})`).join(", ")}. Default: ${policy.default.model} at ${policy.default.level}.`;
+					`Allowed models and level IDs: ${describeAllowedModels(policy)}. Pass the name, or the id when one is shown. Default: ${describeDefaultSubagentModel(policy)}.`;
 				inputSchema.properties.reasoningEffort!.description =
 					"Allowed level ID for the chosen model. Omit for its lowest allowed level.";
 			}
 		}
-		description = `Spawn a subagent. ${policy.blocking === "always" ? "Waits for its result with no overall deadline." : policy.blocking === "never" ? "Returns immediately; results arrive as messages. Blocking is disabled." : "Use wait=true to wait for its result."} Default model: ${policy.default.model} at ${policy.default.level}. ${inputSchema.properties?.model?.description ?? "Omit model and reasoningEffort to use the default."}`;
+		description = `Spawn a subagent. ${policy.blocking === "always" ? "Waits for its result with no overall deadline." : policy.blocking === "never" ? "Returns immediately; results arrive as messages. Blocking is disabled." : "Use wait=true to wait for its result."} Default model: ${describeDefaultSubagentModel(policy)}. ${inputSchema.properties?.model?.description ?? "Omit model and reasoningEffort to use the default."}`;
 	} else if (profilesEnabled) {
 		if (inputSchema.properties) delete inputSchema.properties.model;
 		if (profileSchema) {

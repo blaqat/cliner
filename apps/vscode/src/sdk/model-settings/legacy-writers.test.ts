@@ -1,4 +1,10 @@
-import { createCompatibleConnection, createDefaultModelSettings, type ModelSettings } from "@shared/model-settings"
+import {
+	createCompatibleConnection,
+	createDefaultModelSettings,
+	type ModelSettings,
+	ModelSettingsMigrationSchema,
+	ModelSettingsSchema,
+} from "@shared/model-settings"
 import { Empty } from "@shared/proto/cline/common"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { assignApiProfile } from "@/core/controller/models/assignApiProfile"
@@ -12,6 +18,7 @@ import { updateApiConfigurationProto } from "@/core/controller/models/updateApiC
 import { writeProviderConfig } from "@/core/controller/models/writeProviderConfig"
 import { resetState } from "@/core/controller/state/resetState"
 import { updateSettings } from "@/core/controller/state/updateSettings"
+import { migrateModelSettings } from "@/core/storage/model-settings-migration"
 import { resetGlobalState } from "@/core/storage/utils/state-helpers"
 import { AuthService as SdkAuthService } from "../auth-service"
 import { Controller as SdkController } from "../SdkController"
@@ -41,6 +48,8 @@ function fixture(status: "complete" | "prepared" = "complete") {
 	const state = {
 		...written,
 		connectionSecrets,
+		listSecretStorageKeys: () => [] as string[],
+		setSecretsForKeys: vi.fn(async (_entries: Record<string, string | undefined>) => {}),
 		getApiConfiguration: () => ({}),
 		getGlobalSettingsKey: () => "act",
 		getGlobalStateKey: (key: string) => (key === "modelSettings" ? settings : global[key]),
@@ -306,6 +315,44 @@ describe("reset", () => {
 		expect(f.written.setGlobalState).toHaveBeenCalledWith("modelSettingsMigration", undefined)
 		expect(f.written.setGlobalState).toHaveBeenCalledWith("modelSettingsBackupV1", undefined)
 		expect(f.state.reInitialize).toHaveBeenCalled()
+	})
+	it("clears the saved configurations' own keys", async () => {
+		const f = await stored()
+		f.state.listSecretStorageKeys = () => ["profile:a:openAiApiKey", "profile:b:apiKey", "openAiApiKey"]
+		await resetGlobalState()
+		expect(f.state.setSecretsForKeys).toHaveBeenCalledWith({
+			"profile:a:openAiApiKey": undefined,
+			"profile:b:apiKey": undefined,
+		})
+	})
+	it("leaves a clean first run: moving doesn't run again and bring the shared stores back", async () => {
+		const f = await stored()
+		await resetGlobalState()
+		const data: Record<string, unknown> = {}
+		for (const [key, value] of f.written.setGlobalState.mock.calls as Array<[string, unknown]>) data[key] = value
+		expect(Object.keys(data)).toContain("apiConfigProfiles")
+		const sdkInput = vi.fn(async () => ({
+			providers: { lastUsedProvider: "anthropic", providers: { anthropic: { settings: { model: "claude" } } } },
+		}))
+		const result = await migrateModelSettings({
+			state: {
+				keys: () => Object.keys(data),
+				get: (key: string) => data[key],
+				update: async (key: string, value: unknown) => {
+					data[key] = value
+				},
+			} as never,
+			legacySecretKeys: [],
+			readLegacySecret: () => undefined,
+			sdkInput,
+		})
+		expect(result).toBe("complete")
+		expect(sdkInput).not.toHaveBeenCalled()
+		const settings = data.modelSettings as ModelSettings
+		expect(ModelSettingsSchema.parse(settings).models).toEqual([])
+		expect(settings.connections).toEqual([])
+		expect(settings.roles.chat).toBeNull()
+		expect(ModelSettingsMigrationSchema.safeParse(data.modelSettingsMigration).success).toBe(true)
 	})
 	it("keeps the settings when the keychain refuses, so it can be retried", async () => {
 		const f = await stored()

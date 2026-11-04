@@ -218,10 +218,13 @@ export async function mutateSettings(
 		if (operation === "deleteConnection") {
 			const { connectionId } = schemas.deleteConnection.parse(parsed)
 			const connection = settings.connections.find((c) => c.id === connectionId)
-			const refs = connection ? connectionSecretRefs(connection) : []
-			if (refs.length) {
-				const store = controller.stateManager.connectionSecrets
-				if (!store) throw new Error("Connection keychain is unavailable")
+			const named = connection ? connectionSecretRefs(connection) : []
+			const store = controller.stateManager.connectionSecrets
+			if (named.length && !store) throw new Error("Connection keychain is unavailable")
+			// Everything under this connection goes with it, not only what it still names.
+			const prefix = `settings:v1:connection:${connectionId}:`
+			const refs = [...new Set([...named, ...((await store?.list()) ?? []).filter((ref) => ref.startsWith(prefix))])]
+			if (refs.length && store) {
 				const previous = new Map<string, string | undefined>()
 				rollback = async () => {
 					for (const [ref, value] of previous) if (value !== undefined) await store.set(ref, value)

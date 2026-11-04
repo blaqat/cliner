@@ -54,6 +54,19 @@ function fixture() {
 }
 
 describe("new settings host mutations", () => {
+	it("removing a connection clears every key under it, including ones it no longer names", async () => {
+		const f = fixture()
+		const connection = createCompatibleConnection("c")
+		await f.call("saveConnection", {
+			expectedRevision: 0,
+			connection,
+			secrets: [{ field: "apiKey", operation: "set", value: "named" }],
+		})
+		await f.connectionSecrets.set("settings:v1:connection:c:header-0", "left behind")
+		await f.connectionSecrets.set("settings:v1:connection:other:apiKey", "someone else's")
+		await f.call("deleteConnection", { expectedRevision: 1, connectionId: "c" })
+		expect(await f.connectionSecrets.list()).toEqual(["settings:v1:connection:other:apiKey"])
+	})
 	it("reads defaults without writing and returns no secret values", async () => {
 		const f = fixture()
 		expect((await readModelSettingsState(f.state as never)).settings.revision).toBe(0)

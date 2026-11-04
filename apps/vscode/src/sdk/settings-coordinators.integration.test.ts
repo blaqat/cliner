@@ -2,6 +2,7 @@ import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ModelSettings } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
 import { mutateSettings } from "@/core/controller/models/modelSettingsRpc"
+import { focusedModelsFromSnapshot } from "@/core/controller/models/taskApiModel"
 import { getSessionApiSnapshot } from "./cline-session-factory"
 import { InMemoryConnectionSecretStore } from "./model-settings/connection-secret-store"
 import { NextMessageModelSelections } from "./model-settings-resolver"
@@ -666,7 +667,7 @@ describe("editing settings under a live session", () => {
 		const f = live()
 		const config = await f.build()
 		f.settings.models = f.settings.models.filter((m) => m.id !== "act")
-		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/unavailable.*Open Settings > Models/)
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/was removed.*Open Settings > Models/)
 	})
 
 	it("spawn_agent applies a subagent policy edit to the running session instead of refusing", async () => {
@@ -883,6 +884,119 @@ describe("a thread whose own model is broken, when something else is edited", ()
 		await new Promise((resolve) => setImmediate(resolve))
 		await new Promise((resolve) => setImmediate(resolve))
 		expect(f.options.messages.appendAndEmit).toHaveBeenCalledOnce()
+	})
+})
+
+describe("another rebuild trigger on a thread whose own model is broken", () => {
+	const brokenOn = (reason: string) => {
+		const f = fixture()
+		const refusedRebuilds = new Set<string>()
+		const options = { ...f.options, refusedRebuilds }
+		const pinned = { modelSelectionV1: stable }
+		f.session.apiSnapshot = { selection: pinned as never, configuration: {} }
+		f.options.getTaskApiSelection = () => pinned as never
+		f.settings.models.find((m) => m.id === "act")!.upstreamId = "model-id-needed"
+		const run = async () => {
+			if (reason === "mcp") {
+				await new SdkMcpCoordinator(options as never).restartSessionForMcpTools("thread")
+				return
+			}
+			const coordinator = new SdkSessionConfigChangeCoordinator(options as never)
+			if (reason === "checkpoints") coordinator.handleCheckpointsSettingChanged(false, true)
+			if (reason === "subagents") coordinator.handleSubagentSettingsChanged()
+			if (reason === "terminal") coordinator.handleTerminalExecutionModeChanged("backgroundExec", "vscodeTerminal")
+			if (reason === "taskGroup") coordinator.handleTaskGroupChanged("thread")
+			await f.drain()
+		}
+		return { ...f, options, refusedRebuilds, run }
+	}
+	const triggers = ["checkpoints", "subagents", "terminal", "taskGroup", "mcp"]
+
+	it.each(triggers)("%s shows nothing and leaves the thread idle", async (reason) => {
+		const f = brokenOn(reason)
+		await f.run()
+		expect(f.replace).not.toHaveBeenCalled()
+		expect(f.options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(f.refusedRebuilds.has("thread")).toBe(true)
+		expect(f.options.messages.emitSessionEvents).toHaveBeenLastCalledWith([], {
+			type: "status",
+			payload: { sessionId: "thread", status: "idle" },
+		})
+	})
+	it.each(triggers)("after %s the thread refuses on send, saying how to fix it", async (reason) => {
+		const f = brokenOn(reason)
+		await f.run()
+		const provider = new SdkProviderChangeCoordinator(f.options as never)
+		await expect(provider.retryRefusedRebuild("thread")).resolves.toMatch(/no model ID.*Settings > Models/)
+		expect(f.options.messages.appendAndEmit).not.toHaveBeenCalled()
+		// Fixed since: the send goes through on a rebuilt session.
+		f.settings.models.find((m) => m.id === "act")!.upstreamId = "real"
+		await expect(provider.retryRefusedRebuild("thread")).resolves.toBeUndefined()
+		expect(f.replace).toHaveBeenCalledOnce()
+	})
+	it.each(triggers)("a failure replacing the session after %s is still reported", async (reason) => {
+		const f = brokenOn(reason)
+		f.settings.models.find((m) => m.id === "act")!.upstreamId = "act"
+		f.replace.mockRejectedValueOnce(new Error("boom"))
+		await f.run()
+		expect(f.options.messages.appendAndEmit).toHaveBeenCalledOnce()
+		expect(f.refusedRebuilds.has("thread")).toBe(false)
+	})
+	it("a later build that works clears the refusal", async () => {
+		const f = brokenOn("subagents")
+		await f.run()
+		f.settings.models.find((m) => m.id === "act")!.upstreamId = "real"
+		await f.run()
+		expect(f.replace).toHaveBeenCalledOnce()
+		expect(f.refusedRebuilds.has("thread")).toBe(false)
+	})
+})
+
+describe("what a configured session publishes (B2)", () => {
+	const levels = [
+		{ id: "default", label: "Default", rank: 0, request: { kind: "default" as const } },
+		{ id: "high", label: "High", rank: 1, request: { kind: "effort" as const, value: "high" } },
+	]
+	const built = async (levelId: string, mode: "act" | "plan" = "act") => {
+		const f = fixture()
+		const row = f.settings.models.find((m) => m.id === (mode === "act" ? "act" : "ask"))!
+		row.overrides = { reasoning: "yes", levels }
+		const pick = { modelId: row.id, levelId }
+		const config = await f.builder.build({
+			cwd: "/tmp",
+			mode,
+			apiSelection: { modelSelectionV1: { version: 1, act: pick, ask: pick } },
+		} as never)
+		return focusedModelsFromSnapshot(getSessionApiSnapshot(config), undefined)
+	}
+	it("is the real model and effort, never unknown", async () => {
+		expect(await built("high")).toEqual({
+			act: {
+				provider: "openai",
+				modelId: "act",
+				reasoningEffort: "high",
+				pick: { modelId: "act", levelId: "high" },
+			},
+		})
+	})
+	it("names no effort for the default level", async () => {
+		expect((await built("default"))?.act).toMatchObject({ modelId: "act", reasoningEffort: undefined })
+	})
+	it("speaks only for the mode it was built in", async () => {
+		const published = await built("high", "plan")
+		expect(published?.act).toBeUndefined()
+		expect(published?.plan).toMatchObject({ modelId: "ask", pick: { modelId: "ask" } })
+	})
+	it("a legacy session still publishes from its configuration", () => {
+		expect(
+			focusedModelsFromSnapshot(
+				{
+					selection: { askProfileId: "a", actProfileId: "b" },
+					configuration: { actModeApiProvider: "openai", actModeOpenAiModelId: "m", actModeReasoningEffort: "low" },
+				},
+				{ askProfileId: "a", actProfileId: "b" },
+			)?.act,
+		).toEqual({ profileId: "b", provider: "openai", modelId: "m", reasoningEffort: "low" })
 	})
 })
 

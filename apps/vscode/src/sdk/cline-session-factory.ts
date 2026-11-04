@@ -31,6 +31,7 @@ import { buildClineSystemPrompt, isClineProvider } from "@cline/shared"
 import type { ApiConfiguration } from "@shared/api"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { ClineClient } from "@shared/cline"
+import type { ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, type LanguageDisplay } from "@shared/Languages"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
@@ -103,6 +104,8 @@ export interface SessionConfigInput {
 export interface SessionApiSnapshot {
 	selection: TaskApiSelection
 	configuration: ApiConfiguration
+	/** What a session on the new settings runs. It has no legacy configuration to read this from. */
+	configuredModel?: { mode: Mode } & NonNullable<NonNullable<ExtensionState["focusedSessionModels"]>[Mode]>
 }
 
 export function getSessionApiSnapshot(config: unknown): SessionApiSnapshot | undefined {

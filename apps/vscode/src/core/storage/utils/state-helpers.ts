@@ -1,4 +1,5 @@
 import { ApiProvider } from "@shared/api"
+import { createDefaultModelSettings } from "@shared/model-settings"
 import type { ClineFileStorage } from "@shared/storage/ClineFileStorage"
 import {
 	applyTransform,
@@ -12,6 +13,7 @@ import {
 	SecretKeys,
 	Secrets,
 } from "@shared/storage/state-keys"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import { Logger } from "@/shared/services/Logger"
 import { ClineMemento } from "@/shared/storage"
 import { StateManager } from "../StateManager"
@@ -120,8 +122,24 @@ export async function resetGlobalState() {
 		const named = stateManager.getGlobalStateKey("modelSettings")?.connections.flatMap(connectionSecretRefs) ?? []
 		for (const ref of new Set([...named, ...(await store.list())])) await store.delete(ref)
 	}
+	// Saved configurations keep their own copies under this prefix, which no named key covers.
+	const profileSecrets = stateManager.listSecretStorageKeys().filter((key) => key.startsWith("profile:"))
+	await stateManager.setSecretsForKeys(Object.fromEntries(profileSecrets.map((key) => [key, undefined])))
 	forgetModelSettingsSnapshot(stateManager)
 	GlobalStateAndSettingKeys.map((key) => stateManager.setGlobalState(key, undefined))
 	SecretKeys.map((key) => stateManager.setSecret(key, undefined))
+	// The move has nothing left to do, and running it again would bring back what the shared stores hold.
+	if (modelSettingsRolloutEnabled()) {
+		stateManager.setGlobalState("modelSettings", createDefaultModelSettings())
+		stateManager.setGlobalState("modelSettingsMigration", {
+			version: 1,
+			status: "complete",
+			backupId: "settings-reset",
+			configurationModels: {},
+			profilePicks: {},
+			legacyFingerprint: "settings-reset",
+			completedAt: Date.now(),
+		})
+	}
 	await stateManager.reInitialize()
 }

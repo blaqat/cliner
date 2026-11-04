@@ -78,6 +78,37 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(chip()).toHaveAccessibleName(/Act model: GPT-6 Sol · Company gateway, effort Medium/)
 		})
 
+		it("isn't pending while the live build is what's picked", () => {
+			const { roles, models: rows } = (mocks.state.modelSettings as ReturnType<typeof modelSettingsFixture>).settings
+			const model = rows.find((row) => row.id === roles.chat?.modelId)!
+			mocks.state.focusedSessionModels = {
+				act: { provider: "openai", modelId: model.upstreamId, reasoningEffort: roles.chat?.levelId, pick: roles.chat },
+			}
+			renderChip()
+			expect(chip()).not.toHaveTextContent("(pending)")
+			expect(chip()).toHaveTextContent(/^GPT-6 Sol · Company gatewayMed$/)
+		})
+
+		it("is pending while the live build is on another row or level", () => {
+			const { roles, models: rows } = (mocks.state.modelSettings as ReturnType<typeof modelSettingsFixture>).settings
+			const model = rows.find((row) => row.id === roles.chat?.modelId)!
+			mocks.state.focusedSessionModels = {
+				act: {
+					provider: "openai",
+					modelId: model.upstreamId,
+					pick: { modelId: "another-row", levelId: roles.chat?.levelId },
+				},
+			}
+			const first = renderChip()
+			expect(chip()).toHaveTextContent("GPT-6 Sol · Company gateway(pending)")
+			first.unmount()
+			mocks.state.focusedSessionModels = {
+				act: { provider: "openai", modelId: model.upstreamId, pick: { modelId: model.id, levelId: "default" } },
+			}
+			renderChip()
+			expect(chip()).toHaveTextContent(/Med \(pending\)$/)
+		})
+
 		it("lists every configured chat and unknown model, with no starred filter", async () => {
 			renderChip()
 			await openMenu()

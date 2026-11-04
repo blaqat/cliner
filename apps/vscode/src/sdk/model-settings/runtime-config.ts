@@ -30,8 +30,10 @@ export async function configuredProviderConfig(
 > {
 	const resolved = policy ? resolveEffectiveConfiguredPick(policy.state, settings, pick) : resolveConfiguredPick(settings, pick)
 	if (policy && pick) await assertConfiguredModelRequestAllowed(policy.state, settings, pick, policy.mode)
-	const projection = JSON.stringify(resolved)
 	const built = policy && pick ? structuredClone(settings) : settings
+	// Detection only suggests values for the form, so finding new ones mid-turn isn't the organization changing them.
+	const policyView = () => JSON.stringify(resolveEffectiveConfiguredPick(policy!.state, built, pick, false))
+	const projection = policy && pick ? policyView() : undefined
 	// A user edit reaches this session through its scheduled rebuild, so a running
 	// turn finishes on what it started with. Refuse only what must stop now: the
 	// row is gone or locked, or the organization changed this build's own values.
@@ -40,7 +42,7 @@ export async function configuredProviderConfig(
 			? async () => {
 					const current = policy.state.getGlobalStateKey("modelSettings")!
 					await assertConfiguredModelRequestAllowed(policy.state, current, pick, policy.mode)
-					if (JSON.stringify(resolveEffectiveConfiguredPick(policy.state, built, pick)) !== projection)
+					if (policyView() !== projection)
 						throw new Error(
 							"Your organization changed this model's settings. Send your message again to use them, or open Settings > Models.",
 						)
@@ -103,6 +105,12 @@ export async function configuredProviderConfig(
 		dependencies,
 	)
 	const options = prepared.config.options ?? {}
+	// A saved Bedrock API key sits with its other credentials, but the provider only reads one from apiKey here:
+	// empty is what it takes as "no key", and it then asks for SigV4 instead.
+	const bedrockApiKey =
+		providerId === "bedrock" && ["apikey", "api-key"].includes(String(options.authentication))
+			? (options.bedrockApiKey as string | undefined)
+			: undefined
 	// Ollama's native routing rule consumes the resolved model context, not
 	// config.options.num_ctx. The explicit provider field wins over defaults.
 	const contextWindow =
@@ -138,7 +146,7 @@ export async function configuredProviderConfig(
 		settingsFetchAtLevel: prepared.fetchAtLevel,
 		settingsProviderOptions: prepared.config.options,
 		modelId,
-		apiKey: prepared.config.apiKey ?? "",
+		apiKey: prepared.config.apiKey || bedrockApiKey || "",
 		apiKeyEnv: [],
 		baseUrl: prepared.config.baseUrl,
 		headers: prepared.config.headers,

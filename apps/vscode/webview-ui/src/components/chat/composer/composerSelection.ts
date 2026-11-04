@@ -183,13 +183,14 @@ function useModelSettingsSelection(mode: Mode) {
 		const busy = turnState?.phase === "streaming" || turnState?.phase === "awaiting_approval"
 		const nextMessageOnly = armed ?? !!composerNextMessageOnly
 		const live = focusedSessionModels?.[mode]
-		const pending = !!live && !!model && live.modelId !== model.upstreamId
+		const pending = !!live && !!model && (live.pick ? live.pick.modelId !== model.id : live.modelId !== model.upstreamId)
 		const savedLevel = model && state.effective[model.id]?.levels.value.find((level) => level.id === pick?.levelId)
 		const liveEffort = live?.reasoningEffort ?? "none"
-		const levelPending =
-			!!live &&
-			((savedLevel?.request.kind === "default" && liveEffort !== "none") ||
-				(savedLevel?.request.kind === "effort" && liveEffort !== savedLevel.request.value))
+		const levelPending = live?.pick
+			? live.pick.levelId !== pick?.levelId
+			: !!live &&
+				((savedLevel?.request.kind === "default" && liveEffort !== "none") ||
+					(savedLevel?.request.kind === "effort" && liveEffort !== savedLevel.request.value))
 
 		const send = (next: SelectorPick, nextOnly: boolean) => {
 			setError(undefined)

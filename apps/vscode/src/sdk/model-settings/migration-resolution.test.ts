@@ -150,7 +150,12 @@ describe("Phase 2 migration", () => {
 		expect((empty.data.modelSettings as ModelSettings).roles.chat).toBeNull()
 		const missing = fixture({ profiles: [{ id: "gone", configurationId: "deleted" }], threadDefaultProfileId: "gone" })
 		await migrateModelSettings(missing.deps)
-		expect((missing.data.modelSettings as ModelSettings).roles.chat?.modelId).toBe("missing:deleted")
+		expect((missing.data.modelSettings as ModelSettings).roles.chat).toBeNull()
+		expect((missing.data.modelSettings as ModelSettings).models).toEqual([])
+		// An old thread that names it still resolves to an explicit unavailable pick.
+		expect((missing.data.modelSettingsMigration as { profilePicks: object }).profilePicks).toEqual({
+			gone: { modelId: "missing:deleted", levelId: "default" },
+		})
 	})
 	it("preserves historical providers without applying the live UI allowlist", async () => {
 		const f = fixture({ apiConfigProfiles: [configuration("a", "gemini")] })
@@ -218,7 +223,7 @@ describe("Phase 2 resolution", () => {
 		const s = settings()
 		expect(() => resolveConfiguredPick(s, { modelId: "a", levelId: "high" })).toThrow("Saved level 'high' is not offered")
 		expect(() => resolveConfiguredPick(s, null)).toThrow("Settings > Models")
-		expect(() => resolveConfiguredPick(s, { modelId: "gone", levelId: "default" })).toThrow("unavailable")
+		expect(() => resolveConfiguredPick(s, { modelId: "gone", levelId: "default" })).toThrow("was removed")
 		expect(() => resolveBackgroundPick(s, "generate")).toThrow("Background text")
 	})
 })

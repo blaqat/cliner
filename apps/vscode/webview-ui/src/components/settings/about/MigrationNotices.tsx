@@ -95,6 +95,13 @@ export const migrationIssueRow = (
 				}
 			: undefined
 	}
+	if (field === "level" && model) {
+		return {
+			text: `${source}: the saved reasoning level isn't offered by this model, so it moved to the closest lower one.`,
+			action: "Change it",
+			target: `model:${model.id}:levels`,
+		}
+	}
 	const isSubagents = source === "Subagents"
 	const fix: SettingsNavigationTarget = isSubagents
 		? "subagents"

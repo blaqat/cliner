@@ -447,8 +447,9 @@ export function configuredModelMetadata(
 	settings: ModelSettings,
 	model: ModelRow,
 	connection: ModelSettings["connections"][number],
+	includeDetected = true,
 ) {
-	const detected = detectedMetadata.get(state)?.get(model.id)
+	const detected = includeDetected ? detectedMetadata.get(state)?.get(model.id) : undefined
 	return {
 		modelId: model.id,
 		source: "catalog" as const,
@@ -470,8 +471,9 @@ const effortLevels = (efforts: string[]): ModelLevel[] => [
 ]
 /**
  * Levels a catalog model's reasoning metadata advertises. Effort values map one to one, and a budget range
- * gets three points inside it. With no metadata the SDK sends only broadly supported efforts, so those are
- * what's offered. A toggle alone, or an empty list, has nothing to choose between.
+ * gets three points inside it. A budget with no upper limit is sent as an effort, which the SDK maps to the
+ * budget legacy sends. With no metadata the SDK sends only broadly supported efforts, so those are what's
+ * offered. A toggle alone, or an empty list, has nothing to choose between.
  */
 export function catalogReasoningLevels(model: {
 	capabilities?: readonly string[]
@@ -483,7 +485,8 @@ export function catalogReasoningLevels(model: {
 	const efforts = CATALOG_EFFORTS.filter((effort) => advertised.includes(effort))
 	if (efforts.length) return effortLevels(efforts)
 	const budget = model.reasoningOptions.find((option) => option.type === "budget_tokens")
-	if (!budget?.max || budget.max <= 0) return undefined
+	if (!budget) return undefined
+	if (!budget.max || budget.max <= 0) return effortLevels(["low", "medium", "high"])
 	const floor = Math.max(budget.min ?? 1, 1)
 	const points = [
 		["low", "Low", budget.max / 4],
@@ -599,7 +602,12 @@ export function managedModelValues(
 }
 
 /** Validate levels against the same effective fields used to construct the request. */
-export function resolveEffectiveConfiguredPick(state: StateManager, settings: ModelSettings, pick: ModelPick | null) {
+export function resolveEffectiveConfiguredPick(
+	state: StateManager,
+	settings: ModelSettings,
+	pick: ModelPick | null,
+	includeDetected = true,
+) {
 	const model = settings.models.find((row) => row.id === pick?.modelId)
 	const connection = settings.connections.find((row) => row.id === model?.connectionId)
 	if (!model || !connection) return resolveConfiguredPick(settings, pick)
@@ -611,7 +619,7 @@ export function resolveEffectiveConfiguredPick(state: StateManager, settings: Mo
 	return resolveConfiguredPick(
 		effective,
 		pick,
-		configuredModelMetadata(state, settings, model, connection),
+		configuredModelMetadata(state, settings, model, connection, includeDetected),
 		managedModelValues(state, model, connection),
 	)
 }
