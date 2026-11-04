@@ -153,11 +153,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 		)
 	}
 
-	const knowledgeRow = (
-		key: "images" | "tools" | "streaming" | "promptCache" | "files",
-		label: string,
-		description?: string,
-	) => (
+	const knowledgeRow = (key: "streaming" | "promptCache" | "files", label: string, description?: string) => (
 		<ControlRow description={description} id={fieldAnchor(row.id, key)} label={label} tag={tag(key, label)}>
 			<Segmented<Knowledge>
 				controlId={fieldControl(row.id, key)}
@@ -414,7 +410,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 			<FoldHeader
 				onToggle={() => page.setMoreOpen(row.id)}
 				open={moreOpen}
-				summary={`${setInMore ? `${setInMore} set · ` : ""}images, tools, temperature, verbosity, extra body, and more`}
+				summary={`${setInMore ? `${setInMore} set · ` : ""}temperature, verbosity, extra body, and more`}
 				title="More"
 			/>
 			{moreOpen && (
@@ -429,8 +425,8 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 						<ModelCatalogPresets
 							onApply={(fills) => {
 								setPresetsOpen(false)
-								const next = { ...fills }
-								for (const key of Object.keys(next) as (keyof ModelValues)[]) {
+								const { images: _images, tools: _tools, ...next } = fills
+								for (const key of Object.keys(next) as (keyof typeof next)[]) {
 									if (hasOverride(row, key)) {
 										delete next[key]
 									}
@@ -439,8 +435,7 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 							}}
 						/>
 					)}
-					{knowledgeRow("images", "Images")}
-					{knowledgeRow("tools", "Tools")}
+					<Hint>Images and tools: Cline uses them when the model does. If a server refuses, the thread says so.</Hint>
 					<FieldGrid className="mt-0.5">
 						{numberField(
 							"temperature",

@@ -427,7 +427,11 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			normalized.mode !== "yolo" &&
 			isModelToolEnabledGlobally("web_search") &&
 			supportsModelTool(
-				{ providerId: config.providerId, modelId: config.modelId },
+				{
+					providerId: config.providerId,
+					modelId: config.modelId,
+					baseUrl: config.baseUrl ?? config.providerConfig?.baseUrl,
+				},
 				"web_search",
 			)
 		) {
@@ -436,7 +440,11 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 		if (
 			normalized.enableTools &&
 			supportsModelTool(
-				{ providerId: config.providerId, modelId: config.modelId },
+				{
+					providerId: config.providerId,
+					modelId: config.modelId,
+					baseUrl: config.baseUrl ?? config.providerConfig?.baseUrl,
+				},
 				"image_generation",
 			)
 		) {

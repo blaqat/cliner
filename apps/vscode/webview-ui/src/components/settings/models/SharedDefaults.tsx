@@ -105,8 +105,6 @@ export const SharedDefaults = ({ connection, startOpen }: { connection: Connecti
 						{numberField("contextWindow", "Context window")}
 						{numberField("maxOutputTokens", "Max output tokens")}
 					</FieldGrid>
-					{knowledge("images", "Images")}
-					{knowledge("tools", "Tools")}
 					{knowledge("reasoning", "Reasoning")}
 					{defaults.reasoning === "yes" && (
 						<div className="mb-1 flex flex-wrap gap-1">

@@ -488,9 +488,7 @@ describe("the model form", () => {
 		expect(form.getByRole("button", { name: "Remove" })).toBeInTheDocument()
 		// Everything else waits under More.
 		expect(form.queryByLabelText("Temperature")).toBeNull()
-		for (const group of ["Images", "Tools", "Verbosity"]) {
-			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
-		}
+		expect(form.queryByRole("radiogroup", { name: "Verbosity" })).toBeNull()
 		expect(form.queryByRole("button", { name: /Start from a preset/ })).toBeNull()
 		expect(form.queryByRole("button", { name: "Add param" })).toBeNull()
 		// Free is gone.
@@ -507,9 +505,12 @@ describe("the model form", () => {
 		expect(table.getByLabelText("High is sent as")).toHaveValue("high")
 		// More.
 		await openMore(form)
-		for (const group of ["Images", "Tools", "Verbosity"]) {
-			expect(form.getByRole("radiogroup", { name: group })).toBeInTheDocument()
+		expect(form.getByRole("radiogroup", { name: "Verbosity" })).toBeInTheDocument()
+		// Images and tools aren't settings.
+		for (const group of ["Images", "Tools"]) {
+			expect(form.queryByRole("radiogroup", { name: group })).toBeNull()
 		}
+		expect(form.getByText(/Images and tools: Cline uses them when the model does/)).toBeInTheDocument()
 		expect(form.getByLabelText("Temperature")).toBeInTheDocument()
 		expect(form.getByRole("button", { name: /Start from a preset/ })).toBeInTheDocument()
 		expect(form.getByRole("button", { name: "Add param" })).toBeInTheDocument()
@@ -620,10 +621,9 @@ describe("the model form", () => {
 		expect(overrides).toMatchObject({
 			contextWindow: 200000,
 			maxOutputTokens: 8192,
-			images: "yes",
 			reasoning: "yes",
-			tools: "yes",
 		})
+		expect(overrides).not.toHaveProperty("images")
 		expect(overrides).not.toHaveProperty("inputPrice")
 		expect(overrides).not.toHaveProperty("outputPrice")
 	})
@@ -715,13 +715,13 @@ describe("shared defaults", () => {
 
 	it("an inherited capability is marked as inherited", async () => {
 		const settings = gatewaySettings()
-		settings.connections[0].defaults = { ...settings.connections[0].defaults, images: "no" }
+		settings.connections[0].defaults = { ...settings.connections[0].defaults, streaming: "no" }
 		settings.models[3].overrides = { tools: "yes" }
 		setup({ settings, availability: envAvailable })
 		await flush()
 		const form = await openModel("tuned")
 		await openMore(form)
-		const yes = within(form.getByRole("radiogroup", { name: "Images" })).getByRole("radio", { name: "No" })
+		const yes = within(form.getByRole("radiogroup", { name: "Streaming" })).getByRole("radio", { name: "No" })
 		expect(yes).toHaveAttribute("aria-checked", "true")
 		expect(yes).toHaveAttribute("title", "From this connection's shared defaults")
 	})
@@ -1499,12 +1499,10 @@ describe("shared defaults", () => {
 		expect(host.wire()).not.toContain('"contextWindow":null')
 	})
 
-	it("Unknown removes the key; zero and false stay answers", async () => {
+	it("a shared 0 stays an answer, and images and tools aren't offered", async () => {
 		const shared = await open()
-		fireEvent.click(within(shared.getByRole("radiogroup", { name: "Shared Images" })).getByRole("radio", { name: "Unknown" }))
-		await flush()
-		await flush()
-		expect(Object.hasOwn(defaults(), "images")).toBe(false)
+		expect(shared.queryByRole("radiogroup", { name: "Shared Images" })).toBeNull()
+		expect(shared.queryByRole("radiogroup", { name: "Shared Tools" })).toBeNull()
 		change("Shared Temperature", "0", shared)
 		await flush()
 		await flush()

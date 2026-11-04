@@ -361,7 +361,7 @@ describe("Phase 2 follow-up migration", () => {
 		expect(s.connections).toHaveLength(1)
 		expect(s.connections[0].defaults.contextWindow).toBeUndefined()
 		expect(s.models.map((m) => m.overrides.contextWindow)).toEqual([32000, 64000])
-		expect(s.models[0].overrides.images).toBe("yes")
+		expect(s.models[0].overrides).not.toHaveProperty("images")
 		expect(JSON.stringify(sdkInput)).toBe(snapshot)
 	})
 })
@@ -626,10 +626,8 @@ it("uses nested prices, honors explicit false capabilities and preserves explici
 		outputPrice: 9,
 		cacheReadPrice: 1,
 		cacheWritePrice: 2,
-		images: "no",
 		reasoning: "no",
 		files: "no",
-		tools: "no",
 		streaming: "no",
 	})
 	expect(resolved.model.legacyMetadata?.source).toBe("legacy")

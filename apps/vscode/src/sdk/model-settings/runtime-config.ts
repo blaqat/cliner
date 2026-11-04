@@ -161,10 +161,10 @@ export async function configuredProviderConfig(
 		...(resolved.values.promptCache === "yes" ? ["prompt-cache" as const] : []),
 	]
 	// The SDK reads a populated list as authoritative: leaving "tools" out removes every tool. Answers
-	// about something else mustn't turn an unanswered Tools or Images into a no, unless saved or
-	// catalog metadata already says what the model can do.
+	// about something else mustn't turn an unanswered Tools or Images into a no.
 	const answeredNo = resolved.values.tools === "no" || resolved.values.images === "no"
-	if ((capabilities.length || answeredNo) && !(savedInfo.capabilities ?? []).some((c) => c !== "reasoning")) {
+	// Nobody sets these any more, so unknown means try: a server that refuses says so in the thread.
+	if (capabilities.length || answeredNo) {
 		if (resolved.values.tools === "unknown") capabilities.push("tools")
 		if (resolved.values.images === "unknown") capabilities.push("images")
 	}

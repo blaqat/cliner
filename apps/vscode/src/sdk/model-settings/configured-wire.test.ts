@@ -306,6 +306,20 @@ describe("Azure API version", () => {
 	}
 })
 
+describe("OpenAI's built-in tools", () => {
+	it.each([
+		["https://acme-foundry-api.azure-api.net/openai", false],
+		["https://acme.openai.azure.com/openai/deployments/x", false],
+		["https://gateway.test/v1", false],
+		["not a url", false],
+		["https://api.openai.com/v1", true],
+		[undefined, true],
+	])("on openai-native at %s: %s", (baseUrl, offered) => {
+		for (const tool of ["image_generation", "web_search"] as const)
+			expect(supportsModelTool({ providerId: "openai-native", modelId: "gpt-5", baseUrl }, tool), tool).toBe(offered)
+	})
+})
+
 describe("temperature", () => {
 	const send = async (apiFormat: "chat" | "responses", overrides: Record<string, unknown>, defaults: object = {}) => {
 		const connection = { ...compatibleConnection({ kind: "none" }), apiFormat, defaults } as Connection

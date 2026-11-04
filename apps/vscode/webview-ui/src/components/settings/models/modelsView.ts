@@ -340,8 +340,6 @@ export const readDependencies = (paths: string[]): DependencyLine[] => {
 
 /** Fields that open the form's More fold. A fix link to one of these has to open it too. */
 export const MORE_FIELD_KEYS: (keyof ModelValues)[] = [
-	"images",
-	"tools",
 	"temperature",
 	"verbosity",
 	"extraBody",

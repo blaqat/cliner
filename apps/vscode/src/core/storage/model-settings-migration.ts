@@ -266,28 +266,48 @@ export type MigrationResult = "disabled" | "complete"
  * never reads or writes them again. Edits made in an older version after a downgrade aren't imported.
  */
 const MOVED_TEMPERATURE_REPAIR = "moved-temperature-0"
+const CAPABILITY_SETTINGS_REPAIR = "capability-settings-removed"
 
-/**
- * Settings moved before fork.50 kept the old editor's starting temperature of 0, which the old path
- * never sent. Runs once, so a 0 chosen afterwards stays. Only rows and connections the move created.
- */
-async function repairMovedTemperature(state: MigrationDependencies["state"], journal: ModelSettingsMigration) {
-	if (journal.repairs?.includes(MOVED_TEMPERATURE_REPAIR)) return
-	const settings = state.get<ModelSettings>("modelSettings")
-	if (settings) {
-		let changed = false
-		for (const values of [
-			...settings.models.filter((row) => row.id.startsWith("legacy-")).map((row) => row.overrides),
-			...settings.connections.filter((connection) => connection.id.startsWith("legacy-")).map((c) => c.defaults),
-		]) {
-			if (values.temperature === 0) {
-				delete values.temperature
+/** Images and tools aren't settings: what a model does comes from its catalog entry, and a server that refuses says so. */
+function withoutCapabilitySettings(settings: ModelSettings): boolean {
+	let changed = false
+	for (const values of [...settings.models.map((row) => row.overrides), ...settings.connections.map((c) => c.defaults)]) {
+		for (const key of ["images", "tools"] as const) {
+			if (values[key] !== undefined) {
+				delete values[key]
 				changed = true
 			}
 		}
+	}
+	return changed
+}
+
+/**
+ * One-time fixes to settings already moved, so they never touch a later choice. The starting temperature
+ * of 0 was never sent by the old path, and only rows and connections the move created can hold it.
+ */
+async function repairMovedSettings(state: MigrationDependencies["state"], journal: ModelSettingsMigration) {
+	const done = journal.repairs ?? []
+	const pending = [MOVED_TEMPERATURE_REPAIR, CAPABILITY_SETTINGS_REPAIR].filter((repair) => !done.includes(repair))
+	if (!pending.length) return
+	const settings = state.get<ModelSettings>("modelSettings")
+	if (settings) {
+		let changed = false
+		if (pending.includes(MOVED_TEMPERATURE_REPAIR)) {
+			for (const values of [
+				...settings.models.filter((row) => row.id.startsWith("legacy-")).map((row) => row.overrides),
+				...settings.connections.filter((connection) => connection.id.startsWith("legacy-")).map((c) => c.defaults),
+			]) {
+				if (values.temperature === 0) {
+					delete values.temperature
+					changed = true
+				}
+			}
+		}
+		if (pending.includes(CAPABILITY_SETTINGS_REPAIR) && withoutCapabilitySettings(settings)) changed = true
 		if (changed) await state.update("modelSettings", { ...settings, revision: settings.revision + 1 })
 	}
-	await state.update("modelSettingsMigration", { ...journal, repairs: [...(journal.repairs ?? []), MOVED_TEMPERATURE_REPAIR] })
+	await state.update("modelSettingsMigration", { ...journal, repairs: [...done, ...pending] })
 }
 
 export async function migrateModelSettings(deps: MigrationDependencies): Promise<MigrationResult> {
@@ -295,7 +315,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 	const { state } = deps
 	const finished = state.get<ModelSettingsMigration>("modelSettingsMigration")
 	if (finished?.status === "complete") {
-		await repairMovedTemperature(state, finished)
+		await repairMovedSettings(state, finished)
 		return "complete"
 	}
 	const sdkInput = typeof deps.sdkInput === "function" ? await deps.sdkInput() : (deps.sdkInput ?? {})
@@ -818,6 +838,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 			}
 		}
 	}
+	withoutCapabilitySettings(settings)
 	const parsed = ModelSettingsSchema.safeParse(settings)
 	if (!parsed.success) {
 		// Paths and messages only: zod issues never carry the rejected input here, and paths name fields, not values.
@@ -843,7 +864,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		...journal,
 		status: "complete",
 		completedAt: Date.now(),
-		repairs: [MOVED_TEMPERATURE_REPAIR],
+		repairs: [MOVED_TEMPERATURE_REPAIR, CAPABILITY_SETTINGS_REPAIR],
 	})
 	return "complete"
 }

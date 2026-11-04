@@ -68,6 +68,44 @@ const base = () => ({
 })
 const keys = () => ({ "profile:p1:openAiApiKey": "K1", "profile:p2:openAiApiKey": "K2", openAiApiKey: "GLOBAL" })
 
+describe("images and tools aren't settings", () => {
+	it("aren't carried over by the move", async () => {
+		const f = fixture(
+			{
+				apiConfigProfiles: [
+					profile("p1", "m1", {
+						options: {
+							openAiBaseUrl: "https://a.test/v1",
+							planModeOpenAiModelInfo: { supportsImages: false, supportsTools: false, contextWindow: 1000 },
+						},
+					}),
+				],
+			},
+			keys(),
+		)
+		await f.run()
+		expect(f.rowOf("m1").overrides).not.toHaveProperty("images")
+		expect(f.rowOf("m1").overrides).not.toHaveProperty("tools")
+		expect(f.rowOf("m1").overrides.contextWindow ?? f.settings().connections[0].defaults.contextWindow).toBe(1000)
+	})
+	it("are cleared once from saved settings, on every model and connection", async () => {
+		const f = fixture(base(), keys())
+		await f.run()
+		const saved = f.settings()
+		saved.models[0].overrides.images = "no"
+		saved.models[1].overrides.tools = "no"
+		saved.connections[0].defaults.images = "no"
+		saved.models.push({ ...structuredClone(saved.models[0]), id: "mine", overrides: { images: "no" } })
+		f.data.modelSettingsMigration = { ...f.data.modelSettingsMigration, repairs: ["moved-temperature-0"] }
+		await f.run()
+		for (const row of f.settings().models) {
+			expect(row.overrides).not.toHaveProperty("images")
+			expect(row.overrides).not.toHaveProperty("tools")
+		}
+		expect(f.settings().connections[0].defaults).not.toHaveProperty("images")
+	})
+})
+
 describe("a moved temperature of 0", () => {
 	const withInfo = (temperature: number, extra: Record<string, unknown> = {}) => ({
 		apiConfigProfiles: [

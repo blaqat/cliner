@@ -8,8 +8,6 @@ const FIELD_LABELS: Partial<Record<keyof ModelValues, string>> = {
 	contextWindow: "Context window",
 	maxOutputTokens: "Max output tokens",
 	maxInputTokens: "Max input tokens",
-	images: "Images",
-	tools: "Tools",
 	reasoning: "Reasoning",
 	levels: "Levels",
 	temperature: "Temperature",
