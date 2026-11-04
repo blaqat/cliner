@@ -149,11 +149,14 @@ export class SdkProviderChangeCoordinator {
 						selection,
 					)
 				: undefined
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode,
-				...(apiConfiguration ? { apiConfiguration, apiSelection: selection } : {}),
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(apiConfiguration ? { apiConfiguration, apiSelection: selection } : {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
 			const builtSelection = useModelSettings(this.options.stateManager)
 				? (getSessionApiSnapshot(config)?.selection ?? selection)
 				: selection

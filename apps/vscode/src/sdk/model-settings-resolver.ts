@@ -101,6 +101,8 @@ export interface SubagentModelSettingsResolver {
 	parent: ModelPick
 }
 
+export const transientAdmission = Symbol("configuredModelAdmission")
+
 /** Transient overrides are scoped to a thread and mode, and survive failed admission. */
 export class NextMessageModelSelections {
 	private readonly threads = new Map<string, Partial<Record<Mode, ModelPick>>>()
@@ -108,6 +110,37 @@ export class NextMessageModelSelections {
 		const modes = this.threads.get(threadId) ?? {}
 		modes[mode] = structuredClone(pick)
 		this.threads.set(threadId, modes)
+	}
+	peek(threadId: string, mode: Mode): ModelPick | undefined {
+		const pick = this.threads.get(threadId)?.[mode]
+		return pick ? structuredClone(pick) : undefined
+	}
+	clear(threadId: string, mode: Mode): void {
+		const modes = this.threads.get(threadId)
+		if (!modes) return
+		delete modes[mode]
+		if (!Object.keys(modes).length) this.threads.delete(threadId)
+	}
+	move(from: string, to: string): void {
+		const modes = this.threads.get(from)
+		if (!modes) return
+		this.threads.delete(from)
+		this.threads.set(to, modes)
+	}
+	/** Capture identity before async work so a newer choice cannot be consumed. */
+	admission(threadId: string, mode: Mode): { pick: ModelPick; commit: () => void } | undefined {
+		const modes = this.threads.get(threadId)
+		const pending = modes?.[mode]
+		if (!pending) return undefined
+		return {
+			pick: structuredClone(pending),
+			commit: () => {
+				const owner = [...this.threads].find(([, value]) => value === modes)?.[0]
+				if (owner === undefined || modes?.[mode] !== pending) return
+				delete modes[mode]
+				if (!Object.keys(modes).length) this.threads.delete(owner)
+			},
+		}
 	}
 	async admit<T>(
 		threadId: string,

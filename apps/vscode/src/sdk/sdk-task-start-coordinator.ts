@@ -120,18 +120,24 @@ export class SdkTaskStartCoordinator {
 
 			let cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
-			let apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
+			let apiSelection =
+				(!useModelSettings(this.options.stateManager) || !background
+					? this.options.consumeDraftApiSelection?.()
+					: undefined) ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
-			const config = await this.options.sessionConfigBuilder.build({
-				prompt,
-				images,
-				files,
-				historyItem,
-				taskSettings,
-				cwd,
-				mode,
-				apiSelection,
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					prompt,
+					images,
+					files,
+					historyItem,
+					taskSettings,
+					cwd,
+					mode,
+					apiSelection,
+				},
+				...(useModelSettings(this.options.stateManager) && !background ? ([""] as const) : []),
+			)
 			apiSelection = getSessionApiSnapshot(config)?.selection ?? apiSelection
 			providerId = config.providerId
 			modelId = config.modelId

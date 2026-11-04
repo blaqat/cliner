@@ -10,12 +10,19 @@ import { buildAgentHooks, type HookMessageEmitter } from "./hooks-adapter"
 import { modelAuthDependencies } from "./model-settings/auth-dependencies"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 import { configuredProviderConfig } from "./model-settings/runtime-config"
-import { captureThreadModelSelection, migrateThreadModelSelection, resolveThreadPick } from "./model-settings-resolver"
+import {
+	captureThreadModelSelection,
+	migrateThreadModelSelection,
+	NextMessageModelSelections,
+	resolveThreadPick,
+	transientAdmission,
+} from "./model-settings-resolver"
 import { buildSubagentModelSettings } from "./subagent-profiles"
 
 export interface SdkSessionConfigBuilderOptions {
 	stateManager: StateManager
 	emitHookMessage: HookMessageEmitter
+	nextMessageSelections?: NextMessageModelSelections
 	onConsecutiveMistakeLimitReached?: CoreSessionConfig["onConsecutiveMistakeLimitReached"]
 }
 
@@ -25,9 +32,13 @@ export interface SdkSessionConfigBuilderOptions {
  * or produce a plan artifact.
  */
 export class SdkSessionConfigBuilder {
+	admission(config: object): (() => void) | undefined {
+		return (config as { [transientAdmission]?: () => void })[transientAdmission]
+	}
+
 	constructor(private readonly options: SdkSessionConfigBuilderOptions) {}
 
-	async build(input: SessionConfigInput): Promise<Awaited<ReturnType<typeof buildSessionConfig>>> {
+	async build(input: SessionConfigInput, threadId?: string): Promise<Awaited<ReturnType<typeof buildSessionConfig>>> {
 		// Capture both before the builder's first await. Focus changes cannot split
 		// the picker selection from the credentials/model used to build the session.
 		const selection = structuredClone(input.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
@@ -39,14 +50,17 @@ export class SdkSessionConfigBuilder {
 				selection.modelSelectionV1 ??
 				(input.apiSelection ? migrateThreadModelSelection(selection, journal) : captureThreadModelSelection(settings))
 			if (!state.connectionSecrets) throw new Error("Connection keychain is unavailable")
+			const transient =
+				threadId === undefined ? undefined : this.options.nextMessageSelections?.admission(threadId, input.mode ?? "act")
 			const configuredProvider = await configuredProviderConfig(
 				settings,
-				resolveThreadPick(thread, input.mode ?? "act"),
+				transient?.pick ?? resolveThreadPick(thread, input.mode ?? "act"),
 				modelAuthDependencies(state),
 			)
 			const config = Object.assign(await buildSessionConfig({ ...input, configuredProvider }), {
 				apiSnapshot: { selection: { ...selection, modelSelectionV1: thread }, configuration: {} },
 			})
+			if (transient) Object.assign(config, { [transientAdmission]: transient.commit })
 			config.enableSpawnAgent = settings.subagents.enabled
 			config.subagentSettings = await buildSubagentModelSettings(settings, async (modelId) => {
 				const provider = await configuredProviderConfig(

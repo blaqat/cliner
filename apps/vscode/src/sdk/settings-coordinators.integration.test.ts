@@ -1,7 +1,9 @@
 import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ModelSettings } from "@shared/model-settings"
 import { describe, expect, it, vi } from "vitest"
+import { getSessionApiSnapshot } from "./cline-session-factory"
 import { InMemoryConnectionSecretStore } from "./model-settings/connection-secret-store"
+import { NextMessageModelSelections } from "./model-settings-resolver"
 import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
@@ -269,5 +271,39 @@ it("passes configured subagent allowlist, cap, blocking and access through the s
 				act: { id: "act", connection: { modelId: "act", providerId: "openai-compatible" } },
 			},
 		},
+	})
+})
+
+describe("transient configured runtime selections", () => {
+	it("keeps durable snapshots and isolates threads and modes", async () => {
+		const f = fixture()
+		const next = new NextMessageModelSelections()
+		next.set("first", "act", ask)
+		const builder = new SdkSessionConfigBuilder({
+			stateManager: f.state as never,
+			emitHookMessage: vi.fn(),
+			nextMessageSelections: next,
+		})
+		const input = { cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as const
+		const first = await builder.build(input as never, "first")
+		const other = await builder.build(input as never, "other")
+		const plan = await builder.build({ ...input, mode: "plan" } as never, "first")
+		expect(first.modelId).toBe("ask")
+		expect(other.modelId).toBe("act")
+		expect(plan.modelId).toBe("ask")
+		expect(getSessionApiSnapshot(first)?.selection.modelSelectionV1).toEqual(stable)
+		builder.admission(first)?.()
+		expect(next.peek("first", "act")).toBeUndefined()
+		expect((await builder.build(input as never, "first")).modelId).toBe("act")
+	})
+	it("does not let an old admission consume a newer pick, including after draft transfer", () => {
+		const next = new NextMessageModelSelections()
+		next.set("", "act", ask)
+		const admission = next.admission("", "act")!
+		next.move("", "first")
+		next.set("first", "act", act)
+		admission.commit()
+		expect(next.peek("first", "act")).toEqual(act)
+		expect(next.peek("other", "act")).toBeUndefined()
 	})
 })

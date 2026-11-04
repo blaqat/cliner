@@ -261,21 +261,24 @@ export class SdkModeCoordinator {
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const selection = this.options.getTaskApiSelection?.(oldSessionId) ?? activeSession.apiSnapshot?.selection
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode: newMode,
-				...(selection
-					? {
-							apiSelection: selection,
-							apiConfiguration: resolveApiConfigurationForTaskSelection(
-								this.options.stateManager,
-								this.options.stateManager.getApiConfiguration(newMode),
-								newMode,
-								selection,
-							),
-						}
-					: {}),
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode: newMode,
+					...(selection
+						? {
+								apiSelection: selection,
+								apiConfiguration: resolveApiConfigurationForTaskSelection(
+									this.options.stateManager,
+									this.options.stateManager.getApiConfiguration(newMode),
+									newMode,
+									selection,
+								),
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
 			Logger.log(
 				`[SdkController] Mode rebuild config: mode=${newMode}, provider=${config.providerId}, model=${config.modelId}, hasApiKey=${!!config.apiKey}`,
 			)

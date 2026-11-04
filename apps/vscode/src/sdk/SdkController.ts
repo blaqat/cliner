@@ -1,3 +1,4 @@
+import { NextMessageModelSelections } from "./model-settings-resolver"
 // Replaces classic src/core/controller/index.ts (see origin/main)
 //
 // The SDK-backed Controller. It provides the same interface as the classic
@@ -617,6 +618,7 @@ export class Controller {
 		})
 		this.sessionHistory = new SdkSessionHistoryLoader()
 		this.sessionConfigBuilder = new SdkSessionConfigBuilder({
+			nextMessageSelections: this.configuredNextMessageSelections,
 			stateManager: this.stateManager,
 			emitHookMessage: (msg) => this.messages.emitHookMessage(msg),
 			onConsecutiveMistakeLimitReached: (context) => this.interactions.handleConsecutiveMistakeLimitReached(context),
@@ -782,6 +784,16 @@ export class Controller {
 				this.taskSessions.delete(id)
 			},
 			deferSend: (id, prompt, images, files, delivery) => this.deferOneTurnFollowup(id, prompt, images, files, delivery),
+			onSendAdmission: (id) => {
+				const config = this.sessions.getSession(id)?.startConfig
+				const commit = config && this.sessionConfigBuilder.admission(config)
+				return commit
+					? () => {
+							commit()
+							this.providerChanges.handleApiConfigurationChanged({}, {})
+						}
+					: undefined
+			},
 			onSendStart: (id, delivery) => {
 				const temporary = this.taskSessions.get(id)?.nextMessageSelection
 				if (temporary && !temporary.started) temporary.started = true
@@ -1165,6 +1177,7 @@ export class Controller {
 			},
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
+				this.configuredNextMessageSelections.move("", taskId)
 				this.recordTaskApiSelection(taskId, selection)
 			},
 			recordTaskGroup: (taskId, taskGroupId) => {
@@ -1276,6 +1289,8 @@ export class Controller {
 	 * One-turn choices are armed while idle, retain the prior selection in history,
 	 * and restore it before deferred follow-ups are sent, including after cancel/error.
 	 */
+	private readonly configuredDeferredSends = new Map<string, Array<{ prompt: string; images?: string[]; files?: string[] }>>()
+	private readonly configuredNextMessageSelections = new NextMessageModelSelections()
 	private draftApiSelection?: TaskApiSelection
 
 	/**
@@ -1325,6 +1340,13 @@ export class Controller {
 		delivery?: "queue" | "steer" | "interject",
 	): boolean {
 		const temporary = this.taskSessions.get(id)?.nextMessageSelection
+		const config = this.sessions.getSession(id)?.startConfig
+		if (delivery && config && this.sessionConfigBuilder.admission(config)) {
+			const deferred = this.configuredDeferredSends.get(id) ?? []
+			deferred.push({ prompt, images, files })
+			this.configuredDeferredSends.set(id, deferred)
+			return true
+		}
 		if (delivery === "interject") return false
 		if (!temporary?.started || (!temporary.restoring && !delivery)) return false
 		temporary.deferred.push({ prompt, images, files })
@@ -1346,6 +1368,20 @@ export class Controller {
 		if (reverted && context) context.nextMessageSelection = undefined
 		this.recordTaskApiSelection(taskId, selection)
 		this.refreshTaskApiModel(taskId)
+		const rebuilt = this.sessions.getSession(taskId)
+		if (rebuilt?.startConfig && !this.sessionConfigBuilder.admission(rebuilt.startConfig)) {
+			const deferred = this.configuredDeferredSends.get(taskId) ?? []
+			this.configuredDeferredSends.delete(taskId)
+			for (const [index, message] of deferred.entries())
+				this.sessions.fireAndForgetSend(
+					rebuilt.sdkHost,
+					taskId,
+					message.prompt,
+					message.images,
+					message.files,
+					index ? "queue" : undefined,
+				)
+		}
 		if (reverted) {
 			const session = this.sessions.getSession(taskId)
 			if (session) {
@@ -1388,12 +1424,21 @@ export class Controller {
 		const { useModelSettings } = await import("./model-settings/background")
 		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
 		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
-		if (input.nextMessageOnly) throw new Error("Next-message configured selections are not implemented")
 		const { captureThreadModelSelection, resolveConfiguredPick } = await import("./model-settings-resolver")
 		const settings = this.stateManager.getGlobalStateKey("modelSettings")!
 		resolveConfiguredPick(settings, input.pick)
 		const { assertModelSettingsUnlocked } = await import("./model-settings/host-settings")
 		assertModelSettingsUnlocked(this.stateManager, settings)
+		if (input.nextMessageOnly) {
+			const session = this.sessions.getSession(input.taskId)
+			if (session?.isRunning || session?.queuedPromptCount)
+				throw new Error("Wait for this turn to finish before arming a next-message pick")
+			this.configuredNextMessageSelections.set(input.taskId, input.mode, input.pick)
+			if (session) this.providerChanges.handleApiConfigurationChanged({}, {})
+			await this.postStateToWebview(true)
+			return
+		}
+		this.configuredNextMessageSelections.clear(input.taskId, input.mode)
 		const context = input.taskId ? this.getTaskSessionContext(input.taskId) : undefined
 		const current =
 			context?.pendingApiSelection ??
