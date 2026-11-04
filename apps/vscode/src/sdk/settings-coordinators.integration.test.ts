@@ -11,6 +11,7 @@ import { prepareTaskResumeStartInput } from "./sdk-task-resume"
 
 vi.mock("@/shared/services/Logger", () => ({ Logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock("./model-settings/rollout", () => ({ modelSettingsRolloutEnabled: () => true }))
+vi.mock("./sdk-api-handler", () => ({ buildSdkProviderConfig: vi.fn() }))
 vi.mock("./hooks-adapter", () => ({ buildAgentHooks: () => ({}) }))
 vi.mock("./provider-migration", () => ({
 	getProviderSettingsManager: () => {
@@ -229,5 +230,44 @@ describe("configured selections at coordinator boundaries (rollout explicitly en
 		})
 		historyItem.modelSelectionV1 = { ...stable, act: { ...act, levelId: "removed" } }
 		await expect(prepareTaskResumeStartInput(deps as never, "thread")).rejects.toThrow(/level.*Settings > Models/i)
+	})
+})
+
+it("passes configured subagent allowlist, cap, blocking and access through the session builder", async () => {
+	const f = fixture()
+	const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
+	settings.roles.subagents = { kind: "model", pick: ask }
+	settings.subagents = {
+		enabled: false,
+		maxConcurrent: 2,
+		blocking: "always",
+		access: { write: false, commands: false, web: true, mcp: false },
+		allowed: [
+			{ kind: "model", modelId: "act", levels: ["default"] },
+			{ kind: "thread", levels: ["inherit"] },
+		],
+	}
+	const builder = new SdkSessionConfigBuilder({ stateManager: f.state as never, emitHookMessage: vi.fn() })
+	const config = await builder.build({ cwd: "/tmp", mode: "act", apiSelection: { modelSelectionV1: stable } } as never)
+	expect(config.enableSpawnAgent).toBe(false)
+	expect(config.subagentSettings).toMatchObject({
+		maxConcurrent: 2,
+		allowWrite: false,
+		allowCommands: false,
+		allowWeb: true,
+		allowMcp: false,
+		modelPolicy: {
+			version: 1,
+			default: { model: "ask", level: "default" },
+			blocking: "always",
+			allowed: [
+				{ model: "act", levels: ["default"] },
+				{ model: "parent", levels: ["inherit"] },
+			],
+			models: {
+				ask: { id: "ask", connection: { modelId: "ask", providerId: "openai-compatible" } },
+				act: { id: "act", connection: { modelId: "act", providerId: "openai-compatible" } },
+			},
+		},
 	})
 })

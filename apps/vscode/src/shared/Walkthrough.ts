@@ -203,6 +203,7 @@ export interface WalkthroughNotes {
 
 /** JSON payloads for TaskService's walkthrough RPCs. No file content from the webview is trusted. */
 export interface WalkthroughRequest {
+	pick?: import("./model-settings").ModelPick
 	taskId: string
 	scope: WalkthroughScope
 	profileId?: string

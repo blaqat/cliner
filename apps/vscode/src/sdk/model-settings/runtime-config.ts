@@ -1,5 +1,5 @@
 import { createGateway, type ProviderConfig } from "@cline/llms"
-import { ModelCapabilitySchema } from "@cline/shared"
+import { ModelCapabilitySchema, ModelInfoSchema } from "@cline/shared"
 import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
 import { fetch } from "@/shared/net"
 import { resolveConfiguredPick } from "../model-settings-resolver"
@@ -38,6 +38,16 @@ export async function configuredProviderConfig(
 		dependencies,
 	)
 	const options = prepared.config.options ?? {}
+	const savedInfo = ModelInfoSchema.parse({
+		...model,
+		capabilities: model.capabilities?.flatMap((c) => {
+			const parsed = ModelCapabilitySchema.safeParse(c)
+			return parsed.success ? [parsed.data] : []
+		}),
+		...resolved.model.legacyMetadata?.sdk,
+		...resolved.model.legacyMetadata?.modelInfo,
+		id: resolved.model.upstreamId,
+	})
 	return {
 		providerId: prepared.config.providerId,
 		settingsRequestIntent: resolved.connection.kind === "provider" ? prepared.intent : undefined,
@@ -82,10 +92,12 @@ export async function configuredProviderConfig(
 				: undefined,
 		knownModels: {
 			[resolved.model.upstreamId]: {
+				...savedInfo,
 				id: resolved.model.upstreamId,
-				name: resolved.model.name || resolved.model.upstreamId,
+				name: savedInfo.name ?? (resolved.model.name || resolved.model.upstreamId),
 				contextWindow: resolved.values.contextWindow ?? model.contextWindow ?? 128000,
 				pricing: {
+					...savedInfo.pricing,
 					input: resolved.values.inputPrice ?? undefined,
 					output: resolved.values.outputPrice ?? undefined,
 					cacheRead: resolved.values.cacheReadPrice ?? undefined,
@@ -93,7 +105,7 @@ export async function configuredProviderConfig(
 				},
 				maxTokens: resolved.values.maxOutputTokens ?? undefined,
 				capabilities: [
-					...(model.capabilities ?? [])
+					...(savedInfo.capabilities ?? [])
 						.flatMap((c) => {
 							const parsed = ModelCapabilitySchema.safeParse(c)
 							return parsed.success ? [parsed.data] : []
@@ -101,10 +113,18 @@ export async function configuredProviderConfig(
 						.filter(
 							(c) =>
 								!(c === "images" && resolved.values.images !== "unknown") &&
-								!(c === "reasoning" && resolved.values.reasoning !== "unknown"),
+								!(c === "reasoning" && resolved.values.reasoning !== "unknown") &&
+								!(c === "tools" && resolved.values.tools !== "unknown") &&
+								!(c === "streaming" && resolved.values.streaming !== "unknown") &&
+								!(c === "files" && resolved.values.files !== "unknown") &&
+								!(c === "prompt-cache" && resolved.values.promptCache !== "unknown"),
 						),
 					...(resolved.values.images === "yes" ? ["images" as const] : []),
 					...(resolved.values.reasoning === "yes" ? ["reasoning" as const] : []),
+					...(resolved.values.tools === "yes" ? ["tools" as const] : []),
+					...(resolved.values.streaming === "yes" ? ["streaming" as const] : []),
+					...(resolved.values.files === "yes" ? ["files" as const] : []),
+					...(resolved.values.promptCache === "yes" ? ["prompt-cache" as const] : []),
 				],
 			},
 		},

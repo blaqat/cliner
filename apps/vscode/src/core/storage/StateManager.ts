@@ -262,6 +262,31 @@ export class StateManager {
 		this.scheduleDebouncedPersistence()
 	}
 
+	/** Serialize new settings mutations with migration and other extension windows. */
+	async mutateModelSettings(
+		expectedRevision: number,
+		mutate: (settings: import("@shared/model-settings").ModelSettings) => Promise<void | (() => Promise<void>)>,
+	): Promise<void> {
+		const { createDefaultModelSettings, ModelSettingsSchema } = await import("@shared/model-settings")
+		await this.storage.globalStateBackingStore.withLock(async () => {
+			await this.reloadPersistedState()
+			const current = ModelSettingsSchema.parse(this.getGlobalStateKey("modelSettings") ?? createDefaultModelSettings())
+			if (current.revision !== expectedRevision)
+				throw new Error("Settings changed in another window. Refresh and try again.")
+			const rollback = await mutate(current)
+			try {
+				current.revision++
+				const next = ModelSettingsSchema.parse(current)
+				await this.storage.globalStateBackingStore.setBatch({ modelSettings: next })
+				this.globalStateCache.modelSettings = next
+				this.pendingGlobalState.delete("modelSettings")
+			} catch (error) {
+				await rollback?.()
+				throw error
+			}
+		})
+	}
+
 	/**
 	 * Saves a webview's new stash list as edits to the stash on disk: entries it
 	 * added go on top and entries it removed are dropped, under the settings lock.

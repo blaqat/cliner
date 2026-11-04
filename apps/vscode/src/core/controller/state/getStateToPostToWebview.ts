@@ -10,6 +10,8 @@ import type { ExtensionState, Platform } from "@shared/ExtensionMessage"
 import { maskTerminalEnvironmentScope } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo } from "@/registry"
+import { useModelSettings } from "@/sdk/model-settings/background"
+import { readModelSettingsState } from "@/sdk/model-settings/host-settings"
 import { BannerService } from "@/services/banner/BannerService"
 import { featureFlagsService } from "@/services/feature-flags"
 import { getDistinctId } from "@/services/logging/distinctId"
@@ -120,6 +122,7 @@ export async function getStateToPostToWebview(controller: {
 	}
 
 	return {
+		...(useModelSettings(stateManager) ? { modelSettings: await readModelSettingsState(stateManager) } : {}),
 		version,
 		extensionVariant: getExtensionVariant(),
 		apiConfiguration,

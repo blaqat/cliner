@@ -457,3 +457,340 @@ it("imports changed transport and locked headers once while retaining immutable 
 		"header-two",
 	)
 })
+
+it("preserves every compatible form override and nested SDK metadata through migration and request assembly", async () => {
+	const { readFile } = await import("node:fs/promises")
+	const { configuredProviderConfig } = await import("./runtime-config")
+	const form = await readFile("webview-ui/src/components/settings/providers/OpenAICompatible.tsx", "utf8")
+	const mappedConnectionFields = new Set([
+		"baseUrl",
+		"headers",
+		"reasoning",
+		"openAiCompatibleApiType",
+		"azureApiVersion",
+		"azureIdentity",
+		"planModeOpenAiModelId",
+		"actModeOpenAiModelId",
+	])
+	for (const match of form.matchAll(
+		/handleFieldChange\(\s*"([^"]+)"|write\(\{\s*(\w+)[: ,]|handleModeFieldChange\(\{\s*plan: "([^"]+)", act: "([^"]+)"/g,
+	))
+		for (const field of match.slice(1).filter(Boolean)) expect(mappedConnectionFields.has(field), field).toBe(true)
+	// A new editable metadata control must be represented in this fixture.
+	const editable = [...form.matchAll(/update(?:Numeric)?ModelOverride\("([^"]+)"/g)].map((m) => m[1])
+	const info = {
+		name: "Custom",
+		contextWindow: 96000,
+		maxTokens: 1234,
+		maxInputTokens: 90000,
+		supportsVision: true,
+		supportsAttachments: true,
+		supportsReasoning: true,
+		capabilities: ["tools", "streaming", "prompt-cache"],
+		inputPrice: 2,
+		outputPrice: 3,
+		cacheReadsPrice: 0.2,
+		cacheWritesPrice: 0.4,
+		temperature: 0.7,
+		apiFormat: "default",
+		pricing: { input: 99, output: 99 },
+		reasoningOptions: [{ type: "effort", values: ["low", "high"] }],
+		thinkingConfig: { maxBudget: 8192, outputPrice: 4 },
+		modalities: { input: ["text", "image"], output: ["text"] },
+		operation: "language",
+		operationModes: ["streaming"],
+		metadata: { custom: { nested: ["kept", false, 0] }, apiProtocol: "openai-chat" },
+		description: "User model",
+	}
+	for (const field of editable) expect(Object.hasOwn(info, field), field).toBe(true)
+	const overrideType = await readFile("src/shared/proto-conversions/models/modelOverrides.ts", "utf8")
+	for (const [, field] of overrideType
+		.split("export interface ProviderModelOverrides {")[1]
+		.split("}")[0]
+		.matchAll(/(\w+)\?:/g))
+		expect(Object.hasOwn(info, field), field).toBe(true)
+	const f = fixture({
+		apiConfigProfiles: [
+			{
+				...configuration("a"),
+				options: {
+					...configuration("a").options,
+					openAiHeaders: { "X-Custom": "kept" },
+					azureApiVersion: "test-version",
+				},
+				reasoningEffort: "high",
+			},
+		],
+	})
+	const sdkInput = { models: { version: 1, providers: { "openai-compatible": { models: { "same-model": info } } } } }
+	const before = structuredClone(sdkInput)
+	await migrateModelSettings({ ...f.deps, sdkInput })
+	expect(sdkInput).toEqual(before)
+	const s = f.data.modelSettings as ModelSettings
+	const row = s.models[0]
+	expect(row.legacyMetadata).toMatchObject({ source: "legacy", sdk: info })
+	const config = await configuredProviderConfig(
+		s,
+		{ modelId: row.id, levelId: "high" },
+		{ secrets: f.secrets, environment: {} },
+	)
+	expect(config).toMatchObject({
+		baseUrl: "https://example.test/v1",
+		apiKey: "own-a",
+		headers: { "X-Custom": "kept" },
+		temperature: 0.7,
+		maxOutputTokens: 1234,
+		maxInputTokens: 90000,
+		azure: { apiVersion: "test-version" },
+	})
+	const model = config.knownModels!["same-model"]
+	expect(model).toMatchObject({
+		name: "Custom",
+		contextWindow: 96000,
+		maxTokens: 1234,
+		maxInputTokens: 90000,
+		pricing: { input: 2, output: 3, cacheRead: 0.2, cacheWrite: 0.4 },
+		reasoningOptions: info.reasoningOptions,
+		thinkingConfig: info.thinkingConfig,
+		modalities: info.modalities,
+		operation: "language",
+		operationModes: ["streaming"],
+		metadata: info.metadata,
+		description: "User model",
+		temperature: 0.7,
+		apiFormat: "default",
+	})
+	expect(model.capabilities).toEqual(
+		expect.arrayContaining(["images", "files", "tools", "reasoning", "streaming", "prompt-cache"]),
+	)
+	expect(resolveConfiguredPick(s, { modelId: row.id, levelId: "low" }).values.levels.map((l) => l.id)).toEqual([
+		"default",
+		"low",
+		"high",
+	])
+	const { prepareModelRequest } = await import("./request-adapter")
+	const transport = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("ok"))
+	const resolved = resolveConfiguredPick(s, { modelId: row.id, levelId: "high" })
+	const prepared = await prepareModelRequest(
+		{
+			...resolved,
+			request: { providerId: "openai-compatible", modelId: row.upstreamId, messages: [] },
+			context: { provider: { id: "openai-compatible" }, model, config: { providerId: "openai-compatible" } } as never,
+			requestTimeoutMs: null,
+			fetch: transport as unknown as typeof fetch,
+		},
+		{ secrets: f.secrets, environment: {} },
+	)
+	await prepared.config.fetch!("https://example.test/v1/chat/completions", {
+		body: JSON.stringify({ model: row.upstreamId, messages: [{ role: "system", content: "System" }] }),
+	})
+	expect(JSON.parse(String(transport.mock.calls[0][1]?.body))).toMatchObject({
+		temperature: 0.7,
+		max_tokens: 1234,
+		reasoning_effort: "high",
+	})
+})
+
+for (const variant of [
+	"addition",
+	"model",
+	"limits",
+	"url",
+	"format",
+	"azure",
+	"plain-header",
+	"locked-header",
+	"key",
+	"sdk-metadata",
+	"removal",
+	"roles-only",
+] as const) {
+	it(`retries each durable downgrade-import write: ${variant}`, async () => {
+		const setup = async () => {
+			const f = fixture(seed())
+			const sdkInput = {
+				models: { version: 1, providers: { "openai-compatible": { models: {} as Record<string, unknown> } } },
+			}
+			await migrateModelSettings({ ...f.deps, sdkInput })
+			const original = structuredClone(f.data.modelSettings) as ModelSettings
+			const backup = structuredClone(f.data.modelSettingsBackupV1)
+			const journal = structuredClone(f.data.modelSettingsMigration)
+			const configs = f.data.apiConfigProfiles as Array<ReturnType<typeof configuration>>
+			switch (variant) {
+				case "addition":
+					configs.push(configuration("c"))
+					break
+				case "model":
+					configs[0].modelId = "new-model"
+					break
+				case "limits":
+					Object.assign(configs[0].options, { actModeOpenAiModelInfo: { contextWindow: 64000, maxTokens: 4321 } })
+					break
+				case "url":
+					configs[0].options.openAiBaseUrl = "https://new.test/v1"
+					break
+				case "format":
+					Object.assign(configs[0].options, { openAiCompatibleApiType: "responses" })
+					break
+				case "azure":
+					Object.assign(configs[0].options, { azureApiVersion: "new-version" })
+					break
+				case "plain-header":
+					Object.assign(configs[0].options, { openAiHeaders: { "X-Custom": "new" } })
+					break
+				case "locked-header":
+					Object.assign(configs[0].options, { openAiHeaders: { Authorization: "private-new-header" } })
+					break
+				case "key":
+					f.keys["profile:a:openAiApiKey"] = "private-new-key"
+					break
+				case "sdk-metadata":
+					sdkInput.models.providers["openai-compatible"].models["same-model"] = {
+						pricing: { input: 7 },
+						metadata: { custom: true },
+					}
+					break
+				case "removal":
+					configs.splice(0, 1)
+					break
+				case "roles-only":
+					f.data.threadDefaultProfileId = "b"
+					break
+			}
+			f.interrupt(Infinity)
+			return { f, original, backup, journal, sdkInput }
+		}
+		const baseline = await setup()
+		await migrateModelSettings({ ...baseline.f.deps, sdkInput: baseline.sdkInput })
+		const writes = baseline.f.writes()
+		for (let n = 1; n <= writes; n++) {
+			const { f, original, backup, journal, sdkInput } = await setup()
+			f.interrupt(n)
+			await expect(migrateModelSettings({ ...f.deps, sdkInput })).rejects.toThrow("interrupted")
+			f.interrupt(Infinity)
+			await migrateModelSettings({ ...f.deps, sdkInput })
+			expect(f.data.modelSettings).toEqual(baseline.f.data.modelSettings)
+			expect(f.data.modelSettingsBackupV1).toEqual(backup)
+			const updated = f.data.modelSettings as ModelSettings
+			expect(updated.roles).toEqual(original.roles)
+			for (const row of original.models) expect(updated.models).toContainEqual(row)
+			expect(f.data.modelSettingsMigration).toMatchObject({
+				status: "complete",
+				configurationModels: (journal as { configurationModels: unknown }).configurationModels,
+			})
+			for (const connection of original.connections)
+				if (connection.auth.kind === "keychain")
+					expect(await f.secrets.get(connection.auth.secretRef)).toBe(
+						connection.id.includes(original.models[0].id) ? "own-a" : "own-b",
+					)
+			const before = structuredClone(f.data)
+			await migrateModelSettings({ ...f.deps, sdkInput })
+			expect(f.data).toEqual(before)
+			expect(
+				JSON.stringify([f.data.modelSettings, f.data.modelSettingsMigration, f.data.modelSettingsBackupV1]),
+			).not.toContain("private-new")
+		}
+	})
+}
+
+it("admits SAP client credentials without a fictitious API key and preserves SDK-generated authorization", async () => {
+	const { configuredProviderConfig } = await import("./runtime-config")
+	const f = fixture({
+		apiConfigProfiles: [
+			{
+				...configuration("a", "sapaicore"),
+				options: {
+					sapAiCoreBaseUrl: "https://sap.test",
+					sapAiCoreTokenUrl: "https://token.test",
+					sapAiResourceGroup: "group",
+				},
+			},
+		],
+	})
+	f.keys["profile:a:sapAiCoreClientId"] = "fake-client"
+	f.keys["profile:a:sapAiCoreClientSecret"] = "fake-secret"
+	f.deps.legacySecretKeys.push("profile:a:sapAiCoreClientId", "profile:a:sapAiCoreClientSecret")
+	await migrateModelSettings(f.deps)
+	const s = f.data.modelSettings as ModelSettings
+	expect(s.connections[0].auth).toEqual({ kind: "none" })
+	const config = await configuredProviderConfig(
+		s,
+		{ modelId: s.models[0].id, levelId: "default" },
+		{ secrets: f.secrets, environment: {} },
+	)
+	expect(config.settingsProviderOptions).toMatchObject({
+		clientId: "fake-client",
+		clientSecret: "fake-secret",
+		tokenUrl: "https://token.test",
+		resourceGroup: "group",
+	})
+	const { prepareModelRequest } = await import("./request-adapter")
+	const transport = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("ok"))
+	const prepared = await prepareModelRequest(
+		{
+			...resolveConfiguredPick(s, { modelId: s.models[0].id, levelId: "default" }),
+			requestTimeoutMs: null,
+			request: { providerId: "sapaicore", modelId: "same-model", messages: [] },
+			context: { provider: { id: "sapaicore" }, model: { id: "same-model" }, config: { providerId: "sapaicore" } } as never,
+			fetch: transport as unknown as typeof fetch,
+		},
+		{ secrets: f.secrets, environment: {} },
+	)
+	await prepared.config.fetch!("https://token.test", { headers: { Authorization: "Basic fake-token-exchange" } })
+	expect(new Headers(transport.mock.calls[0][1]?.headers).get("authorization")).toBe("Basic fake-token-exchange")
+	expect(JSON.stringify(s)).not.toContain("fake-secret")
+})
+
+it("uses nested prices, honors explicit false capabilities and preserves explicit legacy defaults", async () => {
+	const f = fixture({
+		apiConfigProfiles: [
+			{
+				...configuration("a"),
+				options: {
+					...configuration("a").options,
+					actModeOpenAiModelInfo: { contextWindow: 128000, inputPrice: 0, maxTokens: -1 },
+				},
+			},
+		],
+	})
+	await migrateModelSettings({
+		...f.deps,
+		sdkInput: {
+			models: {
+				version: 1,
+				providers: {
+					"openai-compatible": {
+						models: {
+							"same-model": {
+								contextWindow: 32000,
+								pricing: { input: 8, output: 9, cacheRead: 1, cacheWrite: 2 },
+								capabilities: ["images", "reasoning", "files", "tools", "streaming"],
+								supportsVision: false,
+								supportsReasoning: false,
+								supportsAttachments: false,
+								supportsTools: false,
+								supportsStreaming: false,
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	const s = f.data.modelSettings as ModelSettings
+	const resolved = resolveConfiguredPick(s, { modelId: s.models[0].id, levelId: "default" })
+	expect(resolved.values).toMatchObject({
+		contextWindow: 128000,
+		maxOutputTokens: null,
+		inputPrice: 0,
+		outputPrice: 9,
+		cacheReadPrice: 1,
+		cacheWritePrice: 2,
+		images: "no",
+		reasoning: "no",
+		files: "no",
+		tools: "no",
+		streaming: "no",
+	})
+	expect(resolved.model.legacyMetadata?.source).toBe("legacy")
+})

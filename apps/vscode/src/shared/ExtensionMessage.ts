@@ -51,6 +51,7 @@ export interface DeletedOpenThread {
 }
 
 export interface ExtensionState {
+	modelSettings?: import("./model-settings-state").ModelSettingsState
 	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
 	subagentView?: {

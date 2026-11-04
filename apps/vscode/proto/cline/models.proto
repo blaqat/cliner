@@ -73,6 +73,23 @@ service ModelsService {
   rpc deleteApiProfile(DeleteApiProfileRequest) returns (Empty);
   // Writes a profile's provider/model/options/secrets into a mode's keys
   rpc assignApiProfile(AssignApiProfileRequest) returns (Empty);
+  rpc setThreadModelSelection(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc getModelSettings(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc saveConnection(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc saveConfiguredModels(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc duplicateConfiguredModel(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc deleteConfiguredModel(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc deleteConnection(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc setModelRoles(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc setSubagentPolicy(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc makeModelDefault(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc getModelSettingsMigrationStatus(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc retryModelSettingsMigration(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc discoverConnectionModels(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc detectConfiguredModel(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc testConnection(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc testConfiguredModel(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
+  rpc previewConfiguredModelRequest(ModelSettingsRequestV1) returns (ModelSettingsResponseV1);
 }
 
 // A saved API configuration: one provider + one model. Secrets are stored in
@@ -917,4 +934,14 @@ message ModelsApiConfiguration {
   optional OpenRouterModelInfo act_mode_cline_model_info = 241;
   optional string act_mode_cline_pass_model_id = 242;
   optional OpenRouterModelInfo act_mode_cline_pass_model_info = 243;
+}
+
+// Validated JSON contracts are defined by modelSettingsRpc.ts and host-settings.ts.
+// JSON preserves absent fields, explicit null, false and zero.
+message ModelSettingsRequestV1 {
+  string json = 1;
+}
+
+message ModelSettingsResponseV1 {
+  string json = 1;
 }

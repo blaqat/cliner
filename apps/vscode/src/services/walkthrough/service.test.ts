@@ -76,9 +76,21 @@ mock.module("@/sdk/sdk-api-handler", () => ({
 		},
 	}),
 }))
+let configuredSettingsEnabled = false
+const actionPicks: unknown[] = []
+mock.module("@/sdk/model-settings/background", () => ({
+	useModelSettings: () => configuredSettingsEnabled,
+	backgroundHandler: async (_state: unknown, _use: string, pick: unknown) => {
+		actionPicks.push(pick)
+		const { buildApiHandler } = await import("@/sdk/sdk-api-handler")
+		return buildApiHandler({} as never, "act")
+	},
+}))
 const { WalkthroughService } = await import("./service")
 
 beforeEach(async () => {
+	configuredSettingsEnabled = false
+	actionPicks.length = 0
 	directory = await realpath(await mkdtemp(path.join(tmpdir(), "walkthrough-service-")))
 	requests = 0
 	rejectGeneration = false
@@ -151,6 +163,29 @@ function service() {
 const request = { taskId: "task", scope: "thread" as const }
 
 describe("walkthrough service", () => {
+	it("uses each Generate action pick without remembering it or changing the next action", async () => {
+		configuredSettingsEnabled = true
+		const { generateChangeWalkthrough } = await import("@/core/controller/task/generateChangeWalkthrough")
+		const host = controller()
+		const first = { modelId: "first", levelId: "high" }
+		const second = { modelId: "second", levelId: "default" }
+		await generateChangeWalkthrough(host, { value: JSON.stringify({ ...request, pick: first }) })
+		await generateChangeWalkthrough(host, { value: JSON.stringify({ ...request, pick: second }) })
+		await generateChangeWalkthrough(host, { value: JSON.stringify(request) })
+		expect(actionPicks).toEqual([first, second, undefined])
+		expect(remembered.id).toBeUndefined()
+		expect(requests).toBe(3)
+	})
+
+	it("rejects a malformed action pick before Generate starts", async () => {
+		configuredSettingsEnabled = true
+		const { generateChangeWalkthrough } = await import("@/core/controller/task/generateChangeWalkthrough")
+		await expect(
+			generateChangeWalkthrough(controller(), { value: JSON.stringify({ ...request, pick: { modelId: "m" } }) }),
+		).rejects.toThrow()
+		expect(actionPicks).toEqual([])
+	})
+
 	it("keys generated caches by review mode", async () => {
 		const host = service()
 		await host.generate({ ...request, profileId: "chosen" })

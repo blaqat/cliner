@@ -4,6 +4,7 @@ import {
 	type Connection,
 	ConnectionOptionsSchema,
 	createDefaultModelSettings,
+	type Json,
 	type ModelPick,
 	ModelProviderOptionsSchema,
 	type ModelSettings,
@@ -276,9 +277,15 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 							? { kind: "keychain", secretRef: keyRef }
 							: provider === "ollama" ||
 									provider === "lmstudio" ||
-									["bedrock", "vertex", "claude-code", "qwen-code", "openai-codex", "opencode"].includes(
-										provider,
-									)
+									[
+										"bedrock",
+										"vertex",
+										"claude-code",
+										"qwen-code",
+										"openai-codex",
+										"opencode",
+										"sapaicore",
+									].includes(provider)
 								? { kind: "none" }
 								: { kind: "keychain", secretRef: `${prefix}${keyField ?? "apiKey"}` },
 			headers: Object.entries(object(options.openAiHeaders ?? {})).map(([name, value], i) => {
@@ -319,6 +326,7 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 		}
 		const effort = text(config.reasoningEffort)
 		const thinkingLevel = text(options[`gemini${mode === "plan" ? "Plan" : "Act"}ModeThinkingLevel`])
+		const sdkValues = sdkInfo ? sdkModelValues(object(sdkInfo)) : {}
 		const levels = [
 			{
 				id: "default",
@@ -327,7 +335,11 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				request: thinkingLevel ? { kind: "thinking-level" as const, value: thinkingLevel } : { kind: "default" as const },
 			},
 			...Array.from(
-				new Set([effort, ...profiles.filter((p) => p.configurationId === sourceId).map((p) => text(p.reasoningEffort))]),
+				new Set([
+					...(sdkValues.levels ?? []).filter((l) => l.request.kind === "effort").map((l) => l.id),
+					effort,
+					...profiles.filter((p) => p.configurationId === sourceId).map((p) => text(p.reasoningEffort)),
+				]),
 			)
 				.filter((e): e is string => !!e && e !== "none")
 				.map((e, i) => ({ id: e, label: e, rank: i + 1, request: { kind: "effort" as const, value: e } })),
@@ -341,10 +353,19 @@ export async function migrateModelSettings(deps: MigrationDependencies): Promise
 				name: text(config.name) ?? (sdkInfo ? text(object(sdkInfo).name) : undefined) ?? "",
 				kind: sdkInfo && object(sdkInfo).operation && object(sdkInfo).operation !== "language" ? "non-chat" : "unknown",
 				overrides: {
-					...(sdkInfo ? sdkModelValues(object(sdkInfo)) : {}),
+					...sdkValues,
 					...legacyModelValues(options, mode),
 					levels,
 					...(levels.length > 1 || thinkingLevel ? { reasoning: "yes" } : {}),
+				},
+				legacyMetadata: {
+					source: "legacy",
+					...(sdkInfo ? { sdk: nonsecret(sdkInfo) as Record<string, Json> } : {}),
+					modelInfo: nonsecret(
+						Object.entries(options).find(
+							([k, v]) => k.startsWith(`${mode}Mode`) && k.endsWith("ModelInfo") && v && typeof v === "object",
+						)?.[1] ?? {},
+					) as Record<string, Json>,
 				},
 				providerOptions: ModelProviderOptionsSchema.parse(
 					Object.fromEntries(

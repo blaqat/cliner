@@ -280,3 +280,61 @@ describe("configured native HTTP transport", () => {
 		}
 	})
 })
+
+it("maps every actual provider registry option into configured runtime admission", () => {
+	const aliases: Record<string, string> = {
+		"gcp.projectId": "project",
+		"gcp.region": "location",
+		"aws.accessKey": "accessKeyId",
+		"aws.secretKey": "secretAccessKey",
+	}
+	for (const provider of createGateway().listProviders()) {
+		const slots = new Set(Object.values(providerOptionMappings[provider.id] ?? {}))
+		for (const field of provider.metadata?.configFields ?? []) {
+			if (["apiKey", "baseUrl"].includes(field.path)) continue
+			const slot = aliases[field.path] ?? field.path.replace(/^(aws|oca)\./, "")
+			expect(slots.has(slot), `${provider.id}: ${field.path}`).toBe(true)
+		}
+	}
+})
+
+for (const [providerId, options, expected] of [
+	[
+		"qwen-code",
+		{ qwenApiLine: "china", qwenCodeOauthPath: "/isolated/oauth.json" },
+		{ apiLine: "china", oauthPath: "/isolated/oauth.json" },
+	],
+	["oca", { ocaMode: "internal", ocaUsePromptCache: false }, { mode: "internal", usePromptCache: false }],
+] as const) {
+	it(`projects explicit ${providerId} registry controls without losing false`, async () => {
+		const settings = createDefaultModelSettings()
+		settings.connections.push({
+			id: "connection",
+			name: providerId,
+			kind: "provider",
+			providerId,
+			baseUrl: null,
+			auth: { kind: "none" },
+			headers: [],
+			requestTimeoutMs: null,
+			defaults: {},
+			options,
+			secretRefs: {},
+		})
+		settings.models.push({
+			id: "row",
+			connectionId: "connection",
+			upstreamId: "test",
+			name: "Test",
+			kind: "chat",
+			overrides: {},
+			providerOptions: {},
+		})
+		const config = await configuredProviderConfig(
+			settings,
+			{ modelId: "row", levelId: "default" },
+			{ secrets: new InMemoryConnectionSecretStore(), environment: {} },
+		)
+		expect(config.settingsProviderOptions).toMatchObject(expected)
+	})
+}

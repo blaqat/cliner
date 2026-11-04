@@ -147,7 +147,9 @@ export async function prepareModelRequest(
 			connection.auth.kind === "none" &&
 			!(
 				connection.kind === "provider" &&
-				["bedrock", "vertex", "claude-code", "qwen-code", "openai-codex", "opencode"].includes(connection.providerId)
+				["bedrock", "vertex", "claude-code", "qwen-code", "openai-codex", "opencode", "sapaicore"].includes(
+					connection.providerId,
+				)
 			)
 		) {
 			const headers = new Headers(init?.headers)

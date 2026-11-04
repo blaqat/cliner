@@ -11,6 +11,7 @@ import { modelAuthDependencies } from "./model-settings/auth-dependencies"
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 import { configuredProviderConfig } from "./model-settings/runtime-config"
 import { captureThreadModelSelection, migrateThreadModelSelection, resolveThreadPick } from "./model-settings-resolver"
+import { buildSubagentModelSettings } from "./subagent-profiles"
 
 export interface SdkSessionConfigBuilderOptions {
 	stateManager: StateManager
@@ -45,6 +46,25 @@ export class SdkSessionConfigBuilder {
 			)
 			const config = Object.assign(await buildSessionConfig({ ...input, configuredProvider }), {
 				apiSnapshot: { selection: { ...selection, modelSelectionV1: thread }, configuration: {} },
+			})
+			config.enableSpawnAgent = settings.subagents.enabled
+			config.subagentSettings = await buildSubagentModelSettings(settings, async (modelId) => {
+				const provider = await configuredProviderConfig(
+					settings,
+					{ modelId, levelId: "default" },
+					modelAuthDependencies(state),
+				)
+				return {
+					connection: {
+						providerId: provider.providerId,
+						modelId: provider.modelId!,
+						apiKey: provider.apiKey,
+						baseUrl: provider.baseUrl,
+						headers: provider.headers,
+						providerConfig: provider,
+					},
+					levels: provider.settingsModelLevels,
+				}
 			})
 			if (this.options.onConsecutiveMistakeLimitReached)
 				config.onConsecutiveMistakeLimitReached = this.options.onConsecutiveMistakeLimitReached

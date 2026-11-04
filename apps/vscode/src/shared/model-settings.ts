@@ -68,7 +68,7 @@ export type CompatibleConnection = ConnectionBase & {
 export type ProviderConnection = ConnectionBase & {
 	kind: "provider"
 	providerId: string // canonical SDK spelling
-	options: Partial<ApiHandlerOptions>
+	options: Partial<ApiHandlerOptions> & { ocaUsePromptCache?: boolean }
 	secretRefs: Record<string, SecretRef>
 }
 export type Connection = CompatibleConnection | ProviderConnection
@@ -80,6 +80,7 @@ export type ModelRow = {
 	kind: "chat" | "non-chat" | "unknown"
 	overrides: Partial<ModelValues>
 	providerOptions: Partial<ApiHandlerOptions> // model-specific settings only
+	legacyMetadata?: { source: "legacy"; sdk?: Record<string, Json>; modelInfo?: Record<string, Json> }
 }
 export type ModelPick = { modelId: ModelId; levelId: LevelId }
 export type ThreadModelPick = { kind: "thread"; level: "inherit" | LevelId }
@@ -307,6 +308,7 @@ const connectionOptionShape = {
 	ocaBaseUrl: z.string(),
 	minimaxApiLine: z.string(),
 	ocaMode: z.string(),
+	ocaUsePromptCache: z.boolean(),
 	aihubmixBaseUrl: z.string(),
 	aihubmixAppCode: z.string(),
 }
@@ -377,6 +379,14 @@ export const ModelRowSchema = z
 		kind: z.enum(["chat", "non-chat", "unknown"]),
 		overrides: ModelValuesSchema.partial(),
 		providerOptions: ModelProviderOptionsSchema,
+		legacyMetadata: z
+			.object({
+				source: z.literal("legacy"),
+				sdk: z.record(z.string(), json).optional(),
+				modelInfo: z.record(z.string(), json).optional(),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict()
 export const ModelPickSchema = z.object({ modelId: id, levelId: id }).strict()

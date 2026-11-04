@@ -1378,6 +1378,42 @@ export class Controller {
 		this.recordTaskApiSelection(taskId, resolved)
 	}
 
+	/** New host contract. Stable selections never write legacy mode/provider keys. */
+	async setConfiguredThreadSelection(input: {
+		taskId: string
+		mode: Mode
+		pick: import("@shared/model-settings").ModelPick
+		nextMessageOnly: boolean
+	}): Promise<void> {
+		const { useModelSettings } = await import("./model-settings/background")
+		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
+		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
+		if (input.nextMessageOnly) throw new Error("Next-message configured selections are not implemented")
+		const { captureThreadModelSelection, resolveConfiguredPick } = await import("./model-settings-resolver")
+		const settings = this.stateManager.getGlobalStateKey("modelSettings")!
+		resolveConfiguredPick(settings, input.pick)
+		const { assertModelSettingsUnlocked } = await import("./model-settings/host-settings")
+		assertModelSettingsUnlocked(this.stateManager, settings)
+		const context = input.taskId ? this.getTaskSessionContext(input.taskId) : undefined
+		const current =
+			context?.pendingApiSelection ??
+			context?.apiSelection ??
+			this.draftApiSelection ??
+			captureTaskApiSelection(this.stateManager)
+		const selection = structuredClone(current)
+		selection.modelSelectionV1 ??= captureThreadModelSelection(settings)
+		selection.modelSelectionV1[input.mode === "plan" ? "ask" : "act"] = input.pick
+		if (!input.taskId) this.draftApiSelection = selection
+		else {
+			context!.pendingApiSelection = selection
+			const session = this.sessions.getSession(input.taskId)
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+			} else this.recordTaskApiSelection(input.taskId, selection)
+		}
+		await this.postStateToWebview(true)
+	}
+
 	/** Composer RPC. Only the Settings branch of assignApiProfile writes defaults. */
 	async updateChatApiSelection(mode: Mode, request: AssignApiProfileRequest): Promise<void> {
 		const taskId = this.task?.taskId
