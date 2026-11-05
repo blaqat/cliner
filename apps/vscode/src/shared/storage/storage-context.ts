@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto"
 import fsSync from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { name as extensionName } from "../../../package.json"
+import { Logger } from "../services/Logger"
 import { ClineFileStorage } from "./ClineFileStorage"
 import { ClineMemento } from "./ClineStorage"
 
@@ -34,6 +37,9 @@ export interface StorageContext {
 	/** The resolved path to the data directory (~/.cline/data) */
 	readonly dataDir: string
 
+	/** Where this build's global state, secrets and workspace state live: see `resolveStateDirFromEnv`. */
+	readonly stateDir: string
+
 	/** The resolved path to the workspace storage directory (contains workspaceState.json) */
 	readonly workspaceStoragePath: string
 }
@@ -61,9 +67,23 @@ export interface StorageContextOptions {
 	 * once the JetBrains client side is cleaned up.
 	 */
 	workspaceStorageDir?: string
+
+	/** Keep state in this subfolder of the data directory. Defaults to `stateNamespace()`. */
+	stateNamespace?: string
 }
 
 const SETTINGS_SUBFOLDER = "data"
+
+/** Owner read/write only — protects API keys. */
+const SECRETS_MODE = 0o600
+
+/**
+ * A renamed build installs beside the Marketplace extension, and both activate on startup. That
+ * extension loads these JSON files once and writes its whole copy back on every save, so sharing
+ * them undoes whatever this build saved since it started. The rest of the data directory (sessions,
+ * task notebooks, MCP settings) isn't rewritten that way, and stays shared.
+ */
+export const stateNamespace = (): string | undefined => (extensionName === "claude-dev" ? undefined : extensionName)
 
 /**
  * Create a short deterministic hash of a string for use in directory names.
@@ -99,6 +119,37 @@ export function resolveDataDirFromEnv(): string {
 	return path.join(clineDir, SETTINGS_SUBFOLDER)
 }
 
+/** Where this build's own JSON stores live: the data directory, or its subfolder for a renamed build. */
+export function resolveStateDirFromEnv(namespace = stateNamespace()): string {
+	return namespace ? path.join(resolveDataDirFromEnv(), namespace) : resolveDataDirFromEnv()
+}
+
+/**
+ * Starts a store from the shared one the first time, so nobody loses their setup moving over. Atomic
+ * and never overwrites: windows starting together after a restart can't half-write or replace it.
+ */
+function adoptOnce(from: string, to: string, mode?: number): void {
+	if (from === to || fsSync.existsSync(to) || !fsSync.existsSync(from)) return
+	const staged = `${to}.adopt.${randomUUID()}`
+	const alreadyThere = (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST"
+	try {
+		fsSync.mkdirSync(path.dirname(to), { recursive: true })
+		fsSync.copyFileSync(from, staged)
+		if (mode !== undefined) fsSync.chmodSync(staged, mode)
+		try {
+			fsSync.linkSync(staged, to)
+		} catch (error) {
+			// A drive without hard links: not atomic, but still never overwrites.
+			if (!alreadyThere(error)) fsSync.copyFileSync(staged, to, fsSync.constants.COPYFILE_EXCL)
+		}
+	} catch (error) {
+		// Starting without the old setup beats not starting; it's tried again until this build saves.
+		if (!alreadyThere(error)) Logger.error(`[StorageContext] Couldn't copy ${from} to ${to}:`, error)
+	} finally {
+		fsSync.rmSync(staged, { force: true })
+	}
+}
+
 /**
  * Creates a StorageContext backed by JSON files on disk.
  *
@@ -110,11 +161,15 @@ export function resolveDataDirFromEnv(): string {
  *   <dataDir>/secrets.json        — secrets (mode 0o600)
  *   <dataDir>/workspaces/<hash>/workspaceState.json — per-workspace state
  *
+ * A renamed build keeps these under <dataDir>/<name>/ instead (see `stateNamespace`).
+ *
  * @param opts Configuration options for path resolution
  * @returns A StorageContext ready for use by StateManager
  */
 export function createStorageContext(opts: StorageContextOptions = {}): StorageContext {
 	const dataDir = opts.clineDir ? path.join(opts.clineDir, SETTINGS_SUBFOLDER) : resolveDataDirFromEnv()
+	const namespace = "stateNamespace" in opts ? opts.stateNamespace : stateNamespace()
+	const stateDir = namespace ? path.join(dataDir, namespace) : dataDir
 
 	// Resolve workspace storage directory
 	let workspaceDir: string
@@ -125,23 +180,30 @@ export function createStorageContext(opts: StorageContextOptions = {}): StorageC
 		// Hash-based workspace isolation (CLI, VSCode)
 		const workspacePath = opts.workspacePath || process.cwd()
 		const workspaceHash = hashString(workspacePath)
-		workspaceDir = path.join(dataDir, "workspaces", workspaceHash)
+		workspaceDir = path.join(stateDir, "workspaces", workspaceHash)
+		adoptOnce(
+			path.join(dataDir, "workspaces", workspaceHash, "workspaceState.json"),
+			path.join(workspaceDir, "workspaceState.json"),
+		)
 	}
 
 	// Ensure directories exist
-	fsSync.mkdirSync(dataDir, { recursive: true })
+	fsSync.mkdirSync(stateDir, { recursive: true })
 	fsSync.mkdirSync(workspaceDir, { recursive: true })
+	adoptOnce(path.join(dataDir, "globalState.json"), path.join(stateDir, "globalState.json"))
+	adoptOnce(path.join(dataDir, "secrets.json"), path.join(stateDir, "secrets.json"), SECRETS_MODE)
 
-	const globalState = new ClineFileStorage(path.join(dataDir, "globalState.json"), "GlobalState")
+	const globalState = new ClineFileStorage(path.join(stateDir, "globalState.json"), "GlobalState")
 
 	return {
 		globalState,
 		globalStateBackingStore: globalState,
-		secrets: new ClineFileStorage<string>(path.join(dataDir, "secrets.json"), "Secrets", {
-			fileMode: 0o600, // Owner read/write only — protects API keys
+		secrets: new ClineFileStorage<string>(path.join(stateDir, "secrets.json"), "Secrets", {
+			fileMode: SECRETS_MODE,
 		}),
 		workspaceState: new ClineFileStorage(path.join(workspaceDir, "workspaceState.json"), "WorkspaceState"),
 		dataDir,
+		stateDir,
 		workspaceStoragePath: workspaceDir,
 	}
 }

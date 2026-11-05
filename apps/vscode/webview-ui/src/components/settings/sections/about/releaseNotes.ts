@@ -17,9 +17,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–58",
+		builds: "test builds fork.39–59",
 		date: "2026-11-04",
 		notes: [
+			"With main Cline installed too, your models and settings no longer disappear after a restart: this build keeps its own copy, started from what you had",
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
 			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search across them, and a Changed chip that lists what isn't the default and resets it",
 			"Images and tools are Yes or No, and No unless the catalog knows the model; OpenAI's built-in image and web tools only go to OpenAI's own servers",
