@@ -440,16 +440,16 @@ describe("ChatTextArea when the mode has no model to run on", () => {
 		mocks.state = {}
 	})
 
-	it("blocks sending, says why, and Pick another opens the model menu", async () => {
+	it("blocks sending, says why, and Pick one opens the model menu", async () => {
 		const { onSend, textarea } = renderBlocked()
-		expect(screen.getByTestId("model-send-block")).toHaveTextContent("The model this chat used is gone.")
+		expect(screen.getByTestId("model-send-block")).toHaveTextContent("No Act model is picked.")
 		const send = screen.getByTestId("send-button")
 		expect(send).toBeDisabled()
-		expect(send).toHaveAttribute("title", "The model this chat used is gone.")
+		expect(send).toHaveAttribute("title", "No Act model is picked.")
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		expect(onSend).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByTestId("model-send-block-fix"))
-		expect(await screen.findByTestId("model-menu-note")).toHaveTextContent("Pick another")
+		expect(await screen.findByTestId("model-menu-note")).toHaveTextContent("Pick one here, or set the default in")
 	})
 
 	it("switching modes still works", async () => {

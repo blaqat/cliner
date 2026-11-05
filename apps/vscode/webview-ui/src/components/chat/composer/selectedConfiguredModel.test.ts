@@ -44,11 +44,14 @@ describe("selectedConfiguredModel", () => {
 		} as never
 		expect(selectedConfiguredModel(s, "act")?.pick).toEqual({ modelId: "leveled", levelId: "high" })
 	})
-	it("is undefined for a pick whose model is gone", () => {
+	it("follows the default for a pick whose model is gone, and is undefined with no default", () => {
 		const s = state()
 		s.composerApiSelection = {
 			modelSelectionV1: { version: 1, act: { modelId: "gone", levelId: "default" }, ask: null },
 		} as never
+		const fallback = s.modelSettings!.settings.roles.chat
+		expect(selectedConfiguredModel(s, "act")?.pick).toEqual(fallback)
+		s.modelSettings!.settings.roles.chat = null
 		expect(selectedConfiguredModel(s, "act")).toBeUndefined()
 	})
 	it("the effort control follows the selected model's own levels", () => {

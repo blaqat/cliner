@@ -192,6 +192,10 @@ export class SdkModeCoordinator {
 			await this.options.postStateToWebview()
 			return sent && !!(chatContent?.message?.trim() || chatContent?.images?.length || chatContent?.files?.length)
 		}
+		// A notice is already waiting from a switch that ended the session, so this one counts against it.
+		if (task && this.modeSwitchNoticeSessionId === task.taskId) {
+			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
+		}
 		await this.options.postStateToWebview()
 		return false
 	}

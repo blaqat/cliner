@@ -226,7 +226,7 @@ describe("configured selections at coordinator boundaries (rollout explicitly en
 		f.settings.roles.chat = null
 		expect((await prepareTaskResumeStartInput(deps as never, "thread")).sessionMetadata?.modelSelectionV1).toEqual(stable)
 		f.settings.models = f.settings.models.filter((model) => model.id !== act.modelId)
-		await expect(prepareTaskResumeStartInput(deps as never, "thread")).rejects.toThrow(/model.*was removed\. Pick another/i)
+		await expect(prepareTaskResumeStartInput(deps as never, "thread")).rejects.toThrow(/No model selected/)
 		f.settings.models.push({
 			id: "act",
 			connectionId: "connection",
@@ -585,25 +585,37 @@ describe("a thread's pick for a mode", () => {
 			apiSelection: { modelSelectionV1: { version: 1, act, ...thread } },
 		} as never)
 
-	it("follows the default when there isn't one, as its model menu shows, so setting one in Settings reaches it", async () => {
+	const gone = { modelId: "gone", levelId: "default" }
+
+	it.each([
+		["has none", null],
+		["names a removed model", gone],
+	])("runs on the default when it %s, so setting one in Settings reaches it", async (_name, pick) => {
 		const f = fixture()
 		const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
-		expect((await build(f, { ask: null })).modelId).toBe("ask")
+		expect((await build(f, { ask: pick })).modelId).toBe("ask")
 		settings.roles.ask = { enabled: false, pick: null }
-		expect((await build(f, { ask: null })).modelId).toBe("new-default")
+		expect((await build(f, { ask: pick })).modelId).toBe("new-default")
+	})
+
+	it("keeps naming the removed model, so a later default still reaches it", async () => {
+		const f = fixture()
+		const config = await build(f, { ask: gone })
+		expect(getSessionApiSnapshot(config)?.selection.modelSelectionV1).toMatchObject({ ask: gone })
+		expect(getSessionApiSnapshot(config)?.configuredModel).toMatchObject({ modelId: "ask" })
 	})
 
 	it.each([
-		["nothing is picked anywhere", { ask: null }, /No model selected/],
-		["its model is gone", { ask: { modelId: "gone", levelId: "default" } }, /was removed\. Pick another/],
-	])("says it can't run when %s, in the error a mode switch carries on past", async (_name, thread, message) => {
+		["has none", null],
+		["names a removed model", gone],
+	])("with no default either, one that %s says it can't run, in the error a mode switch carries on past", async (_name, pick) => {
 		const f = fixture()
 		const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
 		settings.roles.chat = null
 		settings.roles.ask = { enabled: false, pick: null }
-		const refused = build(f, thread)
+		const refused = build(f, { ask: pick })
 		await expect(refused).rejects.toBeInstanceOf(ModelPickUnavailableError)
-		await expect(refused).rejects.toThrow(message)
+		await expect(refused).rejects.toThrow(/No model selected/)
 	})
 })
 

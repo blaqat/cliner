@@ -1,4 +1,5 @@
 import type { CostBreakdownRow } from "@shared/getApiMetrics"
+import { effectiveThreadPick } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
 import { FoldVerticalIcon, Minimize2Icon } from "lucide-react"
 import { memo, useState } from "react"
@@ -420,10 +421,13 @@ export function useComposerContextUsage(
 	const model = useFocusedChatModel(mode)
 	const state = useExtensionState()
 	const settings = state.modelSettings
-	const roles = settings?.settings.roles
 	const pick =
-		state.composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ??
-		(mode === "plan" && roles?.ask.enabled ? roles.ask.pick : roles?.chat)
+		settings &&
+		effectiveThreadPick(
+			settings.settings,
+			state.composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"],
+			mode,
+		)
 	const planning = pick && settings?.planning[pick.modelId]
 	const costVisible = useTaskCostVisible(model, totalCost)
 	return {

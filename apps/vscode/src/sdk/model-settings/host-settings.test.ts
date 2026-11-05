@@ -288,7 +288,7 @@ describe("Phase 4 host boundaries", () => {
 			defaults: { contextWindow: null, temperature: 0, free: false },
 		})
 	})
-	it("saved threads warn but don't block, and a reopened thread refuses with the route", async () => {
+	it("saved threads are counted and don't block a removal, and the removed pick itself won't resolve", async () => {
 		const f = fixture()
 		await f.call("saveConnection", { expectedRevision: 0, connection: createCompatibleConnection("c") })
 		await f.call("saveConfiguredModels", {

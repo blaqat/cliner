@@ -727,6 +727,26 @@ describe("SdkModeCoordinator", () => {
 			expect(coordinator.consumeModeSwitchNotice("old-session")).toBeTruthy()
 		})
 
+		it("the notice stays true through more switches with no session", async () => {
+			const activeSession = makeActiveSession()
+			const { coordinator, options } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+			await coordinator.togglePlanActMode("plan")
+			options.sessions.getActiveSession.mockReturnValue(undefined)
+
+			// There and back again: the transcript's mode is right, so nothing needs saying.
+			await coordinator.togglePlanActMode("act")
+			expect(coordinator.consumeModeSwitchNotice("old-session")).toBeNull()
+
+			await coordinator.togglePlanActMode("plan")
+			expect(coordinator.consumeModeSwitchNotice("old-session")).toMatchObject({ from: "act", to: "plan" })
+		})
+
 		it("Continue in Act keeps the draft and sends nothing", async () => {
 			const activeSession = makeActiveSession()
 			const { coordinator, options, state } = makeCoordinator({

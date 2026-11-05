@@ -1,4 +1,4 @@
-import type { ModelPick } from "@shared/model-settings"
+import { effectiveThreadPick, type ThreadModelSelection } from "@shared/model-settings"
 import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
@@ -74,23 +74,23 @@ export interface ModelSendBlock {
 
 export function modelSendBlock(
 	state: ModelSettingsState | undefined,
-	apiSelection: { modelSelectionV1?: { ask: ModelPick | null; act: ModelPick | null } } | undefined,
+	apiSelection: { modelSelectionV1?: ThreadModelSelection } | undefined,
 	mode: Mode,
 ): ModelSendBlock | undefined {
 	// Before the move has made the store, the last selection still runs.
 	if (!state) return undefined
-	const { connections, models, roles } = state.settings
-	const fallback = mode === "plan" && roles.ask.enabled ? roles.ask.pick : roles.chat
-	const pick = apiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ?? fallback
-	const usable = (candidate: (typeof models)[number]) =>
-		candidate.kind !== "non-chat" && connections.some((connection) => connection.id === candidate.connectionId)
-	if (!pick) {
-		return models.some(usable)
-			? { reason: `No ${mode === "plan" ? "Ask" : "Act"} model is picked.`, fix: "Pick one", setUp: false }
-			: { reason: "No models are set up.", fix: "Set one up", setUp: true }
-	}
-	const model = models.find((candidate) => candidate.id === pick.modelId)
-	return model && usable(model) ? undefined : { reason: "The model this chat used is gone.", fix: "Pick another", setUp: false }
+	const saved = apiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"]
+	if (effectiveThreadPick(state.settings, saved, mode)) return undefined
+	const { connections, models } = state.settings
+	const canPick = models.some(
+		(model) =>
+			model.kind !== "non-chat" &&
+			model.enabled !== false &&
+			connections.some((connection) => connection.id === model.connectionId),
+	)
+	return canPick
+		? { reason: `No ${mode === "plan" ? "Ask" : "Act"} model is picked.`, fix: "Pick one", setUp: false }
+		: { reason: "No models are set up.", fix: "Set one up", setUp: true }
 }
 
 /** The model settings store, through its RPCs. */
@@ -114,7 +114,11 @@ function useModelSettingsSelection(mode: Mode) {
 		const askHasOwnModel = mode === "plan" && roles.ask.enabled
 		const defaultModelPick = askHasOwnModel ? roles.ask.pick : roles.chat
 		const defaultPick = defaultModelPick && { rowId: defaultModelPick.modelId, levelId: defaultModelPick.levelId }
-		const threadPick = composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ?? defaultModelPick
+		const threadPick = effectiveThreadPick(
+			state.settings,
+			composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"],
+			mode,
+		)
 		const pick = threadPick && { rowId: threadPick.modelId, levelId: threadPick.levelId }
 		const { rows, ladder } = selectorDataFromModelSettings(state, [
 			threadPick?.modelId,
@@ -164,14 +168,11 @@ function useModelSettingsSelection(mode: Mode) {
 			})
 		}
 
-		const orphaned = !!pick && !row
 		const note =
 			error ??
-			(orphaned
-				? "The model this chat used is gone. Pick another."
-				: rows.length > 0 && !pick
-					? `No ${roleLabel} model is picked, so nothing can run. Pick one here, or set the default in`
-					: undefined)
+			(rows.length > 0 && !pick
+				? `No ${roleLabel} model is picked, so nothing can run. Pick one here, or set the default in`
+				: undefined)
 
 		return {
 			rows,
@@ -198,7 +199,7 @@ function useModelSettingsSelection(mode: Mode) {
 				: undefined,
 			disabledReason: nextMessageOnly && busy ? LOCKED_REASON : undefined,
 			note,
-			noteLink: !error && !orphaned && note ? "Settings › Models" : undefined,
+			noteLink: !error && note ? "Settings › Models" : undefined,
 			busy,
 			hasChat: !!currentTaskItem,
 			nextMessageOnly,

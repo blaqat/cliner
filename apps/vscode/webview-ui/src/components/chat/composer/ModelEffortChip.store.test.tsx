@@ -494,14 +494,31 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(mocks.navigateToSettings).toHaveBeenCalledWith("models")
 		})
 
-		it("a thread whose model is gone says to pick another", async () => {
+		it("a thread whose model is gone runs on the default", async () => {
+			const state = modelSettingsFixture()
+			mocks.state.modelSettings = state
+			mocks.state.composerApiSelection = {
+				modelSelectionV1: { version: 1, act: { modelId: "gone", levelId: "low" }, ask: null },
+			}
+			const fallback = state.settings.models.find((model) => model.id === state.settings.roles.chat?.modelId)
+			renderChip()
+			expect(chip()).toHaveTextContent(fallback?.name as string)
+			await openMenu()
+			expect(screen.queryByTestId("model-menu-note")).toBeNull()
+			expect(within(models()).getByRole("option", { selected: true })).toHaveTextContent(fallback?.name as string)
+		})
+
+		it("a thread whose model is gone asks for one when there's no default", async () => {
+			const state = modelSettingsFixture()
+			state.settings.roles.chat = null
+			mocks.state.modelSettings = state
 			mocks.state.composerApiSelection = {
 				modelSelectionV1: { version: 1, act: { modelId: "gone", levelId: "low" }, ask: null },
 			}
 			renderChip()
 			expect(chip()).toHaveTextContent("Pick a model")
 			await openMenu()
-			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("The model this chat used is gone. Pick another.")
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Pick one here, or set the default in")
 			expect(within(models()).queryByRole("option", { selected: true })).toBeNull()
 		})
 	})

@@ -1,6 +1,6 @@
 import type { CoreSessionConfig } from "@cline/core"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
-import type { ModelLevel, ModelPick, ModelSettings } from "@shared/model-settings"
+import { effectiveThreadPick, type ModelLevel, type ModelPick, type ModelSettings } from "@shared/model-settings"
 import type { Mode, OpenaiReasoningEffort } from "@shared/storage/types"
 import {
 	captureTaskApiSelection,
@@ -78,11 +78,7 @@ export class SdkSessionConfigBuilder {
 			const transient =
 				threadId === undefined ? undefined : this.options.nextMessageSelections?.admission(threadId, input.mode ?? "act")
 			const mode = input.mode ?? "act"
-			// A thread with no pick for this mode follows the default, as its model menu shows.
-			const pick =
-				transient?.pick ??
-				resolveThreadPick(thread, mode) ??
-				captureThreadModelSelection(settings)[mode === "plan" ? "ask" : "act"]
+			const pick = effectiveThreadPick(settings, transient?.pick ?? resolveThreadPick(thread, mode), mode)
 			const configuredProvider = await configuredProviderConfig(settings, pick, modelAuthDependencies(state), {
 				state,
 				mode,

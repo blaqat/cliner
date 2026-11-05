@@ -65,7 +65,7 @@ export const RemoveFlow = ({
 			{used.length > 0 && <span className="text-description">Also clears it from {listWords(used)}.</span>}
 			{savedThreads > 0 && (
 				<span className="text-description">
-					{savedThreads === 1 ? "1 saved thread" : `${savedThreads} saved threads`} will ask for a new model.
+					{savedThreads === 1 ? "1 saved thread" : `${savedThreads} saved threads`} will switch to your default.
 				</span>
 			)}
 			{error && <Why tone="bad">{error}</Why>}

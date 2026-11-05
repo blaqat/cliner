@@ -40,9 +40,13 @@ describe("modelSendBlock", () => {
 		expect(modelSendBlock(state({ ask: "m" }), thread(null, null), "plan")).toBeUndefined()
 	})
 
-	it("a pick whose model is gone blocks, even with a default set: the thread is asked, not moved", () => {
-		expect(modelSendBlock(state({ chat: "m" }), thread("gone", null), "act")).toMatchObject({
-			reason: "The model this chat used is gone.",
+	it("a pick whose model is gone follows the default; with no default it asks for one", () => {
+		expect(modelSendBlock(state({ chat: "m" }), thread("gone", null), "act")).toBeUndefined()
+		expect(modelSendBlock(state({ chat: "m" }), thread(null, "gone"), "plan")).toBeUndefined()
+		expect(modelSendBlock(state({ ask: "m" }), thread(null, "gone"), "plan")).toBeUndefined()
+		expect(modelSendBlock(state(), thread("gone", null), "act")).toMatchObject({
+			reason: "No Act model is picked.",
+			fix: "Pick one",
 			setUp: false,
 		})
 	})
@@ -57,5 +61,8 @@ describe("modelSendBlock", () => {
 		expect(modelSendBlock(state(), undefined, "plan")).toMatchObject({ reason: "No Ask model is picked.", setUp: false })
 		expect(modelSendBlock(state({}, []), undefined, "act")).toMatchObject({ reason: "No models are set up.", setUp: true })
 		expect(modelSendBlock(state({}, ["embed"]), undefined, "act")).toMatchObject({ setUp: true })
+		const allOff = state()
+		;(allOff.settings.models[0] as { enabled?: boolean }).enabled = false
+		expect(modelSendBlock(allOff, undefined, "act")).toMatchObject({ setUp: true })
 	})
 })

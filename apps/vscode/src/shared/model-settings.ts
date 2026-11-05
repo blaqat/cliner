@@ -573,6 +573,24 @@ export const ModelSettingsSchema = z
 		for (const a of s.subagents.allowed)
 			if (a.kind === "model") for (const levelId of a.levels) check({ modelId: a.modelId, levelId })
 	})
+/**
+ * What a thread runs on in a mode: its own pick, else the default. A pick whose model was removed counts
+ * as none, so the thread follows the default; with no default it's nothing, and the composer asks for one.
+ */
+export function effectiveThreadPick(
+	settings: Pick<ModelSettings, "connections" | "models" | "roles">,
+	pick: ModelPick | null | undefined,
+	mode: "act" | "plan",
+): ModelPick | null {
+	const runnable = (candidate: ModelPick | null | undefined): candidate is ModelPick => {
+		const model = settings.models.find((row) => row.id === candidate?.modelId)
+		return !!model && model.kind !== "non-chat" && settings.connections.some((row) => row.id === model.connectionId)
+	}
+	const { ask, chat } = settings.roles
+	const fallback = mode === "plan" && ask.enabled ? ask.pick : chat
+	return runnable(pick) ? pick : runnable(fallback) ? fallback : null
+}
+
 /** Takes these models out of everything that points at them, so removing one is a single step. */
 export function clearModelReferences(settings: ModelSettings, ids: readonly string[]): void {
 	const gone = (pick: ModelPick | null | undefined) => !!pick && ids.includes(pick.modelId)

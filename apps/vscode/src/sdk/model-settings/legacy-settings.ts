@@ -1,5 +1,5 @@
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
-import type { ThreadModelSelection } from "@shared/model-settings"
+import { effectiveThreadPick, type ThreadModelSelection } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { modelSettingsRolloutEnabled } from "./rollout"
@@ -21,9 +21,7 @@ export function configuredActiveModel(
 	if (!runsOnModelSettings(state)) return undefined
 	const settings = state.getGlobalStateKey("modelSettings")
 	if (!settings) return {}
-	const { roles } = settings
-	const role = mode === "plan" && roles.ask.enabled ? roles.ask.pick : roles.chat
-	const pick = (mode === "plan" ? selection?.ask : selection?.act) ?? role
+	const pick = effectiveThreadPick(settings, mode === "plan" ? selection?.ask : selection?.act, mode)
 	const model = settings.models.find((row) => row.id === pick?.modelId)
 	const connection = settings.connections.find((c) => c.id === model?.connectionId)
 	if (!model || !connection) return {}
