@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–56",
+		builds: "test builds fork.39–57",
 		date: "2026-11-04",
 		notes: [
 			"Profiles became models: your saved setups moved over on their own, with their models, levels and picks, and older versions keep your previous settings",
@@ -37,7 +37,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Subagents have one page: on or off, default model and level, a cap of 3 per thread, access, whether they can block the parent, and in Advanced which models and levels the parent can choose",
 			"Layout is a picture to pick (Classic, Side Bar or Tab bar), and Reset now removes every saved key and sign-in",
 			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them; only threads you start can start subagents, so they can't nest",
-			"One view (beta, Settings › Layout): your threads beside the chat, or as tabs across the top grouped by task; rows show status, the last line and a date once a thread is 5 days old; search filters the list in place, and the filter adds tags (or type #tag) and a date range",
+			"One view (beta, Settings › Layout): your threads beside the chat, or as tabs across the top grouped by task; rows show status, the last line and a date once a thread is 5 days old; search filters the list in place, and the filter chooses what to search (threads, messages, notes or tags; or type #tag) and adds state and a date range",
 			"Walkthroughs can include Cline's review notes (Generate ▾ › Add review notes, or ask for them on a PR): markers in the diff and a review panel up top; Fix, Reply or Dismiss each one, and Send carries your fixes and replies",
 			"Walkthrough diffs are syntax highlighted for the file's language, and in one view a walkthrough keeps your thread list beside it; a thread's row takes you back",
 			"A ticket number in a thread's first message now becomes a tag, as the composer's suggestion says it will",

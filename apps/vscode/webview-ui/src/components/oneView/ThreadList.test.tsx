@@ -258,14 +258,14 @@ describe("ThreadList", () => {
 		expect(actions.parentElement).toBe(within(row).getByText("Fix CRLF diffs").parentElement)
 		expect(within(actions).getByRole("button", { name: "Stash Fix CRLF diffs" })).toHaveAttribute("title", "Stash")
 	})
-	it("opens filters without text, selects inherited tags, and clears an empty result", () => {
+	it("opens filters without text, keeps what has a tag, and clears an empty result", () => {
 		mocks.state.taskGroups = [
 			{ id: "g1", title: "Release 3", tags: [{ kind: "label", value: "release" }], createdAt: NOW, updatedAt: NOW },
 		]
 		renderList()
 		expect(screen.queryByText("Active")).toBeNull()
 		fireEvent.click(screen.getByTestId("one-view-filter"))
-		fireEvent.click(screen.getByRole("button", { name: "release" }))
+		fireEvent.click(screen.getByRole("button", { name: "Tags" }))
 		expect(rowFor("wait")).toBeInTheDocument()
 		expect(screen.queryByText("Home ordering")).toBeNull()
 		expect(screen.getByTestId("one-view-filter-count")).toHaveTextContent("1")
@@ -291,15 +291,43 @@ describe("ThreadList", () => {
 		expect(screen.getByText("Old thread")).toBeInTheDocument()
 		expect(screen.queryByText("Active")).toBeNull()
 	})
-	it("caps tags with a working more link", () => {
+	it("offers what to search as chips, with no list of tags", () => {
 		mocks.state.taskHistory = Array.from({ length: 10 }, (_, i) =>
 			item(`t${i}`, { tags: [{ kind: "label", value: `label${i}` }] }),
 		)
 		renderList()
 		fireEvent.click(screen.getByTestId("one-view-filter"))
-		const tags = screen.getByRole("group", { name: "Tags" })
-		expect(within(tags).getAllByRole("button")).toHaveLength(9)
-		fireEvent.click(within(tags).getByText("+2 more"))
-		expect(within(tags).getByRole("button", { name: "label9" })).toBeInTheDocument()
+		const panel = within(screen.getByTestId("one-view-filter-chips"))
+		for (const name of ["Threads", "Messages", "Notes", "Tags"]) {
+			expect(panel.getByRole("button", { name })).toBeInTheDocument()
+		}
+		expect(panel.queryByRole("button", { name: "Tasks" })).toBeNull()
+		expect(panel.queryByRole("button", { name: "label0" })).toBeNull()
+		expect(screen.queryByRole("group", { name: "Tags" })).toBeNull()
+	})
+	it("the Tags chip searches tags only", () => {
+		mocks.state.taskHistory = [
+			item("tagged", { tags: [{ kind: "label", value: "release" }] }),
+			item("named", { task: "release notes" }),
+			item("other"),
+		]
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "release" } })
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(rowFor("named")).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Tags" }))
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(rowFor("named")).toBeUndefined()
+	})
+	it("Messages and Notes with no text say to type", () => {
+		renderList()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Messages" }))
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("Type to search messages.")
+		fireEvent.click(screen.getByRole("button", { name: "Notes" }))
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("Type to search messages and notes.")
+		fireEvent.click(screen.getByTestId("one-view-no-matches-clear"))
+		expect(screen.queryByTestId("one-view-no-matches")).toBeNull()
 	})
 })

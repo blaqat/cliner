@@ -5,14 +5,14 @@ import Fuse from "fuse.js"
 import { effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
 
 export type SearchResultKind = "task" | "thread" | "note" | "message"
-export type SearchFilter = "all" | "tasks" | "threads" | "notes" | "messages"
+export type SearchFilter = "all" | "threads" | "messages" | "notes" | "tags"
 
 export const SEARCH_FILTERS: { filter: SearchFilter; label: string; kind?: SearchResultKind }[] = [
 	{ filter: "all", label: "All" },
-	{ filter: "tasks", label: "Tasks", kind: "task" },
 	{ filter: "threads", label: "Threads", kind: "thread" },
-	{ filter: "notes", label: "Notes", kind: "note" },
 	{ filter: "messages", label: "Messages", kind: "message" },
+	{ filter: "notes", label: "Notes", kind: "note" },
+	{ filter: "tags", label: "Tags" },
 ]
 
 export interface SearchRow {
@@ -28,6 +28,8 @@ export interface SearchRow {
 	threadId?: string
 	/** 0 = best match, 1 = worst (Fuse scale). */
 	score: number
+	/** Task and thread rows: one of its tags, or its task's, contains the search text. */
+	tagMatch?: boolean
 	/** Message rows: who wrote the message. */
 	author?: MessageAuthor
 	/** Thread rows: settled, and the model it last ran. */
@@ -68,6 +70,8 @@ const titleOf = (item: HistoryItem) => item.title?.trim() || item.task
 export function searchLocal(query: string, taskGroups: TaskGroupSummary[], history: HistoryItem[]): SearchRow[] {
 	const trimmed = query.trim()
 	if (!trimmed) return []
+	const needle = trimmed.toLowerCase()
+	const hasTag = (tags: readonly { value: string }[]) => tags.some((tag) => tag.value.toLowerCase().includes(needle))
 
 	const taskFuse = new Fuse(taskGroups, { ...FUSE_OPTIONS, keys: ["title", "tags.value"] })
 	const tasks = taskFuse.search(trimmed).map(
@@ -77,6 +81,7 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 			title: item.title,
 			ts: item.updatedAt,
 			tags: item.tags,
+			tagMatch: hasTag(item.tags),
 			taskGroupId: item.id,
 			score: score ?? 1,
 		}),
@@ -99,7 +104,7 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 		],
 	})
 	const threadRows = threadFuse.search(trimmed).map(
-		({ item: { item }, score }): SearchRow => ({
+		({ item: { item, effectiveTags }, score }): SearchRow => ({
 			kind: "thread",
 			id: item.id,
 			title: titleOf(item),
@@ -107,6 +112,7 @@ export function searchLocal(query: string, taskGroups: TaskGroupSummary[], histo
 			settled: !!item.isSettled,
 			modelId: item.modelId || undefined,
 			tags: item.tags,
+			tagMatch: hasTag(effectiveTags),
 			taskGroupId: item.taskGroupId || undefined,
 			threadId: item.id,
 			score: score ?? 1,
@@ -162,8 +168,9 @@ export function countByKind(rows: SearchRow[]): Record<SearchResultKind, number>
 	return counts
 }
 
-/** Rows of the chosen kind; message rows also by who wrote them (`anyone` keeps all). */
+/** Rows of the chosen kind, or that matched on a tag; message rows also by who wrote them (`anyone` keeps all). */
 export function filterRows(rows: SearchRow[], filter: SearchFilter, author: MessageAuthorFilter = "anyone"): SearchRow[] {
+	if (filter === "tags") return rows.filter((row) => row.tagMatch)
 	const kind = SEARCH_FILTERS.find((entry) => entry.filter === filter)?.kind
 	return rows.filter(
 		(row) => (!kind || row.kind === kind) && (author === "anyone" || row.kind !== "message" || row.author === author),

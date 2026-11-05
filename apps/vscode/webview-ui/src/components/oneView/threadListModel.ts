@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import type { TaskGroupSummary, TaskTag, TaskTagKind } from "@shared/task-groups"
+import type { TaskGroupSummary, TaskTag } from "@shared/task-groups"
 import {
 	describeActivity,
 	type InboxEntry,
@@ -46,10 +46,16 @@ export function rowLine(row: InboxRow, now: number): RowLine {
 	return { kind: "plain", text: describeActivity(row, now) }
 }
 
-/** A thread that matched the search: a message hit carries its snippet and author. */
+/** A thread that matched the search, and how: a message hit carries its snippet and author. */
 export interface ThreadHit {
 	snippet?: string
 	author?: MessageAuthor
+	/** Its title, first message or tags. */
+	thread?: boolean
+	/** The text of one of its messages. */
+	message?: boolean
+	/** One of its tags, or its task's, contains the search text. */
+	tag?: boolean
 }
 
 export interface ListSearchMatches {
@@ -57,6 +63,8 @@ export interface ListSearchMatches {
 	threads: Map<string, ThreadHit>
 	/** Tasks matched by their own title or tags. */
 	tasks: Set<string>
+	/** Of those, the ones with a tag containing the search text. */
+	taggedTasks: Set<string>
 	notes: SearchRow[]
 }
 
@@ -81,21 +89,30 @@ export function mapSearchRows(rows: readonly SearchRow[], history: readonly Hist
 	const byId = new Map(history.map((item) => [item.id, item]))
 	const threads = new Map<string, ThreadHit>()
 	const tasks = new Set<string>()
+	const taggedTasks = new Set<string>()
 	const notes: SearchRow[] = []
 	for (const row of rows) {
-		if (row.kind === "task") tasks.add(row.id)
-		else if (row.kind === "note") notes.push(row)
+		if (row.kind === "task") {
+			tasks.add(row.id)
+			if (row.tagMatch) taggedTasks.add(row.id)
+		} else if (row.kind === "note") notes.push(row)
 		else {
 			const id = topThreadId(row.threadId ?? row.id, byId)
-			const existing = threads.get(id)
-			if (row.kind === "message" && row.snippet && !existing?.snippet) {
-				threads.set(id, { snippet: row.snippet, author: row.author })
-			} else if (!existing) {
-				threads.set(id, {})
+			const hit = threads.get(id) ?? {}
+			threads.set(id, hit)
+			if (row.kind === "message") {
+				hit.message = true
+				if (row.snippet && !hit.snippet) {
+					hit.snippet = row.snippet
+					hit.author = row.author
+				}
+			} else {
+				hit.thread = true
+				if (row.tagMatch) hit.tag = true
 			}
 		}
 	}
-	return { threads, tasks, notes }
+	return { threads, tasks, taggedTasks, notes }
 }
 
 /**
@@ -109,14 +126,15 @@ export function focusSnippet(snippet: string, query: string, lead = 18): string 
 	return `…${snippet.slice(index - lead).replace(/^…/, "")}`
 }
 
-export type KindChip = "threads" | "tasks" | "notes"
+export type KindChip = "threads" | "messages" | "notes" | "tags"
 export type StateChip = "active" | "stashed" | "settled"
 export type DateRange = "any" | "today" | "7d" | "30d" | "custom"
 
-export const KIND_CHIPS: { id: KindChip; label: string }[] = [
-	{ id: "threads", label: "Threads" },
-	{ id: "tasks", label: "Tasks" },
-	{ id: "notes", label: "Notes" },
+export const KIND_CHIPS: { id: KindChip; label: string; title: string }[] = [
+	{ id: "threads", label: "Threads", title: "Thread and task titles" },
+	{ id: "messages", label: "Messages", title: "What's said in threads" },
+	{ id: "notes", label: "Notes", title: "Task notebooks" },
+	{ id: "tags", label: "Tags", title: "Tags on threads and tasks" },
 ]
 export const STATE_CHIPS: { id: StateChip; label: string }[] = [
 	{ id: "active", label: "Active" },
@@ -142,12 +160,10 @@ export interface DateFilter {
 export interface ListFilter {
 	kinds: ReadonlySet<KindChip>
 	states: ReadonlySet<StateChip>
-	/** Tag values (lowercased) picked in the panel: a row needs any of them. */
-	tags: ReadonlySet<string>
 	date: DateFilter
 }
 
-export const NO_FILTER: ListFilter = { kinds: new Set(), states: new Set(), tags: new Set(), date: { range: "any" } }
+export const NO_FILTER: ListFilter = { kinds: new Set(), states: new Set(), date: { range: "any" } }
 
 const allows = <T>(set: ReadonlySet<T>, value: T) => set.size === 0 || set.has(value)
 
@@ -156,10 +172,14 @@ export function isDateActive(date: DateFilter): boolean {
 	return date.range === "custom" ? !!(date.from || date.to) : date.range !== "any"
 }
 
-/** How many panel filters are on (each kind, state and tag chip, plus the date). */
+/** How many panel filters are on (each kind and state chip, plus the date). */
 export function countFilters(filter: ListFilter): number {
-	return filter.kinds.size + filter.states.size + filter.tags.size + (isDateActive(filter.date) ? 1 : 0)
+	return filter.kinds.size + filter.states.size + (isDateActive(filter.date) ? 1 : 0)
 }
+
+/** Messages and notes only turn up through search text, so these chips alone have nothing to show yet. */
+export const kindsNeedingText = (filter: ListFilter): KindChip[] =>
+	[...filter.kinds].every((kind) => kind === "messages" || kind === "notes") ? [...filter.kinds] : []
 
 const DAY_MS = 86_400_000
 
@@ -221,36 +241,6 @@ export function stripTagTokens(query: string): string {
 	return parseListQuery(query).text
 }
 
-export interface TagInUse {
-	/** Lowercased: the filter key. */
-	key: string
-	/** As first written. */
-	value: string
-	kind: TaskTagKind
-	/** Tasks and threads carrying it. */
-	count: number
-}
-
-/** Tags on tasks and threads (subagents excluded), one per value, most used first. */
-export function tagsInUse(history: readonly HistoryItem[], taskGroups: readonly TaskGroupSummary[]): TagInUse[] {
-	const byKey = new Map<string, TagInUse>()
-	const add = (tags: readonly TaskTag[] | undefined) => {
-		// A value tagged twice on one item (say as a ticket and a label) counts once.
-		const seen = new Set<string>()
-		for (const tag of tags ?? []) {
-			const key = tag.value.trim().toLowerCase()
-			if (!key || seen.has(key)) continue
-			seen.add(key)
-			const entry = byKey.get(key)
-			if (entry) entry.count++
-			else byKey.set(key, { key, value: tag.value.trim(), kind: tag.kind, count: 1 })
-		}
-	}
-	for (const group of taskGroups) add(group.tags)
-	for (const item of history) if (!item.isSubagent) add(item.tags)
-	return [...byKey.values()].sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
-}
-
 export interface FilteredSection {
 	id: StateChip
 	entries: InboxEntry[]
@@ -264,7 +254,7 @@ export interface FilteredList {
 }
 
 export interface FilterOptions {
-	/** `#tag` tokens from the field: like picked tags, but a tag only has to start with one. */
+	/** `#tag` tokens from the field: a row needs a tag starting with one of them. */
 	typedTags?: readonly string[]
 	/** Clock for the date chips. */
 	now?: number
@@ -273,9 +263,10 @@ export interface FilterOptions {
 /**
  * The list narrowed to the search and the filters. Without `matches` (no search text) every row
  * matches the text. A thread stays when it matched; a task stays when it matched itself or any of
- * its threads did, keeping only the matching threads under it. The chips narrow by kind
- * (Threads / Tasks / Notes), by section (Active / Stashed / Settled), by tag (any picked or typed
- * tag; a thread matches on its own tags or its task's) and by last activity.
+ * its threads did, keeping only the matching threads under it. The kind chips choose what the text
+ * is searched in (Threads / Messages / Notes / Tags, with no text Tags keeps whatever has a tag).
+ * The rest narrow by section (Active / Stashed / Settled), by typed `#tag` (a thread matches on its
+ * own tags or its task's) and by last activity.
  */
 export function filterList(
 	inbox: InboxGroups,
@@ -283,33 +274,36 @@ export function filterList(
 	filter: ListFilter = NO_FILTER,
 	{ typedTags = [], now = Date.now() }: FilterOptions = {},
 ): FilteredList {
-	const byTag = filter.tags.size > 0 || typedTags.length > 0
+	const wants = (kind: KindChip) => allows(filter.kinds, kind)
+	const hasTag = (...lists: (readonly TaskTag[] | undefined)[]) => lists.some((tags) => !!tags?.length)
 	const tagsOk = (...lists: (readonly TaskTag[] | undefined)[]) =>
-		!byTag ||
+		typedTags.length === 0 ||
 		lists.some((tags) =>
 			(tags ?? []).some((tag) => {
 				const key = tag.value.trim().toLowerCase()
-				return filter.tags.has(key) || typedTags.some((typed) => key.startsWith(typed))
+				return typedTags.some((typed) => key.startsWith(typed))
 			}),
 		)
 	const { start, end } = dateBounds(filter.date, now)
 	const dateOk = (ts: number) => ts >= start && ts <= end
 
+	const threadMatches = (row: InboxRow, groupTags?: readonly TaskTag[]) => {
+		if (!matches) return wants("threads") || (filter.kinds.has("tags") && hasTag(row.item.tags, groupTags))
+		const hit = matches.threads.get(row.item.id)
+		return !!hit && !!((wants("threads") && hit.thread) || (wants("messages") && hit.message) || (wants("tags") && hit.tag))
+	}
+	const taskMatches = ({ id, tags }: TaskGroupSummary) =>
+		matches
+			? (wants("threads") && matches.tasks.has(id)) || (wants("tags") && matches.taggedTasks.has(id))
+			: filter.kinds.size === 0 || (filter.kinds.has("tags") && hasTag(tags))
 	const threadOk = (row: InboxRow, groupTags?: readonly TaskTag[]) =>
-		allows(filter.kinds, "threads") &&
-		(!matches || matches.threads.has(row.item.id)) &&
-		tagsOk(row.item.tags, groupTags) &&
-		dateOk(row.agentActivityTs)
+		threadMatches(row, groupTags) && tagsOk(row.item.tags, groupTags) && dateOk(row.agentActivityTs)
 	const keep = (entries: readonly InboxEntry[]): InboxEntry[] =>
 		entries.flatMap((entry): InboxEntry[] => {
 			if (entry.kind === "thread") return threadOk(entry.row) ? [entry] : []
 			const { group } = entry.row
 			const members = entry.row.members.filter((member) => threadOk(member, group.tags))
-			const ownMatch =
-				allows(filter.kinds, "tasks") &&
-				(!matches || matches.tasks.has(group.id)) &&
-				tagsOk(group.tags) &&
-				dateOk(entry.row.agentActivityTs)
+			const ownMatch = taskMatches(group) && tagsOk(group.tags) && dateOk(entry.row.agentActivityTs)
 			if (!ownMatch && members.length === 0) return []
 			const row: InboxTaskGroupRow = { ...entry.row, members }
 			return [{ kind: "group", row }]
@@ -328,7 +322,7 @@ export function filterList(
 		),
 	)
 	const notes =
-		matches && allows(filter.kinds, "notes")
+		matches && wants("notes")
 			? matches.notes.filter(
 					(note) => tagsOk(note.taskGroupId ? groupTags.get(note.taskGroupId) : undefined) && dateOk(note.ts),
 				)

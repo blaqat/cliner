@@ -21,12 +21,13 @@ import {
 	countFilters,
 	filterList,
 	isActiveMember,
+	KIND_CHIPS,
+	kindsNeedingText,
 	type ListFilter,
 	NO_FILTER,
 	parseListQuery,
 	type StateChip,
 	stripTagTokens,
-	tagsInUse,
 } from "./threadListModel"
 import { useListSearch } from "./useListSearch"
 
@@ -121,7 +122,6 @@ export const ThreadList = ({
 	// Search text, a `#tag` or any chip narrows the list; the full list otherwise.
 	const filtering = search.active || filterCount > 0
 	const history = useMemo(() => taskHistory ?? [], [taskHistory])
-	const tags = useMemo(() => tagsInUse(history, taskGroups ?? []), [history, taskGroups])
 	const inbox = useMemo(
 		() =>
 			buildInbox(history, sessionStatuses, subagentCounts, {
@@ -204,6 +204,10 @@ export const ThreadList = ({
 			return next
 		})
 
+	// A row found another way doesn't quote a message it isn't there for.
+	const hitFor = (id: string) =>
+		filter.kinds.size === 0 || filter.kinds.has("messages") ? search.matches.threads.get(id) : undefined
+
 	const openNoteRow = (row: SearchRow) => {
 		if (row.taskGroupId) openNote(row.taskGroupId, row.id)
 	}
@@ -239,7 +243,7 @@ export const ThreadList = ({
 				return (
 					<ThreadRow
 						current={entry.row.item.id === currentRowId}
-						hit={search.matches.threads.get(entry.row.item.id)}
+						hit={hitFor(entry.row.item.id)}
 						key={entry.row.item.id}
 						now={now}
 						onOpen={onOpenThread}
@@ -278,7 +282,7 @@ export const ThreadList = ({
 							{shown.map((member) => (
 								<ThreadRow
 									current={member.item.id === currentRowId}
-									hit={search.matches.threads.get(member.item.id)}
+									hit={hitFor(member.item.id)}
 									key={member.item.id}
 									now={now}
 									onOpen={onOpenThread}
@@ -338,15 +342,24 @@ export const ThreadList = ({
 
 	// The panel is the first thing in the list's scroll area, so the menu never has two scrollbars.
 	const filterPanel = filterOpen && (
-		<FilterPanel canClear={filterCount > 0} filter={filter} onChange={setFilter} onClear={clearFilters} tags={tags} />
+		<FilterPanel canClear={filterCount > 0} filter={filter} onChange={setFilter} onClear={clearFilters} />
 	)
 
 	// Why nothing is shown, and the way back.
+	const needText = text
+		? []
+		: KIND_CHIPS.filter((kind) => kindsNeedingText(filter).includes(kind.id)).map((kind) => kind.label.toLowerCase())
 	const noMatches = (
 		<div className="flex flex-col items-start gap-1 px-2 py-3 text-xs text-description" data-testid="one-view-no-matches">
 			<span>
-				{text ? `No matches for “${text}”` : "No threads, tasks or notes match"}
-				{filterCount > 0 ? " with these filters" : ""}.
+				{needText.length > 0 ? (
+					`Type to search ${needText.join(" and ")}.`
+				) : (
+					<>
+						{text ? `No matches for “${text}”` : "No threads, tasks or notes match"}
+						{filterCount > 0 ? " with these filters" : ""}.
+					</>
+				)}
 			</span>
 			<span className="flex gap-3">
 				{text && (
@@ -547,7 +560,7 @@ export const ThreadList = ({
 					icon={filterCount > 0 || filterOpen ? "filter-filled" : "filter"}
 					label="Filter results"
 					onClick={toggleFilterPanel}
-					tooltip="Filter by kind, state, tags or last activity"
+					tooltip="Choose what to search, or filter by state or last activity"
 				/>
 				{filterCount > 0 && (
 					<span className="text-[11px] text-description" data-testid="one-view-filter-count">
@@ -555,7 +568,7 @@ export const ThreadList = ({
 					</span>
 				)}
 			</div>
-			{!filterOpen && <ActiveFilters filter={filter} onChange={setFilter} onClear={clearFilters} tags={tags} />}
+			{!filterOpen && <ActiveFilters filter={filter} onChange={setFilter} onClear={clearFilters} />}
 			<div
 				className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-2"
 				data-testid="one-view-list-body"

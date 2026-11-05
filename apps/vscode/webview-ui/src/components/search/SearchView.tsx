@@ -136,6 +136,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 		[localRows, server, query],
 	)
 	const counts = useMemo(() => countByKind(rows), [rows])
+	const tagCount = useMemo(() => filterRows(rows, "tags").length, [rows])
 	const visible = useMemo(() => filterRows(rows, filter, author), [rows, filter, author])
 
 	const addToTask = (threadId: string, group: TaskGroupSummary) => {
@@ -274,7 +275,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 							role="tab"
 							type="button">
 							{label}
-							{kind && <span className="opacity-70">{counts[kind]}</span>}
+							{(kind || value === "tags") && <span className="opacity-70">{kind ? counts[kind] : tagCount}</span>}
 						</button>
 					))}
 				</div>

@@ -17,12 +17,13 @@ import {
 	filterList,
 	fitStripEntries,
 	focusSnippet,
+	type KindChip,
+	kindsNeedingText,
 	mapSearchRows,
 	NO_FILTER,
 	parseListQuery,
 	rowLine,
 	stripEntries,
-	tagsInUse,
 	topThreadId,
 } from "./threadListModel"
 
@@ -124,8 +125,8 @@ describe("search mapping", () => {
 	it("rolls asides up to their thread and keeps the message hit for the second line", () => {
 		expect(topThreadId("aside", new Map(history.map((entry) => [entry.id, entry])))).toBe("top")
 		const matches = mapSearchRows(rows, history)
-		expect(matches.threads.get("top")).toEqual({ snippet: "fix crlf handling", author: "you" })
-		expect(matches.threads.get("other")).toEqual({})
+		expect(matches.threads.get("top")).toEqual({ message: true, snippet: "fix crlf handling", author: "you" })
+		expect(matches.threads.get("other")).toEqual({ thread: true })
 		expect([...matches.tasks]).toEqual(["g1"])
 		expect(matches.notes.map((note) => note.id)).toEqual(["n1"])
 	})
@@ -147,12 +148,13 @@ describe("search mapping", () => {
 		)
 		const matches = {
 			threads: new Map([
-				["b", {}],
-				["loose", {}],
-				["old", {}],
-				["hidden", {}],
+				["b", { thread: true }],
+				["loose", { thread: true }],
+				["old", { thread: true }],
+				["hidden", { thread: true }],
 			]),
 			tasks: new Set(["g2"]),
+			taggedTasks: new Set<string>(),
 			notes: [rows[3]],
 		}
 		const all = filterList(inbox, matches)
@@ -171,9 +173,59 @@ describe("search mapping", () => {
 		})
 		expect(threadsOnly.sections.map((section) => section.id)).toEqual(["settled"])
 		expect(threadsOnly.notes).toEqual([])
+	})
 
-		const tasksOnly = filterList(inbox, matches, { ...NO_FILTER, kinds: new Set(["tasks"]), states: new Set() })
-		expect(tasksOnly.sections.flatMap((section) => section.entries.map((entry) => entry.kind))).toEqual(["group"])
+	describe("what the text is searched in", () => {
+		const inbox = buildInbox(
+			[item("title"), item("said"), item("tagged"), item("g-member", { taskGroupId: "g" })],
+			{},
+			undefined,
+			{
+				taskGroups: [group("g")],
+			},
+		)
+		const matches = {
+			threads: new Map([
+				["title", { thread: true }],
+				["said", { message: true, snippet: "quote" }],
+				["tagged", { thread: true, tag: true }],
+				["g-member", { thread: true, tag: true }],
+			]),
+			tasks: new Set(["g"]),
+			taggedTasks: new Set(["g"]),
+			notes: [rows[3]],
+		}
+		const shown = (...kinds: KindChip[]) => {
+			const { sections, notes } = filterList(inbox, matches, { ...NO_FILTER, kinds: new Set(kinds) })
+			const ids = sections.flatMap((section) =>
+				section.entries.flatMap((entry) =>
+					entry.kind === "thread"
+						? [entry.row.item.id]
+						: [entry.row.group.id, ...entry.row.members.map((row) => row.item.id)],
+				),
+			)
+			return [...ids, ...notes.map((note) => note.id)].sort()
+		}
+
+		it("each chip keeps only what was found there", () => {
+			expect(shown("messages")).toEqual(["said"])
+			expect(shown("notes")).toEqual(["n1"])
+			expect(shown("tags")).toEqual(["g", "g-member", "tagged"])
+			expect(shown("threads")).toEqual(["g", "g-member", "tagged", "title"])
+		})
+
+		it("no chip keeps everything, and chips add up", () => {
+			expect(shown()).toEqual(["g", "g-member", "n1", "said", "tagged", "title"])
+			expect(shown("messages", "notes")).toEqual(["n1", "said"])
+		})
+
+		it("a task named in the search, not by a tag, stays out of Tags", () => {
+			const named = { ...matches, taggedTasks: new Set<string>() }
+			const threads = new Map(named.threads)
+			threads.set("g-member", { thread: true })
+			const { sections } = filterList(inbox, { ...named, threads }, { ...NO_FILTER, kinds: new Set<KindChip>(["tags"]) })
+			expect(sections.flatMap((section) => section.entries).filter((entry) => entry.kind === "group")).toEqual([])
+		})
 	})
 
 	it("starts a long snippet just before the hit", () => {
@@ -233,17 +285,6 @@ describe("tag and date filters", () => {
 	it("parses typed tags without sending them to text search", () => {
 		expect(parseListQuery("fix #Release #release #bug")).toEqual({ text: "fix", tags: ["release", "bug"] })
 	})
-	it("deduplicates tag values and orders by use", () => {
-		expect(
-			tagsInUse(
-				[item("a", { tags: [{ kind: "label", value: "bug" }] }), item("b", { tags: [{ kind: "ticket", value: "BUG" }] })],
-				[{ ...group("g"), tags: [{ kind: "label", value: "release" }] }],
-			).map((tag) => [tag.key, tag.count]),
-		).toEqual([
-			["bug", 2],
-			["release", 1],
-		])
-	})
 	it("filters without text and inherits task tags", () => {
 		const inbox = buildInbox(
 			[item("a", { taskGroupId: "g" }), item("b", { tags: [{ kind: "label", value: "bug" }] }), item("c")],
@@ -251,12 +292,24 @@ describe("tag and date filters", () => {
 			undefined,
 			{ taskGroups: [{ ...group("g"), tags: [{ kind: "label", value: "bug" }] }] },
 		)
-		const result = filterList(inbox, undefined, { ...NO_FILTER, tags: new Set(["bug"]) })
+		const result = filterList(inbox, undefined, { ...NO_FILTER, kinds: new Set(["tags"]) })
 		expect(result.sections[0].entries).toHaveLength(2)
 		expect(result.sections[0].entries.find((entry) => entry.kind === "group")?.row).toMatchObject({
 			members: [{ item: { id: "a" } }],
 		})
 		expect(filterList(inbox, undefined, NO_FILTER, { typedTags: ["bu"] }).count).toBe(result.count)
+	})
+	it("messages and notes have nothing to show until there's text, and say which", () => {
+		const inbox = buildInbox([item("a")], {}, undefined, { taskGroups: [] })
+		for (const kinds of [["messages"], ["notes"], ["messages", "notes"]] as KindChip[][]) {
+			const filter = { ...NO_FILTER, kinds: new Set(kinds) }
+			expect(filterList(inbox, undefined, filter).count).toBe(0)
+			expect(kindsNeedingText(filter)).toEqual(kinds)
+		}
+		const withThreads = { ...NO_FILTER, kinds: new Set<KindChip>(["threads", "notes"]) }
+		expect(kindsNeedingText(withThreads)).toEqual([])
+		expect(filterList(inbox, undefined, withThreads).count).toBe(1)
+		expect(kindsNeedingText(NO_FILTER)).toEqual([])
 	})
 	it("uses last activity ts even when the user's last message is older", () => {
 		const inbox = buildInbox(
