@@ -48,6 +48,10 @@ describe("review state", () => {
 			stopNotes: { s1: "keep" },
 			lineNotes: [],
 			overallNote: undefined,
+			reviewResponses: undefined,
+			notes: 1,
+			fixes: 0,
+			replies: 0,
 			count: 1,
 		})
 	})

@@ -1,7 +1,16 @@
 import type { ProviderListing } from "@shared/proto/cline/models"
-import type { GenericProviderSettingsProps } from "./GenericProviderSettings"
+import type { ProviderId } from "@/context/ExtensionStateContext"
 
-type GenericProviderSettingsConfig = Omit<GenericProviderSettingsProps, "currentMode" | "isPopup" | "showModelOptions">
+interface GenericProviderSettingsConfig {
+	providerId: ProviderId
+	providerName: string
+	signupUrl?: string
+	baseUrlField?: {
+		label?: string
+		placeholder?: string
+	}
+	allowsCustomIds: boolean
+}
 
 type GenericProviderPresentationOverride = Pick<GenericProviderSettingsConfig, "signupUrl" | "baseUrlField"> &
 	Partial<Pick<GenericProviderSettingsConfig, "allowsCustomIds">>

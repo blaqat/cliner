@@ -10,9 +10,23 @@ import OrgClinePassRestrictionError from "@/components/chat/OrgClinePassRestrict
 import SpendLimitError from "@/components/chat/SpendLimitError"
 import { Button } from "@/components/ui/button"
 import { useClineAuth, useClineSignIn } from "@/context/ClineAuthContext"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ClineError, ClineErrorType } from "../../../../src/services/error/ClineError"
 
 const _errorColor = "var(--vscode-errorForeground)"
+
+/** Refusals about a configured model say where the fix is. This takes you there. */
+const ModelsFixLink = ({ text }: { text?: string }) => {
+	const { navigateToSettings } = useExtensionState()
+	return text && /Settings > Models/.test(text) ? (
+		<button
+			className="mt-1 block cursor-pointer border-0 bg-transparent p-0 text-link underline"
+			onClick={() => navigateToSettings("models")}
+			type="button">
+			Open Settings &gt; Models
+		</button>
+	) : null
+}
 
 interface ErrorRowProps {
 	message: ClineMessage
@@ -166,12 +180,18 @@ const ErrorRow = memo((props: ErrorRowProps) => {
 
 							{/* Display raw API error if different from parsed error message */}
 							{errorMessage !== rawApiError && <div>{rawApiError}</div>}
+							<ModelsFixLink text={errorMessage} />
 						</p>
 					)
 				}
 
 				// Regular error message
-				return <p className="m-0 mt-0 whitespace-pre-wrap text-error wrap-anywhere">{message.text}</p>
+				return (
+					<div className="m-0 mt-0 whitespace-pre-wrap text-error wrap-anywhere">
+						{message.text}
+						<ModelsFixLink text={message.text} />
+					</div>
+				)
 
 			case "diff_error":
 				return (

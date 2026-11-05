@@ -1,10 +1,15 @@
 import type React from "react"
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { openTask } from "@/components/inbox/sessionActions"
-import { resolveSettingsTarget, type SettingsNavigationTarget } from "@/components/settings/settingsTargets"
+import {
+	DEFAULT_SETTINGS_PAGE,
+	type SettingsNavigationTarget,
+	settingsPageForTarget,
+} from "@/components/settings/settingsTargets"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import {
 	backTarget,
+	canonicalSettingsLocation,
 	describeLocation,
 	HOME,
 	jumpToLocation,
@@ -13,6 +18,7 @@ import {
 	popLocation,
 	pushLocation,
 	sameLocation,
+	withoutGoneThreads,
 } from "./navHistory"
 
 /** What ChatView lends the history layer: its thread and search state live there. */
@@ -39,7 +45,8 @@ export interface NavigationHistory {
 	reportSettingsSection: (section: string | undefined) => void
 }
 
-const NavigationHistoryContext = createContext<NavigationHistory | undefined>(undefined)
+/** Exported for stories and tests that stand in a history; the app uses NavigationHistoryProvider. */
+export const NavigationHistoryContext = createContext<NavigationHistory | undefined>(undefined)
 
 /** The history layer, or undefined outside the provider (isolated component tests). */
 export function useNavigationHistory(): NavigationHistory | undefined {
@@ -108,7 +115,7 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 	actionsRef.current = state
 
 	// Before SettingsView reports its tab, it opens on the requested one (or the first).
-	const section = settingsSection ?? resolveSettingsTarget(settingsNavigationRequest?.target)?.tabId ?? "api-config"
+	const section = settingsSection ?? settingsPageForTarget(settingsNavigationRequest?.target) ?? DEFAULT_SETTINGS_PAGE
 	const current = useMemo(
 		() =>
 			deriveLocation({
@@ -141,7 +148,8 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 		],
 	)
 
-	const [entries, setEntries] = useState<NavLocation[]>([current])
+	const [visited, setEntries] = useState<NavLocation[]>([current])
+	const entries = useMemo(() => withoutGoneThreads(visited, taskHistory ?? []), [visited, taskHistory])
 
 	useEffect(() => {
 		const pending = pendingRef.current
@@ -208,8 +216,9 @@ export const NavigationHistoryProvider = ({ children }: { children: React.ReactN
 	const restore = useCallback(
 		(next: NavLocation[] | undefined) => {
 			if (!next) return
-			setEntries(next)
-			goTo(next[next.length - 1])
+			const entries = next.map(canonicalSettingsLocation)
+			setEntries(entries)
+			goTo(entries[entries.length - 1])
 		},
 		[goTo],
 	)

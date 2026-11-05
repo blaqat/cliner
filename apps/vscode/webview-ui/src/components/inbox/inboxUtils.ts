@@ -16,8 +16,13 @@ export const ACTIVE_PAGE_SIZE = 25
 
 export interface InboxRow {
 	item: HistoryItem
-	/** Effective last-active time: the item's ts or the newest descendant's (asides and subagents). */
+	/**
+	 * When the user last messaged the thread or one of its asides: home orders by this, so the
+	 * agent finishing work doesn't move a thread up. Older threads without the stamp use `ts`.
+	 */
 	activityTs: number
+	/** Last activity of any kind (the agent's included), across asides and subagents. */
+	agentActivityTs: number
 	/** Derived: "subagents" when the thread is idle but its subagents or subthreads still run. */
 	status: ThreadStatus
 	settled: boolean
@@ -38,8 +43,10 @@ export interface InboxTaskGroupRow {
 	group: TaskGroupSummary
 	/** Member thread rows: active ones first, then settled ones, each newest activity first. */
 	members: InboxRow[]
-	/** Newest member activity; the group's own update time when it has no threads. */
+	/** Newest member message from the user; the group's own update time when it has no threads. */
 	activityTs: number
+	/** Newest member activity of any kind (the agent's included). */
+	agentActivityTs: number
 	/** Members with work in progress (the thread itself or one of its subthreads/subagents). */
 	runningCount: number
 }
@@ -60,6 +67,9 @@ export interface InboxGroups {
 	settled: InboxSettledEntry[]
 	/** All settled entries, including those cut by the settled limit. */
 	settledTotal: number
+	stashed: InboxEntry[]
+	stashedTotal: number
+	stashedNeedingYou: number
 	/** Active rows past the active limit; the list offers "Show more" for them. */
 	hiddenCount: number
 }
@@ -95,8 +105,9 @@ export function buildInbox(
 	{
 		activeLimit = DEFAULT_ACTIVE_LIMIT,
 		settledLimit = DEFAULT_SETTLED_LIMIT,
+		stashedLimit = DEFAULT_SETTLED_LIMIT,
 		taskGroups = [],
-	}: { activeLimit?: number; settledLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
+	}: { activeLimit?: number; settledLimit?: number; stashedLimit?: number; taskGroups?: readonly TaskGroupSummary[] } = {},
 ): InboxGroups {
 	const valid = history.filter((item) => item.ts && item.task)
 	const byId = new Map(valid.map((item) => [item.id, item]))
@@ -142,15 +153,17 @@ export function buildInbox(
 				agents.push(child)
 				pending.push(...(childrenByParent.get(child.id) ?? []).filter((nested) => nested.isSubagent))
 			}
-			// Last active counts every descendant — asides, asides of asides, and
-			// subagents — so a busy subthread keeps the parent fresh.
-			let activityTs = item.ts
+			// Activity counts every descendant (asides, asides of asides, subagents), so a busy
+			// subthread keeps the parent fresh; the user's own messages only come from asides.
+			let agentActivityTs = item.ts
+			let activityTs = userMessageTs(item)
 			const visited = new Set([item.id])
 			const descendants = [...allChildren]
 			for (const child of descendants) {
 				if (visited.has(child.id)) continue
 				visited.add(child.id)
-				if (child.ts > activityTs) activityTs = child.ts
+				if (child.ts > agentActivityTs) agentActivityTs = child.ts
+				if (!child.isSubagent && userMessageTs(child) > activityTs) activityTs = userMessageTs(child)
 				descendants.push(...(childrenByParent.get(child.id) ?? []))
 			}
 			const counts = subagentCounts?.[item.id]
@@ -170,6 +183,7 @@ export function buildInbox(
 			return {
 				item,
 				activityTs,
+				agentActivityTs,
 				status,
 				// A live thread (including one waiting on subagents) is never shown as settled, even if the history flag lags.
 				settled: (!!item.isSettled || isOrphan(item)) && !isLiveThreadStatus(status),
@@ -196,19 +210,28 @@ export function buildInbox(
 				group,
 				members: [...byActivity.filter(isActive), ...byActivity.filter((member) => !isActive(member))],
 				activityTs: byActivity[0]?.activityTs ?? group.updatedAt,
+				agentActivityTs: Math.max(group.updatedAt, ...byActivity.map((member) => member.agentActivityTs)),
 				runningCount: byActivity.filter(isRowWorking).length,
 			}
 		})
 		.sort((a, b) => b.activityTs - a.activityTs)
 
 	const isGroupSettled = (row: InboxTaskGroupRow) => row.members.every((member) => member.settled && !isRowWorking(member))
-	const groups = allGroups.filter((row) => !isGroupSettled(row))
+	const isGroupStashed = (row: InboxTaskGroupRow) => {
+		const members = valid.filter((item) => !item.isSubagent && item.taskGroupId === row.group.id)
+		return members.length > 0 && members.every((item) => item.isStashed)
+	}
+	const groups = allGroups.filter((row) => !isGroupStashed(row) && !isGroupSettled(row))
+	const stashed: InboxEntry[] = [
+		...unfiled.filter((row) => row.item.isStashed).map((row) => ({ kind: "thread" as const, row })),
+		...allGroups.filter(isGroupStashed).map((row) => ({ kind: "group" as const, row })),
+	].sort((a, b) => b.row.activityTs - a.row.activityTs)
 
-	const active = unfiled.filter((row) => !row.settled).sort((a, b) => b.activityTs - a.activityTs)
+	const active = unfiled.filter((row) => !row.item.isStashed && !row.settled).sort((a, b) => b.activityTs - a.activityTs)
 	const settledTs = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.ts : entry.row.activityTs)
 	const settled: InboxSettledEntry[] = [
-		...unfiled.filter((row) => row.settled).map((row) => ({ kind: "thread" as const, row })),
-		...allGroups.filter(isGroupSettled).map((row) => ({ kind: "group" as const, row })),
+		...unfiled.filter((row) => !row.item.isStashed && row.settled).map((row) => ({ kind: "thread" as const, row })),
+		...allGroups.filter((row) => !isGroupStashed(row) && isGroupSettled(row)).map((row) => ({ kind: "group" as const, row })),
 	].sort((a, b) => settledTs(b) - settledTs(a))
 
 	const shownActive = active.slice(0, activeLimit)
@@ -223,6 +246,11 @@ export function buildInbox(
 		activeEntries,
 		settled: settled.slice(0, settledLimit),
 		settledTotal: settled.length,
+		stashed: stashed.slice(0, stashedLimit),
+		stashedTotal: stashed.length,
+		stashedNeedingYou: valid.filter(
+			(item) => !item.isSubagent && item.isStashed && statusFor(statuses, item.id) === "waiting",
+		).length,
 		hiddenCount: Math.max(0, active.length - activeLimit),
 	}
 }
@@ -261,10 +289,31 @@ export function formatStamp(ts: number, now: number): string {
 	return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
 }
 
+/** When the user last messaged a thread; threads from before the stamp existed use their last activity. */
+const userMessageTs = (item: HistoryItem) => item.lastUserMessageTs ?? item.ts
+
+/** The agent's activity after the user's last message is worth showing once it's a minute newer. */
+const AGENT_LATER_MS = 60_000
+
+/** How long ago the agent was last active, when that's after the user's last message ("2m"), else undefined. */
+export function agentLaterAge(row: Pick<InboxRow, "activityTs" | "agentActivityTs">, now: number): string | undefined {
+	if (row.agentActivityTs - row.activityTs < AGENT_LATER_MS) return undefined
+	return formatAge(row.agentActivityTs, now)
+}
+
+/** "Your last message 5m ago · agent 2m ago": the time slot's tooltip. */
+export function activityTitle(row: Pick<InboxRow, "activityTs" | "agentActivityTs">, now: number): string {
+	const ago = (age: string) => (age === "now" ? "just now" : `${age} ago`)
+	const later = agentLaterAge(row, now)
+	return [`Your last message ${ago(formatAge(row.activityTs, now))}`, later && `agent ${ago(later)}`]
+		.filter(Boolean)
+		.join(" · ")
+}
+
 /** Second line of an inbox row. */
 export function describeActivity(row: InboxRow, now: number): string {
 	if (row.settled) {
-		const age = formatAge(row.activityTs, now)
+		const age = formatAge(row.agentActivityTs, now)
 		return age === "now" ? "Last active just now" : `Last active ${age} ago`
 	}
 	switch (row.status) {
@@ -279,7 +328,13 @@ export function describeActivity(row: InboxRow, now: number): string {
 		case "subagents":
 			return waitingOnLabel(row.liveSubagentCount, row.liveSubthreadCount)
 	}
-	return row.item.modelId ? `Done · ${row.item.modelId}` : "Done"
+	const later = agentLaterAge(row, now)
+	return [
+		row.item.modelId ? `Done · ${row.item.modelId}` : "Done",
+		later && (later === "now" ? "agent replied just now" : `agent replied ${later} ago`),
+	]
+		.filter(Boolean)
+		.join(" · ")
 }
 
 /** Member threads an expanded group row shows before "Show N more". */

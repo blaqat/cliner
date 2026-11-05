@@ -239,6 +239,21 @@ vscode-dropdown::part(listbox) {
 	}
 }
 
+/* Shell rows can wrap older controls with no border of their own, so the emphasis is drawn inside. */
+@keyframes settings-shell-highlight {
+	0%,
+	70% {
+		box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+	}
+	100% {
+		box-shadow: inset 0 0 0 1px transparent;
+	}
+}
+
+.settings-shell .settings-target-highlight {
+	animation-name: settings-shell-highlight;
+}
+
 /* Fix tooltip arrow lag - disable animations on tooltips */
 [data-slot="tooltip-content"],
 [data-slot="tooltip-content"] * {

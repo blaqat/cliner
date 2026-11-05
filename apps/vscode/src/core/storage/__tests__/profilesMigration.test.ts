@@ -97,9 +97,16 @@ describe("profile migration across releases and windows", () => {
 		expect(afterFirst.subagentDefaultModelProfileId).toBe(afterFirst.profiles[1].id)
 		expect(afterFirst.subagentDefaultProfileId).toBe(local.id)
 
+		// These windows have no keychain, so the move to model settings keeps failing and legacy stays in charge.
+		// The move's own journal is retried; legacy's upkeep must not change anything.
+		const withoutJournal = ({
+			modelSettingsMigration: _journal,
+			modelSettingsBackupV1: _backup,
+			...rest
+		}: Record<string, unknown>) => rest
 		const second = openWindow()
 		await second.start()
-		expect(readDisk()).toEqual(afterFirst)
+		expect(withoutJournal(readDisk())).toEqual(withoutJournal(afterFirst))
 	})
 
 	it("adopts what an older release chose after a downgrade, instead of restoring the stale default", async () => {
@@ -229,7 +236,7 @@ it("defers all migration writes on timeout and reloads the committed state", asy
 		release()
 	}
 	await window.reconcile()
-	expect(readDisk().profilesMigration.version).toBe(1)
+	expect(readDisk().modelSettingsMigration.status).toBe("complete")
 })
 
 it("preserves an unrelated process write racing the real migration commit", async () => {
@@ -281,4 +288,13 @@ it("preserves an unrelated process write racing the real migration commit", asyn
 	expect(disk.unrelatedMigrationRace).toBe("saved")
 	expect(disk.profilesMigration.version).toBe(1)
 	expect(disk.profiles.map((profile: { name: string }) => profile.name)).toEqual(["Claude", "Local"])
+})
+
+it("a fresh start finishes the move and leaves an empty store", async () => {
+	const window = openWindow()
+	await window.start()
+	const data = readDisk()
+	expect(data.modelSettings.connections).toEqual([])
+	expect(data.modelSettingsMigration.status).toBe("complete")
+	expect(window.manager.getModelSettingsMigrationStatus().status).toBe("complete")
 })

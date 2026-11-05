@@ -1,28 +1,29 @@
+import type { ModelPick } from "@shared/model-settings"
+import type { ModelSettingsState } from "@shared/model-settings-state"
 import { useState } from "react"
 import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { LinkButton } from "@/components/common/LinkButton"
-import { MENU_HEADING_CLASS, MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { ModelPickButton } from "@/components/models/ModelPickButton"
+import { selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
-
-/** A profile as the ▾ menu shows it: name over its model and effort. */
-export interface GenerateProfileOption {
-	id: string
-	name: string
-	description: string
-}
+import { Box } from "./WalkthroughReviewNotes"
 
 interface GenerateControlProps {
-	profiles: GenerateProfileOption[]
-	profileId: string | undefined
-	onPickProfile: (profileId: string) => void
+	modelSettings?: ModelSettingsState
+	pick?: ModelPick | null
+	onPick?: (pick: ModelPick) => void
 	/** The document shown is already generated, so the button regenerates. */
 	regenerate: boolean
 	disabled: boolean
 	generating: boolean
 	onGenerate: () => void
-	onOpenProfiles: () => void
+	onOpenModels: () => void
+	/** "Add review notes": Generate also asks Cline for its notes. Remembered by the page. */
+	reviewNotes: boolean
+	onReviewNotes: (on: boolean) => void
 }
 
 /** Both halves share one height, radius and separator so they read as one split button. */
@@ -30,24 +31,25 @@ const HALF_CLASS = "h-6 rounded-none py-0 leading-none"
 
 /**
  * `✦ Generate ▾`: the walkthrough's one AI-cost action, as one split button.
- * Runs only on click; ▾ picks the profile and starts on the remembered one.
+ * Runs only on click, on the model picked beside it.
  */
 export function GenerateControl({
-	profiles,
-	profileId,
-	onPickProfile,
+	modelSettings,
+	pick,
+	onPick,
 	regenerate,
 	disabled,
 	generating,
 	onGenerate,
-	onOpenProfiles,
+	onOpenModels,
+	reviewNotes,
+	onReviewNotes,
 }: GenerateControlProps) {
 	const [menuOpen, setMenuOpen] = useState(false)
-	const profile = profiles.find((p) => p.id === profileId)
-	if (!profiles.length)
+	if (!modelSettings)
 		return (
-			<LinkButton className="text-[11px]" onClick={onOpenProfiles}>
-				Add a profile to Generate
+			<LinkButton className="text-[11px]" onClick={onOpenModels}>
+				See why Generate isn't available
 			</LinkButton>
 		)
 	return (
@@ -56,9 +58,9 @@ export function GenerateControl({
 				aria-busy={generating || undefined}
 				className={cn(HALF_CLASS, "gap-1 px-2")}
 				disabled={disabled || generating}
-				onClick={() => (profile ? onGenerate() : setMenuOpen(true))}
+				onClick={() => (pick ? onGenerate() : setMenuOpen(true))}
 				size="xs"
-				title={profile ? `Generate with ${profile.name}` : "Choose a profile first"}>
+				title="Generate with selected model">
 				<span
 					aria-hidden
 					className={cn(
@@ -68,10 +70,17 @@ export function GenerateControl({
 				/>
 				{generating ? "Generating…" : regenerate ? "Regenerate" : "Generate"}
 			</Button>
+			<ModelPickButton
+				{...selectorDataFromModelSettings(modelSettings)}
+				modelsLabel="Generate model"
+				onCommit={(p) => onPick?.({ modelId: p.rowId, levelId: p.levelId })}
+				onManage={onOpenModels}
+				pick={pick ? { rowId: pick.modelId, levelId: pick.levelId } : null}
+			/>
 			<Popover onOpenChange={setMenuOpen} open={menuOpen}>
 				<PopoverTrigger asChild>
 					<Button
-						aria-label="Choose Generate profile"
+						aria-label="Generate options"
 						className={cn(HALF_CLASS, "w-5 border-y-0 border-r-0 border-l border-solid border-button-separator px-0")}
 						disabled={generating}
 						size="xs">
@@ -79,40 +88,35 @@ export function GenerateControl({
 					</Button>
 				</PopoverTrigger>
 				<PopoverContent align="end" className="menu-rise w-64 p-1" onKeyDown={handleMenuKeyDown} side="bottom">
-					<div className={MENU_HEADING_CLASS}>Generate with</div>
 					<div className="flex flex-col" role="menu">
-						{profiles.map((p) => (
-							<button
-								aria-checked={p.id === profileId}
-								className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
-								key={p.id}
-								onClick={() => {
-									onPickProfile(p.id)
-									setMenuOpen(false)
-								}}
-								role="menuitemradio"
-								type="button">
-								<span
-									aria-hidden
-									className={cn(MENU_ICON_CLASS, "codicon-check mt-0.5", p.id !== profileId && "invisible")}
-								/>
-								<span className="min-w-0 flex-1">
-									<span className="block truncate">{p.name}</span>
-									<span className="block truncate text-[11px] text-description">{p.description}</span>
+						<button
+							aria-checked={reviewNotes}
+							className={cn(MENU_ITEM_CLASS, "h-auto items-start py-1")}
+							data-testid="walkthrough-generate-review-notes"
+							onClick={() => onReviewNotes(!reviewNotes)}
+							role="menuitemcheckbox"
+							type="button">
+							<span className="mt-0.5">
+								<Box on={reviewNotes} />
+							</span>
+							<span className="min-w-0 flex-1">
+								<span className="block">Add review notes</span>
+								<span className="block text-[11px] text-description">
+									Risks, suggestions and questions. Same request, a bit more output.
 								</span>
-							</button>
-						))}
+							</span>
+						</button>
 						<div className={MENU_SEPARATOR_CLASS} role="separator" />
 						<button
 							className={cn(MENU_ITEM_CLASS, "text-description")}
 							onClick={() => {
 								setMenuOpen(false)
-								onOpenProfiles()
+								onOpenModels()
 							}}
 							role="menuitem"
 							type="button">
 							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-settings-gear")} />
-							Manage profiles…
+							Manage models…
 						</button>
 					</div>
 				</PopoverContent>

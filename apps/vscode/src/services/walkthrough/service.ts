@@ -2,25 +2,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ChangeWalkthrough, WalkthroughRequest } from "@shared/Walkthrough"
 import type { Controller } from "@/core/controller"
-import { apiConfigurationForModelProfile, resolveModelProfile } from "@/core/controller/models/modelProfiles"
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { HostProvider } from "@/hosts/host-provider"
-import { buildApiHandler, buildSdkProviderConfig } from "@/sdk/sdk-api-handler"
+import { backgroundHandler, useModelSettings } from "@/sdk/model-settings/background"
 import { readAuthoredWalkthrough } from "./authored"
 import { collect, gitRoots, revertChange } from "./collection"
-import { type ContentChange, cacheKey, formatNotes, generate, hash, repairOutput } from "./engine"
-
-/** The profile Generate used last (Settings › Profiles › Text generation › Walkthrough Generate). */
-export function readRememberedWalkthroughProfileId(controller: Controller): string | undefined {
-	return controller.stateManager.getGlobalStateKey("walkthroughGenerateModelProfileId") || undefined
-}
-
-/** Generate remembers whichever profile it ran with, so the ▾ starts there next time. */
-function rememberWalkthroughProfileId(controller: Controller, profileId: string): void {
-	if (readRememberedWalkthroughProfileId(controller) === profileId) return
-	controller.stateManager.setGlobalState("walkthroughGenerateModelProfileId", profileId)
-	void controller.postStateToWebview()
-}
+import { type ContentChange, cacheKey, formatNotes, generate, hash } from "./engine"
 
 const services = new WeakMap<Controller, WalkthroughService>()
 export function walkthroughService(controller: Controller): WalkthroughService {
@@ -63,52 +50,36 @@ export class WalkthroughService {
 		return result
 	}
 
-	async generate(request: WalkthroughRequest): Promise<ChangeWalkthrough> {
+	async generate(
+		request: WalkthroughRequest,
+		oneCall?: import("@shared/model-settings").ModelPick,
+	): Promise<ChangeWalkthrough> {
 		if (this.generating) throw new Error("A walkthrough is already generating")
 		this.generating = true
 		try {
 			const { walk, turns } = await this.current(request)
 			if (!walk.hunks.length) return this.get(request)
-			const profileId = request.profileId?.trim() || readRememberedWalkthroughProfileId(this.controller)
-			const resolved = resolveModelProfile(this.controller.stateManager, profileId)
-			if (!resolved) throw new Error("Choose a profile for Generate")
-			const { profile, configuration } = resolved
-			const config = apiConfigurationForModelProfile(this.controller.stateManager, profile.id, "act")
-			// Explicit profiles remain explicit even for large diffs; this prevents silently changing their cost/provider.
-			const provider = buildSdkProviderConfig(config, "act")
-			const identity = {
-				profile: profile.id,
-				configuration: configuration.id,
-				apiType: configuration.openAiCompatibleApiType,
-				routingProvider: provider.routingProviderId,
-				provider: provider.providerId,
-				model: provider.modelId,
-				options: configuration.options,
-				effort: resolved.reasoningEffort,
-				endpoint: provider.baseUrl,
+			if (!useModelSettings(this.controller.stateManager)) {
+				throw new Error("Generate needs your setup moved to the new Settings. Open Settings to see why it hasn't.")
 			}
-			const cache = cacheKey(walk, identity, turns)
+			const handler = await backgroundHandler(this.controller.stateManager, "generate", oneCall)
+			if (!handler) throw new Error("Choose a Background text model in Settings > Models")
+			const settings = this.controller.stateManager.getGlobalStateKey("modelSettings")!
+			const identity = { settings, oneCall }
+			const cache = cacheKey(walk, identity, turns, request.reviewNotes)
 			const directory = path.join(await ensureTaskDirectoryExists(request.taskId), "walkthrough-cache")
 			const cacheFile = path.join(directory, `${cache}.json`)
 			if (!request.regenerate) {
 				try {
 					const cached = JSON.parse(await readFile(cacheFile, "utf8")) as ChangeWalkthrough
 					if (
-						cached.fingerprint === walk.fingerprint &&
 						cached.version === 1 &&
+						cached.fingerprint === walk.fingerprint &&
 						Array.isArray(cached.chapters) &&
 						Array.isArray(cached.support)
 					) {
-						const normalized = repairOutput(
-							{
-								...cached,
-								support: cached.support.flatMap((stop) => (Array.isArray(stop?.hunkIds) ? stop.hunkIds : [])),
-							},
-							walk,
-						)
-						const result = { ...normalized, profileId: profile.id, cacheHit: true }
+						const result = { ...cached, cacheHit: true }
 						this.documents.set(this.key(request), result)
-						rememberWalkthroughProfileId(this.controller, profile.id)
 						return result
 					}
 				} catch (error) {
@@ -117,8 +88,7 @@ export class WalkthroughService {
 			}
 			const previous = this.documents.get(this.key(request))
 			const result = {
-				...(await generate(walk, turns, buildApiHandler(config, "act"), request.regenerate ? previous : undefined)),
-				profileId: profile.id,
+				...(await generate(walk, turns, handler, request.regenerate ? previous : undefined, request.reviewNotes)),
 				cacheHit: false,
 			}
 			const latest = await this.current(request)
@@ -127,7 +97,6 @@ export class WalkthroughService {
 			await mkdir(directory, { recursive: true })
 			await writeFile(cacheFile, JSON.stringify(result), "utf8")
 			this.documents.set(this.key(request), result)
-			rememberWalkthroughProfileId(this.controller, profile.id)
 			return result
 		} finally {
 			this.generating = false
@@ -180,6 +149,7 @@ export class WalkthroughService {
 			stopNotes: request.stopNotes ?? {},
 			lineNotes: Array.isArray(request.lineNotes) ? request.lineNotes : [],
 			overallNote: request.overallNote,
+			reviewResponses: request.reviewResponses,
 		})
 		this.validate(request)
 		await this.controller.task!.handleWebviewAskResponse("messageResponse", message, [], [])

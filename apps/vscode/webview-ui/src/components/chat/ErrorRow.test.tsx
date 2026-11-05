@@ -6,6 +6,7 @@ import ErrorRow from "./ErrorRow"
 const mockSetUserOrganization = vi.hoisted(() => vi.fn())
 const mockUpdateApiConfigurationProto = vi.hoisted(() => vi.fn())
 const mockNavigateToSettingsModelPicker = vi.hoisted(() => vi.fn())
+const mockNavigateToSettings = vi.hoisted(() => vi.fn())
 const mockApiConfiguration = vi.hoisted(() => ({
 	planModeApiProvider: "cline-pass",
 	actModeApiProvider: "cline-pass",
@@ -32,6 +33,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		startProviderModelsRequest: vi.fn(),
 		applyProviderModelsResponse: vi.fn(),
 		navigateToSettingsModelPicker: mockNavigateToSettingsModelPicker,
+		navigateToSettings: mockNavigateToSettings,
 	}),
 }))
 
@@ -286,7 +288,7 @@ describe("ErrorRow", () => {
 			expect(screen.queryByText(formattedMessage)).not.toBeInTheDocument()
 		})
 
-		it("renders ClinePass limit error and switches to Cline usage-based billing", async () => {
+		it("renders ClinePass limit error and sends the switch to Settings before the setup has moved", async () => {
 			const limitMessage = "You have reached your weekly Clinepass limit. The limit resets in 7d, please try again later."
 			const mockClineError = {
 				message: limitMessage,
@@ -307,13 +309,9 @@ describe("ErrorRow", () => {
 
 			fireEvent.click(screen.getByText("Switch to Usage-Based billing"))
 
-			await waitFor(() => expect(mockUpdateApiConfigurationProto).toHaveBeenCalledTimes(1))
-			const request = mockUpdateApiConfigurationProto.mock.calls[0][0]
-			expect(request.apiConfiguration.planModeApiProvider).toBe("cline")
-			expect(request.apiConfiguration.actModeApiProvider).toBe("cline")
-			expect(request.apiConfiguration.planModeClineModelId).toBeUndefined()
-			expect(request.apiConfiguration.actModeClineModelId).toBeUndefined()
-			expect(screen.getByText("Switched to Usage-Based billing")).toBeInTheDocument()
+			// With the store, configuredLimitErrors.test.tsx covers the switch. Without it, Settings says why it can't yet.
+			expect(mockNavigateToSettings).toHaveBeenCalledWith("models")
+			expect(mockUpdateApiConfigurationProto).not.toHaveBeenCalled()
 		})
 
 		it("renders a daily free model limit without usage-billing guidance", async () => {
@@ -360,7 +358,7 @@ describe("ErrorRow", () => {
 			expect(screen.queryByText(rawMessage)).not.toBeInTheDocument()
 
 			fireEvent.click(screen.getByText("Select a Model"))
-			expect(mockNavigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "api-config" })
+			expect(mockNavigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "models" })
 		})
 
 		it("renders friendly logged-out message and sign in button when user is not signed in", async () => {
@@ -438,5 +436,21 @@ describe("ErrorRow", () => {
 
 			expect(screen.getByText("Test error message")).toBeInTheDocument()
 		})
+	})
+})
+
+describe("a refusal about a configured model", () => {
+	const refusal = (text: string) => ({ ts: 1, type: "say", say: "error", text }) as never
+
+	it("links to where the fix is", () => {
+		mockNavigateToSettings.mockClear()
+		render(<ErrorRow errorType="error" message={refusal("This model has no model ID. Add it in Settings > Models.")} />)
+		fireEvent.click(screen.getByRole("button", { name: "Open Settings > Models" }))
+		expect(mockNavigateToSettings).toHaveBeenCalledWith("models")
+	})
+
+	it("adds nothing to any other error", () => {
+		render(<ErrorRow errorType="error" message={refusal("Something else broke.")} />)
+		expect(screen.queryByRole("button", { name: "Open Settings > Models" })).toBeNull()
 	})
 })

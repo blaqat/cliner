@@ -11,7 +11,6 @@ import { MessageTranslatorState } from "./message-translator"
 import { Controller as SdkController } from "./SdkController"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
-import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
@@ -320,6 +319,84 @@ describe("SDK remote-config coordination", () => {
 		})
 	})
 
+	describe("after a thread fails to start or to resume", () => {
+		function controllerWithFailedTask() {
+			const controller = {
+				task: undefined as TaskProxy | undefined,
+				turnStateTracker: { set: vi.fn(), get: () => ({ phase: "error" }) },
+				messageTranslatorState: { clearTurnOutcome: vi.fn() },
+				messages: { appendAndEmit: vi.fn() },
+				sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
+				postStateToWebview: vi.fn(async () => {}),
+				initTask: vi.fn(async () => "task-id"),
+				followups: { askResponse: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
+				cancelTask: vi.fn(async () => {}),
+				failedStarts: new WeakMap(),
+				failedFollowUps: new WeakMap(),
+				askResponse(prompt?: string, images?: string[], files?: string[]) {
+					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
+				},
+			}
+			const task = createTaskProxy("failed", controller.askResponse, controller.cancelTask)
+			controller.task = task
+			return { controller, task }
+		}
+		const startFailure = { prompt: "first message", images: ["img"], files: ["file"], hasConversation: false }
+
+		it("Retry starts the thread again with its first message and attachments, not a resume with nothing", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect(controller.initTask).toHaveBeenCalledWith("first message", ["img"], ["file"], undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+			expect(controller.followups.askResponse).not.toHaveBeenCalled()
+			// Only the first response answers the failure.
+			await task.handleWebviewAskResponse("messageResponse", "and then")
+			expect(controller.followups.askResponse).toHaveBeenCalledOnce()
+		})
+
+		it("a message typed in the composer starts it instead", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("messageResponse", "revised")
+			expect(controller.initTask).toHaveBeenCalledWith("revised", undefined, undefined, undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+		})
+
+		it("Retry sends the follow-up that never got through; a typed message replaces it", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedFollowUps.set(task, { prompt: "lost", images: ["img"], files: [] })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[]).slice(0, 3)).toEqual(["lost", ["img"], []])
+			controller.followups.askResponse.mockClear()
+
+			controller.failedFollowUps.set(task, { prompt: "lost" })
+			await task.handleWebviewAskResponse("messageResponse", "typed")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[])[0]).toBe("typed")
+		})
+
+		it("reports a failed follow-up once, to the RPC that hands the draft back", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.followups.askResponse.mockImplementation(async () => {
+				;(controller as unknown as { followUpFailure: string }).followUpFailure = "Storage is busy"
+			})
+			await task.handleWebviewAskResponse("messageResponse", "hello")
+			const take = SdkController.prototype.takeFollowUpFailure
+			expect(take.call(controller as never)).toBe("Storage is busy")
+			expect(take.call(controller as never)).toBeUndefined()
+			// A later send doesn't inherit a failure nobody read.
+			;(controller as unknown as { followUpFailure: string }).followUpFailure = "stale"
+			controller.followups.askResponse.mockImplementation(async () => {})
+			await task.handleWebviewAskResponse("messageResponse", "hello again")
+			expect(take.call(controller as never)).toBeUndefined()
+		})
+	})
+
 	describe("after a Cline sign-in error offers to retry a prompt", () => {
 		function controllerShowingSignInError(options: { existingTask?: boolean } = {}) {
 			const controller = {
@@ -331,7 +408,7 @@ describe("SDK remote-config coordination", () => {
 				postStateToWebview: vi.fn(async () => {}),
 				initTask: vi.fn(async () => "task-id"),
 				followups: { askResponse: vi.fn(async () => {}) },
-				taskHistory: { markTaskActive: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
 				cancelTask: vi.fn(async () => {}),
 				askResponse(prompt?: string, images?: string[], files?: string[]) {
 					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
@@ -1209,6 +1286,98 @@ describe("task deletion fence", () => {
 	})
 })
 
+describe("deleting the open thread", () => {
+	const proto = SdkController.prototype as unknown as {
+		openThreadClosedBy: (ids: readonly string[]) => Promise<unknown>
+	}
+	/** Stands in for a Controller whose delete clears the open task the way beforeDeleteSession does. */
+	function makeController(options: {
+		openId?: string
+		items?: Record<string, { id: string; taskGroupId?: string; parentTaskId?: string; isSubagent?: boolean }>
+		subagentThreads?: Map<string, unknown>
+		clearsTask?: boolean
+	}) {
+		const controller: Record<string, unknown> = {
+			task: options.openId ? { taskId: options.openId } : undefined,
+			subagentThreads: options.subagentThreads ?? new Map(),
+			taskSessions: new Map(),
+			deletedOpenThread: undefined,
+			openThreadClosedBy: proto.openThreadClosedBy,
+			taskHistory: {
+				findHistoryItem: async (id: string) => options.items?.[id],
+				deleteTasksFromState: vi.fn(async () => {
+					if (options.clearsTask !== false) controller.task = undefined
+					return []
+				}),
+			},
+		}
+		return controller
+	}
+	const remove = (controller: Record<string, unknown>, ids: string[]) =>
+		SdkController.prototype.deleteTasksFromState.call(controller as never, ids)
+
+	it("records the open thread and its task so the webview can leave it", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } } })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t1", taskGroupId: "g1", seq: 1 })
+	})
+
+	it("bumps seq on every such delete", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" }, t2: { id: "t2" } } })
+		await remove(controller, ["t1"])
+		controller.task = { taskId: "t2" }
+		await remove(controller, ["t2"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t2", taskGroupId: undefined, seq: 2 })
+	})
+
+	it("records nothing when a different thread is deleted", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } }, clearsTask: false })
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records nothing when no thread is open", async () => {
+		const controller = makeController({})
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records an open subagent thread when its owning parent is deleted, filed under the parent's task", async () => {
+		const child = { id: "child", parentTaskId: "parent", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { child, parent: { id: "parent", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["parent"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("resolves a live subagent's task through its runtime owner when it has no history row", async () => {
+		const child = { id: "child", parentTaskId: "ancestor", runtimeOwnerTaskId: "owner", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { owner: { id: "owner", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["owner"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("keeps the event sequence unchanged when deleting another thread later", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		controller.deletedOpenThread = { id: "older", seq: 5 }
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toEqual({ id: "older", seq: 5 })
+	})
+
+	it("records nothing when the delete left the thread open", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+})
+
 describe("task configuration races", () => {
 	it("uses live selection when history was read before a picker change inside the transition lock", async () => {
 		const controller = Object.create(SdkController.prototype)
@@ -1296,9 +1465,7 @@ describe("task configuration races", () => {
 			turnStateTracker: { get: () => undefined },
 			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
 		})
-		await controller.updateChatApiSelection("act", { taskId: "live", profileId: "Q", reasoningEffort: "high" })
-		expect(context.apiSelection).toBe(selection)
-		expect(context.pendingApiSelection).toMatchObject({ actProfileId: "Q", actModeReasoningEffort: "high" })
+		context.pendingApiSelection = { ...selection, actProfileId: "Q", actModeReasoningEffort: "high" }
 		buildBaseStateMock.mockResolvedValueOnce({
 			taskHistory: [],
 			mode: "act",
@@ -1327,56 +1494,18 @@ describe("task configuration races", () => {
 		} as never)
 		const editedState = await controller.getStateToPostToWebview()
 		expect(editedState.focusedSessionModels.act.modelId).toBe("p-model")
-	})
-
-	it("restores pending selection on refocus and preserves it across unrelated saves and other-mode changes", async () => {
-		const controller = Object.create(SdkController.prototype)
-		const selection = { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" }
-		const context = { apiSelection: selection, pendingApiSelection: undefined as TaskApiSelection | undefined }
-		const profiles = ["P", "Q", "R"].map((id) => ({ id, name: id, provider: "openai", modelId: id }))
-		const globals: Record<string, unknown> = { apiConfigProfiles: profiles, askProfileId: "P", actProfileId: "Q" }
-		const config: Record<string, unknown> = { actModeReasoningEffort: "high" }
-		Object.defineProperty(controller, "task", { value: { taskId: "live" } })
-		Object.assign(controller, {
-			taskSessions: new Map([["live", context]]),
-			getTaskSessionContext: () => context,
-			sessions: { getSession: () => ({ isRunning: true, apiSnapshot: { selection } }) },
-			stateManager: {
-				getGlobalStateKey: (key: string) => globals[key],
-				getGlobalSettingsKey: () => "act",
-				getApiConfiguration: () => config,
-				setGlobalStateBatch: (updates: object) => Object.assign(globals, updates),
-				setApiConfiguration: (updates: object) => Object.assign(config, updates),
-				getSecretForKey: () => undefined,
-				listSecretStorageKeys: () => [],
-			},
-			taskHistory: { setTaskApiSelection: vi.fn(async () => {}) },
-			providerChanges: { handleApiConfigurationChanged: vi.fn() },
-		})
-		await controller.updateChatApiSelection("act", { taskId: "live", profileId: "Q", reasoningEffort: "high" })
-		// Another chat changes globals before A regains focus.
-		globals.actProfileId = "R"
-		config.actModeReasoningEffort = "medium"
-		controller.restoreTaskApiSelection({ id: "live", apiSelection: selection }, "act")
-		expect(globals.actProfileId).toBe("R")
-		expect(config.actModeReasoningEffort).toBe("medium")
-		expect(controller.taskHistory.setTaskApiSelection).not.toHaveBeenCalled()
-		// Saving a profile changes connection options, not the requested selection.
-		controller.handleApiConfigurationChanged({ openAiBaseUrl: "old" }, { openAiBaseUrl: "new" })
-		expect(context.pendingApiSelection).toEqual({ ...selection, actProfileId: "Q", actModeReasoningEffort: "high" })
-		await controller.updateChatApiSelection("plan", { taskId: "live", profileId: "R" })
-		expect(context.pendingApiSelection).toEqual({
-			...selection,
-			askProfileId: "R",
-			planModeReasoningEffort: "none",
-			actProfileId: "Q",
-			actModeReasoningEffort: "high",
-		})
-		// Explicitly choosing the live profile again must cancel the pending switch.
-		await controller.updateChatApiSelection("act", { taskId: "live", profileId: "P" })
-		expect(context.pendingApiSelection?.actProfileId).toBe("P")
-		expect(context.pendingApiSelection?.askProfileId).toBe("R")
-		expect(context.apiSelection).toBe(selection)
+		// An armed next-message pick is what the composer shows, until its message has gone.
+		const pick = { modelId: "next", levelId: "high" }
+		const armed = { current: pick as typeof pick | undefined }
+		controller.configuredNextMessageSelections = { peek: () => armed.current }
+		const base = { taskHistory: [], mode: "act", apiConfiguration: {} } as never
+		buildBaseStateMock.mockResolvedValueOnce(base)
+		const armedState = await controller.getStateToPostToWebview()
+		expect(armedState.composerNextMessageOnly).toBe(true)
+		expect(armedState.composerApiSelection.modelSelectionV1.act).toEqual(pick)
+		armed.current = undefined
+		buildBaseStateMock.mockResolvedValueOnce(base)
+		expect((await controller.getStateToPostToWebview()).composerNextMessageOnly).toBe(false)
 	})
 
 	it("commits mode and selection for a history-only chat after switching completes", async () => {
@@ -1424,210 +1553,6 @@ describe("task configuration races", () => {
 		await switchMode
 		expect(session.startConfig.mode).toBe("plan")
 		expect(context.mode).toBe("plan")
-	})
-})
-
-describe("composer selections", () => {
-	function setup(focused = true) {
-		const controller = Object.create(SdkController.prototype)
-		const globals = {
-			askProfileId: "P",
-			actProfileId: "P",
-			apiConfigProfiles: [
-				{ id: "P", name: "Default", provider: "openai", modelId: "p" },
-				{ id: "Q", name: "Override", provider: "openai", modelId: "q", reasoningEffort: "high" },
-			],
-		}
-		const config = { planModeReasoningEffort: "low", actModeReasoningEffort: "low" }
-		const original = { askProfileId: "P", actProfileId: "P", planModeReasoningEffort: "low", actModeReasoningEffort: "low" }
-		const context: any = { apiSelection: original, mode: "act" }
-		const session = { isRunning: false, queuedPromptCount: 0, sdkHost: {} }
-		Object.defineProperty(controller, "task", { value: focused ? { taskId: "chat" } : undefined, writable: true })
-		Object.assign(controller, {
-			taskSessions: new Map([["chat", context]]),
-			getTaskSessionContext: () => context,
-			stateManager: {
-				getGlobalStateKey: (key: keyof typeof globals) => globals[key],
-				getApiConfiguration: () => config,
-				setGlobalState: vi.fn(),
-				setApiConfiguration: vi.fn(),
-			},
-			sessions: { getSession: () => session, markSendRunning: vi.fn(), setRunning: vi.fn(), fireAndForgetSend: vi.fn() },
-			providerChanges: { handleApiConfigurationChanged: vi.fn() },
-			taskHistory: { setTaskApiSelection: vi.fn(async () => {}) },
-			sessionRebuilds: { sessionBecameIdle: vi.fn() },
-		})
-		return { controller, globals, config, context, session, original }
-	}
-
-	it("changes only the focused chat, retaining settings and the live build until replacement", async () => {
-		const { controller, globals, config, context, original } = setup()
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q" })
-		expect(context.pendingApiSelection).toEqual({ ...original, actProfileId: "Q", actModeReasoningEffort: "high" })
-		expect(context.apiSelection).toBe(original)
-		expect(globals.actProfileId).toBe("P")
-		expect(config.actModeReasoningEffort).toBe("low")
-		expect(controller.stateManager.setGlobalState).not.toHaveBeenCalled()
-		expect(controller.stateManager.setApiConfiguration).not.toHaveBeenCalled()
-	})
-
-	it("holds a home draft without updating settings and fences a stale home request", async () => {
-		const { controller, globals } = setup(false)
-		await controller.updateChatApiSelection("plan", { taskId: "", profileId: "Q", reasoningEffort: "xhigh" })
-		expect(controller.draftApiSelection).toMatchObject({ askProfileId: "Q", planModeReasoningEffort: "xhigh" })
-		expect(globals.askProfileId).toBe("P")
-		controller.task = { taskId: "chat" }
-		await expect(controller.updateChatApiSelection("act", { taskId: "", profileId: "Q" })).rejects.toThrow(
-			"Focused chat changed",
-		)
-	})
-
-	it("reverts the next-message choice only after its turn, before releasing deferred messages", async () => {
-		const { controller, context, original, session } = setup()
-		await controller.updateChatApiSelection("act", { taskId: "chat", nextMessageOnly: true })
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q", reasoningEffort: "xhigh" })
-		const temporary = context.pendingApiSelection
-		controller.commitTaskApiSelection("chat", temporary, temporary)
-		expect(controller.taskHistory.setTaskApiSelection).toHaveBeenCalledWith("chat", original)
-		controller.handleSessionBecameIdle()
-		expect(context.nextMessageSelection.restoring).toBeUndefined()
-		context.nextMessageSelection.started = true
-		session.isRunning = true
-		expect(controller.deferOneTurnFollowup("chat", "later", ["image"], [], "queue")).toBe(true)
-		controller.handleSessionBecameIdle()
-		expect(context.pendingApiSelection).toBeUndefined()
-		session.isRunning = false
-		controller.handleSessionBecameIdle()
-		expect(context.pendingApiSelection).toEqual(original)
-		expect(controller.sessions.fireAndForgetSend).not.toHaveBeenCalled()
-		controller.commitTaskApiSelection("chat", original, original)
-		expect(context.nextMessageSelection).toBeUndefined()
-		expect(context.apiSelection).toEqual(original)
-		expect(controller.sessions.fireAndForgetSend).toHaveBeenCalledWith(
-			session.sdkHost,
-			"chat",
-			"later",
-			["image"],
-			[],
-			undefined,
-		)
-	})
-
-	it("aborts through Core interject immediately and restores the one-message selection at idle", async () => {
-		const { controller, context, session, original } = setup()
-		await controller.updateChatApiSelection("act", { taskId: "chat", nextMessageOnly: true })
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q" })
-		controller.commitTaskApiSelection("chat", context.pendingApiSelection, context.pendingApiSelection)
-		context.nextMessageSelection.started = true
-		session.isRunning = true
-		expect(context.apiSelection.actProfileId).toBe("Q")
-		controller.deferOneTurnFollowup("chat", "older followup", [], [], "queue")
-		const pending: any[] = []
-		const runtime = Object.create(LocalRuntimeHost.prototype)
-		Object.assign(runtime, {
-			sessions: new Map([["chat", { sessionId: "chat", status: "running", agent: { canStartRun: () => false } }]]),
-			turnsInFlight: new Map(),
-			abort: vi.fn(async () => {
-				session.isRunning = false
-			}),
-			pendingPromptsController: { enqueue: (_id: string, entry: any) => pending.unshift(entry) },
-		})
-		const host = {
-			send: vi.fn((input: any) =>
-				input.delivery === "interject" ? runtime.runTurn(input) : Promise.resolve(pending.push(input)),
-			),
-		}
-		session.sdkHost = host
-		const lifecycle = Object.create(SdkSessionLifecycle.prototype)
-		Object.assign(lifecycle, {
-			liveSessions: new Map([["chat", session]]),
-			turnGenerations: new Map(),
-			replacements: new Map(),
-			sessionStatuses: {},
-			assertTaskAvailable: vi.fn(),
-			options: {
-				deferSend: (...args: any[]) => controller.deferOneTurnFollowup(...args),
-				onSendComplete: vi.fn(),
-				onSendError: vi.fn(),
-			},
-		})
-		controller.sessions.fireAndForgetSend = lifecycle.fireAndForgetSend.bind(lifecycle)
-		const control = new SdkTaskControlCoordinator({
-			sessions: {
-				getActiveSession: () => ({ ...session, sessionId: "chat" }),
-				fireAndForgetSend: controller.sessions.fireAndForgetSend,
-			},
-			interactions: { clearPending: vi.fn() },
-			raiseCancelFence: vi.fn(),
-		} as never)
-		await control.cancelTask(false, { text: "priority" })
-		expect(host.send).toHaveBeenCalledWith(expect.objectContaining({ prompt: "priority", delivery: "interject" }))
-		expect(runtime.abort).toHaveBeenCalledOnce()
-		expect(session.isRunning).toBe(false)
-		// Core has admitted the priority prompt. Wait for it to drain before rebuilding.
-		session.queuedPromptCount = 1
-		controller.handleSessionBecameIdle()
-		expect(context.pendingApiSelection).toBeUndefined()
-		expect(context.nextMessageSelection.deferred).toHaveLength(1)
-		expect(pending[0]).toMatchObject({ prompt: "priority", delivery: "interject" })
-		session.queuedPromptCount = 0
-		controller.handleSessionBecameIdle()
-		expect(context.pendingApiSelection).toEqual(original)
-		controller.commitTaskApiSelection("chat", original, original)
-		expect(context.apiSelection).toEqual(original)
-		expect(context.nextMessageSelection).toBeUndefined()
-		await vi.waitFor(() => expect(pending.map((entry) => entry.prompt)).toEqual(["priority", "older followup"]))
-	})
-
-	it("persists the temporary choice when Keep for this chat is selected before sending", async () => {
-		const { controller, context } = setup()
-		await controller.updateChatApiSelection("act", { taskId: "chat", nextMessageOnly: true })
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q" })
-		const selected = context.pendingApiSelection
-		controller.commitTaskApiSelection("chat", selected, selected)
-		await controller.updateChatApiSelection("act", { taskId: "chat", nextMessageOnly: false })
-		expect(context.nextMessageSelection).toBeUndefined()
-		expect(controller.taskHistory.setTaskApiSelection).toHaveBeenLastCalledWith("chat", selected)
-	})
-
-	it("rejects arming during a running turn and resets only the requested mode", async () => {
-		const { controller, context, session, original } = setup()
-		session.isRunning = true
-		await expect(controller.updateChatApiSelection("act", { taskId: "chat", nextMessageOnly: true })).rejects.toThrow(
-			"Wait for this turn",
-		)
-		await controller.updateChatApiSelection("plan", { taskId: "chat", profileId: "Q" })
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q" })
-		await controller.updateChatApiSelection("act", { taskId: "chat", resetToDefault: true })
-		expect(context.pendingApiSelection).toEqual({ ...original, askProfileId: "Q", planModeReasoningEffort: "high" })
-	})
-
-	it("settings changes keep chat overrides and captured defaults intact", async () => {
-		const { controller, context, globals, config, original } = setup()
-		await controller.updateChatApiSelection("act", { taskId: "chat", profileId: "Q" })
-		const pending = context.pendingApiSelection
-		controller.commitTaskApiSelection("chat", pending, pending)
-		const inherited = { apiSelection: original }
-		controller.taskSessions.set("default-chat", inherited)
-		globals.actProfileId = "Q"
-		config.actModeReasoningEffort = "high"
-		controller.handleApiConfigurationChanged({}, config, { actProfileId: "Q" })
-		expect(context.apiSelection).toBe(pending)
-		expect(context.pendingApiSelection).toBeUndefined()
-		expect(inherited.apiSelection).toBe(original)
-	})
-
-	it("reopens a persisted override without changing settings", () => {
-		const { controller, globals, config, context } = setup()
-		context.apiSelection = undefined
-		controller.sessions.getSession = () => undefined
-		controller.restoreTaskApiSelection(
-			{ id: "chat", apiSelection: { actProfileId: "Q", actModeReasoningEffort: "xhigh" } },
-			"act",
-		)
-		expect(context.apiSelection).toMatchObject({ actProfileId: "Q", actModeReasoningEffort: "xhigh", askProfileId: "P" })
-		expect(globals.actProfileId).toBe("P")
-		expect(config.actModeReasoningEffort).toBe("low")
 	})
 })
 
@@ -1947,7 +1872,7 @@ describe("nested subagent conversation parents", () => {
 			},
 		})
 		expect(bTask.messageStateHandler.getClineMessages().at(-1)?.text).toBe("Nested report")
-		expect(aTask.messageStateHandler.getClineMessages()).toHaveLength(1)
+		expect(aTask.messageStateHandler.getClineMessages().filter((message) => message.say !== "subagent")).toHaveLength(1)
 		bTask.taskState.askResponse = "yesButtonClicked"
 		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "b-approval")
 		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "b-approval")
@@ -2031,6 +1956,37 @@ describe("task notebook fix round", () => {
 				changes: review.changes,
 			})),
 		)
+	})
+
+	it("shows a later turn's notebook changes in a new card at the end, keeping the card for the same revision", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "v2" }]
+		const earlier = {
+			ts: 5,
+			type: "say",
+			say: "notebook_changes",
+			sdkMessageIndex: 3,
+			text: JSON.stringify({ taskGroupId: "A", threadId: "t", revision: "r1", status: "pending", changes }),
+		}
+		let review = { groupId: "A", revision: "r2", changes }
+		controller.taskHistory = { findHistoryItem: vi.fn(async () => ({ id: "t" })), saveNotebookChangesMessage: vi.fn() }
+		controller.notebookStore = { listPending: vi.fn(async () => [review]), reviewDiffs: vi.fn(async (pending) => pending) }
+		let ts = 10
+		const emitHookMessage = vi.fn()
+		controller.getTaskSessionContext = vi.fn(() => ({
+			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }, earlier] } },
+			messages: { emitHookMessage },
+			translator: { nextTs: () => ++ts },
+		}))
+		await controller.emitNotebookChanges("t")
+		// r2 staged more: a new card (new ts), not the r1 card updated in place up the chat.
+		expect(emitHookMessage.mock.calls[0][0].ts).toBe(11)
+		expect(JSON.parse(emitHookMessage.mock.calls[0][0].text).revision).toBe("r2")
+
+		review = { groupId: "A", revision: "r1", changes }
+		await controller.emitNotebookChanges("t")
+		// The same revision again keeps its card where it is.
+		expect(emitHookMessage.mock.calls[1][0]).toMatchObject({ ts: 5, sdkMessageIndex: 3 })
 	})
 
 	it("refreshes branch on focus or HEAD events and posts only changes", async () => {

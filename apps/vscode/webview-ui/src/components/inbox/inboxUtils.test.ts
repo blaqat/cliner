@@ -2,12 +2,15 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	activityTitle,
+	agentLaterAge,
 	buildInbox,
 	countBackgroundRunning,
 	describeActivity,
 	EXPANDED_TASK_GROUPS_EVENT,
 	expandTaskGroupInInbox,
 	formatAge,
+	type InboxRow,
 	type InboxSettledEntry,
 	isRowWorking,
 	readExpandedTaskGroups,
@@ -25,6 +28,34 @@ function item(id: string, ts: number, extra: Partial<HistoryItem> = {}): History
 const settledId = (entry: InboxSettledEntry) => (entry.kind === "thread" ? entry.row.item.id : `group:${entry.row.group.id}`)
 
 describe("buildInbox", () => {
+	it("keeps stashed running and waiting threads out of Active and Settled", () => {
+		const result = buildInbox(
+			[
+				item("running", NOW, { isStashed: true }),
+				item("waiting", NOW - MIN, { isStashed: true, isSettled: true }),
+				item("active", NOW),
+			],
+			{ running: "running", waiting: "waiting" },
+		)
+		expect(result.active.map((row) => row.item.id)).toEqual(["active"])
+		expect(result.settled).toEqual([])
+		expect(result.stashed.map(settledId)).toEqual(["running", "waiting"])
+		expect(result.stashedTotal).toBe(2)
+		expect(result.stashedNeedingYou).toBe(1)
+	})
+
+	it("stashes a task group only when all its threads are stashed", () => {
+		const taskGroups: TaskGroupSummary[] = [{ id: "g", title: "Group", tags: [], createdAt: NOW, updatedAt: NOW }]
+		const history = [
+			item("a", NOW, { taskGroupId: "g", isStashed: true }),
+			item("b", NOW, { taskGroupId: "g", isStashed: true }),
+		]
+		expect(buildInbox(history, {}, undefined, { taskGroups }).stashed.map(settledId)).toEqual(["group:g"])
+		history[1].isStashed = false
+		const mixed = buildInbox(history, {}, undefined, { taskGroups })
+		expect(mixed.stashedTotal).toBe(0)
+		expect(mixed.activeEntries).toHaveLength(1)
+	})
 	it("puts unsettled chats on top by recency and settled chats below by last activity (not settle time)", () => {
 		const history = [
 			item("old", NOW - 50 * MIN),
@@ -86,12 +117,39 @@ describe("buildInbox", () => {
 		expect(active[0].activityTs).toBe(NOW - MIN)
 	})
 
-	it("rolls subagent activity into the parent's activity time", () => {
+	it("rolls subagent activity into the parent's agent time, not its place in the list", () => {
 		const history = [item("root", NOW - 60 * MIN), item("agent", NOW - MIN, { isSubagent: true, parentTaskId: "root" })]
 
 		const { active } = buildInbox(history, {})
 
-		expect(active[0].activityTs).toBe(NOW - MIN)
+		expect(active[0].agentActivityTs).toBe(NOW - MIN)
+		// Subagents never send the user's messages: the thread keeps its own time for ordering.
+		expect(active[0].activityTs).toBe(NOW - 60 * MIN)
+	})
+
+	it("orders threads and tasks by the user's last message, and says when the agent did more since", () => {
+		const history = [
+			// The agent just finished here, but you last wrote an hour ago.
+			item("busy-agent", NOW - MIN, { lastUserMessageTs: NOW - 60 * MIN }),
+			item("you-wrote", NOW - 10 * MIN, { lastUserMessageTs: NOW - 10 * MIN }),
+			item("member", NOW, { lastUserMessageTs: NOW - 30 * MIN, taskGroupId: "g" }),
+		]
+
+		const { activeEntries } = buildInbox(history, {}, undefined, { taskGroups: [group("g", 0)] })
+
+		expect(activeEntries.map((entry) => (entry.kind === "group" ? entry.row.group.id : entry.row.item.id))).toEqual([
+			"you-wrote",
+			"g",
+			"busy-agent",
+		])
+		const busy = activeEntries.find((entry) => entry.kind === "thread" && entry.row.item.id === "busy-agent")!
+		expect(describeActivity(busy.row as InboxRow, NOW)).toBe("Done · agent replied 1m ago")
+		expect(activityTitle(busy.row, NOW)).toBe("Your last message 1h ago · agent 1m ago")
+		const task = activeEntries.find((entry) => entry.kind === "group")!
+		expect(agentLaterAge(task.row, NOW)).toBe("now")
+		// An agent reply within a minute of your message isn't worth a mention.
+		const quick = activeEntries.find((entry) => entry.kind === "thread" && entry.row.item.id === "you-wrote")!
+		expect(agentLaterAge(quick.row, NOW)).toBeUndefined()
 	})
 
 	it("keeps settled rows sorted by their own ts even when a subthread is newer", () => {
@@ -207,6 +265,7 @@ describe("inbox helpers", () => {
 		const row = (status: "running" | "waiting" | "done" | "error" | "stopped", settled = false) => ({
 			item: item("t", NOW - MIN, { settledAt: NOW - 3 * MIN }),
 			activityTs: NOW - MIN,
+			agentActivityTs: NOW - MIN,
 			status,
 			settled,
 			subthreadCount: 0,
@@ -220,13 +279,14 @@ describe("inbox helpers", () => {
 		expect(describeActivity(row("error"), NOW)).toBe("Stopped with an error")
 		expect(describeActivity(row("stopped"), NOW)).toBe("Stopped")
 		expect(describeActivity(row("done", true), NOW)).toBe("Last active 1m ago")
-		expect(describeActivity({ ...row("done", true), activityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
+		expect(describeActivity({ ...row("done", true), agentActivityTs: NOW - 5 * MIN }, NOW)).toBe("Last active 5m ago")
 	})
 
 	it("says what an idle parent is waiting on", () => {
 		const row = (liveSubthreadCount: number, liveSubagentCount = 0) => ({
 			item: item("t", NOW - MIN),
 			activityTs: NOW - MIN,
+			agentActivityTs: NOW - MIN,
 			status: "subagents" as const,
 			settled: false,
 			subthreadCount: liveSubthreadCount,
@@ -391,7 +451,8 @@ describe("buildInbox task groups", () => {
 
 		const byId = new Map(groups.map((row) => [row.group.id, row]))
 		expect(byId.get("a")?.members.map((row) => row.item.id)).toEqual(["parent"])
-		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 2, activityTs: NOW })
+		// The subagent's activity counts as the agent's; the newest aside you wrote in sets the order.
+		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 2, activityTs: NOW - MIN, agentActivityTs: NOW })
 		expect(byId.has("b")).toBe(false)
 		expect(active).toHaveLength(0)
 	})

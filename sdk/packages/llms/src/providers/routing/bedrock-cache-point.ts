@@ -30,6 +30,14 @@ export function resolveBedrockCachePointRoute(
 	request: GatewayStreamRequest,
 	context: GatewayProviderContext,
 ): GatewayModelRoute | undefined {
+	// The Settings remake opts in through request intent. Keep legacy requests
+	// unchanged while its rollout is disabled.
+	if (
+		request.metadata?.settingsRequestIntent !== undefined &&
+		context.config.options?.usePromptCache === false
+	) {
+		return undefined;
+	}
 	const promptCache = context.provider.metadata?.routing?.promptCache;
 	if (promptCache?.format !== "bedrock-cache-point") {
 		return undefined;

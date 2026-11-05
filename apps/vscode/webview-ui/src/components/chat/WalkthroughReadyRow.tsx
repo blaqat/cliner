@@ -19,6 +19,8 @@ const originOf = (origin: WalkthroughOrigin | undefined): WalkthroughOrigin | un
 	return { label: origin.label, url: typeof origin.url === "string" ? origin.url : undefined }
 }
 
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined)
+
 /** Parses a `walkthrough_ready` message text. Anything malformed returns null so the row renders nothing. */
 export function parseWalkthroughReady(text: string | undefined): WalkthroughReadyMessage | null {
 	if (!text) return null
@@ -33,6 +35,8 @@ export function parseWalkthroughReady(text: string | undefined): WalkthroughRead
 			origin: originOf(parsed.origin),
 			stopCount: typeof parsed.stopCount === "number" ? parsed.stopCount : 0,
 			fileCount: typeof parsed.fileCount === "number" ? parsed.fileCount : 0,
+			reviewCount: count(parsed.reviewCount),
+			reviewHighCount: count(parsed.reviewHighCount),
 		}
 	} catch {
 		return null
@@ -49,7 +53,7 @@ export function WalkthroughReadyRow({ message }: { message: ClineMessage }) {
 	const { navigateToWalkthrough } = useExtensionState()
 	const payload = useMemo(() => parseWalkthroughReady(message.text), [message.text])
 	if (!payload) return null
-	const { authoredId, title, origin, stopCount, fileCount } = payload
+	const { authoredId, title, origin, stopCount, fileCount, reviewCount, reviewHighCount } = payload
 	return (
 		<div className="rounded-sm border border-solid border-link/30 bg-link/10" data-testid="walkthrough-ready">
 			<div className="flex min-w-0 items-center gap-2 pl-2 pr-1.5 pt-1.5">
@@ -62,6 +66,21 @@ export function WalkthroughReadyRow({ message }: { message: ClineMessage }) {
 				<div className="mt-0.5 text-[11px] text-description tabular-nums">
 					{plural(stopCount, "stop")} · {plural(fileCount, "file")}
 				</div>
+				{!!reviewCount && (
+					<div
+						className="mt-0.5 flex items-center gap-1 text-[11px] text-description tabular-nums"
+						data-testid="walkthrough-ready-review"
+						title="Cline's review notes on this change">
+						<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+						{plural(reviewCount, "note")}
+						{!!reviewHighCount && (
+							<>
+								{" · "}
+								<span className="text-warning">{reviewHighCount} high</span>
+							</>
+						)}
+					</div>
+				)}
 				<Button
 					className="mt-2 h-auto min-h-6.5 w-full gap-1.5 px-2 text-(length:--vscode-font-size)"
 					onClick={() => navigateToWalkthrough(authoredId)}

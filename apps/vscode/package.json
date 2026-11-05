@@ -138,6 +138,11 @@
 				"icon": "$(server)"
 			},
 			{
+				"command": "cline.rulesButtonClicked",
+				"title": "Rules & Workflows",
+				"icon": "$(book)"
+			},
+			{
 				"command": "cline.marketplaceButtonClicked",
 				"title": "Customize",
 				"icon": "$(wrench)"
@@ -272,23 +277,33 @@
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.marketplaceButtonClicked",
+					"command": "cline.mcpButtonClicked",
 					"group": "navigation@2",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.historyButtonClicked",
+					"command": "cline.rulesButtonClicked",
 					"group": "navigation@3",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.accountButtonClicked",
+					"command": "cline.marketplaceButtonClicked",
+					"group": "navigation@4",
+					"when": "view == claude-dev.SidebarProvider"
+				},
+				{
+					"command": "cline.historyButtonClicked",
 					"group": "navigation@5",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.settingsButtonClicked",
+					"command": "cline.accountButtonClicked",
 					"group": "navigation@6",
+					"when": "view == claude-dev.SidebarProvider"
+				},
+				{
+					"command": "cline.settingsButtonClicked",
+					"group": "navigation@7",
 					"when": "view == claude-dev.SidebarProvider"
 				}
 			],

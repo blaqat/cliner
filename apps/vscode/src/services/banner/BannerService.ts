@@ -4,6 +4,7 @@ import { ClineEnv } from "@/config"
 import { Controller } from "@/core/controller"
 import { StateManager } from "@/core/storage/StateManager"
 import { HostInfo, HostRegistryInfo } from "@/registry"
+import { configuredActiveModel } from "@/sdk/model-settings/legacy-settings"
 import { fetch } from "@/shared/net"
 import { FeatureFlag } from "@/shared/services/feature-flags/feature-flags"
 import { Logger } from "@/shared/services/Logger"
@@ -433,7 +434,12 @@ export class BannerService {
 
 			const config = StateManager.get().getApiConfiguration()
 			const mode = StateManager.get().getGlobalSettingsKey("mode")
-			const provider = mode === "plan" ? config?.planModeApiProvider : config?.actModeApiProvider
+			const configured = configuredActiveModel(StateManager.get(), mode === "plan" ? "plan" : "act")
+			const provider = configured
+				? configured.providerId
+				: mode === "plan"
+					? config?.planModeApiProvider
+					: config?.actModeApiProvider
 
 			return rules.providers.some((ruleProvider) => {
 				// Check if ruleProvider is an alias for the selected provider

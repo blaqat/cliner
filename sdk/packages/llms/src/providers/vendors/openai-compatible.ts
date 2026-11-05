@@ -11,7 +11,12 @@ import { wrapLanguageModel } from "ai";
 import { ensureFetch, resolveApiKey } from "../http";
 import { splitToolImagesMiddleware } from "../middleware/split-tool-images";
 import { isOpenAIReasoningEraModelId } from "../model-facts";
-import { withHttpErrorContext } from "./http-error-context";
+import {
+	acceptsApiVersion,
+	isAzureOpenAIHost,
+	resolveAzureChatUrl,
+	withHttpErrorContext,
+} from "./http-error-context";
 import type { ProviderFactoryResult } from "./types";
 
 type FetchInput = Parameters<typeof fetch>[0];
@@ -39,15 +44,25 @@ function readAzureApiVersion(
 }
 
 function shouldAddAzureApiVersion(url: URL): boolean {
-	return (
-		url.pathname.startsWith("/openai/deployments/") &&
-		!url.searchParams.has("api-version")
-	);
+	return acceptsApiVersion(url.pathname) && !url.searchParams.has("api-version");
 }
 
-function withAzureApiVersion(
+function requestModel(init: RequestInit | undefined): string | undefined {
+	if (typeof init?.body !== "string") {
+		return undefined;
+	}
+	try {
+		const { model } = JSON.parse(init.body) as { model?: unknown };
+		return typeof model === "string" ? model : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function withAzureEndpoint(
 	input: FetchInput,
-	apiVersion: string,
+	init: RequestInit | undefined,
+	apiVersion: string | undefined,
 ): FetchInput {
 	let url: URL;
 	try {
@@ -55,21 +70,26 @@ function withAzureApiVersion(
 	} catch {
 		return input;
 	}
-	if (!shouldAddAzureApiVersion(url)) {
+	const original = url.toString();
+	const routed =
+		resolveAzureChatUrl(url, requestModel(init), apiVersion) ?? url;
+	if (apiVersion && shouldAddAzureApiVersion(routed)) {
+		routed.searchParams.set("api-version", apiVersion);
+	}
+	if (routed.toString() === original) {
 		return input;
 	}
-	url.searchParams.set("api-version", apiVersion);
 	if (input instanceof Request) {
-		return new Request(url.toString(), input);
+		return new Request(routed.toString(), input);
 	}
-	return (typeof input === "string" ? url.toString() : url) as FetchInput;
+	return (typeof input === "string" ? routed.toString() : routed) as FetchInput;
 }
 
 function createAzureApiVersionFetch(
 	config: GatewayResolvedProviderConfig,
 ): typeof fetch | undefined {
 	const apiVersion = readAzureApiVersion(config);
-	if (!apiVersion) {
+	if (!apiVersion && !(config.baseUrl && isAzureOpenAIHost(config.baseUrl))) {
 		return config.fetch;
 	}
 	const baseFetch = config.fetch ?? globalThis.fetch;
@@ -77,7 +97,7 @@ function createAzureApiVersionFetch(
 		return config.fetch;
 	}
 	const azureFetch = ((input, init) =>
-		baseFetch(withAzureApiVersion(input, apiVersion), init)) as typeof fetch;
+		baseFetch(withAzureEndpoint(input, init, apiVersion), init)) as typeof fetch;
 	const baseFetchWithPreconnect = baseFetch as FetchWithOptionalPreconnect;
 	(azureFetch as FetchWithOptionalPreconnect).preconnect =
 		typeof baseFetchWithPreconnect.preconnect === "function"
@@ -251,7 +271,12 @@ export async function createOpenAICompatibleProviderModule(
 		name: context.provider.id,
 		apiKey,
 		...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
-		...(config.headers ? { headers: config.headers } : {}),
+		// Azure authenticates with `api-key`, as on Responses. Explicit headers win.
+		...(apiKey && config.baseUrl && isAzureOpenAIHost(config.baseUrl)
+			? { headers: { "api-key": apiKey, ...(config.headers ?? {}) } }
+			: config.headers
+				? { headers: config.headers }
+				: {}),
 		...(providerFetch ? { fetch: providerFetch } : {}),
 		includeUsage: true,
 		transformRequestBody: withMaxCompletionTokensForReasoningModels,

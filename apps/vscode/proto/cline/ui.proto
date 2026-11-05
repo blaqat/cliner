@@ -78,6 +78,7 @@ enum ClineSay {
   PLAN_COMPLETION_RESULT = 38;
   NOTEBOOK_CHANGES = 39;
   WALKTHROUGH_READY = 40;
+  SUBAGENT_UPDATE = 41;
 }
 
 // Enum for ClineSayTool tool types
@@ -239,6 +240,22 @@ message ClineMessage {
   // Index into the SDK transcript — the stable anchor message links target.
   // Optional: unset for rows that have no transcript position (minted UI rows).
   optional int64 sdk_message_index = 26;
+
+  // Messages the user linked when sending (shown as chips on the bubble).
+  repeated MessageReference message_references = 27;
+}
+
+// One linked message attached to a sent message (see MessageReferenceInfo).
+message MessageReference {
+  string thread_id = 1;
+  string thread_title = 2;
+  // "user" or "assistant".
+  string author = 3;
+  string text = 4;
+  // Where the message is, when known: index into the SDK transcript plus a row anchor.
+  optional int64 message_index = 5;
+  optional string tool_call_id = 6;
+  optional int32 block = 7;
 }
 
 message ShowWebviewEvent {
@@ -257,6 +274,8 @@ message IntentEvent {
 
 // UiService provides methods for managing UI interactions
 service UiService {
+  // Shows the Cline output channel.
+  rpc openLogs(EmptyRequest) returns (Empty);
   // Scrolls to a specific settings section in the settings view
   rpc scrollToSettings(StringRequest) returns (KeyValuePair);
 
@@ -289,6 +308,9 @@ service UiService {
 
   // Subscribe to worktrees button clicked events
   rpc subscribeToWorktreesButtonClicked(EmptyRequest) returns (stream Empty);
+
+  // Subscribe to rules & workflows button clicked events (view title bar; opens the rules overlay)
+  rpc subscribeToRulesButtonClicked(EmptyRequest) returns (stream Empty);
 
   // Subscribe to partial message updates (streaming Cline messages as they're built)
   rpc subscribeToPartialMessage(EmptyRequest) returns (stream ClineMessage);

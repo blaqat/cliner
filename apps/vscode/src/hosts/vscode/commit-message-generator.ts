@@ -2,6 +2,7 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { Controller } from "@/core/controller"
 import { HostProvider } from "@/hosts/host-provider"
+import { backgroundHandler, useModelSettings } from "@/sdk/model-settings/background"
 import { buildApiHandler } from "@/sdk/sdk-api-handler"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
@@ -215,7 +216,10 @@ async function performCommitMsgGeneration(controller: Controller, gitDiff: strin
 		// transform that doesn't need extended thinking; disabling reasoning also
 		// avoids sending both reasoning.effort and reasoning.max_tokens, which
 		// some providers (e.g. OpenRouter) reject.
-		const apiHandler = buildApiHandler(apiConfiguration, currentMode, { disableReasoning: true })
+		const apiHandler = useModelSettings(controller.stateManager)
+			? await backgroundHandler(controller.stateManager, "commitMessages")
+			: buildApiHandler(apiConfiguration, currentMode, { disableReasoning: true })
+		if (!apiHandler) return
 
 		// Create a system prompt
 		const systemPrompt = PROMPT.system

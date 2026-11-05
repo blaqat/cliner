@@ -3,6 +3,7 @@
  */
 
 export { useChatState } from "./useChatState"
+export { useLeaveDeletedThread } from "./useLeaveDeletedThread"
 export { useMessageHandlers } from "./useMessageHandlers"
 export { type PromptStashControls, usePromptStash } from "./usePromptStash"
 export { useScrollBehavior } from "./useScrollBehavior"

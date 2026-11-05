@@ -5,12 +5,10 @@ import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import type { ScriptValues } from "@shared/scripts"
 import { type SlashCommand } from "@shared/slashCommands"
-import { Mode } from "@shared/storage/types"
-import { SendHorizontalIcon, SendToBackIcon, TriangleAlertIcon, ZapIcon } from "lucide-react"
+import { TriangleAlertIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
-import styled, { css, keyframes } from "styled-components"
 import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
@@ -18,7 +16,6 @@ import Thumbnails from "@/components/common/Thumbnails"
 import ScriptHelper from "@/components/scripts/ScriptHelper"
 import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
@@ -36,11 +33,12 @@ import {
 	shouldShowContextMenu,
 } from "@/utils/context-mentions"
 import { useMetaKeyDetection, useShortcut } from "@/utils/hooks"
-import { isSafari } from "@/utils/platformUtils"
+import { isSafari, modKeyLabel } from "@/utils/platformUtils"
 import {
 	getMatchingSlashCommands,
 	insertSlashCommand,
 	MODE_SWITCHED_BY_COMMAND_EVENT,
+	parseModeSwitchCommand,
 	removeSlashCommand,
 	shouldShowSlashCommandsMenu,
 	slashCommandDeleteRegex,
@@ -49,19 +47,19 @@ import {
 } from "@/utils/slash-commands"
 import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
+import { USE_SCRIPT_EVENT } from "../topbar/topBarPanels"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
-import ApprovalsMenu from "./composer/ApprovalsMenu"
-import { McpServersButton, RulesButton } from "./composer/ComposerPanelButtons"
-import ConfigPicker from "./composer/ConfigPicker"
-import { type ComposerRowLayout, useComposerRowLayout } from "./composer/composerRowLayout"
-import { modelHasReasoning } from "./composer/modelSelection"
-import PlusMenu from "./composer/PlusMenu"
-import ReasoningEffortPicker from "./composer/ReasoningEffortPicker"
+import AttachButton from "./composer/AttachButton"
+import { type ComposerRowLayout, composerChipMinWidth, useComposerRowLayout } from "./composer/composerRowLayout"
+import { modelSendBlock } from "./composer/composerSelection"
+import ModelEffortChip from "./composer/ModelEffortChip"
+import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
-import WherePill, { ComposerTaskGroupSheet, useWherePillHasTask } from "./composer/WherePill"
+import { selectedModelOffersLevels } from "./composer/selectedConfiguredModel"
+import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
 import { WorkspaceButton } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
@@ -135,11 +133,10 @@ export interface ChatTextAreaProps {
 	/** Sends as interject / aside / background. Steer and normal sends go through `onSend`. */
 	onSendAs?: (kind: Exclude<SendKind, "send" | "steer">) => void
 	/**
-	 * Context usage + cost meter at the right of the bottom row, before the Ask/Act toggle. The row
-	 * collapses its optional parts (`hasCost`, `hasCompactNudge`) when narrow; `render` gets the result.
+	 * The context ring (and, near the limit, the Compact chip) left of the model chip. The row
+	 * collapses the Compact chip to its icon when narrow; `render` gets the result.
 	 */
 	usageIndicator?: {
-		hasCost: boolean
 		hasCompactNudge: boolean
 		render: (layout: ComposerRowLayout) => React.ReactNode
 	}
@@ -156,132 +153,9 @@ interface GitCommit {
 	description: string
 }
 
+/** Text-to-action-row gap inside the composer card (the row sits right under the text). */
+const TEXT_BOTTOM_PADDING = 4
 const QUOTE_ROW_HEIGHT = 24
-
-const PLAN_MODE_COLOR = "var(--vscode-activityWarningBadge-background)"
-const ACT_MODE_COLOR = "var(--vscode-focusBorder)"
-
-const modeSwitchFlash = keyframes`
-	0% {
-		box-shadow: 0 0 0 0 var(--vscode-focusBorder);
-	}
-	100% {
-		box-shadow: 0 0 0 7px transparent;
-	}
-`
-
-const SwitchContainer = styled.div.withConfig({
-	shouldForwardProp: (prop) => prop !== "$flash",
-})<{ disabled: boolean; $flash?: boolean }>`
-	display: flex;
-	align-items: center;
-	background-color: transparent;
-	border: 1px solid var(--vscode-input-border);
-	border-radius: 12px;
-	overflow: hidden;
-	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
-	opacity: ${(props) => (props.disabled ? 0.5 : 1)};
-	transform: scale(1);
-	transform-origin: right center;
-	margin-left: 0;
-	user-select: none; // Prevent text selection
-	animation: ${(props) => (props.$flash ? css`${modeSwitchFlash} 0.7s ease-out` : "none")};
-
-	@media (prefers-reduced-motion: reduce) {
-		animation: none;
-	}
-	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
-	body.vscode-reduce-motion & {
-		animation: none;
-	}
-`
-
-const Slider = styled.div.withConfig({
-	shouldForwardProp: (prop) => !["isAct", "isPlan"].includes(prop),
-})<{ isAct: boolean; isPlan?: boolean }>`
-	position: absolute;
-	height: 100%;
-	width: 50%;
-	background-color: ${(props) => (props.isPlan ? PLAN_MODE_COLOR : ACT_MODE_COLOR)};
-	transition:
-		transform 0.22s cubic-bezier(0.3, 0.7, 0.2, 1),
-		background-color 0.22s ease;
-	transform: translateX(${(props) => (props.isAct ? "100%" : "0%")});
-
-	@media (prefers-reduced-motion: reduce) {
-		transition: none;
-	}
-	/* VS Code's workbench.reduceMotion lands as a body class, not a media query. */
-	body.vscode-reduce-motion & {
-		transition: none;
-	}
-`
-
-const ButtonGroup = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	flex: 1;
-	min-width: 0;
-	/* Clips (never overlaps) the meter and toggle if the collapse breakpoints undershoot. */
-	overflow-x: clip;
-	/* The icon buttons and the shield keep their size; the where pill and the configuration and effort pickers truncate to their min-width. */
-	& > * {
-		flex-shrink: 0;
-	}
-	& > [data-shrink] {
-		flex-shrink: 1;
-	}
-`
-
-interface RunningSendButtonsProps {
-	disabled: boolean
-	enterSendsAs: EnterSendsAs
-	metaKeyChar: string
-	onSteer: () => void
-	onInterject: () => void
-}
-
-/** While the agent runs, send splits into steer (queue after this turn) and interject (stop and send now). */
-const RunningSendButtons = ({ disabled, enterSendsAs, metaKeyChar, onSteer, onInterject }: RunningSendButtonsProps) => {
-	const keyFor = (kind: EnterSendsAs) => (kind === enterSendsAs ? "Enter" : `${metaKeyChar}+Enter`)
-	const buttons = [
-		{
-			kind: "steer" as const,
-			label: "Steer",
-			tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
-			icon: <SendHorizontalIcon size={13} />,
-			onClick: onSteer,
-		},
-		{
-			kind: "interject" as const,
-			label: "Interject",
-			tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
-			icon: <ZapIcon size={13} />,
-			onClick: onInterject,
-		},
-	]
-	return (
-		<div className="flex items-center gap-0.5">
-			{buttons.map((button) => (
-				<button
-					aria-label={button.label}
-					className={cn(
-						"flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer hover:bg-toolbar-hover disabled:cursor-not-allowed disabled:opacity-50",
-						button.kind === enterSendsAs ? "text-link" : "text-description hover:text-foreground",
-					)}
-					data-testid={`${button.kind}-button`}
-					disabled={disabled}
-					key={button.kind}
-					onClick={button.onClick}
-					title={button.tooltip}
-					type="button">
-					{button.icon}
-				</button>
-			))}
-		</div>
-	)
-}
 
 const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
@@ -320,6 +194,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const {
 			mode,
 			apiConfiguration,
+			composerApiSelection,
+			composerNextMessageOnly,
+			modelSettings,
 			openRouterModels,
 			platform,
 			localWorkflowToggles,
@@ -367,7 +244,18 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			},
 			[setDraftInputValue, onScriptRun, usable],
 		)
-		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput)
+		const modelBlock = modelSendBlock(modelSettings, composerApiSelection, mode)
+		// `/ask` and `/act` only switch modes, so alone they never wait on a model; text after one goes in the new mode.
+		const modeCommand = parseModeSwitchCommand(inputValue.trim())
+		const onlySwitchesMode =
+			!!modeCommand && !modeCommand.rest && !selectedImages.length && !selectedFiles.length && !hasQuotes
+		const sendBlock = onlySwitchesMode
+			? undefined
+			: modeCommand
+				? modelSendBlock(modelSettings, composerApiSelection, modeCommand.mode)
+				: modelBlock
+		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput) || !!sendBlock
+		const modelChipRef = useRef<HTMLButtonElement>(null)
 		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
 		const slashAtMessageStart = useMemo(() => {
 			const beforeCursor = inputValue.slice(0, cursorPosition)
@@ -391,6 +279,12 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			},
 			[inputValue, setInputValue],
 		)
+		// "Use" on a script in the title bar's Rules & workflows overlay.
+		useEffect(() => {
+			const onUseScript = (event: Event) => startScriptDraft((event as CustomEvent<string>).detail)
+			document.addEventListener(USE_SCRIPT_EVENT, onUseScript)
+			return () => document.removeEventListener(USE_SCRIPT_EVENT, onUseScript)
+		}, [startScriptDraft])
 		const [isMouseDownOnMenu, setIsMouseDownOnMenu] = useState(false)
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
@@ -400,8 +294,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
 		const bottomRowRef = useRef<HTMLDivElement>(null)
-
-		const [shownTooltipMode, setShownTooltipMode] = useState<Mode | null>(null)
 
 		// `#note` mentions search every task's notes; the task this composer's
 		// thread (or task page) belongs to ranks first and inserts bare `#slug`.
@@ -493,13 +385,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [, metaKeyChar] = useMetaKeyDetection(platform)
 		const { selectedProvider, selectedModelId, selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 		// Images are attached regardless; when the selected model has no image input the thumbnails get a warning
-		// badge and a notice offers to switch models. Unknown capability data fails open, like core does.
+		// badge and a notice offers to switch models.
 		const modelSupportsImages = selectedModelInfo.supportsImages !== false
-		// Leave room for the stash icon next to send while the stash has entries.
 		const showRunningSendButtons = isRunning && !!onSendAs
-		const showHomeBackgroundButton = isHome && !isRunning && !!onSendAs
-		const inputPaddingRight =
-			(stashEntries.length > 0 ? 48 : 28) + (showRunningSendButtons ? 22 : 0) + (showHomeBackgroundButton ? 22 : 0)
+		// Leave room in the corner for the stash button.
+		const inputPaddingRight = 9 + (stashEntries.length > 0 ? 22 : 0)
 		const unsupportedImagesAttached = selectedImages.length > 0 && !modelSupportsImages
 
 		// Fetch git commits when Git is selected or when typing a hash
@@ -1434,52 +1324,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			return () => clearTimeout(timer)
 		}, [modeSwitchFlash])
 
-		const handleContextButtonClick = useCallback(() => {
-			// Focus the textarea first
-			textAreaRef.current?.focus()
-
-			// If input is empty, just insert @
-			if (!inputValue.trim()) {
-				const event = {
-					target: {
-						value: "@",
-						selectionStart: 1,
-					},
-				} as React.ChangeEvent<HTMLTextAreaElement>
-				handleInputChange(event)
-				updateHighlights()
-				return
-			}
-
-			// If input ends with space or is empty, just append @
-			if (inputValue.endsWith(" ")) {
-				const event = {
-					target: {
-						value: inputValue + "@",
-						selectionStart: inputValue.length + 1,
-					},
-				} as React.ChangeEvent<HTMLTextAreaElement>
-				handleInputChange(event)
-				updateHighlights()
-				return
-			}
-
-			// Otherwise add space then @
-			const event = {
-				target: {
-					value: inputValue + " @",
-					selectionStart: inputValue.length + 2,
-				},
-			} as React.ChangeEvent<HTMLTextAreaElement>
-			handleInputChange(event)
-			updateHighlights()
-		}, [inputValue, handleInputChange, updateHighlights])
-
 		const handleModelButtonClick = () => {
-			navigateToSettingsModelPicker({ targetSection: "api-config" })
+			navigateToSettingsModelPicker({ targetSection: "models" })
 		}
 
-		// Get model display name
+		// What the chip names before the model settings store exists: the model, as its rows do, not a provider-prefixed id.
 		const modelDisplayName = useMemo(() => {
 			const {
 				vsCodeLmModelSelector,
@@ -1495,37 +1344,32 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			if (!apiConfiguration) {
 				return unknownModel
 			}
-			switch (selectedProvider) {
-				case "cline":
-					return `${selectedProvider}:${selectedModelId}`
-				case "cline-pass":
-					// Free models selected on ClinePass go through Cline usage billing,
-					// so label them the same way as the cline provider
-					return selectedModelId.startsWith("cline-pass/")
-						? `${selectedProvider}:${selectedModelId.replace(/^cline-pass\//, "")}`
-						: `cline:${selectedModelId}`
-				case "openai":
-					return `openai-compat:${selectedModelId}`
-				case "vscode-lm":
-					return `vscode-lm:${vsCodeLmModelSelector ? `${vsCodeLmModelSelector.vendor ?? ""}/${vsCodeLmModelSelector.family ?? ""}` : unknownModel}`
-				case "together":
-					return `${selectedProvider}:${togetherModelId}`
-				case "lmstudio":
-					return `${selectedProvider}:${lmStudioModelId}`
-				case "ollama":
-					return `${selectedProvider}:${ollamaModelId}`
-				case "litellm":
-					return `${selectedProvider}:${liteLlmModelId}`
-				case "requesty":
-					return `${selectedProvider}:${requestyModelId}`
-				case "vercel-ai-gateway":
-					return `${selectedProvider}:${vercelAiGatewayModelId || selectedModelId}`
-				case "anthropic":
-				case "openrouter":
-				default:
-					return `${selectedProvider}:${selectedModelId}`
+			if (selectedModelInfo.name) {
+				return selectedModelInfo.name
 			}
-		}, [apiConfiguration, mode, selectedProvider, selectedModelId])
+			switch (selectedProvider) {
+				case "cline-pass":
+					return selectedModelId.replace(/^cline-pass\//, "")
+				case "vscode-lm":
+					return vsCodeLmModelSelector
+						? `${vsCodeLmModelSelector.vendor ?? ""}/${vsCodeLmModelSelector.family ?? ""}`
+						: unknownModel
+				case "together":
+					return togetherModelId || selectedModelId
+				case "lmstudio":
+					return lmStudioModelId || selectedModelId
+				case "ollama":
+					return ollamaModelId || selectedModelId
+				case "litellm":
+					return liteLlmModelId || selectedModelId
+				case "requesty":
+					return requestyModelId || selectedModelId
+				case "vercel-ai-gateway":
+					return vercelAiGatewayModelId || selectedModelId
+				default:
+					return selectedModelId
+			}
+		}, [apiConfiguration, mode, selectedProvider, selectedModelId, selectedModelInfo.name])
 
 		// Function to show error message for unsupported files for drag and drop
 		const showUnsupportedFileErrorMessage = () => {
@@ -1755,19 +1599,18 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				),
 			)
 		}
-		// Replace Meta with the platform specific key and uppercase the command letter.
+		// Replace Meta with ⌘ (mac) or Ctrl and uppercase the command letter.
 		const togglePlanActKeys = usePlatform()
-			.togglePlanActKeys.replace("Meta", metaKeyChar)
+			.togglePlanActKeys.replace("Meta", modKeyLabel())
 			.replace(/.$/, (match) => match.toUpperCase())
 
-		const whereHasTask = useWherePillHasTask()
-		const rowLayout = useComposerRowLayout(bottomRowRef, {
+		const rowContent = {
 			hasUsage: !!usageIndicator,
-			hasCost: !!usageIndicator?.hasCost,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
-			hasEffort: modelHasReasoning(selectedModelId, selectedModelInfo),
-			hasTask: whereHasTask,
-		})
+			hasEffort: selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode),
+			nextMessage: !!composerNextMessageOnly,
+		}
+		const rowLayout = useComposerRowLayout(bottomRowRef, rowContent)
 
 		return (
 			<div>
@@ -1785,263 +1628,298 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						script={scriptInput.script}
 					/>
 				)}
+				{/* One card: the text on top, the action row (📎 … chip, Send) inside the same border at its bottom edge. */}
 				<div
-					className="relative flex transition-colors ease-in-out duration-100 px-3.5 py-2.5"
+					className={cn(
+						"relative mx-3.5 mt-2.5 mb-2 rounded-xs border bg-input-background transition-colors ease-in-out duration-100 motion-reduce:transition-none",
+						!isTextAreaFocused && "border-input-border",
+					)}
+					data-focused={isTextAreaFocused || undefined}
+					data-testid="composer-card"
 					onDragEnter={handleDragEnter}
 					onDragLeave={handleDragLeave}
 					onDragOver={onDragOver}
-					onDrop={onDrop}>
-					{showDimensionError && (
-						<div className="absolute inset-2.5 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
-							<span className="text-error font-bold text-xs text-center">Image dimensions exceed 7500px</span>
-						</div>
-					)}
-					{showUnsupportedFileError && (
-						<div className="absolute inset-2.5 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
-							<span className="text-error font-bold text-xs">Files other than images are currently disabled</span>
-						</div>
-					)}
-					{showSlashCommandsMenu && (
-						<div ref={slashCommandsMenuContainerRef}>
-							<SlashCommandMenu
-								globalWorkflowToggles={globalWorkflowToggles}
-								localWorkflowToggles={localWorkflowToggles}
-								mcpServers={mcpServers}
-								onMouseDown={handleMenuMouseDown}
-								onSelect={handleSlashCommandsSelect}
-								query={slashCommandsQuery}
-								remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
-								remoteWorkflowToggles={remoteWorkflowToggles}
-								scriptCommands={menuScriptCommands}
-								selectedIndex={selectedSlashCommandsIndex}
-								setSelectedIndex={setSelectedSlashCommandsIndex}
-							/>
-						</div>
-					)}
-
-					{showNoteMentionMenu && (
-						<NoteMentionMenu
-							notes={noteMatches}
-							onSelect={handleNoteMentionSelect}
-							selectedIndex={selectedNoteIndex}
-							setSelectedIndex={setSelectedNoteIndex}
-						/>
-					)}
-
-					{showThreadMentionMenu && (
-						<ThreadMentionMenu
-							onSelect={handleThreadMentionSelect}
-							selectedIndex={selectedThreadIndex}
-							setSelectedIndex={setSelectedThreadIndex}
-							threads={threadMatches}
-						/>
-					)}
-
-					{showContextMenu && (
-						<div ref={contextMenuContainerRef}>
-							<ContextMenu
-								dynamicSearchResults={fileSearchResults}
-								isLoading={searchLoading}
-								onMouseDown={handleMenuMouseDown}
-								onSelect={handleMentionSelect}
-								queryItems={queryItems}
-								searchQuery={searchQuery}
-								selectedIndex={selectedMenuIndex}
-								selectedType={selectedType}
-								setSelectedIndex={setSelectedMenuIndex}
-							/>
-						</div>
-					)}
-					<div
-						className={cn(
-							"absolute bottom-2.5 top-2.5 whitespace-pre-wrap break-words rounded-xs overflow-hidden bg-input-background",
-							isTextAreaFocused ? "left-3.5 right-3.5" : "left-3.5 right-3.5 border border-input-border",
+					onDrop={onDrop}
+					style={{
+						borderColor: isTextAreaFocused
+							? mode === "plan"
+								? PLAN_MODE_COLOR
+								: "var(--vscode-focusBorder)"
+							: undefined,
+						outline:
+							isDraggingOver && !showUnsupportedFileError // Only show drag outline if not showing error
+								? "2px dashed var(--vscode-focusBorder)"
+								: "none",
+						outlineOffset: isDraggingOver && !showUnsupportedFileError ? "1px" : "0px",
+					}}>
+					<div className="relative flex">
+						{showDimensionError && (
+							<div className="absolute inset-0 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
+								<span className="text-error font-bold text-xs text-center">Image dimensions exceed 7500px</span>
+							</div>
 						)}
-						ref={highlightLayerRef}
-						style={{
-							position: "absolute",
-							pointerEvents: "none",
-							whiteSpace: "pre-wrap",
-							wordWrap: "break-word",
-							color: "transparent",
-							overflow: "hidden",
-							fontFamily: "var(--vscode-font-family)",
-							fontSize: "var(--vscode-editor-font-size)",
-							lineHeight: "var(--vscode-editor-line-height)",
-							borderRadius: 2,
-							borderLeft: isTextAreaFocused ? 0 : undefined,
-							borderRight: isTextAreaFocused ? 0 : undefined,
-							borderTop: isTextAreaFocused ? 0 : undefined,
-							borderBottom: isTextAreaFocused ? 0 : undefined,
-							padding: `${9 + quoteRowHeight}px ${inputPaddingRight}px ${9 + thumbnailsHeight}px 9px`,
-						}}
-					/>
-					<DynamicTextArea
-						autoFocus={true}
-						data-testid="chat-input"
-						maxRows={10}
-						minRows={3}
-						onBlur={handleBlur}
-						onChange={(e) => {
-							handleInputChange(e)
-							updateHighlights()
-						}}
-						onFocus={() => {
-							setIsTextAreaFocused(true)
-							onFocusChange?.(true) // Call prop on focus
-						}}
-						onHeightChange={(height) => {
-							if (textAreaBaseHeight === undefined || height < textAreaBaseHeight) {
-								setTextAreaBaseHeight(height)
-							}
-							onHeightChange?.(height)
-						}}
-						onKeyDown={handleKeyDown}
-						onKeyUp={handleKeyUp}
-						onMouseUp={updateCursorPosition}
-						onPaste={handlePaste}
-						onScroll={() => updateHighlights()}
-						onSelect={updateCursorPosition}
-						placeholder={showUnsupportedFileError || showDimensionError ? "" : placeholderText}
-						ref={(el) => {
-							if (typeof ref === "function") {
-								ref(el)
-							} else if (ref) {
-								ref.current = el
-							}
-							textAreaRef.current = el
-						}}
-						style={{
-							width: "100%",
-							boxSizing: "border-box",
-							backgroundColor: "transparent",
-							color: "var(--vscode-input-foreground)",
-							//border: "1px solid var(--vscode-input-border)",
-							borderRadius: 2,
-							fontFamily: "var(--vscode-font-family)",
-							fontSize: "var(--vscode-editor-font-size)",
-							lineHeight: "var(--vscode-editor-line-height)",
-							resize: "none",
-							overflowX: "hidden",
-							overflowY: "scroll",
-							scrollbarWidth: "none",
-							// Since we have maxRows, when text is long enough it starts to overflow the bottom padding, appearing behind the thumbnails. To fix this, we use a transparent border to push the text up instead. (https://stackoverflow.com/questions/42631947/maintaining-a-padding-inside-of-text-area/52538410#52538410)
-							// borderTop: "9px solid transparent",
-							borderLeft: 0,
-							borderRight: 0,
-							borderTop: `${quoteRowHeight}px solid transparent`,
-							borderBottom: `${thumbnailsHeight}px solid transparent`,
-							borderColor: "transparent",
-							// borderRight: "54px solid transparent",
-							// borderLeft: "9px solid transparent", // NOTE: react-textarea-autosize doesn't calculate correct height when using borderLeft/borderRight so we need to use horizontal padding instead
-							// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
-							// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
-							padding: `9px ${inputPaddingRight}px 9px 9px`,
-							cursor: "text",
-							flex: 1,
-							zIndex: 1,
-							outline:
-								isDraggingOver && !showUnsupportedFileError // Only show drag outline if not showing error
-									? "2px dashed var(--vscode-focusBorder)"
-									: isTextAreaFocused
-										? `1px solid ${mode === "plan" ? PLAN_MODE_COLOR : "var(--vscode-focusBorder)"}`
-										: "none",
-							outlineOffset: isDraggingOver && !showUnsupportedFileError ? "1px" : "0px", // Add offset for drag-over outline
-						}}
-						value={inputValue}
-					/>
-					{quoteTags && (
-						<div className="absolute top-3.5 left-5.5 right-5.5 z-2 h-5" data-testid="composer-quote-row">
-							{quoteTags}
-						</div>
-					)}
-					{!inputValue && selectedImages.length === 0 && selectedFiles.length === 0 && (
-						<div className="text-xs absolute bottom-5 left-6.5 right-16 text-(--vscode-input-placeholderForeground)/50 whitespace-nowrap overflow-hidden text-ellipsis pointer-events-none z-1">
-							Type @ for context, / for slash commands & workflows, hold shift to drag in files/images
-						</div>
-					)}
-					{(selectedImages.length > 0 || selectedFiles.length > 0) && (
-						<Thumbnails
-							files={selectedFiles}
-							images={selectedImages}
-							imagesUnsupported={unsupportedImagesAttached}
-							onHeightChange={handleThumbnailsHeightChange}
-							setFiles={setSelectedFiles}
-							setImages={setSelectedImages}
-							style={{
-								position: "absolute",
-								paddingTop: 4,
-								bottom: 14,
-								left: 22,
-								right: 47, // (54 + 9) + 4 extra padding
-								zIndex: 2,
-							}}
-						/>
-					)}
-					<div
-						className="absolute flex items-end bottom-4.5 right-5 z-10 h-8 text-xs"
-						style={{ height: textAreaBaseHeight }}>
-						<div className="flex flex-row items-center">
-							{onRestoreStash && onDeleteStash && (
-								<PromptStashButton
-									entries={stashEntries}
-									modKey={metaKeyChar}
-									onDelete={onDeleteStash}
-									onRestore={onRestoreStash}
+						{showUnsupportedFileError && (
+							<div className="absolute inset-0 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
+								<span className="text-error font-bold text-xs">
+									Files other than images are currently disabled
+								</span>
+							</div>
+						)}
+						{/* The menus are placed for the card's old padded box (bottom: 100% − 10px, left: 15px); this anchor keeps that box. */}
+						<div className="absolute -top-2.5 -left-3.5 -right-3.5 h-0 z-1000">
+							{showSlashCommandsMenu && (
+								<div ref={slashCommandsMenuContainerRef}>
+									<SlashCommandMenu
+										globalWorkflowToggles={globalWorkflowToggles}
+										localWorkflowToggles={localWorkflowToggles}
+										mcpServers={mcpServers}
+										onMouseDown={handleMenuMouseDown}
+										onSelect={handleSlashCommandsSelect}
+										query={slashCommandsQuery}
+										remoteWorkflows={remoteConfigSettings?.remoteGlobalWorkflows}
+										remoteWorkflowToggles={remoteWorkflowToggles}
+										scriptCommands={menuScriptCommands}
+										selectedIndex={selectedSlashCommandsIndex}
+										setSelectedIndex={setSelectedSlashCommandsIndex}
+									/>
+								</div>
+							)}
+
+							{showNoteMentionMenu && (
+								<NoteMentionMenu
+									notes={noteMatches}
+									onSelect={handleNoteMentionSelect}
+									selectedIndex={selectedNoteIndex}
+									setSelectedIndex={setSelectedNoteIndex}
 								/>
 							)}
-							{showRunningSendButtons && onSendAs ? (
-								<RunningSendButtons
-									disabled={sendDisabled}
-									enterSendsAs={enterSendsAs}
-									metaKeyChar={metaKeyChar}
-									onInterject={() => onSendAs("interject")}
-									onSteer={onSend}
+
+							{showThreadMentionMenu && (
+								<ThreadMentionMenu
+									onSelect={handleThreadMentionSelect}
+									selectedIndex={selectedThreadIndex}
+									setSelectedIndex={setSelectedThreadIndex}
+									threads={threadMatches}
 								/>
-							) : (
-								<div className="flex items-center gap-0.5">
-									{showHomeBackgroundButton && (
-										<Tooltip>
-											<TooltipContent side="top">
-												Start in background ({metaKeyChar}+Enter): the chat keeps running while you stay
-												here
-											</TooltipContent>
-											<TooltipTrigger asChild>
-												<button
-													aria-label="Start in background"
-													className="flex size-5 items-center justify-center rounded-xs border-0 bg-transparent p-0 cursor-pointer text-description hover:bg-toolbar-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-													data-testid="send-background-button"
-													disabled={sendDisabled}
-													onClick={() => onSendAs("background")}
-													type="button">
-													<SendToBackIcon size={13} />
-												</button>
-											</TooltipTrigger>
-										</Tooltip>
-									)}
-									<div
-										className={cn(
-											"input-icon-button",
-											{ disabled: sendDisabled },
-											"codicon codicon-send text-sm",
-										)}
-										data-testid="send-button"
-										onClick={() => {
-											if (!sendDisabled) {
-												onSend()
-											}
-										}}
-										title={
-											isHome
-												? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
-												: "Send (Enter) · Aside (Alt+Enter)"
-										}
+							)}
+
+							{showContextMenu && (
+								<div ref={contextMenuContainerRef}>
+									<ContextMenu
+										dynamicSearchResults={fileSearchResults}
+										isLoading={searchLoading}
+										onMouseDown={handleMenuMouseDown}
+										onSelect={handleMentionSelect}
+										queryItems={queryItems}
+										searchQuery={searchQuery}
+										selectedIndex={selectedMenuIndex}
+										selectedType={selectedType}
+										setSelectedIndex={setSelectedMenuIndex}
 									/>
 								</div>
 							)}
 						</div>
+						<div
+							className="absolute inset-0 whitespace-pre-wrap break-words rounded-xs overflow-hidden"
+							ref={highlightLayerRef}
+							style={{
+								position: "absolute",
+								pointerEvents: "none",
+								whiteSpace: "pre-wrap",
+								wordWrap: "break-word",
+								color: "transparent",
+								overflow: "hidden",
+								fontFamily: "var(--vscode-font-family)",
+								fontSize: "var(--vscode-editor-font-size)",
+								lineHeight: "var(--vscode-editor-line-height)",
+								borderRadius: 2,
+								padding: `${7 + quoteRowHeight}px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING + thumbnailsHeight}px 9px`,
+							}}
+						/>
+						<DynamicTextArea
+							autoFocus={true}
+							data-testid="chat-input"
+							maxRows={10}
+							minRows={1}
+							onBlur={handleBlur}
+							onChange={(e) => {
+								handleInputChange(e)
+								updateHighlights()
+							}}
+							onFocus={() => {
+								setIsTextAreaFocused(true)
+								onFocusChange?.(true) // Call prop on focus
+							}}
+							onHeightChange={(height) => {
+								if (textAreaBaseHeight === undefined || height < textAreaBaseHeight) {
+									setTextAreaBaseHeight(height)
+								}
+								onHeightChange?.(height)
+							}}
+							onKeyDown={handleKeyDown}
+							onKeyUp={handleKeyUp}
+							onMouseUp={updateCursorPosition}
+							onPaste={handlePaste}
+							onScroll={() => updateHighlights()}
+							onSelect={updateCursorPosition}
+							placeholder={showUnsupportedFileError || showDimensionError ? "" : placeholderText}
+							ref={(el) => {
+								if (typeof ref === "function") {
+									ref(el)
+								} else if (ref) {
+									ref.current = el
+								}
+								textAreaRef.current = el
+							}}
+							style={{
+								width: "100%",
+								boxSizing: "border-box",
+								backgroundColor: "transparent",
+								color: "var(--vscode-input-foreground)",
+								//border: "1px solid var(--vscode-input-border)",
+								borderRadius: 2,
+								fontFamily: "var(--vscode-font-family)",
+								fontSize: "var(--vscode-editor-font-size)",
+								lineHeight: "var(--vscode-editor-line-height)",
+								resize: "none",
+								overflowX: "hidden",
+								overflowY: "scroll",
+								scrollbarWidth: "none",
+								// Since we have maxRows, when text is long enough it starts to overflow the bottom padding, appearing behind the thumbnails. To fix this, we use a transparent border to push the text up instead. (https://stackoverflow.com/questions/42631947/maintaining-a-padding-inside-of-text-area/52538410#52538410)
+								// borderTop: "9px solid transparent",
+								borderLeft: 0,
+								borderRight: 0,
+								borderTop: `${quoteRowHeight}px solid transparent`,
+								borderBottom: `${thumbnailsHeight}px solid transparent`,
+								borderColor: "transparent",
+								// borderRight: "54px solid transparent",
+								// borderLeft: "9px solid transparent", // NOTE: react-textarea-autosize doesn't calculate correct height when using borderLeft/borderRight so we need to use horizontal padding instead
+								// Instead of using boxShadow, we use a div with a border to better replicate the behavior when the textarea is focused
+								// boxShadow: "0px 0px 0px 1px var(--vscode-input-border)",
+								// Less at the bottom: the action row sits right under the text, inside the card.
+								padding: `7px ${inputPaddingRight}px ${TEXT_BOTTOM_PADDING}px 9px`,
+								cursor: "text",
+								flex: 1,
+								zIndex: 1,
+								// The card draws the focus border (and the drag outline).
+								outline: "none",
+							}}
+							value={inputValue}
+						/>
+						{quoteTags && (
+							<div className="absolute top-1 left-2 right-2 z-2 h-5" data-testid="composer-quote-row">
+								{quoteTags}
+							</div>
+						)}
+						{(selectedImages.length > 0 || selectedFiles.length > 0) && (
+							<Thumbnails
+								files={selectedFiles}
+								images={selectedImages}
+								imagesUnsupported={unsupportedImagesAttached}
+								onHeightChange={handleThumbnailsHeightChange}
+								setFiles={setSelectedFiles}
+								setImages={setSelectedImages}
+								style={{
+									position: "absolute",
+									paddingTop: 4,
+									bottom: 0,
+									left: 8,
+									right: 33, // Clear of the stash button
+									zIndex: 2,
+								}}
+							/>
+						)}
+						<div
+							className="absolute flex items-end bottom-0.5 right-1.5 z-10 h-8 text-xs"
+							style={{ height: textAreaBaseHeight }}>
+							<div className="flex flex-row items-center">
+								{onRestoreStash && onDeleteStash && (
+									<PromptStashButton
+										entries={stashEntries}
+										modKey={metaKeyChar}
+										onDelete={onDeleteStash}
+										onRestore={onRestoreStash}
+									/>
+								)}
+							</div>
+						</div>
+					</div>
+					<div
+						className="flex items-center gap-1.5 flex-nowrap min-w-0 px-1.5 pb-1"
+						data-testid="composer-bottom-row"
+						ref={bottomRowRef}>
+						<AttachButton
+							disabled={shouldDisableFilesAndImages}
+							max={MAX_IMAGES_AND_FILES_PER_MESSAGE}
+							onAddFiles={onSelectFilesAndImages}
+						/>
+						<div aria-hidden className="min-w-0 flex-1" />
+						{usageIndicator && (
+							<div className="flex items-center shrink-0" data-testid="composer-usage">
+								{usageIndicator.render(rowLayout)}
+							</div>
+						)}
+						{/* The model name gives way first; the effort text and Send keep their size. */}
+						<ShrinkSlot floor={composerChipMinWidth(rowContent, rowLayout)}>
+							<ModelEffortChip
+								bareChip={rowLayout.bareChip}
+								compactEffort={rowLayout.compactEffort}
+								fallbackLabel={modelDisplayName}
+								mode={mode}
+								tightChip={rowLayout.tightChip}
+								triggerRef={modelChipRef}
+							/>
+						</ShrinkSlot>
+						<SendSplitButton
+							compactMode={rowLayout.tightChip}
+							disabled={sendDisabled}
+							disabledReason={sendBlock?.reason}
+							flash={modeSwitchFlash}
+							hideModeSwitch={rowLayout.hideModeSwitch}
+							mode={mode}
+							onPickMode={(next) => {
+								if (next !== mode) onModeToggle()
+							}}
+							onSend={() => {
+								if (!sendDisabled) onSend()
+							}}
+							running={
+								showRunningSendButtons
+									? {
+											enterSendsAs,
+											modKey: metaKeyChar,
+											onSteer: onSend,
+										}
+									: undefined
+							}
+							sendTitle={
+								isHome
+									? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
+									: "Send (Enter) · Aside (Alt+Enter)"
+							}
+							toggleKeys={togglePlanActKeys}
+						/>
 					</div>
 				</div>
+				{modelBlock && (
+					<div
+						className="flex items-center gap-1.5 px-3.5 pb-1.5 text-xs"
+						data-testid="model-send-block"
+						role="status"
+						style={{ color: "var(--vscode-editorWarning-foreground)" }}>
+						<TriangleAlertIcon className="shrink-0" size={12} />
+						<span className="min-w-0">
+							{modelBlock.reason}{" "}
+							<button
+								className="underline cursor-pointer bg-transparent border-0 p-0 m-0 text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)]"
+								data-testid="model-send-block-fix"
+								onClick={() => (modelBlock.setUp ? handleModelButtonClick() : modelChipRef.current?.click())}
+								type="button">
+								{modelBlock.fix}
+							</button>
+						</span>
+					</div>
+				)}
 				{unsupportedImagesAttached && (
 					<div
 						className="flex items-center gap-1.5 px-3.5 pb-1.5 text-xs"
@@ -2066,101 +1944,17 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				)}
 				<DetectedTicketChips text={inputValue} />
 				<ComposerTaskGroupSheet draftText={inputValue} />
-				<div
-					className="flex items-center gap-1.5 flex-nowrap min-w-0 -mt-[2px] px-3 pb-2"
-					data-testid="composer-bottom-row"
-					ref={bottomRowRef}>
-					<ButtonGroup className="h-5" data-testid="composer-pickers">
-						<PlusMenu
-							filesDisabled={shouldDisableFilesAndImages}
-							foldedPanels={!rowLayout.inlinePanelButtons}
-							onAddFiles={() => {
-								if (!shouldDisableFilesAndImages) {
-									onSelectFilesAndImages()
-								}
-							}}
-							onMention={handleContextButtonClick}
-							onUseScript={startScriptDraft}
-						/>
-						{rowLayout.inlinePanelButtons && (
-							<>
-								<McpServersButton />
-								<RulesButton onUseScript={startScriptDraft} />
-							</>
-						)}
+				{/* A new thread picks where it runs and which task it goes into; inside a thread both live in the header. */}
+				{!currentTaskItem && (
+					<div
+						className="flex min-w-0 items-center gap-0.5 -mt-1 px-3 pb-2 text-[11px] text-description"
+						data-testid="new-thread-line">
+						<span className="shrink-0 px-0.5 opacity-70">In</span>
 						<WorkspaceButton />
-						{/* No task: the icon alone, never squeezed. A task name shrinks to a few characters, then to the icon when tight. */}
-						{whereHasTask ? (
-							<ShrinkSlot floor={rowLayout.tightPills ? 22 : 52}>
-								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
-							</ShrinkSlot>
-						) : (
-							<span className="flex shrink-0 empty:hidden">
-								<WherePill iconOnly={rowLayout.tightPills} onOpenTaskGroup={onOpenTaskGroup} />
-							</span>
-						)}
-						{/* Tight rows let the pickers go below their usual minimums before the MCP and rules buttons fold. */}
-						<ShrinkSlot floor={rowLayout.tightPills ? 40 : 72}>
-							<ConfigPicker fallbackLabel={modelDisplayName} mode={mode} />
-						</ShrinkSlot>
-						{/* Effort labels are short ("Default", "Med"): the long model name gives way first. */}
-						<ShrinkSlot floor={rowLayout.tightPills ? 28 : 60} shrink={0.2}>
-							<ReasoningEffortPicker
-								defaultEffort={selectedProvider === "openai-native" ? "medium" : "none"}
-								mode={mode}
-								modelId={selectedModelId}
-								modelInfo={selectedModelInfo}
-							/>
-						</ShrinkSlot>
-					</ButtonGroup>
-					{usageIndicator && <div className="flex items-center shrink-0">{usageIndicator.render(rowLayout)}</div>}
-					{/* The approvals shield sits with the Ask/Act switch: both decide how much Cline does on its own. */}
-					<div className="flex shrink-0 items-center gap-1" data-testid="composer-mode-controls">
-						<ApprovalsMenu />
-						{/* Tooltip for Ask/Act toggle remains outside the conditional rendering. Internal mode value stays "plan". */}
-						<Tooltip>
-							<TooltipContent
-								className="text-xs px-2 flex flex-col gap-1"
-								hidden={shownTooltipMode === null}
-								side="top">
-								{shownTooltipMode === "act"
-									? "In Act mode, Cline will complete the task immediately"
-									: "In Ask mode, Cline will answer questions and explore the codebase"}
-								<p className="text-description/80 text-xs mb-0">
-									Toggle w/ <kbd className="text-muted-foreground mx-1">{togglePlanActKeys}</kbd>
-								</p>
-							</TooltipContent>
-							<TooltipTrigger className="shrink-0">
-								<SwitchContainer
-									$flash={modeSwitchFlash}
-									data-testid="mode-switch"
-									disabled={false}
-									onClick={onModeToggle}>
-									<Slider isAct={mode === "act"} isPlan={mode === "plan"} />
-									{(
-										[
-											{ value: "plan", label: "Ask" },
-											{ value: "act", label: "Act" },
-										] as const
-									).map((m) => (
-										<div
-											aria-checked={mode === m.value}
-											className={cn(
-												"pt-0.5 pb-px px-2 z-10 text-xs w-1/2 text-center bg-transparent transition-colors duration-200 motion-reduce:transition-none [.vscode-reduce-motion_&]:transition-none",
-												mode === m.value ? "text-button-foreground" : "text-input-foreground",
-											)}
-											key={m.value}
-											onMouseLeave={() => setShownTooltipMode(null)}
-											onMouseOver={() => setShownTooltipMode(m.value)}
-											role="switch">
-											{m.label}
-										</div>
-									))}
-								</SwitchContainer>
-							</TooltipTrigger>
-						</Tooltip>
+						<span className="shrink-0 px-0.5 opacity-70">for</span>
+						<WherePill onOpenTaskGroup={onOpenTaskGroup} />
 					</div>
-				</div>
+				)}
 			</div>
 		)
 	},

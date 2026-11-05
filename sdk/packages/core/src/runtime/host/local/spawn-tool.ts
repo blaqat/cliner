@@ -1,3 +1,13 @@
+import {
+	describeAllowedModels,
+	describeDefaultSubagentModel,
+	selectSubagentModel,
+} from "./subagent-model-policy";
+import { SUBAGENT_SPAWN_ERROR } from "../../../extensions/tools/team/subagent-policy";
+import {
+	AsyncAgentRegistry,
+	agentControlTools,
+} from "../../../extensions/tools/team/async-agents";
 import type {
 	AgentEvent,
 	AgentTool,
@@ -62,6 +72,15 @@ const activeSubagentCounts = new WeakMap<
 >();
 
 export interface SpawnToolDeps {
+	agentRegistries?: Map<string, AsyncAgentRegistry>;
+	onRegistryChange?: (rootSessionId: string) => void;
+	onSubagentMessage?: (
+		sessionId: string,
+		parentAgentId: string,
+		agentId: string,
+		status: string,
+		message: string,
+	) => void;
 	emit?: (event: CoreSessionEvent) => void;
 	requestToolApproval?: (
 		request: ToolApprovalRequest,
@@ -195,6 +214,9 @@ export function createSessionSubAgentLifecycleCallbacks(
 						context.input.access === "write" && config.mode !== "plan"
 							? "write"
 							: "read",
+					detached: context.detached ?? false,
+					usage: context.usage,
+					result: context.result?.text,
 					status:
 						context.error || context.result?.finishReason === "error"
 							? "failed"
@@ -391,6 +413,26 @@ export function createSessionSpawnTool(
 		rootSessionId,
 	);
 	const settings = config.subagentSettings ?? {};
+	const policy = settings.modelPolicy;
+	const selectModel = (input: SpawnAgentInput) =>
+		policy
+			? selectSubagentModel(
+					input,
+					policy,
+					(() => {
+						const parent = deps
+							.getSession(rootSessionId)
+							?.runtime.delegatedAgentConfigProvider?.getConnectionConfig();
+						return parent
+							? {
+									...parent,
+									providerConfig:
+										parent.providerConfig as CoreSessionConfig["providerConfig"],
+								}
+							: config;
+					})(),
+				)
+			: selectSubagentProfile(input, settings);
 	let counts = activeSubagentCounts.get(deps.subAgentStarts);
 	if (!counts) {
 		counts = new Map();
@@ -415,16 +457,6 @@ export function createSessionSpawnTool(
 					executors: toolExecutors,
 				})
 			: [];
-		if (config.enableSpawnAgent) {
-			tools.push(
-				createSessionSpawnTool(
-					deps,
-					{ ...config, mode: access === "read" ? "plan" : "act" },
-					rootSessionId,
-					toolExecutors,
-				),
-			);
-		}
 		// Use the parent's actual tools, including host replacements and MCP,
 		// rather than recreating tools the parent does not have.
 		const parentTools = deps.getSession(rootSessionId)?.runtime.tools;
@@ -448,30 +480,24 @@ export function createSessionSpawnTool(
 				allowedNames.add(tool.name);
 			}
 		}
-		const childTools = available
-			.filter((tool) => {
-				const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];
-				if (isMcp) return config.enableTools && settings.allowMcp !== false;
-				if (!allowedNames.has(tool.name)) return false;
-				if (tool.name === "run_commands" && settings.allowCommands === false)
-					return false;
-				if (
-					[
-						"fetch_web_content",
-						"web_fetch",
-						"web_search",
-						"browser_action",
-					].includes(tool.name) &&
-					settings.allowWeb === false
-				)
-					return false;
-				return true;
-			})
-			.map((tool) =>
-				tool.name === "spawn_agent"
-					? tools.find((child) => child.name === "spawn_agent")!
-					: tool,
-			);
+		const childTools = available.filter((tool) => {
+			const isMcp = !!tool.metadata?.[MCP_TOOL_METADATA_KEY];
+			if (isMcp) return config.enableTools && settings.allowMcp !== false;
+			if (!allowedNames.has(tool.name)) return false;
+			if (tool.name === "run_commands" && settings.allowCommands === false)
+				return false;
+			if (
+				[
+					"fetch_web_content",
+					"web_fetch",
+					"web_search",
+					"browser_action",
+				].includes(tool.name) &&
+				settings.allowWeb === false
+			)
+				return false;
+			return true;
+		});
 		return filterToolsByPolicies(
 			filterDisabledTools([
 				...new Map(childTools.map((tool) => [tool.name, tool])).values(),
@@ -489,9 +515,64 @@ export function createSessionSpawnTool(
 		allowedProfileIds.map((id) => describeProfile(settings, id)).join(", ") ||
 		"(none)";
 
+	const registries =
+		deps.agentRegistries ?? new Map<string, AsyncAgentRegistry>();
+	let registry = registries.get(rootSessionId);
+	if (!registry) {
+		registry = new AsyncAgentRegistry();
+		registries.set(rootSessionId, registry);
+	}
+	registry.onInput = (entry, message) => {
+		if (entry.runtimeId)
+			deps.emit?.({
+				type: "subagent_input",
+				payload: {
+					sessionId: rootSessionId,
+					childSessionId: makeSubSessionId(rootSessionId, entry.runtimeId),
+					text: `Parent: ${message}`,
+				},
+			});
+	};
+	const settledContexts = new WeakSet<object>();
 	const spawnTool = createSpawnAgentTool({
-		resolveConnectionOverrides: (input) =>
-			selectSubagentProfile(input, settings).overrides,
+		registry,
+		suppressBlockingCompletionMessage: !!policy,
+		getChildSessionId: (id) => makeSubSessionId(rootSessionId, id),
+		onRegistryChange: () => deps.onRegistryChange?.(rootSessionId),
+		onResume: () => {
+			const active = activeCounts.get(rootSessionId) ?? 0;
+			const current =
+				deps.getSession(rootSessionId)?.config?.subagentSettings ?? settings;
+			const limit = current.maxConcurrent ?? (current.modelPolicy ? 3 : 0);
+			if (current.modelPolicy && (!Number.isSafeInteger(limit) || limit < 0))
+				throw new Error("Invalid subagent concurrency limit.");
+			if (limit > 0 && active >= limit)
+				throw new Error(
+					current.modelPolicy
+						? `Maximum concurrent subagents (${limit}) reached. Wait for an active subagent to finish before spawning another.`
+						: `Maximum concurrent subagents (${limit}) reached.`,
+				);
+			activeCounts.set(rootSessionId, active + 1);
+		},
+		onMessage: (agentId, status, message, parentId) =>
+			deps.onSubagentMessage?.(
+				rootSessionId,
+				parentId,
+				agentId,
+				status,
+				message,
+			),
+		onRunEnd: (context) => {
+			settledContexts.add(context);
+			const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;
+			if (remaining > 0) activeCounts.set(rootSessionId, remaining);
+			else activeCounts.delete(rootSessionId);
+		},
+		resolveConnectionOverrides: (input) => {
+			const selection = selectModel(input);
+			if (policy && selection.error) throw new Error(selection.error);
+			return selection.overrides;
+		},
 		configProvider: {
 			getRuntimeConfig: () =>
 				deps
@@ -506,6 +587,14 @@ export function createSessionSpawnTool(
 					providerConfig: config.providerConfig,
 					knownModels: config.knownModels,
 					thinking: config.thinking,
+					...(policy
+						? {
+								reasoningEffort: config.reasoningEffort,
+								thinkingBudgetTokens: config.thinkingBudgetTokens,
+								maxTokensPerTurn: config.maxTokensPerTurn,
+								temperature: config.temperature,
+							}
+						: {}),
 					maxIterations: config.maxIterations,
 					hooks: config.hooks,
 					extensions: config.extensions,
@@ -524,6 +613,14 @@ export function createSessionSpawnTool(
 					providerConfig: config.providerConfig,
 					knownModels: config.knownModels,
 					thinking: config.thinking,
+					...(policy
+						? {
+								reasoningEffort: config.reasoningEffort,
+								thinkingBudgetTokens: config.thinkingBudgetTokens,
+								maxTokensPerTurn: config.maxTokensPerTurn,
+								temperature: config.temperature,
+							}
+						: {}),
 				},
 			updateConnectionDefaults: () => {},
 		},
@@ -581,7 +678,24 @@ export function createSessionSpawnTool(
 	};
 	const profileSchema = inputSchema.properties?.profile;
 	let description = spawnTool.description;
-	if (profilesEnabled) {
+	if (policy) {
+		if (inputSchema.properties) {
+			delete inputSchema.properties.profile;
+			if (policy.blocking !== "parent-decides")
+				delete inputSchema.properties.wait;
+			if (!policy.allowed.length) {
+				delete inputSchema.properties.model;
+				delete inputSchema.properties.reasoningEffort;
+			} else {
+				inputSchema.properties.model!.description =
+					`Allowed models and level IDs: ${describeAllowedModels(policy)}. Pass the name, or the id when one is shown. Default: ${describeDefaultSubagentModel(policy)}.`;
+				inputSchema.properties.reasoningEffort!.description =
+					"Allowed level ID for the chosen model. Omit for its lowest allowed level.";
+			}
+		}
+		description = `Spawn a subagent. ${policy.blocking === "always" ? "Waits for its result with no overall deadline." : policy.blocking === "never" ? "Returns immediately; results arrive as messages. Blocking is disabled." : "Use wait=true to wait for its result."} Default model: ${describeDefaultSubagentModel(policy)}. ${inputSchema.properties?.model?.description ?? "Omit model and reasoningEffort to use the default."}`;
+	} else if (profilesEnabled) {
+		if (inputSchema.properties) delete inputSchema.properties.model;
 		if (profileSchema) {
 			profileSchema.enum = allowedProfileIds;
 			profileSchema.description = `Sub-agent model profile id to run on. Allowed profiles (name (id)): ${allowedProfileList}. Pass the id; a name is accepted only when it is unique. Omit to use the configured default, or "parent" to inherit your model.`;
@@ -590,27 +704,49 @@ export function createSessionSpawnTool(
 	} else {
 		if (inputSchema.properties) {
 			delete inputSchema.properties.profile;
+			delete inputSchema.properties.model;
 			delete inputSchema.properties.reasoningEffort;
 		}
 	}
-	return {
+	const resultTool: AgentTool = {
 		...spawnTool,
 		description,
 		inputSchema,
 		execute: async (rawInput, context) => {
-			const input = rawInput as SpawnAgentInput;
+			if (
+				config.parentAgentId ||
+				deps.getSession(rootSessionId)?.config?.parentAgentId ||
+				context.snapshot?.parentAgentId
+			) {
+				return { error: SUBAGENT_SPAWN_ERROR };
+			}
+			const input = { ...(rawInput as SpawnAgentInput) };
+			if (
+				policy &&
+				settings.maxConcurrent !== undefined &&
+				(!Number.isSafeInteger(settings.maxConcurrent) ||
+					settings.maxConcurrent < 0)
+			)
+				return { error: "Invalid subagent concurrency limit." };
+			if (policy)
+				input.wait =
+					policy.blocking === "always"
+						? true
+						: policy.blocking === "never"
+							? false
+							: input.wait;
 			if (input.access === "write" && settings.allowWrite === false) {
 				return {
 					error:
 						"Write subagents are disabled in Subagents settings. Use access=read.",
 				};
 			}
-			const selection = selectSubagentProfile(input, settings);
+			const selection = selectModel(input);
 			if (selection.error) {
 				return { error: selection.error };
 			}
 			const active = activeCounts.get(rootSessionId) ?? 0;
-			const limit = settings.maxConcurrent ?? 0;
+			const limit = settings.maxConcurrent ?? (policy ? 3 : 0);
 			if (limit > 0 && active >= limit) {
 				return {
 					error: `Maximum concurrent subagents (${limit}) reached. Wait for an active subagent to finish before spawning another.`,
@@ -623,16 +759,31 @@ export function createSessionSpawnTool(
 				// attaches these fields to the matching spawn_agent entry.
 				if (selection.profileName || selection.reasoningEffort) {
 					context.emitUpdate?.({
-						profile: selection.profileName,
+						...(policy
+							? { model: selection.profileName, modelId: selection.profileId }
+							: { profile: selection.profileName }),
 						reasoningEffort: selection.reasoningEffort,
 					});
 				}
 				return await spawnTool.execute(input, context);
-			} finally {
+			} catch (error) {
+				if (settledContexts.has(context)) throw error;
 				const remaining = (activeCounts.get(rootSessionId) ?? 1) - 1;
 				if (remaining > 0) activeCounts.set(rootSessionId, remaining);
 				else activeCounts.delete(rootSessionId);
+				throw error;
 			}
 		},
 	};
+	agentControlTools.set(
+		resultTool,
+		registry.tools(
+			() =>
+				(
+					deps.getSession(rootSessionId)?.config?.subagentSettings ??
+					config.subagentSettings
+				)?.modelPolicy?.blocking,
+		),
+	);
+	return resultTool;
 }

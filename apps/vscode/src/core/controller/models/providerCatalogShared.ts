@@ -3,7 +3,6 @@ import { filterChatModelMap, resolveChatModelDefault } from "@/sdk/model-catalog
 import type {
 	EffectiveProviderConfig,
 	Mode,
-	ModelSelection,
 	ModelSelectionOverrides,
 	ProviderCatalog,
 	ProviderConfigPatch,
@@ -17,12 +16,10 @@ import { parseProviderId } from "@/sdk/model-catalog/provider-id"
 import {
 	AwsProviderConfig,
 	CatalogErrorInfo,
-	CommitModelSelectionRequest,
 	CommittedModelSelection,
 	GcpProviderConfig,
 	ModelOverrides as ModelOverridesProto,
 	OpenRouterModelInfo,
-	ProviderConfigResponse,
 	ProviderListing as ProviderListingProto,
 	ProviderModelsResponse,
 	WriteProviderConfigPatch,
@@ -223,83 +220,6 @@ export function toProviderModelsResponse(
 	})
 }
 
-export function toRedactedProviderConfigResponse(
-	config: EffectiveProviderConfig,
-	store?: ProviderConfigStore,
-): ProviderConfigResponse {
-	return ProviderConfigResponse.create({
-		providerId: config.providerId,
-		baseUrl: config.baseUrl,
-		apiLine: config.apiLine,
-		headers: config.headers ?? {},
-		region: config.region,
-		apiKeyLength: config.apiKey?.length ?? 0,
-		hasAccessToken: Boolean(config.auth?.accessToken),
-		hasRefreshToken: Boolean(config.auth?.refreshToken),
-		accountId: config.auth?.accountId,
-		planSelection: toCommittedModelSelectionProto(store?.readSelection(config.providerId, "plan")),
-		actSelection: toCommittedModelSelectionProto(store?.readSelection(config.providerId, "act")),
-		aws: toRedactedAwsProviderConfigProto(config.aws),
-		gcp: toRedactedGcpProviderConfigProto(config.gcp),
-		contextWindow: config.contextWindow,
-	})
-}
-
-export function toProviderConfigPatch(protoPatch: WriteProviderConfigPatch | undefined): ProviderConfigPatch {
-	if (!protoPatch) {
-		throw new Error("patch is required")
-	}
-	return {
-		...(protoPatch.apiKey !== undefined ? { apiKey: protoPatch.apiKey } : {}),
-		...(protoPatch.baseUrl !== undefined ? { baseUrl: protoPatch.baseUrl } : {}),
-		...(protoPatch.clearHeaders
-			? { headers: {} }
-			: Object.keys(protoPatch.headers ?? {}).length > 0
-				? { headers: { ...protoPatch.headers } }
-				: {}),
-		...(protoPatch.region !== undefined ? { region: protoPatch.region } : {}),
-		...(protoPatch.apiLine !== undefined ? { apiLine: protoPatch.apiLine } : {}),
-		...(protoPatch.aws !== undefined ? { aws: toAwsProviderConfigPatch(protoPatch) } : {}),
-		...(protoPatch.gcp !== undefined ? { gcp: toGcpProviderConfigPatch(protoPatch) } : {}),
-		// A zero context window over the wire means "clear the setting".
-		...(protoPatch.contextWindow !== undefined
-			? { contextWindow: protoPatch.contextWindow > 0 ? protoPatch.contextWindow : null }
-			: {}),
-		...(protoPatch.accessToken !== undefined || protoPatch.refreshToken !== undefined || protoPatch.accountId !== undefined
-			? {
-					auth: {
-						accessToken: protoPatch.accessToken,
-						refreshToken: protoPatch.refreshToken,
-						accountId: protoPatch.accountId,
-					},
-				}
-			: {}),
-		...(protoPatch.reasoning
-			? {
-					reasoning: {
-						...(protoPatch.reasoning.enabled !== undefined ? { enabled: protoPatch.reasoning.enabled } : {}),
-						...(protoPatch.reasoning.effort !== undefined ? { effort: protoPatch.reasoning.effort } : {}),
-						...(protoPatch.reasoning.budgetTokens !== undefined
-							? { budgetTokens: protoPatch.reasoning.budgetTokens }
-							: {}),
-					},
-				}
-			: {}),
-	}
-}
-
 function toSelectionOverrides(overrides: ModelOverridesProto | undefined): ModelSelectionOverrides | undefined {
 	return fromProtobufModelOverrides(overrides)
-}
-
-export function toModelSelection(request: CommitModelSelectionRequest, providerId: ProviderId): ModelSelection {
-	const modelId = request.modelId.trim()
-	if (!modelId) {
-		throw new Error("model_id is required")
-	}
-	return {
-		providerId,
-		modelId,
-		overrides: toSelectionOverrides(request.overrides),
-	}
 }

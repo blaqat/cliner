@@ -6,7 +6,6 @@ import styled from "styled-components"
 import ChatErrorBoundary from "@/components/chat/ChatErrorBoundary"
 import { CODE_BLOCK_BG_COLOR } from "@/components/common/CodeBlock"
 import MarkdownBlock from "@/components/common/MarkdownBlock"
-import { DropdownContainer } from "@/components/settings/ApiOptions"
 import { updateSetting } from "@/components/settings/utils/settingsHandlers"
 import { useExtensionState } from "../../../context/ExtensionStateContext"
 import ImagePreview from "./ImagePreview"
@@ -16,6 +15,19 @@ import { buildDisplaySegments, DisplaySegment, processResponseUrls, truncateData
 
 // Maximum number of URLs to process in total, per response
 const MAX_URLS = 50
+
+// Forces the display mode dropdown to open downward.
+const DropdownContainer = styled.div<{ zIndex?: number }>`
+	position: relative;
+	z-index: ${(props) => props.zIndex || 1000};
+
+	// Force dropdowns to open downward
+	& vscode-dropdown::part(listbox) {
+		position: absolute !important;
+		top: 100% !important;
+		bottom: auto !important;
+	}
+`
 
 const ResponseHeader = styled.div`
 	display: flex;

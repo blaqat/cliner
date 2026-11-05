@@ -1,6 +1,7 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { StateManager } from "@/core/storage/StateManager"
+import { ModelPickUnavailableError } from "./model-settings-resolver"
 import { SdkModeCoordinator, type SdkModeCoordinatorOptions } from "./sdk-mode-coordinator"
 
 vi.mock("@/shared/services/Logger", () => ({
@@ -698,6 +699,116 @@ describe("SdkModeCoordinator", () => {
 		)
 	})
 
+	describe("when the new mode's model can't run", () => {
+		const gone = new ModelPickUnavailableError("The model picked here was removed. Pick another.")
+
+		it("the switch stands and the old session goes, so nothing runs with the old mode's tools", async () => {
+			const activeSession = makeActiveSession()
+			const { coordinator, options, state } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			const onModeRebuilt = vi.fn().mockResolvedValue(undefined)
+			Object.assign(options, { onModeRebuilt })
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+
+			await expect(coordinator.togglePlanActMode("plan")).resolves.toBe(false)
+
+			expect(state.mode).toBe("plan")
+			expect(options.stateManager.setGlobalState).not.toHaveBeenCalledWith("mode", "act")
+			expect(options.sessions.endActiveSession).toHaveBeenCalledWith("modeChange")
+			expect(options.sessions.replaceActiveSession).not.toHaveBeenCalled()
+			expect(onModeRebuilt).toHaveBeenCalledWith("old-session", "plan", undefined)
+			expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+			expect(options.postStateToWebview).toHaveBeenCalled()
+			// The next session starts from the old transcript, so its first message says the mode changed.
+			expect(coordinator.consumeModeSwitchNotice("old-session")).toBeTruthy()
+		})
+
+		it.each([
+			["queued messages", { queuedPromptCount: 2 }],
+			["a turn that restarted from the queue", { isRunning: true }],
+		])("keeps a session holding %s, and the switch doesn't take", async (_name, held) => {
+			const activeSession = Object.assign(makeActiveSession(), held)
+			const { coordinator, options, state } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+
+			await expect(coordinator.togglePlanActMode("plan")).resolves.toBe(false)
+
+			expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+			expect(state.mode).toBe("act")
+			expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+				[expect.objectContaining({ say: "error", text: expect.stringContaining("Pick another") })],
+				expect.anything(),
+			)
+		})
+
+		it("the notice stays true through more switches with no session", async () => {
+			const activeSession = makeActiveSession()
+			const { coordinator, options } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+			await coordinator.togglePlanActMode("plan")
+			options.sessions.getActiveSession.mockReturnValue(undefined)
+
+			// There and back again: the transcript's mode is right, so nothing needs saying.
+			await coordinator.togglePlanActMode("act")
+			expect(coordinator.consumeModeSwitchNotice("old-session")).toBeNull()
+
+			await coordinator.togglePlanActMode("plan")
+			expect(coordinator.consumeModeSwitchNotice("old-session")).toMatchObject({ from: "act", to: "plan" })
+		})
+
+		it("Continue in Act keeps the draft and sends nothing", async () => {
+			const activeSession = makeActiveSession()
+			const { coordinator, options, state } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", planMessages()),
+				mode: "plan",
+				turnPhase: "awaiting_followup",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+
+			await expect(
+				coordinator.togglePlanActMode("act", { message: "go ahead", images: [], files: [] }, { continueAnswer: true }),
+			).resolves.toBe(false)
+
+			expect(state.mode).toBe("act")
+			expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+			expect(options.onAutoContinueFailed).not.toHaveBeenCalled()
+		})
+
+		it("leaves a session that took over in the meantime alone", async () => {
+			const activeSession = makeActiveSession()
+			const { coordinator, options, state } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+				options.sessions.getActiveSession.mockReturnValue(makeActiveSession())
+				throw gone
+			})
+
+			await coordinator.togglePlanActMode("plan")
+
+			expect(state.mode).toBe("plan")
+			expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		})
+	})
+
 	it("emits an auth error and skips replacement when the target cline provider has no token", async () => {
 		const activeSession = makeActiveSession()
 		const { coordinator, options, state } = makeCoordinator({
@@ -868,6 +979,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn((key: string) => state[key as "mode"]),
 			setGlobalState: vi.fn(async (key: string, value: string) => {
 				state[key as "mode"] = value as "act" | "plan"
@@ -875,6 +987,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		} as unknown as StateManager,
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
+			endActiveSession: vi.fn().mockResolvedValue(activeSession),
 			replaceActiveSession: vi.fn(async (input) => {
 				await input.loadInitialMessages?.()
 				await input.onReplaced?.("new-session")
@@ -918,6 +1031,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		sessions: SdkModeCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
+			endActiveSession: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
 			replaceActiveSession: ReturnType<typeof vi.fn>
 			markSendRunning: ReturnType<typeof vi.fn>

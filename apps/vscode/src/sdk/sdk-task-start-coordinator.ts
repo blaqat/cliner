@@ -5,12 +5,16 @@ import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { parseMessageReferences } from "@shared/message-references"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
-import { captureTaskApiSelection } from "@/core/controller/models/apiProfiles"
+import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
+import { captureTaskApiSelection, resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import { isDirectory } from "@/utils/fs"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE, type ProviderFailureTelemetry } from "./provider-failure-telemetry"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -59,7 +63,7 @@ export interface SdkTaskStartCoordinatorOptions {
 		task?: TaskProxy,
 	) => {
 		task: TaskProxy
-		messages: Pick<SdkMessageCoordinator, "appendAndEmit">
+		messages: Pick<SdkMessageCoordinator, "appendAndEmit" | "emitHookMessage">
 	}
 	onAskResponse: (
 		text?: string,
@@ -84,12 +88,23 @@ export interface SdkTaskStartCoordinatorOptions {
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
 	prepareWorkspace?: (id: string, title: string, workspace: string, enabled?: boolean) => Promise<string>
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
+	transferDraftModelPick?: (taskId: string) => void
 	/**
 	 * Remembers the task group a new thread starts in. Core writes the session
 	 * record only when the first send lands, so the history row synthesized for
 	 * the live session needs the group before then.
 	 */
 	recordTaskGroup?: (taskId: string, taskGroupId: string) => void
+	/** A start failed after the thread was shown. Keeps what Retry needs, since nothing reached the session. */
+	onStartFailed?: (failure: {
+		task: TaskProxy
+		prompt?: string
+		images?: string[]
+		files?: string[]
+		provenance?: ComposerProvenance
+		background: boolean
+		reason: string
+	}) => void
 	postStateToWebview: () => Promise<void>
 }
 
@@ -102,7 +117,14 @@ export class SdkTaskStartCoordinator {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
+		options?: {
+			background?: boolean
+			taskGroupId?: string
+			runInWorktree?: boolean
+			provenance?: ComposerProvenance
+			/** The caller's composer takes the draft back, so it has to hear that the start failed. */
+			rethrowStartFailure?: boolean
+		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
 		const background = options?.background === true
@@ -110,6 +132,8 @@ export class SdkTaskStartCoordinator {
 		let providerId: string | undefined
 		let modelId: string | undefined
 		let context: ReturnType<NonNullable<SdkTaskStartCoordinatorOptions["createTaskContext"]>> | undefined
+		let shownTask: TaskProxy | undefined
+		let sessionStarted = false
 		try {
 			// A background start must not touch the task view: no focus change, no
 			// task-settings overlay drop, no clearing of what the user is looking at.
@@ -117,18 +141,25 @@ export class SdkTaskStartCoordinator {
 
 			let cwd = await this.options.getWorkspaceRoot()
 			const mode = this.getCurrentMode()
-			const apiSelection = this.options.consumeDraftApiSelection?.() ?? captureTaskApiSelection(this.options.stateManager)
+			let apiSelection =
+				(!useModelSettings(this.options.stateManager) || !background
+					? this.options.consumeDraftApiSelection?.()
+					: undefined) ?? captureTaskApiSelection(this.options.stateManager)
 			Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
-			const config = await this.options.sessionConfigBuilder.build({
-				prompt,
-				images,
-				files,
-				historyItem,
-				taskSettings,
-				cwd,
-				mode,
-				apiSelection,
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					prompt,
+					images,
+					files,
+					historyItem,
+					taskSettings,
+					cwd,
+					mode,
+					apiSelection,
+				},
+				...(useModelSettings(this.options.stateManager) && !background ? ([""] as const) : []),
+			)
+			apiSelection = getSessionApiSnapshot(config)?.selection ?? apiSelection
 			providerId = config.providerId
 			modelId = config.modelId
 
@@ -158,17 +189,20 @@ export class SdkTaskStartCoordinator {
 					cwd = isolatedCwd
 					Object.assign(
 						config,
-						await this.options.sessionConfigBuilder.build({
-							prompt,
-							images,
-							files,
-							historyItem,
-							taskSettings,
-							cwd,
-							workspaceRoot: cwd,
-							mode,
-							apiSelection,
-						}),
+						await this.options.sessionConfigBuilder.build(
+							{
+								prompt,
+								images,
+								files,
+								historyItem,
+								taskSettings,
+								cwd,
+								workspaceRoot: cwd,
+								mode,
+								apiSelection,
+							},
+							...(useModelSettings(this.options.stateManager) && !background ? ([""] as const) : []),
+						),
 					)
 				}
 			}
@@ -187,10 +221,13 @@ export class SdkTaskStartCoordinator {
 				mode,
 			})
 
+			const autoTags = historyItem ? undefined : mergeAutoTicketTags(undefined, extractTicketTags(prompt), undefined)
 			startInput.sessionMetadata = {
 				...startInput.sessionMetadata,
 				apiSelection,
 				...(options?.taskGroupId ? { taskGroupId: options.taskGroupId } : {}),
+				// The record is first saved during the first send, so a write after this start would find nothing to tag.
+				...(autoTags ? { tags: autoTags } : {}),
 			}
 			// Focused starts install the task proxy as the current view; background
 			// starts park it in the per-task context so its transcript and turn state
@@ -198,10 +235,12 @@ export class SdkTaskStartCoordinator {
 			context = background ? this.options.createTaskContext?.(taskSessionId) : undefined
 			if (background && !context) throw new Error("Background task contexts are unavailable")
 			const task = context?.task ?? this.createAndSetTask(taskSessionId)
+			shownTask = task
 			// Before the first state post, so the thread shows in its task right away.
 			if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
-			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit"> = context?.messages ?? this.options.messages
-			this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
+			const messageTarget: Pick<SdkMessageCoordinator, "appendAndEmit" | "emitHookMessage"> =
+				context?.messages ?? this.options.messages
+			const taskMessage = this.emitInitialTaskMessage(messageTarget, taskSessionId, prompt ?? "", images, files)
 
 			// The turn phase was already set to "streaming" (in SdkController.initTask), but the
 			// webview only learns the phase through a full state post. Ship one now, in parallel
@@ -211,10 +250,12 @@ export class SdkTaskStartCoordinator {
 				Logger.error("[SdkController] Failed to post state after emitting initial task message:", error)
 			})
 
+			if (!background) this.options.transferDraftModelPick?.(taskSessionId)
 			this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 			const { startResult, sdkHost } = background
 				? await this.options.sessions.startNewSession(startInput, { focus: false })
 				: await this.options.sessions.startNewSession(startInput)
+			sessionStarted = true
 			if (startResult.sessionId !== taskSessionId) {
 				Logger.warn(
 					`[SdkController] SDK returned session id ${startResult.sessionId} after requested id ${taskSessionId}`,
@@ -226,6 +267,9 @@ export class SdkTaskStartCoordinator {
 
 			const newHistoryItem = {
 				...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
+				// The first message is the user's.
+				lastUserMessageTs: Date.now(),
+				lastLine: { author: "user" as const, text: (prompt ?? "").replace(/\s+/g, " ").trim().slice(0, 160) },
 				apiSelection,
 				taskGroupId: options?.taskGroupId,
 			}
@@ -236,6 +280,9 @@ export class SdkTaskStartCoordinator {
 			if (prompt?.trim() || images?.length || files?.length) {
 				Logger.log(`[SdkController] Sending prompt to session: ${taskSessionId}`)
 				const resolvedTask = await this.options.resolveContextMentions(prompt || "", taskSessionId, options?.provenance)
+				// Linked messages are only known once resolved: put them on the first message as chips.
+				const { references } = parseMessageReferences(resolvedTask)
+				if (references.length) messageTarget.emitHookMessage({ ...taskMessage, messageReferences: references })
 				this.options.sessions.fireAndForgetSend(sdkHost, taskSessionId, resolvedTask, images, files)
 			}
 
@@ -250,19 +297,50 @@ export class SdkTaskStartCoordinator {
 				errorType: PROVIDER_FAILURE_ERROR_TYPE.TASK_INIT,
 				failurePhase: PROVIDER_FAILURE_PHASE.PREFLIGHT,
 			})
+			// A failure this early has no thread yet: without one the reason has nowhere to land and
+			// the optimistic message never gets confirmed.
+			if (!shownTask) {
+				taskSessionId ??= createSessionId()
+				if (background) context ??= this.options.createTaskContext?.(taskSessionId)
+				shownTask = context?.task ?? this.createAndSetTask(taskSessionId)
+				this.emitInitialTaskMessage(
+					context?.messages ?? this.options.messages,
+					taskSessionId,
+					prompt ?? "",
+					images,
+					files,
+				)
+			}
+			// The message never reached this session, and Retry starts another one.
+			if (sessionStarted && !background && this.options.sessions.getActiveSession()?.sessionId === taskSessionId) {
+				await this.options.sessions.endActiveSession("taskStartFailed", { awaitStop: true }).catch((endError) => {
+					Logger.error("[SdkController] Failed to end session after init error:", endError)
+				})
+			}
 			this.handleInitError(error, taskSessionId, context?.messages)
+			this.options.onStartFailed?.({
+				task: shownTask,
+				prompt,
+				images,
+				files,
+				provenance: options?.provenance,
+				background,
+				reason: error instanceof Error ? error.message : String(error),
+			})
 			await this.options.postStateToWebview().catch((postError) => {
 				Logger.error("[SdkController] Failed to post state after init error:", postError)
 			})
+			if (options?.rethrowStartFailure) throw error
 			return undefined
 		}
 	}
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
+		let historyItem: HistoryItem | undefined
 		try {
 			await this.options.clearTask()
 
-			const historyItem = await this.options.taskHistory.findHistoryItem(taskId)
+			historyItem = await this.options.taskHistory.findHistoryItem(taskId)
 			if (!historyItem) {
 				Logger.error(`[SdkController] Task not found in history: ${taskId}`)
 				return
@@ -274,7 +352,9 @@ export class SdkTaskStartCoordinator {
 			// workspace root instead.
 			const storedCwd = historyItem.cwdOnTaskInitialization
 			const cwd = storedCwd && (await isDirectory(storedCwd)) ? storedCwd : await this.options.getWorkspaceRoot()
-			const apiSelection = historyItem.apiSelection ?? captureTaskApiSelection(this.options.stateManager)
+			const apiSelection = useModelSettings(this.options.stateManager)
+				? resolveTaskApiSelection(this.options.stateManager, historyItem, "act")
+				: (historyItem.apiSelection ?? captureTaskApiSelection(this.options.stateManager))
 			const config = await this.options.sessionConfigBuilder.build({
 				cwd,
 				mode: "act",
@@ -299,7 +379,7 @@ export class SdkTaskStartCoordinator {
 
 			Logger.log(`[SdkController] Task resumed: ${taskId} → ${startResult.sessionId}`)
 		} catch (error) {
-			this.handleReinitError(taskId, error)
+			await this.handleReinitError(taskId, error, historyItem)
 		}
 	}
 
@@ -325,7 +405,7 @@ export class SdkTaskStartCoordinator {
 		task: string,
 		images?: string[],
 		files?: string[],
-	): void {
+	): ClineMessage {
 		// Attachments must ride on the authoritative task message: the webview's
 		// optimistic pending copy is only cleared once an identical message (text
 		// AND images/files) arrives from the extension. Omitting them left the
@@ -344,6 +424,7 @@ export class SdkTaskStartCoordinator {
 			type: "status",
 			payload: { sessionId, status: "running" },
 		})
+		return taskMessage
 	}
 
 	private handleInitError(
@@ -370,7 +451,7 @@ export class SdkTaskStartCoordinator {
 		)
 	}
 
-	private handleReinitError(taskId: string, error: unknown): void {
+	private async handleReinitError(taskId: string, error: unknown, historyItem?: HistoryItem): Promise<void> {
 		Logger.error("[SdkController] Failed to reinit task:", error)
 
 		const reinitErrorMsg = error instanceof Error ? error.message : String(error)
@@ -385,7 +466,10 @@ export class SdkTaskStartCoordinator {
 			return
 		}
 
-		this.options.messages.emitSessionEvents(
+		// clearTask left nothing on screen, so the row needs its thread back to show on. Retry resumes it.
+		this.createAndSetTask(taskId)
+		this.emitInitialTaskMessage(this.options.messages, taskId, historyItem?.task ?? "")
+		this.options.messages.appendAndEmit(
 			[
 				{
 					ts: Date.now(),
@@ -397,5 +481,8 @@ export class SdkTaskStartCoordinator {
 			],
 			{ type: "status", payload: { sessionId: taskId, status: "error" } },
 		)
+		await this.options.postStateToWebview().catch((postError) => {
+			Logger.error("[SdkController] Failed to post state after reinit error:", postError)
+		})
 	}
 }

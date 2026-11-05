@@ -3097,3 +3097,43 @@ describe("SessionRuntime auth retry", () => {
 		expect(result.finishReason).toBe("error");
 	});
 });
+
+it("removes parent tools contributed by extensions on every child turn", async () => {
+	const { deps, configs } = withCapturingFakeRuntime();
+	const tool = (name: string): AgentTool => ({
+		name,
+		description: name,
+		inputSchema: { type: "object" },
+		execute: async () => ({}),
+	});
+	const session = new SessionRuntime(
+		makeAgentConfig({
+			parentAgentId: "parent",
+			tools: [tool("spawn_agent"), tool("message_parent")],
+			extensions: [
+				{
+					name: "legacy-team",
+					manifest: { capabilities: ["tools"] },
+					setup(api) {
+						api.registerTool(tool("team_spawn_teammate"));
+						api.registerTool(tool("subagent_reviewer"));
+						api.registerTool(tool("read_fixture"));
+					},
+				},
+			],
+		}),
+		deps,
+	);
+	await session.run("Work");
+	expect(configs[0]?.tools?.map((t) => t.name)).toEqual([
+		"read_fixture",
+		"message_parent",
+	]);
+	session.addTools([tool("list_agents")]);
+	await session.run("Continue");
+	expect(configs[1]?.tools?.map((t) => t.name)).toEqual([
+		"read_fixture",
+		"message_parent",
+	]);
+	await session.shutdown();
+});

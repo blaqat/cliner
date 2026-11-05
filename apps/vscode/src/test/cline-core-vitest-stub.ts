@@ -529,4 +529,5 @@ export async function loginOpenAICodex(): Promise<OAuthCredentials> {
 	return {}
 }
 
+export { SqliteSessionStore } from "../../../../sdk/packages/core/src/services/storage/sqlite-session-store"
 export { getUserRunSpan, resolveMessageDisplayRole } from "../../../../sdk/packages/core/src/session/user-run-messages"

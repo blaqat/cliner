@@ -13,6 +13,7 @@ import { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import type { ActiveSession } from "./cline-session-factory"
 import { getSessionApiSnapshot } from "./cline-session-factory"
+import { transientAdmission } from "./model-settings-resolver"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { buildToolPolicies } from "./sdk-tool-policies"
 import type { SdkSessionHost } from "./session-host"
@@ -61,6 +62,8 @@ export interface SdkSessionLifecycleOptions {
 		files?: string[],
 		delivery?: "queue" | "steer" | "interject",
 	) => boolean
+	/** Capture a successful admission callback before transport I/O. */
+	onSendAdmission?: (sessionId: string) => (() => void) | undefined
 	onSendStart?: (sessionId: string, delivery?: "queue" | "steer" | "interject") => void
 	onSendComplete: (sessionId: string) => Promise<void> | void
 	onSendError: (error: unknown, sessionId: string) => Promise<void> | void
@@ -432,6 +435,11 @@ export class SdkSessionLifecycle {
 			apiSnapshot: getSessionApiSnapshot(startInput.config),
 			startConfig: startInput.config
 				? {
+						...{
+							[transientAdmission]: (startInput.config as { [transientAdmission]?: () => void })[
+								transientAdmission
+							],
+						},
 						providerId: startInput.config.providerId,
 						modelId: startInput.config.modelId,
 						cwd: startInput.config.cwd,
@@ -532,6 +540,9 @@ export class SdkSessionLifecycle {
 				apiSnapshot: getSessionApiSnapshot(input.config),
 				startConfig: input.config
 					? {
+							...{
+								[transientAdmission]: (input.config as { [transientAdmission]?: () => void })[transientAdmission],
+							},
 							providerId: input.config.providerId,
 							modelId: input.config.modelId,
 							cwd: input.config.cwd,
@@ -599,6 +610,11 @@ export class SdkSessionLifecycle {
 			apiSnapshot: input.start?.config ? getSessionApiSnapshot(input.start.config) : activeSession.apiSnapshot,
 			startConfig: input.start?.config
 				? {
+						...{
+							[transientAdmission]: (input.start.config as { [transientAdmission]?: () => void })[
+								transientAdmission
+							],
+						},
 						providerId: input.start.config.providerId,
 						modelId: input.start.config.modelId,
 						cwd: input.start.config.cwd,
@@ -924,14 +940,37 @@ export class SdkSessionLifecycle {
 			.filter(Boolean)
 			.join("\n")
 		this.options.onSendStart?.(sessionId, delivery)
-		const send = () =>
-			sdkHost.send({
-				sessionId,
-				prompt: [this.options.consumeWorkspaceNotice?.(sessionId), noticedPrompt].filter(Boolean).join("\n"),
-				userImages: images,
-				userFiles: files,
-				delivery,
-			})
+		const send = async () => {
+			const admitted = this.options.onSendAdmission?.(sessionId)
+			// Core emits running only after preparation, validation and persistence.
+			// Listen before send: a turn promise resolves much later than admission.
+			let received = false
+			const unsubscribe = admitted
+				? sdkHost.subscribe((event) => {
+						if (
+							!received &&
+							event.type === "status" &&
+							event.payload.sessionId === sessionId &&
+							event.payload.status === "running" &&
+							!isSuperseded("admission")
+						) {
+							received = true
+							admitted()
+						}
+					})
+				: undefined
+			try {
+				return await sdkHost.send({
+					sessionId,
+					prompt: [this.options.consumeWorkspaceNotice?.(sessionId), noticedPrompt].filter(Boolean).join("\n"),
+					userImages: images,
+					userFiles: files,
+					delivery,
+				})
+			} finally {
+				unsubscribe?.()
+			}
+		}
 		const sending = this.options.acquireSessionLease
 			? this.ensureLease(sessionId).then(async () => {
 					if (isSuperseded("lease acquisition")) {

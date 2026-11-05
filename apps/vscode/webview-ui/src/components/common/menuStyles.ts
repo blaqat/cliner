@@ -28,3 +28,10 @@ export const COMPOSER_ICON_BUTTON_OPEN_CLASS = "bg-toolbar-hover text-foreground
  * the trigger and the window edge and scroll inside.
  */
 export const COMPOSER_MENU_SCROLL_CLASS = "max-h-(--radix-popover-content-available-height) overflow-y-auto overscroll-contain"
+
+/**
+ * A text chip in the line under a new thread's composer ("In Your workspace ⌄ for No task ⌄") and in
+ * the thread header (the branch chip): small description text, the toolbar hover, the focus ring.
+ */
+export const COMPOSER_LINE_CHIP_CLASS =
+	"flex h-5 min-w-0 cursor-pointer items-center gap-1 rounded-xs border-0 bg-transparent px-1 text-[11px] leading-none whitespace-nowrap text-description hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) data-[state=open]:bg-toolbar-hover data-[state=open]:text-foreground"

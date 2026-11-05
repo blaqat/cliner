@@ -1,3 +1,6 @@
+import { useModelSettings } from "./model-settings/background"
+import { configuredActiveModel } from "./model-settings/legacy-settings"
+import { NextMessageModelSelections } from "./model-settings-resolver"
 // Replaces classic src/core/controller/index.ts (see origin/main)
 //
 // The SDK-backed Controller. It provides the same interface as the classic
@@ -5,6 +8,7 @@
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
 
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -37,16 +41,22 @@ import {
 	normalizeProvenance,
 } from "@shared/composer-provenance"
 import { mentionRegexGlobal } from "@shared/context-mentions"
-import type { ClineApiReqInfo, ClineMessage, ClineSay, ExtensionState, TurnPhase } from "@shared/ExtensionMessage"
+import type {
+	ClineApiReqInfo,
+	ClineMessage,
+	ClineSay,
+	DeletedOpenThread,
+	ExtensionState,
+	TurnPhase,
+} from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
 import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
-import type { AssignApiProfileRequest } from "@shared/proto/cline/models"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
 import type { Settings } from "@shared/storage/state-keys"
-import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
+import { type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
 import type {
 	HistorySearchHit,
@@ -66,11 +76,10 @@ import { refreshClineRulesToggles } from "@/core/context/instructions/user-instr
 import { refreshWorkflowToggles } from "@/core/context/instructions/user-instructions/workflows"
 import {
 	captureTaskApiSelection,
-	readApiConfigProfiles,
 	resolveApiConfigurationForTaskSelection,
 	resolveTaskApiSelection,
 } from "@/core/controller/models/apiProfiles"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "@/core/controller/models/taskApiModel"
+import { createTaskApiModelShim, focusedModelsFromSnapshot } from "@/core/controller/models/taskApiModel"
 import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
 import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
@@ -184,6 +193,7 @@ import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-stor
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
+import { messageLastLine } from "./thread-last-line"
 import { maybeGenerateThreadTitle, type ThreadTitleSource } from "./thread-title"
 import { TurnActivityWatchdog } from "./turn-activity-watchdog"
 import { TurnStateTracker } from "./turn-state-tracker"
@@ -236,6 +246,9 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		isFavorited: item.isFavorited ?? false,
 		isSettled: item.isSettled,
 		settledAt: item.settledAt,
+		isStashed: item.isStashed,
+		stashedAt: item.stashedAt,
+		lastLine: item.lastLine,
 		parentTaskId: item.parentTaskId,
 		forkedAtTs: item.forkedAtTs,
 		size: item.size ?? 0,
@@ -272,12 +285,18 @@ interface TaskSessionContext {
 	apiSelection?: TaskApiSelection
 	/** Requested changes waiting for an idle session rebuild. */
 	pendingApiSelection?: TaskApiSelection
-	nextMessageSelection?: {
-		previous: TaskApiSelection
-		started: boolean
-		restoring?: boolean
-		deferred: { prompt: string; images?: string[]; files?: string[] }[]
-	}
+}
+
+/** An armed next-message pick is what the composer should show until that message has gone. */
+function withNextMessagePick(
+	selection: TaskApiSelection | undefined,
+	pick: import("@shared/model-settings").ModelPick | undefined,
+	mode: Mode | undefined,
+) {
+	if (!pick) return selection
+	const key = mode === "plan" ? "ask" : "act"
+	const current = selection?.modelSelectionV1 ?? { version: 1 as const, ask: null, act: null }
+	return { ...selection, modelSelectionV1: { ...current, [key]: pick } }
 }
 
 /**
@@ -287,6 +306,8 @@ interface TaskSessionContext {
 interface ClineAuthRetry {
 	task: TaskProxy
 	prompt: string
+	images?: string[]
+	files?: string[]
 	/** What the user explicitly picked or ran in the composer for `prompt`. */
 	provenance?: ComposerProvenance
 	/**
@@ -324,11 +345,22 @@ export class Controller {
 	private interactions: SdkInteractionCoordinator
 	private diffEdits: SdkDiffEditCoordinator
 	private sessionConfigBuilder: SdkSessionConfigBuilder
+	private historyProjectionCache?: {
+		version: string
+		revision: number
+		legacy: HistoryItem[]
+		liveKey: string
+		records: SessionHistoryRecord[]
+		history: HistoryItem[]
+		statuses: ExtensionState["sessionStatuses"]
+		counts: ExtensionState["subagentCounts"]
+	}
 	private taskHistory: SdkTaskHistory
 	private mode: SdkModeCoordinator
 	private mcpTools: SdkMcpCoordinator
 	private sessionConfigChanges: SdkSessionConfigChangeCoordinator
 	private providerChanges: SdkProviderChangeCoordinator
+	private readonly refusedRebuilds = new Set<string>()
 	private followups: SdkFollowupCoordinator
 	private taskControl: SdkTaskControlCoordinator
 	private taskStart: SdkTaskStartCoordinator
@@ -341,6 +373,8 @@ export class Controller {
 	private readonly providerCatalog: ProviderCatalog
 	private readonly providerConfigStoreSubscription: Disposable
 	private providerConfigStatePostScheduled = false
+	/** Last open thread a delete removed; posted in state (see ExtensionState.deletedOpenThread). */
+	private deletedOpenThread?: DeletedOpenThread
 	// Debounces/coalesces postStateToWebview() calls — see StatePostDebouncer.
 	private static readonly STATE_POST_DEBOUNCE_MS = 50
 	private readonly statePostDebouncer: StatePostDebouncer
@@ -408,6 +442,14 @@ export class Controller {
 	private backgroundCommandRunning = false
 	private backgroundCommandTaskId?: string
 	private pendingClineAuthRetry?: ClineAuthRetry
+	/** Threads whose first message never got a session. Retry starts them again with that message. */
+	private readonly failedStarts = new WeakMap<TaskProxy, ClineAuthRetry>()
+	/** Follow-ups that never reached a session. Retry sends the same message. */
+	private readonly failedFollowUps = new WeakMap<
+		TaskProxy,
+		{ prompt?: string; images?: string[]; files?: string[]; provenance?: ComposerProvenance }
+	>()
+	private followUpFailure?: string
 	checkpointRestoreInput?: ExtensionState["checkpointRestoreInput"]
 
 	// Timer for periodic remote config fetching (enterprise policy enforcement)
@@ -593,6 +635,7 @@ export class Controller {
 		})
 		this.sessionHistory = new SdkSessionHistoryLoader()
 		this.sessionConfigBuilder = new SdkSessionConfigBuilder({
+			nextMessageSelections: this.configuredNextMessageSelections,
 			stateManager: this.stateManager,
 			emitHookMessage: (msg) => this.messages.emitHookMessage(msg),
 			onConsecutiveMistakeLimitReached: (context) => this.interactions.handleConsecutiveMistakeLimitReached(context),
@@ -654,10 +697,8 @@ export class Controller {
 					const workspace = await this.resolveSessionWorkspace(id)
 					if (workspace) input = { ...input, config: { ...input.config, cwd: workspace, workspaceRoot: workspace } }
 				}
-				const previous = this.taskSessions.get(id)?.nextMessageSelection?.previous
 				return {
 					...input,
-					...(previous ? { sessionMetadata: { ...input.sessionMetadata, apiSelection: previous } } : {}),
 					config: {
 						...input.config,
 						sessionId: id,
@@ -758,9 +799,8 @@ export class Controller {
 				this.taskSessions.delete(id)
 			},
 			deferSend: (id, prompt, images, files, delivery) => this.deferOneTurnFollowup(id, prompt, images, files, delivery),
+			onSendAdmission: (id) => this.configuredModelAdmission(id),
 			onSendStart: (id, delivery) => {
-				const temporary = this.taskSessions.get(id)?.nextMessageSelection
-				if (temporary && !temporary.started) temporary.started = true
 				if (delivery !== "interject") this.getTaskSessionContext(id).cancelled = false
 				this.getTaskSessionContext(id).turn.set("streaming")
 				this.getTaskSessionContext(id).watchdog.activity()
@@ -966,6 +1006,7 @@ export class Controller {
 						.map((server) => [server.name, (server.tools ?? []).map((tool) => tool.name).sort()]),
 				),
 			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -978,9 +1019,11 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
 			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			get messages() {
@@ -993,6 +1036,7 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.providerChanges = new SdkProviderChangeCoordinator({
 			stateManager: this.stateManager,
@@ -1014,8 +1058,10 @@ export class Controller {
 				this.commitTaskApiSelection(taskId, selection, requestedSelection),
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.followups = new SdkFollowupCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
@@ -1029,6 +1075,7 @@ export class Controller {
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			runExclusive: (operation) => this.sessionRebuilds.runExclusive(operation),
+			retryRefusedRebuild: (sessionId) => this.providerChanges.retryRefusedRebuild(sessionId),
 			getTask: () => this.task,
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -1039,8 +1086,11 @@ export class Controller {
 			emitClineAuthError: () => this.emitClineAuthErrorWithTelemetry(),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			postStateToWebview: () => this.postStateToWebview(),
-			onResumeFailed: () => {
+			onResumeFailed: (failure) => {
 				this.turnStateTracker.set("error")
+				this.followUpFailure = failure.reason
+				if (this.task && (failure.prompt?.trim() || failure.images?.length || failure.files?.length))
+					this.failedFollowUps.set(this.task, failure)
 			},
 			onFollowUpAbandoned: () => {
 				// Settle the streaming phase askResponse pre-set, unless a turn
@@ -1108,6 +1158,19 @@ export class Controller {
 			setTask: (task) => {
 				this.task = task
 			},
+			onStartFailed: ({ task, prompt, images, files, provenance, background, reason }) => {
+				this.failedStarts.set(task, { task, prompt: prompt ?? "", images, files, provenance, hasConversation: false })
+				// A background thread isn't on screen, so its row alone would go unseen.
+				if (background)
+					void HostProvider.window
+						.showMessage(
+							ShowMessageRequest.create({
+								type: ShowMessageType.ERROR,
+								message: `Couldn't start the thread: ${reason}`,
+							}),
+						)
+						.catch((error) => Logger.error("[SdkController] Failed to report background start failure:", error))
+			},
 			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
 			onAskResponse: (text, images, files, decisionId, provenance) =>
 				this.askResponse(text, images, files, decisionId, provenance),
@@ -1136,6 +1199,7 @@ export class Controller {
 				this.draftApiSelection = undefined
 				return draft
 			},
+			transferDraftModelPick: (id) => this.configuredNextMessageSelections.move("", id),
 			recordTaskApiSelection: (taskId, selection, mode) => {
 				this.getTaskSessionContext(taskId).mode = mode
 				this.recordTaskApiSelection(taskId, selection)
@@ -1146,6 +1210,7 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 		})
 		this.compaction = new SdkCompactionCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			getTaskApiSelection: (id) =>
 				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
@@ -1248,6 +1313,9 @@ export class Controller {
 	 * One-turn choices are armed while idle, retain the prior selection in history,
 	 * and restore it before deferred follow-ups are sent, including after cancel/error.
 	 */
+	private readonly admittedConfiguredRuntimes = new WeakSet<object>()
+	private readonly configuredDeferredSends = new Map<string, Array<{ prompt: string; images?: string[]; files?: string[] }>>()
+	private readonly configuredNextMessageSelections = new NextMessageModelSelections()
 	private draftApiSelection?: TaskApiSelection
 
 	/**
@@ -1267,7 +1335,7 @@ export class Controller {
 			if (taskApiSelectionsEqual(context?.apiSelection, selection)) return selection
 			if (context) context.apiSelection = selection
 			void this.taskHistory
-				.setTaskApiSelection(taskId, context?.nextMessageSelection?.previous ?? selection)
+				.setTaskApiSelection(taskId, selection)
 				.catch((error) => Logger.error(`[SdkController] Failed to persist API selection for ${taskId}:`, error))
 			return selection
 		} catch (error) {
@@ -1289,6 +1357,18 @@ export class Controller {
 		return snapshot
 	}
 
+	private configuredModelAdmission(id: string): (() => void) | undefined {
+		const config = this.sessions.getSession(id)?.startConfig
+		const commit = config && this.sessionConfigBuilder.admission(config)
+		return commit
+			? () => {
+					commit()
+					this.admittedConfiguredRuntimes.add(config!)
+					this.providerChanges.handleApiConfigurationChanged({}, {})
+				}
+			: undefined
+	}
+
 	private deferOneTurnFollowup(
 		id: string,
 		prompt: string,
@@ -1296,11 +1376,14 @@ export class Controller {
 		files?: string[],
 		delivery?: "queue" | "steer" | "interject",
 	): boolean {
-		const temporary = this.taskSessions.get(id)?.nextMessageSelection
-		if (delivery === "interject") return false
-		if (!temporary?.started || (!temporary.restoring && !delivery)) return false
-		temporary.deferred.push({ prompt, images, files })
-		return true
+		const config = this.sessions.getSession(id)?.startConfig
+		if (config && this.sessionConfigBuilder.admission(config) && (delivery || this.admittedConfiguredRuntimes.has(config))) {
+			const deferred = this.configuredDeferredSends.get(id) ?? []
+			deferred.push({ prompt, images, files })
+			this.configuredDeferredSends.set(id, deferred)
+			return true
+		}
+		return false
 	}
 
 	private refreshTaskApiModel(taskId: string): void {
@@ -1313,26 +1396,21 @@ export class Controller {
 		const context = this.taskSessions.get(taskId)
 		if (context && taskApiSelectionsEqual(context.pendingApiSelection, requestedSelection))
 			context.pendingApiSelection = undefined
-		const temporary = context?.nextMessageSelection
-		const reverted = temporary?.restoring && taskApiSelectionsEqual(requestedSelection, temporary.previous)
-		if (reverted && context) context.nextMessageSelection = undefined
 		this.recordTaskApiSelection(taskId, selection)
 		this.refreshTaskApiModel(taskId)
-		if (reverted) {
-			const session = this.sessions.getSession(taskId)
-			if (session) {
-				for (const [index, message] of temporary!.deferred.entries()) {
-					this.sessions.markSendRunning(taskId)
-					this.sessions.fireAndForgetSend(
-						session.sdkHost,
-						taskId,
-						message.prompt,
-						message.images,
-						message.files,
-						index === 0 ? undefined : "queue",
-					)
-				}
-			}
+		const rebuilt = this.sessions.getSession(taskId)
+		if (rebuilt?.startConfig && !this.sessionConfigBuilder.admission(rebuilt.startConfig)) {
+			const deferred = this.configuredDeferredSends.get(taskId) ?? []
+			this.configuredDeferredSends.delete(taskId)
+			for (const [index, message] of deferred.entries())
+				this.sessions.fireAndForgetSend(
+					rebuilt.sdkHost,
+					taskId,
+					message.prompt,
+					message.images,
+					message.files,
+					index ? "queue" : undefined,
+				)
 		}
 	}
 
@@ -1350,65 +1428,54 @@ export class Controller {
 		this.recordTaskApiSelection(taskId, resolved)
 	}
 
-	/** Composer RPC. Only the Settings branch of assignApiProfile writes defaults. */
-	async updateChatApiSelection(mode: Mode, request: AssignApiProfileRequest): Promise<void> {
-		const taskId = this.task?.taskId
-		if ((request.taskId || undefined) !== taskId) throw new Error("Focused chat changed during selection")
-		const defaults = captureTaskApiSelection(this.stateManager)
-		const context = taskId ? this.getTaskSessionContext(taskId) : undefined
-		const session = taskId ? this.sessions.getSession(taskId) : undefined
-		const current = context?.pendingApiSelection ?? context?.apiSelection ?? this.draftApiSelection ?? defaults
-		const profileKey = mode === "plan" ? "askProfileId" : "actProfileId"
-		const effortKey = `${mode}ModeReasoningEffort` as const
-		if (request.reasoningEffort !== undefined && !isOpenaiReasoningEffort(request.reasoningEffort)) {
-			throw new Error("Invalid reasoning effort")
-		}
-		const profile = request.profileId
-			? readApiConfigProfiles(this.stateManager).find((p) => p.id === request.profileId)
-			: undefined
-		if (request.profileId && !profile) throw new Error("Unknown configuration")
-		if (request.nextMessageOnly !== undefined) {
-			if (!context) throw new Error("Next-message selection requires a chat")
-			if (session?.isRunning || session?.queuedPromptCount || context.nextMessageSelection?.started) {
-				throw new Error("Wait for this turn to finish before arming a one-turn selection")
+	/** New host contract. Stable selections never write legacy mode/provider keys. */
+	async setConfiguredThreadSelection(input: {
+		taskId: string
+		mode: Mode
+		pick: import("@shared/model-settings").ModelPick
+		nextMessageOnly: boolean
+	}): Promise<void> {
+		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
+		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
+		const { captureThreadModelSelection } = await import("./model-settings-resolver")
+		const settings = this.stateManager.getGlobalStateKey("modelSettings")!
+		const { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } = await import(
+			"./model-settings/host-settings"
+		)
+		resolveEffectiveConfiguredPick(this.stateManager, settings, input.pick)
+		await assertConfiguredModelRequestAllowed(this.stateManager, settings, input.pick, input.mode)
+		if (input.nextMessageOnly) {
+			const session = this.sessions.getSession(input.taskId)
+			if (session?.isRunning || session?.queuedPromptCount)
+				throw new Error("Wait for this turn to finish before arming a next-message pick")
+			this.configuredNextMessageSelections.set(input.taskId, input.mode, input.pick)
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+				// Arming must finish installing its runtime before the next RPC sends.
+				await this.sessionRebuilds.runExclusive(async () => {})
 			}
-			if (request.nextMessageOnly && !context.nextMessageSelection) {
-				context.nextMessageSelection = { previous: structuredClone(current), started: false, deferred: [] }
-			} else if (!request.nextMessageOnly) {
-				context.nextMessageSelection = undefined
-				// A built temporary choice becomes durable when the user chooses Keep.
-				if (taskId && taskApiSelectionsEqual(current, context.apiSelection)) {
-					await this.taskHistory.setTaskApiSelection(taskId, current)
-				}
-			}
+			await this.postStateToWebview(true)
+			return
 		}
-		if (context?.nextMessageSelection?.started && !(request.resetToDefault && !session?.isRunning)) {
-			throw new Error("Wait for the one-turn selection to revert")
+		this.configuredNextMessageSelections.clear(input.taskId, input.mode)
+		const context = input.taskId ? this.getTaskSessionContext(input.taskId) : undefined
+		const current =
+			context?.pendingApiSelection ??
+			context?.apiSelection ??
+			this.draftApiSelection ??
+			captureTaskApiSelection(this.stateManager)
+		const selection = structuredClone(current)
+		selection.modelSelectionV1 ??= captureThreadModelSelection(settings)
+		selection.modelSelectionV1[input.mode === "plan" ? "ask" : "act"] = input.pick
+		if (!input.taskId) this.draftApiSelection = selection
+		else {
+			context!.pendingApiSelection = selection
+			const session = this.sessions.getSession(input.taskId)
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+			} else this.recordTaskApiSelection(input.taskId, selection)
 		}
-		const selection = { ...current }
-		if (request.resetToDefault) {
-			selection[profileKey] = defaults[profileKey]
-			selection[effortKey] = defaults[effortKey]
-			if (context?.nextMessageSelection?.started) {
-				context.nextMessageSelection.previous = selection
-				context.nextMessageSelection.restoring = true
-			} else if (context) context.nextMessageSelection = undefined
-		} else {
-			if (profile) {
-				selection[profileKey] = profile.id
-				selection[effortKey] = profile.reasoningEffort ?? "none"
-			}
-			if (isOpenaiReasoningEffort(request.reasoningEffort)) selection[effortKey] = request.reasoningEffort
-		}
-		if (!context) {
-			this.draftApiSelection = taskApiSelectionsEqual(selection, defaults) ? undefined : selection
-		} else if (session) {
-			context.pendingApiSelection = selection
-			const configuration = this.stateManager.getApiConfiguration()
-			this.providerChanges.handleApiConfigurationChanged(configuration, configuration, this.snapshotTaskApiSelections())
-		} else {
-			this.recordTaskApiSelection(taskId, selection)
-		}
+		await this.postStateToWebview(true)
 	}
 
 	handleApiConfigurationChanged(
@@ -1433,15 +1500,6 @@ export class Controller {
 	}
 
 	private handleSessionBecameIdle(): void {
-		for (const [taskId, context] of this.taskSessions) {
-			const temporary = context.nextMessageSelection
-			const session = this.sessions.getSession(taskId)
-			if (!temporary?.started || temporary.restoring || !session || session.isRunning || session.queuedPromptCount) continue
-			temporary.restoring = true
-			context.pendingApiSelection = temporary.previous
-			const configuration = this.stateManager.getApiConfiguration()
-			this.providerChanges.handleApiConfigurationChanged(configuration, configuration, this.snapshotTaskApiSelections())
-		}
 		this.mcpTools?.sessionBecameIdle()
 		this.sessionRebuilds?.sessionBecameIdle()
 	}
@@ -1569,6 +1627,7 @@ export class Controller {
 	}
 
 	private async performRemoteConfigRefresh(isCurrent: () => boolean): Promise<boolean> {
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		const refreshed = await refreshSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			isCurrent,
@@ -1580,7 +1639,16 @@ export class Controller {
 		// `.cline/remote-config/`. Refresh the watcher so slash-command expansion
 		// sees them without waiting on filesystem events.
 		await this.refreshUserInstructionWatchers()
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		return refreshed
+	}
+
+	/** Refreshes run on a timer, so only a real change rebuilds. Without one, sessions hold the old values until the request guard refuses them. */
+	private rebuildIfManagedSettingsChanged(managedBefore: string): void {
+		if (!useModelSettings(this.stateManager) || JSON.stringify(this.stateManager.getRemoteConfigSettings()) === managedBefore)
+			return
+		const configuration = this.stateManager.getApiConfiguration()
+		this.handleApiConfigurationChanged(configuration, configuration)
 	}
 
 	setRemoteConfigAvailable(available: boolean): void {
@@ -1675,6 +1743,14 @@ export class Controller {
 
 	/** Child events are translated once into their own transcript, never into siblings. */
 	private handleSubagentEvent(event: CoreSessionEvent): boolean {
+		if (event.type === "subagent_input") {
+			const context = this.getTaskSessionContext(event.payload.childSessionId)
+			context.messages.appendMessages([
+				{ ts: context.translator.nextTs(), type: "say", say: "user_feedback", text: event.payload.text },
+			])
+			void this.postStateToWebview()
+			return true
+		}
 		if (event.type === "subagent") {
 			const payload = event.payload
 			const owner = this.taskSessions.get(payload.sessionId)
@@ -1697,6 +1773,7 @@ export class Controller {
 				cacheReads: existing?.cacheReads ?? 0,
 				cacheWrites: existing?.cacheWrites ?? 0,
 				subagentToolCalls: existing?.subagentToolCalls ?? 0,
+				lastLine: existing?.lastLine,
 				isSubagent: true,
 				parentTaskId,
 				runtimeOwnerTaskId: payload.sessionId,
@@ -1720,9 +1797,55 @@ export class Controller {
 						? "error"
 						: "done",
 			)
-			if (payload.status !== "running") owner.interactions?.clearPending("Subagent ended", payload.agentId)
+			if (payload.status !== "running") {
+				owner.interactions?.clearPending("Subagent ended", payload.agentId)
+				if (item.lastLine)
+					void this.taskHistory.recordLastLine(item.id, item.lastLine).catch((error) => {
+						Logger.warn(`Failed to save child preview: ${error}`)
+					})
+			}
 			const spawn = payload.toolCallId ? parent?.translator.getSpawnAgent(payload.toolCallId) : undefined
-			if (spawn) spawn.childSessionId = item.id
+			if (spawn) {
+				if (payload.result) spawn.result = payload.result
+				spawn.childSessionId = item.id
+				spawn.status =
+					payload.status === "running"
+						? "running"
+						: payload.status === "cancelled"
+							? "stopped"
+							: payload.status === "failed"
+								? "failed"
+								: "completed"
+				const allDone = parent!.translator
+					.getSpawnAgentItems()
+					.every((entry) => entry.status !== "running" && entry.status !== "pending")
+				parent?.messages?.appendMessages([
+					{
+						ts: parent!.translator.getSpawnAgentStatusTs(),
+						type: "say",
+						say: "subagent",
+						text: JSON.stringify(parent!.translator.buildSubagentStatus(allDone ? "completed" : "running")),
+						partial: !allDone,
+					},
+				])
+			}
+			if (payload.detached && payload.usage && payload.status !== "running") {
+				owner.messages?.appendMessages([
+					{
+						ts: owner.translator.nextTs(),
+						type: "say",
+						say: "subagent_usage",
+						text: JSON.stringify({
+							source: "subagents",
+							tokensIn: payload.usage.inputTokens,
+							tokensOut: payload.usage.outputTokens,
+							cacheReads: 0,
+							cacheWrites: 0,
+							cost: payload.usage.totalCost ?? 0,
+						}),
+					},
+				])
+			}
 			this.taskHistory.invalidateMetadataHistoryCache()
 			void this.postStateToWebview()
 			return true
@@ -1780,6 +1903,26 @@ export class Controller {
 			getTask: () => context.task,
 			getMinter: () => translator.getMinter(),
 			isFocused: () => this.task?.taskId === id,
+			onMessages: (updates) => {
+				const line = updates
+					.map(messageLastLine)
+					.filter((line) => line !== undefined)
+					.at(-1)
+				const child = this.subagentThreads?.get(id)
+				if (child && line) {
+					// The SDK owns child metadata while it runs. Publish its preview live,
+					// then persist after the terminal subagent event has saved usage totals.
+					child.lastLine = line
+					return
+				}
+				if (line)
+					void this.taskHistory
+						.recordLastLine?.(id, line)
+						.then(() => this.postStateToWebview())
+						.catch((error) => {
+							Logger.warn(`Failed to save thread preview: ${error}`)
+						})
+			},
 		})
 		messages.onSessionEvent((updates, event) => {
 			if (event.type === "status" && event.payload.status === "error") setPhase("error")
@@ -1884,7 +2027,8 @@ export class Controller {
 			completeScriptApproval: (request, approved, trust) => this.scripts.completeApproval(request, approved, trust),
 		})
 		const events = new SdkSessionEventCoordinator({
-			onRuntimeActivity: () => {
+			onRuntimeActivity: (event) => {
+				watchdog.observe(event)
 				if (hasActiveTurn()) watchdog.activity()
 			},
 			onTurnComplete: () => this.emitNotebookChanges(id),
@@ -2392,9 +2536,14 @@ export class Controller {
 	 */
 	private getActiveProviderId(): string | undefined {
 		try {
-			const apiConfig = this.stateManager.getApiConfiguration()
 			const modeValue = this.stateManager.getGlobalSettingsKey("mode")
 			const mode = modeValue === "plan" ? "plan" : "act"
+			const taskId = this.task?.taskId
+			const context = taskId ? this.getTaskSessionContext(taskId) : undefined
+			const selection = context?.pendingApiSelection ?? context?.apiSelection ?? this.draftApiSelection
+			const configured = configuredActiveModel(this.stateManager, mode, selection?.modelSelectionV1)
+			if (configured) return configured.providerId
+			const apiConfig = this.stateManager.getApiConfiguration()
 			return mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
 		} catch {
 			return undefined
@@ -2698,7 +2847,13 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		options?: { background?: boolean; taskGroupId?: string; runInWorktree?: boolean; provenance?: ComposerProvenance },
+		options?: {
+			background?: boolean
+			taskGroupId?: string
+			runInWorktree?: boolean
+			provenance?: ComposerProvenance
+			rethrowStartFailure?: boolean
+		},
 	): Promise<string | undefined> {
 		await this.waitForInitialRemoteConfig()
 		// A stale pill pick (group deleted between selection and send) starts unfiled.
@@ -2767,6 +2922,8 @@ export class Controller {
 		// turn land on the wrong side of the UI mode. (Full fence-before-abort epoch bump lands
 		// in S6; this sets the authoritative phase now.)
 		this.turnStateTracker.set("resumable")
+		const id = this.task?.taskId
+		if (id) this.configuredDeferredSends.delete(id)
 		await this.taskControl.cancelTask()
 	}
 
@@ -2860,6 +3017,7 @@ export class Controller {
 		decisionId?: string,
 		provenance?: ComposerProvenance,
 	): Promise<void> {
+		this.followUpFailure = undefined
 		const decisionResponseType = this.task?.taskState?.askResponse
 		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
 		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
@@ -2919,12 +3077,22 @@ export class Controller {
 		this.sessions.assertTaskAvailable(this.task?.taskId)
 		// The sign-in retry answers only the next response to the task that
 		// showed the error; a task opened since then does not inherit it.
-		const retry = this.pendingClineAuthRetry
+		const failedStart = this.task && this.failedStarts?.get(this.task)
+		const retry = failedStart ?? this.pendingClineAuthRetry
 		this.pendingClineAuthRetry = undefined
+		if (this.task) this.failedStarts?.delete(this.task)
 		if (retry && retry.task === this.task) {
 			const askResponse = decisionResponseType
+			const startFailureOption = failedStart ? { rethrowStartFailure: true } : {}
 			if (askResponse === "yesButtonClicked") {
-				await this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance })
+				await this.initTask(
+					retry.prompt,
+					images?.length ? images : retry.images,
+					files?.length ? files : retry.files,
+					undefined,
+					undefined,
+					{ provenance: retry.provenance, ...startFailureOption },
+				)
 				return
 			}
 			// A task that failed before it had a session has nothing to
@@ -2932,14 +3100,34 @@ export class Controller {
 			// attachments but no text, the original prompt is kept.
 			if (askResponse === "messageResponse" && !retry.hasConversation) {
 				await (prompt?.trim()
-					? this.initTask(prompt, images, files, undefined, undefined, { provenance })
-					: this.initTask(retry.prompt, images, files, undefined, undefined, { provenance: retry.provenance }))
+					? this.initTask(prompt, images, files, undefined, undefined, { provenance, ...startFailureOption })
+					: this.initTask(retry.prompt, images, files, undefined, undefined, {
+							provenance: retry.provenance,
+							...startFailureOption,
+						}))
 				return
 			}
+		}
+		// Retry carries no text of its own: the message is the one that never got through.
+		const failedFollowUp = this.task && this.failedFollowUps?.get(this.task)
+		if (this.task) this.failedFollowUps?.delete(this.task)
+		if (
+			failedFollowUp &&
+			decisionResponseType === "yesButtonClicked" &&
+			!prompt?.trim() &&
+			!images?.length &&
+			!files?.length
+		) {
+			prompt = failedFollowUp.prompt
+			images = failedFollowUp.images
+			files = failedFollowUp.files
+			provenance = failedFollowUp.provenance
 		}
 
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length))
+			await this.taskHistory.markUserMessage(submittedTaskId, prompt)
 		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
@@ -2970,6 +3158,13 @@ export class Controller {
 			decisionId,
 			provenance,
 		)
+	}
+
+	/** Why the last follow-up never reached a session. Read once, by the RPC that hands the draft back. */
+	takeFollowUpFailure(): string | undefined {
+		const failure = this.followUpFailure
+		this.followUpFailure = undefined
+		return failure
 	}
 
 	async editMessageAndRegenerate(input: {
@@ -3516,10 +3711,12 @@ export class Controller {
 		// secret-bearing caches) after the clear. The clear itself runs under the
 		// same publication lock refreshes use, so it cannot interleave either.
 		this.remoteConfigRefreshCoordinator.invalidate()
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		await clearSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			organizationId,
 		})
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		await this.postStateToWebview()
 	}
 
@@ -3544,6 +3741,8 @@ export class Controller {
 	// ---- Provider auth callbacks ----
 
 	private persistProviderApiKeyFromState(provider: string): void {
+		// The sign-in went to the connection's keychain entry; the old provider store has nothing to persist.
+		if (configuredActiveModel(this.stateManager, "act")) return
 		const providerId = parseProviderId(provider)
 		const apiKey = this.providerConfigStore.read(providerId).apiKey
 
@@ -3556,21 +3755,38 @@ export class Controller {
 	}
 
 	async handleOpenRouterCallback(code: string): Promise<void> {
-		await this.authService.handleOpenRouterCallback(code)
+		await this.authService.handleOpenRouterCallback(code, this)
 		this.persistProviderApiKeyFromState("openrouter")
 		await this.postStateToWebview()
 	}
 
 	async handleRequestyCallback(code: string): Promise<void> {
-		await this.authService.handleRequestyCallback(code)
+		await this.authService.handleRequestyCallback(code, this)
 		this.persistProviderApiKeyFromState("requesty")
 		await this.postStateToWebview()
 	}
 
 	async handleHicapCallback(code: string): Promise<void> {
-		await this.authService.handleHicapCallback(code)
+		await this.authService.handleHicapCallback(code, this)
 		this.persistProviderApiKeyFromState("hicap")
 		await this.postStateToWebview()
+	}
+
+	async getModelSelectionDependencies() {
+		const { backgroundSelectionDependencies } = await import("./model-settings/background")
+		const records = await this.taskHistory.listModelSelectionDependencies()
+		const history = records.map(sessionHistoryRecordToHistoryItem)
+		const add = (id: string, selection: TaskApiSelection | undefined) => {
+			if (selection) history.push({ id, modelSelectionV1: selection.modelSelectionV1 } as (typeof history)[number])
+		}
+		add("home:draft", this.draftApiSelection)
+		for (const [id, context] of this.taskSessions) {
+			add(`${id}:live`, context.apiSelection)
+			add(`${id}:pending`, context.pendingApiSelection)
+		}
+		history.push(...(this.configuredNextMessageSelections.snapshot() as typeof history))
+		history.push(...(backgroundSelectionDependencies(this.stateManager) as unknown as typeof history))
+		return history
 	}
 
 	async getTaskHistory(request: GetTaskHistoryRequest): Promise<TaskHistoryArray> {
@@ -3660,6 +3876,9 @@ export class Controller {
 				isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
 				isSettled: metadataBoolean(metadata, "isSettled"),
 				settledAt: metadataNumber(metadata, "settledAt") || undefined,
+				isStashed: metadataBoolean(metadata, "isStashed"),
+				stashedAt: metadataNumber(metadata, "stashedAt") || undefined,
+				lastLine: sessionHistoryRecordToHistoryItem(item).lastLine,
 				parentTaskId: metadataString(metadata, "parentTaskId"),
 				forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
 				size: metadataNumber(metadata, "size") ?? 0,
@@ -3693,6 +3912,9 @@ export class Controller {
 					isFavorited: false,
 					isSettled: undefined,
 					settledAt: undefined,
+					isStashed: undefined,
+					stashedAt: undefined,
+					lastLine: undefined,
 					parentTaskId: undefined,
 					forkedAtTs: undefined,
 					size: 0,
@@ -3726,11 +3948,34 @@ export class Controller {
 	}
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
-		return this.taskHistory.deleteTaskFromState(id)
+		return this.deleteTasksFromState([id])
 	}
 
 	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
-		return this.taskHistory.deleteTasksFromState(ids)
+		const openThread = await this.openThreadClosedBy(ids)
+		const history = await this.taskHistory.deleteTasksFromState(ids)
+		// beforeDeleteSession cleared the open thread; the next state post tells the webview where to land.
+		if (openThread && !this.task) {
+			this.deletedOpenThread = { ...openThread, seq: (this.deletedOpenThread?.seq ?? 0) + 1 }
+		}
+		return history
+	}
+
+	/**
+	 * The open thread, when deleting `ids` removes it: it is one of them, or its owning parent is
+	 * (the same rule beforeDeleteSession clears the task by). Its task is read before the rows go.
+	 */
+	private async openThreadClosedBy(ids: readonly string[]): Promise<{ id: string; taskGroupId?: string } | undefined> {
+		const openId = this.task?.taskId
+		if (!openId) return undefined
+		const child = this.subagentThreads?.get(openId)
+		const ownerId = child?.runtimeOwnerTaskId ?? child?.parentTaskId
+		if (!ids.includes(openId) && !(ownerId && ids.includes(ownerId))) return undefined
+		const find = (id: string) => this.taskHistory.findHistoryItem(id).catch(() => undefined)
+		const item = (await find(openId)) ?? child
+		const taskGroupId =
+			(item ? await resolveEffectiveTaskGroupId(item, find) : undefined) ?? this.taskSessions?.get(openId)?.taskGroupId
+		return { id: openId, taskGroupId }
 	}
 
 	async deleteAllTaskHistory(): Promise<DeleteAllTaskHistoryCount> {
@@ -3916,6 +4161,11 @@ export class Controller {
 		await this.showTaskWithId(threadId)
 		const { sendOpenMessageEvent } = await import("@/core/controller/ui/subscribeToOpenMessage")
 		await sendOpenMessageEvent(threadId, messageIndex, info.text, anchor)
+	}
+
+	async toggleTaskStashed(taskId: string): Promise<void> {
+		await this.taskHistory.toggleTaskStashed(taskId)
+		await this.postStateToWebview()
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
@@ -4360,7 +4610,11 @@ export class Controller {
 		}
 		for (const pending of reviews) {
 			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
-			const reuse = latest && JSON.parse(latest.text ?? "{}").status === "pending"
+			const shown = latest ? JSON.parse(latest.text ?? "{}") : undefined
+			// Re-showing the same review keeps its card. A new revision (a later turn staged more)
+			// gets a new card at the end, where the user is reading; the old card then shows as
+			// superseded. Updating it in place left the newest changes up in an earlier turn.
+			const reuse = latest && shown?.status === "pending" && shown.revision === pending.revision
 			const message = notebookChangesMessage(
 				{
 					revision: pending.revision,
@@ -4478,6 +4732,7 @@ export class Controller {
 			const resolved = await this.resolveContextMentions(text, undefined, provenance)
 			if (this.task !== task) throw new Error("Focused task changed during interject")
 			await this.taskHistory.markTaskActive(task.taskId)
+			await this.taskHistory.markUserMessage(task.taskId, text)
 			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
 			this.messageTranslatorState.reset()
 			this.messageTranslatorState.clearTurnOutcome()
@@ -4521,17 +4776,17 @@ export class Controller {
 	 * Request a webview state update.
 	 *
 	 * Callers fire this very frequently (notably the session event coordinator,
-	 * once per streamed message/turn boundary), and each rebuild walks the full
-	 * task history. StatePostDebouncer coalesces bursts into a single trailing
+	 * once per streamed message/turn boundary). Unchanged history projections
+	 * are reused. StatePostDebouncer coalesces bursts into a single trailing
 	 * rebuild to avoid hammering the extension host. The returned promise
 	 * resolves once a snapshot reflecting this request has been shipped, or
 	 * rejects if that rebuild failed.
 	 */
-	postStateToWebview(): Promise<void> {
+	postStateToWebview(immediate = false): Promise<void> {
 		if (this.isDisposed) {
 			return Promise.resolve()
 		}
-		return this.statePostDebouncer.post()
+		return this.statePostDebouncer.post(immediate)
 	}
 
 	/** Build the current ExtensionState and push it to the webview immediately. */
@@ -4563,101 +4818,163 @@ export class Controller {
 			const snapshotEpoch = this.messageTranslatorState.getMinter().epoch
 			syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
 			const { getStateToPostToWebview: buildBaseState } = await import("@core/controller/state/getStateToPostToWebview")
-			const state = await buildBaseState({
-				task: snapshotTask,
-				stateManager: this.stateManager,
-				mcpHub: this.mcpHub,
-				backgroundCommandRunning: this.backgroundCommandRunning,
-				backgroundCommandTaskId: this.backgroundCommandTaskId,
-				foregroundCommandRunning: this.foregroundCommands.isRunning,
-				isRemoteConfigAvailable: this.isRemoteConfigAvailable,
-				currentRemoteConfigRevision: this.currentRemoteConfigRevision,
-				// Without this the webview always receives workspaceRoots: [] on the
-				// SDK path (classic Controller exposes a public workspaceManager;
-				// SdkController builds one lazily). The task-header working-directory
-				// badge and anything else keyed on workspaceRoots depend on it.
-				workspaceManager: await this.ensureWorkspaceManager(),
-			})
-			const sdkHistoryRecords = await this.taskHistory.listHistory({
-				limit: 10_000,
-				hydrate: false,
-				includeSubagents: true,
-			})
-			const sdkTaskHistory = sdkHistoryRecords
-				.map(sessionHistoryRecordToHistoryItem)
-				.filter((item) => item.ts && item.task)
-				.sort((a, b) => b.ts - a.ts)
-			const legacyTaskHistory = state.taskHistory ?? []
-			const mergedTaskHistoryById = new Map<string, HistoryItem>()
-
-			// Keep the SDK records authoritative for migrated/new tasks, but append
-			// legacy persisted history so pre-migration tasks still appear in the UI.
-			for (const item of legacyTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-			for (const item of sdkTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-
-			// A just-started task may not be visible in SDK persisted history yet (the
-			// history adapter can lag behind the active in-memory TaskProxy). Classic
-			// state included the current task immediately, and the testing platform
-			// asserts that taskHistory reflects newTask before the model turn completes.
-			if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
-				const taskMessage = snapshotTask.messageStateHandler
-					.getClineMessages()
-					.find((message) => message.type === "say" && message.say === "task" && message.text)
-				if (taskMessage?.text) {
-					mergedTaskHistoryById.set(snapshotTask.taskId, {
-						id: snapshotTask.taskId,
-						ts: taskMessage.ts || Date.now(),
-						task: taskMessage.text,
-						tokensIn: 0,
-						tokensOut: 0,
-						cacheWrites: 0,
-						cacheReads: 0,
-						totalCost: 0,
-						modelId: snapshotTask.api?.getModel?.().id,
-						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
-						taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
-					})
-				}
-			}
-
-			// The same persistence lag applies to every OTHER live session: closing
-			// (X) a just-started chat, or starting one in the background, unfocuses
-			// it while it keeps running. Without a synthesized row the inbox drops
-			// the chat entirely — it looks deleted and cannot be reopened.
-			for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
-				if (mergedTaskHistoryById.has(session.sessionId)) continue
-				const item = this.liveTaskHistoryItem(session.sessionId)
-				if (item) {
-					item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
-					mergedTaskHistoryById.set(session.sessionId, item)
-				}
-			}
-
-			for (const child of this.subagentThreads?.values() ?? []) {
-				mergedTaskHistoryById.set(child.id, child)
-			}
-			// Asides show their parent's task, including ones filed wrong before the cascade existed.
-			const sortedHistory = withEffectiveTaskGroups(
-				Array.from(mergedTaskHistoryById.values())
-					.filter((item) => item.ts && item.task)
-					.sort((a, b) => b.ts - a.ts),
+			const baseStatePromise = this.ensureWorkspaceManager().then((workspaceManager) =>
+				buildBaseState({
+					deferTaskHistory: true,
+					task: snapshotTask,
+					stateManager: this.stateManager,
+					mcpHub: this.mcpHub,
+					backgroundCommandRunning: this.backgroundCommandRunning,
+					backgroundCommandTaskId: this.backgroundCommandTaskId,
+					foregroundCommandRunning: this.foregroundCommands.isRunning,
+					isRemoteConfigAvailable: this.isRemoteConfigAvailable,
+					currentRemoteConfigRevision: this.currentRemoteConfigRevision,
+					// Without this the webview always receives workspaceRoots: [] on the
+					// SDK path (classic Controller exposes a public workspaceManager;
+					// SdkController builds one lazily). The task-header working-directory
+					// badge and anything else keyed on workspaceRoots depend on it.
+					workspaceManager,
+				}),
 			)
-			const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
-			const processedTaskHistory = buildStateTaskHistory(sortedHistory, [
-				focusedItem?.isSubagent ? undefined : focusedItem?.id,
-				focusedItem?.parentTaskId,
+			const groupsPromise = this.listTaskGroups?.().catch((error) => {
+				Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
+				return undefined
+			})
+			const branchPromise = this.resolveCurrentBranch?.().catch(() => undefined)
+			const promptsPromise = snapshotSession
+				? Promise.resolve()
+						.then(() => snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId }))
+						.catch((error) => {
+							Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+							return []
+						})
+				: Promise.resolve([])
+			const revision = this.taskHistory.revision
+			// Only live rows are inspected here; persisted history is keyed by its store revision.
+			// Include values because child previews/usage are updated in place.
+			const liveKey = JSON.stringify([
+				snapshotTask?.taskId,
+				snapshotTask?.messageStateHandler.getClineMessages().find((message) => message.say === "task"),
+				Array.from((this.sessions.getSessions?.() ?? new Map()).keys(), (id) => [id, this.liveTaskHistoryItem?.(id)]),
+				Array.from(this.subagentThreads?.values() ?? []),
 			])
+			const legacy = this.stateManager.getGlobalStateKey?.("taskHistory")
+			const cached = this.historyProjectionCache
+			const reuse =
+				revision !== undefined && cached?.revision === revision && cached.legacy === legacy && cached.liveKey === liveKey
+			const recordsPromise = reuse
+				? Promise.resolve(cached.records)
+				: this.taskHistory.listHistory({
+						limit: 10_000,
+						hydrate: false,
+						includeSubagents: true,
+					})
+			const [state, sdkHistoryRecords, taskGroups, currentBranch, queuedPrompts] = await Promise.all([
+				baseStatePromise,
+				recordsPromise,
+				groupsPromise,
+				branchPromise,
+				promptsPromise,
+			])
+			let processedTaskHistory: HistoryItem[]
+			let historyStatuses: ExtensionState["sessionStatuses"]
+			let historyCounts: ExtensionState["subagentCounts"]
+			if (reuse) {
+				processedTaskHistory = cached.history
+				historyStatuses = cached.statuses
+				historyCounts = cached.counts
+			} else {
+				const sdkTaskHistory = sdkHistoryRecords
+					.map(sessionHistoryRecordToHistoryItem)
+					.filter((item) => item.ts && item.task)
+					.sort((a, b) => b.ts - a.ts)
+				const legacyTaskHistory = state.taskHistory ?? []
+				const mergedTaskHistoryById = new Map<string, HistoryItem>()
 
-			let queuedPrompts: ExtensionState["queuedPrompts"] = []
-			if (snapshotSession) {
-				try {
-					queuedPrompts = await snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId })
-				} catch (error) {
-					Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+				// Keep the SDK records authoritative for migrated/new tasks, but append
+				// legacy persisted history so pre-migration tasks still appear in the UI.
+				for (const item of legacyTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
+				}
+				for (const item of sdkTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
+				}
+
+				// A just-started task may not be visible in SDK persisted history yet (the
+				// history adapter can lag behind the active in-memory TaskProxy). Classic
+				// state included the current task immediately, and the testing platform
+				// asserts that taskHistory reflects newTask before the model turn completes.
+				if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
+					const taskMessage = snapshotTask.messageStateHandler
+						.getClineMessages()
+						.find((message) => message.type === "say" && message.say === "task" && message.text)
+					if (taskMessage?.text) {
+						mergedTaskHistoryById.set(snapshotTask.taskId, {
+							id: snapshotTask.taskId,
+							ts: taskMessage.ts || Date.now(),
+							task: taskMessage.text,
+							tokensIn: 0,
+							tokensOut: 0,
+							cacheWrites: 0,
+							cacheReads: 0,
+							totalCost: 0,
+							modelId: snapshotTask.api?.getModel?.().id,
+							cwdOnTaskInitialization: await this.getWorkspaceRoot(),
+							taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
+						})
+					}
+				}
+
+				// The same persistence lag applies to every OTHER live session: closing
+				// (X) a just-started chat, or starting one in the background, unfocuses
+				// it while it keeps running. Without a synthesized row the inbox drops
+				// the chat entirely — it looks deleted and cannot be reopened.
+				for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
+					if (mergedTaskHistoryById.has(session.sessionId)) continue
+					const item = this.liveTaskHistoryItem(session.sessionId)
+					if (item) {
+						item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
+						mergedTaskHistoryById.set(session.sessionId, item)
+					}
+				}
+
+				for (const child of this.subagentThreads?.values() ?? []) {
+					mergedTaskHistoryById.set(child.id, child)
+				}
+				// Asides show their parent's task, including ones filed wrong before the cascade existed.
+				const sortedHistory = withEffectiveTaskGroups(
+					Array.from(mergedTaskHistoryById.values())
+						.filter((item) => item.ts && item.task)
+						.sort((a, b) => b.ts - a.ts),
+				)
+				const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
+				processedTaskHistory = buildStateTaskHistory(sortedHistory, [
+					focusedItem?.isSubagent ? undefined : focusedItem?.id,
+					focusedItem?.parentTaskId,
+				])
+
+				historyStatuses = {
+					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
+					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
+				}
+				historyCounts = Object.fromEntries(
+					processedTaskHistory
+						.filter((item) => (item.subagentCount ?? 0) > 0)
+						.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
+				)
+
+				// Do not cache a build that raced a persistence write.
+				if (revision !== undefined && revision === this.taskHistory.revision) {
+					this.historyProjectionCache = {
+						version: randomUUID(),
+						revision,
+						legacy,
+						liveKey,
+						records: sdkHistoryRecords,
+						history: processedTaskHistory,
+						statuses: historyStatuses,
+						counts: historyCounts,
+					}
 				}
 			}
 
@@ -4690,20 +5007,8 @@ export class Controller {
 				pendingSelection ??
 				liveSelection ??
 				(snapshotTask ? this.taskSessions.get(snapshotTask.taskId)?.apiSelection : this.draftApiSelection)
-			const liveConfiguration = snapshotSession?.apiSnapshot?.configuration
-			const focusedSessionModels: ExtensionState["focusedSessionModels"] = liveConfiguration
-				? Object.fromEntries(
-						(["plan", "act"] as const).map((mode) => [
-							mode,
-							{
-								profileId: mode === "plan" ? liveSelection?.askProfileId : liveSelection?.actProfileId,
-								provider: liveConfiguration[`${mode}ModeApiProvider`],
-								modelId: resolveActiveModelIdFromApiConfiguration(liveConfiguration, mode),
-								reasoningEffort: liveConfiguration[`${mode}ModeReasoningEffort`],
-							},
-						]),
-					)
-				: undefined
+			const nextMessagePick = this.configuredNextMessageSelections?.peek(snapshotTask?.taskId ?? "", state.mode ?? "act")
+			const focusedSessionModels = focusedModelsFromSnapshot(snapshotSession?.apiSnapshot, liveSelection)
 			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
 			const focusedOwner = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : snapshotTask?.taskId
 			const ownerInteractions = focusedOwner ? this.taskSessions.get(focusedOwner)?.interactions : undefined
@@ -4781,10 +5086,8 @@ export class Controller {
 					: { subagentView: null }),
 				focusedSessionModels,
 				pendingSubagentDecisions,
-				composerApiSelection: pickerSelection,
-				composerNextMessageOnly: snapshotTask
-					? !!this.taskSessions.get(snapshotTask.taskId)?.nextMessageSelection
-					: false,
+				composerApiSelection: withNextMessagePick(pickerSelection, nextMessagePick, state.mode),
+				composerNextMessageOnly: !!nextMessagePick,
 				composerApiConfiguration: pickerSelection
 					? resolveApiConfigurationForTaskSelection(
 							this.stateManager,
@@ -4796,15 +5099,17 @@ export class Controller {
 				currentTaskItem: snapshotTask?.taskId
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
+				deletedOpenThread: this.deletedOpenThread,
 				taskHistory: processedTaskHistory,
+				taskHistoryVersion: reuse
+					? cached.version
+					: this.historyProjectionCache?.history === processedTaskHistory
+						? this.historyProjectionCache.version
+						: randomUUID(),
 				// Optional-called: unit tests drive getStateToPostToWebview with
 				// partial controller stubs that don't carry these members.
-				taskGroups:
-					(await this.listTaskGroups?.().catch((error) => {
-						Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
-						return undefined
-					})) ?? [],
-				currentBranch: await this.resolveCurrentBranch?.().catch(() => undefined),
+				taskGroups: taskGroups ?? [],
+				currentBranch,
 				turnState:
 					childTurn ??
 					(decision
@@ -4816,19 +5121,14 @@ export class Controller {
 						: this.turnStateTracker.get()),
 				queuedPrompts,
 				sessionStatuses: {
-					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
-					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
+					...historyStatuses,
 					...this.sessions.sessionStatuses,
 					...childDecisionStatuses,
 				},
 				// Live sessions report total + running; persisted history totals fill
 				// in settled tasks whose sessions are gone.
 				subagentCounts: {
-					...Object.fromEntries(
-						processedTaskHistory
-							.filter((item) => (item.subagentCount ?? 0) > 0)
-							.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
-					),
+					...historyCounts,
 					...this.sessions.subagentCounts,
 				},
 				stateVersion: minter.nextSeq(),

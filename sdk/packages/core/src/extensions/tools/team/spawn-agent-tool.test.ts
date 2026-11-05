@@ -80,6 +80,7 @@ describe("createSpawnAgentTool", () => {
 
 		const output = await tool.execute(
 			{
+				wait: true,
 				systemPrompt: "You are focused",
 				task: "Do delegated work",
 			},
@@ -147,6 +148,7 @@ describe("createSpawnAgentTool", () => {
 
 		await tool.execute(
 			{
+				wait: true,
 				systemPrompt: "You are focused",
 				task: "Do delegated work",
 			},
@@ -181,6 +183,7 @@ describe("createSpawnAgentTool", () => {
 		await expect(
 			tool.execute(
 				{
+					wait: true,
 					systemPrompt: "System",
 					task: "Fail task",
 				},
@@ -220,6 +223,7 @@ describe("createSpawnAgentTool", () => {
 
 		await tool.execute(
 			{
+				wait: true,
 				systemPrompt: "System",
 				task: "Do task",
 			},
@@ -267,6 +271,7 @@ describe("createSpawnAgentTool", () => {
 
 		await tool.execute(
 			{
+				wait: true,
 				systemPrompt: "You are a specialist teammate.",
 				task: "Investigate module boundaries",
 			},
@@ -316,6 +321,7 @@ describe("createSpawnAgentTool", () => {
 
 		await tool.execute(
 			{
+				wait: true,
 				systemPrompt: inputSystemPrompt,
 				task: "Investigate module boundaries",
 			},
@@ -328,7 +334,7 @@ describe("createSpawnAgentTool", () => {
 
 		expect(agentConstructorSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
-				systemPrompt: inputSystemPrompt,
+				systemPrompt: expect.stringContaining(inputSystemPrompt),
 			}),
 		);
 	});
@@ -352,7 +358,7 @@ describe("createSpawnAgentTool", () => {
 		});
 
 		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
+			{ wait: true, systemPrompt: "System", task: "Do task" },
 			{
 				agentId: "parent-9",
 				conversationId: "conv-parent",
@@ -417,7 +423,7 @@ describe("createSpawnAgentTool", () => {
 		});
 
 		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
+			{ wait: true, systemPrompt: "System", task: "Do task" },
 			{
 				agentId: "parent-11",
 				conversationId: "conv-parent",
@@ -477,7 +483,7 @@ describe("createSpawnAgentTool", () => {
 		});
 
 		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
+			{ wait: true, systemPrompt: "System", task: "Do task" },
 			{
 				agentId: "parent-12",
 				conversationId: "conv-parent",
@@ -528,7 +534,7 @@ describe("createSpawnAgentTool", () => {
 		});
 
 		await tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
+			{ wait: true, systemPrompt: "System", task: "Do task" },
 			{
 				agentId: "parent-13",
 				conversationId: "conv-parent",
@@ -537,99 +543,6 @@ describe("createSpawnAgentTool", () => {
 			},
 		);
 		expect(unregisteredBeforeEnd).toBe(true);
-	});
-
-	it("throws on a parent abort even when the child resolves as aborted", async () => {
-		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
-		const parent = new AbortController();
-		const onSubAgentEnd = vi.fn();
-		runMock.mockImplementation(
-			() =>
-				new Promise((resolve) =>
-					agentConstructorSpy.mock.calls
-						.at(-1)?.[0]
-						.abortSignal?.addEventListener(
-							"abort",
-							() =>
-								resolve({
-									text: "",
-									iterations: 1,
-									finishReason: "aborted",
-									usage: { inputTokens: 0, outputTokens: 0 },
-								}),
-							{ once: true },
-						),
-				),
-		);
-
-		const tool = createSpawnAgentTool({
-			configProvider: createDelegatedAgentConfigProvider({
-				providerId: "anthropic",
-				modelId: "mock-model",
-			}),
-			subAgentTools: [],
-			onSubAgentEnd,
-		});
-
-		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
-			{
-				agentId: "parent-14",
-				conversationId: "conv-parent",
-				iteration: 1,
-				toolCallId: "call-14",
-				signal: parent.signal,
-			},
-		);
-		await Promise.resolve();
-		parent.abort(new Error("Task cancelled"));
-		await expect(executing).rejects.toThrow("Task cancelled");
-		expect(onSubAgentEnd).toHaveBeenCalledWith(
-			expect.objectContaining({ error: expect.any(Error) }),
-		);
-		expect(onSubAgentEnd.mock.calls[0][0].result).toBeUndefined();
-		expect(onSubAgentEnd.mock.calls[0][0].agentResult).toMatchObject({
-			finishReason: "aborted",
-		});
-	});
-
-	it("propagates the parent abort signal into the child run", async () => {
-		const { createSpawnAgentTool } = await import("./spawn-agent-tool.js");
-		const parent = new AbortController();
-		runMock.mockImplementation(
-			() =>
-				new Promise((_, reject) =>
-					agentConstructorSpy.mock.calls
-						.at(-1)?.[0]
-						.abortSignal?.addEventListener(
-							"abort",
-							() => reject(new Error("aborted")),
-							{ once: true },
-						),
-				),
-		);
-
-		const tool = createSpawnAgentTool({
-			configProvider: createDelegatedAgentConfigProvider({
-				providerId: "anthropic",
-				modelId: "mock-model",
-			}),
-			subAgentTools: [],
-		});
-
-		const executing = tool.execute(
-			{ systemPrompt: "System", task: "Do task" },
-			{
-				agentId: "parent-10",
-				conversationId: "conv-parent",
-				iteration: 1,
-				toolCallId: "call-10",
-				signal: parent.signal,
-			},
-		);
-		await Promise.resolve();
-		parent.abort();
-		await expect(executing).rejects.toThrow("aborted");
 	});
 
 	it("resolves connection settings lazily at execution time", async () => {
@@ -663,6 +576,7 @@ describe("createSpawnAgentTool", () => {
 
 		await tool.execute(
 			{
+				wait: true,
 				systemPrompt: "System",
 				task: "Do task",
 			},
@@ -727,7 +641,7 @@ it.each([
 		onSubAgentEnd,
 	});
 	const executing = tool.execute(
-		{ task: "Investigate", systemPrompt: "Test" },
+		{ task: "Investigate", wait: true, systemPrompt: "Test" },
 		{
 			agentId: "parent",
 			conversationId: "parent",

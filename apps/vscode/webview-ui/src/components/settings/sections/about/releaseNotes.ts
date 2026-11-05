@@ -15,6 +15,26 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
 	{
+		id: "release-3",
+		title: "Release 3",
+		builds: "fork.39–61",
+		date: "2026-11-05",
+		notes: [
+			"Models replace Profiles, and your saved setups move over on their own: add a connection and it saves itself, enter several model IDs at once or tick them, share defaults across a connection, duplicate a model or turn one off. Every provider is offered, and removing a model or connection is one confirmation",
+			"Settings is seven short pages (Models, Agent, Subagents, Tools, Layout, Data & privacy, About) with one search, roomier rows in outlined groups, and a Changed chip that lists and resets what isn't the default",
+			"One model selector everywhere: model and level side by side, with Make this the default in the composer's menu. Background text has its own model, and Subagents have one page for their model, level, cap, access and whether they can block the parent",
+			"Gateways and Azure: one base URL can serve many models, an API version you set goes on every request, a blank temperature sends none, and custom headers stay as text unless you lock one. Images and tools are Yes or No, and No unless the catalog knows the model, and OpenAI's built-in tools only go to OpenAI's own servers",
+			"One view (beta, Settings › Layout): your threads beside the chat or as tabs across the top, with status, the last line and in-place search",
+			"Search chooses what to look in: Threads, Messages, Notes or Tags, plus state and a date range in one view. Typing #tag filters by tag",
+			"Simpler composer: the buttons sit inside the box, Ask/Act is a sliding switch, and one menu holds models and efforts with the auto-approvals as icon tiles. While a turn runs, the button steers and interject is keys only. New chats pick the workspace and task under the composer",
+			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, and gets their results as they land. Your messages and Stop no longer cancel them, and they can't start subagents of their own",
+			"Stash threads and tasks you'll come back to, and a row's Stash and Settle replace its time. Home orders by your last message, and thread lists name the folder of a thread running outside what's open",
+			"Walkthroughs can include Cline's review notes (Fix, Reply or Dismiss each one), diffs are syntax highlighted, and in one view a walkthrough keeps your list beside it",
+			"MCP servers and Rules & workflows open from the title bar, and Layout is a picture to pick",
+			"Fixes: your models and settings no longer disappear when main Cline is installed too, because this build keeps its own copy; Ask/Act always switches and only sending needs a model; a thread whose model was removed uses your default; ticket numbers in a first message become tags; deleting the thread you're in goes back to its task or home; Reset removes saved keys and sign-ins; walkthroughs on Windows show only real edits",
+		],
+	},
+	{
 		id: "release-2",
 		title: "Release 2",
 		builds: "fork.24–38",

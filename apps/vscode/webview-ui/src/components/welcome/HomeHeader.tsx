@@ -4,6 +4,13 @@ import ClineLogoVariable from "@/assets/ClineLogoVariable"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { UiServiceClient } from "@/services/grpc-client"
 
+/** The home header's Cline logo (the Santa one in December), at any size. */
+export const HomeLogo = ({ className }: { className?: string }) => {
+	const { environment } = useExtensionState()
+	const LogoComponent = new Date().getMonth() === 11 ? ClineLogoSanta : ClineLogoVariable
+	return <LogoComponent className={className} environment={environment} />
+}
+
 interface HomeHeaderProps {
 	shouldShowQuickWins?: boolean
 }

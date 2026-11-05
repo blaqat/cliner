@@ -10,6 +10,8 @@ import {
 import type { StateManager } from "@/core/storage/StateManager"
 import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -40,6 +42,8 @@ export interface SdkProviderChangeCoordinatorOptions {
 	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection, requestedSelection?: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Shared with every other rebuild trigger: whichever was refused, the send is what says so. */
+	refusedRebuilds?: Set<string>
 }
 
 function filterModeConfiguration(resolved: ApiConfiguration, mode: Mode) {
@@ -54,7 +58,15 @@ function filterModeConfiguration(resolved: ApiConfiguration, mode: Mode) {
 }
 
 export class SdkProviderChangeCoordinator {
-	constructor(private readonly options: SdkProviderChangeCoordinatorOptions) {}
+	/**
+	 * Threads whose own model refused a passive rebuild, so they're still on their old build. Nothing is
+	 * said until someone sends to one: an edit elsewhere in Settings isn't that thread's error to show.
+	 */
+	private readonly refusedRebuilds: Set<string>
+
+	constructor(private readonly options: SdkProviderChangeCoordinatorOptions) {
+		this.refusedRebuilds = options.refusedRebuilds ?? new Set()
+	}
 
 	handleApiConfigurationChanged(
 		previous: ApiConfiguration,
@@ -65,6 +77,17 @@ export class SdkProviderChangeCoordinator {
 			this.options.sessions.getSessions?.().values() ??
 			[this.options.sessions.getActiveSession()].filter((session) => session !== undefined)
 		for (const session of sessions) {
+			if (useModelSettings(this.options.stateManager)) {
+				this.options.rebuilds.request(
+					"provider",
+					(context) =>
+						this.performRestartActiveSessionForProviderChange(session.sessionId, context.isCurrent, (sessionId) =>
+							this.refusedRebuilds.add(sessionId),
+						),
+					session.sessionId,
+				)
+				continue
+			}
 			const mode = session.startConfig?.mode ?? this.getCurrentMode()
 			const selection = this.options.getTaskApiSelection?.(session.sessionId) ?? session.apiSnapshot?.selection
 			const beforeSelection = previousSelections?.has(session.sessionId)
@@ -109,7 +132,30 @@ export class SdkProviderChangeCoordinator {
 		await this.performRestartActiveSessionForProviderChange()
 	}
 
-	private async performRestartActiveSessionForProviderChange(sessionId?: string, isCurrent = () => true): Promise<void> {
+	/**
+	 * A send to a thread whose rebuild was refused tries once more, so it can't run on its old build.
+	 * Returns why it still can't start, which is the send's error to show.
+	 */
+	async retryRefusedRebuild(sessionId: string): Promise<string | undefined> {
+		if (!this.refusedRebuilds.delete(sessionId)) return undefined
+		let refusal: string | undefined
+		await this.performRestartActiveSessionForProviderChange(
+			sessionId,
+			() => true,
+			(_id, error) => {
+				this.refusedRebuilds.add(sessionId)
+				refusal = error instanceof Error ? error.message : String(error)
+			},
+		)
+		return refusal
+	}
+
+	/** `onBuildRefused` takes a failure to build the new configuration. Anything after that is always reported. */
+	private async performRestartActiveSessionForProviderChange(
+		sessionId?: string,
+		isCurrent = () => true,
+		onBuildRefused?: (sessionId: string, error: unknown) => void,
+	): Promise<void> {
 		const activeSession = sessionId
 			? (this.options.sessions.getSession?.(sessionId) ??
 				(this.options.sessions.getActiveSession()?.sessionId === sessionId
@@ -126,6 +172,7 @@ export class SdkProviderChangeCoordinator {
 
 		Logger.log(`[SdkController] Restarting session ${oldSessionId} for provider change`)
 
+		let built = false
 		try {
 			// A session pinned to a task selection rebuilds against its own
 			// profile, not whichever configuration is globally selected now.
@@ -139,11 +186,19 @@ export class SdkProviderChangeCoordinator {
 						selection,
 					)
 				: undefined
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode,
-				...(apiConfiguration ? { apiConfiguration, apiSelection: selection } : {}),
-			})
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(apiConfiguration ? { apiConfiguration, apiSelection: selection } : {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
+			built = true
+			this.refusedRebuilds.delete(oldSessionId)
+			const builtSelection = useModelSettings(this.options.stateManager)
+				? (getSessionApiSnapshot(config)?.selection ?? selection)
+				: selection
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -159,7 +214,7 @@ export class SdkProviderChangeCoordinator {
 					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "providerChange",
 				onReplaced: () => {
-					if (selection) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+					if (builtSelection) this.options.onSelectionRebuilt?.(oldSessionId, builtSelection, requestedSelection)
 					selectionCommitted = true
 				},
 			})
@@ -168,7 +223,8 @@ export class SdkProviderChangeCoordinator {
 				if (isCurrent() && retained === activeSession) {
 					this.options.rebuilds.request(
 						"provider",
-						(context) => this.performRestartActiveSessionForProviderChange(oldSessionId, context.isCurrent),
+						(context) =>
+							this.performRestartActiveSessionForProviderChange(oldSessionId, context.isCurrent, onBuildRefused),
 						oldSessionId,
 					)
 				}
@@ -176,7 +232,8 @@ export class SdkProviderChangeCoordinator {
 			}
 
 			const { startResult } = restartResult
-			if (selection && !selectionCommitted) this.options.onSelectionRebuilt?.(oldSessionId, selection, requestedSelection)
+			if (builtSelection && !selectionCommitted)
+				this.options.onSelectionRebuilt?.(oldSessionId, builtSelection, requestedSelection)
 			const task = this.options.getTask()
 			if (task?.taskId === oldSessionId && task.taskId !== startResult.sessionId) {
 				Logger.warn(
@@ -188,6 +245,13 @@ export class SdkProviderChangeCoordinator {
 			await this.options.postStateToWebview()
 			Logger.log(`[SdkController] Session restarted for provider change: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			if (!built && onBuildRefused) {
+				Logger.warn(
+					`[SdkController] Session ${oldSessionId} keeps its current build: ${error instanceof Error ? error.message : "refused"}`,
+				)
+				onBuildRefused(oldSessionId, error)
+				return
+			}
 			Logger.error("[SdkController] Failed to restart session for provider change:", error)
 			if (this.options.sessions.getActiveSession()?.sessionId === oldSessionId)
 				this.options.messages.appendAndEmit(
@@ -210,6 +274,7 @@ export class SdkProviderChangeCoordinator {
 	}
 
 	private reconcileSelection(selection: TaskApiSelection): TaskApiSelection {
+		if (useModelSettings(this.options.stateManager)) return structuredClone(selection)
 		const profiles = readApiConfigProfiles(this.options.stateManager)
 		const known = new Set(profiles.map((profile) => profile.id))
 		const resolved = { ...selection }

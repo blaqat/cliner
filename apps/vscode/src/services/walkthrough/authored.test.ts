@@ -124,7 +124,8 @@ describe("authored walkthroughs", () => {
 			expect(() => normalizeAuthoredWalkthrough("task", value)).toThrow()
 	})
 	it("round trips separate presentations and refuses traversal", async () => {
-		const first = await saveAuthoredWalkthrough("task", input())
+		const value = { ...input(), review: { notes: [{ kind: "question", title: "Why?", text: "Why this guard?" }] } }
+		const first = await saveAuthoredWalkthrough("task", value)
 		const second = await saveAuthoredWalkthrough("task", input())
 		expect(second.authoredId).not.toBe(first.authoredId)
 		expect(await readAuthoredWalkthrough("task", first.authoredId)).toEqual(first)

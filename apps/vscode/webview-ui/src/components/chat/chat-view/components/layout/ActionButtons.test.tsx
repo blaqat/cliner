@@ -15,8 +15,9 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 }))
 
 const mockTurnState = vi.fn<() => TurnState | undefined>(() => undefined)
+const mockOneView = vi.fn(() => false)
 vi.mock("../../../../../context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ turnState: mockTurnState() }),
+	useExtensionState: () => ({ turnState: mockTurnState(), oneViewEnabled: mockOneView() }),
 }))
 
 function fileApprovalAsk(ts: number, path: string): ClineMessage {
@@ -284,5 +285,32 @@ describe("ActionButtons", () => {
 		expect(chatState.setInputValue).not.toHaveBeenCalled()
 		expect(chatState.setSelectedImages).not.toHaveBeenCalled()
 		expect(chatState.setSelectedFiles).not.toHaveBeenCalled()
+	})
+})
+
+describe("ActionButtons in one view", () => {
+	const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "do it" }
+	const done: ClineMessage = { ts: 2, type: "ask", ask: "completion_result", text: "", partial: false }
+	const props = () => ({
+		task,
+		chatState: makeChatState(),
+		messageHandlers: { executeButtonAction: vi.fn().mockResolvedValue(true) } as unknown as MessageHandlers,
+		messages: [task, done],
+		mode: "act" as const,
+	})
+
+	it("hides the lone Start New Task after a finished thread (the list has ✎ New)", () => {
+		mockTurnState.mockReturnValue(undefined)
+		mockOneView.mockReturnValue(true)
+		render(<ActionButtons {...props()} />)
+		expect(screen.queryByRole("button", { name: "Start New Task" })).not.toBeInTheDocument()
+		mockOneView.mockReturnValue(false)
+	})
+
+	it("keeps it in the classic view", () => {
+		mockTurnState.mockReturnValue(undefined)
+		mockOneView.mockReturnValue(false)
+		render(<ActionButtons {...props()} />)
+		expect(screen.getByRole("button", { name: "Start New Task" })).toBeInTheDocument()
 	})
 })

@@ -1,21 +1,24 @@
 import type { CostBreakdownRow } from "@shared/getApiMetrics"
+import { effectiveThreadPick } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
-import { FoldVerticalIcon } from "lucide-react"
+import { FoldVerticalIcon, Minimize2Icon } from "lucide-react"
 import { memo, useState } from "react"
 import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
-import { describeProfile, PROVIDER_LABELS } from "@/components/settings/apiProfiles/profileDraft"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useTaskCostVisible } from "@/hooks/useTaskCostVisible"
 import { cn } from "@/lib/utils"
 import { formatLargeNumber } from "@/utils/format"
 import { CONTEXT_USAGE_COLORS, contextUsageLevel, contextUsagePercent, formatChatCost, showsCompactNudge } from "./contextUsage"
+import { describeModel, PROVIDER_LABELS } from "./describeModel"
 import { useFocusedChatModel } from "./useFocusedChatModel"
 
 export interface ContextUsageIndicatorProps {
 	/** Total tokens of the last request: what currently occupies the context window. */
 	usedTokens?: number
 	contextWindow?: number
+	contextWindowEstimated?: boolean
 	tokensIn: number
 	tokensOut: number
 	cacheReads?: number
@@ -39,8 +42,8 @@ export interface ContextUsageIndicatorProps {
 	inlineCompactNudge?: boolean
 }
 
-const RING_SIZE = 18
-const RING_STROKE = 2.5
+const RING_SIZE = 14
+const RING_STROKE = 2
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
 
@@ -74,6 +77,10 @@ const ContextRing = ({ percent, color }: { percent: number; color: string }) => 
 		/>
 	</svg>
 )
+
+/** "699k", "1.2m": the Compact chip's short token count. */
+export const formatTokensShort = (tokens: number) =>
+	tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}m` : tokens >= 1e3 ? `${Math.round(tokens / 1e3)}k` : String(tokens)
 
 /** Matches the SDK's auto-compaction trigger (COMPACTION_TRIGGER_RATIO). */
 const AUTO_COMPACT_PERCENT = 90
@@ -142,14 +149,16 @@ const Bar = ({
 )
 
 /**
- * Composer bottom-row context meter: a ring of context used vs the model's window plus the chat's
- * cost. Clicking opens one card: how full the window is, the cost by model, and Compact. At high
- * usage a Compact pill appears in front of the ring; narrow rows keep it as its icon.
+ * Composer bottom-row context meter: a tiny ring of context used vs the model's window, always
+ * beside the model chip. Hover names the usage; clicking opens one card: how full the window is,
+ * the cost by model, and Compact. Near the limit a "⤡ Compact 699k" chip appears in front of the
+ * ring; narrow rows keep it as its icon.
  */
 export const ContextUsageIndicator = memo(
 	({
 		usedTokens = 0,
 		contextWindow,
+		contextWindowEstimated,
 		tokensIn,
 		tokensOut,
 		cacheReads,
@@ -194,30 +203,44 @@ export const ContextUsageIndicator = memo(
 			<div className="flex items-center gap-1 shrink-0" data-testid="context-usage">
 				{nudge && (
 					<button
-						aria-label="Compact context"
+						aria-label={`Compact context (${formatTokensShort(usedTokens)} used)`}
 						className={cn(
-							"flex items-center justify-center gap-0.5 h-4.5 rounded-full border border-(--vscode-charts-yellow) bg-transparent text-xs text-foreground cursor-pointer hover:bg-toolbar-hover",
-							inlineCompactNudge ? "px-1.5" : "w-4.5 shrink-0 px-0",
+							"flex h-5 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-xs border-0 bg-toolbar-hover text-xs text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+							inlineCompactNudge ? "px-1.5" : "w-5 px-0",
 						)}
 						data-icon-only={inlineCompactNudge ? undefined : "true"}
 						data-testid="compact-nudge"
 						onClick={compact}
-						title="Context is nearly full. Compact the conversation to free up space."
+						title={`Context is nearly full (${roundedPercent ?? 0}%). Compact the conversation to free up space.`}
 						type="button">
-						<FoldVerticalIcon size={11} />
-						{inlineCompactNudge && "Compact"}
+						<Minimize2Icon size={11} />
+						{inlineCompactNudge && (
+							<>
+								Compact
+								<span className="text-description tabular-nums">{formatTokensShort(usedTokens)}</span>
+							</>
+						)}
 					</button>
 				)}
 				<Popover onOpenChange={setOpen} open={open}>
 					<PopoverTrigger asChild>
 						<button
 							aria-label={summary}
-							className="flex items-center gap-1 h-5 px-0.5 rounded-xs border-0 bg-transparent text-xs text-description cursor-pointer hover:bg-toolbar-hover hover:text-foreground"
+							className="flex items-center gap-1 h-5 px-0.5 rounded-xs border-0 bg-transparent text-xs text-description cursor-pointer hover:bg-toolbar-hover hover:text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
 							data-level={level}
 							data-testid="context-usage-button"
 							title={summary}
 							type="button">
-							<ContextRing color={levelColor} percent={percent ?? 0} />
+							<span className="relative inline-flex">
+								<ContextRing color={levelColor} percent={percent ?? 0} />
+								{contextWindowEstimated && (
+									<span
+										aria-label="Estimated context window"
+										className="absolute inset-0 flex items-center justify-center text-[9px]">
+										~
+									</span>
+								)}
+							</span>
 							{costLabel && showCost && (
 								<span className="tabular-nums" data-testid="context-usage-cost">
 									{costLabel}
@@ -394,13 +417,24 @@ ContextUsageIndicator.displayName = "ContextUsageIndicator"
 export function useComposerContextUsage(
 	mode: Mode,
 	totalCost: number | undefined,
-): Pick<ContextUsageIndicatorProps, "contextWindow" | "cost" | "modelLabel" | "modelId"> {
+): Pick<ContextUsageIndicatorProps, "contextWindow" | "contextWindowEstimated" | "cost" | "modelLabel" | "modelId"> {
 	const model = useFocusedChatModel(mode)
+	const state = useExtensionState()
+	const settings = state.modelSettings
+	const pick =
+		settings &&
+		effectiveThreadPick(
+			settings.settings,
+			state.composerApiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"],
+			mode,
+		)
+	const planning = pick && settings?.planning[pick.modelId]
 	const costVisible = useTaskCostVisible(model, totalCost)
 	return {
-		contextWindow: model.contextWindow,
+		contextWindow: planning ? planning.planningContextWindow : model.contextWindow,
+		contextWindowEstimated: planning ? !planning.contextWindowKnown : false,
 		cost: costVisible ? totalCost : undefined,
-		modelLabel: describeProfile(model),
+		modelLabel: describeModel(model),
 		modelId: model.modelId || undefined,
 	}
 }

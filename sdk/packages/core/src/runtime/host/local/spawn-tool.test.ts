@@ -221,7 +221,7 @@ describe("createSessionSpawnTool sub-agent access", () => {
 		expect(names).toContain("read_files");
 		expect(names).not.toContain("editor");
 	});
-	it("keeps read access and the command guard through nested write requests", async () => {
+	it("keeps read access and the command guard without nested spawn rights", async () => {
 		await childToolNames(makeConfig({ mode: "act", enableSpawnAgent: true }), {
 			access: "read",
 		});
@@ -246,18 +246,11 @@ describe("createSessionSpawnTool sub-agent access", () => {
 			const spawn = child.tools.find(
 				(tool: AgentTool) => tool.name === "spawn_agent",
 			);
-			await spawn.execute(
-				{ systemPrompt: "nested", task: "edit", access: "write" },
-				{
-					agentId: "child",
-					conversationId: "child-conversation",
-					iteration: 1,
-				},
-			);
+			expect(spawn).toBeUndefined();
 		}
 	});
 
-	it("passes writer policies and routes nested approvals to the root session", async () => {
+	it("passes writer policies and routes child approvals to the root session", async () => {
 		const requestToolApproval = vi.fn(async () => ({
 			approved: false,
 			reason: "denied",
@@ -297,16 +290,9 @@ describe("createSessionSpawnTool sub-agent access", () => {
 					conversationId: "child-conversation",
 				}),
 			);
-			await child.tools
-				.find((tool: AgentTool) => tool.name === "spawn_agent")
-				.execute(
-					{ systemPrompt: "nested", task: "edit", access: "write" },
-					{
-						agentId: "child",
-						conversationId: "child-conversation",
-						iteration: 1,
-					},
-				);
+			expect(child.tools.map((tool: AgentTool) => tool.name)).not.toContain(
+				"spawn_agent",
+			);
 		}
 	});
 });
@@ -382,7 +368,12 @@ describe("subagent settings enforcement", () => {
 			context,
 		);
 		const child = agentConstructorSpy.mock.calls.at(-1)![0];
-		expect(child.tools).toEqual([read, shell, mcp]);
+		expect(child.tools).toEqual([
+			read,
+			shell,
+			mcp,
+			expect.objectContaining({ name: "message_parent" }),
+		]);
 		expect(child.tools.map((tool: AgentTool) => tool.name)).not.toContain(
 			"editor",
 		);
@@ -395,10 +386,13 @@ describe("subagent settings enforcement", () => {
 			"root",
 			TOOL_EXECUTORS,
 		).execute(input, context);
-		expect(agentConstructorSpy.mock.calls.at(-1)![0].tools).toEqual([read]);
+		expect(agentConstructorSpy.mock.calls.at(-1)![0].tools).toEqual([
+			read,
+			expect.objectContaining({ name: "message_parent" }),
+		]);
 	});
 
-	it("reserves concurrency atomically across nested tools and releases it after errors", async () => {
+	it("reserves concurrency atomically across parallel calls and releases it after errors", async () => {
 		const { createSessionSpawnTool } = await import("./spawn-tool.js");
 		const deps = makeDeps();
 		const config = makeConfig({
@@ -413,17 +407,15 @@ describe("subagent settings enforcement", () => {
 					rejectRun = reject;
 				}),
 		);
-		const first = tool.execute(input, context) as Promise<unknown>;
+		const first = tool.execute(
+			{ ...input, wait: true },
+			context,
+		) as Promise<unknown>;
 		await vi.waitFor(() => expect(rejectRun).toBeDefined());
 		expect(await tool.execute(input, context)).toEqual({
 			error: expect.stringContaining("Maximum concurrent subagents (1)"),
 		});
-		const nested = agentConstructorSpy.mock.calls
-			.at(-1)![0]
-			.tools.find((tool: AgentTool) => tool.name === "spawn_agent");
-		expect(await nested.execute(input, context)).toEqual({
-			error: expect.stringContaining("Maximum concurrent subagents (1)"),
-		});
+
 		const failure = expect(first).rejects.toThrow("failed");
 		rejectRun(new Error("failed"));
 		await failure;
@@ -433,7 +425,9 @@ describe("subagent settings enforcement", () => {
 			finishReason: "completed",
 			usage: { inputTokens: 1, outputTokens: 1 },
 		});
-		expect(await tool.execute(input, context)).toMatchObject({ text: "done" });
+		expect(await tool.execute({ ...input, wait: true }, context)).toMatchObject(
+			{ text: "done" },
+		);
 	});
 });
 
@@ -488,4 +482,94 @@ describe("child lifecycle notification", () => {
 			}),
 		);
 	});
+});
+
+it("holds a detached concurrency slot until the child finishes", async () => {
+	const input = { systemPrompt: "sub", task: "work" };
+	const context = { agentId: "parent", conversationId: "conv", iteration: 1 };
+	const { createSessionSpawnTool } = await import("./spawn-tool.js");
+	const deps: SpawnToolDeps = { ...makeDeps(), agentRegistries: new Map() };
+	const config = makeConfig({ subagentSettings: { maxConcurrent: 1 } });
+	const tool = createSessionSpawnTool(deps, config, "root", TOOL_EXECUTORS);
+	let finish!: (value: unknown) => void;
+	runMock.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+	);
+	expect(await tool.execute(input, context)).toMatchObject({
+		agentId: "a1",
+		status: "running",
+	});
+	expect(await tool.execute(input, context)).toHaveProperty("error");
+	finish({
+		text: "done",
+		iterations: 1,
+		finishReason: "completed",
+		usage: { inputTokens: 1, outputTokens: 1 },
+	});
+	await deps.agentRegistries!.get("root")!.agents.get("a1")!.completion;
+	runMock.mockResolvedValue({
+		text: "next",
+		iterations: 1,
+		finishReason: "completed",
+		usage: { inputTokens: 1, outputTokens: 1 },
+	});
+	expect(await tool.execute(input, context)).toMatchObject({
+		agentId: "a2",
+		status: "running",
+	});
+	await deps.agentRegistries!.get("root")!.agents.get("a2")!.completion;
+});
+
+it("rejects spawning from stored child ownership without consuming capacity", async () => {
+	const { createSessionSpawnTool } = await import("./spawn-tool.js");
+	const tool = createSessionSpawnTool(
+		makeDeps(),
+		makeConfig({
+			parentAgentId: "stored-parent",
+			subagentSettings: { maxConcurrent: 1 },
+		}),
+		"old-grandchild",
+		TOOL_EXECUTORS,
+	);
+	for (let attempt = 0; attempt < 2; attempt++)
+		expect(
+			await tool.execute(
+				{ systemPrompt: "work", task: "nest" },
+				{ agentId: "child", iteration: 1 },
+			),
+		).toEqual({
+			error:
+				"Subagents can't start other subagents. Do the work yourself, or message_parent to ask the parent to start one.",
+		});
+});
+
+it.each([
+	undefined,
+	{ parentTaskId: "main", forkedAtTs: 42 },
+])("lets user-created main and aside threads spawn (%j)", async (metadata) => {
+	const { subagentParent } = await import(
+		"../../../extensions/tools/team/subagent-policy"
+	);
+	const { createSessionSpawnTool } = await import("./spawn-tool");
+	runMock.mockResolvedValue({
+		text: "done",
+		iterations: 1,
+		finishReason: "completed",
+		usage: { inputTokens: 0, outputTokens: 0 },
+	});
+	const tool = createSessionSpawnTool(
+		makeDeps(),
+		makeConfig({ parentAgentId: subagentParent({ metadata }) }),
+		"user-thread",
+		TOOL_EXECUTORS,
+	);
+	expect(
+		await tool.execute(
+			{ task: "work", systemPrompt: "Work", wait: true },
+			{ agentId: "main-or-aside", iteration: 1 },
+		),
+	).toMatchObject({ text: "done" });
 });

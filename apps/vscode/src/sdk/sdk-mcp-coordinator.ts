@@ -1,7 +1,10 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -21,10 +24,13 @@ export interface SdkMcpCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	loadInitialMessages: (sdkHost: SdkSessionHost, sessionId: string) => Promise<unknown[] | undefined>
 	buildStartSessionInput: (config: SessionConfig, input: { cwd: string; mode: Mode }) => StartInput
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	getMessages?: (sessionId: string) => SdkMessageCoordinator
 	getToolSnapshot?: () => Record<string, string[]>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Threads whose own model refused a rebuild. The send says why; a tool change isn't that thread's error. */
+	refusedRebuilds?: Set<string>
 }
 
 export class SdkMcpCoordinator {
@@ -126,21 +132,28 @@ export class SdkMcpCoordinator {
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
 
+		let building = false
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode,
-				...(activeSession.apiSnapshot
-					? {
-							apiConfiguration: activeSession.apiSnapshot.configuration,
-							apiSelection: activeSession.apiSnapshot.selection,
-						}
-					: {}),
-			})
+			building = true
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(activeSession.apiSnapshot
+						? {
+								apiConfiguration: activeSession.apiSnapshot.configuration,
+								apiSelection: activeSession.apiSnapshot.selection,
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
+			building = false
+			this.options.refusedRebuilds?.delete(oldSessionId)
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -149,6 +162,14 @@ export class SdkMcpCoordinator {
 				this.options.sessions.replaceActiveSession.bind(this.options.sessions)
 			if (!isCurrent()) return
 			const changes = new Set(this.changeDescriptions.get(oldSessionId))
+			let selectionCommitted = false
+			const commitSelection = () => {
+				if (selectionCommitted) return
+				selectionCommitted = true
+				const selection = getSessionApiSnapshot(config)?.selection
+				if (selection && useModelSettings(this.options.stateManager))
+					this.options.onSelectionRebuilt?.(oldSessionId, selection)
+			}
 			const restartResult = await replace({
 				expectedSession: activeSession,
 				startInput,
@@ -156,6 +177,7 @@ export class SdkMcpCoordinator {
 					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "mcpToolRestart",
 				onReplaced: (replacementId) => {
+					commitSelection()
 					const descriptions = [...changes].join("; ").slice(0, 2000).replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 					const previous = this.notices.get(oldSessionId)
 					this.notices.set(
@@ -168,6 +190,7 @@ export class SdkMcpCoordinator {
 				if (isCurrent() && this.options.sessions.getSession?.(oldSessionId) === activeSession) this.schedule(oldSessionId)
 				return
 			}
+			commitSelection()
 			const { startResult } = restartResult
 			if (isCurrent()) {
 				this.pendingSessions.delete(oldSessionId)
@@ -191,6 +214,13 @@ export class SdkMcpCoordinator {
 			await this.options.postStateToWebview()
 			Logger.log(`[SdkController] Session restarted for MCP tools: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			if (building && this.options.refusedRebuilds && useModelSettings(this.options.stateManager)) {
+				Logger.warn(`[SdkController] Session ${oldSessionId} keeps its current build after MCP tool changes`)
+				this.options.refusedRebuilds.add(oldSessionId)
+				messages.emitSessionEvents([], { type: "status", payload: { sessionId: oldSessionId, status: "idle" } })
+				await this.options.postStateToWebview()
+				return
+			}
 			Logger.error("[SdkController] Failed to restart session for MCP tools:", error)
 
 			if (this.warnedSessions.has(oldSessionId)) return

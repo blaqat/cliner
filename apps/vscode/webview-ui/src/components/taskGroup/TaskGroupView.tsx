@@ -10,7 +10,9 @@ import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles
 import { formatAge } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { isLiveThreadStatus, type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
+import { SPINE_CLASS, SPINE_LEFT_PX, SPINE_WIDTH_PX } from "@/components/inbox/treeGeometry"
 import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
@@ -118,6 +120,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		() => new Set((taskHistory ?? []).filter((item) => item.isSettled).map((item) => item.id)),
 		[taskHistory],
 	)
+	const cwds = useMemo(() => new Map((taskHistory ?? []).map((item) => [item.id, item.cwdOnTaskInitialization])), [taskHistory])
 
 	if (missing) {
 		return (
@@ -360,6 +363,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								const status = threadStatusFor(threadStatuses, thread.threadId)
 								return (
 									<TimelineRow
+										cwd={cwds.get(thread.threadId)}
 										first={index === 0}
 										key={thread.threadId}
 										last={index === timeline.length - 1}
@@ -410,12 +414,13 @@ function NoteCard({ note, onOpen }: { note: NotebookNoteMeta; onOpen: () => void
 }
 
 /**
- * Connector geometry: node centers sit at (16px, 15px) of each row — the row's 1px border and 8px
- * padding put the 14px node column's center at x=16, and the 20px title line's center at y=15. The
- * spine is 2px wide on whole pixels (15–17) so it stays centered and crisp at any zoom, and stops
- * 2px short of each node so a dimmed (settled) node never shows the line through it.
+ * Connector geometry (shared with the inbox lists, see treeGeometry): node centers sit at
+ * (ICON_CENTER_X_PX, 15px) of each row — the row's 1px border and 8px padding put the 14px node
+ * column's center there, and the 20px title line's center at y=15. The spine is 2px wide on whole
+ * pixels so it stays centered and crisp at any zoom, and stops 2px short of each node so a dimmed
+ * (settled) node never shows the line through it.
  */
-const SPINE_CLASS = "pointer-events-none absolute left-[15px] w-[2px] rounded-full bg-description/30"
+const SPINE_X = { left: SPINE_LEFT_PX, width: SPINE_WIDTH_PX }
 const NODE_CENTER_Y = 15
 const SPINE_GAP = 2
 
@@ -435,8 +440,11 @@ function TimelineRow({
 	last,
 	subthread,
 	settled,
+	cwd,
 }: {
 	thread: TaskGroupThreadRow
+	/** Where the thread runs, to call out when that's outside what's open here. */
+	cwd?: string
 	status: ThreadStatus
 	/** Settled threads dim; any thread or aside can be settled or unsettled from its row. */
 	settled: boolean
@@ -492,6 +500,7 @@ function TimelineRow({
 						{subthread && <span className="sr-only">Subthread: </span>}
 						{title}
 					</span>
+					<ThreadCwdTag cwd={cwd} />
 					{/* Hover swaps the start time for Settle. */}
 					<span
 						className={cn(
@@ -531,16 +540,29 @@ function TimelineRow({
 					{/* Elbow from the spine into the subthread's node; the spine carries on past it. */}
 					<span
 						aria-hidden
-						className="pointer-events-none absolute top-0 left-[15px] h-[16px] w-[9px] rounded-bl-[6px] border-x-0 border-t-0 border-b-2 border-l-2 border-solid border-description/30"
+						className="pointer-events-none absolute top-0 h-[16px] w-[9px] rounded-bl-[6px] border-x-0 border-t-0 border-b-2 border-l-2 border-solid border-description/30"
+						style={{ left: SPINE_LEFT_PX }}
 					/>
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y }} />}
+					{!last && (
+						<span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ ...SPINE_X, top: NODE_CENTER_Y }} />
+					)}
 				</>
 			) : (
 				<>
 					{!first && (
-						<span aria-hidden className={cn(SPINE_CLASS, "top-0")} style={{ height: NODE_CENTER_Y - reach }} />
+						<span
+							aria-hidden
+							className={cn(SPINE_CLASS, "top-0")}
+							style={{ ...SPINE_X, height: NODE_CENTER_Y - reach }}
+						/>
 					)}
-					{!last && <span aria-hidden className={cn(SPINE_CLASS, "bottom-0")} style={{ top: NODE_CENTER_Y + reach }} />}
+					{!last && (
+						<span
+							aria-hidden
+							className={cn(SPINE_CLASS, "bottom-0")}
+							style={{ ...SPINE_X, top: NODE_CENTER_Y + reach }}
+						/>
+					)}
 				</>
 			)}
 		</li>

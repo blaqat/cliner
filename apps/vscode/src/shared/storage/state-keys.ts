@@ -7,7 +7,7 @@ import {
 	type OcaModelInfo,
 	OpenAiCompatibleModelInfo,
 } from "@shared/api"
-import { type ApiConfigProfile, type OpenAiCompatibleApiType, toAllowedApiProvider } from "@shared/api-profiles"
+import type { ApiConfigProfile, OpenAiCompatibleApiType } from "@shared/api-profiles"
 import { BrowserSettings, DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { ClineRulesToggles } from "@shared/cline-rules"
 import { DEFAULT_FOCUS_CHAIN_SETTINGS, FocusChainSettings } from "@shared/FocusChainSettings"
@@ -52,6 +52,7 @@ type FieldDefinitions = Record<string, FieldDefinition<any>>
 
 export type ConfiguredAPIKeys = Partial<Record<ApiProvider, boolean>>
 const REMOTE_CONFIG_EXTRA_FIELDS = {
+	remoteProviderSettings: { default: undefined as import("../remote-config/schema").RemoteConfig["providerSettings"] },
 	remoteConfiguredProviders: { default: [] as ApiProvider[] },
 	allowedMCPServers: { default: [] as Array<{ id: string }> },
 	remoteMCPServers: { default: undefined as Array<{ name: string; url: string; alwaysEnabled?: boolean }> | undefined },
@@ -68,6 +69,11 @@ const REMOTE_CONFIG_EXTRA_FIELDS = {
 } satisfies FieldDefinitions
 
 const GLOBAL_STATE_FIELDS = {
+	modelSettings: { default: undefined as import("../model-settings").ModelSettings | undefined },
+	modelSettingsMigration: { default: undefined as import("../model-settings").ModelSettingsMigration | undefined },
+	modelSettingsBackupV1: {
+		default: undefined as { version: 1; backupId: string; createdAt: number; legacyFingerprint: string } | undefined,
+	},
 	clineVersion: { default: undefined as string | undefined },
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },
@@ -313,13 +319,11 @@ const API_HANDLER_SETTINGS_FIELDS = {
 	// by older builds or other hosts is loaded from disk.
 	planModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		// Fold disallowed providers onto the allowlist so requests, settings
-		// and validation all agree on a provider the fork actually supports.
-		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
+		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
 	},
 	actModeApiProvider: {
 		default: DEFAULT_API_PROVIDER as ApiProvider,
-		transform: (v: any) => (typeof v === "string" ? toAllowedApiProvider(toLegacyApiProvider(v)) : v),
+		transform: (v: any) => (typeof v === "string" ? toLegacyApiProvider(v) : v),
 	},
 
 	// Deprecated model settings
@@ -366,6 +370,8 @@ const USER_SETTINGS_FIELDS = {
 	threadToastSeconds: { default: 5 as number },
 	// Switching to Act right after an Ask answer also continues it. Off: only the answer's Continue in Act button does.
 	continueAnswerOnActSwitch: { default: true as boolean },
+	// One view (beta): the thread list sits beside the chat instead of on a separate home page.
+	oneViewEnabled: { default: false as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },

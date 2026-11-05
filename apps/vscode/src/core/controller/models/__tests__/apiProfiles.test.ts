@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 import type { ApiConfiguration } from "@shared/api"
-import { ALLOWED_API_PROVIDERS, isAllowedApiProvider, toAllowedApiProvider } from "@shared/api-profiles"
 import { isSecretKey } from "@shared/storage/state-keys"
 import {
 	type ApiProfileStore,
@@ -74,19 +73,6 @@ describe("provider allowlist", () => {
 		expect(config.openAiApiKey).toBeUndefined()
 		expect(hasAssignedApiProfile(config)).toBe(true)
 		expect(globalState.actProfileId).toBe(chat.id)
-	})
-
-	it("keeps allowed providers", () => {
-		for (const provider of ALLOWED_API_PROVIDERS) {
-			expect(toAllowedApiProvider(provider)).toBe(provider)
-		}
-		expect(isAllowedApiProvider("bedrock")).toBe(true)
-	})
-
-	it("maps a stored disallowed provider to the first allowed one", () => {
-		expect(toAllowedApiProvider("openrouter")).toBe(ALLOWED_API_PROVIDERS[0])
-		expect(toAllowedApiProvider("cline")).toBe(ALLOWED_API_PROVIDERS[0])
-		expect(toAllowedApiProvider(undefined)).toBe(ALLOWED_API_PROVIDERS[0])
 	})
 })
 

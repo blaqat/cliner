@@ -2,9 +2,13 @@ import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { useBranchTaskSuggestion } from "@/components/chat/composer/BranchTaskSuggestion"
+import { TASK_MENU_CLASS, TaskPickerMenu } from "@/components/chat/composer/WherePill"
+import { ThreadBranchChip } from "@/components/chat/composer/worktreeSlot"
 import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -52,7 +56,13 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 		taskHistory,
 		taskGroups,
 	} = useExtensionState()
+	// One view: no Home crumb or Close (the list is home); its list toggle leads the header.
+	const oneView = useOneView()
 	const [menuOpen, setMenuOpen] = useState(false)
+	// The ⋯ menu's "Move to task…" swaps the menu for the task picker in the same popover.
+	const [menuView, setMenuView] = useState<"menu" | "task">("menu")
+	// Kept here (always mounted) so dismissing it in the picker sticks after the menu closes.
+	const branchSuggestion = useBranchTaskSuggestion()
 	const [copied, setCopied] = useState(false)
 	// Shown until the saved title comes back through history.
 	const [pendingTitle, setPendingTitle] = useState<string>()
@@ -76,7 +86,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 		const ancestors = path.threads.slice(0, -1)
 		const groupId = path.taskGroupId
 		return [
-			{ id: "home", kind: "home", label: "Home", onSelect: onClose },
+			...(oneView.enabled ? [] : [{ id: "home", kind: "home" as const, label: "Home", onSelect: onClose }]),
 			...(groupId
 				? [
 						{
@@ -96,7 +106,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 			})),
 			{ id: taskId ?? "current", kind: "thread", label: title, sub: !!currentTaskItem?.parentTaskId },
 		]
-	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup])
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup, oneView.enabled])
 
 	const rename = useCallback(
 		(next: string) => {
@@ -123,6 +133,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 				className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 				data-testid="task-header"
 				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
+				{oneView.listToggle}
 				<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
 				{(imageCount > 0 || fileCount > 0) && (
 					<span
@@ -136,6 +147,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					taskCwd={currentTaskItem?.cwdOnTaskInitialization}
 					workspaceRoots={workspaceRoots}
 				/>
+				{/* A worktree thread's branch; it opens the worktree menu (status, copy back, switch, remove). */}
+				<ThreadBranchChip />
 				<div className="flex shrink-0 items-center gap-0.5">
 					<SubagentPanelButton onOpenPreview={onOpenSubagentPreview} />
 					{taskId && (
@@ -160,76 +173,132 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 						}
 						tooltip="Delete task (asks to confirm)"
 					/>
-					<Popover onOpenChange={setMenuOpen} open={menuOpen}>
+					<Popover
+						onOpenChange={(next) => {
+							setMenuOpen(next)
+							if (next) setMenuView("menu")
+						}}
+						open={menuOpen}>
 						<PopoverTrigger asChild>
 							<HeaderIconButton icon="ellipsis" label="More actions" />
 						</PopoverTrigger>
-						<PopoverContent align="end" className="w-56 p-1 motion-reduce:animate-none" side="bottom">
-							<div className="flex flex-col" role="menu">
-								<button
-									className={MENU_ITEM_CLASS}
-									disabled={!taskId}
-									onClick={() => {
-										setMenuOpen(false)
-										navigateToWalkthrough()
-									}}
-									role="menuitem"
-									type="button">
-									<span aria-hidden className="codicon codicon-diff text-[13px]" />
-									Walkthrough
-								</button>
-								<button
-									className={MENU_ITEM_CLASS}
-									disabled={!task.text}
-									onClick={copyFirstMessage}
-									role="menuitem"
-									type="button">
-									<span
-										aria-hidden
-										className={cn("codicon text-[13px]", copied ? "codicon-check" : "codicon-copy")}
+						<PopoverContent
+							align="end"
+							className={cn(menuView === "task" ? TASK_MENU_CLASS : "w-56 p-1", "motion-reduce:animate-none")}
+							data-testid="task-header-menu"
+							onEscapeKeyDown={(event) => {
+								// Escape in the task picker steps back to the menu; a second one closes it.
+								if (menuView === "task") {
+									event.preventDefault()
+									setMenuView("menu")
+								}
+							}}
+							side="bottom">
+							{menuView === "task" ? (
+								<>
+									<div className="-mx-1 -mt-1 mb-1 flex shrink-0 items-center gap-1 border-b border-solid border-x-0 border-t-0 border-menu-foreground/10 px-1 py-1">
+										<HeaderIconButton
+											data-testid="task-header-menu-back"
+											icon="arrow-left"
+											label="Back to more actions"
+											onClick={() => setMenuView("menu")}
+										/>
+										<span className="text-[12px] font-medium">
+											{currentTaskItem?.taskGroupId ? "Move to task" : "File into a task"}
+										</span>
+									</div>
+									<TaskPickerMenu
+										onClose={() => setMenuOpen(false)}
+										onOpenTaskGroup={onOpenTaskGroup}
+										suggestion={branchSuggestion}
 									/>
-									{copied ? "Copied" : "Copy first message"}
-								</button>
-								{backgroundRunning > 0 && (
+								</>
+							) : (
+								<div className="flex flex-col" role="menu">
+									{taskId && !currentTaskItem?.isSubagent && (
+										<button
+											className={MENU_ITEM_CLASS}
+											data-testid="move-to-task"
+											onClick={() => setMenuView("task")}
+											role="menuitem"
+											type="button">
+											<span aria-hidden className="codicon codicon-tasklist text-[13px]" />
+											<span className="flex-1">
+												{currentTaskItem?.taskGroupId ? "Move to task…" : "File into a task…"}
+											</span>
+											<span
+												aria-hidden
+												className="codicon codicon-chevron-right text-[12px] text-description"
+											/>
+										</button>
+									)}
 									<button
 										className={MENU_ITEM_CLASS}
+										disabled={!taskId}
 										onClick={() => {
 											setMenuOpen(false)
-											onClose()
+											navigateToWalkthrough()
 										}}
+										role="menuitem"
+										type="button">
+										<span aria-hidden className="codicon codicon-diff text-[13px]" />
+										Walkthrough
+									</button>
+									<button
+										className={MENU_ITEM_CLASS}
+										disabled={!task.text}
+										onClick={copyFirstMessage}
 										role="menuitem"
 										type="button">
 										<span
 											aria-hidden
-											className="codicon codicon-loading codicon-modifier-spin text-[13px] motion-reduce:animate-none"
+											className={cn("codicon text-[13px]", copied ? "codicon-check" : "codicon-copy")}
 										/>
-										{backgroundRunning} other chat{backgroundRunning === 1 ? "" : "s"} running
+										{copied ? "Copied" : "Copy first message"}
 									</button>
-								)}
-								{IS_DEV && taskId && (
-									<button
-										className={MENU_ITEM_CLASS}
-										onClick={() => {
-											setMenuOpen(false)
-											TaskServiceClient.exportTaskWithId(StringRequest.create({ value: taskId })).catch(
-												(err) => console.error("Failed to export task:", err),
-											)
-										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-go-to-file text-[13px]" />
-										Open conversation history file
-									</button>
-								)}
-							</div>
+									{backgroundRunning > 0 && !oneView.enabled && (
+										<button
+											className={MENU_ITEM_CLASS}
+											onClick={() => {
+												setMenuOpen(false)
+												onClose()
+											}}
+											role="menuitem"
+											type="button">
+											<span
+												aria-hidden
+												className="codicon codicon-loading codicon-modifier-spin text-[13px] motion-reduce:animate-none"
+											/>
+											{backgroundRunning} other chat{backgroundRunning === 1 ? "" : "s"} running
+										</button>
+									)}
+									{IS_DEV && taskId && (
+										<button
+											className={MENU_ITEM_CLASS}
+											onClick={() => {
+												setMenuOpen(false)
+												TaskServiceClient.exportTaskWithId(StringRequest.create({ value: taskId })).catch(
+													(err) => console.error("Failed to export task:", err),
+												)
+											}}
+											role="menuitem"
+											type="button">
+											<span aria-hidden className="codicon codicon-go-to-file text-[13px]" />
+											Open conversation history file
+										</button>
+									)}
+								</div>
+							)}
 						</PopoverContent>
 					</Popover>
-					<HeaderIconButton
-						icon="close"
-						label="Close"
-						onClick={onClose}
-						tooltip="Close: back to home, the chat keeps running"
-					/>
+					{!oneView.enabled && (
+						<HeaderIconButton
+							icon="close"
+							label="Close"
+							onClick={onClose}
+							tooltip="Close: back to home, the chat keeps running"
+						/>
+					)}
 				</div>
 			</div>
 			{/* Subagent threads are read-only, so they get no tag row. */}

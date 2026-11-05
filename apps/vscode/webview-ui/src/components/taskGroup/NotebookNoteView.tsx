@@ -5,6 +5,7 @@ import { Breadcrumb } from "@/components/chat/task-header/Breadcrumb"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import MarkdownBlock from "@/components/common/MarkdownBlock"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -31,6 +32,7 @@ export function NotebookNoteView({
 	onBack: () => void
 }) {
 	const { hideTaskGroupView, navigateToTaskGroup } = useExtensionState()
+	const oneView = useOneView()
 	const [history, setHistory] = useState(false)
 	const [data, setData] = useState<NoteData>()
 	const [selected, setSelected] = useState<string>()
@@ -73,9 +75,12 @@ export function NotebookNoteView({
 				<div
 					className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 					data-testid="notebook-note-header">
+					{oneView.listToggle}
 					<Breadcrumb
 						crumbs={[
-							{ id: "home", kind: "home", label: "Home", onSelect: hideTaskGroupView },
+							...(oneView.enabled
+								? []
+								: [{ id: "home", kind: "home" as const, label: "Home", onSelect: hideTaskGroupView }]),
 							{
 								id: taskGroupId,
 								kind: "task",

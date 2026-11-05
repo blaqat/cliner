@@ -1,11 +1,14 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type React from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { StateServiceClient } from "@/services/grpc-client"
 import ChatTextArea from "./ChatTextArea"
 
 const mocks = vi.hoisted(() => ({
 	supportsImages: true as boolean | undefined,
 	navigateToSettingsModelPicker: vi.fn(),
+	state: {} as Record<string, unknown>,
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
@@ -20,6 +23,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		remoteConfigSettings: undefined,
 		navigateToSettingsModelPicker: mocks.navigateToSettingsModelPicker,
 		mcpServers: [],
+		...mocks.state,
 	}),
 }))
 
@@ -111,7 +115,7 @@ describe("ChatTextArea image attachments vs. model capability", () => {
 		const chooseModel = screen.getByRole("button", { name: "Choose an image-capable model" })
 		expect(chooseModel.tagName).toBe("BUTTON")
 		fireEvent.click(chooseModel)
-		expect(mocks.navigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "api-config" })
+		expect(mocks.navigateToSettingsModelPicker).toHaveBeenCalledWith({ targetSection: "models" })
 	})
 
 	it("uses singular wording for one image", () => {
@@ -209,10 +213,45 @@ describe("ChatTextArea stash and mode toggle", () => {
 		expect(screen.getByTestId("stash-button")).toHaveAccessibleName("Stashed prompts (2)")
 	})
 
-	it("labels the modes Ask and Act", () => {
+	it("retains text, images and files when the host does not consume the mode-toggle draft", async () => {
+		vi.mocked(StateServiceClient.togglePlanActModeProto).mockResolvedValueOnce({ value: false })
+		const setInputValue = vi.fn()
+		const setSelectedImages = vi.fn()
+		const setSelectedFiles = vi.fn()
+		const textarea = renderComposer({
+			inputValue: "keep this draft",
+			selectedImages: [PNG_DATA_URL],
+			selectedFiles: ["/tmp/file.txt"],
+			setInputValue,
+			setSelectedImages,
+			setSelectedFiles,
+		})
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		await waitFor(() => expect(StateServiceClient.togglePlanActModeProto).toHaveBeenCalled())
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 150))
+		})
+		expect(textarea).toHaveValue("keep this draft")
+		expect(setInputValue).not.toHaveBeenCalledWith("")
+		expect(setSelectedImages.mock.calls.some(([update]) => update([PNG_DATA_URL]).length === 0)).toBe(false)
+		expect(setSelectedFiles.mock.calls.some(([update]) => update(["/tmp/file.txt"]).length === 0)).toBe(false)
+	})
+
+	it("shows the mode on a sliding Ask | Act switch beside the send icon", () => {
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			},
+		)
 		renderComposer()
-		const switches = screen.getAllByRole("switch")
-		expect(switches.map((el) => el.textContent)).toEqual(["Ask", "Act"])
+		expect(screen.getByTestId("mode-switch")).toHaveTextContent(/^AskAct$/)
+		expect(screen.getByTestId("mode-switch")).toHaveAttribute("role", "switch")
+		expect(screen.getByTestId("mode-switch").title).toMatch(/^Switch to Ask \(/)
+		expect(screen.getByTestId("send-button").querySelector(".codicon-send")).not.toBeNull()
+		expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0)
 	})
 })
 
@@ -274,10 +313,9 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		expect(onSendAs).not.toHaveBeenCalled()
 	})
 
-	it("offers a Start in background button on home only", () => {
-		const { onSendAs } = renderComposer({ isHome: true })
-		fireEvent.click(screen.getByTestId("send-background-button"))
-		expect(onSendAs).toHaveBeenCalledWith("background")
+	it("does not show a background button on home", () => {
+		renderComposer({ isHome: true })
+		expect(screen.queryByTestId("send-background-button")).toBeNull()
 	})
 
 	it("hides the background button inside a chat", () => {
@@ -316,16 +354,17 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		expect(onSendAs).not.toHaveBeenCalled()
 	})
 
-	it("replaces send with steer + interject buttons while running, highlighting the default", () => {
-		const { onSend, onSendAs } = renderComposer({ isRunning: true, enterSendsAs: "interject" })
+	it("replaces send with one steer button while running; interject stays on the keys", () => {
+		const { onSend, onSendAs, textarea } = renderComposer({ isRunning: true })
 
 		expect(screen.queryByTestId("send-button")).toBeNull()
-		expect(screen.getByTestId("interject-button")).toHaveClass("text-link")
-		expect(screen.getByTestId("steer-button")).not.toHaveClass("text-link")
+		expect(screen.queryByTestId("interject-button")).toBeNull()
 
 		fireEvent.click(screen.getByTestId("steer-button"))
-		fireEvent.click(screen.getByTestId("interject-button"))
 		expect(onSend).toHaveBeenCalledTimes(1)
+		expect(onSendAs).not.toHaveBeenCalled()
+
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true })
 		expect(onSendAs).toHaveBeenCalledWith("interject")
 	})
 
@@ -336,8 +375,8 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 	})
 })
 
-describe("ChatTextArea mode slider reduced motion", () => {
-	it("disables the slider transition under VS Code's reduce-motion body class", () => {
+describe("ChatTextArea mode flash reduced motion", () => {
+	it("drops the Send button's mode flash under VS Code's reduce-motion body class", () => {
 		renderTextArea()
 
 		const rules = Array.from(document.querySelectorAll("style")).flatMap((style) => {
@@ -348,6 +387,112 @@ describe("ChatTextArea mode slider reduced motion", () => {
 			}
 		})
 
-		expect(rules.some((rule) => rule.includes("vscode-reduce-motion") && rule.includes("transition"))).toBe(true)
+		expect(rules.some((rule) => rule.includes("vscode-reduce-motion") && rule.includes("animation"))).toBe(true)
+	})
+})
+
+describe("ChatTextArea when the mode has no model to run on", () => {
+	const lostModel = {
+		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
+		modelSettings: {
+			settings: {
+				connections: [{ id: "c", name: "Gateway", kind: "openai-compatible", baseUrl: "https://x", defaults: {} }],
+				models: [{ id: "new", connectionId: "c", upstreamId: "new", name: "New", kind: "chat", overrides: {} }],
+				roles: {
+					chat: null,
+					ask: { enabled: false, pick: null },
+					subagents: { kind: "thread", level: "inherit" },
+					background: { pick: null, titlesEnabled: false, overrides: {} },
+				},
+			},
+			effective: {},
+			availability: {},
+		},
+		composerApiSelection: {
+			modelSelectionV1: { version: 1, act: { modelId: "old", levelId: "default" }, ask: null },
+		},
+	}
+
+	const renderBlocked = (inputValue = "hello") => {
+		const onSend = vi.fn()
+		render(
+			<ChatTextArea
+				inputValue={inputValue}
+				onSelectFilesAndImages={vi.fn()}
+				onSend={onSend}
+				placeholderText="Type a message"
+				selectedFiles={[]}
+				selectedImages={[]}
+				sendingDisabled={false}
+				setInputValue={vi.fn()}
+				setSelectedFiles={vi.fn()}
+				setSelectedImages={vi.fn()}
+				shouldDisableFilesAndImages={false}
+			/>,
+		)
+		return { onSend, textarea: screen.getByPlaceholderText("Type a message") }
+	}
+
+	beforeEach(() => {
+		mocks.state = lostModel
+		vi.mocked(StateServiceClient.togglePlanActModeProto).mockClear()
+	})
+	afterEach(() => {
+		mocks.state = {}
+	})
+
+	it("blocks sending, says why, and Pick one opens the model menu", async () => {
+		const { onSend, textarea } = renderBlocked()
+		expect(screen.getByTestId("model-send-block")).toHaveTextContent("No Act model is picked.")
+		const send = screen.getByTestId("send-button")
+		expect(send).toBeDisabled()
+		expect(send).toHaveAttribute("title", "No Act model is picked.")
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("model-send-block-fix"))
+		expect(await screen.findByTestId("model-menu-note")).toHaveTextContent("Pick one here, or set the default in")
+	})
+
+	it("switching modes still works", async () => {
+		renderBlocked()
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		await waitFor(() => expect(StateServiceClient.togglePlanActModeProto).toHaveBeenCalledTimes(1))
+	})
+
+	it("/ask alone goes through, since it only switches modes", () => {
+		const { onSend, textarea } = renderBlocked("/ask")
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).toHaveBeenCalledTimes(1)
+	})
+
+	it("/act with text is blocked by Act's model, and /ask with text is judged by Ask's", () => {
+		const blocked = renderBlocked("/act hello")
+		fireEvent.keyDown(blocked.textarea, { key: "Enter" })
+		expect(blocked.onSend).not.toHaveBeenCalled()
+		cleanup()
+		mocks.state = {
+			...lostModel,
+			composerApiSelection: {
+				modelSelectionV1: {
+					version: 1,
+					act: { modelId: "old", levelId: "default" },
+					ask: { modelId: "new", levelId: "default" },
+				},
+			},
+		}
+		const allowed = renderBlocked("/ask hello")
+		fireEvent.keyDown(allowed.textarea, { key: "Enter" })
+		expect(allowed.onSend).toHaveBeenCalledTimes(1)
+	})
+
+	it("says nothing and sends normally once the mode has a model", () => {
+		mocks.state = {
+			...lostModel,
+			composerApiSelection: { modelSelectionV1: { version: 1, act: { modelId: "new", levelId: "default" }, ask: null } },
+		}
+		const { onSend, textarea } = renderBlocked()
+		expect(screen.queryByTestId("model-send-block")).toBeNull()
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).toHaveBeenCalledTimes(1)
 	})
 })

@@ -87,3 +87,55 @@ export function buildSubagentProfileSettings(
 		defaultReasoningEffort: legacyEffort && legacyEffort !== "none" ? legacyEffort : undefined,
 	}
 }
+
+/**
+ * Opt-in adapter for the new settings store. The caller resolves each configured
+ * row through the connection/secret resolver; this does not activate migration or
+ * write SDK provider stores. Keep the legacy adapter above for old callers.
+ */
+export async function buildSubagentModelSettings(
+	settings: import("@shared/model-settings").ModelSettings,
+	resolveModel: (modelId: string) => Promise<{
+		connection: import("@cline/core").SubagentModelConnection
+		levels: import("@cline/core").SubagentModelLevel[]
+	}>,
+): Promise<SubagentSettings> {
+	const policy = settings.subagents
+	const ids = new Set(policy.allowed.flatMap((entry) => (entry.kind === "model" ? [entry.modelId] : [])))
+	if (settings.roles.subagents.kind === "model") ids.add(settings.roles.subagents.pick.modelId)
+	const models: Record<string, import("@cline/core").SubagentModelRecord> = {}
+	// One broken model can't stop a chat. It's reported when the parent tries to use it.
+	const unavailable: Record<string, { name: string; reason: string }> = {}
+	for (const id of ids) {
+		const row = settings.models.find((model) => model.id === id)
+		if (!row) continue
+		const name = row.name || row.upstreamId
+		try {
+			models[id] = { id, name, ...(await resolveModel(id)) }
+		} catch (error) {
+			unavailable[id] = { name, reason: error instanceof Error ? error.message : String(error) }
+		}
+	}
+	const pick = settings.roles.subagents
+	return {
+		maxConcurrent: policy.maxConcurrent,
+		allowWrite: policy.access.write,
+		allowCommands: policy.access.commands,
+		allowMcp: policy.access.mcp,
+		allowWeb: policy.access.web,
+		modelPolicy: {
+			version: 1,
+			models,
+			unavailable,
+			default:
+				pick.kind === "model"
+					? { model: pick.pick.modelId, level: pick.pick.levelId }
+					: { model: "parent", level: pick.level },
+			allowed: policy.allowed.map((entry) => ({
+				model: entry.kind === "model" ? entry.modelId : "parent",
+				levels: entry.levels,
+			})),
+			blocking: policy.blocking,
+		},
+	}
+}

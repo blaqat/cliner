@@ -297,3 +297,29 @@ Hosts that record command telemetry should label a `CommandSpawnError` by its
 standalone adapters do this in the `errorCode` dimension, and use the bounded
 labels `signal` and `no_exit_code` for `CommandTerminationError`. Only an actual
 numeric exit is reported as `exitCode`.
+
+## Async subagent tools
+
+These tools share the `spawn_agent` gate and tool policy filtering. `message_parent`
+is available inside a spawned child. Profile fields on `spawn_agent` are exposed
+only when model profiles are enabled; profile IDs and reasoning levels follow
+the session's configured allowlist.
+
+| Tool | Input | Behavior |
+| --- | --- | --- |
+| `spawn_agent` | `{ systemPrompt: string, task: string, wait?: boolean, access?: "read" \| "write", profile?: string, reasoningEffort?: string }` | Defaults to detached execution and returns `{ agentId, status: "running" }`. `wait: true` returns the final text, iterations, finish reason and usage. |
+| `send_to_agent` | `{ agentId: string, message: string }` | Delivers input at a running child's iteration boundary, or continues a finished child's conversation. Returns immediately. Unknown, cancelled and reload-ended handles return an error. |
+| `cancel_agent` | `{ agentId: string }` | Aborts the child through its existing per-child abort controller. |
+| `list_agents` | `{}` | Returns handles, task summaries, status, timestamps, age in seconds and result previews. |
+| `wait_for_agents` | `{ agentIds?: string[], timeoutSeconds?: number }` | Waits for selected children, or all children. Defaults to 120 seconds; accepts 0 through 120. Returns completed snapshots at the deadline. |
+| `message_parent` | `{ message: string }` | Sends an interim update without ending the child run. |
+
+Completion messages include final text and finish reason. Several updates can
+share one user-role `<subagent_update>` input batch. Hosts receive
+`subagent_update` events for mid-turn delivery and `pending_prompt_submitted`
+for idle wakes. `subagent_input` identifies parent messages for child transcript
+rendering. The VS Code webview renders updates as compact expandable rows.
+
+Live delegated runtimes survive parent Stop and interjection. Root disposal,
+thread deletion, and extension shutdown stop children. After reload, saved
+transcripts remain available, but restored handles cannot resume their runtime.

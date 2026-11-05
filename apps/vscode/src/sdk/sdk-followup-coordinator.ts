@@ -6,6 +6,8 @@ import type { Mode } from "@shared/storage/types"
 import type { ClineAskResponse } from "@shared/WebviewMessage"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -30,6 +32,7 @@ const TASK_RESUMPTION_PROMPT = "[TASK RESUMPTION] Please continue where you left
 
 export interface SdkFollowupCoordinatorOptions {
 	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	stateManager: StateManager
 	interactions: SdkInteractionCoordinator
 	sessions: SdkSessionLifecycle
@@ -53,13 +56,21 @@ export interface SdkFollowupCoordinatorOptions {
 	 * streaming before delegating here, so the failure must move it to a
 	 * terminal phase or the footer stays stuck on Thinking/Cancel.
 	 */
-	onResumeFailed: () => void
+	onResumeFailed: (failure: {
+		prompt?: string
+		images?: string[]
+		files?: string[]
+		provenance?: ComposerProvenance
+		reason: string
+	}) => void
 	/**
 	 * Called when a follow-up ends without starting a turn (the displayed task
 	 * changed, or no session could be chosen). Settles the streaming phase that
 	 * askResponse pre-set, for the same reason as onResumeFailed.
 	 */
 	onFollowUpAbandoned: () => void
+	/** Before a send reaches an idle session: why that session can't run, if its last rebuild was refused. */
+	retryRefusedRebuild?: (sessionId: string) => Promise<string | undefined>
 }
 
 export class SdkFollowupCoordinator {
@@ -188,7 +199,18 @@ export class SdkFollowupCoordinator {
 		fallbackPrompt = TASK_RESUMPTION_PROMPT,
 		provenance?: ComposerProvenance,
 	): Promise<void> {
-		const { sdkHost, sessionId } = activeSession
+		const refusal = await this.options.retryRefusedRebuild?.(activeSession.sessionId)
+		if (refusal) {
+			this.options.messages.appendAndEmit([{ ts: Date.now(), type: "say", say: "error", text: refusal, partial: false }], {
+				type: "status",
+				payload: { sessionId: activeSession.sessionId, status: "error" },
+			})
+			this.options.onResumeFailed({ prompt, images, files, provenance, reason: refusal })
+			await this.options.postStateToWebview()
+			return
+		}
+		// The retry may have replaced the session it was asked about.
+		const { sdkHost, sessionId } = this.options.sessions.getActiveSession() ?? activeSession
 		Logger.log(`[SdkController] Continuing idle session for follow-up: ${sessionId}`)
 
 		this.options.sessions.markSendRunning()
@@ -236,7 +258,7 @@ export class SdkFollowupCoordinator {
 			if (isClineAuth) {
 				this.options.emitClineAuthError()
 			} else {
-				this.options.messages.emitSessionEvents(
+				this.options.messages.appendAndEmit(
 					[
 						{
 							ts: Date.now(),
@@ -249,7 +271,7 @@ export class SdkFollowupCoordinator {
 					{ type: "status", payload: { sessionId: task.taskId, status: "error" } },
 				)
 			}
-			this.options.onResumeFailed()
+			this.options.onResumeFailed({ prompt, images, files, provenance, reason: errorMsg })
 			await this.options.postStateToWebview()
 		}
 	}
@@ -266,7 +288,7 @@ export class SdkFollowupCoordinator {
 		Logger.log(`[SdkController] Resuming session from task: ${taskId}`)
 
 		const historyItem = await this.options.taskHistory.findHistoryItem(taskId)
-		const resumeStart = await prepareTaskResumeStartInput(this.options, taskId)
+		const resumeStart = await prepareTaskResumeStartInput(this.options, taskId, true)
 		// Targeting checks below compare by taskId (logical identity): reloading
 		// the same task allocates a new TaskProxy and must not cancel the
 		// follow-up. Cleanup (endStartedResume) uses object identity instead.
@@ -284,6 +306,10 @@ export class SdkFollowupCoordinator {
 			sessionMetadata: { ...resumeStart.sessionMetadata, taskResumed: true },
 			interactive: true,
 		})
+
+		const builtSelection = getSessionApiSnapshot(resumeStart.config)?.selection
+		if (builtSelection && useModelSettings(this.options.stateManager))
+			this.options.onSelectionRebuilt?.(taskId, builtSelection)
 
 		if (this.options.getTask()?.taskId !== taskId) {
 			await this.endStartedResume(sdkHost, startResult.sessionId)

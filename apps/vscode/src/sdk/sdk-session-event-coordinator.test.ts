@@ -488,7 +488,7 @@ describe("SdkSessionEventCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalled()
 	})
 
-	it("drops live to 0 when a child stops and when the session is idle", async () => {
+	it("keeps detached children live while the parent is idle", async () => {
 		const { coordinator, options, event } = makeCoordinator()
 		const state = options.messageTranslatorState
 		state.addSpawnAgent("call-1", "one")
@@ -502,10 +502,10 @@ describe("SdkSessionEventCoordinator", () => {
 		await coordinator.handleSessionEvent(event)
 		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 1 })
 
-		// A finished turn has no live children, even if a content_end never arrived.
+		// Parent completion leaves detached children running.
 		options.sessions.getActiveSession.mockReturnValue({ ...makeActiveSession(), isRunning: false } as never)
 		await coordinator.handleSessionEvent(event)
-		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 0 })
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 1 })
 	})
 })
 

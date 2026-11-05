@@ -78,9 +78,10 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename, rename
 	const [renaming, setRenaming] = useState(false)
 	const [draft, setDraft] = useState("")
 
-	const home = crumbs[0]
+	// One view drops the Home crumb (the list is home): every level before the current one is then a middle level.
+	const home = crumbs[0]?.kind === "home" ? crumbs[0] : undefined
 	const current = crumbs[crumbs.length - 1]
-	const middle = crumbs.slice(1, -1)
+	const middle = crumbs.slice(home ? 1 : 0, -1)
 	const parent = crumbs.length > 1 ? crumbs[crumbs.length - 2] : undefined
 	const collapsed = shouldCollapseCrumbs(width, middle.length)
 	// What the last crumb is, for the rename labels ("Rename task" on a task's page).
@@ -143,16 +144,24 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ crumbs, onRename, rename
 		<nav aria-label="Thread path" className="flex min-w-0 flex-1 items-center gap-1" data-testid="task-breadcrumb">
 			<BackButton
 				crumbIds={crumbs.map((crumb) => crumb.id)}
-				fallback={{
-					label: parent ? (parent.kind === "home" ? "home" : parent.label) : "home",
-					onSelect: parent?.onSelect,
-				}}
+				fallback={
+					home
+						? {
+								label: parent ? (parent.kind === "home" ? "home" : parent.label) : "home",
+								onSelect: parent?.onSelect,
+							}
+						: undefined
+				}
 			/>
 			<div className="flex min-w-0 flex-1 items-center gap-1" ref={listRef}>
 				{crumbs.length > 1 && (
 					<>
-						{renderCrumb(home)}
-						<Separator />
+						{home && (
+							<>
+								{renderCrumb(home)}
+								<Separator />
+							</>
+						)}
 						{collapsed ? (
 							<>
 								<Popover onOpenChange={setMenuOpen} open={menuOpen}>

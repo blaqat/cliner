@@ -4,6 +4,7 @@ import path from "node:path"
 import type { ChangeWalkthrough, WalkthroughHunk, WalkthroughReadyMessage } from "@shared/Walkthrough"
 import { ensureTaskDirectoryExists } from "@/core/storage/disk"
 import { hash } from "./engine"
+import { parseReview } from "./review"
 
 export const AUTHORED_LIMITS = { chapters: 8, stops: 60, hunks: 400, patchChars: 300000 }
 
@@ -176,7 +177,8 @@ export function normalizeAuthoredWalkthrough(taskId: string, value: unknown, aut
 		}
 	})
 	if (!stopCount) throw new Error("Include at least one stop; narrative stops may have no hunks")
-	const content = { title, focus, origin, chapters, hunks }
+	const review = parseReview(input.review, { chapters, hunks, support: [] })
+	const content = { title, focus, origin, chapters, hunks, ...(review ? { review } : {}) }
 	return {
 		version: 1,
 		taskId,
@@ -197,6 +199,12 @@ export function walkthroughReady(walk: ChangeWalkthrough): WalkthroughReadyMessa
 		origin: walk.origin,
 		stopCount: walk.chapters.reduce((sum, chapter) => sum + chapter.stops.length, 0),
 		fileCount: new Set(walk.hunks.map((hunk) => hunk.fileId)).size,
+		...(walk.review
+			? {
+					reviewCount: walk.review.notes.length,
+					reviewHighCount: walk.review.notes.filter((note) => note.severity === "high").length,
+				}
+			: {}),
 	}
 }
 

@@ -91,7 +91,7 @@ function buildGatewayProviderOptions(
 		Object.assign(options, config.sap);
 	}
 
-	return compactOptions(options);
+	return compactOptions({ ...options, ...config.settingsProviderOptions });
 }
 
 function readPositiveInteger(value: unknown): number | undefined {
@@ -281,6 +281,12 @@ export function createAgentModelFromConfig(
 			modelId: normalizedProviderConfig.modelId,
 		},
 		{
+			metadata: normalizedProviderConfig.settingsRequestIntent
+				? {
+						settingsRequestIntent:
+							normalizedProviderConfig.settingsRequestIntent,
+					}
+				: undefined,
 			maxTokens: normalizedProviderConfig.maxOutputTokens,
 			temperature: normalizedProviderConfig.temperature,
 		},

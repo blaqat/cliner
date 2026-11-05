@@ -1,0 +1,164 @@
+{
+	"aihubmix": [
+		"actModeAihubmixModelId",
+		"actModeAihubmixModelInfo",
+		"aihubmixApiKey",
+		"planModeAihubmixModelId",
+		"planModeAihubmixModelInfo"
+	],
+	"anthropic": [
+		"apiKeyLength",
+		"baseUrl"
+	],
+	"asksage": [
+		"actModeApiModelId",
+		"asksageApiKey",
+		"asksageApiUrl",
+		"planModeApiModelId"
+	],
+	"baseten": [
+		"basetenApiKey"
+	],
+	"bedrock": [
+		"actModeReasoningEffort",
+		"actModeThinkingBudgetTokens",
+		"apiKeyLength",
+		"aws.accessKeyLength",
+		"aws.authentication",
+		"aws.customModelBaseId",
+		"aws.endpoint",
+		"aws.profile",
+		"aws.secretKeyLength",
+		"aws.sessionTokenLength",
+		"aws.useCrossRegionInference",
+		"aws.useGlobalInference",
+		"aws.usePromptCache",
+		"planModeReasoningEffort",
+		"planModeThinkingBudgetTokens",
+		"region"
+	],
+	"claude-code": [
+		"claudeCodePath"
+	],
+	"cline-pass": [],
+	"cline": [],
+	"dify": [
+		"difyApiKey",
+		"difyBaseUrl"
+	],
+	"groq": [
+		"groqApiKey"
+	],
+	"hicap": [
+		"hicapApiKey"
+	],
+	"huggingface": [
+		"huggingFaceApiKey"
+	],
+	"lmstudio": [
+		"baseUrl",
+		"lmStudioBaseUrl",
+		"lmStudioMaxTokens"
+	],
+	"litellm": [
+		"apiKeyLength",
+		"baseUrl"
+	],
+	"moonshot": [
+		"apiLine",
+		"moonshotApiKey",
+		"moonshotApiLine"
+	],
+	"oca": [
+		"ocaBaseUrl",
+		"ocaMode"
+	],
+	"ollama": [
+		"apiKeyLength",
+		"baseUrl",
+		"contextWindow",
+		"ollamaApiOptionsCtxNum",
+		"ollamaBaseUrl",
+		"requestTimeoutMs"
+	],
+	"openai-compatible": [
+		"actModeOpenAiModelId",
+		"actSelection",
+		"apiKeyLength",
+		"azureApiVersion",
+		"azureIdentity",
+		"baseUrl",
+		"headers",
+		"openAiApiKey",
+		"openAiCompatibleApiType",
+		"planModeOpenAiModelId",
+		"planSelection"
+	],
+	"openai-native": [
+		"actModeApiModelId",
+		"openAiNativeApiKey",
+		"planModeApiModelId"
+	],
+	"openai-codex": [
+		"actSelection",
+		"planSelection"
+	],
+	"openrouter": [
+		"apiKeyLength",
+		"openRouterApiKey"
+	],
+	"qwen-code": [
+		"qwenCodeOauthPath"
+	],
+	"qwen": [
+		"actModeApiModelId",
+		"apiLine",
+		"planModeApiModelId",
+		"qwenApiKey",
+		"qwenApiLine"
+	],
+	"requesty": [
+		"requestyApiKey",
+		"requestyBaseUrl"
+	],
+	"sapaicore": [
+		"actModeApiModelId",
+		"actModeSapAiCoreDeploymentId",
+		"planModeApiModelId",
+		"planModeSapAiCoreDeploymentId",
+		"sapAiCoreBaseUrl",
+		"sapAiCoreClientId",
+		"sapAiCoreClientSecret",
+		"sapAiCoreTokenUrl",
+		"sapAiCoreUseOrchestrationMode",
+		"sapAiResourceGroup"
+	],
+	"vscode-lm": [
+		"actModeVsCodeLmModelSelector",
+		"actSelection",
+		"planModeVsCodeLmModelSelector",
+		"planSelection"
+	],
+	"vercel-ai-gateway": [
+		"vercelAiGatewayApiKey"
+	],
+	"vertex": [
+		"actSelection",
+		"gcp.projectId",
+		"gcp.region",
+		"planSelection",
+		"region",
+		"vertexProjectId",
+		"vertexRegion"
+	],
+	"xai": [
+		"apiKeyLength",
+		"xaiApiKey"
+	],
+	"zai": [
+		"apiKeyLength",
+		"apiLine",
+		"zaiApiKey",
+		"zaiApiLine"
+	]
+}

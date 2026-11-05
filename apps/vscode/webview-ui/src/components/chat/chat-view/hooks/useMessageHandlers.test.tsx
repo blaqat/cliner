@@ -196,6 +196,69 @@ describe("useMessageHandlers — send routing", () => {
 		expect(trackIntent).not.toHaveBeenCalled()
 	})
 
+	it("takes the draft back when a new task fails to start, and Retry takes it out again once it succeeds", async () => {
+		mockTurnState = { phase: "idle", seq: 1 }
+		newTask.mockRejectedValue(new Error("Storage is busy in another window. Try again shortly."))
+		const state = makeChatState([], {
+			getDraftSnapshot: vi.fn(() => ({
+				revision: 0,
+				text: "hello",
+				quotes: [],
+				images: [],
+				files: [],
+				authorizedThreadIds: [],
+			})),
+		})
+		const { result, rerender } = renderHook(({ messages }) => useMessageHandlers(messages, state), {
+			initialProps: { messages: [] as ClineMessage[] },
+		})
+
+		await act(async () => {
+			await expect(result.current.handleSendMessage("hello", ["img"], [])).rejects.toThrow("Storage is busy")
+		})
+		expect(state.setInputValue).toHaveBeenLastCalledWith("hello")
+		expect(state.setSelectedImages).toHaveBeenLastCalledWith(["img"])
+		expect(state.setSendingDisabled).toHaveBeenLastCalledWith(false)
+		expect(state.setPendingResponse).toHaveBeenCalledTimes(2)
+
+		mockTurnState = { phase: "error", seq: 2 }
+		rerender({ messages: [{ ts: 1, type: "say", say: "task", text: "hello" }] })
+		vi.mocked(state.setInputValue).mockClear()
+		await act(async () => {
+			await result.current.executeButtonAction({ type: "retry" })
+		})
+		expect(askResponse).toHaveBeenCalledOnce()
+		expect(state.setInputValue).toHaveBeenCalledExactlyOnceWith("")
+	})
+
+	it("Retry leaves a draft the user has edited since", async () => {
+		mockTurnState = { phase: "idle", seq: 1 }
+		newTask.mockRejectedValue(new Error("busy"))
+		const state = makeChatState([], {
+			getDraftSnapshot: vi.fn(() => ({
+				revision: 0,
+				text: "edited",
+				quotes: [],
+				images: [],
+				files: [],
+				authorizedThreadIds: [],
+			})),
+		})
+		const { result, rerender } = renderHook(({ messages }) => useMessageHandlers(messages, state), {
+			initialProps: { messages: [] as ClineMessage[] },
+		})
+		await act(async () => {
+			await expect(result.current.handleSendMessage("hello", [], [])).rejects.toThrow("busy")
+		})
+		mockTurnState = { phase: "error", seq: 2 }
+		rerender({ messages: [{ ts: 1, type: "say", say: "task", text: "hello" }] })
+		vi.mocked(state.setInputValue).mockClear()
+		await act(async () => {
+			await result.current.executeButtonAction({ type: "retry" })
+		})
+		expect(state.setInputValue).not.toHaveBeenCalled()
+	})
+
 	it("does not intercept /compact when there is no active task (starts a new task instead)", async () => {
 		mockTurnState = { phase: "idle", seq: 1 }
 		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))

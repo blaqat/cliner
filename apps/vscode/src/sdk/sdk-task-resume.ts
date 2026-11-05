@@ -10,7 +10,10 @@
 
 import type { TaskApiSelection } from "@shared/api-profiles"
 import type { Mode } from "@shared/storage/types"
+import { resolveTaskApiSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import { historyItemToSessionMetadata, type SdkTaskHistory } from "./sdk-task-history"
 import type { SdkSessionHost } from "./session-host"
@@ -44,14 +47,22 @@ export interface PrepareTaskResumeStartDeps {
 export async function prepareTaskResumeStartInput(
 	deps: PrepareTaskResumeStartDeps,
 	taskId: string,
+	forMessage = false,
 ): Promise<TaskResumeStartInput> {
 	const historyItem = await deps.taskHistory.findHistoryItem(taskId)
 	const cwd = historyItem?.cwdOnTaskInitialization ?? (await deps.getWorkspaceRoot())
 
 	const modeValue = deps.stateManager.getGlobalSettingsKey("mode")
 	const mode: Mode = modeValue === "plan" || modeValue === "act" ? modeValue : "act"
-	const apiSelection = deps.getTaskApiSelection?.(taskId) ?? historyItem?.apiSelection
-	const config = await deps.sessionConfigBuilder.build({ cwd, mode, ...(apiSelection ? { apiSelection } : {}) })
+	const apiSelection =
+		deps.getTaskApiSelection?.(taskId) ??
+		(useModelSettings(deps.stateManager)
+			? resolveTaskApiSelection(deps.stateManager, historyItem ?? {}, mode)
+			: historyItem?.apiSelection)
+	const config = await deps.sessionConfigBuilder.build(
+		{ cwd, mode, ...(apiSelection ? { apiSelection } : {}) },
+		...(forMessage && useModelSettings(deps.stateManager) ? ([taskId] as const) : []),
+	)
 	config.sessionId = taskId
 
 	const isLegacyTask = await deps.taskHistory.isLegacyTask(taskId)
@@ -69,6 +80,21 @@ export async function prepareTaskResumeStartInput(
 	return {
 		config,
 		...(initialMessages ? { initialMessages: initialMessages as InitialMessages } : {}),
-		...(historyItem ? { sessionMetadata: historyItemToSessionMetadata(historyItem, config.modelId) } : {}),
+		...(historyItem
+			? {
+					sessionMetadata: historyItemToSessionMetadata(
+						{
+							...historyItem,
+							...(getSessionApiSnapshot(config)?.selection
+								? {
+										apiSelection: getSessionApiSnapshot(config)?.selection,
+										modelSelectionV1: getSessionApiSnapshot(config)?.selection.modelSelectionV1,
+									}
+								: {}),
+						},
+						config.modelId,
+					),
+				}
+			: {}),
 	}
 }

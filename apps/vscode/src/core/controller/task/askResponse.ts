@@ -45,6 +45,9 @@ export async function askResponse(controller: Controller, request: AskResponseRe
 			request.decisionId,
 			normalizeProvenance(request.provenance),
 		)
+		// The error row is already showing. Rejecting is what returns the draft to the composer.
+		const failure = controller.takeFollowUpFailure?.()
+		if (failure) throw new Error(failure)
 
 		return Empty.create()
 	} catch (error) {

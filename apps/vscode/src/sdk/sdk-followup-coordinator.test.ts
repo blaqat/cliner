@@ -613,12 +613,37 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("continue")
 
-		expect(options.onResumeFailed).toHaveBeenCalledOnce()
-		expect(options.messages.emitSessionEvents).toHaveBeenCalledWith(
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "continue", reason: "session start failed" }),
+		)
+		// Through appendAndEmit: only stamped, stored messages survive the webview's epoch fence.
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ say: "error", text: expect.stringContaining("session start failed") })],
 			{ type: "status", payload: { sessionId: "task-1", status: "error" } },
 		)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("reports a resume refused by the resolver with the message that didn't get through", async () => {
+		const task = makeTask("task-1")
+		const { coordinator, options } = makeCoordinator({ task })
+		options.sessionConfigBuilder.build.mockRejectedValue(new Error("Storage is busy in another window. Try again shortly."))
+
+		await coordinator.askResponse("continue", ["img"], ["file"])
+
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				prompt: "continue",
+				images: ["img"],
+				files: ["file"],
+				reason: expect.stringContaining("Storage is busy"),
+			}),
+		)
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: expect.stringContaining("Storage is busy") })],
+			expect.anything(),
+		)
 	})
 })
 
@@ -634,6 +659,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
 		} as unknown as StateManager,
 		interactions: {
@@ -763,4 +789,33 @@ it("ignores a stale decision response instead of queuing or resuming a turn", as
 	await coordinator.askResponse("stale", undefined, undefined, "yesButtonClicked", "awaiting_approval", undefined, "resolved-a")
 	expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
 	expect(options.runExclusive).not.toHaveBeenCalled()
+})
+
+describe("a send to a thread whose rebuild was refused", () => {
+	it("refuses with the reason and sends nothing", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		options.retryRefusedRebuild = vi.fn(async () => "This model has no model ID. Add it in Settings > Models.")
+		await coordinator.askResponse("hello")
+		expect(options.retryRefusedRebuild).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: "This model has no model ID. Add it in Settings > Models." })],
+			{ type: "status", payload: { sessionId: "session-123", status: "error" } },
+		)
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "hello", reason: "This model has no model ID. Add it in Settings > Models." }),
+		)
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+	it("sends on the session the retry rebuilt", async () => {
+		const old = makeActiveSession()
+		const rebuilt = { ...makeActiveSession(), sdkHost: { send: vi.fn() } }
+		const { coordinator, options } = makeCoordinator({ activeSession: old })
+		options.retryRefusedRebuild = vi.fn(async () => {
+			options.sessions.getActiveSession.mockReturnValue(rebuilt as never)
+			return undefined
+		})
+		await coordinator.askResponse("hello")
+		expect(options.sessions.fireAndForgetSend.mock.calls[0][0]).toBe(rebuilt.sdkHost)
+	})
 })

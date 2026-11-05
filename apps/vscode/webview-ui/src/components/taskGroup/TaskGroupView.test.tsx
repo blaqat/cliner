@@ -198,6 +198,19 @@ describe("TaskGroupView", () => {
 		expect(mocks.openNote).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", slug: "decisions" }))
 	})
 
+	it("names the folder of a thread running outside what's open", async () => {
+		mocks.state.workspaceRoots = [{ path: "/work/here" }]
+		mocks.state.platform = "darwin"
+		const [first, second] = FIXTURE.threads
+		mocks.state.taskHistory = [
+			{ id: first.threadId, cwdOnTaskInitialization: "/work/other" },
+			{ id: second.threadId, cwdOnTaskInitialization: "/work/here/app" },
+		]
+		await renderView()
+		const tags = screen.getAllByTestId("thread-cwd-tag")
+		expect(tags.map((tag) => tag.textContent)).toEqual(["other"])
+	})
+
 	it("＋ New and View all › open the notebook page", async () => {
 		await renderView()
 		const navigate = mocks.state.navigateToTaskGroup as ReturnType<typeof vi.fn>

@@ -1,15 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
 import { expect, waitFor } from "storybook/test"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
 import { createStorybookDecorator } from "@/config/StorybookDecorator"
 import ChatTextArea from "../ChatTextArea"
 import { ContextUsageIndicator } from "./ContextUsageIndicator"
 
 /**
- * The composer's bottom row at sidebar widths, with the widest content: ＋, MCP servers, rules, the
- * where pill, a long configuration name with its effort, approvals, the chat cost, the 85% Compact
- * pill and Ask/Act. Used to check that the pills truncate, the cost and the Compact pill hide, the
- * pills go tight and only then the MCP and rules buttons fold into ＋, never wrapping or
- * overlapping: the play function checks real bounds.
+ * The composer's bottom row at sidebar widths, with the widest content: the paperclip, the Compact
+ * chip near the limit, the context ring, a long model name with its effort and the Send button that
+ * carries the mode. Used to check that the model name truncates and the Compact chip drops to its
+ * icon, never wrapping or overlapping: the play function checks real bounds.
  */
 const meta: Meta<typeof ChatTextArea> = {
 	title: "Views/Components/ComposerBottomRow",
@@ -19,10 +19,7 @@ const meta: Meta<typeof ChatTextArea> = {
 			{
 				mode: "act",
 				apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
-				apiConfigProfiles: [
-					{ id: "work", name: "Work · OpenAI long configuration name", provider: "openai-native", modelId: "gpt-5.1" },
-				],
-				actProfileId: "work",
+				modelSettings: modelSettingsFixture(),
 			},
 			"max-w-none",
 		),
@@ -34,6 +31,8 @@ type Story = StoryObj<typeof ChatTextArea>
 
 const noop = () => {}
 const WIDTHS = [250, 280, 300, 320, 360, 400, 440, 480]
+/** Down to VS Code's narrowest sidebar: Send has to stay whole and clickable. */
+const NARROW_WIDTHS = [170, 190, 220, 250]
 
 const Composer = ({ width }: { width: number }) => (
 	<div className="border border-(--vscode-panel-border)" data-width={width} style={{ width }}>
@@ -50,7 +49,6 @@ const Composer = ({ width }: { width: number }) => (
 			setSelectedImages={noop}
 			shouldDisableFilesAndImages={false}
 			usageIndicator={{
-				hasCost: true,
 				hasCompactNudge: true,
 				render: (layout) => (
 					<ContextUsageIndicator
@@ -60,7 +58,7 @@ const Composer = ({ width }: { width: number }) => (
 						inlineCompactNudge={layout.inlineCompactNudge}
 						modelLabel="OpenAI · gpt-5.1"
 						onCompact={noop}
-						showCost={layout.showCost}
+						showCost={false}
 						tokensIn={150_000}
 						tokensOut={20_000}
 						usedTokens={180_000}
@@ -71,17 +69,21 @@ const Composer = ({ width }: { width: number }) => (
 	</div>
 )
 
-export const SidebarWidths: Story = {
-	render: () => (
-		<div className="flex flex-col gap-4">
-			{WIDTHS.map((width) => (
-				<Composer key={width} width={width} />
-			))}
-		</div>
-	),
-	play: async ({ canvasElement }) => {
+const sidebars = (widths: readonly number[]) => () => (
+	<div className="flex flex-col gap-4">
+		{widths.map((width) => (
+			<Composer key={width} width={width} />
+		))}
+	</div>
+)
+const allWidths = sidebars(WIDTHS)
+const narrowWidths = sidebars(NARROW_WIDTHS)
+
+const fitsWidths =
+	(widths: readonly number[]): Story["play"] =>
+	async ({ canvasElement }) => {
 		const rows = () => [...canvasElement.querySelectorAll<HTMLElement>('[data-testid="composer-bottom-row"]')]
-		await waitFor(() => expect(rows()).toHaveLength(WIDTHS.length))
+		await waitFor(() => expect(rows()).toHaveLength(widths.length))
 		for (const row of rows()) {
 			const bounds = row.getBoundingClientRect()
 			const items = [...row.children].map((child) => child.getBoundingClientRect())
@@ -90,19 +92,36 @@ export const SidebarWidths: Story = {
 				await expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1)
 				await expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
 			}
-			// No overlap, and the Ask/Act toggle stays inside the row.
+			// No overlap, and Send stays inside the row.
 			for (let i = 1; i < items.length; i++) {
 				await expect(items[i].left).toBeGreaterThanOrEqual(items[i - 1].right - 0.5)
 			}
 			await expect(items[items.length - 1].right).toBeLessThanOrEqual(bounds.right + 0.5)
-			// Nothing inside the picker group is clipped.
-			const group = row.querySelector('[data-testid="composer-pickers"]')
-			await expect(group).not.toBeNull()
-			for (const picker of group?.children ?? []) {
-				await expect(picker.getBoundingClientRect().right).toBeLessThanOrEqual(
-					(group as Element).getBoundingClientRect().right + 0.5,
-				)
-			}
 		}
+	}
+
+const fitsEveryWidth = fitsWidths(WIDTHS)
+const fitsNarrowWidths = fitsWidths(NARROW_WIDTHS)
+
+export const SidebarWidths: Story = { render: allWidths, play: fitsEveryWidth }
+
+export const NarrowSidebars: Story = { render: narrowWidths, play: fitsNarrowWidths }
+
+const armed = createStorybookDecorator(
+	{
+		mode: "act",
+		apiConfiguration: { actModeApiProvider: "openai-native", actModeApiModelId: "gpt-5.1" },
+		modelSettings: modelSettingsFixture(),
+		composerNextMessageOnly: true,
 	},
+	"max-w-none",
+)
+
+/** Next message only is armed: the widest chip there is. */
+export const ArmedNextMessage: Story = {
+	decorators: [armed],
+	render: allWidths,
+	play: fitsEveryWidth,
 }
+
+export const ArmedNarrowSidebars: Story = { decorators: [armed], render: narrowWidths, play: fitsNarrowWidths }

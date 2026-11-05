@@ -1,0 +1,345 @@
+import type { HistoryItem } from "@shared/HistoryItem"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { expectCenteredSpine } from "@/components/inbox/treeGeometry.testUtils"
+import { ThreadList } from "./ThreadList"
+
+const mocks = vi.hoisted(() => ({
+	toggleTaskSettled: vi.fn(),
+	toggleTaskStashed: vi.fn(),
+	searchHistory: vi.fn(),
+	openNote: vi.fn(),
+	state: {} as Record<string, unknown>,
+}))
+
+vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
+vi.mock("@/services/grpc-client", () => ({
+	TaskServiceClient: {
+		toggleTaskSettled: (request: unknown) => mocks.toggleTaskSettled(request),
+		toggleTaskStashed: (request: unknown) => mocks.toggleTaskStashed(request),
+	},
+	TaskGroupServiceClient: {
+		searchHistory: (request: unknown) => mocks.searchHistory(request),
+		openNote: (request: unknown) => mocks.openNote(request),
+	},
+}))
+
+const NOW = Date.UTC(2026, 9, 29, 12)
+const item = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
+	id,
+	ts: NOW - 60_000,
+	task: `task ${id}`,
+	tokensIn: 0,
+	tokensOut: 0,
+	totalCost: 0,
+	...extra,
+})
+
+const renderList = (props: Partial<Parameters<typeof ThreadList>[0]> = {}) => {
+	const handlers = { onOpenThread: vi.fn(), onOpenTaskGroup: vi.fn() }
+	render(<ThreadList now={NOW} {...handlers} {...props} />)
+	return handlers
+}
+
+const rowFor = (id: string) => screen.getAllByTestId("one-view-row").find((row) => row.dataset.threadId === id) as HTMLElement
+
+describe("ThreadList", () => {
+	beforeEach(() => {
+		const store = new Map<string, string>()
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => store.get(key) ?? null,
+			setItem: (key: string, value: string) => void store.set(key, value),
+		})
+		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
+		mocks.toggleTaskStashed.mockReset().mockResolvedValue({})
+		mocks.searchHistory.mockReset().mockResolvedValue({ results: [] })
+		mocks.state = {
+			taskHistory: [
+				item("wait", {
+					title: "Worktree menu rewrite",
+					taskGroupId: "g1",
+					lastLine: { author: "ask", text: "approve edit to a.ts" },
+				}),
+				item("run", {
+					title: "Home ordering",
+					lastLine: { author: "user", text: "order by my message" },
+					ts: NOW - 30_000,
+				}),
+				item("done", {
+					title: "Fix CRLF diffs",
+					lastLine: { author: "agent", text: "All 81 tests pass." },
+					ts: NOW - 120_000,
+				}),
+				item("you", { title: "Release notes", lastLine: { author: "user", text: "keep it short" }, ts: NOW - 180_000 }),
+				item("stashed", { title: "Try Bun 1.5", isStashed: true }),
+				item("old", { title: "Old thread", isSettled: true }),
+			],
+			sessionStatuses: { wait: "waiting", run: "running", stashed: "waiting" },
+			taskGroups: [{ id: "g1", title: "Release 3", tags: [], createdAt: NOW, updatedAt: NOW }],
+		}
+	})
+
+	it("shows each thread's status and last line with who said it", () => {
+		renderList({ currentThreadId: "done" })
+		expect(within(rowFor("wait")).getByTestId("one-view-row-line")).toHaveTextContent("Needs you: approve edit to a.ts")
+		expect(within(rowFor("run")).getByTestId("one-view-row-line")).toHaveTextContent("Working…")
+		expect(within(rowFor("done")).getByTestId("one-view-row-line")).toHaveTextContent("Agent: All 81 tests pass.")
+		expect(within(rowFor("you")).getByTestId("one-view-row-line")).toHaveTextContent("You: keep it short")
+		expect(within(rowFor("run")).getByRole("img", { name: "Running" })).toBeInTheDocument()
+		expect(within(rowFor("wait")).getByRole("img", { name: "Waiting for you" })).toBeInTheDocument()
+		expect(within(rowFor("done")).getByRole("img", { name: "Done" })).toBeInTheDocument()
+		expect(rowFor("done")).toHaveAttribute("aria-current", "true")
+		// The task row leads its thread.
+		const task = screen.getByTestId("one-view-task")
+		expect(within(task).getByTestId("one-view-task-row")).toHaveTextContent("Release 3")
+		expect(within(task).getByText("Worktree menu rewrite")).toBeInTheDocument()
+	})
+
+	it("keeps Stashed and Settled collapsed, with the stashed thread that needs you counted", () => {
+		renderList()
+		expect(screen.queryByText("Try Bun 1.5")).toBeNull()
+		expect(screen.queryByText("Old thread")).toBeNull()
+		expect(screen.getByTestId("one-view-stashed-attention")).toHaveTextContent("1")
+		fireEvent.click(screen.getByRole("button", { name: "Expand stashed" }))
+		expect(screen.getByText("Try Bun 1.5")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Expand settled" }))
+		expect(screen.getByText("Old thread")).toBeInTheDocument()
+	})
+
+	it("opens threads and tasks, and stashes or settles from a row without opening it", () => {
+		const handlers = renderList()
+		fireEvent.click(rowFor("done"))
+		expect(handlers.onOpenThread).toHaveBeenCalledWith("done")
+		fireEvent.click(screen.getByTestId("one-view-task-row"))
+		expect(handlers.onOpenTaskGroup).toHaveBeenCalledWith("g1")
+		handlers.onOpenThread.mockClear()
+		fireEvent.click(within(rowFor("done")).getByRole("button", { name: "Stash Fix CRLF diffs" }))
+		expect(mocks.toggleTaskStashed).toHaveBeenCalledWith(expect.objectContaining({ taskId: "done" }))
+		fireEvent.click(within(rowFor("done")).getByRole("button", { name: "Settle Fix CRLF diffs" }))
+		expect(mocks.toggleTaskSettled).toHaveBeenCalledWith(expect.objectContaining({ taskId: "done" }))
+		expect(handlers.onOpenThread).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "Expand stashed" }))
+		expect(within(rowFor("stashed")).getByRole("button", { name: "Unstash Try Bun 1.5" })).toBeInTheDocument()
+		expect(screen.queryByTestId("one-view-new")).toBeNull()
+	})
+
+	it("moves between rows with ↑/↓ and opens with Enter", () => {
+		const handlers = renderList()
+		const search = screen.getByTestId("one-view-search")
+		search.focus()
+		fireEvent.keyDown(search, { key: "ArrowDown" })
+		const rows = screen.getAllByRole("button").filter((element) => element.hasAttribute("data-list-row"))
+		expect(document.activeElement).toBe(rows[0])
+		fireEvent.keyDown(rows[0], { key: "ArrowDown" })
+		expect(document.activeElement).toBe(rows[1])
+		// Newest first: the running thread, then the task (its thread asked earlier).
+		expect(rows[0]).toHaveAttribute("data-thread-id", "run")
+		fireEvent.keyDown(rows[1], { key: "Enter" })
+		expect(handlers.onOpenTaskGroup).toHaveBeenCalledWith("g1")
+		fireEvent.keyDown(rows[0], { key: " " })
+		expect(handlers.onOpenThread).toHaveBeenCalledWith("run")
+		fireEvent.keyDown(rows[1], { key: "ArrowUp" })
+		fireEvent.keyDown(rows[0], { key: "ArrowUp" })
+		expect(document.activeElement).toBe(search)
+	})
+
+	it("filters in place, shows the message hit, narrows with chips, and Esc clears", async () => {
+		vi.useFakeTimers()
+		mocks.searchHistory.mockImplementation(async (request: { kind: string }) =>
+			request.kind === "messages"
+				? {
+						results: [
+							{
+								kind: "message",
+								id: "m",
+								title: "Release notes",
+								threadId: "you",
+								snippet: "local drift or CRLF line endings",
+								author: "you",
+								ts: 1,
+							},
+						],
+					}
+				: { results: [{ kind: "note", id: "crlf", title: "CRLF handling", taskGroupId: "g1", snippet: "", ts: 1 }] },
+		)
+		renderList()
+		const search = screen.getByTestId("one-view-search")
+		fireEvent.change(search, { target: { value: "crlf" } })
+		// Title matches show right away.
+		expect(rowFor("done")).toBeInTheDocument()
+		expect(screen.queryByText("Home ordering")).toBeNull()
+		await act(async () => {
+			vi.advanceTimersByTime(250)
+		})
+		vi.useRealTimers()
+		const line = within(rowFor("you")).getByTestId("one-view-row-line")
+		expect(line).toHaveTextContent("You: local drift or CRLF line endings")
+		expect(within(line).getByTestId("one-view-hit")).toHaveTextContent("CRLF")
+		expect(screen.getByTestId("one-view-note-row")).toHaveTextContent("CRLF handling")
+
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Notes" }))
+		expect(screen.queryByTestId("one-view-row")).toBeNull()
+		expect(screen.getByTestId("one-view-note-row")).toBeInTheDocument()
+
+		fireEvent.keyDown(search, { key: "Escape" })
+		expect(search).toHaveValue("")
+		expect(screen.queryByTestId("one-view-filter-chips")).toBeNull()
+		expect(screen.getByText("Home ordering")).toBeInTheDocument()
+	})
+
+	it("says when nothing matches and offers to clear", async () => {
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "zzzz" } })
+		expect(await screen.findByTestId("one-view-no-matches", undefined, { timeout: 2000 })).toHaveTextContent(
+			"No matches for “zzzz”",
+		)
+		fireEvent.click(screen.getByText("Clear search"))
+		expect(screen.getByTestId("one-view-search")).toHaveValue("")
+	})
+
+	it("says how to start when there are no threads yet", () => {
+		mocks.state = { taskHistory: [], sessionStatuses: {}, taskGroups: [] }
+		renderList()
+		expect(screen.getByTestId("one-view-empty")).toHaveTextContent("No threads yet — start one in the composer")
+	})
+
+	it("renders a task like the home inbox: chevron, task icon, thread count, threads on a centered connector", () => {
+		renderList()
+		const task = screen.getByTestId("one-view-task")
+		const row = within(task).getByTestId("one-view-task-row")
+		expect(row).toHaveTextContent("1 thread")
+		expect(row).toHaveAttribute("data-list-row")
+		expect(within(task).getByTestId("inbox-task-group-waiting")).toHaveTextContent("1 needs you")
+		expectCenteredSpine(task, "one-view-task-row", "one-view-row")
+		fireEvent.click(within(row).getByRole("button", { name: "Collapse Release 3" }))
+		expect(within(task).queryByTestId("task-spine")).toBeNull()
+		expect(within(task).queryByTestId("one-view-row")).toBeNull()
+	})
+
+	it("stashes and settles a whole task from its row", async () => {
+		mocks.state.taskHistory = [
+			...(mocks.state.taskHistory as HistoryItem[]),
+			item("second", { title: "Second", taskGroupId: "g1" }),
+		]
+		const handlers = renderList()
+		const row = screen.getByTestId("one-view-task-row")
+		fireEvent.click(within(row).getByRole("button", { name: "Stash Release 3" }))
+		await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(2))
+		expect(mocks.toggleTaskStashed.mock.calls.map(([request]) => request.taskId)).toEqual(["wait", "second"])
+		fireEvent.click(within(row).getByRole("button", { name: "Settle Release 3" }))
+		// The waiting thread is live: settle leaves it open and says so.
+		await waitFor(() =>
+			expect(screen.getByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Settled 1 · 1 still running"),
+		)
+		expect(handlers.onOpenTaskGroup).not.toHaveBeenCalled()
+	})
+
+	it("lists a fully stashed task under Stashed with Unstash", () => {
+		mocks.state.taskHistory = (mocks.state.taskHistory as HistoryItem[]).map((entry) =>
+			entry.taskGroupId === "g1" ? { ...entry, isStashed: true } : entry,
+		)
+		renderList()
+		expect(screen.queryByTestId("one-view-task-row")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "Expand stashed" }))
+		const stashed = screen.getByTestId("one-view-task-row").closest("[data-section]")
+		expect(stashed).toHaveAttribute("data-section", "stashed")
+		expect(screen.getByRole("button", { name: "Unstash Release 3" })).toBeInTheDocument()
+	})
+
+	it("swaps the time for the row actions on hover instead of covering the title", () => {
+		renderList()
+		const row = rowFor("done")
+		expect(within(row).getByTestId("one-view-row-time")).toHaveClass("group-hover:hidden", "group-focus-within:hidden")
+		const actions = within(row).getByTestId("row-actions")
+		expect(actions).toHaveClass("hidden", "group-hover:flex", "group-focus-within:flex")
+		expect(actions).not.toHaveClass("absolute")
+		// In the title's line, after the title, so the title truncates before them.
+		expect(actions.parentElement).toBe(within(row).getByText("Fix CRLF diffs").parentElement)
+		expect(within(actions).getByRole("button", { name: "Stash Fix CRLF diffs" })).toHaveAttribute("title", "Stash")
+	})
+	it("opens filters without text, keeps what has a tag, and clears an empty result", () => {
+		mocks.state.taskGroups = [
+			{ id: "g1", title: "Release 3", tags: [{ kind: "label", value: "release" }], createdAt: NOW, updatedAt: NOW },
+		]
+		renderList()
+		expect(screen.queryByText("Active")).toBeNull()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Tags" }))
+		expect(rowFor("wait")).toBeInTheDocument()
+		expect(screen.queryByText("Home ordering")).toBeNull()
+		expect(screen.getByTestId("one-view-filter-count")).toHaveTextContent("1")
+		fireEvent.click(screen.getByRole("button", { name: "Custom" }))
+		fireEvent.change(screen.getByLabelText("From"), { target: { value: "2027-01-01" } })
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("with these filters")
+		fireEvent.click(screen.getByTestId("one-view-no-matches-clear"))
+		expect(screen.getByText("Home ordering")).toBeInTheDocument()
+	})
+	it("filters typed tags without a text search request", () => {
+		mocks.state.taskHistory = [item("tagged", { tags: [{ kind: "label", value: "release" }] }), item("other")]
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "#release" } })
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(screen.queryByText("task other")).toBeNull()
+		expect(mocks.searchHistory).not.toHaveBeenCalled()
+	})
+	it("keeps filtered settled results collapsible without an Active header", () => {
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "Old thread" } })
+		expect(screen.queryByText("Old thread")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "Expand settled" }))
+		expect(screen.getByText("Old thread")).toBeInTheDocument()
+		expect(screen.queryByText("Active")).toBeNull()
+	})
+	it("offers what to search as chips, with no list of tags", () => {
+		mocks.state.taskHistory = Array.from({ length: 10 }, (_, i) =>
+			item(`t${i}`, { tags: [{ kind: "label", value: `label${i}` }] }),
+		)
+		renderList()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		const panel = within(screen.getByTestId("one-view-filter-chips"))
+		for (const name of ["Threads", "Messages", "Notes", "Tags"]) {
+			expect(panel.getByRole("button", { name })).toBeInTheDocument()
+		}
+		expect(panel.queryByRole("button", { name: "Tasks" })).toBeNull()
+		expect(panel.queryByRole("button", { name: "label0" })).toBeNull()
+		expect(screen.queryByRole("group", { name: "Tags" })).toBeNull()
+	})
+	it("the Tags chip searches tags only", () => {
+		mocks.state.taskHistory = [
+			item("tagged", { tags: [{ kind: "label", value: "release" }] }),
+			item("named", { task: "release notes" }),
+			item("other"),
+		]
+		renderList()
+		fireEvent.change(screen.getByTestId("one-view-search"), { target: { value: "release" } })
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(rowFor("named")).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Tags" }))
+		expect(rowFor("tagged")).toBeInTheDocument()
+		expect(rowFor("named")).toBeUndefined()
+	})
+	it("a row outside the open folder names it", () => {
+		mocks.state.taskHistory = [
+			item("other", { cwdOnTaskInitialization: "/somewhere/else" }),
+			item("here", { cwdOnTaskInitialization: "/work/here" }),
+		]
+		mocks.state.workspaceRoots = [{ path: "/work/here" }]
+		mocks.state.platform = "darwin"
+		renderList()
+		expect(rowFor("other")).toHaveTextContent("else")
+		expect(rowFor("other").querySelector("[data-testid=thread-cwd-tag]")).not.toBeNull()
+		expect(rowFor("here").querySelector("[data-testid=thread-cwd-tag]")).toBeNull()
+	})
+	it("Messages and Notes with no text say to type", () => {
+		renderList()
+		fireEvent.click(screen.getByTestId("one-view-filter"))
+		fireEvent.click(screen.getByRole("button", { name: "Messages" }))
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("Type to search messages.")
+		fireEvent.click(screen.getByRole("button", { name: "Notes" }))
+		expect(screen.getByTestId("one-view-no-matches")).toHaveTextContent("Type to search messages and notes.")
+		fireEvent.click(screen.getByTestId("one-view-no-matches-clear"))
+		expect(screen.queryByTestId("one-view-no-matches")).toBeNull()
+	})
+})

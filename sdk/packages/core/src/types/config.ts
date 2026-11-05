@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@cline/llms";
+import type { LevelRequest, ModelInfo } from "@cline/llms";
 import type {
 	AgentConfig,
 	AgentHooks,
@@ -57,7 +57,7 @@ export interface CoreModelConfig {
  * profile into this shape when the session config is built so the runtime
  * never touches credential storage itself.
  */
-export interface SubagentProfileConnection {
+export interface SubagentModelConnection {
 	providerId: string;
 	modelId: string;
 	apiKey?: string;
@@ -72,8 +72,34 @@ export interface SubagentProfileConnection {
 	temperature?: number;
 }
 
+/** @deprecated Use SubagentModelConnection. */
+export type SubagentProfileConnection = SubagentModelConnection;
+
+export interface SubagentModelLevel {
+	id: string;
+	label: string;
+	rank: number;
+	request: LevelRequest;
+}
+export interface SubagentModelRecord {
+	id: string;
+	name: string;
+	connection: SubagentModelConnection;
+	levels: SubagentModelLevel[];
+}
+export interface SubagentModelPolicyV1 {
+	version: 1;
+	models: Record<string, SubagentModelRecord>;
+	/** Models that could not be resolved, reported only when the parent uses one. */
+	unavailable?: Record<string, { name: string; reason: string }>;
+	default: { model: string; level: string };
+	allowed: Array<{ model: string; levels: string[] }>;
+	blocking: "never" | "parent-decides" | "always";
+}
+
 export interface SubagentSettings {
-	/** Zero or absent means unlimited. Includes nested children of this session. */
+	modelPolicy?: SubagentModelPolicyV1;
+	/** Zero is unlimited. Absent defaults to 3 with modelPolicy, otherwise unlimited. */
 	maxConcurrent?: number;
 	allowWrite?: boolean;
 	allowCommands?: boolean;
@@ -309,6 +335,9 @@ export interface CoreSessionConfig
 			| "missionLogIntervalMs"
 			| "maxConsecutiveMistakes"
 		> {
+	/** Stored agent ownership; user-created asides do not set this. */
+	parentAgentId?: string;
+
 	/** When false, this session owns its provider settings and ignores providers.json. */
 	inheritProviderSettings?: boolean;
 

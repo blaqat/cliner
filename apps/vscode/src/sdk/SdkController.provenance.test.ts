@@ -49,6 +49,7 @@ function followUpController() {
 	controller.taskHistory = {
 		findHistoryItem: vi.fn(async (id: string) => ({ id, title: `Title ${id}`, task: id })),
 		markTaskActive: vi.fn(async () => {}),
+		markUserMessage: vi.fn(async () => {}),
 		addReferencedThreads: vi.fn(async () => {}),
 	}
 	controller.referencedThreads = new Map()

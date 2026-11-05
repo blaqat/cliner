@@ -22,6 +22,7 @@ function makeController() {
 	const stateManager = {
 		getApiConfiguration: () => ({}),
 		getGlobalStateKey: () => undefined,
+		getModelSettingsMigrationStatus: () => ({ status: "pending", retryable: false }),
 		getGlobalSettingsKey: (key: string) => settings[key],
 		getWorkspaceStateKey: () => undefined,
 		setGlobalState: vi.fn((key: string, value: unknown) => {

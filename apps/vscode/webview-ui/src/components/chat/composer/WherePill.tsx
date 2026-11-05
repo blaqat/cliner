@@ -2,7 +2,12 @@ import { SetThreadTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { TaskGroupSummary } from "@shared/task-groups"
 import { extractTicketTags } from "@shared/ticket-tags"
 import { memo, useMemo, useState } from "react"
-import { COMPOSER_MENU_SCROLL_CLASS, MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import {
+	COMPOSER_LINE_CHIP_CLASS,
+	COMPOSER_MENU_SCROLL_CLASS,
+	MENU_ICON_CLASS,
+	MENU_SEPARATOR_CLASS,
+} from "@/components/common/menuStyles"
 import { expandTaskGroupInInbox } from "@/components/inbox/inboxUtils"
 import {
 	setComposerTaskGroup,
@@ -18,10 +23,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
-import { BranchTaskSuggestion, useBranchTaskSuggestion } from "./BranchTaskSuggestion"
+import { BranchTaskSuggestion, type BranchTaskSuggestionOffer, useBranchTaskSuggestion } from "./BranchTaskSuggestion"
 import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKeyboard"
 
-/** How many tasks the menu lists before the find field is needed. */
 /** Task rows visible before the list scrolls (24px each). */
 const VISIBLE_TASK_ROWS = 8
 
@@ -31,8 +35,8 @@ function matchesQuery(group: TaskGroupSummary, query: string): boolean {
 }
 
 /**
- * The task the pill shows: the thread's, the pending one for a new thread, or the fixed one on a
- * task page. Shared with the composer row, which sizes the pill by whether there is a task name.
+ * The task the chip shows: the thread's, the pending one for a new thread, or the fixed one on a
+ * task page.
  */
 function useWhereTask() {
 	const { currentTaskItem, taskGroups } = useExtensionState()
@@ -56,49 +60,34 @@ function useWhereTask() {
 	}
 }
 
-/** True when the where pill shows a task name (so it needs room for it); false for "No task" or no pill. */
-export function useWherePillHasTask(): boolean {
-	const { title, hidden } = useWhereTask()
-	return !hidden && !!title
-}
-
-interface WherePillProps {
+interface TaskPickerMenuProps {
+	/** Closes the surrounding popover (after a pick, or before opening the new-task sheet). */
+	onClose: () => void
+	/**
+	 * The branch → task suggestion, from `useBranchTaskSuggestion` in whatever stays mounted (the chip,
+	 * the header), so a dismissal survives the menu closing.
+	 */
+	suggestion?: BranchTaskSuggestionOffer
 	onOpenTaskGroup?: (taskGroupId: string) => void
-	/** Icon only even with a task (the name and chevron hide; the tooltip and label keep them), for very narrow rows. */
-	iconOnly?: boolean
 }
 
 /**
- * The composer's "where" pill: the thread's task (the workspace button beside it says where it runs). With no
- * task it is just the icon ("No task" in the tooltip and label); with one it shows a short,
- * truncating name. In a new thread it picks the task the first message files the thread into; in an
- * existing thread it moves the thread right away. A branch → task suggestion shows as a ghost row
- * at the top of the menu, and a green branch codicon on the pill hints at it.
+ * The task menu: a find field, recent tasks, "No task" and "New task…", plus a branch → task
+ * suggestion on top. In a new thread a pick is the task the first message files the thread into;
+ * in an existing thread it moves the thread right away (the header's ⋯ › Move to task). On a task
+ * page the task is fixed, and the menu just says so.
  */
-const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
+export function TaskPickerMenu({ onClose, onOpenTaskGroup, suggestion }: TaskPickerMenuProps) {
 	const { taskGroups } = useExtensionState()
-	const suggestion = useBranchTaskSuggestion()
-	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState("")
-	const { threadId, fixedId, selectedId, selected, fixedTitle, title, hidden } = useWhereTask()
+	const { threadId, selectedId, fixedTitle } = useWhereTask()
 	const recent = useMemo(
 		() => [...(taskGroups ?? [])].sort((a, b) => b.updatedAt - a.updatedAt).filter((group) => matchesQuery(group, query)),
 		[taskGroups, query],
 	)
-	// Subagent threads belong to their root thread's task; they can't move on their own.
-	if (hidden) {
-		return null
-	}
-	const hasTask = !!title
-	// No task: nothing worth a label, so the pill is just the icon.
-	const showName = hasTask && !iconOnly
 
-	const close = () => {
-		setOpen(false)
-		setQuery("")
-	}
 	const pick = (id: string | undefined) => {
-		close()
+		onClose()
 		if (!threadId) {
 			setComposerTaskGroup(id)
 			return
@@ -113,6 +102,118 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 		).catch((error) => console.error("Failed to move thread to task:", error))
 	}
 
+	return (
+		<>
+			{suggestion && <BranchTaskSuggestion onAccept={onClose} suggestion={suggestion} />}
+			{fixedTitle ? (
+				<div className="px-2 py-1 text-[12px] text-description" data-testid="where-fixed-task">
+					New threads here go into <span className="text-foreground">{fixedTitle}</span>.
+				</div>
+			) : (
+				<div aria-label="Task" className="flex min-h-0 flex-col" role="menu">
+					{/* Pinned to the top, so it stays in reach even if the menu has to scroll. */}
+					<div
+						className={cn("sticky top-0 z-10 -mx-1 shrink-0 bg-menu px-1 py-1", !suggestion && "-mt-1")}
+						data-testid="where-search">
+						<Input
+							aria-label="Find a task"
+							autoFocus
+							className="h-6 rounded-xs px-1.5 py-0 text-xs md:text-xs"
+							onChange={(event) => setQuery(event.target.value)}
+							onKeyDown={(event) => {
+								if (event.key === "Enter" && recent[0]) {
+									event.preventDefault()
+									pick(recent[0].id)
+								}
+							}}
+							placeholder="Find a task…"
+							value={query}
+						/>
+					</div>
+					{recent.length > 0 && <div className={MENU_HEADING_CLASS}>{query ? "Matching tasks" : "Recent"}</div>}
+					{/* Every task, newest first; past eight rows (or fewer when the window is short, down to two)
+					    the list scrolls and the rows below stay put. */}
+					<div
+						className="overflow-y-auto overscroll-contain"
+						data-testid="where-task-list"
+						style={{ maxHeight: VISIBLE_TASK_ROWS * 24, minHeight: Math.min(recent.length, 2) * 24 }}>
+						{recent.map((group) => (
+							<button
+								aria-checked={group.id === selectedId}
+								className={MENU_ROW_CLASS}
+								key={group.id}
+								onClick={() => pick(group.id)}
+								role="menuitemradio"
+								title={threadId && group.id === selectedId && onOpenTaskGroup ? `Open ${group.title}` : undefined}
+								type="button">
+								<span
+									aria-hidden
+									className={cn(MENU_ICON_CLASS, "codicon-tasklist text-(--vscode-charts-purple)")}
+								/>
+								<span className="min-w-0 flex-1 truncate">{group.title}</span>
+								{group.tags[0] && <TaskTagChip kind={group.tags[0].kind} value={group.tags[0].value} />}
+								<span
+									aria-hidden
+									className={cn(MENU_ICON_CLASS, "codicon-check", group.id !== selectedId && "invisible")}
+								/>
+							</button>
+						))}
+					</div>
+					{query && recent.length === 0 && (
+						<div className="px-2 py-1 text-[12px] text-description">No matching tasks</div>
+					)}
+					<button
+						aria-checked={!selectedId}
+						className={MENU_ROW_CLASS}
+						onClick={() => pick(undefined)}
+						role="menuitemradio"
+						type="button">
+						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-circle-slash text-description")} />
+						<span className="flex-1">No task</span>
+						<span className="text-[11px] text-description">plain thread</span>
+						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !!selectedId && "invisible")} />
+					</button>
+					<div className={MENU_SEPARATOR_CLASS} />
+					<button
+						className={cn(MENU_ROW_CLASS, "text-link")}
+						onClick={() => {
+							onClose()
+							setComposerTaskSheetOpen(true)
+						}}
+						role="menuitem"
+						type="button">
+						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-add")} />
+						New task…
+					</button>
+				</div>
+			)}
+		</>
+	)
+}
+
+/** The task menu's popover look: one scrollbar (the task list's); the menu itself only scrolls, barless, as a last resort. */
+export const TASK_MENU_CLASS = cn("flex w-64 flex-col p-1 [scrollbar-width:none]", COMPOSER_MENU_SCROLL_CLASS)
+
+interface WherePillProps {
+	onOpenTaskGroup?: (taskGroupId: string) => void
+}
+
+/**
+ * "for [No task ⌄]" in the line under a new thread's composer: the task the thread goes into, the
+ * fixed task on a task page. A branch → task suggestion shows as a ghost row at the top of the
+ * menu, and a green branch codicon on the chip hints at it. Inside a thread it isn't shown: the
+ * task is the header's crumb, and ⋯ › Move to task moves the thread.
+ */
+const WherePill = ({ onOpenTaskGroup }: WherePillProps) => {
+	const suggestion = useBranchTaskSuggestion()
+	const [open, setOpen] = useState(false)
+	const { fixedId, fixedTitle, title, hidden } = useWhereTask()
+	// Subagent threads belong to their root thread's task; they can't move on their own.
+	if (hidden) {
+		return null
+	}
+	const hasTask = !!title
+
 	const pillLabel = [
 		hasTask ? `Task: ${title}` : "No task",
 		suggestion ? `suggested: ${suggestion.verb.toLowerCase()} ${suggestion.group.title}` : undefined,
@@ -121,24 +222,12 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 		.join("; ")
 
 	return (
-		<Popover
-			onOpenChange={(next) => {
-				setOpen(next)
-				if (!next) setQuery("")
-			}}
-			open={open}>
+		<Popover onOpenChange={setOpen} open={open}>
 			<PopoverTrigger asChild>
 				<button
 					aria-label={pillLabel}
-					className={cn(
-						"flex h-4.5 min-w-[18px] max-w-[120px] shrink cursor-pointer items-center gap-1 overflow-hidden rounded-full border px-1 text-[11px] leading-none whitespace-nowrap",
-						hasTask
-							? "border-(--vscode-charts-purple)/50 bg-(--vscode-charts-purple)/15 text-foreground"
-							: "border-dashed border-description/50 bg-transparent text-description hover:text-foreground",
-						open && "border-(--vscode-focusBorder)",
-					)}
+					className={cn(COMPOSER_LINE_CHIP_CLASS, "max-w-48 shrink")}
 					data-fixed={fixedId ? "true" : undefined}
-					data-icon-only={showName ? undefined : "true"}
 					data-suggestion={suggestion ? "true" : undefined}
 					data-testid="where-pill"
 					title={
@@ -154,11 +243,11 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 					<span
 						aria-hidden
 						className={cn(
-							"codicon codicon-tasklist shrink-0 text-[11px]!",
+							"codicon codicon-tasklist shrink-0 text-[12px]!",
 							hasTask && "text-(--vscode-charts-purple)",
 						)}
 					/>
-					{showName && <span className="truncate">{title}</span>}
+					<span className={cn("min-w-0 truncate", hasTask && "text-foreground")}>{hasTask ? title : "No task"}</span>
 					{suggestion && (
 						<span
 							aria-hidden
@@ -166,102 +255,16 @@ const WherePill = ({ onOpenTaskGroup, iconOnly = false }: WherePillProps) => {
 							data-testid="where-pill-suggestion-hint"
 						/>
 					)}
-					{showName && <span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />}
+					<span aria-hidden className="codicon codicon-chevron-down shrink-0 text-[10px]! opacity-70" />
 				</button>
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"
-				// One scrollbar: the task list scrolls and shrinks to fit a short window. The menu itself
-				// only scrolls (without a bar of its own) as a last resort when even that doesn't fit.
-				className={cn("menu-rise flex w-64 flex-col p-1 [scrollbar-width:none]", COMPOSER_MENU_SCROLL_CLASS)}
+				className={cn("menu-rise", TASK_MENU_CLASS)}
 				data-testid="where-menu"
 				onKeyDown={handleMenuKeyDown}
 				side="top">
-				{suggestion && <BranchTaskSuggestion onAccept={close} suggestion={suggestion} />}
-				{fixedTitle ? (
-					<div className="px-2 py-1 text-[12px] text-description" data-testid="where-fixed-task">
-						New threads here go into <span className="text-foreground">{fixedTitle}</span>.
-					</div>
-				) : (
-					<div aria-label="Task" className="flex min-h-0 flex-col" role="menu">
-						{/* Pinned to the top, so it stays in reach even if the menu has to scroll. */}
-						<div
-							className={cn("sticky top-0 z-10 -mx-1 shrink-0 bg-menu px-1 py-1", !suggestion && "-mt-1")}
-							data-testid="where-search">
-							<Input
-								aria-label="Find a task"
-								autoFocus
-								className="h-6 rounded-xs px-1.5 py-0 text-xs md:text-xs"
-								onChange={(event) => setQuery(event.target.value)}
-								onKeyDown={(event) => {
-									if (event.key === "Enter" && recent[0]) {
-										event.preventDefault()
-										pick(recent[0].id)
-									}
-								}}
-								placeholder="Find a task…"
-								value={query}
-							/>
-						</div>
-						{recent.length > 0 && <div className={MENU_HEADING_CLASS}>{query ? "Matching tasks" : "Recent"}</div>}
-						{/* Every task, newest first; past eight rows (or fewer when the window is short, down to two)
-						    the list scrolls and the rows below stay put. */}
-						<div
-							className="overflow-y-auto overscroll-contain"
-							data-testid="where-task-list"
-							style={{ maxHeight: VISIBLE_TASK_ROWS * 24, minHeight: Math.min(recent.length, 2) * 24 }}>
-							{recent.map((group) => (
-								<button
-									aria-checked={group.id === selectedId}
-									className={MENU_ROW_CLASS}
-									key={group.id}
-									onClick={() => pick(group.id)}
-									role="menuitemradio"
-									title={
-										threadId && group.id === selectedId && onOpenTaskGroup ? `Open ${group.title}` : undefined
-									}
-									type="button">
-									<span
-										aria-hidden
-										className={cn(MENU_ICON_CLASS, "codicon-tasklist text-(--vscode-charts-purple)")}
-									/>
-									<span className="min-w-0 flex-1 truncate">{group.title}</span>
-									{group.tags[0] && <TaskTagChip kind={group.tags[0].kind} value={group.tags[0].value} />}
-									<span
-										aria-hidden
-										className={cn(MENU_ICON_CLASS, "codicon-check", group.id !== selectedId && "invisible")}
-									/>
-								</button>
-							))}
-						</div>
-						{query && recent.length === 0 && (
-							<div className="px-2 py-1 text-[12px] text-description">No matching tasks</div>
-						)}
-						<button
-							aria-checked={!selectedId}
-							className={MENU_ROW_CLASS}
-							onClick={() => pick(undefined)}
-							role="menuitemradio"
-							type="button">
-							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-circle-slash text-description")} />
-							<span className="flex-1">No task</span>
-							<span className="text-[11px] text-description">plain thread</span>
-							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !!selectedId && "invisible")} />
-						</button>
-						<div className={MENU_SEPARATOR_CLASS} />
-						<button
-							className={cn(MENU_ROW_CLASS, "text-link")}
-							onClick={() => {
-								close()
-								setComposerTaskSheetOpen(true)
-							}}
-							role="menuitem"
-							type="button">
-							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-add")} />
-							New task…
-						</button>
-					</div>
-				)}
+				<TaskPickerMenu onClose={() => setOpen(false)} onOpenTaskGroup={onOpenTaskGroup} suggestion={suggestion} />
 			</PopoverContent>
 		</Popover>
 	)

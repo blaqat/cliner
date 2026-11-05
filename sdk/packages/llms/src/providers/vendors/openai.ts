@@ -6,6 +6,7 @@ import type {
 import { resolveApiKey } from "../http";
 import {
 	isAzureOpenAIHost,
+	plainApiVersionBase,
 	resolveAzureResponsesEndpoint,
 	withApiVersion,
 	withHttpErrorContext,
@@ -41,6 +42,9 @@ export async function createOpenAIProviderModule(
 	const errorFetch = withResponsesStreamGuard(
 		withHttpErrorContext(config.fetch),
 	);
+	// A base URL with no Azure shape still gets a version someone set.
+	const plainVersion = azure ? undefined : configuredApiVersion?.trim();
+	const plainBase = plainVersion ? plainApiVersionBase(config.baseUrl) : undefined;
 	const provider = createOpenAI({
 		apiKey,
 		baseURL: azure?.baseUrl ?? config.baseUrl,
@@ -52,7 +56,9 @@ export async function createOpenAIProviderModule(
 				: config.headers,
 		fetch: azure?.apiVersion
 			? withApiVersion(errorFetch, azure.baseUrl, azure.apiVersion)
-			: errorFetch,
+			: plainVersion && plainBase
+				? withApiVersion(errorFetch, plainBase, plainVersion)
+				: errorFetch,
 		name: context.provider.id,
 	});
 	// The ChatGPT OAuth Codex backend rejects `max_output_tokens`, and the

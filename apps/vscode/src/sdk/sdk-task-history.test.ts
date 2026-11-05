@@ -99,6 +99,20 @@ describe("SdkTaskHistory", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("reads model dependencies beyond every display page without hydration", async () => {
+		const records = Array.from({ length: 10025 }, (_, i) =>
+			makeSessionRecord(`thread-${i}`, {
+				metadata: { modelSelectionV1: { version: 1, act: { modelId: `model-${i}`, levelId: "default" }, ask: null } },
+			}),
+		)
+		const { history, listHistory } = makeHistory(records)
+		listHistory.mockImplementation(async (options?: { limit?: number }) => records.slice(0, options?.limit ?? 200))
+		const result = await history.listModelSelectionDependencies()
+		expect(result).toHaveLength(10025)
+		expect(result[10024].metadata?.modelSelectionV1).toMatchObject({ act: { modelId: "model-10024" } })
+		expect(listHistory).toHaveBeenCalledWith({ hydrate: false, includeSubagents: true, limit: Number.MAX_SAFE_INTEGER })
+	})
+
 	it("shows a persisted message_reference block as a tag on the bubble, never as text", () => {
 		const block =
 			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
@@ -134,6 +148,13 @@ describe("SdkTaskHistory", () => {
 			makeSessionRecord("aside", { metadata: historyItemToSessionMetadata(item) }),
 		)
 		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+	})
+
+	it("round trips when the user last sent a message, and leaves it unset on older threads", () => {
+		const item = makeHistoryItem("t", { lastUserMessageTs: 1234 })
+		const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("t", { metadata: historyItemToSessionMetadata(item) }))
+		expect(result.lastUserMessageTs).toBe(1234)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("old", { metadata: {} })).lastUserMessageTs).toBeUndefined()
 	})
 
 	describe("threads left by regular Cline or older builds", () => {
@@ -360,6 +381,55 @@ describe("SdkTaskHistory", () => {
 		expect(updateSession.mock.calls.length).toBe(writes)
 		await history.updateTaskSubagentCount("task-1", 3)
 		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 3 })
+	})
+
+	it("round trips stash and preview metadata", () => {
+		const original = makeHistoryItem("task-1", {
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: { author: "agent", text: "done" },
+		})
+		const metadata = historyItemToSessionMetadata(original)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("task-1", { metadata }))).toMatchObject({
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: original.lastLine,
+		})
+	})
+
+	it("keeps stash through agent activity and waiting, clears it on user messages or settle", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: true } })])
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, isSettled: false, settledAt: undefined })
+		await history.markTaskActive("task-1")
+		await history.saveThreadStatus("task-1", "waiting")
+		await history.recordLastLine("task-1", { author: "ask", text: "approve tool use" })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, lastLine: { author: "ask" } })
+		await history.markUserMessage("task-1", "  hello\n  again  ")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: false,
+			stashedAt: undefined,
+			lastLine: { author: "user", text: "hello again" },
+		})
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: true, isStashed: false, stashedAt: undefined })
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: false, stashedAt: undefined })
+	})
+
+	it("does not overwrite newer stash or preview with an older usage snapshot", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isStashed: false } })])
+		const stale = await history.findHistoryItem("task-1")
+		await history.toggleTaskStashed("task-1")
+		await history.recordLastLine("task-1", { author: "agent", text: "Finished" })
+		await history.updateTaskHistoryItem({ ...stale!, tokensIn: 42 })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: true,
+			tokensIn: 42,
+			lastLine: { author: "agent", text: "Finished" },
+		})
 	})
 
 	it("toggles settle and automatically clears it on activity", async () => {
@@ -1546,4 +1616,28 @@ it("reopens a nested child with its immediate parent and separate runtime owner"
 		runtimeOwnerTaskId: "root",
 		spawnToolCallId: "spawn-b",
 	})
+})
+
+it("preserves ownership when resuming old nested subagent history", () => {
+	const item = makeHistoryItem("grandchild", { isSubagent: true, parentTaskId: "child", runtimeOwnerTaskId: "main" })
+	expect(historyItemToSessionMetadata(item)).toMatchObject({
+		isSubagent: true,
+		parentTaskId: "child",
+		runtimeOwnerTaskId: "main",
+	})
+	const aside = historyItemToSessionMetadata(makeHistoryItem("aside", { parentTaskId: "main", forkedAtTs: 42 }))
+	expect(aside).toMatchObject({ isSubagent: false, runtimeOwnerTaskId: "" })
+})
+
+it("mirrors exact configured picks between top-level metadata, apiSelection and HistoryItem", () => {
+	const modelSelectionV1 = {
+		version: 1 as const,
+		ask: { modelId: "ask-row", levelId: "custom-low" },
+		act: { modelId: "act-row", levelId: "custom-high" },
+	}
+	const metadata = historyItemToSessionMetadata(makeHistoryItem("task", { apiSelection: { modelSelectionV1 } }))
+	expect(metadata.modelSelectionV1).toEqual(modelSelectionV1)
+	const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("task", { metadata: { modelSelectionV1 } }))
+	expect(result.modelSelectionV1).toEqual(modelSelectionV1)
+	expect(result.apiSelection?.modelSelectionV1).toEqual(modelSelectionV1)
 })

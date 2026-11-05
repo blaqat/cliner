@@ -82,6 +82,19 @@ describe("walkthrough_ready card", () => {
 		expect(screen.queryByRole("button", { name: "pasted diff" })).toBeNull()
 	})
 
+	it("shows Cline's review count, with high ones, only when there are notes", () => {
+		renderRow(JSON.stringify({ ...payload, reviewCount: 8, reviewHighCount: 1 }))
+		expect(screen.getByTestId("walkthrough-ready-review")).toHaveTextContent("8 notes · 1 high")
+	})
+
+	it("leaves the review line out without notes, or with no high ones in the count", () => {
+		const { unmount } = renderRow(JSON.stringify({ ...payload, reviewCount: 0 }))
+		expect(screen.queryByTestId("walkthrough-ready-review")).toBeNull()
+		unmount()
+		renderRow(JSON.stringify({ ...payload, reviewCount: 1 }))
+		expect(screen.getByTestId("walkthrough-ready-review").textContent).toBe("1 note")
+	})
+
 	it("renders nothing for a malformed payload", () => {
 		const { container } = renderRow("not json")
 		expect(container.querySelector("[data-testid='walkthrough-ready']")).toBeNull()

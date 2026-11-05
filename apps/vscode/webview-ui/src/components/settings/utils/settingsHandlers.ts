@@ -36,7 +36,12 @@ export const updateSetting = (field: keyof UpdateSettingsRequest, value: any) =>
 	const convertedValue = convertToProtoValue(field, value)
 	updateRequest[field] = convertedValue
 
-	StateServiceClient.updateSettings(UpdateSettingsRequest.create(updateRequest)).catch((error) => {
-		console.error(`Failed to update setting ${field}:`, error)
-	})
+	return StateServiceClient.updateSettings(UpdateSettingsRequest.create(updateRequest)).then(
+		() => undefined,
+		(error) => {
+			console.error(`Failed to update setting ${field}:`, error)
+			// Settings rows show this next to the control.
+			throw error
+		},
+	)
 }

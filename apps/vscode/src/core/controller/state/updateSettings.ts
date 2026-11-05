@@ -1,21 +1,15 @@
 import { setCompactionStrategyGlobally, setModelToolEnabledGlobally } from "@cline/core"
 import { Empty } from "@shared/proto/cline/common"
 import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsRequest } from "@shared/proto/cline/state"
-import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
-import { OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
-import type { ApiConfiguration } from "@/shared/api"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
 import { Logger } from "@/shared/services/Logger"
 import { telemetryService } from "../../../services/telemetry"
 import { BrowserSettings as SharedBrowserSettings } from "../../../shared/BrowserSettings"
 import { Controller } from ".."
 import { accountLogoutClicked } from "../account/accountLogoutClicked"
-import { applyThreadDefaultProfiles, findModelProfile, saveModelProfiles } from "../models/modelProfiles"
-import { normalizeProviderSwitchModel } from "../models/providerSwitchNormalization"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "../models/taskApiModel"
 
 /**
  * Updates multiple extension settings in a single request
@@ -25,6 +19,70 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
  */
 export async function updateSettings(controller: Controller, request: UpdateSettingsRequest): Promise<Empty> {
 	try {
+		// Refuse managed fields before applying any part of this request.
+		const managed = Object.keys(request).some(
+			(key) => key.startsWith("openTelemetry") && request[key as keyof UpdateSettingsRequest] !== undefined,
+		)
+			? controller.stateManager.getRemoteConfigSettings()
+			: {}
+		for (const key of Object.keys(request)) {
+			if (
+				key.startsWith("openTelemetry") &&
+				request[key as keyof UpdateSettingsRequest] !== undefined &&
+				managed[key as keyof typeof managed] !== undefined
+			) {
+				throw new Error(`Managed setting cannot be changed: ${key}`)
+			}
+		}
+
+		for (const key of [
+			"openTelemetryMetricExportInterval",
+			"openTelemetryLogBatchSize",
+			"openTelemetryLogBatchTimeout",
+			"openTelemetryLogMaxQueueSize",
+		] as const) {
+			const value = request[key]
+			if (value !== undefined && (!Number.isInteger(value) || value <= 0))
+				throw new Error(`Invalid positive interval or size: ${key}`)
+		}
+
+		if (request.focusChainSettings !== undefined) {
+			const value = request.focusChainSettings
+			if (!Number.isInteger(value.remindClineInterval) || value.remindClineInterval < 1)
+				throw new Error("Invalid task progress reminder interval")
+			controller.stateManager.setGlobalState("focusChainSettings", value)
+		}
+		if (request.openTelemetryEnabled !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryEnabled", request.openTelemetryEnabled)
+		if (request.openTelemetryMetricsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricsExporter", request.openTelemetryMetricsExporter)
+		if (request.openTelemetryLogsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogsExporter", request.openTelemetryLogsExporter)
+		if (request.openTelemetryTracesExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryTracesExporter", request.openTelemetryTracesExporter)
+		if (request.openTelemetryOtlpProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpProtocol", request.openTelemetryOtlpProtocol)
+		if (request.openTelemetryOtlpEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpEndpoint", request.openTelemetryOtlpEndpoint)
+		if (request.openTelemetryOtlpMetricsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsProtocol", request.openTelemetryOtlpMetricsProtocol)
+		if (request.openTelemetryOtlpMetricsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsEndpoint", request.openTelemetryOtlpMetricsEndpoint)
+		if (request.openTelemetryOtlpLogsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsProtocol", request.openTelemetryOtlpLogsProtocol)
+		if (request.openTelemetryOtlpLogsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsEndpoint", request.openTelemetryOtlpLogsEndpoint)
+		if (request.openTelemetryMetricExportInterval !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricExportInterval", request.openTelemetryMetricExportInterval)
+		if (request.openTelemetryOtlpInsecure !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpInsecure", request.openTelemetryOtlpInsecure)
+		if (request.openTelemetryLogBatchSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchSize", request.openTelemetryLogBatchSize)
+		if (request.openTelemetryLogBatchTimeout !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchTimeout", request.openTelemetryLogBatchTimeout)
+		if (request.openTelemetryLogMaxQueueSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogMaxQueueSize", request.openTelemetryLogMaxQueueSize)
+
 		if (request.enterSendsAs !== undefined) {
 			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
 			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)
@@ -36,49 +94,9 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			await accountLogoutClicked(controller, Empty.create())
 		}
 
-		if (request.apiConfiguration) {
-			const protoApiConfiguration = request.apiConfiguration
-
-			const convertedApiConfigurationFromProto = {
-				...protoApiConfiguration,
-				// Convert proto ApiProvider enums to native string types
-				planModeApiProvider: protoApiConfiguration.planModeApiProvider
-					? convertProtoToApiProvider(protoApiConfiguration.planModeApiProvider)
-					: undefined,
-				actModeApiProvider: protoApiConfiguration.actModeApiProvider
-					? convertProtoToApiProvider(protoApiConfiguration.actModeApiProvider)
-					: undefined,
-				planModeReasoningEffort: protoApiConfiguration.planModeReasoningEffort as OpenaiReasoningEffort | undefined,
-				actModeReasoningEffort: protoApiConfiguration.actModeReasoningEffort as OpenaiReasoningEffort | undefined,
-				openAiCompatibleApiType:
-					protoApiConfiguration.openAiCompatibleApiType as ApiConfiguration["openAiCompatibleApiType"],
-			}
-
-			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
-			const normalizedApiConfiguration = normalizeProviderSwitchModel(
-				controller.getProviderConfigStore(),
-				previousApiConfiguration,
-				convertedApiConfigurationFromProto,
-			)
-
-			controller.stateManager.setApiConfiguration(normalizedApiConfiguration)
-
-			if (controller.task) {
-				const currentMode = controller.stateManager.getGlobalSettingsKey("mode")
-				const modelId = resolveActiveModelIdFromApiConfiguration(normalizedApiConfiguration, currentMode)
-				controller.task.api = createTaskApiModelShim(modelId)
-			}
-			controller.handleApiConfigurationChanged(previousApiConfiguration, normalizedApiConfiguration)
-		}
-
 		// Update telemetry setting
 		if (request.telemetrySetting) {
 			await controller.updateTelemetrySetting(request.telemetrySetting as TelemetrySetting)
-		}
-
-		// Update plan/act separate models setting
-		if (request.planActSeparateModelsSetting !== undefined) {
-			controller.stateManager.setGlobalState("planActSeparateModelsSetting", request.planActSeparateModelsSetting)
 		}
 
 		// Update checkpoints setting
@@ -159,87 +177,6 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			controller.stateManager.setGlobalState("worktreesEnabled", request.worktreesEnabled)
 		}
 
-		// Update subagents setting
-		if (request.subagentsEnabled !== undefined) {
-			const wasEnabled = controller.stateManager.getGlobalSettingsKey("subagentsEnabled") ?? false
-			const isEnabled = !!request.subagentsEnabled
-			controller.stateManager.setGlobalState("subagentsEnabled", isEnabled)
-
-			// Capture telemetry when setting changes
-			if (wasEnabled !== isEnabled) {
-				telemetryService.captureSubagentToggle(isEnabled)
-			}
-		}
-
-		for (const key of ["subagentsAllowWrite", "subagentsAllowCommands", "subagentsAllowMcp", "subagentsAllowWeb"] as const) {
-			if (request[key] !== undefined) controller.stateManager.setGlobalState(key, request[key])
-		}
-		if (request.subagentsMaxConcurrent !== undefined) {
-			if (!Number.isInteger(request.subagentsMaxConcurrent) || request.subagentsMaxConcurrent < 0) {
-				throw new Error("Maximum concurrent subagents must be a nonnegative integer; use 0 for unlimited.")
-			}
-			controller.stateManager.setGlobalState("subagentsMaxConcurrent", request.subagentsMaxConcurrent)
-		}
-
-		// Profiles page: the profile list and the Thread defaults. Defaults are
-		// applied onto the per-mode selection new threads start from.
-		const profilesChanged = request.profiles !== undefined
-		const threadDefaultsChanged = [
-			request.threadDefaultProfileId,
-			request.threadSeparateAskActProfiles,
-			request.threadAskProfileId,
-			request.threadActProfileId,
-		].some((value) => value !== undefined)
-		if (profilesChanged) {
-			saveModelProfiles(controller.stateManager, request.profiles?.values ?? [])
-		}
-		for (const key of ["threadDefaultProfileId", "threadAskProfileId", "threadActProfileId"] as const) {
-			const id = request[key]
-			if (id === undefined) continue
-			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
-			controller.stateManager.setGlobalState(key, id || undefined)
-		}
-		if (request.threadSeparateAskActProfiles !== undefined) {
-			controller.stateManager.setGlobalState("threadSeparateAskActProfiles", request.threadSeparateAskActProfiles)
-		}
-		if (profilesChanged || threadDefaultsChanged) {
-			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
-			if (applyThreadDefaultProfiles(controller.stateManager)) {
-				const nextApiConfiguration = controller.stateManager.getApiConfiguration()
-				controller.handleApiConfigurationChanged?.(previousApiConfiguration, nextApiConfiguration)
-			}
-		}
-
-		// Features that run on a profile. Ids are profile ids; "parent" in
-		// the allowlist is the inherit option.
-		for (const key of ["subagentDefaultProfileId", "threadTitlesProfileId", "walkthroughGenerateProfileId"] as const) {
-			const id = request[key]
-			if (id && !findModelProfile(controller.stateManager, id)) throw new Error("Unknown profile")
-		}
-		if (request.subagentProfilesEnabled !== undefined) {
-			controller.stateManager.setGlobalState("subagentProfilesEnabled", request.subagentProfilesEnabled)
-		}
-		if (request.subagentDefaultProfileId !== undefined) {
-			controller.stateManager.setGlobalState("subagentDefaultModelProfileId", request.subagentDefaultProfileId || undefined)
-		}
-		// subagentReasoningEffort is a legacy setting this release only reads (the
-		// fallback for subagents inheriting the thread's model); profiles carry effort.
-		if (request.subagentAllowedProfileIds !== undefined) {
-			controller.stateManager.setGlobalState("subagentAllowedModelProfileIds", request.subagentAllowedProfileIds.values)
-		}
-		if (request.threadTitlesEnabled !== undefined) {
-			controller.stateManager.setGlobalState("threadTitlesEnabled", request.threadTitlesEnabled)
-		}
-		if (request.threadTitlesProfileId !== undefined) {
-			controller.stateManager.setGlobalState("threadTitlesModelProfileId", request.threadTitlesProfileId || undefined)
-		}
-		if (request.walkthroughGenerateProfileId !== undefined) {
-			controller.stateManager.setGlobalState(
-				"walkthroughGenerateModelProfileId",
-				request.walkthroughGenerateProfileId || undefined,
-			)
-		}
-
 		// Terminal environment arrives as a granular patch for one scope, applied
 		// to the freshest stored value so back-to-back edits cannot clobber each
 		// other. Workspace scope lives in per-workspace state so machine-local
@@ -262,23 +199,6 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			} else {
 				controller.stateManager.setGlobalState("terminalEnvironment", env)
 			}
-		}
-
-		if (
-			[
-				request.subagentsEnabled,
-				request.subagentsMaxConcurrent,
-				request.subagentsAllowWrite,
-				request.subagentsAllowCommands,
-				request.subagentsAllowMcp,
-				request.subagentsAllowWeb,
-				request.subagentProfilesEnabled,
-				request.subagentDefaultProfileId,
-				request.subagentAllowedProfileIds,
-				request.profiles,
-			].some((value) => value !== undefined)
-		) {
-			controller.handleSubagentSettingsChanged()
 		}
 
 		// Update auto-condense setting
@@ -389,6 +309,9 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 		if (request.continueAnswerOnActSwitch !== undefined) {
 			controller.stateManager.setGlobalState("continueAnswerOnActSwitch", request.continueAnswerOnActSwitch)
 		}
+		if (request.oneViewEnabled !== undefined) {
+			controller.stateManager.setGlobalState("oneViewEnabled", request.oneViewEnabled)
+		}
 		if (request.threadToastSeconds !== undefined) {
 			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
 				throw new Error("Toast duration must be a whole number of seconds, at least 1.")
@@ -397,7 +320,7 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 		}
 
 		// Post updated state to webview
-		await controller.postStateToWebview()
+		await controller.postStateToWebview(true)
 
 		return Empty.create()
 	} catch (error) {

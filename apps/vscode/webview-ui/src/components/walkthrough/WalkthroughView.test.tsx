@@ -1,6 +1,8 @@
 import type { ChangeWalkthrough } from "@shared/Walkthrough"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { modelSettingsFixture } from "@/components/models/modelSelector.fixture"
+import { OneViewContext } from "@/components/oneView/OneViewContext"
 import { reviewStorageKey } from "./reviewState"
 import WalkthroughView from "./WalkthroughView"
 
@@ -82,18 +84,12 @@ const fixture: ChangeWalkthrough = {
 const response = (walk: ChangeWalkthrough) => ({ value: JSON.stringify(walk) })
 const sent = (fn: ReturnType<typeof vi.fn>, call = 0) => JSON.parse(fn.mock.calls[call][0].value)
 const stop = (title: string) => screen.getByRole("article", { name: title })
+// Syntax tokens split a code line across spans; match the complete line text.
+const codeLine = (pattern: RegExp) => (_text: string, element: Element | null) =>
+	!!element?.classList.contains("whitespace-pre") && pattern.test(element.textContent ?? "")
 
 const baseState = () => ({
-	apiConfigProfiles: [
-		{ id: "cfg-haiku", name: "Haiku", provider: "anthropic", modelId: "haiku" },
-		{ id: "cfg-opus", name: "Opus", provider: "anthropic", modelId: "opus" },
-	],
-	// Generate picks named profiles (Settings › Profiles), not configurations.
-	profiles: [
-		{ id: "fast", name: "Fast", configurationId: "cfg-haiku" },
-		{ id: "deep", name: "Deep", configurationId: "cfg-opus", reasoningEffort: "high" },
-	],
-	walkthroughGenerateProfileId: "deep",
+	modelSettings: modelSettingsFixture(),
 	currentTaskItem: { id: "task", ts: 1, task: "Implement steps", title: "Implement steps 1–2", taskGroupId: "group" },
 	taskHistory: [],
 	taskGroups: [{ id: "group", title: "Bulk invoice export" }],
@@ -145,11 +141,26 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe("WalkthroughView", () => {
+	it("fills the main region in one view, with the list toggle and no Home crumb", async () => {
+		render(
+			<OneViewContext.Provider value={{ enabled: true, listToggle: <button type="button">Hide the list</button> }}>
+				<WalkthroughView onDone={vi.fn()} taskId="task" />
+			</OneViewContext.Provider>,
+		)
+		await screen.findByText("Stop the request waiting")
+		expect(screen.getByTestId("walkthrough-page")).not.toHaveClass("fixed")
+		expect(screen.getByRole("navigation")).toHaveTextContent("Bulk invoice export › Implement steps 1–2 › Walkthrough")
+		expect(screen.getByRole("navigation")).not.toHaveTextContent("Home")
+		expect(screen.getByTestId("walkthrough-header").firstElementChild).toBe(
+			screen.getByRole("button", { name: "Hide the list" }),
+		)
+	})
+
 	it("renders chapters, stops and hunks from the document, with support collapsed", async () => {
 		await renderPage()
 		expect(screen.getByRole("navigation")).toHaveTextContent("Home › Bulk invoice export › Implement steps 1–2 › Walkthrough")
 		expect(screen.getByRole("heading", { name: "Cap bulk exports at 10k rows" })).toBeVisible()
-		expect(screen.getByText("MAX_EXPORT_ROWS").tagName).toBe("CODE")
+		expect(screen.getByText("MAX_EXPORT_ROWS", { selector: "code" }).tagName).toBe("CODE")
 		expect(screen.getByRole("region", { name: "Runtime" })).toBeVisible()
 		expect(screen.getByRole("region", { name: "UI" })).toBeVisible()
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
@@ -159,11 +170,11 @@ describe("WalkthroughView", () => {
 		// Two hunks of one file sit under one file header.
 		const first = stop("Stop the request waiting")
 		expect(within(first).getAllByTestId("walkthrough-file")).toHaveLength(1)
-		expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
+		expect(within(first).getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 		// The sign sits beside the code (outside the selectable text), shown as − for removals.
 		expect(
 			within(first)
-				.getByText(/const csv = await buildCsv/)
+				.getByText(codeLine(/const csv = await buildCsv/))
 				.closest("[data-line-index]")?.textContent,
 		).toMatch(/^2−/)
 
@@ -183,8 +194,8 @@ describe("WalkthroughView", () => {
 		await renderPage()
 		const first = stop("Stop the request waiting")
 		fireEvent.click(within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ }))
-		expect(within(first).queryByText(/const job = await jobs.enqueue/)).toBeNull()
-		expect(within(first).getByText(/jobId: job.id/)).toBeVisible()
+		expect(within(first).queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
+		expect(within(first).getByText(codeLine(/jobId: job.id/))).toBeVisible()
 		fireEvent.click(within(first).getByRole("button", { name: "Open diff" }))
 		await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(1))
 		expect(sent(mocks.open)).toEqual({
@@ -294,8 +305,19 @@ describe("WalkthroughView", () => {
 		Range.prototype.getBoundingClientRect ??= () => new DOMRect(0, 0, 10, 10)
 		// Select from inside the removed line to inside the added one.
 		const range = document.createRange()
-		range.setStart(lines[1].lastChild?.firstChild as Node, 8)
-		range.setEnd(lines[2].lastChild?.firstChild as Node, 13)
+		const pointAt = (row: HTMLElement, offset: number): [Node, number] => {
+			const walker = document.createTreeWalker(row.lastChild!, NodeFilter.SHOW_TEXT)
+			let node = walker.nextNode()
+			while (node) {
+				const length = node.textContent?.length ?? 0
+				if (offset <= length) return [node, offset]
+				offset -= length
+				node = walker.nextNode()
+			}
+			throw new Error("Selection offset exceeds code line")
+		}
+		range.setStart(...pointAt(lines[1], 8))
+		range.setEnd(...pointAt(lines[2], 13))
 		window.getSelection()?.removeAllRanges()
 		window.getSelection()?.addRange(range)
 		fireEvent.mouseUp(within(first).getAllByTestId("walkthrough-diff")[0])
@@ -462,49 +484,47 @@ describe("WalkthroughView", () => {
 		expect(screen.queryByTestId("walkthrough-moved")).toBeNull()
 	})
 
-	it("never generates on mount; Generate uses the remembered profile, ▾ picks another, then Regenerate", async () => {
+	it("never generates on mount; Generate uses the Background text model, then Regenerate", async () => {
 		await renderPage()
 		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Deep")
-
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		// Each profile shows its model and effort under its name.
-		expect(await screen.findByRole("menuitemradio", { name: /Deep.*Anthropic · opus · high effort/ })).toBeTruthy()
-		fireEvent.click(await screen.findByRole("menuitemradio", { name: /Fast/ }))
-		expect(mocks.generate).not.toHaveBeenCalled()
-		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with Fast")
+		expect(screen.getByRole("button", { name: /Generate$/ })).toHaveAttribute("title", "Generate with selected model")
 
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
-		await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated · Fast"))
+		await waitFor(() => expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("Generated"))
 		expect(mocks.generate).toHaveBeenCalledTimes(1)
-		expect(sent(mocks.generate)).toMatchObject({ taskId: "task", scope: "thread", profileId: "fast", regenerate: false })
+		const pick = { modelId: "qwen", levelId: "default" }
+		expect(sent(mocks.generate)).toMatchObject({ taskId: "task", scope: "thread", pick, regenerate: false })
 
 		fireEvent.click(screen.getByRole("button", { name: /Regenerate$/ }))
 		await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(2))
-		expect(sent(mocks.generate, 1)).toMatchObject({ profileId: "fast", regenerate: true })
+		expect(sent(mocks.generate, 1)).toMatchObject({ pick, regenerate: true })
+	})
+
+	it("says why Generate isn't there before the setup has moved, and links to Settings", async () => {
+		mocks.state = { ...mocks.state, modelSettings: undefined }
+		await renderPage()
+		fireEvent.click(screen.getByRole("button", { name: /Generate isn't available/ }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("models")
 	})
 
 	it("moves through the Generate ▾ menu with the arrow keys, Home and End", async () => {
 		await renderPage()
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		const fast = await screen.findByRole("menuitemradio", { name: /Fast/ })
-		const deep = screen.getByRole("menuitemradio", { name: /Deep/ })
-		const manage = screen.getByRole("menuitem", { name: "Manage profiles…" })
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
+		const notes = await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })
+		const manage = screen.getByRole("menuitem", { name: "Manage models…" })
 		const menu = screen.getByRole("menu")
-		fast.focus()
-		fireEvent.keyDown(fast, { key: "ArrowDown" })
-		expect(deep).toHaveFocus()
-		fireEvent.keyDown(deep, { key: "ArrowDown" })
+		notes.focus()
+		fireEvent.keyDown(notes, { key: "ArrowDown" })
 		expect(manage).toHaveFocus()
 		fireEvent.keyDown(manage, { key: "ArrowDown" })
-		expect(fast).toHaveFocus()
-		fireEvent.keyDown(fast, { key: "ArrowUp" })
+		expect(notes).toHaveFocus()
+		fireEvent.keyDown(notes, { key: "ArrowUp" })
 		expect(manage).toHaveFocus()
 		fireEvent.keyDown(manage, { key: "Home" })
-		expect(fast).toHaveFocus()
-		fireEvent.keyDown(fast, { key: "End" })
+		expect(notes).toHaveFocus()
+		fireEvent.keyDown(notes, { key: "End" })
 		expect(manage).toHaveFocus()
-		expect(within(menu).getByRole("separator")).toBeTruthy()
+		expect(within(menu).getAllByRole("separator")).toHaveLength(1)
 	})
 
 	it("shows a turn's short prose and reveals its full narration with Show more", async () => {
@@ -538,12 +558,12 @@ describe("WalkthroughView", () => {
 		expect(within(stop("Cap at 10k rows")).queryByRole("button", { name: "Show more" })).toBeNull()
 	})
 
-	it("opens Settings › Profiles from Manage profiles… in the Generate ▾ menu", async () => {
+	it("opens Models from Manage models… in the Generate ▾ menu", async () => {
 		await renderPage()
-		fireEvent.click(screen.getByRole("button", { name: "Choose Generate profile" }))
-		fireEvent.click(await screen.findByRole("menuitem", { name: "Manage profiles…" }))
-		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("profiles")
-		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Manage profiles…" })).toBeNull())
+		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Manage models…" }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalledWith("models")
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Manage models…" })).toBeNull())
 		expect(mocks.generate).not.toHaveBeenCalled()
 	})
 
@@ -609,11 +629,11 @@ describe("WalkthroughView", () => {
 	})
 
 	it("shows Generate failures inline and keeps the free walkthrough", async () => {
-		mocks.generate.mockRejectedValue(new Error("Choose a profile for Generate"))
+		mocks.generate.mockRejectedValue(new Error("Choose a model for Generate"))
 		await renderPage()
 		fireEvent.click(screen.getByRole("button", { name: /Generate$/ }))
-		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a profile for Generate")
-		expect(sent(mocks.generate).profileId).toBe("deep")
+		expect(await screen.findByRole("alert")).toHaveTextContent("Choose a model for Generate")
+		expect(sent(mocks.generate).pick).toEqual({ modelId: "qwen", levelId: "default" })
 		expect(screen.getByTestId("walkthrough-source")).toHaveTextContent("From turns")
 	})
 
@@ -621,7 +641,7 @@ describe("WalkthroughView", () => {
 		await renderPage()
 		const split = screen.getByTestId("walkthrough-generate")
 		const main = within(split).getByRole("button", { name: /Generate$/ })
-		const menu = within(split).getByRole("button", { name: "Choose Generate profile" })
+		const menu = within(split).getByRole("button", { name: "Generate options" })
 		for (const half of [main, menu]) expect(half.className).toMatch(/\bh-6\b/)
 		expect(main.className).toMatch(/\brounded-none\b/)
 		expect(menu.className).toMatch(/\brounded-none\b/)
@@ -630,9 +650,6 @@ describe("WalkthroughView", () => {
 		expect(screen.queryByTestId("walkthrough-generate-cost")).toBeNull()
 		expect(screen.queryByText(/only when you click/i)).toBeNull()
 		expect(screen.queryByText(/One call to/i)).toBeNull()
-		// The profile name stays where it helps: the ▾ menu and the Generated badge.
-		fireEvent.click(menu)
-		expect(await screen.findByRole("menuitemradio", { name: /Deep/ })).toHaveAttribute("aria-checked", "true")
 	})
 
 	describe("collapsing", () => {
@@ -660,10 +677,10 @@ describe("WalkthroughView", () => {
 			const hunk = within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ })
 			expect(hunk).toHaveAttribute("aria-expanded", "true")
 			fireEvent.click(hunk)
-			expect(within(first).queryByText(/const job = await jobs.enqueue/)).toBeNull()
-			expect(within(first).getByText(/jobId: job.id/)).toBeVisible()
+			expect(within(first).queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
+			expect(within(first).getByText(codeLine(/jobId: job.id/))).toBeVisible()
 			fireEvent.click(within(first).getByRole("button", { name: /Expand hunk @@ -1,2/ }))
-			expect(within(first).getByText(/const job = await jobs.enqueue/)).toBeVisible()
+			expect(within(first).getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 		})
 
 		it("collapses and expands everything from the ⋯ menu and the header toggle", async () => {
@@ -676,12 +693,12 @@ describe("WalkthroughView", () => {
 			// Reopening one chapter shows its stops with their hunks folded.
 			fireEvent.click(chapterToggle("Runtime"))
 			expect(stop("Stop the request waiting")).toBeVisible()
-			expect(screen.queryByText(/const job = await jobs.enqueue/)).toBeNull()
+			expect(screen.queryByText(codeLine(/const job = await jobs.enqueue/))).toBeNull()
 
 			fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 			fireEvent.click(await screen.findByRole("menuitem", { name: "Expand all" }))
 			expect(screen.getAllByTestId("walkthrough-stop")).toHaveLength(3)
-			expect(screen.getByText(/const job = await jobs.enqueue/)).toBeVisible()
+			expect(screen.getByText(codeLine(/const job = await jobs.enqueue/))).toBeVisible()
 
 			// The header toggle flips between the two.
 			fireEvent.click(screen.getByRole("button", { name: "Collapse all" }))
@@ -828,4 +845,20 @@ describe("WalkthroughView", () => {
 			expect(localStorage.getItem(reviewStorageKey("task", "thread"))).toBeNull()
 		})
 	})
+})
+
+it("Generate sends the shared model pick when modelSettings is present", async () => {
+	const settings = modelSettingsFixture()
+	settings.settings.roles.background.overrides.generate = { modelId: "sol", levelId: "medium" }
+	mocks.state = { ...baseState(), modelSettings: settings }
+	await renderPage()
+	fireEvent.click(screen.getByRole("button", { name: /^Generate model:/ }))
+	fireEvent.click(within(await screen.findByTestId("model-list")).getByRole("option", { name: "GPT-5.4" }))
+	fireEvent.click(within(screen.getByTestId("effort-list")).getByRole("option", { name: "High" }))
+	fireEvent.keyDown(screen.getByTestId("model-list"), { key: "Enter" })
+	fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+	await waitFor(() => expect(mocks.generate).toHaveBeenCalled())
+	const body = JSON.parse(mocks.generate.mock.calls[0][0].value)
+	expect(body.pick).toEqual({ modelId: "g54", levelId: "high" })
+	expect(body).not.toHaveProperty("profileId")
 })

@@ -6,7 +6,7 @@ import { RemoteConfigFields } from "@shared/storage/state-keys"
 import type { Environment } from "../config"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration } from "./api"
-import type { ApiConfigProfile, TaskApiSelection } from "./api-profiles"
+import type { TaskApiSelection } from "./api-profiles"
 import { BrowserSettings } from "./BrowserSettings"
 import { ClineFeatureSetting } from "./ClineFeatureSetting"
 import { BannerCardData } from "./cline/banner"
@@ -15,7 +15,7 @@ import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
 import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
-import type { ModelProfile } from "./model-profiles"
+import type { ModelPick } from "./model-settings"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
@@ -42,7 +42,37 @@ export const DEFAULT_PLATFORM = "unknown"
 
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
+/** See {@link ExtensionState.deletedOpenThread}. */
+export interface DeletedOpenThread {
+	id: string
+	/** The task (group) the thread was filed in, resolved before the delete. */
+	taskGroupId?: string
+	seq: number
+}
+
 export interface ExtensionState {
+	modelSettings?: import("./model-settings-state").ModelSettingsState
+	modelSettingsMigrationStatus?: import("./model-settings-migration-status").ModelSettingsMigrationStatus
+	focusChainSettings?: import("./FocusChainSettings").FocusChainSettings
+	openTelemetrySettings?: Pick<
+		import("./proto/cline/state").Settings,
+		| "openTelemetryEnabled"
+		| "openTelemetryMetricsExporter"
+		| "openTelemetryLogsExporter"
+		| "openTelemetryTracesExporter"
+		| "openTelemetryOtlpProtocol"
+		| "openTelemetryOtlpEndpoint"
+		| "openTelemetryOtlpMetricsProtocol"
+		| "openTelemetryOtlpMetricsEndpoint"
+		| "openTelemetryOtlpLogsProtocol"
+		| "openTelemetryOtlpLogsEndpoint"
+		| "openTelemetryMetricExportInterval"
+		| "openTelemetryOtlpInsecure"
+		| "openTelemetryLogBatchSize"
+		| "openTelemetryLogBatchTimeout"
+		| "openTelemetryLogMaxQueueSize"
+	>
+
 	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
 	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
 	subagentView?: {
@@ -77,12 +107,6 @@ export interface ExtensionState {
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined
 	apiConfiguration?: ApiConfiguration
-	/** Saved API configurations (one provider + one model each). */
-	apiConfigProfiles: ApiConfigProfile[]
-	/** Profile id assigned to Ask (plan) mode. */
-	askProfileId?: string
-	/** Profile id assigned to Act mode. */
-	actProfileId?: string
 	/** Immutable model details from the focused session's build, independent of saved profile edits. */
 	/** Composer values are separate from Settings defaults. On home, this is the next-chat draft. */
 	composerApiSelection?: TaskApiSelection
@@ -96,6 +120,8 @@ export interface ExtensionState {
 				provider?: string
 				modelId: string
 				reasoningEffort?: ApiConfiguration["actModeReasoningEffort"]
+				/** The row and level a session on the new settings was built with. */
+				pick?: ModelPick
 			}
 		>
 	>
@@ -143,6 +169,11 @@ export interface ExtensionState {
 	 */
 	epoch?: number
 	currentTaskItem?: HistoryItem
+	/**
+	 * The last open thread a delete removed, with the task it was in (if any). `seq` grows per
+	 * deletion so the webview leaves the dead thread once: for that task's page, else home.
+	 */
+	deletedOpenThread?: DeletedOpenThread
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
 	planActSeparateModelsSetting: boolean
@@ -150,6 +181,8 @@ export interface ExtensionState {
 	platform: Platform
 	environment?: Environment
 	shouldShowAnnouncement: boolean
+	/** Opaque projection version. Absent on legacy full snapshots. */
+	taskHistoryVersion?: string
 	taskHistory: HistoryItem[]
 	/** Task groups ("Tasks" in the UI) with note counts, from ~/.cline/data/task-groups. */
 	taskGroups: TaskGroupSummary[]
@@ -195,18 +228,7 @@ export interface ExtensionState {
 	subagentsAllowCommands?: boolean
 	subagentsAllowMcp?: boolean
 	subagentsAllowWeb?: boolean
-	/** Named profiles (configuration + effort) and what uses them (Profiles page). */
-	profiles?: ModelProfile[]
-	threadDefaultProfileId?: string
-	threadSeparateAskActProfiles?: boolean
-	threadAskProfileId?: string
-	threadActProfileId?: string
-	subagentProfilesEnabled?: boolean
-	subagentDefaultProfileId?: string
-	subagentAllowedProfileIds?: string[]
 	threadTitlesEnabled?: boolean
-	threadTitlesProfileId?: string
-	walkthroughGenerateProfileId?: string
 	/** Terminal environment per scope; workspace values come from workspace state. */
 	terminalEnvironment?: TerminalEnvironmentWebviewState
 	worktreesEnabled?: ClineFeatureSetting
@@ -235,6 +257,8 @@ export interface ExtensionState {
 	threadToastSeconds?: number
 	/** Switching to Act right after an Ask answer also continues it (default on). */
 	continueAnswerOnActSwitch?: boolean
+	/** One view (beta): the thread list beside the chat instead of a separate home page (default off). */
+	oneViewEnabled?: boolean
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	openAiCodexIsAuthenticated?: boolean
@@ -329,6 +353,7 @@ export type ClineAsk =
 	| "use_subagents"
 
 export type ClineSay =
+	| "subagent_update"
 	| "task"
 	| "error"
 	| "api_req_started"
@@ -529,3 +554,6 @@ export interface ClineSubagentUsageInfo {
 type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled" | "retries_exhausted"
 
 export const COMPLETION_RESULT_CHANGES_FLAG = "HAS_CHANGES"
+
+/** JSON state transport supports omitted, unchanged fields and partial posts. */
+export type ExtensionStateUpdate = Partial<ExtensionState>

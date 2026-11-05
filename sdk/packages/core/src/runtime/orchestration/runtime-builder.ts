@@ -1,3 +1,4 @@
+import { agentControlTools } from "../../extensions/tools/team/async-agents";
 import { supportsModelTool } from "@cline/llms";
 import type {
 	AgentTool,
@@ -415,14 +416,22 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			toolExecutors,
 		} = input;
 		const onTeamEvent = input.onTeamEvent ?? (() => {});
-		const normalized = normalizeConfig(config);
+		const normalized = normalizeConfig(
+			config.parentAgentId
+				? { ...config, enableSpawnAgent: false, enableAgentTeams: false }
+				: config,
+		);
 		const modelTools: ModelTool[] = [];
 		if (
 			normalized.enableTools &&
 			normalized.mode !== "yolo" &&
 			isModelToolEnabledGlobally("web_search") &&
 			supportsModelTool(
-				{ providerId: config.providerId, modelId: config.modelId },
+				{
+					providerId: config.providerId,
+					modelId: config.modelId,
+					baseUrl: config.baseUrl ?? config.providerConfig?.baseUrl,
+				},
 				"web_search",
 			)
 		) {
@@ -431,7 +440,11 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 		if (
 			normalized.enableTools &&
 			supportsModelTool(
-				{ providerId: config.providerId, modelId: config.modelId },
+				{
+					providerId: config.providerId,
+					modelId: config.modelId,
+					baseUrl: config.baseUrl ?? config.providerConfig?.baseUrl,
+				},
 				"image_generation",
 			)
 		) {
@@ -799,6 +812,13 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 
 		if (normalized.enableSpawnAgent && createSpawnTool) {
 			const spawnTool = createSpawnTool();
+			tools.push(
+				...(agentControlTools.get(spawnTool) ?? []).filter(
+					(tool) =>
+						tool.name !== "wait_for_agents" ||
+						config.subagentSettings?.modelPolicy?.blocking !== "never",
+				),
+			);
 			tools.push({
 				...spawnTool,
 				execute: async (spawnInput, context) => {

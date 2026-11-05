@@ -19,8 +19,13 @@ export type HistoryItem = {
 	isFavorited?: boolean
 	isSettled?: boolean
 	settledAt?: number
+	isStashed?: boolean
+	stashedAt?: number
+	lastLine?: { author: "user" | "agent" | "ask"; text: string }
 	/** Last real interaction (message, approval, turn); unaffected by settle/favorite/metadata edits. Mirrored into `ts`. */
 	lastActivityTs?: number
+	/** When the user last sent this thread a message (home orders by it; agent activity shows beside it). */
+	lastUserMessageTs?: number
 	parentTaskId?: string
 	/** Root session that owns the child runtime and persisted artifacts. */
 	runtimeOwnerTaskId?: string
@@ -46,6 +51,7 @@ export type HistoryItem = {
 	 * chat restores it instead of the current global selection.
 	 */
 	apiSelection?: TaskApiSelection
+	modelSelectionV1?: import("./model-settings").ThreadModelSelection
 	/** User-set thread title; when absent the UI falls back to `task` (the first message). */
 	title?: string
 	/** Task group ("Task" in the UI) this thread is filed under. */

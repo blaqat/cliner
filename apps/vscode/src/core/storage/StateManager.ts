@@ -1,4 +1,6 @@
 import type { ApiConfiguration } from "@shared/api"
+import type { ModelSettingsMigrationStatus } from "@shared/model-settings-migration-status"
+import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import {
 	ApiHandlerSettingsKeys,
 	type GlobalState,
@@ -19,6 +21,9 @@ import type { StorageContext } from "@shared/storage/storage-context"
 import { type StorageLockOptions, StorageLockTimeoutError } from "@shared/storage/storage-lock"
 import type { Mode } from "@shared/storage/types"
 import { FSWatcher } from "chokidar"
+import type { ConnectionSecretStore } from "@/sdk/model-settings/connection-secret-store"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
+import { readSdkMigrationInput } from "@/sdk/model-settings/sdk-migration-input"
 import { initializeDistinctId } from "@/services/logging/distinctId"
 import { Logger } from "@/shared/services/Logger"
 import { ensureApiConfigProfiles, snapshotApiProfileConfiguration } from "../controller/models/apiProfiles"
@@ -26,6 +31,7 @@ import { ensureModelProfiles, THREAD_SELECTION_KEYS, threadSelectionStamp } from
 import { AgentConfigLoader } from "../task/tools/subagent/AgentConfigLoader"
 import { readTaskSettingsFromStorage, writeTaskSettingsToStorage } from "./disk"
 import { STATE_MANAGER_NOT_INITIALIZED } from "./error-messages"
+import { migrateModelSettings, redactedMigrationCause } from "./model-settings-migration"
 import { filterAllowedRemoteConfigFields } from "./remote-config/utils"
 import { readGlobalStateFromStorage, readSecretsFromStorage, readWorkspaceStateFromStorage } from "./utils/state-helpers"
 export interface PersistenceErrorEvent {
@@ -54,6 +60,8 @@ export interface PersistenceErrorEvent {
  * each window typically runs different tasks.
  */
 export class StateManager {
+	public connectionSecrets?: ConnectionSecretStore
+
 	private static instance: StateManager | null = null
 
 	private globalStateCache: GlobalStateAndSettings = {} as GlobalStateAndSettings
@@ -97,7 +105,7 @@ export class StateManager {
 	/**
 	 * Initialize the cache by loading data from the file-backed StorageContext.
 	 */
-	public static async initialize(storage: StorageContext): Promise<StateManager> {
+	public static async initialize(storage: StorageContext, connectionSecrets?: ConnectionSecretStore): Promise<StateManager> {
 		if (!StateManager.instance) {
 			StateManager.instance = new StateManager(storage)
 		}
@@ -107,6 +115,7 @@ export class StateManager {
 		}
 
 		try {
+			StateManager.instance.connectionSecrets = connectionSecrets
 			await initializeDistinctId(storage)
 
 			await StateManager.instance.loadFromStorage()
@@ -158,20 +167,72 @@ export class StateManager {
 	 * a window that arrives second finds the first one's committed result and
 	 * changes nothing, and never writes back values that were saved meanwhile.
 	 */
+	private modelMigrationStatus: "disabled" | "pending" | "complete" | "failed" = "disabled"
+
+	private modelMigrationCause?: string
+
+	getModelSettingsMigrationStatus(): ModelSettingsMigrationStatus {
+		const journal = this.globalStateCache.modelSettingsMigration
+		return {
+			status: this.modelMigrationStatus,
+			retryable: this.modelMigrationStatus === "failed",
+			...(this.modelMigrationCause ? { cause: this.modelMigrationCause } : {}),
+			...(journal?.issues?.length ? { issues: journal.issues } : {}),
+		}
+	}
+
+	private failModelSettingsMigration(cause: string): void {
+		this.modelMigrationStatus = "failed"
+		this.modelMigrationCause = cause
+		Logger.warn(`[ModelSettings] Migration failed: ${cause}. Legacy settings retained.`)
+	}
+
+	async retryModelSettingsMigration(): Promise<void> {
+		await this.reconcileProfilesUnderLock()
+	}
+
 	private async reconcileProfilesUnderLock(options?: StorageLockOptions): Promise<void> {
 		let acquired = false
 		try {
 			await this.storage.globalStateBackingStore.withLock(async () => {
 				acquired = true
 				await this.reloadPersistedState()
-				await ensureApiConfigProfiles(this)
-				ensureModelProfiles(this)
+				if (modelSettingsRolloutEnabled()) {
+					this.modelMigrationStatus = "pending"
+					this.modelMigrationCause = undefined
+					try {
+						const moved = this.globalStateCache.modelSettingsMigration?.status !== "complete"
+						await migrateModelSettings({
+							state: this.storage.globalState,
+							sdkInput: () => readSdkMigrationInput(this.storage.dataDir),
+							secrets: this.connectionSecrets,
+							legacySecretKeys: this.storage.secrets.keys(),
+							readLegacySecret: (key) => this.storage.secrets.get(key),
+						})
+						await this.populateFromStorage()
+						this.modelMigrationStatus = "complete"
+						const settings = this.globalStateCache.modelSettings
+						Logger.info(
+							`[ModelSettings] ${moved ? "Moved settings" : "Loaded saved settings"}: revision ${settings?.revision ?? "none"}, ${settings?.models.length ?? 0} models`,
+						)
+					} catch (error) {
+						this.failModelSettingsMigration(redactedMigrationCause(error))
+						// Legacy stays the runtime until a retry succeeds, so it keeps its own upkeep.
+						await ensureApiConfigProfiles(this)
+						ensureModelProfiles(this)
+					}
+				} else {
+					await ensureApiConfigProfiles(this)
+					ensureModelProfiles(this)
+				}
 				await this.flushPendingState()
 			}, options)
 		} catch (error) {
 			if (acquired || !(error instanceof StorageLockTimeoutError)) throw error
 			Logger.warn("[StateManager] Could not take the settings lock; deferring profile migration.")
 			await this.reloadPersistedState()
+			if (modelSettingsRolloutEnabled() && this.globalStateCache.modelSettingsMigration?.status !== "complete")
+				this.failModelSettingsMigration(SETTINGS_LOCK_HELD_CAUSE)
 		}
 	}
 
@@ -225,6 +286,38 @@ export class StateManager {
 		// Add to pending persistence set and schedule debounced write
 		this.pendingGlobalState.add(key)
 		this.scheduleDebouncedPersistence()
+	}
+
+	/** Serialize new settings mutations with migration and other extension windows. */
+	/** Picks up what another window saved. True if the model settings moved. */
+	async refreshModelSettings(): Promise<boolean> {
+		const before = this.getGlobalStateKey("modelSettings")?.revision
+		await this.reloadPersistedState()
+		return this.getGlobalStateKey("modelSettings")?.revision !== before
+	}
+
+	async mutateModelSettings(
+		expectedRevision: number,
+		mutate: (settings: import("@shared/model-settings").ModelSettings) => Promise<void | (() => Promise<void>)>,
+	): Promise<void> {
+		const { createDefaultModelSettings, ModelSettingsSchema } = await import("@shared/model-settings")
+		await this.storage.globalStateBackingStore.withLock(async () => {
+			await this.reloadPersistedState()
+			const current = ModelSettingsSchema.parse(this.getGlobalStateKey("modelSettings") ?? createDefaultModelSettings())
+			if (current.revision !== expectedRevision)
+				throw new Error("Settings changed in another window. Refresh and try again.")
+			const rollback = await mutate(current)
+			try {
+				current.revision++
+				const next = ModelSettingsSchema.parse(current)
+				await this.storage.globalStateBackingStore.setBatch({ modelSettings: next })
+				this.globalStateCache.modelSettings = next
+				this.pendingGlobalState.delete("modelSettings")
+			} catch (error) {
+				await rollback?.()
+				throw error
+			}
+		})
 	}
 
 	/**
@@ -693,7 +786,7 @@ export class StateManager {
 		this.dispose()
 
 		// Reinitialize from the same storage context
-		await StateManager.initialize(this.storage)
+		await StateManager.initialize(this.storage, this.connectionSecrets)
 
 		// If there's an active task, reload its settings
 		if (currentTaskId) {

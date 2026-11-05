@@ -277,7 +277,7 @@ export default function SubagentStatusRow({ message, isLast, lastModifiedMessage
 										title={
 											entry.profile === "parent"
 												? "Runs on this thread's model"
-												: `Sub-agent profile: ${entry.profile}`
+												: `Subagent model: ${entry.profile}`
 										}>
 										{entry.profile === "parent" ? "parent" : entry.profile}
 										{entry.reasoningEffort && entry.reasoningEffort !== "none"

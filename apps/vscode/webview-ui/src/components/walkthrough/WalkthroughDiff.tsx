@@ -1,6 +1,9 @@
 import { hunkBodyLines, hunkLineNumbers, type WalkthroughAnnotation, type WalkthroughHunk } from "@shared/Walkthrough"
-import { Fragment, useRef, useState } from "react"
+import { Fragment, type ReactNode, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import "../common/codeblock-parser.css"
+import { diffCode as code, highlightDiff } from "./diffHighlight"
+import { type PlacedReviewNote, REVIEW_KINDS, sortReviewNotes } from "./reviewNotes"
 import type { LineRange } from "./reviewState"
 import { InlineCodeProse, NoteEditor } from "./WalkthroughNote"
 
@@ -47,6 +50,17 @@ export interface LineNotes {
 	onEdit: (range: (LineRange & { quote?: string }) | undefined) => void
 }
 
+/** Cline's notes on this hunk's lines: a kind icon in the gutter that opens the note under its lines. */
+export interface DiffReview {
+	/** Line notes in this hunk that the filter shows. */
+	notes: PlacedReviewNote[]
+	isOpen: (id: string) => boolean
+	isDismissed: (id: string) => boolean
+	/** A marker was clicked: the notes starting on that line. */
+	onMarker: (ids: string[]) => void
+	renderCallout: (placed: PlacedReviewNote) => ReactNode
+}
+
 /** The body line a DOM point sits in, if it's one of this diff's lines. */
 function lineAt(node: Node | null, container: HTMLElement): number | undefined {
 	const element = node instanceof Element ? node : node?.parentElement
@@ -64,12 +78,15 @@ export function WalkthroughDiff({
 	hunk,
 	annotations,
 	notes,
+	review,
 }: {
 	hunk: WalkthroughHunk
 	annotations: WalkthroughAnnotation[]
 	notes: LineNotes
+	review?: DiffReview
 }) {
-	const body = hunkBodyLines(hunk.patch)
+	const body = useMemo(() => hunkBodyLines(hunk.patch), [hunk.patch])
+	const highlighted = useMemo(() => highlightDiff(body, hunk.path), [body, hunk.path])
 	const numbers = hunkLineNumbers(hunk)
 	const container = useRef<HTMLDivElement>(null)
 	// A selection waiting for its Note button: the lines, the exact text, and where to put the button.
@@ -82,6 +99,44 @@ export function WalkthroughDiff({
 		return range.end > range.start && first !== last ? `${old}lines ${first}–${last}` : `${old}line ${first}`
 	}
 	const covers = (range: LineRange | undefined, index: number) => !!range && index >= range.start && index <= range.end
+	const cline = review?.notes ?? []
+	const gutter = cline.length > 0
+
+	const marker = (index: number) => {
+		const here = sortReviewNotes(cline.filter((placed) => placed.line === index))
+		// Lines a ranged note covers after its first get a thin rail, so its extent reads at a glance.
+		const rail = cline.some((p) => p.line !== undefined && p.endLine !== undefined && index > p.line && index <= p.endLine)
+		const first = here[0]
+		if (!first)
+			return (
+				<span aria-hidden className="relative w-4 shrink-0 select-none">
+					{rail && <i className="absolute inset-y-0 left-[7px] w-px bg-description/45" />}
+				</span>
+			)
+		const kind = REVIEW_KINDS[first.note.kind]
+		const ids = here.map((placed) => placed.note.id)
+		const open = ids.some((id) => review?.isOpen(id))
+		const label = `Cline · ${kind.label}: ${first.note.title}${here.length > 1 ? ` and ${here.length - 1} more` : ""}`
+		return (
+			<span className="flex w-4 shrink-0 select-none items-center justify-center">
+				<button
+					aria-expanded={open}
+					aria-label={label}
+					className={cn(
+						"flex size-4 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground",
+						open && "bg-list-hover text-foreground",
+						ids.every((id) => review?.isDismissed(id)) && "opacity-40",
+					)}
+					data-kind={first.note.kind}
+					data-testid="review-marker"
+					onClick={() => review?.onMarker(ids)}
+					title={label}
+					type="button">
+					<span aria-hidden className={cn("codicon text-[11px]!", `codicon-${kind.icon}`, kind.tone)} />
+				</button>
+			</span>
+		)
+	}
 
 	const onMouseUp = () => {
 		// After the browser settles the selection.
@@ -99,7 +154,7 @@ export function WalkthroughDiff({
 			// Whole lines need no quote; a part of a line (or of several) keeps exactly what was picked.
 			const whole = body
 				.slice(start, end + 1)
-				.map((line) => line.slice(1))
+				.map((line) => code(line))
 				.join("\n")
 			const quote = text.trim() === whole.trim() ? undefined : text.slice(0, 2000)
 			const rect = range.getBoundingClientRect()
@@ -159,6 +214,7 @@ export function WalkthroughDiff({
 								// Lines a note covers carry its blue edge.
 								boxShadow: marked ? "inset 2px 0 0 var(--vscode-textLink-foreground)" : undefined,
 							}}>
+							{gutter && marker(index)}
 							<button
 								aria-label={`Note on ${span({ start: index, end: index })}`}
 								className="w-9 shrink-0 cursor-pointer select-none border-0 bg-transparent p-0 pr-1.5 text-right font-mono text-[11px] leading-5 text-description/60 hover:text-foreground hover:underline"
@@ -170,8 +226,21 @@ export function WalkthroughDiff({
 							<span aria-hidden className="w-3 shrink-0 select-none pl-0.5">
 								{sign === "-" ? "−" : sign}
 							</span>
-							<span className="whitespace-pre">{raw.slice(1) || " "}</span>
+							<span className="whitespace-pre">
+								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
+							</span>
 						</div>
+						{cline
+							.filter((placed) => (placed.endLine ?? placed.line) === index && review?.isOpen(placed.note.id))
+							.map((placed) => (
+								<div
+									className="border-y border-x-0 border-solid border-editor-group-border bg-code font-sans"
+									data-review-callout={placed.note.id}
+									data-testid="review-callout"
+									key={placed.note.id}>
+									{review?.renderCallout(placed)}
+								</div>
+							))}
 						{ending
 							.filter((saved) => !(editing && editing.start === saved.start && editing.end === saved.end))
 							.map(noteRow)}

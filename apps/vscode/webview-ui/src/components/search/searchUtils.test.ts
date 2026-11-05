@@ -57,6 +57,22 @@ describe("searchLocal", () => {
 		expect(rows.find((r) => r.id === "t2")?.title).toBe("PROJ-482 follow-up")
 	})
 
+	it("marks rows whose tags, or whose task's tags, contain the text; a title match isn't one", () => {
+		const groups = [
+			group("g1", "Bulk invoice export", { tags: [{ kind: "ticket", value: "PROJ-482", source: "user" }] }),
+			group("g2", "PROJ-482 by name"),
+		]
+		const history = [
+			item("own", "alpha", { tags: [{ kind: "ticket", value: "proj-482-b", source: "user" }] }),
+			item("inherited", "beta", { taskGroupId: "g1" }),
+			item("named", "PROJ-482 by name"),
+		]
+
+		const tagged = filterRows(searchLocal("PROJ-482", groups, history), "tags")
+
+		expect(tagged.map((r) => `${r.kind}:${r.id}`).sort()).toEqual(["task:g1", "thread:inherited", "thread:own"])
+	})
+
 	it("matches a thread on its task's tags but keeps only its own tags on the row", () => {
 		const groups = [group("g1", "Export", { tags: [{ kind: "ticket", value: "PROJ-482", source: "user" }] })]
 		const history = [
@@ -142,6 +158,16 @@ describe("filters", () => {
 		expect(countByKind(rows)).toEqual({ task: 1, thread: 2, note: 0, message: 1 })
 		expect(filterRows(rows, "threads").map((r) => r.id)).toEqual(["b", "c"])
 		expect(filterRows(rows, "all")).toHaveLength(4)
+	})
+
+	it("Tags keeps only rows that matched on a tag, whatever their kind", () => {
+		const rows = [
+			row("task", "a", 0, 0, { tagMatch: true }),
+			row("thread", "b", 0, 0, { tagMatch: true }),
+			row("thread", "c", 0),
+			row("message", "d", 0),
+		]
+		expect(filterRows(rows, "tags").map((r) => r.id)).toEqual(["a", "b"])
 	})
 
 	it("narrows messages by who wrote them, leaving other kinds alone", () => {

@@ -2,6 +2,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { describe, expect, it } from "vitest"
 import {
 	backTarget,
+	canonicalSettingsLocation,
 	crumbIdFor,
 	describeLocation,
 	HOME,
@@ -11,6 +12,7 @@ import {
 	popLocation,
 	pushLocation,
 	shouldNameBack,
+	withoutGoneThreads,
 } from "./navHistory"
 
 const thread = (id: string): NavLocation => ({ kind: "thread", id })
@@ -34,12 +36,37 @@ describe("pushLocation", () => {
 		])
 	})
 
+	it("treats Settings' pages as one place to leave, so Done leaves no way back into it", () => {
+		const thread: NavLocation = { kind: "thread", id: "t1" }
+		const models: NavLocation = { kind: "settings", section: "models" }
+		const agent: NavLocation = { kind: "settings", section: "agent" }
+		expect(pushLocation([HOME, thread, agent], thread)).toEqual([HOME, thread])
+		// Settings was the first thing open: nothing to go back to, Settings included.
+		expect(pushLocation([agent], thread)).toEqual([thread])
+		// Leaving for somewhere else still comes back through it.
+		expect(pushLocation([thread, models], { kind: "history" })).toEqual([thread, models, { kind: "history" }])
+	})
+
+	it("moving between Settings' pages replaces the entry, so Back still leaves Settings", () => {
+		const models: NavLocation = { kind: "settings", section: "models" }
+		const agent: NavLocation = { kind: "settings", section: "agent" }
+		const tools: NavLocation = { kind: "settings", section: "tools" }
+		let entries = pushLocation([HOME, thread("a"), models], agent)
+		expect(entries).toEqual([HOME, thread("a"), agent])
+		entries = pushLocation(entries, tools)
+		expect(entries).toEqual([HOME, thread("a"), tools])
+		expect(backTarget(entries)).toEqual(thread("a"))
+		// Opened first: still nowhere to go back to.
+		expect(backTarget(pushLocation([models], agent))).toBeUndefined()
+		// A return to Settings after leaving it is a new visit, and it too keeps one entry.
+		const again = pushLocation([thread("a"), models, search], agent)
+		expect(pushLocation(again, models)).toEqual([thread("a"), models, search, models])
+	})
+
 	it("keeps distinct sections and pages apart", () => {
 		let entries = pushLocation([HOME], task("t"))
 		entries = pushLocation(entries, task("t", "notebook"))
-		entries = pushLocation(entries, { kind: "settings", section: "general" })
-		entries = pushLocation(entries, { kind: "settings", section: "features" })
-		expect(entries).toHaveLength(5)
+		expect(entries).toHaveLength(3)
 	})
 
 	it("resets the stack when you arrive at Home, so Back has nothing before it", () => {
@@ -57,6 +84,20 @@ describe("pushLocation", () => {
 		for (let i = 0; i < MAX_NAV_ENTRIES + 10; i++) entries = pushLocation(entries, thread(String(i)))
 		expect(entries).toHaveLength(MAX_NAV_ENTRIES)
 		expect(entries[entries.length - 1]).toEqual(thread(String(MAX_NAV_ENTRIES + 9)))
+	})
+})
+
+describe("withoutGoneThreads", () => {
+	const history = [{ id: "a" }, { id: "b" }] as HistoryItem[]
+
+	it("drops threads that have left history, never the current place", () => {
+		expect(withoutGoneThreads([HOME, thread("failed"), thread("a")], history)).toEqual([HOME, thread("a")])
+		expect(withoutGoneThreads([HOME, thread("a"), thread("failed")], history)).toEqual([HOME, thread("a"), thread("failed")])
+	})
+
+	it("keeps the same list when nothing is gone, and leaves other places alone", () => {
+		const entries = [HOME, search, task("t"), thread("a"), { kind: "settings" } as NavLocation, thread("b")]
+		expect(withoutGoneThreads(entries, history)).toBe(entries)
 	})
 })
 
@@ -128,7 +169,39 @@ describe("describeLocation", () => {
 		expect(describeLocation(thread("gone"), history, groups).label).toBe("Thread")
 		expect(describeLocation({ kind: "settings", section: "features" }, [], [])).toMatchObject({
 			label: "Settings",
-			detail: "Features",
+			detail: "Agent",
 		})
+	})
+})
+
+describe("settings places", () => {
+	it.each([
+		["models", "Models"],
+		["agent", "Agent"],
+		["tools", "Tools"],
+		["layout", "Layout"],
+		["data", "Data & privacy"],
+		["api-config", "Models"],
+		["general", "Agent"],
+	])("names %s", (section, detail) => {
+		expect(describeLocation({ kind: "settings", section }, [], []).detail).toBe(detail)
+	})
+
+	it.each([
+		["api-config", "models"],
+		["profiles", "models"],
+		["features", "agent"],
+		["general", "agent"],
+		["terminal", "tools"],
+		["remote-config", "about"],
+		["agent", "agent"],
+	])("reads the old %s entry as %s", (section, page) => {
+		expect(canonicalSettingsLocation({ kind: "settings", section })).toEqual({ kind: "settings", section: page })
+	})
+
+	it("leaves other places and an unnamed section alone", () => {
+		expect(canonicalSettingsLocation(HOME)).toBe(HOME)
+		const bare: NavLocation = { kind: "settings" }
+		expect(canonicalSettingsLocation(bare)).toBe(bare)
 	})
 })

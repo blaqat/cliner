@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { BackButton } from "./BackButton"
+import { BACK_LABEL_MAX_WIDTH, BackButton } from "./BackButton"
 import { NavigationHistoryProvider, useNavigationHistory } from "./NavigationHistoryContext"
 import { locationKey } from "./navHistory"
 
@@ -102,6 +102,63 @@ describe("navigation history", () => {
 		expect(entries()).toBe("home > task:t:home > thread:a")
 	})
 
+	it("names Settings by its page", () => {
+		const { go } = setup()
+		go({ showSettings: true } as never)
+		expect(entries()).toBe("home > settings:models")
+	})
+
+	it("reads a deep link as the page it opens", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "worktrees", requestId: 1 } } as never)
+		expect(entries()).toBe("home > settings:tools")
+	})
+
+	it("switching Settings pages adds no Back to Settings; Done and Back leave for where you were", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "models", requestId: 1 } } as never)
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Home"))
+		go({ settingsNavigationRequest: { target: "agent", requestId: 2 } } as never)
+		expect(entries()).toBe("home > settings:agent")
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Home"))
+		expect(screen.queryByTestId("crumb-back-label")).toBeNull()
+
+		go({ showSettings: false, currentTaskItem: { id: "a" }, settingsNavigationRequest: undefined } as never)
+		go({ showSettings: true, settingsNavigationRequest: { target: "models", requestId: 3 } } as never)
+		go({ settingsNavigationRequest: { target: "agent", requestId: 4 } } as never)
+		expect(entries()).toBe("home > settings:agent > thread:a > settings:agent")
+		expect(screen.getByTestId("crumb-back-label")).toHaveTextContent("Thread A")
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(openTask).not.toHaveBeenCalled()
+		expect(entries()).toBe("home > settings:agent > thread:a")
+	})
+
+	it("a retried failed thread has no Back to the thread Retry replaced", () => {
+		const { go } = setup()
+		const original = state.taskHistory
+		const failed = { id: "failed", ts: 3, task: "Hello" }
+		go({ currentTaskItem: { id: "failed" }, taskHistory: [...original, failed] })
+		expect(entries()).toBe("home > thread:failed")
+		// Retry starts a new session straight from the failed one, which then has no record to open.
+		go({ currentTaskItem: { id: "b" }, taskHistory: original })
+		expect(entries()).toBe("home > thread:b")
+		expect(screen.queryByTestId("crumb-back-label")).toBeNull()
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(openTask).not.toHaveBeenCalled()
+		expect(entries()).toBe("home")
+	})
+
+	it("Back to an entry reached by an old target opens the page it became", () => {
+		const { go } = setup()
+		go({ showSettings: true, settingsNavigationRequest: { target: "terminal", requestId: 1 } } as never)
+		go({ showSettings: false, currentTaskItem: { id: "a" }, settingsNavigationRequest: undefined } as never)
+		expect(entries()).toBe("home > settings:tools > thread:a")
+
+		fireEvent.click(screen.getByTestId("crumb-back"))
+		expect(actions.navigateToSettings).toHaveBeenCalledWith("tools")
+		expect(entries()).toBe("home > settings:tools")
+	})
+
 	it("Back restores the previous place and ignores screens on the way", () => {
 		const { go } = setup()
 		go({ currentTaskItem: { id: "a" } })
@@ -126,7 +183,7 @@ describe("navigation history", () => {
 		const { go } = setup()
 		go({ currentTaskItem: { id: "a" } })
 		go({ showSettings: true })
-		expect(entries()).toBe("home > thread:a > settings:api-config")
+		expect(entries()).toBe("home > thread:a > settings:models")
 		expect(screen.getByTestId("crumb-back")).toBeInTheDocument()
 
 		// Settings' close (or a Home crumb) lands on Home with no thread open.
@@ -175,6 +232,13 @@ describe("navigation history", () => {
 		// came from thread A, which isn't in B's crumbs
 		expect(screen.getByTestId("crumb-back-label")).toHaveTextContent("Thread A")
 		expect(screen.getByTestId("crumb-back-bar")).toBeInTheDocument()
+		// A long name ellipsizes early (about 14 characters) instead of taking half the header; the tooltip has it all.
+		const label = screen.getByTestId("crumb-back-label")
+		expect(label).toHaveClass("truncate")
+		expect(label.style.maxWidth).toBe(BACK_LABEL_MAX_WIDTH)
+		expect(BACK_LABEL_MAX_WIDTH).toBe("min(14ch, 110px)")
+		expect(screen.getByTestId("crumb-back")).toHaveAttribute("title", expect.stringContaining("Back to Thread A"))
+		expect(screen.getByTestId("crumb-back").className).not.toContain("max-w-[45%]")
 	})
 
 	it("Back between authored walkthroughs of one thread restores the authoredId", () => {

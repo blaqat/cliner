@@ -1,13 +1,14 @@
-import { existsSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
 import path from "node:path"
-import type { ClineCoreListHistoryOptions, SessionHistoryRecord } from "@cline/core"
+import { type ClineCoreListHistoryOptions, type SessionHistoryRecord, SqliteSessionStore } from "@cline/core"
 import type { MessageWithMetadata as SdkMessage } from "@cline/llms"
 import { formatDisplayUserInput, parseUserInputMode } from "@cline/shared"
-import { resolveSessionDataDir } from "@cline/shared/storage"
+import { resolveDbDataDir, resolveSessionDataDir } from "@cline/shared/storage"
 import { readTaskApiSelection, type TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage, ClineSaySubagentStatus, ExtensionState } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
+import { resolveDataDirFromEnv } from "@shared/storage/storage-context"
 import type { TaskTag } from "@shared/task-groups"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
@@ -29,6 +30,21 @@ import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
 import { clineMessagesToTranscript, sdkMessagesToTranscript, type TranscriptEntry } from "./task-groups/thread-transcript"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
+export function makeLastLine(
+	author: NonNullable<HistoryItem["lastLine"]>["author"],
+	text: string,
+): NonNullable<HistoryItem["lastLine"]> {
+	return { author, text: text.replace(/\s+/g, " ").trim().slice(0, 160) }
+}
+
+function readLastLine(value: unknown): HistoryItem["lastLine"] {
+	if (!value || typeof value !== "object") return undefined
+	const { author, text } = value as Record<string, unknown>
+	return (author === "user" || author === "agent" || author === "ask") && typeof text === "string"
+		? makeLastLine(author, text)
+		: undefined
+}
+
 export interface TaskUsage {
 	tokensIn: number
 	tokensOut: number
@@ -38,6 +54,8 @@ export interface TaskUsage {
 }
 
 export interface SdkTaskHistoryOptions {
+	/** Database directory to observe when the host uses custom storage. */
+	databaseDir?: string
 	resolveNotebookChanges?: (taskId: string, messages: ClineMessage[]) => Promise<ClineMessage[]>
 	beforeDeleteSession?: (taskId: string) => Promise<void>
 	mcpHub: McpHub
@@ -128,10 +146,16 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		isFavorited: item.isFavorited ?? false,
 		isSettled: item.isSettled ?? false,
 		settledAt: item.settledAt ?? 0,
+		isStashed: item.isStashed ?? false,
+		stashedAt: item.stashedAt ?? 0,
+		lastLine: item.lastLine ?? null,
 		// Frozen at the last real interaction; `ts` of a listed item already carries it,
 		// so settle/favorite/metadata rewrites keep the same value.
 		lastActivityTs: item.lastActivityTs ?? item.ts ?? 0,
+		lastUserMessageTs: item.lastUserMessageTs ?? 0,
 		parentTaskId: item.parentTaskId ?? "",
+		isSubagent: item.isSubagent ?? false,
+		runtimeOwnerTaskId: item.runtimeOwnerTaskId ?? "",
 		forkedAtTs: item.forkedAtTs ?? 0,
 		subagentCount: item.subagentCount ?? 0,
 		size: item.size ?? 0,
@@ -142,6 +166,9 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
 		...(item.apiSelection ? { apiSelection: item.apiSelection } : {}),
+		...((item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1)
+			? { modelSelectionV1: item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1 }
+			: {}),
 		// The user-set thread title persists as "threadTitle": metadata "title"
 		// already carries the first-message task text.
 		threadTitle: item.title ?? "",
@@ -276,6 +303,9 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		// left for the user to review, so an idle one is settled; only a running one stays open.
 		isSettled: metadataBoolean(metadata, "isSettled") ?? (item.status !== "running" && item.status !== "pending"),
 		settledAt: metadataNumber(metadata, "settledAt") || undefined,
+		isStashed: metadataBoolean(metadata, "isStashed") ?? false,
+		stashedAt: metadataNumber(metadata, "stashedAt") || undefined,
+		lastLine: readLastLine(metadata?.lastLine),
 		parentTaskId: item.isSubagent
 			? (metadataString(metadata, "immediateParentSessionId") ?? item.parentSessionId ?? undefined)
 			: metadataString(metadata, "parentTaskId"),
@@ -285,10 +315,17 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		spawnToolCallId: metadataString(metadata, "spawnToolCallId"),
 		subagentAccess: metadataString(metadata, "subagentAccess") === "write" ? "write" : "read",
 		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
+		lastUserMessageTs: metadataNumber(metadata, "lastUserMessageTs") || undefined,
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
-		apiSelection: readTaskApiSelection(metadata?.apiSelection),
+		apiSelection: readTaskApiSelection({
+			...readTaskApiSelection(metadata?.apiSelection),
+			...(readTaskApiSelection({ modelSelectionV1: metadata?.modelSelectionV1 }) ?? {}),
+		}),
+		modelSelectionV1:
+			readTaskApiSelection({ modelSelectionV1: metadata?.modelSelectionV1 })?.modelSelectionV1 ??
+			readTaskApiSelection(metadata?.apiSelection)?.modelSelectionV1,
 		title: metadataString(metadata, "threadTitle"),
 		taskGroupId: metadataString(metadata, "taskGroupId"),
 		tags: metadataTaskTags(metadata, "tags"),
@@ -310,6 +347,42 @@ export class SdkTaskHistory {
 		hostLimit: number
 		createdAt: number
 	}
+	private projectionRevision = 0
+	private storeRevision = SqliteSessionStore.historyRevision
+
+	private historyFileVersion?: string
+
+	/** Check file metadata only, so an idle settings post never re-enumerates history. */
+	get revision(): number {
+		const databasePath = path.join(this.options.databaseDir ?? resolveDbDataDir(), "sessions.db")
+		const paths = [databasePath, `${databasePath}-wal`, path.join(resolveDataDirFromEnv(), "state", "taskHistory.json")]
+		if (this.options.legacyExtensionStorageDir) {
+			paths.push(path.join(this.options.legacyExtensionStorageDir.trim(), "state", "taskHistory.json"))
+		}
+		// The counter covers every in-process session write. File stamps also
+		// catch external writers, imports and database replacement without a TTL
+		// that forces an expensive read when nothing has changed.
+		const fileVersion = paths
+			.map((file) => {
+				try {
+					const stat = statSync(file, { bigint: true })
+					return `${file}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+				} catch {
+					return file
+				}
+			})
+			.join("|")
+		if (
+			this.storeRevision !== SqliteSessionStore.historyRevision ||
+			(this.historyFileVersion !== undefined && this.historyFileVersion !== fileVersion)
+		) {
+			this.storeRevision = SqliteSessionStore.historyRevision
+			this.invalidateMetadataHistoryCache()
+		}
+		this.historyFileVersion = fileVersion
+		return this.projectionRevision
+	}
+
 	private disposed = false
 	private readonly activityUnsettled = new Set<string>()
 	private readonly activityWrites = new Map<string, Promise<void>>()
@@ -441,6 +514,7 @@ export class SdkTaskHistory {
 	}
 
 	invalidateMetadataHistoryCache(): void {
+		this.projectionRevision++
 		this.metadataHistoryCache = undefined
 	}
 
@@ -459,6 +533,7 @@ export class SdkTaskHistory {
 		sessionId: string,
 		updates: { prompt: string; metadata: Record<string, unknown>; updatedAt: string },
 	): void {
+		this.projectionRevision++
 		const cache = this.metadataHistoryCache
 		if (!cache) {
 			return
@@ -498,7 +573,22 @@ export class SdkTaskHistory {
 		}
 	}
 
+	/** Deletion must bypass display pagination and its projection cache. */
+	async listModelSelectionDependencies(): Promise<SessionHistoryRecord[]> {
+		const records = await this.withHistoryHost((host) =>
+			host.listHistory({ hydrate: false, includeSubagents: true, limit: Number.MAX_SAFE_INTEGER }),
+		)
+		const ids = new Set(records.map((record) => record.sessionId))
+		return [
+			...records,
+			...this.readAllLegacyTaskHistory()
+				.filter(({ item }) => !ids.has(item.id))
+				.map(({ item }) => historyItemToSessionHistoryRecord(item)),
+		]
+	}
+
 	async listHistory(options: SdkTaskHistoryListOptions = {}): Promise<SessionHistoryRecord[]> {
+		void this.revision
 		const offset = Math.max(0, Math.floor(options.offset ?? 0))
 		const limit = Math.max(0, Math.floor(options.limit ?? 10_000))
 		const hostLimit = offset + limit
@@ -722,11 +812,18 @@ export class SdkTaskHistory {
 	private readonly selectionWrites = new Map<string, Promise<void>>()
 
 	setTaskApiSelection(taskId: string, selection: TaskApiSelection): Promise<void> {
-		const captured = { ...selection }
+		const captured = structuredClone(selection)
 		return this.serializeMetadataWrite(taskId, async () => {
 			await this.withHistoryHost(async (host) => {
 				const record = await host.get(taskId)
-				if (record) await host.update(taskId, { metadata: { ...record.metadata, apiSelection: captured } })
+				if (record)
+					await host.update(taskId, {
+						metadata: {
+							...record.metadata,
+							apiSelection: captured,
+							...(captured.modelSelectionV1 ? { modelSelectionV1: captured.modelSelectionV1 } : {}),
+						},
+					})
 			})
 			this.invalidateMetadataHistoryCache()
 		})
@@ -746,7 +843,10 @@ export class SdkTaskHistory {
 
 	async getTaskApiSelection(taskId: string): Promise<TaskApiSelection | undefined> {
 		const record = await this.getSdkRecord(taskId)
-		return readTaskApiSelection(record?.metadata?.apiSelection)
+		return readTaskApiSelection({
+			...readTaskApiSelection(record?.metadata?.apiSelection),
+			...(readTaskApiSelection({ modelSelectionV1: record?.metadata?.modelSelectionV1 }) ?? {}),
+		})
 	}
 
 	async isLegacyTask(taskId: string): Promise<boolean> {
@@ -787,6 +887,12 @@ export class SdkTaskHistory {
 			const metadata: Record<string, unknown> = {
 				...(existing?.metadata ?? {}),
 				...historyItemToSessionMetadata(item, existing?.model),
+				// Preserve previews and stash flags when an activity/usage snapshot predates them.
+				...Object.fromEntries(
+					["lastLine", "isStashed", "stashedAt"].flatMap((key) =>
+						existing?.metadata?.[key] !== undefined ? [[key, existing.metadata[key]]] : [],
+					),
+				),
 				// User-owned fields are changed only by their dedicated operations.
 				...Object.fromEntries(
 					["threadTitle", "taskGroupId", "tags", "dismissedAutoTags", "referencedThreadIds"].map((key) => [
@@ -798,6 +904,7 @@ export class SdkTaskHistory {
 				// History reads may predate live picker changes. Only explicit selection
 				// writes may replace an existing authoritative selection.
 				...(existing?.metadata?.apiSelection ? { apiSelection: existing.metadata.apiSelection } : {}),
+				...(existing?.metadata?.modelSelectionV1 ? { modelSelectionV1: existing.metadata.modelSelectionV1 } : {}),
 			}
 			if (item.size === undefined) {
 				const existingSize = existing?.metadata?.size
@@ -983,9 +1090,37 @@ export class SdkTaskHistory {
 		const item = await this.findHistoryItem(taskId)
 		if (!item) return
 		this.activityUnsettled.delete(taskId)
-		item.isSettled = !item.isSettled
-		item.settledAt = item.isSettled ? Date.now() : undefined
-		await this.updateTaskHistoryItem(item)
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const isSettled = !(metadata.isSettled ?? item.isSettled)
+			return {
+				lastActivityTs: metadata.lastActivityTs ?? item.ts,
+				isSettled,
+				settledAt: isSettled ? Date.now() : 0,
+				...(isSettled ? { isStashed: false, stashedAt: 0 } : {}),
+			}
+		})
+	}
+
+	async toggleTaskStashed(taskId: string): Promise<void> {
+		const item = await this.findHistoryItem(taskId)
+		if (!item) return
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const isStashed = !metadata.isStashed
+			return {
+				lastActivityTs: metadata.lastActivityTs ?? item.ts,
+				isStashed,
+				stashedAt: isStashed ? Date.now() : 0,
+				...(isStashed ? { isSettled: false, settledAt: 0 } : {}),
+			}
+		})
+	}
+
+	async recordLastLine(taskId: string, lastLine: HistoryItem["lastLine"]): Promise<void> {
+		if (!lastLine) return
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const previous = readLastLine(metadata.lastLine)
+			return previous?.author === lastLine.author && previous.text === lastLine.text ? undefined : { lastLine }
+		})
 	}
 
 	async flushMetadataWrites(): Promise<void> {
@@ -1133,6 +1268,16 @@ export class SdkTaskHistory {
 		})().finally(() => this.activityWrites.delete(taskId))
 		this.activityWrites.set(taskId, write)
 		return write
+	}
+
+	/** Stamps the time the user sent the thread a message (not the agent's replies). */
+	async markUserMessage(taskId: string, text?: string): Promise<void> {
+		await this.updateOwnedMetadata(taskId, () => ({
+			isStashed: false,
+			stashedAt: 0,
+			lastUserMessageTs: Date.now(),
+			...(text?.trim() ? { lastLine: makeLastLine("user", text) } : {}),
+		}))
 	}
 
 	async updateTaskUsage(taskId: string | undefined, usage: TaskUsage): Promise<void> {

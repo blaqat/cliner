@@ -5,7 +5,7 @@ import { type PrepareTaskResumeStartDeps, prepareTaskResumeStartInput } from "./
 function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
 	const tempHost = { dispose: vi.fn().mockResolvedValue(undefined) }
 	const deps = {
-		stateManager: { getGlobalSettingsKey: vi.fn(() => "act") } as unknown as StateManager,
+		stateManager: { getGlobalStateKey: vi.fn(), getGlobalSettingsKey: vi.fn(() => "act") } as unknown as StateManager,
 		taskHistory: {
 			findHistoryItem: vi.fn().mockResolvedValue(undefined),
 			isLegacyTask: vi.fn().mockResolvedValue(false),

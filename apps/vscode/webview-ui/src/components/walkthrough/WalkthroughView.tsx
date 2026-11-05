@@ -1,9 +1,11 @@
+import type { ModelPick } from "@shared/model-settings"
 import { StringRequest } from "@shared/proto/cline/common"
 import type {
 	ChangeWalkthrough,
 	WalkthroughHunk,
 	WalkthroughOrigin,
 	WalkthroughRequest,
+	WalkthroughReviewResponse,
 	WalkthroughScope,
 	WalkthroughStop,
 } from "@shared/Walkthrough"
@@ -16,13 +18,21 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
-import { describeProfile } from "@/components/settings/apiProfiles/profileDraft"
+import { useOneView } from "@/components/oneView/OneViewContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { GenerateControl } from "./GenerateControl"
+import {
+	EMPTY_REVIEW_FILTER,
+	groupReviewNotes,
+	type PlacedReviewNote,
+	placeReviewNotes,
+	type ReviewFilter,
+	shownByFilter,
+} from "./reviewNotes"
 import {
 	carryOverReview,
 	discardUnplacedNotes,
@@ -44,13 +54,45 @@ import {
 	unplacedNotes,
 } from "./reviewState"
 import type { LineNotes } from "./WalkthroughDiff"
-import { InlineCodeProse, NoteEditor, NoteQuote, type RevertTarget, WalkthroughStopCard } from "./WalkthroughStopCard"
+import { ReviewChip, ReviewNoteCard, type ReviewNoteHandlers, ReviewPanel } from "./WalkthroughReviewNotes"
+import {
+	InlineCodeProse,
+	NoteEditor,
+	NoteQuote,
+	type RevertTarget,
+	type StopReviewNotes,
+	WalkthroughStopCard,
+} from "./WalkthroughStopCard"
 import { countChanges, EMPTY_FOLDS, type Folds, foldAll, supportSummary, unfoldAll } from "./walkthroughUtils"
 
 const request = (value: WalkthroughRequest) => StringRequest.create({ value: JSON.stringify(value) })
 const parse = (response: { value: string }) => JSON.parse(response.value) as ChangeWalkthrough
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
+
+/** "Send 2 notes, 1 fix, 1 reply": what one message to the thread carries. */
+function sendLabel(sending: { notes: number; fixes: number; replies: number; count: number }) {
+	if (!sending.count) return "Send"
+	// A note can be both a fix and a reply; the parts still name what goes.
+	const parts = [
+		sending.notes > 0 && plural(sending.notes, "note"),
+		sending.fixes > 0 && counted(sending.fixes, "fix", "fixes"),
+		sending.replies > 0 && counted(sending.replies, "reply", "replies"),
+	].filter(Boolean)
+	return `Send ${parts.join(", ")}`
+}
+
+/** Brings what a jump landed on into view and lights it up briefly in the find-match color. */
+function flash(element: Element | null | undefined) {
+	if (!element) return
+	element.scrollIntoView?.({ block: "center", behavior: "smooth" })
+	if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return
+	;(element as HTMLElement).animate?.(
+		[{ backgroundColor: "var(--vscode-editor-findMatchHighlightBackground)" }, { backgroundColor: "transparent" }],
+		{ duration: 1400, easing: "ease-out" },
+	)
+}
 const openExternal = (url: string) =>
 	UiServiceClient.openUrl(StringRequest.create({ value: url })).catch((err) =>
 		console.error("Failed to open walkthrough origin:", err),
@@ -91,9 +133,7 @@ export default function WalkthroughView({
 	onDone: () => void
 }) {
 	const {
-		apiConfigProfiles,
-		profiles: namedProfiles,
-		walkthroughGenerateProfileId,
+		modelSettings,
 		currentTaskItem,
 		taskHistory,
 		taskGroups,
@@ -103,6 +143,8 @@ export default function WalkthroughView({
 		clineMessages,
 	} = useExtensionState()
 	const navigation = useNavigationHistory()
+	// One view: it sits beside the list, which is home, so no Home crumb and the list toggle leads the header.
+	const oneView = useOneView()
 	const [scope, setScope] = useState<WalkthroughScope>("thread")
 	// An authoredId pins the page to the stored authored doc; the scope switch is not offered.
 	const authored = authoredId !== undefined
@@ -115,7 +157,11 @@ export default function WalkthroughView({
 	const [error, setError] = useState("")
 	// Set when a background check finds a different diff than the one on screen.
 	const [moved, setMoved] = useState(false)
-	const [pickedProfileId, setPickedProfileId] = useState<string>()
+	const [pickedModel, setPickedModel] = useState<ModelPick>()
+	const generatePick =
+		pickedModel ??
+		modelSettings?.settings.roles.background.overrides.generate ??
+		modelSettings?.settings.roles.background.pick
 	// Fold state per scope and layout, kept while the page is open (not persisted).
 	const [foldsByWalk, setFoldsByWalk] = useState<Record<string, Folds>>({})
 	const [overallOpen, setOverallOpen] = useState(false)
@@ -124,6 +170,15 @@ export default function WalkthroughView({
 	const [editingStopId, setEditingStopId] = useState<string>()
 	// The selection whose note box is open: its hunk, lines and the exact text picked.
 	const [editingLine, setEditingLine] = useState<{ fingerprint: string } & LineRange & { quote?: string }>()
+	// Cline's review notes: Generate's "Add review notes" (remembered), the kind filter and what's open.
+	// Applies to the next Generate only: notes depend on what's asked for, so the choice isn't remembered.
+	const [reviewNotesOn, setReviewNotesOn] = useState(false)
+	const [reviewFilter, setReviewFilter] = useState<ReviewFilter>(EMPTY_REVIEW_FILTER)
+	const [openCallouts, setOpenCallouts] = useState<Record<string, boolean>>({})
+	const [openStopNotes, setOpenStopNotes] = useState<Record<string, boolean>>({})
+	const [activeReviewId, setActiveReviewId] = useState<string>()
+	const [replyingId, setReplyingId] = useState<string>()
+	const [reveals, setReveals] = useState<Record<string, number>>({})
 	const scroller = useRef<HTMLDivElement>(null)
 	// The stop J/K last moved to; cleared when the user scrolls, so keys follow what's on screen.
 	const keyedStop = useRef<string>()
@@ -131,28 +186,6 @@ export default function WalkthroughView({
 	// Generate finishes long after it starts; it must merge into the latest notes, not a stale render's.
 	const storeRef = useRef(store)
 	storeRef.current = store
-
-	// Generate runs on a profile (Settings › Profiles): its model at its effort.
-	const profiles = useMemo(
-		() =>
-			(namedProfiles ?? []).map((profile) => {
-				const configuration = apiConfigProfiles?.find((c) => c.id === profile.configurationId)
-				return {
-					id: profile.id,
-					name: profile.name,
-					description: [
-						configuration ? describeProfile(configuration) : "Missing model",
-						profile.reasoningEffort && `${profile.reasoningEffort} effort`,
-					]
-						.filter(Boolean)
-						.join(" · "),
-				}
-			}),
-		[namedProfiles, apiConfigProfiles],
-	)
-	const profileId =
-		pickedProfileId ??
-		(profiles.some((p) => p.id === walkthroughGenerateProfileId) ? walkthroughGenerateProfileId : undefined)
 
 	const fetchFree = useCallback(
 		async (forScope: WalkthroughScope) =>
@@ -237,15 +270,23 @@ export default function WalkthroughView({
 		})
 
 	const generate = async () => {
-		if (!walk || !profileId) return
+		if (!walk || !generatePick) return
 		const regenerate = walk.source === "generated"
 		setGenerating(true)
+		setReviewNotesOn(false)
 		setError("")
 		try {
 			const id = ++sequence.current
 			const next = parse(
 				await TaskServiceClient.generateChangeWalkthrough(
-					request({ taskId, scope: activeScope, fingerprint: walk.fingerprint, profileId, regenerate }),
+					request({
+						taskId,
+						scope: activeScope,
+						fingerprint: walk.fingerprint,
+						pick: generatePick,
+						regenerate,
+						...(reviewNotesOn ? { reviewNotes: true } : {}),
+					}),
 				),
 			)
 			if (id !== sequence.current) return
@@ -254,6 +295,7 @@ export default function WalkthroughView({
 			if (regenerate) persist(migrateRegeneratedReview(storeRef.current, walk, next))
 			setWalk(next)
 			setMoved(false)
+			setReviewNotesOn(false)
 		} catch (err) {
 			setError(message(err))
 		} finally {
@@ -278,6 +320,46 @@ export default function WalkthroughView({
 			}
 			return walk ? { ...current, [walk.source]: next } : current
 		})
+
+	// Note ids belong to one review; a new document starts with nothing open.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset whenever the document changes
+	useEffect(() => {
+		setOpenCallouts({})
+		setOpenStopNotes({})
+		setActiveReviewId(undefined)
+		setReplyingId(undefined)
+	}, [walk])
+	const placed = useMemo(() => placeReviewNotes(walk), [walk])
+	const reviewGroups = useMemo(() => (walk ? groupReviewNotes(walk, placed) : []), [walk, placed])
+	const reviewShown = placed.filter((note) => shownByFilter(reviewFilter, note))
+	const responses = record.reviewResponses ?? {}
+	const respond = (id: string, change: Partial<WalkthroughReviewResponse>) =>
+		updateRecord((current) => {
+			const merged = { ...current.reviewResponses?.[id], ...change }
+			const next: WalkthroughReviewResponse = {
+				...(merged.fix ? { fix: true } : {}),
+				...(merged.reply ? { reply: merged.reply } : {}),
+				...(merged.dismissed ? { dismissed: true } : {}),
+			}
+			const { [id]: _old, ...rest } = current.reviewResponses ?? {}
+			const all = Object.keys(next).length ? { ...rest, [id]: next } : rest
+			return { ...current, reviewResponses: Object.keys(all).length ? all : undefined }
+		})
+	const reviewHandlers: ReviewNoteHandlers = {
+		response: (id) => responses[id],
+		respond,
+		replying: replyingId,
+		onReplying: (id) => {
+			setReplyingId(id)
+			if (id) {
+				setEditingStopId(undefined)
+				setEditingLine(undefined)
+			}
+		},
+	}
+	const reviewCard = (note: PlacedReviewNote, className?: string) =>
+		walk && <ReviewNoteCard className={className} handlers={reviewHandlers} placed={note} walk={walk} />
+	const highOpen = reviewShown.filter((note) => note.note.severity === "high" && !responses[note.note.id]?.dismissed).length
 
 	const foldKey = walk ? `${activeScope}:${authoredId ?? ""}:${walk.source}` : ""
 	const folds = foldsByWalk[foldKey] ?? EMPTY_FOLDS
@@ -314,9 +396,27 @@ export default function WalkthroughView({
 			editing: editingLine?.fingerprint === hunk.fingerprint ? editingLine : undefined,
 			onEdit: (range) => {
 				setEditingLine(range && { fingerprint: hunk.fingerprint, ...range })
-				if (range) setEditingStopId(undefined)
+				if (range) {
+					setEditingStopId(undefined)
+					setReplyingId(undefined)
+				}
 			},
 		}),
+		review: (hunk: WalkthroughHunk) =>
+			walk?.review
+				? {
+						notes: reviewShown.filter((note) => note.hunkId === hunk.id),
+						isOpen: (id: string) => !!openCallouts[id],
+						isDismissed: (id: string) => !!responses[id]?.dismissed,
+						onMarker: (ids: string[]) => {
+							const opening = !ids.some((id) => openCallouts[id])
+							setOpenCallouts((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, opening])) }))
+							// The panel highlights the note too, so the list and the code agree.
+							setActiveReviewId(opening ? ids[0] : undefined)
+						},
+						renderCallout: (note: PlacedReviewNote) => reviewCard(note, "rounded-none"),
+					}
+				: undefined,
 		openDiff: (fileId: string) => {
 			if (input) void run(async () => void (await TaskServiceClient.openWalkthroughDiff(request({ ...input, fileId }))))
 		},
@@ -335,7 +435,7 @@ export default function WalkthroughView({
 			}),
 	}
 
-	const sending = notesToSend(walk ?? EMPTY_WALK, review, overallNote, record.lineNotes)
+	const sending = notesToSend(walk ?? EMPTY_WALK, review, overallNote, record.lineNotes, record.reviewResponses)
 	const send = () =>
 		run(async () => {
 			if (!input || !walk || !sending.count) return
@@ -345,13 +445,20 @@ export default function WalkthroughView({
 					stopNotes: sending.stopNotes,
 					lineNotes: sending.lineNotes,
 					overallNote: sending.overallNote,
+					...(sending.reviewResponses ? { reviewResponses: sending.reviewResponses } : {}),
 				}),
 			)
-			// Sent notes now live in the thread; reviewed marks stay.
+			// Sent notes now live in the thread; reviewed marks and dismissals stay.
+			const dismissed = Object.fromEntries(
+				Object.entries(record.reviewResponses ?? {})
+					.filter(([, response]) => response.dismissed)
+					.map(([id]) => [id, { dismissed: true }]),
+			)
 			updateRecord((current) => ({
 				...current,
 				overallNote: undefined,
 				lineNotes: undefined,
+				reviewResponses: Object.keys(dismissed).length ? dismissed : undefined,
 				[walk.source]: { notes: {}, reviewed: current[walk.source]?.reviewed ?? {} },
 			}))
 			onDone()
@@ -362,12 +469,16 @@ export default function WalkthroughView({
 		const thread = path.threads[path.threads.length - 1]
 		const groupId = path.taskGroupId
 		return [
-			{
-				id: "home",
-				kind: "home",
-				label: "Home",
-				onSelect: () => (navigation ? navigation.navigate({ kind: "home" }) : onDone()),
-			},
+			...(oneView.enabled
+				? []
+				: [
+						{
+							id: "home",
+							kind: "home" as const,
+							label: "Home",
+							onSelect: () => (navigation ? navigation.navigate({ kind: "home" }) : onDone()),
+						},
+					]),
 			...(groupId
 				? [
 						{
@@ -392,15 +503,16 @@ export default function WalkthroughView({
 				label: "Walkthrough",
 			},
 		]
-	}, [currentTaskItem, taskHistory, taskGroups, taskId, authoredId, navigation, navigateToTaskGroup, onDone])
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, authoredId, navigation, navigateToTaskGroup, onDone, oneView.enabled])
 
 	const mainStops = walk?.chapters.flatMap((chapter) => chapter.stops) ?? []
+	// Why Send is off: dismissed and untouched review notes stay out of it.
+	const nothingToSend = placed.length ? "Fix, reply or add a note to send" : "Add a note to send"
 	const reviewedCount = mainStops.filter((stop) => review.reviewed[stop.id]).length
 	const supportHunks = walk?.support.reduce((sum, stop) => sum + stop.hunkIds.length, 0) ?? 0
 	const stale = walk ? summarizeStale(store, walk.fingerprint) : { notes: 0, reviewed: 0 }
 	const showMoved = moved || stale.notes + stale.reviewed > 0
 	const unplaced = walk ? unplacedNotes(store, walk.fingerprint) : []
-	const generatedBy = walk?.profileId ? profiles.find((p) => p.id === walk.profileId)?.name : undefined
 	// Numbered up front so a collapsed chapter doesn't renumber the ones after it.
 	const stopNumbers = new Map(mainStops.map((stop, index) => [stop.id, index + 1]))
 	const fileCount = walk ? new Set(walk.hunks.map((h) => h.fileId)).size : 0
@@ -460,6 +572,49 @@ export default function WalkthroughView({
 		}
 	}
 
+	/** From Cline's review: open the note at its line (or on its stop) and bring it into view. */
+	const jumpToReviewNote = (note: PlacedReviewNote) => {
+		const stopId = note.stopId
+		if (!walk || !stopId) return
+		const id = note.note.id
+		const chapter = walk.chapters.find((c) => c.stops.some((stop) => stop.id === stopId))
+		if (chapter && folds.collapsedChapters[chapter.id]) toggleChapter(chapter.id)
+		if (!chapter) setFolds((current) => ({ ...current, supportOpen: true }))
+		const hunk = note.hunkId ? walk.hunks.find((h) => h.id === note.hunkId) : undefined
+		if (hunk && folds.collapsedHunks[hunk.fingerprint])
+			setFolds((current) => ({ ...current, collapsedHunks: { ...current.collapsedHunks, [hunk.fingerprint]: false } }))
+		if (hunk) setOpenCallouts((current) => ({ ...current, [id]: true }))
+		else setOpenStopNotes((current) => ({ ...current, [stopId]: true }))
+		setReveals((current) => ({ ...current, [stopId]: (current[stopId] ?? 0) + 1 }))
+		setActiveReviewId(id)
+		keyedStop.current = stopId
+		// After the folds and the reveal render.
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				const root = scroller.current
+				const stop = root?.querySelector(`[data-stop-id="${CSS.escape(stopId)}"]`)
+				flash(
+					hunk
+						? root?.querySelector(`[data-review-callout="${CSS.escape(id)}"]`)
+						: stop?.querySelector(`[data-review-note="${CSS.escape(id)}"]`),
+				)
+			}),
+		)
+	}
+
+	const stopReview = (stop: WalkthroughStop): StopReviewNotes | undefined => {
+		if (!walk?.review || reviewFilter.all) return undefined
+		const here = reviewShown.filter((note) => note.stopId === stop.id)
+		if (!here.length) return undefined
+		return {
+			stopNotes: here.filter((note) => !note.hunkId),
+			openCount: here.filter((note) => !responses[note.note.id]?.dismissed).length,
+			open: !!openStopNotes[stop.id],
+			onToggle: () => setOpenStopNotes((current) => ({ ...current, [stop.id]: !current[stop.id] })),
+			renderNote: (note) => reviewCard(note),
+		}
+	}
+
 	const renderStop = (stop: WalkthroughStop, numbered: boolean) => (
 		<WalkthroughStopCard
 			actions={actions}
@@ -470,10 +625,15 @@ export default function WalkthroughView({
 			number={numbered ? stopNumbers.get(stop.id) : undefined}
 			onEditing={(open) => {
 				setEditingStopId(open ? stop.id : undefined)
-				if (open) setEditingLine(undefined)
+				if (open) {
+					setEditingLine(undefined)
+					setReplyingId(undefined)
+				}
 			}}
 			onNote={(note) => updateStop(stop.id, { note })}
 			onReviewed={(reviewed) => markReviewed(stop.id, reviewed)}
+			reveal={reveals[stop.id]}
+			review={stopReview(stop)}
 			reviewed={!!review.reviewed[stop.id]}
 			stop={stop}
 			walk={walk as ChangeWalkthrough}
@@ -545,11 +705,17 @@ export default function WalkthroughView({
 	)
 
 	return (
-		<section className="fixed inset-0 flex flex-col overflow-hidden bg-background" data-testid="walkthrough-page">
+		<section
+			className={cn(
+				"flex flex-col overflow-hidden bg-background",
+				oneView.enabled ? "min-h-0 min-w-0 flex-1" : "fixed inset-0",
+			)}
+			data-testid="walkthrough-page">
 			<div className="px-4 pt-2 pb-1">
 				<div
 					className="flex h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
 					data-testid="walkthrough-header">
+					{oneView.listToggle}
 					<Breadcrumb crumbs={crumbs} />
 					<div className="flex shrink-0 items-center gap-0.5">
 						{!!walk?.chapters.length && (
@@ -616,12 +782,14 @@ export default function WalkthroughView({
 						<GenerateControl
 							disabled={!walk || !walk.hunks.length || busy || moved}
 							generating={generating}
+							modelSettings={modelSettings}
 							onGenerate={() => void generate()}
-							onOpenProfiles={() => navigateToSettings("profiles")}
-							onPickProfile={setPickedProfileId}
-							profileId={profileId}
-							profiles={profiles}
+							onOpenModels={() => navigateToSettings("models")}
+							onPick={setPickedModel}
+							onReviewNotes={setReviewNotesOn}
+							pick={generatePick}
 							regenerate={walk?.source === "generated"}
+							reviewNotes={reviewNotesOn}
 						/>
 					</div>
 				)}
@@ -729,7 +897,7 @@ export default function WalkthroughView({
 											walk?.source === "generated" ? "codicon-sparkle" : "codicon-history",
 										)}
 									/>
-									{walk?.source === "generated" ? `Generated · ${generatedBy ?? "profile"}` : "From turns"}
+									{walk?.source === "generated" ? "Generated" : "From turns"}
 								</span>
 							)}
 							<span>{plural(fileCount, "file")}</span>
@@ -737,6 +905,9 @@ export default function WalkthroughView({
 								<span className="text-(--vscode-gitDecoration-addedResourceForeground)">+{totals.added}</span>
 								<span className="text-(--vscode-gitDecoration-deletedResourceForeground)">−{totals.removed}</span>
 							</span>
+							{placed.length > 0 && (
+								<ReviewChip all={placed} filter={reviewFilter} highOpen={highOpen} onFilter={setReviewFilter} />
+							)}
 						</div>
 					</header>
 				)}
@@ -750,6 +921,19 @@ export default function WalkthroughView({
 							</li>
 						))}
 					</ul>
+				)}
+
+				{contentful && walk?.review && (
+					<ReviewPanel
+						activeId={activeReviewId}
+						all={placed}
+						filter={reviewFilter}
+						groups={reviewGroups}
+						handlers={reviewHandlers}
+						onFilter={setReviewFilter}
+						onJump={jumpToReviewNote}
+						walk={walk}
+					/>
 				)}
 
 				{walk && !contentful && (
@@ -902,14 +1086,21 @@ export default function WalkthroughView({
 				) : (
 					<span className="flex-1" />
 				)}
+				{!sending.count && (
+					<span
+						className="hidden min-w-0 shrink truncate text-[11px] text-description min-[420px]:inline"
+						data-testid="walkthrough-send-hint">
+						{nothingToSend}
+					</span>
+				)}
 				<Button
 					className="h-6 shrink-0 gap-1 px-2.5"
 					disabled={!sending.count || busy || generating || moved}
 					onClick={() => void send()}
 					size="xs"
-					title={sending.count ? "Sends every note to the thread as one message" : "Add a note to send"}>
+					title={sending.count ? "Sends every note to the thread as one message" : nothingToSend}>
 					<span aria-hidden className="codicon codicon-send text-[12px]!" />
-					{sending.count ? `Send ${plural(sending.count, "note")}` : "Send"}
+					{sendLabel(sending)}
 				</Button>
 			</div>
 		</section>

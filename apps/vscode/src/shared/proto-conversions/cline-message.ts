@@ -105,6 +105,7 @@ function convertClineSayToProtoEnum(say: AppClineSay | undefined): ClineSay | un
 		hook_output_stream: ClineSay.HOOK_OUTPUT_STREAM,
 		conditional_rules_applied: ClineSay.CONDITIONAL_RULES_APPLIED,
 		subagent: ClineSay.SUBAGENT_STATUS,
+		subagent_update: ClineSay.SUBAGENT_UPDATE,
 		use_subagents: ClineSay.USE_SUBAGENTS_SAY,
 		subagent_usage: ClineSay.SUBAGENT_USAGE,
 		compaction: ClineSay.COMPACTION,
@@ -157,6 +158,7 @@ function convertProtoEnumToClineSay(say: ClineSay): AppClineSay | undefined {
 		[ClineSay.HOOK_OUTPUT_STREAM]: "hook_output_stream",
 		[ClineSay.CONDITIONAL_RULES_APPLIED]: "conditional_rules_applied",
 		[ClineSay.SUBAGENT_STATUS]: "subagent",
+		[ClineSay.SUBAGENT_UPDATE]: "subagent_update",
 		[ClineSay.USE_SUBAGENTS_SAY]: "use_subagents",
 		[ClineSay.SUBAGENT_USAGE]: "subagent_usage",
 		[ClineSay.COMPACTION]: "compaction",
@@ -219,6 +221,15 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 		askNewTask: undefined,
 		apiReqInfo: undefined,
 		modelInfo: message.modelInfo ?? undefined,
+		messageReferences: (message.messageReferences ?? []).map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author,
+			text: reference.text,
+			messageIndex: reference.messageIndex,
+			toolCallId: reference.toolCallId,
+			block: reference.block,
+		})),
 	}
 
 	return protoMessage
@@ -299,6 +310,19 @@ export function convertProtoToClineMessage(protoMessage: ProtoClineMessage): App
 	// real index, so check presence, not truthiness.
 	if (protoMessage.sdkMessageIndex !== undefined) {
 		message.sdkMessageIndex = protoMessage.sdkMessageIndex
+	}
+
+	// Linked messages on a sent message; dropping them left the bubble without its chips.
+	if (protoMessage.messageReferences?.length) {
+		message.messageReferences = protoMessage.messageReferences.map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author === "user" ? "user" : "assistant",
+			text: reference.text,
+			...(reference.messageIndex !== undefined ? { messageIndex: reference.messageIndex } : {}),
+			...(reference.toolCallId ? { toolCallId: reference.toolCallId } : {}),
+			...(reference.block !== undefined ? { block: reference.block } : {}),
+		}))
 	}
 
 	return message

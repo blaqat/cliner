@@ -1,30 +1,6 @@
 import type { ApiProvider } from "./api"
+import { ThreadModelSelectionSchema } from "./model-settings"
 import { isOpenaiReasoningEffort, type OpenaiReasoningEffort } from "./storage/types"
-
-/**
- * Provider allowlist for this fork (plan §1a). Only these providers are
- * selectable in the settings UI; a stored provider outside this list is
- * mapped to the first allowed provider on load.
- */
-export const ALLOWED_API_PROVIDERS = ["openai", "bedrock", "anthropic", "openai-native"] as const satisfies readonly ApiProvider[]
-
-export type AllowedApiProvider = (typeof ALLOWED_API_PROVIDERS)[number]
-
-/** Fallback used when a stored provider id is not in the allowlist. */
-export const DEFAULT_ALLOWED_API_PROVIDER: ApiProvider = ALLOWED_API_PROVIDERS[0]
-
-export function isAllowedApiProvider(provider: string | undefined): provider is ApiProvider {
-	return !!provider && (ALLOWED_API_PROVIDERS as readonly string[]).includes(provider)
-}
-
-/**
- * Map a stored provider id to an allowed provider. Anything not in the
- * allowlist (including SDK spellings handled by callers) resolves to the
- * first allowed provider.
- */
-export function toAllowedApiProvider(provider: string | undefined): ApiProvider {
-	return isAllowedApiProvider(provider) ? provider : DEFAULT_ALLOWED_API_PROVIDER
-}
 
 /** OpenAI Compatible "API type" selector value (plan §10). */
 export type OpenAiCompatibleApiType = "chat" | "responses"
@@ -53,6 +29,7 @@ export interface ApiConfigProfile {
  * `apiSelection` key and mirrored onto HistoryItem.
  */
 export interface TaskApiSelection {
+	modelSelectionV1?: import("./model-settings").ThreadModelSelection
 	/** Profile id assigned to Ask (internal "plan") mode. */
 	askProfileId?: string
 	/** Profile id assigned to Act mode. */
@@ -68,6 +45,8 @@ export function readTaskApiSelection(value: unknown): TaskApiSelection | undefin
 	}
 	const record = value as Record<string, unknown>
 	const selection: TaskApiSelection = {}
+	const parsed = ThreadModelSelectionSchema.safeParse(record.modelSelectionV1)
+	if (parsed.success) selection.modelSelectionV1 = parsed.data
 	if (typeof record.askProfileId === "string" && record.askProfileId.trim()) {
 		selection.askProfileId = record.askProfileId
 	}
@@ -89,6 +68,7 @@ export function taskApiSelectionsEqual(a: TaskApiSelection | undefined, b: TaskA
 		return a === b
 	}
 	return (
+		JSON.stringify(a.modelSelectionV1) === JSON.stringify(b.modelSelectionV1) &&
 		a.askProfileId === b.askProfileId &&
 		a.actProfileId === b.actProfileId &&
 		a.planModeReasoningEffort === b.planModeReasoningEffort &&

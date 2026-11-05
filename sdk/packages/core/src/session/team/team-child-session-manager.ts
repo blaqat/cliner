@@ -396,9 +396,10 @@ export class TeamChildSessionManager {
 				subagentAccess: context.input.access ?? "read",
 			},
 		});
-		await this.manifestStore.persistSessionMessages(subSessionId, [
-			{ role: "user", content: context.input.task },
-		]);
+		if (!context.continuing)
+			await this.manifestStore.persistSessionMessages(subSessionId, [
+				{ role: "user", content: context.input.task },
+			]);
 		await this.applySubagentStatusBySessionId(subSessionId, "running");
 	}
 

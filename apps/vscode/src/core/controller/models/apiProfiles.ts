@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { ApiConfiguration, ApiProvider } from "@shared/api"
-import {
-	type ApiConfigProfile,
-	isAllowedApiProvider,
-	type OpenAiCompatibleApiType,
-	type TaskApiSelection,
-} from "@shared/api-profiles"
+import { type ApiConfigProfile, type OpenAiCompatibleApiType, type TaskApiSelection } from "@shared/api-profiles"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import {
@@ -19,6 +14,8 @@ import {
 } from "@shared/storage/state-keys"
 import { isOpenaiReasoningEffort, type Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
+import { captureThreadModelSelection, migrateThreadModelSelection } from "@/sdk/model-settings-resolver"
 
 /**
  * Saved API configuration profiles (plan §1b).
@@ -549,7 +546,7 @@ export async function ensureApiConfigProfiles(stateManager: ApiProfileStore): Pr
 		updates.actProfileId = actProfileId
 	} else {
 		const known = new Set(profiles.map((p) => p.id))
-		const fallback = profiles.find((p) => isAllowedApiProvider(p.provider))?.id ?? profiles[0]?.id
+		const fallback = profiles[0]?.id
 		if (!askProfileId || !known.has(askProfileId)) {
 			askProfileId = fallback
 			updates.askProfileId = askProfileId
@@ -582,6 +579,10 @@ export async function ensureApiConfigProfiles(stateManager: ApiProfileStore): Pr
 export function captureTaskApiSelection(
 	stateManager: Pick<ApiProfileStore, "getGlobalStateKey" | "getApiConfiguration">,
 ): TaskApiSelection {
+	if (modelSettingsRolloutEnabled() && stateManager.getGlobalStateKey("modelSettingsMigration")?.status === "complete") {
+		const settings = stateManager.getGlobalStateKey("modelSettings")
+		if (settings) return { modelSelectionV1: captureThreadModelSelection(settings) }
+	}
 	const config = stateManager.getApiConfiguration()
 	const selection: TaskApiSelection = {
 		askProfileId: stateManager.getGlobalStateKey("askProfileId"),
@@ -611,9 +612,41 @@ function taskSelectionEffort(selection: TaskApiSelection | undefined, mode: Mode
  */
 export function resolveTaskApiSelection(
 	stateManager: Pick<ApiProfileStore, "getGlobalStateKey">,
-	item: { apiSelection?: TaskApiSelection; apiProvider?: string; modelId?: string },
+	item: {
+		apiSelection?: TaskApiSelection
+		apiProvider?: string
+		modelId?: string
+		modelSelectionV1?: import("@shared/model-settings").ThreadModelSelection
+	},
 	mode: Mode,
 ): TaskApiSelection {
+	if (modelSettingsRolloutEnabled()) {
+		const journal = stateManager.getGlobalStateKey("modelSettingsMigration")
+		if (journal?.status === "complete") {
+			let selection = item.modelSelectionV1 ?? item.apiSelection?.modelSelectionV1
+			const settings = stateManager.getGlobalStateKey("modelSettings")
+			if (!selection && item.apiSelection) selection = migrateThreadModelSelection(item.apiSelection, journal, settings)
+			if (!selection) {
+				// As legacy: the first row for the recorded provider and model, for this mode only. The rest is the current selection.
+				const matched = settings?.models.find(
+					(model) =>
+						model.upstreamId === item.modelId &&
+						settings.connections.some(
+							(connection) =>
+								connection.id === model.connectionId &&
+								(connection.kind === "provider"
+									? toLegacyApiProvider(connection.providerId) === toLegacyApiProvider(item.apiProvider ?? "")
+									: toLegacyApiProvider(item.apiProvider ?? "") === "openai"),
+						),
+				)
+				const current = settings ? captureThreadModelSelection(settings) : { version: 1 as const, ask: null, act: null }
+				selection = matched
+					? { ...current, [mode === "plan" ? "ask" : "act"]: { modelId: matched.id, levelId: "default" } }
+					: current
+			}
+			return { ...item.apiSelection, modelSelectionV1: selection }
+		}
+	}
 	const profiles = readApiConfigProfiles(stateManager)
 	const known = new Set(profiles.map((p) => p.id))
 	const resolved: TaskApiSelection = { ...item.apiSelection }

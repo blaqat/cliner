@@ -53,7 +53,7 @@ export function isTaskCwdOutsideWorkspace(
 	})
 }
 
-function basename(p: string, platform: Platform): string {
+export function cwdBasename(p: string, platform: Platform): string {
 	let cleaned = p
 	if (platform === "win32") {
 		cleaned = cleaned.replace(/\\/g, "/")
@@ -91,7 +91,7 @@ const TaskWorkingDirectoryBadge: React.FC<{
 					id="task-cwd-badge">
 					<FolderIcon className="shrink-0" size={11} />
 					<span className="text-xs whitespace-nowrap overflow-hidden text-ellipsis min-w-0">
-						{basename(cwd, platform)}
+						{cwdBasename(cwd, platform)}
 					</span>
 				</div>
 			</TooltipTrigger>

@@ -3,7 +3,17 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } f
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Message } from "@cline/shared"
-import { changesBetween, collect, git, modulePath, readEdits, recordEdits, revertChange, transcriptTurns } from "./collection"
+import {
+	changesBetween,
+	collect,
+	git,
+	matchLineEndings,
+	modulePath,
+	readEdits,
+	recordEdits,
+	revertChange,
+	transcriptTurns,
+} from "./collection"
 import { type ContentChange, fallback } from "./engine"
 import { recordToolEdits } from "./recording"
 
@@ -164,6 +174,29 @@ describe("walkthrough collection", () => {
 		expect(changes[0].after).toBe("after\n")
 		expect(changes[1].before).toBe("untracked before\n")
 		expect(changes[1].after).toBe("untracked after\n")
+	})
+	it("compares a checked-out CRLF file in its own line endings, so only real edits show (Windows)", async () => {
+		const root = await repo("repo")
+		await writeFile(path.join(root, "b.ts"), "one\ntwo\nthree\n")
+		await git(root, ["add", "b.ts"])
+		await git(root, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-qm", "b"])
+		// autocrlf checks files out with CRLF while the blobs keep LF.
+		await git(root, ["config", "core.autocrlf", "true"])
+		await writeFile(path.join(root, "a.ts"), "old\r\n")
+		await writeFile(path.join(root, "b.ts"), "one\r\nTWO\r\nthree\r\n")
+		const changes = await changesBetween(root, [root], "HEAD")
+		// a.ts only gained CRLF: no change. b.ts shows the one edited line, not all three.
+		expect(changes.map((change) => change.path)).toEqual(["b.ts"])
+		expect(changes[0].before).toBe("one\r\ntwo\r\nthree\r\n")
+		const walk = fallback("task", "git", [], changes)
+		expect(walk.hunks[0].patch.split("\n").filter((line) => /^[+-]/.test(line))).toEqual(["-two\r", "+TWO\r"])
+	})
+	it("matches line endings only when each side uses one style", () => {
+		expect(matchLineEndings("a\nb\n", "a\r\nb\r\n")).toBe("a\r\nb\r\n")
+		expect(matchLineEndings("a\r\nb\r\n", "a\nb\n")).toBe("a\nb\n")
+		// Mixed endings are left alone: that's content, not a checkout difference.
+		expect(matchLineEndings("a\nb\n", "a\r\nb\n")).toBe("a\nb\n")
+		expect(matchLineEndings("same\n", "same\n")).toBe("same\n")
 	})
 	it("collects both sides of a git rename as reviewable file changes", async () => {
 		const root = await repo("repo")

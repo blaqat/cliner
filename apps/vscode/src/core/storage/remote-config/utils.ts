@@ -43,6 +43,8 @@ function accessSettingsToBlobStorage(type: BlobStoreSettings["adapterType"], set
  */
 export function transformRemoteConfigToStateShape(remoteConfig: RemoteConfig): Partial<RemoteConfigFields> {
 	const transformed: Partial<RemoteConfigFields> = {}
+	if (remoteConfig.providerSettings !== undefined)
+		transformed.remoteProviderSettings = structuredClone(remoteConfig.providerSettings)
 
 	// Map top-level settings
 	if (remoteConfig.telemetryEnabled !== undefined) {

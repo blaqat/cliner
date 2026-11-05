@@ -1,0 +1,86 @@
+import type { Connection, ConnectionPatch, ModelPick, ModelRow, RoleSettings, SubagentPolicy } from "@shared/model-settings"
+import type { ModelSettingsState } from "@shared/model-settings-state"
+import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
+import { ModelsServiceClient } from "@/services/grpc-client"
+
+export type SecretMutation =
+	| { field: string; operation: "keep" | "delete" | "unlock" }
+	| { field: string; operation: "set"; value: string }
+
+export interface DiscoveredModel {
+	upstreamId: string
+	name: string
+	classification: "chat" | "unknown" | "non-chat"
+	source: "catalog" | "discovered"
+}
+
+export interface DiscoveryResult {
+	status: "ok" | "catalog" | "auth" | "network" | "no-list"
+	models: DiscoveredModel[]
+	manualEntry?: boolean
+}
+
+export type PreviewResult =
+	| { exact: true; request: { url: string; method: string; headers: Record<string, string>; body: unknown } }
+	| { exact: false; reason: string }
+
+type SettingsRpc = {
+	[K in keyof typeof ModelsServiceClient]: (typeof ModelsServiceClient)[K] extends (
+		request: ModelSettingsRequestV1,
+	) => Promise<{ json: string }>
+		? K
+		: never
+}[keyof typeof ModelsServiceClient]
+
+/** Every ModelsService settings call carries one JSON string each way. Encoded and decoded exactly once, here. */
+const call = async <T>(method: SettingsRpc, payload: unknown) => {
+	const send = ModelsServiceClient[method] as (request: ModelSettingsRequestV1) => Promise<{ json: string }>
+	const response = await send.call(ModelsServiceClient, ModelSettingsRequestV1.create({ json: JSON.stringify(payload) }))
+	return JSON.parse(response.json) as T
+}
+
+/** The revision check tripped. The host has re-read the file, so another try sees what changed. */
+export const isStaleSettings = (error: unknown) =>
+	/another window|settings changed/i.test(error instanceof Error ? error.message : String(error))
+
+/**
+ * A change built on the latest settings. If they move between the read and the write, it's built
+ * again on what's there now: it only touches its own part, so nothing someone else saved is lost.
+ */
+export const withLatestSettings = async <T>(write: (latest: ModelSettingsState) => Promise<T>): Promise<T> => {
+	const attempt = async () => write(await call<ModelSettingsState>("getModelSettings", {}))
+	try {
+		return await attempt()
+	} catch (error) {
+		if (!isStaleSettings(error)) {
+			throw error
+		}
+		return attempt()
+	}
+}
+
+export const modelSettingsClient = {
+	get: () => call<ModelSettingsState>("getModelSettings", {}),
+	saveConnection: (expectedRevision: number, connection: ConnectionPatch | Connection, secrets: SecretMutation[] = []) =>
+		call<ModelSettingsState>("saveConnection", { expectedRevision, connection, secrets }),
+	saveModels: (expectedRevision: number, models: ModelRow[]) =>
+		call<ModelSettingsState>("saveConfiguredModels", { expectedRevision, models }),
+	duplicateModel: (modelId: string) => call<{ draft: ModelRow }>("duplicateConfiguredModel", { modelId }),
+	deleteModel: (expectedRevision: number, modelId: string) =>
+		call<ModelSettingsState>("deleteConfiguredModel", { expectedRevision, modelId }),
+	deleteConnection: (expectedRevision: number, connectionId: string) =>
+		call<ModelSettingsState>("deleteConnection", { expectedRevision, connectionId }),
+	setRoles: (expectedRevision: number, roles: RoleSettings) =>
+		call<ModelSettingsState>("setModelRoles", { expectedRevision, roles }),
+	makeDefault: (expectedRevision: number, mode: "plan" | "act", pick: ModelPick) =>
+		call<ModelSettingsState>("makeModelDefault", { expectedRevision, mode, pick }),
+	setThreadModel: (input: { taskId: string; mode: "plan" | "act"; pick: ModelPick; nextMessageOnly: boolean }) =>
+		call<{ applied: true }>("setThreadModelSelection", input),
+	setPolicy: (expectedRevision: number, subagents: SubagentPolicy) =>
+		call<ModelSettingsState>("setSubagentPolicy", { expectedRevision, subagents }),
+	discover: (expectedRevision: number, connectionId: string) =>
+		call<DiscoveryResult>("discoverConnectionModels", { expectedRevision, connectionId }),
+	savedThreadUsage: (modelIds: string[]) => call<{ savedThreads: number }>("getModelSavedThreadUsage", { modelIds }),
+	preview: (expectedRevision: number, pick: ModelPick) =>
+		call<PreviewResult>("previewConfiguredModelRequest", { expectedRevision, pick }),
+}

@@ -21,6 +21,13 @@ export function renameTask(taskId: string, title: string): Promise<boolean> {
 	)
 }
 
+export function toggleTaskStashed(taskId: string): Promise<void> {
+	return TaskServiceClient.toggleTaskStashed(TaskSettledRequest.create({ taskId })).then(
+		() => undefined,
+		(error) => console.error("Failed to stash task:", error),
+	)
+}
+
 /** Flips a task between the Active and Settled inbox groups. */
 export function toggleTaskSettled(taskId: string): Promise<void> {
 	return TaskServiceClient.toggleTaskSettled(TaskSettledRequest.create({ taskId })).then(

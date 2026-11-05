@@ -1,7 +1,10 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -23,8 +26,11 @@ export interface SdkSessionConfigChangeCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	loadInitialMessages: (sdkHost: SdkSessionHost, sessionId: string) => Promise<unknown[] | undefined>
 	buildStartSessionInput: (config: SessionConfig, input: { cwd: string; mode: Mode }) => StartInput
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Threads whose own model refused a rebuild. The send says why; an edit elsewhere isn't that thread's error. */
+	refusedRebuilds?: Set<string>
 }
 
 interface RebuildDetails {
@@ -118,21 +124,28 @@ export class SdkSessionConfigChangeCoordinator {
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
 
+		let building = false
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode,
-				...(activeSession.apiSnapshot
-					? {
-							apiSelection: activeSession.apiSnapshot.selection,
-							apiConfiguration: activeSession.apiSnapshot.configuration,
-						}
-					: {}),
-			})
+			building = true
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(activeSession.apiSnapshot
+						? {
+								apiSelection: activeSession.apiSnapshot.selection,
+								apiConfiguration: activeSession.apiSnapshot.configuration,
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
+			building = false
+			this.options.refusedRebuilds?.delete(oldSessionId)
 			config.sessionId = oldSessionId
 
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
@@ -166,12 +179,21 @@ export class SdkSessionConfigChangeCoordinator {
 			const replaceSession = sessionId
 				? this.options.sessions.replaceSession.bind(this.options.sessions)
 				: this.options.sessions.replaceActiveSession.bind(this.options.sessions)
+			let selectionCommitted = false
+			const commitSelection = () => {
+				if (selectionCommitted) return
+				selectionCommitted = true
+				const selection = getSessionApiSnapshot(config)?.selection
+				if (selection && useModelSettings(this.options.stateManager))
+					this.options.onSelectionRebuilt?.(oldSessionId, selection)
+			}
 			const restartResult = await replaceSession({
 				expectedSession: activeSession,
 				startInput,
 				loadInitialMessages: async () =>
 					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: details.disposeReason,
+				...(useModelSettings(this.options.stateManager) ? { onReplaced: commitSelection } : {}),
 			})
 			if (!restartResult) {
 				if (
@@ -183,6 +205,7 @@ export class SdkSessionConfigChangeCoordinator {
 				return
 			}
 
+			commitSelection()
 			const { startResult } = restartResult
 			if (startResult.sessionId !== oldSessionId) {
 				Logger.warn(
@@ -200,6 +223,13 @@ export class SdkSessionConfigChangeCoordinator {
 				`[SdkController] Session restarted for ${details.description}: ${oldSessionId} -> ${startResult.sessionId}`,
 			)
 		} catch (error) {
+			if (building && this.options.refusedRebuilds && useModelSettings(this.options.stateManager)) {
+				Logger.warn(`[SdkController] Session ${oldSessionId} keeps its current build after ${details.description}`)
+				this.options.refusedRebuilds.add(oldSessionId)
+				messages.emitSessionEvents([], { type: "status", payload: { sessionId: oldSessionId, status: "idle" } })
+				await this.options.postStateToWebview()
+				return
+			}
 			Logger.error(`[SdkController] Failed to restart session for ${details.description}:`, error)
 
 			const errorMessage: ClineMessage = {

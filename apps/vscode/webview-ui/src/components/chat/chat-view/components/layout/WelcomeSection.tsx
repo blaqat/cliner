@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react"
 import BannerCarousel, { BannerData } from "@/components/common/BannerCarousel"
 import WhatsNewModal from "@/components/common/WhatsNewModal"
 import InboxList from "@/components/inbox/InboxList"
-import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
+import { moveToAccountModel } from "@/components/settings/models/configuredModelActions"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import HomeHeader from "@/components/welcome/HomeHeader"
@@ -67,17 +67,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 	}, [])
 
 	const { clineUser } = useClineAuth()
-	const {
-		openRouterModels,
-		navigateToSettings,
-		navigateToSettingsModelPicker,
-		navigateToWorktrees,
-		worktreesEnabled,
-		banners,
-		welcomeBanners,
-		taskGroups,
-	} = useExtensionState()
-	const { handleFieldsChange } = useApiConfigurationHandlers()
+	const { navigateToSettings, navigateToWorktrees, worktreesEnabled, banners, welcomeBanners, taskGroups, currentTaskItem } =
+		useExtensionState()
 	const { isClinePassEnabled, isUsingClinePass, openSubscribePage, switchToClinePassProvider } = useClinePassPromo()
 	// Seeded from the session-scoped record so dismissals survive unmounts.
 	const [dismissedLocalBanners, setDismissedLocalBanners] = useState<Set<string>>(() => getSessionDismissedBannerIds())
@@ -174,16 +165,15 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 
 				case BannerActionType.SetModel: {
 					const modelId = action.arg || "anthropic/claude-sonnet-4.5"
-					const initialModelTab = action.tab || "recommended"
-					handleFieldsChange({
-						planModeOpenRouterModelId: modelId,
-						actModeOpenRouterModelId: modelId,
-						planModeOpenRouterModelInfo: openRouterModels[modelId],
-						actModeOpenRouterModelInfo: openRouterModels[modelId],
-						planModeApiProvider: "cline",
-						actModeApiProvider: "cline",
+					moveToAccountModel({
+						providerId: "cline",
+						providerName: "Cline",
+						upstreamId: modelId,
+						modes: ["act", "plan"],
+						taskId: currentTaskItem?.id ?? "",
 					})
-					navigateToSettingsModelPicker({ targetSection: "api-config", initialModelTab })
+						.catch((error) => console.error("Failed to switch to the banner's model:", error))
+						.finally(() => navigateToSettings("models"))
 					break
 				}
 
@@ -192,14 +182,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					break
 
 				case BannerActionType.ShowApiSettings:
-					if (action.arg) {
-						// Pre-select the provider before navigating
-						handleFieldsChange({
-							planModeApiProvider: action.arg as any,
-							actModeApiProvider: action.arg as any,
-						})
-					}
-					navigateToSettings("api-config")
+					// The page has no provider to preselect: providers are added from it.
+					navigateToSettings("models")
 					break
 
 				case BannerActionType.ShowFeatureSettings:
@@ -216,7 +200,7 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					console.warn("Unknown banner action:", action.action)
 			}
 		},
-		[handleFieldsChange, openRouterModels, navigateToSettings, navigateToSettingsModelPicker],
+		[currentTaskItem?.id, navigateToSettings],
 	)
 
 	/**

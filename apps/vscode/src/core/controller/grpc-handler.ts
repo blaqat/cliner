@@ -121,7 +121,7 @@ async function handleStreamingRequest(
 		isLast: boolean = false,
 		sequenceNumber?: number,
 	) => {
-		await postMessageToWebview({
+		const posted = await postMessageToWebview({
 			type: "grpc_response",
 			grpc_response: {
 				message: response,
@@ -130,6 +130,9 @@ async function handleStreamingRequest(
 				sequence_number: sequenceNumber,
 			},
 		})
+		if (posted === false) {
+			throw new Error("Webview rejected streaming response")
+		}
 	}
 
 	try {

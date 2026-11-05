@@ -9,6 +9,9 @@ import { shouldNameBack } from "./navHistory"
 
 const LONG_PRESS_MS = 450
 
+/** The named Back's label ellipsizes early (about 14 characters); its tooltip has the full name. */
+export const BACK_LABEL_MAX_WIDTH = "min(14ch, 110px)"
+
 interface BackButtonProps {
 	/** Ids of the breadcrumbs on screen; Back names its target only when it isn't one of them. */
 	crumbIds: readonly string[]
@@ -62,9 +65,9 @@ export const BackButton = ({ crumbIds, fallback }: BackButtonProps) => {
 						aria-haspopup="menu"
 						aria-label={`Back to ${targetLabel}`}
 						className={cn(
-							// Named, it grows to fit the label (up to a share of the header).
+							// Named, it grows to fit a short label; the current crumb keeps priority for the space.
 							named
-								? HEADER_ICON_BUTTON_CLASS.replace("size-5.5", "h-5.5 max-w-[45%] gap-0.5 pr-1.5")
+								? HEADER_ICON_BUTTON_CLASS.replace("size-5.5", "h-5.5 min-w-0 gap-0.5 pr-1.5")
 								: HEADER_ICON_BUTTON_CLASS,
 							menuOpen && "bg-toolbar-hover text-foreground",
 						)}
@@ -97,7 +100,10 @@ export const BackButton = ({ crumbIds, fallback }: BackButtonProps) => {
 						type="button">
 						<span aria-hidden className="codicon codicon-chevron-left shrink-0 text-[14px]" />
 						{named && (
-							<span className="ph-no-capture min-w-0 truncate text-[12px]" data-testid="crumb-back-label">
+							<span
+								className="ph-no-capture min-w-0 truncate text-[12px]"
+								data-testid="crumb-back-label"
+								style={{ maxWidth: BACK_LABEL_MAX_WIDTH }}>
 								{targetLabel}
 							</span>
 						)}

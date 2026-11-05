@@ -84,6 +84,7 @@ describe("subagents through the real parent session", () => {
 							for (const child of ["child-a", "child-b", "child-c"])
 								yield call("spawn_agent", `spawn-${child}`, {
 									systemPrompt: "Investigate",
+									wait: true,
 									task: child,
 									access: "read",
 								})
@@ -282,6 +283,7 @@ describe("subagents through the real parent session", () => {
 			const pendingQuestions = (await state()).pendingSubagentDecisions!
 			if (cancel) {
 				await core.abort(startResult.sessionId)
+				for (const child of children) await core.abortSubAgent(startResult.sessionId, child.spawnToolCallId!)
 			} else {
 				// Answer out of order from parent and child views without crossing resolvers.
 				for (const index of [1, 0, 2]) {
@@ -352,6 +354,7 @@ describe("subagents through the real parent session", () => {
 			for (const child of children) {
 				const saved = await controller.taskHistory.findHistoryItem(child.id)
 				const turns = cancel ? 2 : 3
+				if (!cancel) expect(saved?.lastLine).toMatchObject({ author: "agent", text: expect.stringContaining("Report") })
 				expect(saved).toMatchObject({
 					tokensIn: 100 * turns,
 					tokensOut: 20 * turns,
