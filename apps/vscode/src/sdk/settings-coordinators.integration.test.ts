@@ -5,7 +5,7 @@ import { mutateSettings } from "@/core/controller/models/modelSettingsRpc"
 import { focusedModelsFromSnapshot } from "@/core/controller/models/taskApiModel"
 import { getSessionApiSnapshot } from "./cline-session-factory"
 import { InMemoryConnectionSecretStore } from "./model-settings/connection-secret-store"
-import { NextMessageModelSelections } from "./model-settings-resolver"
+import { ModelPickUnavailableError, NextMessageModelSelections } from "./model-settings-resolver"
 import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
@@ -226,7 +226,7 @@ describe("configured selections at coordinator boundaries (rollout explicitly en
 		f.settings.roles.chat = null
 		expect((await prepareTaskResumeStartInput(deps as never, "thread")).sessionMetadata?.modelSelectionV1).toEqual(stable)
 		f.settings.models = f.settings.models.filter((model) => model.id !== act.modelId)
-		await expect(prepareTaskResumeStartInput(deps as never, "thread")).rejects.toThrow(/model.*Settings > Models/i)
+		await expect(prepareTaskResumeStartInput(deps as never, "thread")).rejects.toThrow(/model.*was removed\. Pick another/i)
 		f.settings.models.push({
 			id: "act",
 			connectionId: "connection",
@@ -577,6 +577,36 @@ it.each([
 	}
 })
 
+describe("a thread's pick for a mode", () => {
+	const build = (f: ReturnType<typeof fixture>, thread: object) =>
+		new SdkSessionConfigBuilder({ stateManager: f.state as never, emitHookMessage: vi.fn() }).build({
+			cwd: "/tmp",
+			mode: "plan",
+			apiSelection: { modelSelectionV1: { version: 1, act, ...thread } },
+		} as never)
+
+	it("follows the default when there isn't one, as its model menu shows, so setting one in Settings reaches it", async () => {
+		const f = fixture()
+		const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
+		expect((await build(f, { ask: null })).modelId).toBe("ask")
+		settings.roles.ask = { enabled: false, pick: null }
+		expect((await build(f, { ask: null })).modelId).toBe("new-default")
+	})
+
+	it.each([
+		["nothing is picked anywhere", { ask: null }, /No model selected/],
+		["its model is gone", { ask: { modelId: "gone", levelId: "default" } }, /was removed\. Pick another/],
+	])("says it can't run when %s, in the error a mode switch carries on past", async (_name, thread, message) => {
+		const f = fixture()
+		const settings = f.state.getGlobalStateKey("modelSettings") as ModelSettings
+		settings.roles.chat = null
+		settings.roles.ask = { enabled: false, pick: null }
+		const refused = build(f, thread)
+		await expect(refused).rejects.toBeInstanceOf(ModelPickUnavailableError)
+		await expect(refused).rejects.toThrow(message)
+	})
+})
+
 it("uses managed remote model values and refuses an obsolete projection in a live session", async () => {
 	const f = fixture()
 	const managed = f.state.getRemoteConfigSettings() as Record<string, unknown>
@@ -667,7 +697,7 @@ describe("editing settings under a live session", () => {
 		const f = live()
 		const config = await f.build()
 		f.settings.models = f.settings.models.filter((m) => m.id !== "act")
-		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/was removed.*Open Settings > Models/)
+		await expect(config.hooks!.beforeModel!({} as never)).rejects.toThrow(/was removed.*Pick another/)
 	})
 
 	it("spawn_agent applies a subagent policy edit to the running session instead of refusing", async () => {

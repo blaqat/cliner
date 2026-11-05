@@ -313,7 +313,7 @@ describe("Phase 4 host boundaries", () => {
 			/rollout/,
 		)
 		await f.call("deleteConfiguredModel", { expectedRevision: 2, modelId: "m" })
-		expect(() => resolveConfiguredPick(f.get(), resolveThreadPick(selection, "act"))).toThrow(/Settings > Models/)
+		expect(() => resolveConfiguredPick(f.get(), resolveThreadPick(selection, "act"))).toThrow(/was removed\. Pick another/)
 	})
 	it.each([
 		"openAiBaseUrl",

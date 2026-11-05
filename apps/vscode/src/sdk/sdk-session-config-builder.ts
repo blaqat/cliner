@@ -15,6 +15,7 @@ import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 import { configuredProviderConfig, requestPolicyGuard } from "./model-settings/runtime-config"
 import {
 	captureThreadModelSelection,
+	ModelPickUnavailableError,
 	migrateThreadModelSelection,
 	NextMessageModelSelections,
 	resolveThreadPick,
@@ -77,10 +78,16 @@ export class SdkSessionConfigBuilder {
 			const transient =
 				threadId === undefined ? undefined : this.options.nextMessageSelections?.admission(threadId, input.mode ?? "act")
 			const mode = input.mode ?? "act"
-			const pick = transient?.pick ?? resolveThreadPick(thread, mode)
+			// A thread with no pick for this mode follows the default, as its model menu shows.
+			const pick =
+				transient?.pick ??
+				resolveThreadPick(thread, mode) ??
+				captureThreadModelSelection(settings)[mode === "plan" ? "ask" : "act"]
 			const configuredProvider = await configuredProviderConfig(settings, pick, modelAuthDependencies(state), {
 				state,
 				mode,
+			}).catch((error: unknown) => {
+				throw new ModelPickUnavailableError(error instanceof Error ? error.message : String(error))
 			})
 			const config = Object.assign(await buildSessionConfig({ ...input, configuredProvider }), {
 				apiSnapshot: {

@@ -1,6 +1,6 @@
 import type { Mode } from "@shared/storage/types"
 import { ShieldOffIcon } from "lucide-react"
-import { memo } from "react"
+import { memo, type Ref } from "react"
 import { ChipChevron, MODEL_CHIP_CLASS } from "@/components/models/ModelPickButton"
 import { ModelSelector, type SelectorSlotContext } from "@/components/models/ModelSelector"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -146,6 +146,8 @@ interface ModelEffortChipProps {
 	tightChip?: boolean
 	/** The narrowest rows: no model name either, just the chevron. The tooltip and menu still name it. */
 	bareChip?: boolean
+	/** The chip itself, so a fix link beside the composer can open its menu. */
+	triggerRef?: Ref<HTMLButtonElement>
 }
 
 /**
@@ -159,6 +161,7 @@ const ModelEffortChip = ({
 	compactEffort = false,
 	tightChip = false,
 	bareChip = false,
+	triggerRef,
 }: ModelEffortChipProps) => {
 	const { autoApprovalSettings } = useExtensionState()
 	const selection = useComposerSelection(mode, fallbackLabel)
@@ -194,6 +197,7 @@ const ModelEffortChip = ({
 					aria-label={chipLabel}
 					className={cn(MODEL_CHIP_CLASS, "overflow-hidden")}
 					data-testid="model-effort-chip"
+					ref={triggerRef}
 					title={[
 						selection.description,
 						level?.description,

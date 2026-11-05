@@ -136,6 +136,8 @@ export interface SendSplitButtonProps {
 	mode: Mode
 	/** Sending is blocked (empty draft, script options missing, ...); the mode toggle stays usable. */
 	disabled: boolean
+	/** Why, when it's worth saying: the send part's tooltip says this instead. */
+	disabledReason?: string
 	onSend: () => void
 	onPickMode: (mode: Mode) => void
 	/** Flash after a mode change from `/ask`, `/act` or the shortcut. */
@@ -165,6 +167,7 @@ export interface SendSplitButtonProps {
 const SendSplitButton = ({
 	mode,
 	disabled,
+	disabledReason,
 	onSend,
 	onPickMode,
 	flash = false,
@@ -221,7 +224,7 @@ const SendSplitButton = ({
 							disabled={disabled}
 							key={button.kind}
 							onClick={button.onClick}
-							title={button.tooltip}
+							title={disabledReason ?? button.tooltip}
 							type="button">
 							<span aria-hidden className={`codicon codicon-${button.icon} text-[13px]!`} />
 						</button>
@@ -233,7 +236,7 @@ const SendSplitButton = ({
 						data-testid="send-button"
 						disabled={disabled}
 						onClick={onSend}
-						title={`${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`}
+						title={disabledReason ?? `${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`}
 						type="button">
 						<span aria-hidden className="codicon codicon-send text-[13px]!" />
 					</button>

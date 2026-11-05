@@ -1,3 +1,4 @@
+import type { ModelPick } from "@shared/model-settings"
 import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-status"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
@@ -62,6 +63,35 @@ export interface ComposerSelection {
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/** Why a message can't go, and the words for the way out. Only sending needs a model; switching modes never does. */
+export interface ModelSendBlock {
+	reason: string
+	fix: string
+	/** Nothing is set up, so the fix is in Settings rather than the composer's model menu. */
+	setUp: boolean
+}
+
+export function modelSendBlock(
+	state: ModelSettingsState | undefined,
+	apiSelection: { modelSelectionV1?: { ask: ModelPick | null; act: ModelPick | null } } | undefined,
+	mode: Mode,
+): ModelSendBlock | undefined {
+	// Before the move has made the store, the last selection still runs.
+	if (!state) return undefined
+	const { connections, models, roles } = state.settings
+	const fallback = mode === "plan" && roles.ask.enabled ? roles.ask.pick : roles.chat
+	const pick = apiSelection?.modelSelectionV1?.[mode === "plan" ? "ask" : "act"] ?? fallback
+	const usable = (candidate: (typeof models)[number]) =>
+		candidate.kind !== "non-chat" && connections.some((connection) => connection.id === candidate.connectionId)
+	if (!pick) {
+		return models.some(usable)
+			? { reason: `No ${mode === "plan" ? "Ask" : "Act"} model is picked.`, fix: "Pick one", setUp: false }
+			: { reason: "No models are set up.", fix: "Set one up", setUp: true }
+	}
+	const model = models.find((candidate) => candidate.id === pick.modelId)
+	return model && usable(model) ? undefined : { reason: "The model this chat used is gone.", fix: "Pick another", setUp: false }
+}
 
 /** The model settings store, through its RPCs. */
 function useModelSettingsSelection(mode: Mode) {

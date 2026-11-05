@@ -10,6 +10,7 @@ import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import { getSessionApiSnapshot } from "./cline-session-factory"
 import { useModelSettings } from "./model-settings/background"
+import { ModelPickUnavailableError } from "./model-settings-resolver"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -393,6 +394,18 @@ export class SdkModeCoordinator {
 
 			Logger.log(`[SdkController] Session rebuilt for mode ${newMode}: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			if (error instanceof ModelPickUnavailableError && !sessionReplaced) {
+				// Only a send needs a model, so the switch stands. The old session goes with it: it still has the
+				// old mode's tools. The next send starts a new one in this mode, or says why it can't.
+				Logger.log(`[SdkController] Switched to ${newMode} with no model to run on yet: ${error.message}`)
+				if (this.options.sessions.getActiveSession() === activeSession) {
+					await this.options.sessions.endActiveSession("modeChange")
+				}
+				this.recordModeSwitchNotice(oldSessionId, previousMode, newMode)
+				await this.options.onModeRebuilt?.(oldSessionId, newMode, undefined)
+				await this.options.postStateToWebview()
+				return false
+			}
 			Logger.error("[SdkController] Failed to rebuild session for mode change:", error)
 			if (!sessionReplaced) {
 				// The old session is still the active one and still has the old

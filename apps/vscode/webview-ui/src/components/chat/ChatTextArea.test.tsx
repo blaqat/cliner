@@ -1,12 +1,14 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type React from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StateServiceClient } from "@/services/grpc-client"
 import ChatTextArea from "./ChatTextArea"
 
 const mocks = vi.hoisted(() => ({
 	supportsImages: true as boolean | undefined,
 	navigateToSettingsModelPicker: vi.fn(),
+	state: {} as Record<string, unknown>,
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
@@ -21,6 +23,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		remoteConfigSettings: undefined,
 		navigateToSettingsModelPicker: mocks.navigateToSettingsModelPicker,
 		mcpServers: [],
+		...mocks.state,
 	}),
 }))
 
@@ -384,5 +387,111 @@ describe("ChatTextArea mode flash reduced motion", () => {
 		})
 
 		expect(rules.some((rule) => rule.includes("vscode-reduce-motion") && rule.includes("animation"))).toBe(true)
+	})
+})
+
+describe("ChatTextArea when the mode has no model to run on", () => {
+	const lostModel = {
+		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
+		modelSettings: {
+			settings: {
+				connections: [{ id: "c", name: "Gateway", kind: "openai-compatible", baseUrl: "https://x", defaults: {} }],
+				models: [{ id: "new", connectionId: "c", upstreamId: "new", name: "New", kind: "chat", overrides: {} }],
+				roles: {
+					chat: null,
+					ask: { enabled: false, pick: null },
+					subagents: { kind: "thread", level: "inherit" },
+					background: { pick: null, titlesEnabled: false, overrides: {} },
+				},
+			},
+			effective: {},
+			availability: {},
+		},
+		composerApiSelection: {
+			modelSelectionV1: { version: 1, act: { modelId: "old", levelId: "default" }, ask: null },
+		},
+	}
+
+	const renderBlocked = (inputValue = "hello") => {
+		const onSend = vi.fn()
+		render(
+			<ChatTextArea
+				inputValue={inputValue}
+				onSelectFilesAndImages={vi.fn()}
+				onSend={onSend}
+				placeholderText="Type a message"
+				selectedFiles={[]}
+				selectedImages={[]}
+				sendingDisabled={false}
+				setInputValue={vi.fn()}
+				setSelectedFiles={vi.fn()}
+				setSelectedImages={vi.fn()}
+				shouldDisableFilesAndImages={false}
+			/>,
+		)
+		return { onSend, textarea: screen.getByPlaceholderText("Type a message") }
+	}
+
+	beforeEach(() => {
+		mocks.state = lostModel
+		vi.mocked(StateServiceClient.togglePlanActModeProto).mockClear()
+	})
+	afterEach(() => {
+		mocks.state = {}
+	})
+
+	it("blocks sending, says why, and Pick another opens the model menu", async () => {
+		const { onSend, textarea } = renderBlocked()
+		expect(screen.getByTestId("model-send-block")).toHaveTextContent("The model this chat used is gone.")
+		const send = screen.getByTestId("send-button")
+		expect(send).toBeDisabled()
+		expect(send).toHaveAttribute("title", "The model this chat used is gone.")
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("model-send-block-fix"))
+		expect(await screen.findByTestId("model-menu-note")).toHaveTextContent("Pick another")
+	})
+
+	it("switching modes still works", async () => {
+		renderBlocked()
+		fireEvent.click(screen.getByTestId("mode-switch"))
+		await waitFor(() => expect(StateServiceClient.togglePlanActModeProto).toHaveBeenCalledTimes(1))
+	})
+
+	it("/ask alone goes through, since it only switches modes", () => {
+		const { onSend, textarea } = renderBlocked("/ask")
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).toHaveBeenCalledTimes(1)
+	})
+
+	it("/act with text is blocked by Act's model, and /ask with text is judged by Ask's", () => {
+		const blocked = renderBlocked("/act hello")
+		fireEvent.keyDown(blocked.textarea, { key: "Enter" })
+		expect(blocked.onSend).not.toHaveBeenCalled()
+		cleanup()
+		mocks.state = {
+			...lostModel,
+			composerApiSelection: {
+				modelSelectionV1: {
+					version: 1,
+					act: { modelId: "old", levelId: "default" },
+					ask: { modelId: "new", levelId: "default" },
+				},
+			},
+		}
+		const allowed = renderBlocked("/ask hello")
+		fireEvent.keyDown(allowed.textarea, { key: "Enter" })
+		expect(allowed.onSend).toHaveBeenCalledTimes(1)
+	})
+
+	it("says nothing and sends normally once the mode has a model", () => {
+		mocks.state = {
+			...lostModel,
+			composerApiSelection: { modelSelectionV1: { version: 1, act: { modelId: "new", levelId: "default" }, ask: null } },
+		}
+		const { onSend, textarea } = renderBlocked()
+		expect(screen.queryByTestId("model-send-block")).toBeNull()
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(onSend).toHaveBeenCalledTimes(1)
 	})
 })

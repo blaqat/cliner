@@ -20,6 +20,10 @@ import { type ConnectionAuthDependencies, prepareModelRequest } from "./model-se
 import { modelSettingsRolloutEnabled } from "./model-settings/rollout"
 
 const fix = "Open Settings > Models to choose a model and level."
+
+/** A thread's pick can't run right now: it's gone, unset, locked or has no key. Only a send needs one. */
+export class ModelPickUnavailableError extends Error {}
+
 export function captureThreadModelSelection(settings: ModelSettings): ThreadModelSelection {
 	return structuredClone({
 		version: 1,
@@ -84,9 +88,9 @@ export function resolveConfiguredPick(
 ) {
 	if (!pick) throw new Error(`No model selected. ${fix}`)
 	const model = settings.models.find((m) => m.id === pick.modelId)
-	if (!model) throw new Error(`The model picked here was removed. ${fix}`)
+	if (!model) throw new Error("The model picked here was removed. Pick another.")
 	const connection = settings.connections.find((c) => c.id === model.connectionId)
-	if (!connection) throw new Error(`The connection for '${model.name || model.upstreamId}' was removed. ${fix}`)
+	if (!connection) throw new Error(`The connection for '${model.name || model.upstreamId}' was removed. Pick another model.`)
 	if (model.kind === "non-chat") throw new Error(`Saved model does not support chat. ${fix}`)
 	if (model.upstreamId === MODEL_ID_NEEDED) throw new Error(`This model has no model ID. Add it in Settings > Models.`)
 	if (connection.baseUrl === BASE_URL_NEEDED)

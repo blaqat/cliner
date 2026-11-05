@@ -38,6 +38,7 @@ import {
 	getMatchingSlashCommands,
 	insertSlashCommand,
 	MODE_SWITCHED_BY_COMMAND_EVENT,
+	parseModeSwitchCommand,
 	removeSlashCommand,
 	shouldShowSlashCommandsMenu,
 	slashCommandDeleteRegex,
@@ -53,6 +54,7 @@ import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
 import AttachButton from "./composer/AttachButton"
 import { type ComposerRowLayout, composerChipMinWidth, useComposerRowLayout } from "./composer/composerRowLayout"
+import { modelSendBlock } from "./composer/composerSelection"
 import ModelEffortChip from "./composer/ModelEffortChip"
 import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
@@ -242,7 +244,18 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			},
 			[setDraftInputValue, onScriptRun, usable],
 		)
-		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput)
+		const modelBlock = modelSendBlock(modelSettings, composerApiSelection, mode)
+		// `/ask` and `/act` only switch modes, so alone they never wait on a model; text after one goes in the new mode.
+		const modeCommand = parseModeSwitchCommand(inputValue.trim())
+		const onlySwitchesMode =
+			!!modeCommand && !modeCommand.rest && !selectedImages.length && !selectedFiles.length && !hasQuotes
+		const sendBlock = onlySwitchesMode
+			? undefined
+			: modeCommand
+				? modelSendBlock(modelSettings, composerApiSelection, modeCommand.mode)
+				: modelBlock
+		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput) || !!sendBlock
+		const modelChipRef = useRef<HTMLButtonElement>(null)
 		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
 		const slashAtMessageStart = useMemo(() => {
 			const beforeCursor = inputValue.slice(0, cursorPosition)
@@ -1855,11 +1868,13 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								fallbackLabel={modelDisplayName}
 								mode={mode}
 								tightChip={rowLayout.tightChip}
+								triggerRef={modelChipRef}
 							/>
 						</ShrinkSlot>
 						<SendSplitButton
 							compactMode={rowLayout.tightChip}
 							disabled={sendDisabled}
+							disabledReason={sendBlock?.reason}
 							flash={modeSwitchFlash}
 							hideModeSwitch={rowLayout.hideModeSwitch}
 							mode={mode}
@@ -1888,6 +1903,25 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						/>
 					</div>
 				</div>
+				{modelBlock && (
+					<div
+						className="flex items-center gap-1.5 px-3.5 pb-1.5 text-xs"
+						data-testid="model-send-block"
+						role="status"
+						style={{ color: "var(--vscode-editorWarning-foreground)" }}>
+						<TriangleAlertIcon className="shrink-0" size={12} />
+						<span className="min-w-0">
+							{modelBlock.reason}{" "}
+							<button
+								className="underline cursor-pointer bg-transparent border-0 p-0 m-0 text-[var(--vscode-textLink-foreground)] hover:text-[var(--vscode-textLink-activeForeground)]"
+								data-testid="model-send-block-fix"
+								onClick={() => (modelBlock.setUp ? handleModelButtonClick() : modelChipRef.current?.click())}
+								type="button">
+								{modelBlock.fix}
+							</button>
+						</span>
+					</div>
+				)}
 				{unsupportedImagesAttached && (
 					<div
 						className="flex items-center gap-1.5 px-3.5 pb-1.5 text-xs"
