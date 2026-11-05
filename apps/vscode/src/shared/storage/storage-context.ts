@@ -127,9 +127,11 @@ export function resolveStateDirFromEnv(namespace = stateNamespace()): string {
 /**
  * Starts a store from the shared one the first time, so nobody loses their setup moving over. Atomic
  * and never overwrites: windows starting together after a restart can't half-write or replace it.
+ * False when the copy failed: the caller stays on the shared file, so the setup isn't missing and
+ * nothing gets written to the new place that would stop the next start from trying again.
  */
-function adoptOnce(from: string, to: string, mode?: number): void {
-	if (from === to || fsSync.existsSync(to) || !fsSync.existsSync(from)) return
+function adoptOnce(from: string, to: string, mode?: number): boolean {
+	if (from === to || fsSync.existsSync(to) || !fsSync.existsSync(from)) return true
 	const staged = `${to}.adopt.${randomUUID()}`
 	const alreadyThere = (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST"
 	try {
@@ -142,9 +144,11 @@ function adoptOnce(from: string, to: string, mode?: number): void {
 			// A drive without hard links: not atomic, but still never overwrites.
 			if (!alreadyThere(error)) fsSync.copyFileSync(staged, to, fsSync.constants.COPYFILE_EXCL)
 		}
+		return true
 	} catch (error) {
-		// Starting without the old setup beats not starting; it's tried again until this build saves.
-		if (!alreadyThere(error)) Logger.error(`[StorageContext] Couldn't copy ${from} to ${to}:`, error)
+		if (alreadyThere(error)) return true
+		Logger.error(`[StorageContext] Couldn't copy ${from} to ${to}:`, error)
+		return false
 	} finally {
 		fsSync.rmSync(staged, { force: true })
 	}
@@ -169,7 +173,14 @@ function adoptOnce(from: string, to: string, mode?: number): void {
 export function createStorageContext(opts: StorageContextOptions = {}): StorageContext {
 	const dataDir = opts.clineDir ? path.join(opts.clineDir, SETTINGS_SUBFOLDER) : resolveDataDirFromEnv()
 	const namespace = "stateNamespace" in opts ? opts.stateNamespace : stateNamespace()
-	const stateDir = namespace ? path.join(dataDir, namespace) : dataDir
+	let stateDir = namespace ? path.join(dataDir, namespace) : dataDir
+	// Secrets first: it's the global state's copy that says this build has moved over.
+	if (
+		!adoptOnce(path.join(dataDir, "secrets.json"), path.join(stateDir, "secrets.json"), SECRETS_MODE) ||
+		!adoptOnce(path.join(dataDir, "globalState.json"), path.join(stateDir, "globalState.json"))
+	) {
+		stateDir = dataDir
+	}
 
 	// Resolve workspace storage directory
 	let workspaceDir: string
@@ -181,17 +192,15 @@ export function createStorageContext(opts: StorageContextOptions = {}): StorageC
 		const workspacePath = opts.workspacePath || process.cwd()
 		const workspaceHash = hashString(workspacePath)
 		workspaceDir = path.join(stateDir, "workspaces", workspaceHash)
-		adoptOnce(
-			path.join(dataDir, "workspaces", workspaceHash, "workspaceState.json"),
-			path.join(workspaceDir, "workspaceState.json"),
-		)
+		const shared = path.join(dataDir, "workspaces", workspaceHash)
+		if (!adoptOnce(path.join(shared, "workspaceState.json"), path.join(workspaceDir, "workspaceState.json"))) {
+			workspaceDir = shared
+		}
 	}
 
 	// Ensure directories exist
 	fsSync.mkdirSync(stateDir, { recursive: true })
 	fsSync.mkdirSync(workspaceDir, { recursive: true })
-	adoptOnce(path.join(dataDir, "globalState.json"), path.join(stateDir, "globalState.json"))
-	adoptOnce(path.join(dataDir, "secrets.json"), path.join(stateDir, "secrets.json"), SECRETS_MODE)
 
 	const globalState = new ClineFileStorage(path.join(stateDir, "globalState.json"), "GlobalState")
 

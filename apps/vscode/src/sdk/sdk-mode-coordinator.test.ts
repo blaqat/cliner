@@ -727,6 +727,29 @@ describe("SdkModeCoordinator", () => {
 			expect(coordinator.consumeModeSwitchNotice("old-session")).toBeTruthy()
 		})
 
+		it.each([
+			["queued messages", { queuedPromptCount: 2 }],
+			["a turn that restarted from the queue", { isRunning: true }],
+		])("keeps a session holding %s, and the switch doesn't take", async (_name, held) => {
+			const activeSession = Object.assign(makeActiveSession(), held)
+			const { coordinator, options, state } = makeCoordinator({
+				activeSession,
+				task: makeTask("old-session", []),
+				mode: "act",
+				turnPhase: "completed",
+			})
+			;(options.sessionConfigBuilder.build as ReturnType<typeof vi.fn>).mockRejectedValueOnce(gone)
+
+			await expect(coordinator.togglePlanActMode("plan")).resolves.toBe(false)
+
+			expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+			expect(state.mode).toBe("act")
+			expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+				[expect.objectContaining({ say: "error", text: expect.stringContaining("Pick another") })],
+				expect.anything(),
+			)
+		})
+
 		it("the notice stays true through more switches with no session", async () => {
 			const activeSession = makeActiveSession()
 			const { coordinator, options } = makeCoordinator({

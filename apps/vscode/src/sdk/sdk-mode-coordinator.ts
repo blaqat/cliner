@@ -398,7 +398,10 @@ export class SdkModeCoordinator {
 
 			Logger.log(`[SdkController] Session rebuilt for mode ${newMode}: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
-			if (error instanceof ModelPickUnavailableError && !sessionReplaced) {
+			// Queued messages live only in the session, so it can't end under them: as when replacement is refused,
+			// the switch doesn't take, and the error below says why.
+			const holdsMessages = activeSession.isRunning || activeSession.queuedPromptCount > 0
+			if (error instanceof ModelPickUnavailableError && !sessionReplaced && !holdsMessages) {
 				// Only a send needs a model, so the switch stands. The old session goes with it: it still has the
 				// old mode's tools. The next send starts a new one in this mode, or says why it can't.
 				Logger.log(`[SdkController] Switched to ${newMode} with no model to run on yet: ${error.message}`)

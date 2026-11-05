@@ -89,17 +89,47 @@ describe("createStorageContext beside the Marketplace extension", () => {
 		}
 	})
 
-	it("a copy that fails doesn't stop startup", () => {
-		write(path.join(shared, "globalState.json"), { modelSettings: { revision: 1 } })
-		const copy = spyOn(fs, "copyFileSync").mockImplementation(() => {
-			throw Object.assign(new Error("denied"), { code: "EACCES" })
+	describe("when the copy fails", () => {
+		it("stays on the shared file so the setup isn't missing, and tries again next start", async () => {
+			write(path.join(shared, "globalState.json"), { modelSettings: { revision: 1 } })
+			const copy = spyOn(fs, "copyFileSync").mockImplementation(() => {
+				throw Object.assign(new Error("denied"), { code: "EACCES" })
+			})
+			try {
+				const storage = open()
+				expect(storage.stateDir).toBe(shared)
+				expect(storage.globalState.get<unknown>("modelSettings")).toEqual({ revision: 1 })
+				// Startup's own first write, which used to make the empty copy permanent.
+				await storage.globalStateBackingStore.setBatch({ migrated: 3 })
+			} finally {
+				copy.mockRestore()
+			}
+			expect(fs.existsSync(path.join(own, "globalState.json"))).toBe(false)
+			const later = open()
+			expect(later.stateDir).toBe(own)
+			expect(later.globalState.get<unknown>("modelSettings")).toEqual({ revision: 1 })
+			expect(later.globalState.get<unknown>("migrated")).toBe(3)
 		})
-		try {
-			expect(open().globalState.get<unknown>("modelSettings")).toBeUndefined()
-		} finally {
-			copy.mockRestore()
-		}
-		expect(open().globalState.get<unknown>("modelSettings")).toEqual({ revision: 1 })
+
+		it("a workspace that can't copy stays on its shared state, and the rest moves on", async () => {
+			const marketplace = createStorageContext({ clineDir, stateNamespace: undefined, workspacePath: "/two" })
+			await marketplace.workspaceState.update("toggle", 1)
+			write(path.join(shared, "globalState.json"), { modelSettings: { revision: 1 } })
+			const original = fs.copyFileSync
+			const selective = spyOn(fs, "copyFileSync").mockImplementation((from, to, mode) => {
+				if (String(from).includes("workspaceState")) throw Object.assign(new Error("denied"), { code: "EACCES" })
+				return original(from, to, mode)
+			})
+			try {
+				const storage = open({ workspacePath: "/two" })
+				expect(storage.stateDir).toBe(own)
+				expect(storage.workspaceState.get<unknown>("toggle")).toBe(1)
+				expect(storage.workspaceStoragePath.startsWith(own)).toBe(false)
+			} finally {
+				selective.mockRestore()
+			}
+			expect(open({ workspacePath: "/two" }).workspaceStoragePath.startsWith(own)).toBe(true)
+		})
 	})
 
 	it("starts empty with nothing to copy, and leaves no stray files", () => {
