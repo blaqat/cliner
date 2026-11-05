@@ -150,19 +150,17 @@ export interface SendSplitButtonProps {
 	compactMode?: boolean
 	/** The narrowest rows: no switch, so Send still fits. Send's color shows the mode; the shortcut and `/ask` still flip it. */
 	hideModeSwitch?: boolean
-	/** While the agent runs, the send part splits into steer and interject. */
+	/** While the agent runs, the send part steers. Interject is keys only, and the tooltip says which. */
 	running?: {
 		enterSendsAs: EnterSendsAs
 		modKey: string
 		onSteer: () => void
-		onInterject: () => void
 	}
 }
 
 /**
  * `( Ask | Act ) [ ➤ ]`: the sliding mode switch (Ask ↔ Act, also the shortcut), then the filled
- * send part in the mode's color. While running, the send part becomes steer and interject (the one
- * Enter does is highlighted) and the switch stays one click.
+ * send part in the mode's color. While running, the send part steers and the switch stays one click.
  */
 const SendSplitButton = ({
 	mode,
@@ -192,55 +190,21 @@ const SendSplitButton = ({
 				data-mode={mode}
 				data-testid="send-split"
 				style={MODE_FILL[mode]}>
-				{running ? (
-					(
-						[
-							{
-								kind: "steer" as const,
-								label: "Steer",
-								tooltip: `Steer (${keyFor("steer")}): queue this message for after the current turn`,
-								icon: "send",
-								onClick: running.onSteer,
-							},
-							{
-								kind: "interject" as const,
-								label: "Interject",
-								tooltip: `Interject (${keyFor("interject")}): stop the current turn and send now`,
-								icon: "zap",
-								onClick: running.onInterject,
-							},
-						] as const
-					).map((button) => (
-						<button
-							aria-label={button.label}
-							className={cn(
-								PART_CLASS,
-								SEND_CLASS,
-								"px-1.5",
-								button.kind !== running.enterSendsAs && "opacity-70 hover:opacity-100",
-							)}
-							data-default={button.kind === running.enterSendsAs ? "true" : undefined}
-							data-testid={`${button.kind}-button`}
-							disabled={disabled}
-							key={button.kind}
-							onClick={button.onClick}
-							title={disabledReason ?? button.tooltip}
-							type="button">
-							<span aria-hidden className={`codicon codicon-${button.icon} text-[13px]!`} />
-						</button>
-					))
-				) : (
-					<button
-						aria-label={`Send (${label})`}
-						className={cn(PART_CLASS, SEND_CLASS, "px-2", { disabled })}
-						data-testid="send-button"
-						disabled={disabled}
-						onClick={onSend}
-						title={disabledReason ?? `${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`}
-						type="button">
-						<span aria-hidden className="codicon codicon-send text-[13px]!" />
-					</button>
-				)}
+				<button
+					aria-label={running ? "Steer" : `Send (${label})`}
+					className={cn(PART_CLASS, SEND_CLASS, "px-2", { disabled })}
+					data-testid={running ? "steer-button" : "send-button"}
+					disabled={disabled}
+					onClick={running ? running.onSteer : onSend}
+					title={
+						disabledReason ??
+						(running
+							? `Steer (${keyFor("steer")}): queue this message for after the current turn\nInterject (${keyFor("interject")}): stop the current turn and send now`
+							: `${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`)
+					}
+					type="button">
+					<span aria-hidden className="codicon codicon-send text-[13px]!" />
+				</button>
 			</Shell>
 		</div>
 	)

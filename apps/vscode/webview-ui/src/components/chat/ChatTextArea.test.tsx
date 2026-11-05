@@ -354,16 +354,17 @@ describe("ChatTextArea steer / interject / aside keys", () => {
 		expect(onSendAs).not.toHaveBeenCalled()
 	})
 
-	it("replaces send with steer + interject buttons while running, highlighting the default", () => {
-		const { onSend, onSendAs } = renderComposer({ isRunning: true, enterSendsAs: "interject" })
+	it("replaces send with one steer button while running; interject stays on the keys", () => {
+		const { onSend, onSendAs, textarea } = renderComposer({ isRunning: true })
 
 		expect(screen.queryByTestId("send-button")).toBeNull()
-		expect(screen.getByTestId("interject-button")).toHaveAttribute("data-default", "true")
-		expect(screen.getByTestId("steer-button")).not.toHaveAttribute("data-default")
+		expect(screen.queryByTestId("interject-button")).toBeNull()
 
 		fireEvent.click(screen.getByTestId("steer-button"))
-		fireEvent.click(screen.getByTestId("interject-button"))
 		expect(onSend).toHaveBeenCalledTimes(1)
+		expect(onSendAs).not.toHaveBeenCalled()
+
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true })
 		expect(onSendAs).toHaveBeenCalledWith("interject")
 	})
 

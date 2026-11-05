@@ -55,7 +55,7 @@ describe("composerRowLayout", () => {
 		// Rows are 27px narrower than the sidebar.
 		for (const sidebar of [170, 190, 220, 250]) {
 			for (const content of [home, chat, nearlyFull]) {
-				for (const extra of [{}, { nextMessage: true }, { running: true }, { nextMessage: true, running: true }]) {
+				for (const extra of [{}, { nextMessage: true }]) {
 					const row = sidebar - 27
 					const fitted = { ...content, ...extra }
 					expect(composerRowMinWidth(fitted, composerRowLayout(row, fitted))).toBeLessThanOrEqual(row)
@@ -103,14 +103,11 @@ describe("composerRowLayout", () => {
 		)
 	})
 
-	it("makes room for the effort text only when the model has reasoning, and for steer/interject while running", () => {
+	it("makes room for the effort text only when the model has reasoning", () => {
 		const noEffort = { ...chat, hasEffort: false }
 		expect(composerRowMinWidth(chat, FULL_COMPOSER_ROW) - composerRowMinWidth(noEffort, FULL_COMPOSER_ROW)).toBe(
 			COMPOSER_ROW_WIDTHS.effortSaving,
 		)
-		expect(
-			composerRowMinWidth({ ...chat, running: true }, FULL_COMPOSER_ROW) - composerRowMinWidth(chat, FULL_COMPOSER_ROW),
-		).toBe(COMPOSER_ROW_WIDTHS.sendRunning - COMPOSER_ROW_WIDTHS.send)
 	})
 
 	it("shrinks the Ask | Act switch to the current mode only on the tightest row", () => {

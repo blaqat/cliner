@@ -1608,7 +1608,6 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			hasUsage: !!usageIndicator,
 			hasCompactNudge: !!usageIndicator?.hasCompactNudge,
 			hasEffort: selectedModelOffersLevels({ modelSettings, composerApiSelection }, mode),
-			running: showRunningSendButtons,
 			nextMessage: !!composerNextMessageOnly,
 		}
 		const rowLayout = useComposerRowLayout(bottomRowRef, rowContent)
@@ -1885,12 +1884,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								if (!sendDisabled) onSend()
 							}}
 							running={
-								showRunningSendButtons && onSendAs
+								showRunningSendButtons
 									? {
 											enterSendsAs,
 											modKey: metaKeyChar,
 											onSteer: onSend,
-											onInterject: () => onSendAs("interject"),
 										}
 									: undefined
 							}

@@ -108,20 +108,28 @@ describe("SendSplitButton", () => {
 		expect(onPickMode).toHaveBeenCalledWith("plan")
 	})
 
-	it("while running, splits send into steer and interject and keeps the one-click mode switch", () => {
+	it("with Enter set to interject, the button still steers and the tooltip swaps the keys", () => {
 		const onSteer = vi.fn()
-		const onInterject = vi.fn()
-		const { onPickMode } = renderButton({ running: { enterSendsAs: "interject", modKey: "Ctrl", onSteer, onInterject } })
+		renderButton({ running: { enterSendsAs: "interject", modKey: "Ctrl", onSteer } })
+		expect(screen.getByTestId("steer-button").title).toBe(
+			"Steer (Ctrl+Enter): queue this message for after the current turn\nInterject (Enter): stop the current turn and send now",
+		)
+		fireEvent.click(screen.getByTestId("steer-button"))
+		expect(onSteer).toHaveBeenCalledOnce()
+	})
+
+	it("while running, the one button steers, its tooltip gives both keys, and the mode switch stays one click", () => {
+		const onSteer = vi.fn()
+		const { onPickMode } = renderButton({ running: { enterSendsAs: "steer", modKey: "Ctrl", onSteer } })
 		expect(screen.queryByTestId("send-button")).toBeNull()
-		expect(screen.getByTestId("interject-button")).toHaveAttribute("data-default", "true")
-		expect(screen.getByTestId("interject-button").title).toBe("Interject (Enter): stop the current turn and send now")
-		expect(screen.getByTestId("steer-button").title).toBe("Steer (Ctrl+Enter): queue this message for after the current turn")
+		expect(screen.queryByTestId("interject-button")).toBeNull()
+		expect(screen.getByTestId("steer-button").title).toBe(
+			"Steer (Enter): queue this message for after the current turn\nInterject (Ctrl+Enter): stop the current turn and send now",
+		)
 		expect(screen.getByTestId("steer-button").querySelector(".codicon-send")).not.toBeNull()
 		expect(screen.getByTestId("mode-switch")).toHaveTextContent("Act")
 		fireEvent.click(screen.getByTestId("steer-button"))
-		fireEvent.click(screen.getByTestId("interject-button"))
 		expect(onSteer).toHaveBeenCalledOnce()
-		expect(onInterject).toHaveBeenCalledOnce()
 		fireEvent.click(screen.getByTestId("mode-switch"))
 		expect(onPickMode).toHaveBeenCalledWith("plan")
 	})

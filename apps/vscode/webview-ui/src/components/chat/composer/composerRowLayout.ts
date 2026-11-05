@@ -35,8 +35,6 @@ export interface ComposerRowContent {
 	hasCompactNudge: boolean
 	/** The model has reasoning, so the chip has its effort text. */
 	hasEffort: boolean
-	/** The agent is running: Send is split into steer and interject. */
-	running?: boolean
 	/** The chip also says "next message", or "next" once its effort word has gone. */
 	nextMessage?: boolean
 }
@@ -88,8 +86,6 @@ export const COMPOSER_ROW_WIDTHS = {
 	switchGap: 4,
 	/** The send icon. */
 	send: 26,
-	/** Steer and interject while running. */
-	sendRunning: 46,
 } as const
 
 /** The least the chip can take in `layout`: the row squeezes it no further. */
@@ -114,7 +110,7 @@ export function composerRowMinWidth(content: ComposerRowContent, layout: Compose
 		: 0
 	const chip = composerChipMinWidth(content, layout)
 	const modeSwitch = layout.hideModeSwitch ? 0 : (layout.tightChip ? w.modeSwitchCompact : w.modeSwitch) + w.switchGap
-	return w.padding + w.attach + usage + w.rowGap + chip + w.rowGap + modeSwitch + (content.running ? w.sendRunning : w.send)
+	return w.padding + w.attach + usage + w.rowGap + chip + w.rowGap + modeSwitch + w.send
 }
 
 /** The fullest layout that fits a measured row width; unknown widths (not laid out yet, jsdom) get the full row. */
@@ -146,10 +142,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number | un
 /** `composerRowLayout` driven by the row element's measured width. */
 export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
 	const width = useElementWidth(ref)
-	const { hasUsage, hasCompactNudge, hasEffort, running, nextMessage } = content
+	const { hasUsage, hasCompactNudge, hasEffort, nextMessage } = content
 	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
 	return useMemo(
-		() => composerRowLayout(width, { hasUsage, hasCompactNudge, hasEffort, running, nextMessage }),
-		[width, hasUsage, hasCompactNudge, hasEffort, running, nextMessage],
+		() => composerRowLayout(width, { hasUsage, hasCompactNudge, hasEffort, nextMessage }),
+		[width, hasUsage, hasCompactNudge, hasEffort, nextMessage],
 	)
 }

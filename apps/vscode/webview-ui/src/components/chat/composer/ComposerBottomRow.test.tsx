@@ -260,15 +260,15 @@ describe("composer bottom row", () => {
 			expect(onSendAs).toHaveBeenCalledWith("background")
 		})
 
-		it("splits into steer and interject while running", () => {
+		it("steers while running, with no interject button", () => {
 			mocks.inThread = true
 			const onSendAs = vi.fn()
 			const props = renderComposer(undefined, { isRunning: true, onSendAs })
 			expect(screen.queryByTestId("send-button")).toBeNull()
+			expect(screen.queryByTestId("interject-button")).toBeNull()
 			fireEvent.click(screen.getByTestId("steer-button"))
-			fireEvent.click(screen.getByTestId("interject-button"))
 			expect(props.onSend).toHaveBeenCalledOnce()
-			expect(onSendAs).toHaveBeenCalledWith("interject")
+			expect(onSendAs).not.toHaveBeenCalled()
 		})
 	})
 
