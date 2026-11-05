@@ -320,6 +320,18 @@ describe("ThreadList", () => {
 		expect(rowFor("tagged")).toBeInTheDocument()
 		expect(rowFor("named")).toBeUndefined()
 	})
+	it("a row outside the open folder names it", () => {
+		mocks.state.taskHistory = [
+			item("other", { cwdOnTaskInitialization: "/somewhere/else" }),
+			item("here", { cwdOnTaskInitialization: "/work/here" }),
+		]
+		mocks.state.workspaceRoots = [{ path: "/work/here" }]
+		mocks.state.platform = "darwin"
+		renderList()
+		expect(rowFor("other")).toHaveTextContent("else")
+		expect(rowFor("other").querySelector("[data-testid=thread-cwd-tag]")).not.toBeNull()
+		expect(rowFor("here").querySelector("[data-testid=thread-cwd-tag]")).toBeNull()
+	})
 	it("Messages and Notes with no text say to type", () => {
 		renderList()
 		fireEvent.click(screen.getByTestId("one-view-filter"))

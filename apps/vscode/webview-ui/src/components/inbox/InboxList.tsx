@@ -32,6 +32,7 @@ import {
 	TaskGroupRow,
 	threadRowActions,
 } from "./TaskGroupRow"
+import { ThreadCwdTag } from "./ThreadCwdTag"
 import { treeRowStyle } from "./treeGeometry"
 
 interface CountBadgeProps {
@@ -115,6 +116,7 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 				<div className="ph-no-capture truncate text-sm text-foreground">{item.title || item.task}</div>
 				<div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs" data-testid="inbox-row-detail">
 					<RowTagChips tags={tags} />
+					<ThreadCwdTag cwd={item.cwdOnTaskInitialization} />
 					<span
 						className={cn(
 							"min-w-0 truncate",

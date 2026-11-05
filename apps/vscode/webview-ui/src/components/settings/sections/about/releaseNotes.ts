@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-3",
 		title: "Release 3",
-		builds: "test builds fork.39–59",
+		builds: "test builds fork.39–60",
 		date: "2026-11-04",
 		notes: [
 			"With main Cline installed too, your models and settings no longer disappear after a restart: this build keeps its own copy, started from what you had",
@@ -39,6 +39,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Layout is a picture to pick (Classic, Side Bar or Tab bar), and Reset now removes every saved key and sign-in",
 			"While a turn runs, the send button steers and interject is keys only (Ctrl/⌘+Enter, or swap them in Settings › Layout)",
 			"Subagents run alongside their parent: it keeps working, can message, check on or cancel them, sends finished ones a follow-up, and gets their results as they land (an idle parent wakes up); your messages and Stop no longer cancel them; only threads you start can start subagents, so they can't nest",
+			"Thread lists name the folder of a thread running outside what's open here, as its header does",
 			"One view (beta, Settings › Layout): your threads beside the chat, or as tabs across the top grouped by task; rows show status, the last line and a date once a thread is 5 days old; search filters the list in place, and the filter chooses what to search (threads, messages, notes or tags; or type #tag) and adds state and a date range",
 			"Walkthroughs can include Cline's review notes (Generate ▾ › Add review notes, or ask for them on a PR): markers in the diff and a review panel up top; Fix, Reply or Dismiss each one, and Send carries your fixes and replies",
 			"Walkthrough diffs are syntax highlighted for the file's language, and in one view a walkthrough keeps your thread list beside it; a thread's row takes you back",

@@ -232,6 +232,23 @@ describe("InboxList", () => {
 			expect(rows[2]).toHaveTextContent("Last active")
 		})
 
+		it("calls out a thread that runs outside the open folder, and only that one", () => {
+			mocks.state = {
+				taskHistory: [
+					item("other", NOW - 5000, { cwdOnTaskInitialization: "/somewhere/else" }),
+					item("here", NOW - 6000, { cwdOnTaskInitialization: "/work/here/app" }),
+				],
+				sessionStatuses: {},
+				workspaceRoots: [{ path: "/work/here" }],
+				platform: "darwin",
+			}
+			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
+			const tags = screen.getAllByTestId("thread-cwd-tag")
+			expect(tags).toHaveLength(1)
+			expect(tags[0]).toHaveTextContent("else")
+			expect(screen.getAllByTestId("inbox-row")[0]).toContainElement(tags[0])
+		})
+
 		it("pages settled chats and shows fewer again", () => {
 			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 			expect(screen.getAllByTestId("inbox-row")).toHaveLength(10)

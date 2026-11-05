@@ -4,6 +4,7 @@ import type { InboxRow } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { toggleTaskSettled, toggleTaskStashed } from "@/components/inbox/sessionActions"
 import { ROW_META_CLASS, RowActions, threadRowActions } from "@/components/inbox/TaskGroupRow"
+import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { threadStatusLabel } from "@/components/inbox/threadStatus"
 import { treeRowStyle } from "@/components/inbox/treeGeometry"
 import type { SearchRow } from "@/components/search/searchUtils"
@@ -117,6 +118,7 @@ export const ThreadRow = ({ row, now, current, onOpen, hit, query = "" }: Thread
 					<span className="ph-no-capture min-w-0 flex-1 truncate text-[13px] text-foreground">
 						{query ? <Hit query={query} text={title} /> : title}
 					</span>
+					<ThreadCwdTag cwd={item.cwdOnTaskInitialization} />
 					<span
 						className={cn("shrink-0 text-[10px] text-description tabular-nums", ROW_META_CLASS)}
 						data-testid="one-view-row-time"

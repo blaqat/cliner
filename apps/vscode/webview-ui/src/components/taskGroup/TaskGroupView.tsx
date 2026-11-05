@@ -10,6 +10,7 @@ import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles
 import { formatAge } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { isLiveThreadStatus, type ThreadStatus, threadStatusFor, threadStatusLabel } from "@/components/inbox/threadStatus"
 import { SPINE_CLASS, SPINE_LEFT_PX, SPINE_WIDTH_PX } from "@/components/inbox/treeGeometry"
 import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
@@ -119,6 +120,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		() => new Set((taskHistory ?? []).filter((item) => item.isSettled).map((item) => item.id)),
 		[taskHistory],
 	)
+	const cwds = useMemo(() => new Map((taskHistory ?? []).map((item) => [item.id, item.cwdOnTaskInitialization])), [taskHistory])
 
 	if (missing) {
 		return (
@@ -361,6 +363,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								const status = threadStatusFor(threadStatuses, thread.threadId)
 								return (
 									<TimelineRow
+										cwd={cwds.get(thread.threadId)}
 										first={index === 0}
 										key={thread.threadId}
 										last={index === timeline.length - 1}
@@ -437,8 +440,11 @@ function TimelineRow({
 	last,
 	subthread,
 	settled,
+	cwd,
 }: {
 	thread: TaskGroupThreadRow
+	/** Where the thread runs, to call out when that's outside what's open here. */
+	cwd?: string
 	status: ThreadStatus
 	/** Settled threads dim; any thread or aside can be settled or unsettled from its row. */
 	settled: boolean
@@ -494,6 +500,7 @@ function TimelineRow({
 						{subthread && <span className="sr-only">Subthread: </span>}
 						{title}
 					</span>
+					<ThreadCwdTag cwd={cwd} />
 					{/* Hover swaps the start time for Settle. */}
 					<span
 						className={cn(

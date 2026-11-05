@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
 import { formatAge, formatStamp } from "@/components/inbox/inboxUtils"
 import { openTask } from "@/components/inbox/sessionActions"
+import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { TaskTagChip } from "@/components/taskGroup/TaskTagChip"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -129,6 +130,7 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 
 	const groups = taskGroups ?? []
 	const groupsById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups])
+	const threadsById = useMemo(() => new Map((taskHistory ?? []).map((item) => [item.id, item])), [taskHistory])
 	const localRows = useMemo(() => searchLocal(query, groups, taskHistory ?? []), [query, groups, taskHistory])
 	// Server rows belong to the query they were fetched for; hide them as soon as the input differs.
 	const rows = useMemo(
@@ -359,6 +361,9 @@ export const SearchView = ({ initialQuery, onClose }: SearchViewProps) => {
 								</div>
 							</div>
 							<div className="flex items-center gap-2">
+								{(row.kind === "thread" || row.kind === "message") && (
+									<ThreadCwdTag cwd={threadsById.get(row.threadId ?? row.id)?.cwdOnTaskInitialization} />
+								)}
 								{addedTo ? (
 									<span className="text-[11px] text-(--vscode-charts-green)">Added ✓</span>
 								) : (

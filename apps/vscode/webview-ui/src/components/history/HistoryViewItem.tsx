@@ -13,6 +13,7 @@ import {
 	TrashIcon,
 } from "lucide-react"
 import { memo, useCallback, useMemo, useState } from "react"
+import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { Button } from "@/components/ui/button"
 import { useUsageCostVisibility } from "@/hooks/useUsageCostVisibility"
 import { cn } from "@/lib/utils"
@@ -100,6 +101,7 @@ const HistoryViewItem = ({
 					<div className="line-clamp-1 overflow-hidden break-words whitespace-pre-wrap flex-1 min-w-0">
 						<span className="ph-no-capture">{item.title || item.task}</span>
 					</div>
+					<ThreadCwdTag cwd={item.cwdOnTaskInitialization} />
 					{item.isLegacy && (
 						<span className="text-xs uppercase rounded px-1.5 py-0.5 bg-accent/20 text-description flex-shrink-0">
 							Legacy
