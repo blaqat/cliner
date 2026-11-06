@@ -292,6 +292,21 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(sent(mocks.setThreadModelSelection).map((request) => request.nextMessageOnly)).toEqual([true, false])
 		})
 
+		it("a refused pick can be tried again once the host would take it", async () => {
+			mocks.setThreadModelSelection.mockRejectedValueOnce(new Error("Wait for this turn to finish"))
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			await flush()
+			expect(within(models()).getByRole("option", { selected: true })).toHaveTextContent("GPT-6 Sol")
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Wait for this turn to finish")
+			fireEvent.click(option(models(), "Qwen 3"))
+			expect(sent(mocks.setThreadModelSelection)[1]).toMatchObject({ pick: { modelId: "qwen" } })
+			consoleError.mockRestore()
+		})
+
 		it("a refused pick isn't sent again on close", async () => {
 			mocks.setThreadModelSelection.mockRejectedValue(new Error("Wait for this turn to finish"))
 			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})

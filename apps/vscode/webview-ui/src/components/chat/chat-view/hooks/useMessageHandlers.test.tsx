@@ -436,6 +436,31 @@ describe("useMessageHandlers — send routing", () => {
 		)
 	})
 
+	it("doesn't lock Send or clear the box again when the send returns after the turn is over", async () => {
+		mockTurnState = { phase: "completed", seq: 7 }
+		let finish: (value: unknown) => void = () => {}
+		askResponse.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+		const setInputValue = vi.fn()
+		const setSendingDisabled = vi.fn()
+		const chatState = makeChatState(completedConversation, { setInputValue, setSendingDisabled })
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, chatState))
+
+		let sendPromise: Promise<void> = Promise.resolve()
+		await act(async () => {
+			sendPromise = result.current.handleSendMessage("quick question", [], [])
+			await Promise.resolve()
+		})
+		expect(setSendingDisabled).toHaveBeenCalledExactlyOnceWith(true)
+		expect(setInputValue).toHaveBeenCalledExactlyOnceWith("")
+
+		await act(async () => {
+			finish({})
+			await sendPromise
+		})
+		expect(setSendingDisabled).toHaveBeenCalledOnce()
+		expect(setInputValue).toHaveBeenCalledOnce()
+	})
+
 	it("shows pending composer state before a follow-up askResponse resolves", async () => {
 		mockTurnState = { phase: "completed", seq: 7 }
 		let resolveAskResponse: () => void = () => {}

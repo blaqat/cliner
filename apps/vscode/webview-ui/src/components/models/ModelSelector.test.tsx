@@ -142,6 +142,39 @@ describe("ModelSelector", () => {
 			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "default" })
 		})
 
+		it("a refused click puts the lists back, and the same click tries again", async () => {
+			onCommit.mockResolvedValueOnce(false)
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			await waitFor(() => expect(selected(models())).toHaveTextContent("GPT-6 Sol"))
+			expect(selected(levels())).toHaveTextContent("Medium")
+			fireEvent.click(option(models(), "GPT-5.4"))
+			expect(onCommit).toHaveBeenCalledTimes(2)
+			expect(onCommit).toHaveBeenLastCalledWith({ rowId: "g54", levelId: "default" })
+		})
+
+		it("closing after a refused click sends nothing more", async () => {
+			onCommit.mockResolvedValueOnce(false)
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			await waitFor(() => expect(selected(models())).toHaveTextContent("GPT-6 Sol"))
+			fireEvent.pointerDown(document.body)
+			expect(onCommit).toHaveBeenCalledOnce()
+		})
+
+		it("a late refusal leaves a newer pick alone", async () => {
+			let refuse: (accepted: boolean) => void = () => {}
+			onCommit.mockImplementationOnce(() => new Promise((resolve) => (refuse = resolve)))
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			await act(async () => refuse(false))
+			expect(selected(models())).toHaveTextContent("Qwen 3")
+		})
+
 		it("a click outside saves what the keys moved", async () => {
 			renderSelector()
 			await openMenu()

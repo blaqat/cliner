@@ -67,8 +67,11 @@ export interface ModelSelectorProps {
 	ladder: SelectorLevel[]
 	/** The saved pick; null when none is set. */
 	pick: SelectorPick | null
-	/** A click on a row, at once. Enter, a click outside or Tab away save what the keys moved. Escape never calls it. */
-	onCommit: (pick: SelectorPick) => void
+	/**
+	 * A click on a row, at once. Enter, a click outside or Tab away save what the keys moved. Escape never calls it.
+	 * Resolving to false says the save was refused: the lists go back to what's saved, and the same click can try again.
+	 */
+	onCommit: (pick: SelectorPick) => void | Promise<boolean>
 	/** The menu closed: `keep` is false for Escape, and `saved` is the last pick `onCommit` got while it was open. */
 	onClose?: (keep: boolean, saved: SelectorPick | null) => void
 	/** The button that opens the menu. */
@@ -239,8 +242,16 @@ export function ModelSelector({
 	const save = () => {
 		const next = draftRef.current && draftPick(draftRef.current, rows)
 		if (!next || !differs(next)) return
+		const before = savedRef.current ?? pick
 		savedRef.current = next
-		onCommit(next)
+		void Promise.resolve(onCommit(next)).then((accepted) => {
+			if (accepted !== false || savedRef.current !== next) return
+			savedRef.current = before
+			const shown = draftRef.current && draftPick(draftRef.current, rows)
+			if (shown?.rowId === next.rowId && shown.levelId === next.levelId) {
+				setDraft({ rowId: before?.rowId ?? null, levelId: before?.levelId ?? null, levelTouched: false })
+			}
+		})
 	}
 
 	const close = (keep: boolean) => {
