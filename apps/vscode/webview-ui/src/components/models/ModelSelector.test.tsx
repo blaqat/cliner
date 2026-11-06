@@ -95,14 +95,81 @@ describe("ModelSelector", () => {
 			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "high" })
 		})
 
-		it("a click outside saves what the lists show", async () => {
+		it("a click saves at once and leaves the menu open for the other list", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "default" })
+			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
+			fireEvent.click(option(levels(), "High"))
+			expect(onCommit).toHaveBeenLastCalledWith({ rowId: "g54", levelId: "high" })
+			expect(onCommit).toHaveBeenCalledTimes(2)
+			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
+		})
+
+		it("closing after a click saves nothing more, even before the host has answered", async () => {
 			renderSelector()
 			await openMenu()
 			fireEvent.click(option(levels(), "Low"))
-			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
 			fireEvent.pointerDown(document.body)
 			expect(screen.queryByTestId("model-menu")).toBeNull()
 			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "sol", levelId: "low" })
+		})
+
+		it("clicking the pick that's already saved saves nothing", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-6 Sol"))
+			fireEvent.click(option(levels(), "Medium"))
+			expect(onCommit).not.toHaveBeenCalled()
+		})
+
+		it("clicking back to the first model saves that too, though the prop hasn't caught up", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			fireEvent.click(option(models(), "GPT-6 Sol"))
+			expect(onCommit).toHaveBeenCalledTimes(2)
+			expect(onCommit).toHaveBeenLastCalledWith({ rowId: "sol", levelId: "default" })
+		})
+
+		it("a click on the row the keys moved to saves it", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.keyDown(models(), { key: "ArrowDown" })
+			expect(onCommit).not.toHaveBeenCalled()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "default" })
+		})
+
+		it("a click outside saves what the keys moved", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.keyDown(models(), { key: "ArrowDown" })
+			expect(onCommit).not.toHaveBeenCalled()
+			fireEvent.pointerDown(document.body)
+			expect(screen.queryByTestId("model-menu")).toBeNull()
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "default" })
+		})
+
+		it("a row that left the list when its save landed isn't saved again on close", async () => {
+			// "Add allowed model" drops a model from its own list once it's added.
+			const { rerender } = renderSelector({ pick: null })
+			await openMenu()
+			fireEvent.click(option(models(), "Qwen 3"))
+			rerender(
+				<ModelSelector
+					ladder={STANDARD_LEVELS}
+					modelsLabel="Chat model"
+					onCommit={onCommit}
+					onManage={onManage}
+					pick={null}
+					rows={rows.filter((row) => row.id !== "qwen")}
+					trigger={<button type="button">open</button>}
+				/>,
+			)
+			fireEvent.pointerDown(document.body)
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "qwen", levelId: "default" })
 		})
 
 		it("saves a model without levels when nothing was picked yet", async () => {
@@ -123,6 +190,16 @@ describe("ModelSelector", () => {
 			await openMenu()
 			expect(selected(models())).toHaveTextContent("GPT-6 Sol")
 			expect(selected(levels())).toHaveTextContent("Medium")
+		})
+
+		it("Escape only drops what the keys moved: a click is already saved", async () => {
+			renderSelector()
+			await openMenu()
+			fireEvent.click(option(models(), "GPT-5.4"))
+			fireEvent.keyDown(models(), { key: "End" })
+			fireEvent.keyDown(models(), { key: "Escape" })
+			expect(screen.queryByTestId("model-menu")).toBeNull()
+			expect(onCommit).toHaveBeenCalledExactlyOnceWith({ rowId: "g54", levelId: "default" })
 		})
 
 		it("keeping the same pick saves nothing", async () => {

@@ -70,7 +70,7 @@ function ComposerMenuFooter({ selection, context }: { selection: ComposerSelecti
 					<span aria-hidden className="codicon codicon-discard text-[13px]!" />
 				</button>
 				{selection.hasChat && (
-					// Waits for the close, with what the lists show: Escape drops both.
+					// Waits for the next pick or the close: Escape drops it.
 					<button
 						aria-checked={nextOn}
 						className={cn(FOOTER_BUTTON_CLASS, "gap-1.5", nextOn && "text-foreground")}
@@ -118,7 +118,7 @@ function ComposerMenuFooter({ selection, context }: { selection: ComposerSelecti
 			</div>
 			{makeDefault && (
 				<div className="mt-1 flex shrink-0 items-center border-0 border-t border-solid border-menu-foreground/10 pt-1">
-					{/* The menu stays open: what the lists show is still kept or dropped on close. */}
+					{/* The menu stays open: this only sets the default. */}
 					<button
 						className={cn(FOOTER_BUTTON_CLASS, "w-full")}
 						data-testid="menu-make-default"

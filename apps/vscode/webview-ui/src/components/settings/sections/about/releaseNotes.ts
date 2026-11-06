@@ -15,6 +15,15 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
 	{
+		id: "release-4",
+		title: "Release 4",
+		builds: "fork.62",
+		date: "2026-11-06",
+		notes: [
+			"Clicking a model or level in a model menu switches to it right away; the menu stays open so you can pick the other",
+		],
+	},
+	{
 		id: "release-3",
 		title: "Release 3",
 		builds: "fork.39–61",
