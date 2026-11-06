@@ -67,10 +67,12 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, ch
 	const isProcessing = processedAskRef.current === askIdentity
 
 	// Mirror the config's sending-disabled flag into chat state whenever the active button set
-	// changes.
+	// changes, or the turn moves on: a turn over before its streaming state rendered goes from
+	// one shared config back to the same one, and still has to release the lock a send took.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: askIdentity is the trigger, not a value read.
 	useEffect(() => {
 		setSendingDisabled(buttonConfig.sendingDisabled)
-	}, [buttonConfig, setSendingDisabled])
+	}, [buttonConfig, askIdentity, setSendingDisabled])
 
 	const handleActionClick = useCallback(
 		(invocation: ButtonActionInvocation) => {

@@ -3,7 +3,7 @@ import { SETTINGS_LOCK_HELD_CAUSE } from "@shared/model-settings-migration-statu
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import type { Mode } from "@shared/storage/types"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { SelectorLevel, SelectorPick, SelectorRow } from "@/components/models/ModelSelector"
 import { describePick, samePick, selectorDataFromModelSettings } from "@/components/models/modelSelectorRows"
 import { withLatestSettings } from "@/components/settings/models/modelSettingsClient"
@@ -46,11 +46,12 @@ export interface ComposerSelection {
 	nextMessageDisabledReason?: string
 	canReset: boolean
 	resetDisabledReason: string
-	commit: (pick: SelectorPick) => void
-	/** Shows at once; `settleNextMessage` saves it when the menu closes. */
+	/** Resolves to false if the host refused it. */
+	commit: (pick: SelectorPick) => void | Promise<boolean>
+	/** Shows at once; goes out with the next `commit`, or `settleNextMessage` saves it when the menu closes. */
 	setNextMessageOnly: (on: boolean) => void
-	/** The menu closed. Escape (`keep` false) drops a flip; otherwise it's saved, unless `commit` just sent it. */
-	settleNextMessage: (keep: boolean, committed: boolean) => void
+	/** The menu closed. Escape (`keep` false) drops a flip; otherwise it's saved on `saved`, the pick `commit` last got. */
+	settleNextMessage: (keep: boolean, saved: SelectorPick | null) => void
 	reset: () => void
 	manage: (target?: SettingsNavigationTarget) => void
 	/** Nothing to set before the store exists. */
@@ -107,6 +108,8 @@ function useModelSettingsSelection(mode: Mode) {
 	// The switch answers at once; the host's next state replaces this.
 	const [armed, setArmed] = useState<boolean | null>(null)
 	const [error, setError] = useState<string>()
+	// What the open menu's last pick went out with: the host's answer may still be on its way.
+	const sentNextOnly = useRef<boolean | null>(null)
 	useEffect(() => setArmed(null), [composerNextMessageOnly, taskId])
 
 	return (state: ModelSettingsState): ComposerSelection => {
@@ -152,7 +155,7 @@ function useModelSettingsSelection(mode: Mode) {
 
 		const send = (next: SelectorPick, nextOnly: boolean) => {
 			setError(undefined)
-			void ModelsServiceClient.setThreadModelSelection(
+			return ModelsServiceClient.setThreadModelSelection(
 				ModelSettingsRequestV1.create({
 					json: JSON.stringify({
 						taskId,
@@ -161,11 +164,16 @@ function useModelSettingsSelection(mode: Mode) {
 						nextMessageOnly: nextOnly,
 					}),
 				}),
-			).catch((failure) => {
-				console.error("Failed to update chat model:", failure)
-				setArmed(null)
-				setError(`Couldn't save that: ${errorText(failure)}`)
-			})
+			).then(
+				() => true,
+				(failure) => {
+					console.error("Failed to update chat model:", failure)
+					sentNextOnly.current = null
+					setArmed(null)
+					setError(`Couldn't save that: ${errorText(failure)}`)
+					return false
+				},
+			)
 		}
 
 		const note =
@@ -208,18 +216,24 @@ function useModelSettingsSelection(mode: Mode) {
 			resetDisabledReason: defaultPick
 				? RESET_DISABLED_REASON
 				: `Nothing to reset to: no default ${roleLabel} model is set yet`,
-			commit: (next) => send(next, nextMessageOnly),
+			commit: (next) => {
+				sentNextOnly.current = nextMessageOnly
+				return send(next, nextMessageOnly)
+			},
 			setNextMessageOnly: (on) => {
 				if (pick) setArmed(on)
 			},
-			settleNextMessage: (keep, committed) => {
-				if (!keep) setArmed(null)
-				else if (!committed && pick && nextMessageOnly !== !!composerNextMessageOnly) send(pick, nextMessageOnly)
+			settleNextMessage: (keep, saved) => {
+				const sent = sentNextOnly.current
+				sentNextOnly.current = null
+				const target = saved ?? pick
+				if (!keep) setArmed(sent)
+				else if (target && nextMessageOnly !== (sent ?? !!composerNextMessageOnly)) void send(target, nextMessageOnly)
 			},
 			reset: () => {
 				if (!defaultPick) return
 				setArmed(false)
-				send(defaultPick, false)
+				void send(defaultPick, false)
 			},
 			manage: (target) => navigateToSettings(target ?? "models"),
 			makeDefault: {

@@ -187,16 +187,29 @@ describe("ModelEffortChip with the new model settings", () => {
 	})
 
 	describe("saving a pick", () => {
-		it("Enter calls setThreadModelSelection once, per the contract, and never the old RPC", async () => {
+		it("a click calls setThreadModelSelection at once, per the contract, and never the old RPC", async () => {
 			mocks.state.currentTaskItem = { id: "chat" }
 			renderChip()
 			await openMenu()
 			fireEvent.click(option(models(), "Qwen 3"))
-			fireEvent.keyDown(models(), { key: "Enter" })
-			expect(sent(mocks.setThreadModelSelection)).toEqual([
+			const expected = [
 				{ taskId: "chat", mode: "act", pick: { modelId: "qwen", levelId: "default" }, nextMessageOnly: false },
-			])
+			]
+			expect(sent(mocks.setThreadModelSelection)).toEqual(expected)
+			expect(screen.getByTestId("model-menu")).toBeInTheDocument()
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(sent(mocks.setThreadModelSelection)).toEqual(expected)
 			expect(mocks.assignApiProfile).not.toHaveBeenCalled()
+		})
+
+		it("Enter saves what the keys moved", async () => {
+			mocks.state.currentTaskItem = { id: "chat" }
+			renderChip()
+			await openMenu()
+			fireEvent.keyDown(models(), { key: "ArrowDown" })
+			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(sent(mocks.setThreadModelSelection)).toHaveLength(1)
 		})
 
 		it("the home screen sends the empty task id", async () => {
@@ -209,10 +222,10 @@ describe("ModelEffortChip with the new model settings", () => {
 			])
 		})
 
-		it("Escape saves nothing", async () => {
+		it("Escape saves nothing the keys moved", async () => {
 			renderChip()
 			await openMenu()
-			fireEvent.click(option(models(), "Qwen 3"))
+			fireEvent.keyDown(models(), { key: "ArrowDown" })
 			fireEvent.keyDown(models(), { key: "Escape" })
 			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
 		})
@@ -223,8 +236,11 @@ describe("ModelEffortChip with the new model settings", () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(option(levels(), "High"))
+			await flush()
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Focused chat changed during selection")
 			fireEvent.keyDown(models(), { key: "Enter" })
 			await flush()
+			expect(mocks.setThreadModelSelection).toHaveBeenCalledOnce()
 			await openMenu()
 			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Focused chat changed during selection")
 			consoleError.mockRestore()
@@ -236,7 +252,7 @@ describe("ModelEffortChip with the new model settings", () => {
 			mocks.state.currentTaskItem = { id: "chat" }
 		})
 
-		it("flipping on shows at once, keeps the menu open, and goes out with what the lists show on close", async () => {
+		it("flipping on shows at once, keeps the menu open, and goes out with the next pick, once", async () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(screen.getByTestId("menu-next-message"))
@@ -245,10 +261,65 @@ describe("ModelEffortChip with the new model settings", () => {
 			expect(chip()).toHaveTextContent("next message")
 			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
 			fireEvent.click(option(models(), "Qwen 3"))
+			const expected = [
+				{ taskId: "chat", mode: "act", pick: { modelId: "qwen", levelId: "default" }, nextMessageOnly: true },
+			]
+			expect(sent(mocks.setThreadModelSelection)).toEqual(expected)
+			// The host hasn't answered yet: closing must not arm the old model on top of it.
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(sent(mocks.setThreadModelSelection)).toEqual(expected)
+		})
+
+		it("a flip after a click goes out with the clicked pick on close, even before the host has answered", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(option(models(), "Qwen 3"))
+			fireEvent.click(screen.getByTestId("menu-next-message"))
 			fireEvent.keyDown(models(), { key: "Enter" })
 			expect(sent(mocks.setThreadModelSelection)).toEqual([
+				{ taskId: "chat", mode: "act", pick: { modelId: "qwen", levelId: "default" }, nextMessageOnly: false },
 				{ taskId: "chat", mode: "act", pick: { modelId: "qwen", levelId: "default" }, nextMessageOnly: true },
 			])
+		})
+
+		it("flipping back after a pick went out armed disarms it on close", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(models(), { key: "Enter" })
+			expect(sent(mocks.setThreadModelSelection).map((request) => request.nextMessageOnly)).toEqual([true, false])
+		})
+
+		it("a refused pick can be tried again once the host would take it", async () => {
+			mocks.setThreadModelSelection.mockRejectedValueOnce(new Error("Wait for this turn to finish"))
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			await flush()
+			expect(within(models()).getByRole("option", { selected: true })).toHaveTextContent("GPT-6 Sol")
+			expect(screen.getByTestId("model-menu-note")).toHaveTextContent("Wait for this turn to finish")
+			fireEvent.click(option(models(), "Qwen 3"))
+			expect(sent(mocks.setThreadModelSelection)[1]).toMatchObject({ pick: { modelId: "qwen" } })
+			consoleError.mockRestore()
+		})
+
+		it("a refused pick isn't sent again on close", async () => {
+			mocks.setThreadModelSelection.mockRejectedValue(new Error("Wait for this turn to finish"))
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.click(option(models(), "Qwen 3"))
+			await flush()
+			fireEvent.keyDown(models(), { key: "Enter" })
+			await flush()
+			expect(mocks.setThreadModelSelection).toHaveBeenCalledOnce()
+			expect(chip()).not.toHaveTextContent("next message")
+			consoleError.mockRestore()
 		})
 
 		it("keeps a flip with the same pick when the menu closes", async () => {
@@ -261,15 +332,37 @@ describe("ModelEffortChip with the new model settings", () => {
 			])
 		})
 
-		it("Escape drops the flip along with the picks, and arms nothing on the old model", async () => {
+		it("Escape drops the flip along with what the keys moved, and arms nothing on the old model", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(models(), { key: "ArrowDown" })
+			fireEvent.keyDown(screen.getByTestId("model-menu"), { key: "Escape" })
+			await flush()
+			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
+			expect(chip()).not.toHaveTextContent("next message")
+		})
+
+		it("Escape after a click drops only a later flip: the chip shows what was sent", async () => {
+			renderChip()
+			await openMenu()
+			fireEvent.click(option(models(), "Qwen 3"))
+			fireEvent.click(screen.getByTestId("menu-next-message"))
+			fireEvent.keyDown(screen.getByTestId("model-menu"), { key: "Escape" })
+			await flush()
+			expect(sent(mocks.setThreadModelSelection).map((request) => request.nextMessageOnly)).toEqual([false])
+			expect(chip()).not.toHaveTextContent("next message")
+		})
+
+		it("Escape after an armed click keeps it armed while the host answers", async () => {
 			renderChip()
 			await openMenu()
 			fireEvent.click(screen.getByTestId("menu-next-message"))
 			fireEvent.click(option(models(), "Qwen 3"))
 			fireEvent.keyDown(screen.getByTestId("model-menu"), { key: "Escape" })
 			await flush()
-			expect(mocks.setThreadModelSelection).not.toHaveBeenCalled()
-			expect(chip()).not.toHaveTextContent("next message")
+			expect(sent(mocks.setThreadModelSelection).map((request) => request.nextMessageOnly)).toEqual([true])
+			expect(chip()).toHaveTextContent("next message")
 		})
 
 		it("Escape leaves an armed pick armed after flipping it off", async () => {

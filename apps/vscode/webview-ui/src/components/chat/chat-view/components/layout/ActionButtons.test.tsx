@@ -212,6 +212,27 @@ describe("ActionButtons", () => {
 		expect(screen.getByRole("button", { name: "Start New Task" })).not.toBeDisabled()
 	})
 
+	it("releases the send lock when a turn ends before its streaming state ever rendered", () => {
+		mockTurnState.mockReturnValue({ phase: "completed", seq: 3 })
+		const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "task" }
+		const setSendingDisabled = vi.fn()
+		const props = {
+			task,
+			chatState: { ...makeChatState(), setSendingDisabled },
+			messageHandlers: { executeButtonAction: vi.fn() } as unknown as MessageHandlers,
+			messages: [task],
+			mode: "act" as const,
+		}
+		const { rerender } = render(<ActionButtons {...props} />)
+		setSendingDisabled.mockClear()
+
+		// The send locked it; completed → streaming → completed all landed in one render.
+		mockTurnState.mockReturnValue({ phase: "completed", seq: 5 })
+		rerender(<ActionButtons {...props} />)
+
+		expect(setSendingDisabled).toHaveBeenCalledExactlyOnceWith(false)
+	})
+
 	it("releases its local latch when another recovery control owns the turn", async () => {
 		mockTurnState.mockReturnValue({ phase: "error", anchorTs: 2, seq: 3 })
 		const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "task" }

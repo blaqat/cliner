@@ -67,10 +67,13 @@ export interface ModelSelectorProps {
 	ladder: SelectorLevel[]
 	/** The saved pick; null when none is set. */
 	pick: SelectorPick | null
-	/** Enter, a click outside or Tab away, when the lists differ from `pick`. Escape never calls it. */
-	onCommit: (pick: SelectorPick) => void
-	/** The menu closed: `keep` is false for Escape, and `committed` says `onCommit` just ran. */
-	onClose?: (keep: boolean, committed: boolean) => void
+	/**
+	 * A click on a row, at once. Enter, a click outside or Tab away save what the keys moved. Escape never calls it.
+	 * Resolving to false says the save was refused: the lists go back to what's saved, and the same click can try again.
+	 */
+	onCommit: (pick: SelectorPick) => void | Promise<boolean>
+	/** The menu closed: `keep` is false for Escape, and `saved` is the last pick `onCommit` got while it was open. */
+	onClose?: (keep: boolean, saved: SelectorPick | null) => void
 	/** The button that opens the menu. */
 	trigger: ReactElement
 	/** Names the model list; also the menu's accessible name unless `menuLabel` says otherwise. */
@@ -149,7 +152,7 @@ const useMenuScrollsAsOne = (open: boolean, deps: unknown) => {
 	return { listsRef, asOne }
 }
 
-/** What the lists show; nothing is saved until the menu closes with it kept. */
+/** What the lists show: a click saves it, and what the keys move waits for the menu to close with it kept. */
 interface Draft {
 	rowId: string | null
 	levelId: string | null
@@ -163,10 +166,10 @@ const findRow = (rows: SelectorRow[], id: string | null) => rows.find((row) => r
 
 /** The draft as a pick: a row without levels saves its fixed level, not the one carried across. */
 function draftPick(draft: Draft, rows: SelectorRow[]): SelectorPick | null {
-	if (draft.rowId === null) return null
 	const row = findRow(rows, draft.rowId)
-	const levelId = row?.levels ? draft.levelId : (row?.noLevelId ?? draft.levelId)
-	return levelId === null ? null : { rowId: draft.rowId, levelId }
+	if (!row) return null
+	const levelId = row.levels ? draft.levelId : (row.noLevelId ?? draft.levelId)
+	return levelId === null ? null : { rowId: row.id, levelId }
 }
 
 /**
@@ -195,8 +198,9 @@ function levelForRow(row: SelectorRow, draft: Draft, ladder: SelectorLevel[]): P
 /**
  * The one model selector, for the composer and every model pick in Settings: a menu over two plain
  * lists (models | levels, the chosen rows banded) that stays inside the viewport with one scroll
- * region. Enter, a click outside or Tab away keep what the lists show; Escape puts the previous pick
- * back. Props-driven: it knows nothing about where the rows come from or how a pick is saved.
+ * region. A click switches at once and leaves the menu open for the other list and the extras. The keys
+ * only move the lists: Enter, a click outside or Tab away keep that, and Escape drops it. Props-driven:
+ * it knows nothing about where the rows come from or how a pick is saved.
  */
 export function ModelSelector({
 	rows,
@@ -219,6 +223,8 @@ export function ModelSelector({
 	const [draft, setDraftState] = useState<Draft | null>(null)
 	const draftRef = useRef<Draft | null>(null)
 	const escapingRef = useRef(false)
+	// `pick` only catches up once the host answers, and a row can leave `rows` when its save lands.
+	const savedRef = useRef<SelectorPick | null>(null)
 	const listsRef = useRef<HTMLDivElement>(null)
 	const open = draft !== null
 	const { listsRef: scrollRef, asOne } = useMenuScrollsAsOne(open, draft?.rowId)
@@ -228,20 +234,36 @@ export function ModelSelector({
 		setDraftState(next)
 	}
 
-	const differs = (next: SelectorPick | null) => !!next && (next.rowId !== pick?.rowId || next.levelId !== pick?.levelId)
+	const differs = (next: SelectorPick | null) => {
+		const saved = savedRef.current ?? pick
+		return !!next && (next.rowId !== saved?.rowId || next.levelId !== saved?.levelId)
+	}
+
+	const save = () => {
+		const next = draftRef.current && draftPick(draftRef.current, rows)
+		if (!next || !differs(next)) return
+		const before = savedRef.current ?? pick
+		savedRef.current = next
+		void Promise.resolve(onCommit(next)).then((accepted) => {
+			if (accepted !== false || savedRef.current !== next) return
+			savedRef.current = before
+			const shown = draftRef.current && draftPick(draftRef.current, rows)
+			if (shown?.rowId === next.rowId && shown.levelId === next.levelId) {
+				setDraft({ rowId: before?.rowId ?? null, levelId: before?.levelId ?? null, levelTouched: false })
+			}
+		})
+	}
 
 	const close = (keep: boolean) => {
-		const current = draftRef.current
-		if (!current) return
-		const next = draftPick(current, rows)
-		const committed = keep && !!next && differs(next)
-		if (committed) onCommit(next)
-		onClose?.(keep, committed)
+		if (!draftRef.current) return
+		if (keep) save()
+		onClose?.(keep, savedRef.current)
 		setDraft(null)
 	}
 
 	const openMenu = () => {
 		escapingRef.current = false
+		savedRef.current = null
 		setDraft({ rowId: pick?.rowId ?? null, levelId: pick?.levelId ?? null, levelTouched: false })
 	}
 
@@ -408,6 +430,7 @@ export function ModelSelector({
 							}}
 							noEffortReason={row ? row.noLevelsReason : "Pick a model first"}
 							onEnter={() => close(true)}
+							onRowClick={save}
 						/>
 					</div>
 				)}

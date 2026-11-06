@@ -511,10 +511,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					}
 				}
 
-				// New tasks clear optimistically before the RPC; the repeated success cleanup is idempotent.
+				// Every path above cleared before its RPC. Not again here: the turn can already be over by the
+				// time the RPC returns, so locking Send now would never be undone, and it would wipe new typing.
 				if (messageSent) {
-					clearSentMessageState()
-
 					// Reset auto-scroll
 					if ("disableAutoScrollRef" in chatState) {
 						;(chatState as any).disableAutoScrollRef.current = false

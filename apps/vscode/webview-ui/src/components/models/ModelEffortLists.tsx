@@ -50,11 +50,12 @@ interface ListColumnProps {
 	active: boolean
 	columnRef: RefObject<HTMLDivElement>
 	onFocus: () => void
+	onRowClick: () => void
 	testId: string
 	className?: string
 }
 
-function ListColumn({ spec, align, active, columnRef, onFocus, testId, className }: ListColumnProps) {
+function ListColumn({ spec, align, active, columnRef, onFocus, onRowClick, testId, className }: ListColumnProps) {
 	const { items, index, disabled } = spec
 	const baseId = useId()
 
@@ -117,7 +118,9 @@ function ListColumn({ spec, align, active, columnRef, onFocus, testId, className
 							data-testid="list-option"
 							id={`${baseId}-option-${i}`}
 							onClick={() => {
-								if (!disabled && !off && i !== index) spec.onSelect(i)
+								if (disabled || off) return
+								if (i !== index) spec.onSelect(i)
+								onRowClick()
 							}}
 							role="option"
 							style={{ height: LIST_ROW_HEIGHT, lineHeight: `${LIST_ROW_HEIGHT}px` }}
@@ -139,6 +142,8 @@ interface ModelEffortListsProps {
 	noEffortReason?: string
 	/** Enter or Space: keep the choice and close. */
 	onEnter: () => void
+	/** A row was clicked, after its column's `onSelect`: keep the choice and stay open for the other list. */
+	onRowClick: () => void
 	/** The column focus lands on when the menu opens. */
 	listsRef?: RefObject<HTMLDivElement>
 	className?: string
@@ -147,15 +152,16 @@ interface ModelEffortListsProps {
 /**
  * Two plain lists side by side, every option on show: the models (right-aligned) and the efforts
  * (left-aligned) meet in the middle. The chosen row in each has the selection band. A click picks a
- * row; ↑/↓ move the focused column's choice, ←/→ switch columns, Home/End/PageUp/PageDown jump, Enter
- * or Space keep it. The keys step over rows that can't be chosen. One tab stop for both. Both columns
- * sit in one scroll region, so a long model list scrolls them together.
+ * row and keeps it; ↑/↓ move the focused column's choice, ←/→ switch columns, Home/End/PageUp/PageDown
+ * jump, Enter or Space keep it. The keys step over rows that can't be chosen. One tab stop for both.
+ * Both columns sit in one scroll region, so a long model list scrolls them together.
  */
 export function ModelEffortLists({
 	model,
 	effort,
 	noEffortReason = "This model has no reasoning control",
 	onEnter,
+	onRowClick,
 	listsRef,
 	className,
 }: ModelEffortListsProps) {
@@ -216,6 +222,7 @@ export function ModelEffortLists({
 				align="end"
 				columnRef={modelRef}
 				onFocus={() => setActive("model")}
+				onRowClick={onRowClick}
 				spec={model}
 				testId="model-list"
 			/>
@@ -225,6 +232,7 @@ export function ModelEffortLists({
 				className="min-w-[4.5rem] border-0 border-l border-solid border-menu-foreground/10 pl-1.5"
 				columnRef={effortRef}
 				onFocus={() => setActive("effort")}
+				onRowClick={onRowClick}
 				spec={effortSpec}
 				testId="effort-list"
 			/>
