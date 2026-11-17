@@ -138,6 +138,11 @@
 				"icon": "$(server)"
 			},
 			{
+				"command": "cline.rulesButtonClicked",
+				"title": "Rules & Workflows",
+				"icon": "$(book)"
+			},
+			{
 				"command": "cline.marketplaceButtonClicked",
 				"title": "Customize",
 				"icon": "$(wrench)"
@@ -250,6 +255,18 @@
 				"win": "ctrl+'",
 				"linux": "ctrl+'",
 				"when": "!editorHasSelection"
+			},
+			{
+				"command": "cline.searchShortcut",
+				"key": "ctrl+k",
+				"mac": "cmd+k",
+				"when": "focusedView == claude-dev.SidebarProvider"
+			},
+			{
+				"command": "cline.stashShortcut",
+				"key": "ctrl+s",
+				"mac": "cmd+s",
+				"when": "focusedView == claude-dev.SidebarProvider"
 			}
 		],
 		"menus": {
@@ -260,23 +277,33 @@
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.marketplaceButtonClicked",
+					"command": "cline.mcpButtonClicked",
 					"group": "navigation@2",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.historyButtonClicked",
+					"command": "cline.rulesButtonClicked",
 					"group": "navigation@3",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.accountButtonClicked",
+					"command": "cline.marketplaceButtonClicked",
+					"group": "navigation@4",
+					"when": "view == claude-dev.SidebarProvider"
+				},
+				{
+					"command": "cline.historyButtonClicked",
 					"group": "navigation@5",
 					"when": "view == claude-dev.SidebarProvider"
 				},
 				{
-					"command": "cline.settingsButtonClicked",
+					"command": "cline.accountButtonClicked",
 					"group": "navigation@6",
+					"when": "view == claude-dev.SidebarProvider"
+				},
+				{
+					"command": "cline.settingsButtonClicked",
+					"group": "navigation@7",
 					"when": "view == claude-dev.SidebarProvider"
 				}
 			],
@@ -342,6 +369,7 @@
 	},
 	"scripts": {
 		"vscode:prepublish": "bun run package",
+		"package:fork": "node scripts/package-fork.mjs",
 		"compile": "bun run check-types && bun run lint && bun esbuild.mjs",
 		"compile-standalone": "bun run check-types && bun run lint && bun esbuild.mjs --standalone",
 		"postcompile-standalone": "node scripts/package-standalone.mjs",

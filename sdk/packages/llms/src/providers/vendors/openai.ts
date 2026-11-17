@@ -4,6 +4,14 @@ import type {
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
 import { resolveApiKey } from "../http";
+import {
+	isAzureOpenAIHost,
+	plainApiVersionBase,
+	resolveAzureResponsesEndpoint,
+	withApiVersion,
+	withHttpErrorContext,
+} from "./http-error-context";
+import { withResponsesStreamGuard } from "./responses-stream";
 import type { ProviderFactoryResult } from "./types";
 
 function isChatGptOAuthBaseUrl(baseUrl: string | undefined): boolean {
@@ -23,11 +31,34 @@ export async function createOpenAIProviderModule(
 	context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
 	const apiKey = await resolveApiKey(config);
+	const configuredApiVersion =
+		typeof config.options?.apiVersion === "string"
+			? config.options.apiVersion
+			: undefined;
+	const azure = resolveAzureResponsesEndpoint(
+		config.baseUrl,
+		configuredApiVersion,
+	);
+	const errorFetch = withResponsesStreamGuard(
+		withHttpErrorContext(config.fetch),
+	);
+	// A base URL with no Azure shape still gets a version someone set.
+	const plainVersion = azure ? undefined : configuredApiVersion?.trim();
+	const plainBase = plainVersion ? plainApiVersionBase(config.baseUrl) : undefined;
 	const provider = createOpenAI({
 		apiKey,
-		baseURL: config.baseUrl,
-		headers: config.headers,
-		fetch: config.fetch,
+		baseURL: azure?.baseUrl ?? config.baseUrl,
+		// Azure API keys authenticate via `api-key`; explicit headers (e.g. an
+		// API Management subscription key) are kept and win.
+		headers:
+			azure && apiKey && isAzureOpenAIHost(config.baseUrl)
+				? { "api-key": apiKey, ...(config.headers ?? {}) }
+				: config.headers,
+		fetch: azure?.apiVersion
+			? withApiVersion(errorFetch, azure.baseUrl, azure.apiVersion)
+			: plainVersion && plainBase
+				? withApiVersion(errorFetch, plainBase, plainVersion)
+				: errorFetch,
 		name: context.provider.id,
 	});
 	// The ChatGPT OAuth Codex backend rejects `max_output_tokens`, and the
@@ -82,7 +113,7 @@ export async function createOpenAIProviderModule(
 			return result;
 		},
 		operations: {
-			language: (modelId) => provider.responses(modelId),
+			language: (modelId) => provider.responses(azure?.deployment ?? modelId),
 			imageGeneration: (modelId) => provider.image(modelId),
 		},
 		buildStreamConfig: (request) => ({

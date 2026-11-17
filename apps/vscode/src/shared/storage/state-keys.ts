@@ -7,17 +7,20 @@ import {
 	type OcaModelInfo,
 	OpenAiCompatibleModelInfo,
 } from "@shared/api"
+import type { ApiConfigProfile, OpenAiCompatibleApiType } from "@shared/api-profiles"
 import { BrowserSettings, DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
 import { ClineRulesToggles } from "@shared/cline-rules"
 import type { CloudTaskTargetSelection, RememberedCloudStatuses } from "@shared/cloud/cloud-sessions"
 import { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_MCP_DISPLAY_MODE, McpDisplayMode } from "@shared/McpDisplayMode"
 import { toLegacyApiProvider } from "@shared/model-catalog/provider-helpers"
+import type { ModelProfile, ProfilesMigrationState, ThreadSelectionStamp } from "@shared/model-profiles"
 import { GlobalInstructionsFile } from "@shared/remote-config/schema"
 import { Mode } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { UserInfo } from "@shared/UserInfo"
 import { LanguageModelChatSelector } from "vscode"
+import type { TerminalEnvironmentSettings } from "../terminal-environment"
 import { type BlobStoreSettings } from "./types"
 
 // ============================================================================
@@ -49,6 +52,7 @@ type FieldDefinitions = Record<string, FieldDefinition<any>>
 
 export type ConfiguredAPIKeys = Partial<Record<ApiProvider, boolean>>
 const REMOTE_CONFIG_EXTRA_FIELDS = {
+	remoteProviderSettings: { default: undefined as import("../remote-config/schema").RemoteConfig["providerSettings"] },
 	remoteConfiguredProviders: { default: [] as ApiProvider[] },
 	allowedMCPServers: { default: [] as Array<{ id: string }> },
 	remoteMCPServers: { default: undefined as Array<{ name: string; url: string; alwaysEnabled?: boolean }> | undefined },
@@ -65,9 +69,31 @@ const REMOTE_CONFIG_EXTRA_FIELDS = {
 } satisfies FieldDefinitions
 
 const GLOBAL_STATE_FIELDS = {
+	modelSettings: { default: undefined as import("../model-settings").ModelSettings | undefined },
+	modelSettingsMigration: { default: undefined as import("../model-settings").ModelSettingsMigration | undefined },
+	modelSettingsBackupV1: {
+		default: undefined as { version: 1; backupId: string; createdAt: number; legacyFingerprint: string } | undefined,
+	},
 	clineVersion: { default: undefined as string | undefined },
 	"cline.generatedMachineId": { default: undefined as string | undefined }, // Note, distinctId reads/writes this directly from/to StorageContext before StateManager is initialized.
 	lastShownAnnouncementId: { default: undefined as string | undefined },
+	promptStash: {
+		default: [] as Array<{
+			id: string
+			text: string
+			quotes: { text: string; note: string; source?: string }[]
+			messageTags?: {
+				threadId: string
+				messageIndex: number
+				toolCallId?: string
+				block?: number
+				text: string
+				source: string
+			}[]
+			ts: number
+			taskId?: string
+		}>,
+	},
 	taskHistory: { default: [] as HistoryItem[], isAsync: true },
 	userInfo: { default: undefined as UserInfo | undefined },
 	favoritedModelIds: { default: [] as string[] },
@@ -103,6 +129,52 @@ const GLOBAL_STATE_FIELDS = {
 	cloudSessionStatuses: { default: {} as RememberedCloudStatuses },
 	// Path to worktree that should auto-open Cline sidebar when launched
 	worktreeAutoOpenPath: { default: undefined as string | undefined },
+	// Saved API configurations (one provider + one model each) and the
+	// profile assigned to each mode. Plan keys serve Ask mode.
+	apiConfigProfiles: { default: [] as ApiConfigProfile[] },
+	askProfileId: { default: undefined as string | undefined },
+	actProfileId: { default: undefined as string | undefined },
+	// Named profiles (configuration + effort) on the Profiles page. Unset
+	// until the one-time migration from configuration-based settings runs.
+	profiles: { default: undefined as ModelProfile[] | undefined },
+	// Thread defaults: one profile for both modes unless the switch is on.
+	// They are applied to askProfileId/actProfileId + mode efforts so new
+	// threads start on them.
+	threadDefaultProfileId: { default: undefined as string | undefined },
+	threadSeparateAskActProfiles: { default: false as boolean },
+	threadAskProfileId: { default: undefined as string | undefined },
+	threadActProfileId: { default: undefined as string | undefined },
+	// Features that run on a profile. Ids refer to `profiles` entries;
+	// "parent" in subagentAllowedModelProfileIds means the agent may also
+	// inherit the thread's own model. These are separate from the legacy
+	// subagentDefaultProfileId / subagentAllowedProfileIds /
+	// walkthroughGenerateProfileId / threadTitlesProfileId keys (below), which
+	// hold saved-configuration ids for older releases: this release never
+	// writes them, so a downgrade keeps working and an upgrade can tell what
+	// the older release changed.
+	subagentProfilesEnabled: { default: false as boolean },
+	subagentDefaultModelProfileId: { default: undefined as string | undefined },
+	subagentAllowedModelProfileIds: { default: [] as string[] },
+	// Off by default: generating a title costs a model call per new thread.
+	threadTitlesEnabled: { default: false as boolean },
+	threadTitlesModelProfileId: { default: undefined as string | undefined },
+	// Last profile picked for the walkthrough Generate button (step 9 reads it).
+	walkthroughGenerateModelProfileId: { default: undefined as string | undefined },
+	// Legacy configuration-id references written by earlier releases. Read
+	// only by the profile migration; subagentReasoningEffort is also still the
+	// effort for subagents that inherit the thread's model.
+	subagentDefaultProfileId: { default: undefined as string | undefined },
+	subagentReasoningEffort: { default: undefined as string | undefined },
+	subagentAllowedProfileIds: { default: [] as string[] },
+	threadTitlesProfileId: { default: undefined as string | undefined },
+	walkthroughGenerateProfileId: { default: undefined as string | undefined },
+	// Profile migration bookkeeping: the version and the legacy values last
+	// reconciled, plus the Ask/Act selection this release last wrote. An older
+	// release changing either shows up as a difference at the next startup.
+	profilesMigration: { default: undefined as ProfilesMigrationState | undefined },
+	threadSelectionStamp: { default: undefined as ThreadSelectionStamp | undefined },
+	// Global terminal environment (variables, .env path, PATH additions).
+	terminalEnvironment: { default: undefined as TerminalEnvironmentSettings | undefined },
 } satisfies FieldDefinitions
 
 // Fields that map directly to ApiHandlerOptions in @shared/api.ts
@@ -151,6 +223,9 @@ const API_HANDLER_SETTINGS_FIELDS = {
 	ocaMode: { default: "internal" as string },
 	aihubmixBaseUrl: { default: undefined as string | undefined },
 	aihubmixAppCode: { default: undefined as string | undefined },
+	// OpenAI Compatible "API type": Chat Completions (default, local servers)
+	// or the native Responses API.
+	openAiCompatibleApiType: { default: "chat" as OpenAiCompatibleApiType },
 
 	// Plan mode configurations
 	planModeApiModelId: { default: undefined as string | undefined },
@@ -270,6 +345,8 @@ const USER_SETTINGS_FIELDS = {
 	globalClineRulesToggles: { default: {} as ClineRulesToggles },
 	globalWorkflowToggles: { default: {} as ClineRulesToggles },
 	globalSkillsToggles: { default: {} as Record<string, boolean> },
+	// Script files in ~/.cline/scripts, keyed by path. Missing means on.
+	globalScriptToggles: { default: {} as Record<string, boolean> },
 	browserSettings: {
 		default: DEFAULT_BROWSER_SETTINGS as BrowserSettings,
 		transform: (v: any) => ({ ...DEFAULT_BROWSER_SETTINGS, ...v }),
@@ -281,14 +358,26 @@ const USER_SETTINGS_FIELDS = {
 	defaultTerminalProfile: { default: "default" as string },
 	hooksEnabled: { default: true as boolean },
 	useAutoCondense: { default: true as boolean },
-	subagentsEnabled: { default: false as boolean },
+	subagentsEnabled: { default: true as boolean },
+	subagentsMaxConcurrent: { default: 0 as number },
+	subagentsAllowWrite: { default: true as boolean },
+	subagentsAllowCommands: { default: true as boolean },
+	subagentsAllowMcp: { default: true as boolean },
+	subagentsAllowWeb: { default: true as boolean },
 	worktreesEnabled: { default: false as boolean },
 	cloudSessionsEnabled: { default: false as boolean },
 	preferredLanguage: { default: "English" as string },
 	mode: { default: "act" as Mode },
+	enterSendsAs: { default: "steer" as "steer" | "interject" },
 	backgroundEditEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },
 	showFeatureTips: { default: false as boolean },
+	threadToastsEnabled: { default: true as boolean },
+	threadToastSeconds: { default: 5 as number },
+	// Switching to Act right after an Ask answer also continues it. Off: only the answer's Continue in Act button does.
+	continueAnswerOnActSwitch: { default: true as boolean },
+	// One view (beta): the thread list sits beside the chat instead of on a separate home page.
+	oneViewEnabled: { default: false as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },
@@ -369,12 +458,17 @@ const SECRETS_KEYS = [
 // WARNING, these are not ALL of the local state keys in practice. For example, FileContextTracker
 // uses dynamic keys like pendingFileContextWarning_${taskId}.
 export const LocalStateKeys = [
+	"worktreeToggles",
 	"localClineRulesToggles",
 	"localCursorRulesToggles",
 	"localWindsurfRulesToggles",
 	"localAgentsRulesToggles",
 	"localSkillsToggles",
 	"workflowToggles",
+	"scriptToggles",
+	// Workspace terminal environment overrides — kept in workspace state so
+	// machine-local values never land in the repo.
+	"terminalEnvironment",
 ] as const
 
 // ============================================================================
@@ -397,7 +491,11 @@ export type RemoteConfigFields = GlobalStateAndSettings & RemoteConfigExtra
 // ============================================================================
 
 export type Secrets = { [K in (typeof SecretKeys)[number]]: string | undefined }
-export type LocalState = { [K in (typeof LocalStateKeys)[number]]: ClineRulesToggles }
+export type LocalState = {
+	[K in (typeof LocalStateKeys)[number]]: K extends "terminalEnvironment"
+		? TerminalEnvironmentSettings | undefined
+		: ClineRulesToggles
+}
 export type SecretKey = (typeof SecretKeys)[number]
 export type GlobalStateKey = keyof GlobalState
 export type LocalStateKey = keyof LocalState

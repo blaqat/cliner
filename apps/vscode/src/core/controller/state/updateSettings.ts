@@ -1,9 +1,8 @@
 import { setCompactionStrategyGlobally, setModelToolEnabledGlobally } from "@cline/core"
 import { Empty } from "@shared/proto/cline/common"
 import { PlanActMode, McpDisplayMode as ProtoMcpDisplayMode, UpdateSettingsRequest } from "@shared/proto/cline/state"
-import { convertProtoToApiProvider } from "@shared/proto-conversions/models/api-configuration-conversion"
-import { OpenaiReasoningEffort } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
+import { applyTerminalEnvironmentPatch } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import { McpDisplayMode } from "@/shared/McpDisplayMode"
 import { Logger } from "@/shared/services/Logger"
@@ -11,8 +10,6 @@ import { telemetryService } from "../../../services/telemetry"
 import { BrowserSettings as SharedBrowserSettings } from "../../../shared/BrowserSettings"
 import { Controller } from ".."
 import { accountLogoutClicked } from "../account/accountLogoutClicked"
-import { normalizeProviderSwitchModel } from "../models/providerSwitchNormalization"
-import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from "../models/taskApiModel"
 
 /**
  * Updates multiple extension settings in a single request
@@ -22,52 +19,78 @@ import { createTaskApiModelShim, resolveActiveModelIdFromApiConfiguration } from
  */
 export async function updateSettings(controller: Controller, request: UpdateSettingsRequest): Promise<Empty> {
 	try {
+		// Refuse managed fields before applying any part of this request.
+		const managed = Object.keys(request).some(
+			(key) => key.startsWith("openTelemetry") && request[key as keyof UpdateSettingsRequest] !== undefined,
+		)
+			? controller.stateManager.getRemoteConfigSettings()
+			: {}
+		for (const key of Object.keys(request)) {
+			if (
+				key.startsWith("openTelemetry") &&
+				request[key as keyof UpdateSettingsRequest] !== undefined &&
+				managed[key as keyof typeof managed] !== undefined
+			) {
+				throw new Error(`Managed setting cannot be changed: ${key}`)
+			}
+		}
+
+		for (const key of [
+			"openTelemetryMetricExportInterval",
+			"openTelemetryLogBatchSize",
+			"openTelemetryLogBatchTimeout",
+			"openTelemetryLogMaxQueueSize",
+		] as const) {
+			const value = request[key]
+			if (value !== undefined && (!Number.isInteger(value) || value <= 0))
+				throw new Error(`Invalid positive interval or size: ${key}`)
+		}
+
+		if (request.openTelemetryEnabled !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryEnabled", request.openTelemetryEnabled)
+		if (request.openTelemetryMetricsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricsExporter", request.openTelemetryMetricsExporter)
+		if (request.openTelemetryLogsExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogsExporter", request.openTelemetryLogsExporter)
+		if (request.openTelemetryTracesExporter !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryTracesExporter", request.openTelemetryTracesExporter)
+		if (request.openTelemetryOtlpProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpProtocol", request.openTelemetryOtlpProtocol)
+		if (request.openTelemetryOtlpEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpEndpoint", request.openTelemetryOtlpEndpoint)
+		if (request.openTelemetryOtlpMetricsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsProtocol", request.openTelemetryOtlpMetricsProtocol)
+		if (request.openTelemetryOtlpMetricsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpMetricsEndpoint", request.openTelemetryOtlpMetricsEndpoint)
+		if (request.openTelemetryOtlpLogsProtocol !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsProtocol", request.openTelemetryOtlpLogsProtocol)
+		if (request.openTelemetryOtlpLogsEndpoint !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpLogsEndpoint", request.openTelemetryOtlpLogsEndpoint)
+		if (request.openTelemetryMetricExportInterval !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryMetricExportInterval", request.openTelemetryMetricExportInterval)
+		if (request.openTelemetryOtlpInsecure !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryOtlpInsecure", request.openTelemetryOtlpInsecure)
+		if (request.openTelemetryLogBatchSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchSize", request.openTelemetryLogBatchSize)
+		if (request.openTelemetryLogBatchTimeout !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogBatchTimeout", request.openTelemetryLogBatchTimeout)
+		if (request.openTelemetryLogMaxQueueSize !== undefined)
+			controller.stateManager.setGlobalState("openTelemetryLogMaxQueueSize", request.openTelemetryLogMaxQueueSize)
+
+		if (request.enterSendsAs !== undefined) {
+			if (request.enterSendsAs !== "steer" && request.enterSendsAs !== "interject") throw new Error("Invalid enterSendsAs")
+			controller.stateManager.setGlobalState("enterSendsAs", request.enterSendsAs)
+		}
+		if (request.promptStash !== undefined) await controller.stateManager.applyPromptStash(request.promptStash.entries)
+
 		if (request.clineEnv !== undefined && request.clineEnv !== "") {
 			ClineEnv.setEnvironment(request.clineEnv)
 			await accountLogoutClicked(controller, Empty.create())
 		}
 
-		if (request.apiConfiguration) {
-			const protoApiConfiguration = request.apiConfiguration
-
-			const convertedApiConfigurationFromProto = {
-				...protoApiConfiguration,
-				// Convert proto ApiProvider enums to native string types
-				planModeApiProvider: protoApiConfiguration.planModeApiProvider
-					? convertProtoToApiProvider(protoApiConfiguration.planModeApiProvider)
-					: undefined,
-				actModeApiProvider: protoApiConfiguration.actModeApiProvider
-					? convertProtoToApiProvider(protoApiConfiguration.actModeApiProvider)
-					: undefined,
-				planModeReasoningEffort: protoApiConfiguration.planModeReasoningEffort as OpenaiReasoningEffort | undefined,
-				actModeReasoningEffort: protoApiConfiguration.actModeReasoningEffort as OpenaiReasoningEffort | undefined,
-			}
-
-			const previousApiConfiguration = controller.stateManager.getApiConfiguration()
-			const normalizedApiConfiguration = normalizeProviderSwitchModel(
-				controller.getProviderConfigStore(),
-				previousApiConfiguration,
-				convertedApiConfigurationFromProto,
-			)
-
-			controller.stateManager.setApiConfiguration(normalizedApiConfiguration)
-
-			if (controller.task) {
-				const currentMode = controller.stateManager.getGlobalSettingsKey("mode")
-				const modelId = resolveActiveModelIdFromApiConfiguration(normalizedApiConfiguration, currentMode)
-				controller.task.api = createTaskApiModelShim(modelId)
-			}
-			controller.handleApiConfigurationChanged(previousApiConfiguration, normalizedApiConfiguration)
-		}
-
 		// Update telemetry setting
 		if (request.telemetrySetting) {
 			await controller.updateTelemetrySetting(request.telemetrySetting as TelemetrySetting)
-		}
-
-		// Update plan/act separate models setting
-		if (request.planActSeparateModelsSetting !== undefined) {
-			controller.stateManager.setGlobalState("planActSeparateModelsSetting", request.planActSeparateModelsSetting)
 		}
 
 		// Update checkpoints setting
@@ -154,15 +177,27 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			controller.invalidateTaskHistoryCache()
 		}
 
-		// Update subagents setting
-		if (request.subagentsEnabled !== undefined) {
-			const wasEnabled = controller.stateManager.getGlobalSettingsKey("subagentsEnabled") ?? false
-			const isEnabled = !!request.subagentsEnabled
-			controller.stateManager.setGlobalState("subagentsEnabled", isEnabled)
-
-			// Capture telemetry when setting changes
-			if (wasEnabled !== isEnabled) {
-				telemetryService.captureSubagentToggle(isEnabled)
+		// Terminal environment arrives as a granular patch for one scope, applied
+		// to the freshest stored value so back-to-back edits cannot clobber each
+		// other. Workspace scope lives in per-workspace state so machine-local
+		// values stay out of the repo. Values are never logged.
+		if (request.terminalEnvironment !== undefined) {
+			const patch = request.terminalEnvironment
+			const isWorkspace = !!patch.workspace
+			const current = isWorkspace
+				? controller.stateManager.getWorkspaceStateKey("terminalEnvironment")
+				: controller.stateManager.getGlobalStateKey("terminalEnvironment")
+			const env = applyTerminalEnvironmentPatch(current, {
+				setVariables: patch.setVariables,
+				removeVariables: patch.removeVariables,
+				envFilePath: patch.envFilePath,
+				addPathEntries: patch.addPathEntries,
+				removePathEntries: patch.removePathEntries,
+			})
+			if (isWorkspace) {
+				controller.stateManager.setWorkspaceState("terminalEnvironment", env)
+			} else {
+				controller.stateManager.setGlobalState("terminalEnvironment", env)
 			}
 		}
 
@@ -268,8 +303,24 @@ export async function updateSettings(controller: Controller, request: UpdateSett
 			controller.stateManager.setGlobalState("showFeatureTips", request.showFeatureTips)
 		}
 
+		if (request.threadToastsEnabled !== undefined) {
+			controller.stateManager.setGlobalState("threadToastsEnabled", request.threadToastsEnabled)
+		}
+		if (request.continueAnswerOnActSwitch !== undefined) {
+			controller.stateManager.setGlobalState("continueAnswerOnActSwitch", request.continueAnswerOnActSwitch)
+		}
+		if (request.oneViewEnabled !== undefined) {
+			controller.stateManager.setGlobalState("oneViewEnabled", request.oneViewEnabled)
+		}
+		if (request.threadToastSeconds !== undefined) {
+			if (!Number.isInteger(request.threadToastSeconds) || request.threadToastSeconds < 1) {
+				throw new Error("Toast duration must be a whole number of seconds, at least 1.")
+			}
+			controller.stateManager.setGlobalState("threadToastSeconds", request.threadToastSeconds)
+		}
+
 		// Post updated state to webview
-		await controller.postStateToWebview()
+		await controller.postStateToWebview(true)
 
 		return Empty.create()
 	} catch (error) {

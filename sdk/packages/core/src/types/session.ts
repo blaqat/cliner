@@ -10,6 +10,8 @@ import type { SessionSource, SessionStatus } from "./common";
 import type { CoreAgentMode, CoreSessionConfig } from "./config";
 
 export type ActiveSession = {
+	/** Fences late turn callbacks once runtime teardown starts. */
+	shuttingDown?: boolean;
 	sessionId: string;
 	config: CoreSessionConfig;
 	sessionMetadata?: Record<string, unknown>;
@@ -76,7 +78,7 @@ export type PendingPrompt = {
 	id: string;
 	prompt: string;
 	mode?: CoreAgentMode;
-	delivery: "queue" | "steer";
+	delivery: "queue" | "steer" | "interject";
 	userImages?: string[];
 	userFiles?: string[];
 };

@@ -1,3 +1,4 @@
+import { normalizeProvenance } from "@shared/composer-provenance"
 import { String } from "@shared/proto/cline/common"
 import { PlanActMode } from "@shared/proto/cline/state"
 import { NewTaskRequest } from "@shared/proto/cline/task"
@@ -69,7 +70,12 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 		}).filter(([_, value]) => value !== undefined),
 	)
 
-	let cloudTarget: { repoUrl: string; branch?: string } | undefined
+	let cloudTarget:
+		| {
+				repoUrl: string
+				branch?: string
+		  }
+		| undefined
 	if (request.executionTarget === "cloud") {
 		const repoUrl = request.cloudRepoUrl?.trim()
 		// A cloud request without a repository is incomplete; running it locally
@@ -79,13 +85,13 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 		}
 		cloudTarget = { repoUrl, branch: request.cloudBranch?.trim() || undefined }
 	}
-	const taskId = await controller.initTask(
-		request.text,
-		request.images,
-		request.files,
-		undefined,
-		filteredTaskSettings,
-		cloudTarget,
-	)
+	const taskId = await controller.initTask(request.text, request.images, request.files, undefined, filteredTaskSettings, {
+		...cloudTarget,
+		background: request.runInBackground,
+		runInWorktree: request.runInWorktree,
+		taskGroupId: request.taskGroupId || undefined,
+		provenance: normalizeProvenance(request.provenance),
+		rethrowStartFailure: true,
+	})
 	return String.create({ value: taskId || "" })
 }

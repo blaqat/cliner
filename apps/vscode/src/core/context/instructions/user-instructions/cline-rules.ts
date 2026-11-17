@@ -24,6 +24,7 @@ const CLINERULES_EXCLUDED_SUBDIRECTORIES: string[][] = [
 	[".clinerules", "workflows"],
 	[".clinerules", "hooks"],
 	[".clinerules", "skills"],
+	[".clinerules", "scripts"],
 ]
 
 /**

@@ -131,3 +131,62 @@ export function getLastApiReqTotalTokens(messages: ClineMessage[]): number {
 	}
 	return 0
 }
+
+/** One line of the composer's cost breakdown: a model, the thread's subagents, or requests from before models were recorded. */
+export interface CostBreakdownRow {
+	key: string
+	kind: "model" | "subagents" | "earlier"
+	modelId?: string
+	providerId?: string
+	/** Input tokens, cached ones included (`cacheTokens` says how many were cached). */
+	tokensIn: number
+	tokensOut: number
+	cacheTokens: number
+	cost: number
+}
+
+/**
+ * The thread's usage grouped by the model that served each request (stamped on
+ * `api_req_started`), plus one row for subagents and one for requests recorded
+ * before the model was (older threads, deleted requests). Highest cost first.
+ */
+export function getCostBreakdown(messages: ClineMessage[]): CostBreakdownRow[] {
+	const rows = new Map<string, CostBreakdownRow>()
+	const add = (
+		row: Omit<CostBreakdownRow, "tokensIn" | "tokensOut" | "cacheTokens" | "cost">,
+		data: Record<string, unknown>,
+	) => {
+		const num = (value: unknown) => (typeof value === "number" ? value : 0)
+		const cacheTokens = num(data.cacheReads) + num(data.cacheWrites)
+		const tokensIn = num(data.tokensIn) + cacheTokens
+		const tokensOut = typeof data.tokensOut === "number" ? data.tokensOut : 0
+		const cost = typeof data.cost === "number" ? data.cost : 0
+		if (!tokensIn && !tokensOut && !cost) return
+		const current = rows.get(row.key) ?? { ...row, tokensIn: 0, tokensOut: 0, cacheTokens: 0, cost: 0 }
+		current.tokensIn += tokensIn
+		current.cacheTokens += cacheTokens
+		current.tokensOut += tokensOut
+		current.cost += cost
+		rows.set(row.key, current)
+	}
+	for (const message of messages) {
+		if (message.type !== "say" || !message.text) continue
+		if (message.say !== "api_req_started" && message.say !== "deleted_api_reqs" && message.say !== "subagent_usage") continue
+		let data: Record<string, unknown>
+		try {
+			data = JSON.parse(message.text)
+		} catch {
+			continue
+		}
+		if (!data || typeof data !== "object") continue
+		if (message.say === "subagent_usage") {
+			add({ key: "subagents", kind: "subagents" }, data)
+		} else if (message.say === "api_req_started" && typeof data.modelId === "string" && data.modelId) {
+			const providerId = typeof data.providerId === "string" ? data.providerId : undefined
+			add({ key: `model:${providerId ?? ""}:${data.modelId}`, kind: "model", modelId: data.modelId, providerId }, data)
+		} else {
+			add({ key: "earlier", kind: "earlier" }, data)
+		}
+	}
+	return [...rows.values()].sort((a, b) => b.cost - a.cost || b.tokensIn + b.tokensOut - (a.tokensIn + a.tokensOut))
+}

@@ -43,7 +43,7 @@ describe("togglePlanActModeProto", () => {
 
 		await togglePlanActModeProto(mockController, request)
 
-		expect(toggleSpy).toHaveBeenCalledWith("plan", undefined)
+		expect(toggleSpy).toHaveBeenCalledWith("plan", undefined, { continueAnswer: false })
 	})
 
 	it("decodes ACT mode and passes it to the controller", async () => {
@@ -52,7 +52,16 @@ describe("togglePlanActModeProto", () => {
 
 		await togglePlanActModeProto(mockController, request)
 
-		expect(toggleSpy).toHaveBeenCalledWith("act", undefined)
+		expect(toggleSpy).toHaveBeenCalledWith("act", undefined, { continueAnswer: false })
+	})
+
+	it("passes the answer button's continueAnswer flag through", async () => {
+		toggleSpy.mockResolvedValue(false)
+		await togglePlanActModeProto(
+			mockController,
+			TogglePlanActModeRequest.create({ mode: PlanActMode.ACT, continueAnswer: true }),
+		)
+		expect(toggleSpy).toHaveBeenCalledWith("act", undefined, { continueAnswer: true })
 	})
 
 	it("passes chatContent through to the controller", async () => {

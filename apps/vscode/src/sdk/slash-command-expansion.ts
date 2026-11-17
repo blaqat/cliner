@@ -155,15 +155,15 @@ function findRuntimeCommand(
 }
 
 /**
- * Expand the first slash command in `text` that resolves to a known
- * workflow/skill into its instruction body.
+ * Expand every slash command in `text` that resolves to a known
+ * workflow/builtin into its instruction body, in order of appearance.
  *
  * Unlike the SDK's `resolveRuntimeSlashCommand` (leading `/command` only), this
  * matches commands anywhere in the message — the webview lets users insert a
  * slash command after whitespace mid-message, and the legacy extension expanded
- * those too. Only the first matching command is expanded, mirroring legacy
- * behavior and the webview menu (which only offers suggestions for the first
- * command in a message).
+ * those too. Replacements are computed against the original text and spliced in
+ * afterwards, so the instructions one command expands to are never re-scanned
+ * for further commands.
  */
 export function expandSlashCommands(
 	text: string,
@@ -175,9 +175,16 @@ export function expandSlashCommands(
 	}
 	const disabledWorkflowNames = options.disabledWorkflowNames ?? new Set()
 	const workflowRecords = options.workflowRecords ?? []
+	const replacements: { start: number; end: number; instructions: string }[] = []
 	for (const match of text.matchAll(SLASH_COMMAND_TOKEN_REGEX)) {
 		const token = match[2]
 		const typedName = token.slice(1)
+		// The webview removes /ask and /act mode-switch tokens before sending;
+		// ignore them here defensively so they can never expand (or be shadowed
+		// by a same-named workflow) if they somehow reach the host.
+		if (typedName.toLowerCase() === "ask" || typedName.toLowerCase() === "act") {
+			continue
+		}
 		const command = findRuntimeCommand(commands, typedName, workflowRecords)
 		if (!command) {
 			continue
@@ -199,10 +206,18 @@ export function expandSlashCommands(
 			continue
 		}
 		const start = (match.index ?? 0) + match[1].length
-		const end = start + token.length
-		return text.slice(0, start) + command.instructions + text.slice(end)
+		replacements.push({ start, end: start + token.length, instructions: command.instructions })
 	}
-	return text
+	if (replacements.length === 0) {
+		return text
+	}
+	let result = ""
+	let cursor = 0
+	for (const { start, end, instructions } of replacements) {
+		result += text.slice(cursor, start) + instructions
+		cursor = end
+	}
+	return result + text.slice(cursor)
 }
 
 export interface BuildDisabledWorkflowNamesOptions {

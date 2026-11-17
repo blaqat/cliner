@@ -40,7 +40,13 @@ async function* textStream(text: string) {
 }
 
 function fakeController(getRulesForSystemPrompt: () => Promise<string> = async () => "") {
-	return { stateManager: { getApiConfiguration: () => ({}) }, getRulesForSystemPrompt } as never
+	return {
+		stateManager: {
+			getApiConfiguration: () => ({}),
+			getGlobalStateKey: () => undefined,
+		},
+		getRulesForSystemPrompt,
+	} as never
 }
 
 describe("commit-message-generator", () => {

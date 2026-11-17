@@ -1,10 +1,16 @@
 import { getProviderAuthStorageId } from "@cline/core"
 import { createModeSwitchNoticeTracker, type ModeSwitchNotice, type ModeSwitchNoticeTracker } from "@cline/shared"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
+import { type ComposerProvenance, normalizeProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnPhase } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
+import { resolveApiConfigurationForTaskSelection } from "@/core/controller/models/apiProfiles"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
+import { ModelPickUnavailableError } from "./model-settings-resolver"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
@@ -19,6 +25,20 @@ type StartInput = Parameters<VscodeSessionHost["start"]>[0]
 type InitialMessages = StartInput["initialMessages"]
 type SessionConfig = Awaited<ReturnType<SdkSessionConfigBuilder["build"]>>
 
+function latestModeResult(messages: ClineMessage[]): ClineMessage | undefined {
+	return [...messages]
+		.reverse()
+		.find(
+			(message) =>
+				(message.type === "say" && (message.say === "plan_completion_result" || message.say === "completion_result")) ||
+				(message.type === "ask" && (message.ask === "plan_mode_respond" || message.ask === "completion_result")),
+		)
+}
+
+function isAskAnswer(message: ClineMessage | undefined): boolean {
+	return !!message && !message.partial && (message.say === "plan_completion_result" || message.ask === "plan_mode_respond")
+}
+
 function usesClineAccountAuth(providerId: string): boolean {
 	return getProviderAuthStorageId(providerId) === "cline"
 }
@@ -26,6 +46,9 @@ function usesClineAccountAuth(providerId: string): boolean {
 export { ACT_MODE_CONTINUATION_PROMPT }
 
 export interface SdkModeCoordinatorOptions {
+	getTaskApiSelection?: (taskId: string) => TaskApiSelection | undefined
+	onModeRebuilt?: (taskId: string, mode: Mode, selection: TaskApiSelection | undefined) => Promise<void>
+	resumeInAct?: (content?: ChatContent) => Promise<boolean>
 	stateManager: StateManager
 	sessions: SdkSessionLifecycle
 	interactions: SdkInteractionCoordinator
@@ -48,7 +71,7 @@ export interface SdkModeCoordinatorOptions {
 	 * Approve/Reject buttons wired to an approval that was already denied.
 	 */
 	setTurnPhase: (phase: TurnPhase, anchorTs?: number) => void
-	resolveContextMentions: (text: string) => Promise<string>
+	resolveContextMentions: (text: string, provenance?: ComposerProvenance) => Promise<string>
 	/**
 	 * Called right before an auto-continue send kicks off a new turn. Mirrors
 	 * initTask/askResponse: moves the turn phase to "streaming" (footer shows
@@ -110,19 +133,27 @@ export class SdkModeCoordinator {
 		this.modeSwitchNoticeTracker.record(from, to)
 	}
 
-	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
-		// Decide under the rebuild lock, after any session start in flight has
-		// settled. Starts and rebuilds detach the outgoing session before the
-		// replacement is active, so a toggle that looked during that window
-		// would see no session, flip only the setting, and leave the session
-		// that finishes starting on the other mode's tools.
+	/**
+	 * `continueAnswer` is the answer's own Continue in Act button. A plain switch (the Ask/Act toggle,
+	 * its shortcut, /act) only continues an answer while the continueAnswerOnActSwitch setting is on;
+	 * off, it just changes the mode and leaves the draft in the composer.
+	 */
+	async togglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent?: ChatContent,
+		{ continueAnswer = false }: { continueAnswer?: boolean } = {},
+	): Promise<boolean> {
 		return this.options.rebuilds.runExclusive(async () => {
 			await this.options.sessions.waitForSessionStarts()
-			return this.performTogglePlanActMode(modeToSwitchTo, chatContent)
+			return this.performTogglePlanActMode(modeToSwitchTo, chatContent, continueAnswer)
 		})
 	}
 
-	private async performTogglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
+	private async performTogglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent: ChatContent | undefined,
+		continueAnswer: boolean,
+	): Promise<boolean> {
 		const currentMode = this.options.stateManager.getGlobalSettingsKey("mode")
 		const activeSession = this.options.sessions.getActiveSession()
 		// Cloud sessions are Act-only; the webview disables the toggle, this
@@ -133,6 +164,8 @@ export class SdkModeCoordinator {
 		if (currentMode === modeToSwitchTo && (activeSession?.mode ?? modeToSwitchTo) === modeToSwitchTo) {
 			return false
 		}
+		const mayContinue =
+			continueAnswer || this.options.stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch") !== false
 
 		if (activeSession) {
 			// awaiting_followup is also used for non-plan turns, so it is not
@@ -144,20 +177,13 @@ export class SdkModeCoordinator {
 			// act -> plan -> act round trip from starting work on a stale plan.
 			const task = this.options.getTask()
 			const clineMessages = task?.messageStateHandler.getClineMessages() ?? []
-			const latestAssistantResult = [...clineMessages]
-				.reverse()
-				.find(
-					(message) =>
-						message.type === "say" &&
-						(message.say === "plan_completion_result" || message.say === "completion_result"),
-				)
+			const latestAssistantResult = latestModeResult(clineMessages)
 			const turnPhase = this.options.getTurnPhase()
 			const planPresented =
 				!activeSession.isRunning &&
 				(turnPhase === "awaiting_followup" || turnPhase === "completed") &&
-				latestAssistantResult?.say === "plan_completion_result" &&
-				!latestAssistantResult.partial
-			const autoContinue = modeToSwitchTo === "act" && planPresented
+				isAskAnswer(latestAssistantResult)
+			const autoContinue = modeToSwitchTo === "act" && planPresented && mayContinue
 			const userPrompt = chatContent?.message?.trim() || undefined
 			const userImages = chatContent?.images?.length ? chatContent.images : undefined
 			const userFiles = chatContent?.files?.length ? chatContent.files : undefined
@@ -165,6 +191,7 @@ export class SdkModeCoordinator {
 			const continuationSent = await this.performRebuildSessionForMode(modeToSwitchTo, {
 				autoContinue,
 				userContinuationPrompt: autoContinue ? userPrompt : undefined,
+				userProvenance: autoContinue ? normalizeProvenance(chatContent?.provenance) : undefined,
 				userImages: autoContinue ? userImages : undefined,
 				userFiles: autoContinue ? userFiles : undefined,
 			})
@@ -173,6 +200,18 @@ export class SdkModeCoordinator {
 		}
 
 		this.options.stateManager.setGlobalState("mode", modeToSwitchTo)
+		const task = this.options.getTask()
+		const latestResult = latestModeResult(task?.messageStateHandler.getClineMessages() ?? [])
+		if (task && modeToSwitchTo === "act" && isAskAnswer(latestResult) && mayContinue && this.options.resumeInAct) {
+			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
+			const sent = await this.options.resumeInAct(chatContent)
+			await this.options.postStateToWebview()
+			return sent && !!(chatContent?.message?.trim() || chatContent?.images?.length || chatContent?.files?.length)
+		}
+		// A notice is already waiting from a switch that ended the session, so this one counts against it.
+		if (task && this.modeSwitchNoticeSessionId === task.taskId) {
+			this.recordModeSwitchNotice(task.taskId, currentMode, modeToSwitchTo)
+		}
 		await this.options.postStateToWebview()
 		return false
 	}
@@ -187,6 +226,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		} = {},
@@ -199,6 +240,8 @@ export class SdkModeCoordinator {
 		options: {
 			autoContinue?: boolean
 			userContinuationPrompt?: string
+			/** The part of the continuation prompt the user typed; only it can authorize thread references. */
+			userProvenance?: ComposerProvenance
 			userImages?: string[]
 			userFiles?: string[]
 		},
@@ -256,12 +299,26 @@ export class SdkModeCoordinator {
 		let continuationSent = false
 		let sessionReplaced = false
 		try {
-			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const cwd = await this.options.getWorkspaceRoot()
-			const config = await this.options.sessionConfigBuilder.build({
-				cwd,
-				mode: newMode,
-			})
+			const selection = this.options.getTaskApiSelection?.(oldSessionId) ?? activeSession.apiSnapshot?.selection
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode: newMode,
+					...(selection
+						? {
+								apiSelection: selection,
+								apiConfiguration: resolveApiConfigurationForTaskSelection(
+									this.options.stateManager,
+									this.options.stateManager.getApiConfiguration(newMode),
+									newMode,
+									selection,
+								),
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
 			Logger.log(
 				`[SdkController] Mode rebuild config: mode=${newMode}, provider=${config.providerId}, model=${config.modelId}, hasApiKey=${!!config.apiKey}`,
 			)
@@ -279,15 +336,26 @@ export class SdkModeCoordinator {
 				return false
 			}
 
+			const builtSelection = useModelSettings(this.options.stateManager)
+				? (getSessionApiSnapshot(config)?.selection ?? selection)
+				: selection
 			const startInput = this.options.buildStartSessionInput(config, {
 				cwd,
 				mode: newMode,
 			})
+			let committed = false
 			const rebuildResult = await this.options.sessions.replaceActiveSession({
 				expectedSession: activeSession,
 				startInput,
-				initialMessages: initialMessages as InitialMessages,
+				loadInitialMessages: async () =>
+					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: "modeChange",
+				onReplaced: async (sessionId) => {
+					sessionReplaced = true
+					this.recordModeSwitchNotice(sessionId, previousMode, newMode)
+					await this.options.onModeRebuilt?.(oldSessionId, newMode, builtSelection)
+					committed = true
+				},
 			})
 			if (!rebuildResult) {
 				// Replacement was refused. When the session we tried to replace is
@@ -305,6 +373,7 @@ export class SdkModeCoordinator {
 
 			sessionReplaced = true
 			const { sdkHost, startResult } = rebuildResult
+			if (!committed) await this.options.onModeRebuilt?.(oldSessionId, newMode, builtSelection)
 			const task = this.options.getTask()
 			if (task && task.taskId !== startResult.sessionId) {
 				Logger.warn(
@@ -318,7 +387,7 @@ export class SdkModeCoordinator {
 			// fails earlier rolls the mode setting back, and a notice for a switch
 			// that never took effect would lie to the model. Recording before the
 			// auto-continue send lets that send carry the notice.
-			this.recordModeSwitchNotice(startResult.sessionId, previousMode, newMode)
+			if (!committed) this.recordModeSwitchNotice(startResult.sessionId, previousMode, newMode)
 			if (options.autoContinue) {
 				const userPrompt = options.userContinuationPrompt
 				const userImages = options.userImages
@@ -327,11 +396,13 @@ export class SdkModeCoordinator {
 				// before anything is emitted or sent, so no listener ever sees a
 				// user_feedback message while the phase still reads awaiting_followup.
 				autoContinueStarted = true
-				this.options.sessions.setRunning(true)
+				this.options.sessions.markSendRunning()
 				this.options.onAutoContinueStarting()
 				// Resolve mentions before echoing so a resolution failure cannot
 				// leave an echoed-but-never-sent user message in the transcript.
-				const prompt = userPrompt ? await this.options.resolveContextMentions(userPrompt) : ACT_MODE_CONTINUATION_PROMPT
+				const prompt = userPrompt
+					? await this.options.resolveContextMentions(userPrompt, options.userProvenance)
+					: ACT_MODE_CONTINUATION_PROMPT
 				if (userPrompt || userImages?.length || userFiles?.length) {
 					const userMessage: ClineMessage = {
 						ts: Date.now(),
@@ -362,6 +433,21 @@ export class SdkModeCoordinator {
 
 			Logger.log(`[SdkController] Session rebuilt for mode ${newMode}: ${oldSessionId} -> ${startResult.sessionId}`)
 		} catch (error) {
+			// Queued messages live only in the session, so it can't end under them: as when replacement is refused,
+			// the switch doesn't take, and the error below says why.
+			const holdsMessages = activeSession.isRunning || activeSession.queuedPromptCount > 0
+			if (error instanceof ModelPickUnavailableError && !sessionReplaced && !holdsMessages) {
+				// Only a send needs a model, so the switch stands. The old session goes with it: it still has the
+				// old mode's tools. The next send starts a new one in this mode, or says why it can't.
+				Logger.log(`[SdkController] Switched to ${newMode} with no model to run on yet: ${error.message}`)
+				if (this.options.sessions.getActiveSession() === activeSession) {
+					await this.options.sessions.endActiveSession("modeChange")
+				}
+				this.recordModeSwitchNotice(oldSessionId, previousMode, newMode)
+				await this.options.onModeRebuilt?.(oldSessionId, newMode, undefined)
+				await this.options.postStateToWebview()
+				return false
+			}
 			Logger.error("[SdkController] Failed to rebuild session for mode change:", error)
 			if (!sessionReplaced) {
 				// The old session is still the active one and still has the old

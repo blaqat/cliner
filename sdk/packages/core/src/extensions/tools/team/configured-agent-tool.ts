@@ -1,3 +1,4 @@
+import { SUBAGENT_SPAWN_ERROR } from "./subagent-policy";
 import {
 	type AgentEvent,
 	type AgentResult,
@@ -147,12 +148,17 @@ export function createConfiguredAgentTools(
 ): AgentTool[] {
 	return buildConfiguredAgentToolDescriptors(options.agents).map(
 		({ toolName, config }) => {
-			const tool = createTool<ConfiguredAgentInput, SpawnAgentOutput>({
+			const tool = createTool<
+				ConfiguredAgentInput,
+				SpawnAgentOutput | { error: string }
+			>({
 				name: toolName,
 				executionMode: "parallel",
 				description: `Use the "${config.name}" subagent: ${config.description}`,
 				inputSchema: zodToJsonSchema(ConfiguredAgentInputSchema),
 				execute: async (input, context) => {
+					if (context.snapshot?.parentAgentId)
+						return { error: SUBAGENT_SPAWN_ERROR };
 					const baseRuntimeConfig = options.configProvider.getRuntimeConfig();
 					const configProvider = createDelegatedAgentConfigProvider(
 						buildAgentRuntimeConfig(baseRuntimeConfig, config),

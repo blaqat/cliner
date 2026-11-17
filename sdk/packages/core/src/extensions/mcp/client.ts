@@ -23,6 +23,7 @@ import type {
 	McpServerClient,
 	McpServerClientFactory,
 	McpServerRegistration,
+	McpToolAnnotations,
 	McpToolCallResult,
 	McpToolDescriptor,
 } from "./types";
@@ -368,6 +369,7 @@ class StdioMcpClient implements McpServerClient {
 				description?: string;
 				inputSchema?: Record<string, unknown>;
 				_meta?: Record<string, unknown>;
+				annotations?: McpToolAnnotations;
 			}>;
 		};
 		return (result.tools ?? [])
@@ -379,6 +381,7 @@ class StdioMcpClient implements McpServerClient {
 					description?: string;
 					inputSchema: Record<string, unknown>;
 					_meta?: Record<string, unknown>;
+					annotations?: McpToolAnnotations;
 				} =>
 					typeof tool?.name === "string" &&
 					typeof tool.inputSchema === "object" &&
@@ -393,6 +396,7 @@ class StdioMcpClient implements McpServerClient {
 				!Array.isArray(tool._meta)
 					? { _meta: tool._meta }
 					: {}),
+				annotations: tool.annotations,
 			}));
 	}
 
@@ -865,6 +869,7 @@ class SdkUrlMcpClient implements McpServerClient {
 						? tool.inputSchema
 						: {},
 				...(tool._meta ? { _meta: tool._meta } : {}),
+				annotations: tool.annotations,
 			}));
 		} catch (error) {
 			return await this.handleOperationError(error);

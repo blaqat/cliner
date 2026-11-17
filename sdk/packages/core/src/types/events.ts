@@ -67,7 +67,26 @@ export interface SessionSnapshotEvent {
 	snapshot: CoreSessionSnapshot;
 }
 
+export interface SessionSubagentEvent {
+	detached?: boolean;
+	usage?: { inputTokens: number; outputTokens: number; totalCost?: number };
+	result?: string;
+	sessionId: string;
+	childSessionId: string;
+	agentId: string;
+	parentAgentId: string;
+	toolCallId?: string;
+	prompt: string;
+	access: "read" | "write";
+	status: "running" | "completed" | "failed" | "cancelled";
+}
+
 export type CoreSessionEvent =
+	| { type: "subagent"; payload: SessionSubagentEvent }
+	| {
+			type: "subagent_input";
+			payload: { sessionId: string; childSessionId: string; text: string };
+	  }
 	| { type: "chunk"; payload: SessionChunkEvent }
 	| {
 			type: "agent_event";
@@ -80,6 +99,7 @@ export type CoreSessionEvent =
 				teamRole?: "lead" | "teammate";
 			};
 	  }
+	| { type: "subagent_update"; payload: { sessionId: string; text: string } }
 	| { type: "team_progress"; payload: SessionTeamProgressEvent }
 	| { type: "pending_prompts"; payload: SessionPendingPromptsEvent }
 	| {

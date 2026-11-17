@@ -7,20 +7,26 @@
 import { isModelToolEnabledGlobally, readCompactionStrategyGlobally } from "@cline/core"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
 import type { ExtensionState, Platform } from "@shared/ExtensionMessage"
+import { maskTerminalEnvironmentScope } from "@shared/terminal-environment"
 import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo, HostRegistryInfo } from "@/registry"
+import { useModelSettings } from "@/sdk/model-settings/background"
+import { readModelSettingsState } from "@/sdk/model-settings/host-settings"
+import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import { BannerService } from "@/services/banner/BannerService"
 import { featureFlagsService } from "@/services/feature-flags"
 import { getDistinctId } from "@/services/logging/distinctId"
 import { getExtensionVariant } from "@/services/telemetry/rollout-metadata"
 import { getLatestAnnouncementId } from "@/utils/announcements"
 import { getClineOnboardingModels } from "../models/getClineOnboardingModels"
+import { buildStateTaskHistory } from "./stateTaskHistory"
 
 /**
  * Builds the ExtensionState object to push to the webview.
  * Extracted from the classic Controller.getStateToPostToWebview().
  */
 export async function getStateToPostToWebview(controller: {
+	deferTaskHistory?: boolean
 	task?: any
 	stateManager: any
 	mcpHub?: any
@@ -80,16 +86,19 @@ export async function getStateToPostToWebview(controller: {
 	const localAgentsRulesToggles = stateManager.getWorkspaceStateKey("localAgentsRulesToggles")
 	const workflowToggles = stateManager.getWorkspaceStateKey("workflowToggles")
 
-	const currentTaskItem = controller.task?.taskId
-		? (taskHistory || []).find((item: any) => item.id === controller.task?.taskId)
-		: undefined
+	const currentTaskItem =
+		!controller.deferTaskHistory && controller.task?.taskId
+			? (taskHistory || []).find((item: any) => item.id === controller.task?.taskId)
+			: undefined
 	const clineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
 	const checkpointRestoreInput = controller.checkpointRestoreInput
 
-	const processedTaskHistory = (taskHistory || [])
-		.filter((item: any) => item.ts && item.task)
-		.sort((a: any, b: any) => b.ts - a.ts)
-		.slice(0, 100)
+	const processedTaskHistory = controller.deferTaskHistory
+		? (taskHistory ?? [])
+		: buildStateTaskHistory(
+				(taskHistory || []).filter((item: any) => item.ts && item.task).sort((a: any, b: any) => b.ts - a.ts),
+				[controller.task?.taskId],
+			)
 
 	const latestAnnouncementId = getLatestAnnouncementId()
 	const shouldShowAnnouncement = lastShownAnnouncementId !== latestAnnouncementId
@@ -113,6 +122,11 @@ export async function getStateToPostToWebview(controller: {
 	}
 
 	return {
+		...(useModelSettings(stateManager) ? { modelSettings: await readModelSettingsState(stateManager) } : {}),
+		// Not gated on the journal: a failed first migration has no modelSettings, and this is how it can be retried.
+		...(modelSettingsRolloutEnabled()
+			? { modelSettingsMigrationStatus: stateManager.getModelSettingsMigrationStatus() }
+			: {}),
 		version,
 		extensionVariant: getExtensionVariant(),
 		apiConfiguration,
@@ -127,6 +141,18 @@ export async function getStateToPostToWebview(controller: {
 		compactionStrategy,
 		webSearchEnabled,
 		subagentsEnabled,
+		subagentsMaxConcurrent: stateManager.getGlobalSettingsKey("subagentsMaxConcurrent"),
+		subagentsAllowWrite: stateManager.getGlobalSettingsKey("subagentsAllowWrite"),
+		subagentsAllowCommands: stateManager.getGlobalSettingsKey("subagentsAllowCommands"),
+		subagentsAllowMcp: stateManager.getGlobalSettingsKey("subagentsAllowMcp"),
+		subagentsAllowWeb: stateManager.getGlobalSettingsKey("subagentsAllowWeb"),
+		threadTitlesEnabled: stateManager.getGlobalStateKey("threadTitlesEnabled"),
+		// Names + masked placeholders only; values come from revealTerminalEnvironment.
+		terminalEnvironment: {
+			global: maskTerminalEnvironmentScope(stateManager.getGlobalStateKey("terminalEnvironment")),
+			workspace: maskTerminalEnvironmentScope(stateManager.getWorkspaceStateKey("terminalEnvironment")),
+		},
+
 		userInfo,
 		mcpMarketplaceEnabled,
 		mcpDisplayMode,
@@ -148,6 +174,23 @@ export async function getStateToPostToWebview(controller: {
 		localSkillsToggles: localSkillsToggles || {},
 		remoteRulesToggles,
 		remoteWorkflowToggles,
+		openTelemetrySettings: {
+			openTelemetryEnabled: stateManager.getGlobalSettingsKey("openTelemetryEnabled"),
+			openTelemetryMetricsExporter: stateManager.getGlobalSettingsKey("openTelemetryMetricsExporter"),
+			openTelemetryLogsExporter: stateManager.getGlobalSettingsKey("openTelemetryLogsExporter"),
+			openTelemetryTracesExporter: stateManager.getGlobalSettingsKey("openTelemetryTracesExporter"),
+			openTelemetryOtlpProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpProtocol"),
+			openTelemetryOtlpEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpEndpoint"),
+			openTelemetryOtlpMetricsProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpMetricsProtocol"),
+			openTelemetryOtlpMetricsEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpMetricsEndpoint"),
+			openTelemetryOtlpLogsProtocol: stateManager.getGlobalSettingsKey("openTelemetryOtlpLogsProtocol"),
+			openTelemetryOtlpLogsEndpoint: stateManager.getGlobalSettingsKey("openTelemetryOtlpLogsEndpoint"),
+			openTelemetryMetricExportInterval: stateManager.getGlobalSettingsKey("openTelemetryMetricExportInterval"),
+			openTelemetryOtlpInsecure: stateManager.getGlobalSettingsKey("openTelemetryOtlpInsecure"),
+			openTelemetryLogBatchSize: stateManager.getGlobalSettingsKey("openTelemetryLogBatchSize"),
+			openTelemetryLogBatchTimeout: stateManager.getGlobalSettingsKey("openTelemetryLogBatchTimeout"),
+			openTelemetryLogMaxQueueSize: stateManager.getGlobalSettingsKey("openTelemetryLogMaxQueueSize"),
+		},
 		shellIntegrationTimeout,
 		terminalReuseEnabled,
 		vscodeTerminalExecutionMode,
@@ -157,6 +200,10 @@ export async function getStateToPostToWebview(controller: {
 		onboardingModels,
 		mcpResponsesCollapsed,
 		taskHistory: processedTaskHistory,
+		sessionStatuses: {},
+		subagentCounts: {},
+		enterSendsAs: stateManager.getGlobalSettingsKey("enterSendsAs") ?? "steer",
+		promptStash: stateManager.getGlobalStateKey("promptStash") ?? [],
 		shouldShowAnnouncement,
 		favoritedModelIds,
 		backgroundCommandRunning: controller.backgroundCommandRunning ?? false,
@@ -176,7 +223,15 @@ export async function getStateToPostToWebview(controller: {
 		hooksEnabled: getHooksEnabledSafe(stateManager.getGlobalSettingsKey("hooksEnabled")),
 		lastDismissedInfoBannerVersion,
 		lastDismissedModelBannerVersion,
-		remoteConfigSettings: stateManager.getRemoteConfigSettings?.(),
+		remoteConfigSettings: (() => {
+			const remote = stateManager.getRemoteConfigSettings?.()
+			if (!remote) return remote
+			const masked = { ...remote }
+			for (const key of ["openTelemetryOtlpHeaders", "otlpMetricsHeaders", "otlpLogsHeaders"] as const) {
+				if (masked[key]) masked[key] = Object.fromEntries(Object.keys(masked[key]!).map((name) => [name, "********"]))
+			}
+			return masked
+		})(),
 		remoteConfigRevision: controller.currentRemoteConfigRevision ?? 0,
 		lastDismissedCliBannerVersion,
 		dismissedBanners,
@@ -184,6 +239,10 @@ export async function getStateToPostToWebview(controller: {
 		optOutOfRemoteConfig: stateManager.getGlobalSettingsKey("optOutOfRemoteConfig"),
 		remoteConfigAvailable: controller.isRemoteConfigAvailable ?? false,
 		showFeatureTips,
+		threadToastsEnabled: stateManager.getGlobalSettingsKey("threadToastsEnabled"),
+		threadToastSeconds: stateManager.getGlobalSettingsKey("threadToastSeconds"),
+		continueAnswerOnActSwitch: stateManager.getGlobalSettingsKey("continueAnswerOnActSwitch"),
+		oneViewEnabled: stateManager.getGlobalSettingsKey("oneViewEnabled"),
 		banners,
 		welcomeBanners,
 		openAiCodexIsAuthenticated,

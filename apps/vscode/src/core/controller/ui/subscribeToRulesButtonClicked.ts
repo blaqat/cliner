@@ -1,0 +1,56 @@
+import { Empty, EmptyRequest } from "@shared/proto/cline/common"
+import { Logger } from "@/shared/services/Logger"
+import { getRequestRegistry, StreamingResponseHandler } from "../grpc-handler"
+import { Controller } from "../index"
+
+// Keep track of active rules button clicked subscriptions
+const activeRulesButtonClickedSubscriptions = new Set<StreamingResponseHandler<Empty>>()
+
+/**
+ * Subscribe to rules button clicked events
+ * @param controller The controller instance
+ * @param request The empty request
+ * @param responseStream The streaming response handler
+ * @param requestId The ID of the request (passed by the gRPC handler)
+ */
+export async function subscribeToRulesButtonClicked(
+	_controller: Controller,
+	_request: EmptyRequest,
+	responseStream: StreamingResponseHandler<Empty>,
+	requestId?: string,
+): Promise<void> {
+	// Add this subscription to the active subscriptions
+	activeRulesButtonClickedSubscriptions.add(responseStream)
+
+	// Register cleanup when the connection is closed
+	const cleanup = () => {
+		activeRulesButtonClickedSubscriptions.delete(responseStream)
+	}
+
+	// Register the cleanup function with the request registry if we have a requestId
+	if (requestId) {
+		getRequestRegistry().registerRequest(requestId, cleanup, { type: "rules_button_clicked_subscription" }, responseStream)
+	}
+}
+
+/**
+ * Send a rules button clicked event to all active subscribers
+ */
+export async function sendRulesButtonClickedEvent(): Promise<void> {
+	// Send the event to all active subscribers
+	const promises = Array.from(activeRulesButtonClickedSubscriptions).map(async (responseStream) => {
+		try {
+			const event = Empty.create({})
+			await responseStream(
+				event,
+				false, // Not the last message
+			)
+		} catch (error) {
+			Logger.error("Error sending rules button clicked event:", error)
+			// Remove the subscription if there was an error
+			activeRulesButtonClickedSubscriptions.delete(responseStream)
+		}
+	})
+
+	await Promise.all(promises)
+}

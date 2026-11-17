@@ -290,3 +290,91 @@ describe("PendingPromptService", () => {
 		).toBe(true);
 	});
 });
+
+describe("interject delivery", () => {
+	it("drains ahead of steer/queue but stays hidden from listings", () => {
+		const service = new PendingPromptService();
+		const state = createState();
+
+		service.enqueue(state, { prompt: "queued", delivery: "queue" });
+		service.enqueue(state, { prompt: "steered", delivery: "steer" });
+		const prompts = service.enqueue(state, {
+			prompt: "interjected",
+			delivery: "interject",
+		});
+
+		// Hidden from snapshots, so the UI queue never re-shows it.
+		expect(prompts.map((p) => p.prompt)).toEqual(["steered", "queued"]);
+		expect(service.list(state).map((p) => p.prompt)).toEqual([
+			"steered",
+			"queued",
+		]);
+		expect(state.pendingPrompts.map((p) => p.delivery)).toEqual([
+			"interject",
+			"steer",
+			"queue",
+		]);
+
+		// ...but drains first once the abort it triggered settles.
+		expect(service.shiftNext(state).entry?.prompt).toBe("interjected");
+		expect(service.shiftNext(state).entry?.prompt).toBe("steered");
+	});
+
+	it("never merges with a queued prompt carrying the same text", () => {
+		const service = new PendingPromptService();
+		const state = createState();
+
+		service.enqueue(state, { prompt: "same", delivery: "queue" });
+		service.enqueue(state, { prompt: "same", delivery: "interject" });
+
+		expect(state.pendingPrompts).toHaveLength(2);
+		expect(state.pendingPrompts[0]?.delivery).toBe("interject");
+		expect(service.list(state)).toHaveLength(1);
+	});
+
+	it("keeps steer entries behind pending interjects", () => {
+		const service = new PendingPromptService();
+		const state = createState();
+
+		service.enqueue(state, { prompt: "interjected", delivery: "interject" });
+		service.enqueue(state, { prompt: "steered", delivery: "steer" });
+
+		expect(state.pendingPrompts.map((p) => p.delivery)).toEqual([
+			"interject",
+			"steer",
+		]);
+		expect(service.consumeSteer(state).entry?.prompt).toBe("steered");
+	});
+
+	it("is not promoted by steerFirst and not surfaced in emitted prompts", () => {
+		const events: CoreSessionEvent[] = [];
+		const session = {
+			sessionId: "sess-1",
+			pendingPrompts: [],
+			aborting: false,
+			agent: {
+				canStartRun: () => false,
+				notifyPendingUserMessage: vi.fn(),
+			},
+		} as unknown as ActiveSession;
+		const controller = new PendingPromptsController({
+			getSession: () => session,
+			emit: (event) => events.push(event),
+			send: vi.fn(),
+		});
+
+		controller.enqueue("sess-1", {
+			prompt: "interjected",
+			delivery: "interject",
+		});
+		expect(session.agent.notifyPendingUserMessage).toHaveBeenCalled();
+
+		const promoted = controller.steerFirst("sess-1");
+		expect(promoted.updated).toBe(false);
+
+		const promptsEvent = events.find((e) => e.type === "pending_prompts");
+		expect(
+			promptsEvent?.type === "pending_prompts" && promptsEvent.payload.prompts,
+		).toEqual([]);
+	});
+});

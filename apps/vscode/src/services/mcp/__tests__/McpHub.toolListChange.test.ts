@@ -98,6 +98,7 @@ describe("McpHub tool list change detection", () => {
 			const connections = [makeConnection("server-a", "connected", ["tool1", "tool2"])]
 			const entries = JSON.parse(computeToolFingerprint(connections)).map((entry: string) => JSON.parse(entry))
 			entries.should.deepEqual([
+				["server-a", "server", 0],
 				["server-a", "tool1", null, {}, 60_000],
 				["server-a", "tool2", null, {}, 60_000],
 			])
@@ -109,7 +110,10 @@ describe("McpHub tool list change detection", () => {
 				makeConnection("server-b", "disconnected", ["tool2"]),
 			]
 			const entries = JSON.parse(computeToolFingerprint(connections)).map((entry: string) => JSON.parse(entry))
-			entries.should.deepEqual([["server-a", "tool1", null, {}, 60_000]])
+			entries.should.deepEqual([
+				["server-a", "server", 0],
+				["server-a", "tool1", null, {}, 60_000],
+			])
 		})
 
 		it("should exclude tools from disabled servers", () => {

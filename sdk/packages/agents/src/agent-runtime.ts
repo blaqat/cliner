@@ -890,6 +890,27 @@ export class AgentRuntime {
 					if (
 						!hasModelToolActivity &&
 						finishReason !== "max-tokens" &&
+						finishReason !== "content-filter" &&
+						this.endsWithEmptyResponseCompletingTool()
+					) {
+						await this.emit({
+							type: "turn-finished",
+							snapshot: this.snapshot(),
+							iteration: this.state.iteration,
+							toolCallCount: 0,
+						});
+						const result = this.finishRun("completed");
+						await this.callAfterRunHooks(result);
+						await this.emit({
+							type: "run-finished",
+							snapshot: this.snapshot(),
+							result,
+						});
+						return result;
+					}
+					if (
+						!hasModelToolActivity &&
+						finishReason !== "max-tokens" &&
 						finishReason !== "unknown"
 					) {
 						this.state.lastFinishReason = finishReason;
@@ -2397,6 +2418,25 @@ export class AgentRuntime {
 		return results;
 	}
 
+	/**
+	 * True when the conversation ends with a tool message holding a successful
+	 * result from a tool flagged `lifecycle.emptyResponseCompletes`. Only the
+	 * last message counts, so it is strictly "directly after, same turn".
+	 */
+	private endsWithEmptyResponseCompletingTool(): boolean {
+		const last = this.state.messages.at(-1);
+		if (last?.role !== "tool") {
+			return false;
+		}
+		return last.content.some(
+			(part) =>
+				part.type === "tool-result" &&
+				!part.isError &&
+				this.tools.get(part.toolName)?.lifecycle?.emptyResponseCompletes ===
+					true,
+		);
+	}
+
 	private findCompletingToolMessage(
 		toolCalls: AgentToolCallPart[],
 		toolMessages: AgentMessage[],
@@ -2496,7 +2536,10 @@ export class AgentRuntime {
 			};
 			if (policy.enabled === false) {
 				skipReason = `Tool "${toolCall.toolName}" is disabled by policy`;
-			} else if (policy.autoApprove === false) {
+			} else if (
+				policy.requireApproval === true ||
+				policy.autoApprove === false
+			) {
 				const approval = await this.requestToolApproval(
 					toolCall,
 					input,
@@ -2529,8 +2572,17 @@ export class AgentRuntime {
 				reason: `Tool "${toolCall.toolName}" requires approval but no approval callback is configured`,
 			};
 		}
+		const signal = this.abortController?.signal;
+		let onAbort: (() => void) | undefined;
 		try {
-			return await requestApproval({
+			this.throwIfAborted();
+			const cancelled = new Promise<ToolApprovalResult>((resolve) => {
+				onAbort = () =>
+					resolve({ approved: false, reason: "Agent run aborted" });
+				signal?.addEventListener("abort", onAbort, { once: true });
+			});
+			const approval = requestApproval({
+				signal,
 				sessionId:
 					this.config.sessionId?.trim() ||
 					this.config.conversationId?.trim() ||
@@ -2547,6 +2599,7 @@ export class AgentRuntime {
 				input,
 				policy,
 			});
+			return await Promise.race([approval, cancelled]);
 		} catch (error) {
 			return {
 				approved: false,
@@ -2554,6 +2607,8 @@ export class AgentRuntime {
 					error instanceof Error ? error.message : String(error)
 				}`,
 			};
+		} finally {
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
 		}
 	}
 
@@ -2571,10 +2626,17 @@ export class AgentRuntime {
 			toolCall: prepared.toolCall,
 		});
 
+		const abortedBeforeExecution =
+			this.abortController?.signal.aborted === true;
 		let result: AgentToolResult;
-		if (prepared.skipReason) {
+		// Even an aborted approval batch must close every tool call in the transcript.
+		// Do not execute siblings after cancellation, but still return their results.
+		if (abortedBeforeExecution || prepared.skipReason) {
 			result = {
-				output: { error: prepared.skipReason },
+				output: {
+					error:
+						prepared.skipReason ?? "Agent run aborted; tool was not executed",
+				},
 				isError: true,
 			};
 		} else if (!prepared.tool) {
@@ -2618,7 +2680,7 @@ export class AgentRuntime {
 		const endedAt = new Date();
 		const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
 
-		if (prepared.tool) {
+		if (prepared.tool && !abortedBeforeExecution) {
 			for (const hook of this.hooks.afterTool) {
 				const after = (await hook({
 					snapshot: this.snapshot(),

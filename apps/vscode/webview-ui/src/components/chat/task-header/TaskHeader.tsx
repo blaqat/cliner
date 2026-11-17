@@ -1,267 +1,312 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react"
-import React, { useCallback, useLayoutEffect, useMemo, useState } from "react"
-import { CloudTaskBadge } from "@/components/cloud/CloudTaskBadge"
-import Thumbnails from "@/components/common/Thumbnails"
-import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
+import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
+import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
+import { useBranchTaskSuggestion } from "@/components/chat/composer/BranchTaskSuggestion"
+import { TASK_MENU_CLASS, TaskPickerMenu } from "@/components/chat/composer/WherePill"
+import { ThreadBranchChip } from "@/components/chat/composer/worktreeSlot"
+import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
+import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
+import { useOneView } from "@/components/oneView/OneViewContext"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
-import { useProviderUsageCostDisplay } from "@/hooks/useProviderUsageCostDisplay"
 import { cn } from "@/lib/utils"
+import { TaskServiceClient } from "@/services/grpc-client"
 import { getEnvironmentColor } from "@/utils/environmentColors"
-import CopyTaskButton from "./buttons/CopyTaskButton"
-import DeleteTaskButton from "./buttons/DeleteTaskButton"
-import NewTaskButton from "./buttons/NewTaskButton"
-import OpenDiskConversationHistoryButton from "./buttons/OpenDiskConversationHistoryButton"
-import ContextWindow from "./ContextWindow"
-import { highlightText } from "./Highlights"
+import { Breadcrumb, type Crumb } from "./Breadcrumb"
+import { HeaderIconButton } from "./HeaderIconButton"
+import { SubagentPanelButton } from "./SubagentPanel"
 import TaskWorkingDirectoryBadge from "./TaskWorkingDirectoryBadge"
+import { ThreadTagRow } from "./ThreadTagRow"
 
 const IS_DEV = process.env.IS_DEV === "true"
+
 interface TaskHeaderProps {
 	task: ClineMessage
-	tokensIn: number
-	tokensOut: number
-	doesModelSupportPromptCache: boolean
-	cacheWrites?: number
-	cacheReads?: number
-	totalCost: number
-	lastApiReqTotalTokens?: number
-	compactDisabled: boolean
-	compactTask: () => Promise<boolean>
+	/** Back to home; the chat keeps running. */
 	onClose: () => void
-	onSendMessage?: (command: string, files: string[], images: string[]) => void
+	/** Opens a transcript-only subagent from the panel by scrolling to its status row. */
+	onOpenSubagentPreview?: (row: LineageRow) => void
+	/** Opens the task (group) page from its crumb. */
+	onOpenTaskGroup?: (taskGroupId: string) => void
 }
 
-const BUTTON_CLASS = "max-h-3 border-0 font-bold bg-transparent hover:opacity-100 text-foreground"
+/** Title for the header: the thread's title, else the first user message. */
+export function headerTitle(title: string | undefined, firstMessage: string | undefined): string {
+	return (title?.trim() || firstMessage?.trim() || "New task").replace(/\s+/g, " ")
+}
 
 /**
- * Whether the header may show the task's cost. A cloud task is billed by the
- * cloud service, so its cost is shown only when the sandbox reported usage;
- * the local provider's cost display setting does not apply to it, and an
- * unknown cloud charge must not render as a confirmed $0.0000.
+ * One compact row: the breadcrumb path to this thread (home, task, ancestor
+ * threads, then the renamable current title) and codicon actions — subagents,
+ * settle, delete, close — with less frequent actions behind "…". The first
+ * message itself is the first bubble of the chat. Context, tokens and cost live
+ * in the composer. The thread's tags sit on a compact line below.
  */
-export function isTaskCostAvailable(input: {
-	isCloudTask: boolean
-	cloudUsageAvailable: boolean | undefined
-	localCostAvailable: boolean
-}): boolean {
-	if (input.isCloudTask) {
-		return input.cloudUsageAvailable === true
-	}
-	return input.localCostAvailable
-}
-
-const TaskHeader: React.FC<TaskHeaderProps> = ({
-	task,
-	tokensIn,
-	tokensOut,
-	cacheWrites,
-	cacheReads,
-	totalCost,
-	lastApiReqTotalTokens,
-	compactDisabled,
-	compactTask,
-	onClose,
-	onSendMessage,
-}) => {
+const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPreview, onOpenTaskGroup }) => {
 	const {
-		apiConfiguration,
+		navigateToWalkthrough,
+		currentBranch,
 		currentTaskItem,
-		mode,
-		expandTaskHeader: isTaskExpanded,
-		setExpandTaskHeader: setIsTaskExpanded,
 		environment,
 		workspaceRoots,
 		platform,
-		currentCloudTask,
+		sessionStatuses,
+		taskHistory,
+		taskGroups,
 	} = useExtensionState()
+	// One view: no Home crumb or Close (the list is home); its list toggle leads the header.
+	const oneView = useOneView()
+	const [menuOpen, setMenuOpen] = useState(false)
+	// The ⋯ menu's "Move to task…" swaps the menu for the task picker in the same popover.
+	const [menuView, setMenuView] = useState<"menu" | "task">("menu")
+	// Kept here (always mounted) so dismissing it in the picker sticks after the menu closes.
+	const branchSuggestion = useBranchTaskSuggestion()
+	const [copied, setCopied] = useState(false)
+	// Shown until the saved title comes back through history.
+	const [pendingTitle, setPendingTitle] = useState<string>()
 
-	const [isHighlightedTextExpanded, setIsHighlightedTextExpanded] = useState(false)
-	const [isTextOverflowing, setIsTextOverflowing] = useState(false)
-	const highlightedTextRef = React.useRef<HTMLDivElement>(null)
+	const taskId = currentTaskItem?.id
+	const settled = !!currentTaskItem?.isSettled
+	const savedTitle = currentTaskItem?.title
+	const title = headerTitle(
+		pendingTitle ?? savedTitle,
+		(currentTaskItem?.task && threadTitle({ ...currentTaskItem, title: undefined })) || task.text,
+	)
+	const imageCount = task.images?.length ?? 0
+	const fileCount = task.files?.length ?? 0
+	const backgroundRunning = countBackgroundRunning(sessionStatuses, taskId, taskHistory)
 
-	const highlightedText = useMemo(() => highlightText(task.text, false), [task.text])
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the pending title clears once the saved one (or the thread) changes
+	useEffect(() => setPendingTitle(undefined), [taskId, savedTitle])
 
-	// Check if text overflows the container (i.e., needs clamping)
-	useLayoutEffect(() => {
-		const el = highlightedTextRef.current
-		if (el && isTaskExpanded && !isHighlightedTextExpanded) {
-			// Check if content height exceeds the max-height
-			setIsTextOverflowing(el.scrollHeight > el.clientHeight)
-		}
-	}, [task.text, isTaskExpanded, isHighlightedTextExpanded])
+	const crumbs = useMemo((): Crumb[] => {
+		const path = buildThreadPath(currentTaskItem, taskHistory ?? [])
+		const ancestors = path.threads.slice(0, -1)
+		const groupId = path.taskGroupId
+		return [
+			...(oneView.enabled ? [] : [{ id: "home", kind: "home" as const, label: "Home", onSelect: onClose }]),
+			...(groupId
+				? [
+						{
+							id: `task:${groupId}`,
+							kind: "task" as const,
+							label: taskGroups?.find((group) => group.id === groupId)?.title ?? "Task",
+							onSelect: () => onOpenTaskGroup?.(groupId),
+						},
+					]
+				: []),
+			...ancestors.map((thread) => ({
+				id: thread.id,
+				kind: "thread" as const,
+				label: thread.title,
+				sub: thread.sub,
+				onSelect: () => void openTask(thread.id),
+			})),
+			{ id: taskId ?? "current", kind: "thread", label: title, sub: !!currentTaskItem?.parentTaskId },
+		]
+	}, [currentTaskItem, taskHistory, taskGroups, taskId, title, onClose, onOpenTaskGroup, oneView.enabled])
 
-	// Handle click outside to collapse
-	React.useEffect(() => {
-		if (!isHighlightedTextExpanded) {
-			return
-		}
+	const rename = useCallback(
+		(next: string) => {
+			if (!taskId) return
+			setPendingTitle(next)
+			void renameTask(taskId, next).then((ok) => {
+				if (!ok) setPendingTitle(undefined)
+			})
+		},
+		[taskId],
+	)
 
-		const handleClickOutside = (event: MouseEvent) => {
-			if (highlightedTextRef.current && !highlightedTextRef.current.contains(event.target as Node)) {
-				setIsHighlightedTextExpanded(false)
-			}
-		}
-
-		document.addEventListener("mousedown", handleClickOutside)
-		return () => document.removeEventListener("mousedown", handleClickOutside)
-	}, [isHighlightedTextExpanded])
-
-	// Simplified computed values
-	const { selectedModelInfo } = useNormalizedApiConfiguration(mode)
-	const modeFields = getModeSpecificFields(apiConfiguration, mode)
-
-	// Local providers report no cost; the openai-compatible provider can
-	// report cost only when the user has supplied both prices. For every
-	// other provider, the SDK is the source of truth for whether to render
-	// per-task cost: any `metadata.usageCostDisplay` other than "show" —
-	// "hide", or "subscription" for flat-rate providers like ClinePass and
-	// ChatGPT Plus/Pro where the computed figure would be an API-rate
-	// estimate rather than a real charge — suppresses the cost here. This
-	// mirrors the CLI's `shouldShowCliUsageCost` consumer and removes the
-	// previous extension-side hard-coded "openai-codex" check.
-	const usageCostDisplay = useProviderUsageCostDisplay(modeFields.apiProvider)
-	const isCostAvailable = isTaskCostAvailable({
-		isCloudTask: !!currentCloudTask,
-		cloudUsageAvailable: currentTaskItem?.cloudUsageAvailable,
-		localCostAvailable:
-			!!(
-				totalCost &&
-				modeFields.apiProvider === "openai" &&
-				modeFields.openAiModelInfo?.inputPrice &&
-				modeFields.openAiModelInfo?.outputPrice
-			) ||
-			(modeFields.apiProvider !== "vscode-lm" &&
-				modeFields.apiProvider !== "ollama" &&
-				modeFields.apiProvider !== "lmstudio" &&
-				usageCostDisplay === "show"),
-	})
-
-	// Event handlers
-	const toggleTaskExpanded = useCallback(() => setIsTaskExpanded(!isTaskExpanded), [setIsTaskExpanded, isTaskExpanded])
-
-	const environmentBorderColor = getEnvironmentColor(environment, "border")
+	const copyFirstMessage = useCallback(() => {
+		if (!task.text) return
+		void navigator.clipboard.writeText(task.text).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1500)
+		})
+	}, [task.text])
 
 	return (
-		<div className="py-2 px-4 flex flex-col gap-2">
-			{/* Task Header */}
+		<div className="px-4 pt-2 pb-1">
 			<div
-				className={cn(
-					"relative overflow-hidden cursor-pointer rounded-sm flex flex-col gap-1.5 z-10 pt-2 pb-2 px-2 hover:opacity-100 bg-(--vscode-toolbar-hoverBackground)/65",
-					{
-						"opacity-100 border-1": isTaskExpanded, // No hover effects when expanded, add border
-						"hover:bg-toolbar-hover border-1": !isTaskExpanded, // Hover effects only when collapsed
-					},
-				)}
-				style={{
-					borderColor: environmentBorderColor,
-				}}>
-				{/* Task Title */}
-				<div
-					aria-label={isTaskExpanded ? "Collapse task header" : "Expand task header"}
-					className="flex justify-between items-start cursor-pointer"
-					onClick={toggleTaskExpanded}
-					onKeyDown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							e.preventDefault()
-							e.stopPropagation()
-							toggleTaskExpanded()
+				className="flex min-h-7.5 items-center gap-1 rounded-xs border border-transparent pl-0.5 pr-1 bg-(--vscode-toolbar-hoverBackground)/40"
+				data-testid="task-header"
+				style={{ borderColor: getEnvironmentColor(environment, "border") }}>
+				{oneView.listToggle}
+				<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1">
+					<Breadcrumb crumbs={crumbs} onRename={taskId ? rename : undefined} />
+					{(imageCount > 0 || fileCount > 0) && (
+						<span
+							aria-label={`${imageCount + fileCount} attachment${imageCount + fileCount === 1 ? "" : "s"}`}
+							className="codicon codicon-paperclip shrink-0 text-[12px] text-description"
+							role="img"
+						/>
+					)}
+					<TaskWorkingDirectoryBadge
+						platform={platform}
+						taskCwd={currentTaskItem?.cwdOnTaskInitialization}
+						workspaceRoots={workspaceRoots}
+					/>
+					{/* A worktree thread's branch; it opens the worktree menu (status, copy back, switch, remove). */}
+					<ThreadBranchChip />
+				</div>
+				<div className="flex shrink-0 items-center gap-0.5">
+					<SubagentPanelButton onOpenPreview={onOpenSubagentPreview} />
+					{taskId && (
+						<HeaderIconButton
+							data-testid="settle-task"
+							icon={settled ? "issue-reopened" : "check"}
+							label={settled ? "Unsettle task" : "Settle task"}
+							onClick={() =>
+								void toggleTaskSettled(taskId).then(() => {
+									if (!settled) onClose()
+								})
+							}
+							tooltip={settled ? "Move back to Active" : "Settle: move to the Settled list and return home"}
+						/>
+					)}
+					<HeaderIconButton
+						disabled={!taskId}
+						icon="trash"
+						label="Delete task"
+						onClick={() =>
+							taskId && TaskServiceClient.deleteTasksWithIds(StringArrayRequest.create({ value: [taskId] }))
 						}
-					}}
-					tabIndex={0}>
-					<div className="flex flex-wrap gap-y-1 items-center grow min-w-0">
-						<div className="flex justify-between items-center">
-							{isTaskExpanded ? <ChevronDownIcon size="16" /> : <ChevronRightIcon size="16" />}
-							{isTaskExpanded && (
-								<div className="mt-1 flex justify-end cursor-pointer opacity-80 gap-2 mx-2">
-									<CopyTaskButton className={BUTTON_CLASS} taskText={task.text} />
-									<DeleteTaskButton
-										className={BUTTON_CLASS}
-										taskId={currentTaskItem?.id}
-										taskSize={currentTaskItem?.size}
-									/>
-									{/* Only visible in development mode */}
-									{IS_DEV && (
-										<OpenDiskConversationHistoryButton
-											className={BUTTON_CLASS}
-											taskId={currentTaskItem?.id}
+						tooltip="Delete task (asks to confirm)"
+					/>
+					<Popover
+						onOpenChange={(next) => {
+							setMenuOpen(next)
+							if (next) setMenuView("menu")
+						}}
+						open={menuOpen}>
+						<PopoverTrigger asChild>
+							<HeaderIconButton icon="ellipsis" label="More actions" />
+						</PopoverTrigger>
+						<PopoverContent
+							align="end"
+							className={cn(menuView === "task" ? TASK_MENU_CLASS : "w-56 p-1", "motion-reduce:animate-none")}
+							data-testid="task-header-menu"
+							onEscapeKeyDown={(event) => {
+								// Escape in the task picker steps back to the menu; a second one closes it.
+								if (menuView === "task") {
+									event.preventDefault()
+									setMenuView("menu")
+								}
+							}}
+							side="bottom">
+							{menuView === "task" ? (
+								<>
+									<div className="-mx-1 -mt-1 mb-1 flex shrink-0 items-center gap-1 border-b border-solid border-x-0 border-t-0 border-menu-foreground/10 px-1 py-1">
+										<HeaderIconButton
+											data-testid="task-header-menu-back"
+											icon="arrow-left"
+											label="Back to more actions"
+											onClick={() => setMenuView("menu")}
 										/>
+										<span className="text-[12px] font-medium">
+											{currentTaskItem?.taskGroupId ? "Move to task" : "File into a task"}
+										</span>
+									</div>
+									<TaskPickerMenu
+										onClose={() => setMenuOpen(false)}
+										onOpenTaskGroup={onOpenTaskGroup}
+										suggestion={branchSuggestion}
+									/>
+								</>
+							) : (
+								<div className="flex flex-col" role="menu">
+									{taskId && !currentTaskItem?.isSubagent && (
+										<button
+											className={MENU_ITEM_CLASS}
+											data-testid="move-to-task"
+											onClick={() => setMenuView("task")}
+											role="menuitem"
+											type="button">
+											<span aria-hidden className="codicon codicon-tasklist text-[13px]" />
+											<span className="flex-1">
+												{currentTaskItem?.taskGroupId ? "Move to task…" : "File into a task…"}
+											</span>
+											<span
+												aria-hidden
+												className="codicon codicon-chevron-right text-[12px] text-description"
+											/>
+										</button>
+									)}
+									<button
+										className={MENU_ITEM_CLASS}
+										disabled={!taskId}
+										onClick={() => {
+											setMenuOpen(false)
+											navigateToWalkthrough()
+										}}
+										role="menuitem"
+										type="button">
+										<span aria-hidden className="codicon codicon-diff text-[13px]" />
+										Walkthrough
+									</button>
+									<button
+										className={MENU_ITEM_CLASS}
+										disabled={!task.text}
+										onClick={copyFirstMessage}
+										role="menuitem"
+										type="button">
+										<span
+											aria-hidden
+											className={cn("codicon text-[13px]", copied ? "codicon-check" : "codicon-copy")}
+										/>
+										{copied ? "Copied" : "Copy first message"}
+									</button>
+									{backgroundRunning > 0 && !oneView.enabled && (
+										<button
+											className={MENU_ITEM_CLASS}
+											onClick={() => {
+												setMenuOpen(false)
+												onClose()
+											}}
+											role="menuitem"
+											type="button">
+											<span
+												aria-hidden
+												className="codicon codicon-loading codicon-modifier-spin text-[13px] motion-reduce:animate-none"
+											/>
+											{backgroundRunning} other chat{backgroundRunning === 1 ? "" : "s"} running
+										</button>
+									)}
+									{IS_DEV && taskId && (
+										<button
+											className={MENU_ITEM_CLASS}
+											onClick={() => {
+												setMenuOpen(false)
+												TaskServiceClient.exportTaskWithId(StringRequest.create({ value: taskId })).catch(
+													(err) => console.error("Failed to export task:", err),
+												)
+											}}
+											role="menuitem"
+											type="button">
+											<span aria-hidden className="codicon codicon-go-to-file text-[13px]" />
+											Open conversation history file
+										</button>
 									)}
 								</div>
 							)}
-						</div>
-						{!isTaskExpanded && (
-							<div className="select-none whitespace-nowrap overflow-hidden text-ellipsis grow basis-0 min-w-16">
-								<span className="ph-no-capture text-base">{highlightedText}</span>
-							</div>
-						)}
-						<div className="inline-flex flex-wrap gap-y-1 items-center justify-end select-none ml-auto min-w-0">
-							{currentCloudTask ? (
-								<CloudTaskBadge cloudTask={currentCloudTask} />
-							) : (
-								<TaskWorkingDirectoryBadge
-									platform={platform}
-									taskCwd={currentTaskItem?.cwdOnTaskInitialization}
-									workspaceRoots={workspaceRoots}
-								/>
-							)}
-							{isCostAvailable && (
-								<div
-									className="mx-1 px-1 py-0.25 rounded-full inline-flex shrink-0 text-badge-background bg-badge-foreground/80 items-center"
-									id="price-tag">
-									<span className="text-xs sm:text-sm">${totalCost?.toFixed(4)}</span>
-								</div>
-							)}
-						</div>
-					</div>
-					<NewTaskButton className={cn(BUTTON_CLASS, "shrink-0 mt-1")} onClick={onClose} />
-				</div>
-
-				{/* Expand/Collapse Task Details */}
-				{isTaskExpanded && (
-					<div className="flex flex-col break-words" key={`task-details-${currentTaskItem?.id}`}>
-						<div
-							className={cn(
-								"ph-no-capture whitespace-pre-wrap break-words px-0.5 text-sm mt-1 relative",
-								"max-h-[4.5rem] overflow-hidden",
-								{
-									"max-h-[25vh] overflow-y-auto scroll-smooth": isHighlightedTextExpanded,
-									"cursor-pointer": isTextOverflowing,
-								},
-							)}
-							onClick={() => isTextOverflowing && setIsHighlightedTextExpanded(true)}
-							ref={highlightedTextRef}
-							style={
-								!isHighlightedTextExpanded && isTextOverflowing
-									? {
-											WebkitMaskImage: "linear-gradient(to bottom, black 60%, transparent 100%)",
-											maskImage: "linear-gradient(to bottom, black 60%, transparent 100%)",
-										}
-									: undefined
-							}>
-							{highlightedText}
-						</div>
-
-						{((task.images && task.images.length > 0) || (task.files && task.files.length > 0)) && (
-							<Thumbnails files={task.files ?? []} images={task.images ?? []} />
-						)}
-
-						<ContextWindow
-							cacheReads={cacheReads}
-							cacheWrites={cacheWrites}
-							compactDisabled={compactDisabled}
-							compactTask={compactTask}
-							contextWindow={selectedModelInfo?.contextWindow}
-							lastApiReqTotalTokens={lastApiReqTotalTokens}
-							onSendMessage={onSendMessage}
-							tokensIn={tokensIn}
-							tokensOut={tokensOut}
-							useAutoCondense={false} // Disable auto-condense configuration in UI for now
+						</PopoverContent>
+					</Popover>
+					{!oneView.enabled && (
+						<HeaderIconButton
+							icon="close"
+							label="Close"
+							onClick={onClose}
+							tooltip="Close: back to home, the chat keeps running"
 						/>
-					</div>
-				)}
+					)}
+				</div>
 			</div>
+			{/* Subagent threads are read-only, so they get no tag row. */}
+			{currentTaskItem && !currentTaskItem.isSubagent && (
+				<ThreadTagRow currentBranch={currentBranch} item={currentTaskItem} />
+			)}
 		</div>
 	)
 }

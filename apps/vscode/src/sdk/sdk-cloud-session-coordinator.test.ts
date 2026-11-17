@@ -341,7 +341,12 @@ describe("SdkCloudSessionCoordinator ownership", () => {
 			return operation()
 		})
 		const taskControl = new SdkTaskControlCoordinator({
-			sessions: { endActiveSession: vi.fn(async () => undefined) },
+			sessions: {
+				getActiveSession: () => undefined,
+				focusSession: vi.fn(),
+				cancelHeldSends: vi.fn(),
+				endActiveSession: vi.fn(async () => undefined),
+			},
 			interactions: { clearPending: vi.fn() },
 			messages: { cancelPendingSave: vi.fn() },
 			getTask: () => task,

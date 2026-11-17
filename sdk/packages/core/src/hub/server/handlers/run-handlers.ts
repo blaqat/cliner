@@ -269,7 +269,9 @@ export async function handleSessionInput(
 					prompt,
 					mode: parseTurnMode(payload.mode),
 					delivery:
-						payload.delivery === "queue" || payload.delivery === "steer"
+						payload.delivery === "queue" ||
+						payload.delivery === "steer" ||
+						payload.delivery === "interject"
 							? payload.delivery
 							: undefined,
 					userImages,

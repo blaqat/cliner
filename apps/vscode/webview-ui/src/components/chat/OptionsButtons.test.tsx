@@ -18,7 +18,7 @@ describe("OptionsButtons", () => {
 	it("removes hover affordance from the other options immediately after a selection", async () => {
 		askResponseMock.mockReturnValue(new Promise(() => undefined))
 
-		render(<OptionsButtons isActive options={["Use this", "Use that"]} />)
+		render(<OptionsButtons decisionId="question-a" isActive options={["Use this", "Use that"]} taskId="child-a" />)
 
 		const selectedButton = screen.getByRole("button", { name: "Use this" })
 		const otherButton = screen.getByRole("button", { name: "Use that" })
@@ -27,6 +27,7 @@ describe("OptionsButtons", () => {
 
 		fireEvent.click(selectedButton)
 
+		expect(askResponseMock).toHaveBeenCalledWith(expect.objectContaining({ decisionId: "question-a", taskId: "child-a" }))
 		expect(askResponseMock).toHaveBeenCalledTimes(1)
 		await waitFor(() => {
 			expect(getComputedStyle(selectedButton).cursor).toBe("default")

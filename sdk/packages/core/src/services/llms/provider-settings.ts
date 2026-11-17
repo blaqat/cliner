@@ -16,7 +16,16 @@ export type ProviderClient = Llms.ProviderClient;
 export type ProviderProtocol = Llms.ProviderProtocol;
 export type ProviderId = Llms.ProviderId;
 export type ProviderCapability = Llms.ProviderCapability;
-export type ProviderConfig = Llms.ProviderConfig;
+export type ProviderConfig = Llms.ProviderConfig & {
+	/** Resolved opt-in settings request, applied by the core gateway adapter. */
+	settingsRequestIntent?: import("@cline/llms").ModelRequestIntent;
+	/** Effective thread levels, resolved with its current connection. */
+	settingsModelLevels?: import("../../types/config").SubagentModelLevel[];
+	/** The connection's own request wrapper, built at a chosen level. */
+	settingsFetchAtLevel?: (
+		level: import("@cline/llms").LevelRequest,
+	) => typeof globalThis.fetch;
+};
 export type BuiltInProviderId = Llms.BuiltInProviderId;
 
 export const BUILT_IN_PROVIDER = Llms.BUILT_IN_PROVIDER;
@@ -197,7 +206,8 @@ function shouldRouteThroughOpenAIResponses(
 	settings: ProviderSettings,
 ): boolean {
 	return (
-		settings.protocol === "openai-responses" || settings.client === "openai"
+		settings.protocol === "openai-responses" ||
+		(settings.protocol === undefined && settings.client === "openai")
 	);
 }
 

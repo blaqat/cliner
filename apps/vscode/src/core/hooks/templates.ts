@@ -10,6 +10,17 @@ export function getHookTemplate(hookName: string): string {
 	}
 
 	const templates: Record<string, string> = {
+		McpServerStart: `#!/usr/bin/env bash
+# Runs before every MCP server connection. Filter by serverName as needed.
+INPUT=$(cat)
+SERVER_NAME=$(echo "$INPUT" | jq -r '.mcpServerStart.serverName')
+if [ "$SERVER_NAME" != "internal" ]; then
+    echo '{"cancel": false}'
+    exit 0
+fi
+# Refresh local files or services here before the MCP server connects.
+echo '{"cancel": false}'
+`,
 		TaskStart: getTaskStartTemplate(),
 		TaskResume: getTaskResumeTemplate(),
 		TaskCancel: getTaskCancelTemplate(),

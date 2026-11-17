@@ -4,10 +4,17 @@ import getFolderSize from "get-folder-size"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
+import reopenedCompletedThread from "./__fixtures__/reopened-completed-thread.json"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages } from "./legacy-state-reader"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
-import { type CloudHistorySource, SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import {
+	type CloudHistorySource,
+	historyItemToSessionMetadata,
+	SdkTaskHistory,
+	sanitizeSdkUserMessagesForDisplay,
+	sessionHistoryRecordToHistoryItem,
+} from "./sdk-task-history"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 vi.mock("@/core/storage/disk", () => ({
@@ -91,6 +98,374 @@ describe("SdkTaskHistory", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+	})
+
+	it("reads model dependencies beyond every display page without hydration", async () => {
+		const records = Array.from({ length: 10025 }, (_, i) =>
+			makeSessionRecord(`thread-${i}`, {
+				metadata: { modelSelectionV1: { version: 1, act: { modelId: `model-${i}`, levelId: "default" }, ask: null } },
+			}),
+		)
+		const { history, listHistory } = makeHistory(records)
+		listHistory.mockImplementation(async (options?: { limit?: number }) => records.slice(0, options?.limit ?? 200))
+		const result = await history.listModelSelectionDependencies()
+		expect(result).toHaveLength(10025)
+		expect(result[10024].metadata?.modelSelectionV1).toMatchObject({ act: { modelId: "model-10024" } })
+		expect(listHistory).toHaveBeenCalledWith({ hydrate: false, includeSubagents: true, limit: Number.MAX_SAFE_INTEGER })
+	})
+
+	it("shows a persisted message_reference block as a tag on the bubble, never as text", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const messages = sdkMessagesToClineMessages(
+			sanitizeSdkUserMessagesForDisplay([
+				{ role: "user", content: `<user_input mode="act">${block}\n\nfirst question</user_input>` },
+				{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+				{ role: "user", content: [{ type: "text", text: `<user_input mode="act">${block}\n\nsecond</user_input>` }] },
+			] as never),
+		)
+		const user = messages.filter((row) => row.say === "task" || row.say === "user_feedback")
+		expect(user.map((row) => row.text)).toEqual(["first question", "second"])
+		for (const row of user) {
+			expect(row.messageReferences).toEqual([
+				{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports at 10k rows" },
+			])
+		}
+		expect(JSON.stringify(messages.map((row) => row.text))).not.toContain("message_reference")
+	})
+
+	it("derives a thread title and preview without the message_reference block", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>'
+		const item = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task-1", { prompt: `<user_input mode="act">${block}\n\nFix the login loop</user_input>` }),
+		)
+		expect(item.task).toBe("Fix the login loop")
+	})
+
+	it("round trips settle and aside metadata", () => {
+		const item = makeHistoryItem("aside", { isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("aside", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
+	})
+
+	it("round trips when the user last sent a message, and leaves it unset on older threads", () => {
+		const item = makeHistoryItem("t", { lastUserMessageTs: 1234 })
+		const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("t", { metadata: historyItemToSessionMetadata(item) }))
+		expect(result.lastUserMessageTs).toBe(1234)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("old", { metadata: {} })).lastUserMessageTs).toBeUndefined()
+	})
+
+	describe("threads left by regular Cline or older builds", () => {
+		it("settles idle records that carry no settle flag, but not ones still running", () => {
+			const done = sessionHistoryRecordToHistoryItem(makeSessionRecord("done", { metadata: {} }))
+			const running = sessionHistoryRecordToHistoryItem(makeSessionRecord("run", { status: "running", metadata: {} }))
+			const explicitlyOpen = sessionHistoryRecordToHistoryItem(
+				makeSessionRecord("open", { metadata: { isSettled: false } }),
+			)
+
+			expect(done.isSettled).toBe(true)
+			expect(running.isSettled).toBe(false)
+			expect(explicitlyOpen.isSettled).toBe(false)
+		})
+
+		it("keeps a thread whose display text formats down to nothing", () => {
+			const raw = "<environment_details>\nonly wrapper\n</environment_details>"
+			const item = sessionHistoryRecordToHistoryItem(makeSessionRecord("odd", { prompt: raw, metadata: {} }))
+
+			expect(item.task).toBeTruthy()
+		})
+
+		it("lists unmigrated Cline threads as settled, with every fork field absent", async () => {
+			legacyStateReaderMock.taskHistory = [
+				{ id: "1700000000001", ts: 1_700_000_000_001, task: "old thread", tokensIn: 1, tokensOut: 1, totalCost: 0 },
+			]
+			const { history } = makeHistory([])
+
+			const [record] = await history.listHistory({ hydrate: false, includeSubagents: true })
+			const item = sessionHistoryRecordToHistoryItem(record)
+
+			expect(item).toMatchObject({ id: "1700000000001", task: "old thread", isSettled: true })
+		})
+
+		it("lists unmigrated threads from another workspace and every SDK record past 100", async () => {
+			legacyStateReaderMock.taskHistory = [
+				makeHistoryItem("elsewhere", { task: "other repo", cwdOnTaskInitialization: "/other/workspace" }),
+			]
+			const records = Array.from({ length: 250 }, (_, i) =>
+				makeSessionRecord(`sdk-${i}`, { updatedAt: new Date(Date.UTC(2026, 0, 2, 0, i)).toISOString() }),
+			)
+			const { history } = makeHistory(records)
+
+			const listed = await history.listHistory({ hydrate: false, includeSubagents: true, limit: 10_000 })
+
+			expect(listed).toHaveLength(251)
+			expect(listed.map((record) => record.sessionId)).toContain("elsewhere")
+		})
+	})
+
+	it("round trips the persisted subagent count", () => {
+		const item = makeHistoryItem("task", { subagentCount: 3 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.subagentCount).toBe(3)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).subagentCount).toBeUndefined()
+	})
+
+	it("round trips the task's last-used API selection", () => {
+		const apiSelection = {
+			askProfileId: "ask-1",
+			actProfileId: "act-1",
+			planModeReasoningEffort: "low" as const,
+			actModeReasoningEffort: "high" as const,
+		}
+		const item = makeHistoryItem("task", { apiSelection })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result.apiSelection).toEqual(apiSelection)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} })).apiSelection).toBeUndefined()
+	})
+
+	it("round trips thread title, task group, tags and dismissed auto tags", () => {
+		const item = makeHistoryItem("task", {
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: [
+				{ kind: "ticket", value: "PROJ-482", source: "auto" },
+				{ kind: "branch", value: "feat/x", source: "user" },
+			],
+			dismissedAutoTags: ["OLD-1"],
+		})
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("task", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({
+			title: "Renamed thread",
+			taskGroupId: "group-1",
+			tags: item.tags,
+			dismissedAutoTags: ["OLD-1"],
+		})
+		// The user-set title must not leak into `task` (the first-message default).
+		expect(result.task).not.toBe("Renamed thread")
+	})
+
+	it("returns undefined task-group fields when unset or malformed", () => {
+		const unset = sessionHistoryRecordToHistoryItem(makeSessionRecord("unset", { metadata: {} }))
+		expect(unset.title).toBeUndefined()
+		expect(unset.taskGroupId).toBeUndefined()
+		expect(unset.tags).toBeUndefined()
+		expect(unset.dismissedAutoTags).toBeUndefined()
+
+		const malformed = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("bad", {
+				metadata: { tags: [{ kind: "bogus", value: "x", source: "user" }], taskGroupId: 42 },
+			}),
+		)
+		expect(malformed.tags).toEqual([])
+		expect(malformed.taskGroupId).toBeUndefined()
+	})
+
+	it("flushes the final thread status before history disposal", async () => {
+		const { history, getSession } = makeHistory([makeSessionRecord("task-1")])
+		const running = history.saveThreadStatus("task-1", "running")
+		const waiting = history.saveThreadStatus("task-1", "waiting")
+		await history.dispose()
+		await Promise.all([running, waiting])
+		expect((await getSession("task-1"))?.metadata?.vscodeThreadStatus).toBe("waiting")
+	})
+
+	it("serializes owned metadata changes against stale activity and usage snapshots", async () => {
+		const { history, getSession } = makeHistory([
+			makeSessionRecord("task-1", {
+				metadata: {
+					threadTitle: "Old",
+					taskGroupId: "A",
+					tags: [],
+					dismissedAutoTags: [],
+				},
+			}),
+		])
+		const stale = (await history.findHistoryItem("task-1"))!
+		await Promise.all([
+			history.setTaskGroup("task-1", "B"),
+			history.renameTask("task-1", "New"),
+			history.setThreadTags("task-1", [{ kind: "label", value: "keep", source: "user" }], ["PROJ-1"]),
+			history.updateTaskHistoryItem({ ...stale, tokensIn: 42, lastActivityTs: 1234 }),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "New",
+			taskGroupId: "B",
+			tags: [{ kind: "label", value: "keep", source: "user" }],
+			dismissedAutoTags: ["PROJ-1"],
+			tokensIn: 42,
+		})
+		await Promise.all([
+			history.setTaskGroup("task-1", undefined),
+			history.renameTask("task-1", ""),
+			history.setThreadTags("task-1", [], ["PROJ-2"]),
+			history.addAutoTicketTags("task-1", "PROJ-2 PROJ-3"),
+			history.updateTaskHistoryItem(stale),
+		])
+		expect((await getSession("task-1"))?.metadata).toMatchObject({
+			threadTitle: "",
+			taskGroupId: "",
+			tags: [{ kind: "ticket", value: "PROJ-3", source: "auto" }],
+			dismissedAutoTags: ["PROJ-2"],
+		})
+	})
+
+	it("adds auto ticket tags from a user message, skipping existing and dismissed ones", async () => {
+		const { history, updateSession } = makeHistory([
+			makeSessionRecord("task-1", {
+				metadata: {
+					tags: [{ kind: "ticket", value: "PROJ-1", source: "user" }],
+					dismissedAutoTags: ["PROJ-3"],
+				},
+			}),
+		])
+		expect(await history.addAutoTicketTags("task-1", "Fix PROJ-1, PROJ-2 and PROJ-3")).toBe(true)
+		expect((await history.findHistoryItem("task-1"))?.tags).toEqual([
+			{ kind: "ticket", value: "PROJ-1", source: "user" },
+			{ kind: "ticket", value: "PROJ-2", source: "auto" },
+		])
+		updateSession.mockClear()
+		expect(await history.addAutoTicketTags("task-1", "PROJ-2 again, no ticket here")).toBe(false)
+		expect(await history.addAutoTicketTags("task-1", "plain message")).toBe(false)
+		expect(updateSession).not.toHaveBeenCalled()
+	})
+
+	it("serializes selection writes and preserves the latest selection across stale history updates", async () => {
+		const { history, getSession, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const firstGet = getSession.getMockImplementation()!
+		getSession.mockImplementationOnce(async (id) => {
+			await gate
+			return firstGet(id)
+		})
+		const first = history.setTaskApiSelection("task-1", { actProfileId: "P" })
+		const second = history.setTaskApiSelection("task-1", { actProfileId: "Q" })
+		await vi.waitFor(() => expect(getSession).toHaveBeenCalledOnce())
+		expect(updateSession).not.toHaveBeenCalled()
+		release()
+		await Promise.all([first, second])
+		await history.updateTaskHistoryItem(makeHistoryItem("task-1", { apiSelection: { actProfileId: "P" } }))
+		expect(await history.getTaskApiSelection("task-1")).toEqual({ actProfileId: "Q" })
+	})
+
+	it("persists and reads back a task's API selection via setTaskApiSelection", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1")])
+		await history.setTaskApiSelection("task-1", { actProfileId: "act-1", actModeReasoningEffort: "medium" })
+		expect((await history.findHistoryItem("task-1"))?.apiSelection).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+		expect(await history.getTaskApiSelection("task-1")).toEqual({
+			actProfileId: "act-1",
+			actModeReasoningEffort: "medium",
+		})
+	})
+
+	it("persists a growing subagent count and skips non-growth writes", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1")])
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 2 })
+		const writes = updateSession.mock.calls.length
+		await history.updateTaskSubagentCount("task-1", 1)
+		await history.updateTaskSubagentCount("task-1", 2)
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.updateTaskSubagentCount("task-1", 3)
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ subagentCount: 3 })
+	})
+
+	it("round trips stash and preview metadata", () => {
+		const original = makeHistoryItem("task-1", {
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: { author: "agent", text: "done" },
+		})
+		const metadata = historyItemToSessionMetadata(original)
+		expect(sessionHistoryRecordToHistoryItem(makeSessionRecord("task-1", { metadata }))).toMatchObject({
+			isStashed: true,
+			stashedAt: 123,
+			lastLine: original.lastLine,
+		})
+	})
+
+	it("keeps stash through agent activity and waiting, clears it on user messages or settle", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: true } })])
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, isSettled: false, settledAt: undefined })
+		await history.markTaskActive("task-1")
+		await history.saveThreadStatus("task-1", "waiting")
+		await history.recordLastLine("task-1", { author: "ask", text: "approve tool use" })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: true, lastLine: { author: "ask" } })
+		await history.markUserMessage("task-1", "  hello\n  again  ")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: false,
+			stashedAt: undefined,
+			lastLine: { author: "user", text: "hello again" },
+		})
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: true, isStashed: false, stashedAt: undefined })
+		await history.toggleTaskStashed("task-1")
+		await history.toggleTaskStashed("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isStashed: false, stashedAt: undefined })
+	})
+
+	it("does not overwrite newer stash or preview with an older usage snapshot", async () => {
+		const { history } = makeHistory([makeSessionRecord("task-1", { metadata: { isStashed: false } })])
+		const stale = await history.findHistoryItem("task-1")
+		await history.toggleTaskStashed("task-1")
+		await history.recordLastLine("task-1", { author: "agent", text: "Finished" })
+		await history.updateTaskHistoryItem({ ...stale!, tokensIn: 42 })
+		expect(await history.findHistoryItem("task-1")).toMatchObject({
+			isStashed: true,
+			tokensIn: 42,
+			lastLine: { author: "agent", text: "Finished" },
+		})
+	})
+
+	it("toggles settle and automatically clears it on activity", async () => {
+		const { history, updateSession } = makeHistory([makeSessionRecord("task-1", { metadata: { isSettled: false } })])
+		await history.toggleTaskSettled("task-1")
+		expect((await history.findHistoryItem("task-1"))?.isSettled).toBe(true)
+		expect((await history.findHistoryItem("task-1"))?.settledAt).toBeGreaterThan(0)
+		await history.markTaskActive("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
+		const writes = updateSession.mock.calls.length
+		await history.markTaskActive("task-1")
+		expect(updateSession.mock.calls.length).toBe(writes)
+		await history.toggleTaskSettled("task-1")
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ isSettled: false, settledAt: undefined })
+	})
+
+	it("keeps last-activity time when settling and only bumps it on activity", async () => {
+		const { history } = makeHistory([
+			makeSessionRecord("task-1", {
+				updatedAt: "2026-01-02T00:00:00.000Z",
+				metadata: { lastActivityTs: 1234, isSettled: false },
+			}),
+			makeSessionRecord("old-1", { updatedAt: "2026-01-03T00:00:00.000Z", metadata: { isSettled: false } }),
+		])
+		await history.toggleTaskSettled("task-1")
+		expect(await history.findHistoryItem("task-1")).toMatchObject({ ts: 1234, lastActivityTs: 1234, isSettled: true })
+		// Chats from before the field existed freeze their previous updatedAt on settle.
+		await history.toggleTaskSettled("old-1")
+		const frozen = Date.parse("2026-01-03T00:00:00.000Z")
+		expect(await history.findHistoryItem("old-1")).toMatchObject({ ts: frozen, lastActivityTs: frozen })
+		await history.toggleTaskSettled("old-1")
+		expect((await history.findHistoryItem("old-1"))?.ts).toBe(frozen)
+		await history.markTaskActive("task-1")
+		expect((await history.findHistoryItem("task-1"))?.ts).toBeGreaterThan(1234)
 	})
 
 	it("maps SDK session history records to legacy history items", () => {
@@ -351,6 +726,67 @@ describe("SdkTaskHistory", () => {
 		expect(result.filter((m) => m.say === "completion_result" || m.say === "plan_completion_result")).toHaveLength(0)
 	})
 
+	describe("reopening a completed thread after a window reload (real QA session)", () => {
+		// The window reload skipped the graceful release, so the SDK record is "idle" — but the
+		// extension had persisted vscodeThreadStatus "done" when the turn finished.
+		const fixtureRecord = (metadata: Record<string, unknown> = reopenedCompletedThread.record.metadata) =>
+			makeSessionRecord(reopenedCompletedThread.record.session_id, {
+				status: reopenedCompletedThread.record.status as SessionHistoryRecord["status"],
+				metadata,
+			})
+
+		async function rebuild(metadata?: Record<string, unknown>) {
+			const { history, readMessages } = makeHistory([fixtureRecord(metadata)])
+			readMessages.mockResolvedValueOnce(reopenedCompletedThread.messages as never)
+			const id = reopenedCompletedThread.record.session_id
+			return { history, id, messages: await history.getClineMessages(id) }
+		}
+
+		it("rebuilds the final message as the completion row, like the live translator", async () => {
+			const { messages } = await rebuild()
+			const finalContent = reopenedCompletedThread.messages.at(-1)?.content as { text?: string }[]
+			const finalText = finalContent[0].text
+
+			const completions = messages.filter((m) => m.say === "completion_result")
+			expect(completions).toHaveLength(1)
+			expect(completions[0]).toMatchObject({ type: "say", text: finalText, partial: false })
+			// Earlier narration stays plain text; the final message is no longer a text row.
+			expect(messages.filter((m) => m.say === "text").map((m) => m.text)).not.toContain(finalText)
+		})
+
+		it("keeps the completion row last among visible rows and linked to its SDK message", async () => {
+			const { messages } = await rebuild()
+			const completion = messages.find((m) => m.say === "completion_result")
+
+			// View Changes / Open walkthrough render only on the last visible, finalized completion
+			// row. Everything after it must be a row the webview hides (empty completion ask).
+			const afterCompletion = messages.slice(messages.indexOf(completion!) + 1)
+			expect(afterCompletion.length).toBeGreaterThan(0)
+			for (const row of afterCompletion) {
+				expect(row).toMatchObject({ type: "ask", ask: "completion_result", text: "" })
+			}
+			// Message links and asides resolve through ts and sdkMessageIndex.
+			expect(completion?.sdkMessageIndex).toBe(reopenedCompletedThread.messages.length - 1)
+			expect(completion?.ts).toBeGreaterThan(0)
+		})
+
+		it("reports the thread completed so the reopened view gets no Resume Task ask", async () => {
+			const { history, id } = await rebuild()
+			expect(await history.getSessionStatus(id)).toBe("completed")
+		})
+
+		it.each([
+			["stopped by the user", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "stopped" }],
+			["still running", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "running" }],
+			["errored", { ...reopenedCompletedThread.record.metadata, vscodeThreadStatus: "error" }],
+			["unrecorded", {}],
+		])("keeps the plain text and the Resume affordance for a thread %s", async (_label, metadata) => {
+			const { history, id, messages } = await rebuild(metadata)
+			expect(messages.filter((m) => m.say === "completion_result")).toHaveLength(0)
+			expect(await history.getSessionStatus(id)).toBe("idle")
+		})
+	})
+
 	it("does not retag a transcript that ends on a dangling tool call", () => {
 		const result = sdkMessagesToClineMessages([
 			{ role: "user", content: "do the thing" },
@@ -380,6 +816,72 @@ describe("SdkTaskHistory", () => {
 		const result = await history.listHistory()
 
 		expect(result.map((item) => item.sessionId)).toEqual(["root"])
+	})
+
+	it("reopens a saved child report with its parent, spawn identity, reasoning, and full completion", async () => {
+		const child = makeSessionRecord("root__agent", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "agent",
+			prompt: "Report on the SDK",
+			status: "completed",
+			metadata: { spawnToolCallId: "spawn-a", subagentAccess: "read" },
+		})
+		const { history, readMessages } = makeHistory([makeSessionRecord("root"), child])
+		expect((await history.listHistory({ includeSubagents: true })).map((item) => item.sessionId)).toContain("root__agent")
+		await expect(history.findHistoryItem("root__agent")).resolves.toMatchObject({
+			id: "root__agent",
+			isSubagent: true,
+			parentTaskId: "root",
+			agentId: "agent",
+			spawnToolCallId: "spawn-a",
+		})
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "Report on the SDK" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Read the source" },
+					{ type: "text", text: "# Full report\n\n```ts\nconst a = 1\n```" },
+				],
+			},
+		] as never)
+		const messages = await history.getClineMessages("root__agent")
+		expect(messages).toContainEqual(expect.objectContaining({ say: "task", text: "Report on the SDK" }))
+		expect(messages).toContainEqual(expect.objectContaining({ say: "reasoning", text: "Read the source" }))
+		expect(messages).toContainEqual(
+			expect.objectContaining({ say: "completion_result", text: "# Full report\n\n```ts\nconst a = 1\n```" }),
+		)
+	})
+
+	it("restores nested spawn links from a subagent transcript on reopen", async () => {
+		const root = makeSessionRecord("root")
+		const a = makeSessionRecord("root__a", { isSubagent: true, parentSessionId: "root", agentId: "a" })
+		const b = makeSessionRecord("root__b", {
+			isSubagent: true,
+			parentSessionId: "root",
+			agentId: "b",
+			metadata: { immediateParentSessionId: a.sessionId, spawnToolCallId: "spawn-b" },
+		})
+		const { history, readMessages } = makeHistory([root, a, b])
+		readMessages.mockResolvedValueOnce([
+			{ role: "user", content: "A" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "spawn-b", name: "spawn_agent", input: { task: "B" } }] },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "spawn-b", content: JSON.stringify({ text: "B report" }) }],
+			},
+		] as never)
+		const messages = await history.getClineMessages(a.sessionId)
+		const status = messages.find((message) => message.say === "subagent")
+		expect(status).toBeDefined()
+		expect(JSON.parse(status!.text!).items).toContainEqual(
+			expect.objectContaining({ childSessionId: b.sessionId, toolCallId: "spawn-b" }),
+		)
+		await expect(history.findHistoryItem(b.sessionId)).resolves.toMatchObject({
+			parentTaskId: a.sessionId,
+			runtimeOwnerTaskId: root.sessionId,
+		})
 	})
 
 	it("finds a task from SDK history", async () => {
@@ -526,6 +1028,59 @@ describe("SdkTaskHistory", () => {
 		expect(updateSession).not.toHaveBeenCalled()
 	})
 
+	it("awaits live task teardown before deleting persistence and orphans its aside", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("parent"),
+			makeSessionRecord("aside", { metadata: { parentTaskId: "parent", forkedAtTs: 42 } }),
+		])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTaskFromState("parent")
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledWith("parent"))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect((await history.findHistoryItem("aside"))?.parentTaskId).toBeUndefined()
+		expect((await history.findHistoryItem("aside"))?.forkedAtTs).toBeUndefined()
+	})
+
+	it("stops all selected sessions before deleting any of a multi-task selection", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([makeSessionRecord("a"), makeSessionRecord("b")])
+		let release!: () => void
+		removeSession.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const deleting = history.deleteTasksFromState(["a", "b"])
+		await vi.waitFor(() => expect(removeSession).toHaveBeenCalledTimes(2))
+		expect(deleteSession).not.toHaveBeenCalled()
+		release()
+		await deleting
+		expect(deleteSession).toHaveBeenCalledTimes(2)
+	})
+
+	it("stops every deleted task before deleting all history while preserving favorites", async () => {
+		const { history, removeSession, deleteSession } = makeHistory([
+			makeSessionRecord("a"),
+			makeSessionRecord("b"),
+			makeSessionRecord("favorite", { metadata: { isFavorited: true } }),
+		])
+		expect(await history.deleteAllTaskHistory({ preserveFavorites: true })).toBe(2)
+		expect(removeSession.mock.calls).toEqual([["a"], ["b"]])
+		for (let index = 0; index < 2; index++) {
+			expect(removeSession.mock.invocationCallOrder[index]).toBeLessThan(deleteSession.mock.invocationCallOrder[index])
+		}
+		expect(await history.deleteAllTaskHistory()).toBe(1)
+		expect(removeSession).toHaveBeenLastCalledWith("favorite")
+	})
+
 	it("deletes SDK sessions", async () => {
 		const { history, deleteSession } = makeHistory([makeSessionRecord("task-1")])
 
@@ -602,6 +1157,56 @@ describe("SdkTaskHistory", () => {
 		expect(readUiMessages).toHaveBeenCalledWith("legacy-task", undefined)
 		expect(messages).toEqual(legacyStateReaderMock.uiMessages)
 		expect(startSession).not.toHaveBeenCalled()
+	})
+
+	it("persists review cards and updates the newest summary in place across reopen", async () => {
+		const { history, readMessages, getSession } = makeHistory([
+			makeSessionRecord("root", { metadata: { threadTitle: "Title", taskGroupId: "group" } }),
+		])
+		readMessages.mockResolvedValue([
+			{ role: "user", content: "First" },
+			{ role: "assistant", content: "Done" },
+		] as never)
+		const payload = {
+			revision: "r1",
+			taskGroupId: "group",
+			threadId: "root",
+			status: "pending",
+			changes: [{ op: "create", slug: "plan", name: "Plan", description: "", content: "Draft" }],
+		}
+		await history.saveNotebookChangesMessage("root", {
+			ts: 1,
+			type: "say",
+			say: "notebook_changes",
+			text: JSON.stringify(payload),
+		})
+		await history.saveNotebookChangesMessage("root", {
+			ts: 1,
+			type: "say",
+			say: "notebook_changes",
+			text: JSON.stringify({
+				...payload,
+				revision: "r2",
+				changes: [{ ...payload.changes[0], content: "User draft", editedByUser: true }],
+			}),
+		})
+		payload.revision = "r2"
+		expect((await getSession("root"))?.metadata?.notebookChangesMessages).toHaveLength(1)
+		const reopened = await history.getClineMessages("root")
+		const card = reopened.find((message) => message.say === "notebook_changes")!
+		expect(reopened.at(-1)).toBe(card)
+		expect(new Set(reopened.map((message) => message.ts)).size).toBe(reopened.length)
+		expect(card.sdkMessageIndex).toBe(1)
+		await history.saveNotebookChangesMessage("root", {
+			...card,
+			text: JSON.stringify({ ...payload, status: "applied", appliedSlugs: ["plan"] }),
+		})
+		const saved = (await getSession("root"))!.metadata!
+		expect(saved.threadTitle).toBe("Title")
+		expect(saved.taskGroupId).toBe("group")
+		expect(saved.notebookChangesMessages).toHaveLength(1)
+		const restored = await history.getClineMessages("root")
+		expect(JSON.parse(restored.find((message) => message.say === "notebook_changes")!.text!).status).toBe("applied")
 	})
 
 	it("adds a tool warning to legacy initial messages when resuming", async () => {
@@ -994,7 +1599,9 @@ function makeHistory(
 		update: updateSession,
 		delete: deleteSession,
 	} as unknown as VscodeSessionHost
+	const removeSession = vi.fn().mockResolvedValue(undefined)
 	const sessions = {
+		removeSession,
 		getActiveSession: () => ({ sdkHost: host }),
 	} as unknown as SdkSessionLifecycle
 	const history = new SdkTaskHistory({
@@ -1007,6 +1614,7 @@ function makeHistory(
 
 	return {
 		history,
+		removeSession,
 		getSession,
 		listHistory,
 		updateSession,
@@ -1015,3 +1623,45 @@ function makeHistory(
 		startSession,
 	}
 }
+
+it("reopens a nested child with its immediate parent and separate runtime owner", () => {
+	const record = makeSessionRecord("root__b", {
+		sessionId: "root__b",
+		parentSessionId: "root",
+		isSubagent: true,
+		agentId: "b",
+		prompt: "B",
+		startedAt: "2026-10-01T00:00:00Z",
+		metadata: { immediateParentSessionId: "root__a", spawnToolCallId: "spawn-b" },
+	})
+	expect(sessionHistoryRecordToHistoryItem(record)).toMatchObject({
+		id: "root__b",
+		parentTaskId: "root__a",
+		runtimeOwnerTaskId: "root",
+		spawnToolCallId: "spawn-b",
+	})
+})
+
+it("preserves ownership when resuming old nested subagent history", () => {
+	const item = makeHistoryItem("grandchild", { isSubagent: true, parentTaskId: "child", runtimeOwnerTaskId: "main" })
+	expect(historyItemToSessionMetadata(item)).toMatchObject({
+		isSubagent: true,
+		parentTaskId: "child",
+		runtimeOwnerTaskId: "main",
+	})
+	const aside = historyItemToSessionMetadata(makeHistoryItem("aside", { parentTaskId: "main", forkedAtTs: 42 }))
+	expect(aside).toMatchObject({ isSubagent: false, runtimeOwnerTaskId: "" })
+})
+
+it("mirrors exact configured picks between top-level metadata, apiSelection and HistoryItem", () => {
+	const modelSelectionV1 = {
+		version: 1 as const,
+		ask: { modelId: "ask-row", levelId: "custom-low" },
+		act: { modelId: "act-row", levelId: "custom-high" },
+	}
+	const metadata = historyItemToSessionMetadata(makeHistoryItem("task", { apiSelection: { modelSelectionV1 } }))
+	expect(metadata.modelSelectionV1).toEqual(modelSelectionV1)
+	const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("task", { metadata: { modelSelectionV1 } }))
+	expect(result.modelSelectionV1).toEqual(modelSelectionV1)
+	expect(result.apiSelection?.modelSelectionV1).toEqual(modelSelectionV1)
+})

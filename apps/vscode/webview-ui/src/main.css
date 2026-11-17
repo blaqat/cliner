@@ -239,6 +239,21 @@ vscode-dropdown::part(listbox) {
 	}
 }
 
+/* Shell rows can wrap older controls with no border of their own, so the emphasis is drawn inside. */
+@keyframes settings-shell-highlight {
+	0%,
+	70% {
+		box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+	}
+	100% {
+		box-shadow: inset 0 0 0 1px transparent;
+	}
+}
+
+.settings-shell .settings-target-highlight {
+	animation-name: settings-shell-highlight;
+}
+
 /* Fix tooltip arrow lag - disable animations on tooltips */
 [data-slot="tooltip-content"],
 [data-slot="tooltip-content"] * {
@@ -251,4 +266,92 @@ vscode-dropdown::part(listbox) {
 [data-slot="popover-content"] * {
 	animation: none !important;
 	transition: none !important;
+}
+
+/* Menus that opt in rise + fade (overrides the popover animation reset above) */
+@keyframes menu-rise {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+[data-slot="popover-content"].menu-rise[data-state="open"],
+[data-slot="select-content"].menu-rise[data-state="open"] {
+	animation: menu-rise 0.14s ease-out !important;
+}
+
+/* Motion polish is decorative: drop it for reduced motion (OS setting or VS Code's workbench.reduceMotion) */
+@media (prefers-reduced-motion: reduce) {
+	.animate-shimmer,
+	.animate-breathe,
+	.animate-minimap-live,
+	.animate-row-in,
+	.streaming-dot .inline-markdown-block *::after,
+	[data-slot="popover-content"].menu-rise[data-state="open"],
+	[data-slot="select-content"].menu-rise[data-state="open"] {
+		animation: none !important;
+	}
+}
+
+body.vscode-reduce-motion .animate-shimmer,
+body.vscode-reduce-motion .animate-breathe,
+body.vscode-reduce-motion .animate-minimap-live,
+body.vscode-reduce-motion .animate-row-in,
+body.vscode-reduce-motion .streaming-dot .inline-markdown-block *::after,
+body.vscode-reduce-motion [data-slot="popover-content"].menu-rise[data-state="open"],
+body.vscode-reduce-motion [data-slot="select-content"].menu-rise[data-state="open"] {
+	animation: none !important;
+}
+
+/* Thread toasts: entry and the completion countdown bar (paused via animation-play-state) */
+@keyframes toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+@keyframes toast-countdown {
+	from {
+		transform: scaleX(1);
+	}
+	to {
+		transform: scaleX(0);
+	}
+}
+
+/* A message deep link's target row: brief highlight after the scroll lands. */
+@keyframes message-link-flash {
+	0% {
+		background-color: var(--vscode-editor-findMatchHighlightBackground);
+		box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+	}
+	100% {
+		background-color: transparent;
+		box-shadow: 0 0 0 2px transparent;
+	}
+}
+
+.message-link-flash {
+	animation: message-link-flash 1.6s ease-out;
+	border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.message-link-flash {
+		animation: none !important;
+	}
+}
+
+body.vscode-reduce-motion .message-link-flash {
+	animation: none !important;
 }

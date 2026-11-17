@@ -1,3 +1,4 @@
+import { BackButton } from "@/components/navigation/BackButton"
 import { Button } from "@/components/ui/button"
 import { getEnvironmentColor } from "@/utils/environmentColors"
 import type { Environment } from "../../../../src/shared/config-types"
@@ -23,7 +24,8 @@ const ViewHeader = ({ title, onDone, showEnvironmentSuffix, environment }: ViewH
 
 	return (
 		<div className="flex justify-between items-center py-2.5 px-5 mb-[17px]">
-			<div className="relative">
+			<div className="relative flex min-w-0 items-center gap-1">
+				<BackButton crumbIds={[]} />
 				<h3 className="m-0 text-lg font-normal" style={{ color: titleColor }}>
 					{title}
 				</h3>
@@ -33,7 +35,7 @@ const ViewHeader = ({ title, onDone, showEnvironmentSuffix, environment }: ViewH
 					</span>
 				)}
 			</div>
-			<Button size="header" onClick={onDone}>
+			<Button onClick={onDone} size="header">
 				Done
 			</Button>
 		</div>

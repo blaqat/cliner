@@ -6,7 +6,6 @@ import styled from "styled-components"
 import ChatErrorBoundary from "@/components/chat/ChatErrorBoundary"
 import { CODE_BLOCK_BG_COLOR } from "@/components/common/CodeBlock"
 import MarkdownBlock from "@/components/common/MarkdownBlock"
-import { DropdownContainer } from "@/components/settings/ApiOptions"
 import { updateSetting } from "@/components/settings/utils/settingsHandlers"
 import { useExtensionState } from "../../../context/ExtensionStateContext"
 import ImagePreview from "./ImagePreview"
@@ -16,6 +15,19 @@ import { buildDisplaySegments, DisplaySegment, processResponseUrls, truncateData
 
 // Maximum number of URLs to process in total, per response
 const MAX_URLS = 50
+
+// Forces the display mode dropdown to open downward.
+const DropdownContainer = styled.div<{ zIndex?: number }>`
+	position: relative;
+	z-index: ${(props) => props.zIndex || 1000};
+
+	// Force dropdowns to open downward
+	& vscode-dropdown::part(listbox) {
+		position: absolute !important;
+		top: 100% !important;
+		bottom: auto !important;
+	}
+`
 
 const ResponseHeader = styled.div`
 	display: flex;
@@ -74,11 +86,20 @@ const UrlText = styled.div`
 
 interface McpResponseDisplayProps {
 	responseText: string
+	/** Controlled expansion (kept by the chat list across remounts). Uncontrolled and collapsed when omitted. */
+	isExpanded?: boolean
+	onToggleExpand?: () => void
 }
 
-const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({ responseText }) => {
-	const { mcpResponsesCollapsed, mcpDisplayMode } = useExtensionState() // Get setting from context
-	const [isExpanded, setIsExpanded] = useState(!mcpResponsesCollapsed) // Initialize with context setting
+const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({
+	responseText,
+	isExpanded: controlledExpanded,
+	onToggleExpand,
+}) => {
+	const { mcpDisplayMode } = useExtensionState()
+	// Tool responses start collapsed; the content is not mounted (or processed) until opened.
+	const [localExpanded, setLocalExpanded] = useState(false)
+	const isExpanded = controlledExpanded ?? localExpanded
 	const [isLoading, setIsLoading] = useState(false) // Initial loading state for rich content
 
 	const [urlMatches, setUrlMatches] = useState<UrlMatch[]>([])
@@ -89,13 +110,12 @@ const McpResponseDisplay: React.FC<McpResponseDisplayProps> = ({ responseText })
 	}, [])
 
 	const toggleExpand = useCallback(() => {
-		setIsExpanded((prev) => {
-			const newExpanded = !prev
-			// Save collapsed state so future MCP responses start in the same state
-			updateSetting("mcpResponsesCollapsed", !newExpanded)
-			return newExpanded
-		})
-	}, [])
+		if (onToggleExpand) {
+			onToggleExpand()
+		} else {
+			setLocalExpanded((prev) => !prev)
+		}
+	}, [onToggleExpand])
 
 	// Find all URLs in the text and determine if they're images
 	useEffect(() => {

@@ -29,6 +29,12 @@ export interface SdkSessionHost {
 	send(input: SendSessionInput): Promise<AgentResult | undefined>
 	getAccumulatedUsage(sessionId: string): Promise<SessionAccumulatedUsage | undefined>
 	abort(sessionId: string, reason?: unknown): Promise<void>
+	/**
+	 * Aborts a single in-flight subagent run, identified by its spawn_agent tool
+	 * call id, without aborting the parent run. Optional: hosts without live
+	 * per-child abort support resolve false.
+	 */
+	stopSubagent?(sessionId: string, toolCallId: string): Promise<boolean>
 	stop(sessionId: string): Promise<void>
 	dispose(reason?: string): Promise<void>
 	get(sessionId: string): Promise<SessionRecord | undefined>

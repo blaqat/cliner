@@ -1,7 +1,10 @@
+import type { TaskApiSelection } from "@shared/api-profiles"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { Mode } from "@shared/storage/types"
 import type { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { getSessionApiSnapshot } from "./cline-session-factory"
+import { useModelSettings } from "./model-settings/background"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
@@ -15,6 +18,7 @@ type InitialMessages = StartInput["initialMessages"]
 type SessionConfig = Awaited<ReturnType<SdkSessionConfigBuilder["build"]>>
 
 export interface SdkSessionConfigChangeCoordinatorOptions {
+	getMessages?: (sessionId: string) => SdkMessageCoordinator
 	stateManager: StateManager
 	sessions: SdkSessionLifecycle
 	messages: SdkMessageCoordinator
@@ -22,8 +26,11 @@ export interface SdkSessionConfigChangeCoordinatorOptions {
 	getWorkspaceRoot: () => Promise<string>
 	loadInitialMessages: (sdkHost: SdkSessionHost, sessionId: string) => Promise<unknown[] | undefined>
 	buildStartSessionInput: (config: SessionConfig, input: { cwd: string; mode: Mode }) => StartInput
+	onSelectionRebuilt?: (taskId: string, selection: TaskApiSelection) => void
 	postStateToWebview: () => Promise<void>
 	rebuilds: Pick<SdkSessionRebuildScheduler, "request">
+	/** Threads whose own model refused a rebuild. The send says why; an edit elsewhere isn't that thread's error. */
+	refusedRebuilds?: Set<string>
 }
 
 interface RebuildDetails {
@@ -36,6 +43,18 @@ interface RebuildDetails {
 export class SdkSessionConfigChangeCoordinator {
 	constructor(private readonly options: SdkSessionConfigChangeCoordinatorOptions) {}
 
+	handleTaskGroupChanged(threadId: string): void {
+		this.requestRebuild(
+			{
+				reason: "taskGroup",
+				description: "task notebook membership",
+				disposeReason: "taskGroupChange",
+				failureMessage: "Failed to reload the task notebook. Reopen the thread to retry.",
+			},
+			threadId,
+		)
+	}
+
 	handleTerminalExecutionModeChanged(previous: VscodeTerminalExecutionMode, next: VscodeTerminalExecutionMode): void {
 		if (previous === next) {
 			return
@@ -45,6 +64,15 @@ export class SdkSessionConfigChangeCoordinator {
 			description: `terminal execution mode ${previous} -> ${next}`,
 			disposeReason: "terminalExecutionModeChange",
 			failureMessage: "Failed to reload terminal tools. Terminal mode changes may not apply until the next task.",
+		})
+	}
+
+	handleSubagentSettingsChanged(): void {
+		this.requestRebuild({
+			reason: "subagents",
+			description: "subagent settings",
+			disposeReason: "subagentSettingsChange",
+			failureMessage: "Failed to reload subagent settings. The change may not apply until the next task.",
 		})
 	}
 
@@ -60,48 +88,73 @@ export class SdkSessionConfigChangeCoordinator {
 		})
 	}
 
-	private requestRebuild(details: RebuildDetails): void {
+	private requestRebuild(details: RebuildDetails, sessionId?: string): void {
 		Logger.log(`[SdkController] Session configuration changed: ${details.description}`)
 
-		const activeSession = this.options.sessions.getActiveSession()
+		const activeSession = sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()
 		if (!activeSession) {
 			Logger.log("[SdkController] No active session - configuration will be picked up on next initTask")
 			return
 		}
 
-		this.options.rebuilds.request(details.reason, (context) => this.restartSession(details, context))
+		this.scheduleRestart(details, sessionId)
 	}
 
-	private async restartSession(details: RebuildDetails, context: SessionRebuildContext): Promise<void> {
-		const activeSession = this.options.sessions.getActiveSession()
+	private scheduleRestart(details: RebuildDetails, sessionId?: string): void {
+		const run = (context: SessionRebuildContext) => this.restartSession(details, context, sessionId)
+		if (sessionId) this.options.rebuilds.request(details.reason, run, sessionId)
+		else this.options.rebuilds.request(details.reason, run)
+	}
+
+	private async restartSession(details: RebuildDetails, context: SessionRebuildContext, sessionId?: string): Promise<void> {
+		const activeSession = sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()
 		if (!activeSession) {
 			return
 		}
 
 		const { sdkHost: oldManager, sessionId: oldSessionId } = activeSession
+		const messages = this.options.getMessages?.(oldSessionId) ?? this.options.messages
 		const terminalMode = getEffectiveTerminalExecutionMode(
 			this.options.stateManager.getGlobalStateKey("vscodeTerminalExecutionMode"),
 		)
 		Logger.log(`[SdkController] Restarting session ${oldSessionId} for ${details.description}; terminal mode ${terminalMode}`)
 
-		this.options.messages.emitSessionEvents([], {
+		messages.emitSessionEvents([], {
 			type: "status",
 			payload: { sessionId: oldSessionId, status: "running" },
 		})
 
+		let building = false
 		try {
 			const cwd = await this.options.getWorkspaceRoot()
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
-			const mode: Mode = modeValue === "plan" || modeValue === "act" ? modeValue : "act"
-			const config = await this.options.sessionConfigBuilder.build({ cwd, mode })
+			const mode: Mode =
+				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")
+			building = true
+			const config = await this.options.sessionConfigBuilder.build(
+				{
+					cwd,
+					mode,
+					...(activeSession.apiSnapshot
+						? {
+								apiSelection: activeSession.apiSnapshot.selection,
+								apiConfiguration: activeSession.apiSnapshot.configuration,
+							}
+						: {}),
+				},
+				...(useModelSettings(this.options.stateManager) ? ([oldSessionId] as const) : []),
+			)
+			building = false
+			this.options.refusedRebuilds?.delete(oldSessionId)
 			config.sessionId = oldSessionId
 
-			const initialMessages = await this.options.loadInitialMessages(oldManager, oldSessionId)
 			const startInput = this.options.buildStartSessionInput(config, { cwd, mode })
 
 			// Rebuilds may preserve the session ID, so identity is the only reliable
 			// way to detect that another path replaced this session while we awaited.
-			const currentSession = this.options.sessions.getActiveSession()
+			const currentSession = sessionId
+				? this.options.sessions.getSession(sessionId)
+				: this.options.sessions.getActiveSession()
 			if (!currentSession) {
 				Logger.log(`[SdkController] Active session ended during configuration restart (was ${oldSessionId}); aborting`)
 				return
@@ -118,30 +171,49 @@ export class SdkSessionConfigChangeCoordinator {
 				Logger.log(
 					`[SdkController] Active session changed or received a prompt during configuration restart (was ${oldSessionId}); deferring`,
 				)
-				this.options.rebuilds.request(details.reason, (nextContext) => this.restartSession(details, nextContext))
+				this.scheduleRestart(details, sessionId)
 				return
 			}
 
-			// replaceActiveSession detaches the old session synchronously before its
-			// first suspension, so no send can enter it after this final state check.
-			const restartResult = await this.options.sessions.replaceActiveSession({
+			// Admission closes before the replacement reads the current history.
+			const replaceSession = sessionId
+				? this.options.sessions.replaceSession.bind(this.options.sessions)
+				: this.options.sessions.replaceActiveSession.bind(this.options.sessions)
+			let selectionCommitted = false
+			const commitSelection = () => {
+				if (selectionCommitted) return
+				selectionCommitted = true
+				const selection = getSessionApiSnapshot(config)?.selection
+				if (selection && useModelSettings(this.options.stateManager))
+					this.options.onSelectionRebuilt?.(oldSessionId, selection)
+			}
+			const restartResult = await replaceSession({
 				expectedSession: activeSession,
 				startInput,
-				initialMessages: initialMessages as InitialMessages,
+				loadInitialMessages: async () =>
+					(await this.options.loadInitialMessages(oldManager, oldSessionId)) as InitialMessages,
 				disposeReason: details.disposeReason,
+				...(useModelSettings(this.options.stateManager) ? { onReplaced: commitSelection } : {}),
 			})
 			if (!restartResult) {
+				if (
+					context.isCurrent() &&
+					(sessionId ? this.options.sessions.getSession(sessionId) : this.options.sessions.getActiveSession()) ===
+						activeSession
+				)
+					this.scheduleRestart(details, sessionId)
 				return
 			}
 
-			const { startResult, sdkHost } = restartResult
+			commitSelection()
+			const { startResult } = restartResult
 			if (startResult.sessionId !== oldSessionId) {
 				Logger.warn(
 					`[SdkController] Configuration restart returned a new session ID (${startResult.sessionId}); preserving task ID ${oldSessionId} for UI continuity`,
 				)
 			}
 
-			this.options.messages.emitSessionEvents([], {
+			messages.emitSessionEvents([], {
 				type: "status",
 				payload: { sessionId: startResult.sessionId, status: "idle" },
 			})
@@ -151,6 +223,13 @@ export class SdkSessionConfigChangeCoordinator {
 				`[SdkController] Session restarted for ${details.description}: ${oldSessionId} -> ${startResult.sessionId}`,
 			)
 		} catch (error) {
+			if (building && this.options.refusedRebuilds && useModelSettings(this.options.stateManager)) {
+				Logger.warn(`[SdkController] Session ${oldSessionId} keeps its current build after ${details.description}`)
+				this.options.refusedRebuilds.add(oldSessionId)
+				messages.emitSessionEvents([], { type: "status", payload: { sessionId: oldSessionId, status: "idle" } })
+				await this.options.postStateToWebview()
+				return
+			}
 			Logger.error(`[SdkController] Failed to restart session for ${details.description}:`, error)
 
 			const errorMessage: ClineMessage = {
@@ -160,7 +239,7 @@ export class SdkSessionConfigChangeCoordinator {
 				text: `${details.failureMessage} ${error instanceof Error ? error.message : String(error)}`,
 				partial: false,
 			}
-			this.options.messages.appendAndEmit([errorMessage], {
+			messages.appendAndEmit([errorMessage], {
 				type: "status",
 				payload: { sessionId: oldSessionId, status: "error" },
 			})

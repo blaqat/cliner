@@ -294,6 +294,7 @@ async function resolveBedrockApiKey(
 	config: GatewayResolvedProviderConfig,
 	options: { includeEnvironment: boolean },
 ): Promise<string | undefined> {
+	if (config.apiKey === "" && config.apiKeyEnv?.length === 0) return undefined;
 	const explicitApiKey =
 		readOptionalString(config.apiKey) ??
 		readOptionalString(config.options?.apiKey) ??

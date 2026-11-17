@@ -104,10 +104,13 @@ function convertClineSayToProtoEnum(say: AppClineSay | undefined): ClineSay | un
 		hook_output_stream: ClineSay.HOOK_OUTPUT_STREAM,
 		conditional_rules_applied: ClineSay.CONDITIONAL_RULES_APPLIED,
 		subagent: ClineSay.SUBAGENT_STATUS,
+		subagent_update: ClineSay.SUBAGENT_UPDATE,
 		use_subagents: ClineSay.USE_SUBAGENTS_SAY,
 		subagent_usage: ClineSay.SUBAGENT_USAGE,
 		compaction: ClineSay.COMPACTION,
 		cloud_provisioning: ClineSay.CLOUD_PROVISIONING,
+		notebook_changes: ClineSay.NOTEBOOK_CHANGES,
+		walkthrough_ready: ClineSay.WALKTHROUGH_READY,
 	}
 
 	const result = mapping[say]
@@ -154,10 +157,13 @@ function convertProtoEnumToClineSay(say: ClineSay): AppClineSay | undefined {
 		[ClineSay.HOOK_OUTPUT_STREAM]: "hook_output_stream",
 		[ClineSay.CONDITIONAL_RULES_APPLIED]: "conditional_rules_applied",
 		[ClineSay.SUBAGENT_STATUS]: "subagent",
+		[ClineSay.SUBAGENT_UPDATE]: "subagent_update",
 		[ClineSay.USE_SUBAGENTS_SAY]: "use_subagents",
 		[ClineSay.SUBAGENT_USAGE]: "subagent_usage",
 		[ClineSay.COMPACTION]: "compaction",
 		[ClineSay.CLOUD_PROVISIONING]: "cloud_provisioning",
+		[ClineSay.NOTEBOOK_CHANGES]: "notebook_changes",
+		[ClineSay.WALKTHROUGH_READY]: "walkthrough_ready",
 	}
 
 	return mapping[say]
@@ -204,6 +210,7 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 					endIndex: message.conversationHistoryDeletedRange[1],
 				}
 			: undefined,
+		sdkMessageIndex: message.sdkMessageIndex,
 		// Additional optional fields for specific ask/say types
 		sayTool: undefined,
 		sayBrowserAction: undefined,
@@ -214,6 +221,15 @@ export function convertClineMessageToProto(message: AppClineMessage): ProtoCline
 		askNewTask: undefined,
 		apiReqInfo: undefined,
 		modelInfo: message.modelInfo ?? undefined,
+		messageReferences: (message.messageReferences ?? []).map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author,
+			text: reference.text,
+			messageIndex: reference.messageIndex,
+			toolCallId: reference.toolCallId,
+			block: reference.block,
+		})),
 	}
 
 	return protoMessage
@@ -288,6 +304,25 @@ export function convertProtoToClineMessage(protoMessage: ProtoClineMessage): App
 	}
 	if (protoMessage.epoch && protoMessage.epoch !== 0) {
 		message.epoch = protoMessage.epoch
+	}
+
+	// Stable transcript index for message deep links. Optional field — 0 is a
+	// real index, so check presence, not truthiness.
+	if (protoMessage.sdkMessageIndex !== undefined) {
+		message.sdkMessageIndex = protoMessage.sdkMessageIndex
+	}
+
+	// Linked messages on a sent message; dropping them left the bubble without its chips.
+	if (protoMessage.messageReferences?.length) {
+		message.messageReferences = protoMessage.messageReferences.map((reference) => ({
+			threadId: reference.threadId,
+			threadTitle: reference.threadTitle,
+			author: reference.author === "user" ? "user" : "assistant",
+			text: reference.text,
+			...(reference.messageIndex !== undefined ? { messageIndex: reference.messageIndex } : {}),
+			...(reference.toolCallId ? { toolCallId: reference.toolCallId } : {}),
+			...(reference.block !== undefined ? { block: reference.block } : {}),
+		}))
 	}
 
 	return message

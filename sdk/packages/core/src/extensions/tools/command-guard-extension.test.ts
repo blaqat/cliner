@@ -69,6 +69,21 @@ async function runBeforeTool(
 }
 
 describe("plan-mode command-guard extension", () => {
+	it("allows notebook reads and staged writes/deletes without command approval", async () => {
+		const extension = createPlanModeCommandGuardExtension();
+		for (const action of ["read", "write", "delete"]) {
+			expect(
+				await runBeforeTool(
+					extension,
+					makeContext("notebook", {
+						action,
+						name: "dev-plan",
+						content: "notes",
+					}),
+				),
+			).toBeUndefined();
+		}
+	});
 	it("declares the hooks capability under a stable name", () => {
 		const extension = createPlanModeCommandGuardExtension();
 		expect(extension.name).toBe(PLAN_MODE_COMMAND_GUARD_EXTENSION_NAME);
@@ -133,6 +148,102 @@ describe("plan-mode command-guard extension", () => {
 			makeContext("read_files", { files: [{ path: "/tmp/rm" }] }),
 		);
 
+		expect(result).toBeUndefined();
+	});
+
+	it.each([
+		"bun run check-types",
+		"npm run test",
+		"make check",
+		"bash -c 'just check'",
+		"env -u HOME bun run build",
+		"xargs -I ARG bun run check-types",
+		"xargs -J % bun run %",
+		"find . -exec bun run {} \\;",
+		"parallel bun run {}",
+		"timeout -s TERM 10 bun run check-types",
+		'echo "$(bun run check-types)"',
+		"cat <<EOF\n$(bun run check-types)\nEOF",
+	])("routes %s through the existing approval policy instead of skipping execution", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result).toEqual({
+			policy: { autoApprove: false, requireApproval: true },
+		});
+	});
+
+	it.each([
+		'printf "touch /tmp/example" | xargs -I {} sh -c {}',
+		"xargs sh -c",
+		"xargs -J % eval %",
+		"xargs -I {} python3 -c {}",
+		"xargs -I {} node -e {}",
+		"find . -exec sh -c {} \\;",
+		"find . -execdir node -e {} \\;",
+		"parallel sh -c {}",
+		"parallel 'sh -c {}' ::: 'touch /tmp/example'",
+	])("rejects input-driven code before requesting approval: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+	});
+
+	it.each([
+		"xargs grep foo",
+		"xargs cat",
+		"find . -name x -exec cat {} \\;",
+		"parallel cat {}",
+	])("allows plain input-driven readers: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result).toBeUndefined();
+	});
+
+	it.each([
+		'env -u HOME sh -c "touch file"',
+		'xargs -I ARG sh -c "touch file"',
+		'timeout -s TERM 10 sh -c "touch file"',
+		'echo "$(touch file)"',
+		'echo "`touch file`"',
+		"cat <<EOF\n$(touch file)\nEOF",
+		"cat <(touch file)",
+		"cat >(touch file)",
+	])("blocks wrapper and substitution bypasses before approval: %s", async (command) => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", { commands: [command] }),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+		expect(result?.reason).toContain("`touch`");
+	});
+
+	it("checks the whole batch for blocked commands before requiring approval", async () => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("run_commands", {
+				commands: ["bun run check-types", "npx prettier --write src"],
+			}),
+		);
+		expect(result?.skip).toBe(true);
+		expect(result?.policy).toBeUndefined();
+	});
+
+	it("does not block or request approval for the future notebook host tool", async () => {
+		const result = await runBeforeTool(
+			createPlanModeCommandGuardExtension(),
+			makeContext("notebook", {
+				action: "write",
+				content: "bun run check-types; rm file",
+			}),
+		);
 		expect(result).toBeUndefined();
 	});
 

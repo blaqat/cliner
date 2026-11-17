@@ -19,6 +19,45 @@ describe("SdkSessionEventCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("emits notebook review after final response and only once across done/ended events", async () => {
+		const { coordinator, options, event } = makeCoordinator({
+			translation: {
+				messages: [{ ts: 1, type: "say", say: "completion_result", text: "Done" }],
+				sessionEnded: false,
+				turnComplete: true,
+			},
+		})
+		const order: string[] = []
+		options.messages.appendAndEmit.mockImplementation(() => order.push("response"))
+		const onTurnComplete = vi.fn(async () => {
+			order.push("notebook")
+		})
+		Object.assign(options, { onTurnComplete })
+		await coordinator.handleSessionEvent(event)
+		await coordinator.handleSessionEvent(event)
+		expect(order.slice(0, 2)).toEqual(["response", "notebook"])
+		expect(onTurnComplete).toHaveBeenCalledOnce()
+	})
+
+	it("settles the old turn before notebook I/O so it cannot mark a queued turn idle", async () => {
+		const { coordinator, options, event } = makeCoordinator({
+			translation: { messages: [], sessionEnded: false, turnComplete: true },
+		})
+		let finishReview: (() => void) | undefined
+		Object.assign(options, {
+			onTurnComplete: () =>
+				new Promise<void>((resolve) => {
+					finishReview = resolve
+				}),
+		})
+		const completion = coordinator.handleSessionEvent(event)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
+		options.sessions.setRunning.mockClear()
+		finishReview?.()
+		await completion
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+	})
+
 	it("translates and emits session messages, then posts state", async () => {
 		const message: ClineMessage = { ts: 1, type: "say", say: "text", text: "hello" }
 		const { coordinator, options, event } = makeCoordinator({
@@ -34,6 +73,30 @@ describe("SdkSessionEventCoordinator", () => {
 
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith([message], event)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("stamps the session's model on usage rows only", async () => {
+		const opening: ClineMessage = { ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({}) }
+		const usage: ClineMessage = {
+			ts: 2,
+			type: "say",
+			say: "api_req_started",
+			text: JSON.stringify({ tokensIn: 10, tokensOut: 2, cost: 0.01 }),
+		}
+		const { coordinator, options, event } = makeCoordinator({
+			translation: { messages: [opening, usage], sessionEnded: false, turnComplete: false },
+		})
+		Object.assign(options, { getModelId: () => "claude-x", getProviderId: () => "anthropic" })
+		await coordinator.handleSessionEvent(event)
+		const [emitted] = options.messages.appendAndEmit.mock.calls[0] as [ClineMessage[]]
+		expect(JSON.parse(emitted[0].text ?? "")).toEqual({})
+		expect(JSON.parse(emitted[1].text ?? "")).toEqual({
+			tokensIn: 10,
+			tokensOut: 2,
+			cost: 0.01,
+			modelId: "claude-x",
+			providerId: "anthropic",
+		})
 	})
 
 	it("filters late completion messages after cancellation", async () => {
@@ -88,7 +151,7 @@ describe("SdkSessionEventCoordinator", () => {
 
 		await coordinator.handleSessionEvent(event)
 
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
 	})
 
 	it("posts state on turn end even when the turn-complete event carries NO messages", async () => {
@@ -151,7 +214,7 @@ describe("SdkSessionEventCoordinator", () => {
 
 		expect(clearTurnOutcome).toHaveBeenCalledOnce()
 		expect(options.beginProviderFailureTelemetryTurn).toHaveBeenCalledOnce()
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(true, "session-123")
 		expect(options.setTurnPhase).toHaveBeenCalledWith("streaming")
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith([message], event)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
@@ -222,7 +285,7 @@ describe("SdkSessionEventCoordinator", () => {
 		await coordinator.handleSessionEvent(event)
 
 		expect(options.setTurnPhase).toHaveBeenCalledWith("awaiting_followup")
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
+		expect(options.sessions.setRunning).toHaveBeenCalledWith(false, "session-123")
 	})
 
 	it("updates task usage when the active session has a start result", async () => {
@@ -245,6 +308,29 @@ describe("SdkSessionEventCoordinator", () => {
 			cacheWrites: 0,
 			totalCost: 0.01,
 		})
+	})
+
+	it("does not recreate status or persist usage after a session is removed during cost lookup", async () => {
+		let release!: (free: boolean) => void
+		const { coordinator, options, event } = makeCoordinator({
+			isClineFreeModel: () =>
+				new Promise<boolean>((resolve) => {
+					release = resolve
+				}),
+			translation: {
+				messages: [{ ts: 1, type: "say", say: "text", text: "late" }],
+				sessionEnded: false,
+				turnComplete: true,
+				usage: { tokensIn: 1, tokensOut: 1, totalCost: 1 },
+			},
+		})
+		const handling = coordinator.handleSessionEvent(event)
+		options.sessions.getActiveSession.mockReturnValue(undefined)
+		release(false)
+		await handling
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+		expect(options.taskHistory.updateTaskUsage).not.toHaveBeenCalled()
 	})
 
 	it("zeros usage and api request message cost for free Cline models", async () => {
@@ -390,6 +476,37 @@ describe("SdkSessionEventCoordinator", () => {
 			failurePhase: PROVIDER_FAILURE_PHASE.STREAMING,
 		})
 	})
+
+	it("tracks per-session subagent counts from translator state and posts state", async () => {
+		const { coordinator, options, event } = makeCoordinator()
+		options.messageTranslatorState.addSpawnAgent("call-1", "research the codebase")
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 1, live: 1 })
+		expect(options.taskHistory.updateTaskSubagentCount).toHaveBeenCalledWith("session-123", 1)
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("keeps detached children live while the parent is idle", async () => {
+		const { coordinator, options, event } = makeCoordinator()
+		const state = options.messageTranslatorState
+		state.addSpawnAgent("call-1", "one")
+		state.addSpawnAgent("call-2", "two")
+
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 2 })
+		expect(options.taskHistory.updateTaskSubagentCount).toHaveBeenCalledWith("session-123", 2)
+
+		state.markSpawnAgentStopped("call-1")
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 1 })
+
+		// Parent completion leaves detached children running.
+		options.sessions.getActiveSession.mockReturnValue({ ...makeActiveSession(), isRunning: false } as never)
+		await coordinator.handleSessionEvent(event)
+		expect(options.sessions.subagentCounts["session-123"]).toEqual({ total: 2, live: 1 })
+	})
 })
 
 function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
@@ -401,18 +518,30 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 	} as unknown as CoreSessionEvent
 	const activeSession = input.activeSession ?? makeActiveSession()
+	const subagentCounts: Record<string, { total: number; live: number }> = {}
 	const options = {
 		messageTranslatorState: new MessageTranslatorState(),
 		sessions: {
 			getActiveSession: vi.fn(() => activeSession),
+			getSession: vi.fn(() => activeSession),
 			setRunning: vi.fn(),
 			setQueuedPromptCount: vi.fn(),
+			subagentCounts,
+			setSubagentCounts: vi.fn((id: string, counts: { total: number; live: number }) => {
+				const current = subagentCounts[id]
+				if (current && current.total === counts.total && current.live === counts.live) {
+					return false
+				}
+				subagentCounts[id] = counts
+				return true
+			}),
 		},
 		messages: {
 			appendAndEmit: vi.fn(),
 		},
 		taskHistory: {
 			updateTaskUsage: vi.fn(),
+			updateTaskSubagentCount: vi.fn(async () => {}),
 		},
 		getTask: vi.fn(() => input.task),
 		postStateToWebview: vi.fn().mockResolvedValue(undefined),

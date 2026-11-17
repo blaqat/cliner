@@ -176,6 +176,32 @@ describe("translateSessionEvent — chunk events", () => {
 // ---------------------------------------------------------------------------
 
 describe("translateSessionEvent — pending prompts", () => {
+	it("echoes a resolved prompt without its message_reference block, keeping the tag for display", () => {
+		const state = new MessageTranslatorState()
+		const result = translateSessionEvent(
+			{
+				type: "pending_prompt_submitted",
+				payload: {
+					sessionId: "session-1",
+					id: "pending-1",
+					prompt: '<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports at 10k rows\n</message_reference>\n\nuse this',
+					delivery: "steer",
+					attachmentCount: 0,
+				},
+			} as CoreSessionEvent,
+			state,
+		)
+		expect(result.messages).toEqual([
+			expect.objectContaining({
+				say: "user_feedback",
+				text: "use this",
+				messageReferences: [
+					{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports at 10k rows" },
+				],
+			}),
+		])
+	})
+
 	it("renders a submitted queued prompt as user feedback", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
@@ -1819,7 +1845,7 @@ describe("translateSessionEvent — ended event", () => {
 // ---------------------------------------------------------------------------
 
 describe("translateSessionEvent — hook events", () => {
-	it("translates tool_call hook to hook_status message", () => {
+	it("suppresses internal tool_call hook events", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
 			type: "hook",
@@ -1831,12 +1857,10 @@ describe("translateSessionEvent — hook events", () => {
 		}
 
 		const result = translateSessionEvent(event, state)
-		expect(result.messages).toHaveLength(1)
-		expect(result.messages[0].say).toBe("hook_status")
-		expect(result.messages[0].text).toContain("write_to_file")
+		expect(result.messages).toHaveLength(0)
 	})
 
-	it("translates tool_result hook to hook_status message", () => {
+	it("suppresses internal tool_result hook events", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
 			type: "hook",
@@ -1848,8 +1872,7 @@ describe("translateSessionEvent — hook events", () => {
 		}
 
 		const result = translateSessionEvent(event, state)
-		expect(result.messages).toHaveLength(1)
-		expect(result.messages[0].text).toContain("completed")
+		expect(result.messages).toHaveLength(0)
 	})
 })
 
@@ -3123,6 +3146,27 @@ describe("translateSessionEvent — run_commands bare array/string input (ENG-18
 // ---------------------------------------------------------------------------
 
 describe("sdkToolToClineSayTool — fetch_web_content and skills (S6-39, S6-40)", () => {
+	it.each(["read", "write", "delete"])("preserves notebook %s inputs for the compact tool row", (action) => {
+		const state = new MessageTranslatorState()
+		const { messages } = translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "root",
+					event: {
+						type: "content_start",
+						contentType: "tool",
+						toolName: "notebook",
+						toolCallId: "note-call",
+						input: { action, name: "Dev plan", content: "Private body" },
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+		expect(JSON.parse(messages[0].text ?? "{}")).toMatchObject({ tool: "notebook", action, name: "Dev plan" })
+		expect(messages[0].text).not.toContain("Private body")
+	})
 	it("S6-39: fetch_web_content extracts URL from SDK requests array", () => {
 		const state = new MessageTranslatorState()
 		const event: CoreSessionEvent = {
@@ -4365,6 +4409,32 @@ describe("tool display paths are relativized to the cwd", () => {
 		expect(clineMessages.some((m) => m.say === "completion_result" || m.ask === "completion_result")).toBe(true)
 	})
 
+	it("records the model that produced each restored request, for the cost breakdown", () => {
+		const messages: MessageWithMetadata[] = [
+			{ role: "user", content: "hi" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "hello" }],
+				modelInfo: { id: "gpt-5.6-sol", provider: "openai-native" },
+				metrics: { inputTokens: 10, outputTokens: 2, cost: 0.01 },
+			},
+			{ role: "user", content: "again" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "ok" }],
+				metrics: { inputTokens: 5, outputTokens: 1, cost: 0.005 },
+			},
+		]
+		const rows = sdkMessagesToClineMessages(messages as SdkMessage[])
+			.filter((m) => m.say === "api_req_started")
+			.map((m) => JSON.parse(m.text ?? "{}"))
+			.filter((info) => info.tokensIn !== undefined)
+		expect(rows.map((info) => [info.modelId, info.providerId])).toEqual([
+			["gpt-5.6-sol", "openai-native"],
+			[undefined, undefined],
+		])
+	})
+
 	it("relativizes persisted-history tool paths via options.cwd", () => {
 		const messages: SdkMessage[] = [
 			{
@@ -4448,5 +4518,202 @@ describe("persisted display-only errors", () => {
 		expect(rendered.at(-1)).toMatchObject({ type: "ask", ask: "api_req_failed" })
 		expect(rendered.at(-1)?.text).toContain("API key expired")
 		expect(rendered.some((message) => message.say === "completion_result" || message.ask === "completion_result")).toBe(false)
+	})
+})
+
+describe("translateSessionEvent — spawn_agent stop", () => {
+	const spawnStart = (state: MessageTranslatorState, callId: string, task: string) =>
+		translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "content_start",
+						contentType: "tool",
+						toolName: "spawn_agent",
+						toolCallId: callId,
+						input: { task },
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+	const spawnEnd = (state: MessageTranslatorState, callId: string, error?: string) =>
+		translateSessionEvent(
+			{
+				type: "agent_event",
+				payload: {
+					sessionId: "session-1",
+					event: {
+						type: "content_end",
+						contentType: "tool",
+						toolName: "spawn_agent",
+						toolCallId: callId,
+						output: { text: "", usage: { inputTokens: 0, outputTokens: 0 } },
+						error,
+					} as AgentEvent,
+				},
+			},
+			state,
+		)
+
+	it("keeps a user-stopped entry stopped when its tool call ends with an abort error", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "research")
+		expect(state.getSpawnAgentTotalCount()).toBe(1)
+		expect(state.getSpawnAgentToolCallId(1)).toBe("call-1")
+		expect(state.markSpawnAgentStopped("call-1")).toBe(true)
+
+		const result = spawnEnd(state, "call-1", "aborted")
+		const statusMessage = result.messages.find((message) => message.say === "subagent")
+		const parsed = JSON.parse(statusMessage?.text ?? "{}")
+		expect(parsed.items[0].status).toBe("stopped")
+		expect(parsed.status).toBe("failed")
+		expect(statusMessage?.partial).toBe(false)
+	})
+
+	it("does not mark finished or unknown entries stopped", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "research")
+		spawnEnd(state, "call-1")
+		expect(state.markSpawnAgentStopped("call-1")).toBe(false)
+		expect(state.markSpawnAgentStopped("missing")).toBe(false)
+	})
+
+	it("keeps the cumulative total across per-iteration resets", () => {
+		const state = new MessageTranslatorState()
+		spawnStart(state, "call-1", "one")
+		state.reset()
+		spawnStart(state, "call-2", "two")
+		expect(state.getSpawnAgentTotalCount()).toBe(2)
+		expect(state.getSpawnAgentItems()).toHaveLength(2)
+	})
+})
+
+describe("child transcript routing", () => {
+	it("streams a child's text, reasoning, tools, and report without consuming sibling or parent events", () => {
+		const state = new MessageTranslatorState()
+		const event = (agentId: string, data: Partial<AgentEvent>): CoreSessionEvent => ({
+			type: "agent_event",
+			payload: { sessionId: "parent", event: { agentId, parentAgentId: "lead", ...data } as AgentEvent },
+		})
+		const text = event("child-a", { type: "content_start", contentType: "text", text: "# Full report" })
+		expect(translateSessionEvent(text, new MessageTranslatorState()).messages).toEqual([])
+		expect(translateSessionEvent(text, state, "child-a").messages).toContainEqual(
+			expect.objectContaining({ say: "text", text: "# Full report", partial: true }),
+		)
+		expect(
+			translateSessionEvent(
+				event("child-b", { type: "content_end", contentType: "text", text: "Wrong report" }),
+				state,
+				"child-a",
+			).messages,
+		).toEqual([])
+		expect(
+			translateSessionEvent(
+				event("child-a", { type: "content_end", contentType: "reasoning", reasoning: "Review evidence" }),
+				state,
+				"child-a",
+			).messages,
+		).toContainEqual(expect.objectContaining({ say: "reasoning", text: "Review evidence" }))
+		expect(
+			translateSessionEvent(
+				event("child-a", {
+					type: "content_start",
+					contentType: "tool",
+					toolName: "read_files",
+					toolCallId: "read-a",
+					input: { paths: ["a.ts"] },
+				}),
+				state,
+				"child-a",
+			).messages.length,
+		).toBeGreaterThan(0)
+		expect(
+			translateSessionEvent(
+				event("child-a", { type: "content_end", contentType: "text", text: "# Full report\n\n```ts\nconst a = 1\n```" }),
+				state,
+				"child-a",
+			).messages,
+		).toContainEqual(expect.objectContaining({ text: "# Full report\n\n```ts\nconst a = 1\n```" }))
+		const done = translateSessionEvent(
+			event("child-a", { type: "done", reason: "completed", text: "", iterations: 1 }),
+			state,
+			"child-a",
+		)
+		expect(done.turnComplete).toBe(true)
+		expect(done.messages).toContainEqual(expect.objectContaining({ say: "completion_result" }))
+	})
+})
+
+describe("authored walkthrough ready cards", () => {
+	const ready = {
+		authoredId: "a1",
+		title: "Review remote changes",
+		origin: { label: "MR !12" },
+		stopCount: 2,
+		fileCount: 1,
+		reviewCount: 3,
+		reviewHighCount: 1,
+	}
+	const output = JSON.stringify({ walkthroughReady: ready, message: "Ready for review" })
+	it("emits a live ready card after success, with no partial generic tool row", () => {
+		const state = new MessageTranslatorState()
+		const send = (event: AgentEvent) =>
+			translateSessionEvent({ type: "agent_event", payload: { sessionId: "task", event } }, state).messages
+		expect(
+			send({
+				type: "content_start",
+				contentType: "tool",
+				toolName: "present_walkthrough",
+				toolCallId: "p1",
+				input: {},
+			} as AgentEvent),
+		).toEqual([])
+		const rows = send({
+			type: "content_end",
+			contentType: "tool",
+			toolName: "present_walkthrough",
+			toolCallId: "p1",
+			output,
+		} as AgentEvent)
+		expect(rows).toEqual([
+			expect.objectContaining({ type: "say", say: "walkthrough_ready", text: JSON.stringify(ready), partial: false }),
+		])
+	})
+	it("rebuilds the same card from persisted tool results on reopen", () => {
+		for (const content of [output, [{ type: "text", text: output }]]) {
+			const messages = [
+				{ role: "assistant", content: [{ type: "tool_use", id: "p1", name: "present_walkthrough", input: {} }] },
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "p1", content }] },
+			] as SdkMessage[]
+			const rows = sdkMessagesToClineMessages(messages)
+			expect(rows.filter((row) => row.say === "walkthrough_ready")).toEqual([
+				expect.objectContaining({ text: JSON.stringify(ready), sdkToolCallId: "p1" }),
+			])
+		}
+	})
+	it("never emits a ready card for a failed or malformed tool result", () => {
+		for (const result of [{ output, error: "Storage failed" }, { output: "bad" }]) {
+			const state = new MessageTranslatorState()
+			const rows = translateSessionEvent(
+				{
+					type: "agent_event",
+					payload: {
+						sessionId: "task",
+						event: {
+							type: "content_end",
+							contentType: "tool",
+							toolName: "present_walkthrough",
+							...result,
+						} as AgentEvent,
+					},
+				},
+				state,
+			).messages
+			expect(rows.some((row) => row.say === "walkthrough_ready")).toBe(false)
+			expect(rows.some((row) => row.say === "error")).toBe(true)
+		}
 	})
 })

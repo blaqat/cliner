@@ -151,6 +151,12 @@ export class TeamChildSessionManager {
 
 		const sessionId = makeSubSessionId(rootSessionId, input.agentId);
 		const existing = await this.adapter.getSession(sessionId);
+		const parent = await this.adapter.getSession(
+			makeSubSessionId(rootSessionId, input.parentAgentId),
+		);
+		const immediateParentSessionId = parent?.isSubagent
+			? parent.sessionId
+			: rootSessionId;
 		const startedAt = nowIso();
 		const artifactPaths = this.manifestStore.artifacts.subagentArtifactPaths(
 			sessionId,
@@ -179,6 +185,7 @@ export class TeamChildSessionManager {
 				startedAt,
 				...artifactPaths,
 			});
+			row.metadata = { ...row.metadata, immediateParentSessionId };
 			await this.adapter.upsertSession(row);
 			this.manifestStore.initializeMessagesFile(
 				row,
@@ -197,10 +204,13 @@ export class TeamChildSessionManager {
 			conversationId: input.conversationId,
 			prompt: existing.prompt ?? prompt ?? null,
 			metadata: resolveMetadataWithTitle({
-				metadata: withSessionHistoryOriginMetadata(existing.metadata, {
-					mode: "subagent",
-					version: readSessionHistoryOriginMetadata(root.metadata)?.version,
-				}),
+				metadata: withSessionHistoryOriginMetadata(
+					{ ...existing.metadata, immediateParentSessionId },
+					{
+						mode: "subagent",
+						version: readSessionHistoryOriginMetadata(root.metadata)?.version,
+					},
+				),
 				prompt: existing.prompt ?? prompt ?? null,
 			}),
 			expectedStatusLock: existing.statusLock,
@@ -377,6 +387,19 @@ export class TeamChildSessionManager {
 			rootSessionId,
 		});
 		if (!subSessionId) return;
+		const row = await this.adapter.getSession(subSessionId);
+		await this.adapter.updateSession({
+			sessionId: subSessionId,
+			metadata: {
+				...row?.metadata,
+				spawnToolCallId: context.toolCallId,
+				subagentAccess: context.input.access ?? "read",
+			},
+		});
+		if (!context.continuing)
+			await this.manifestStore.persistSessionMessages(subSessionId, [
+				{ role: "user", content: context.input.task },
+			]);
 		await this.applySubagentStatusBySessionId(subSessionId, "running");
 	}
 
@@ -392,12 +415,8 @@ export class TeamChildSessionManager {
 			rootSessionId,
 		});
 		if (!subSessionId) return;
-		if (context.error) {
-			await this.applySubagentStatusBySessionId(subSessionId, "failed");
-			return;
-		}
 		const persistedMessages = this.toPersistedMessages(
-			context.agentResult?.messages,
+			context.agentResult?.messages ?? context.messages,
 			context.agentResult,
 		);
 		if (persistedMessages) {
@@ -406,10 +425,44 @@ export class TeamChildSessionManager {
 				persistedMessages,
 			);
 		}
+		// History listings do not hydrate transcripts. Store the child's totals
+		// beside its lineage so the host can show them after reload as well.
+		const row = await this.adapter.getSession(subSessionId);
+		const usage: AgentResult["usage"] | undefined =
+			context.agentResult?.usage ?? context.usage ?? context.result?.usage;
+		if (usage) {
+			await this.adapter.updateSession({
+				sessionId: subSessionId,
+				metadata: {
+					...row?.metadata,
+					// Match the host's disjoint input/cache buckets.
+					tokensIn: Math.max(
+						0,
+						usage.inputTokens -
+							(usage.cacheReadTokens ?? 0) -
+							(usage.cacheWriteTokens ?? 0),
+					),
+					tokensOut: usage.outputTokens,
+					totalCost: usage.totalCost ?? 0,
+					cacheReads: usage.cacheReadTokens ?? 0,
+					cacheWrites: usage.cacheWriteTokens ?? 0,
+					subagentToolCalls:
+						context.agentResult?.toolCalls.length ?? context.toolCalls ?? 0,
+				},
+			});
+		}
+		if (context.error) {
+			await this.applySubagentStatusBySessionId(subSessionId, "failed");
+			return;
+		}
 		const reason = context.result?.finishReason ?? "completed";
 		await this.applySubagentStatusBySessionId(
 			subSessionId,
-			reason === "aborted" ? "cancelled" : "completed",
+			reason === "aborted"
+				? "cancelled"
+				: reason === "error"
+					? "failed"
+					: "completed",
 		);
 	}
 

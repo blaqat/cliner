@@ -78,6 +78,9 @@ enum ClineSay {
   COMPACTION = 37;
   PLAN_COMPLETION_RESULT = 38;
   CLOUD_PROVISIONING = 39;
+  NOTEBOOK_CHANGES = 1039;
+  WALKTHROUGH_READY = 1040;
+  SUBAGENT_UPDATE = 1041;
 }
 
 // Enum for ClineSayTool tool types
@@ -235,6 +238,26 @@ message ClineMessage {
   // epoch = conversation/replica fence (older epoch is dropped by the webview)
   int64 seq = 24;
   int64 epoch = 25;
+
+  // Index into the SDK transcript — the stable anchor message links target.
+  // Optional: unset for rows that have no transcript position (minted UI rows).
+  optional int64 sdk_message_index = 26;
+
+  // Messages the user linked when sending (shown as chips on the bubble).
+  repeated MessageReference message_references = 27;
+}
+
+// One linked message attached to a sent message (see MessageReferenceInfo).
+message MessageReference {
+  string thread_id = 1;
+  string thread_title = 2;
+  // "user" or "assistant".
+  string author = 3;
+  string text = 4;
+  // Where the message is, when known: index into the SDK transcript plus a row anchor.
+  optional int64 message_index = 5;
+  optional string tool_call_id = 6;
+  optional int32 block = 7;
 }
 
 message ShowWebviewEvent {
@@ -253,6 +276,8 @@ message IntentEvent {
 
 // UiService provides methods for managing UI interactions
 service UiService {
+  // Shows the Cline output channel.
+  rpc openLogs(EmptyRequest) returns (Empty);
   // Scrolls to a specific settings section in the settings view
   rpc scrollToSettings(StringRequest) returns (KeyValuePair);
 
@@ -286,15 +311,21 @@ service UiService {
   // Subscribe to worktrees button clicked events
   rpc subscribeToWorktreesButtonClicked(EmptyRequest) returns (stream Empty);
 
+  // Subscribe to rules & workflows button clicked events (view title bar; opens the rules overlay)
+  rpc subscribeToRulesButtonClicked(EmptyRequest) returns (stream Empty);
+
   // Subscribe to partial message updates (streaming Cline messages as they're built)
   rpc subscribeToPartialMessage(EmptyRequest) returns (stream ClineMessage);
 
   // Initialize webview when it launches
   rpc initializeWebview(EmptyRequest) returns (Empty);
 
-
   // Subscribe to show webview events
   rpc subscribeToShowWebview(EmptyRequest) returns (stream ShowWebviewEvent);
+
+  // Subscribe to stash shortcut events (⌘S / Ctrl+S while the Cline view is
+  // focused; the workbench keybinding claims the key so it can't save a file)
+  rpc subscribeToStashShortcut(EmptyRequest) returns (stream Empty);
 
   // Returns the HTML for the webview index page. This is only used by external clients, not by the vscode webview.
   rpc getWebviewHtml(EmptyRequest) returns (String);
@@ -305,6 +336,25 @@ service UiService {
   // Opens the Cline walkthrough
   rpc openWalkthrough(EmptyRequest) returns (Empty);
 
+  // Subscribe to message deep-link events (a vscode:// link opened the thread
+  // at a specific message; the webview scrolls to and flashes it)
+  rpc subscribeToOpenMessage(EmptyRequest) returns (stream OpenMessageEvent);
+
   // Tracks intent signals before task creation or first model activity
   rpc trackIntent(IntentEvent) returns (Empty);
+
+  // Subscribe to VS Code window focus changes; sends the current state first
+  rpc subscribeToWindowFocus(EmptyRequest) returns (stream Boolean);
+}
+
+// A message deep link was opened: show thread_id scrolled to the message.
+// message_index is its index into the SDK transcript (sdkMessageIndex); text
+// is a display fallback for rows that have no stamped index yet.
+message OpenMessageEvent {
+  string thread_id = 1;
+  int64 message_index = 2;
+  string text = 3;
+  // Row anchor (see ResolveMessageLinkRequest): tool call id or sibling ordinal.
+  optional string tool_call_id = 4;
+  optional int32 block = 5;
 }

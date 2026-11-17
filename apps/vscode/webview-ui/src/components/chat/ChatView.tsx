@@ -1,16 +1,26 @@
 import { combineApiRequests } from "@shared/combineApiRequests"
 import { combineCommandSequences } from "@shared/combineCommandSequences"
 import { combineHookSequences } from "@shared/combineHookSequences"
-import { getApiMetrics, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
+import { getApiMetrics, getCostBreakdown, getLastApiReqTotalTokens } from "@shared/getApiMetrics"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
+import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
+import { NewChatHero, NewChatListToggle } from "@/components/oneView/NewChatHero"
+import { OneViewLayout } from "@/components/oneView/OneViewLayout"
+import { SearchView } from "@/components/search/SearchView"
+import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/composerTaskGroup"
+import { NotebookView } from "@/components/taskGroup/NotebookView"
+import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
+import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
+import WalkthroughView from "@/components/walkthrough/WalkthroughView"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
+import { cn } from "@/lib/utils"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { Navbar } from "../menu/Navbar"
-import AutoApproveBar from "./auto-approve-menu/AutoApproveBar"
 // Import utilities and hooks from the new structure
 import {
 	ActionButtons,
@@ -24,16 +34,25 @@ import {
 	MessagesArea,
 	QueuedPrompts,
 	TaskSection,
+	ThreadStrip,
 	useChatState,
+	useLeaveDeletedThread,
 	useMessageHandlers,
 	useScrollBehavior,
 	WelcomeSection,
+	withTaskMessage,
 } from "./chat-view"
+import { SubagentThreadFooter, SubagentThreadHeader } from "./chat-view/components/layout/SubagentThreadHeader"
+import { composerPlaceholder } from "./chat-view/utils/composerPlaceholder"
+import { findOpenMessageIndex } from "./chat-view/utils/openMessageUtils"
 import {
 	hasPendingMessageConfirmation,
 	isPendingResponseUnconfirmed,
 	withPendingUserMessage,
 } from "./chat-view/utils/pendingResponse"
+import { subagentReportText } from "./chat-view/utils/subagentReport"
+import type { LineageRow } from "./chat-view/utils/threadUtils"
+import { clearSubagentExpandTarget, emitSubagentExpand } from "./subagentExpand"
 
 interface ChatViewProps {
 	isHidden: boolean
@@ -62,6 +81,15 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		cloudSessionsEnabled,
 		cloudTaskTarget,
 		currentCloudTask,
+		subagentView,
+		currentTaskItem,
+		taskGroupView,
+		oneViewEnabled,
+		showWalkthrough,
+		walkthroughAuthoredId,
+		hideWalkthrough,
+		hideTaskGroupView,
+		navigateToChat,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -84,6 +112,24 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		setPendingResponse,
 		textAreaRef,
 	} = chatState
+
+	const [childQuotes, setChildQuotes] = useState<Record<string, string[]>>({})
+	const selectedChildQuotes = childQuotes[currentTaskItem?.id ?? ""] ?? []
+	const pendingParentQuote = useRef<{ parentTaskId: string; text: string } | undefined>(undefined)
+	useEffect(() => {
+		const pending = pendingParentQuote.current
+		if (pending && currentTaskItem?.id === pending.parentTaskId) {
+			pendingParentQuote.current = undefined
+			chatState.setQuotes((quotes) => [...quotes, { text: pending.text, note: "" }])
+		}
+	}, [currentTaskItem?.id, chatState.setQuotes])
+	const report = subagentReportText(messages)
+	const quoteIntoParent = () => {
+		if (!subagentView) return
+		const selected = selectedChildQuotes.join("\n\n")
+		pendingParentQuote.current = { parentTaskId: subagentView.parentTaskId, text: selected || report }
+		void openTask(subagentView.parentTaskId)
+	}
 
 	const displayMessages = useMemo(() => withPendingUserMessage(messages, pendingUserMessage), [messages, pendingUserMessage])
 
@@ -110,6 +156,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	}, [displayMessages, hooksEnabled])
 	// has to be after api_req_finished are all reduced into api_req_started messages
 	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
+	const costBreakdown = useMemo(() => getCostBreakdown(modifiedMessages), [modifiedMessages])
 
 	const lastApiReqTotalTokens = useMemo(() => getLastApiReqTotalTokens(modifiedMessages) || undefined, [modifiedMessages])
 	const lastAppliedCheckpointRestoreSessionId = useRef<string | undefined>(checkpointRestoreInput?.sessionId)
@@ -220,13 +267,10 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	// Use message handlers hook
 	const messageHandlers = useMessageHandlers(messages, chatState)
 
-	const { selectedModelInfo } = useNormalizedApiConfiguration(mode)
+	const { selectedModelInfo } = useNormalizedApiConfiguration(mode, true)
 
 	// Cloud sandboxes cannot read local files; only images (sent inline) can be attached.
 	const imagesOnly =
-		!!currentCloudTask || (messages.length === 0 && cloudSessionsEnabled && cloudTaskTarget?.target === "cloud")
-	// Cloud sessions always auto-approve; local auto-approve settings don't apply there.
-	const hideAutoApprove =
 		!!currentCloudTask || (messages.length === 0 && cloudSessionsEnabled && cloudTaskTarget?.target === "cloud")
 
 	const selectFilesAndImages = useCallback(async () => {
@@ -342,9 +386,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		}
 	}, [isHidden, sendingDisabled, enableButtons])
 
-	const visibleMessages = useMemo(() => {
-		return filterVisibleMessages(modifiedMessages)
-	}, [modifiedMessages])
+	// The first message renders as the conversation's first user bubble. It joins the list only
+	// after combining, so it never reaches the metrics/combine helpers above.
+	const visibleMessages = useMemo(
+		() => withTaskMessage(task, filterVisibleMessages(modifiedMessages)),
+		[task, modifiedMessages],
+	)
 
 	const groupedMessages = useMemo(() => {
 		return groupLowStakesTools(groupMessages(visibleMessages))
@@ -354,12 +401,65 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const scrollBehavior = useScrollBehavior(displayMessages, visibleMessages, groupedMessages, expandedRows, setExpandedRows)
 	const { scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef } = scrollBehavior
 
+	// A vscode:// message deep link: scroll to the message once its thread is
+	// loaded, then briefly flash the row. Matched by the stable transcript
+	// index; the message text is the fallback for unindexed rows.
+	const { openMessageTarget, clearOpenMessageTarget } = useExtensionState()
+	useEffect(() => {
+		if (!openMessageTarget || currentTaskItem?.id !== openMessageTarget.threadId) {
+			return
+		}
+		const index = findOpenMessageIndex(displayMessages, openMessageTarget)
+		if (index < 0) {
+			return // thread still loading — retry on the next messages update
+		}
+		const ts = displayMessages[index].ts
+		scrollBehavior.scrollToMessage(index)
+		clearOpenMessageTarget()
+		// Flash once the row is rendered (Virtuoso mounts it after the scroll).
+		// No effect cleanup for this timer: clearing the target re-runs the effect,
+		// which would cancel the flash before the row mounts. It stops itself.
+		let tries = 0
+		const flash = setInterval(() => {
+			const el = scrollBehavior.scrollContainerRef.current?.querySelector<HTMLElement>(`[data-message-ts="${ts}"]`)
+			if (el || ++tries > 20) {
+				clearInterval(flash)
+				el?.classList.add("message-link-flash")
+				setTimeout(() => el?.classList.remove("message-link-flash"), 1800)
+			}
+		}, 100)
+	}, [openMessageTarget, currentTaskItem?.id, displayMessages, scrollBehavior, clearOpenMessageTarget])
+
+	// A transcript-only subagent row in the header's subagent panel scrolls the
+	// transcript to that subagent's status row and expands its details there.
+	const openSubagentDetails = useCallback(
+		(item: LineageRow) => {
+			const [tsText, indexText] = item.id.split(":")
+			const ts = Number(tsText)
+			const itemIndex = Number(indexText)
+			if (!Number.isFinite(ts) || !Number.isFinite(itemIndex)) {
+				return
+			}
+			const messageIndex = displayMessages.findIndex((message) => message.ts === ts)
+			if (messageIndex >= 0) {
+				scrollBehavior.scrollToMessage(messageIndex)
+			}
+			emitSubagentExpand(ts, itemIndex)
+		},
+		[displayMessages, scrollBehavior],
+	)
+
 	// When a prompt gets queued, the queue banner mounts (or grows) in the footer, which
 	// shrinks the messages area and visually covers the bottom of the conversation. No new
 	// chat row is added, so the list-length-based auto-scroll never fires — re-pin to the
 	// bottom here so the latest content stays visible.
 	const queuedPromptCount = queuedPrompts?.length ?? 0
 	const taskTs = task?.ts
+	// A pending subagent-expand target belongs to the task it was requested in;
+	// drop it on a task switch so it can't expand a row in another conversation.
+	useEffect(() => {
+		clearSubagentExpandTarget()
+	}, [taskTs])
 	const prevQueuedPromptCountRef = useRef(queuedPromptCount)
 	const prevQueuedPromptTaskTsRef = useRef(taskTs)
 	useEffect(() => {
@@ -383,30 +483,244 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		}, 50)
 	}, [queuedPromptCount, taskTs, scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef])
 
-	const placeholderText = useMemo(() => {
-		const text = task ? "Type a message..." : "Type your task here..."
-		return text
-	}, [task])
+	// Home's search view, carrying over what was typed in the search bar. null = closed.
+	const [searchQuery, setSearchQuery] = useState<string | null>(null)
+	const openSearch = useCallback((query: string) => setSearchQuery(query), [])
+	const closeSearch = useCallback(() => setSearchQuery(null), [])
+	const showSearch = !task && searchQuery !== null
+	// Back history needs ChatView's thread and search state; lend it the controls.
+	const navigation = useNavigationHistory()
+	const registerChatNavigation = navigation?.registerChat
+	const reportSearch = navigation?.reportSearch
+	const closeThread = messageHandlers.handleTaskCloseButtonClick
+	useEffect(
+		() => registerChatNavigation?.({ closeThread: () => void closeThread(), openSearch, closeSearch }),
+		[registerChatNavigation, closeThread, openSearch, closeSearch],
+	)
+	useEffect(() => reportSearch?.(showSearch), [reportSearch, showSearch])
+	// Opening a thread from anywhere leaves search; coming home lands on home, not stale results.
+	useEffect(() => {
+		if (taskTs !== undefined) setSearchQuery(null)
+	}, [taskTs])
+
+	// The task (group) page replaces chat/home in the sidebar.
+	const openTaskGroup = useTaskGroupPageNavigation({
+		taskTs,
+		closeThread: messageHandlers.handleTaskCloseButtonClick,
+		onPageOpen: closeSearch,
+	})
+
+	useClearComposerTaskOnLeavingTask(taskGroupView?.id ?? currentTaskItem?.taskGroupId)
+
+	// One view: Esc in an empty new chat returns to the last thread.
+	const lastThreadIdRef = useRef<string | undefined>(undefined)
+	useEffect(() => {
+		if (currentTaskItem?.id) lastThreadIdRef.current = currentTaskItem.id
+	}, [currentTaskItem?.id])
+	// Deleting the open thread lands on its task page, else home, with the composer ready for a new thread.
+	const goHomeAfterDelete = useCallback(() => {
+		closeSearch()
+		navigateToChat()
+		setTimeout(() => textAreaRef.current?.focus(), 0)
+	}, [closeSearch, navigateToChat, textAreaRef])
+	const openTaskGroupAfterDelete = useCallback(
+		(taskGroupId: string) => {
+			openTaskGroup(taskGroupId)
+			setTimeout(() => textAreaRef.current?.focus(), 0)
+		},
+		[openTaskGroup, textAreaRef],
+	)
+	useLeaveDeletedThread({ openTaskGroup: openTaskGroupAfterDelete, goHome: goHomeAfterDelete })
+	const openThreadFromList = useCallback(
+		(threadId: string) => {
+			// A row leaves the walkthrough for the thread, even the one it belongs to.
+			if (showWalkthrough) hideWalkthrough()
+			if (threadId === currentTaskItem?.id && !taskGroupView) return
+			void openTask(threadId)
+		},
+		[currentTaskItem?.id, taskGroupView, showWalkthrough, hideWalkthrough],
+	)
+	const returnOnEscape = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (event.key !== "Escape" || event.defaultPrevented || task || taskGroupView) return
+		if (event.target !== textAreaRef.current && event.target !== event.currentTarget) return
+		const hasDraft =
+			!!chatState.inputValue.trim() ||
+			selectedImages.length > 0 ||
+			selectedFiles.length > 0 ||
+			chatState.quotes.length > 0 ||
+			(chatState.messageTags?.length ?? 0) > 0
+		const previous = lastThreadIdRef.current
+		if (hasDraft || !previous || !taskHistory?.some((item) => item.id === previous)) return
+		event.preventDefault()
+		void openTask(previous)
+	}
+
+	const placeholderText = useMemo(
+		() => composerPlaceholder({ inThread: !!task, onTaskPage: !!taskGroupView }),
+		[task, taskGroupView],
+	)
+
+	const messagesArea = task && !taskGroupView && (
+		<MessagesArea
+			chatState={chatState}
+			groupedMessages={groupedMessages}
+			messageHandlers={messageHandlers}
+			modifiedMessages={modifiedMessages}
+			onSetQuote={
+				subagentView && currentTaskItem
+					? (text) =>
+							setChildQuotes((quotes) => ({
+								...quotes,
+								[currentTaskItem.id]: [...(quotes[currentTaskItem.id] ?? []), text],
+							}))
+					: undefined
+			}
+			scrollBehavior={scrollBehavior}
+			task={task}
+		/>
+	)
+
+	const composerControls = (
+		<>
+			{(!subagentView || subagentView.pendingDecision === "approval") && (
+				<ActionButtons
+					chatState={chatState}
+					messageHandlers={messageHandlers}
+					messages={messages}
+					mode={mode}
+					task={task}
+				/>
+			)}
+			{!subagentView && <QueuedPrompts items={queuedPrompts} />}
+			{(!subagentView || subagentView.pendingDecision === "question") && (
+				<InputSection
+					apiMetrics={apiMetrics}
+					chatState={chatState}
+					costBreakdown={costBreakdown}
+					lastApiReqTotalTokens={lastApiReqTotalTokens}
+					messageHandlers={messageHandlers}
+					onOpenTaskGroup={openTaskGroup}
+					placeholderText={placeholderText}
+					scrollBehavior={scrollBehavior}
+					selectFilesAndImages={selectFilesAndImages}
+					shouldDisableFilesAndImages={shouldDisableFilesAndImages}
+				/>
+			)}
+			{subagentView && (
+				<SubagentThreadFooter hasReport={!!report || selectedChildQuotes.length > 0} onQuote={quoteIntoParent} />
+			)}
+		</>
+	)
+
+	if (oneViewEnabled) {
+		// The list is home: no thread and no task page is the new-chat screen.
+		const isNewChat = !task && !taskGroupView
+		// A walkthrough is a page of its thread: it takes the main region and the list stays. The thread stays mounted under it.
+		const walkthroughOpen = !!showWalkthrough && !!currentTaskItem
+		return (
+			<OneViewLayout
+				currentTaskGroupId={taskGroupView?.id}
+				currentThreadId={currentTaskItem?.id}
+				hidden={isHidden && !walkthroughOpen}
+				onOpenTaskGroup={openTaskGroup}
+				onOpenThread={openThreadFromList}>
+				{walkthroughOpen && (
+					<WalkthroughView
+						authoredId={walkthroughAuthoredId}
+						key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}
+						onDone={hideWalkthrough}
+						taskId={currentTaskItem.id}
+					/>
+				)}
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: Esc in an empty new chat returns to the last thread */}
+				<div
+					className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", walkthroughOpen && "hidden")}
+					onKeyDown={returnOnEscape}>
+					{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
+					{/* Fixed slots (top, composer, spacer) so the composer never remounts between a new chat and a thread. */}
+					<div
+						className={cn("flex min-h-0 flex-1 flex-col", isNewChat ? "justify-end" : "overflow-hidden")}
+						data-testid={isNewChat ? "one-view-new-chat" : "one-view-content"}>
+						{isNewChat ? (
+							<>
+								<NewChatListToggle />
+								<NewChatHero />
+							</>
+						) : (
+							<>
+								{taskGroupView ? (
+									taskGroupView.page === "notebook" ? (
+										<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+									) : (
+										<TaskGroupView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+									)
+								) : subagentView && currentTaskItem ? (
+									<SubagentThreadHeader
+										item={currentTaskItem}
+										onOpenSubagentPreview={openSubagentDetails}
+										view={subagentView}
+									/>
+								) : (
+									task && (
+										<TaskSection
+											messageHandlers={messageHandlers}
+											onOpenSubagentPreview={openSubagentDetails}
+											onOpenTaskGroup={openTaskGroup}
+											task={task}
+										/>
+									)
+								)}
+								{task && !subagentView && !taskGroupView && <ThreadStrip />}
+								{messagesArea}
+							</>
+						)}
+					</div>
+					<footer
+						className={cn(
+							"flex shrink-0 flex-col bg-(--vscode-sidebar-background)",
+							isNewChat && "mx-auto w-full max-w-[680px]",
+							taskGroupView?.page === "notebook" && "hidden",
+						)}
+						data-testid="one-view-composer">
+						{composerControls}
+					</footer>
+					<div aria-hidden className={isNewChat ? "min-h-0 flex-1" : "hidden"} />
+				</div>
+			</OneViewLayout>
+		)
+	}
 
 	return (
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-				{task ? (
+				{taskGroupView ? (
+					taskGroupView.page === "notebook" ? (
+						<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+					) : (
+						<TaskGroupView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+					)
+				) : subagentView && currentTaskItem ? (
+					<SubagentThreadHeader
+						item={currentTaskItem}
+						onOpenSubagentPreview={openSubagentDetails}
+						view={subagentView}
+					/>
+				) : task ? (
 					<TaskSection
-						apiMetrics={apiMetrics}
-						lastApiReqTotalTokens={lastApiReqTotalTokens}
 						messageHandlers={messageHandlers}
-						selectedModelInfo={{
-							supportsPromptCache: selectedModelInfo.supportsPromptCache,
-							supportsImages: selectedModelInfo.supportsImages || false,
-						}}
+						onOpenSubagentPreview={openSubagentDetails}
+						onOpenTaskGroup={openTaskGroup}
 						task={task}
 					/>
+				) : showSearch ? (
+					<SearchView initialQuery={searchQuery ?? ""} onClose={closeSearch} />
 				) : (
 					<WelcomeSection
 						hideAnnouncement={hideAnnouncement}
 						isVisible={!isHidden}
+						onOpenSearch={openSearch}
+						onOpenTaskGroup={openTaskGroup}
 						shouldShowQuickWins={shouldShowQuickWins}
 						showAnnouncement={showAnnouncement}
 						showHistoryView={showHistoryView}
@@ -415,35 +729,16 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
-				{task && (
-					<MessagesArea
-						chatState={chatState}
-						groupedMessages={groupedMessages}
-						messageHandlers={messageHandlers}
-						modifiedMessages={modifiedMessages}
-						scrollBehavior={scrollBehavior}
-						task={task}
-					/>
-				)}
+				{task && !subagentView && !taskGroupView && <ThreadStrip />}
+				{messagesArea}
 			</div>
-			<footer className="bg-(--vscode-sidebar-background) flex flex-col" style={{ gridRow: "2" }}>
-				{!hideAutoApprove && <AutoApproveBar />}
-				<ActionButtons
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					messages={messages}
-					mode={mode}
-					task={task}
-				/>
-				<QueuedPrompts items={queuedPrompts} />
-				<InputSection
-					chatState={chatState}
-					messageHandlers={messageHandlers}
-					placeholderText={placeholderText}
-					scrollBehavior={scrollBehavior}
-					selectFilesAndImages={selectFilesAndImages}
-					shouldDisableFilesAndImages={shouldDisableFilesAndImages}
-				/>
+			<footer
+				className={cn(
+					"bg-(--vscode-sidebar-background) flex flex-col",
+					(showSearch || taskGroupView?.page === "notebook") && "hidden",
+				)}
+				style={{ gridRow: "2" }}>
+				{composerControls}
 			</footer>
 		</ChatLayout>
 	)

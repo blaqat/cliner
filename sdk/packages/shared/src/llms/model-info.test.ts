@@ -181,6 +181,13 @@ describe("modelSupportsToolCalling", () => {
 	});
 });
 
+describe("a declared text-only model", () => {
+	it("says no to tools and images, where an empty list says nothing", () => {
+		expect(modelSupportsToolCalling({ capabilities: ["text"] })).toBe(false);
+		expect(modelSupportsImageInput({ capabilities: ["text"] })).toBe(false);
+	});
+});
+
 describe("modelSupportsImageInput", () => {
 	it("fails open when capability metadata is missing or empty", () => {
 		expect(modelSupportsImageInput({})).toBe(true);

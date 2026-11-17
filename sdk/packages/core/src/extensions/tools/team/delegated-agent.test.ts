@@ -1,3 +1,4 @@
+import type { AgentTool } from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import {
 	buildDelegatedAgentConfig,
@@ -42,4 +43,36 @@ describe("buildDelegatedAgentConfig", () => {
 		expect(config.distinctId).toBeUndefined();
 		expect(config.sessionId).toBeUndefined();
 	});
+});
+
+it.each([
+	"subagent",
+	"teammate",
+] as const)("removes parent tools from %s configurations", (kind) => {
+	const names = [
+		"spawn_agent",
+		"send_to_agent",
+		"cancel_agent",
+		"list_agents",
+		"wait_for_agents",
+		"team_spawn_teammate",
+		"team_run_task",
+		"subagent_reviewer",
+		"message_parent",
+		"read_file",
+	];
+	const config = buildDelegatedAgentConfig({
+		kind,
+		prompt: "Work",
+		tools: names.map((name) => ({ name }) as AgentTool),
+		configProvider: createDelegatedAgentConfigProvider({
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+		}),
+		parentAgentId: "parent",
+	});
+	expect(config.tools.map((tool) => tool.name)).toEqual([
+		"message_parent",
+		"read_file",
+	]);
 });

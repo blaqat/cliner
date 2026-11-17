@@ -4,6 +4,13 @@ import ClineLogoVariable from "@/assets/ClineLogoVariable"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { UiServiceClient } from "@/services/grpc-client"
 
+/** The home header's Cline logo (the Santa one in December), at any size. */
+export const HomeLogo = ({ className }: { className?: string }) => {
+	const { environment } = useExtensionState()
+	const LogoComponent = new Date().getMonth() === 11 ? ClineLogoSanta : ClineLogoVariable
+	return <LogoComponent className={className} environment={environment} />
+}
+
 interface HomeHeaderProps {
 	shouldShowQuickWins?: boolean
 }
@@ -24,15 +31,16 @@ const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
 	const headingText = "What can I do for you?"
 
 	return (
-		<div className="flex flex-col items-center mb-5">
-			<div className="my-7">
-				<LogoComponent className="size-20" environment={environment} />
+		// The original layout (logo over the heading), just smaller: about 115px instead of 190.
+		<div className="mb-3 flex flex-col items-center">
+			<div className="mt-4 mb-2.5">
+				<LogoComponent className="size-14" environment={environment} />
 			</div>
-			<div className="text-center flex items-center justify-center px-4">
-				<h1 className="m-0 font-bold">{headingText}</h1>
+			<div className="flex items-center justify-center px-4 text-center">
+				<h1 className="m-0 text-[15px] font-bold">{headingText}</h1>
 			</div>
 			{shouldShowQuickWins && (
-				<div className="mt-4">
+				<div className="mt-3">
 					<button
 						className="flex items-center gap-2 px-4 py-2 rounded-full border border-border-panel bg-white/2 hover:bg-list-background-hover transition-colors duration-150 ease-in-out text-code-foreground text-sm font-medium cursor-pointer"
 						onClick={handleTakeATour}

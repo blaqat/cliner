@@ -21,6 +21,7 @@ import type {
 const GATEWAY_CAPABILITY_BY_MODEL_CAPABILITY: Readonly<
 	Record<ModelCapability, GatewayModelCapability | null>
 > = {
+	text: "text",
 	images: "images",
 	video: null,
 	tools: "tools",

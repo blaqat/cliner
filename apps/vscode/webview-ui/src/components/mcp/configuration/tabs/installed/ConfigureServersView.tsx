@@ -54,12 +54,12 @@ const ConfigureServersView = () => {
 						})
 					}}
 					style={{ width: "100%", marginBottom: "5px" }}>
-					<span className="codicon codicon-server" style={{ marginRight: "6px" }}></span>
+					<span className="codicon codicon-server" style={{ marginRight: "6px" }} />
 					Configure MCP Servers
 				</VSCodeButton>
 
 				<div style={{ textAlign: "center" }}>
-					<VSCodeLink onClick={() => navigateToSettings("features")} style={{ fontSize: "12px" }}>
+					<VSCodeLink onClick={() => navigateToSettings("mcp-advanced")} style={{ fontSize: "12px" }}>
 						Advanced MCP Settings
 					</VSCodeLink>
 				</div>

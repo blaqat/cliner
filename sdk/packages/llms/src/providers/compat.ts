@@ -204,12 +204,17 @@ export async function resolveGatewayProviderRegistration(
 			baseUrl: collection.provider.baseUrl ?? routedBuiltin?.defaults?.baseUrl,
 			apiKeyEnv: collection.provider.env ?? routedBuiltin?.defaults?.apiKeyEnv,
 		},
+		// A built-in provider explicitly routed to another built-in (e.g. OpenAI
+		// Compatible -> openai-native for the Responses API) must use the routed
+		// transport; the source collection's own client would pick the wrong API.
 		createProvider:
-			routedBuiltin?.createProvider ??
-			resolveFactory(routedProviderId, {
-				client: config.clientType ?? collection.provider.client,
-				protocol: collection.provider.protocol,
-			}),
+			builtin && routedBuiltin
+				? routedBuiltin.createProvider
+				: (routedBuiltin?.createProvider ??
+					resolveFactory(routedProviderId, {
+						client: config.clientType ?? collection.provider.client,
+						protocol: collection.provider.protocol,
+					})),
 		loadProvider: routedBuiltin?.loadProvider,
 	};
 }
@@ -270,12 +275,17 @@ export function resolveGatewayProviderRegistrationSync(
 			baseUrl: collection.provider.baseUrl ?? routedBuiltin?.defaults?.baseUrl,
 			apiKeyEnv: collection.provider.env ?? routedBuiltin?.defaults?.apiKeyEnv,
 		},
+		// A built-in provider explicitly routed to another built-in (e.g. OpenAI
+		// Compatible -> openai-native for the Responses API) must use the routed
+		// transport; the source collection's own client would pick the wrong API.
 		createProvider:
-			routedBuiltin?.createProvider ??
-			resolveFactory(routedProviderId, {
-				client: config.clientType ?? collection.provider.client,
-				protocol: collection.provider.protocol,
-			}),
+			builtin && routedBuiltin
+				? routedBuiltin.createProvider
+				: (routedBuiltin?.createProvider ??
+					resolveFactory(routedProviderId, {
+						client: config.clientType ?? collection.provider.client,
+						protocol: collection.provider.protocol,
+					})),
 		loadProvider: routedBuiltin?.loadProvider,
 	};
 }
@@ -313,11 +323,20 @@ export function toGatewayRequestMessages(
 										type: "reasoning" as const,
 										text: part.thinking,
 										metadata:
-											part.signature || part.call_id
+											part.signature || part.call_id || part.details
 												? {
 														signature: part.signature,
 														callId: part.call_id,
 														details: part.details,
+														...(part.details &&
+														typeof part.details === "object" &&
+														!Array.isArray(part.details)
+															? {
+																	openaiReasoningItems: (
+																		part.details as Record<string, unknown>
+																	).openaiReasoningItems,
+																}
+															: {}),
 													}
 												: undefined,
 									},
@@ -405,6 +424,9 @@ function buildGatewayRequest(
 		messages: toGatewayRequestMessages(messages),
 		tools: toGatewayTools(tools),
 		maxTokens: config.maxOutputTokens,
+		metadata: config.settingsRequestIntent
+			? { settingsRequestIntent: config.settingsRequestIntent }
+			: undefined,
 		reasoning:
 			config.thinking !== undefined ||
 			config.reasoningEffort ||
@@ -495,6 +517,7 @@ function buildGatewayConfig(config: ProviderConfig) {
 	return {
 		providerId,
 		apiKey: config.apiKey ?? config.accessToken,
+		apiKeyEnv: config.apiKeyEnv,
 		baseUrl: config.baseUrl,
 		headers: config.headers,
 		timeoutMs: config.timeoutMs,
@@ -521,6 +544,7 @@ function buildGatewayConfig(config: ProviderConfig) {
 			...config.claudeCode,
 			...config.opencode,
 			...config.sap,
+			...config.settingsProviderOptions,
 		},
 	};
 }
@@ -551,7 +575,9 @@ function toApiStreamChunk(
 						: typeof metadata?.signature === "string"
 							? metadata.signature
 							: undefined,
-				details: metadata?.details,
+				details: Array.isArray(metadata?.openaiReasoningItems)
+					? { openaiReasoningItems: metadata.openaiReasoningItems }
+					: metadata?.details,
 			};
 		}
 		case "tool-call-delta": {

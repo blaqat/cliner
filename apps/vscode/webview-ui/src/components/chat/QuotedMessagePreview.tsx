@@ -2,7 +2,7 @@ import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import React from "react"
 import styled from "styled-components"
 
-const PreviewContainer = styled.div`
+const PreviewContainer = styled.div<{ $compact?: boolean }>`
 	background-color: var(--vscode-input-background); /* Outer box matches text area */
 	/* border-left: 3px solid var(--vscode-textBlockQuote-border); */ /* Remove left border */
 	/* border-top: 1px solid var(--vscode-editorGroup-border); */ /* Remove top border */
@@ -12,6 +12,8 @@ const PreviewContainer = styled.div`
 	display: flex;
 	/* flex-direction: column; */ /* No longer needed as Label is removed */
 	position: relative; /* Keep for button positioning */
+
+	${(props) => (props.$compact ? "margin: 0; padding: 0; background-color: transparent;" : "")}
 `
 
 // Removed Label component
@@ -63,23 +65,79 @@ const ReplyIcon = styled.span`
 	/* transform: translateY(-1px); */ /* Removed vertical transform */
 `
 
+const NoteInput = styled.input`
+	width: 100%;
+	margin-top: 4px;
+	padding: 3px 6px;
+	box-sizing: border-box;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 2px;
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+	outline: none;
+
+	&::placeholder {
+		color: var(--vscode-input-placeholderForeground);
+	}
+
+	&:focus {
+		border-color: var(--vscode-focusBorder);
+	}
+`
+
 interface QuotedMessagePreviewProps {
 	text: string
 	onDismiss: () => void
 	isFocused?: boolean
+	/** Note typed under the quote. The note input is only shown when `onNoteChange` is set. */
+	note?: string
+	onNoteChange?: (note: string) => void
+	/** Called when Enter or Escape is pressed in the note input, e.g. to return focus to the composer. */
+	onNoteDone?: () => void
+	autoFocusNote?: boolean
+	/** Drops the panel margins so the editor fits inside a popover. */
+	compact?: boolean
 }
 
-const QuotedMessagePreview: React.FC<QuotedMessagePreviewProps> = ({ text, onDismiss, isFocused }) => {
+const QuotedMessagePreview: React.FC<QuotedMessagePreviewProps> = ({
+	text,
+	onDismiss,
+	isFocused,
+	note,
+	onNoteChange,
+	onNoteDone,
+	autoFocusNote,
+	compact,
+}) => {
 	const _cardClassName = `reply-card ${isFocused ? "reply-card--focused" : ""}`
 
 	return (
-		<PreviewContainer>
+		<PreviewContainer $compact={compact}>
 			{/* Removed Label */}
 			<ContentRow>
-				<ReplyIcon className="codicon codicon-reply"></ReplyIcon>
-				<TextContainer title={text}>{text}</TextContainer>
+				<ReplyIcon className="codicon codicon-reply" />
+				<div className="flex-1 min-w-0">
+					<TextContainer title={text}>{text}</TextContainer>
+					{onNoteChange && (
+						<NoteInput
+							aria-label="Note on this quote"
+							autoFocus={autoFocusNote}
+							onChange={(e) => onNoteChange(e.target.value)}
+							onKeyDown={(e) => {
+								if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") {
+									e.preventDefault()
+									onNoteDone?.()
+								}
+							}}
+							placeholder="Add a note on this quote…"
+							value={note ?? ""}
+						/>
+					)}
+				</div>
 				<DismissButton appearance="icon" aria-label="Dismiss quote" onClick={onDismiss}>
-					<span className="codicon codicon-close"></span>
+					<span className="codicon codicon-close" />
 				</DismissButton>
 			</ContentRow>
 		</PreviewContainer>

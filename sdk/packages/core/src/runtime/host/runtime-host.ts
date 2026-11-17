@@ -271,7 +271,7 @@ export interface SendSessionInput {
 	mode?: AgentMode;
 	userImages?: string[];
 	userFiles?: string[];
-	delivery?: "queue" | "steer";
+	delivery?: "queue" | "steer" | "interject";
 	timeoutMs?: number;
 }
 
@@ -367,6 +367,15 @@ export interface McpAppsRuntimeService {
 
 export interface CommandExecutionRuntimeService {
 	proceedWhileRunning(sessionId: string, toolCallId?: string): Promise<number>;
+}
+
+export interface SessionSubagentRuntimeService {
+	/**
+	 * Aborts one in-flight sub-agent run (keyed by its spawn_agent tool call
+	 * id) without aborting the parent run. Resolves false when no matching
+	 * child is running.
+	 */
+	abortSubAgent(sessionId: string, toolCallId: string): Promise<boolean>;
 }
 
 export interface RuntimeHostSubscribeOptions {

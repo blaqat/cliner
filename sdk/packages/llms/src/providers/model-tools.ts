@@ -10,6 +10,26 @@ import { modelRouteMatches } from "./model-facts";
 export interface ModelToolSupportInput {
 	providerId: string;
 	modelId?: string;
+	/** Where requests go. OpenAI's built-in tools only exist on OpenAI's own servers. */
+	baseUrl?: string;
+}
+
+const OPENAI_HOSTED_PROVIDERS = new Set(["openai-native", "openai-codex"]);
+
+/**
+ * A gateway or Azure endpoint behind the OpenAI adapter speaks the same API but doesn't host OpenAI's
+ * tools, and Azure answers 400 for the image tool without its own deployment header.
+ */
+function reachesOpenAiServers(baseUrl: string | undefined): boolean {
+	if (!baseUrl?.trim()) return true;
+	try {
+		const host = new URL(baseUrl).hostname.toLowerCase();
+		return ["openai.com", "chatgpt.com"].some(
+			(domain) => host === domain || host.endsWith(`.${domain}`),
+		);
+	} catch {
+		return false;
+	}
 }
 
 function resolveModelRouteContext(
@@ -71,6 +91,12 @@ export function supportsModelTool(
 	toolName: ModelToolName,
 ): boolean {
 	const providerId = normalizeProviderId(input.providerId);
+	if (
+		OPENAI_HOSTED_PROVIDERS.has(providerId) &&
+		!reachesOpenAiServers(input.baseUrl)
+	) {
+		return false;
+	}
 	const manifest = BUILTIN_PROVIDER_MANIFESTS_BY_ID[providerId];
 	return manifest
 		? providerManifestSupportsModelTool(manifest, input.modelId, toolName)

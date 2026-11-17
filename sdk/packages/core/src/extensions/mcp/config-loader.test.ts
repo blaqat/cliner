@@ -900,3 +900,26 @@ describe("updateMcpSettingsFile (async acquisition)", () => {
 		expect(existsSync(`${filePath}.lock`)).toBe(false);
 	});
 });
+
+it("accepts extension startHook fields in both MCP settings formats", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "core-mcp-start-hook-"));
+	try {
+		const filePath = join(tempRoot, "cline_mcp_settings.json");
+		await writeFile(
+			filePath,
+			JSON.stringify({
+				mcpServers: {
+					flat: { command: "server", startHook: { command: "bootstrap" } },
+					nested: {
+						transport: { type: "stdio", command: "server" },
+						startHook: { command: "bootstrap" },
+					},
+				},
+			}),
+		);
+		const result = loadMcpSettingsFile({ filePath });
+		expect(Object.keys(result.mcpServers)).toEqual(["flat", "nested"]);
+	} finally {
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});

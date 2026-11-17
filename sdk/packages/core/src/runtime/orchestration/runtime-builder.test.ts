@@ -209,6 +209,35 @@ You are a code reviewer.`,
 		expect(runtime.tools.map((tool) => tool.name)).toContain("spawn_agent");
 	});
 
+	it("does not expose unguarded named agents when subagent permissions are set", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "guarded-agent-home-"));
+		tempDirs.push(tempHome);
+		setHomeDir(tempHome);
+		const agentsDir = join(tempHome, ".cline", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "reviewer.yml"),
+			`---
+name: reviewer
+description: Review code
+tools: Read_File
+---
+Review code.`,
+			"utf8",
+		);
+		const runtime = await new DefaultRuntimeBuilder().build({
+			config: makeBaseConfig({
+				enableSpawnAgent: true,
+				subagentSettings: { allowWrite: false },
+			}),
+			createSpawnTool: makeSpawnTool,
+		});
+		expect(runtime.tools.map((tool) => tool.name)).toContain("spawn_agent");
+		expect(runtime.tools.map((tool) => tool.name)).not.toContain(
+			"subagent_reviewer",
+		);
+	});
+
 	it("does not register root skills when only configured agents declare skills", async () => {
 		const tempHome = mkdtempSync(join(tmpdir(), "cline-agent-home-"));
 		const workspaceRoot = mkdtempSync(join(tmpdir(), "cline-agent-workspace-"));

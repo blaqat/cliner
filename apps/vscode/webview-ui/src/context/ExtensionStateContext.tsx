@@ -1,6 +1,6 @@
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
-import { DEFAULT_PLATFORM, type ExtensionState } from "@shared/ExtensionMessage"
+import { DEFAULT_PLATFORM, type ExtensionState, type ExtensionStateUpdate } from "@shared/ExtensionMessage"
 import { DEFAULT_MCP_DISPLAY_MODE } from "@shared/McpDisplayMode"
 import type { UserInfo } from "@shared/proto/cline/account"
 import { EmptyRequest } from "@shared/proto/cline/common"
@@ -31,7 +31,10 @@ import {
 	type SettingsNavigationRequest,
 	type SettingsNavigationTarget,
 } from "../components/settings/settingsTargets"
+import { toggleTopBarPanel } from "../components/topbar/topBarPanels"
 import { McpServiceClient, ModelsServiceClient, StateServiceClient, UiServiceClient } from "../services/grpc-client"
+
+const EMPTY_TOGGLES: Record<string, boolean> = Object.freeze({})
 
 export type ProviderId = string
 
@@ -80,8 +83,15 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showHistory: boolean
 	showAccount: boolean
 	showWorktrees: boolean
+	showWalkthrough: boolean
+	/** Set while the walkthrough page shows a stored agent-authored doc; unset for the thread diff. */
+	walkthroughAuthoredId?: string
+	/** The task (group) page or its notebook, shown in the sidebar in place of chat/home. */
+	taskGroupView: TaskGroupViewState | null
 	showAnnouncement: boolean
 	expandTaskHeader: boolean
+	/** Whether the VS Code window has focus (pushed by the host; true until told otherwise). */
+	windowFocused: boolean
 
 	// Setters
 	setShowAnnouncement: (value: boolean) => void
@@ -132,6 +142,9 @@ export interface ExtensionStateContextType extends ExtensionState {
 	navigateToHistory: () => void
 	navigateToAccount: () => void
 	navigateToWorktrees: () => void
+	navigateToWalkthrough: (authoredId?: string) => void
+	/** Opens a task group's page (or its notebook) in the sidebar. */
+	navigateToTaskGroup: (id: string, page?: TaskGroupPage) => void
 	navigateToChat: () => void
 
 	// Hide functions
@@ -139,11 +152,22 @@ export interface ExtensionStateContextType extends ExtensionState {
 	hideHistory: () => void
 	hideAccount: () => void
 	hideWorktrees: () => void
+	hideWalkthrough: () => void
+	hideTaskGroupView: () => void
 	hideAnnouncement: () => void
 	closeMarketplaceView: () => void
 	closeMcpView: () => void
 
-	// Event callbacks
+	// Message deep links: set when a vscode:// link opens a thread; the chat
+	// view scrolls to the message, flashes it, then clears this.
+	openMessageTarget?: { threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number }
+	clearOpenMessageTarget: () => void
+}
+
+export type TaskGroupPage = "home" | "notebook"
+export interface TaskGroupViewState {
+	id: string
+	page: TaskGroupPage
 }
 
 export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
@@ -161,7 +185,15 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showHistory, setShowHistory] = useState(false)
 	const [showAccount, setShowAccount] = useState(false)
 	const [showWorktrees, setShowWorktrees] = useState(false)
+	const [showWalkthrough, setShowWalkthrough] = useState(false)
+	const [walkthroughAuthoredId, setWalkthroughAuthoredId] = useState<string | undefined>(undefined)
+	const hideWalkthrough = useCallback(() => {
+		setShowWalkthrough(false)
+		setWalkthroughAuthoredId(undefined)
+	}, [])
+	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
+	const [windowFocused, setWindowFocused] = useState(true)
 
 	// Helper for MCP view
 	const closeMcpView = useCallback(() => {
@@ -181,6 +213,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const hideHistory = useCallback(() => setShowHistory(false), [setShowHistory])
 	const hideAccount = useCallback(() => setShowAccount(false), [setShowAccount])
 	const hideWorktrees = useCallback(() => setShowWorktrees(false), [setShowWorktrees])
+	const hideTaskGroupView = useCallback(() => setTaskGroupView(null), [])
 	const hideAnnouncement = useCallback(() => setShowAnnouncement(false), [setShowAnnouncement])
 
 	// Navigation functions
@@ -190,6 +223,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			setShowHistory(false)
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			closeMcpView()
 			if (tab) {
 				setMcpTab(tab)
@@ -205,6 +239,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowMarketplace(true)
 	}, [closeMcpView])
 
@@ -215,6 +250,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			closeMcpView()
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			setSettingsNavigationRequest(targetSection ? createSettingsNavigationRequest(targetSection) : undefined)
 			setSettingsInitialModelTab(undefined)
 			setShowSettings(true)
@@ -229,6 +265,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			closeMcpView()
 			setShowAccount(false)
 			setShowWorktrees(false)
+			setShowWalkthrough(false)
 			setSettingsNavigationRequest(opts.targetSection ? createSettingsNavigationRequest(opts.targetSection) : undefined)
 			setSettingsInitialModelTab(opts.initialModelTab)
 			setShowSettings(true)
@@ -242,6 +279,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowHistory(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowAccount, setShowWorktrees, setShowHistory])
 
@@ -251,6 +289,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowHistory(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
 		setShowAccount(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowWorktrees, setShowAccount])
 
@@ -260,8 +299,23 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeMcpView()
 		setShowHistory(false)
 		setShowAccount(false)
+		setShowWalkthrough(false)
 		setShowWorktrees(true)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
+
+	const navigateToTaskGroup = useCallback(
+		(id: string, page: TaskGroupPage = "home") => {
+			closeMarketplaceView()
+			setShowSettings(false)
+			closeMcpView()
+			setShowHistory(false)
+			setShowAccount(false)
+			setShowWorktrees(false)
+			setShowWalkthrough(false)
+			setTaskGroupView({ id, page })
+		},
+		[closeMarketplaceView, closeMcpView],
+	)
 
 	const navigateToChat = useCallback(() => {
 		closeMarketplaceView()
@@ -270,13 +324,30 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
+		setShowWalkthrough(false)
+		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
+
+	const navigateToWalkthrough = useCallback(
+		(authoredId?: string) => {
+			navigateToChat()
+			// Guard against being wired straight to onClick, which passes a click event here.
+			setWalkthroughAuthoredId(typeof authoredId === "string" ? authoredId : undefined)
+			setShowWalkthrough(true)
+		},
+		[navigateToChat],
+	)
 
 	const [state, setState] = useState<ExtensionState>({
 		version: "",
 		clineMessages: [],
 		queuedPrompts: [],
+		sessionStatuses: {},
+		subagentCounts: {},
+		enterSendsAs: "steer",
+		promptStash: [],
 		taskHistory: [],
+		taskGroups: [],
 		shouldShowAnnouncement: false,
 		autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
 		browserSettings: DEFAULT_BROWSER_SETTINGS,
@@ -307,7 +378,12 @@ export const ExtensionStateContextProvider: React.FC<{
 		useAutoCondense: true,
 		compactionStrategy: "basic",
 		webSearchEnabled: false,
-		subagentsEnabled: false,
+		subagentsEnabled: true,
+		subagentsMaxConcurrent: 0,
+		subagentsAllowWrite: true,
+		subagentsAllowCommands: true,
+		subagentsAllowMcp: true,
+		subagentsAllowWeb: true,
 		worktreesEnabled: { user: true, featureFlag: false },
 		cloudSessionsAvailable: false,
 		cloudSessionsEnabled: false,
@@ -323,6 +399,10 @@ export const ExtensionStateContextProvider: React.FC<{
 		lastDismissedCliBannerVersion: 0,
 		backgroundEditEnabled: false,
 		showFeatureTips: false,
+		threadToastsEnabled: true,
+		threadToastSeconds: 5,
+		continueAnswerOnActSwitch: true,
+		oneViewEnabled: false,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},
 
@@ -428,10 +508,18 @@ export const ExtensionStateContextProvider: React.FC<{
 	const accountButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const settingsButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
 	const worktreesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
+	const rulesButtonClickedSubscriptionRef = useRef<(() => void) | null>(null)
+	const windowFocusSubscriptionRef = useRef<(() => void) | null>(null)
 	const partialMessageUnsubscribeRef = useRef<(() => void) | null>(null)
 	const openRouterModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const liteLlmModelsUnsubscribeRef = useRef<(() => void) | null>(null)
 	const workspaceUpdatesUnsubscribeRef = useRef<(() => void) | null>(null)
+	const openMessageUnsubscribeRef = useRef<(() => void) | null>(null)
+	const [openMessageTarget, setOpenMessageTarget] = useState<
+		{ threadId: string; messageIndex: number; text: string; toolCallId?: string; block?: number } | undefined
+	>(undefined)
+	const clearOpenMessageTarget = useCallback(() => setOpenMessageTarget(undefined), [])
+
 	const mcpServersSubscriptionRef = useRef<(() => void) | null>(null)
 	// Convergent-replica state for clineMessages. The partial-message stream and the full state
 	// snapshots both feed this reducer so the transcript converges correctly regardless of
@@ -445,7 +533,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			onResponse: (response: any) => {
 				if (response.stateJson) {
 					try {
-						const stateData = JSON.parse(response.stateJson) as ExtensionState
+						const stateData = JSON.parse(response.stateJson) as ExtensionStateUpdate
 						setState((prevState) => {
 							// Versioning logic for autoApprovalSettings
 							const incomingVersion = stateData.autoApprovalSettings?.version ?? 1
@@ -471,10 +559,21 @@ export const ExtensionStateContextProvider: React.FC<{
 							stateData.turnState = replicaRef.current.turnState
 
 							const newState = {
+								// Full snapshots still clear absent optional values such as
+								// currentTaskItem. Partial posts preserve the rest of state.
+								...("version" in stateData ? (stateData as ExtensionState) : prevState),
 								...stateData,
-								autoApprovalSettings: shouldUpdateAutoApproval
-									? stateData.autoApprovalSettings
-									: prevState.autoApprovalSettings,
+								taskHistory: stateData.taskHistory ?? prevState.taskHistory,
+								sessionStatuses: stateData.sessionStatuses ?? prevState.sessionStatuses,
+								subagentCounts: stateData.subagentCounts ?? prevState.subagentCounts,
+								taskGroups: stateData.taskGroups ?? prevState.taskGroups,
+								// An unversioned snapshot is a legacy full update. Do not
+								// retain its predecessor's version across that boundary.
+								taskHistoryVersion: stateData.taskHistoryVersion,
+								autoApprovalSettings:
+									shouldUpdateAutoApproval && stateData.autoApprovalSettings
+										? stateData.autoApprovalSettings
+										: prevState.autoApprovalSettings,
 							}
 
 							// Update welcome screen state based on API configuration if welcome view not in progress
@@ -510,8 +609,8 @@ export const ExtensionStateContextProvider: React.FC<{
 			{},
 			{
 				onResponse: () => {
-					console.log("[DEBUG] Received mcpButtonClicked event from gRPC stream")
-					navigateToMarketplace()
+					// The title bar's MCP servers button opens the servers overlay, or closes it when open (its "MCP server settings…" reaches the full page).
+					toggleTopBarPanel("mcp")
 				},
 				onError: (error: any) => {
 					console.error("Error in mcpButtonClicked subscription:", error)
@@ -616,6 +715,23 @@ export const ExtensionStateContextProvider: React.FC<{
 			},
 		)
 
+		// The title bar's Rules & workflows button opens the rules overlay (again: closes it).
+		rulesButtonClickedSubscriptionRef.current = UiServiceClient.subscribeToRulesButtonClicked(EmptyRequest.create({}), {
+			onResponse: () => toggleTopBarPanel("rules"),
+			onError: (error: any) => {
+				console.error("Error in rules button clicked subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
+		windowFocusSubscriptionRef.current = UiServiceClient.subscribeToWindowFocus(EmptyRequest.create({}), {
+			onResponse: (response) => setWindowFocused(!!response.value),
+			onError: (error: any) => {
+				console.error("Error in window focus subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Subscribe to partial message events
 		partialMessageUnsubscribeRef.current = UiServiceClient.subscribeToPartialMessage(EmptyRequest.create({}), {
 			onResponse: (protoMessage: any) => {
@@ -716,6 +832,25 @@ export const ExtensionStateContextProvider: React.FC<{
 				console.error("Failed to fetch available terminal profiles:", error)
 			})
 
+		// Subscribe to message deep-link events (vscode://…/thread/<id>?m=<index>)
+		openMessageUnsubscribeRef.current = UiServiceClient.subscribeToOpenMessage(EmptyRequest.create({}), {
+			onResponse: (event: any) => {
+				if (event?.threadId) {
+					setOpenMessageTarget({
+						threadId: event.threadId,
+						messageIndex: event.messageIndex,
+						text: event.text ?? "",
+						toolCallId: event.toolCallId || undefined,
+						block: event.block ?? undefined,
+					})
+				}
+			},
+			onError: (error: any) => {
+				console.error("Error in openMessage subscription:", error)
+			},
+			onComplete: () => {},
+		})
+
 		// Clean up subscriptions when component unmounts
 		return () => {
 			if (stateSubscriptionRef.current) {
@@ -746,10 +881,14 @@ export const ExtensionStateContextProvider: React.FC<{
 				settingsButtonClickedSubscriptionRef.current()
 				settingsButtonClickedSubscriptionRef.current = null
 			}
+			windowFocusSubscriptionRef.current?.()
+			windowFocusSubscriptionRef.current = null
 			if (worktreesButtonClickedSubscriptionRef.current) {
 				worktreesButtonClickedSubscriptionRef.current()
 				worktreesButtonClickedSubscriptionRef.current = null
 			}
+			rulesButtonClickedSubscriptionRef.current?.()
+			rulesButtonClickedSubscriptionRef.current = null
 			if (partialMessageUnsubscribeRef.current) {
 				partialMessageUnsubscribeRef.current()
 				partialMessageUnsubscribeRef.current = null
@@ -765,6 +904,10 @@ export const ExtensionStateContextProvider: React.FC<{
 			if (workspaceUpdatesUnsubscribeRef.current) {
 				workspaceUpdatesUnsubscribeRef.current()
 				workspaceUpdatesUnsubscribeRef.current = null
+			}
+			if (openMessageUnsubscribeRef.current) {
+				openMessageUnsubscribeRef.current()
+				openMessageUnsubscribeRef.current = null
 			}
 			if (mcpServersSubscriptionRef.current) {
 				mcpServersSubscriptionRef.current()
@@ -874,19 +1017,23 @@ export const ExtensionStateContextProvider: React.FC<{
 		showSettings,
 		settingsNavigationRequest,
 		settingsInitialModelTab,
+		windowFocused,
 		showHistory,
 		showAccount,
 		showWorktrees,
+		showWalkthrough,
+		walkthroughAuthoredId,
+		taskGroupView,
 		showAnnouncement,
-		globalClineRulesToggles: state.globalClineRulesToggles || {},
-		localClineRulesToggles: state.localClineRulesToggles || {},
-		localCursorRulesToggles: state.localCursorRulesToggles || {},
-		localWindsurfRulesToggles: state.localWindsurfRulesToggles || {},
-		localAgentsRulesToggles: state.localAgentsRulesToggles || {},
-		localWorkflowToggles: state.localWorkflowToggles || {},
-		globalWorkflowToggles: state.globalWorkflowToggles || {},
-		remoteRulesToggles: state.remoteRulesToggles || {},
-		remoteWorkflowToggles: state.remoteWorkflowToggles || {},
+		globalClineRulesToggles: state.globalClineRulesToggles || EMPTY_TOGGLES,
+		localClineRulesToggles: state.localClineRulesToggles || EMPTY_TOGGLES,
+		localCursorRulesToggles: state.localCursorRulesToggles || EMPTY_TOGGLES,
+		localWindsurfRulesToggles: state.localWindsurfRulesToggles || EMPTY_TOGGLES,
+		localAgentsRulesToggles: state.localAgentsRulesToggles || EMPTY_TOGGLES,
+		localWorkflowToggles: state.localWorkflowToggles || EMPTY_TOGGLES,
+		globalWorkflowToggles: state.globalWorkflowToggles || EMPTY_TOGGLES,
+		remoteRulesToggles: state.remoteRulesToggles || EMPTY_TOGGLES,
+		remoteWorkflowToggles: state.remoteWorkflowToggles || EMPTY_TOGGLES,
 		enableCheckpointsSetting: state.enableCheckpointsSetting,
 
 		// Navigation functions
@@ -897,13 +1044,21 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToHistory,
 		navigateToAccount,
 		navigateToWorktrees,
+		navigateToWalkthrough,
+		navigateToTaskGroup,
 		navigateToChat,
+
+		// Message deep links
+		openMessageTarget,
+		clearOpenMessageTarget,
 
 		// Hide functions
 		hideSettings,
 		hideHistory,
 		hideAccount,
 		hideWorktrees,
+		hideWalkthrough,
+		hideTaskGroupView,
 		hideAnnouncement,
 		closeMarketplaceView,
 		setShowAnnouncement,

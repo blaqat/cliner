@@ -38,6 +38,11 @@ describe("newTask execution target", () => {
 		expect(initTask).toHaveBeenCalledWith("hello", [], [], undefined, expect.any(Object), {
 			repoUrl: "https://github.com/cline/fixture",
 			branch: "main",
+			background: false,
+			runInWorktree: undefined,
+			taskGroupId: undefined,
+			provenance: undefined,
+			rethrowStartFailure: true,
 		})
 	})
 
@@ -46,6 +51,12 @@ describe("newTask execution target", () => {
 
 		await newTask(controller, NewTaskRequest.create({ text: "hello" }))
 
-		expect(initTask).toHaveBeenCalledWith("hello", [], [], undefined, expect.any(Object), undefined)
+		expect(initTask).toHaveBeenCalledWith("hello", [], [], undefined, expect.any(Object), {
+			background: false,
+			runInWorktree: undefined,
+			taskGroupId: undefined,
+			provenance: undefined,
+			rethrowStartFailure: true,
+		})
 	})
 })

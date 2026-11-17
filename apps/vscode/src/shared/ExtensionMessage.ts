@@ -6,6 +6,7 @@ import { RemoteConfigFields } from "@shared/storage/state-keys"
 import type { Environment } from "../config"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration } from "./api"
+import type { TaskApiSelection } from "./api-profiles"
 import { BrowserSettings } from "./BrowserSettings"
 import { ClineFeatureSetting } from "./ClineFeatureSetting"
 import { BannerCardData } from "./cline/banner"
@@ -13,10 +14,14 @@ import { ClineRulesToggles } from "./cline-rules"
 import type { CloudTaskTargetView, CurrentCloudTaskInfo } from "./cloud/cloud-sessions"
 import { HistoryItem } from "./HistoryItem"
 import { McpDisplayMode } from "./McpDisplayMode"
+import type { MessageReferenceInfo } from "./message-references"
 import { ClineMessageModelInfo } from "./messages"
+import type { ModelPick } from "./model-settings"
 import { OnboardingModelGroup } from "./proto/cline/state"
 import { Mode } from "./storage/types"
 import { TelemetrySetting } from "./TelemetrySetting"
+import type { TaskGroupSummary } from "./task-groups"
+import type { TerminalEnvironmentWebviewState } from "./terminal-environment"
 import { UserInfo } from "./UserInfo"
 // webview will hold state
 export interface ExtensionMessage {
@@ -38,17 +43,101 @@ export const DEFAULT_PLATFORM = "unknown"
 
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
+/** See {@link ExtensionState.deletedOpenThread}. */
+export interface DeletedOpenThread {
+	id: string
+	/** The task (group) the thread was filed in, resolved before the delete. */
+	taskGroupId?: string
+	seq: number
+}
+
 export interface ExtensionState {
+	modelSettings?: import("./model-settings-state").ModelSettingsState
+	modelSettingsMigrationStatus?: import("./model-settings-migration-status").ModelSettingsMigrationStatus
+	openTelemetrySettings?: Pick<
+		import("./proto/cline/state").Settings,
+		| "openTelemetryEnabled"
+		| "openTelemetryMetricsExporter"
+		| "openTelemetryLogsExporter"
+		| "openTelemetryTracesExporter"
+		| "openTelemetryOtlpProtocol"
+		| "openTelemetryOtlpEndpoint"
+		| "openTelemetryOtlpMetricsProtocol"
+		| "openTelemetryOtlpMetricsEndpoint"
+		| "openTelemetryOtlpLogsProtocol"
+		| "openTelemetryOtlpLogsEndpoint"
+		| "openTelemetryMetricExportInterval"
+		| "openTelemetryOtlpInsecure"
+		| "openTelemetryLogBatchSize"
+		| "openTelemetryLogBatchTimeout"
+		| "openTelemetryLogMaxQueueSize"
+	>
+
+	sessionStatuses: Record<string, "running" | "waiting" | "done" | "error" | "stopped">
+	/** Child threads use the normal transcript, with decisions forwarded to their parent. */
+	subagentView?: {
+		parentTaskId: string
+		agentId: string
+		status: "running" | "waiting" | "done" | "error" | "stopped"
+		pendingDecision?: "approval" | "question"
+	} | null
+	/**
+	 * Subagent counts per task id. Live sessions report total spawned + still
+	 * running; settled/history rows fall back to the persisted `subagentCount`
+	 * on HistoryItem (rendered as `live: 0`).
+	 */
+	subagentCounts: Record<string, { total: number; live: number }>
+	enterSendsAs: "steer" | "interject"
+	promptStash: {
+		id: string
+		text: string
+		quotes: { text: string; note: string; source?: string }[]
+		messageTags?: {
+			threadId: string
+			messageIndex: number
+			toolCallId?: string
+			block?: number
+			text: string
+			source: string
+		}[]
+		ts: number
+		taskId?: string
+	}[]
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
 	onboardingModels: OnboardingModelGroup | undefined
 	apiConfiguration?: ApiConfiguration
+	/** Immutable model details from the focused session's build, independent of saved profile edits. */
+	/** Composer values are separate from Settings defaults. On home, this is the next-chat draft. */
+	composerApiSelection?: TaskApiSelection
+	composerApiConfiguration?: ApiConfiguration
+	composerNextMessageOnly?: boolean
+	focusedSessionModels?: Partial<
+		Record<
+			Mode,
+			{
+				profileId?: string
+				provider?: string
+				modelId: string
+				reasoningEffort?: ApiConfiguration["actModeReasoningEffort"]
+				/** The row and level a session on the new settings was built with. */
+				pick?: ModelPick
+			}
+		>
+	>
 	autoApprovalSettings: AutoApprovalSettings
 	browserSettings: BrowserSettings
 	remoteBrowserHost?: string
 	preferredLanguage?: string
 	mode: Mode
 	clineMessages: ClineMessage[]
+	/** Actionable child decisions belonging to the focused thread's runtime. */
+	pendingSubagentDecisions?: {
+		taskId: string
+		name: string
+		kind: "approval" | "question"
+		message: ClineMessage
+	}[]
 	checkpointRestoreInput?: {
 		text: string
 		images?: string[]
@@ -80,6 +169,11 @@ export interface ExtensionState {
 	 */
 	epoch?: number
 	currentTaskItem?: HistoryItem
+	/**
+	 * The last open thread a delete removed, with the task it was in (if any). `seq` grows per
+	 * deletion so the webview leaves the dead thread once: for that task's page, else home.
+	 */
+	deletedOpenThread?: DeletedOpenThread
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
 	planActSeparateModelsSetting: boolean
@@ -89,7 +183,13 @@ export interface ExtensionState {
 	/** The editor Cline runs in, as the host reports it ("Visual Studio Code", "Cursor", "PyCharm Professional"). */
 	hostName?: string
 	shouldShowAnnouncement: boolean
+	/** Opaque projection version. Absent on legacy full snapshots. */
+	taskHistoryVersion?: string
 	taskHistory: HistoryItem[]
+	/** Task groups ("Tasks" in the UI) with note counts, from ~/.cline/data/task-groups. */
+	taskGroups: TaskGroupSummary[]
+	/** Current git branch of the workspace ("" outside a repo / detached HEAD). */
+	currentBranch?: string
 	telemetrySetting: TelemetrySetting
 	shellIntegrationTimeout: number
 	terminalReuseEnabled?: boolean
@@ -125,6 +225,14 @@ export interface ExtensionState {
 	compactionStrategy?: string
 	webSearchEnabled?: boolean
 	subagentsEnabled?: boolean
+	subagentsMaxConcurrent?: number
+	subagentsAllowWrite?: boolean
+	subagentsAllowCommands?: boolean
+	subagentsAllowMcp?: boolean
+	subagentsAllowWeb?: boolean
+	threadTitlesEnabled?: boolean
+	/** Terminal environment per scope; workspace values come from workspace state. */
+	terminalEnvironment?: TerminalEnvironmentWebviewState
 	worktreesEnabled?: ClineFeatureSetting
 	favoritedModelIds: string[]
 	// NEW: Add workspace information
@@ -145,6 +253,14 @@ export interface ExtensionState {
 	optOutOfRemoteConfig?: boolean
 	remoteConfigAvailable?: boolean
 	showFeatureTips?: boolean
+	/** In-app toasts when a background thread finishes or needs input. */
+	threadToastsEnabled?: boolean
+	/** How long a completion toast stays, in seconds. */
+	threadToastSeconds?: number
+	/** Switching to Act right after an Ask answer also continues it (default on). */
+	continueAnswerOnActSwitch?: boolean
+	/** One view (beta): the thread list beside the chat instead of a separate home page (default off). */
+	oneViewEnabled?: boolean
 	banners?: BannerCardData[]
 	welcomeBanners?: BannerCardData[]
 	/** Cline Cloud sessions rollout flag; shows the Settings toggle. */
@@ -193,6 +309,14 @@ export interface QueuedPrompt {
 }
 
 export interface ClineMessage {
+	decisionId?: string
+	subagentTaskId?: string
+	subagentName?: string
+	/** Index in the persisted SDK transcript, for conversation-only forks. */
+	sdkMessageIndex?: number
+	sdkToolCallId?: string
+	/** Message tags the user attached to this user message, parsed out of its text for display. */
+	messageReferences?: MessageReferenceInfo[]
 	ts: number
 	type: "ask" | "say"
 	ask?: ClineAsk
@@ -245,6 +369,7 @@ export type ClineAsk =
 	| "use_subagents"
 
 export type ClineSay =
+	| "subagent_update"
 	| "task"
 	| "error"
 	| "api_req_started"
@@ -282,6 +407,8 @@ export type ClineSay =
 	| "conditional_rules_applied"
 	| "compaction" // context compaction progress/result divider
 	| "cloud_provisioning" // cloud sandbox start/resume progress
+	| "notebook_changes"
+	| "walkthrough_ready"
 
 export interface ClineSayTool {
 	tool:
@@ -297,6 +424,16 @@ export interface ClineSayTool {
 		| "webSearch"
 		| "summarizeTask"
 		| "useSkill"
+		| "notebook"
+		| "script"
+	action?: "read" | "write" | "delete"
+	name?: string
+	/** `script` tool: what is being asked and the option values; unreviewed definitions include the command template and cwd. */
+	scriptCommand?: string
+	scriptCwd?: string
+	scriptFingerprint?: string
+	scriptAction?: "load" | "run"
+	scriptOptions?: Record<string, string | boolean>
 	path?: string
 	diff?: string
 	content?: string
@@ -320,11 +457,18 @@ export interface ClineSayBrowserAction {
 	text?: string
 }
 
-export type SubagentExecutionStatus = "pending" | "running" | "completed" | "failed"
+export type SubagentExecutionStatus = "pending" | "running" | "completed" | "failed" | "stopped"
 
 export interface SubagentStatusItem {
+	toolCallId?: string
+	childSessionId?: string
 	index: number
 	prompt: string
+	/** Access level requested via spawn_agent ("read" default, "write" for editing tools). */
+	access?: "read" | "write"
+	/** Resolved sub-agent profile name ("parent" = inherited model) shown as a chip. */
+	profile?: string
+	reasoningEffort?: string
 	status: SubagentExecutionStatus
 	toolCalls: number
 	inputTokens: number
@@ -370,6 +514,8 @@ export interface ClineAskUseMcpServer {
 
 export interface ClineAskUseSubagents {
 	prompts: string[]
+	/** Parallel to `prompts`: access level requested for each spawned subagent. */
+	access?: ("read" | "write")[]
 }
 
 export interface ClinePlanModeResponse {
@@ -391,6 +537,9 @@ export interface ClineApiReqInfo {
 	cacheWrites?: number
 	cacheReads?: number
 	cost?: number
+	/** The model that served this request; absent on requests recorded before it was stamped. */
+	modelId?: string
+	providerId?: string
 	cancelReason?: ClineApiReqCancelReason
 	streamingFailedMessage?: string
 }
@@ -431,3 +580,6 @@ export interface ClineSubagentUsageInfo {
 type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled" | "retries_exhausted"
 
 export const COMPLETION_RESULT_CHANGES_FLAG = "HAS_CHANGES"
+
+/** JSON state transport supports omitted, unchanged fields and partial posts. */
+export type ExtensionStateUpdate = Partial<ExtensionState>

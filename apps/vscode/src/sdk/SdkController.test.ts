@@ -1,13 +1,24 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE } from "@shared/cloud/cloud-sessions"
+import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnState } from "@shared/ExtensionMessage"
 import { GetTaskHistoryRequest } from "@shared/proto/cline/task"
 import { describe, expect, it, vi } from "vitest"
 import { ClineError } from "@/services/error/ClineError"
 import { telemetryService } from "@/services/telemetry"
 import { isClineManagedProvider } from "@/shared/utils/cline"
+import { LocalRuntimeHost } from "../../../../sdk/packages/core/dist/index.js"
+import { MessageTranslatorState } from "./message-translator"
 import { Controller as SdkController } from "./SdkController"
+import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
+import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
+import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
+import { worktreeProject } from "./worktrees/temp-project.test-support"
 
 describe("isClineManagedProvider", () => {
 	it("treats both Cline account providers as Cline providers", () => {
@@ -31,6 +42,8 @@ describe("resolveWorkspaceRootPath", () => {
 vi.mock("@/services/telemetry", () => ({
 	telemetryService: {
 		captureRemoteConfigSessionGate: vi.fn(),
+		captureMentionUsed: vi.fn(),
+		captureMentionFailed: vi.fn(),
 	},
 }))
 
@@ -57,7 +70,7 @@ describe("SDK remote-config coordination", () => {
 			currentRemoteConfigRevision: 7,
 			ensureWorkspaceManager: async () => undefined,
 			taskHistory: { listHistory: async () => [] },
-			sessions: { getActiveSession: () => undefined },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			cloud: { getCurrentTaskInfo: () => undefined },
 			turnStateTracker: { get: () => undefined },
 			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
@@ -94,7 +107,7 @@ describe("SDK remote-config coordination", () => {
 					return []
 				},
 			},
-			sessions: { getActiveSession: () => undefined },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			cloud: {
 				getCurrentTaskInfo: () => undefined,
 				getCloudModelId: () => "cloud-model",
@@ -166,6 +179,7 @@ describe("SDK remote-config coordination", () => {
 				return true
 			}),
 			sessions: {
+				assertTaskAvailable: vi.fn(),
 				endActiveSession: vi.fn(async () => {
 					events.push("end")
 				}),
@@ -280,6 +294,7 @@ describe("SDK remote-config coordination", () => {
 			turnStateTracker: { set: vi.fn() },
 			messageTranslatorState: { clearTurnOutcome: vi.fn() },
 			taskStart: { initTask },
+			generateThreadTitle: vi.fn(),
 		}
 
 		const taskPromise = SdkController.prototype.initTask.call(controller as never, "start immediately")
@@ -295,6 +310,106 @@ describe("SDK remote-config coordination", () => {
 		expect(initTask).toHaveBeenCalledWith("start immediately", undefined, undefined, undefined, undefined)
 	})
 
+	it("hands thread-title generation the new thread's captured mode and selection", async () => {
+		const selection = { askProfileId: "ask-a", actProfileId: "composer-pick", actModeReasoningEffort: "high" }
+		const generateThreadTitle = vi.fn()
+		const controller = {
+			waitForInitialRemoteConfig: vi.fn(async () => {}),
+			taskStart: { initTask: vi.fn(async () => "task-id") },
+			taskSessions: new Map([["task-id", { mode: "plan", apiSelection: selection }]]),
+			// Global Act/Ask state differs; it must not leak into the title call.
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			generateThreadTitle,
+		}
+
+		await SdkController.prototype.initTask.call(controller as never, "name this thread")
+		// The captured selection is a copy: later composer edits can't change it.
+		selection.actProfileId = "changed-later"
+
+		expect(generateThreadTitle).toHaveBeenCalledWith("task-id", "name this thread", {
+			mode: "plan",
+			selection: { askProfileId: "ask-a", actProfileId: "composer-pick", actModeReasoningEffort: "high" },
+		})
+	})
+
+	describe("after a thread fails to start or to resume", () => {
+		function controllerWithFailedTask() {
+			const controller = {
+				task: undefined as TaskProxy | undefined,
+				turnStateTracker: { set: vi.fn(), get: () => ({ phase: "error" }) },
+				messageTranslatorState: { clearTurnOutcome: vi.fn() },
+				messages: { appendAndEmit: vi.fn() },
+				sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
+				postStateToWebview: vi.fn(async () => {}),
+				initTask: vi.fn(async () => "task-id"),
+				followups: { askResponse: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
+				cancelTask: vi.fn(async () => {}),
+				failedStarts: new WeakMap(),
+				failedFollowUps: new WeakMap(),
+				askResponse(prompt?: string, images?: string[], files?: string[]) {
+					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
+				},
+			}
+			const task = createTaskProxy("failed", controller.askResponse, controller.cancelTask)
+			controller.task = task
+			return { controller, task }
+		}
+		const startFailure = { prompt: "first message", images: ["img"], files: ["file"], hasConversation: false }
+
+		it("Retry starts the thread again with its first message and attachments, not a resume with nothing", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect(controller.initTask).toHaveBeenCalledWith("first message", ["img"], ["file"], undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+			expect(controller.followups.askResponse).not.toHaveBeenCalled()
+			// Only the first response answers the failure.
+			await task.handleWebviewAskResponse("messageResponse", "and then")
+			expect(controller.followups.askResponse).toHaveBeenCalledOnce()
+		})
+
+		it("a message typed in the composer starts it instead", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedStarts.set(task, { ...startFailure, task })
+			await task.handleWebviewAskResponse("messageResponse", "revised")
+			expect(controller.initTask).toHaveBeenCalledWith("revised", undefined, undefined, undefined, undefined, {
+				provenance: undefined,
+				rethrowStartFailure: true,
+			})
+		})
+
+		it("Retry sends the follow-up that never got through; a typed message replaces it", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.failedFollowUps.set(task, { prompt: "lost", images: ["img"], files: [] })
+			await task.handleWebviewAskResponse("yesButtonClicked")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[]).slice(0, 3)).toEqual(["lost", ["img"], []])
+			controller.followups.askResponse.mockClear()
+
+			controller.failedFollowUps.set(task, { prompt: "lost" })
+			await task.handleWebviewAskResponse("messageResponse", "typed")
+			expect((controller.followups.askResponse.mock.calls[0] as unknown[])[0]).toBe("typed")
+		})
+
+		it("reports a failed follow-up once, to the RPC that hands the draft back", async () => {
+			const { controller, task } = controllerWithFailedTask()
+			controller.followups.askResponse.mockImplementation(async () => {
+				;(controller as unknown as { followUpFailure: string }).followUpFailure = "Storage is busy"
+			})
+			await task.handleWebviewAskResponse("messageResponse", "hello")
+			const take = SdkController.prototype.takeFollowUpFailure
+			expect(take.call(controller as never)).toBe("Storage is busy")
+			expect(take.call(controller as never)).toBeUndefined()
+			// A later send doesn't inherit a failure nobody read.
+			;(controller as unknown as { followUpFailure: string }).followUpFailure = "stale"
+			controller.followups.askResponse.mockImplementation(async () => {})
+			await task.handleWebviewAskResponse("messageResponse", "hello again")
+			expect(take.call(controller as never)).toBeUndefined()
+		})
+	})
+
 	describe("after a Cline sign-in error offers to retry a prompt", () => {
 		function controllerShowingSignInError(options: { existingTask?: boolean } = {}) {
 			const controller = {
@@ -302,11 +417,12 @@ describe("SDK remote-config coordination", () => {
 				turnStateTracker: { set: vi.fn(), get: () => ({ phase: "error" }) },
 				messageTranslatorState: { clearTurnOutcome: vi.fn() },
 				messages: { appendAndEmit: vi.fn() },
-				sessions: { getActiveSession: () => undefined },
+				sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 				cloud: { isCloudSessionId: () => false },
 				postStateToWebview: vi.fn(async () => {}),
 				initTask: vi.fn(async () => "task-id"),
 				followups: { askResponse: vi.fn(async () => {}) },
+				taskHistory: { markTaskActive: vi.fn(async () => {}), markUserMessage: vi.fn(async () => {}) },
 				cancelTask: vi.fn(async () => {}),
 				askResponse(prompt?: string, images?: string[], files?: string[]) {
 					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
@@ -330,42 +446,27 @@ describe("SDK remote-config coordination", () => {
 		it("restarts a new task with the original prompt when Retry is clicked", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("yesButtonClicked")
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"original prompt",
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("original prompt", undefined, undefined, undefined, undefined, {
+				provenance: undefined,
+			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
 
 		it("restarts a new task with a revised prompt submitted from the composer", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "revised prompt", ["img"])
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"revised prompt",
-				["img"],
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("revised prompt", ["img"], undefined, undefined, undefined, {
+				provenance: undefined,
+			})
 			expect(controller.followups.askResponse).not.toHaveBeenCalled()
 		})
 
 		it("keeps the original prompt when the revised submission has attachments but no text", async () => {
 			const { controller, errorTask } = controllerShowingSignInError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "  ", ["img"])
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"original prompt",
-				["img"],
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("original prompt", ["img"], undefined, undefined, undefined, {
+				provenance: undefined,
+			})
 		})
 
 		it("continues an existing conversation with a message submitted from the composer", async () => {
@@ -379,6 +480,9 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"messageResponse",
 				"error",
+				undefined,
+				undefined,
+				undefined,
 			)
 
 			// The follow-up answered the error, so a later approval continues the conversation.
@@ -397,6 +501,9 @@ describe("SDK remote-config coordination", () => {
 				undefined,
 				"yesButtonClicked",
 				"error",
+				undefined,
+				undefined,
+				undefined,
 			)
 		})
 	})
@@ -414,7 +521,7 @@ describe("SDK remote-config coordination", () => {
 				},
 				messageTranslatorState: { clearTurnOutcome: vi.fn() },
 				messages: { appendAndEmit: vi.fn() },
-				sessions: { getActiveSession: () => undefined },
+				sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 				cloud: { isCloudSessionId: () => true, getCurrentTaskInfo: () => ({ status: "unknown" }) },
 				postStateToWebview: vi.fn(async () => {}),
 				initTask: vi.fn(async () => "ses-retried"),
@@ -454,14 +561,10 @@ describe("SDK remote-config coordination", () => {
 		it("starts the same cloud task again when Retry is clicked", async () => {
 			const { controller, errorTask } = controllerShowingCloudStartError()
 			await errorTask.handleWebviewAskResponse("yesButtonClicked")
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"cloud prompt",
-				["img"],
-				undefined,
-				undefined,
-				undefined,
-				cloudTarget,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("cloud prompt", ["img"], undefined, undefined, undefined, {
+				...cloudTarget,
+				provenance: undefined,
+			})
 			expect(controller.messages.appendAndEmit).not.toHaveBeenCalled()
 		})
 
@@ -469,27 +572,19 @@ describe("SDK remote-config coordination", () => {
 			const { controller, errorTask } = controllerShowingCloudStartError()
 			// Protobuf decodes the Retry request's omitted repeated images field as an empty array.
 			await errorTask.handleWebviewAskResponse("yesButtonClicked", "", [])
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"cloud prompt",
-				["img"],
-				undefined,
-				undefined,
-				undefined,
-				cloudTarget,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("cloud prompt", ["img"], undefined, undefined, undefined, {
+				...cloudTarget,
+				provenance: undefined,
+			})
 		})
 
 		it("starts a cloud task on the same target with a prompt typed into the composer", async () => {
 			const { controller, errorTask } = controllerShowingCloudStartError()
 			await errorTask.handleWebviewAskResponse("messageResponse", "revised prompt")
-			expect(controller.initTask).toHaveBeenCalledWith(
-				"revised prompt",
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				cloudTarget,
-			)
+			expect(controller.initTask).toHaveBeenCalledWith("revised prompt", undefined, undefined, undefined, undefined, {
+				...cloudTarget,
+				provenance: undefined,
+			})
 		})
 
 		it("advances the turn phase when it refuses a response to a session that is gone", async () => {
@@ -507,6 +602,103 @@ describe("SDK remote-config coordination", () => {
 				controller.postStateToWebview.mock.invocationCallOrder.at(-1)!,
 			)
 		})
+	})
+
+	it("lists a live background session in taskHistory before its record persists", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const bgTask = createTaskProxy("bg-1", vi.fn(), vi.fn())
+		bgTask.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "quiet work" }])
+		const session = {
+			sessionId: "bg-1",
+			isRunning: true,
+			startConfig: { modelId: "bg-model" },
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		const liveSessions = new Map([["bg-1", session]])
+		Object.assign(controller, {
+			lastKnownWorkspaceRoot: "/workspace",
+			taskSessions: new Map([["bg-1", { task: bgTask }]]),
+			stateManager: {
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			backgroundCommandRunning: false,
+			backgroundCommandTaskId: undefined,
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { listHistory: async () => [] },
+			sessions: {
+				getActiveSession: () => undefined,
+				getSessions: () => liveSessions,
+				getSession: (id: string) => liveSessions.get(id),
+				sessionStatuses: { "bg-1": "running" },
+				subagentCounts: {},
+			},
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+
+		const state = await controller.getStateToPostToWebview()
+
+		// No focused task and no persisted record — the running chat must still
+		// surface in the inbox instead of looking deleted.
+		expect(state.currentTaskItem).toBeUndefined()
+		const row = state.taskHistory.find((item: { id: string }) => item.id === "bg-1")
+		expect(row).toMatchObject({ task: "quiet work", modelId: "bg-model", cwdOnTaskInitialization: "/workspace" })
+		expect(state.sessionStatuses["bg-1"]).toBe("running")
+	})
+
+	it("files a just-started thread into its task before its record persists", async () => {
+		// Core writes the session record (with taskGroupId metadata) only when the
+		// first send lands. Until then the synthesized rows must carry the task, or
+		// the breadcrumb, composer pill and inbox show "no task" until it streams.
+		const controller = Object.create(SdkController.prototype)
+		const focused = createTaskProxy("fg-1", vi.fn(), vi.fn())
+		focused.messageStateHandler.addMessages([{ ts: 41, type: "say", say: "task", text: "focused work" }])
+		const bgTask = createTaskProxy("bg-1", vi.fn(), vi.fn())
+		bgTask.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "quiet work" }])
+		const bgSession = {
+			sessionId: "bg-1",
+			isRunning: true,
+			startConfig: { modelId: "bg-model" },
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		const liveSessions = new Map([["bg-1", bgSession]])
+		Object.assign(controller, {
+			lastKnownWorkspaceRoot: "/workspace",
+			focusedTask: focused,
+			taskSessions: new Map<string, unknown>([
+				["fg-1", { task: focused, taskGroupId: "group-1" }],
+				["bg-1", { task: bgTask, taskGroupId: "group-2" }],
+			]),
+			stateManager: {
+				getGlobalSettingsKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			backgroundCommandRunning: false,
+			backgroundCommandTaskId: undefined,
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { listHistory: async () => [] },
+			sessions: {
+				getActiveSession: () => undefined,
+				getSessions: () => liveSessions,
+				getSession: (id: string) => liveSessions.get(id),
+				sessionStatuses: { "fg-1": "running", "bg-1": "running" },
+				subagentCounts: {},
+			},
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+
+		const state = await controller.getStateToPostToWebview()
+
+		expect(state.currentTaskItem).toMatchObject({ id: "fg-1", task: "focused work", taskGroupId: "group-1" })
+		expect(state.taskHistory.find((item: { id: string }) => item.id === "bg-1")).toMatchObject({ taskGroupId: "group-2" })
 	})
 
 	it("waits for initial remote config before resuming an existing task", async () => {
@@ -542,6 +734,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 		const controller = {
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: {
+				assertTaskAvailable: vi.fn(),
 				getActiveSession: () => ({
 					sessionId: "task-a",
 					sdkHost: {
@@ -567,13 +760,17 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 		const readLiveMessages = vi.fn().mockResolvedValue(sdkMessages)
 		const readMessages = vi.fn().mockResolvedValue(sdkMessages.slice(0, 2))
 		const restore = vi.fn().mockRejectedValue(new Error("stop at restore"))
-		// The prototype supplies the private implementation the public method delegates to.
-		const controller = Object.assign(Object.create(SdkController.prototype), {
+		const selection = { actProfileId: "Q" }
+		const configuration = { actModeApiProvider: "anthropic" }
+		const build = vi.fn(async () => ({ providerId: "anthropic", apiKey: "key", modelId: "model" }))
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: {
+				assertTaskAvailable: vi.fn(),
 				trackSessionStart: (operation: () => Promise<unknown>) => operation(),
 				getActiveSession: () => ({
 					sessionId: "task-a",
+					apiSnapshot: { selection, configuration },
 					isRunning: false,
 					sdkHost: {
 						get: async () => ({
@@ -589,7 +786,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 			taskHistory: { findHistoryItem: async () => undefined },
 			getWorkspaceRoot: async () => "C:/work",
 			stateManager: { getGlobalSettingsKey: () => "act" },
-			sessionConfigBuilder: { build: async () => ({ providerId: "anthropic", apiKey: "key", modelId: "model" }) },
+			sessionConfigBuilder: { build },
 			resolveContextMentions: async (text: string) => text,
 		})
 
@@ -601,6 +798,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 				restoreWorkspace: true,
 			}),
 		).rejects.toThrow("stop at restore")
+		expect(build).toHaveBeenCalledWith(expect.objectContaining({ apiSelection: selection, apiConfiguration: configuration }))
 		expect(restore).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "task-a", checkpointRunCount: 2 }))
 		expect(readMessages).not.toHaveBeenCalled()
 	})
@@ -618,7 +816,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 			trackedRestores.push(tracking)
 			return {}
 		})
-		const controller = Object.assign(Object.create(SdkController.prototype), {
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: {
 				trackSessionStart: async (operation: () => Promise<unknown>) => {
@@ -677,7 +875,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 		}
 		const controller = {
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
-			sessions: { getActiveSession: () => undefined },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost: vi.fn().mockResolvedValue(tempHost),
 		}
 
@@ -689,7 +887,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 	it("reports no checkpoint when the host cannot be read", async () => {
 		const controller = {
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
-			sessions: { getActiveSession: () => undefined },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost: vi.fn().mockRejectedValue(new Error("host unavailable")),
 		}
 
@@ -705,7 +903,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 		const createRemoteConfigAwareSessionHost = vi.fn()
 		const controller = {
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => answerMessages } },
-			sessions: { getActiveSession: () => undefined },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost,
 		}
 
@@ -869,7 +1067,7 @@ describe("cloud tasks stay in the cloud", () => {
 	it("refuses to rebuild a cloud task's conversation as a local session", async () => {
 		const startNewSession = vi.fn()
 		// The prototype supplies the private implementation the public method delegates to.
-		const controller = Object.assign(Object.create(SdkController.prototype), {
+		const controller = controllerFixture({
 			task: { taskId: "ses-cloud", messageStateHandler: { getClineMessages: () => [] } },
 			sessions: {
 				getActiveSession: () => undefined,
@@ -897,3 +1095,1401 @@ describe("cloud tasks stay in the cloud", () => {
 		expect(mode(undefined)).toBe("plan")
 	})
 })
+
+describe("interject ordering", () => {
+	it("waits for abort before sending the next turn with attachments", async () => {
+		const order: string[] = []
+		let releaseAbort: () => void = () => {}
+		const controller = {
+			task: { taskId: "parent" },
+			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
+			turnStateTracker: { set: vi.fn() },
+			taskControl: {
+				cancelTask: vi.fn(async (resume: boolean) => {
+					expect(resume).toBe(false)
+					order.push("abort")
+					await new Promise<void>((resolve) => {
+						releaseAbort = resolve
+					})
+				}),
+			},
+			askResponse: vi.fn(async () => {
+				order.push("send")
+			}),
+		}
+		const sending = SdkController.prototype.interjectPrompt.call(controller as never, "Now", ["image"], ["file"])
+		expect(order).toEqual(["abort"])
+		expect(controller.askResponse).not.toHaveBeenCalled()
+		releaseAbort()
+		await sending
+		expect(order).toEqual(["abort", "send"])
+		expect(controller.askResponse).toHaveBeenCalledWith("Now", ["image"], ["file"], undefined, undefined)
+	})
+})
+
+describe("task session contexts", () => {
+	it.each([
+		"streaming",
+		"awaiting_approval",
+	])("shows a retryable chat error for a silent %s turn with no decision", async (phase) => {
+		vi.useFakeTimers()
+		type Context = {
+			task: TaskProxy
+			turn: { set: (phase: string) => void; currentPhase: string }
+			watchdog: { activity: () => void; stop: () => void }
+			cancelled: boolean
+		}
+		const abort = vi.fn(async () => {})
+		const controller = {
+			task: { taskId: "stalled" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: { emitSessionEvents: vi.fn() },
+			stateManager: { getGlobalSettingsKey: () => undefined },
+			sessions: {
+				getSession: () => ({ isRunning: true, sdkHost: { abort } }),
+				setStatus: vi.fn(),
+				setRunning: vi.fn(),
+			},
+			taskHistory: {},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		try {
+			const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
+				.getTaskSessionContext
+			const context = factory.call(controller, "stalled")
+			context.turn.set(phase)
+			context.watchdog.activity()
+			await vi.advanceTimersByTimeAsync(120_000)
+			expect(context.turn.currentPhase).toBe("error")
+			expect(context.task.messageStateHandler.getClineMessages()).toContainEqual(
+				expect.objectContaining({
+					ask: "api_req_failed",
+					text: expect.stringContaining("Retry to continue"),
+				}),
+			)
+			expect(abort).toHaveBeenCalledWith("stalled")
+			expect(context.cancelled).toBe(true)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("isolates messages and approvals, streams only focus, and marks background asks waiting", async () => {
+		type Context = { task: TaskProxy; interactions: SdkInteractionCoordinator; messages: SdkMessageCoordinator }
+		const statuses: Record<string, string> = {}
+		const stream = { emitSessionEvents: vi.fn() }
+		const controller = {
+			task: { taskId: "b" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: stream,
+			stateManager: { getGlobalSettingsKey: () => undefined },
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ isRunning: true }),
+				setStatus: (id: string, status: string) => {
+					statuses[id] = status
+				},
+			},
+			taskHistory: {},
+			postStateToWebview: vi.fn(async () => {}),
+			diffEdits: { discardPreview: vi.fn() },
+		}
+		const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
+			.getTaskSessionContext
+		const a = factory.call(controller, "a")
+		const b = factory.call(controller, "b")
+		const answer = a.interactions.handleAskQuestion("Background question", [], {})
+		await vi.waitFor(() => expect(statuses.a).toBe("waiting"))
+		expect(a.task.messageStateHandler.getClineMessages()).toHaveLength(1)
+		expect(b.task.messageStateHandler.getClineMessages()).toHaveLength(0)
+		expect(stream.emitSessionEvents).not.toHaveBeenCalled()
+		expect(b.interactions.resolvePendingAskQuestion("wrong session", b.interactions.getPendingDecision()?.id)).toBe(false)
+		controller.task = { taskId: "a" }
+		expect(a.interactions.resolvePendingAskQuestion("Answer", a.interactions.getPendingDecision()?.id)).toBe(true)
+		await expect(answer).resolves.toBe("Answer")
+		expect(statuses.a).toBe("running")
+		expect(stream.emitSessionEvents).toHaveBeenCalledOnce()
+	})
+})
+
+describe("child approval task ownership", () => {
+	it("keeps concurrent approvals waiting on the background owner", async () => {
+		type Context = { mode: "plan" | "act"; task: TaskProxy; interactions: SdkInteractionCoordinator }
+		const statuses: Record<string, string> = {}
+		let focusedMode = "plan"
+		const stream = { emitSessionEvents: vi.fn() }
+		const controller = {
+			task: { taskId: "focused-act" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: stream,
+			stateManager: {
+				getGlobalSettingsKey: (key: string) =>
+					key === "mode" ? focusedMode : key === "autoApprovalSettings" ? { actions: { useMcp: false } } : undefined,
+			},
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ isRunning: true }),
+				setStatus: (id: string, status: string) => {
+					statuses[id] = status
+				},
+			},
+			taskHistory: {},
+			postStateToWebview: vi.fn(async () => {}),
+			diffEdits: { discardPreview: vi.fn() },
+		}
+		const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
+			.getTaskSessionContext
+		const owner = factory.call(controller, "background-ask")
+		focusedMode = "act"
+		const focus = factory.call(controller, "focused-act")
+		const request = {
+			agentId: "child",
+			conversationId: "child-conversation",
+			iteration: 1,
+			toolCallId: "call-1",
+			toolName: "s__write",
+			input: {},
+			policy: { autoApprove: false },
+		}
+		const first = owner.interactions.handleRequestToolApproval(request)
+		const second = owner.interactions.handleRequestToolApproval({ ...request, toolCallId: "call-2" })
+		await vi.waitFor(() => expect(statuses["background-ask"]).toBe("waiting"))
+		expect(focus.task.messageStateHandler.getClineMessages()).toHaveLength(0)
+		expect(stream.emitSessionEvents).not.toHaveBeenCalled()
+		owner.interactions.resolvePendingToolApproval(
+			undefined,
+			"yesButtonClicked",
+			undefined,
+			undefined,
+			owner.interactions.getPendingDecision()?.id,
+		)
+		await expect(first).resolves.toEqual({ approved: true })
+		await vi.waitFor(() => expect(owner.task.messageStateHandler.getClineMessages()).toHaveLength(2))
+		expect(statuses["background-ask"]).toBe("waiting")
+		owner.interactions.resolvePendingToolApproval(
+			undefined,
+			"noButtonClicked",
+			undefined,
+			undefined,
+			owner.interactions.getPendingDecision()?.id,
+		)
+		await expect(second).resolves.toMatchObject({ approved: false })
+		expect(statuses["background-ask"]).toBe("running")
+	})
+})
+
+describe("aside session creation", () => {
+	it("persists fork fields in Ask mode and keeps the parent focused without restoring files", async () => {
+		const raw = [
+			{ role: "user", content: "Parent question" },
+			{ role: "assistant", content: "Answer" },
+		]
+		const visible = [{ ts: 10, type: "say", say: "task", text: "Parent question", sdkMessageIndex: 0 }]
+		const task = createTaskProxy("parent", vi.fn(), vi.fn())
+		task.messageStateHandler.addMessages(visible as never)
+		const context = { mode: "act", task: createTaskProxy("aside", vi.fn(), vi.fn()), turn: { set: vi.fn() } }
+		const host = { readLiveMessages: vi.fn(async () => raw), restore: vi.fn() }
+		const controller = {
+			stateManager: { getGlobalStateKey: () => undefined, getApiConfiguration: () => ({}) },
+			task,
+			taskSessions: new Map([["parent", { task }]]),
+			sessionRebuilds: { runExclusive: async (run: () => Promise<void>) => run() },
+			taskHistory: {
+				findHistoryItem: async () => ({ id: "parent", task: "Parent question", cwdOnTaskInitialization: "/repo" }),
+				updateTaskHistoryItem: vi.fn(async () => {}),
+				getClineMessages: async () => visible,
+			},
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ sdkHost: host }),
+				startNewSession: vi.fn(async () => ({ startResult: { sessionId: "aside" } })),
+				focusSession: vi.fn(),
+				setRunning: vi.fn(),
+			},
+			sessionConfigBuilder: {
+				build: vi.fn(async () => ({ providerId: "anthropic", modelId: "model", cwd: "/repo", mode: "plan" })),
+			},
+			getTaskSessionContext: () => context,
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await expect(SdkController.prototype.forkTaskAt.call(controller as never, "parent", 10)).resolves.toBe("aside")
+		expect(controller.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				initialMessages: [raw[0]],
+				sessionMetadata: expect.objectContaining({ taskMode: "plan", parentTaskId: "parent", forkedAtTs: 10 }),
+			}),
+		)
+		expect(controller.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ parentTaskId: "parent", forkedAtTs: 10 }),
+		)
+		expect(context.mode).toBe("plan")
+		expect(controller.sessions.focusSession).toHaveBeenCalledWith("parent")
+		expect(controller.task).toBe(task)
+		expect(host.restore).not.toHaveBeenCalled()
+	})
+})
+
+describe("aside task membership", () => {
+	const record = (id: string, metadata: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+		({
+			sessionId: id,
+			prompt: id,
+			status: "completed",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			isSubagent: false,
+			metadata,
+			...extra,
+		}) as never
+
+	function makeFilingController(records: unknown[]) {
+		const stored = new Map<string, string | undefined>()
+		const controller = {
+			taskGroupStore: { getGroup: vi.fn(async (id: string) => ({ id })) },
+			taskHistory: {
+				listHistory: vi.fn(async () =>
+					(records as { sessionId: string; metadata: Record<string, unknown> }[]).map((entry) =>
+						stored.has(entry.sessionId)
+							? { ...entry, metadata: { ...entry.metadata, taskGroupId: stored.get(entry.sessionId) ?? "" } }
+							: entry,
+					),
+				),
+				setTaskGroup: vi.fn(async (id: string, group: string | undefined) => void stored.set(id, group)),
+			},
+			sessionConfigChanges: { handleTaskGroupChanged: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			fileThread: (SdkController.prototype as never as Record<string, unknown>).fileThread,
+		}
+		return { controller, stored }
+	}
+	const family = [
+		record("parent"),
+		record("aside", { parentTaskId: "parent", forkedAtTs: 1 }),
+		record("nested", { parentTaskId: "aside", forkedAtTs: 2 }),
+		record("agent", { parentTaskId: "parent" }, { isSubagent: true, parentSessionId: "parent" }),
+		record("unrelated"),
+		record("unrelatedAside", { parentTaskId: "unrelated" }),
+	]
+
+	it("filing, moving and unfiling a parent carries its asides, nested ones included", async () => {
+		const { controller, stored } = makeFilingController(family)
+		const call = (group: string) => SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", group)
+
+		await call("A")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "A", aside: "A", nested: "A" })
+		expect(controller.sessionConfigChanges.handleTaskGroupChanged.mock.calls.map(([id]) => id).sort()).toEqual([
+			"aside",
+			"nested",
+			"parent",
+		])
+
+		await call("B")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "B", aside: "B", nested: "B" })
+
+		await call("")
+		expect(Object.fromEntries(stored)).toEqual({ parent: undefined, aside: undefined, nested: undefined })
+		expect(controller.taskGroupStore.getGroup).toHaveBeenCalledTimes(2)
+		expect(controller.postStateToWebview).toHaveBeenCalledTimes(3)
+	})
+
+	it("leaves a subagent record and unrelated threads alone", async () => {
+		const { controller, stored } = makeFilingController(family)
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", "A")
+		expect(stored.has("agent")).toBe(false)
+		expect(stored.has("unrelated")).toBe(false)
+		expect(stored.has("unrelatedAside")).toBe(false)
+	})
+
+	it("picks up asides filed wrongly before: a stray task is overwritten with the parent's", async () => {
+		const { controller, stored } = makeFilingController([
+			record("parent", { taskGroupId: "A" }),
+			record("aside", { parentTaskId: "parent", taskGroupId: "B" }),
+		])
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "parent", "A")
+		expect(stored.get("aside")).toBe("A")
+	})
+
+	it("filing an aside files the thread it was forked from, so the family never splits", async () => {
+		const { controller, stored } = makeFilingController(family)
+		await SdkController.prototype.setThreadTaskGroup.call(controller as never, "nested", "A")
+		expect(Object.fromEntries(stored)).toEqual({ parent: "A", aside: "A", nested: "A" })
+	})
+
+	it("creating a task with a thread files its asides too", async () => {
+		const { controller, stored } = makeFilingController(family)
+		const createGroup = vi.fn(async () => ({ id: "NEW" }))
+		await SdkController.prototype.createTaskGroup.call({ ...controller, taskGroupStore: { createGroup } } as never, {
+			title: "T",
+			tags: [],
+			threadId: "parent",
+		})
+		expect(Object.fromEntries(stored)).toEqual({ parent: "NEW", aside: "NEW", nested: "NEW" })
+	})
+
+	it("a new aside starts in its parent's task, even when the parent is a legacy aside stored unfiled", async () => {
+		const items = new Map([
+			["root", { id: "root", task: "Root", taskGroupId: "A", cwdOnTaskInitialization: "/repo" }],
+			["legacy", { id: "legacy", task: "Legacy", parentTaskId: "root", cwdOnTaskInitialization: "/repo" }],
+		])
+		const visible = [{ ts: 10, type: "say", say: "task", text: "Q", sdkMessageIndex: 0 }]
+		const task = createTaskProxy("legacy", vi.fn(), vi.fn())
+		task.messageStateHandler.addMessages(visible as never)
+		const context = { mode: "act", task: createTaskProxy("aside", vi.fn(), vi.fn()), turn: { set: vi.fn() } }
+		const controller = {
+			stateManager: { getGlobalStateKey: () => undefined, getApiConfiguration: () => ({}) },
+			task,
+			taskSessions: new Map([["legacy", { task }]]),
+			sessionRebuilds: { runExclusive: async (run: () => Promise<void>) => run() },
+			taskHistory: {
+				findHistoryItem: async (id: string) => items.get(id),
+				updateTaskHistoryItem: vi.fn(async () => {}),
+				getClineMessages: async () => visible,
+			},
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ sdkHost: { readLiveMessages: vi.fn(async () => [{ role: "user", content: "Q" }]) } }),
+				startNewSession: vi.fn(async () => ({ startResult: { sessionId: "aside" } })),
+				focusSession: vi.fn(),
+				setRunning: vi.fn(),
+			},
+			sessionConfigBuilder: {
+				build: vi.fn(async () => ({ providerId: "anthropic", modelId: "model", cwd: "/repo", mode: "plan" })),
+			},
+			getTaskSessionContext: () => context,
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await SdkController.prototype.forkTaskAt.call(controller as never, "legacy", 10)
+		expect(controller.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionMetadata: expect.objectContaining({ taskGroupId: "A", parentTaskId: "legacy" }) }),
+		)
+		expect(controller.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ parentTaskId: "legacy", taskGroupId: "A" }),
+		)
+	})
+})
+
+describe("stopSubagent", () => {
+	it("aborts the child run, marks it stopped, and emits an updated status row", async () => {
+		const translator = new MessageTranslatorState()
+		translator.addSpawnAgent("call-1", "research", "read")
+		translator.addSpawnAgent("call-2", "write", "write")
+		const statusTs = translator.getSpawnAgentStatusTs()
+		const emitHookMessage = vi.fn()
+		const stopSubagent = vi.fn(async () => true)
+		const setSubagentCounts = vi.fn()
+		const controller = {
+			taskSessions: new Map([["task-1", { translator, messages: { emitHookMessage } }]]),
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ sessionId: "task-1", sdkHost: { stopSubagent } }),
+				setSubagentCounts,
+			},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "task-1", `${statusTs}:1`)).resolves.toBe(
+			true,
+		)
+
+		expect(stopSubagent).toHaveBeenCalledWith("task-1", "call-1")
+		expect(translator.getSpawnAgent("call-1")?.status).toBe("stopped")
+		expect(translator.getSpawnAgent("call-2")?.status).toBe("running")
+		const emitted = emitHookMessage.mock.calls[0][0]
+		expect(emitted.ts).toBe(statusTs)
+		expect(emitted.say).toBe("subagent")
+		expect(emitted.partial).toBe(true)
+		expect(JSON.parse(emitted.text).items.map((i: { status: string }) => i.status)).toEqual(["stopped", "running"])
+		expect(setSubagentCounts).toHaveBeenCalledWith("task-1", { total: 2, live: 1 })
+		expect(controller.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("stops one saved child so the parent's spawn wait resolves and siblings keep running", async () => {
+		// Real per-call abort registry from core; each controller stands in for one in-flight spawn_agent call.
+		const runtime = Object.create(LocalRuntimeHost.prototype)
+		const handles = new Map<string, AbortController>()
+		runtime.subAgentAbortHandles = handles
+		const spawnWait = (toolCallId: string) => {
+			const controller = new AbortController()
+			handles.set(`root:${toolCallId}`, controller)
+			const result = new Promise<string>((resolve) =>
+				controller.signal.addEventListener("abort", () => resolve("Stopped by user before finishing."), { once: true }),
+			)
+			return { controller, result }
+		}
+		const first = spawnWait("call-1")
+		const second = spawnWait("call-2")
+		const parentTranslator = new MessageTranslatorState()
+		parentTranslator.addSpawnAgent("call-1", "research", "read")
+		parentTranslator.addSpawnAgent("call-2", "audit", "read")
+		const clearPending = vi.fn()
+		const abort = vi.fn()
+		const child = (id: string, toolCallId: string, agentId: string) => ({
+			id,
+			ts: 1,
+			task: id,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			isSubagent: true,
+			parentTaskId: "root",
+			runtimeOwnerTaskId: "root",
+			agentId,
+			spawnToolCallId: toolCallId,
+		})
+		const controller = {
+			subagentThreads: new Map([
+				["child-1", child("child-1", "call-1", "agent-1")],
+				["child-2", child("child-2", "call-2", "agent-2")],
+			]),
+			taskSessions: new Map([["root", { translator: parentTranslator, interactions: { clearPending } }]]),
+			sessions: {
+				getSession: () => ({
+					sessionId: "root",
+					sdkHost: { abort, stopSubagent: (id: string, call: string) => runtime.abortSubAgent(id, call) },
+				}),
+			},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-1")).resolves.toBe(true)
+
+		await expect(first.result).resolves.toBe("Stopped by user before finishing.")
+		expect(second.controller.signal.aborted).toBe(false)
+		expect(abort).not.toHaveBeenCalled()
+		expect(clearPending).toHaveBeenCalledWith("Subagent stopped", "agent-1")
+		expect(parentTranslator.getSpawnAgent("call-1")?.status).toBe("stopped")
+		expect(parentTranslator.getSpawnAgent("call-2")?.status).toBe("running")
+
+		// Stop all is one stop per running child; an already-stopped child is a no-op.
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-2")).resolves.toBe(true)
+		await expect(second.result).resolves.toBe("Stopped by user before finishing.")
+		handles.delete("root:call-1")
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root", "child-1")).resolves.toBe(false)
+		expect(abort).not.toHaveBeenCalled()
+	})
+
+	it("returns false for stale chips, unknown tasks, or missing abort support", async () => {
+		const translator = new MessageTranslatorState()
+		translator.addSpawnAgent("call-1", "research", "read")
+		const statusTs = translator.getSpawnAgentStatusTs()
+		const stopSubagent = vi.fn(async () => true)
+		const controller = {
+			taskSessions: new Map([["task-1", { translator, messages: { emitHookMessage: vi.fn() } }]]),
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ sessionId: "task-1", sdkHost: { stopSubagent } }),
+				setSubagentCounts: vi.fn(),
+			},
+			postStateToWebview: vi.fn(async () => {}),
+		}
+
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "task-1", "999:1")).resolves.toBe(false)
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "task-1", `${statusTs}:9`)).resolves.toBe(
+			false,
+		)
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "gone", `${statusTs}:1`)).resolves.toBe(false)
+		expect(stopSubagent).not.toHaveBeenCalled()
+	})
+})
+
+describe("task deletion fence", () => {
+	it.each([
+		"askResponse",
+		"showTaskWithId",
+		"forkTaskAt",
+		"interjectPrompt",
+	] as const)("rejects %s for a deleting task", async (method) => {
+		const controller = {
+			task: { taskId: "deleting" },
+			sessions: {
+				assertTaskAvailable: vi.fn(() => {
+					throw new Error("Task is being deleted")
+				}),
+			},
+		}
+		await expect(Reflect.apply(SdkController.prototype[method], controller, ["deleting", 10])).rejects.toThrow(
+			"Task is being deleted",
+		)
+		expect(controller.sessions.assertTaskAvailable).toHaveBeenCalledWith("deleting")
+	})
+})
+
+describe("deleting the open thread", () => {
+	const proto = SdkController.prototype as unknown as {
+		openThreadClosedBy: (ids: readonly string[]) => Promise<unknown>
+	}
+	/** Stands in for a Controller whose delete clears the open task the way beforeDeleteSession does. */
+	function makeController(options: {
+		openId?: string
+		items?: Record<string, { id: string; taskGroupId?: string; parentTaskId?: string; isSubagent?: boolean }>
+		subagentThreads?: Map<string, unknown>
+		clearsTask?: boolean
+	}) {
+		const controller: Record<string, unknown> = {
+			task: options.openId ? { taskId: options.openId } : undefined,
+			subagentThreads: options.subagentThreads ?? new Map(),
+			taskSessions: new Map(),
+			deletedOpenThread: undefined,
+			openThreadClosedBy: proto.openThreadClosedBy,
+			taskHistory: {
+				findHistoryItem: async (id: string) => options.items?.[id],
+				deleteTasksFromState: vi.fn(async () => {
+					if (options.clearsTask !== false) controller.task = undefined
+					return []
+				}),
+			},
+		}
+		return controller
+	}
+	const remove = (controller: Record<string, unknown>, ids: string[]) =>
+		SdkController.prototype.deleteTasksFromState.call(controller as never, ids)
+
+	it("records the open thread and its task so the webview can leave it", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } } })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t1", taskGroupId: "g1", seq: 1 })
+	})
+
+	it("bumps seq on every such delete", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" }, t2: { id: "t2" } } })
+		await remove(controller, ["t1"])
+		controller.task = { taskId: "t2" }
+		await remove(controller, ["t2"])
+		expect(controller.deletedOpenThread).toEqual({ id: "t2", taskGroupId: undefined, seq: 2 })
+	})
+
+	it("records nothing when a different thread is deleted", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1", taskGroupId: "g1" } }, clearsTask: false })
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records nothing when no thread is open", async () => {
+		const controller = makeController({})
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+
+	it("records an open subagent thread when its owning parent is deleted, filed under the parent's task", async () => {
+		const child = { id: "child", parentTaskId: "parent", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { child, parent: { id: "parent", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["parent"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("resolves a live subagent's task through its runtime owner when it has no history row", async () => {
+		const child = { id: "child", parentTaskId: "ancestor", runtimeOwnerTaskId: "owner", isSubagent: true }
+		const controller = makeController({
+			openId: "child",
+			subagentThreads: new Map([["child", child]]),
+			items: { owner: { id: "owner", taskGroupId: "g9" } },
+		})
+		await remove(controller, ["owner"])
+		expect(controller.deletedOpenThread).toEqual({ id: "child", taskGroupId: "g9", seq: 1 })
+	})
+
+	it("keeps the event sequence unchanged when deleting another thread later", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		controller.deletedOpenThread = { id: "older", seq: 5 }
+		await remove(controller, ["other"])
+		expect(controller.deletedOpenThread).toEqual({ id: "older", seq: 5 })
+	})
+
+	it("records nothing when the delete left the thread open", async () => {
+		const controller = makeController({ openId: "t1", items: { t1: { id: "t1" } }, clearsTask: false })
+		await remove(controller, ["t1"])
+		expect(controller.deletedOpenThread).toBeUndefined()
+	})
+})
+
+describe("task configuration races", () => {
+	it("uses live selection when history was read before a picker change inside the transition lock", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const profiles = ["P", "Q"].map((id) => ({ id, name: id, provider: "openai", modelId: id }))
+		const globals: Record<string, unknown> = { apiConfigProfiles: profiles, askProfileId: "P", actProfileId: "P" }
+		const config: Record<string, unknown> = { actModeReasoningEffort: "low" }
+		const context = {
+			mode: "act",
+			apiSelection: { actProfileId: "P", actModeReasoningEffort: "low" },
+			task: createTaskProxy("live", vi.fn(), vi.fn()),
+		}
+		Object.assign(controller, {
+			stateManager: {
+				getGlobalStateKey: (key: string) => globals[key],
+				getGlobalSettingsKey: () => "act",
+				getApiConfiguration: () => config,
+				setGlobalStateBatch: (updates: object) => Object.assign(globals, updates),
+				setApiConfiguration: (updates: object) => Object.assign(config, updates),
+				getSecretForKey: () => undefined,
+				listSecretStorageKeys: () => [],
+			},
+			taskSessions: new Map([["live", context]]),
+			sessions: { getSession: () => ({}) },
+			taskHistory: { setTaskApiSelection: vi.fn(async () => {}) },
+		})
+		const stale = { id: "live", apiSelection: { actProfileId: "P", actModeReasoningEffort: "low" } }
+		const control = new SdkTaskControlCoordinator({
+			taskHistory: { findHistoryItem: async () => stale },
+			sessions: {},
+			clearTaskSettings: async () => {},
+			rebuilds: {
+				runTaskTransition: async (run: () => Promise<void>) => {
+					// A picker change lands after history lookup but before focus restoration.
+					context.apiSelection = { actProfileId: "Q", actModeReasoningEffort: "high" }
+					await run()
+				},
+			},
+			focusLiveTask: (_id: string, item: unknown) => {
+				controller.restoreTaskApiSelection(item, "act")
+				return true
+			},
+			postStateToWebview: async () => {},
+		} as never)
+		await control.showTaskWithId("live")
+		expect(globals.actProfileId).toBe("P")
+		expect(config.actModeReasoningEffort).toBe("low")
+		expect(context.apiSelection).toEqual({ actProfileId: "Q", actModeReasoningEffort: "high" })
+	})
+
+	it("keeps pending picker changes separate from the live selection and posts the live build snapshot", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const selection = { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" }
+		const context = { apiSelection: selection, pendingApiSelection: undefined as TaskApiSelection | undefined }
+		const task = { taskId: "live", messageStateHandler: { getClineMessages: () => [] } }
+		Object.defineProperty(controller, "task", { value: task, writable: true })
+		const session = {
+			sessionId: "live",
+			apiSnapshot: {
+				selection,
+				configuration: { actModeApiProvider: "openai", actModeOpenAiModelId: "p-model", actModeReasoningEffort: "low" },
+			},
+			sdkHost: { pendingPrompts: async () => [] },
+		}
+		Object.assign(controller, {
+			task,
+			taskSessions: new Map([["live", context]]),
+			getTaskSessionContext: () => context,
+			stateManager: {
+				getGlobalStateKey: (key: string) =>
+					key === "apiConfigProfiles"
+						? ["P", "Q"].map((id) => ({ id, name: id, provider: "openai", modelId: `${id.toLowerCase()}-model` }))
+						: "Q",
+				getApiConfiguration: () => ({ actModeReasoningEffort: "high" }),
+				getGlobalSettingsKey: () => undefined,
+				listSecretStorageKeys: () => [],
+				getSecretForKey: () => undefined,
+				getRemoteConfigSettings: () => ({}),
+				setGlobalState: vi.fn(),
+			},
+			providerChanges: { handleApiConfigurationChanged: vi.fn() },
+			sessions: { getSession: () => session, getActiveSession: () => session, sessionStatuses: {} },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: { listHistory: async () => [] },
+			turnStateTracker: { get: () => undefined },
+			messageTranslatorState: { getMinter: () => ({ epoch: 1, nextSeq: () => 1 }) },
+		})
+		context.pendingApiSelection = { ...selection, actProfileId: "Q", actModeReasoningEffort: "high" }
+		buildBaseStateMock.mockResolvedValueOnce({
+			taskHistory: [],
+			mode: "act",
+			actProfileId: "Q",
+			apiConfiguration: { actModeReasoningEffort: "high" },
+		} as never)
+		const state = await controller.getStateToPostToWebview()
+		expect(state.actProfileId).toBe("Q")
+		expect(state.apiConfiguration).toMatchObject({ actModeReasoningEffort: "high" })
+		expect(state.apiConfiguration.actModeOpenAiModelId).toBeUndefined()
+		expect(state.composerApiSelection).toMatchObject({ actProfileId: "Q", actModeReasoningEffort: "high" })
+		expect(state.composerApiConfiguration).toMatchObject({ actModeOpenAiModelId: "q-model", actModeReasoningEffort: "high" })
+		expect(state.focusedSessionModels.act).toEqual({
+			profileId: "P",
+			provider: "openai",
+			modelId: "p-model",
+			reasoningEffort: "low",
+		})
+		// A background profile edit cannot change the displayed live model on refocus.
+		controller.stateManager.getApiConfiguration = () => ({ actModeOpenAiModelId: "edited-p-model" })
+		buildBaseStateMock.mockResolvedValueOnce({
+			taskHistory: [],
+			mode: "act",
+			actProfileId: "Q",
+			apiConfiguration: { actModeOpenAiModelId: "edited-p-model" },
+		} as never)
+		const editedState = await controller.getStateToPostToWebview()
+		expect(editedState.focusedSessionModels.act.modelId).toBe("p-model")
+		// An armed next-message pick is what the composer shows, until its message has gone.
+		const pick = { modelId: "next", levelId: "high" }
+		const armed = { current: pick as typeof pick | undefined }
+		controller.configuredNextMessageSelections = { peek: () => armed.current }
+		const base = { taskHistory: [], mode: "act", apiConfiguration: {} } as never
+		buildBaseStateMock.mockResolvedValueOnce(base)
+		const armedState = await controller.getStateToPostToWebview()
+		expect(armedState.composerNextMessageOnly).toBe(true)
+		expect(armedState.composerApiSelection.modelSelectionV1.act).toEqual(pick)
+		armed.current = undefined
+		buildBaseStateMock.mockResolvedValueOnce(base)
+		expect((await controller.getStateToPostToWebview()).composerNextMessageOnly).toBe(false)
+	})
+
+	it("commits mode and selection for a history-only chat after switching completes", async () => {
+		const context = { mode: "plan" }
+		const controller = {
+			task: { taskId: "history" },
+			getTaskSessionContext: () => context,
+			sessions: { getSession: () => undefined },
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			mode: { togglePlanActMode: vi.fn(async () => false) },
+			recordTaskApiSelection: vi.fn(),
+			taskHistory: { setTaskMode: vi.fn(async () => {}) },
+		}
+		await SdkController.prototype.togglePlanActMode.call(controller as never, "act")
+		expect(context.mode).toBe("act")
+		expect(controller.recordTaskApiSelection).toHaveBeenCalledWith("history")
+		expect(controller.taskHistory.setTaskMode).toHaveBeenCalledWith("history", "act")
+		expect(controller.taskHistory.setTaskMode.mock.invocationCallOrder[0]).toBeGreaterThan(
+			controller.mode.togglePlanActMode.mock.invocationCallOrder[0],
+		)
+	})
+
+	it("does not mutate the live mode snapshot before a failed rebuild", async () => {
+		const session = { startConfig: { mode: "plan" } }
+		const context = { mode: "plan" }
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const controller = {
+			task: { taskId: "live" },
+			getTaskSessionContext: () => context,
+			sessions: { getSession: () => session },
+			mode: {
+				togglePlanActMode: async () => {
+					await gate
+					return false
+				},
+			},
+		}
+		const switchMode = SdkController.prototype.togglePlanActMode.call(controller as never, "act")
+		expect(session.startConfig.mode).toBe("plan")
+		expect(context.mode).toBe("plan")
+		release()
+		await switchMode
+		expect(session.startConfig.mode).toBe("plan")
+		expect(context.mode).toBe("plan")
+	})
+})
+
+describe("subagent thread routing", () => {
+	const route = (controller: unknown, event: import("@cline/core").CoreSessionEvent): boolean =>
+		Reflect.apply(Reflect.get(SdkController.prototype, "handleSubagentEvent"), controller, [event])
+
+	it("retains independent live transcripts for two children and links their spawn calls", () => {
+		const parentTranslator = new MessageTranslatorState()
+		parentTranslator.addSpawnAgent("spawn-a", "Report A")
+		parentTranslator.addSpawnAgent("spawn-b", "Report B")
+		const contexts = new Map<
+			string,
+			{ translator: MessageTranslatorState; messages: SdkMessageCoordinator; turn: { set: ReturnType<typeof vi.fn> } }
+		>()
+		const childTasks = new Map<string, TaskProxy>()
+		const controller = {
+			subagentThreads: new Map(),
+			taskSessions: new Map([["parent", { translator: parentTranslator }]]),
+			sessions: { getSession: () => ({}), setStatus: vi.fn() },
+			taskHistory: { invalidateMetadataHistoryCache: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			getTaskSessionContext: (id: string) => {
+				if (!contexts.has(id)) {
+					const task = createTaskProxy(
+						id,
+						async () => {},
+						async () => {},
+					)
+					childTasks.set(id, task)
+					const append = (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+						task.messageStateHandler.addMessages(messages)
+					contexts.set(id, {
+						translator: new MessageTranslatorState(),
+						messages: { appendMessages: append, appendAndEmit: append } as unknown as SdkMessageCoordinator,
+						turn: { set: vi.fn() },
+					})
+				}
+				return contexts.get(id)!
+			},
+		}
+		for (const child of ["a", "b"]) {
+			expect(
+				route(controller, {
+					type: "subagent",
+					payload: {
+						sessionId: "parent",
+						childSessionId: `parent__${child}`,
+						agentId: child,
+						parentAgentId: "lead",
+						toolCallId: `spawn-${child}`,
+						prompt: `Report ${child.toUpperCase()}`,
+						access: "read",
+						status: "running",
+					},
+				}),
+			).toBe(true)
+			route(controller, {
+				type: "agent_event",
+				payload: {
+					sessionId: "parent",
+					event: {
+						type: "content_start",
+						agentId: child,
+						parentAgentId: "lead",
+						contentType: "text",
+						text: `Report from ${child}`,
+					} as import("@cline/core").AgentEvent,
+				},
+			})
+		}
+		expect(parentTranslator.getSpawnAgent("spawn-a")?.childSessionId).toBe("parent__a")
+		expect(
+			childTasks
+				.get("parent__a")
+				?.messageStateHandler.getClineMessages()
+				.map((message) => message.text),
+		).toEqual(["Report A", "Report from a"])
+		expect(
+			childTasks
+				.get("parent__b")
+				?.messageStateHandler.getClineMessages()
+				.map((message) => message.text),
+		).toEqual(["Report B", "Report from b"])
+	})
+
+	it("forwards only the selected child's approval to the parent's queue and blocks followups", async () => {
+		const resolvePendingToolApproval = vi.fn()
+		const child = { parentTaskId: "parent", agentId: "a" }
+		const parent = {
+			interactions: {
+				getPendingDecision: vi.fn(() => ({ id: "decision-a", kind: "approval" })),
+				resolvePendingToolApproval,
+			},
+		}
+		const controller = {
+			task: { taskId: "child", taskState: { askResponse: "yesButtonClicked" } },
+			subagentThreads: new Map([["child", child]]),
+			taskSessions: new Map([["parent", parent]]),
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "decision-a")
+		expect(parent.interactions.getPendingDecision).toHaveBeenCalledWith("a")
+		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "decision-a")
+		controller.task.taskState.askResponse = "messageResponse"
+		await expect(SdkController.prototype.askResponse.call(controller as never, "Follow up")).rejects.toThrow("read-only")
+		expect(resolvePendingToolApproval).toHaveBeenCalledTimes(1)
+	})
+
+	it("publishes a newer streaming phase when a child's projected approval resolves", async () => {
+		const translator = new MessageTranslatorState()
+		const minter = translator.getMinter()
+		const task = createTaskProxy("child", vi.fn(), vi.fn())
+		const ask = { ts: 5, type: "ask", ask: "tool", text: "{}" } as const
+		let pending = true
+		const controller = {
+			task,
+			subagentThreads: new Map([
+				["child", { id: "child", task: "Report", ts: 1, isSubagent: true, parentTaskId: "parent", agentId: "a" }],
+			]),
+			taskSessions: new Map<string, unknown>([
+				["child", {}],
+				[
+					"parent",
+					{ interactions: { getPendingDecision: () => (pending ? { message: ask, kind: "approval" } : undefined) } },
+				],
+			]),
+			stateManager: { getGlobalSettingsKey: () => undefined, getRemoteConfigSettings: () => ({}), setGlobalState: vi.fn() },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: {
+				listHistory: async () => [
+					{ sessionId: "parent", prompt: "Parent", startedAt: "2026-10-01T00:00:00Z" },
+					{
+						sessionId: "child",
+						prompt: "Report",
+						startedAt: "2026-10-01T00:00:00Z",
+						parentSessionId: "parent",
+						isSubagent: true,
+					},
+				],
+			},
+			sessions: { getActiveSession: () => undefined, sessionStatuses: { child: "running" } },
+			messageTranslatorState: translator,
+			turnStateTracker: { get: () => ({ phase: "streaming", seq: 1 }) },
+		}
+		buildBaseStateMock.mockResolvedValueOnce({ taskHistory: [], clineMessages: [] } as never)
+		const waiting = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(waiting.turnState?.phase).toBe("awaiting_approval")
+		pending = false
+		buildBaseStateMock.mockResolvedValueOnce({ taskHistory: [], clineMessages: [] } as never)
+		const streaming = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(streaming.turnState?.phase).toBe("streaming")
+		expect(streaming.turnState!.seq).toBeGreaterThan(waiting.turnState!.seq)
+		expect(streaming.subagentView?.pendingDecision).toBeUndefined()
+		expect(minter.seq).toBeGreaterThan(streaming.turnState!.seq)
+	})
+
+	it("stops the selected child by its saved spawn call without aborting its parent", async () => {
+		const stopSubagent = vi.fn(async () => true)
+		const controller = {
+			subagentThreads: new Map([["child", { parentTaskId: "parent", spawnToolCallId: "spawn-a" }]]),
+			taskSessions: new Map([["parent", { translator: new MessageTranslatorState() }]]),
+			sessions: { getSession: () => ({ sdkHost: { stopSubagent } }) },
+			postStateToWebview: vi.fn(async () => {}),
+		}
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "parent", "child")).resolves.toBe(true)
+		expect(stopSubagent).toHaveBeenCalledWith("parent", "spawn-a")
+	})
+})
+
+describe("nested subagent conversation parents", () => {
+	it.each(["live", "reopened"])("keeps nested children in %s state when A is focused and B returns to A", async (source) => {
+		const a = {
+			id: "root__a",
+			task: "A",
+			ts: 2,
+			isSubagent: true,
+			parentTaskId: "root",
+			runtimeOwnerTaskId: "root",
+			agentId: "a",
+		}
+		const b = {
+			id: "root__b",
+			task: "B",
+			ts: 3,
+			isSubagent: true,
+			parentTaskId: a.id,
+			runtimeOwnerTaskId: "root",
+			agentId: "b",
+		}
+		const records = [
+			{ sessionId: "root", prompt: "Root", startedAt: "2026-10-01T00:00:00Z" },
+			...(source === "reopened"
+				? [a, b].map((child) => ({
+						sessionId: child.id,
+						prompt: child.task,
+						startedAt: "2026-10-01T00:00:01Z",
+						isSubagent: true,
+						parentSessionId: "root",
+						agentId: child.agentId,
+						metadata: { immediateParentSessionId: child.parentTaskId },
+					}))
+				: []),
+		]
+		const controller = {
+			task: createTaskProxy(a.id, vi.fn(), vi.fn()),
+			// Reverse insertion order to cover live children before their parents.
+			subagentThreads: new Map(
+				source === "live"
+					? [
+							[b.id, b],
+							[a.id, a],
+						]
+					: [[a.id, a]],
+			),
+			taskSessions: new Map<string, unknown>([["root", { interactions: { getPendingDecision: () => undefined } }]]),
+			stateManager: { getGlobalSettingsKey: () => undefined, getRemoteConfigSettings: () => ({}), setGlobalState: vi.fn() },
+			foregroundCommands: { isRunning: false },
+			ensureWorkspaceManager: async () => undefined,
+			taskHistory: { listHistory: async () => records },
+			sessions: { getActiveSession: () => undefined, sessionStatuses: { [b.id]: "waiting" } },
+			messageTranslatorState: new MessageTranslatorState(),
+			turnStateTracker: { get: () => ({ phase: "streaming", seq: 1 }) },
+		}
+		const state = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(state.currentTaskItem?.id).toBe(a.id)
+		expect(state.taskHistory.map((item) => item.id)).toEqual(expect.arrayContaining(["root", a.id, b.id]))
+		expect(state.taskHistory.filter((item) => item.id === a.id)).toHaveLength(1)
+		expect(state.sessionStatuses?.[b.id]).toBe("waiting")
+		controller.task = createTaskProxy(b.id, vi.fn(), vi.fn())
+		controller.subagentThreads.set(b.id, b)
+		const childState = await SdkController.prototype.getStateToPostToWebview.call(controller as never)
+		expect(childState.subagentView?.parentTaskId).toBe(a.id)
+		expect(childState.taskHistory.filter((item) => item.id === a.id)).toHaveLength(1)
+	})
+
+	it("links B in A's translator, streams into B, and routes B's approval and Stop through root", async () => {
+		const rootTranslator = new MessageTranslatorState()
+		rootTranslator.addSpawnAgent("spawn-a", "A")
+		const aTranslator = new MessageTranslatorState()
+		aTranslator.addSpawnAgent("spawn-b", "B")
+		const resolvePendingToolApproval = vi.fn()
+		const clearPending = vi.fn()
+		const stopSubagent = vi.fn(async () => true)
+		const root = {
+			translator: rootTranslator,
+			interactions: {
+				getPendingDecision: () => ({ id: "b-approval", kind: "approval" }),
+				resolvePendingToolApproval,
+				clearPending,
+			},
+		}
+		const aTask = createTaskProxy("root__a", vi.fn(), vi.fn())
+		const bTask = createTaskProxy("root__b", vi.fn(), vi.fn())
+		const context = (task: TaskProxy, translator: MessageTranslatorState) => ({
+			translator,
+			messages: {
+				appendMessages: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+					task.messageStateHandler.addMessages(messages),
+				appendAndEmit: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+					task.messageStateHandler.addMessages(messages),
+			},
+			turn: { set: vi.fn() },
+		})
+		const contexts = new Map<string, unknown>([
+			["root", root],
+			["root__a", context(aTask, aTranslator)],
+			["root__b", context(bTask, new MessageTranslatorState())],
+		])
+		const threads = new Map<string, import("@shared/HistoryItem").HistoryItem>()
+		const controller = {
+			task: bTask,
+			taskSessions: contexts,
+			subagentThreads: threads,
+			sessions: {
+				getSession: (id: string) => (id === "root" ? { sdkHost: { stopSubagent } } : undefined),
+				setStatus: vi.fn(),
+			},
+			taskHistory: { invalidateMetadataHistoryCache: vi.fn() },
+			postStateToWebview: vi.fn(async () => {}),
+			getTaskSessionContext: (id: string) => contexts.get(id),
+		}
+		const route = (event: import("@cline/core").CoreSessionEvent) =>
+			Reflect.apply(Reflect.get(SdkController.prototype, "handleSubagentEvent"), controller, [event])
+		for (const [agentId, parentAgentId] of [
+			["a", "lead"],
+			["b", "a"],
+		])
+			route({
+				type: "subagent",
+				payload: {
+					sessionId: "root",
+					childSessionId: `root__${agentId}`,
+					agentId,
+					parentAgentId,
+					toolCallId: `spawn-${agentId}`,
+					prompt: agentId,
+					access: "read",
+					status: "running",
+				},
+			})
+		expect(threads.get("root__b")).toMatchObject({ parentTaskId: "root__a", runtimeOwnerTaskId: "root" })
+		expect(aTranslator.getSpawnAgent("spawn-b")?.childSessionId).toBe("root__b")
+		expect(rootTranslator.getSpawnAgent("spawn-b")).toBeUndefined()
+		route({
+			type: "agent_event",
+			payload: {
+				sessionId: "root",
+				event: {
+					type: "content_start",
+					agentId: "b",
+					parentAgentId: "a",
+					contentType: "text",
+					text: "Nested report",
+				} as import("@cline/core").AgentEvent,
+			},
+		})
+		expect(bTask.messageStateHandler.getClineMessages().at(-1)?.text).toBe("Nested report")
+		expect(aTask.messageStateHandler.getClineMessages().filter((message) => message.say !== "subagent")).toHaveLength(1)
+		bTask.taskState.askResponse = "yesButtonClicked"
+		await SdkController.prototype.askResponse.call(controller as never, undefined, undefined, undefined, "b-approval")
+		expect(resolvePendingToolApproval).toHaveBeenCalledWith(undefined, "yesButtonClicked", undefined, undefined, "b-approval")
+		await expect(SdkController.prototype.stopSubagent.call(controller as never, "root__a", "root__b")).resolves.toBe(true)
+		expect(stopSubagent).toHaveBeenCalledWith("root", "spawn-b")
+		expect(clearPending).toHaveBeenCalledWith("Subagent stopped", "b")
+	})
+})
+
+it("marks live descendants stopped with a clear status when their root runtime is replaced", () => {
+	const task = createTaskProxy("root__b", vi.fn(), vi.fn())
+	const clearPending = vi.fn()
+	const context = {
+		translator: new MessageTranslatorState(),
+		messages: {
+			appendMessages: (messages: import("@shared/ExtensionMessage").ClineMessage[]) =>
+				task.messageStateHandler.addMessages(messages),
+		},
+		turn: { set: vi.fn() },
+	}
+	const controller = {
+		taskSessions: new Map([["root", { interactions: { clearPending } }]]),
+		subagentThreads: new Map([
+			["root__b", { id: "root__b", parentTaskId: "root__a", runtimeOwnerTaskId: "root" }],
+			["other__c", { id: "other__c", parentTaskId: "other", runtimeOwnerTaskId: "other" }],
+		]),
+		sessions: { sessionStatuses: { root__b: "waiting", other__c: "running" }, setStatus: vi.fn() },
+		getTaskSessionContext: () => context,
+		postStateToWebview: vi.fn(async () => {}),
+	}
+	Reflect.apply(Reflect.get(SdkController.prototype, "handleParentSessionReplaced"), controller, ["root"])
+	expect(clearPending).toHaveBeenCalledWith("Parent session replaced")
+	expect(task.messageStateHandler.getClineMessages()).toMatchObject([
+		{ say: "error", text: "Subagent stopped because its parent session was rebuilt." },
+	])
+	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root__b", "error")
+	expect(controller.sessions.setStatus).toHaveBeenCalledWith("root", "done")
+})
+
+describe("task notebook fix round", () => {
+	it("uses the parent's group for an aside in timeline and history search, whatever the aside stores", () => {
+		const controller = Object.create(SdkController.prototype)
+		const parent = { id: "parent", taskGroupId: "A" }
+		const aside = { id: "aside", parentTaskId: "parent" }
+		const child = { id: "child", isSubagent: true, runtimeOwnerTaskId: "aside" }
+		const byId = new Map([parent, aside, child].map((item) => [item.id, item]))
+		expect(controller.effectiveTaskGroupId(aside, byId)).toBe("A")
+		expect(controller.effectiveTaskGroupId(child, byId)).toBe("A")
+		byId.set("aside", { ...aside, taskGroupId: "B" } as typeof aside)
+		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBe("A")
+		expect(controller.effectiveTaskGroupId(child, byId)).toBe("A")
+		byId.set("parent", { id: "parent" } as typeof parent)
+		expect(controller.effectiveTaskGroupId(byId.get("aside"), byId)).toBeUndefined()
+	})
+
+	it("emits a review card for every pending group owned by an aside", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const aside = { id: "aside", parentTaskId: "parent", taskGroupId: "B" }
+		const reviews = ["A", "B"].map((groupId) => ({
+			groupId,
+			revision: `r-${groupId}`,
+			changes: [{ op: "create", slug: "plan", name: "Plan", description: "", content: groupId }],
+		}))
+		controller.taskHistory = { findHistoryItem: vi.fn(async () => aside), saveNotebookChangesMessage: vi.fn() }
+		controller.notebookStore = { listPending: vi.fn(async () => reviews), reviewDiffs: vi.fn(async (review) => review) }
+		let ts = 10
+		const emitHookMessage = vi.fn()
+		controller.getTaskSessionContext = vi.fn(() => ({
+			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }] } },
+			messages: { emitHookMessage },
+			translator: { nextTs: () => ++ts },
+		}))
+		await controller.emitNotebookChanges("aside")
+		expect(controller.notebookStore.listPending).toHaveBeenCalledWith("aside")
+		expect(emitHookMessage.mock.calls.map(([message]) => JSON.parse(message.text))).toEqual(
+			reviews.map((review) => ({
+				taskGroupId: review.groupId,
+				revision: review.revision,
+				threadId: "aside",
+				status: "pending",
+				changes: review.changes,
+			})),
+		)
+	})
+
+	it("shows a later turn's notebook changes in a new card at the end, keeping the card for the same revision", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "v2" }]
+		const earlier = {
+			ts: 5,
+			type: "say",
+			say: "notebook_changes",
+			sdkMessageIndex: 3,
+			text: JSON.stringify({ taskGroupId: "A", threadId: "t", revision: "r1", status: "pending", changes }),
+		}
+		let review = { groupId: "A", revision: "r2", changes }
+		controller.taskHistory = { findHistoryItem: vi.fn(async () => ({ id: "t" })), saveNotebookChangesMessage: vi.fn() }
+		controller.notebookStore = { listPending: vi.fn(async () => [review]), reviewDiffs: vi.fn(async (pending) => pending) }
+		let ts = 10
+		const emitHookMessage = vi.fn()
+		controller.getTaskSessionContext = vi.fn(() => ({
+			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }, earlier] } },
+			messages: { emitHookMessage },
+			translator: { nextTs: () => ++ts },
+		}))
+		await controller.emitNotebookChanges("t")
+		// r2 staged more: a new card (new ts), not the r1 card updated in place up the chat.
+		expect(emitHookMessage.mock.calls[0][0].ts).toBe(11)
+		expect(JSON.parse(emitHookMessage.mock.calls[0][0].text).revision).toBe("r2")
+
+		review = { groupId: "A", revision: "r1", changes }
+		await controller.emitNotebookChanges("t")
+		// The same revision again keeps its card where it is.
+		expect(emitHookMessage.mock.calls[1][0]).toMatchObject({ ts: 5, sdkMessageIndex: 3 })
+	})
+
+	it("refreshes branch on focus or HEAD events and posts only changes", async () => {
+		const git = await import("@/utils/git-worktree")
+		const getBranch = vi.spyOn(git, "getCurrentBranch").mockResolvedValue("new-branch")
+		try {
+			const controller = Object.create(SdkController.prototype)
+			controller.getWorkspaceRoot = vi.fn(async () => "/workspace")
+			controller.currentBranchCache = { cwd: "/workspace", branch: "old-branch", at: Date.now() }
+			controller.postStateToWebview = vi.fn()
+			await controller.refreshCurrentBranch()
+			expect(controller.currentBranchCache.branch).toBe("new-branch")
+			expect(controller.postStateToWebview).toHaveBeenCalledTimes(1)
+			await controller.refreshCurrentBranch()
+			expect(getBranch).toHaveBeenCalledTimes(2)
+			expect(controller.postStateToWebview).toHaveBeenCalledTimes(1)
+			controller.isDisposed = true
+			await controller.refreshCurrentBranch()
+			expect(getBranch).toHaveBeenCalledTimes(2)
+		} finally {
+			getBranch.mockRestore()
+		}
+	})
+})
+
+it("resolves only the addressed notebook group and revision when another group's card is newer", async () => {
+	const controller = Object.create(SdkController.prototype)
+	const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "Reviewed" }]
+	const messages = ["A", "B"].map((taskGroupId, index) => ({
+		ts: index + 1,
+		type: "say",
+		say: "notebook_changes",
+		sdkMessageIndex: 10,
+		text: JSON.stringify({ taskGroupId, threadId: "thread", revision: `r-${taskGroupId}`, status: "pending", changes }),
+	}))
+	const emitHookMessage = vi.fn()
+	controller.taskHistory = { saveNotebookChangesMessage: vi.fn() }
+	controller.getTaskSessionContext = vi.fn(() => ({
+		task: { messageStateHandler: { getClineMessages: () => messages } },
+		messages: { emitHookMessage },
+		translator: { nextTs: () => 3 },
+	}))
+	await controller.finishNotebookChanges("thread", "A", "r-A", "applied", changes)
+	const resolved = emitHookMessage.mock.calls[0][0]
+	expect(resolved.ts).toBe(1)
+	expect(JSON.parse(resolved.text)).toMatchObject({
+		taskGroupId: "A",
+		revision: "r-A",
+		status: "applied",
+		appliedSlugs: ["plan"],
+	})
+	expect(JSON.parse(messages[1].text).status).toBe("pending")
+})
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: Remove retires the local idle runtime and records the original workspace`, async () => {
+		const temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-controller-remove-"))
+		try {
+			const { manager, workspace } = await worktreeProject(temp, mode)
+			const mapping = await manager.create("idle", "Idle", workspace)
+			let resident = { isRunning: false, cwd: mapping.cwd } as { isRunning: boolean; cwd: string } | undefined
+			const release = vi.fn()
+			const controller = {
+				threadWorktrees: manager,
+				getWorkspaceRoot: async () => workspace,
+				stateManager: { getWorkspaceStateKey: () => undefined },
+				sessions: {
+					getSession: () => resident,
+					beginTaskDeletion: () => release,
+					removeSession: vi.fn(async () => {
+						await fs.access(mapping.cwd)
+						resident = undefined
+					}),
+				},
+				resolveSlashCommands: async (text: string) => text,
+				resolveReferenceMentions: async (text: string) => text,
+				workspaceNotices: new Map<string, string>(),
+				seenWorktreeRemovals: new Map<string, number>(),
+			}
+			const result = await SdkController.prototype.threadWorktreeAction.call(controller as never, {
+				action: "remove",
+				threadId: "idle",
+				json: "",
+				confirmed: false,
+			})
+			expect(resident).toBeUndefined()
+			expect(result.message).toContain("next turn runs in your workspace")
+			expect(release).toHaveBeenCalledOnce()
+			const resolveWorkspace = Reflect.get(SdkController.prototype, "resolveSessionWorkspace")
+			expect(await resolveWorkspace.call(controller, "idle")).toBe(workspace)
+			expect(controller.workspaceNotices.get("idle")).toContain(workspace)
+			controller.workspaceNotices.clear()
+			await resolveWorkspace.call(controller, "idle")
+			expect(controller.workspaceNotices.size).toBe(0)
+			const relative = mode === "mm" ? "api/file.txt" : "file.txt"
+			await fs.writeFile(path.join(workspace, relative), "Original workspace context\n")
+			const resolveMentions = Reflect.get(SdkController.prototype, "resolveContextMentions")
+			expect(await resolveMentions.call(controller, `@/${relative}`, "idle")).toContain("Original workspace context")
+		} finally {
+			await fs.rm(temp, { recursive: true, force: true })
+		}
+	}, 60_000)
+}
+
+describe("thread reference authorization", () => {
+	function referenceController() {
+		const controller = Object.create(SdkController.prototype)
+		Object.defineProperty(controller, "task", { value: { taskId: "current" } })
+		controller.referencedThreads = new Map<string, Set<string>>()
+		controller.resolveSlashCommands = async (text: string) => text
+		controller.resolveAllowListOwner = async (id: string) => id
+		controller.taskHistory = {
+			findHistoryItem: vi.fn(async (id: string) => ({ id, title: `Title ${id}`, task: id })),
+			addReferencedThreads: vi.fn(async () => {}),
+		}
+		return controller
+	}
+	const resolve = (controller: object, text: string, provenance?: ComposerProvenance) =>
+		Reflect.get(SdkController.prototype, "resolveContextMentions").call(
+			controller,
+			text,
+			undefined,
+			provenance,
+		) as Promise<string>
+
+	it("never authorizes a thread id that only appears in a walkthrough note's hunk", async () => {
+		const controller = referenceController()
+		// What WalkthroughService.sendNotes sends: quoted hunks, no composer provenance.
+		const notes = "> src/a.ts\n> +see thread:9_secret for details\n\nPlease explain this."
+		expect(await resolve(controller, notes)).toBe(notes)
+		expect(controller.referencedThreads.size).toBe(0)
+		expect(controller.taskHistory.addReferencedThreads).not.toHaveBeenCalled()
+	})
+
+	it("never authorizes a thread id that only appears in a quote chip", async () => {
+		const controller = referenceController()
+		const message = "> **Assistant**\n> the old plan lives in thread:9_secret\n\nWhat do you think?"
+		expect(await resolve(controller, message, { authorizedThreadIds: [] })).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+
+	it("authorizes only the thread ids the user picked, not other thread: text in the message", async () => {
+		const controller = referenceController()
+		const message = "> quoted thread:9_secret\n\ncompare with thread:1_picked"
+		const resolved = await resolve(controller, message, { authorizedThreadIds: ["1_picked"] })
+		expect(resolved).toContain('<thread_reference id="1_picked"')
+		expect(resolved).toContain("quoted thread:9_secret")
+		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_picked"])
+	})
+
+	it("ignores thread: text that Add to Cline or a restored draft put in the composer when nothing was picked", async () => {
+		const controller = referenceController()
+		const message = "from the editor: thread:9_secret"
+		expect(await resolve(controller, message, undefined)).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+
+	it("authorizes a picked thread that exists even when its token is not in the final text", async () => {
+		const controller = referenceController()
+		expect(await resolve(controller, "no token here", { authorizedThreadIds: ["1_picked"] })).toBe("no token here")
+		expect([...(controller.referencedThreads.get("current") ?? [])]).toEqual(["1_picked"])
+	})
+
+	it("does not authorize a picked id that is not a known thread", async () => {
+		const controller = referenceController()
+		controller.taskHistory.findHistoryItem = vi.fn(async () => undefined)
+		const message = "see thread:7_gone"
+		expect(await resolve(controller, message, { authorizedThreadIds: ["7_gone"] })).toBe(message)
+		expect(controller.referencedThreads.size).toBe(0)
+	})
+})
+
+function controllerFixture<T extends object>(properties: T): T & SdkController {
+	return Object.defineProperties(Object.create(SdkController.prototype), Object.getOwnPropertyDescriptors(properties))
+}

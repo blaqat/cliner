@@ -1,3 +1,5 @@
+import { hasAssignedApiProfile, resolveApiConfigurationForMode } from "@/core/controller/models/apiProfiles"
+import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 // Replaces classic src/core/api buildApiHandler (see origin/main).
 //
 // Builds an SDK ApiHandler (from `@cline/llms`) directly from the extension's
@@ -19,6 +21,7 @@ import { buildBedrockProviderConfig } from "./bedrock-config"
 import {
 	type HostClientContext,
 	resolveApiKey,
+	resolveAzureProviderConfig,
 	resolveBaseUrl,
 	resolveClineRequestClientContext,
 	resolveModelId,
@@ -46,6 +49,7 @@ import { getProviderSettingsManager } from "./provider-migration"
 function resolveRequestHeaders(
 	providerId: string,
 	client: Partial<HostClientContext> | undefined,
+	configuredHeaders?: Record<string, string>,
 ): Record<string, string> | undefined {
 	return resolveProviderRequestHeaders({
 		providerId,
@@ -66,7 +70,7 @@ function resolveRequestHeaders(
 			// Custom headers the user configured for this provider in
 			// providers.json, layered under the required headers exactly as the
 			// session path layers them.
-			stored: resolveStoredProviderHeaders(providerId),
+			stored: configuredHeaders ?? resolveStoredProviderHeaders(providerId),
 		},
 	})
 }
@@ -118,7 +122,10 @@ export function buildSdkProviderConfig(
 	mode: Mode,
 	options?: BuildApiHandlerOptions,
 ): ProviderConfig {
-	const providerId = (mode === "plan" ? configuration.planModeApiProvider : configuration.actModeApiProvider) ?? "cline"
+	configuration = resolveApiConfigurationForMode(configuration, mode)
+	const providerId = toLegacyApiProvider(
+		(mode === "plan" ? configuration.planModeApiProvider : configuration.actModeApiProvider) ?? "cline",
+	)
 
 	const apiKey = resolveApiKey(providerId, configuration)
 	const modelId = resolveModelId(providerId, mode, configuration)
@@ -130,17 +137,34 @@ export function buildSdkProviderConfig(
 
 	const vertexProviderConfig = providerId === "vertex" ? resolveVertexProviderConfig(configuration) : undefined
 	const sdkProviderId = toSdkProviderId(providerId)
-	const headers = resolveRequestHeaders(sdkProviderId, options?.client)
+	const headers = resolveRequestHeaders(
+		sdkProviderId,
+		options?.client,
+		hasAssignedApiProfile(configuration)
+			? ((providerId === "openai" ? configuration.openAiHeaders : undefined) ?? {})
+			: providerId === "openai"
+				? configuration.openAiHeaders
+				: undefined,
+	)
 
 	const base: ProviderConfig = {
 		providerId: sdkProviderId,
 		modelId: modelId ?? "",
 		apiKey: apiKey ?? "",
+		...(hasAssignedApiProfile(configuration) ? { apiKeyEnv: [] } : {}),
 		baseUrl,
 		...(headers ? { headers } : {}),
+		// OpenAI Compatible "Responses" API type: route through the native
+		// OpenAI Responses adapter (the same route `protocol: "openai-responses"`
+		// takes in provider-settings) while keeping the user's base URL, key,
+		// headers and model id.
+		...(providerId === "openai" && configuration.openAiCompatibleApiType === "responses"
+			? { routingProviderId: "openai-native" }
+			: {}),
 		...(vertexProviderConfig ?? {}),
-		// Proxy-aware fetch (see .clinerules/network.md); local model servers get
-		// the variant without undici's idle timeouts.
+		...(providerId === "openai" ? resolveAzureProviderConfig(configuration) : {}),
+		// Use the proxy-aware fetch so gateway providers respect corporate proxy
+		// configuration (see .clinerules/network.md).
 		fetch: resolveProviderFetch(sdkProviderId, baseUrl),
 		// Bedrock needs its region + structured AWS auth options forwarded to the
 		// SDK gateway. Without these, a pasted Bedrock API key / region is dropped.

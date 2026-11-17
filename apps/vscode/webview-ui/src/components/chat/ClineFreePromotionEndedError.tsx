@@ -20,7 +20,7 @@ const ClineFreePromotionEndedError = () => {
 			<VSCodeButton
 				appearance="primary"
 				className="w-full mt-3"
-				onClick={() => navigateToSettingsModelPicker({ targetSection: "api-config" })}>
+				onClick={() => navigateToSettingsModelPicker({ targetSection: "models" })}>
 				Select a Model
 			</VSCodeButton>
 		</div>

@@ -5,7 +5,7 @@ import { type PrepareTaskResumeStartDeps, prepareTaskResumeStartInput } from "./
 function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
 	const tempHost = { dispose: vi.fn().mockResolvedValue(undefined) }
 	const deps = {
-		stateManager: { getGlobalSettingsKey: vi.fn(() => "act") } as unknown as StateManager,
+		stateManager: { getGlobalStateKey: vi.fn(), getGlobalSettingsKey: vi.fn(() => "act") } as unknown as StateManager,
 		taskHistory: {
 			findHistoryItem: vi.fn().mockResolvedValue(undefined),
 			isLegacyTask: vi.fn().mockResolvedValue(false),
@@ -30,6 +30,14 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("prepareTaskResumeStartInput", () => {
+	it("uses the persisted chat selection when resuming instead of Settings defaults", async () => {
+		const apiSelection = { actProfileId: "override", actModeReasoningEffort: "high" }
+		const { deps } = makeDeps()
+		deps.taskHistory.findHistoryItem.mockResolvedValue({ apiSelection })
+		await prepareTaskResumeStartInput(deps, "chat")
+		expect(deps.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/workspace", mode: "act", apiSelection })
+	})
+
 	it("pins the config sessionId to the task and reads its persisted transcript", async () => {
 		const { deps, tempHost } = makeDeps()
 

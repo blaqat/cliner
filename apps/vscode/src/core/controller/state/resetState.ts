@@ -2,6 +2,7 @@ import { Empty } from "@shared/proto/cline/common"
 import { ResetStateRequest } from "@shared/proto/cline/state"
 import { resetGlobalState, resetWorkspaceState } from "@/core/storage/utils/state-helpers"
 import { HostProvider } from "@/hosts/host-provider"
+import { AuthService, LogoutReason } from "@/sdk/auth-service"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { Controller } from ".."
@@ -18,8 +19,12 @@ export async function resetState(controller: Controller, request: ResetStateRequ
 		if (request.global) {
 			HostProvider.window.showMessage({
 				type: ShowMessageType.INFORMATION,
-				message: "Resetting global state...",
+				message: "Removing every connection and model, all saved keys and sign-ins, and all other settings...",
 			})
+			// A signed-in session refreshes its tokens, which would write them straight back after the reset.
+			const auth = AuthService.getInstance()
+			if (auth.getInfo().user) await auth.handleDeauth(LogoutReason.USER_INITIATED)
+			await auth.clearCodexCredentials()
 			await resetGlobalState()
 		} else {
 			HostProvider.window.showMessage({
@@ -36,7 +41,9 @@ export async function resetState(controller: Controller, request: ResetStateRequ
 
 		HostProvider.window.showMessage({
 			type: ShowMessageType.INFORMATION,
-			message: "State reset",
+			message: request.global
+				? "Settings reset. Connections, models, saved keys and sign-ins were removed. Add a model in Settings > Models to run again."
+				: "Workspace state reset",
 		})
 		await controller.postStateToWebview()
 

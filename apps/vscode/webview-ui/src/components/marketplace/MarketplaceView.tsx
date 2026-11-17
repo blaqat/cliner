@@ -819,7 +819,7 @@ const McpManagementPanel = ({
 					Edit Configuration
 				</VSCodeButton>
 				<div className="marketplace-mcp-advanced">
-					<VSCodeLink onClick={() => navigateToSettings("features")}>Advanced MCP Settings</VSCodeLink>
+					<VSCodeLink onClick={() => navigateToSettings("mcp-advanced")}>Advanced MCP Settings</VSCodeLink>
 				</div>
 			</div>
 		</section>

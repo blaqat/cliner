@@ -27,9 +27,11 @@ import axios from "axios"
 import { ClineEnv } from "@/config"
 import type { Controller } from "@/core/controller"
 import { getRequestRegistry, type StreamingResponseHandler } from "@/core/controller/grpc-handler"
+import { connectProviderKey } from "@/core/controller/models/connectProviderKey"
 import { StateManager } from "@/core/storage/StateManager"
 import { HostProvider } from "@/hosts/host-provider"
 import { openAiCodexOAuthManager } from "@/integrations/openai-codex/oauth"
+import { configuredActiveModel } from "@/sdk/model-settings/legacy-settings"
 import { LogoutReason } from "@/services/auth/types"
 import { BannerService } from "@/services/banner/BannerService"
 import { buildBasicClineHeaders } from "@/services/EnvUtils"
@@ -1144,8 +1146,24 @@ export class AuthService {
 	/**
 	 * Shared helper: set a provider's API key and switch both plan/act modes to it.
 	 */
-	private setProviderApiKey(provider: ApiProvider, apiKeyField: string, apiKey: string): void {
+	private async setProviderApiKey(
+		provider: ApiProvider,
+		apiKeyField: string,
+		apiKey: string,
+		controller: Controller | undefined,
+	): Promise<void> {
 		const stateManager = StateManager.get()
+		if (configuredActiveModel(stateManager, "act")) {
+			if (!controller) throw new Error(`Signing in to ${provider} needs an open Cline window.`)
+			const { picked } = await connectProviderKey(controller, provider, apiKey)
+			if (!picked) {
+				HostProvider.window.showMessage({
+					type: ShowMessageType.WARNING,
+					message: `Your ${provider} key is saved, but Cline doesn't know a model to start it on. Add one in Settings > Models.`,
+				})
+			}
+			return
+		}
 		const currentApiConfiguration = stateManager.getApiConfiguration()
 		const updatedConfig = {
 			...currentApiConfiguration,
@@ -1159,7 +1177,7 @@ export class AuthService {
 	/**
 	 * Handle OpenRouter OAuth callback.
 	 */
-	async handleOpenRouterCallback(code: string): Promise<void> {
+	async handleOpenRouterCallback(code: string, controller?: Controller): Promise<void> {
 		let apiKey: string
 		try {
 			const response = await fetch("https://openrouter.ai/api/v1/auth/keys", {
@@ -1181,20 +1199,20 @@ export class AuthService {
 			throw error
 		}
 
-		this.setProviderApiKey("openrouter", "openRouterApiKey", apiKey)
+		await this.setProviderApiKey("openrouter", "openRouterApiKey", apiKey, controller)
 	}
 
 	/**
 	 * Handle Requesty OAuth callback.
 	 */
-	async handleRequestyCallback(code: string): Promise<void> {
-		this.setProviderApiKey("requesty", "requestyApiKey", code)
+	async handleRequestyCallback(code: string, controller?: Controller): Promise<void> {
+		await this.setProviderApiKey("requesty", "requestyApiKey", code, controller)
 	}
 
 	/**
 	 * Handle Hicap OAuth callback.
 	 */
-	async handleHicapCallback(code: string): Promise<void> {
-		this.setProviderApiKey("hicap", "hicapApiKey", code)
+	async handleHicapCallback(code: string, controller?: Controller): Promise<void> {
+		await this.setProviderApiKey("hicap", "hicapApiKey", code, controller)
 	}
 }

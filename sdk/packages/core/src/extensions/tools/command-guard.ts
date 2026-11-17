@@ -3,18 +3,16 @@
  *
  * Plan mode keeps run_commands available for read-only investigation, but
  * models (especially weaker ones) use it to edit files anyway. When the plan
- * preset sets `blockFileEditingCommands`, createShellTool checks each command
- * against this blacklist before executing and returns a tool error instead of
- * running anything that looks like a file modification.
+ * runtime installs the command-guard extension, its beforeTool hook checks
+ * each command against this blacklist before approval or execution.
  *
  * This is a simple blacklist, not a shell interpreter. Commands are lightly
- * preprocessed (quoted text, heredoc bodies, escapes, and comments are masked
- * so they cannot false-positive), split on shell separators, and the leading
- * command word of each part is compared against the lists below; output
- * redirection to files is also rejected. It will not catch every possible
- * mutation (e.g. `python -c "open(..., 'w')"` or commands hidden inside a
- * quoted `bash -c` string) — it exists to stop the common ways models edit
- * files from the shell, and entries are easy to add.
+ * preprocessed (executable substitutions are inspected before literal quoted
+ * text, heredoc bodies, escapes, and comments are masked), split on shell
+ * separators, and the leading command word is compared against the lists; output
+ * redirection to files is also rejected. Shell/eval scripts are inspected
+ * recursively, inline interpreter code is rejected, and opaque package
+ * scripts require approval. This remains a blacklist, not a shell sandbox.
  */
 
 import type { StructuredCommandInput } from "./schemas";
@@ -198,7 +196,234 @@ const WRAPPERS = new Set([
 	"stdbuf",
 	"timeout",
 	"xargs",
+	"parallel",
+	"exec",
+	"caffeinate",
 ]);
+
+/** Value-taking options must consume their argv, including attached values. */
+const WRAPPER_VALUE_OPTIONS: Record<string, Set<string>> = {
+	env: new Set([
+		"-u",
+		"--unset",
+		"-C",
+		"--chdir",
+		"-S",
+		"--split-string",
+		"-a",
+		"--argv0",
+	]),
+	xargs: new Set([
+		"-I",
+		"-J",
+		"-i",
+		"-n",
+		"-P",
+		"-L",
+		"-l",
+		"-s",
+		"-d",
+		"-E",
+		"-e",
+		"-a",
+		"--replace",
+		"--max-args",
+		"--max-procs",
+		"--max-lines",
+		"--max-chars",
+		"--delimiter",
+		"--eof",
+		"--arg-file",
+		"--process-slot-var",
+	]),
+	parallel: new Set([
+		"-j",
+		"--jobs",
+		"-I",
+		"--replace",
+		"-a",
+		"--arg-file",
+		"--colsep",
+		"--arg-sep",
+		"--delay",
+		"--header",
+		"-S",
+		"--sshlogin",
+	]),
+	timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+	nice: new Set(["-n", "--adjustment"]),
+	stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+	exec: new Set(["-a"]),
+	sudo: new Set([
+		"-u",
+		"--user",
+		"-g",
+		"--group",
+		"-h",
+		"--host",
+		"-p",
+		"--prompt",
+		"-C",
+		"--close-from",
+		"-T",
+		"--command-timeout",
+		"-R",
+		"--chroot",
+		"-D",
+		"--chdir",
+		"-a",
+		"--auth-type",
+		"-U",
+		"--other-user",
+		"-r",
+		"--role",
+		"-t",
+		"--type",
+	]),
+	doas: new Set(["-u", "-C"]),
+	time: new Set(["-f", "--format", "-o", "--output"]),
+	caffeinate: new Set(["-t", "-w"]),
+};
+
+const WRAPPER_FLAGS: Record<string, Set<string>> = {
+	env: new Set([
+		"-",
+		"-i",
+		"--ignore-environment",
+		"-0",
+		"--null",
+		"-v",
+		"--debug",
+	]),
+	xargs: new Set([
+		"-0",
+		"--null",
+		"-t",
+		"--verbose",
+		"-r",
+		"--no-run-if-empty",
+		"-p",
+		"--interactive",
+		"-x",
+		"--exit",
+		"-o",
+		"--open-tty",
+	]),
+	parallel: new Set([
+		"-0",
+		"--null",
+		"-k",
+		"--keep-order",
+		"--bar",
+		"--eta",
+		"--pipe",
+		"--pipepart",
+		"--dry-run",
+		"--will-cite",
+		"--quote",
+		"--ungroup",
+		"--line-buffer",
+		"--link",
+		"--xapply",
+	]),
+	timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
+	nice: new Set(),
+	stdbuf: new Set(),
+	command: new Set(["-p", "-v", "-V"]),
+	builtin: new Set(),
+	exec: new Set(["-c", "-l"]),
+	nohup: new Set(),
+	sudo: new Set([
+		"-A",
+		"--askpass",
+		"-b",
+		"--background",
+		"-E",
+		"--preserve-env",
+		"-H",
+		"--set-home",
+		"-i",
+		"--login",
+		"-K",
+		"--remove-timestamp",
+		"-k",
+		"--reset-timestamp",
+		"-l",
+		"--list",
+		"-n",
+		"--non-interactive",
+		"-P",
+		"--preserve-groups",
+		"-S",
+		"--stdin",
+		"-s",
+		"--shell",
+		"-V",
+		"--version",
+		"-v",
+		"--validate",
+	]),
+	doas: new Set(["-L", "-n", "-s"]),
+	time: new Set([
+		"-p",
+		"--portability",
+		"-a",
+		"--append",
+		"-v",
+		"--verbose",
+		"-l",
+	]),
+	caffeinate: new Set(["-d", "-i", "-m", "-s", "-u"]),
+};
+
+const SHELL_COMMANDS = new Set(["bash", "sh", "zsh", "dash", "fish"]);
+const INTERPRETER_COMMANDS = new Set([
+	"node",
+	"bun",
+	"deno",
+	"ruby",
+	"perl",
+	"php",
+]);
+const PACKAGE_RUNNERS = new Set([
+	"npm",
+	"pnpm",
+	"yarn",
+	"bun",
+	"npx",
+	"bunx",
+	"make",
+	"gmake",
+	"just",
+	"task",
+]);
+const FORMATTER_COMMANDS = new Set([
+	"prettier",
+	"biome",
+	"eslint",
+	"ruff",
+	"black",
+	"isort",
+	"gofmt",
+	"goimports",
+	"rustfmt",
+	"dprint",
+	"clang-format",
+]);
+
+function isInspectableExecutable(name: string): boolean {
+	return (
+		WRAPPERS.has(name) ||
+		BLOCKED_COMMANDS.has(name) ||
+		BLOCKED_SUBCOMMANDS[name] !== undefined ||
+		SHELL_COMMANDS.has(name) ||
+		name === "eval" ||
+		/^python[\d.]*$/.test(name) ||
+		INTERPRETER_COMMANDS.has(name) ||
+		PACKAGE_RUNNERS.has(name) ||
+		FORMATTER_COMMANDS.has(name)
+	);
+}
 
 /** Shell reserved words that can precede the command word. */
 const RESERVED_WORDS = new Set([
@@ -253,52 +478,365 @@ function normalizeCommandName(word: string): string {
 	return base.toLowerCase().replace(/\.exe$/, "");
 }
 
-/**
- * Mask the parts of a command string that are data rather than commands, so
- * the blacklist scan below cannot false-positive on them: heredoc bodies are
- * dropped, and special characters inside quotes / behind backslash escapes /
- * after a comment marker are replaced with "_".
- */
-function maskNonCommandText(command: string): string {
-	// Drop heredoc bodies (everything between `<<DELIM` and the DELIM line).
-	const lines = command.split("\n");
-	const kept: string[] = [];
-	let heredocDelimiter: string | undefined;
-	for (const line of lines) {
-		if (heredocDelimiter !== undefined) {
-			if (line.replace(/^\t+/, "") === heredocDelimiter) {
-				heredocDelimiter = undefined;
+interface Heredoc {
+	delimiter: string;
+	literal: boolean;
+	stripTabs: boolean;
+	length: number;
+}
+
+function readHeredoc(command: string, cursor: number): Heredoc | undefined {
+	if (command[cursor - 1] === "<" || command[cursor + 2] === "<")
+		return undefined;
+	const match = command
+		.slice(cursor)
+		.match(/^<<(-?)[ \t]*((?:'[^']*'|"[^"]*"|\\.|[^\s;|&<>()'"\\])+)/);
+	if (!match) return undefined;
+	return {
+		delimiter: match[2].replace(
+			/'([^']*)'|"([^"]*)"|\\(.)/g,
+			(_, single, double, escaped) => single ?? double ?? escaped,
+		),
+		literal: /['"\\]/.test(match[2]),
+		stripTabs: match[1] === "-",
+		length: match[0].length,
+	};
+}
+
+/** Heredoc text cannot terminate the surrounding command substitution. */
+function skipHeredocBodies(
+	command: string,
+	cursor: number,
+	heredocs: Heredoc[],
+	inspectBody?: (body: string) => void,
+): number {
+	for (const heredoc of heredocs) {
+		const start = cursor;
+		while (cursor < command.length) {
+			const newline = command.indexOf("\n", cursor);
+			const end = newline < 0 ? command.length : newline;
+			const line = command.slice(cursor, end);
+			if (
+				(heredoc.stripTabs ? line.replace(/^\t+/, "") : line) ===
+				heredoc.delimiter
+			) {
+				if (!heredoc.literal) inspectBody?.(command.slice(start, cursor));
+				cursor = end + 1;
+				break;
 			}
-			continue;
-		}
-		kept.push(line);
-		const heredoc = line.match(
-			/(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))/,
-		);
-		if (heredoc) {
-			heredocDelimiter = heredoc[1] ?? heredoc[2] ?? heredoc[3];
+			cursor = end;
+			if (newline < 0) {
+				if (!heredoc.literal) inspectBody?.(command.slice(start));
+				break;
+			}
+			cursor += 1;
 		}
 	}
-	return (
-		kept
-			.join("\n")
-			// Arithmetic expansion ($((3 > 2))) holds comparisons, not
-			// commands or redirections.
-			.replace(/\$\(\([\s\S]*?\)\)/g, "_")
-			// Backslash-escaped characters are literal text.
-			.replace(/\\./g, "_")
-			// Special characters inside quotes are literal text; spaces are
-			// masked too so a quoted span stays a single token.
-			.replace(/"[^"]*"|'[^']*'/g, (span) =>
-				span.replace(/[\s<>|;&$()`#\\]/g, "_"),
-			)
-			// Comments.
-			.replace(/(?:^|\s)#.*$/gm, " ")
+	heredocs.length = 0;
+	return cursor;
+}
+
+/** Find the closing delimiter without mistaking quoted/nested parentheses for it. */
+function substitutionEnd(command: string, start: number): number {
+	const backtick = command[start] === "`";
+	let parentheses = 1;
+	let quote = "";
+	const heredocs: Heredoc[] = [];
+	for (
+		let cursor = start + (backtick ? 1 : 2);
+		cursor < command.length;
+		cursor += 1
+	) {
+		const char = command[cursor];
+		if (char === "\\" && quote !== "'") {
+			cursor += 1;
+			continue;
+		}
+		if (backtick && char === "`") return cursor;
+		if (quote === "'") {
+			if (char === "'") quote = "";
+			continue;
+		}
+		if (command.startsWith("$(", cursor) || char === "`") {
+			cursor = substitutionEnd(command, cursor);
+			continue;
+		}
+		if (char === '"' || (!quote && char === "'")) {
+			quote = quote ? "" : char;
+			continue;
+		}
+		if (!quote && !backtick) {
+			if (char === "#" && /[\s;|&()]/.test(command[cursor - 1])) {
+				const newline = command.indexOf("\n", cursor);
+				if (newline < 0) return command.length;
+				cursor = newline - 1;
+				continue;
+			}
+			if (command.startsWith("<<", cursor)) {
+				const heredoc = readHeredoc(command, cursor);
+				if (heredoc) {
+					heredocs.push(heredoc);
+					cursor += heredoc.length - 1;
+					continue;
+				}
+			}
+			if (char === "\n" && heredocs.length) {
+				cursor = skipHeredocBodies(command, cursor + 1, heredocs) - 1;
+				continue;
+			}
+			if (char === "(") parentheses += 1;
+			if (char === ")" && --parentheses === 0) return cursor;
+		}
+	}
+	return command.length;
+}
+
+/** Extract expansions that execute even when their surrounding text is data. */
+function maskNonCommandText(
+	command: string,
+	quotedText: string[],
+	substitutions: string[],
+	heredocBody = false,
+): string {
+	const placeholder = (value: string) => {
+		quotedText.push(value);
+		return `__guard_quote_${quotedText.length - 1}__`;
+	};
+	const heredocs: Heredoc[] = [];
+	let masked = "";
+	for (let cursor = 0; cursor < command.length; ) {
+		const char = command[cursor];
+		if (char === "\\") {
+			if (command[cursor + 1] !== "\n")
+				masked += placeholder(command[cursor + 1] ?? "");
+			cursor += 2;
+			continue;
+		}
+		if (
+			!heredocBody &&
+			char === "#" &&
+			(cursor === 0 || /[\s;|&()]/.test(command[cursor - 1]))
+		) {
+			const end = command.indexOf("\n", cursor);
+			cursor = end < 0 ? command.length : end;
+			continue;
+		}
+		if (
+			command.startsWith("$(", cursor) ||
+			char === "`" ||
+			(!heredocBody &&
+				(command.startsWith("<(", cursor) || command.startsWith(">(", cursor)))
+		) {
+			const end = substitutionEnd(command, cursor);
+			const body = command.slice(cursor + (char === "`" ? 1 : 2), end);
+			if (command.startsWith("$((", cursor)) {
+				// Arithmetic itself is data, but it can contain command substitutions.
+				maskNonCommandText(body, quotedText, substitutions, true);
+			} else {
+				substitutions.push(
+					char === "`" ? body.replace(/\\([\\$`])/g, "$1") : body,
+				);
+			}
+			masked += placeholder(command.slice(cursor, end + 1));
+			cursor = end + 1;
+			continue;
+		}
+		if (!heredocBody && (char === "'" || char === '"')) {
+			const start = cursor++;
+			while (cursor < command.length && command[cursor] !== char) {
+				if (char === '"' && command[cursor] === "\\") {
+					cursor += 2;
+				} else if (
+					char === '"' &&
+					(command.startsWith("$(", cursor) || command[cursor] === "`")
+				) {
+					const end = substitutionEnd(command, cursor);
+					maskNonCommandText(
+						command.slice(cursor, end + 1),
+						quotedText,
+						substitutions,
+						true,
+					);
+					cursor = end + 1;
+				} else {
+					cursor += 1;
+				}
+			}
+			const value = command.slice(start + 1, cursor);
+			masked += placeholder(
+				char === "'"
+					? value
+					: value.replace(/\\\n/g, "").replace(/\\(["\\$`])/g, "$1"),
+			);
+			cursor += 1;
+			continue;
+		}
+		if (!heredocBody && command.startsWith("<<", cursor)) {
+			const heredoc = readHeredoc(command, cursor);
+			if (heredoc) {
+				heredocs.push(heredoc);
+				masked += `<<${placeholder(heredoc.delimiter)}`;
+				cursor += heredoc.length;
+				continue;
+			}
+		}
+		masked += char;
+		cursor += 1;
+		if (char === "\n" && heredocs.length) {
+			cursor = skipHeredocBodies(command, cursor, heredocs, (body) => {
+				maskNonCommandText(body, quotedText, substitutions, true);
+			});
+		}
+	}
+	return masked;
+}
+
+function checkWrappedCommand(
+	name: string,
+	args: string[],
+	approval: boolean,
+	depth: number,
+	inputDriven: boolean,
+): string | undefined {
+	inputDriven ||= name === "xargs" || name === "parallel";
+	const valueOptions = WRAPPER_VALUE_OPTIONS[name] ?? new Set<string>();
+	const flags = WRAPPER_FLAGS[name];
+	let cursor = 0;
+	let unknownOption = false;
+	const optionValue = (option: string, attached: string) => {
+		if (attached) return attached;
+		// xargs has optional replacement/eof/line-count values. Do not consume
+		// a following executable as the value of one of these options.
+		if (
+			name === "xargs" &&
+			["-i", "-l", "-e", "--replace", "--max-lines", "--eof"].includes(
+				option,
+			) &&
+			(args[cursor]?.startsWith("-") ||
+				isInspectableExecutable(normalizeCommandName(args[cursor] ?? "")))
+		)
+			return undefined;
+		return args[cursor++];
+	};
+	while (cursor < args.length && args[cursor].startsWith("-")) {
+		const option = args[cursor++];
+		if (option === "--") break;
+		if (name === "nice" && /^-\d+$/.test(option)) continue;
+		if (["--help", "--version"].includes(option)) continue;
+		const longOption = option.split("=")[0];
+		if (option.startsWith("--")) {
+			if (valueOptions.has(longOption)) {
+				const value = option.includes("=")
+					? option.slice(option.indexOf("=") + 1)
+					: optionValue(longOption, "");
+				if (
+					name === "env" &&
+					longOption === "--split-string" &&
+					value !== undefined
+				) {
+					return checkEnvSplitString(
+						value,
+						args.slice(cursor),
+						approval,
+						depth,
+						inputDriven,
+					);
+				}
+			} else if (!flags?.has(longOption)) unknownOption = true;
+			continue;
+		}
+		for (let letter = 1; letter < option.length; letter += 1) {
+			const shortOption = `-${option[letter]}`;
+			if (valueOptions.has(shortOption)) {
+				const value = optionValue(shortOption, option.slice(letter + 1));
+				if (name === "env" && shortOption === "-S" && value !== undefined) {
+					return checkEnvSplitString(
+						value,
+						args.slice(cursor),
+						approval,
+						depth,
+						inputDriven,
+					);
+				}
+				break;
+			}
+			if (!flags?.has(shortOption)) unknownOption = true;
+		}
+	}
+	if (name === "env") {
+		while (cursor < args.length && ENV_ASSIGNMENT.test(args[cursor]))
+			cursor += 1;
+		if (args[cursor] === "--") cursor += 1;
+	}
+	if (name === "nice" && /^\+\d+$/.test(args[cursor] ?? "")) cursor += 1;
+	if (name === "timeout") cursor += 1; // DURATION follows the options.
+	const tail = args.slice(cursor);
+	if (name === "parallel") {
+		if (!tail.length || [":::", "::::"].includes(tail[0])) {
+			return "`parallel` (input-driven code)";
+		}
+		// Parallel joins every word before the first input separator with spaces
+		// and runs the result through a shell, so a template may be one quoted
+		// word or split across several. Inspect the joined template.
+		const end = tail.findIndex((arg) => /^::::?\+?$/.test(arg));
+		const template = (end === -1 ? tail : tail.slice(0, end)).join(" ");
+		return inspectCommand(template, approval, depth, true);
+	}
+	const blocked = checkTokens(tail, approval, depth, inputDriven);
+	if (blocked || !unknownOption) return blocked;
+
+	// An unknown option may consume the token we mistook for the executable.
+	// Inspect plausible executables in the remaining argv instead of trusting it.
+	for (let index = 0; index < args.length; index += 1) {
+		const candidate = normalizeCommandName(args[index]);
+		if (isInspectableExecutable(candidate)) {
+			const nested = checkTokens(
+				args.slice(index),
+				approval,
+				depth,
+				inputDriven,
+			);
+			if (nested) return nested;
+			if (
+				SHELL_COMMANDS.has(candidate) ||
+				candidate === "eval" ||
+				/^python[\d.]*$/.test(candidate) ||
+				(INTERPRETER_COMMANDS.has(candidate) && candidate !== "bun")
+			) {
+				return `\`${candidate}\` (unknown wrapper option)`;
+			}
+			if (approval && PACKAGE_RUNNERS.has(candidate))
+				return `\`${candidate}\` (unknown wrapper option)`;
+		}
+	}
+	return undefined;
+}
+
+function checkEnvSplitString(
+	value: string,
+	args: string[],
+	approval: boolean,
+	depth: number,
+	inputDriven: boolean,
+): string | undefined {
+	if (depth >= 4) return "nested shell code (inspection limit)";
+	// env inserts split-string words back into its own argv, before the tail.
+	const tail = args.map((arg) => `'${arg.replace(/'/g, "'\\''")}'`).join(" ");
+	return inspectCommand(
+		`env ${value} ${tail}`,
+		approval,
+		depth + 1,
+		inputDriven,
 	);
 }
 
 /** Check one command's tokens (command word + args) against the blacklist. */
-function checkTokens(tokens: string[]): string | undefined {
+function checkTokens(
+	tokens: string[],
+	approval = false,
+	depth = 0,
+	inputDriven = false,
+): string | undefined {
 	let index = 0;
 	while (
 		index < tokens.length &&
@@ -306,28 +844,134 @@ function checkTokens(tokens: string[]): string | undefined {
 	) {
 		index += 1;
 	}
-	// Skip wrappers (sudo, env, xargs, timeout 30, ...) and their options.
-	while (
-		index < tokens.length &&
-		WRAPPERS.has(normalizeCommandName(tokens[index]))
-	) {
-		index += 1;
-		while (
-			index < tokens.length &&
-			(tokens[index].startsWith("-") ||
-				tokens[index] === "{}" ||
-				ENV_ASSIGNMENT.test(tokens[index]) ||
-				/^\d+[smhd]?$/.test(tokens[index]))
-		) {
-			index += 1;
-		}
-	}
 	if (index >= tokens.length) {
 		return undefined;
 	}
 
-	const name = normalizeCommandName(tokens[index]);
-	const args = tokens.slice(index + 1);
+	let name = normalizeCommandName(tokens[index]);
+	let args = tokens.slice(index + 1);
+	if (WRAPPERS.has(name))
+		return checkWrappedCommand(name, args, approval, depth, inputDriven);
+	if (approval && inputDriven && PACKAGE_RUNNERS.has(name)) {
+		return `\`${name}\` (input-driven package script)`;
+	}
+	// Package executors can hide formatter/fixer command names.
+	if (
+		name === "npx" ||
+		name === "bunx" ||
+		((name === "pnpm" || name === "yarn") && args[0] === "dlx")
+	) {
+		if (args[0] === "dlx") args = args.slice(1);
+		const cursor = skipOptions(
+			args,
+			new Set(["-p", "--package", "--cache", "--registry"]),
+		);
+		name = normalizeCommandName(args[cursor] ?? "").replace(/@[^@]*$/, "");
+		args = args.slice(cursor + 1);
+	}
+
+	if (SHELL_COMMANDS.has(name) || name === "eval") {
+		if (args.some((arg) => arg.startsWith("<<")))
+			return `\`${name}\` (inline code)`;
+		const scriptIndex = args.findIndex((arg) =>
+			/^-[A-Za-z]*c[A-Za-z]*$/.test(arg),
+		);
+		const script =
+			name === "eval"
+				? (args[0] === "--" ? args.slice(1) : args).join(" ")
+				: scriptIndex >= 0
+					? args[scriptIndex + 1]
+					: undefined;
+		if (script !== undefined) {
+			if (depth >= 4) return "nested shell code (inspection limit)";
+			const blocked = inspectCommand(script, approval, depth + 1);
+			if (blocked) return blocked;
+		}
+		// Input can supply the script, replace any part of it, or reach eval
+		// through positional parameters. Its runtime contents are unavailable.
+		if (inputDriven) return `\`${name}\` (input-driven code)`;
+	}
+
+	// Inline code can import arbitrary write APIs or launch subprocesses.
+	// Blocking all of it avoids pretending a write-API regex is a sandbox.
+	const inlineFlag = /^-[ep]/;
+	if (
+		(/^python[\d.]*$/.test(name) && args.some((arg) => /^-c/.test(arg))) ||
+		(["node", "bun"].includes(name) &&
+			args.some(
+				(arg) => inlineFlag.test(arg) || /^--(eval|print)(=|$)/.test(arg),
+			)) ||
+		(["ruby", "perl"].includes(name) &&
+			args.some((arg) => /^-[A-Za-z]*e/.test(arg))) ||
+		(name === "php" && args.some((arg) => /^-r/.test(arg))) ||
+		(name === "deno" && args.includes("eval")) ||
+		((/^python[\d.]*$/.test(name) ||
+			["node", "bun", "deno", "ruby", "perl", "php"].includes(name)) &&
+			args.some((arg) => arg.startsWith("<<")))
+	) {
+		return `\`${name}\` (inline code)`;
+	}
+	if (
+		inputDriven &&
+		(/^python[\d.]*$/.test(name) ||
+			(INTERPRETER_COMMANDS.has(name) && name !== "bun"))
+	) {
+		return `\`${name}\` (input-driven code)`;
+	}
+
+	const hasFlag = (flags: string[]) =>
+		args.some((arg) =>
+			flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+		);
+	const writes =
+		(name === "prettier" && hasFlag(["--write", "-w"])) ||
+		(name === "biome" &&
+			args.some((arg) => ["check", "format", "lint"].includes(arg)) &&
+			hasFlag(["--write", "--fix", "--apply"])) ||
+		(name === "eslint" && hasFlag(["--fix"]) && !hasFlag(["--fix-dry-run"])) ||
+		(name === "ruff" &&
+			(hasFlag(["--fix"]) ||
+				(args.includes("format") && !hasFlag(["--check", "--diff"])))) ||
+		(["black", "isort"].includes(name) &&
+			!hasFlag(["--check", "--check-only", "--diff"])) ||
+		(["gofmt", "goimports"].includes(name) && hasFlag(["-w"])) ||
+		(name === "rustfmt" &&
+			!hasFlag(["--check"]) &&
+			!args.some(
+				(arg, i) =>
+					arg === "--emit=stdout" ||
+					(arg === "--emit" && args[i + 1] === "stdout"),
+			)) ||
+		(name === "cargo" && args.includes("fmt") && !hasFlag(["--check"])) ||
+		(name === "dprint" && args.includes("fmt") && !hasFlag(["--diff"])) ||
+		(name === "clang-format" && hasFlag(["-i"]));
+	if (writes && !hasFlag(["--help", "-h", "--version"]))
+		return `\`${name}\` (formatter writes files)`;
+
+	if (approval) {
+		const cursor = skipOptions(
+			args,
+			new Set([
+				"-C",
+				"--cwd",
+				"--dir",
+				"--prefix",
+				"-w",
+				"--workspace",
+				"-F",
+				"--filter",
+			]),
+		);
+		const subcommand = args[cursor];
+		if (
+			(["npm", "pnpm", "yarn", "bun"].includes(name) &&
+				["run", "run-script", "test"].includes(subcommand)) ||
+			(["make", "gmake", "just", "task"].includes(name) &&
+				!hasFlag(["--help", "-h", "--version"]))
+		) {
+			return `\`${name}\` (package script)`;
+		}
+	}
 
 	// `| tee /tmp/log` is the documented way to capture output; only file
 	// arguments outside tmp are a mutation.
@@ -353,10 +997,10 @@ function checkTokens(tokens: string[]): string | undefined {
 		}
 		// First non-option arg is the subcommand; `git -c k=v` / `git -C dir`
 		// take a value, so skip that too.
-		let cursor = 0;
-		while (cursor < args.length && args[cursor].startsWith("-")) {
-			cursor += name === "git" && /^-[cC]$/.test(args[cursor]) ? 2 : 1;
-		}
+		const cursor = skipOptions(
+			args,
+			name === "git" ? GIT_VALUE_OPTIONS : new Set(),
+		);
 		const subcommand = args[cursor]?.toLowerCase();
 		if (subcommand && subcommands.has(subcommand)) {
 			const next = args[cursor + 1]?.toLowerCase();
@@ -460,7 +1104,12 @@ function checkTokens(tokens: string[]): string | undefined {
 			) {
 				tail.push(args[cursor]);
 			}
-			const nested = checkTokens(tail);
+			const nested = checkTokens(
+				tail,
+				approval,
+				depth,
+				inputDriven || tail.some((arg) => arg.includes("{}")),
+			);
 			if (nested) {
 				return nested;
 			}
@@ -479,13 +1128,64 @@ function checkTokens(tokens: string[]): string | undefined {
 export function findFileEditingCommand(
 	command: string | StructuredCommandInput,
 ): string | undefined {
+	return inspectCommand(command);
+}
+
+/** Check after the mutation blacklist; opaque scripts need approval even with terminal auto-approval. */
+export function requiresPlanModeCommandApproval(
+	command: string | StructuredCommandInput,
+): boolean {
+	return inspectCommand(command, true) !== undefined;
+}
+
+const GIT_VALUE_OPTIONS = new Set([
+	"-c",
+	"-C",
+	"--git-dir",
+	"--work-tree",
+	"--namespace",
+	"--config-env",
+	"--super-prefix",
+]);
+
+function skipOptions(args: string[], valueOptions: Set<string>): number {
+	let cursor = 0;
+	while (cursor < args.length && args[cursor].startsWith("-")) {
+		cursor += valueOptions.has(args[cursor]) ? 2 : 1;
+	}
+	return cursor;
+}
+
+function inspectCommand(
+	command: string | StructuredCommandInput,
+	approval = false,
+	depth = 0,
+	inputDriven = false,
+): string | undefined {
 	if (typeof command !== "string") {
 		// Structured argv is executed without shell parsing, so only the
 		// executable and argv matter (a ">" argument is a literal string).
-		return checkTokens([command.command, ...(command.args ?? [])]);
+		return checkTokens(
+			[command.command, ...(command.args ?? [])],
+			approval,
+			depth,
+			inputDriven,
+		);
 	}
 
-	const masked = maskNonCommandText(command);
+	const quotedText: string[] = [];
+	const substitutions: string[] = [];
+	const masked = maskNonCommandText(command, quotedText, substitutions);
+	for (const substitution of substitutions) {
+		if (depth >= 4) return "nested shell code (inspection limit)";
+		const nested = inspectCommand(substitution, approval, depth + 1);
+		if (nested) return nested;
+	}
+	const restoreQuotes = (word: string) =>
+		word.replace(
+			/__guard_quote_(\d+)__/g,
+			(_, index) => quotedText[Number(index)],
+		);
 
 	// Output redirection to a file (`>`, `>>`, `&>`), allowing /dev sinks,
 	// fd duplication (`2>&1`, `>&2`), and /tmp output capture.
@@ -493,14 +1193,19 @@ export function findFileEditingCommand(
 		/(?:^|[^<>])(?:>{1,2}|&>{1,2})\s*([^\s;&|<>()]+)/g,
 	);
 	for (const redirect of redirects) {
-		if (!isAllowedRedirectTarget(redirect[1])) {
+		if (!isAllowedRedirectTarget(restoreQuotes(redirect[1]))) {
 			return `output redirection (\`> ${redirect[1]}\`)`;
 		}
 	}
 
 	// Check the command word of every simple command in the string.
 	for (const segment of masked.split(/[\n;|&()`]+/)) {
-		const blocked = checkTokens(segment.trim().split(/\s+/).filter(Boolean));
+		const blocked = checkTokens(
+			segment.trim().split(/\s+/).filter(Boolean).map(restoreQuotes),
+			approval,
+			depth,
+			inputDriven,
+		);
 		if (blocked) {
 			return blocked;
 		}

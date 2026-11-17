@@ -21,7 +21,7 @@ const DebugSection = ({ onResetState, renderSectionHeader }: DebugSectionProps) 
 					Reset Global State
 				</Button>
 				<p className="text-xs mt-[5px] text-(--vscode-descriptionForeground)">
-					This will reset all global state and secret storage in the extension.
+					This removes all global state and saved secrets, including every connection, model and connection key.
 				</p>
 			</Section>
 			<Section>

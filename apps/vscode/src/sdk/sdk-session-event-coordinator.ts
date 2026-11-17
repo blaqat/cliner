@@ -20,6 +20,8 @@ function normalizeModelId(modelId: string): string {
 type AgentFailureTelemetry = Pick<ProviderFailureTelemetry, "sessionId" | "error" | "errorType"> | undefined
 
 export interface SdkSessionEventCoordinatorOptions {
+	onTurnComplete?: () => Promise<void>
+	onRuntimeActivity?: (event: CoreSessionEvent) => void
 	messageTranslatorState: MessageTranslatorState
 	sessions: SdkSessionLifecycle
 	messages: SdkMessageCoordinator
@@ -37,11 +39,17 @@ export interface SdkSessionEventCoordinatorOptions {
 	setTurnPhase?: (phase: TurnPhase, anchorTs?: number) => void
 	/** Current authoritative UI turn phase, from the controller's TurnStateTracker. */
 	getTurnPhase?: () => TurnPhase
+	sessionId?: string
+	isTurnCancelled?: () => boolean
+	onTurnStarted?: () => void
+	getProviderId?: () => string | undefined
+	getModelId?: () => string | undefined
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
 	beginProviderFailureTelemetryTurn?: () => void
 }
 
 export class SdkSessionEventCoordinator {
+	private notebookTurnCompleteHandled = false
 	private readonly translateSessionEvent: (event: CoreSessionEvent, state: MessageTranslatorState) => TranslationResult
 
 	constructor(private readonly options: SdkSessionEventCoordinatorOptions) {
@@ -51,7 +59,9 @@ export class SdkSessionEventCoordinator {
 	async handleSessionEvent(event: CoreSessionEvent): Promise<void> {
 		this.logQueueEvents(event)
 
-		const activeSession = this.options.sessions.getActiveSession()
+		const activeSession = this.options.sessionId
+			? this.options.sessions.getSession(this.options.sessionId)
+			: this.options.sessions.getActiveSession()
 		if (!activeSession || event.payload.sessionId !== activeSession.sessionId) {
 			Logger.debug(
 				`[SdkController] Ignoring stale SDK event for session ${event.payload.sessionId}; active=${activeSession?.sessionId ?? "none"}`,
@@ -59,14 +69,24 @@ export class SdkSessionEventCoordinator {
 			return
 		}
 
+		this.options.onRuntimeActivity?.(event)
+
 		if (event.type === "pending_prompts") {
-			this.options.sessions.setQueuedPromptCount(event.payload.prompts.length)
+			this.options.sessions.setQueuedPromptCount(event.payload.prompts.length, activeSession.sessionId)
 			this.options.postStateToWebview().catch((err) => {
 				Logger.error("[SdkController] Failed to post pending-prompt state update:", err)
 			})
 		}
 
+		if (event.type === "pending_prompt_submitted") this.options.onTurnStarted?.()
 		const result = this.translateSessionEvent(event, this.options.messageTranslatorState)
+		if (event.type === "pending_prompt_submitted" || result.messages.some((message) => message.say === "api_req_started")) {
+			this.notebookTurnCompleteHandled = false
+		}
+		if (result.messages.length > 0)
+			void this.options.taskHistory
+				.markTaskActive?.(activeSession.sessionId)
+				.catch((error) => Logger.error("Failed to unsettle active task", error))
 		const agentFailure = this.getAgentFailureTelemetry(event)
 		if (agentFailure && !this.options.messageTranslatorState.isSuppressedToolApprovalDenial(agentFailure.error)) {
 			this.options.captureProviderApiError?.({
@@ -79,12 +99,18 @@ export class SdkSessionEventCoordinator {
 		if (event.type === "pending_prompt_submitted") {
 			this.options.beginProviderFailureTelemetryTurn?.()
 			this.options.messageTranslatorState.clearTurnOutcome()
-			this.options.sessions.setRunning(true)
+			this.options.sessions.setRunning(true, activeSession.sessionId)
 			this.options.setTurnPhase?.(PROVIDER_FAILURE_PHASE.STREAMING)
 		}
+		if (this.options.isTurnCancelled?.()) result.messages = []
+		this.stampRequestModel(result)
 		const zeroCostPromise = this.zeroCostForFreeClineModel(result)
 		if (zeroCostPromise) {
 			await zeroCostPromise
+			const currentSession = this.options.sessionId
+				? this.options.sessions.getSession(this.options.sessionId)
+				: this.options.sessions.getActiveSession()
+			if (currentSession !== activeSession) return
 		}
 
 		if (!activeSession.isRunning && result.messages.length > 0) {
@@ -95,6 +121,13 @@ export class SdkSessionEventCoordinator {
 
 		if (result.messages.length > 0) {
 			this.options.messages.appendAndEmit(result.messages, event)
+		}
+		let notebookReview: Promise<void> | undefined
+		if (result.turnComplete && activeSession.isRunning && !this.notebookTurnCompleteHandled) {
+			this.notebookTurnCompleteHandled = true
+			notebookReview = this.options.onTurnComplete?.().catch((error) => {
+				Logger.warn("Failed to emit notebook changes at turn end", error)
+			})
 		}
 
 		if (activeSession) {
@@ -114,7 +147,10 @@ export class SdkSessionEventCoordinator {
 				// isRunning back to false mid-turn (see fireAndForgetSend). Keying on isRunning
 				// alone made the queued turn's real completion look like this straggler, leaving
 				// the phase stuck on "streaming" (endless Thinking).
-				if (!activeSession.isRunning && this.options.getTurnPhase?.() === "resumable") {
+				if (
+					this.options.isTurnCancelled?.() ||
+					(!activeSession.isRunning && this.options.getTurnPhase?.() === "resumable")
+				) {
 					Logger.debug("[SdkController] turn-complete straggler after cancel; preserving resumable phase")
 				} else if (this.options.messageTranslatorState.wasErrorSeen()) {
 					// The turn surfaced a provider error (ask:"api_req_failed" was emitted) —
@@ -126,13 +162,17 @@ export class SdkSessionEventCoordinator {
 					this.options.setTurnPhase?.("awaiting_followup")
 				}
 
-				this.options.sessions.setRunning(false)
+				this.options.sessions.setRunning(false, activeSession.sessionId)
 			}
 
 			if (result.usage && activeSession.startResult) {
 				Promise.resolve(
 					this.options.taskHistory.updateTaskUsage(
-						this.options.getTask()?.taskId ?? this.options.sessions.getActiveSession()?.sessionId,
+						this.options.getTask()?.taskId ??
+							(this.options.sessionId
+								? this.options.sessions.getSession(this.options.sessionId)
+								: this.options.sessions.getActiveSession()
+							)?.sessionId,
 						result.usage,
 					),
 				).catch((error) => {
@@ -140,6 +180,13 @@ export class SdkSessionEventCoordinator {
 				})
 			}
 		}
+
+		// Per-task subagent tally for the inbox. Tracked for every live session
+		// (focused or background) from the session's own translator state.
+		const subagentCountsChanged = this.updateSubagentCounts(activeSession.sessionId, activeSession.isRunning)
+		// Settle the finished turn before notebook I/O yields: Core can start a
+		// queued turn during that await, and the old turn must not mark it idle.
+		await notebookReview
 
 		// Post state when there are messages to ship OR when the turn ended. A clean turn end's
 		// `done` event carries no transcript message, yet the authoritative phase just changed to
@@ -150,12 +197,36 @@ export class SdkSessionEventCoordinator {
 			result.messages.length > 0 ||
 			result.sessionEnded ||
 			result.turnComplete ||
+			subagentCountsChanged ||
 			event.type === "pending_prompt_submitted"
 		) {
 			this.options.postStateToWebview().catch((err) => {
 				Logger.error("[SdkController] Failed to post state after event:", err)
 			})
 		}
+	}
+
+	/**
+	 * Recomputes this session's subagent tally from its translator state and
+	 * records it for the inbox. `total` is cumulative across the session; `live`
+	 * counts children still running, including while the parent is idle. The total is also
+	 * persisted onto the history item so settled rows keep showing it.
+	 */
+	private updateSubagentCounts(sessionId: string, _sessionRunning: boolean): boolean {
+		const state = this.options.messageTranslatorState
+		const total = state.getSpawnAgentTotalCount()
+		const existing = this.options.sessions.subagentCounts[sessionId]
+		if (total === 0 && !existing) {
+			return false
+		}
+		const live = state.getSpawnAgentItems().filter((item) => item.status === "running" || item.status === "pending").length
+		const changed = this.options.sessions.setSubagentCounts(sessionId, { total, live })
+		if (changed && total > (existing?.total ?? 0)) {
+			this.options.taskHistory.updateTaskSubagentCount(sessionId, total).catch((error) => {
+				Logger.error("[SdkController] Failed to persist subagent count:", error)
+			})
+		}
+		return changed
 	}
 
 	private getAgentFailureTelemetry(event: CoreSessionEvent): AgentFailureTelemetry {
@@ -194,6 +265,25 @@ export class SdkSessionEventCoordinator {
 			}
 		}
 		return undefined
+	}
+
+	/** Records which model served each request's usage, so the cost breakdown can group by model. */
+	private stampRequestModel(result: TranslationResult): void {
+		const modelId = this.options.getModelId?.()
+		if (!modelId) return
+		const providerId = this.options.getProviderId?.()
+		result.messages = result.messages.map((message) => {
+			if (message.type !== "say" || message.say !== "api_req_started" || !message.text) return message
+			try {
+				const info = JSON.parse(message.text) as ClineApiReqInfo
+				// Only the usage update carries tokens; the opening row has nothing to attribute yet.
+				if (info.tokensIn === undefined && info.tokensOut === undefined && info.cost === undefined) return message
+				if (info.modelId) return message
+				return { ...message, text: JSON.stringify({ ...info, modelId, ...(providerId ? { providerId } : {}) }) }
+			} catch {
+				return message
+			}
+		})
 	}
 
 	private zeroCostForFreeClineModel(result: TranslationResult): Promise<void> | undefined {
@@ -256,7 +346,8 @@ export class SdkSessionEventCoordinator {
 		try {
 			const apiConfig = stateManager.getApiConfiguration()
 			const mode = stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
-			const provider = mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
+			const provider =
+				this.options.getProviderId?.() ?? (mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider)
 			// Free models are also selectable on ClinePass — they ride usage billing at $0
 			if (!isClineManagedProvider(provider)) {
 				return false
@@ -285,6 +376,7 @@ export class SdkSessionEventCoordinator {
 	}
 
 	private getCurrentClineModelId(): string | undefined {
+		if (this.options.getModelId) return this.options.getModelId()
 		const stateManager = this.options.stateManager
 		if (!stateManager) {
 			return undefined

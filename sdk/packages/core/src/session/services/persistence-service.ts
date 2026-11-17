@@ -445,20 +445,24 @@ export class UnifiedSessionPersistenceService {
 	private async reconcileDeadRunningSession(
 		row: SessionRow,
 	): Promise<SessionRow | undefined> {
-		if (
-			isNonTerminalSessionStatus(row.status) === false ||
-			this.isPidAlive(row.pid)
-		) {
+		if (row.status !== "running" || this.isPidAlive(row.pid)) {
 			return row;
 		}
 
 		const detectedAt = nowIso();
-		const reason = UnifiedSessionPersistenceService.STALE_REASON;
+		// An interactive host exiting interrupts work; it does not prove a turn failed.
+		const interrupted = row.interactive || row.isSubagent;
+		const status = interrupted ? "cancelled" : "failed";
+		const exitCode = interrupted ? 0 : 1;
+		const reason = interrupted
+			? "interrupted_external_process_exit"
+			: UnifiedSessionPersistenceService.STALE_REASON;
 
 		for (let attempt = 0; attempt < OCC_MAX_RETRIES; attempt++) {
 			const latest = await this.adapter.getSession(row.sessionId);
 			if (!latest) return undefined;
-			if (isNonTerminalSessionStatus(latest.status) === false) return latest;
+			if (latest.status !== "running" || this.isPidAlive(latest.pid))
+				return latest;
 
 			const nextMetadata = {
 				...(latest.metadata ?? {}),
@@ -470,23 +474,27 @@ export class UnifiedSessionPersistenceService {
 
 			const changed = await this.adapter.updateSession({
 				sessionId: latest.sessionId,
-				status: "failed",
+				status,
 				endedAt: detectedAt,
-				exitCode: 1,
+				exitCode,
 				metadata: nextMetadata,
 				expectedStatusLock: latest.statusLock,
 			});
 			if (!changed.updated) continue;
 
-			await this.teamChildren.applyStatusToRunningChildSessions(
-				latest.sessionId,
-				"failed",
-			);
+			// Interactive children reconcile their own persisted turn state.
+			// A parent exiting must not overwrite an idle or waiting child.
+			if (!interrupted) {
+				await this.teamChildren.applyStatusToRunningChildSessions(
+					latest.sessionId,
+					"failed",
+				);
+			}
 
 			const manifest = buildManifestFromRow(latest, {
-				status: "failed",
+				status,
 				endedAt: detectedAt,
-				exitCode: 1,
+				exitCode,
 				metadata: nextMetadata,
 			});
 			const { path: manifestPath } = this.manifestStore.readManifestFile(
@@ -502,9 +510,9 @@ export class UnifiedSessionPersistenceService {
 			);
 			return {
 				...latest,
-				status: "failed",
+				status,
 				endedAt: detectedAt,
-				exitCode: 1,
+				exitCode,
 				metadata: nextMetadata,
 				statusLock: changed.statusLock,
 				updatedAt: detectedAt,

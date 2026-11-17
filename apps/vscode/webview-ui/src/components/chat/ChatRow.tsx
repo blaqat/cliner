@@ -40,6 +40,7 @@ import { OptionsButtons } from "@/components/chat/OptionsButtons"
 import { CloudProvisioningRow } from "@/components/cloud/CloudProvisioningRow"
 import { WithCopyButton } from "@/components/common/CopyButton"
 import Thumbnails from "@/components/common/Thumbnails"
+import { openTask } from "@/components/inbox/sessionActions"
 import McpResponseDisplay from "@/components/mcp/chat-display/McpResponseDisplay"
 import McpResourceRow from "@/components/mcp/configuration/tabs/installed/server-row/McpResourceRow"
 import McpToolRow from "@/components/mcp/configuration/tabs/installed/server-row/McpToolRow"
@@ -48,6 +49,7 @@ import { cn } from "@/lib/utils"
 import { FileServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { findMatchingResourceOrTemplate } from "@/utils/mcp"
 import CodeAccordian, { cleanPathPrefix } from "../common/CodeAccordian"
+import AsideButton from "./AsideButton"
 import { CommandOutputContent, CommandOutputRow } from "./CommandOutputRow"
 import CompactionRow from "./CompactionRow"
 import { CompletionOutputRow } from "./CompletionOutputRow"
@@ -56,15 +58,22 @@ import ErrorRow from "./ErrorRow"
 import { FeatureTip } from "./FeatureTip"
 import HookMessage from "./HookMessage"
 import { MarkdownRow } from "./MarkdownRow"
+import MessageLinkButton from "./MessageLinkButton"
 import NewTaskPreview from "./NewTaskPreview"
+import { NotebookChangesRow } from "./NotebookChangesRow"
+import { NotebookToolRow, parseNotebookTool } from "./NotebookToolRow"
 import PlanCompletionOutputRow from "./PlanCompletionOutputRow"
 import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
+import { parseScriptTool, ScriptToolRow } from "./ScriptToolRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
+import { SubagentDecisionControls } from "./SubagentDecisionControls"
 import SubagentStatusRow from "./SubagentStatusRow"
+import { SubagentUpdateRow } from "./SubagentUpdateRow"
 import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
+import { WalkthroughReadyRow } from "./WalkthroughReadyRow"
 
 const HEADER_CLASSNAMES = "flex items-center gap-2.5 mb-3"
 
@@ -109,7 +118,18 @@ const ChatRow = memo(
 
 		const [chatrow, { height }] = useSize(
 			<div className="relative pt-2.5 px-4">
+				{message.subagentName && (
+					<button
+						className="mb-1 border-0 bg-transparent p-0 text-[11px] text-link cursor-pointer hover:underline"
+						onClick={() => message.subagentTaskId && void openTask(message.subagentTaskId)}
+						type="button">
+						Subagent: {message.subagentName}
+					</button>
+				)}
 				<ChatRowContent {...props} />
+				{message.subagentTaskId && message.decisionId && (
+					<SubagentDecisionControls key={message.decisionId} message={message} />
+				)}
 			</div>,
 		)
 
@@ -153,6 +173,7 @@ export const ChatRowContent = memo(
 		retryFailedRequest,
 	}: ChatRowContentProps) => {
 		const {
+			currentTaskItem,
 			backgroundEditEnabled: backgroundEditSetting,
 			mcpServers,
 			vscodeTerminalExecutionMode,
@@ -161,6 +182,7 @@ export const ChatRowContent = memo(
 			enableCheckpointsSetting: checkpointsSetting,
 			turnState,
 			currentCloudTask,
+			navigateToWalkthrough,
 		} = useExtensionState()
 		// Cloud tasks edit files inside the sandbox: there is no local editor to
 		// preview in, so diffs render inline, and no local workspace to checkpoint.
@@ -177,6 +199,8 @@ export const ChatRowContent = memo(
 		// Command output expansion state (for all messages, but only used by command messages)
 		const [isOutputFullyExpanded, setIsOutputFullyExpanded] = useState(false)
 		const prevCommandExecutingRef = useRef<boolean>(false)
+		const autoExpandedCommandRef = useRef(false)
+		const autoOpenedApprovalRef = useRef(false)
 
 		const hasAutoExpandedRef = useRef(false)
 		const hasAutoCollapsedRef = useRef(false)
@@ -380,6 +404,19 @@ export const ChatRowContent = memo(
 			return extension ? imageExtensions.includes(`.${extension}`) : false
 		}
 
+		// An edit waiting for approval must show its content so the user can decide. Tool responses
+		// are otherwise collapsed by default; open the row once (the user can still fold it).
+		const isEditApproval =
+			message.type === "ask" &&
+			isLast &&
+			(tool?.tool === "editedExistingFile" || tool?.tool === "newFileCreated" || tool?.tool === "fileDeleted")
+		useEffect(() => {
+			if (isEditApproval && !isExpanded && !autoOpenedApprovalRef.current) {
+				autoOpenedApprovalRef.current = true
+				onToggleExpand(message.ts, { preserveAutoScroll: true })
+			}
+		}, [isEditApproval, isExpanded, onToggleExpand, message.ts])
+
 		if (conditionalRulesInfo) {
 			const names = conditionalRulesInfo.rules.map((r: { name: string }) => r.name).join(", ")
 			return (
@@ -407,6 +444,15 @@ export const ChatRowContent = memo(
 					title={title}
 				/>
 			)
+
+			const notebookTool = parseNotebookTool(tool)
+			if (notebookTool) {
+				return <NotebookToolRow info={notebookTool} />
+			}
+			const scriptTool = parseScriptTool(tool)
+			if (scriptTool) {
+				return <ScriptToolRow asking={message.type === "ask"} info={scriptTool} message={message} />
+			}
 
 			switch (tool.tool) {
 				case "editedExistingFile":
@@ -718,23 +764,29 @@ export const ChatRowContent = memo(
 			}
 		}
 
-		// Reset output expansion state when command stops (completes or is cancelled)
+		// Command output is collapsed by default. Live output opens once a command has run for a
+		// while, and folds away again when the command finishes (a user's own toggle still works).
 		useEffect(() => {
-			// If command was executing and now isn't, clean up
 			if (isCommandMessage && prevCommandExecutingRef.current && !isCommandExecuting) {
 				setIsOutputFullyExpanded(false)
+				autoExpandedCommandRef.current = false
+				if (isExpanded) {
+					onToggleExpand(message.ts, { preserveAutoScroll: true })
+				}
 			}
 
 			// Update ref for next render
 			prevCommandExecutingRef.current = isCommandExecuting
-		}, [isCommandMessage, isCommandExecuting])
+		}, [isCommandMessage, isCommandExecuting, isExpanded, onToggleExpand, message.ts])
 
-		// Auto-expand when command starts executing (only if running > 500ms)
+		// Auto-expand once when a command has been running > 500ms (avoids animating fast commands)
 		useEffect(() => {
-			if (isCommandMessage && isCommandExecuting && !isExpanded) {
-				// Wait 500ms before auto-expanding to avoid animating fast commands
+			if (!isCommandMessage || !isCommandExecuting) return
+			// Already open this run (auto or by the user): never re-open after the user folds it.
+			if (isExpanded) autoExpandedCommandRef.current = true
+			if (!isExpanded && !autoExpandedCommandRef.current) {
 				const timer = setTimeout(() => {
-					// Expand after 500ms
+					autoExpandedCommandRef.current = true
 					onToggleExpand(message.ts, { preserveAutoScroll: true })
 				}, 500)
 
@@ -750,10 +802,12 @@ export const ChatRowContent = memo(
 					isCommandCompleted={isCommandCompleted}
 					isCommandExecuting={isCommandExecuting}
 					isCommandPending={isCommandPending}
+					isExpanded={isExpanded}
 					isOutputFullyExpanded={isOutputFullyExpanded}
 					message={message}
 					onCancelCommand={onCancelCommand}
 					onOutputChange={onLastRowContentChange}
+					onToggleExpand={handleToggle}
 					setIsOutputFullyExpanded={setIsOutputFullyExpanded}
 					title={title}
 				/>
@@ -848,7 +902,13 @@ export const ChatRowContent = memo(
 					case "api_req_finished":
 						return <InvisibleSpacer /> // we should never see this message type
 					case "mcp_server_response":
-						return <McpResponseDisplay responseText={message.text || ""} />
+						return (
+							<McpResponseDisplay
+								isExpanded={isExpanded}
+								onToggleExpand={handleToggle}
+								responseText={message.text || ""}
+							/>
+						)
 					case "mcp_notification":
 						return (
 							<div className="flex items-start gap-2 py-2.5 px-3 bg-quote rounded-sm text-base text-foreground opacity-90 mb-2">
@@ -863,6 +923,12 @@ export const ChatRowContent = memo(
 						const hasText = !!message.text?.trim()
 						return (
 							<WithCopyButton
+								actions={
+									<>
+										<AsideButton messageTs={message.ts} />
+										<MessageLinkButton messageTs={message.ts} />
+									</>
+								}
 								onMouseUp={handleMouseUp}
 								position="bottom-right"
 								ref={contentRef}
@@ -870,7 +936,11 @@ export const ChatRowContent = memo(
 								{hasText && (
 									<div className="flex items-center">
 										<div className={cn("flex-1 min-w-0 pl-1")}>
-											<MarkdownRow markdown={message.text} showCursor={false} />
+											<MarkdownRow
+												markdown={message.text}
+												showCursor={false}
+												streaming={message.partial === true}
+											/>
 										</div>
 									</div>
 								)}
@@ -881,7 +951,7 @@ export const ChatRowContent = memo(
 									<div className={cn("flex flex-col gap-2", hasText && "mt-2")}>
 										{message.media.map((media) => (
 											<GeneratedMediaContent
-												className="max-h-96 max-w-full rounded-sm"
+												className="max-h-70 w-auto max-w-full rounded-sm object-contain"
 												key={media.id}
 												media={media}
 											/>
@@ -919,7 +989,12 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					}
+					// The thread's first message renders like every later user message.
+					case "subagent_update":
+						return <SubagentUpdateRow text={message.text ?? ""} />
+					case "task":
 					case "user_feedback":
+						if (message.text?.trim().startsWith("<subagent_update")) return <SubagentUpdateRow text={message.text} />
 						return (
 							<UserMessage
 								canRestoreWorkspace={
@@ -929,6 +1004,7 @@ export const ChatRowContent = memo(
 								// Edit-and-regenerate rebuilds the conversation as a local session, which
 								// a cloud task cannot use; without a timestamp the row is read-only.
 								images={message.images}
+								messageReferences={message.messageReferences}
 								messageTs={currentCloudTask ? undefined : message.ts}
 								sendMessageFromChatRow={sendMessageFromChatRow}
 								text={message.text}
@@ -969,7 +1045,11 @@ export const ChatRowContent = memo(
 
 						return (
 							<CompletionOutputRow
+								asideFromTs={message.ts}
+								contentRef={contentRef}
 								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
+								onOpenWalkthrough={currentTaskItem?.isSubagent ? undefined : navigateToWalkthrough}
 								quoteButtonState={quoteButtonState}
 								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
 								text={text || ""}
@@ -977,8 +1057,18 @@ export const ChatRowContent = memo(
 						)
 					}
 					case "plan_completion_result":
-						// Turn-final plan-mode response inferred at turn end (SDK path)
-						return <PlanCompletionOutputRow text={message.text || ""} />
+						// Turn-final Ask-mode (internal "plan") response inferred at turn end (SDK path)
+						return (
+							<PlanCompletionOutputRow
+								asideFromTs={message.ts}
+								contentRef={contentRef}
+								handleQuoteClick={handleQuoteClick}
+								onMouseUp={handleMouseUp}
+								quoteButtonState={quoteButtonState}
+								showContinueInAct={isLast && mode === "plan" && message.partial !== true}
+								text={message.text || ""}
+							/>
+						)
 					case "shell_integration_warning":
 						return (
 							<div className="flex flex-col bg-warning/20 p-2 rounded-xs border border-error">
@@ -1045,6 +1135,10 @@ export const ChatRowContent = memo(
 						return <CompactionRow message={message} />
 					case "cloud_provisioning":
 						return <CloudProvisioningRow active={lastModifiedMessage?.ts === message.ts} message={message} />
+					case "notebook_changes":
+						return <NotebookChangesRow message={message} />
+					case "walkthrough_ready":
+						return <WalkthroughReadyRow message={message} />
 					default:
 						return (
 							<div>
@@ -1076,7 +1170,9 @@ export const ChatRowContent = memo(
 							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
 							return (
 								<CompletionOutputRow
+									contentRef={contentRef}
 									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
 									quoteButtonState={quoteButtonState}
 									text={text || ""}
 								/>
@@ -1107,6 +1203,7 @@ export const ChatRowContent = memo(
 									</div>
 								)}
 								<WithCopyButton
+									actions={<MessageLinkButton messageTs={message.ts} />}
 									className="pt-1"
 									onMouseUp={handleMouseUp}
 									position="bottom-right"
@@ -1125,10 +1222,12 @@ export const ChatRowContent = memo(
 								</WithCopyButton>
 								<div className="pt-3">
 									<OptionsButtons
+										decisionId={message.decisionId}
 										inputValue={inputValue}
 										isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 										options={options}
 										selected={selected}
+										taskId={currentTaskItem?.id}
 									/>
 								</div>
 							</div>
@@ -1178,12 +1277,22 @@ export const ChatRowContent = memo(
 						}
 						return (
 							<div>
-								<PlanCompletionOutputRow text={response || message.text || ""} />
+								<PlanCompletionOutputRow
+									asideFromTs={message.ts}
+									contentRef={contentRef}
+									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
+									quoteButtonState={quoteButtonState}
+									showContinueInAct={isLast && mode === "plan" && message.partial !== true}
+									text={response || message.text || ""}
+								/>
 								<OptionsButtons
+									decisionId={message.decisionId}
 									inputValue={inputValue}
 									isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 									options={options}
 									selected={selected}
+									taskId={currentTaskItem?.id}
 								/>
 							</div>
 						)

@@ -35,12 +35,26 @@ export class StatePostDebouncer {
 
 	constructor(private readonly options: StatePostDebouncerOptions) {}
 
-	post(): Promise<void> {
+	post(immediate = false): Promise<void> {
 		if (this.disposed) {
 			return Promise.resolve()
 		}
 		return new Promise<void>((resolve, reject) => {
 			this.pendingResolvers.push({ resolve, reject })
+			// The running flush already provides a coalescing window. Queue the
+			// fresh snapshot immediately rather than adding another timer behind it.
+			if (this.inFlight) {
+				this.queued = true
+				return
+			}
+			if (immediate) {
+				if (this.debounceTimer) {
+					clearTimeout(this.debounceTimer)
+					this.debounceTimer = undefined
+				}
+				this.inFlightPromise = this.runDebounced()
+				return
+			}
 			if (this.debounceTimer) {
 				return
 			}

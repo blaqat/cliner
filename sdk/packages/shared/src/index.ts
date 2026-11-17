@@ -318,6 +318,7 @@ export { formatHumanReadableDate, formatUptime } from "./parse/time";
 export { validateWithZod, zodToJsonSchema } from "./parse/zod";
 export type { ClineSystemPromptOptions } from "./prompt/cline";
 export {
+	ASK_MODE_INSTRUCTIONS,
 	buildClineSystemPrompt,
 	MODE_TAG_INSTRUCTIONS,
 	PLAN_MODE_INSTRUCTIONS,
@@ -342,6 +343,7 @@ export {
 	parseUserInputMode,
 	SESSION_SEARCH_PREVIEW_MAX_LENGTH,
 	SESSION_SEARCH_TITLE_MAX_LENGTH,
+	stripMessageReferences,
 	stripModeNotices,
 	xmlTagsRemoval,
 } from "./prompt/format";

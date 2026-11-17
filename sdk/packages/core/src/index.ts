@@ -316,6 +316,7 @@ export {
 export {
 	type AuthorizeMcpServerOAuthOptions,
 	type AuthorizeMcpServerOAuthResult,
+	createAskModeMcpGateExtension,
 	augmentMcpTimeoutError,
 	authorizeMcpServerOAuth,
 	type CreateDisabledMcpToolPoliciesOptions,
@@ -1165,7 +1166,14 @@ export type {
 	CoreModelConfig,
 	CoreRuntimeFeatures,
 	CoreSessionConfig,
+	SubagentProfileConnection,
+	SubagentModelConnection,
+	SubagentModelLevel,
+	SubagentModelRecord,
+	SubagentModelPolicyV1,
+	SubagentSettings,
 } from "./types/config";
+export { INHERIT_SUBAGENT_PROFILE } from "./runtime/host/local/spawn-tool";
 export type {
 	CoreSessionEvent,
 	SessionChunkEvent,

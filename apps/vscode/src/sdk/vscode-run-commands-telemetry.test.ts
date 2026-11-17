@@ -15,7 +15,13 @@ vi.mock("@cline/core", async (importOriginal) => ({
 }))
 
 vi.mock("@/core/storage/StateManager", () => ({
-	StateManager: { get: () => ({ getGlobalSettingsKey: () => "default" }) },
+	StateManager: {
+		get: () => ({
+			getGlobalSettingsKey: () => "default",
+			getGlobalStateKey: () => undefined,
+			getWorkspaceStateKey: () => undefined,
+		}),
+	},
 }))
 
 // Bypass only singleton/host initialization: keep the real capture method and

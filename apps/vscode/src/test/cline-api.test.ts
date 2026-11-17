@@ -43,6 +43,7 @@ describe("ClineAPI Core Functionality", () => {
 			postStateToWebview: sandbox.stub().resolves(),
 			postMessageToWebview: sandbox.stub().resolves(),
 			initTask: sandbox.stub().resolves(),
+			getPendingDecisionId: sandbox.stub().returns(undefined),
 			task: undefined,
 		}
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	createModeSwitchNoticeTracker,
 	formatDisplayUserInput,
+	stripMessageReferences,
 	formatModeSwitchNotice,
 	formatSessionSearchPreview,
 	formatSessionSearchTitle,
@@ -70,7 +71,7 @@ describe("prompt format helpers", () => {
 
 	it("formats a mode switch notice", () => {
 		expect(formatModeSwitchNotice("plan", "act")).toBe(
-			"<mode_notice>The user switched from plan mode to act mode before sending this message.</mode_notice>",
+			"<mode_notice>The user switched from Ask mode to Act mode before sending this message.</mode_notice>",
 		);
 	});
 
@@ -172,5 +173,18 @@ describe("createModeSwitchNoticeTracker", () => {
 		tracker.record("plan", "plan");
 
 		expect(tracker.consume()).toBeNull();
+	});
+
+	it("hides message reference blocks from displayed user input", () => {
+		const block =
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user">\nCap exports\n</message_reference>';
+		const wrapped = formatUserInputBlock(`${block}\n\nuse this`, "act");
+		expect(formatDisplayUserInput(wrapped)).toBe("use this");
+		expect(formatDisplayUserInput(`${block}\n\n${block}\n\nhi`)).toBe("hi");
+	});
+
+	it("leaves an unterminated message reference opening intact", () => {
+		const broken = '<message_reference thread_id="a">never closed';
+		expect(stripMessageReferences(broken)).toBe(broken);
 	});
 });

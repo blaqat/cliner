@@ -1,5 +1,15 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { NextMessageModelSelections } from "./model-settings-resolver"
+import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { isAbortError, SdkSessionLifecycle } from "./sdk-session-lifecycle"
+import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
+import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
+import { SdkTaskHistory } from "./sdk-task-history"
+import { worktreeProject } from "./worktrees/temp-project.test-support"
+import { ThreadWorktreeManager } from "./worktrees/thread-worktree-manager"
 
 type StartInput = Parameters<SdkSessionLifecycle["startNewSession"]>[0]
 type SendHost = Parameters<SdkSessionLifecycle["fireAndForgetSend"]>[0]
@@ -25,10 +35,522 @@ describe("SdkSessionLifecycle", () => {
 		mockCreateSessionHost.mockReset()
 	})
 
+	it.each([
+		"failed",
+		"cancelled",
+		"aborted-result",
+		"error-result",
+		"success",
+	])("consumes on admission for %s and retains a rejected send", async (outcome) => {
+		const next = new NextMessageModelSelections()
+		const pick = { modelId: "temporary", levelId: "default" }
+		next.set("session-123", "act", pick)
+		next.set("other", "act", pick)
+		const listeners = new Set<(event: never) => void>()
+		const send = vi.fn(async () => {
+			if (["aborted-result", "error-result", "success"].includes(outcome)) {
+				for (const listener of listeners)
+					listener({ type: "status", payload: { sessionId: "session-123", status: "running" } } as never)
+				expect(next.peek("session-123", "act")).toBeUndefined()
+			}
+			if (outcome === "aborted-result") return { finishReason: "aborted" }
+			if (outcome === "error-result") return { finishReason: "error" }
+			if (outcome === "failed") throw new Error("admission failed")
+			if (outcome === "cancelled") throw Object.assign(new Error("aborted"), { name: "AbortError" })
+			return undefined
+		})
+		const host = makeSdkHost({
+			send,
+			subscribe: (listener: (event: never) => void) => {
+				listeners.add(listener)
+				return () => listeners.delete(listener)
+			},
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle({ onSendAdmission: (id) => next.admission(id, "act")?.commit })
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.fireAndForgetSend(host as never, "session-123", "hello")
+		await vi.waitFor(() => expect(lifecycle.getActiveSession()?.isRunning).toBe(false))
+		expect(next.peek("session-123", "act")).toEqual(
+			["aborted-result", "error-result", "success"].includes(outcome) ? undefined : pick,
+		)
+		expect(next.peek("other", "act")).toEqual(pick)
+		await lifecycle.dispose()
+	})
+
+	it("reports status changes for background and child sessions once", () => {
+		const onStatusChange = vi.fn()
+		const lifecycle = makeLifecycle({ onStatusChange })
+		lifecycle.setStatus("background", "done")
+		lifecycle.setStatus("child", "waiting")
+		lifecycle.setStatus("child", "waiting")
+		expect(onStatusChange.mock.calls).toEqual([
+			["background", "done"],
+			["child", "waiting"],
+		])
+	})
+
+	it.each([
+		undefined,
+		"queue",
+		"interject",
+	] as const)("holds %s submissions until replacement is live and reads history inside admission", async (delivery) => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const history = [{ role: "user", content: "complete preceding turn" }]
+		const readHistory = vi.fn(async () => {
+			// Even a submission from inside the history read is held by admission.
+			lifecycle.fireAndForgetSend(oldHost as never, old.sessionId, "next", [], [], delivery)
+			return history as StartInput["initialMessages"]
+		})
+		const swapping = lifecycle.replaceSession({
+			expectedSession: old,
+			startInput: {} as StartInput,
+			loadInitialMessages: readHistory,
+			disposeReason: "test",
+		})
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		expect(oldHost.send).not.toHaveBeenCalled()
+		expect(newHost.send).not.toHaveBeenCalled()
+		expect(oldHost.stop).not.toHaveBeenCalled()
+		expect(newHost.start).toHaveBeenCalledWith(expect.objectContaining({ initialMessages: history }))
+		started.resolve({ sessionId: old.sessionId })
+		await swapping
+		await vi.waitFor(() => expect(newHost.send).toHaveBeenCalledWith(expect.objectContaining({ prompt: "next", delivery })))
+		expect(oldHost.send).not.toHaveBeenCalled()
+		expect(oldHost.stop).toHaveBeenCalledExactlyOnceWith(old.sessionId)
+		expect(newHost.send).toHaveBeenCalledOnce()
+	})
+
+	it.each([undefined, "interject"] as const)("Cancel drops a held %s submission during replacement", async (delivery) => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const onSendError = vi.fn()
+		const onHeldSendCancelled = vi.fn()
+		const lifecycle = makeLifecycle({ onSendError, onHeldSendCancelled })
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const swapping = lifecycle.replaceSession({ expectedSession: old, startInput: {} as StartInput, disposeReason: "test" })
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		// The old session is idle, so even an interject is held behind the swap.
+		lifecycle.fireAndForgetSend(oldHost as never, old.sessionId, "keep my text", ["image"], ["file"], delivery)
+		await makeTaskControl(lifecycle).cancelTask()
+		expect(onHeldSendCancelled).toHaveBeenCalledExactlyOnceWith(old.sessionId, "keep my text", ["image"], ["file"])
+		expect(oldHost.abort).toHaveBeenCalledWith(old.sessionId)
+		started.resolve({ sessionId: old.sessionId })
+		expect(await swapping).toBeUndefined()
+		await lifecycle.waitForReplacement(old.sessionId)
+		expect(newHost.dispose).toHaveBeenCalledOnce()
+		expect(oldHost.send).not.toHaveBeenCalled()
+		expect(newHost.send).not.toHaveBeenCalled()
+		expect(lifecycle.getActiveSession()?.isRunning).toBe(false)
+		expect(onSendError).not.toHaveBeenCalled()
+	})
+
+	it("an interjection during replacement goes straight to a raced old turn via Core's interject path", async () => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const swapping = lifecycle.replaceSession({ expectedSession: old, startInput: {} as StartInput, disposeReason: "test" })
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		lifecycle.setRunning(true, old.sessionId)
+		await makeTaskControl(lifecycle).cancelTask(false, { text: "priority" })
+		// Core's interject aborts the raced turn itself while preserving the
+		// pending queue; no separate destructive abort() is issued.
+		await vi.waitFor(() =>
+			expect(oldHost.send).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ prompt: "priority", delivery: "interject" }),
+			),
+		)
+		expect(oldHost.abort).not.toHaveBeenCalled()
+		lifecycle.setRunning(false, old.sessionId)
+		started.resolve({ sessionId: old.sessionId })
+		expect(await swapping).toBeUndefined()
+		expect(newHost.send).not.toHaveBeenCalled()
+		expect(newHost.dispose).toHaveBeenCalledOnce()
+		expect(lifecycle.getSession(old.sessionId)).toBe(old)
+	})
+
+	it("deleting a task during replacement drops held sends without resurrecting its session", async () => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const onHeldSendCancelled = vi.fn()
+		const onSendError = vi.fn()
+		const lifecycle = makeLifecycle({ onHeldSendCancelled, onSendError })
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const swapping = lifecycle.replaceSession({ expectedSession: old, startInput: {} as StartInput, disposeReason: "test" })
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		lifecycle.fireAndForgetSend(oldHost as never, old.sessionId, "held")
+		const deleting = lifecycle.removeSession(old.sessionId)
+		expect(onHeldSendCancelled).toHaveBeenCalledOnce()
+		started.resolve({ sessionId: old.sessionId })
+		expect(await swapping).toBeUndefined()
+		await deleting
+		expect(oldHost.send).not.toHaveBeenCalled()
+		expect(newHost.send).not.toHaveBeenCalled()
+		expect(newHost.dispose).toHaveBeenCalledOnce()
+		expect(oldHost.stop).toHaveBeenCalledExactlyOnceWith(old.sessionId)
+		expect(lifecycle.getSession(old.sessionId)).toBeUndefined()
+		expect(lifecycle.getActiveSession()).toBeUndefined()
+		expect(onSendError).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		false,
+		true,
+	])("abandons replacement when a Core turn races in, even if it finishes before start, finished=%s", async (finished) => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const swapping = lifecycle.replaceSession({ expectedSession: old, startInput: {} as StartInput, disposeReason: "test" })
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		lifecycle.setRunning(true, old.sessionId)
+		if (finished) lifecycle.setRunning(false, old.sessionId)
+		started.resolve({ sessionId: old.sessionId })
+		expect(await swapping).toBeUndefined()
+		expect(lifecycle.getSession(old.sessionId)).toBe(old)
+		expect(oldHost.stop).not.toHaveBeenCalled()
+		expect(newHost.dispose).toHaveBeenCalledOnce()
+	})
+
+	it("routes a held interjection to the old session after replacement fails", async () => {
+		const oldHost = makeSdkHost()
+		const started = Promise.withResolvers<{ sessionId: string }>()
+		const newHost = makeSdkHost({ start: vi.fn(() => started.promise) })
+		mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(newHost)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const swapping = lifecycle.replaceSession({ expectedSession: old, startInput: {} as StartInput, disposeReason: "test" })
+		const failure = expect(swapping).rejects.toThrow("failed")
+		await vi.waitFor(() => expect(newHost.start).toHaveBeenCalledOnce())
+		lifecycle.fireAndForgetSend(oldHost as never, old.sessionId, "priority", [], [], "interject")
+		expect(oldHost.send).not.toHaveBeenCalled()
+		started.reject(new Error("failed"))
+		await failure
+		await vi.waitFor(() =>
+			expect(oldHost.send).toHaveBeenCalledWith(expect.objectContaining({ prompt: "priority", delivery: "interject" })),
+		)
+		expect(oldHost.stop).not.toHaveBeenCalled()
+	})
+
+	it("keeps the live session usable after an MCP start failure and retries at the next boundary", async () => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		const input = { config: { sessionId: "session-123" }, interactive: true } as StartInput
+		await lifecycle.startNewSession(input)
+		lifecycle.setRunning(false)
+		const old = lifecycle.getActiveSession()!
+		const messages = { appendAndEmit: vi.fn(), emitSessionEvents: vi.fn() }
+		const scheduler = new SdkSessionRebuildScheduler({ sessions: lifecycle })
+		const coordinator = new SdkMcpCoordinator({
+			sessions: lifecycle,
+			rebuilds: scheduler,
+			stateManager: { getGlobalStateKey: () => undefined, getGlobalSettingsKey: () => "act" },
+			messages,
+			sessionConfigBuilder: { build: async () => input.config },
+			getWorkspaceRoot: async () => "/workspace",
+			loadInitialMessages: async () => [],
+			buildStartSessionInput: () => input,
+			postStateToWebview: async () => {},
+		} as unknown as ConstructorParameters<typeof SdkMcpCoordinator>[0])
+		old.isRunning = true
+		host.start.mockRejectedValueOnce(new Error("MCP start failed"))
+		coordinator.handleToolListChanged()
+		old.isRunning = false
+		coordinator.sessionBecameIdle()
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(messages.appendAndEmit).toHaveBeenCalledOnce())
+		expect(lifecycle.getSession(old.sessionId)).toBe(old)
+		expect(host.stop).not.toHaveBeenCalled()
+		lifecycle.fireAndForgetSend(host as never, old.sessionId, "still usable")
+		await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+		old.isRunning = false
+		coordinator.sessionBecameIdle()
+		scheduler.sessionBecameIdle()
+		await vi.waitFor(() => expect(lifecycle.getSession(old.sessionId)).not.toBe(old))
+		expect(coordinator.consumeMcpChangeNotice(old.sessionId)).toContain("MCP tools changed")
+		expect(host.start).toHaveBeenCalledTimes(3)
+	})
+
+	it.each(["single", "multi", "all", "except-favorites"])("fences resumes through %s persistence deletion", async (kind) => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		const input = { config: { sessionId: "session-123" } } as StartInput
+		await lifecycle.startNewSession(input)
+		const { history, deletingPersistence, releasePersistence } = makeDeletionHistory(lifecycle)
+		const deletion =
+			kind === "single"
+				? history.deleteTaskFromState("session-123")
+				: kind === "multi"
+					? history.deleteTasksFromState(["session-123", "other"])
+					: history.deleteAllTaskHistory({ preserveFavorites: kind === "except-favorites" })
+		await deletingPersistence.promise
+		// The handle is gone but persistence still exists, matching the reviewer probe.
+		expect(lifecycle.getSession("session-123")).toBeUndefined()
+		await expect(lifecycle.startNewSession(input)).rejects.toThrow("Task is being deleted")
+		expect(() => lifecycle.focusSession("session-123")).toThrow("Task is being deleted")
+		expect(() => lifecycle.fireAndForgetSend(host as unknown as SendHost, "session-123", "resume")).toThrow(
+			"Task is being deleted",
+		)
+		lifecycle.focusSession(undefined)
+		releasePersistence.resolve()
+		await deletion
+		expect(lifecycle.getSession("session-123")).toBeUndefined()
+		expect(() => lifecycle.assertTaskAvailable("session-123")).not.toThrow()
+	})
+
+	it.each(["single", "all"])("clears the %s deletion fence on persistence failure and permits a retry", async (kind) => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		const input = { config: { sessionId: "session-123" } } as StartInput
+		await lifecycle.startNewSession(input)
+		const { history, deletingPersistence, releasePersistence } = makeDeletionHistory(lifecycle, new Error("disk failed"))
+		const deletion =
+			kind === "single"
+				? expect(history.deleteTaskFromState("session-123")).rejects.toThrow("disk failed")
+				: expect(history.deleteAllTaskHistory()).resolves.toBe(0)
+		await deletingPersistence.promise
+		await expect(lifecycle.startNewSession(input)).rejects.toThrow("Task is being deleted")
+		releasePersistence.resolve()
+		await deletion
+		await expect(lifecycle.startNewSession(input)).resolves.toMatchObject({ startResult: { sessionId: "session-123" } })
+	})
+
+	it("waits for an already-starting resume before deleting persistence", async () => {
+		const enteredStart = Promise.withResolvers<void>()
+		const finishStart = Promise.withResolvers<{ sessionId: string }>()
+		const host = makeSdkHost({
+			start: vi.fn(() => {
+				enteredStart.resolve()
+				return finishStart.promise
+			}),
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		const starting = expect(
+			lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput),
+		).rejects.toThrow("Task is being deleted")
+		await enteredStart.promise
+		const { history, deletingPersistence, releasePersistence, deleteRecord } = makeDeletionHistory(lifecycle)
+		const deletion = history.deleteTaskFromState("session-123")
+		await Promise.resolve()
+		expect(deleteRecord).not.toHaveBeenCalled()
+		finishStart.resolve({ sessionId: "session-123" })
+		await starting
+		await deletingPersistence.promise
+		expect(host.stop).toHaveBeenCalledWith("session-123")
+		expect(lifecycle.getSession("session-123")).toBeUndefined()
+		releasePersistence.resolve()
+		await deletion
+	})
+
+	it("fences delete-all before its initial history enumeration finishes", async () => {
+		const lifecycle = makeLifecycle()
+		const { history, releasePersistence } = makeDeletionHistory(lifecycle)
+		const listing = Promise.withResolvers<void>()
+		const listed = Promise.withResolvers<Awaited<ReturnType<SdkTaskHistory["listHistory"]>>>()
+		vi.mocked(history.listHistory).mockImplementationOnce(() => {
+			listing.resolve()
+			return listed.promise
+		})
+		const deletion = history.deleteAllTaskHistory()
+		await listing.promise
+		await expect(lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)).rejects.toThrow(
+			"Task is being deleted",
+		)
+		listed.resolve([{ sessionId: "session-123", metadata: {} } as never])
+		releasePersistence.resolve()
+		await deletion
+		expect(() => lifecycle.assertTaskAvailable("session-123")).not.toThrow()
+	})
+
+	it("clears the fence after a failed stop and keeps the live task resumable", async () => {
+		const host = makeSdkHost({ stop: vi.fn().mockRejectedValueOnce(new Error("stop failed")) })
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)
+		const { history, deleteRecord } = makeDeletionHistory(lifecycle)
+		await expect(history.deleteTaskFromState("session-123")).rejects.toThrow("stop failed")
+		expect(deleteRecord).not.toHaveBeenCalled()
+		expect(lifecycle.getSession("session-123")).toBeDefined()
+		expect(() => lifecycle.focusSession("session-123")).not.toThrow()
+	})
+
+	it("removes a running background task and fences its pending send completion", async () => {
+		let finish!: () => void
+		const host = makeSdkHost({
+			start: vi.fn().mockResolvedValueOnce({ sessionId: "background" }).mockResolvedValueOnce({ sessionId: "focus" }),
+			send: vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						finish = resolve
+					}),
+			),
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.fireAndForgetSend(host as unknown as SendHost, "background", "work")
+		lifecycle.focusSession("focus")
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.setSubagentCounts("background", { total: 2, live: 1 })
+		await lifecycle.removeSession("background")
+		finish()
+		await Promise.resolve()
+		expect(host.stop).toHaveBeenCalledWith("background")
+		expect(lifecycle.getSession("background")).toBeUndefined()
+		expect(lifecycle.sessionStatuses.background).toBeUndefined()
+		expect(lifecycle.subagentCounts.background).toBeUndefined()
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("focus")
+	})
+
+	it("keeps a failed stop retryable without clearing task status", async () => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		const id = lifecycle.getActiveSession()!.sessionId
+		host.stop.mockRejectedValueOnce(new Error("stop failed"))
+		await expect(lifecycle.removeSession(id)).rejects.toThrow("stop failed")
+		expect(lifecycle.getSession(id)).toBeDefined()
+		await lifecycle.removeSession(id)
+		expect(lifecycle.getSession(id)).toBeUndefined()
+	})
+
+	it.each([
+		"focus",
+		"running",
+		"queue",
+		"waiting",
+		"replacement",
+	])("rechecks %s during an awaited idle stop", async (change) => {
+		let id = 0
+		let release!: () => void
+		const host = makeSdkHost({ start: vi.fn(async () => ({ sessionId: String(++id) })) })
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		for (let index = 0; index < 11; index++) {
+			lifecycle.focusSession(String(index + 1))
+			await lifecycle.startNewSession({} as StartInput)
+		}
+		for (const session of lifecycle.getSessions().values()) session.isRunning = false
+		host.stop.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const pruning = (lifecycle as unknown as { pruneIdleSessions(): Promise<void> }).pruneIdleSessions()
+		await vi.waitFor(() => expect(host.stop).toHaveBeenCalledWith("1"))
+		const candidate = lifecycle.getSession("2")!
+		if (change === "focus") lifecycle.focusSession("2")
+		if (change === "running") candidate.isRunning = true
+		if (change === "queue") candidate.queuedPromptCount = 1
+		if (change === "waiting") lifecycle.setStatus("2", "waiting")
+		if (change === "replacement") {
+			;(lifecycle.getSessions() as Map<string, typeof candidate>).set("2", { ...candidate, isRunning: true })
+		}
+		const overlapping = (lifecycle as unknown as { pruneIdleSessions(): Promise<void> }).pruneIdleSessions()
+		expect(overlapping).toBe(pruning)
+		release()
+		await pruning
+		expect(host.stop).not.toHaveBeenCalledWith("2")
+		expect(lifecycle.getSession("2")).toBeDefined()
+	})
+
+	it("replaces an idle background provider without changing focus", async () => {
+		const host = makeSdkHost({
+			start: vi
+				.fn()
+				.mockResolvedValueOnce({ sessionId: "a" })
+				.mockResolvedValueOnce({ sessionId: "b" })
+				.mockResolvedValueOnce({ sessionId: "a" }),
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ mode: "plan" } as StartInput)
+		lifecycle.setRunning(false, "a")
+		lifecycle.focusSession("b")
+		await lifecycle.startNewSession({ mode: "act" } as StartInput)
+		const a = lifecycle.getSession("a")!
+		await lifecycle.replaceSession({
+			expectedSession: a,
+			startInput: {
+				mode: "plan",
+				config: {
+					providerId: "openai-compatible",
+					modelId: "new-model",
+					sessionId: "a",
+				},
+			} as StartInput,
+			disposeReason: "providerChange",
+		})
+		expect(host.stop).toHaveBeenCalledExactlyOnceWith("a")
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("b")
+		expect(lifecycle.getSession("a")?.startConfig).toMatchObject({ modelId: "new-model", mode: "plan" })
+		expect(lifecycle.getSession("a")?.isRunning).toBe(false)
+	})
+
+	it("starts a session in the background without moving the focused task", async () => {
+		const host = makeSdkHost({
+			start: vi.fn().mockResolvedValueOnce({ sessionId: "focused" }).mockResolvedValueOnce({ sessionId: "bg" }),
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ config: { sessionId: "focused" } } as StartInput)
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("focused")
+
+		await lifecycle.startNewSession({ config: { sessionId: "bg" } } as StartInput, { focus: false })
+
+		expect(lifecycle.getSession("bg")).toBeDefined()
+		expect(lifecycle.sessionStatuses.bg).toBe("running")
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("focused")
+	})
+
+	it("leaves nothing focused when a background session starts from the inbox", async () => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+
+		await lifecycle.startNewSession({} as StartInput, { focus: false })
+
+		expect(lifecycle.getSession("session-123")).toBeDefined()
+		expect(lifecycle.sessionStatuses["session-123"]).toBe("running")
+		expect(lifecycle.getActiveSession()).toBeUndefined()
+	})
+
 	it("starts a session and stores active session state", async () => {
 		const unsubscribe = vi.fn()
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" }, unsubscribe })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
@@ -63,6 +585,62 @@ describe("SdkSessionLifecycle", () => {
 		} as StartInput)
 
 		expect(lifecycle.getActiveSession()?.mode).toBe("plan")
+	})
+
+	it("records the new mode when replacing an idle session", async () => {
+		const host = makeSdkHost()
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ mode: "plan", config: { mode: "plan" } } as StartInput)
+		lifecycle.setRunning(false)
+		await lifecycle.replaceActiveSession({
+			expectedSession: lifecycle.getActiveSession()!,
+			startInput: { mode: "act", config: { mode: "act" } } as StartInput,
+			disposeReason: "modeChange",
+		})
+		expect(lifecycle.getActiveSession()?.mode).toBe("act")
+		expect(lifecycle.getActiveSession()?.startConfig?.mode).toBe("act")
+		await lifecycle.dispose()
+	})
+
+	it("starts a remote host without applying local workspace preparation or stopping the running local task", async () => {
+		const local = makeSdkHost({ startResult: { sessionId: "local" } })
+		const remote = makeSdkHost({ isCloud: true, startResult: { sessionId: "ses-cloud" } })
+		mockCreateSessionHost.mockResolvedValue(local)
+		const prepareStartInput = vi.fn(async (input: StartInput) => input)
+		const acquireSessionLease = vi.fn(async () => async () => {})
+		const lifecycle = makeLifecycle({ prepareStartInput, acquireSessionLease })
+		await lifecycle.startNewSession({ config: { sessionId: "local" } } as StartInput)
+		prepareStartInput.mockClear()
+		acquireSessionLease.mockClear()
+		// Provisioning selected a placeholder before the cloud service assigned its final id.
+		lifecycle.focusSession("cloud-start-placeholder")
+		await lifecycle.startNewSession(
+			{ mode: "act", config: { sessionId: "ses-cloud", cwd: "/workspace" } } as StartInput,
+			remote as never,
+		)
+		expect(prepareStartInput).not.toHaveBeenCalled()
+		expect(acquireSessionLease).not.toHaveBeenCalled()
+		expect(local.stop).not.toHaveBeenCalled()
+		expect(lifecycle.getSession("local")?.isRunning).toBe(true)
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("ses-cloud")
+		lifecycle.fireAndForgetSend(remote as never, "ses-cloud", "continue")
+		await vi.waitFor(() => expect(remote.send).toHaveBeenCalledOnce())
+		expect(acquireSessionLease).not.toHaveBeenCalled()
+		await lifecycle.dispose()
+	})
+
+	it("retains a running local task when attaching an existing cloud session", async () => {
+		const local = makeSdkHost({ startResult: { sessionId: "local" } })
+		const remote = makeSdkHost({ isCloud: true })
+		mockCreateSessionHost.mockResolvedValue(local)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({ config: { sessionId: "local" } } as StartInput)
+		await lifecycle.attachExistingSession({ sdkHost: remote as never, sessionId: "ses-cloud", isRunning: false })
+		expect(local.stop).not.toHaveBeenCalled()
+		expect(lifecycle.getSession("local")?.isRunning).toBe(true)
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("ses-cloud")
+		await lifecycle.dispose()
 	})
 
 	it("waits for tracked session starts, including ones that fail", async () => {
@@ -103,9 +681,54 @@ describe("SdkSessionLifecycle", () => {
 		await expect(lifecycle.waitForSessionStarts()).resolves.toBeUndefined()
 	})
 
+	it("records background completion and errors without changing focused running state", async () => {
+		const start = vi.fn().mockResolvedValueOnce({ sessionId: "a" }).mockResolvedValueOnce({ sessionId: "b" })
+		let finishA: () => void = () => {}
+		const sdkHost = makeSdkHost({
+			start,
+			send: vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						finishA = resolve
+					}),
+			),
+		})
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
+		const lifecycle = makeLifecycle()
+		await lifecycle.startNewSession({} as StartInput)
+		lifecycle.fireAndForgetSend(sdkHost as unknown as SendHost, "a", "work")
+		lifecycle.focusSession("b")
+		await lifecycle.startNewSession({} as StartInput)
+		finishA()
+		await vi.waitFor(() => expect(lifecycle.sessionStatuses.a).toBe("done"))
+		expect(lifecycle.getActiveSession()?.sessionId).toBe("b")
+		expect(lifecycle.getSession("b")?.isRunning).toBe(true)
+		lifecycle.setStatus("b", "waiting")
+		expect(lifecycle.sessionStatuses.b).toBe("waiting")
+		expect(sdkHost.stop).not.toHaveBeenCalled()
+		await lifecycle.dispose()
+		expect(sdkHost.stop).toHaveBeenCalledWith("a")
+		expect(sdkHost.stop).toHaveBeenCalledWith("b")
+	})
+
+	it("caps idle handles while retaining running and waiting sessions", async () => {
+		let id = 0
+		const sdkHost = makeSdkHost({ start: vi.fn(async () => ({ sessionId: String(++id) })) })
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
+		const lifecycle = makeLifecycle()
+		for (let index = 0; index < 12; index++) {
+			lifecycle.focusSession(String(index + 1))
+			await lifecycle.startNewSession({} as StartInput)
+			lifecycle.setRunning(false)
+		}
+		expect(lifecycle.getSessions().size).toBeLessThanOrEqual(9)
+		expect(lifecycle.getSession("12")).toBeDefined()
+		expect(lifecycle.sessionStatuses["1"]).toBe("done")
+	})
+
 	it("stores the provider and model config used to start the active session", async () => {
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" } })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		await lifecycle.startNewSession({
@@ -115,17 +738,19 @@ describe("SdkSessionLifecycle", () => {
 			},
 		} as StartInput)
 
-		expect(lifecycle.getActiveSession()?.startConfig).toEqual({
-			providerId: "anthropic",
-			modelId: "claude-sonnet-4",
-		})
+		expect(lifecycle.getActiveSession()?.startConfig).toEqual(
+			expect.objectContaining({
+				providerId: "anthropic",
+				modelId: "claude-sonnet-4",
+			}),
+		)
 	})
 
 	it("reuses the shared session host across sessions", async () => {
 		const sdkHost = makeSdkHost({
 			start: vi.fn().mockResolvedValueOnce({ sessionId: "session-1" }).mockResolvedValueOnce({ sessionId: "session-2" }),
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
@@ -142,13 +767,13 @@ describe("SdkSessionLifecycle", () => {
 		expect(lifecycle.getActiveSession()?.sessionId).toBe("session-2")
 	})
 
-	it("replaces an existing active session before starting another without resubscribing", async () => {
+	it("keeps multiple sessions alive and switches focus without stopping them", async () => {
 		const unsubscribe = vi.fn()
 		const sdkHost = makeSdkHost({
 			start: vi.fn().mockResolvedValueOnce({ sessionId: "session-1" }).mockResolvedValueOnce({ sessionId: "session-2" }),
 			unsubscribe,
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
@@ -158,7 +783,9 @@ describe("SdkSessionLifecycle", () => {
 
 		expect(mockCreateSessionHost).toHaveBeenCalledOnce()
 		expect(sdkHost.subscribe).toHaveBeenCalledOnce()
-		expect(sdkHost.stop).toHaveBeenCalledWith("session-1")
+		expect(sdkHost.stop).not.toHaveBeenCalled()
+		expect(lifecycle.getSessions().size).toBe(2)
+		lifecycle.focusSession("session-2")
 		expect(unsubscribe).not.toHaveBeenCalled()
 		expect(lifecycle.getActiveSession()?.sessionId).toBe("session-2")
 
@@ -170,7 +797,7 @@ describe("SdkSessionLifecycle", () => {
 		const unsubscribe = vi.fn()
 		const error = new Error("start failed")
 		const sdkHost = makeSdkHost({ start: vi.fn().mockRejectedValue(error), unsubscribe })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
@@ -186,7 +813,7 @@ describe("SdkSessionLifecycle", () => {
 	it("disposes the shared host only when the lifecycle is disposed", async () => {
 		const unsubscribe = vi.fn()
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" }, unsubscribe })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -202,7 +829,7 @@ describe("SdkSessionLifecycle", () => {
 	it("passes the policy readiness gate to the shared session host", async () => {
 		const beforeStartSession = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" } })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ beforeStartSession })
 
 		await lifecycle.startNewSession({} as StartInput)
@@ -213,7 +840,7 @@ describe("SdkSessionLifecycle", () => {
 	it("passes shared telemetry to the VSCode session host", async () => {
 		const telemetry = { capture: vi.fn() }
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" } })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		const lifecycle = makeLifecycle({ telemetry: telemetry as any })
 
@@ -226,7 +853,7 @@ describe("SdkSessionLifecycle", () => {
 	it("marks the active session idle after a non-queued send completes", async () => {
 		const onSendComplete = vi.fn()
 		const sdkHost = makeSdkHost({ send: vi.fn().mockResolvedValue(undefined) })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendComplete })
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -249,7 +876,7 @@ describe("SdkSessionLifecycle", () => {
 					}),
 			),
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onDidBecomeIdle })
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -310,7 +937,7 @@ describe("SdkSessionLifecycle", () => {
 	it("treats an emptied prompt queue on an idle session as becoming idle", async () => {
 		const onDidBecomeIdle = vi.fn()
 		const sdkHost = makeSdkHost()
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onDidBecomeIdle })
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -327,7 +954,7 @@ describe("SdkSessionLifecycle", () => {
 		const onDidBecomeIdle = vi.fn()
 		const onSendError = vi.fn()
 		const sdkHost = makeSdkHost({ send: vi.fn().mockRejectedValue(new Error("provider failed")) })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onDidBecomeIdle, onSendError })
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -341,7 +968,7 @@ describe("SdkSessionLifecycle", () => {
 	it("notifies idle listeners only on a running-to-idle transition", async () => {
 		const onDidBecomeIdle = vi.fn()
 		const sdkHost = makeSdkHost()
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onDidBecomeIdle })
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -355,7 +982,7 @@ describe("SdkSessionLifecycle", () => {
 		const onSendStart = vi.fn()
 		const send = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ send })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendStart })
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -364,7 +991,7 @@ describe("SdkSessionLifecycle", () => {
 		lifecycle.fireAndForgetSend(sdkHost as any, "session-123", "hello")
 		await vi.waitFor(() => expect(send).toHaveBeenCalled())
 
-		expect(onSendStart).toHaveBeenCalledWith("session-123")
+		expect(onSendStart).toHaveBeenCalledWith("session-123", undefined)
 		expect(onSendStart.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
 	})
 
@@ -372,7 +999,7 @@ describe("SdkSessionLifecycle", () => {
 		const onSendComplete = vi.fn()
 		const send = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ send })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendComplete })
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -389,7 +1016,7 @@ describe("SdkSessionLifecycle", () => {
 		const onSendError = vi.fn()
 		const error = new Error("boom")
 		const sdkHost = makeSdkHost({ send: vi.fn().mockRejectedValue(error) })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendError })
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -417,7 +1044,7 @@ describe("SdkSessionLifecycle", () => {
 				.mockResolvedValueOnce({ sessionId: "plan-session" }),
 			send,
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendComplete })
 		await lifecycle.startNewSession({} as StartInput)
 		const expectedSession = lifecycle.getActiveSession()!
@@ -458,7 +1085,7 @@ describe("SdkSessionLifecycle", () => {
 				.mockResolvedValueOnce({ sessionId: "plan-session" }),
 			send,
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ onSendError })
 		await lifecycle.startNewSession({} as StartInput)
 		const expectedSession = lifecycle.getActiveSession()!
@@ -480,7 +1107,7 @@ describe("SdkSessionLifecycle", () => {
 		expect(lifecycle.getActiveSession()?.isRunning).toBe(true)
 	})
 
-	it("completes the old session stop before starting a same-id replacement", async () => {
+	it("starts same-id replacements without stopping the old runtime first", async () => {
 		let resolveStop: () => void = () => {}
 		const stop = vi.fn(
 			() =>
@@ -493,7 +1120,7 @@ describe("SdkSessionLifecycle", () => {
 			.mockResolvedValueOnce({ sessionId: "plan-session" })
 			.mockResolvedValueOnce({ sessionId: "plan-session" })
 		const sdkHost = makeSdkHost({ start, stop })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		await lifecycle.startNewSession({} as StartInput)
 		lifecycle.setRunning(false)
@@ -506,9 +1133,9 @@ describe("SdkSessionLifecycle", () => {
 		})
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
-		// Core cleanup deletes by sessionId, so the same-id replacement must not
-		// start while the old stop is still in flight.
-		expect(start).toHaveBeenCalledTimes(1)
+		// The old host stops only after the replacement starts.
+		expect(start).toHaveBeenCalledTimes(2)
+		expect(stop).toHaveBeenCalledTimes(1)
 
 		resolveStop()
 		const result = await replacePromise
@@ -517,7 +1144,7 @@ describe("SdkSessionLifecycle", () => {
 		expect(result?.startResult.sessionId).toBe("plan-session")
 	})
 
-	it("passes compacted initial messages after a same-id replacement stop completes", async () => {
+	it("passes compacted initial messages to a same-id replacement", async () => {
 		let resolveStop: () => void = () => {}
 		const stop = vi.fn(
 			() =>
@@ -530,7 +1157,7 @@ describe("SdkSessionLifecycle", () => {
 			.mockResolvedValueOnce({ sessionId: "task-session" })
 			.mockResolvedValueOnce({ sessionId: "task-session" })
 		const sdkHost = makeSdkHost({ start, stop })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		await lifecycle.startNewSession({ config: { sessionId: "task-session" } } as unknown as StartInput)
 		lifecycle.setRunning(false)
@@ -549,7 +1176,8 @@ describe("SdkSessionLifecycle", () => {
 		})
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
-		expect(start).toHaveBeenCalledTimes(1)
+		expect(start).toHaveBeenCalledTimes(2)
+		expect(stop).toHaveBeenCalledTimes(1)
 
 		resolveStop()
 		const result = await replacePromise
@@ -574,7 +1202,7 @@ describe("SdkSessionLifecycle", () => {
 		)
 		const start = vi.fn().mockResolvedValueOnce({ sessionId: "task-1" }).mockResolvedValueOnce({ sessionId: "task-1" })
 		const sdkHost = makeSdkHost({ start, stop })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -597,7 +1225,7 @@ describe("SdkSessionLifecycle", () => {
 		const stop = vi.fn(() => new Promise<void>(() => {}))
 		const start = vi.fn().mockResolvedValueOnce({ sessionId: "task-1" }).mockResolvedValueOnce({ sessionId: "task-2" })
 		const sdkHost = makeSdkHost({ start, stop })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		await lifecycle.startNewSession({} as StartInput)
 
@@ -606,10 +1234,10 @@ describe("SdkSessionLifecycle", () => {
 		const result = await lifecycle.startNewSession({ config: {} } as unknown as StartInput)
 
 		expect(result.startResult.sessionId).toBe("task-2")
-		expect(stop).toHaveBeenCalledWith("task-1")
+		expect(stop).not.toHaveBeenCalled()
 	})
 
-	it("replaces the active session by stopping the old session and reusing the shared host", async () => {
+	it("starts a replacement host before stopping the old session", async () => {
 		const oldUnsubscribe = vi.fn()
 		const sdkHost = makeSdkHost({
 			start: vi
@@ -620,7 +1248,7 @@ describe("SdkSessionLifecycle", () => {
 			stop: vi.fn().mockResolvedValue(undefined),
 			dispose: vi.fn().mockResolvedValue(undefined),
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -640,9 +1268,8 @@ describe("SdkSessionLifecycle", () => {
 		expect(result?.startResult.sessionId).toBe("new-session")
 		expect(oldUnsubscribe).not.toHaveBeenCalled()
 		expect(sdkHost.stop).toHaveBeenCalledWith("old-session")
-		expect(sdkHost.dispose).not.toHaveBeenCalled()
-		expect(mockCreateSessionHost).toHaveBeenCalledOnce()
-		expect(sdkHost.subscribe).toHaveBeenCalledOnce()
+		expect(mockCreateSessionHost).toHaveBeenCalledTimes(2)
+		expect(sdkHost.subscribe).toHaveBeenCalledTimes(2)
 		expect(sdkHost.start).toHaveBeenLastCalledWith({
 			config: {},
 			initialMessages: [{ role: "user", content: "hello" }],
@@ -653,7 +1280,7 @@ describe("SdkSessionLifecycle", () => {
 
 	it("does not replace a session that started running", async () => {
 		const sdkHost = makeSdkHost()
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		await lifecycle.startNewSession({} as StartInput)
 		const expectedSession = lifecycle.getActiveSession()!
@@ -678,7 +1305,7 @@ describe("SdkSessionLifecycle", () => {
 			startResult: { sessionId: "source-session" },
 			restore: vi.fn().mockResolvedValue(restored),
 		})
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 
 		await lifecycle.startNewSession({
@@ -695,17 +1322,19 @@ describe("SdkSessionLifecycle", () => {
 
 		expect(result).toBe(restored)
 		expect(lifecycle.getActiveSession()?.sessionId).toBe("restored-session")
-		expect(lifecycle.getActiveSession()?.startConfig).toEqual({
-			providerId: "openai",
-			modelId: "gpt-5",
-		})
+		expect(lifecycle.getActiveSession()?.startConfig).toEqual(
+			expect.objectContaining({
+				providerId: "openai",
+				modelId: "gpt-5",
+			}),
+		)
 		expect(sdkHost.stop).toHaveBeenCalledWith("source-session")
 	})
 
 	it("updates the active session model for the next turn when supported", async () => {
 		const updateSessionModel = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" }, updateSessionModel })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -718,7 +1347,7 @@ describe("SdkSessionLifecycle", () => {
 
 	it("does not update active session model when no host capability is available", async () => {
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" } })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle()
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -736,7 +1365,7 @@ describe("SdkSessionLifecycle", () => {
 	it("stamps a pending mode-switch notice onto the outbound prompt", async () => {
 		const send = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ send })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		// Real tracker semantics live in @cline/shared and SdkModeCoordinator;
 		// here a one-shot stub proves the consume-once wiring: first send is
 		// stamped, later sends go out untouched.
@@ -759,7 +1388,7 @@ describe("SdkSessionLifecycle", () => {
 		expect(send).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionId: "session-123",
-				prompt: "<mode_notice>The user switched from act mode to plan mode before sending this message.</mode_notice>\nhow should we refactor this?",
+				prompt: "<mode_notice>The user switched from Act mode to Ask mode before sending this message.</mode_notice>\nhow should we refactor this?",
 			}),
 		)
 
@@ -773,7 +1402,7 @@ describe("SdkSessionLifecycle", () => {
 	it("sends prompts unchanged when no mode-switch notice is pending", async () => {
 		const send = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ send })
-		mockCreateSessionHost.mockResolvedValueOnce(sdkHost)
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
 		const lifecycle = makeLifecycle({ consumeModeSwitchNotice: vi.fn(() => null) })
 		// biome-ignore lint/suspicious/noExplicitAny: focused fake for lifecycle unit test
 		await lifecycle.startNewSession({} as any)
@@ -811,7 +1440,275 @@ function makeSdkHost(overrides: Record<string, unknown> = {}) {
 			checkpoint: { ref: "abc", createdAt: 1, runCount: 1 },
 		}),
 		stop: vi.fn().mockResolvedValue(undefined),
+		abort: vi.fn().mockResolvedValue(undefined),
 		dispose: vi.fn().mockResolvedValue(undefined),
 		...overrides,
 	}
 }
+
+function makeTaskControl(sessions: SdkSessionLifecycle) {
+	return new SdkTaskControlCoordinator({
+		sessions,
+		interactions: { clearPending: vi.fn() },
+		messages: { appendAndEmit: vi.fn() },
+		postStateToWebview: vi.fn().mockResolvedValue(undefined),
+	} as unknown as ConstructorParameters<typeof SdkTaskControlCoordinator>[0])
+}
+
+function makeDeletionHistory(lifecycle: SdkSessionLifecycle, failure?: Error) {
+	const history = new SdkTaskHistory({ sessions: lifecycle, mcpHub: {} as never })
+	const deletingPersistence = Promise.withResolvers<void>()
+	const releasePersistence = Promise.withResolvers<void>()
+	const deleteRecord = vi.fn(async () => {
+		deletingPersistence.resolve()
+		await releasePersistence.promise
+		if (failure) throw failure
+	})
+	const internals = history as unknown as {
+		withHistoryHost: (fn: (host: { delete: typeof deleteRecord }) => Promise<unknown>) => Promise<unknown>
+		findLegacyTask: () => undefined
+	}
+	vi.spyOn(internals, "withHistoryHost").mockImplementation(async (fn) => fn({ delete: deleteRecord }))
+	vi.spyOn(internals, "findLegacyTask").mockReturnValue(undefined)
+	vi.spyOn(history, "listHistory").mockResolvedValue([{ sessionId: "session-123", metadata: {} } as never])
+	return { history, deletingPersistence, releasePersistence, deleteRecord }
+}
+
+it("keeps a child event subscription while an active parent blocks a model/MCP replacement", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const onSessionEvent = vi.fn()
+	const lifecycle = makeLifecycle({ onSessionEvent })
+	await lifecycle.startNewSession({} as StartInput)
+	lifecycle.setRunning(true)
+	const parent = lifecycle.getActiveSession()!
+	const result = await lifecycle.replaceSession({
+		expectedSession: parent,
+		startInput: {} as StartInput,
+		disposeReason: "model/MCP rebuild",
+	})
+	expect(result).toBeUndefined()
+	const childEvent = {
+		type: "agent_event",
+		payload: {
+			sessionId: parent.sessionId,
+			event: { agentId: "child", parentAgentId: "lead", type: "content_update", text: "still streaming" },
+		},
+	}
+	host.subscribe.mock.calls[0][0](childEvent)
+	expect(onSessionEvent).toHaveBeenCalledWith(childEvent)
+	expect(host.stop).not.toHaveBeenCalled()
+})
+
+it("notifies child cleanup when replacement retires the parent's runtime", async () => {
+	const oldHost = makeSdkHost()
+	const nextHost = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(oldHost).mockResolvedValueOnce(nextHost)
+	const onSessionReplaced = vi.fn()
+	const lifecycle = makeLifecycle({ onSessionReplaced })
+	await lifecycle.startNewSession({} as StartInput)
+	lifecycle.setRunning(false)
+	const parent = lifecycle.getActiveSession()!
+	await lifecycle.replaceSession({ expectedSession: parent, startInput: {} as StartInput, disposeReason: "MCP rebuild" })
+	expect(onSessionReplaced).toHaveBeenCalledExactlyOnceWith(parent.sessionId)
+	expect(oldHost.stop).toHaveBeenCalledWith(parent.sessionId)
+})
+
+it("holds admission through mapping lookup, startup and sending, then releases on idle", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const admission = Promise.withResolvers<() => Promise<void>>()
+	const release = vi.fn(async () => {})
+	const acquireSessionLease = vi.fn().mockReturnValueOnce(admission.promise).mockResolvedValue(release)
+	const prepareStartInput = vi.fn((input) => input)
+	const lifecycle = makeLifecycle({ acquireSessionLease, prepareStartInput })
+	const started = lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)
+	await vi.waitFor(() => expect(acquireSessionLease).toHaveBeenCalledOnce())
+	expect(prepareStartInput).not.toHaveBeenCalled()
+	expect(host.start).not.toHaveBeenCalled()
+	admission.resolve(release)
+	await started
+	expect(release).not.toHaveBeenCalled()
+	lifecycle.setRunning(false)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	const turn = Promise.withResolvers<void>()
+	host.send.mockReturnValueOnce(turn.promise)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+	expect(acquireSessionLease).toHaveBeenCalledTimes(2)
+	expect(release).toHaveBeenCalledOnce()
+	turn.resolve()
+	await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+	await lifecycle.dispose()
+})
+it("releases admission if startup fails", async () => {
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({
+		acquireSessionLease: async () => release,
+		prepareStartInput: async () => {
+			throw new Error("missing isolate")
+		},
+	})
+	await expect(lifecycle.startNewSession({ config: { sessionId: "failure" } } as StartInput)).rejects.toThrow("missing isolate")
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+})
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: rebuilds a retained session after another window removes its worktree`, async () => {
+		const temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-removed-session-"))
+		let lifecycle: SdkSessionLifecycle | undefined
+		try {
+			const { manager, storage, workspace } = await worktreeProject(temp, mode)
+			const mapping = await manager.create("session-123", "Retained", workspace)
+			const messages = [{ role: "user", content: "previous turn" }]
+			const host = makeSdkHost({ readMessages: vi.fn(async () => messages), updateSessionModel: vi.fn(async () => {}) })
+			mockCreateSessionHost.mockResolvedValueOnce(host)
+			let notice: string | undefined
+			let seen = false
+			lifecycle = makeLifecycle({
+				acquireSessionLease: (id) => manager.acquireSessionLease(id),
+				resolveSessionWorkspace: async (id) => {
+					const removed = await manager.removedWorkspace(id)
+					if (removed && !seen) {
+						notice = "Worktree removed. Continue in the user's workspace."
+						seen = true
+					}
+					return removed?.workspace
+				},
+				consumeWorkspaceNotice: () => {
+					const next = notice
+					notice = undefined
+					return next
+				},
+			})
+			await lifecycle.startNewSession({
+				config: { sessionId: "session-123", cwd: mapping.cwd, workspaceRoot: mapping.cwd },
+			} as StartInput)
+			await lifecycle.updateActiveSessionModel("updated-model")
+			lifecycle.setRunning(false)
+			// Idle releases asynchronously, just as it does in a real extension host.
+			await vi.waitFor(async () => expect(await fs.readdir(path.join(storage, "leases"))).toEqual([]))
+			const result = await new ThreadWorktreeManager(storage).remove("session-123")
+			expect(result.message).toContain("next turn runs in your workspace")
+			lifecycle.fireAndForgetSend(host as never, "session-123", "next turn")
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+			expect(host.start).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					config: expect.objectContaining({ cwd: workspace, workspaceRoot: workspace, modelId: "updated-model" }),
+					initialMessages: messages,
+				}),
+			)
+			expect(host.stop).toHaveBeenCalledWith("session-123")
+			expect(lifecycle.getSession("session-123")?.startConfig?.cwd).toBe(workspace)
+			expect(host.send.mock.calls[0][0].prompt).toContain("Worktree removed")
+			expect(host.send.mock.calls[0][0].prompt).toContain("next turn")
+			await vi.waitFor(() => expect(lifecycle!.getSession("session-123")?.isRunning).toBe(false))
+			lifecycle.fireAndForgetSend(host as never, "session-123", "another turn")
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledTimes(2))
+			expect(host.send.mock.calls[1][0].prompt).toBe("another turn")
+			expect(host.start).toHaveBeenCalledTimes(2)
+		} finally {
+			await lifecycle?.dispose()
+			await fs.rm(temp, { recursive: true, force: true })
+		}
+	}, 60_000)
+}
+
+it("cancels a workspace rebuild before it can restart a retired runtime", async () => {
+	const history = Promise.withResolvers<never[]>()
+	const readMessages = vi.fn(() => history.promise)
+	const host = makeSdkHost({ readMessages })
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({
+		acquireSessionLease: async () => release,
+		resolveSessionWorkspace: async () => "/original-workspace",
+	})
+	await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+	lifecycle.setRunning(false)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(readMessages).toHaveBeenCalled())
+	const retiring = lifecycle.removeSession("session-123")
+	history.resolve([])
+	await retiring
+	expect(host.start).toHaveBeenCalledOnce()
+	expect(host.send).not.toHaveBeenCalled()
+	await lifecycle.dispose()
+})
+
+for (const successor of [false, true]) {
+	it(`cleans up a cancelled workspace refresh without releasing a successor lease: ${successor}`, async () => {
+		const history = Promise.withResolvers<never[]>()
+		const readMessages = vi.fn().mockReturnValueOnce(history.promise).mockResolvedValue([])
+		const host = makeSdkHost({ readMessages })
+		mockCreateSessionHost.mockResolvedValueOnce(host)
+		const release = vi.fn(async () => {})
+		const acquireSessionLease = vi.fn(async () => release)
+		const lifecycle = makeLifecycle({ acquireSessionLease, resolveSessionWorkspace: async () => "/original-workspace" })
+		await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+		lifecycle.setRunning(false)
+		await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+		lifecycle.fireAndForgetSend(host as never, "session-123", "cancelled")
+		await vi.waitFor(() => expect(readMessages).toHaveBeenCalledOnce())
+		lifecycle.cancelHeldSends("session-123")
+		lifecycle.setRunning(false)
+		const pendingSend = Promise.withResolvers<void>()
+		if (successor) {
+			host.send.mockReturnValueOnce(pendingSend.promise)
+			lifecycle.fireAndForgetSend(host as never, "session-123", "successor")
+		}
+		history.resolve([])
+		if (successor) {
+			await vi.waitFor(() => expect(host.send).toHaveBeenCalledOnce())
+			expect(release).toHaveBeenCalledOnce()
+			pendingSend.resolve()
+		}
+		await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+		expect(lifecycle.getSession("session-123")?.isRunning).toBe(false)
+		await lifecycle.dispose()
+	})
+}
+
+it("releases the lease when an otherwise current submission aborts", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const lifecycle = makeLifecycle({ acquireSessionLease: async () => release })
+	await lifecycle.startNewSession({ config: { sessionId: "session-123" } } as StartInput)
+	const aborted = new Error("Submission aborted")
+	aborted.name = "AbortError"
+	host.send.mockRejectedValueOnce(aborted)
+	lifecycle.fireAndForgetSend(host as never, "session-123", "next")
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	expect(lifecycle.getSession("session-123")?.isRunning).toBe(false)
+	await lifecycle.dispose()
+})
+
+it("does not refresh a cancelled submission after delayed lease admission", async () => {
+	const host = makeSdkHost()
+	mockCreateSessionHost.mockResolvedValueOnce(host)
+	const release = vi.fn(async () => {})
+	const admission = Promise.withResolvers<() => Promise<void>>()
+	const acquireSessionLease = vi.fn().mockResolvedValueOnce(release).mockReturnValueOnce(admission.promise)
+	const resolveSessionWorkspace = vi.fn(async () => "/original-workspace")
+	const next = new NextMessageModelSelections()
+	next.set("session-123", "act", { modelId: "temporary", levelId: "default" })
+	const lifecycle = makeLifecycle({
+		acquireSessionLease,
+		resolveSessionWorkspace,
+		onSendAdmission: (id) => next.admission(id, "act")?.commit,
+	})
+	await lifecycle.startNewSession({ config: { sessionId: "session-123", cwd: "/removed-worktree" } } as StartInput)
+	lifecycle.setRunning(false)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+	lifecycle.fireAndForgetSend(host as never, "session-123", "cancelled")
+	await vi.waitFor(() => expect(acquireSessionLease).toHaveBeenCalledTimes(2))
+	lifecycle.cancelHeldSends("session-123")
+	lifecycle.setRunning(false)
+	admission.resolve(release)
+	await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2))
+	expect(resolveSessionWorkspace).not.toHaveBeenCalled()
+	expect(host.send).not.toHaveBeenCalled()
+	expect(next.peek("session-123", "act")?.modelId).toBe("temporary")
+	await lifecycle.dispose()
+})

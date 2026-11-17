@@ -1,3 +1,4 @@
+import { workToolsOnly } from "../../extensions/tools/team/subagent-policy";
 /**
  * Per-session `SessionRuntime` orchestrator.
  *
@@ -990,7 +991,11 @@ export class SessionRuntime {
 			Array.from(mergedToolsByName.values()),
 			this.config.toolPolicies,
 		);
-		const tools = toolCallingDisabled ? [] : availableTools;
+		const tools = toolCallingDisabled
+			? []
+			: this.parentAgentId
+				? workToolsOnly(availableTools)
+				: availableTools;
 		const systemPrompt = await this.composeSystemPrompt(
 			new Set(tools.map((tool) => tool.name)),
 		);
@@ -1492,9 +1497,18 @@ export class SessionRuntime {
 	}
 
 	private emitLegacyEvent(event: AgentEvent): void {
+		// The legacy adapter only translates content. Stamp the session identity
+		// here, including notices/errors emitted outside the adapter, so child
+		// events cannot be mistaken for their parent's stream.
+		const identifiedEvent: AgentEvent = {
+			...event,
+			agentId: this.agentId,
+			conversationId: this.getConversationId(),
+			parentAgentId: this.parentAgentId,
+		};
 		for (const listener of this.listeners) {
 			try {
-				listener(event);
+				listener(identifiedEvent);
 			} catch (error) {
 				this.logger?.error?.("SessionRuntime event listener threw", {
 					agentId: this.agentId,

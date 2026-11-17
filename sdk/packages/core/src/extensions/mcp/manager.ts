@@ -40,6 +40,7 @@ function cloneTools(
 		description: tool.description,
 		inputSchema: tool.inputSchema,
 		...(tool._meta ? { _meta: tool._meta } : {}),
+		annotations: tool.annotations,
 	}));
 }
 

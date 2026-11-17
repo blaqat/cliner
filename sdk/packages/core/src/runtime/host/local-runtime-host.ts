@@ -1,3 +1,5 @@
+import { subagentParent } from "../../extensions/tools/team/subagent-policy";
+import { AsyncAgentRegistry } from "../../extensions/tools/team/async-agents";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -145,6 +147,7 @@ import {
 import {
 	createSessionSpawnTool,
 	createSessionSubAgentLifecycleCallbacks,
+	type SubAgentAbortTracker,
 	type SubAgentStartTracker,
 } from "./local/spawn-tool";
 import { loadUserFileContent } from "./local/user-files";
@@ -292,6 +295,7 @@ function isSessionDirectedPluginEvent(name: string): boolean {
 
 export class LocalRuntimeHost implements RuntimeHost {
 	public readonly runtimeAddress = undefined;
+	private readonly turnsInFlight = new Map<string, object>();
 	public readonly pendingPrompts: PendingPromptsServiceApi;
 	public readonly pluginCommands: PluginCommandsApi;
 	private readonly pluginCommandManager: PluginCommandManager;
@@ -317,7 +321,101 @@ export class LocalRuntimeHost implements RuntimeHost {
 		string,
 		SessionAccumulatedUsage
 	>();
+	private readonly agentRegistries = new Map<string, AsyncAgentRegistry>();
+	private readonly subagentInboxes = new Map<string, string[]>();
+	private readonly subagentWakeTimers = new Map<
+		string,
+		ReturnType<typeof setTimeout>
+	>();
+	private queueSubagentUpdate(
+		sessionId: string,
+		_parentId: string,
+		agentId: string,
+		status: string,
+		message: string,
+	): void {
+		if (
+			!this.sessions.has(sessionId) ||
+			this.sessions.get(sessionId)?.shuttingDown
+		)
+			return;
+		const parent = [
+			...(this.agentRegistries.get(sessionId)?.agents.values() ?? []),
+		].find((e) => e.runtimeId === _parentId);
+		if (parent) {
+			parent.pending.push(
+				`<subagent_update agent="${agentId}" status="${status}">\n${message}\n</subagent_update>`,
+			);
+			if (parent.status === "done" || parent.status === "failed") {
+				try {
+					parent.completion = parent.resume(parent.pending.join("\n\n"));
+					parent.pending.splice(0);
+				} catch {
+					/* Retain the update for a later explicit continuation. */
+				}
+			} else parent.notify?.();
+			return;
+		}
+		const updates = this.subagentInboxes.get(sessionId) ?? [];
+		updates.push(
+			`<subagent_update agent="${agentId}" status="${status}">\n${message}\n</subagent_update>`,
+		);
+		this.subagentInboxes.set(sessionId, updates);
+		this.sessions.get(sessionId)?.agent.notifyPendingUserMessage();
+		if (this.subagentWakeTimers.has(sessionId)) return;
+		const wake = () => {
+			this.subagentWakeTimers.delete(sessionId);
+			const session = this.sessions.get(sessionId);
+			if (
+				!session ||
+				session.shuttingDown ||
+				!this.subagentInboxes.get(sessionId)?.length
+			)
+				return;
+			if (
+				!session.agent.canStartRun() ||
+				session.status === "pending" ||
+				session.aborting ||
+				this.turnsInFlight.has(sessionId)
+			) {
+				this.subagentWakeTimers.set(sessionId, setTimeout(wake, 1000));
+				return;
+			}
+			const prompt = this.subagentInboxes
+				.get(sessionId)
+				?.splice(0)
+				.join("\n\n");
+			if (prompt)
+				this.pendingPromptsController.enqueue(sessionId, {
+					prompt,
+					delivery: "steer",
+				});
+		};
+		this.subagentWakeTimers.set(sessionId, setTimeout(wake, 1000));
+	}
+	private disposeSubagents(sessionId: string): void {
+		this.agentRegistries.get(sessionId)?.dispose();
+		this.agentRegistries.delete(sessionId);
+		const timer = this.subagentWakeTimers.get(sessionId);
+		if (timer) clearTimeout(timer);
+		this.subagentWakeTimers.delete(sessionId);
+		this.subagentInboxes.delete(sessionId);
+	}
 	private readonly subAgentStarts: SubAgentStartTracker = new Map();
+	// In-flight sub-agent abort handles keyed by `${rootSessionId}:${toolCallId}`;
+	// entries are removed by the spawn tool when each run settles.
+	private readonly subAgentAbortHandles = new Map<string, AbortController>();
+	private readonly subAgentAborts: SubAgentAbortTracker = {
+		register: (rootSessionId, toolCallId, controller) => {
+			this.subAgentAbortHandles.set(
+				`${rootSessionId}:${toolCallId}`,
+				controller,
+			);
+		},
+		unregister: (rootSessionId, toolCallId) => {
+			this.subAgentAbortHandles.delete(`${rootSessionId}:${toolCallId}`);
+		},
+	};
 	private readonly pendingPromptsController: PendingPromptsController;
 	private readonly eventBridge: AgentEventBridge;
 	private readonly sessionVersioning = new SessionVersioningService();
@@ -575,6 +673,20 @@ export class LocalRuntimeHost implements RuntimeHost {
 		const startedAt = nowIso();
 		const startInput: ResolvedStartSessionInput =
 			await this.applyInitialOAuthCredentials(input);
+		const storedSession = wasSessionIdRequested
+			? await this.getSession(sessionId)
+			: undefined;
+		const parentAgentId =
+			subagentParent(storedSession) ??
+			subagentParent({ metadata: startInput.sessionMetadata }) ??
+			startInput.config.parentAgentId;
+		if (parentAgentId)
+			startInput.config = {
+				...startInput.config,
+				parentAgentId,
+				enableSpawnAgent: false,
+				enableAgentTeams: false,
+			};
 		const initialMessages = startInput.initialMessages ?? [];
 		const initialUsage =
 			initialMessages.length > 0
@@ -684,8 +796,30 @@ export class LocalRuntimeHost implements RuntimeHost {
 		let heldSessionEvents: Array<{ name: string; payload?: unknown }> | null =
 			[];
 		const subAgentDeps = {
+			agentRegistries: this.agentRegistries,
+			onRegistryChange: (sid: string) => {
+				const session = this.sessions.get(sid);
+				if (!session || session.shuttingDown) return;
+				const snapshot = this.agentRegistries.get(sid)?.snapshot();
+				const metadata = { ...session.sessionMetadata, asyncAgents: snapshot };
+				session.sessionMetadata = metadata;
+				if (session.artifacts) session.artifacts.manifest.metadata = metadata;
+				void this.invokeOptional("updateSession", {
+					sessionId: sid,
+					metadata,
+				}).catch(() => {});
+			},
+			onSubagentMessage: (
+				sid: string,
+				parentId: string,
+				agentId: string,
+				status: string,
+				message: string,
+			) => this.queueSubagentUpdate(sid, parentId, agentId, status, message),
+			emit: (event: CoreSessionEvent) => this.emit(event),
 			getSession: (sid: string) => this.sessions.get(sid),
 			subAgentStarts: this.subAgentStarts,
+			subAgentAborts: this.subAgentAborts,
 			onAgentEvent: (
 				rootSessionId: string,
 				config: CoreSessionConfig,
@@ -708,6 +842,12 @@ export class LocalRuntimeHost implements RuntimeHost {
 				trigger: startInput.mode ? undefined : resumedOrigin?.trigger,
 			}),
 		);
+		const restoredAgents = resumedArtifacts?.manifest.metadata?.asyncAgents;
+		if (Array.isArray(restoredAgents) && !this.agentRegistries.has(sessionId)) {
+			const registry = new AsyncAgentRegistry();
+			registry.restore(restoredAgents);
+			this.agentRegistries.set(sessionId, registry);
+		}
 		bootstrap = await prepareLocalRuntimeBootstrap({
 			input: startInput,
 			localRuntime: input.localRuntime,
@@ -758,8 +898,11 @@ export class LocalRuntimeHost implements RuntimeHost {
 			},
 			createSpawnTool: () =>
 				createSessionSpawnTool(
-					subAgentDeps,
-					bootstrap.config,
+					{
+						...subAgentDeps,
+						requestToolApproval: bootstrap.requestToolApproval,
+					},
+					{ ...bootstrap.config, toolPolicies: bootstrap.toolPolicies },
 					sessionId,
 					sessionToolExecutors,
 				),
@@ -782,6 +925,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 				{
 					...(resumedArtifacts?.manifest.metadata ?? {}),
 					...(startInput.sessionMetadata ?? {}),
+					...(parentAgentId ? { parentAgentId } : {}),
 				},
 				bootstrap.gitState,
 			),
@@ -926,6 +1070,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		});
 
 		const agentConfig = {
+			parentAgentId,
 			distinctId: this.distinctId,
 			sessionId,
 			providerId: providerConfig.providerId,
@@ -982,13 +1127,29 @@ export class LocalRuntimeHost implements RuntimeHost {
 				configWithProvider.onConsecutiveMistakeLimitReached,
 			completionPolicy: runtime.completionPolicy,
 			consumePendingUserMessage: () => {
+				const updates = this.subagentInboxes
+					.get(sessionId)
+					?.splice(0)
+					.join("\n\n");
+				if (updates)
+					this.emit({
+						type: "subagent_update",
+						payload: { sessionId, text: updates },
+					});
 				const entry = this.pendingPromptsController.consumeSteer(sessionId);
-				return entry
-					? formatModePrompt(
-							entry.prompt,
-							entry.mode ?? configWithProvider.mode,
-						)
-					: undefined;
+				return (
+					[
+						updates,
+						entry
+							? formatModePrompt(
+									entry.prompt,
+									entry.mode ?? configWithProvider.mode,
+								)
+							: undefined,
+					]
+						.filter(Boolean)
+						.join("\n\n") || undefined
+				);
 			},
 			logger: runtime.logger ?? configWithProvider.logger,
 			extensionContext: configWithProvider.extensionContext,
@@ -1269,7 +1430,46 @@ export class LocalRuntimeHost implements RuntimeHost {
 		// other input during a queued run is fresh user input.
 		const replayingQueuedPrompt = session.replayingQueuedPrompt === true;
 		session.replayingQueuedPrompt = false;
+		if (!input.prompt.startsWith("<subagent_update")) {
+			const running = this.agentRegistries
+				?.get(input.sessionId)
+				?.snapshot()
+				.filter((e) => e.status === "running");
+			if (running?.length)
+				input = {
+					...input,
+					prompt: `${input.prompt}\n\n<mode_notice>\nRunning subagents:\n${running.map((e) => `${e.agentId}: ${e.task} (${e.ageSeconds}s)`).join("\n")}\nChildren continue independently. Keep working, send_to_agent, or cancel_agent as needed.\n</mode_notice>`,
+				};
+		}
 		const canStartRun = session.agent.canStartRun();
+		if (input.delivery === "interject") {
+			// abort raises the fence synchronously. Enqueue before yielding so older
+			// prompts cannot drain between abort and the priority follow-up. The
+			// entry carries the "interject" delivery: it stays hidden from queue
+			// listings (so the message does not reappear as queued) and drains
+			// ahead of any steer/queue entries once the abort settles. The abort
+			// preserves the rest of the pending queue — interject means "send this
+			// now", not "cancel the queued work".
+			const aborting =
+				!canStartRun ||
+				this.turnsInFlight.has(input.sessionId) ||
+				session.status === "running" ||
+				session.status === "pending" ||
+				session.aborting
+					? this.abort(input.sessionId, undefined, {
+							preservePendingPrompts: true,
+						})
+					: Promise.resolve();
+			this.pendingPromptsController.enqueue(input.sessionId, {
+				prompt: input.prompt,
+				mode: input.mode,
+				delivery: "interject",
+				userImages: input.userImages,
+				userFiles: input.userFiles,
+			});
+			await aborting;
+			return undefined;
+		}
 		const delivery =
 			input.delivery ??
 			(session.interactive && !canStartRun ? ("queue" as const) : undefined);
@@ -1306,6 +1506,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 			});
 			return undefined;
 		}
+		const turnIdentity = {};
+		this.turnsInFlight.set(input.sessionId, turnIdentity);
 		try {
 			const result = await this.executeTurn(session, {
 				prompt: input.prompt,
@@ -1349,6 +1551,9 @@ export class LocalRuntimeHost implements RuntimeHost {
 			});
 			await this.failSession(session);
 			throw error;
+		} finally {
+			if (this.turnsInFlight.get(input.sessionId) === turnIdentity)
+				this.turnsInFlight.delete(input.sessionId);
 		}
 	}
 
@@ -1362,7 +1567,11 @@ export class LocalRuntimeHost implements RuntimeHost {
 		return usage || aggregateUsage ? { usage, aggregateUsage } : undefined;
 	}
 
-	async abort(sessionId: string, reason?: unknown): Promise<void> {
+	async abort(
+		sessionId: string,
+		reason?: unknown,
+		options?: { preservePendingPrompts?: boolean },
+	): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
 		session.config.telemetry?.capture({
@@ -1378,7 +1587,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		// and start a fresh provider call, and the session could never be
 		// brought to a full stop.
 		session.aborting = true;
-		if (session.drainingPendingPrompts) {
+		if (session.drainingPendingPrompts && !options?.preservePendingPrompts) {
 			this.pendingPromptsController.discardQueue(session);
 		}
 		const teamRuntime = session.runtime.teamRuntime;
@@ -1458,6 +1667,20 @@ export class LocalRuntimeHost implements RuntimeHost {
 		);
 	}
 
+	/**
+	 * Aborts a single in-flight sub-agent run by its spawn_agent tool call id.
+	 * The child rejects its run with an abort error; the parent tool call then
+	 * ends like any failed tool call and the parent run continues.
+	 */
+	async abortSubAgent(sessionId: string, toolCallId: string): Promise<boolean> {
+		const controller = this.subAgentAbortHandles.get(
+			`${sessionId}:${toolCallId}`,
+		);
+		if (!controller || controller.signal.aborted) return false;
+		controller.abort(new Error("Subagent stopped by user"));
+		return true;
+	}
+
 	async stopSession(sessionId: string): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
@@ -1490,6 +1713,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 	}
 
 	async dispose(reason = "session_manager_dispose"): Promise<void> {
+		for (const id of this.agentRegistries.keys()) this.disposeSubagents(id);
 		const sessions = [...this.sessions.values()];
 		await this.pluginCommandManager.dispose();
 		if (sessions.length === 0) return;
@@ -1546,6 +1770,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 	}
 
 	async deleteSession(sessionId: string): Promise<boolean> {
+		this.disposeSubagents(sessionId);
 		if (this.sessions.has(sessionId)) {
 			await this.stopSession(sessionId);
 		}
@@ -2060,7 +2285,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session: ActiveSession,
 		finishReason: AgentResult["finishReason"],
 	): Promise<void> {
-		if (hasPendingTeamRunWork(session)) return;
+		if (session.shuttingDown || hasPendingTeamRunWork(session)) return;
 		session.lastInteractiveTurnFinishReason = finishReason;
 		await this.markTurnIdle(session);
 		session.aborting = false;
@@ -2552,7 +2777,14 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session: ActiveSession,
 		finishReason: AgentResult["finishReason"],
 	): Promise<void> {
-		if (hasPendingTeamRunWork(session)) return;
+		if (
+			hasPendingTeamRunWork(session) ||
+			this.agentRegistries
+				.get(session.sessionId)
+				?.snapshot()
+				.some((entry) => entry.status === "running")
+		)
+			return;
 		const isAborted = finishReason === "aborted" || session.aborting;
 		const isError = finishReason === "error";
 		await this.shutdownSession(session, {
@@ -2586,6 +2818,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 			endReason: string;
 		},
 	): Promise<void> {
+		session.shuttingDown = true;
+		this.disposeSubagents(session.sessionId);
 		// Fallback `task.completed` emission for completed sessions that did
 		// not observe an explicit `submit_and_exit` tool call, routed through
 		// the shared teardown choke point so it can neither double-fire nor
@@ -2674,6 +2908,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session: ActiveSession,
 		reason: string,
 	): Promise<void> {
+		session.shuttingDown = true;
+		this.disposeSubagents(session.sessionId);
 		// Releasing is a full session exit too: interactive sessions whose
 		// reported status is already terminal are stopped/disposed through
 		// this branch. The completion emission must happen here as well —
@@ -2746,6 +2982,8 @@ export class LocalRuntimeHost implements RuntimeHost {
 		status: SessionStatus,
 		exitCode?: number | null,
 	): Promise<void> {
+		// Approval cleanup and turn completion can settle after the shutdown status.
+		if (session.shuttingDown && isNonTerminalSessionStatus(status)) return;
 		if (!session.artifacts) return;
 		const result = await this.invoke<{ updated: boolean; endedAt?: string }>(
 			"updateSessionStatus",

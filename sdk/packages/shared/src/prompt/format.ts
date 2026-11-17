@@ -42,7 +42,9 @@ export function formatModeSwitchNotice(
 	from: "act" | "plan",
 	to: "act" | "plan",
 ): string {
-	return `<mode_notice>The user switched from ${from} mode to ${to} mode before sending this message.</mode_notice>`;
+	// The internal "plan" mode is presented to users (and the model) as "Ask".
+	const label = (mode: "act" | "plan") => (mode === "plan" ? "Ask" : "Act");
+	return `<mode_notice>The user switched from ${label(from)} mode to ${label(to)} mode before sending this message.</mode_notice>`;
 }
 
 export type ModeSwitchNotice = {
@@ -176,8 +178,33 @@ function removeTagElements(input: string, tag: string): string {
 	return result;
 }
 
+/**
+ * Removes the host-injected <message_reference ...> blocks (a message the user
+ * attached as context, content included). Like mode notices they are not
+ * user-typed text; hosts that want to show them parse them out first.
+ */
+export function stripMessageReferences(input?: string): string {
+	if (!input?.trim()) return "";
+	const open = "<message_reference ";
+	const close = "</message_reference>";
+	let result = input;
+	let start = result.indexOf(open);
+	while (start !== -1) {
+		const openEnd = result.indexOf(">", start);
+		const end = openEnd === -1 ? -1 : result.indexOf(close, openEnd);
+		if (end === -1) {
+			break;
+		}
+		result = result.slice(0, start) + result.slice(end + close.length);
+		start = result.indexOf(open, start);
+	}
+	return result.trim();
+}
+
 export function formatDisplayUserInput(input?: string): string {
-	const normalized = stripModeNotices(normalizeUserInput(input));
+	const normalized = stripMessageReferences(
+		stripModeNotices(normalizeUserInput(input)),
+	);
 	const envelope = parseUserCommandEnvelope(input);
 	if (!envelope) {
 		return normalized;

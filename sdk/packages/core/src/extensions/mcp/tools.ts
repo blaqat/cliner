@@ -1,7 +1,24 @@
 import { type AgentTool, createTool } from "@cline/shared";
 import { isMcpToolVisibleToModel } from "./apps";
 import { defaultMcpToolNameTransform } from "./name-transform";
-import type { CreateMcpToolsOptions, McpToolDescriptor } from "./types";
+import type {
+	CreateMcpToolsOptions,
+	McpToolAnnotations,
+	McpToolDescriptor,
+} from "./types";
+
+/**
+ * Key under which MCP provenance is stored on `AgentTool.metadata`. Hooks and
+ * gates (e.g. the Ask-mode MCP approval gate) use it to distinguish MCP tools
+ * from builtins and to read the server's declared annotations.
+ */
+export const MCP_TOOL_METADATA_KEY = "mcp";
+
+export interface McpToolMetadata {
+	serverName: string;
+	toolName: string;
+	annotations?: McpToolAnnotations;
+}
 
 function defaultMcpDescription(
 	serverName: string,
@@ -31,6 +48,13 @@ export async function createMcpTools(
 			resultPolicy: "cache-oversized",
 			description: defaultMcpDescription(options.serverName, descriptor),
 			inputSchema: descriptor.inputSchema,
+			metadata: {
+				[MCP_TOOL_METADATA_KEY]: {
+					serverName: options.serverName,
+					toolName: descriptor.name,
+					annotations: descriptor.annotations,
+				} satisfies McpToolMetadata,
+			},
 			timeoutMs: options.timeoutMs,
 			retryable: options.retryable,
 			maxRetries: options.maxRetries,

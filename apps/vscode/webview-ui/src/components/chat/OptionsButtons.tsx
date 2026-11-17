@@ -29,11 +29,15 @@ export const OptionsButtons = ({
 	selected,
 	isActive,
 	inputValue,
+	decisionId,
+	taskId,
 }: {
 	options?: string[]
 	selected?: string
 	isActive?: boolean
 	inputValue?: string
+	decisionId?: string
+	taskId?: string
 }) => {
 	const optionItems = options ?? []
 	const optionsKey = optionItems.join("\u0000")
@@ -78,6 +82,8 @@ export const OptionsButtons = ({
 						try {
 							await TaskServiceClient.askResponse(
 								AskResponseRequest.create({
+									decisionId,
+									taskId,
 									responseType: "messageResponse",
 									text: option + (inputValue ? `: ${inputValue?.trim()}` : ""),
 									images: [],

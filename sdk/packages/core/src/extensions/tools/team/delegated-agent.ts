@@ -1,3 +1,4 @@
+import { workToolsOnly } from "./subagent-policy";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -84,6 +85,7 @@ export interface BuildDelegatedAgentConfigOptions {
 	) => Promise<ToolApprovalResult> | ToolApprovalResult;
 	role?: string;
 	cwd?: string;
+	consumePendingUserMessage?: AgentConfig["consumePendingUserMessage"];
 }
 
 export function createDelegatedAgentConfigProvider(
@@ -131,10 +133,11 @@ export function buildDelegatedAgentConfig(
 		distinctId: runtimeConfig.distinctId,
 		sessionId: runtimeConfig.sessionId,
 		systemPrompt,
-		tools: options.tools,
+		tools: workToolsOnly(options.tools),
 		maxIterations: options.maxIterations ?? runtimeConfig.maxIterations,
 		parentAgentId: options.parentAgentId,
 		abortSignal: options.abortSignal,
+		consumePendingUserMessage: options.consumePendingUserMessage,
 		onEvent: options.onEvent,
 		hooks: runtimeConfig.hooks,
 		extensions: runtimeConfig.extensions,

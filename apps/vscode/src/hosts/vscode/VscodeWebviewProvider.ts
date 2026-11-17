@@ -1,4 +1,5 @@
 import { sendShowWebviewEvent } from "@core/controller/ui/subscribeToShowWebview"
+import { sendWindowFocusEvent } from "@core/controller/ui/subscribeToWindowFocus"
 import { WebviewProvider } from "@core/webview"
 import * as vscode from "vscode"
 import { handleGrpcRequest, handleGrpcRequestCancel } from "@/core/controller/grpc-handler"
@@ -95,6 +96,27 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 			null,
 			this.disposables,
 		)
+
+		void sendWindowFocusEvent(vscode.window.state.focused)
+		vscode.window.onDidChangeWindowState(
+			(state) => {
+				void sendWindowFocusEvent(state.focused)
+				if (!state.focused) return
+				void this.controller.refreshCurrentBranch().catch(() => {})
+				// Another window may have stashed or removed prompts meanwhile.
+				if (this.controller.stateManager.refreshPromptStash()) void this.controller.postStateToWebview()
+			},
+			null,
+			this.disposables,
+		)
+		vscode.workspace.onDidChangeWorkspaceFolders(
+			() => {
+				void this.controller.refreshCurrentBranch().catch(() => {})
+			},
+			null,
+			this.disposables,
+		)
+		void this.controller.refreshCurrentBranch().catch(() => {})
 
 		// Listen for when the view is disposed. This happens when the user moves the
 		// view between the primary and secondary sidebars: VS Code destroys the old

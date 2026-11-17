@@ -31,7 +31,7 @@ interface ActionButtonsProps {
  */
 export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, chatState, mode, messageHandlers }) => {
 	const { getDraftSnapshot, setSendingDisabled } = chatState
-	const { turnState, foregroundCommandRunning } = useExtensionState()
+	const { turnState, foregroundCommandRunning, oneViewEnabled } = useExtensionState()
 
 	// Tracks the ask the user last acted on. Clicking a footer button latches this so the
 	// buttons disable immediately (and survive the trailing bookkeeping re-renders before the
@@ -67,10 +67,12 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, ch
 	const isProcessing = processedAskRef.current === askIdentity
 
 	// Mirror the config's sending-disabled flag into chat state whenever the active button set
-	// changes.
+	// changes, or the turn moves on: a turn over before its streaming state rendered goes from
+	// one shared config back to the same one, and still has to release the lock a send took.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: askIdentity is the trigger, not a value read.
 	useEffect(() => {
 		setSendingDisabled(buttonConfig.sendingDisabled)
-	}, [buttonConfig, setSendingDisabled])
+	}, [buttonConfig, askIdentity, setSendingDisabled])
 
 	const handleActionClick = useCallback(
 		(invocation: ButtonActionInvocation) => {
@@ -99,29 +101,14 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({ task, messages, ch
 		[messageHandlers, askIdentity],
 	)
 
-	// Keyboard event handler
-	const handleKeyDown = useCallback(
-		(event: KeyboardEvent) => {
-			if (event.key === "Escape") {
-				event.preventDefault()
-				event.stopPropagation()
-				handleActionClick({ type: "cancel" })
-			}
-		},
-		[handleActionClick],
-	)
-
-	useEffect(() => {
-		window.addEventListener("keydown", handleKeyDown)
-		return () => window.removeEventListener("keydown", handleKeyDown)
-	}, [handleKeyDown])
-
 	if (!task) {
 		return null
 	}
 
 	const { primaryText, secondaryText, primaryAction, secondaryAction, enableButtons } = buttonConfig
-	const hasButtons = primaryText || secondaryText
+	// One view's list already has ✎ New: a lone "Start New Task" after a finished thread would repeat it.
+	const onlyStartsNewTask = primaryAction === "new_task" && !secondaryText && primaryText === "Start New Task"
+	const hasButtons = (primaryText || secondaryText) && !(oneViewEnabled && onlyStartsNewTask)
 	const isStreaming = task.partial === true
 	const canInteract = enableButtons && !isProcessing && !messageHandlers.recoveryActionInFlight
 

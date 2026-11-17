@@ -1,3 +1,4 @@
+import { normalizeProvenance } from "@shared/composer-provenance"
 import { Empty } from "@shared/proto/cline/common"
 import { AskResponseRequest } from "@shared/proto/cline/task"
 import { Logger } from "@/shared/services/Logger"
@@ -13,7 +14,7 @@ import { Controller } from ".."
  */
 export async function askResponse(controller: Controller, request: AskResponseRequest): Promise<Empty> {
 	try {
-		if (!controller.task) {
+		if (!controller.task || (request.taskId && controller.task.taskId !== request.taskId)) {
 			Logger.warn("askResponse: No active task to receive response")
 			return Empty.create()
 		}
@@ -36,7 +37,17 @@ export async function askResponse(controller: Controller, request: AskResponseRe
 		}
 
 		// Call the task's handler for webview responses
-		await controller.task.handleWebviewAskResponse(responseType, request.text, request.images, request.files)
+		await controller.task.handleWebviewAskResponse(
+			responseType,
+			request.text,
+			request.images,
+			request.files,
+			request.decisionId,
+			normalizeProvenance(request.provenance),
+		)
+		// The error row is already showing. Rejecting is what returns the draft to the composer.
+		const failure = controller.takeFollowUpFailure?.()
+		if (failure) throw new Error(failure)
 
 		return Empty.create()
 	} catch (error) {

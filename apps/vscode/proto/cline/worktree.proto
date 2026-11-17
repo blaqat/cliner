@@ -10,6 +10,9 @@ option java_package = "bot.cline.proto";
 
 // Service for git worktree operations
 service WorktreeService {
+  // Thread isolation settings, actions and per-module diffs.
+  rpc threadWorktreeAction(ThreadWorktreeActionRequest) returns (ThreadWorktreeActionResponse);
+
   // Lists all worktrees in the current repository
   rpc listWorktrees(EmptyRequest) returns (WorktreeList);
 
@@ -150,4 +153,15 @@ message MergeWorktreeResult {
 // Request to track worktree view opened (for telemetry)
 message TrackWorktreeViewOpenedRequest {
   string source = 1; // Where the view was opened from: "home_page" or "menu_bar"
+}
+
+message ThreadWorktreeActionRequest {
+  string action = 1;
+  string thread_id = 2;
+  string json = 3;
+  bool confirmed = 4;
+}
+
+message ThreadWorktreeActionResponse {
+  string json = 1;
 }

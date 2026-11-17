@@ -4,6 +4,7 @@ import { ResolveModelInfoRequest } from "@shared/proto/cline/models"
 import { fromProtobufModelInfo } from "@shared/proto-conversions/models/typeConversion"
 import type { Mode } from "@shared/storage/types"
 import { useEffect, useMemo, useState } from "react"
+import { type SelectedConfiguredModel, selectedConfiguredModel } from "@/components/chat/composer/selectedConfiguredModel"
 import { getModeSpecificFields, type NormalizedApiConfig } from "@/components/settings/utils/providerUtils"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
@@ -31,7 +32,10 @@ const unknownModelInfo: ModelInfo = {
  * adding a provider that needs its own model-id field, extend the map
  * here and the corresponding writer.
  */
-function getActiveProviderAndModelId(apiConfiguration: ReturnType<typeof useExtensionState>["apiConfiguration"], mode: Mode) {
+export function getActiveProviderAndModelId(
+	apiConfiguration: ReturnType<typeof useExtensionState>["apiConfiguration"],
+	mode: Mode,
+) {
 	// State written by older builds or other hosts may carry SDK catalog
 	// spellings (e.g. `openai-compatible`); fold them back to the legacy
 	// `ApiProvider` spelling so the provider-keyed lookups below resolve.
@@ -85,9 +89,46 @@ function getActiveProviderAndModelId(apiConfiguration: ReturnType<typeof useExte
  * treat `unknownModelInfo` as "no data yet" — render placeholders, do
  * not assume features are unsupported.
  */
-export function useNormalizedApiConfiguration(mode: Mode): NormalizedApiConfig {
-	const { apiConfiguration } = useExtensionState()
-	const { provider, modelId } = getActiveProviderAndModelId(apiConfiguration, mode)
+export function useNormalizedApiConfiguration(mode: Mode, composer = false): NormalizedApiConfig {
+	const state = useExtensionState()
+	const apiConfiguration = (composer ? state.composerApiConfiguration : undefined) ?? state.apiConfiguration
+	const legacy = getActiveProviderAndModelId(apiConfiguration, mode)
+	// The composer's model is the selected configured one. The old configuration says nothing about it.
+	const configuredStore = composer && !!state.modelSettings
+	const { modelSettings, composerApiSelection } = state
+	const configured = useMemo(
+		() => (configuredStore ? selectedConfiguredModel({ modelSettings, composerApiSelection }, mode) : undefined),
+		[composerApiSelection, configuredStore, mode, modelSettings],
+	)
+	const resolved = useResolvedModelInfo(
+		configuredStore ? ((configured?.provider ?? "openai") as ApiProvider) : legacy.provider,
+		configuredStore ? (configured?.model.upstreamId ?? "") : legacy.modelId,
+	)
+	return useMemo(
+		() => (configuredStore ? withConfiguredModel(resolved, configured) : resolved),
+		[configured, configuredStore, resolved],
+	)
+}
+
+/** The configured model's own answers over the catalog's. Unknown image support fails open, like core does. */
+export function withConfiguredModel(resolved: NormalizedApiConfig, configured: SelectedConfiguredModel | undefined) {
+	const values = configured?.effective
+	return {
+		...resolved,
+		selectedModelId: configured?.model.upstreamId ?? "",
+		selectedModelInfo: {
+			...resolved.selectedModelInfo,
+			supportsImages: values?.images.value === "yes",
+			...(values?.contextWindow.value ? { contextWindow: values.contextWindow.value } : {}),
+			...(values?.maxOutputTokens.value ? { maxTokens: values.maxOutputTokens.value } : {}),
+			...(values?.inputPrice.value != null ? { inputPrice: values.inputPrice.value } : {}),
+			...(values?.outputPrice.value != null ? { outputPrice: values.outputPrice.value } : {}),
+		},
+	}
+}
+
+/** Resolves catalog metadata for an explicit provider + model (see `useNormalizedApiConfiguration`). */
+export function useResolvedModelInfo(provider: ApiProvider, modelId: string | undefined): NormalizedApiConfig {
 	const [resolvedInfo, setResolvedInfo] = useState<
 		Awaited<ReturnType<typeof ModelsServiceClient.resolveModelInfo>> | undefined
 	>(undefined)

@@ -14,3 +14,7 @@ export function registerClineOutputChannel(context: vscode.ExtensionContext): vs
 	context.subscriptions.push(CLINE_OUTPUT_CHANNEL)
 	return CLINE_OUTPUT_CHANNEL
 }
+
+export function showClineOutputChannel(): void {
+	CLINE_OUTPUT_CHANNEL.show(true)
+}

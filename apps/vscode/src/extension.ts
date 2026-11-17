@@ -1,3 +1,4 @@
+import { VSCodeConnectionSecretStore } from "./sdk/model-settings/connection-secret-store"
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 
@@ -10,7 +11,9 @@ import { sendChatButtonClickedEvent } from "./core/controller/ui/subscribeToChat
 import { sendHistoryButtonClickedEvent } from "./core/controller/ui/subscribeToHistoryButtonClicked"
 import { sendMarketplaceButtonClickedEvent } from "./core/controller/ui/subscribeToMarketplaceButtonClicked"
 import { sendMcpButtonClickedEvent } from "./core/controller/ui/subscribeToMcpButtonClicked"
+import { sendRulesButtonClickedEvent } from "./core/controller/ui/subscribeToRulesButtonClicked"
 import { sendSettingsButtonClickedEvent } from "./core/controller/ui/subscribeToSettingsButtonClicked"
+import { sendStashShortcutEvent } from "./core/controller/ui/subscribeToStashShortcut"
 import { sendWorktreesButtonClickedEvent } from "./core/controller/ui/subscribeToWorktreesButtonClicked"
 import { WebviewProvider } from "./core/webview"
 import { createClineAPI } from "./exports"
@@ -55,6 +58,7 @@ import { AuthService, LogoutReason } from "./sdk/auth-service"
 import { telemetryService } from "./services/telemetry"
 import type { RolloutBundleActivation } from "./services/telemetry/rollout-metadata"
 import { LG_TASK_URI_PATH, SharedUriHandler, TASK_URI_PATH } from "./services/uri/SharedUriHandler"
+import { MESSAGE_LINK_PATH_PREFIX } from "./shared/message-links"
 import { ShowMessageType } from "./shared/proto/host/window"
 import { fileExistsAtPath } from "./utils/fs"
 
@@ -89,7 +93,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// 4. Register services and perform common initialization
 	// IMPORTANT: Must be done after host provider is setup and migrations are complete
-	const webview = (await initialize(storageContext)) as VscodeWebviewProvider
+	const webview = (await initialize(storageContext, new VSCodeConnectionSecretStore(context.secrets))) as VscodeWebviewProvider
 
 	// 5. Register services and commands specific to VS Code
 	// Initialize hook discovery cache for performance optimization
@@ -140,6 +144,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		}),
 	)
 	context.subscriptions.push(vscode.commands.registerCommand(commands.McpButton, () => sendMcpButtonClickedEvent()))
+	context.subscriptions.push(vscode.commands.registerCommand(commands.RulesButton, () => sendRulesButtonClickedEvent()))
 	context.subscriptions.push(
 		vscode.commands.registerCommand(commands.MarketplaceButton, () => sendMarketplaceButtonClickedEvent()),
 	)
@@ -147,6 +152,15 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(commands.HistoryButton, () => sendHistoryButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.AccountButton, () => sendAccountButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.WorktreesButton, () => sendWorktreesButtonClickedEvent()))
+	// ⌘K / Ctrl+K is VS Code's chord prefix (⌘K Z, ⌘K W, …). The webview handles the
+	// key itself (focus search); this binding only claims it while the Cline view is
+	// focused, so the forwarded keydown doesn't start a chord that eats the next key.
+	context.subscriptions.push(vscode.commands.registerCommand(commands.SearchShortcut, () => {}))
+	// ⌘S / Ctrl+S is workbench.action.files.save. The package.json binding claims it
+	// while the Cline view is focused and posts to the webview, where the composer
+	// stashes the draft — the same path as Esc-to-stash, but reliable because it
+	// doesn't depend on which element inside the view holds DOM focus.
+	context.subscriptions.push(vscode.commands.registerCommand(commands.StashShortcut, () => sendStashShortcutEvent()))
 
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider))
 
@@ -160,7 +174,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	const handleUri = async (uri: vscode.Uri) => {
 		const url = decodeURIComponent(uri.toString())
 		const uriPath = getUriPath(url)
-		const isTaskUri = uriPath === TASK_URI_PATH || uriPath === LG_TASK_URI_PATH
+		const isTaskUri =
+			uriPath === TASK_URI_PATH || uriPath === LG_TASK_URI_PATH || (uriPath ?? "").startsWith(MESSAGE_LINK_PATH_PREFIX)
 
 		if (isTaskUri) {
 			await openClineSidebarForTaskUri()

@@ -13,6 +13,8 @@ export function ensureFetch(fetchImpl?: typeof fetch): typeof fetch {
 export async function resolveApiKey(
 	settings: GatewayProviderSettings,
 ): Promise<string | undefined> {
+	// An explicitly empty key with disabled environment fallback is intentional.
+	if (settings.apiKey === "" && settings.apiKeyEnv?.length === 0) return "";
 	const explicitApiKey = settings.apiKey?.trim();
 	if (explicitApiKey) {
 		return explicitApiKey;

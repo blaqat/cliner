@@ -1,3 +1,4 @@
+import { SUBAGENT_SPAWN_ERROR } from "./subagent-policy";
 /**
  * Reusable spawn_agent tool for delegating tasks to sub-agents.
  */
@@ -22,16 +23,47 @@ import { z } from "zod";
 import {
 	createDelegatedAgent,
 	type DelegatedAgentConfigProvider,
+	type DelegatedAgentConnectionConfig,
 } from "./delegated-agent";
+
+import { AsyncAgentRegistry, type AsyncAgentEntry } from "./async-agents";
 
 type AgentExtension = NonNullable<AgentConfig["extensions"]>[number];
 type AgentFinishReason = AgentResult["finishReason"];
 
 export const SpawnAgentInputSchema = z.object({
+	wait: z
+		.boolean()
+		.optional()
+		.describe(
+			"Wait for the result before continuing. Default false; results arrive later as messages.",
+		),
 	systemPrompt: z
 		.string()
 		.describe("System prompt defining the sub-agent's behavior"),
 	task: z.string().describe("Task for the sub-agent to complete"),
+	access: z
+		.enum(["read", "write"])
+		.optional()
+		.describe(
+			'Tool access for the sub-agent: "read" (default) gives it read-only investigation tools; "write" gives it the full editing toolset. Choose "write" only when the task requires the sub-agent to modify files. A write request is downgraded to read when the parent is in a read-only mode, and the child never receives tools the parent lacks.',
+		),
+	model: z
+		.string()
+		.optional()
+		.describe("Configured model id or unique name. Omit to use the default."),
+	profile: z
+		.string()
+		.optional()
+		.describe(
+			'Name of a configured sub-agent model profile to run on. Only usable when sub-agent profiles are enabled and only with the names listed in the tool description (or "parent" to inherit this thread\'s model). Omit to use the configured default sub-agent profile, or the parent model when no default is set.',
+		),
+	reasoningEffort: z
+		.string()
+		.optional()
+		.describe(
+			'Reasoning effort for the sub-agent\'s model ("none", "minimal", "low", "medium", "high", "xhigh" or "max"). Only used when sub-agent profiles are enabled; overrides the profile\'s and the configured default effort.',
+		),
 });
 
 export type SpawnAgentInput = z.infer<typeof SpawnAgentInputSchema>;
@@ -50,23 +82,63 @@ export interface SubAgentStartContext {
 	subAgentId: string;
 	conversationId: string;
 	parentAgentId: string;
+	toolCallId?: string;
 	input: SpawnAgentInput;
+	continuing?: boolean;
 }
 
 export interface SubAgentEndContext {
+	detached?: boolean;
+	messages?: AgentResult["messages"];
 	subAgentId: string;
 	conversationId: string;
 	parentAgentId: string;
+	toolCallId?: string;
 	input: SpawnAgentInput;
 	result?: SpawnAgentOutput;
 	agentResult?: AgentResult;
+	/** Accumulated usage and tool starts, including runs that throw. */
+	usage?: AgentResult["usage"];
+	toolCalls?: number;
 	error?: Error;
 }
 
+/**
+ * Registry hook for per-call abort handles. When provided, the spawn_agent
+ * tool registers one AbortController per in-flight sub-agent run (keyed by
+ * the spawn_agent tool call id) so a host can stop a single child without
+ * aborting the parent run. Entries are removed when the run settles.
+ */
+export interface SpawnAgentAbortRegistry {
+	register(toolCallId: string, controller: AbortController): void;
+	unregister(toolCallId: string): void;
+}
+
 export interface SpawnAgentToolConfig {
+	registry?: AsyncAgentRegistry;
+	getChildSessionId?: (runtimeId: string) => string;
+	onMessage?: (
+		agentId: string,
+		status: string,
+		message: string,
+		parentAgentId: string,
+	) => void;
+	onRunEnd?: (context: AgentToolContext) => void;
+	onResume?: () => void;
+	suppressBlockingCompletionMessage?: boolean;
+	onRegistryChange?: () => void;
 	configProvider: DelegatedAgentConfigProvider;
 	defaultMaxIterations?: number;
 	subAgentTools?: AgentTool[];
+	/**
+	 * Per-call model/connection overrides resolved from the spawn input
+	 * (e.g. a named sub-agent profile). Applied over the delegated agent's
+	 * inherited connection config; keys left undefined keep parent values.
+	 */
+	resolveConnectionOverrides?: (
+		input: SpawnAgentInput,
+	) => Partial<DelegatedAgentConnectionConfig> | undefined;
+	createSubAgentExtensions?: (input: SpawnAgentInput) => AgentExtension[];
 	createSubAgentTools?: (
 		input: SpawnAgentInput,
 		context: AgentToolContext,
@@ -94,6 +166,15 @@ export interface SpawnAgentToolConfig {
 	 * Errors are ignored so lifecycle observers cannot break task execution.
 	 */
 	onSubAgentEnd?: (context: SubAgentEndContext) => void | Promise<void>;
+	/** Checkpoint a child conversation after each completed iteration. */
+	onSubAgentMessages?: (
+		subAgentId: string,
+		messages: NonNullable<AgentResult["messages"]>,
+	) => void | Promise<void>;
+	/**
+	 * Optional per-call abort registry; see {@link SpawnAgentAbortRegistry}.
+	 */
+	abortHandleRegistry?: SpawnAgentAbortRegistry;
 	/**
 	 * Optional per-tool policy for spawned sub-agents.
 	 */
@@ -111,31 +192,140 @@ export interface SpawnAgentToolConfig {
 	telemetry?: ITelemetryService;
 }
 
+function stoppedByUserText(partial: string): string {
+	const text = partial.trim();
+	return text
+		? `Stopped by user before finishing. Partial output:\n${text}`
+		: "Stopped by user before finishing.";
+}
+
+function toError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Create a spawn_agent tool that can run a delegated task with a focused sub-agent.
  */
 export function createSpawnAgentTool(
 	config: SpawnAgentToolConfig,
-): AgentTool<SpawnAgentInput, SpawnAgentOutput> {
-	return createTool<SpawnAgentInput, SpawnAgentOutput>({
+): AgentTool<
+	SpawnAgentInput,
+	SpawnAgentOutput | { error: string } | { agentId: string; status: "running" }
+> {
+	const registry = config.registry ?? new AsyncAgentRegistry();
+	return createTool<
+		SpawnAgentInput,
+		| SpawnAgentOutput
+		| { error: string }
+		| { agentId: string; status: "running" }
+	>({
 		name: "spawn_agent",
 		executionMode: "parallel",
-		description: `Spawn a sub-agent with custom instructions for a specialized task. Waits for the sub-agent to finish and returns its result before your next step.`,
-		inputSchema: zodToJsonSchema(SpawnAgentInputSchema),
+		description: `Spawn a sub-agent with custom instructions for a specialized task. Returns immediately with agentId and status running. Results arrive later as messages; do not poll in a loop. Use wait=true only when you need its result before continuing. Use send_to_agent to steer or continue a child, cancel_agent to stop it, list_agents for status, and wait_for_agents when you have no other work. Set access="write" when the task requires the sub-agent to edit files or make changes; leave it at the default "read" for investigation, search, and analysis tasks. A write-capable sub-agent is downgraded to read-only when you are in a read-only mode.`,
+		inputSchema: zodToJsonSchema(
+			config.suppressBlockingCompletionMessage
+				? SpawnAgentInputSchema.omit({ profile: true })
+				: SpawnAgentInputSchema.omit({ model: true }),
+		),
 		execute: async (input, context) => {
+			if (context.snapshot?.parentAgentId)
+				return { error: SUBAGENT_SPAWN_ERROR };
+			const agentId = registry.nextId();
+			let entry: AsyncAgentEntry;
 			const tools = config.createSubAgentTools
 				? await config.createSubAgentTools(input, context)
 				: (config.subAgentTools ?? []);
 
+			// A per-call abort handle lets a host stop this one child without
+			// aborting the parent run; it still follows the parent's signal.
+			const toolCallId = context.toolCallId;
+			const abortController = new AbortController();
+			if (toolCallId) {
+				config.abortHandleRegistry?.register(toolCallId, abortController);
+			}
+			const abortSignal = abortController.signal;
+			let messagesWrite = Promise.resolve();
+			const usage: AgentResult["usage"] = { inputTokens: 0, outputTokens: 0 };
+			const progress = {
+				toolCalls: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				totalCost: 0,
+				latestToolCall: "",
+			};
 			const subAgent = createDelegatedAgent({
 				kind: "subagent",
-				prompt: input.systemPrompt,
-				configProvider: config.configProvider,
-				tools,
+				prompt: `${input.systemPrompt}\nThe parent may send messages while you work. Use message_parent to reply with progress or an answer without finishing.`,
+				consumePendingUserMessage: () =>
+					entry.pending.splice(0).join("\n\n") || undefined,
+				configProvider: {
+					...config.configProvider,
+					getRuntimeConfig: () => {
+						const runtime = config.configProvider.getRuntimeConfig();
+						return {
+							...runtime,
+							...config.resolveConnectionOverrides?.(input),
+							extensions:
+								config.createSubAgentExtensions?.(input) ?? runtime.extensions,
+						};
+					},
+					getConnectionConfig: () => ({
+						...config.configProvider.getConnectionConfig(),
+						...config.resolveConnectionOverrides?.(input),
+					}),
+				},
+				tools: [
+					...tools,
+					createTool({
+						name: "message_parent",
+						description:
+							"Send an update or answer to your parent without ending your work.",
+						inputSchema: zodToJsonSchema(z.object({ message: z.string() })),
+						execute: async (raw) => {
+							const message = (raw as { message: string }).message;
+							entry.lastResult = message;
+							config.onMessage?.(agentId, "message", message, context.agentId);
+							return { delivered: true };
+						},
+					}),
+				],
 				maxIterations: config.defaultMaxIterations,
 				parentAgentId: context.agentId,
-				abortSignal: context.signal,
-				onEvent: config.onSubAgentEvent,
+				abortSignal,
+				onEvent: (event) => {
+					config.onSubAgentEvent?.(event);
+					if (event.type === "content_start" && event.contentType === "tool") {
+						progress.toolCalls++;
+						progress.latestToolCall = event.toolName ?? "";
+						context.emitUpdate?.({ ...progress });
+					} else if (event.type === "usage") {
+						usage.inputTokens = event.totalInputTokens;
+						usage.outputTokens = event.totalOutputTokens;
+						usage.cacheReadTokens =
+							event.totalCacheReadTokens ??
+							(usage.cacheReadTokens ?? 0) + (event.cacheReadTokens ?? 0);
+						usage.cacheWriteTokens =
+							event.totalCacheWriteTokens ??
+							(usage.cacheWriteTokens ?? 0) + (event.cacheWriteTokens ?? 0);
+						usage.totalCost =
+							event.totalCost ?? (usage.totalCost ?? 0) + (event.cost ?? 0);
+						progress.inputTokens = event.totalInputTokens;
+						progress.outputTokens = event.totalOutputTokens;
+						progress.totalCost = usage.totalCost;
+						context.emitUpdate?.({ ...progress });
+					}
+					if (event.type === "iteration_end" && config.onSubAgentMessages) {
+						const messages = structuredClone(subAgent.getMessages());
+						messagesWrite = messagesWrite
+							.then(() =>
+								config.onSubAgentMessages!(subAgent.getAgentId(), messages),
+							)
+							.then(
+								() => {},
+								() => {},
+							);
+					}
+				},
 				hookErrorMode: config.hookErrorMode,
 				toolPolicies: config.toolPolicies,
 				requestToolApproval: config.requestToolApproval,
@@ -143,60 +333,188 @@ export function createSpawnAgentTool(
 			const subAgentId = subAgent.getAgentId();
 			const conversationId = subAgent.getConversationId();
 			const parentAgentId = context.agentId;
-			if (config.onSubAgentStart) {
-				try {
-					await config.onSubAgentStart({
-						subAgentId,
-						conversationId,
-						parentAgentId,
-						input,
-					});
-				} catch {
-					// Best-effort observer callback.
-				}
-			}
-			try {
-				const result = await subAgent.run(input.task);
-				const output: SpawnAgentOutput = {
-					text: result.text,
-					iterations: result.iterations,
-					finishReason: result.finishReason,
-					usage: {
-						inputTokens: result.usage.inputTokens,
-						outputTokens: result.usage.outputTokens,
-					},
-				};
-				if (config.onSubAgentEnd) {
+
+			const run = async (
+				message: string,
+				continuing = false,
+			): Promise<SpawnAgentOutput | undefined> => {
+				entry.status = "running";
+				entry.endedAt = undefined;
+				entry.startedAt = Date.now();
+				config.onRegistryChange?.();
+				if (config.onSubAgentStart) {
 					try {
-						await config.onSubAgentEnd({
+						await config.onSubAgentStart({
 							subAgentId,
 							conversationId,
 							parentAgentId,
+							toolCallId,
 							input,
-							result: output,
-							agentResult: result,
+							continuing,
 						});
 					} catch {
 						// Best-effort observer callback.
+					}
+				}
+				// Decide the terminal outcome the moment execution settles, then drop
+				// the abort handle: a Stop that lands during persistence or observer
+				// callbacks must not relabel a finished child as stopped.
+				let result: AgentResult | undefined;
+				let runError: unknown;
+				try {
+					result = await (continuing
+						? subAgent.continue(message)
+						: subAgent.run(message));
+				} catch (error) {
+					runError = error;
+				}
+				const stopped = abortController.signal.aborted;
+				if (toolCallId) {
+					config.abortHandleRegistry?.unregister(toolCallId);
+				}
+
+				let output: SpawnAgentOutput | undefined;
+				let error: Error | undefined;
+				if (result) {
+					const stoppedEarly = stopped && result.finishReason !== "completed";
+					output = {
+						text: stoppedEarly ? stoppedByUserText(result.text) : result.text,
+						iterations: result.iterations,
+						finishReason: stoppedEarly ? "aborted" : result.finishReason,
+						usage: {
+							inputTokens: result.usage.inputTokens,
+							outputTokens: result.usage.outputTokens,
+						},
+					};
+				} else if (stopped) {
+					output = {
+						text: stoppedByUserText(""),
+						iterations: 0,
+						finishReason: "aborted",
+						usage: {
+							inputTokens: usage.inputTokens,
+							outputTokens: usage.outputTokens,
+						},
+					};
+				} else {
+					error = toError(runError);
+				}
+
+				await messagesWrite;
+				if (config.onSubAgentEnd) {
+					try {
+						await config.onSubAgentEnd({
+							detached: !input.wait,
+							subAgentId,
+							conversationId,
+							parentAgentId,
+							toolCallId,
+							input,
+							...(output ? { result: output } : { error }),
+							...(result ? { agentResult: result } : {}),
+							usage: result?.usage ?? usage,
+							toolCalls: result?.toolCalls?.length ?? progress.toolCalls,
+							messages: subAgent.getMessages(),
+						});
+					} catch {
+						// Best-effort observer callback.
+					}
+				}
+				entry.status = stopped
+					? "cancelled"
+					: error || output?.finishReason === "error"
+						? "failed"
+						: "done";
+				entry.endedAt = Date.now();
+				entry.lastResult = output?.text ?? String(error);
+				config.onRunEnd?.(context);
+				config.onRegistryChange?.();
+				if (
+					!config.suppressBlockingCompletionMessage ||
+					continuing ||
+					!input.wait ||
+					context.signal?.aborted
+				)
+					config.onMessage?.(
+						agentId,
+						entry.status,
+						`${entry.lastResult}\n\nFinish reason: ${output?.finishReason ?? "error"}`,
+						context.agentId,
+					);
+				if (entry.pending.length && entry.status !== "cancelled") {
+					const pending = entry.pending.join("\n\n");
+					try {
+						entry.completion = entry.resume(pending);
+						entry.pending.splice(0);
+					} catch {
+						/* Keep inbound messages until another continuation is admitted. */
 					}
 				}
 				return output;
-			} catch (error) {
-				if (config.onSubAgentEnd) {
-					try {
-						await config.onSubAgentEnd({
-							subAgentId,
-							conversationId,
-							parentAgentId,
-							input,
-							error: error instanceof Error ? error : new Error(String(error)),
-						});
-					} catch {
-						// Best-effort observer callback.
+			};
+			entry = {
+				agentId,
+				runtimeId: subAgentId,
+				threadId: config.getChildSessionId?.(subAgentId) ?? conversationId,
+				task: input.task,
+				status: "running",
+				startedAt: Date.now(),
+				pending: [],
+				notify: () => subAgent.notifyPendingUserMessage(),
+				cancel: () => {
+					if (entry.status === "running") {
+						entry.status = "cancelled";
+						abortController.abort();
+						subAgent.abort("Cancelled by parent or user");
 					}
-				}
-				throw error;
+				},
+				resume: (message) => {
+					config.onResume?.();
+					if (toolCallId)
+						config.abortHandleRegistry?.register(toolCallId, abortController);
+					const completion = run(message, true);
+					void completion.catch((error) => {
+						entry.status = "failed";
+						entry.lastResult = String(error);
+					});
+					return completion;
+				},
+			};
+			registry.agents.set(agentId, entry);
+			config.onRegistryChange?.();
+			const completion = run(input.task);
+			entry.completion = completion;
+			// Observe detached failures even when no caller explicitly waits.
+			void completion.catch((error) => {
+				entry.status = "failed";
+				entry.lastResult = String(error);
+			});
+			if (input.wait) {
+				let onAbort: (() => void) | undefined;
+				const aborted = new Promise<undefined>((resolve) => {
+					onAbort = () => resolve(undefined);
+					if (context.signal?.aborted) onAbort();
+					else
+						context.signal?.addEventListener("abort", onAbort, { once: true });
+				});
+				const output = await (config.suppressBlockingCompletionMessage
+					? Promise.race([completion, aborted])
+					: completion
+				).finally(() => {
+					if (onAbort) context.signal?.removeEventListener("abort", onAbort);
+				});
+				if (
+					config.suppressBlockingCompletionMessage &&
+					context.signal?.aborted &&
+					!output
+				)
+					return {
+						error: "Stopped waiting for subagent. The child remains active.",
+					};
+				if (!output) throw new Error(entry.lastResult);
+				return output;
 			}
+			return { agentId, status: "running" as const };
 		},
 		timeoutMs: 300000,
 		retryable: false,

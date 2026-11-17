@@ -1,6 +1,8 @@
 import { CommandExitError } from "@cline/core"
 import { EventEmitter } from "events"
 import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
@@ -17,7 +19,11 @@ import {
 const mocks = vi.hoisted(() => ({
 	existsSync: vi.fn<(path: fs.PathLike) => boolean>(),
 	getGlobalSettingsKey: vi.fn(() => "default"),
+	getWorkspaceStateKey: vi.fn((): unknown => undefined),
+	envWorkspaceRoot: vi.fn(async (fallback: string) => fallback),
 }))
+
+vi.mock("@/utils/terminal-env-root", () => ({ getTerminalEnvWorkspaceRoot: mocks.envWorkspaceRoot }))
 
 vi.mock("fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("fs")>()),
@@ -26,7 +32,11 @@ vi.mock("fs", async (importOriginal) => ({
 
 vi.mock("@/core/storage/StateManager", () => ({
 	StateManager: {
-		get: () => ({ getGlobalSettingsKey: mocks.getGlobalSettingsKey }),
+		get: () => ({
+			getGlobalSettingsKey: mocks.getGlobalSettingsKey,
+			getGlobalStateKey: () => undefined,
+			getWorkspaceStateKey: mocks.getWorkspaceStateKey,
+		}),
 	},
 }))
 
@@ -145,7 +155,7 @@ describe("createVscodeRunCommandsTool", () => {
 			{ commands: ["Write-Output 'ok'"] },
 			{ agentId: "agent-1", conversationId: "conversation-1", iteration: 1 },
 		)
-		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-legacy")
+		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-legacy", {}, "{}")
 
 		const nextDescription = tool.description
 		expect(nextDescription).toContain("PowerShell (pwsh.exe)")
@@ -156,7 +166,7 @@ describe("createVscodeRunCommandsTool", () => {
 			{ commands: ["Write-Output 'ok'"] },
 			{ agentId: "agent-1", conversationId: "conversation-1", iteration: 2 },
 		)
-		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-7")
+		expect(getOrCreateTerminal).toHaveBeenLastCalledWith("C:\\workspace", "powershell-7", {}, "{}")
 	})
 })
 
@@ -371,7 +381,30 @@ describe("executeForeground", () => {
 
 		await executeForeground("echo ok", "/workspace", terminalManager, 1000, undefined, undefined, "wsl-bash")
 
-		expect(getOrCreateTerminal).toHaveBeenCalledWith("/workspace", "wsl-bash")
+		expect(getOrCreateTerminal).toHaveBeenCalledWith("/workspace", "wsl-bash", {}, "{}")
+	})
+
+	it("resolves a relative workspace .env path against the workspace root, not the command cwd", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "cline-env-root-"))
+		const commandDir = path.join(root, "packages", "app")
+		fs.mkdirSync(commandDir, { recursive: true })
+		fs.writeFileSync(path.join(root, "rel.env"), "FROM_ROOT=yes")
+		mocks.getWorkspaceStateKey.mockReturnValue({ envFilePath: "rel.env" })
+		mocks.envWorkspaceRoot.mockResolvedValue(root)
+		const getOrCreateTerminal = vi.fn(async () => ({ terminal: { show: () => {} } }) as never)
+		const terminalManager = {
+			getOrCreateTerminal,
+			runCommand: () => createFakeTerminalProcess({ lines: ["ok"] }),
+		} as unknown as VscodeTerminalManager
+		try {
+			await executeForeground("echo ok", commandDir, terminalManager, 1000)
+			expect(getOrCreateTerminal).toHaveBeenCalledWith(commandDir, undefined, { FROM_ROOT: "yes" }, expect.any(String))
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true })
+			mocks.getWorkspaceStateKey.mockReset()
+			mocks.getWorkspaceStateKey.mockReturnValue(undefined)
+			mocks.envWorkspaceRoot.mockImplementation(async (fallback: string) => fallback)
+		}
 	})
 
 	it("throws CommandExitError with the exit code on non-zero exit", async () => {

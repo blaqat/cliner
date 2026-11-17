@@ -4,6 +4,7 @@ import type { StateManager } from "@/core/storage/StateManager"
 import { isDirectory } from "@/utils/fs"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE } from "./provider-failure-telemetry"
 import { SdkTaskStartCoordinator, type SdkTaskStartCoordinatorOptions } from "./sdk-task-start-coordinator"
+import { createTaskProxy } from "./task-proxy"
 
 vi.mock("@/shared/services/Logger", () => ({
 	Logger: {
@@ -69,6 +70,7 @@ describe("SdkTaskStartCoordinator", () => {
 			taskSettings: undefined,
 			cwd: "/workspace",
 			mode: "act",
+			apiSelection: {},
 		})
 		expect(options.buildStartSessionInput).toHaveBeenCalledWith(
 			expect.objectContaining({ providerId: "anthropic", modelId: "model", sessionId }),
@@ -107,7 +109,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.postStateToWebview.mock.invocationCallOrder[0]).toBeLessThan(
 			options.sessions.startNewSession.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", state.task?.taskId, undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			sessionId,
@@ -115,6 +117,197 @@ describe("SdkTaskStartCoordinator", () => {
 			["image.png"],
 			["a.ts"],
 		)
+	})
+
+	it("puts linked messages on the first message as chips once they're resolved", async () => {
+		const { coordinator, options } = makeCoordinator()
+		options.resolveContextMentions.mockResolvedValueOnce(
+			'<message_reference thread_id="7_src" thread_title="Dev plan" author="user" message_index="2">\nCap exports\n</message_reference>\n\nuse this',
+		)
+		await coordinator.initTask("use this")
+		const [first] = options.messages.appendAndEmit.mock.calls[0][0]
+		expect(options.messages.emitHookMessage).toHaveBeenCalledWith({
+			...first,
+			messageReferences: [
+				{ threadId: "7_src", threadTitle: "Dev plan", author: "user", text: "Cap exports", messageIndex: 2 },
+			],
+		})
+	})
+
+	it("leaves the first message alone when nothing was linked", async () => {
+		const { coordinator, options } = makeCoordinator()
+		await coordinator.initTask("hello")
+		expect(options.messages.emitHookMessage).not.toHaveBeenCalled()
+	})
+
+	it("overrides SDK cwd and workspace root and persists the isolate cwd", async () => {
+		const { options } = makeCoordinator()
+		const prepareWorkspace = vi.fn().mockResolvedValue("/isolate")
+		options.sessionConfigBuilder.build.mockImplementation(async (input) => ({
+			providerId: "anthropic",
+			modelId: "model",
+			apiKey: "key",
+			cwd: input.cwd,
+			workspaceRoot: input.workspaceRoot ?? input.cwd,
+		}))
+		const coordinator = new SdkTaskStartCoordinator({ ...options, prepareWorkspace })
+		const id = await coordinator.initTask("isolate me", undefined, undefined, undefined, undefined, { runInWorktree: true })
+		expect(prepareWorkspace).toHaveBeenCalledWith(id, "isolate me", "/workspace", true)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ cwd: "/isolate", workspaceRoot: "/isolate" }) }),
+		)
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ cwdOnTaskInitialization: "/isolate" }),
+		)
+	})
+
+	it("starts a chat in the background without clearing or focusing the view", async () => {
+		const { options, state } = makeCoordinator()
+		const contextTask = createTaskProxy("", vi.fn(), vi.fn())
+		const contextMessages = { appendAndEmit: vi.fn(), emitHookMessage: vi.fn() }
+		const createTaskContext = vi.fn((taskId: string) => {
+			contextTask.taskId = taskId
+			return { task: contextTask, messages: contextMessages }
+		})
+		const transferDraftModelPick = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, createTaskContext, transferDraftModelPick })
+
+		const sessionId = await coordinator.initTask("quiet task", ["image.png"], [], undefined, undefined, {
+			background: true,
+		})
+
+		expect(sessionId).toEqual(expect.any(String))
+		// The view is untouched: no clear, no focused task, and the task message is
+		// written into the background task's own transcript, not the visible one.
+		expect(transferDraftModelPick).not.toHaveBeenCalled()
+		expect(options.clearTask).not.toHaveBeenCalled()
+		expect(options.setTask).not.toHaveBeenCalled()
+		expect(state.task).toBeUndefined()
+		expect(createTaskContext).toHaveBeenCalledWith(sessionId)
+		expect(contextTask.taskId).toBe(sessionId)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ sessionId }) }),
+			{ focus: false },
+		)
+		expect(contextMessages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ type: "say", say: "task", text: "quiet task", images: ["image.png"] })],
+			{ type: "status", payload: { sessionId, status: "running" } },
+		)
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ id: sessionId, task: "quiet task" }),
+		)
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+			expect.anything(),
+			sessionId,
+			"resolved: quiet task",
+			["image.png"],
+			[],
+		)
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("records the new thread's task group before the first state post", async () => {
+		// Core persists the session record (and its taskGroupId) only when the first
+		// send lands; the synthesized history row the early state post ships must
+		// already know the task, or the thread shows as "no task" until it streams.
+		const { options } = makeCoordinator()
+		const recordTaskGroup = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, recordTaskGroup })
+
+		const sessionId = await coordinator.initTask("in a task", [], [], undefined, undefined, { taskGroupId: "group-1" })
+
+		expect(recordTaskGroup).toHaveBeenCalledWith(sessionId, "group-1")
+		expect(recordTaskGroup.mock.invocationCallOrder[0]).toBeLessThan(options.postStateToWebview.mock.invocationCallOrder[0])
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({ id: sessionId, taskGroupId: "group-1" }),
+		)
+	})
+
+	it("starts a new thread with the ticket tags its first message names", async () => {
+		// The session record doesn't exist until the first send lands, so these can't be written after the start.
+		const { coordinator, options } = makeCoordinator()
+
+		await coordinator.initTask("Fix PROJ-123 and PROJ-124")
+
+		const startInput = options.sessions.startNewSession.mock.calls[0][0]
+		expect(startInput.sessionMetadata.tags).toEqual([
+			{ kind: "ticket", value: "PROJ-123", source: "auto" },
+			{ kind: "ticket", value: "PROJ-124", source: "auto" },
+		])
+	})
+
+	it("adds no tags to a new thread whose first message names no ticket", async () => {
+		const { coordinator, options } = makeCoordinator()
+
+		await coordinator.initTask("no ticket here")
+
+		expect(options.sessions.startNewSession.mock.calls[0][0].sessionMetadata).not.toHaveProperty("tags")
+	})
+
+	it("does not record a task group for an unfiled thread", async () => {
+		const { options } = makeCoordinator()
+		const recordTaskGroup = vi.fn()
+		const coordinator = new SdkTaskStartCoordinator({ ...options, recordTaskGroup })
+
+		await coordinator.initTask("unfiled")
+
+		expect(recordTaskGroup).not.toHaveBeenCalled()
+	})
+
+	it("applies the home draft once, then starts the next chat from Settings defaults", async () => {
+		const { options } = makeCoordinator()
+		Object.assign(options.stateManager, {
+			getGlobalStateKey: () => "P",
+			getApiConfiguration: () => ({ actModeReasoningEffort: "low" }),
+		})
+		const draft = { actProfileId: "Q", actModeReasoningEffort: "high" as const }
+		const consume = vi.fn().mockReturnValueOnce(draft).mockReturnValue(undefined)
+		const coordinator = new SdkTaskStartCoordinator({ ...options, consumeDraftApiSelection: consume })
+		await coordinator.initTask("draft chat")
+		expect(options.sessionConfigBuilder.build).toHaveBeenLastCalledWith(expect.objectContaining({ apiSelection: draft }))
+		await coordinator.initTask("default chat")
+		expect(options.sessionConfigBuilder.build).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				apiSelection: { askProfileId: "P", actProfileId: "P", actModeReasoningEffort: "low" },
+			}),
+		)
+	})
+
+	it("pins the build selection through slow startup while another chat changes the picker", async () => {
+		const { options } = makeCoordinator()
+		let selected = "P"
+		Object.assign(options.stateManager, {
+			getGlobalStateKey: () => selected,
+			getApiConfiguration: () => ({ actModeReasoningEffort: "low" }),
+		})
+		const record = vi.fn()
+		const coordinatorWithRecord = new SdkTaskStartCoordinator({ ...options, recordTaskApiSelection: record })
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		options.sessions.startNewSession.mockImplementationOnce(async () => {
+			selected = "Q"
+			await gate
+			return { startResult: { sessionId: "started" }, sdkHost: { send: vi.fn() } }
+		})
+		const start = coordinatorWithRecord.initTask("hello")
+		await vi.waitFor(() => expect(options.sessions.startNewSession).toHaveBeenCalledOnce())
+		expect(record).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ actProfileId: "P" }), "act")
+		release()
+		await start
+		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiSelection: expect.objectContaining({ actProfileId: "P", actModeReasoningEffort: "low" }),
+			}),
+		)
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionMetadata: expect.objectContaining({ apiSelection: expect.objectContaining({ actProfileId: "P" }) }),
+			}),
+		)
+		expect(record).toHaveBeenLastCalledWith("started", expect.objectContaining({ actProfileId: "P" }), "act")
 	})
 
 	it("omits images/files from the task message when the task has no attachments", async () => {
@@ -134,7 +327,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})
@@ -145,7 +338,7 @@ describe("SdkTaskStartCoordinator", () => {
 		const sessionId = await coordinator.initTask("needs clinepass auth")
 
 		expect(sessionId).toBeUndefined()
-		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth")
+		expect(options.emitClineAuthError).toHaveBeenCalledWith("needs clinepass auth", undefined)
 		expect(options.captureProviderApiError).not.toHaveBeenCalled()
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 	})
@@ -180,6 +373,95 @@ describe("SdkTaskStartCoordinator", () => {
 		)
 		// One early post before session startup, one after the failure.
 		expect(options.postStateToWebview).toHaveBeenCalledTimes(2)
+	})
+
+	describe("a start that fails before the session exists", () => {
+		const busy = new Error("Storage is busy in another window. Try again shortly.")
+
+		it("shows the thread with the message and the reason, so nothing is left waiting", async () => {
+			const { coordinator, options, state } = makeCoordinator()
+			options.sessionConfigBuilder.build.mockRejectedValue(busy)
+			options.onStartFailed = vi.fn()
+
+			expect(await coordinator.initTask("hello", ["img"], ["file"])).toBeUndefined()
+
+			expect(state.task?.taskId).toEqual(expect.any(String))
+			const rows = options.messages.appendAndEmit.mock.calls.flatMap(
+				(call: unknown[]) => call[0] as Array<{ say: string; text: string }>,
+			)
+			expect(rows[0]).toMatchObject({ say: "task", text: "hello", images: ["img"], files: ["file"] })
+			expect(rows[1]).toMatchObject({ say: "error", text: expect.stringContaining("Storage is busy") })
+			expect(options.messages.appendAndEmit.mock.calls.at(-1)?.[1]).toEqual({
+				type: "status",
+				payload: { sessionId: state.task?.taskId, status: "error" },
+			})
+			expect(options.onStartFailed).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					prompt: "hello",
+					images: ["img"],
+					files: ["file"],
+					background: false,
+					task: state.task,
+				}),
+			)
+			expect(options.postStateToWebview).toHaveBeenCalled()
+			expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		})
+
+		it("tells a caller that asked, once the row is up", async () => {
+			const { coordinator, options } = makeCoordinator()
+			options.sessionConfigBuilder.build.mockRejectedValue(busy)
+
+			await expect(
+				coordinator.initTask("hello", undefined, undefined, undefined, undefined, { rethrowStartFailure: true }),
+			).rejects.toBe(busy)
+
+			expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+				[expect.objectContaining({ say: "error", text: expect.stringContaining("Storage is busy") })],
+				expect.anything(),
+			)
+		})
+
+		it("keeps a background failure out of the focused thread", async () => {
+			const { coordinator, options, state } = makeCoordinator()
+			const messages = { appendAndEmit: vi.fn(), emitHookMessage: vi.fn() }
+			const task = { taskId: "background" }
+			options.createTaskContext = vi.fn(() => ({ task, messages })) as never
+			options.sessionConfigBuilder.build.mockRejectedValue(busy)
+			options.onStartFailed = vi.fn()
+
+			await coordinator.initTask("hello", undefined, undefined, undefined, undefined, { background: true })
+
+			expect(state.task).toBeUndefined()
+			expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+			expect(messages.appendAndEmit).toHaveBeenCalledWith([expect.objectContaining({ say: "error" })], expect.anything())
+			expect(options.onStartFailed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ task, background: true }))
+		})
+	})
+
+	it("ends the session when the start fails after it was created, so Retry doesn't leave it running", async () => {
+		const { coordinator, options, state } = makeCoordinator()
+		options.taskHistory.updateTaskHistoryItem.mockRejectedValue(
+			new Error("Storage is busy in another window. Try again shortly."),
+		)
+		options.sessions.startNewSession.mockImplementation(async ({ config }: { config: { sessionId: string } }) => ({
+			startResult: { sessionId: config.sessionId },
+			sdkHost: {},
+		}))
+		;(options.sessions as unknown as Record<string, unknown>).getActiveSession = vi.fn(() => ({
+			sessionId: state.task?.taskId,
+		}))
+		const endActiveSession = vi.fn(async () => undefined)
+		;(options.sessions as unknown as Record<string, unknown>).endActiveSession = endActiveSession
+
+		expect(await coordinator.initTask("hello")).toBeUndefined()
+
+		expect(endActiveSession).toHaveBeenCalledOnce()
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error" })],
+			expect.anything(),
+		)
 	})
 
 	it.each([true, false])("forwards task useAutoCondense=%s into SDK session config inputs", async (useAutoCondense) => {
@@ -220,7 +502,7 @@ describe("SdkTaskStartCoordinator", () => {
 		expect(options.taskHistory.findHistoryItem).toHaveBeenCalledWith("task-1")
 		expect(isDirectory).toHaveBeenCalledWith("/task-cwd")
 		expect(options.getWorkspaceRoot).not.toHaveBeenCalled()
-		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/task-cwd", mode: "act" })
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/task-cwd", mode: "act", apiSelection: {} })
 		expect(options.createTempSessionHost).toHaveBeenCalledOnce()
 		expect(options.loadInitialMessages).toHaveBeenCalledWith(tempHost, "task-1")
 		expect(tempHost.dispose).toHaveBeenCalledWith("readMessages")
@@ -253,7 +535,22 @@ describe("SdkTaskStartCoordinator", () => {
 
 		expect(isDirectory).toHaveBeenCalledWith("/missing-task-cwd")
 		expect(options.getWorkspaceRoot).toHaveBeenCalledOnce()
-		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/workspace", mode: "act" })
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith({ cwd: "/workspace", mode: "act", apiSelection: {} })
+	})
+
+	it("puts a failed resume back on screen with its reason", async () => {
+		const { coordinator, options, state } = makeCoordinator()
+		options.sessionConfigBuilder.build.mockRejectedValue(new Error("Storage is busy in another window. Try again shortly."))
+
+		await coordinator.reinitExistingTaskFromId("task-1")
+
+		expect(state.task?.taskId).toBe("task-1")
+		const rows = options.messages.appendAndEmit.mock.calls.flatMap(
+			(call: unknown[]) => call[0] as Array<{ say: string; text: string }>,
+		)
+		expect(rows[0]).toMatchObject({ say: "task", text: "old task" })
+		expect(rows[1]).toMatchObject({ say: "error", text: expect.stringContaining("Storage is busy") })
+		expect(options.postStateToWebview).toHaveBeenCalled()
 	})
 
 	it("emits Cline auth errors when reinitialization fails due auth", async () => {
@@ -293,6 +590,8 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	const options = {
 		stateManager: {
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
+			getGlobalStateKey: vi.fn(() => undefined),
+			getApiConfiguration: vi.fn(() => ({})),
 		} as unknown as StateManager,
 		sessions: {
 			startNewSession: vi.fn((startInput?: { config?: { sessionId?: string } }) => ({
@@ -304,6 +603,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 		messages: {
 			appendAndEmit: vi.fn(),
+			emitHookMessage: vi.fn(),
 			emitSessionEvents: vi.fn(),
 		},
 		taskHistory: {
@@ -351,6 +651,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		messages: SdkTaskStartCoordinatorOptions["messages"] & {
 			appendAndEmit: ReturnType<typeof vi.fn>
+			emitHookMessage: ReturnType<typeof vi.fn>
 			emitSessionEvents: ReturnType<typeof vi.fn>
 		}
 		taskHistory: SdkTaskStartCoordinatorOptions["taskHistory"] & {

@@ -18,17 +18,11 @@ export const detectOS = (platform: string) => {
 	return detectedOs
 }
 
+// Label for the platform "mod" key used by shortcuts: Cmd on macOS, Ctrl on
+// Windows/Linux (the OS captures the Win/Super key, so it can never be a
+// usable webview shortcut).
 export const detectMetaKeyChar = (platform: string) => {
-	if (platform.match(platforms.mac)) {
-		return "CMD"
-	}
-	if (platform.match(platforms.windows)) {
-		return "Win"
-	}
-	if (platform.match(platforms.linux)) {
-		return "Super"
-	}
-	return "CMD"
+	return platform.match(platforms.mac) ? "⌘" : "Ctrl"
 }
 
 const userAgent = navigator?.userAgent || ""
@@ -39,12 +33,31 @@ export const isSafari = !isChrome && userAgent.indexOf("Safari") >= 0
 
 declare const __NODE_PLATFORM__: string
 
+type Platform = "windows" | "mac" | "linux"
+
 /**
- * Gets the current platform: 'windows', 'mac', or 'linux'
- * Defaults to 'linux' if platform cannot be determined
+ * The OS the webview is running on right now, from the browser. Checked before the build-time
+ * value: that one is the machine the extension was *built* on, so a vsix built on a Mac would
+ * otherwise show ⌘ and listen for Cmd on Windows. Mac is checked first because "darwin" contains
+ * "win".
  */
-export function getCurrentPlatform() {
-	// Fallback to linux if platform is not available
+function runtimePlatform(): Platform | undefined {
+	if (typeof navigator === "undefined") return undefined
+	const nav = navigator as Navigator & { userAgentData?: { platform?: string } }
+	const hint = `${nav.userAgentData?.platform ?? ""} ${nav.platform ?? ""} ${nav.userAgent ?? ""}`.toLowerCase()
+	if (/mac|darwin|iphone|ipad/.test(hint)) return "mac"
+	if (/win/.test(hint)) return "windows"
+	if (/linux|x11|cros/.test(hint)) return "linux"
+	return undefined
+}
+
+/**
+ * Gets the current platform: 'windows', 'mac', or 'linux' (where the keyboard is, even in a
+ * remote window). Falls back to the build machine's, then to 'linux'.
+ */
+export function getCurrentPlatform(): Platform {
+	const detected = runtimePlatform()
+	if (detected) return detected
 	switch (__NODE_PLATFORM__) {
 		case "win32":
 			return "windows"
@@ -54,6 +67,9 @@ export function getCurrentPlatform() {
 			return "linux"
 	}
 }
+
+/** Cmd on macOS, Ctrl elsewhere: the label for "Meta" in shortcuts. */
+export const modKeyLabel = (): string => (getCurrentPlatform() === "mac" ? "⌘" : "Ctrl")
 
 /**
  * Checks if the platform is macOS or Linux

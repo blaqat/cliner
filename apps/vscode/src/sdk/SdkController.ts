@@ -1,18 +1,26 @@
+import { useModelSettings } from "./model-settings/background"
+import { configuredActiveModel } from "./model-settings/legacy-settings"
+import { NextMessageModelSelections } from "./model-settings-resolver"
 // Replaces classic src/core/controller/index.ts (see origin/main)
 //
 // The SDK-backed Controller. It provides the same interface as the classic
 // Controller but delegates session lifecycle (initTask, askResponse,
 // cancelTask, …) to the Cline SDK (@cline/core) and bridges SDK events to
 // the webview's gRPC streams.
+
+import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
 	type CompareCheckpointResult,
+	type CoreSessionEvent,
 	createRestoredCheckpointMetadata,
 	createUserInstructionConfigService,
 	ensureChatWorkspace,
 	findCheckpointForRun,
 	getProviderAuthStorageId,
+	getUserRunSpan,
 	loadRulesForSystemPromptFromRecords,
 	type PreparedRemoteConfigCoreIntegration,
 	type RuleConfig,
@@ -23,27 +31,78 @@ import {
 	type UserInstructionConfigService,
 } from "@cline/core"
 import { loadCloudModels } from "@cline/core/cloud"
-import { formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
+import { createSessionId, formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
 import type { ApiConfiguration } from "@shared/api"
+import { type TaskApiSelection, taskApiSelectionsEqual } from "@shared/api-profiles"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE, CLOUD_SESSION_MODE, isCloudSessionId } from "@shared/cloud/cloud-sessions"
+import {
+	authorizedThreadIds,
+	type ComposerProvenance,
+	type MessageLinkRef,
+	messageLinkRefs,
+	normalizeProvenance,
+} from "@shared/composer-provenance"
 import { mentionRegexGlobal } from "@shared/context-mentions"
-import type { ClineApiReqInfo, ClineMessage, ExtensionState } from "@shared/ExtensionMessage"
+import type {
+	ClineApiReqInfo,
+	ClineMessage,
+	ClineSay,
+	DeletedOpenThread,
+	ExtensionState,
+	TurnPhase,
+} from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
+import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
+import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
+import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
 import type { Settings } from "@shared/storage/state-keys"
-import type { Mode } from "@shared/storage/types"
+import { type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
+import type {
+	HistorySearchHit,
+	HistorySearchThread,
+	NotebookChange,
+	NotebookNoteMeta,
+	TaskGroupSummary,
+	TaskGroupThreadRow,
+	TaskTag,
+} from "@shared/task-groups"
+import type { ThreadWorktreeSettings, WorktreeActionResult } from "@shared/thread-worktrees"
+import { extractTicketTags } from "@shared/ticket-tags"
+import type { WalkthroughScope } from "@shared/Walkthrough"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
+import chokidar, { type FSWatcher } from "chokidar"
 import { ClineEnv } from "@/config"
+import { refreshClineRulesToggles } from "@/core/context/instructions/user-instructions/cline-rules"
+import { refreshWorkflowToggles } from "@/core/context/instructions/user-instructions/workflows"
+import {
+	captureTaskApiSelection,
+	resolveApiConfigurationForTaskSelection,
+	resolveTaskApiSelection,
+} from "@/core/controller/models/apiProfiles"
+import { createTaskApiModelShim, focusedModelsFromSnapshot } from "@/core/controller/models/taskApiModel"
+import { buildStateTaskHistory } from "@/core/controller/state/stateTaskHistory"
 import { parseMentions } from "@/core/mentions"
-import { ensureMcpServersDirectoryExists } from "@/core/storage/disk"
+import { expandTaskNoteMentions } from "@/core/mentions/task-notes"
+import { expandThreadMentions } from "@/core/mentions/thread-mentions"
+import {
+	ensureAgentSkillsDirectoryExists,
+	ensureMcpServersDirectoryExists,
+	ensureRulesDirectoryExists,
+	ensureTaskDirectoryExists,
+	ensureWorkflowsDirectoryExists,
+} from "@/core/storage/disk"
 import { clearSdkRemoteConfig, refreshSdkRemoteConfig } from "@/core/storage/remote-config/sdk-refresh"
 import { StateManager } from "@/core/storage/StateManager"
 import { WorkspaceRootManager } from "@/core/workspace/WorkspaceRootManager"
 import { HostProvider } from "@/hosts/host-provider"
+import { openPendingNoteEditor } from "@/hosts/vscode/NotebookPendingEditor"
 import { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
+import { openFile as openFileIntegration } from "@/integrations/misc/open-file"
 import { ExtensionRegistryInfo } from "@/registry"
 import { OcaAuthService } from "@/services/auth/oca/OcaAuthService"
 import { UrlContentFetcher } from "@/services/browser/UrlContentFetcher"
@@ -52,19 +111,25 @@ import { isCloudSessionsFeatureAvailable, isCloudSessionsFeatureEnabled } from "
 import { ClineError } from "@/services/error/ClineError"
 import { McpHub } from "@/services/mcp/McpHub"
 import { telemetryService } from "@/services/telemetry"
+import { type CollectionInput, readEdits } from "@/services/walkthrough/collection"
+import { recordToolEdits } from "@/services/walkthrough/recording"
 import type { ClineExtensionContext } from "@/shared/cline"
-import { toLegacyApiProvider } from "@/shared/model-catalog/provider-helpers"
 import { fetch } from "@/shared/net"
 import { ShowMessageRequest, ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { resolveDataDirFromEnv } from "@/shared/storage/storage-context"
 import { isClineManagedProvider } from "@/shared/utils/cline"
+import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
+import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
+import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
-import { buildStartSessionInput, createHistoryItemFromSession } from "./cline-session-factory"
-import { MessageTranslatorState, reshapeErrorForWebview } from "./message-translator"
+import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
+import { buildAgentHooks } from "./hooks-adapter"
+import { findMessageLinkTarget, resolveLinkedMessageText } from "./message-link-anchor"
+import { MessageTranslatorState, reshapeErrorForWebview, translateSessionEvent } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
 import type { Disposable, ProviderCatalog, ProviderConfigChange, ProviderConfigStore } from "./model-catalog/contracts"
 import { parseProviderId } from "./model-catalog/provider-id"
@@ -76,6 +141,8 @@ import {
 	ProviderFailureTelemetryTurnGate,
 } from "./provider-failure-telemetry"
 import { RemoteConfigRefreshCoordinator } from "./remote-config-refresh-coordinator"
+import { ScriptsHost } from "./scripts/script-host"
+import { buildAsideConversation } from "./sdk-aside-conversation"
 import {
 	findVisibleCheckpointUserMessageByRun,
 	getCheckpointRunCountForMessage,
@@ -90,8 +157,9 @@ import { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordi
 import { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import { SdkMcpCoordinator } from "./sdk-mcp-coordinator"
 import { SdkMessageCoordinator, type SessionEventListener } from "./sdk-message-coordinator"
-import { SdkModeCoordinator } from "./sdk-mode-coordinator"
+import { ACT_MODE_CONTINUATION_PROMPT, SdkModeCoordinator } from "./sdk-mode-coordinator"
 import { SdkProviderChangeCoordinator } from "./sdk-provider-change-coordinator"
+import { restoredThreadStatus } from "./sdk-restored-status"
 import { SdkSessionConfigBuilder } from "./sdk-session-config-builder"
 import { SdkSessionConfigChangeCoordinator } from "./sdk-session-config-change-coordinator"
 import { SdkSessionEventCoordinator } from "./sdk-session-event-coordinator"
@@ -99,7 +167,12 @@ import { SdkSessionHistoryLoader } from "./sdk-session-history-loader"
 import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkSessionRebuildScheduler } from "./sdk-session-rebuild-scheduler"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
-import { SdkTaskHistory, sessionHistoryRecordToHistoryItem } from "./sdk-task-history"
+import {
+	SdkTaskHistory,
+	sessionHistoryRecordToHistoryItem,
+	sessionRecordActivityTs,
+	sessionRecordStartedTs,
+} from "./sdk-task-history"
 import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 import { createVscodeSdkTelemetryHandle, type VscodeSdkTelemetryHandle } from "./sdk-telemetry"
 import { isToolAutoApproved } from "./sdk-tool-policies"
@@ -113,14 +186,34 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
+import {
+	asideDescendantIds,
+	asideRootId,
+	effectiveTaskGroupId,
+	resolveEffectiveTaskGroupId,
+	withEffectiveTaskGroups,
+} from "./task-groups/effective-task-group"
+import { HistorySearcher } from "./task-groups/history-search"
+import { latestNotebookChangesMessage, notebookChangesMessage, restoreNotebookChanges } from "./task-groups/notebook-changes"
+import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/notebook-context"
+import { createNotebookConversion, type NotebookConversionKind, notebookConversion } from "./task-groups/notebook-convert"
+import { notebookDiff } from "./task-groups/notebook-diff"
+import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
+import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
+import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
+import { messageLastLine } from "./thread-last-line"
+import { maybeGenerateThreadTitle, type ThreadTitleSource } from "./thread-title"
+import { TurnActivityWatchdog } from "./turn-activity-watchdog"
 import { TurnStateTracker } from "./turn-state-tracker"
 import { createWorkspaceFileReadExecutor } from "./vscode-file-read-executor"
 import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
+import { ThreadWorktreeManager, threadRunFolder } from "./worktrees/thread-worktree-manager"
 
 /**
  * Log a stub warning and return undefined.
@@ -162,6 +255,13 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		task: formatDisplayUserInput(item.task),
 		ts: item.ts,
 		isFavorited: item.isFavorited ?? false,
+		isSettled: item.isSettled,
+		settledAt: item.settledAt,
+		isStashed: item.isStashed,
+		stashedAt: item.stashedAt,
+		lastLine: item.lastLine,
+		parentTaskId: item.parentTaskId,
+		forkedAtTs: item.forkedAtTs,
 		size: item.size ?? 0,
 		totalCost: item.totalCost ?? 0,
 		tokensIn: item.tokensIn ?? 0,
@@ -170,6 +270,44 @@ function historyItemToTaskResponse(item: HistoryItem): TaskResponse {
 		cacheReads: item.cacheReads ?? 0,
 		isLegacy: item.isLegacy ?? false,
 	})
+}
+
+interface TaskSessionContext {
+	task: TaskProxy
+	translator: MessageTranslatorState
+	turn: TurnStateTracker
+	messages: SdkMessageCoordinator
+	interactions: SdkInteractionCoordinator
+	events: SdkSessionEventCoordinator
+	watchdog: TurnActivityWatchdog
+	mode: "plan" | "act"
+	cancelled: boolean
+	/**
+	 * The task group a new thread was started in. Core persists the session
+	 * record (with its `taskGroupId` metadata) only when the first send lands,
+	 * so until then the synthesized history row reads the group from here.
+	 */
+	taskGroupId?: string
+	/**
+	 * The saved-configuration selection this task was last using (per mode).
+	 * Sessions pin to it so switching chats never rewrites a running chat's
+	 * provider/model without changing the settings defaults.
+	 */
+	apiSelection?: TaskApiSelection
+	/** Requested changes waiting for an idle session rebuild. */
+	pendingApiSelection?: TaskApiSelection
+}
+
+/** An armed next-message pick is what the composer should show until that message has gone. */
+function withNextMessagePick(
+	selection: TaskApiSelection | undefined,
+	pick: import("@shared/model-settings").ModelPick | undefined,
+	mode: Mode | undefined,
+) {
+	if (!pick) return selection
+	const key = mode === "plan" ? "ask" : "act"
+	const current = selection?.modelSelectionV1 ?? { version: 1 as const, ask: null, act: null }
+	return { ...selection, modelSelectionV1: { ...current, [key]: pick } }
 }
 
 /**
@@ -184,6 +322,9 @@ interface StartRetry {
 	images?: string[]
 	/** Set for a cloud start; the retry runs on the same repository and branch. */
 	cloudTarget?: CloudTarget
+	files?: string[]
+	/** What the user explicitly picked or ran in the composer for `prompt`. */
+	provenance?: ComposerProvenance
 	/**
 	 * The error was shown on a task that already had a conversation, such as
 	 * a failed edit or checkpoint restore, rather than on a new task that
@@ -196,6 +337,19 @@ interface StartRetry {
 interface CloudTarget {
 	repoUrl: string
 	branch?: string
+}
+
+/**
+ * Edits and checkpoint restores start a new session for the same thread; carry
+ * over what the user set on it (name, task, tags) so the replacement keeps them.
+ */
+function threadIdentityMetadata(item: HistoryItem | undefined): Record<string, unknown> {
+	return {
+		...(item?.title ? { threadTitle: item.title } : {}),
+		...(item?.taskGroupId ? { taskGroupId: item.taskGroupId } : {}),
+		...(item?.tags?.length ? { tags: item.tags } : {}),
+		...(item?.dismissedAutoTags?.length ? { dismissedAutoTags: item.dismissedAutoTags } : {}),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -212,11 +366,22 @@ export class Controller {
 	private interactions: SdkInteractionCoordinator
 	private diffEdits: SdkDiffEditCoordinator
 	private sessionConfigBuilder: SdkSessionConfigBuilder
+	private historyProjectionCache?: {
+		version: string
+		revision: number
+		legacy: HistoryItem[]
+		liveKey: string
+		records: SessionHistoryRecord[]
+		history: HistoryItem[]
+		statuses: ExtensionState["sessionStatuses"]
+		counts: ExtensionState["subagentCounts"]
+	}
 	private taskHistory: SdkTaskHistory
 	private mode: SdkModeCoordinator
 	private mcpTools: SdkMcpCoordinator
 	private sessionConfigChanges: SdkSessionConfigChangeCoordinator
 	private providerChanges: SdkProviderChangeCoordinator
+	private readonly refusedRebuilds = new Set<string>()
 	private followups: SdkFollowupCoordinator
 	private taskControl: SdkTaskControlCoordinator
 	private taskStart: SdkTaskStartCoordinator
@@ -232,6 +397,8 @@ export class Controller {
 	private readonly providerCatalog: ProviderCatalog
 	private readonly providerConfigStoreSubscription: Disposable
 	private providerConfigStatePostScheduled = false
+	/** Last open thread a delete removed; posted in state (see ExtensionState.deletedOpenThread). */
+	private deletedOpenThread?: DeletedOpenThread
 	// Debounces/coalesces postStateToWebview() calls — see StatePostDebouncer.
 	private static readonly STATE_POST_DEBOUNCE_MS = 50
 	private readonly statePostDebouncer: StatePostDebouncer
@@ -241,7 +408,38 @@ export class Controller {
 
 	// Presents the Task interface that gRPC handlers expect, delegating to the
 	// active SDK session.
-	task?: TaskProxy
+	private focusedTask?: TaskProxy
+	private readonly taskSessions = new Map<string, TaskSessionContext>()
+	private sessionEventStream!: SdkMessageCoordinator
+	private readonly subagentThreads = new Map<string, HistoryItem>()
+	private homeContext!: Pick<TaskSessionContext, "translator" | "turn" | "messages" | "interactions">
+
+	get task(): TaskProxy | undefined {
+		return this.focusedTask
+	}
+	set task(task: TaskProxy | undefined) {
+		const previous = this.focusedTask
+		if (
+			previous &&
+			previous.taskId !== task?.taskId &&
+			!this.sessions.getSession(previous.taskId) &&
+			!this.subagentThreads?.has(previous.taskId) &&
+			this.taskSessions.get(previous.taskId)?.turn.currentPhase !== "streaming"
+		) {
+			this.taskSessions.get(previous.taskId)?.messages.dispose()
+			this.taskSessions.delete(previous.taskId)
+		}
+		this.focusedTask = task
+		const context = task ? this.getTaskSessionContext(task.taskId, task) : this.homeContext
+		if (!context) return
+		this.messageTranslatorState = context.translator
+		this.turnStateTracker = context.turn
+		this.messages = context.messages
+		this.interactions = context.interactions
+		this.sessions.focusSession(task?.taskId)
+		this.messageTranslatorState.getMinter().bumpEpoch()
+		this.turnStateTracker.set(this.turnStateTracker.currentPhase)
+	}
 
 	mcpHub: McpHub
 	accountService: ClineAccountService
@@ -267,7 +465,15 @@ export class Controller {
 	// Private state kept for stub compatibility
 	private backgroundCommandRunning = false
 	private backgroundCommandTaskId?: string
-	private pendingStartRetry?: StartRetry
+	private pendingClineAuthRetry?: StartRetry
+	/** Threads whose first message never got a session. Retry starts them again with that message. */
+	private readonly failedStarts = new WeakMap<TaskProxy, StartRetry>()
+	/** Follow-ups that never reached a session. Retry sends the same message. */
+	private readonly failedFollowUps = new WeakMap<
+		TaskProxy,
+		{ prompt?: string; images?: string[]; files?: string[]; provenance?: ComposerProvenance }
+	>()
+	private followUpFailure?: string
 	checkpointRestoreInput?: ExtensionState["checkpointRestoreInput"]
 
 	// Timer for periodic remote config fetching (enterprise policy enforcement)
@@ -295,6 +501,50 @@ export class Controller {
 	private userInstructionServiceRoot?: string
 	private isDisposed = false
 
+	// Task-group ("Tasks") storage under ~/.cline/data/task-groups — deliberately
+	// outside data/sessions and data/tasks, which the SDK owns and other Cline
+	// installs share. The watcher refreshes webview state when notes/groups
+	// change on disk (hand edits, or another install writing to ~/.cline).
+	private readonly taskGroupStore = new TaskGroupStore()
+	/** Saved scripts: the `script` tool, per-script approvals and `/script` composer runs. */
+	readonly scripts = new ScriptsHost({
+		getToggles: () => ({
+			global: StateManager.get().getGlobalSettingsKey("globalScriptToggles") ?? {},
+			workspace: StateManager.get().getWorkspaceStateKey("scriptToggles") ?? {},
+		}),
+		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
+		getLogDir: () => path.join(HostProvider.get().globalStorageFsPath, "script-logs"),
+		getTrustFile: () => path.join(HostProvider.get().globalStorageFsPath, "script-trust.json"),
+		// The same environment every other command Cline runs gets (settings + .env + PATH).
+		// Same .env base as commands and the settings preview (the workspace root, not the script's cwd).
+		resolveEnv: async (cwd) =>
+			(
+				await resolveConfiguredTerminalEnv(StateManager.get(), {
+					cwd,
+					workspaceRoot: await getTerminalEnvWorkspaceRoot(cwd),
+				})
+			).env,
+	})
+	private readonly notebookStore = new NotebookStore()
+	private readonly notebookEditors: { dispose(): void }[] = []
+	private readonly historySearcher = new HistorySearcher()
+	// Bumped per search kind on every searchHistory call so an in-flight scan for
+	// a superseded request can notice and return early. Keyed by kind because the
+	// search view runs its notes and messages searches in parallel.
+	private readonly historySearchGenerations = new Map<string, number>()
+	private taskGroupsWatcher?: FSWatcher
+	private taskGroupsSummaryCache?: { summaries: TaskGroupSummary[]; at: number }
+	// User-mentioned `thread:` ids per conversation (owner thread id), kept in
+	// memory for immediate access and mirrored into the thread's session
+	// metadata so the transcript-tool allow-list survives session rebuilds.
+	private readonly referencedThreads = new Map<string, Set<string>>()
+	private readonly currentBranchWatcher = new CurrentBranchWatcher(() => {
+		void this.refreshCurrentBranch().catch(() => {})
+	})
+	private branchRefresh?: Promise<void>
+	private branchRefreshRequested = false
+	private currentBranchCache?: { cwd: string; branch: string; at: number }
+
 	// Synchronous snapshot of getWorkspaceRoot()'s latest result, for the message
 	// translator (which runs synchronously and relativizes the tool paths shown in
 	// the chat view). Warmed in the constructor and refreshed on every call.
@@ -316,7 +566,27 @@ export class Controller {
 		return this.remoteConfigRevision
 	}
 
+	private readonly workspaceNotices = new Map<string, string>()
+	private readonly seenWorktreeRemovals = new Map<string, number>()
+	private async resolveSessionWorkspace(id: string): Promise<string | undefined> {
+		const mapping = await this.threadWorktrees.get(id)
+		if (mapping) return threadRunFolder(mapping)
+		const removed = await this.threadWorktrees.removedWorkspace(id)
+		if (!removed) return undefined
+		if (this.seenWorktreeRemovals.get(id) !== removed.removedAt) {
+			this.workspaceNotices.set(
+				id,
+				`The thread worktree was removed. Continue in the user's workspace at ${removed.workspace}.`,
+			)
+			this.seenWorktreeRemovals.set(id, removed.removedAt)
+		}
+		return removed.workspace
+	}
+	readonly threadWorktrees: ThreadWorktreeManager
+
 	constructor(readonly context: ClineExtensionContext) {
+		this.threadWorktrees = new ThreadWorktreeManager(path.join(context.globalStorageUri.fsPath, "thread-worktrees"))
+		const controller = this
 		// StateManager must be initialized before creating the Controller
 		this.stateManager = StateManager.get()
 		syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
@@ -389,16 +659,21 @@ export class Controller {
 		})
 		this.sessionHistory = new SdkSessionHistoryLoader()
 		this.sessionConfigBuilder = new SdkSessionConfigBuilder({
+			nextMessageSelections: this.configuredNextMessageSelections,
 			stateManager: this.stateManager,
 			emitHookMessage: (msg) => this.messages.emitHookMessage(msg),
 			onConsecutiveMistakeLimitReached: (context) => this.interactions.handleConsecutiveMistakeLimitReached(context),
 		})
 		this.diffEdits = new SdkDiffEditCoordinator({
-			getCwd: () => this.getWorkspaceRoot(),
+			getCwd: async (sessionId) =>
+				this.sessions?.getSession(sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
+			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 		})
 		this.interactions = new SdkInteractionCoordinator({
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			getSessionId: () => this.sessions.getActiveSession()?.sessionId ?? "",
 			postStateToWebview: () => this.postStateToWebview(),
 			// Share the single id/seq/epoch authority so interaction-minted ids (tool-approval
@@ -406,7 +681,8 @@ export class Controller {
 			getMinter: () => this.messageTranslatorState.getMinter(),
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
 			// Open the diff editor preview before the approval buttons render.
-			onToolApprovalAsk: (request) => this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input),
+			onToolApprovalAsk: (request) =>
+				this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId),
 			recordApprovedToolMessage: (toolCallId, messageTs) =>
 				this.messageTranslatorState.recordApprovedToolMessageTs(toolCallId, messageTs),
 			recordDeniedToolApproval: (toolCallId, toolName, reason) => {
@@ -419,24 +695,107 @@ export class Controller {
 				const autoApprovalSettings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return autoApprovalSettings ? isToolAutoApproved(request.toolName, autoApprovalSettings) : false
 			},
-			getCwd: () => this.lastKnownWorkspaceRoot,
+			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? "")?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
+			onStatusChange: (id, status) => {
+				if (this.isDisposed) return
+				void this.taskHistory
+					.saveThreadStatus(id, status)
+					.catch((error) => Logger.warn("[SdkController] Failed to persist thread status", error))
+			},
+			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
+			resolveSessionWorkspace: (id) => this.resolveSessionWorkspace(id),
+			consumeWorkspaceNotice: (id) => {
+				const notice = this.workspaceNotices.get(id)
+				this.workspaceNotices.delete(id)
+				return notice
+			},
+			prepareStartInput: async (input) => {
+				const id = input.config?.sessionId || createSessionId()
+				const mapping = await this.threadWorktrees.get(id)
+				if (mapping && !mapping.takenOver) {
+					await this.threadWorktrees.assertPresent(mapping)
+					input = { ...input, config: { ...input.config, cwd: mapping.cwd, workspaceRoot: mapping.cwd } }
+				} else {
+					const workspace = await this.resolveSessionWorkspace(id)
+					if (workspace) input = { ...input, config: { ...input.config, cwd: workspace, workspaceRoot: workspace } }
+				}
+				return {
+					...input,
+					config: {
+						...input.config,
+						sessionId: id,
+						onConsecutiveMistakeLimitReached: (context) =>
+							this.getTaskSessionContext(id).interactions.handleConsecutiveMistakeLimitReached(context),
+						hooks: buildAgentHooks(
+							this.stateManager,
+							(message) => this.getTaskSessionContext(id).messages.emitHookMessage(message),
+							input.config?.cwd,
+							{ taskResumed: input.sessionMetadata?.taskResumed === true },
+						),
+					},
+				}
+			},
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
-			requestToolApproval: (request) => this.interactions.handleRequestToolApproval(request),
-			askQuestion: (question, options, context) => this.interactions.handleAskQuestion(question, options, context),
-			editorExecutor: (input, cwd, context) => this.diffEdits.executeEditorTool(input, cwd, context),
-			applyPatchExecutor: (input, cwd, context) => this.diffEdits.executeApplyPatchTool(input, cwd, context),
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
+			resolveScripts: (input) => this.scripts.toolContext(input.config.cwd),
+			requestToolApproval: async (request) =>
+				this.getTaskSessionContext(
+					this.sessions.getSession(request.sessionId)
+						? request.sessionId
+						: await this.resolveTaskSessionId(request.conversationId),
+				).interactions.handleRequestToolApproval(request),
+			askQuestion: async (question, options, context) =>
+				this.getTaskSessionContext(
+					Array.from(this.subagentThreads?.values() ?? []).find((child) => child.agentId === context.agentId)
+						?.runtimeOwnerTaskId ??
+						context.sessionId ??
+						(await this.resolveTaskSessionId(context.conversationId ?? "")),
+				).interactions.handleAskQuestion(question, options, context),
+			editorExecutor: (input, cwd, context) =>
+				recordToolEdits(
+					async () =>
+						ensureTaskDirectoryExists(
+							context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+						),
+					input,
+					cwd,
+					context,
+					() => this.diffEdits.executeEditorTool(input, cwd, context),
+					(error) => Logger.warn(`[Walkthrough] Edit recording failed: ${error}`),
+				),
+			applyPatchExecutor: (input, cwd, context) =>
+				recordToolEdits(
+					async () =>
+						ensureTaskDirectoryExists(
+							context.sessionId ?? (await this.resolveTaskSessionId(context.conversationId ?? "")),
+						),
+					input,
+					cwd,
+					context,
+					() => this.diffEdits.executeApplyPatchTool(input, cwd, context),
+					(error) => Logger.warn(`[Walkthrough] Edit recording failed: ${error}`),
+				),
 			// The SDK's built-in reader resolves relative paths against the extension
 			// host's process.cwd() (usually "/"); resolve them against the workspace instead.
-			readFileExecutor: createWorkspaceFileReadExecutor(() => this.getWorkspaceRoot()),
+			readFileExecutor: createWorkspaceFileReadExecutor(
+				async (context) =>
+					this.sessions.getSession(context.sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
+			),
 			onSessionEvent: (event) => {
-				this.sessionEvents.handleSessionEvent(event).catch((err) => {
-					Logger.error("[SdkController] Failed to handle session event:", err)
-				})
+				if (this.handleSubagentEvent(event)) return
+				if (!this.sessions.getSession(event.payload.sessionId) && !this.taskSessions.has(event.payload.sessionId)) return
+				this.getTaskSessionContext(event.payload.sessionId)
+					.events.handleSessionEvent(event)
+					.catch((err) => {
+						Logger.error("[SdkController] Failed to handle session event:", err)
+					})
 			},
 			onDidBecomeIdle: () => this.handleSessionBecameIdle(),
+			onSessionReplaced: (id) => this.handleParentSessionReplaced(id),
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
 			foregroundCommands: this.foregroundCommands,
@@ -455,21 +814,61 @@ export class Controller {
 				}
 				return this._terminalManager
 			},
-			onSendStart: () => {
+			onSessionRemoved: (id) => {
+				this.mcpTools?.forgetSession(id)
+				this.sessionRebuilds?.forgetSession(id)
+				this.taskSessions.get(id)?.interactions.clearPending("Session removed")
+				this.taskSessions.get(id)?.watchdog.stop()
+				this.taskSessions.get(id)?.messages.dispose()
+				this.taskSessions.delete(id)
+			},
+			deferSend: (id, prompt, images, files, delivery) => this.deferOneTurnFollowup(id, prompt, images, files, delivery),
+			onSendAdmission: (id) => this.configuredModelAdmission(id),
+			onSendStart: (id, delivery) => {
+				if (delivery !== "interject") this.getTaskSessionContext(id).cancelled = false
+				this.getTaskSessionContext(id).turn.set("streaming")
+				this.getTaskSessionContext(id).watchdog.activity()
+				void this.taskHistory.markTaskActive(id)
 				this.beginProviderFailureTelemetryTurn()
 			},
 			// this.mode is assigned later in this constructor; the closure only
 			// runs at send time, long after construction completes.
 			consumeModeSwitchNotice: (sessionId) => this.mode.consumeModeSwitchNotice(sessionId),
-			onSendComplete: async () => {
+			consumeMcpChangeNotice: (id) => this.mcpTools.consumeMcpChangeNotice(id),
+			onSendComplete: async (id) => {
+				await this.taskHistory.markTaskActive(id)
 				// Normal flows close their diff sessions inline; anything left here is orphaned.
-				void this.diffEdits.discardAllPreviews("turn complete")
+				if (this.task?.taskId === id) void this.diffEdits.discardAllPreviews("turn complete")
 
 				this.postStateToWebview().catch((err) => {
 					Logger.error("[SdkController] Failed to post state after turn:", err)
 				})
 			},
+			onHeldSendCancelled: (sessionId, prompt, images, files) => {
+				const context = this.getTaskSessionContext(sessionId)
+				context.messages.appendMessages([
+					{
+						ts: context.translator.nextTs(),
+						type: "say",
+						say: "text",
+						text: `Cancelled before sending:\n\n${prompt}`,
+						images,
+						files,
+					},
+				])
+				void this.postStateToWebview().catch((error) => Logger.error("Failed to post cancelled submission:", error))
+			},
 			onSendError: async (error, sessionId) => {
+				const context = this.getTaskSessionContext(sessionId)
+				context.turn.set("error")
+				context.watchdog.stop()
+				if (this.task?.taskId !== sessionId) {
+					context.messages.appendMessages([
+						{ ts: context.translator.nextTs(), type: "say", say: "error", text: String(error) },
+					])
+					await this.postStateToWebview()
+					return
+				}
 				// A turn failed — the UI shows error recovery (Retry / Sign In / Add Credits).
 				void this.diffEdits.discardAllPreviews("turn error")
 				this.turnStateTracker.set("error")
@@ -525,6 +924,39 @@ export class Controller {
 		})
 		this.sessionRebuilds = new SdkSessionRebuildScheduler({ sessions: this.sessions })
 		this.taskHistory = new SdkTaskHistory({
+			resolveNotebookChanges: async (id, messages) =>
+				restoreNotebookChanges(
+					messages,
+					id,
+					await Promise.all(
+						(await this.notebookStore.listPending(id)).map((review) => this.notebookStore.reviewDiffs(review, id)),
+					),
+					() => this.messageTranslatorState.nextTs(),
+				),
+			beforeDeleteSession: async (id) => {
+				await this.sessionRebuilds.runExclusive(async () => {
+					const context = this.taskSessions.get(id)
+					if (context) {
+						context.cancelled = true
+						context.interactions.clearPending("Task deleted")
+						context.messages.cancelPendingSave()
+					}
+					await this.sessions.removeSession(id)
+				})
+				if (
+					this.task?.taskId === id ||
+					(this.subagentThreads?.get(this.task?.taskId ?? "")?.runtimeOwnerTaskId ??
+						this.subagentThreads?.get(this.task?.taskId ?? "")?.parentTaskId) === id
+				)
+					await this.clearTask()
+				for (const [childId, child] of this.subagentThreads) {
+					if ((child.runtimeOwnerTaskId ?? child.parentTaskId) !== id && childId !== id) continue
+					this.taskSessions.get(childId)?.messages.dispose()
+					this.taskSessions.delete(childId)
+					this.subagentThreads.delete(childId)
+					delete this.sessions.sessionStatuses[childId]
+				}
+			},
 			mcpHub: this.mcpHub,
 			sessions: this.sessions,
 			legacyExtensionStorageDir: this.context.globalStorageUri.fsPath,
@@ -534,17 +966,47 @@ export class Controller {
 			getMinter: () => this.messageTranslatorState.getMinter(),
 			// Resolved lazily: the cloud coordinator is constructed after the task coordinators it depends on.
 			cloud: {
-				isCloudSessionId: (id) => this.cloud.isCloudSessionId(id),
+				isCloudSessionId: (id) => this.cloud?.isCloudSessionId(id),
 				list: () => this.cloud.listHistoryRecords(),
 				find: (id) => this.cloud.findHistoryRecord(id),
 				delete: (id) => this.cloud.deleteSession(id),
 			},
 		})
+		void this.ensureTaskGroupsWatcher()
 		this.mode = new SdkModeCoordinator({
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
+			onModeRebuilt: async (id, mode, selection) => {
+				this.getTaskSessionContext(id).mode = mode
+				this.refreshTaskApiModel(id)
+				if (selection) this.recordTaskApiSelection(id, selection)
+				await this.taskHistory.setTaskMode(id, mode)
+			},
+			resumeInAct: async (content) => {
+				const id = this.task?.taskId
+				if (!id) return false
+				this.turnStateTracker.set("streaming")
+				this.messageTranslatorState.clearTurnOutcome()
+				await this.followups.askResponse(
+					content?.message,
+					content?.images,
+					content?.files,
+					undefined,
+					undefined,
+					ACT_MODE_CONTINUATION_PROMPT,
+					undefined,
+					normalizeProvenance(content?.provenance),
+				)
+				return this.task?.taskId === id && this.sessions.getSession(id)?.isRunning === true
+			},
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			interactions: this.interactions,
-			messages: this.messages,
+			get interactions() {
+				return controller.interactions
+			},
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getTask: () => this.task,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
@@ -556,7 +1018,7 @@ export class Controller {
 			postStateToWebview: () => this.postStateToWebview(),
 			getTurnPhase: () => this.turnStateTracker.currentPhase,
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, provenance) => this.resolveContextMentions(text, undefined, provenance),
 			rebuilds: this.sessionRebuilds,
 			onAutoContinueStarting: () => {
 				this.turnStateTracker.set("streaming")
@@ -567,9 +1029,20 @@ export class Controller {
 			},
 		})
 		this.mcpTools = new SdkMcpCoordinator({
+			getToolSnapshot: () =>
+				Object.fromEntries(
+					this.mcpHub
+						.getServers()
+						.filter((server) => server.status === "connected" && !server.disabled)
+						.map((server) => [server.name, (server.tools ?? []).map((tool) => tool.name).sort()]),
+				),
+			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: async (sdkHost, sessionId) =>
@@ -577,11 +1050,16 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.sessionConfigChanges = new SdkSessionConfigChangeCoordinator({
+			getMessages: (id) => this.getTaskSessionContext(id).messages,
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: async (sdkHost, sessionId) =>
@@ -589,40 +1067,61 @@ export class Controller {
 			buildStartSessionInput,
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.providerChanges = new SdkProviderChangeCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getTask: () => this.task,
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: async (sdkHost, sessionId) =>
 				(await this.sessionHistory.loadInitialMessages(sdkHost, sessionId)) ?? [],
 			buildStartSessionInput,
+			getTaskApiSelection: (taskId) => {
+				const context = this.taskSessions.get(taskId)
+				return context?.pendingApiSelection ?? context?.apiSelection
+			},
+			onSelectionRebuilt: (taskId, selection, requestedSelection) =>
+				this.commitTaskApiSelection(taskId, selection, requestedSelection),
 			postStateToWebview: () => this.postStateToWebview(),
 			rebuilds: this.sessionRebuilds,
+			refusedRebuilds: this.refusedRebuilds,
 		})
 		this.followups = new SdkFollowupCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
-			interactions: this.interactions,
+			get interactions() {
+				return controller.interactions
+			},
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			runExclusive: (operation) => this.sessionRebuilds.runExclusive(operation),
+			retryRefusedRebuild: (sessionId) => this.providerChanges.retryRefusedRebuild(sessionId),
 			getTask: () => this.task,
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			loadInitialMessages: (sessionHost, taskId) => this.sessionHistory.loadInitialMessages(sessionHost, taskId),
 			buildStartSessionInput,
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, provenance) => this.resolveContextMentions(text, undefined, provenance),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: () => this.emitClineAuthErrorWithTelemetry(),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			postStateToWebview: () => this.postStateToWebview(),
-			onResumeFailed: () => {
+			onResumeFailed: (failure) => {
 				this.turnStateTracker.set("error")
+				this.followUpFailure = failure.reason
+				if (this.task && (failure.prompt?.trim() || failure.images?.length || failure.files?.length))
+					this.failedFollowUps.set(this.task, failure)
 			},
 			onFollowUpAbandoned: () => {
 				// Settle the streaming phase askResponse pre-set, unless a turn
@@ -634,19 +1133,37 @@ export class Controller {
 		})
 		this.taskControl = new SdkTaskControlCoordinator({
 			sessions: this.sessions,
-			interactions: this.interactions,
-			messages: this.messages,
+			get interactions() {
+				return controller.interactions
+			},
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			getTask: () => this.task,
 			setTask: (task) => {
 				this.task = task
 			},
-			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
+			onAskResponse: (text, images, files, decisionId, provenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			resetMessageTranslator: () => this.resetMessageTranslatorAndFence(),
 			// Bump the epoch synchronously before abort so straggler events from the cancelled
 			// turn carry the old epoch and are dropped by the webview. The resumable phase is set
 			// in SdkController.cancelTask before this runs.
+			setTaskMode: (mode) => this.stateManager.setGlobalState("mode", mode),
+			focusLiveTask: (id, historyItem) => {
+				if (historyItem?.isSubagent && !this.subagentThreads?.has(id)) this.subagentThreads.set(id, historyItem)
+				const context = this.taskSessions.get(id)
+				if (!context || (!this.sessions.getSession(id) && !this.subagentThreads?.has(id))) return false
+				this.task = context.task
+				this.stateManager.setGlobalState("mode", context.mode)
+				if (historyItem) this.restoreTaskApiSelection(historyItem, context.mode)
+				return true
+			},
+			getLiveTaskItem: (id) => this.subagentThreads?.get(id) ?? this.liveTaskHistoryItem(id),
+			applyTaskApiSelection: (historyItem, mode) => this.restoreTaskApiSelection(historyItem, mode),
 			raiseCancelFence: () => {
+				if (this.task) this.getTaskSessionContext(this.task.taskId).cancelled = true
 				this.messageTranslatorState.clearApprovedToolMessageTs()
 				this.messageTranslatorState.getMinter().bumpEpoch()
 			},
@@ -658,27 +1175,69 @@ export class Controller {
 		this.taskStart = new SdkTaskStartCoordinator({
 			stateManager: this.stateManager,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			buildStartSessionInput,
 			createHistoryItemFromSession,
 			clearTask: async () => {
-				this.pendingStartRetry = undefined
+				this.pendingClineAuthRetry = undefined
 				await this.taskControl.clearTask()
 			},
 			setTask: (task) => {
 				this.task = task
 			},
-			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
+			onStartFailed: ({ task, prompt, images, files, provenance, background, reason }) => {
+				this.failedStarts.set(task, { task, prompt: prompt ?? "", images, files, provenance, hasConversation: false })
+				// A background thread isn't on screen, so its row alone would go unseen.
+				if (background)
+					void HostProvider.window
+						.showMessage(
+							ShowMessageRequest.create({
+								type: ShowMessageType.ERROR,
+								message: `Couldn't start the thread: ${reason}`,
+							}),
+						)
+						.catch((error) => Logger.error("[SdkController] Failed to report background start failure:", error))
+			},
+			createTaskContext: (id, task) => this.getTaskSessionContext(id, task),
+			onAskResponse: (text, images, files, decisionId, provenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			onCancelTask: () => this.cancelTask(),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 			createTempSessionHost: () => this.createRemoteConfigAwareSessionHost(),
 			loadInitialMessages: (reader, taskId) => this.sessionHistory.loadInitialMessages(reader, taskId),
-			resolveContextMentions: (text) => this.resolveContextMentions(text),
+			resolveContextMentions: (text, id, provenance) => this.resolveContextMentions(text, id, provenance),
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
-			emitClineAuthError: (task) => this.emitClineAuthErrorWithTelemetry(task),
+			emitClineAuthError: (task, provenance) => this.emitClineAuthErrorWithTelemetry(task, undefined, provenance),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
+			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
+				const enabled = runInWorktree === true
+				if (!enabled) return workspace
+				return (
+					await this.threadWorktrees.create(
+						id,
+						title,
+						workspace,
+						!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+					)
+				).cwd
+			},
+			consumeDraftApiSelection: () => {
+				const draft = this.draftApiSelection
+				this.draftApiSelection = undefined
+				return draft
+			},
+			transferDraftModelPick: (id) => this.configuredNextMessageSelections.move("", id),
+			recordTaskApiSelection: (taskId, selection, mode) => {
+				this.getTaskSessionContext(taskId).mode = mode
+				this.recordTaskApiSelection(taskId, selection)
+			},
+			recordTaskGroup: (taskId, taskGroupId) => {
+				this.getTaskSessionContext(taskId).taskGroupId = taskGroupId
+			},
 			postStateToWebview: () => this.postStateToWebview(),
 		})
 		this.cloudSessions = new CloudSessionsService({
@@ -701,7 +1260,9 @@ export class Controller {
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			sessionConfigBuilder: this.sessionConfigBuilder,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			getMinter: () => this.messageTranslatorState.getMinter(),
 			getTask: () => this.task,
 			setTask: (task) => {
@@ -710,7 +1271,7 @@ export class Controller {
 			onAskResponse: (text, images, files) => this.askResponse(text, images, files),
 			onCancelTask: () => this.cancelTask(),
 			clearTask: async () => {
-				this.pendingStartRetry = undefined
+				this.pendingClineAuthRetry = undefined
 				return this.taskControl.clearTask()
 			},
 			onStartFailed: (task, input) => this.offerCloudStartRetry(task, input),
@@ -746,10 +1307,15 @@ export class Controller {
 		// reads until the change has settled.
 		this.accountService.onAccountChange((change) => this.cloud.reset(change))
 		this.compaction = new SdkCompactionCoordinator({
+			onSelectionRebuilt: (id, selection) => this.recordTaskApiSelection(id, selection),
+			getTaskApiSelection: (id) =>
+				this.taskSessions.get(id)?.pendingApiSelection ?? this.taskSessions.get(id)?.apiSelection,
 			stateManager: this.stateManager,
 			sessions: this.sessions,
 			rebuilds: this.sessionRebuilds,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			sessionConfigBuilder: this.sessionConfigBuilder,
 			getDisplayedTaskId: () => this.task?.taskId,
@@ -761,7 +1327,9 @@ export class Controller {
 		this.sessionEvents = new SdkSessionEventCoordinator({
 			messageTranslatorState: this.messageTranslatorState,
 			sessions: this.sessions,
-			messages: this.messages,
+			get messages() {
+				return controller.messages
+			},
 			taskHistory: this.taskHistory,
 			stateManager: this.stateManager,
 			getTask: () => this.task,
@@ -782,6 +1350,14 @@ export class Controller {
 		// Wire the bridge to the controller's getStateToPostToWebview()
 		// so state updates include messages, currentTaskItem, and task history
 		this.grpcBridge.setGetStateFn(() => this.getStateToPostToWebview())
+
+		this.sessionEventStream = this.messages
+		this.homeContext = {
+			translator: this.messageTranslatorState,
+			turn: this.turnStateTracker,
+			messages: this.messages,
+			interactions: this.interactions,
+		}
 
 		// Register the bridge as a session event listener
 		this.onSessionEvent(this.grpcBridge.createListener())
@@ -822,22 +1398,198 @@ export class Controller {
 		this.providerCatalog.invalidateProviderListings()
 	}
 
-	private handleProviderConfigChange(event: ProviderConfigChange): void {
+	private handleProviderConfigChange(_event: ProviderConfigChange): void {
 		this.scheduleProviderConfigStatePost()
+	}
 
-		if (event.kind === "selection" && this.isSelectionForActiveModeProvider(event)) {
-			this.sessions
-				?.updateActiveSessionModel(event.selection.modelId)
-				.catch((error) => Logger.error("[SdkController] Failed to update active session model:", error))
+	/**
+	 * Home picker draft lives only in this host, survives webview remounts, and is consumed
+	 * by the next task-start attempt. It is never written to Settings or carried to later chats.
+	 * Chats capture both modes at start and keep that selection when defaults change.
+	 * Reset copies the current Settings default for the selected mode into this chat.
+	 * One-turn choices are armed while idle, retain the prior selection in history,
+	 * and restore it before deferred follow-ups are sent, including after cancel/error.
+	 */
+	private readonly admittedConfiguredRuntimes = new WeakSet<object>()
+	private readonly configuredDeferredSends = new Map<string, Array<{ prompt: string; images?: string[]; files?: string[] }>>()
+	private readonly configuredNextMessageSelections = new NextMessageModelSelections()
+	private draftApiSelection?: TaskApiSelection
+
+	/**
+	 * Records a chat's per-mode selection as its last-used selection, pinned on
+	 * the session context so provider-change rebuilds resolve against it, and
+	 * persisted to session metadata so reopening the chat restores it.
+	 */
+	recordTaskApiSelection(
+		taskId: string | undefined = this.task?.taskId,
+		capturedSelection?: TaskApiSelection,
+	): TaskApiSelection | undefined {
+		if (!taskId) return undefined
+		try {
+			const selection =
+				capturedSelection ?? this.taskSessions.get(taskId)?.apiSelection ?? captureTaskApiSelection(this.stateManager)
+			const context = this.getTaskSessionContext(taskId)
+			if (taskApiSelectionsEqual(context?.apiSelection, selection)) return selection
+			if (context) context.apiSelection = selection
+			void this.taskHistory
+				.setTaskApiSelection(taskId, selection)
+				.catch((error) => Logger.error(`[SdkController] Failed to persist API selection for ${taskId}:`, error))
+			return selection
+		} catch (error) {
+			Logger.error("[SdkController] Failed to capture task API selection:", error)
+			return undefined
 		}
 	}
 
-	handleApiConfigurationChanged(previous: ApiConfiguration, next: ApiConfiguration): void {
-		this.providerChanges.handleApiConfigurationChanged(previous, next)
+	/**
+	 * Snapshot of every task session's pinned selection, taken before a
+	 * configuration rebuild — the provider-change coordinator uses
+	 * it as the "before" side of each session's effective-config comparison.
+	 */
+	private snapshotTaskApiSelections(): Map<string, TaskApiSelection | undefined> {
+		const snapshot = new Map<string, TaskApiSelection | undefined>()
+		for (const [taskId, context] of this.taskSessions) {
+			snapshot.set(taskId, context.apiSelection)
+		}
+		return snapshot
+	}
+
+	private configuredModelAdmission(id: string): (() => void) | undefined {
+		const config = this.sessions.getSession(id)?.startConfig
+		const commit = config && this.sessionConfigBuilder.admission(config)
+		return commit
+			? () => {
+					commit()
+					this.admittedConfiguredRuntimes.add(config!)
+					this.providerChanges.handleApiConfigurationChanged({}, {})
+				}
+			: undefined
+	}
+
+	private deferOneTurnFollowup(
+		id: string,
+		prompt: string,
+		images?: string[],
+		files?: string[],
+		delivery?: "queue" | "steer" | "interject",
+	): boolean {
+		const config = this.sessions.getSession(id)?.startConfig
+		if (config && this.sessionConfigBuilder.admission(config) && (delivery || this.admittedConfiguredRuntimes.has(config))) {
+			const deferred = this.configuredDeferredSends.get(id) ?? []
+			deferred.push({ prompt, images, files })
+			this.configuredDeferredSends.set(id, deferred)
+			return true
+		}
+		return false
+	}
+
+	private refreshTaskApiModel(taskId: string): void {
+		const context = this.taskSessions.get(taskId)
+		const modelId = this.sessions.getSession(taskId)?.startConfig?.modelId
+		if (context?.task && modelId) context.task.api = createTaskApiModelShim(modelId)
+	}
+
+	private commitTaskApiSelection(taskId: string, selection: TaskApiSelection, requestedSelection?: TaskApiSelection): void {
+		const context = this.taskSessions.get(taskId)
+		if (context && taskApiSelectionsEqual(context.pendingApiSelection, requestedSelection))
+			context.pendingApiSelection = undefined
+		this.recordTaskApiSelection(taskId, selection)
+		this.refreshTaskApiModel(taskId)
+		const rebuilt = this.sessions.getSession(taskId)
+		if (rebuilt?.startConfig && !this.sessionConfigBuilder.admission(rebuilt.startConfig)) {
+			const deferred = this.configuredDeferredSends.get(taskId) ?? []
+			this.configuredDeferredSends.delete(taskId)
+			for (const [index, message] of deferred.entries())
+				this.sessions.fireAndForgetSend(
+					rebuilt.sdkHost,
+					taskId,
+					message.prompt,
+					message.images,
+					message.files,
+					index ? "queue" : undefined,
+				)
+		}
+	}
+
+	/** Restore chat state without writing Settings defaults. */
+	private restoreTaskApiSelection(historyItem: HistoryItem | undefined, mode?: Mode): void {
+		const taskId = historyItem?.id
+		if (!taskId) return
+		const context = this.getTaskSessionContext(taskId)
+		const live = this.sessions.getSession(taskId)?.apiSnapshot?.selection
+		if (context.apiSelection || context.pendingApiSelection) return
+		const resolved = live ?? {
+			...captureTaskApiSelection(this.stateManager),
+			...resolveTaskApiSelection(this.stateManager, historyItem ?? {}, mode ?? context.mode),
+		}
+		this.recordTaskApiSelection(taskId, resolved)
+	}
+
+	/** New host contract. Stable selections never write legacy mode/provider keys. */
+	async setConfiguredThreadSelection(input: {
+		taskId: string
+		mode: Mode
+		pick: import("@shared/model-settings").ModelPick
+		nextMessageOnly: boolean
+	}): Promise<void> {
+		if (!useModelSettings(this.stateManager)) throw new Error("Model settings rollout is disabled")
+		if ((this.task?.taskId ?? "") !== input.taskId) throw new Error("Focused chat changed during selection")
+		const { captureThreadModelSelection } = await import("./model-settings-resolver")
+		const settings = this.stateManager.getGlobalStateKey("modelSettings")!
+		const { assertConfiguredModelRequestAllowed, resolveEffectiveConfiguredPick } = await import(
+			"./model-settings/host-settings"
+		)
+		resolveEffectiveConfiguredPick(this.stateManager, settings, input.pick)
+		await assertConfiguredModelRequestAllowed(this.stateManager, settings, input.pick, input.mode)
+		if (input.nextMessageOnly) {
+			const session = this.sessions.getSession(input.taskId)
+			if (session?.isRunning || session?.queuedPromptCount)
+				throw new Error("Wait for this turn to finish before arming a next-message pick")
+			this.configuredNextMessageSelections.set(input.taskId, input.mode, input.pick)
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+				// Arming must finish installing its runtime before the next RPC sends.
+				await this.sessionRebuilds.runExclusive(async () => {})
+			}
+			await this.postStateToWebview(true)
+			return
+		}
+		this.configuredNextMessageSelections.clear(input.taskId, input.mode)
+		const context = input.taskId ? this.getTaskSessionContext(input.taskId) : undefined
+		const current =
+			context?.pendingApiSelection ??
+			context?.apiSelection ??
+			this.draftApiSelection ??
+			captureTaskApiSelection(this.stateManager)
+		const selection = structuredClone(current)
+		selection.modelSelectionV1 ??= captureThreadModelSelection(settings)
+		selection.modelSelectionV1[input.mode === "plan" ? "ask" : "act"] = input.pick
+		if (!input.taskId) this.draftApiSelection = selection
+		else {
+			context!.pendingApiSelection = selection
+			const session = this.sessions.getSession(input.taskId)
+			if (session) {
+				this.providerChanges.handleApiConfigurationChanged({}, {})
+			} else this.recordTaskApiSelection(input.taskId, selection)
+		}
+		await this.postStateToWebview(true)
+	}
+
+	handleApiConfigurationChanged(
+		previous: ApiConfiguration,
+		next: ApiConfiguration,
+		_selectionChanges: Partial<TaskApiSelection> = {},
+	): void {
+		// Existing chats keep their captured selection; saved profile edits still rebuild users of that profile.
+		this.providerChanges.handleApiConfigurationChanged(previous, next, this.snapshotTaskApiSelections())
 	}
 
 	handleTerminalExecutionModeChanged(previous: VscodeTerminalExecutionMode, next: VscodeTerminalExecutionMode): void {
 		this.sessionConfigChanges.handleTerminalExecutionModeChanged(previous, next)
+	}
+
+	handleSubagentSettingsChanged(): void {
+		this.sessionConfigChanges.handleSubagentSettingsChanged()
 	}
 
 	handleCheckpointsSettingChanged(previous: boolean, next: boolean): void {
@@ -845,30 +1597,8 @@ export class Controller {
 	}
 
 	private handleSessionBecameIdle(): void {
+		this.mcpTools?.sessionBecameIdle()
 		this.sessionRebuilds?.sessionBecameIdle()
-	}
-
-	private isSelectionForActiveModeProvider(event: Extract<ProviderConfigChange, { kind: "selection" }>): boolean {
-		try {
-			const modeValue = this.stateManager.getGlobalSettingsKey("mode")
-			const mode = modeValue === "plan" ? "plan" : "act"
-			if (event.mode !== mode) {
-				return false
-			}
-
-			const apiConfig = this.stateManager.getApiConfiguration()
-			const activeProvider = mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
-			if (activeProvider === undefined) {
-				return false
-			}
-			// Normalize both sides so stale SDK spellings in cached state
-			// (e.g. `openai-compatible`) still match the parse-normalized
-			// event id and model-only commits keep the lightweight
-			// in-session update path.
-			return toLegacyApiProvider(activeProvider) === toLegacyApiProvider(event.providerId.toString())
-		} catch {
-			return false
-		}
 	}
 
 	private scheduleProviderConfigStatePost(): void {
@@ -985,6 +1715,8 @@ export class Controller {
 
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
+			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			mcpHub: this.mcpHub,
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
 			getRemoteConfigIntegration: () => this.remoteConfigCoreIntegration,
@@ -992,6 +1724,7 @@ export class Controller {
 	}
 
 	private async performRemoteConfigRefresh(isCurrent: () => boolean): Promise<boolean> {
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		const refreshed = await refreshSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			isCurrent,
@@ -1003,7 +1736,16 @@ export class Controller {
 		// `.cline/remote-config/`. Refresh the watcher so slash-command expansion
 		// sees them without waiting on filesystem events.
 		await this.refreshUserInstructionWatchers()
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		return refreshed
+	}
+
+	/** Refreshes run on a timer, so only a real change rebuilds. Without one, sessions hold the old values until the request guard refuses them. */
+	private rebuildIfManagedSettingsChanged(managedBefore: string): void {
+		if (!useModelSettings(this.stateManager) || JSON.stringify(this.stateManager.getRemoteConfigSettings()) === managedBefore)
+			return
+		const configuration = this.stateManager.getApiConfiguration()
+		this.handleApiConfigurationChanged(configuration, configuration)
 	}
 
 	setRemoteConfigAvailable(available: boolean): void {
@@ -1035,6 +1777,7 @@ export class Controller {
 	}
 
 	async dispose(): Promise<void> {
+		for (const editor of this.notebookEditors) editor.dispose()
 		this.providerConfigStoreSubscription.dispose()
 		// Clear the remote config timer to prevent stale fetches
 		if (this.remoteConfigTimer) {
@@ -1043,6 +1786,7 @@ export class Controller {
 		}
 		await this.setRemoteConfigCoreIntegration(undefined)
 		this.isDisposed = true
+		await this.taskHistory.flushMetadataWrites()
 		// Tear down the debounced state-post machinery before downstream resources
 		// are disposed below — see StatePostDebouncer.dispose().
 		await this.statePostDebouncer.dispose()
@@ -1053,12 +1797,416 @@ export class Controller {
 		await this.diffEdits.discardAllPreviews("controller dispose")
 		await this.clearTask()
 		await this.cloud.dispose()
+		for (const context of this.taskSessions.values()) {
+			context.interactions.clearPending("Controller disposed")
+			context.watchdog.stop()
+			context.messages.dispose()
+		}
+		this.taskSessions.clear()
 		await this.sessions.dispose("SdkController.dispose")
 		await this.taskHistory.dispose()
+		await this.taskGroupsWatcher?.close()
+		await this.currentBranchWatcher.dispose()
 		this.mcpHub?.dispose?.()
 		this.messages.dispose()
 		await this.sdkTelemetry.dispose()
 		Logger.log("[SdkController] Disposed")
+	}
+
+	private handleParentSessionReplaced(id: string): void {
+		const owner = this.taskSessions.get(id)
+		owner?.interactions.clearPending("Parent session replaced")
+		if (owner?.turn?.currentPhase === "streaming") owner.turn.set("completed")
+		this.sessions.setStatus(id, "done")
+		for (const child of this.subagentThreads.values()) {
+			if (
+				(child.runtimeOwnerTaskId ?? child.parentTaskId) !== id ||
+				!["running", "waiting"].includes(this.sessions.sessionStatuses[child.id])
+			)
+				continue
+			const context = this.getTaskSessionContext(child.id)
+			context.messages.appendMessages([
+				{
+					ts: context.translator.nextTs(),
+					type: "say",
+					say: "error",
+					text: "Subagent stopped because its parent session was rebuilt.",
+				},
+			])
+			context.turn.set("error")
+			this.sessions.setStatus(child.id, "error")
+		}
+		void this.postStateToWebview()
+	}
+
+	/** Child events are translated once into their own transcript, never into siblings. */
+	private handleSubagentEvent(event: CoreSessionEvent): boolean {
+		if (event.type === "subagent_input") {
+			const context = this.getTaskSessionContext(event.payload.childSessionId)
+			context.messages.appendMessages([
+				{ ts: context.translator.nextTs(), type: "say", say: "user_feedback", text: event.payload.text },
+			])
+			void this.postStateToWebview()
+			return true
+		}
+		if (event.type === "subagent") {
+			const payload = event.payload
+			const owner = this.taskSessions.get(payload.sessionId)
+			if (!owner || !this.sessions.getSession(payload.sessionId)) return true
+			const immediateParent = Array.from(this.subagentThreads?.values() ?? []).find(
+				(child) =>
+					(child.runtimeOwnerTaskId ?? child.parentTaskId) === payload.sessionId &&
+					child.agentId === payload.parentAgentId,
+			)
+			const parentTaskId = immediateParent?.id ?? payload.sessionId
+			const parent = this.taskSessions.get(parentTaskId)
+			const existing = this.subagentThreads?.get(payload.childSessionId)
+			const item: HistoryItem = {
+				id: payload.childSessionId,
+				ts: existing?.ts ?? Date.now(),
+				task: payload.prompt,
+				tokensIn: existing?.tokensIn ?? 0,
+				tokensOut: existing?.tokensOut ?? 0,
+				totalCost: existing?.totalCost ?? 0,
+				cacheReads: existing?.cacheReads ?? 0,
+				cacheWrites: existing?.cacheWrites ?? 0,
+				subagentToolCalls: existing?.subagentToolCalls ?? 0,
+				lastLine: existing?.lastLine,
+				isSubagent: true,
+				parentTaskId,
+				runtimeOwnerTaskId: payload.sessionId,
+				agentId: payload.agentId,
+				spawnToolCallId: payload.toolCallId,
+				subagentAccess: payload.access,
+			}
+			this.subagentThreads.set(item.id, item)
+			const context = this.getTaskSessionContext(item.id)
+			context.mode = payload.access === "write" ? "act" : "plan"
+			if (!existing)
+				context.messages.appendMessages([
+					{ ts: context.translator.nextTs(), type: "say", say: "task", text: payload.prompt },
+				])
+			context.turn.set(payload.status === "running" ? "streaming" : payload.status === "failed" ? "error" : "completed")
+			this.sessions.setStatus(
+				item.id,
+				payload.status === "running"
+					? "running"
+					: payload.status === "failed" || payload.status === "cancelled"
+						? "error"
+						: "done",
+			)
+			if (payload.status !== "running") {
+				owner.interactions?.clearPending("Subagent ended", payload.agentId)
+				if (item.lastLine)
+					void this.taskHistory.recordLastLine(item.id, item.lastLine).catch((error) => {
+						Logger.warn(`Failed to save child preview: ${error}`)
+					})
+			}
+			const spawn = payload.toolCallId ? parent?.translator.getSpawnAgent(payload.toolCallId) : undefined
+			if (spawn) {
+				if (payload.result) spawn.result = payload.result
+				spawn.childSessionId = item.id
+				spawn.status =
+					payload.status === "running"
+						? "running"
+						: payload.status === "cancelled"
+							? "stopped"
+							: payload.status === "failed"
+								? "failed"
+								: "completed"
+				const allDone = parent!.translator
+					.getSpawnAgentItems()
+					.every((entry) => entry.status !== "running" && entry.status !== "pending")
+				parent?.messages?.appendMessages([
+					{
+						ts: parent!.translator.getSpawnAgentStatusTs(),
+						type: "say",
+						say: "subagent",
+						text: JSON.stringify(parent!.translator.buildSubagentStatus(allDone ? "completed" : "running")),
+						partial: !allDone,
+					},
+				])
+			}
+			if (payload.detached && payload.usage && payload.status !== "running") {
+				owner.messages?.appendMessages([
+					{
+						ts: owner.translator.nextTs(),
+						type: "say",
+						say: "subagent_usage",
+						text: JSON.stringify({
+							source: "subagents",
+							tokensIn: payload.usage.inputTokens,
+							tokensOut: payload.usage.outputTokens,
+							cacheReads: 0,
+							cacheWrites: 0,
+							cost: payload.usage.totalCost ?? 0,
+						}),
+					},
+				])
+			}
+			this.taskHistory.invalidateMetadataHistoryCache()
+			void this.postStateToWebview()
+			return true
+		}
+		if (event.type !== "agent_event" || !event.payload.event.parentAgentId) return false
+		const child = Array.from(this.subagentThreads?.values() ?? []).find(
+			(item) =>
+				(item.runtimeOwnerTaskId ?? item.parentTaskId) === event.payload.sessionId &&
+				item.agentId === event.payload.event.agentId,
+		)
+		if (!child) return true
+		const context = this.getTaskSessionContext(child.id)
+		const result = translateSessionEvent(event, context.translator, child.agentId)
+		if (event.payload.event.type === "content_start" && event.payload.event.contentType === "tool")
+			child.subagentToolCalls = (child.subagentToolCalls ?? 0) + 1
+		if (result.usage) {
+			child.tokensIn += result.usage.tokensIn
+			child.tokensOut += result.usage.tokensOut
+			child.totalCost = (child.totalCost ?? 0) + (result.usage.totalCost ?? 0)
+			child.cacheReads = (child.cacheReads ?? 0) + (result.usage.cacheReads ?? 0)
+			child.cacheWrites = (child.cacheWrites ?? 0) + (result.usage.cacheWrites ?? 0)
+		}
+		context.messages.appendAndEmit(result.messages, { ...event, payload: { ...event.payload, sessionId: child.id } })
+		if (result.turnComplete) context.turn.set(context.translator.wasErrorSeen() ? "error" : "completed")
+		void this.postStateToWebview()
+		return true
+	}
+
+	private async resolveTaskSessionId(conversationId: string): Promise<string> {
+		if (this.sessions.getSession(conversationId)) return conversationId
+		for (const [id, session] of this.sessions.getSessions()) {
+			const record = await session.sdkHost.get(id)
+			if (record?.conversationId === conversationId) return id
+		}
+		throw new Error(`No live task for conversation ${conversationId}`)
+	}
+
+	private getTaskSessionContext(id: string, task?: TaskProxy): TaskSessionContext {
+		const existing = this.taskSessions.get(id)
+		if (existing) {
+			if (task) existing.task = task
+			return existing
+		}
+		const session = this.sessions.getSession(id)
+		const mode = isCloudSessionId(id)
+			? CLOUD_SESSION_MODE
+			: (session?.startConfig?.mode ?? (this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"))
+		const translator = new MessageTranslatorState(
+			this.homeContext?.translator.getMinter() ?? this.messageTranslatorState.getMinter(),
+			() => this.sessions.getSession(id)?.startConfig?.providerId,
+			() => context.mode,
+			() => this.lastKnownWorkspaceRoot,
+			() => this.sessions.getSession(id)?.startConfig?.modelId,
+		)
+		const turn = new TurnStateTracker(translator.getMinter())
+		const messages = new SdkMessageCoordinator({
+			getTask: () => context.task,
+			getMinter: () => translator.getMinter(),
+			isFocused: () => this.task?.taskId === id,
+			onMessages: (updates) => {
+				const line = updates
+					.map(messageLastLine)
+					.filter((line) => line !== undefined)
+					.at(-1)
+				const child = this.subagentThreads?.get(id)
+				if (child && line) {
+					// The SDK owns child metadata while it runs. Publish its preview live,
+					// then persist after the terminal subagent event has saved usage totals.
+					child.lastLine = line
+					return
+				}
+				if (line)
+					void this.taskHistory
+						.recordLastLine?.(id, line)
+						.then(() => this.postStateToWebview())
+						.catch((error) => {
+							Logger.warn(`Failed to save thread preview: ${error}`)
+						})
+			},
+		})
+		messages.onSessionEvent((updates, event) => {
+			if (event.type === "status" && event.payload.status === "error") setPhase("error")
+			if (this.task?.taskId === id) this.sessionEventStream.emitSessionEvents(updates, event)
+		})
+		const hasActiveTurn = () =>
+			turn.currentPhase === "streaming" ||
+			turn.currentPhase === "awaiting_approval" ||
+			(turn.currentPhase === "awaiting_followup" && this.sessions.getSession(id)?.isRunning === true)
+		const setPhase = (phase: TurnPhase, anchorTs?: number) => {
+			turn.set(phase, anchorTs)
+			if (hasActiveTurn()) watchdog.activity()
+			else watchdog.stop()
+			this.sessions.setStatus(
+				id,
+				phase === "awaiting_approval" || (phase === "awaiting_followup" && this.sessions.getSession(id)?.isRunning)
+					? "waiting"
+					: phase === "streaming"
+						? "running"
+						: phase === "error"
+							? "error"
+							: "done",
+			)
+		}
+		const watchdog = new TurnActivityWatchdog(
+			() => context.interactions.hasPendingUserDecision(),
+			() => {
+				if (!hasActiveTurn() || context.cancelled) return
+				context.cancelled = true
+				translator.setErrorSeen()
+				setPhase("error")
+				this.sessions.setRunning(false, id)
+				messages.appendAndEmit(
+					[
+						{
+							ts: translator.nextTs(),
+							type: "ask",
+							ask: "api_req_failed",
+							partial: false,
+							text: "The agent stopped responding for 2 minutes with no pending approval or question. Retry to continue this turn.",
+						},
+					],
+					{ type: "status", payload: { sessionId: id, status: "error" } },
+				)
+				void this.postStateToWebview()
+				const session = this.sessions.getSession(id)
+				void session?.sdkHost.abort(id).catch((error) => Logger.warn("Failed to abort stalled turn", error))
+			},
+		)
+
+		const interactions = new SdkInteractionCoordinator({
+			messages,
+			onDecisionMessage: (agentId, message) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				if (child) {
+					message.subagentTaskId = child.id
+					message.subagentName = child.task
+					this.getTaskSessionContext(child.id).messages.appendAndEmit([{ ...message }], {
+						type: "status",
+						payload: { sessionId: child.id, status: "running" },
+					})
+				}
+			},
+			getSessionId: () => id,
+			getMode: () => context.mode,
+			getMinter: () => translator.getMinter(),
+			postStateToWebview: () => this.postStateToWebview(),
+			setTurnPhase: setPhase,
+			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? id)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
+			onToolApprovalAsk: (request) =>
+				this.task?.taskId === id
+					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId ?? id)
+					: Promise.resolve(),
+			recordApprovedToolMessage: (callId, ts, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordApprovedToolMessageTs(callId, ts)
+			},
+			recordDeniedToolApproval: (callId, name, reason, agentId) => {
+				const child = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
+				)
+				const ownerTranslator = child ? this.getTaskSessionContext(child.id).translator : translator
+				ownerTranslator.recordDeniedToolApproval(callId, name, reason)
+				void this.diffEdits.discardPreview(callId)
+			},
+			shouldAutoApproveTool: (request) => {
+				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
+				return settings ? isToolAutoApproved(request.toolName, settings) : false
+			},
+			prepareScriptApproval: (request, scriptMode) =>
+				this.scripts.prepareApproval(
+					request,
+					scriptMode,
+					id,
+					this.sessions.getSession(request.sessionId ?? id)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
+				),
+			completeScriptApproval: (request, approved, trust) => this.scripts.completeApproval(request, approved, trust),
+		})
+		const events = new SdkSessionEventCoordinator({
+			onRuntimeActivity: (event) => {
+				watchdog.observe(event)
+				if (hasActiveTurn()) watchdog.activity()
+			},
+			onTurnComplete: () => this.emitNotebookChanges(id),
+			sessionId: id,
+			messageTranslatorState: translator,
+			sessions: this.sessions,
+			messages,
+			taskHistory: this.taskHistory,
+			stateManager: this.stateManager,
+			getTask: () => context.task,
+			postStateToWebview: () => this.postStateToWebview(),
+			setTurnPhase: setPhase,
+			getTurnPhase: () => turn.currentPhase,
+			getProviderId: () => this.sessions.getSession(id)?.startConfig?.providerId,
+			getModelId: () => this.sessions.getSession(id)?.startConfig?.modelId,
+			isTurnCancelled: () => context.cancelled,
+			onTurnStarted: () => {
+				context.cancelled = false
+			},
+			captureProviderApiError: (event) => this.captureProviderFailure(event),
+		})
+		const context: TaskSessionContext = {
+			task:
+				task ??
+				createTaskProxy(
+					id,
+					(text, images, files, decisionId, provenance) =>
+						this.askResponse(text, images, files, decisionId, provenance),
+					() => this.cancelTask(),
+				),
+			translator,
+			turn,
+			messages,
+			interactions,
+			events,
+			watchdog,
+			mode,
+			cancelled: false,
+			apiSelection: session?.apiSnapshot?.selection,
+		}
+		this.taskSessions.set(id, context)
+		if (!this.sessions.getSession(id) && task?.messageStateHandler.getClineMessages().length === 0) setPhase("streaming")
+		return context
+	}
+
+	/**
+	 * Displayable HistoryItem for a session that is live but absent from
+	 * persisted history — Core only writes the record when the first send
+	 * lands, so without this a just-backgrounded chat vanishes from the inbox
+	 * and cannot be reopened. The title comes from the session's own transcript
+	 * (the say:task message emitted at start); cwd fills in at the call site.
+	 */
+	private liveTaskHistoryItem(taskId: string): HistoryItem | undefined {
+		const session = this.sessions.getSession(taskId)
+		if (!session) {
+			return undefined
+		}
+		const context = this.taskSessions.get(taskId)
+		const taskProxy = this.task?.taskId === taskId ? this.task : context?.task
+		const taskMessage = taskProxy?.messageStateHandler
+			.getClineMessages()
+			.find((message) => message.type === "say" && message.say === "task" && message.text)
+		if (!taskMessage?.text) {
+			return undefined
+		}
+		return {
+			id: taskId,
+			ts: taskMessage.ts || Date.now(),
+			task: taskMessage.text,
+			tokensIn: 0,
+			tokensOut: 0,
+			cacheWrites: 0,
+			cacheReads: 0,
+			totalCost: 0,
+			modelId: session.startConfig?.modelId ?? taskProxy?.api?.getModel?.().id,
+			cwdOnTaskInitialization: this.lastKnownWorkspaceRoot,
+			taskGroupId: context?.taskGroupId,
+		}
 	}
 
 	// ---- Slash command + context mention resolution ----
@@ -1143,11 +2291,20 @@ export class Controller {
 	 * and honors the user's workflow enable/disable toggles. Returns the input
 	 * unchanged if no known command matches or expansion fails.
 	 */
-	private async resolveSlashCommands(text: string): Promise<string> {
+	private async resolveSlashCommands(text: string, threadId?: string, provenance?: ComposerProvenance): Promise<string> {
 		if (this.isDisposed) {
 			return text
 		}
 		try {
+			// `/script-name option:value` runs a saved script; it wins over a workflow of the same name.
+			// Only the composer's script marker grants a one-run approval; the same text from anywhere
+			// else still expands but goes through normal approval.
+			const scriptRun = threadId
+				? await this.scripts.expandInvocation(text, threadId, provenance?.scriptInvocation)
+				: undefined
+			if (scriptRun) {
+				return scriptRun
+			}
 			const workspaceRoot = await this.getWorkspaceRoot()
 			const service = await this.ensureUserInstructionService(workspaceRoot)
 			const remoteWorkflows = this.stateManager.getRemoteConfigSettings()?.remoteGlobalWorkflows ?? []
@@ -1202,26 +2359,225 @@ export class Controller {
 	 * and does not understand the webview's `@/path` format or special
 	 * mentions, so the LLM would otherwise never see the referenced content.
 	 */
-	private async resolveContextMentions(text: string): Promise<string> {
-		const withCommands = await this.resolveSlashCommands(text)
+	private async resolveContextMentions(
+		text: string,
+		threadId = this.task?.taskId,
+		provenance?: ComposerProvenance,
+	): Promise<string> {
+		// Only what the user explicitly did in the composer (`provenance`) authorizes
+		// transcript access or a one-run script grant. `text` also holds quote chips,
+		// walkthrough hunks, "Add to Cline" insertions and expanded notes/files/workflows,
+		// so nothing is inferred from it; callers without provenance (host-built
+		// prompts, task-creation URIs) authorize nothing.
+		const authorizedThreads = authorizedThreadIds(provenance)
+		// Message tags attach one message each as context; they never touch `authorizedThreads`.
+		const messageLinks = messageLinkRefs(provenance)
+		const finish = async (resolved: string): Promise<string> =>
+			messageLinks.length === 0
+				? resolved
+				: prependMessageReferences(resolved, await this.resolveMessageReferenceBlocks(messageLinks))
+		const withCommands = await this.resolveSlashCommands(text, threadId, provenance)
+		let resolved = withCommands
 
 		// Quick check: skip mention parsing if there are no @ mentions
 		if (!mentionRegexGlobal.test(withCommands)) {
-			return withCommands
+			return finish(await this.resolveReferenceMentions(withCommands, threadId, authorizedThreads))
 		}
 		// Reset lastIndex since RegExp.test() advances it for global regexes
 		mentionRegexGlobal.lastIndex = 0
 
 		try {
-			const cwd = await this.getWorkspaceRoot()
+			const found = threadId ? await this.threadWorktrees.get(threadId) : undefined
+			// Once the workspace took over the branch, the thread runs (and resolves mentions) there.
+			const mapping = found?.takenOver ? undefined : found
+			const removed = !found && threadId ? await this.threadWorktrees.removedWorkspace(threadId) : undefined
+			const cwd = mapping?.cwd ?? removed?.workspace ?? found?.workspace ?? (await this.getWorkspaceRoot())
 			const urlContentFetcher = new UrlContentFetcher()
-			const workspaceManager = await this.ensureWorkspaceManager()
-			const resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
+			const workspaceManager = mapping
+				? await WorkspaceRootManager.fromPaths(mapping.modules.map((module) => module.path))
+				: removed
+					? await WorkspaceRootManager.fromPaths([removed.workspace])
+					: await this.ensureWorkspaceManager()
+			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
-			return resolved
 		} catch (error) {
 			Logger.error("[SdkController] Failed to resolve context mentions, using raw text:", error)
-			return withCommands
+		}
+		return finish(await this.resolveReferenceMentions(resolved, threadId, authorizedThreads))
+	}
+
+	/** Context blocks for the message tags the user attached (links that no longer resolve are skipped). */
+	private async resolveMessageReferenceBlocks(links: readonly MessageLinkRef[]): Promise<string[]> {
+		const blocks: string[] = []
+		for (const link of links) {
+			// A reference carried verbatim (an edited message resending the tags it already had)
+			// keeps its text: the linked message may be past the rewind point by now.
+			// The position goes into the block too, so the sent chip can scroll to the message.
+			// A verbatim reference whose position was never stored arrives as messageIndex -1.
+			const position =
+				link.messageIndex >= 0 ? { messageIndex: link.messageIndex, toolCallId: link.toolCallId, block: link.block } : {}
+			if (link.text) {
+				blocks.push(
+					formatMessageReference({
+						threadId: link.threadId,
+						threadTitle: link.threadTitle ?? "",
+						author: link.author === "user" ? "user" : "assistant",
+						text: link.text,
+						...position,
+					}),
+				)
+				continue
+			}
+			try {
+				const info = await this.resolveMessageLink(link.threadId, link.messageIndex, {
+					toolCallId: link.toolCallId,
+					block: link.block,
+				})
+				if (info.text)
+					blocks.push(
+						formatMessageReference({
+							threadTitle: info.threadTitle,
+							text: info.text,
+							threadId: link.threadId,
+							author: info.author === "user" ? "user" : "assistant",
+							...position,
+						}),
+					)
+			} catch (error) {
+				Logger.warn(`[SdkController] Failed to resolve message tag for thread ${link.threadId}:`, error)
+			}
+		}
+		return blocks
+	}
+
+	private async resolveReferenceMentions(
+		text: string,
+		threadId: string | undefined,
+		authorizedThreads: ReadonlySet<string>,
+	): Promise<string> {
+		const withNotes = await this.resolveTaskNoteMentions(text, threadId)
+		return this.resolveThreadMentions(withNotes, threadId, authorizedThreads)
+	}
+
+	/**
+	 * `#slug` and cross-task `#<group>/<slug>` mentions. The current task's
+	 * notebook resolves first (including staged-but-uncommitted changes);
+	 * every other task group is searched after it, most recently updated
+	 * first. `<group>` is a group id or its slugified title.
+	 */
+	private async resolveTaskNoteMentions(text: string, threadId?: string): Promise<string> {
+		if (!text.includes("#")) return text
+		const notebook = threadId ? await this.resolveTaskNotebook(threadId) : undefined
+		const otherGroups = (await this.taskGroupStore.listGroups()).filter((group) => group.id !== notebook?.group.id)
+		if (!notebook && otherGroups.length === 0) return text
+		const orderedGroups = notebook ? [notebook.group, ...otherGroups] : otherGroups
+		return expandTaskNoteMentions(text, async (slug, qualifier) => {
+			// A qualified mention tries its group first, then falls back to the
+			// global search so a renamed task still resolves.
+			const candidates = qualifier
+				? [
+						...orderedGroups.filter((group) => group.id === qualifier || slugifyNoteName(group.title) === qualifier),
+						...orderedGroups,
+					]
+				: orderedGroups
+			for (const group of candidates) {
+				const note =
+					group.id === notebook?.group.id
+						? await notebook!.store.readThreadNote(group.id, notebook!.rootThreadId, slug, threadId!)
+						: await this.notebookStore.readNote(group.id, slug, threadId)
+				if (!note) continue
+				const name = "meta" in note ? note.meta.name : note.name
+				return {
+					name,
+					content: note.content,
+					taskTitle: group.id !== notebook?.group.id ? group.title : undefined,
+				}
+			}
+			return undefined
+		})
+	}
+
+	/**
+	 * Threads the user picked from the composer's `thread:` menu. Each picked
+	 * thread joins this conversation's allow-list so the grep_threads/read_thread
+	 * tools can open it, and its `thread:<id>` token expands to the thread's id
+	 * and title (never its transcript). Nothing is derived from the text: a
+	 * `thread:<id>` that was not picked stays literal and authorizes nothing.
+	 */
+	private async resolveThreadMentions(
+		text: string,
+		threadId: string | undefined,
+		authorizedThreads: ReadonlySet<string>,
+	): Promise<string> {
+		if (authorizedThreads.size === 0) return text
+		const known = new Map<string, { id: string; title: string } | undefined>()
+		for (const id of authorizedThreads) {
+			const item = await this.taskHistory.findHistoryItem(id)
+			known.set(id, item ? { id: item.id, title: item.title || item.task } : undefined)
+		}
+		const resolvedIds = [...known.values()].filter((thread) => thread !== undefined).map((thread) => thread.id)
+		if (threadId && resolvedIds.length > 0) {
+			const owner = await this.resolveAllowListOwner(threadId)
+			this.rememberThreadReferences(owner, resolvedIds)
+		}
+		if (!text.includes("thread:")) return text
+		const { text: resolved } = await expandThreadMentions(text, async (id) => known.get(id), authorizedThreads)
+		return resolved
+	}
+
+	/**
+	 * The thread that owns a conversation's thread-reference allow-list: the
+	 * user-facing thread itself, or the root thread for subagent sessions.
+	 */
+	private async resolveAllowListOwner(threadId: string): Promise<string> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item) return threadId
+		const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+		return owner.rootThreadId
+	}
+
+	private rememberThreadReferences(ownerThreadId: string, threadIds: string[]): void {
+		let allowed = this.referencedThreads.get(ownerThreadId)
+		if (!allowed) {
+			allowed = new Set()
+			this.referencedThreads.set(ownerThreadId, allowed)
+		}
+		for (const id of threadIds) allowed.add(id)
+		void this.taskHistory.addReferencedThreads(ownerThreadId, threadIds).catch((error) => {
+			Logger.warn("[SdkController] Failed to persist referenced threads:", error)
+		})
+	}
+
+	private async isThreadReferenced(ownerThreadId: string, threadId: string): Promise<boolean> {
+		if (this.referencedThreads.get(ownerThreadId)?.has(threadId)) return true
+		return (await this.taskHistory.getReferencedThreads(ownerThreadId)).includes(threadId)
+	}
+
+	/**
+	 * Context for the grep_threads/read_thread host tools. The allow-list is
+	 * scoped to the user-facing thread that owns the calling session — a
+	 * subagent inherits its owning thread's mentioned references.
+	 */
+	private async resolveThreadTranscriptContext(input: {
+		config: { sessionId?: string }
+	}): Promise<ThreadTranscriptToolsContext | undefined> {
+		const sessionId = input.config.sessionId
+		if (!sessionId) return undefined
+		return {
+			resolveOwnerThreadId: (toolContext) => this.resolveAllowListOwner(toolContext.sessionId ?? sessionId),
+			isThreadAllowed: (ownerThreadId, threadId) => this.isThreadReferenced(ownerThreadId, threadId),
+			listAllowedThreads: async (ownerThreadId) => {
+				const persisted = await this.taskHistory.getReferencedThreads(ownerThreadId)
+				const ids = [...new Set([...(this.referencedThreads.get(ownerThreadId) ?? []), ...persisted])]
+				const threads = await Promise.all(
+					ids.map(async (id) => {
+						const item = await this.taskHistory.findHistoryItem(id)
+						return item ? { id, title: item.title || item.task } : undefined
+					}),
+				)
+				return threads.filter((thread): thread is { id: string; title: string } => thread !== undefined)
+			},
+			readTranscript: (threadId) => this.taskHistory.readSessionTranscript(threadId),
 		}
 	}
 
@@ -1237,18 +2593,20 @@ export class Controller {
 	 * This avoids using the VS Code extension host's `process.cwd()` (often `/`),
 	 * which produces invalid SDK workspace metadata with an empty hint.
 	 */
-	private async getWorkspaceRoot(): Promise<string> {
+	async getWorkspaceRoot(): Promise<string> {
 		try {
 			const { paths } = await HostProvider.workspace.getWorkspacePaths({})
 			const workspaceRoot = paths?.find((workspacePath) => workspacePath.trim().length > 0)
 			if (workspaceRoot) {
 				this.lastKnownWorkspaceRoot = workspaceRoot
+				void this.currentBranchWatcher.setRoot(workspaceRoot).catch(() => {})
 				return workspaceRoot
 			}
 		} catch (error) {
 			Logger.warn("[SdkController] Failed to get workspace paths, using the no-workspace fallback:", error)
 		}
 		this.lastKnownWorkspaceRoot = await this.getNoWorkspaceFallback()
+		void this.currentBranchWatcher.setRoot(this.lastKnownWorkspaceRoot).catch(() => {})
 		return this.lastKnownWorkspaceRoot
 	}
 
@@ -1296,7 +2654,7 @@ export class Controller {
 	 * Returns an unsubscribe function.
 	 */
 	onSessionEvent(listener: SessionEventListener): () => void {
-		return this.messages.onSessionEvent(listener)
+		return this.sessionEventStream.onSessionEvent(listener)
 	}
 
 	/**
@@ -1304,9 +2662,14 @@ export class Controller {
 	 */
 	private getActiveProviderId(): string | undefined {
 		try {
-			const apiConfig = this.stateManager.getApiConfiguration()
 			const modeValue = this.stateManager.getGlobalSettingsKey("mode")
 			const mode = modeValue === "plan" ? "plan" : "act"
+			const taskId = this.task?.taskId
+			const context = taskId ? this.getTaskSessionContext(taskId) : undefined
+			const selection = context?.pendingApiSelection ?? context?.apiSelection ?? this.draftApiSelection
+			const configured = configuredActiveModel(this.stateManager, mode, selection?.modelSelectionV1)
+			if (configured) return configured.providerId
+			const apiConfig = this.stateManager.getApiConfiguration()
 			return mode === "plan" ? apiConfig.planModeApiProvider : apiConfig.actModeApiProvider
 		} catch {
 			return undefined
@@ -1319,7 +2682,7 @@ export class Controller {
 	}
 
 	private getSessionProviderId(sessionId?: string): string | undefined {
-		const activeSession = this.sessions.getActiveSession()
+		const activeSession = sessionId ? this.sessions.getSession(sessionId) : this.sessions.getActiveSession()
 		if (sessionId && activeSession?.sessionId !== sessionId) {
 			return undefined
 		}
@@ -1329,7 +2692,7 @@ export class Controller {
 	}
 
 	private getSessionModelId(sessionId?: string): string | undefined {
-		const activeSession = this.sessions.getActiveSession()
+		const activeSession = sessionId ? this.sessions.getSession(sessionId) : this.sessions.getActiveSession()
 		if (sessionId && activeSession?.sessionId !== sessionId) {
 			return undefined
 		}
@@ -1382,8 +2745,8 @@ export class Controller {
 		})
 	}
 
-	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string): void {
-		this.emitClineAuthError(task)
+	private emitClineAuthErrorWithTelemetry(task?: string, sessionId?: string, provenance?: ComposerProvenance): void {
+		this.emitClineAuthError(task, provenance)
 		this.captureProviderFailure({
 			sessionId: sessionId ?? this.task?.taskId,
 			error: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE,
@@ -1395,7 +2758,7 @@ export class Controller {
 
 	/** A cloud start failed before it had a session; the footer's Retry runs the same input again. */
 	private offerCloudStartRetry(task: TaskProxy, input: CloudTaskInput): void {
-		this.pendingStartRetry = {
+		this.pendingClineAuthRetry = {
 			task,
 			prompt: input.prompt,
 			images: input.images,
@@ -1414,17 +2777,19 @@ export class Controller {
 	 *   2. say:'api_req_started' – opens the API request row
 	 *   3. ask:'api_req_failed'  – ClineError JSON → ErrorRow renders auth UI
 	 */
-	private emitClineAuthError(task?: string): void {
+	private emitClineAuthError(task?: string, provenance?: ComposerProvenance): void {
 		const ts = Date.now()
 		const hasConversation = this.task !== undefined
 		if (!this.task) {
 			this.task = createTaskProxy(
 				`auth-error-${ts}`,
-				(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+					this.askResponse(text, images, files, decisionId, provenance),
 				() => this.cancelTask(),
 			)
 		}
-		this.pendingStartRetry = task === undefined ? undefined : { task: this.task, prompt: task, hasConversation }
+		this.pendingClineAuthRetry =
+			task === undefined ? undefined : { task: this.task, prompt: task, provenance, hasConversation }
 
 		const clineError = new ClineError(
 			{ message: CLINE_ACCOUNT_AUTH_ERROR_MESSAGE, status: 401 },
@@ -1538,6 +2903,79 @@ export class Controller {
 		this.postStateToWebview().catch(() => {})
 	}
 
+	/** Shared with the walkthrough and checkpoints; patches stay relative to each module. */
+	async getThreadWorktreeDiffs(threadId: string) {
+		return this.threadWorktrees.exclusive(() => this.threadWorktrees.diffs(threadId))
+	}
+
+	async threadWorktreeAction(request: ThreadWorktreeActionRequest): Promise<WorktreeActionResult> {
+		const workspace = await this.getWorkspaceRoot()
+		const data = request.json ? JSON.parse(request.json) : {}
+		const id = request.threadId
+		const running = this.sessions.getSession(id)?.isRunning
+		const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
+		switch (request.action) {
+			case "state": {
+				const history = await this.taskHistory.listHistory({ hydrate: false })
+				return {
+					state: {
+						settings: await this.threadWorktrees.settings(),
+						availability: await this.threadWorktrees.availability(workspace, workspaceOff),
+						mapping: id ? await this.threadWorktrees.get(id) : undefined,
+						settled: (
+							await this.threadWorktrees.settled(
+								history.map(sessionHistoryRecordToHistoryItem),
+								history.filter((item) => item.status === "completed").map((item) => item.sessionId),
+							)
+						).filter((m) => m.workspace === workspace && !this.sessions.getSession(m.threadId)?.isRunning),
+					},
+				}
+			}
+			case "configure":
+				await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
+				return {}
+			case "workspaceOff":
+				this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
+				await this.stateManager.flushPendingState()
+				return {}
+			case "diffs":
+				return { diffs: await this.threadWorktrees.diffs(id) }
+			case "open": {
+				const mapping = await this.threadWorktrees.get(id)
+				if (!mapping) throw new Error("This thread has no worktree")
+				const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
+				if (!opened.success) throw new Error("Could not open the worktree window")
+				return {}
+			}
+			case "summary":
+				return { summary: { ...(await this.threadWorktrees.summary(id)), running: !!running } }
+			case "bring":
+				if (running) return { warning: "Wait for the thread to finish before copying its changes here." }
+				return this.threadWorktrees.bring(id)
+			case "undo":
+				return this.threadWorktrees.undo(id)
+			case "takeOver": {
+				if (running) return { warning: "Stop this thread before switching your workspace to its branch." }
+				const result = await this.threadWorktrees.takeOver(id)
+				// The next turn starts a fresh session in the workspace (see threadRunFolder).
+				if (result.mapping?.takenOver) await this.sessions.removeSession(id)
+				return result
+			}
+			case "remove": {
+				if (running) return { warning: "Stop this thread before removing its worktree." }
+				const release = this.sessions.beginTaskDeletion(id)
+				try {
+					await this.sessions.removeSession(id)
+					return await this.threadWorktrees.remove(id, request.confirmed)
+				} finally {
+					release()
+				}
+			}
+			default:
+				throw new Error("Unknown worktree action")
+		}
+	}
+
 	// ---- Task lifecycle ----
 
 	async initTask(
@@ -1546,8 +2984,17 @@ export class Controller {
 		files?: string[],
 		historyItem?: HistoryItem,
 		taskSettings?: Partial<Settings>,
-		cloudTarget?: CloudTarget,
+		options?: {
+			repoUrl?: string
+			branch?: string
+			background?: boolean
+			taskGroupId?: string
+			runInWorktree?: boolean
+			provenance?: ComposerProvenance
+			rethrowStartFailure?: boolean
+		},
 	): Promise<string | undefined> {
+		const cloudTarget = options?.repoUrl ? { repoUrl: options.repoUrl, branch: options.branch } : undefined
 		if (cloudTarget) {
 			// Register the cloud start before the first await so a Cancel that
 			// arrives while remote config is still loading finds it and stops it.
@@ -1560,15 +3007,59 @@ export class Controller {
 				branch: cloudTarget.branch,
 			})
 			await this.waitForInitialRemoteConfig()
-			this.pendingStartRetry = undefined
+			this.pendingClineAuthRetry = undefined
 			return startCloudTask()
 		}
 		await this.waitForInitialRemoteConfig()
+		// A stale pill pick (group deleted between selection and send) starts unfiled.
+		if (options?.taskGroupId && !(await this.taskGroupStore.getGroup(options.taskGroupId))) {
+			Logger.warn(`[SdkController] initTask: unknown taskGroupId ${options.taskGroupId}, starting unfiled`)
+			options = { ...options, taskGroupId: undefined }
+		}
 		// A new task is starting — the agent is about to stream.
-		this.turnStateTracker.set("streaming")
-		// Clear the previous turn's completion signal so this turn's phase is computed fresh.
-		this.messageTranslatorState.clearTurnOutcome()
-		return this.taskStart.initTask(prompt, images, files, historyItem, taskSettings)
+		const taskId = await (options
+			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
+			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
+		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
+		// Thread titles run once per new thread (never for resumed ones) when
+		// the feature is enabled; failures are logged inside and never block.
+		if (taskId && !historyItem && prompt?.trim()) {
+			// Captured now, from what the new thread actually started with
+			// (composer profile/effort overrides and mode included).
+			const context = this.taskSessions?.get(taskId)
+			const globalMode = this.stateManager?.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+			void this.generateThreadTitle(taskId, prompt, {
+				mode: context?.mode ?? globalMode,
+				selection: context?.apiSelection ? structuredClone(context.apiSelection) : undefined,
+			})
+		}
+		return taskId
+	}
+
+	private async generateThreadTitle(taskId: string, prompt: string, thread: ThreadTitleSource): Promise<void> {
+		await maybeGenerateThreadTitle(
+			{
+				store: this.stateManager,
+				getTitleState: (id) => this.taskHistory.getThreadTitleState(id),
+				applyTitle: async (id, title) => {
+					const written = await this.taskHistory.applyGeneratedThreadTitle(id, title)
+					if (written) await this.postStateToWebview()
+					return written
+				},
+			},
+			taskId,
+			prompt,
+			thread,
+		)
+	}
+
+	/** Tags the thread with ticket keys/URLs found in a user message (regex only). Best-effort. */
+	private async autoTagThread(taskId: string, text: string | undefined): Promise<void> {
+		try {
+			if (await this.taskHistory.addAutoTicketTags(taskId, text)) await this.postStateToWebview()
+		} catch (error) {
+			Logger.warn(`[SdkController] Failed to auto-tag thread ${taskId}:`, error)
+		}
 	}
 
 	/**
@@ -1585,16 +3076,22 @@ export class Controller {
 
 	async reinitExistingTaskFromId(taskId: string): Promise<void> {
 		await this.waitForInitialRemoteConfig()
-		this.turnStateTracker.set("streaming")
-		this.messageTranslatorState.clearTurnOutcome()
 		await this.taskStart.reinitExistingTaskFromId(taskId)
 	}
 
 	async cancelTask(): Promise<void> {
-		// Fence first: mark resumable and invalidate provisioning before any abort await,
-		// so straggler work cannot restore the cancelled turn's streaming state.
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		if (child?.parentTaskId) {
+			await this.stopSubagent(child.runtimeOwnerTaskId ?? child.parentTaskId, child.id)
+			return
+		}
+		// Fence first: mark resumable before aborting so any straggler events from the aborted
+		// turn land on the wrong side of the UI mode. (Full fence-before-abort epoch bump lands
+		// in S6; this sets the authoritative phase now.)
 		this.turnStateTracker.set("resumable")
-		if (this.cloud.cancelPendingStartFor(this.task)) {
+		const id = this.task?.taskId
+		if (id) this.configuredDeferredSends.delete(id)
+		if (this.cloud?.cancelPendingStartFor(this.task)) {
 			// The sandbox never started and its record is being deleted, so there is
 			// nothing to resume: return to the home view instead of offering Resume Task.
 			await this.clearTask()
@@ -1651,22 +3148,33 @@ export class Controller {
 	 * reduced on the next turn and later resumes.
 	 */
 	async compactTask(): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		await this.compaction.compactTask()
 	}
 
 	async clearTask(): Promise<void> {
-		this.pendingStartRetry = undefined
+		this.pendingClineAuthRetry = undefined
 		// No active task — UI returns to idle (input enabled, no buttons/thinking).
-		this.turnStateTracker.set("idle")
 		// A cloud task still provisioning has no SDK session for taskControl to end;
 		// stop it here so it cannot re-install its view after the user left.
-		this.cloud.cancelPendingStart()
+		this.cloud?.cancelPendingStart()
 		await this.taskControl.clearTask()
+		this.turnStateTracker.set("idle")
 		await this.postStateToWebview()
 	}
 
 	async handleTaskCreation(prompt: string): Promise<void> {
 		await this.initTask(prompt)
+	}
+
+	getPendingDecisionId(responseType: "messageResponse" | "yesButtonClicked" | "noButtonClicked"): string | undefined {
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		const decision = child
+			? this.taskSessions
+					.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+					?.interactions.getPendingDecision(child.agentId ?? "")
+			: this.interactions?.getPendingDecision()
+		return decision?.kind === (responseType === "messageResponse" ? "question" : "approval") ? decision.id : undefined
 	}
 
 	/**
@@ -1678,23 +3186,88 @@ export class Controller {
 	 * subscription. We do NOT await the send — the gRPC handler needs to
 	 * return immediately so the webview stays responsive.
 	 */
-	async askResponse(prompt?: string, images?: string[], files?: string[]): Promise<void> {
-		// A start retry answers only the next response to the task that showed
-		// the error; a task opened since then does not inherit it.
-		const retry = this.pendingStartRetry
-		this.pendingStartRetry = undefined
+	async askResponse(
+		prompt?: string,
+		images?: string[],
+		files?: string[],
+		decisionId?: string,
+		provenance?: ComposerProvenance,
+	): Promise<void> {
+		this.followUpFailure = undefined
+		const decisionResponseType = this.task?.taskState?.askResponse
+		const child = this.subagentThreads?.get(this.task?.taskId ?? "")
+		const ownerId = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : this.task?.taskId
+		const ownerInteractions = ownerId ? this.taskSessions?.get(ownerId)?.interactions : undefined
+		const childDecision = ownerInteractions?.getPendingDecisions?.().find((pending) => {
+			if (decisionId ? pending.id !== decisionId : pending.id !== ownerInteractions.getPendingDecision()?.id) return false
+			return Array.from(this.subagentThreads?.values() ?? []).some(
+				(item) =>
+					(item.runtimeOwnerTaskId ?? item.parentTaskId) === ownerId &&
+					item.agentId === pending.agentId &&
+					(!child || item.id === child.id || item.parentTaskId === child.id),
+			)
+		})
+		if (
+			childDecision &&
+			(childDecision.kind === "question"
+				? decisionResponseType === "messageResponse"
+				: decisionResponseType === "yesButtonClicked" || decisionResponseType === "noButtonClicked")
+		) {
+			const responseType = decisionResponseType
+			if (
+				childDecision.kind === "approval" &&
+				(responseType === "yesButtonClicked" || responseType === "noButtonClicked")
+			) {
+				ownerInteractions!.resolvePendingToolApproval(prompt, responseType, images, files, childDecision.id)
+			} else if (childDecision.kind === "question" && responseType === "messageResponse") {
+				ownerInteractions!.resolvePendingAskQuestion(prompt, images, files, childDecision.id)
+			}
+			await this.postStateToWebview()
+			return
+		}
+		if (child) {
+			const parent = this.taskSessions.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+			const decision = parent?.interactions.getPendingDecision(child.agentId ?? "")
+			const responseType = decisionResponseType
+			if (decisionId && decision?.id !== decisionId) return
+			if (decision?.kind === "approval" && (responseType === "yesButtonClicked" || responseType === "noButtonClicked")) {
+				parent!.interactions.resolvePendingToolApproval(prompt, responseType, images, files, decision.id)
+			} else if (decision?.kind === "question" && responseType === "messageResponse") {
+				parent!.interactions.resolvePendingAskQuestion(prompt, images, files, decision.id)
+			} else throw new Error("Subagent threads are read-only. Quote into the parent to continue.")
+			await this.postStateToWebview()
+			return
+		}
+		if (decisionId && !this.interactions.hasPendingDecision(decisionId)) return
+		if (!decisionId) {
+			// Capture the projected decision before awaiting metadata writes. A legacy
+			// response must not answer a later decision that replaces it while we wait.
+			const decision = this.interactions?.getPendingDecision?.()
+			const responseType = decisionResponseType
+			if (
+				decision &&
+				(decision.kind === "question" || responseType === "yesButtonClicked" || responseType === "noButtonClicked")
+			)
+				decisionId = decision.id
+		}
+		this.sessions.assertTaskAvailable(this.task?.taskId)
+		// The sign-in retry answers only the next response to the task that
+		// showed the error; a task opened since then does not inherit it.
+		const failedStart = this.task && this.failedStarts?.get(this.task)
+		const retry = failedStart ?? this.pendingClineAuthRetry
+		this.pendingClineAuthRetry = undefined
+		if (this.task) this.failedStarts?.delete(this.task)
 		if (retry && retry.task === this.task) {
-			const askResponse = this.task.taskState.askResponse
+			const askResponse = decisionResponseType
+			const startFailureOption = failedStart ? { rethrowStartFailure: true } : {}
 			if (askResponse === "yesButtonClicked") {
-				// A Retry click carries no attachments of its own (protobuf decodes the
-				// omitted field as an empty list), so the failed start's attachments stand.
 				await this.initTask(
 					retry.prompt,
 					images?.length ? images : retry.images,
-					files,
+					files?.length ? files : retry.files,
 					undefined,
 					undefined,
-					retry.cloudTarget,
+					{ provenance: retry.provenance, ...startFailureOption, ...retry.cloudTarget },
 				)
 				return
 			}
@@ -1702,19 +3275,37 @@ export class Controller {
 			// continue, so a prompt typed in the composer starts it again. With
 			// attachments but no text, the original prompt is kept.
 			if (askResponse === "messageResponse" && !retry.hasConversation) {
-				await this.initTask(
-					prompt?.trim() ? prompt : retry.prompt,
-					images,
-					files,
-					undefined,
-					undefined,
-					retry.cloudTarget,
-				)
+				await (prompt?.trim()
+					? this.initTask(prompt, images, files, undefined, undefined, {
+							provenance,
+							...startFailureOption,
+							...retry.cloudTarget,
+						})
+					: this.initTask(retry.prompt, images, files, undefined, undefined, {
+							provenance: retry.provenance,
+							...retry.cloudTarget,
+							...startFailureOption,
+						}))
 				return
 			}
 		}
+		// Retry carries no text of its own: the message is the one that never got through.
+		const failedFollowUp = this.task && this.failedFollowUps?.get(this.task)
+		if (this.task) this.failedFollowUps?.delete(this.task)
+		if (
+			failedFollowUp &&
+			decisionResponseType === "yesButtonClicked" &&
+			!prompt?.trim() &&
+			!images?.length &&
+			!files?.length
+		) {
+			prompt = failedFollowUp.prompt
+			images = failedFollowUp.images
+			files = failedFollowUp.files
+			provenance = failedFollowUp.provenance
+		}
 
-		if (this.task && this.cloud.isCloudSessionId(this.task.taskId) && !this.sessions.getActiveSession()) {
+		if (this.task && this.cloud?.isCloudSessionId(this.task.taskId) && !this.sessions.getActiveSession()) {
 			// No sandbox to send to: still provisioning (only reachable through the
 			// extension API, the composer is disabled), expired, or unconfirmed. Refusing the
 			// response is itself a turn outcome: the footer holds its Retry claim
@@ -1749,6 +3340,13 @@ export class Controller {
 			return
 		}
 
+		const submittedTaskId = this.task?.taskId
+		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
+		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length))
+			await this.taskHistory.markUserMessage(submittedTaskId, prompt)
+		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
+		this.sessions.assertTaskAvailable(submittedTaskId)
+		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
 		const turnStateBefore = this.turnStateTracker.get()
 
 		// Answering an ask / continuing after completion / resuming a cancelled task all kick off a
@@ -1766,7 +3364,23 @@ export class Controller {
 		this.postStateToWebview().catch((error) => {
 			Logger.error("[SdkController] Failed to post state after askResponse phase change:", error)
 		})
-		await this.followups.askResponse(prompt, images, files, this.task?.taskState?.askResponse, turnStateBefore.phase)
+		await this.followups.askResponse(
+			prompt,
+			images,
+			files,
+			decisionResponseType,
+			turnStateBefore.phase,
+			undefined,
+			decisionId,
+			provenance,
+		)
+	}
+
+	/** Why the last follow-up never reached a session. Read once, by the RPC that hands the draft back. */
+	takeFollowUpFailure(): string | undefined {
+		const failure = this.followUpFailure
+		this.followUpFailure = undefined
+		return failure
 	}
 
 	async editMessageAndRegenerate(input: {
@@ -1775,7 +3389,9 @@ export class Controller {
 		images?: string[]
 		files?: string[]
 		restoreWorkspace?: boolean
+		provenance?: ComposerProvenance
 	}): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		// Reads the mode setting and replaces the session outside the rebuild
 		// lock; tracking it makes a concurrent mode toggle wait for the result.
 		await this.sessions.trackSessionStart(() => this.performEditMessageAndRegenerate(input))
@@ -1787,6 +3403,7 @@ export class Controller {
 		images?: string[]
 		files?: string[]
 		restoreWorkspace?: boolean
+		provenance?: ComposerProvenance
 	}): Promise<void> {
 		const editedText = input.text.trim()
 		if (!editedText && (input.images?.length ?? 0) === 0 && (input.files?.length ?? 0) === 0) {
@@ -1856,20 +3473,38 @@ export class Controller {
 				sessionRecord?.workspaceRoot?.trim() ||
 				historyItem?.cwdOnTaskInitialization?.trim() ||
 				fallbackCwd
-			const mode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
-			const config = await this.sessionConfigBuilder.build({ cwd, mode, prompt: historyTitle })
+			const mode =
+				activeSession?.startConfig?.mode ??
+				this.taskSessions?.get(currentTask.taskId)?.mode ??
+				(this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
+			const apiSelection =
+				this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection ??
+				this.taskSessions?.get(currentTask.taskId)?.apiSelection ??
+				activeSession?.apiSnapshot?.selection ??
+				historyItem?.apiSelection
+			const config = await this.sessionConfigBuilder.build({
+				cwd,
+				mode,
+				prompt: historyTitle,
+				...(apiSelection ? { apiSelection } : {}),
+				...(activeSession?.apiSnapshot && !this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection
+					? { apiConfiguration: activeSession.apiSnapshot.configuration }
+					: {}),
+			})
 			if (usesClineAccountAuth(config.providerId) && !config.apiKey) {
 				this.emitClineAuthErrorWithTelemetry(editedText)
 				return
 			}
 
-			const resolvedPrompt = await this.resolveContextMentions(editedText)
+			const resolvedPrompt = await this.resolveContextMentions(editedText, undefined, input.provenance)
 			const startInput = {
 				...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 				initialMessages,
 				sessionMetadata: {
+					apiSelection: getSessionApiSnapshot(config)?.selection,
 					title: historyTitle,
 					modelId: config.modelId,
+					...threadIdentityMetadata(historyItem),
 					...(checkpointRunCount
 						? { checkpoint: createRestoredCheckpointMetadata(sessionRecord, checkpointRunCount) }
 						: {}),
@@ -1909,12 +3544,16 @@ export class Controller {
 
 			const task = createTaskProxy(
 				startResult.sessionId,
-				(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+				(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+					this.askResponse(text, images, files, decisionId, provenance),
 				() => this.cancelTask(),
 			)
 			this.task = task
 
-			const newHistoryItem = createHistoryItemFromSession(startResult.sessionId, historyTitle, config.modelId, cwd)
+			const newHistoryItem = {
+				...createHistoryItemFromSession(startResult.sessionId, historyTitle, config.modelId, cwd),
+				apiSelection: getSessionApiSnapshot(config)?.selection,
+			}
 			await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
 
 			const visibleMessages = clineMessages.slice(0, targetIndex)
@@ -1941,6 +3580,7 @@ export class Controller {
 	}
 
 	async restoreCheckpoint(input: { checkpointRunCount: number; restoreType: ClineCheckpointRestore }): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
 		// Reads the mode setting and swaps the session outside the rebuild lock;
 		// tracking it makes a concurrent mode toggle wait for the result.
 		await this.sessions.trackSessionStart(() => this.performRestoreCheckpoint(input))
@@ -1973,22 +3613,42 @@ export class Controller {
 		}
 
 		const cwd = await this.getWorkspaceRoot()
-		const mode = this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"
+		const mode =
+			activeSession?.startConfig?.mode ??
+			this.taskSessions?.get(currentTask.taskId)?.mode ??
+			(this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
 		const firstUserMessage = currentMessages.find(isVisibleCheckpointUserMessage)
 		const restoredText = target?.message.text ?? ""
 		const historyTitle = checkpointRunCount === 1 ? restoredText : firstUserMessage?.text || restoredText
-		const config = restoreMessages ? await this.sessionConfigBuilder.build({ cwd, mode, prompt: historyTitle }) : undefined
+		const apiSelection =
+			this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection ??
+			this.taskSessions?.get(currentTask.taskId)?.apiSelection ??
+			activeSession.apiSnapshot?.selection
+		const config = restoreMessages
+			? await this.sessionConfigBuilder.build({
+					cwd,
+					mode,
+					prompt: historyTitle,
+					...(apiSelection ? { apiSelection } : {}),
+					...(activeSession.apiSnapshot && !this.taskSessions?.get(currentTask.taskId)?.pendingApiSelection
+						? { apiConfiguration: activeSession.apiSnapshot.configuration }
+						: {}),
+				})
+			: undefined
 		if (config && usesClineAccountAuth(config.providerId) && !config.apiKey) {
 			this.emitClineAuthErrorWithTelemetry(restoredText)
 			return
 		}
 
+		const historyItem = config ? await this.taskHistory.findHistoryItem(currentTask.taskId).catch(() => undefined) : undefined
 		const startInput = config
 			? {
 					...buildStartSessionInput(config, { prompt: historyTitle, cwd, mode }),
 					sessionMetadata: {
+						apiSelection: getSessionApiSnapshot(config)?.selection,
 						title: historyTitle,
 						modelId: config.modelId,
+						...threadIdentityMetadata(historyItem),
 					},
 				}
 			: undefined
@@ -2020,12 +3680,16 @@ export class Controller {
 
 		const task = createTaskProxy(
 			restored.sessionId,
-			(text?: string, images?: string[], files?: string[]) => this.askResponse(text, images, files),
+			(text?: string, images?: string[], files?: string[], decisionId?: string, provenance?: ComposerProvenance) =>
+				this.askResponse(text, images, files, decisionId, provenance),
 			() => this.cancelTask(),
 		)
 		this.task = task
 
-		const newHistoryItem = createHistoryItemFromSession(restored.sessionId, historyTitle, config?.modelId ?? "", cwd)
+		const newHistoryItem = {
+			...createHistoryItemFromSession(restored.sessionId, historyTitle, config?.modelId ?? "", cwd),
+			apiSelection: getSessionApiSnapshot(config)?.selection,
+		}
 		await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
 
 		const visibleMessages = currentMessages.slice(0, target.index)
@@ -2040,6 +3704,38 @@ export class Controller {
 			sessionId: restored.sessionId,
 		}
 		await this.postStateToWebview()
+	}
+
+	async getWalkthroughCollectionInput(taskId: string, scope: WalkthroughScope): Promise<CollectionInput> {
+		if (this.task?.taskId !== taskId) throw new Error("Open the requested thread first")
+		let temporaryHost: VscodeSessionHost | undefined
+		const host =
+			this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
+		try {
+			const [session, messages, workspace, edits, worktree] = await Promise.all([
+				host.get(taskId),
+				readCurrentMessages(host, taskId),
+				HostProvider.workspace.getWorkspacePaths({}),
+				ensureTaskDirectoryExists(taskId).then(readEdits),
+				this.threadWorktrees.get(taskId),
+			])
+			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
+			// An isolated thread's changes live only in its worktree (one per module with mm), not
+			// in the user's own workspace folders.
+			const rootPaths = worktree && !worktree.takenOver ? worktree.modules.map((module) => module.path) : workspace.paths
+			return {
+				taskId,
+				scope,
+				messages,
+				runSpans: messages.map(getUserRunSpan),
+				edits,
+				roots: [...new Set([cwd, ...rootPaths])],
+				checkpointRoot: cwd,
+				checkpoints: readSessionCheckpointHistory(session),
+			}
+		} finally {
+			await temporaryHost?.dispose("walkthroughCollection")
+		}
 	}
 
 	/**
@@ -2183,41 +3879,59 @@ export class Controller {
 	}
 
 	/**
-	 * Show a task from history by loading its messages.
-	 * This does NOT start inference — it just loads the task for viewing.
-	 *
-	 * IMPORTANT: We do NOT call clearTask() here because clearTask() sets
-	 * this.task = undefined and may trigger async operations (session stop/dispose)
-	 * that race with the new task proxy creation. If any of those async operations
-	 * trigger postStateToWebview() while this.task is undefined, the webview
-	 * receives a state with no currentTaskItem/clineMessages and flashes back
-	 * to the welcome screen (S6-6/S6-23 fix).
-	 *
-	 * Instead, we:
-	 * 1. Silently tear down the active session (unsubscribe + stop in background)
-	 * 2. Create the new task proxy with loaded messages BEFORE any state push
-	 * 3. Only then push state to the webview
-	 *
-	 * Delegates straight to the coordinator (including the history lookup) so
-	 * the "latest selection wins" generation is allocated synchronously at the
-	 * moment of the request — awaiting the lookup here first would let a
-	 * stalled older request grab a NEWER generation than a later selection and
-	 * replace it.
+	 * Focuses a retained live task, or loads a persisted task for viewing.
+	 * Other sessions keep running with their own transcript and approvals.
+	 * The coordinator allocates its selection generation before the history
+	 * lookup, so a stalled lookup cannot replace a newer user selection.
 	 */
+
 	async showTaskWithId(taskId: string): Promise<TaskResponse> {
-		const historyItem = this.cloud.isCloudSessionId(taskId)
+		this.sessions.assertTaskAvailable(taskId)
+		const historyItem = this.cloud?.isCloudSessionId(taskId)
 			? await this.cloud.openCloudTask(taskId)
 			: await this.taskControl.showTaskWithId(taskId)
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
+		}
+		const context = this.taskSessions.get(taskId)
+		if (context && this.task?.taskId === taskId) {
+			const pending = await Promise.all(
+				(await this.notebookStore.listPending(taskId)).map((review) => this.notebookStore.reviewDiffs(review, taskId)),
+			)
+			if (this.task?.taskId === taskId) {
+				const current = context.task.messageStateHandler.getClineMessages()
+				context.messages.replaceMessages(
+					restoreNotebookChanges(current, taskId, pending, () => context.translator.nextTs()),
+				)
+				await this.postStateToWebview()
+			}
 		}
 		return historyItemToTaskResponse(historyItem)
 	}
 
 	// ---- Mode switching ----
 
-	async togglePlanActMode(modeToSwitchTo: Mode, chatContent?: ChatContent): Promise<boolean> {
-		return this.mode.togglePlanActMode(modeToSwitchTo, chatContent)
+	async togglePlanActMode(
+		modeToSwitchTo: Mode,
+		chatContent?: ChatContent,
+		options?: { continueAnswer?: boolean },
+	): Promise<boolean> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
+		const taskId = this.task?.taskId
+		const hadLiveSession = taskId ? !!this.sessions.getSession(taskId) : false
+		const result = await this.mode.togglePlanActMode(modeToSwitchTo, chatContent, options)
+		// Live mode changes are committed by onModeRebuilt inside the transition
+		// lock. A history-only task has no session to rebuild, so commit its mode
+		// after the coordinator completes the global mode change.
+		if (!hadLiveSession && taskId && this.task?.taskId === taskId) {
+			const mode = this.sessions.getSession(taskId)?.startConfig?.mode ?? this.stateManager.getGlobalSettingsKey("mode")
+			if (mode === "plan" || mode === "act") {
+				this.getTaskSessionContext(taskId).mode = mode
+				this.recordTaskApiSelection(taskId)
+				await this.taskHistory.setTaskMode(taskId, mode)
+			}
+		}
+		return result
 	}
 
 	// ---- Telemetry ----
@@ -2237,7 +3951,7 @@ export class Controller {
 		// (which can hold enterprise secrets) is actually deleted on sign-out.
 		const organizationId = this.authService.getActiveOrganizationId() ?? undefined
 		await this.taskControl.cancelClineTaskOnSignOut(isClineManagedProvider(sessionProviderId))
-		if (this.task && this.cloud.isCloudSessionId(this.task.taskId)) {
+		if (this.task && this.cloud?.isCloudSessionId(this.task.taskId)) {
 			await this.clearTask()
 		}
 		await this.cloud.reset(() => this.authService.handleDeauth(LogoutReason.USER_INITIATED))
@@ -2246,10 +3960,12 @@ export class Controller {
 		// secret-bearing caches) after the clear. The clear itself runs under the
 		// same publication lock refreshes use, so it cannot interleave either.
 		this.remoteConfigRefreshCoordinator.invalidate()
+		const managedBefore = JSON.stringify(this.stateManager.getRemoteConfigSettings())
 		await clearSdkRemoteConfig(this, {
 			workspacePath: await this.getRemoteConfigWorkspacePath(),
 			organizationId,
 		})
+		this.rebuildIfManagedSettingsChanged(managedBefore)
 		await this.postStateToWebview()
 	}
 
@@ -2274,6 +3990,8 @@ export class Controller {
 	// ---- Provider auth callbacks ----
 
 	private persistProviderApiKeyFromState(provider: string): void {
+		// The sign-in went to the connection's keychain entry; the old provider store has nothing to persist.
+		if (configuredActiveModel(this.stateManager, "act")) return
 		const providerId = parseProviderId(provider)
 		const apiKey = this.providerConfigStore.read(providerId).apiKey
 
@@ -2286,21 +4004,38 @@ export class Controller {
 	}
 
 	async handleOpenRouterCallback(code: string): Promise<void> {
-		await this.authService.handleOpenRouterCallback(code)
+		await this.authService.handleOpenRouterCallback(code, this)
 		this.persistProviderApiKeyFromState("openrouter")
 		await this.postStateToWebview()
 	}
 
 	async handleRequestyCallback(code: string): Promise<void> {
-		await this.authService.handleRequestyCallback(code)
+		await this.authService.handleRequestyCallback(code, this)
 		this.persistProviderApiKeyFromState("requesty")
 		await this.postStateToWebview()
 	}
 
 	async handleHicapCallback(code: string): Promise<void> {
-		await this.authService.handleHicapCallback(code)
+		await this.authService.handleHicapCallback(code, this)
 		this.persistProviderApiKeyFromState("hicap")
 		await this.postStateToWebview()
+	}
+
+	async getModelSelectionDependencies() {
+		const { backgroundSelectionDependencies } = await import("./model-settings/background")
+		const records = await this.taskHistory.listModelSelectionDependencies()
+		const history = records.map(sessionHistoryRecordToHistoryItem)
+		const add = (id: string, selection: TaskApiSelection | undefined) => {
+			if (selection) history.push({ id, modelSelectionV1: selection.modelSelectionV1 } as (typeof history)[number])
+		}
+		add("home:draft", this.draftApiSelection)
+		for (const [id, context] of this.taskSessions) {
+			add(`${id}:live`, context.apiSelection)
+			add(`${id}:pending`, context.pendingApiSelection)
+		}
+		history.push(...(this.configuredNextMessageSelections.snapshot() as typeof history))
+		history.push(...(backgroundSelectionDependencies(this.stateManager) as unknown as typeof history))
+		return history
 	}
 
 	async getTaskHistory(request: GetTaskHistoryRequest): Promise<TaskHistoryArray> {
@@ -2356,10 +4091,7 @@ export class Controller {
 		filteredTasks.sort((a, b) => {
 			switch (sortBy) {
 				case "oldest":
-					return (
-						dateStringToTimestamp(a.updatedAt ?? a.endedAt ?? a.startedAt) -
-						dateStringToTimestamp(b.updatedAt ?? b.endedAt ?? b.startedAt)
-					)
+					return sessionRecordActivityTs(a) - sessionRecordActivityTs(b)
 				case "mostExpensive":
 					return (metadataNumber(b.metadata, "totalCost") ?? 0) - (metadataNumber(a.metadata, "totalCost") ?? 0)
 				case "mostTokens":
@@ -2374,24 +4106,38 @@ export class Controller {
 							(metadataNumber(a.metadata, "cacheReads") ?? 0))
 					)
 				default:
-					return (
-						dateStringToTimestamp(b.updatedAt ?? b.endedAt ?? b.startedAt) -
-						dateStringToTimestamp(a.updatedAt ?? a.endedAt ?? a.startedAt)
-					)
+					return sessionRecordActivityTs(b) - sessionRecordActivityTs(a)
 			}
 		})
 
-		if (paginateAfterFilter) {
-			filteredTasks = filteredTasks.slice(offset)
-		}
+		if (paginateAfterFilter) filteredTasks = filteredTasks.slice(offset)
 		const hasMore = paginateAfterFilter ? filteredTasks.length > limit : sessionHistory.length > limit
-		const tasks = filteredTasks.slice(0, limit).map((item) => {
+		const pageItems = filteredTasks.slice(0, limit)
+		// An aside lists under its parent's task; the parent may be on another page.
+		const effectiveGroups = new Map<string, string | undefined>()
+		for (const record of pageItems) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.parentTaskId && !item.isSubagent) {
+				effectiveGroups.set(
+					item.id,
+					await resolveEffectiveTaskGroupId(item, (id) => this.taskHistory.findHistoryItem(id)),
+				)
+			}
+		}
+		const tasks = pageItems.map((item) => {
 			const metadata = item.metadata
 			return {
 				id: item.sessionId,
 				task: formatDisplayUserInput(metadataString(metadata, "title") ?? item.prompt ?? ""),
-				ts: dateStringToTimestamp(item.updatedAt ?? item.endedAt ?? item.startedAt),
+				ts: sessionRecordActivityTs(item),
 				isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
+				isSettled: metadataBoolean(metadata, "isSettled"),
+				settledAt: metadataNumber(metadata, "settledAt") || undefined,
+				isStashed: metadataBoolean(metadata, "isStashed"),
+				stashedAt: metadataNumber(metadata, "stashedAt") || undefined,
+				lastLine: sessionHistoryRecordToHistoryItem(item).lastLine,
+				parentTaskId: metadataString(metadata, "parentTaskId"),
+				forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
 				size: metadataNumber(metadata, "size") ?? 0,
 				totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 				tokensIn: metadataNumber(metadata, "tokensIn") ?? 0,
@@ -2400,6 +4146,10 @@ export class Controller {
 				cacheReads: metadataNumber(metadata, "cacheReads") ?? 0,
 				modelId: item.model || metadataString(metadata, "modelId") || "",
 				apiProvider: item.provider ?? "",
+				title: metadataString(metadata, "threadTitle") ?? "",
+				taskGroupId: effectiveGroups.has(item.sessionId)
+					? (effectiveGroups.get(item.sessionId) ?? "")
+					: (metadataString(metadata, "taskGroupId") ?? ""),
 				isLegacy:
 					metadataBoolean(metadata, "legacyTask") === true ||
 					metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -2416,13 +4166,20 @@ export class Controller {
 				.getClineMessages()
 				.find((message) => message.type === "say" && message.say === "task" && message.text)
 			const matchesSearch = !searchQuery || taskMessage?.text?.toLowerCase().includes(searchQuery.toLowerCase())
-			const currentCloudTask = this.cloud.getCurrentTaskInfo()
+			const currentCloudTask = this.cloud?.getCurrentTaskInfo()
 			if (taskMessage?.text && matchesSearch && (!cloudOnly || currentCloudTask)) {
 				tasks.unshift({
 					id: this.task.taskId,
 					task: formatDisplayUserInput(taskMessage.text),
 					ts: taskMessage.ts || Date.now(),
 					isFavorited: false,
+					isSettled: undefined,
+					settledAt: undefined,
+					isStashed: undefined,
+					stashedAt: undefined,
+					lastLine: undefined,
+					parentTaskId: undefined,
+					forkedAtTs: undefined,
 					size: 0,
 					totalCost: 0,
 					tokensIn: 0,
@@ -2431,6 +4188,8 @@ export class Controller {
 					cacheReads: 0,
 					modelId: this.task.api?.getModel?.().id ?? "",
 					apiProvider: "",
+					title: "",
+					taskGroupId: (await this.taskHistory.findHistoryItem(this.task.taskId))?.taskGroupId ?? "",
 					isLegacy: false,
 					executionTarget: currentCloudTask ? "cloud" : "",
 					cloudStatus: currentCloudTask?.status ?? "",
@@ -2469,7 +4228,34 @@ export class Controller {
 	}
 
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
-		return this.taskHistory.deleteTaskFromState(id)
+		return this.deleteTasksFromState([id])
+	}
+
+	async deleteTasksFromState(ids: string[]): Promise<HistoryItem[]> {
+		const openThread = await this.openThreadClosedBy(ids)
+		const history = await this.taskHistory.deleteTasksFromState(ids)
+		// beforeDeleteSession cleared the open thread; the next state post tells the webview where to land.
+		if (openThread && !this.task) {
+			this.deletedOpenThread = { ...openThread, seq: (this.deletedOpenThread?.seq ?? 0) + 1 }
+		}
+		return history
+	}
+
+	/**
+	 * The open thread, when deleting `ids` removes it: it is one of them, or its owning parent is
+	 * (the same rule beforeDeleteSession clears the task by). Its task is read before the rows go.
+	 */
+	private async openThreadClosedBy(ids: readonly string[]): Promise<{ id: string; taskGroupId?: string } | undefined> {
+		const openId = this.task?.taskId
+		if (!openId) return undefined
+		const child = this.subagentThreads?.get(openId)
+		const ownerId = child?.runtimeOwnerTaskId ?? child?.parentTaskId
+		if (!ids.includes(openId) && !(ownerId && ids.includes(ownerId))) return undefined
+		const find = (id: string) => this.taskHistory.findHistoryItem(id).catch(() => undefined)
+		const item = (await find(openId)) ?? child
+		const taskGroupId =
+			(item ? await resolveEffectiveTaskGroupId(item, find) : undefined) ?? this.taskSessions?.get(openId)?.taskGroupId
+		return { id: openId, taskGroupId }
 	}
 
 	async deleteAllTaskHistory(): Promise<DeleteAllTaskHistoryCount> {
@@ -2533,6 +4319,713 @@ export class Controller {
 		return this.taskHistory.updateTaskHistory(item)
 	}
 
+	async forkTaskAt(taskId: string, messageTs: number): Promise<string> {
+		this.sessions.assertTaskAvailable(taskId)
+		let newId = ""
+		await this.sessionRebuilds.runExclusive(async () => {
+			this.sessions.assertTaskAvailable(taskId)
+			const parent = await this.taskHistory.findHistoryItem(taskId)
+			if (!parent) throw new Error("Parent task not found")
+			// The parent's effective task: a parent that is itself an aside may be stored unfiled.
+			const taskGroupId = await resolveEffectiveTaskGroupId(parent, (id) => this.taskHistory.findHistoryItem(id))
+			const visible =
+				this.taskSessions.get(taskId)?.task.messageStateHandler.getClineMessages() ??
+				(await this.taskHistory.getClineMessages(taskId))
+			let temporaryHost: VscodeSessionHost | undefined
+			const reader =
+				this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
+			const focusedId = this.task?.taskId
+			try {
+				const raw = await readCurrentMessages(reader, taskId)
+				const initialMessages = buildAsideConversation(raw, visible, messageTs, parent.cwdOnTaskInitialization)
+				const cwd = parent.cwdOnTaskInitialization || (await this.getWorkspaceRoot())
+				const apiSelection =
+					this.taskSessions.get(taskId)?.pendingApiSelection ??
+					this.taskSessions.get(taskId)?.apiSelection ??
+					this.sessions.getSession(taskId)?.apiSnapshot?.selection ??
+					parent.apiSelection ??
+					captureTaskApiSelection(this.stateManager)
+				const config = await this.sessionConfigBuilder.build({ cwd, mode: "plan", apiSelection })
+				config.sessionId = createSessionId()
+				const input = buildStartSessionInput(config, { cwd, mode: "plan" })
+				this.sessions.assertTaskAvailable(taskId)
+				const { startResult } = await this.sessions.startNewSession({
+					...input,
+					initialMessages,
+					sessionMetadata: {
+						...input.sessionMetadata,
+						apiSelection,
+						taskMode: "plan",
+						parentTaskId: taskId,
+						forkedAtTs: messageTs,
+						// Asides stay in their parent's task group.
+						taskGroupId: taskGroupId ?? "",
+					},
+				})
+				newId = startResult.sessionId
+				const item = {
+					...createHistoryItemFromSession(newId, `Aside: ${parent.task}`, config.modelId, cwd),
+					apiSelection,
+					parentTaskId: taskId,
+					forkedAtTs: messageTs,
+					taskGroupId,
+				}
+				await this.taskHistory.updateTaskHistoryItem(item)
+				const context = this.getTaskSessionContext(newId)
+				context.mode = "plan"
+				context.apiSelection = apiSelection
+				context.task.messageStateHandler.addMessages(await this.taskHistory.getClineMessages(newId))
+				context.turn.set("awaiting_followup")
+				this.sessions.setRunning(false, newId)
+			} finally {
+				try {
+					this.sessions.focusSession(focusedId)
+				} finally {
+					await temporaryHost?.dispose("forkTaskAt")
+				}
+			}
+		})
+		await this.postStateToWebview()
+		return newId
+	}
+
+	// ---- Message deep links ----
+
+	/**
+	 * Builds the vscode:// link for "Copy link" on a rendered row: the row's
+	 * minted ts is resolved back to the stable SDK transcript index (plus a
+	 * tool-call / text-row anchor) so the link survives reloads and resolves to
+	 * exactly what the row renders.
+	 */
+	async buildMessageLink(threadId: string, messageTs: number): Promise<string> {
+		const parent = await this.taskHistory.findHistoryItem(threadId)
+		const visible =
+			this.taskSessions.get(threadId)?.task.messageStateHandler.getClineMessages() ??
+			(await this.taskHistory.getClineMessages(threadId))
+		const raw = await this.taskHistory.readSessionMessages(threadId)
+		const { messageIndex, anchor } = findMessageLinkTarget(raw, visible, messageTs, parent?.cwdOnTaskInitialization)
+		if (messageIndex === undefined) {
+			throw new Error("That message has no transcript position to link to yet")
+		}
+		return HostProvider.get().getCallbackUrl(buildMessageLinkPath(threadId, messageIndex, anchor))
+	}
+
+	/**
+	 * Resolves a message link for the composer's paste -> message tag and for sending it as context. Returns
+	 * the single referenced row's text (never the thread) plus attribution.
+	 */
+	async resolveMessageLink(
+		threadId: string,
+		messageIndex: number,
+		anchor: MessageLinkAnchor = {},
+	): Promise<{ threadId: string; messageIndex: number; threadTitle: string; author: string; text: string }> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		const threadTitle = item ? item.title || item.task : ""
+		const raw = await this.taskHistory.readSessionMessages(threadId).catch(() => [])
+		const resolved = resolveLinkedMessageText(raw, messageIndex, anchor, item?.cwdOnTaskInitialization)
+		if (!resolved) {
+			return { threadId, messageIndex, threadTitle, author: "", text: "" }
+		}
+		return { threadId, messageIndex, threadTitle, author: resolved.role, text: resolved.text }
+	}
+
+	/**
+	 * Opens a vscode:// message deep link: shows the target thread, then tells
+	 * the webview which message to scroll to and briefly flash.
+	 */
+	async openMessageLink(threadId: string, messageIndex: number, anchor: MessageLinkAnchor = {}): Promise<void> {
+		const info = await this.resolveMessageLink(threadId, messageIndex, anchor)
+		await this.showTaskWithId(threadId)
+		const { sendOpenMessageEvent } = await import("@/core/controller/ui/subscribeToOpenMessage")
+		await sendOpenMessageEvent(threadId, messageIndex, info.text, anchor)
+	}
+
+	async toggleTaskStashed(taskId: string): Promise<void> {
+		await this.taskHistory.toggleTaskStashed(taskId)
+		await this.postStateToWebview()
+	}
+
+	async toggleTaskSettled(taskId: string): Promise<void> {
+		await this.taskHistory.toggleTaskSettled(taskId)
+		await this.postStateToWebview()
+	}
+
+	/** Sets (or clears, when empty) the thread's user-set title. */
+	async renameTask(taskId: string, title: string): Promise<void> {
+		await this.taskHistory.renameTask(taskId, title)
+		await this.postStateToWebview()
+	}
+
+	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
+	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
+		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
+		await this.postStateToWebview()
+	}
+
+	// ---- Task groups ----
+
+	/**
+	 * Watch ~/.cline/data/task-groups so on-disk changes — hand-edited notes or
+	 * writes from another Cline install sharing ~/.cline — refresh webview
+	 * state (taskGroups list, note chips) the same way the user-instruction
+	 * watcher picks up .clinerules edits.
+	 */
+	private async ensureTaskGroupsWatcher(): Promise<void> {
+		if (this.isDisposed || this.taskGroupsWatcher) {
+			return
+		}
+		try {
+			const rootDir = taskGroupsRootDir()
+			await fs.mkdir(rootDir, { recursive: true })
+			this.taskGroupsWatcher = chokidar.watch(rootDir, { ignoreInitial: true })
+			this.taskGroupsWatcher.on("all", (_event, file) => {
+				const relative = path.relative(rootDir, file).split(path.sep)
+				if (relative.length === 3 && relative[1] === "notebook" && relative[2].endsWith(".md")) {
+					void this.notebookStore
+						.captureSavedVersion(relative[0], relative[2].slice(0, -3))
+						.catch((error) => Logger.warn("Failed to capture note history", error))
+				}
+				this.taskGroupsSummaryCache = undefined
+				void this.notebookStore
+					.refreshNoteIndexes()
+					.catch((error) => Logger.warn("Failed to refresh notebook index", error))
+				void this.postStateToWebview()
+			})
+		} catch (error) {
+			Logger.warn("[SdkController] Failed to watch task-groups dir:", error)
+		}
+	}
+
+	/** Group summaries for ExtensionState, cached briefly — state posts run on a 50ms debounce. */
+	async listTaskGroups(): Promise<TaskGroupSummary[]> {
+		const cached = this.taskGroupsSummaryCache
+		if (cached && Date.now() - cached.at < 2000) {
+			return cached.summaries
+		}
+		const summaries = await this.taskGroupStore.listGroupSummaries()
+		this.taskGroupsSummaryCache = { summaries, at: Date.now() }
+		return summaries
+	}
+
+	/** Notes across every task group (the composer's `#` menu); groups ordered by recency. */
+	async listAllNotes(): Promise<{ taskGroupId: string; taskGroupTitle: string; notes: NotebookNoteMeta[] }[]> {
+		const groups = await this.taskGroupStore.listGroupSummaries()
+		return Promise.all(
+			groups.map(async (group) => ({
+				taskGroupId: group.id,
+				taskGroupTitle: group.title,
+				notes: await this.notebookStore.listNotes(group.id),
+			})),
+		)
+	}
+
+	/** Focus and HEAD events bypass the short state-post cache and post only changes. */
+	async refreshCurrentBranch(): Promise<void> {
+		if (this.isDisposed) return
+		if (this.branchRefresh) {
+			this.branchRefreshRequested = true
+			return this.branchRefresh
+		}
+		const refresh = (async () => {
+			do {
+				this.branchRefreshRequested = false
+				const cwd = await this.getWorkspaceRoot()
+				const previous = this.currentBranchCache
+				const branch = await getCurrentBranch(cwd)
+				if (this.isDisposed) return
+				this.currentBranchCache = { cwd, branch, at: Date.now() }
+				if (previous?.cwd !== cwd || previous?.branch !== branch) await this.postStateToWebview()
+			} while (this.branchRefreshRequested && !this.isDisposed)
+		})()
+		this.branchRefresh = refresh
+		try {
+			await refresh
+		} finally {
+			if (this.branchRefresh === refresh) this.branchRefresh = undefined
+		}
+	}
+
+	/**
+	 * Current git branch for ExtensionState, cached briefly to keep state posts
+	 * cheap. Uses the last-known workspace root snapshot rather than awaiting
+	 * the host — fine for the "link current branch" hint, which only matters
+	 * when a real workspace is open.
+	 */
+	private async resolveCurrentBranch(): Promise<string | undefined> {
+		const cwd = this.lastKnownWorkspaceRoot
+		if (!cwd) {
+			return undefined
+		}
+		const cached = this.currentBranchCache
+		if (cached && cached.cwd === cwd && Date.now() - cached.at < 5000) {
+			return cached.branch || undefined
+		}
+		const branch = await getCurrentBranch(cwd)
+		this.currentBranchCache = { cwd, branch, at: Date.now() }
+		return branch || undefined
+	}
+
+	/** The effective group of a thread (see {@link effectiveTaskGroupId}). */
+	private effectiveTaskGroupId(item: HistoryItem, byId: Map<string, HistoryItem>): string | undefined {
+		return effectiveTaskGroupId(item, byId)
+	}
+
+	/** Group detail: summary + note metas + member threads (the webview orders the timeline). */
+	async getTaskGroup(
+		id: string,
+	): Promise<{ group: TaskGroupSummary; notes: NotebookNoteMeta[]; threads: TaskGroupThreadRow[] } | undefined> {
+		const [group, notes, activity] = await Promise.all([
+			this.taskGroupStore.getGroup(id),
+			this.notebookStore.listNotes(id),
+			this.notebookStore.summarizeActivity(id),
+		])
+		if (!group) {
+			return undefined
+		}
+		const records = await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })
+		const startedTs = new Map(records.map((record) => [record.sessionId, sessionRecordStartedTs(record)]))
+		const historyItems = records.map(sessionHistoryRecordToHistoryItem)
+		const byId = new Map(historyItems.map((item) => [item.id, item]))
+		const threads: TaskGroupThreadRow[] = historyItems
+			.filter((item) => this.effectiveTaskGroupId(item, byId) === id)
+			.map((item) => ({
+				threadId: item.id,
+				title: item.title,
+				task: item.task,
+				ts: item.ts,
+				startedTs: startedTs.get(item.id) ?? item.ts,
+				parentTaskId: item.parentTaskId,
+				isSubagent: item.isSubagent ?? false,
+				read: activity.get(item.id)?.read ?? [],
+				wrote: activity.get(item.id)?.wrote ?? [],
+			}))
+		return { group: { ...group, noteCount: notes.length }, notes, threads }
+	}
+
+	async createTaskGroup(input: { title: string; tags: TaskTag[]; threadId?: string }): Promise<string> {
+		const group = await this.taskGroupStore.createGroup(input)
+		if (input.threadId) await this.fileThread(input.threadId, group.id)
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return group.id
+	}
+
+	async updateTaskGroup(
+		id: string,
+		update: { title?: string; tags?: TaskTag[]; branchSuggestionDismissed?: boolean },
+	): Promise<TaskGroupSummary> {
+		const group = await this.taskGroupStore.updateGroup(id, update)
+		if (!group) {
+			throw new Error(`Task group not found: ${id}`)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return { ...group, noteCount: await this.taskGroupStore.noteCount(id) }
+	}
+
+	/** Deleting a task unfiles its threads; it never deletes threads. */
+	async deleteTaskGroup(id: string): Promise<void> {
+		const records = await this.taskHistory.listHistory({ hydrate: false })
+		for (const record of records) {
+			const item = sessionHistoryRecordToHistoryItem(record)
+			if (item.taskGroupId === id) {
+				await this.taskHistory.setTaskGroup(item.id, undefined)
+				this.sessionConfigChanges.handleTaskGroupChanged(item.id)
+			}
+		}
+		await this.taskGroupStore.deleteGroup(id)
+		for (const record of records) {
+			if (sessionHistoryRecordToHistoryItem(record).taskGroupId === id)
+				this.sessionConfigChanges.handleTaskGroupChanged(record.sessionId)
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	/** Files a thread into a task group (empty taskGroupId unfiles it). */
+	async setThreadTaskGroup(threadId: string, taskGroupId: string): Promise<void> {
+		if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		await this.fileThread(threadId, taskGroupId || undefined)
+		await this.postStateToWebview()
+	}
+
+	/**
+	 * Stores a thread's task and carries every aside under it (nested ones too)
+	 * along, so they keep the task's notebook, notes and inbox grouping. An aside
+	 * is never filed on its own: that would split it from its parent, so filing
+	 * one moves the thread it was forked from (and that thread's other asides).
+	 * Each affected live session reloads its notebook.
+	 */
+	private async fileThread(threadId: string, taskGroupId: string | undefined): Promise<void> {
+		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(items.map((item) => [item.id, item]))
+		const rootId = asideRootId(threadId, byId)
+		await this.taskHistory.setTaskGroup(rootId, taskGroupId)
+		this.sessionConfigChanges.handleTaskGroupChanged(rootId)
+		for (const id of asideDescendantIds(rootId, items)) {
+			if ((byId.get(id)?.taskGroupId || undefined) === taskGroupId) continue
+			await this.taskHistory.setTaskGroup(id, taskGroupId)
+			this.sessionConfigChanges.handleTaskGroupChanged(id)
+		}
+	}
+
+	/** Creates a note file in the group's notebook; returns its absolute path. */
+	async createNote(taskGroupId: string, name: string, description: string): Promise<string> {
+		if (!(await this.taskGroupStore.getGroup(taskGroupId))) {
+			throw new Error(`Task group not found: ${taskGroupId}`)
+		}
+		const note = await this.notebookStore.createNote(taskGroupId, { name, description })
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+		return note.path
+	}
+
+	async openNote(taskGroupId: string, slug: string): Promise<void> {
+		const filePath = this.notebookStore.notePath(taskGroupId, slug)
+		if (!existsSync(filePath)) {
+			throw new Error(`Note not found: ${slug}`)
+		}
+		await this.notebookStore.captureSavedVersion(taskGroupId, slug)
+		await openFileIntegration(filePath)
+	}
+
+	async notebookAction(input: NotebookActionRequest): Promise<unknown> {
+		const { taskGroupId: groupId, slug, threadId, revision } = input
+		if (input.action === "edit" || input.action === "reload_draft") {
+			// Reload reopens the user's rejected text against the card's current revision.
+			const draft =
+				input.action === "reload_draft" ? (await this.notebookStore.readDrafts(groupId, threadId))[slug] : undefined
+			if (input.action === "reload_draft" && !draft) throw new Error("Your draft is no longer available")
+			const refreshReview = async () => {
+				await this.emitNotebookChanges(threadId)
+				await this.postStateToWebview()
+			}
+			this.notebookEditors.push(
+				await openPendingNoteEditor(this.notebookStore, input, refreshReview, {
+					initialContent: draft?.content,
+					draftTs: draft?.ts,
+					onRejected: refreshReview,
+				}),
+			)
+			return {}
+		}
+		if (input.action === "retry_draft" || input.action === "discard_draft") {
+			if (input.action === "discard_draft") {
+				await this.notebookStore.discardDraft(groupId, threadId, slug)
+			} else {
+				const draft = (await this.notebookStore.readDrafts(groupId, threadId))[slug]
+				if (!draft) throw new Error("Your draft is no longer available")
+				await this.notebookStore.editPending(groupId, threadId, revision, slug, draft.content, {
+					supersedesDraftTs: draft.ts,
+				})
+			}
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			return {}
+		}
+		if (input.action === "restore_pending") {
+			const pending = await this.notebookStore.readPendingReview(groupId, threadId)
+			const change = pending?.changes.find((change) => change.slug === slug)
+			const version = (await this.notebookStore.history(groupId, slug)).find(
+				(version) => version.id === change?.replacedUserVersion,
+			)
+			if (!version) throw new Error("Your version is no longer available")
+			await this.notebookStore.editPending(groupId, threadId, revision, slug, version.content)
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			return {}
+		}
+		if (input.action === "restore") {
+			await this.notebookStore.restoreVersion(groupId, slug, input.versionId)
+			this.taskGroupsSummaryCache = undefined
+			await this.postStateToWebview()
+			return {}
+		}
+		const note = await this.notebookStore.readNote(groupId, slug)
+		if (input.action === "history") {
+			// History outlives the saved note (never-saved, deleted or tombstoned notes keep their versions).
+			await this.notebookStore.captureSavedVersion(groupId, slug)
+			const versions = await this.notebookStore.history(groupId, slug)
+			return {
+				versions: versions.map((version) => ({ ...version, diff: notebookDiff(version.content, note?.content ?? "") })),
+				conversions: await this.notebookStore.conversions(groupId, slug),
+			}
+		}
+		if (!note) throw new Error("Note no longer exists")
+		if (input.action === "open_conversion") {
+			const links = await this.notebookStore.conversions(groupId, slug)
+			const link = links.find((link) => link.path === input.versionId)
+			if (!link) throw new Error("Conversion no longer available")
+			await openFileIntegration(link.path)
+			return {}
+		}
+		if (input.action !== "convert" && input.action !== "convert_preview") throw new Error("Unknown notebook action")
+		const kind = input.kind as NotebookConversionKind
+		if (!["rule", "skill", "workflow"].includes(kind)) throw new Error("Choose Rule, Skill or Workflow")
+		const workspace = await this.getWorkspaceRoot()
+		if (!input.isGlobal && !(await HostProvider.workspace.getWorkspacePaths({})).paths.length)
+			throw new Error("No workspace folder open")
+		const directory =
+			kind === "skill"
+				? await ensureAgentSkillsDirectoryExists({ isGlobal: input.isGlobal, workspacePath: workspace })
+				: input.isGlobal
+					? await (kind === "workflow" ? ensureWorkflowsDirectoryExists() : ensureRulesDirectoryExists())
+					: path.join(workspace, kind === "workflow" ? ".clinerules/workflows" : ".clinerules")
+		const file = notebookConversion(directory, kind, slug, note.content, input.description)
+		if (input.action === "convert_preview") return file
+		if (file.revision !== input.versionId) throw new Error("The note changed. Review the file again before creating it.")
+		await createNotebookConversion(file)
+		await this.notebookStore.addConversion(groupId, slug, { kind, path: file.path })
+		if (kind === "rule") await refreshClineRulesToggles(this, workspace)
+		if (kind === "workflow") await refreshWorkflowToggles(this, workspace)
+		await this.postStateToWebview()
+		return file
+	}
+
+	async applyNotebookChanges(
+		threadId: string,
+		taskGroupId: string,
+		revision: string,
+		items: { slug: string; include: boolean; editedContent?: string }[],
+	): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		try {
+			const applied = await this.notebookStore.applyPendingChanges(taskGroupId, threadId, revision, items, {
+				threadTitle: item?.title ?? item?.task ?? "",
+			})
+			await this.finishNotebookChanges(threadId, taskGroupId, revision, "applied", applied)
+			await this.emitNotebookChanges(threadId)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
+		this.taskGroupsSummaryCache = undefined
+		await this.postStateToWebview()
+	}
+
+	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string): Promise<void> {
+		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
+		try {
+			await this.notebookStore.discardPendingChanges(taskGroupId, threadId, revision)
+		} catch (error) {
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			throw error
+		}
+		if (pending) await this.finishNotebookChanges(threadId, taskGroupId, revision, "discarded", pending.changes)
+		await this.emitNotebookChanges(threadId)
+		await this.postStateToWebview()
+	}
+
+	/**
+	 * Server-side history search: note bodies and session message text.
+	 * Task/thread rows are fuzzy-matched client-side, so those kinds return
+	 * no results here.
+	 */
+	async searchHistory(input: { query: string; kind?: string; limit?: number }): Promise<HistorySearchHit[]> {
+		const kind = input.kind ?? "all"
+		const generation = (this.historySearchGenerations.get(kind) ?? 0) + 1
+		this.historySearchGenerations.set(kind, generation)
+		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+			sessionHistoryRecordToHistoryItem,
+		)
+		const byId = new Map(items.map((item) => [item.id, item]))
+		const threads: HistorySearchThread[] = items.map((item) => ({
+			id: item.id,
+			title: item.title || item.task,
+			ts: item.ts,
+			taskGroupId: this.effectiveTaskGroupId(item, byId),
+		}))
+		return this.historySearcher.search({
+			...input,
+			threads,
+			isCancelled: () => this.historySearchGenerations.get(kind) !== generation,
+		})
+	}
+
+	private async resolveTaskNotebook(
+		threadId?: string,
+		metadata?: Record<string, unknown>,
+	): Promise<TaskNotebookContext | undefined> {
+		if (!threadId) return undefined
+		const item = (await this.taskHistory.findHistoryItem(threadId)) ?? {
+			...createHistoryItemFromSession(threadId, ""),
+			taskGroupId: typeof metadata?.taskGroupId === "string" ? metadata.taskGroupId : undefined,
+			parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : undefined,
+			runtimeOwnerTaskId: typeof metadata?.runtimeOwnerTaskId === "string" ? metadata.runtimeOwnerTaskId : undefined,
+			isSubagent: metadata?.isSubagent === true,
+		}
+		const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+		if (!owner.taskGroupId) return undefined
+		const group = await this.taskGroupStore.getGroup(owner.taskGroupId)
+		if (!group) return undefined
+		return {
+			group,
+			threadId,
+			rootThreadId: owner.rootThreadId,
+			store: this.notebookStore,
+			resolveReaderThreadId: (agentId) =>
+				Array.from(this.subagentThreads.values()).find((child) => child.agentId === agentId)?.id ?? threadId,
+		}
+	}
+
+	private async emitNotebookChanges(threadId: string): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		const rootThreadId = item
+			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
+			: threadId
+		const reviews = await this.notebookStore.listPending(rootThreadId)
+		if (!reviews.length) return
+		const context = this.getTaskSessionContext(rootThreadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
+		}
+		for (const pending of reviews) {
+			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
+			const shown = latest ? JSON.parse(latest.text ?? "{}") : undefined
+			// Re-showing the same review keeps its card. A new revision (a later turn staged more)
+			// gets a new card at the end, where the user is reading; the old card then shows as
+			// superseded. Updating it in place left the newest changes up in an earlier turn.
+			const reuse = latest && shown?.status === "pending" && shown.revision === pending.revision
+			const message = notebookChangesMessage(
+				{
+					revision: pending.revision,
+					taskGroupId: pending.groupId,
+					threadId: rootThreadId,
+					status: "pending",
+					changes: (await this.notebookStore.reviewDiffs(pending, rootThreadId)).changes,
+				},
+				reuse ? latest.ts : context.translator.nextTs(),
+			)
+			if (reuse) message.sdkMessageIndex = latest.sdkMessageIndex
+			context.messages.emitHookMessage(message)
+			await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
+		}
+	}
+
+	private async finishNotebookChanges(
+		threadId: string,
+		taskGroupId: string,
+		revision: string,
+		status: "applied" | "discarded",
+		changes: NotebookChange[],
+	): Promise<void> {
+		const context = this.getTaskSessionContext(threadId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(threadId))
+		}
+		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), taskGroupId, revision)
+		const message = notebookChangesMessage(
+			{
+				taskGroupId,
+				threadId,
+				revision,
+				status,
+				changes,
+				...(status === "applied" ? { appliedSlugs: changes.map((change) => change.slug) } : {}),
+			},
+			latest?.ts ?? context.translator.nextTs(),
+		)
+		message.sdkMessageIndex = latest?.sdkMessageIndex
+		context.messages.emitHookMessage(message)
+		await this.taskHistory.saveNotebookChangesMessage(threadId, message)
+	}
+
+	/**
+	 * Aborts one running subagent of a live session. `subagentId` is the
+	 * ThreadStrip chip id — `${statusMessageTs}:${index}` (see
+	 * collectSubagents) — resolved to the spawn_agent tool call id through the
+	 * session's translator state, then aborted via the SDK host. On success the
+	 * entry is marked "stopped" and an updated status row is emitted.
+	 */
+	async stopSubagent(taskId: string, subagentId: string): Promise<boolean> {
+		const child = this.subagentThreads?.get(subagentId)
+		const ownerId = child?.runtimeOwnerTaskId ?? taskId
+		const context = this.taskSessions.get(ownerId)
+		const session = this.sessions.getSession(ownerId)
+		if (!context || !session || !session.sdkHost.stopSubagent) return false
+		if (child && (child.parentTaskId === taskId || ownerId === taskId) && child.spawnToolCallId) {
+			// Only this child's run aborts: core resolves the parent's spawn_agent call with a
+			// "Stopped by user" result, so the parent turn and sibling children keep running.
+			const stopped = await session.sdkHost.stopSubagent(ownerId, child.spawnToolCallId)
+			if (!stopped) return false
+			context.interactions?.clearPending("Subagent stopped", child.agentId)
+			this.taskSessions.get(child.parentTaskId ?? ownerId)?.translator.markSpawnAgentStopped(child.spawnToolCallId)
+			await this.postStateToWebview()
+			return true
+		}
+
+		const separator = subagentId.lastIndexOf(":")
+		const statusTs = Number(subagentId.slice(0, separator))
+		const index = Number(subagentId.slice(separator + 1))
+		const translator = context.translator
+		if (!Number.isFinite(statusTs) || !Number.isFinite(index) || statusTs !== translator.getCurrentSpawnAgentStatusTs()) {
+			return false
+		}
+		const toolCallId = translator.getSpawnAgentToolCallId(index)
+		if (!toolCallId || !(await session.sdkHost.stopSubagent(taskId, toolCallId))) {
+			return false
+		}
+		translator.markSpawnAgentStopped(toolCallId)
+		// Emit an updated status row so the transcript and chip show the stop
+		// immediately, before the aborted child's content_end lands.
+		const items = translator.getSpawnAgentItems()
+		const stillRunning = items.some((entry) => entry.status === "running" || entry.status === "pending")
+		const status = translator.buildSubagentStatus(
+			stillRunning
+				? "running"
+				: items.some((entry) => entry.status === "failed" || entry.status === "stopped")
+					? "failed"
+					: "completed",
+		)
+		context.messages.emitHookMessage({
+			ts: translator.getSpawnAgentStatusTs(),
+			type: "say",
+			say: "subagent" as ClineSay,
+			text: JSON.stringify(status),
+			partial: stillRunning,
+		})
+		this.sessions.setSubagentCounts(taskId, {
+			total: translator.getSpawnAgentTotalCount(),
+			live: items.filter((entry) => entry.status === "running" || entry.status === "pending").length,
+		})
+		await this.postStateToWebview()
+		return true
+	}
+
+	async interjectPrompt(text: string, images?: string[], files?: string[], provenance?: ComposerProvenance): Promise<void> {
+		if (this.subagentThreads?.has(this.task?.taskId ?? "")) throw new Error("Subagent threads are read-only.")
+		this.sessions.assertTaskAvailable(this.task?.taskId)
+		if (!text.trim() && !images?.length && !files?.length) throw new Error("Interject requires content")
+		const task = this.task
+		if (!task) throw new Error("No focused task")
+		const active = this.sessions.getActiveSession()
+		if (active) {
+			const resolved = await this.resolveContextMentions(text, undefined, provenance)
+			if (this.task !== task) throw new Error("Focused task changed during interject")
+			await this.taskHistory.markTaskActive(task.taskId)
+			await this.taskHistory.markUserMessage(task.taskId, text)
+			if (extractTicketTags(text).length) await this.autoTagThread(task.taskId, text)
+			this.messageTranslatorState.reset()
+			this.messageTranslatorState.clearTurnOutcome()
+			this.sessions.assertTaskAvailable(task.taskId)
+			await this.taskControl.cancelTask(false, { text: resolved, images, files })
+			this.turnStateTracker.set("streaming")
+			await this.postStateToWebview()
+			return
+		}
+		this.turnStateTracker.set("resumable")
+		await this.taskControl.cancelTask(false)
+		if (this.task !== task) throw new Error("Focused task changed during interject")
+		this.turnStateTracker.set("idle")
+		await this.askResponse(text, images, files, undefined, provenance)
+	}
+
 	async toggleTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {
 		const historyItem = await this.taskHistory.findHistoryItem(taskId)
 		if (!historyItem) {
@@ -2560,17 +5053,17 @@ export class Controller {
 	 * Request a webview state update.
 	 *
 	 * Callers fire this very frequently (notably the session event coordinator,
-	 * once per streamed message/turn boundary), and each rebuild walks the full
-	 * task history. StatePostDebouncer coalesces bursts into a single trailing
+	 * once per streamed message/turn boundary). Unchanged history projections
+	 * are reused. StatePostDebouncer coalesces bursts into a single trailing
 	 * rebuild to avoid hammering the extension host. The returned promise
 	 * resolves once a snapshot reflecting this request has been shipped, or
 	 * rejects if that rebuild failed.
 	 */
-	postStateToWebview(): Promise<void> {
+	postStateToWebview(immediate = false): Promise<void> {
 		if (this.isDisposed) {
 			return Promise.resolve()
 		}
-		return this.statePostDebouncer.post()
+		return this.statePostDebouncer.post(immediate)
 	}
 
 	/** Build the current ExtensionState and push it to the webview immediately. */
@@ -2602,81 +5095,172 @@ export class Controller {
 			const snapshotEpoch = this.messageTranslatorState.getMinter().epoch
 			syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
 			const { getStateToPostToWebview: buildBaseState } = await import("@core/controller/state/getStateToPostToWebview")
-			const state = await buildBaseState({
-				task: snapshotTask,
-				stateManager: this.stateManager,
-				mcpHub: this.mcpHub,
-				backgroundCommandRunning: this.backgroundCommandRunning,
-				backgroundCommandTaskId: this.backgroundCommandTaskId,
-				foregroundCommandRunning: this.foregroundCommands.isRunning,
-				isRemoteConfigAvailable: this.isRemoteConfigAvailable,
-				currentRemoteConfigRevision: this.currentRemoteConfigRevision,
-				// Without this the webview always receives workspaceRoots: [] on the
-				// SDK path (classic Controller exposes a public workspaceManager;
-				// SdkController builds one lazily). The task-header working-directory
-				// badge and anything else keyed on workspaceRoots depend on it.
-				workspaceManager: await this.ensureWorkspaceManager(),
+			const baseStatePromise = this.ensureWorkspaceManager().then((workspaceManager) =>
+				buildBaseState({
+					deferTaskHistory: true,
+					task: snapshotTask,
+					stateManager: this.stateManager,
+					mcpHub: this.mcpHub,
+					backgroundCommandRunning: this.backgroundCommandRunning,
+					backgroundCommandTaskId: this.backgroundCommandTaskId,
+					foregroundCommandRunning: this.foregroundCommands.isRunning,
+					isRemoteConfigAvailable: this.isRemoteConfigAvailable,
+					currentRemoteConfigRevision: this.currentRemoteConfigRevision,
+					// Without this the webview always receives workspaceRoots: [] on the
+					// SDK path (classic Controller exposes a public workspaceManager;
+					// SdkController builds one lazily). The task-header working-directory
+					// badge and anything else keyed on workspaceRoots depend on it.
+					workspaceManager,
+				}),
+			)
+			const groupsPromise = this.listTaskGroups?.().catch((error) => {
+				Logger.warn("[SdkController] Failed to list task groups for webview state:", error)
+				return undefined
 			})
-			const sdkTaskHistory = (await this.taskHistory.listHistory({ limit: 100, hydrate: false }))
-				.map(sessionHistoryRecordToHistoryItem)
-				.filter((item) => item.ts && item.task)
-				.sort((a, b) => b.ts - a.ts)
-			const legacyTaskHistory = state.taskHistory ?? []
-			const mergedTaskHistoryById = new Map<string, HistoryItem>()
-
-			// Keep the SDK records authoritative for migrated/new tasks, but append
-			// legacy persisted history so pre-migration tasks still appear in the UI.
-			for (const item of legacyTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-			for (const item of sdkTaskHistory) {
-				mergedTaskHistoryById.set(item.id, item)
-			}
-
-			// A just-started task may not be visible in SDK persisted history yet (the
-			// history adapter can lag behind the active in-memory TaskProxy). Classic
-			// state included the current task immediately, and the testing platform
-			// asserts that taskHistory reflects newTask before the model turn completes.
-			if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
-				const taskMessage = snapshotTask.messageStateHandler
-					.getClineMessages()
-					.find((message) => message.type === "say" && message.say === "task" && message.text)
-				if (taskMessage?.text) {
-					const currentCloudTask = this.cloud.getCurrentTaskInfo()
-					mergedTaskHistoryById.set(snapshotTask.taskId, {
-						id: snapshotTask.taskId,
-						ts: taskMessage.ts || Date.now(),
-						task: taskMessage.text,
-						tokensIn: 0,
-						tokensOut: 0,
-						cacheWrites: 0,
-						cacheReads: 0,
-						totalCost: 0,
-						modelId: snapshotTask.api?.getModel?.().id,
-						cwdOnTaskInitialization: await this.getWorkspaceRoot(),
-						...(currentCloudTask
-							? {
-									executionTarget: "cloud" as const,
-									cloudStatus: currentCloudTask.status,
-									cloudRepoUrl: currentCloudTask.repoUrl,
-									cloudBranch: currentCloudTask.branch,
-								}
-							: {}),
+			const branchPromise = this.resolveCurrentBranch?.().catch(() => undefined)
+			const promptsPromise = snapshotSession
+				? Promise.resolve()
+						.then(() => snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId }))
+						.catch((error) => {
+							Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+							return []
+						})
+				: Promise.resolve([])
+			const revision = this.taskHistory.revision
+			// Only live rows are inspected here; persisted history is keyed by its store revision.
+			// Include values because child previews/usage are updated in place.
+			const liveKey = JSON.stringify([
+				snapshotTask?.taskId,
+				this.cloud?.getCurrentTaskInfo(),
+				snapshotTask?.messageStateHandler.getClineMessages().find((message) => message.say === "task"),
+				Array.from((this.sessions.getSessions?.() ?? new Map()).keys(), (id) => [id, this.liveTaskHistoryItem?.(id)]),
+				Array.from(this.subagentThreads?.values() ?? []),
+			])
+			const legacy = this.stateManager.getGlobalStateKey?.("taskHistory")
+			const cached = this.historyProjectionCache
+			const reuse =
+				revision !== undefined && cached?.revision === revision && cached.legacy === legacy && cached.liveKey === liveKey
+			const recordsPromise = reuse
+				? Promise.resolve(cached.records)
+				: this.taskHistory.listHistory({
+						limit: 10_000,
+						hydrate: false,
+						includeSubagents: true,
 					})
+			const [state, sdkHistoryRecords, taskGroups, currentBranch, queuedPrompts] = await Promise.all([
+				baseStatePromise,
+				recordsPromise,
+				groupsPromise,
+				branchPromise,
+				promptsPromise,
+			])
+			let processedTaskHistory: HistoryItem[]
+			let historyStatuses: ExtensionState["sessionStatuses"]
+			let historyCounts: ExtensionState["subagentCounts"]
+			if (reuse) {
+				processedTaskHistory = cached.history
+				historyStatuses = cached.statuses
+				historyCounts = cached.counts
+			} else {
+				const sdkTaskHistory = sdkHistoryRecords
+					.map(sessionHistoryRecordToHistoryItem)
+					.filter((item) => item.ts && item.task)
+					.sort((a, b) => b.ts - a.ts)
+				const legacyTaskHistory = state.taskHistory ?? []
+				const mergedTaskHistoryById = new Map<string, HistoryItem>()
+
+				// Keep the SDK records authoritative for migrated/new tasks, but append
+				// legacy persisted history so pre-migration tasks still appear in the UI.
+				for (const item of legacyTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
 				}
-			}
+				for (const item of sdkTaskHistory) {
+					mergedTaskHistoryById.set(item.id, item)
+				}
 
-			const processedTaskHistory = Array.from(mergedTaskHistoryById.values())
-				.filter((item) => item.ts && item.task)
-				.sort((a, b) => b.ts - a.ts)
-				.slice(0, 100)
+				// A just-started task may not be visible in SDK persisted history yet (the
+				// history adapter can lag behind the active in-memory TaskProxy). Classic
+				// state included the current task immediately, and the testing platform
+				// asserts that taskHistory reflects newTask before the model turn completes.
+				if (snapshotTask?.taskId && !mergedTaskHistoryById.has(snapshotTask.taskId)) {
+					const taskMessage = snapshotTask.messageStateHandler
+						.getClineMessages()
+						.find((message) => message.type === "say" && message.say === "task" && message.text)
+					if (taskMessage?.text) {
+						mergedTaskHistoryById.set(snapshotTask.taskId, {
+							id: snapshotTask.taskId,
+							ts: taskMessage.ts || Date.now(),
+							task: taskMessage.text,
+							tokensIn: 0,
+							tokensOut: 0,
+							cacheWrites: 0,
+							cacheReads: 0,
+							totalCost: 0,
+							modelId: snapshotTask.api?.getModel?.().id,
+							cwdOnTaskInitialization: await this.getWorkspaceRoot(),
+							taskGroupId: this.taskSessions.get(snapshotTask.taskId)?.taskGroupId,
+							...(this.cloud?.getCurrentTaskInfo()
+								? {
+										executionTarget: "cloud" as const,
+										cloudStatus: this.cloud.getCurrentTaskInfo()!.status,
+										cloudRepoUrl: this.cloud.getCurrentTaskInfo()!.repoUrl,
+										cloudBranch: this.cloud.getCurrentTaskInfo()!.branch,
+									}
+								: {}),
+						})
+					}
+				}
 
-			let queuedPrompts: ExtensionState["queuedPrompts"] = []
-			if (snapshotSession) {
-				try {
-					queuedPrompts = await snapshotSession.sdkHost.pendingPrompts("list", { sessionId: snapshotSession.sessionId })
-				} catch (error) {
-					Logger.error("[SdkController] Failed to list pending prompts for webview state:", error)
+				// The same persistence lag applies to every OTHER live session: closing
+				// (X) a just-started chat, or starting one in the background, unfocuses
+				// it while it keeps running. Without a synthesized row the inbox drops
+				// the chat entirely — it looks deleted and cannot be reopened.
+				for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
+					if (mergedTaskHistoryById.has(session.sessionId)) continue
+					const item = this.liveTaskHistoryItem(session.sessionId)
+					if (item) {
+						item.cwdOnTaskInitialization ??= await this.getWorkspaceRoot().catch(() => undefined)
+						mergedTaskHistoryById.set(session.sessionId, item)
+					}
+				}
+
+				for (const child of this.subagentThreads?.values() ?? []) {
+					mergedTaskHistoryById.set(child.id, child)
+				}
+				// Asides show their parent's task, including ones filed wrong before the cascade existed.
+				const sortedHistory = withEffectiveTaskGroups(
+					Array.from(mergedTaskHistoryById.values())
+						.filter((item) => item.ts && item.task)
+						.sort((a, b) => b.ts - a.ts),
+				)
+				const focusedItem = snapshotTask ? mergedTaskHistoryById.get(snapshotTask.taskId) : undefined
+				processedTaskHistory = buildStateTaskHistory(sortedHistory, [
+					focusedItem?.isSubagent ? undefined : focusedItem?.id,
+					focusedItem?.parentTaskId,
+				])
+
+				historyStatuses = {
+					...Object.fromEntries(processedTaskHistory.map((item) => [item.id, "done" as const])),
+					...Object.fromEntries(sdkHistoryRecords.map((record) => [record.sessionId, restoredThreadStatus(record)])),
+				}
+				historyCounts = Object.fromEntries(
+					processedTaskHistory
+						.filter((item) => (item.subagentCount ?? 0) > 0)
+						.map((item) => [item.id, { total: item.subagentCount ?? 0, live: 0 }]),
+				)
+
+				// Do not cache a build that raced a persistence write.
+				if (revision !== undefined && revision === this.taskHistory.revision) {
+					this.historyProjectionCache = {
+						version: randomUUID(),
+						revision,
+						legacy,
+						liveKey,
+						records: sdkHistoryRecords,
+						history: processedTaskHistory,
+						statuses: historyStatuses,
+						counts: historyCounts,
+					}
 				}
 			}
 
@@ -2700,14 +5284,128 @@ export class Controller {
 				}
 				throw new Error("Task changed while building webview state")
 			}
-			const currentCloudTask = this.cloud.getCurrentTaskInfo()
+			const currentCloudTask = this.cloud?.getCurrentTaskInfo()
+			const liveSelection =
+				snapshotTask && snapshotSession?.sessionId === snapshotTask.taskId
+					? (this.taskSessions?.get(snapshotTask.taskId)?.apiSelection ?? snapshotSession.apiSnapshot?.selection)
+					: undefined
+			const pendingSelection = snapshotTask ? this.taskSessions?.get(snapshotTask.taskId)?.pendingApiSelection : undefined
+			const pickerSelection =
+				pendingSelection ??
+				liveSelection ??
+				(snapshotTask ? this.taskSessions.get(snapshotTask.taskId)?.apiSelection : this.draftApiSelection)
+			const nextMessagePick = this.configuredNextMessageSelections?.peek(snapshotTask?.taskId ?? "", state.mode ?? "act")
+			const focusedSessionModels = focusedModelsFromSnapshot(snapshotSession?.apiSnapshot, liveSelection)
+			const child = snapshotTask ? this.subagentThreads?.get(snapshotTask.taskId) : undefined
+			const focusedOwner = child ? (child.runtimeOwnerTaskId ?? child.parentTaskId) : snapshotTask?.taskId
+			const ownerInteractions = focusedOwner ? this.taskSessions.get(focusedOwner)?.interactions : undefined
+			const decision = child
+				? this.taskSessions
+						.get(child.runtimeOwnerTaskId ?? child.parentTaskId ?? "")
+						?.interactions.getPendingDecision(child.agentId ?? "")
+				: ownerInteractions?.getPendingDecision?.()
+			const pendingSubagentDecisions: NonNullable<ExtensionState["pendingSubagentDecisions"]> = []
+			for (const pending of ownerInteractions?.getPendingDecisions?.() ?? []) {
+				const item = Array.from(this.subagentThreads?.values() ?? []).find(
+					(item) =>
+						(item.runtimeOwnerTaskId ?? item.parentTaskId) === focusedOwner &&
+						item.agentId === pending.agentId &&
+						(!child || item.id === child.id || item.parentTaskId === child.id),
+				)
+				if (item)
+					pendingSubagentDecisions.push({
+						taskId: item.id,
+						name: item.task,
+						kind: pending.kind,
+						message: pending.message,
+					})
+			}
+			const childDecisionStatuses = Object.fromEntries(
+				Array.from(this.subagentThreads?.values() ?? [])
+					.filter(
+						(item) =>
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.hasPendingDecisionForAgent?.(item.agentId ?? "") ||
+							this.taskSessions
+								.get(item.runtimeOwnerTaskId ?? item.parentTaskId ?? "")
+								?.interactions.getPendingDecision(item.agentId ?? ""),
+					)
+					.map((item) => [item.id, "waiting" as const]),
+			)
+			const childRecord = child ? sdkHistoryRecords.find((record) => record.sessionId === child.id) : undefined
+			const childStatus = child
+				? (this.sessions.sessionStatuses[child.id] ?? (childRecord ? restoredThreadStatus(childRecord) : "done"))
+				: undefined
+			// The projected decision has its own freshness stamp. Once it resolves,
+			// publish a newer child phase so the replica can leave awaiting_approval.
+			const childTurn = child
+				? {
+						...(decision
+							? {
+									phase:
+										decision.kind === "approval"
+											? ("awaiting_approval" as const)
+											: ("awaiting_followup" as const),
+									anchorTs: decision.message.ts,
+								}
+							: this.turnStateTracker.get()),
+						seq: minter.nextSeq(),
+					}
+				: undefined
 			return {
 				...state,
+				...(child
+					? {
+							clineMessages: decision
+								? [
+										...state.clineMessages.filter((message) => message.ts !== decision.message.ts),
+										decision.message,
+									]
+								: state.clineMessages,
+							subagentView: {
+								parentTaskId: child.parentTaskId!,
+								agentId: child.agentId!,
+								status: decision || childDecisionStatuses[child.id] ? ("waiting" as const) : childStatus!,
+								pendingDecision: decision?.kind,
+							},
+						}
+					: { subagentView: null }),
+				focusedSessionModels,
+				pendingSubagentDecisions,
+				composerApiSelection: withNextMessagePick(pickerSelection, nextMessagePick, state.mode),
+				composerNextMessageOnly: !!nextMessagePick,
+				composerApiConfiguration: pickerSelection
+					? resolveApiConfigurationForTaskSelection(
+							this.stateManager,
+							state.apiConfiguration ?? {},
+							state.mode,
+							pickerSelection,
+						)
+					: undefined,
 				currentTaskItem: snapshotTask?.taskId
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
+				deletedOpenThread: this.deletedOpenThread,
 				taskHistory: processedTaskHistory,
-				turnState: this.turnStateTracker.get(),
+				taskHistoryVersion: reuse
+					? cached.version
+					: this.historyProjectionCache?.history === processedTaskHistory
+						? this.historyProjectionCache.version
+						: randomUUID(),
+				// Optional-called: unit tests drive getStateToPostToWebview with
+				// partial controller stubs that don't carry these members.
+				taskGroups: taskGroups ?? [],
+				currentBranch,
+				turnState:
+					childTurn ??
+					(decision
+						? {
+								phase: decision.kind === "approval" ? "awaiting_approval" : "awaiting_followup",
+								anchorTs: decision.message.ts,
+								seq: minter.nextSeq(),
+							}
+						: this.turnStateTracker.get()),
 				queuedPrompts,
 				cloudSessionsAvailable: isCloudSessionsFeatureAvailable(),
 				cloudSessionsEnabled: isCloudSessionsFeatureEnabled(),
@@ -2716,6 +5414,17 @@ export class Controller {
 				cloudModelId: isCloudSessionsFeatureEnabled() || currentCloudTask ? this.cloud.getCloudModelId() : undefined,
 				nextCloudModelId: isCloudSessionsFeatureEnabled() || currentCloudTask ? this.cloud.nextCloudModelId() : undefined,
 				clinePassSubscribed: isCloudSessionsFeatureEnabled() ? this.cloud.clinePassSubscribed() : undefined,
+				sessionStatuses: {
+					...historyStatuses,
+					...this.sessions.sessionStatuses,
+					...childDecisionStatuses,
+				},
+				// Live sessions report total + running; persisted history totals fill
+				// in settled tasks whose sessions are gone.
+				subagentCounts: {
+					...historyCounts,
+					...this.sessions.subagentCounts,
+				},
 				stateVersion: minter.nextSeq(),
 				epoch: minter.epoch,
 			}

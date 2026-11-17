@@ -1,21 +1,19 @@
-import { openRouterDefaultModelId } from "@shared/api"
 import { BANNER_DATA, BannerAction, BannerActionType, BannerCardData } from "@shared/cline/banner"
 import { EmptyRequest } from "@shared/proto/cline/common"
 import type { Worktree } from "@shared/proto/cline/worktree"
 import { TrackWorktreeViewOpenedRequest } from "@shared/proto/cline/worktree"
 import { GitBranch, Sparkles } from "lucide-react"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import RunningCloudTasks from "@/components/cloud/RunningCloudTasks"
-import { TaskTargetPanel } from "@/components/cloud/TaskTargetPanel"
 import BannerCarousel, { BannerData } from "@/components/common/BannerCarousel"
 import WhatsNewModal from "@/components/common/WhatsNewModal"
-import HistoryPreview from "@/components/history/HistoryPreview"
-import { useApiConfigurationHandlers } from "@/components/settings/utils/useApiConfigurationHandlers"
+import InboxList from "@/components/inbox/InboxList"
+import { moveToAccountModel } from "@/components/settings/models/configuredModelActions"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import HomeHeader from "@/components/welcome/HomeHeader"
+import { HomeSearchBar } from "@/components/welcome/HomeSearchBar"
 import { SuggestedTasks } from "@/components/welcome/SuggestedTasks"
-import CreateWorktreeModal from "@/components/worktrees/CreateWorktreeModal"
+import CreateWorktreeForm from "@/components/worktrees/CreateWorktreeForm"
 import { useClineAuth } from "@/context/ClineAuthContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useClinePassPromo } from "@/hooks/useClinePassPromo"
@@ -30,16 +28,17 @@ const CLINE_PASS_PROMO_BANNER_ID = "cline-pass-home-promo-v2"
 
 /**
  * Welcome section shown when there's no active task
- * Includes info banner, announcements, home header, and history preview
+ * Includes info banner, announcements, home header, and the chat inbox
  */
 export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
-	isVisible,
 	showAnnouncement,
 	hideAnnouncement,
 	showHistoryView,
 	version,
 	taskHistory,
 	shouldShowQuickWins,
+	onOpenSearch,
+	onOpenTaskGroup,
 }) => {
 	const { lastDismissedInfoBannerVersion, lastDismissedCliBannerVersion, lastDismissedModelBannerVersion, dismissedBanners } =
 		useExtensionState()
@@ -48,8 +47,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 	const [hasShownWhatsNewModal, setHasShownWhatsNewModal] = useState(false)
 	const [showWhatsNewModal, setShowWhatsNewModal] = useState(false)
 
-	// Quick launch worktree modal
-	const [showCreateWorktreeModal, setShowCreateWorktreeModal] = useState(false)
+	// Quick launch worktree form
+	const [showCreateWorktreeForm, setShowCreateWorktreeForm] = useState(false)
 	const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null)
 	const [currentWorktree, setCurrentWorktree] = useState<Worktree | null>(null)
 
@@ -68,17 +67,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 	}, [])
 
 	const { clineUser } = useClineAuth()
-	const {
-		openRouterModels,
-		navigateToSettings,
-		navigateToSettingsModelPicker,
-		navigateToWorktrees,
-		worktreesEnabled,
-		banners,
-		welcomeBanners,
-		cloudSessionsEnabled,
-	} = useExtensionState()
-	const { handleFieldsChange } = useApiConfigurationHandlers()
+	const { navigateToSettings, navigateToWorktrees, worktreesEnabled, banners, welcomeBanners, taskGroups, currentTaskItem } =
+		useExtensionState()
 	const { isClinePassEnabled, isUsingClinePass, openSubscribePage, switchToClinePassProvider } = useClinePassPromo()
 	// Seeded from the session-scoped record so dismissals survive unmounts.
 	const [dismissedLocalBanners, setDismissedLocalBanners] = useState<Set<string>>(() => getSessionDismissedBannerIds())
@@ -174,17 +164,16 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					break
 
 				case BannerActionType.SetModel: {
-					const modelId = action.arg || openRouterDefaultModelId
-					const initialModelTab = action.tab || "recommended"
-					handleFieldsChange({
-						planModeOpenRouterModelId: modelId,
-						actModeOpenRouterModelId: modelId,
-						planModeOpenRouterModelInfo: openRouterModels[modelId],
-						actModeOpenRouterModelInfo: openRouterModels[modelId],
-						planModeApiProvider: "cline",
-						actModeApiProvider: "cline",
+					const modelId = action.arg || "anthropic/claude-sonnet-4.5"
+					moveToAccountModel({
+						providerId: "cline",
+						providerName: "Cline",
+						upstreamId: modelId,
+						modes: ["act", "plan"],
+						taskId: currentTaskItem?.id ?? "",
 					})
-					navigateToSettingsModelPicker({ targetSection: "api-config", initialModelTab })
+						.catch((error) => console.error("Failed to switch to the banner's model:", error))
+						.finally(() => navigateToSettings("models"))
 					break
 				}
 
@@ -193,14 +182,8 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					break
 
 				case BannerActionType.ShowApiSettings:
-					if (action.arg) {
-						// Pre-select the provider before navigating
-						handleFieldsChange({
-							planModeApiProvider: action.arg as any,
-							actModeApiProvider: action.arg as any,
-						})
-					}
-					navigateToSettings("api-config")
+					// The page has no provider to preselect: providers are added from it.
+					navigateToSettings("models")
 					break
 
 				case BannerActionType.ShowFeatureSettings:
@@ -217,7 +200,7 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 					console.warn("Unknown banner action:", action.action)
 			}
 		},
-		[handleFieldsChange, openRouterModels, navigateToSettings, navigateToSettingsModelPicker],
+		[currentTaskItem?.id, navigateToSettings],
 	)
 
 	/**
@@ -328,11 +311,13 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 			/>
 			<div className="overflow-y-auto flex flex-col pb-2.5">
 				<HomeHeader shouldShowQuickWins={shouldShowQuickWins} />
+				<HomeSearchBar onOpenSearch={onOpenSearch} />
 				{!showWhatsNewModal && (
 					<>
 						<BannerCarousel banners={activeBanners} />
-						{cloudSessionsEnabled && <RunningCloudTasks />}
-						{!shouldShowQuickWins && taskHistory.length > 0 && <HistoryPreview showHistoryView={showHistoryView} />}
+						{!shouldShowQuickWins && (taskHistory.length > 0 || taskGroups?.length > 0) && (
+							<InboxList onOpenTaskGroup={onOpenTaskGroup} showHistoryView={showHistoryView} />
+						)}
 						{/* Quick launch worktree button */}
 						{isGitRepo && worktreesEnabled?.featureFlag && worktreesEnabled?.user && (
 							<div className="flex flex-col items-center gap-3 mt-2 mb-4 px-5">
@@ -341,7 +326,7 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 									<TooltipTrigger asChild>
 										<button
 											className="flex items-center gap-2 px-4 py-2 rounded-full border border-[var(--vscode-foreground)]/30 text-[var(--vscode-foreground)] bg-transparent hover:bg-[var(--vscode-list-hoverBackground)] active:opacity-80 text-sm font-medium cursor-pointer"
-											onClick={() => setShowCreateWorktreeModal(true)}
+											onClick={() => setShowCreateWorktreeForm(true)}
 											type="button">
 											<span className="codicon codicon-empty-window"></span>
 											New Worktree Window
@@ -383,16 +368,11 @@ export const WelcomeSection: React.FC<WelcomeSectionProps> = ({
 				)}
 			</div>
 			<SuggestedTasks shouldShowQuickWins={shouldShowQuickWins} />
-			{cloudSessionsEnabled && isVisible && (
-				<div className="mt-auto pt-2">
-					<TaskTargetPanel />
-				</div>
-			)}
 
-			{/* Quick launch worktree modal */}
-			<CreateWorktreeModal
-				onClose={() => setShowCreateWorktreeModal(false)}
-				open={showCreateWorktreeModal}
+			{/* Quick launch worktree form */}
+			<CreateWorktreeForm
+				onClose={() => setShowCreateWorktreeForm(false)}
+				open={showCreateWorktreeForm}
 				openAfterCreate={true}
 			/>
 		</div>

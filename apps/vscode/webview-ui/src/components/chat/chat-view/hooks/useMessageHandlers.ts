@@ -1,19 +1,20 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
-import { EmptyRequest, StringRequest } from "@shared/proto/cline/common"
-import { AskResponseRequest, NewTaskRequest } from "@shared/proto/cline/task"
+import { type ComposerProvenance, EmptyRequest, StringRequest } from "@shared/proto/cline/common"
+import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
+import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
+import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
+import { noteThreadStopped } from "@/components/toasts/threadToastRules"
+import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
-import { SlashServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
-
-function formatDraftText(text: string, activeQuote: string | null): string {
-	if (!activeQuote) {
-		return text
-	}
-	return `[context] \n>  ${activeQuote} \n[/context] \n\n ${text}`
-}
+import { latestMessageTs, startAside } from "../utils/asideUtils"
+import { type DraftAuthorization, toComposerProvenance } from "../utils/composerProvenance"
+import { formatMessageWithQuotes } from "../utils/quoteUtils"
 
 // `/compact` and its aliases `/smol` and `/newtask` run a real SDK manual
 // compaction via the condense RPC. Sending the literal text to the model would
@@ -30,11 +31,16 @@ function isCompactionCommand(text: string): boolean {
  * Handles sending messages, button clicks, and task management
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
-	const { backgroundCommandRunning, turnState, cloudSessionsEnabled, cloudTaskTarget } = useExtensionState()
+	const { backgroundCommandRunning, turnState, currentTaskItem, mode } = useExtensionState()
+	// Read at cancel time so a stop never counts as a finished thread for toasts.
+	const currentTaskItemIdRef = useRef(currentTaskItem?.id)
+	currentTaskItemIdRef.current = currentTaskItem?.id
 	const {
 		setInputValue,
-		activeQuote,
-		setActiveQuote,
+		quotes,
+		setQuotes,
+		messageTags,
+		setMessageTags,
 		setSelectedImages,
 		setSelectedFiles,
 		sendingDisabled,
@@ -46,8 +52,34 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		clineAsk,
 		lastMessage,
 	} = chatState
+	const displayedAsk = getTurnStateMessage(messages, turnState) ?? lastMessage
+	const createAskResponse = useCallback(
+		(input: Partial<AskResponseRequest>) => {
+			const isDecisionResponse = input?.responseType !== "messageResponse" || displayedAsk?.ask === "followup"
+			return AskResponseRequest.create({
+				...input,
+				taskId: currentTaskItem?.id,
+				decisionId: isDecisionResponse ? displayedAsk?.decisionId : undefined,
+			})
+		},
+		[currentTaskItem?.id, displayedAsk],
+	)
+	// The composer's explicit grants (thread picks, a typed script run) and its message tags
+	// apply only to the composer's own text. A send of other text, such as a chat row's option button, carries none.
+	const composerGrants = useCallback(
+		(text: string, snapshot = chatState.getDraftSnapshot()) => {
+			const applies = snapshot.text === text
+			const auth: DraftAuthorization | undefined = applies
+				? { authorizedThreadIds: snapshot.authorizedThreadIds ?? [], scriptRun: snapshot.scriptRun }
+				: undefined
+			return { auth, provenance: auth ? toComposerProvenance(snapshot.text, auth, snapshot.messageTags) : undefined }
+		},
+		[chatState],
+	)
 	const cancelInFlightRef = useRef(false)
 	const pendingResponseIdRef = useRef(0)
+	// A failed send's text, back in the composer. Retry sends it too, so a success takes it out again.
+	const restoredDraftRef = useRef<string | undefined>(undefined)
 	// The first recovery action for an authoritative turn sequence owns that
 	// sequence until the backend advances it. A ref makes competing click
 	// handlers observe the claim before React can render the mirrored UI state.
@@ -100,13 +132,85 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			const submittedText = recoveryDraft?.text ?? text
 			const submittedImages = recoveryDraft?.images ?? images
 			const submittedFiles = recoveryDraft?.files ?? files
-			const submittedQuote = recoveryDraft?.activeQuote ?? activeQuote
+			const submittedQuotes = recoveryDraft?.quotes ?? quotes
 			let messageToSend = submittedText.trim()
-			const hasContent = messageToSend || submittedImages.length > 0 || submittedFiles.length > 0
 
-			// Prepend the active quote if it exists
-			if (submittedQuote && hasContent) {
-				messageToSend = formatDraftText(messageToSend, submittedQuote)
+			// `/ask` and `/act` switch the chat's mode through the same RPC as the
+			// Ask/Act toggle, so the mode's saved configuration and default
+			// reasoning effort apply exactly as toggling does. Any text after the
+			// command is sent in the new mode: passing it as chatContent lets the
+			// host consume it directly when the switch auto-continues (a plan
+			// awaiting approval), otherwise it falls through to the normal send
+			// path below. The literal command text is never sent to the model.
+			const modeCommand = parseModeSwitchCommand(messageToSend)
+			if (modeCommand) {
+				messageToSend = modeCommand.rest
+			}
+
+			// What the user explicitly picked or ran in the composer; read before the draft is
+			// cleared. Quote chips and other generated text never carry any.
+			const { auth: sentAuth, provenance } = recoveryDraft
+				? composerGrants(recoveryDraft.text, recoveryDraft)
+				: composerGrants(text)
+
+			const hasContent =
+				messageToSend || submittedQuotes.length > 0 || submittedImages.length > 0 || submittedFiles.length > 0
+
+			// Prepend the quotes (each followed by its note) if there are any
+			if (submittedQuotes.length > 0) {
+				messageToSend = formatMessageWithQuotes(messageToSend, submittedQuotes)
+			}
+
+			if (modeCommand) {
+				if (mode === modeCommand.mode) {
+					// Already in the target mode — a bare command is a no-op, and
+					// text after it falls through to the normal send path.
+					if (!hasContent) {
+						setInputValue("")
+						return
+					}
+				} else {
+					let consumed = false
+					try {
+						const response = await StateServiceClient.togglePlanActModeProto(
+							TogglePlanActModeRequest.create({
+								mode: modeCommand.mode === "act" ? PlanActMode.ACT : PlanActMode.PLAN,
+								chatContent: {
+									message: hasContent ? messageToSend : undefined,
+									provenance,
+									images: submittedImages,
+									files: submittedFiles,
+								},
+							}),
+						)
+						consumed = response.value === true
+						// Let the Ask/Act toggle flash so the command-driven switch is visible.
+						document.dispatchEvent(new CustomEvent(MODE_SWITCHED_BY_COMMAND_EVENT))
+					} catch (error) {
+						console.error("Failed to switch mode:", error)
+						return
+					}
+					if (consumed) {
+						// The host echoed the message itself as part of the switch, so
+						// clear the composer like a completed send.
+						setInputValue("")
+						setQuotes([])
+						setMessageTags([])
+						setSelectedImages([])
+						setSelectedFiles([])
+						if (recoveryDraft) {
+							chatState.consumeDraftSnapshot(recoveryDraft)
+						}
+						if ("disableAutoScrollRef" in chatState) {
+							;(chatState as any).disableAutoScrollRef.current = false
+						}
+						return
+					}
+					if (!hasContent) {
+						setInputValue("")
+						return
+					}
+				}
 			}
 
 			// Intercept the built-in compaction commands when an active task exists.
@@ -122,7 +226,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				// after compaction finishes, and the typed command lingering in the
 				// field the whole time reads as if the send didn't register.
 				setInputValue("")
-				setActiveQuote(null)
+				setQuotes([])
+				setMessageTags([])
 				await compactTask().catch((err) => console.error("Failed to compact task:", err))
 				if ("disableAutoScrollRef" in chatState) {
 					;(chatState as any).disableAutoScrollRef.current = false
@@ -148,7 +253,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 				const clearSentMessageState = () => {
 					setInputValue("")
-					setActiveQuote(null)
+					setQuotes([])
+					setMessageTags([])
 					setSendingDisabled(true)
 					setSelectedImages([])
 					setSelectedFiles([])
@@ -156,11 +262,14 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 				const restorePendingMessageState = () => {
 					setInputValue(text)
-					setActiveQuote(activeQuote)
+					setQuotes(quotes)
+					setMessageTags(messageTags)
 					setSendingDisabled(sendingDisabled)
 					setSelectedImages(images)
 					setSelectedFiles(files)
 					setEnableButtons(enableButtons)
+					if (sentAuth) chatState.restoreAuthorization(sentAuth)
+					restoredDraftRef.current = text
 				}
 				const beginPendingResponse = (pendingMessage?: ClineMessage) => {
 					const id = ++pendingResponseIdRef.current
@@ -225,9 +334,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (!recoveryDraft || !claimErrorRecovery()) {
 						return false
 					}
-					const request = AskResponseRequest.create({
+					const request = createAskResponse({
 						responseType: "messageResponse",
 						text: messageToSend,
+						provenance,
 						images: submittedImages,
 						files: submittedFiles,
 					})
@@ -262,23 +372,13 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 
 				if (messages.length === 0) {
-					// Cloud selected means cloud requested, even without a repository: the
-					// extension refuses an incomplete cloud request rather than running the
-					// task locally behind a Cloud label.
-					const runInCloud = !!cloudSessionsEnabled && cloudTaskTarget?.target === "cloud"
 					const request = NewTaskRequest.create({
 						text: messageToSend,
+						provenance,
 						images,
-						// Local file paths cannot be read from a cloud sandbox; the composer
-						// refuses a cloud send while files are attached.
-						files: runInCloud ? [] : files,
-						...(runInCloud
-							? {
-									executionTarget: "cloud",
-									cloudRepoUrl: cloudTaskTarget.repoUrl,
-									cloudBranch: cloudTaskTarget.branch,
-								}
-							: {}),
+						files,
+						taskGroupId: getComposerSendTaskGroup(),
+						runInWorktree: getDraftRunInWorktree() || undefined,
 					})
 					clearSentMessageState()
 					trackPromptSubmitted(false)
@@ -298,12 +398,16 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						restorePendingMessageState()
 						throw error
 					}
+					// The where pill's picks applied to this thread; the next new thread starts unfiled, in the workspace.
+					setComposerTaskGroup(undefined)
+					clearDraftRunInWorktree()
 					messageSent = true
 				} else if (turnState?.phase === "awaiting_approval") {
 					await sendAskResponseWithPendingState(
-						AskResponseRequest.create({
+						createAskResponse({
 							responseType: "noButtonClicked",
 							text: messageToSend,
+							provenance,
 							images,
 							files,
 						}),
@@ -318,9 +422,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						// user's message would not appear until the (slow) resume finishes — the
 						// chat would show only the Thinking loader in the meantime.
 						await sendAskResponseWithPendingState(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "yesButtonClicked",
 								text: messageToSend,
+								provenance,
 								images,
 								files,
 							}),
@@ -354,9 +459,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								const showPendingMessage = clineAsk !== "followup" && turnState?.phase !== "streaming"
 
 								await sendAskResponseWithPendingState(
-									AskResponseRequest.create({
+									createAskResponse({
 										responseType: "messageResponse",
 										text: messageToSend,
+										provenance,
 										images,
 										files,
 									}),
@@ -390,9 +496,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (turnAllowsFollowup || isTaskRunning) {
 						// Continue the conversation / interrupt with feedback.
 						await sendAskResponseWithPendingState(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "messageResponse",
 								text: messageToSend,
+								provenance,
 								images,
 								files,
 							}),
@@ -404,9 +511,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					}
 				}
 
-				// Every send path clears the draft before its RPC. Do not clear it again
-				// here: the RPC can take a while (a cloud task provisions its sandbox
-				// first) and the user may have typed a new draft in the meantime.
+				// Every path above cleared before its RPC. Not again here: the turn can already be over by the
+				// time the RPC returns, so locking Send now would never be undone, and it would wipe new typing.
 				if (messageSent) {
 					// Reset auto-scroll
 					if ("disableAutoScrollRef" in chatState) {
@@ -416,17 +522,22 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 		},
 		[
+			createAskResponse,
+			composerGrants,
 			messages,
 			clineAsk,
 			turnState,
-			activeQuote,
+			mode,
+			quotes,
+			messageTags,
 			recoverySeq,
 			errorRecoveryAvailable,
 			compactTask,
 			claimErrorRecovery,
 			releaseErrorRecoveryClaim,
 			setInputValue,
-			setActiveQuote,
+			setQuotes,
+			setMessageTags,
 			sendingDisabled,
 			setSendingDisabled,
 			setSelectedImages,
@@ -436,8 +547,6 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			setPendingUserMessage,
 			setPendingResponse,
 			chatState,
-			cloudSessionsEnabled,
-			cloudTaskTarget,
 		],
 	)
 
@@ -469,7 +578,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			// Quotes refer to rows in the task being closed. Keep independent draft
 			// text and attachments, but do not carry stale task context forward.
-			setActiveQuote(null)
+			setQuotes([])
+			setMessageTags([])
 			try {
 				await clearTask(source)
 			} catch (error) {
@@ -478,7 +588,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setActiveQuote],
+		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes, setMessageTags],
 	)
 
 	// Execute button action based on type
@@ -492,7 +602,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					// For API retry (api_req_failed), always send simple approval without content
 					try {
 						await TaskServiceClient.askResponse(
-							AskResponseRequest.create({
+							createAskResponse({
 								responseType: "yesButtonClicked",
 							}),
 						)
@@ -500,6 +610,17 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						releaseErrorRecoveryClaim()
 						throw error
 					}
+					if (
+						restoredDraftRef.current !== undefined &&
+						chatState.getDraftSnapshot().text === restoredDraftRef.current
+					) {
+						setInputValue("")
+						setQuotes([])
+						setMessageTags([])
+						setSelectedImages([])
+						setSelectedFiles([])
+					}
+					restoredDraftRef.current = undefined
 					break
 				}
 				case "approve":
@@ -507,12 +628,21 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				case "proceed": {
 					const { draft } = invocation
 					const trimmedText = draft.text.trim()
-					const hasContent = trimmedText.length > 0 || draft.images.length > 0 || draft.files.length > 0
-					const text = hasContent ? formatDraftText(trimmedText, draft.activeQuote) : undefined
+					const hasContent =
+						trimmedText.length > 0 || draft.quotes.length > 0 || draft.images.length > 0 || draft.files.length > 0
+					const text = hasContent ? formatMessageWithQuotes(trimmedText, draft.quotes) : undefined
 					const responseType = invocation.type === "reject" ? "noButtonClicked" : "yesButtonClicked"
 					await TaskServiceClient.askResponse(
-						AskResponseRequest.create(
-							hasContent ? { responseType, text, images: draft.images, files: draft.files } : { responseType },
+						createAskResponse(
+							hasContent
+								? {
+										responseType,
+										text,
+										provenance: composerGrants(draft.text, draft).provenance,
+										images: draft.images,
+										files: draft.files,
+									}
+								: { responseType },
 						),
 					)
 					chatState.consumeDraftSnapshot(draft)
@@ -532,7 +662,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					if (clineAsk === "new_task") {
 						// Reset context from the old task before the first await. A quote
 						// selected while New Task is in flight belongs to the new draft.
-						setActiveQuote(null)
+						setQuotes([])
+						setMessageTags([])
 						await TaskServiceClient.newTask(
 							NewTaskRequest.create({
 								text: lastMessage?.text,
@@ -560,6 +691,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								console.error("Failed to cancel background command:", err),
 							)
 						}
+						noteThreadStopped(currentTaskItemIdRef.current)
 						await TaskServiceClient.cancelTask(EmptyRequest.create({}))
 					} finally {
 						cancelInFlightRef.current = false
@@ -592,6 +724,8 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			return true
 		},
 		[
+			createAskResponse,
+			composerGrants,
 			clineAsk,
 			lastMessage,
 			startNewTask,
@@ -599,12 +733,119 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			backgroundCommandRunning,
 			claimErrorRecovery,
 			releaseErrorRecoveryClaim,
-			setActiveQuote,
+			setQuotes,
+			setMessageTags,
 			setSendingDisabled,
 			setEnableButtons,
 		],
 	)
 	const retryFailedRequest = useCallback(() => executeButtonAction({ type: "retry" }), [executeButtonAction])
+
+	// Sends the draft through `send`, clearing the composer first and restoring it if the send fails.
+	const sendDraftVia = useCallback(
+		async (
+			text: string,
+			images: string[],
+			files: string[],
+			send: (message: string, provenance: ComposerProvenance | undefined) => Promise<unknown>,
+		) => {
+			const message = quotes.length > 0 ? formatMessageWithQuotes(text, quotes) : text.trim()
+			if (!message && images.length === 0 && files.length === 0) {
+				return false
+			}
+			// Read the grants before the draft is cleared below.
+			const { auth, provenance } = composerGrants(text)
+			const sentQuotes = quotes
+			const sentMessageTags = messageTags
+			setInputValue("")
+			setQuotes([])
+			setMessageTags([])
+			setSelectedImages([])
+			setSelectedFiles([])
+			try {
+				await send(message, provenance)
+			} catch (error) {
+				setInputValue(text)
+				if (auth) chatState.restoreAuthorization(auth)
+				setQuotes(sentQuotes)
+				setMessageTags(sentMessageTags)
+				setSelectedImages(images)
+				setSelectedFiles(files)
+				throw error
+			}
+			if ("disableAutoScrollRef" in chatState) {
+				;(chatState as any).disableAutoScrollRef.current = false
+			}
+			return true
+		},
+		[
+			quotes,
+			messageTags,
+			composerGrants,
+			setInputValue,
+			setQuotes,
+			setMessageTags,
+			setSelectedImages,
+			setSelectedFiles,
+			chatState,
+		],
+	)
+
+	// Background start (home composer Ctrl/Cmd+Enter): the draft becomes a NEW chat
+	// that runs without taking focus — the user stays on home and it shows up in
+	// the inbox Active list via the normal state post.
+	const handleSendInBackground = useCallback(
+		async (text: string, images: string[], files: string[]) => {
+			await sendDraftVia(text, images, files, (message, provenance) =>
+				TaskServiceClient.newTask(
+					NewTaskRequest.create({
+						text: message,
+						provenance,
+						images,
+						files,
+						runInBackground: true,
+						taskGroupId: getComposerSendTaskGroup(),
+						runInWorktree: getDraftRunInWorktree() || undefined,
+					}),
+				).then(() => {
+					setComposerTaskGroup(undefined)
+					clearDraftRunInWorktree()
+				}),
+			).catch((error) => console.error("Failed to start background task:", error))
+		},
+		[sendDraftVia],
+	)
+
+	// Interject: stop the focused task's current turn and send the draft as the next turn.
+	const handleInterject = useCallback(
+		async (text: string, images: string[], files: string[]) => {
+			await sendDraftVia(text, images, files, (message, provenance) =>
+				TaskServiceClient.interjectPrompt(InterjectPromptRequest.create({ text: message, provenance, images, files })),
+			).catch((error) => console.error("Failed to interject:", error))
+		},
+		[sendDraftVia],
+	)
+
+	// Aside: fork the focused task at `messageTs` (default: the latest message), open the
+	// fork (in Ask) and send the draft there. With no task yet, it is just a normal send.
+	const handleAside = useCallback(
+		async (text: string, images: string[], files: string[], messageTs = latestMessageTs(messages)) => {
+			const taskId = currentTaskItem?.id
+			if (!taskId || messageTs === undefined) {
+				await handleSendMessage(text, images, files)
+				return
+			}
+			const hasDraft = !!text.trim() || quotes.length > 0 || images.length > 0 || files.length > 0
+			const open = (message: string, provenance?: ComposerProvenance) =>
+				startAside({ taskId, messageTs, text: message, provenance, images, files })
+			if (!hasDraft) {
+				await open("").catch((error) => console.error("Failed to start aside:", error))
+				return
+			}
+			await sendDraftVia(text, images, files, open).catch((error) => console.error("Failed to start aside:", error))
+		},
+		[messages, currentTaskItem?.id, quotes.length, handleSendMessage, sendDraftVia],
+	)
 
 	// Handle task close button click
 	const handleTaskCloseButtonClick = useCallback(() => {
@@ -616,6 +857,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		recoveryActionInFlight,
 		compactTask,
 		handleSendMessage,
+		handleSendInBackground,
+		handleInterject,
+		handleAside,
 		executeButtonAction,
 		handleTaskCloseButtonClick,
 		retryFailedRequest,

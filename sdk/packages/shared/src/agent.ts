@@ -182,6 +182,14 @@ export interface AgentToolDefinition {
 		 * Whether a successful call to this tool completes the current run.
 		 */
 		completesRun?: boolean;
+		/**
+		 * Whether an empty model response directly after a successful call to
+		 * this tool (same turn) ends the run as completed instead of failing
+		 * with "Model returned empty response". For display-only tools whose
+		 * result already told the user everything, so a closing sentence is
+		 * optional.
+		 */
+		emptyResponseCompletes?: boolean;
 	};
 }
 
@@ -221,6 +229,14 @@ export interface AgentTool<TInput = unknown, TOutput = unknown>
 	timeoutMs?: number;
 	retryable?: boolean;
 	maxRetries?: number;
+	/**
+	 * Host/tool-source metadata carried on the runtime tool object but never
+	 * sent to the model. Hooks and policy gates can inspect it (e.g. MCP tool
+	 * annotations such as `readOnlyHint`).
+	 * `subagentAccess: "read" | "write"` opts a host tool into session-spawned
+	 * subagents at that access level, subject to parent policies and disables.
+	 */
+	metadata?: Record<string, unknown>;
 	execute: (
 		input: TInput,
 		context: AgentToolContext,

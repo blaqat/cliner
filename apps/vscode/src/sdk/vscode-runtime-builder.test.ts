@@ -1,6 +1,6 @@
 import sinon from "sinon"
 import { describe, expect, it } from "vitest"
-import { McpHubToolProvider } from "./vscode-runtime-builder"
+import { createVscodeExtraTools, McpHubToolProvider } from "./vscode-runtime-builder"
 
 describe("McpHubToolProvider", () => {
 	it("forwards the agent abort signal to McpHub", async () => {
@@ -62,4 +62,12 @@ describe("McpHubToolProvider", () => {
 
 		expect(readResource.firstCall.args).toEqual(["weather", "ui://weather/view.html", controller.signal])
 	})
+})
+
+it("registers present_walkthrough without requiring MCP or exposing it to subagents", async () => {
+	const tools = await createVscodeExtraTools({ getServers: () => [] } as never)
+	const tool = tools.find((tool) => tool.name === "present_walkthrough")
+	expect(tool).toBeDefined()
+	expect(tool?.metadata?.subagentAccess).toBeUndefined()
+	expect(tool?.inputSchema).toMatchObject({ required: ["title", "chapters"] })
 })

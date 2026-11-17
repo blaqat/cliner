@@ -6,7 +6,6 @@ import { VSCodeButton, VSCodeDivider, VSCodeDropdown, VSCodeOption, VSCodeTag } 
 import { LoaderCircleIcon } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useInterval } from "react-use"
-import { CloudGitHubCard } from "@/components/cloud/CloudGitHubCard"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { type ClineUser, handleSignOut, useClineAuth } from "@/context/ClineAuthContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -69,7 +68,7 @@ const AccountView = ({ onDone, clineUser, organizations, activeOrganization }: A
 
 const ClineAccountView = ({ clineUser, userOrganizations, activeOrganization, clineEnv }: ClineAccountViewProps) => {
 	const { email, displayName, appBaseUrl, uid } = clineUser
-	const { remoteConfigSettings, environment, cloudSessionsEnabled } = useExtensionState()
+	const { remoteConfigSettings, environment } = useExtensionState()
 
 	// Determine if dropdown should be locked by remote config
 	const isLockedByRemoteConfig = Object.keys(remoteConfigSettings || {}).length > 0
@@ -217,12 +216,6 @@ const ClineAccountView = ({ clineUser, userOrganizations, activeOrganization, cl
 				</div>
 
 				<VSCodeDivider className="w-full my-6" />
-
-				{cloudSessionsEnabled && (
-					<div className="mb-6">
-						<CloudGitHubCard />
-					</div>
-				)}
 
 				<CreditBalance
 					balance={balance}

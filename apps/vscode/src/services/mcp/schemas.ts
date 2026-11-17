@@ -5,6 +5,7 @@ import {
 	resolveMcpTimeoutSeconds,
 } from "@shared/mcp"
 import { z } from "zod"
+import { Logger } from "@/shared/services/Logger"
 import { TYPE_ERROR_MESSAGE } from "./constants"
 
 const AutoApproveSchema = z.array(z.string()).default([])
@@ -163,7 +164,14 @@ const createServerTypeSchema = () => {
 	])
 }
 
-export const ServerConfigSchema = createServerTypeSchema()
+let warnedAboutStartHook = false
+export const ServerConfigSchema = z.preprocess((value) => {
+	if (value && typeof value === "object" && "startHook" in value && !warnedAboutStartHook) {
+		warnedAboutStartHook = true
+		Logger.warn("Ignoring obsolete MCP startHook setting. Use a McpServerStart file hook instead.")
+	}
+	return value
+}, createServerTypeSchema())
 
 export const McpSettingsSchema = z.object({
 	mcpServers: z.record(z.string(), ServerConfigSchema),

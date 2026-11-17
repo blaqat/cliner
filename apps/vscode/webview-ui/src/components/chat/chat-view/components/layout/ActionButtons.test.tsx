@@ -15,8 +15,9 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 }))
 
 const mockTurnState = vi.fn<() => TurnState | undefined>(() => undefined)
+const mockOneView = vi.fn(() => false)
 vi.mock("../../../../../context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ turnState: mockTurnState() }),
+	useExtensionState: () => ({ turnState: mockTurnState(), oneViewEnabled: mockOneView() }),
 }))
 
 function fileApprovalAsk(ts: number, path: string): ClineMessage {
@@ -30,14 +31,15 @@ function fileApprovalAsk(ts: number, path: string): ClineMessage {
 }
 
 function makeChatState(): ChatState {
-	const draft = { revision: 3, text: "", activeQuote: null, images: [] as string[], files: [] as string[] }
+	const draft = { revision: 3, text: "", quotes: [], images: [] as string[], files: [] as string[] }
 	return {
 		inputValue: draft.text,
-		activeQuote: draft.activeQuote,
+		quotes: draft.quotes,
 		selectedImages: draft.images,
 		selectedFiles: draft.files,
 		setInputValue: vi.fn(),
-		setActiveQuote: vi.fn(),
+		setQuotes: vi.fn(),
+		addQuote: vi.fn(),
 		setSelectedImages: vi.fn(),
 		setSelectedFiles: vi.fn(),
 		getDraftSnapshot: vi.fn(() => draft),
@@ -47,6 +49,23 @@ function makeChatState(): ChatState {
 }
 
 describe("ActionButtons", () => {
+	it("does not cancel or reject a pending approval on Escape", () => {
+		mockTurnState.mockReturnValue({ phase: "awaiting_approval", seq: 1, anchorTs: 10 })
+		const executeButtonAction = vi.fn()
+		const task = fileApprovalAsk(10, "app.js")
+		render(
+			<ActionButtons
+				chatState={makeChatState()}
+				messageHandlers={{ executeButtonAction } as unknown as MessageHandlers}
+				messages={[task]}
+				mode="act"
+				task={task}
+			/>,
+		)
+		fireEvent.keyDown(window, { key: "Escape" })
+		expect(executeButtonAction).not.toHaveBeenCalled()
+	})
+
 	it("does not render a scroll button when there are no action buttons", () => {
 		mockTurnState.mockReturnValue(undefined)
 		const task: ClineMessage = {
@@ -118,13 +137,13 @@ describe("ActionButtons", () => {
 		const chatState = {
 			...makeChatState(),
 			inputValue: "unsent draft",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			selectedImages: ["image.png"],
 			selectedFiles: ["notes.md"],
 			getDraftSnapshot: vi.fn(() => ({
 				revision: 9,
 				text: "unsent draft",
-				activeQuote: "selected context",
+				quotes: [{ text: "selected context", note: "" }],
 				images: ["image.png"],
 				files: ["notes.md"],
 			})),
@@ -193,6 +212,27 @@ describe("ActionButtons", () => {
 		expect(screen.getByRole("button", { name: "Start New Task" })).not.toBeDisabled()
 	})
 
+	it("releases the send lock when a turn ends before its streaming state ever rendered", () => {
+		mockTurnState.mockReturnValue({ phase: "completed", seq: 3 })
+		const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "task" }
+		const setSendingDisabled = vi.fn()
+		const props = {
+			task,
+			chatState: { ...makeChatState(), setSendingDisabled },
+			messageHandlers: { executeButtonAction: vi.fn() } as unknown as MessageHandlers,
+			messages: [task],
+			mode: "act" as const,
+		}
+		const { rerender } = render(<ActionButtons {...props} />)
+		setSendingDisabled.mockClear()
+
+		// The send locked it; completed → streaming → completed all landed in one render.
+		mockTurnState.mockReturnValue({ phase: "completed", seq: 5 })
+		rerender(<ActionButtons {...props} />)
+
+		expect(setSendingDisabled).toHaveBeenCalledExactlyOnceWith(false)
+	})
+
 	it("releases its local latch when another recovery control owns the turn", async () => {
 		mockTurnState.mockReturnValue({ phase: "error", anchorTs: 2, seq: 3 })
 		const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "task" }
@@ -225,7 +265,7 @@ describe("ActionButtons", () => {
 		const draft = {
 			revision: 12,
 			text: "approval feedback",
-			activeQuote: "selected context",
+			quotes: [{ text: "selected context", note: "" }],
 			images: ["image.png"],
 			files: ["notes.md"],
 		}
@@ -266,5 +306,32 @@ describe("ActionButtons", () => {
 		expect(chatState.setInputValue).not.toHaveBeenCalled()
 		expect(chatState.setSelectedImages).not.toHaveBeenCalled()
 		expect(chatState.setSelectedFiles).not.toHaveBeenCalled()
+	})
+})
+
+describe("ActionButtons in one view", () => {
+	const task: ClineMessage = { ts: 1, type: "say", say: "task", text: "do it" }
+	const done: ClineMessage = { ts: 2, type: "ask", ask: "completion_result", text: "", partial: false }
+	const props = () => ({
+		task,
+		chatState: makeChatState(),
+		messageHandlers: { executeButtonAction: vi.fn().mockResolvedValue(true) } as unknown as MessageHandlers,
+		messages: [task, done],
+		mode: "act" as const,
+	})
+
+	it("hides the lone Start New Task after a finished thread (the list has ✎ New)", () => {
+		mockTurnState.mockReturnValue(undefined)
+		mockOneView.mockReturnValue(true)
+		render(<ActionButtons {...props()} />)
+		expect(screen.queryByRole("button", { name: "Start New Task" })).not.toBeInTheDocument()
+		mockOneView.mockReturnValue(false)
+	})
+
+	it("keeps it in the classic view", () => {
+		mockTurnState.mockReturnValue(undefined)
+		mockOneView.mockReturnValue(false)
+		render(<ActionButtons {...props()} />)
+		expect(screen.getByRole("button", { name: "Start New Task" })).toBeInTheDocument()
 	})
 })

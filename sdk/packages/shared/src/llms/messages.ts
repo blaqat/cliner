@@ -66,6 +66,8 @@ export interface ToolUseContent {
 	input: Record<string, unknown>;
 	/** Thought signature for this function call part (Gemini) */
 	signature?: string;
+	/** OpenAI Responses item id (e.g. `fc_...`) required to reference this call on continuation */
+	openaiItemId?: string;
 }
 
 /**

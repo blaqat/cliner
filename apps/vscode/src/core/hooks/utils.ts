@@ -18,6 +18,7 @@ export const VALID_HOOK_TYPES = [
 	"UserPromptSubmit",
 	"Notification",
 	"PreCompact",
+	"McpServerStart",
 ] as const
 
 /**

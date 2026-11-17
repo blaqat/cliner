@@ -1,0 +1,151 @@
+import { type RefObject, useLayoutEffect, useMemo, useState } from "react"
+
+/**
+ * What the composer's bottom row shows at its current width. The row is 📎 on the left, then on
+ * the right the Compact chip (near the limit), the context ring, the "Model · Effort" chip, the
+ * Ask/Act switch and Send. In the order things give way:
+ * 1. The model name in the chip truncates (CSS, down to the minimum below).
+ * 2. The Compact chip drops its label and token count, keeping its icon (it never hides while the
+ *    context is nearly full).
+ * 3. The effort word hides from the chip (the chip is one button; its menu still has the effort),
+ *    so the model name keeps its letters.
+ * 4. The chip goes tight (the model name may drop to a few characters) and the Ask/Act switch
+ *    shows only the current mode on its thumb.
+ * 5. The chip loses the model name, keeping its chevron (its tooltip and menu still name the model).
+ * 6. The Ask/Act switch hides (Send's color still shows the mode; the shortcut and `/ask` still flip it),
+ *    and the chip may shrink away before Send moves.
+ * 📎, the ring and Send never hide: Send fits down to VS Code's narrowest sidebar.
+ */
+export interface ComposerRowLayout {
+	/** The Compact chip shows "Compact 699k"; when false it is its icon alone. */
+	inlineCompactNudge: boolean
+	/** The effort word hides from the chip; the chip's menu still has the effort wheel. */
+	compactEffort: boolean
+	/** The model/effort chip may shrink below its usual minimum; the mode switch shows one label. */
+	tightChip: boolean
+	/** The chip shows no model name. Set only on the narrowest rows. */
+	bareChip?: boolean
+	/** The Ask/Act switch hides. Set only on the narrowest rows. */
+	hideModeSwitch?: boolean
+}
+
+/** What the row has to fit; absent items need no room. */
+export interface ComposerRowContent {
+	hasUsage: boolean
+	hasCompactNudge: boolean
+	/** The model has reasoning, so the chip has its effort text. */
+	hasEffort: boolean
+	/** The chip also says "next message", or "next" once its effort word has gone. */
+	nextMessage?: boolean
+}
+
+const LAYOUT_STEPS: readonly ComposerRowLayout[] = [
+	{ inlineCompactNudge: true, compactEffort: false, tightChip: false },
+	{ inlineCompactNudge: false, compactEffort: false, tightChip: false },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: false },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: true },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: true, bareChip: true },
+	{ inlineCompactNudge: false, compactEffort: true, tightChip: true, bareChip: true, hideModeSwitch: true },
+]
+
+export const FULL_COMPOSER_ROW = LAYOUT_STEPS[0]
+
+/** Item widths in px (VS Code font, 13px root), measured in Chromium (see ComposerBottomRow.stories). */
+export const COMPOSER_ROW_WIDTHS = {
+	/** px-1.5 on both sides and the gap before the row's spacer. */
+	padding: 15,
+	/** gap-1.5. */
+	rowGap: 5,
+	/** The 📎 button. */
+	attach: 20,
+	/** The 14px ring and its padding. */
+	ring: 18,
+	/** "⤡ Compact 699k". */
+	compactNudge: 92,
+	/** The Compact chip as its icon. */
+	compactNudgeIcon: 22,
+	/** The model chip at a still-readable name ("Opus 4…") and its effort word ("High ⌄"). */
+	chipMin: 104,
+	/** Effort word hidden: a readable name ("Opus 4…") and the chevron. */
+	chipCompact: 76,
+	/** Tight: a few characters of the model name. */
+	chipTight: 56,
+	/** No model name: the chevron, and the armed dot if it has one. */
+	chipBare: 26,
+	/** Without reasoning the chip has no effort word. */
+	effortSaving: 24,
+	/** "next message" and its gap. */
+	nextMessage: 76,
+	/** "next" and its gap. */
+	nextMessageShort: 28,
+	/** The "( Ask | Act )" switch. */
+	modeSwitch: 62,
+	/** The tightest row's switch: the current mode on a short track. */
+	modeSwitchCompact: 37,
+	/** gap-1 between the switch and Send. */
+	switchGap: 4,
+	/** The send icon. */
+	send: 26,
+} as const
+
+/** The least the chip can take in `layout`: the row squeezes it no further. */
+export function composerChipMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
+	const w = COMPOSER_ROW_WIDTHS
+	// With the switch gone there's nothing left to give way but the chip.
+	if (layout.hideModeSwitch) return 0
+	if (layout.bareChip) return w.chipBare
+	// Tight, "next" takes what the model name would have had.
+	if (layout.tightChip) return w.chipTight
+	const chip = layout.compactEffort ? w.chipCompact : w.chipMin - (content.hasEffort ? 0 : w.effortSaving)
+	return chip + (content.nextMessage ? (layout.compactEffort ? w.nextMessageShort : w.nextMessage) : 0)
+}
+
+/** Smallest row width (border box) that fits `content` in `layout`. */
+export function composerRowMinWidth(content: ComposerRowContent, layout: ComposerRowLayout): number {
+	const w = COMPOSER_ROW_WIDTHS
+	const usage = content.hasUsage
+		? w.rowGap +
+			w.ring +
+			(content.hasCompactNudge ? w.rowGap + (layout.inlineCompactNudge ? w.compactNudge : w.compactNudgeIcon) : 0)
+		: 0
+	const chip = composerChipMinWidth(content, layout)
+	const modeSwitch = layout.hideModeSwitch ? 0 : (layout.tightChip ? w.modeSwitchCompact : w.modeSwitch) + w.switchGap
+	return w.padding + w.attach + usage + w.rowGap + chip + w.rowGap + modeSwitch + w.send
+}
+
+/** The fullest layout that fits a measured row width; unknown widths (not laid out yet, jsdom) get the full row. */
+export function composerRowLayout(width: number | undefined, content: ComposerRowContent): ComposerRowLayout {
+	if (!width) {
+		return FULL_COMPOSER_ROW
+	}
+	return LAYOUT_STEPS.find((layout) => composerRowMinWidth(content, layout) <= width) ?? LAYOUT_STEPS[LAYOUT_STEPS.length - 1]
+}
+
+/** The element's border-box width, tracked with a ResizeObserver; undefined until measured. */
+export function useElementWidth(ref: RefObject<HTMLElement | null>): number | undefined {
+	const [width, setWidth] = useState<number>()
+	useLayoutEffect(() => {
+		const element = ref.current
+		if (!element || typeof ResizeObserver === "undefined") {
+			return
+		}
+		setWidth(element.getBoundingClientRect().width)
+		const observer = new ResizeObserver(([entry]) => {
+			setWidth(entry.borderBoxSize?.[0]?.inlineSize ?? entry.target.getBoundingClientRect().width)
+		})
+		observer.observe(element)
+		return () => observer.disconnect()
+	}, [ref])
+	return width
+}
+
+/** `composerRowLayout` driven by the row element's measured width. */
+export function useComposerRowLayout(ref: RefObject<HTMLElement | null>, content: ComposerRowContent): ComposerRowLayout {
+	const width = useElementWidth(ref)
+	const { hasUsage, hasCompactNudge, hasEffort, nextMessage } = content
+	// LAYOUT_STEPS entries are stable, so this only changes when a breakpoint is crossed.
+	return useMemo(
+		() => composerRowLayout(width, { hasUsage, hasCompactNudge, hasEffort, nextMessage }),
+		[width, hasUsage, hasCompactNudge, hasEffort, nextMessage],
+	)
+}

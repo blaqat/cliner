@@ -182,16 +182,28 @@ function contentBlockToAgentPart(block: ContentBlock): AgentMessagePart {
 	switch (block.type) {
 		case "text":
 			return { type: "text", text: block.text };
-		case "thinking":
+		case "thinking": {
+			// The OpenAI Responses bridge stores per-item reasoning state (item
+			// ids + encrypted content) in `details.openaiReasoningItems`. Promote
+			// object-form details keys onto the part metadata so the AI SDK
+			// adapter sees `openaiReasoningItems` at the top level.
+			const detailsObject =
+				block.details !== null &&
+				typeof block.details === "object" &&
+				!Array.isArray(block.details)
+					? (block.details as Record<string, unknown>)
+					: undefined;
+			const metadata = {
+				...(block.signature ? { signature: block.signature } : {}),
+				...(block.details !== undefined ? { details: block.details } : {}),
+				...detailsObject,
+			};
 			return {
 				type: "reasoning",
 				text: block.thinking,
-				metadata: block.signature
-					? { signature: block.signature, details: block.details }
-					: block.details
-						? { details: block.details }
-						: undefined,
+				metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
 			};
+		}
 		case "redacted_thinking":
 			return {
 				type: "reasoning",
@@ -211,11 +223,15 @@ function contentBlockToAgentPart(block: ContentBlock): AgentMessagePart {
 				toolCallId: block.id,
 				toolName: block.name,
 				input: block.input,
-				metadata: block.signature
-					? {
-							signature: block.signature,
-						}
-					: undefined,
+				metadata:
+					block.signature || block.openaiItemId
+						? {
+								...(block.signature ? { signature: block.signature } : {}),
+								...(block.openaiItemId
+									? { openaiItemId: block.openaiItemId }
+									: {}),
+							}
+						: undefined,
 			};
 		case "tool_result":
 			return toolResultContentToAgentPart(block);
@@ -250,13 +266,40 @@ function agentPartToContentBlock(
 				} satisfies RedactedThinkingContent;
 			}
 			const metadata = part.metadata as
-				| { signature?: string; details?: unknown[] }
+				| {
+						signature?: string;
+						details?: unknown;
+						openaiReasoningItems?: unknown;
+						openaiItemId?: unknown;
+				  }
 				| undefined;
+			// Persist OpenAI Responses continuation state the way the legacy
+			// bridge does: inside `details` as an object carrying
+			// `openaiReasoningItems` (item ids + encrypted content) and, when a
+			// lone item id was reported, `openaiItemId`.
+			const openaiDetails: Record<string, unknown> = {};
+			if (Array.isArray(metadata?.openaiReasoningItems)) {
+				openaiDetails.openaiReasoningItems = metadata.openaiReasoningItems;
+			}
+			if (typeof metadata?.openaiItemId === "string") {
+				openaiDetails.openaiItemId = metadata.openaiItemId;
+			}
+			const details =
+				Object.keys(openaiDetails).length > 0
+					? {
+							...(metadata?.details !== null &&
+							typeof metadata?.details === "object" &&
+							!Array.isArray(metadata.details)
+								? (metadata.details as Record<string, unknown>)
+								: {}),
+							...openaiDetails,
+						}
+					: metadata?.details;
 			return {
 				type: "thinking",
 				thinking: part.text,
 				signature: metadata?.signature,
-				details: metadata?.details,
+				details: details as ThinkingContent["details"],
 			} satisfies ThinkingContent;
 		}
 		case "image":
@@ -283,6 +326,7 @@ function agentPartToContentBlock(
 				| {
 						signature?: string;
 						thoughtSignature?: string;
+						openaiItemId?: unknown;
 				  }
 				| undefined;
 			return {
@@ -291,6 +335,9 @@ function agentPartToContentBlock(
 				name: part.toolName,
 				input: (part.input as Record<string, unknown>) ?? {},
 				signature: metadata?.thoughtSignature ?? metadata?.signature,
+				...(typeof metadata?.openaiItemId === "string"
+					? { openaiItemId: metadata.openaiItemId }
+					: {}),
 			} satisfies ToolUseContent;
 		}
 		case "tool-result": {

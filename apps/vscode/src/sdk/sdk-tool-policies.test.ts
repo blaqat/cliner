@@ -1,8 +1,12 @@
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { describe, expect, it } from "vitest"
-import { isToolAutoApproved } from "./sdk-tool-policies"
+import { buildToolPolicies, isToolAutoApproved } from "./sdk-tool-policies"
 
 describe("isToolAutoApproved", () => {
+	it("enables and auto-approves notebook staging independently of workspace editing settings", () => {
+		expect(buildToolPolicies(DEFAULT_AUTO_APPROVAL_SETTINGS).notebook).toEqual({ enabled: true, autoApprove: true })
+		expect(isToolAutoApproved("notebook", DEFAULT_AUTO_APPROVAL_SETTINGS)).toBe(true)
+	})
 	it("does not auto-approve command tools by default", () => {
 		expect(isToolAutoApproved("run_commands", DEFAULT_AUTO_APPROVAL_SETTINGS)).toBe(false)
 	})

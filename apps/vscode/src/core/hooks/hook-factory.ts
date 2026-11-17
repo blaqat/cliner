@@ -8,6 +8,7 @@ import {
 	HookInput,
 	HookModelContext,
 	HookOutput,
+	McpServerStartData,
 	NotificationData,
 	PostToolUseData,
 	PreCompactData,
@@ -99,6 +100,9 @@ function validateHookOutput(output: any): { valid: boolean; error?: string } {
 }
 
 export interface Hooks {
+	McpServerStart: {
+		mcpServerStart: McpServerStartData
+	}
 	PreToolUse: {
 		preToolUse: PreToolUseData
 	}
@@ -142,9 +146,9 @@ type HookName = keyof Hooks
  * hook system.
  */
 export type NamedHookInput<Name extends HookName> = {
-	taskId: string
 	model?: HookModelInputContext
-} & Hooks[Name]
+} & (Name extends "McpServerStart" ? { taskId?: string } : { taskId: string }) &
+	Hooks[Name]
 
 // We look up HookRunner.exec via symbol so that the combined hook runner can call
 // exec on its sub-runners without completing a new set of parameters for each one.
@@ -225,6 +229,7 @@ export abstract class HookRunner<Name extends HookName> {
 			workspaceRoots,
 			userId: getDistinctId(), // Always available: Cline User ID, machine ID, or generated UUID
 			...params,
+			taskId: params.taskId ?? "",
 			model,
 		}
 	}
@@ -466,6 +471,11 @@ class StdioHookRunner<Name extends HookName> extends HookRunner<Name> {
 				}
 			}
 
+			// MCP preparation must fail on every non-zero exit, even with valid JSON.
+			if (this.hookName === "McpServerStart" && exitCode !== 0) {
+				throw HookExecutionError.execution(this.scriptPath, exitCode ?? 1, stderr || stdout, this.hookName)
+			}
+
 			const parsedOutput = parseJsonOutput()
 
 			// If we have valid JSON, honor it regardless of exit code
@@ -680,7 +690,20 @@ class CombinedHookRunner<Name extends HookName> extends HookRunner<Name> {
 
 	override async [exec](input: HookInput): Promise<HookOutput> {
 		// Run all hooks in parallel
-		const results = await Promise.all(this.runners.map((runner) => runner[exec](input)))
+		const executions = this.runners.map((runner) => runner[exec](input))
+		let results: HookOutput[]
+		if (this.hookName === "McpServerStart") {
+			// Keep the server's attempt in flight until every script exits, even
+			// if one fails early. A retry must not overlap the remaining scripts.
+			const settled = await Promise.allSettled(executions)
+			results = []
+			for (const result of settled) {
+				if (result.status === "rejected") throw result.reason
+				results.push(result.value)
+			}
+		} else {
+			results = await Promise.all(executions)
+		}
 
 		// Merge results:
 		// - If any hook requests cancellation, set cancel to true

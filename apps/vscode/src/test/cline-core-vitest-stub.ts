@@ -128,6 +128,8 @@ export function createShellExecutor() {
 	return async () => ""
 }
 
+export { createAskModeMcpGateExtension } from "../../../../sdk/packages/core/src/extensions/mcp/ask-mode-gate"
+
 export { augmentMcpTimeoutError } from "../../../../sdk/packages/core/src/extensions/mcp/timeout"
 // The real createShellTool, so tests exercise the actual description
 // building and shell classification (getShellKind) rather than a stub that
@@ -538,4 +540,5 @@ export async function loginOpenAICodex(): Promise<OAuthCredentials> {
 	return {}
 }
 
-export { resolveMessageDisplayRole } from "../../../../sdk/packages/core/src/session/user-run-messages"
+export { SqliteSessionStore } from "../../../../sdk/packages/core/src/services/storage/sqlite-session-store"
+export { getUserRunSpan, resolveMessageDisplayRole } from "../../../../sdk/packages/core/src/session/user-run-messages"

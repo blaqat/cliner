@@ -8,6 +8,9 @@ import McpView from "./components/mcp/configuration/McpConfigurationView"
 import { openClinePassSubscriptionIfPending } from "./components/onboarding/clinePassSubscribe"
 import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
+import { ThreadToasts } from "./components/toasts/ThreadToasts"
+import { TopBarPanelOverlay } from "./components/topbar/TopBarPanelOverlay"
+import WalkthroughView from "./components/walkthrough/WalkthroughView"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
 import { useExtensionState } from "./context/ExtensionStateContext"
@@ -27,6 +30,11 @@ const AppContent = () => {
 		showHistory,
 		showAccount,
 		showWorktrees,
+		showWalkthrough,
+		walkthroughAuthoredId,
+		currentTaskItem,
+		hideWalkthrough,
+		oneViewEnabled,
 		showAnnouncement,
 		setShowAnnouncement,
 		setShouldShowAnnouncement,
@@ -41,6 +49,9 @@ const AppContent = () => {
 	} = useExtensionState()
 
 	const { clineUser, organizations, activeOrganization, accountSwitch, accountSwitchError } = useClineAuth()
+	useEffect(() => {
+		if (showWalkthrough && !currentTaskItem) hideWalkthrough()
+	}, [showWalkthrough, currentTaskItem, hideWalkthrough])
 
 	const showUpdateAnnouncementModal = useCallback(() => {
 		setShowAnnouncement(true)
@@ -77,7 +88,9 @@ const AppContent = () => {
 	}
 
 	return (
-		<div className="flex h-screen w-full flex-col">
+		<div className="relative flex h-screen w-full flex-col">
+			<ThreadToasts />
+			<TopBarPanelOverlay />
 			{(accountSwitch || accountSwitchError) && !showAccount && (
 				<div className="z-50 bg-editor-background p-2 text-xs" role="status">
 					{accountSwitch
@@ -100,10 +113,21 @@ const AppContent = () => {
 				/>
 			)}
 			{showWorktrees && <WorktreesView onDone={hideWorktrees} />}
+			{/* One view keeps the list beside it: ChatView shows it in the main region instead. */}
+			{showWalkthrough && currentTaskItem && !oneViewEnabled && (
+				<WalkthroughView
+					authoredId={walkthroughAuthoredId}
+					key={`${currentTaskItem.id}:${walkthroughAuthoredId ?? ""}`}
+					onDone={hideWalkthrough}
+					taskId={currentTaskItem.id}
+				/>
+			)}
 			{/* Do not conditionally load ChatView, it's expensive and there's state we don't want to lose (user input, disableInput, askResponse promise, etc.) */}
 			<ChatView
 				hideAnnouncement={hideAnnouncement}
-				isHidden={showSettings || showHistory || showMarketplace || showMcp || showAccount || showWorktrees}
+				isHidden={
+					showSettings || showHistory || showMarketplace || showMcp || showAccount || showWorktrees || showWalkthrough
+				}
 				showAnnouncement={showAnnouncement}
 				showHistoryView={navigateToHistory}
 			/>

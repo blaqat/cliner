@@ -1,8 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { serviceHandlers, serviceRequestDecoders } from "@generated/hosts/vscode/protobus-services"
-import { ModelsApiConfiguration, OpenRouterModelInfo, UpdateApiConfigurationRequest } from "@shared/proto/cline/models"
+import { RelativePathsRequest } from "@shared/proto/cline/file"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
-import { fromProtobufModelInfo } from "@shared/proto-conversions/models/typeConversion"
 import { decodeCoreConnectionRequestMessage } from "../core-connection-dispatcher"
 
 /**
@@ -14,33 +13,16 @@ import { decodeCoreConnectionRequestMessage } from "../core-connection-dispatche
  */
 describe("core connection request decoding", () => {
 	it("restores empty repeated fields that proto3 JSON omits", () => {
-		// One getter for both stages so the pre- and post-decode assertions
-		// can't dereference different paths.
-		const getTiers = (obj: any) => obj?.apiConfiguration?.planModeOpenRouterModelInfo?.tiers
-		const request = UpdateApiConfigurationRequest.create({
-			apiConfiguration: ModelsApiConfiguration.create({
-				planModeOpenRouterModelInfo: OpenRouterModelInfo.create({ name: "some-model" }),
-			}),
-		})
-		// The wire format really does drop the empty `tiers` array; without that
-		// this test would not be exercising anything.
-		const wireJson = JSON.parse(JSON.stringify(UpdateApiConfigurationRequest.toJSON(request)))
-		expect(getTiers(wireJson)).toBeUndefined()
+		const wireJson = JSON.parse(JSON.stringify(RelativePathsRequest.toJSON(RelativePathsRequest.create({ uris: [] }))))
+		// The wire format really does drop the empty array; without that this test would not be exercising anything.
+		expect(wireJson.uris).toBeUndefined()
 
 		const decoded = decodeCoreConnectionRequestMessage(
-			"cline.ModelsService",
-			"updateApiConfigurationProto",
+			"cline.FileService",
+			"getRelativePaths",
 			wireJson,
-		) as UpdateApiConfigurationRequest
-
-		expect(getTiers(decoded)).toEqual([])
-		// The original failure: fromProtobufModelInfo reads `.tiers.length` and
-		// threw a TypeError on the undecoded wire JSON.
-		const modelInfo = decoded.apiConfiguration?.planModeOpenRouterModelInfo
-		if (!modelInfo) {
-			throw new Error("decoded request lost planModeOpenRouterModelInfo")
-		}
-		expect(() => fromProtobufModelInfo(modelInfo)).not.toThrow()
+		) as RelativePathsRequest
+		expect(decoded.uris).toEqual([])
 	})
 
 	it("converts enum names back to numeric enum values", () => {

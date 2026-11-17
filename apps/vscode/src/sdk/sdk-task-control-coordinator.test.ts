@@ -25,8 +25,16 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.cancelTask()
 
+		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable")
+		expect(options.interactions.clearPending.mock.invocationCallOrder[0]).toBeLessThan(
+			options.setTurnPhase.mock.invocationCallOrder[0],
+		)
 		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cancelled")
 		expect(activeSession.sdkHost.abort).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.cancelHeldSends.mock.invocationCallOrder[0]).toBeLessThan(
+			activeSession.sdkHost.abort.mock.invocationCallOrder[0],
+		)
 		expect(options.sessions.setRunning).toHaveBeenCalledWith(false)
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ type: "ask", ask: "resume_task" })],
@@ -60,6 +68,81 @@ describe("SdkTaskControlCoordinator", () => {
 		releaseQuestionPost()
 		await new Promise((resolve) => setTimeout(resolve, 0))
 		expect(interactions.resolvePendingAskQuestion("input after cancel")).toBe(false)
+	})
+
+	it("persists a stopped thread status when cancelling a running turn", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).toHaveBeenCalledWith("session-123", "stopped")
+	})
+
+	it("does not mark an idle session stopped when cancel is requested", async () => {
+		const activeSession = { ...makeActiveSession(), isRunning: false }
+		const { coordinator, options } = makeCoordinator({ activeSession })
+
+		await coordinator.cancelTask()
+
+		expect(options.taskHistory.saveThreadStatus).not.toHaveBeenCalled()
+	})
+
+	it("aborts an interject without adding a resumable message", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		await coordinator.cancelTask(false)
+		expect(options.raiseCancelFence).toHaveBeenCalledOnce()
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+	})
+
+	it("fences interject then uses the SDK atomic abort and priority-send path", async () => {
+		const active = makeActiveSession()
+		const { coordinator, options } = makeCoordinator({ activeSession: active })
+		await coordinator.cancelTask(false, { text: "Next", images: ["image"], files: ["file"] })
+		expect(options.raiseCancelFence).toHaveBeenCalledOnce()
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+			active.sdkHost,
+			"session-123",
+			"Next",
+			["image"],
+			["file"],
+			"interject",
+		)
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+		expect(options.sessions.setRunning).not.toHaveBeenCalled()
+		expect(options.sessions.cancelHeldSends).not.toHaveBeenCalled()
+	})
+
+	it("opens a saved child transcript without offering to resume it or stopping its parent", async () => {
+		const { coordinator, options } = makeCoordinator({ hasHistoryItem: true })
+		options.taskHistory.findHistoryItem.mockResolvedValueOnce({
+			id: "child",
+			task: "Report",
+			isSubagent: true,
+			parentTaskId: "parent",
+		})
+		options.taskHistory.getClineMessages.mockResolvedValueOnce([
+			{ ts: 1, type: "say", say: "task", text: "Report" },
+			{ ts: 2, type: "say", say: "completion_result", text: "# Full report" },
+		])
+		await coordinator.showTaskWithId("child")
+		const task = options.setTask.mock.calls[0][0]
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(2)
+		expect(
+			task.messageStateHandler
+				.getClineMessages()
+				.some((message: ClineMessage) => message.ask === "resume_task" || message.ask === "resume_completed_task"),
+		).toBe(false)
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+	})
+
+	it("focuses an existing live task without reloading or stopping it", async () => {
+		const { options } = makeCoordinator({ hasHistoryItem: true })
+		const focusLiveTask = vi.fn(() => true)
+		await new SdkTaskControlCoordinator({ ...options, focusLiveTask }).showTaskWithId("task-1")
+		expect(focusLiveTask).toHaveBeenCalledWith("task-1", expect.objectContaining({ id: "task-1" }))
+		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.interactions.clearPending).not.toHaveBeenCalled()
 	})
 
 	it("cancels a running Cline task when the user signs out", async () => {
@@ -116,14 +199,16 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.clearTask()
 
-		expect(options.interactions.clearPending).toHaveBeenCalledWith("Task cleared")
+		expect(options.interactions.clearPending).not.toHaveBeenCalled()
 		expect(options.rebuilds.runTaskTransition).toHaveBeenCalledOnce()
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("clearTask")
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith()
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
 		expect(options.messages.finalizeMessagesForSave).not.toHaveBeenCalled()
 		expect(options.messages.cancelPendingSave).toHaveBeenCalledOnce()
-		expect(task.messageStateHandler.clear).toHaveBeenCalledOnce()
+		expect(task.messageStateHandler.clear).not.toHaveBeenCalled()
 		expect(state.task).toBeUndefined()
-		expect(options.resetMessageTranslator).toHaveBeenCalledOnce()
+		expect(options.resetMessageTranslator).not.toHaveBeenCalled()
 	})
 
 	it("waits for the task-transition boundary before ending the active session", async () => {
@@ -141,12 +226,14 @@ describe("SdkTaskControlCoordinator", () => {
 		const clear = coordinator.clearTask()
 		await Promise.resolve()
 
+		expect(options.sessions.cancelHeldSends).toHaveBeenCalledWith("session-123")
 		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
 
 		releaseRebuild()
 		await clear
 
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("clearTask")
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith()
 	})
 
 	it("does not end the session when a task selection supersedes clearTask during the rebuild wait", async () => {
@@ -220,9 +307,10 @@ describe("SdkTaskControlCoordinator", () => {
 		await coordinator.showTaskWithId("task-1")
 
 		expect(options.taskHistory.findHistoryItem).toHaveBeenCalledWith("task-1")
-		expect(options.sessions.endActiveSession).toHaveBeenCalledWith("showTaskWithId", { awaitStop: false })
-		expect(existingTask.messageStateHandler.clear).toHaveBeenCalledOnce()
-		expect(options.resetMessageTranslator).toHaveBeenCalledOnce()
+		expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+		expect(options.sessions.focusSession).toHaveBeenCalledWith("task-1")
+		expect(existingTask.messageStateHandler.clear).not.toHaveBeenCalled()
+		expect(options.resetMessageTranslator).not.toHaveBeenCalled()
 		expect(state.task?.taskId).toBe("task-1")
 		expect(options.taskHistory.getClineMessages).toHaveBeenCalledWith("task-1")
 		expect(state.task?.messageStateHandler.getClineMessages()).toEqual([
@@ -233,7 +321,51 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
 	})
 
-	it("clears a pending approval when switching tasks so the new task input is not consumed", async () => {
+	it.each(["cancel", "interject"])("clears active and queued child approvals on parent %s", async (action) => {
+		let phase = "resumable"
+		const setTurnPhase = (next: string) => {
+			phase = next
+		}
+		const task = createTaskProxy("session-123", vi.fn(), vi.fn())
+		const interactions = new SdkInteractionCoordinator({
+			messages: new SdkMessageCoordinator({ getTask: () => task }),
+			getSessionId: () => task.taskId,
+			setTurnPhase,
+			postStateToWebview: vi.fn().mockResolvedValue(undefined),
+		})
+		const { options } = makeCoordinator({ activeSession: makeActiveSession() })
+		const coordinator = new SdkTaskControlCoordinator({ ...options, interactions, setTurnPhase })
+		const approvals = ["child-1", "child-2"].map((id) =>
+			interactions.handleRequestToolApproval({
+				agentId: id,
+				conversationId: id,
+				iteration: 1,
+				toolCallId: id,
+				toolName: "editor",
+				input: {},
+				policy: { autoApprove: false },
+				signal: new AbortController().signal,
+			}),
+		)
+		await vi.waitFor(() => expect(task.messageStateHandler.getClineMessages()).toHaveLength(1))
+		await coordinator.cancelTask(false, action === "interject" ? { text: "new direction" } : undefined)
+		expect(phase).toBe("resumable")
+		for (const approval of approvals) await expect(approval).resolves.toMatchObject({ approved: false })
+		expect(task.messageStateHandler.getClineMessages()).toHaveLength(0)
+		expect(
+			interactions.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				interactions.getPendingDecision()?.id,
+			),
+		).toBe(false)
+		if (action === "interject") expect(options.sessions.fireAndForgetSend).toHaveBeenCalled()
+		else expect(options.sessions.getActiveSession()?.sdkHost.abort).toHaveBeenCalled()
+	})
+
+	it("preserves a background approval across task switching", async () => {
 		const pendingTask = createTaskProxy("old-task", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => pendingTask }),
@@ -259,11 +391,19 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		await expect(approvalPromise).resolves.toEqual({ approved: false, reason: "Task switched" })
-		expect(interactions.resolvePendingToolApproval("next task input", "noButtonClicked")).toBe(false)
+		expect(
+			interactions.resolvePendingToolApproval(
+				undefined,
+				"yesButtonClicked",
+				undefined,
+				undefined,
+				interactions.getPendingDecision()?.id,
+			),
+		).toBe(true)
+		await expect(approvalPromise).resolves.toEqual({ approved: true })
 	})
 
-	it("settles a pending question when switching tasks so the outgoing run can unwind", async () => {
+	it("preserves a background question across task switching", async () => {
 		const pendingTask = createTaskProxy("old-task", vi.fn(), vi.fn())
 		const interactions = new SdkInteractionCoordinator({
 			messages: new SdkMessageCoordinator({ getTask: () => pendingTask }),
@@ -281,8 +421,8 @@ describe("SdkTaskControlCoordinator", () => {
 
 		await coordinator.showTaskWithId("new-task")
 
-		await expect(questionPromise).resolves.toBe("")
-		expect(interactions.resolvePendingAskQuestion("late answer")).toBe(false)
+		expect(interactions.resolvePendingAskQuestion("late answer", interactions.getPendingDecision()?.id)).toBe(true)
+		await expect(questionPromise).resolves.toBe("late answer")
 	})
 
 	it("shows a legacy task with a warning and a resume ask", async () => {
@@ -305,6 +445,48 @@ describe("SdkTaskControlCoordinator", () => {
 			}),
 			expect.objectContaining({ type: "ask", ask: "resume_task" }),
 		])
+	})
+
+	it("focuses a live session that has no persisted history item yet", async () => {
+		// A just-started chat outruns its persisted history record (Core writes it
+		// when the first send lands). Closing it with X unfocuses the session but
+		// keeps it running, so the inbox row must reopen through the live path.
+		const { options } = makeCoordinator({ hasHistoryItem: false })
+		const liveItem = { id: "live-1", ts: 5, task: "bg task", tokensIn: 0, tokensOut: 0, totalCost: 0 }
+		const focusLiveTask = vi.fn(() => true)
+		const getLiveTaskItem = vi.fn((id: string) => (id === "live-1" ? liveItem : undefined))
+		const coordinator = new SdkTaskControlCoordinator({ ...options, focusLiveTask, getLiveTaskItem })
+
+		const result = await coordinator.showTaskWithId("live-1")
+
+		expect(getLiveTaskItem).toHaveBeenCalledWith("live-1")
+		expect(focusLiveTask).toHaveBeenCalledWith("live-1", expect.objectContaining({ id: "live-1" }))
+		expect(result).toMatchObject({ id: "live-1" })
+		expect(options.taskHistory.getClineMessages).not.toHaveBeenCalled()
+	})
+
+	it("opens an unpersisted child even when the history read would reject", async () => {
+		const { options } = makeCoordinator({ hasHistoryItem: false })
+		const child = {
+			id: "parent__child",
+			ts: 5,
+			task: "Child",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			isSubagent: true,
+			parentTaskId: "parent",
+		}
+		options.taskHistory.findHistoryItem.mockRejectedValue(new Error("History unavailable"))
+		const focusLiveTask = vi.fn(() => true)
+		const coordinator = new SdkTaskControlCoordinator({
+			...options,
+			focusLiveTask,
+			getLiveTaskItem: (id) => (id === child.id ? child : undefined),
+		})
+		expect(await coordinator.showTaskWithId(child.id)).toEqual(child)
+		expect(focusLiveTask).toHaveBeenCalledWith(child.id, child)
+		expect(options.taskHistory.findHistoryItem).not.toHaveBeenCalled()
 	})
 
 	it("does not show a task that is missing from history", async () => {
@@ -337,6 +519,26 @@ describe("SdkTaskControlCoordinator", () => {
 			expect.objectContaining({ type: "ask", ask: "resume_task" }),
 		)
 		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable", expect.any(Number))
+	})
+
+	it("shows no Resume Task ask and a completed phase for a reopened thread whose last turn completed", async () => {
+		// getSessionStatus reports "completed" for an idle record the extension marked done.
+		const { coordinator, options, state } = makeCoordinator({
+			hasHistoryItem: true,
+			clineMessages: [
+				{ ts: 1, type: "say", say: "task", text: "hello" },
+				{ ts: 2, type: "say", say: "completion_result", text: "All done" },
+				{ ts: 3, type: "ask", ask: "completion_result", text: "" },
+			],
+			sessionStatus: "completed",
+		})
+
+		await coordinator.showTaskWithId("task-1")
+
+		const reopened = state.task?.messageStateHandler.getClineMessages() ?? []
+		expect(reopened.some((message) => message.ask === "resume_task")).toBe(false)
+		expect(reopened.at(-1)).toEqual(expect.objectContaining({ ask: "resume_completed_task" }))
+		expect(options.setTurnPhase).toHaveBeenCalledWith("completed", expect.any(Number))
 	})
 
 	it("sets the turn phase to resumable when showing a failed task", async () => {
@@ -531,6 +733,9 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		sessions: {
 			getActiveSession: vi.fn(() => input.activeSession),
 			endActiveSession: vi.fn().mockResolvedValue(input.activeSession),
+			focusSession: vi.fn(),
+			fireAndForgetSend: vi.fn(),
+			cancelHeldSends: vi.fn(),
 			setRunning: vi.fn(),
 		},
 		interactions: {
@@ -553,6 +758,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		taskHistory: {
 			getClineMessages: vi.fn().mockResolvedValue(input.clineMessages ?? []),
 			getSessionStatus: vi.fn().mockResolvedValue(input.sessionStatus),
+			saveThreadStatus: vi.fn().mockResolvedValue(undefined),
 			isLegacyTask: vi.fn().mockResolvedValue(input.isLegacyTask ?? false),
 			findHistoryItem: vi.fn(() =>
 				input.hasHistoryItem === false
@@ -584,6 +790,9 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		sessions: SdkTaskControlCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
 			endActiveSession: ReturnType<typeof vi.fn>
+			focusSession: ReturnType<typeof vi.fn>
+			fireAndForgetSend: ReturnType<typeof vi.fn>
+			cancelHeldSends: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 		}
 		interactions: SdkTaskControlCoordinatorOptions["interactions"] & { clearPending: ReturnType<typeof vi.fn> }
@@ -645,3 +854,31 @@ function makeTask(taskId: string, messages: ClineMessage[] = []) {
 		},
 	}
 }
+
+it("reloads the selected saved child transcript and preserves its nested relationship", async () => {
+	const messages: ClineMessage[] = [
+		{ ts: 1, type: "say", say: "task", text: "B" },
+		{ ts: 2, type: "say", say: "text", text: "Full nested report" },
+	]
+	const { coordinator, options, state } = makeCoordinator({ clineMessages: messages, sessionStatus: "completed" })
+	const child = {
+		id: "root__b",
+		ts: 1,
+		task: "B",
+		tokensIn: 0,
+		tokensOut: 0,
+		totalCost: 0,
+		isSubagent: true,
+		parentTaskId: "root__a",
+		runtimeOwnerTaskId: "root",
+		agentId: "b",
+	}
+	options.taskHistory.findHistoryItem.mockResolvedValue(child)
+	await coordinator.showTaskWithId(child.id)
+	expect(state.task?.taskId).toBe(child.id)
+	expect(state.task?.messageStateHandler.getClineMessages()).toEqual(messages)
+	await coordinator.showTaskWithId(child.id)
+	expect(state.task?.messageStateHandler.getClineMessages()).toEqual(messages)
+	expect(options.applyTaskApiSelection).toBeUndefined()
+	expect(options.sessions.endActiveSession).not.toHaveBeenCalled()
+})

@@ -15,6 +15,15 @@ describe("SdkFollowupCoordinator", () => {
 		vi.clearAllMocks()
 	})
 
+	it("resumes a persisted answer with the hidden Act continuation prompt", async () => {
+		const { coordinator, options } = makeCoordinator({ task: makeTask("task-1") })
+		await coordinator.askResponse(undefined, undefined, undefined, undefined, undefined, "[ACT MODE] Implement the answer.")
+		expect(options.sessionConfigBuilder.build).toHaveBeenCalledWith(expect.objectContaining({ mode: "act" }))
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("[ACT MODE] Implement the answer.", undefined)
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
+		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
+	})
+
 	it("resolves pending tool approvals without sending a follow-up", async () => {
 		const { coordinator, options } = makeCoordinator()
 		options.interactions.resolvePendingToolApproval.mockReturnValue(true)
@@ -24,6 +33,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"yes",
 			"yesButtonClicked",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -40,8 +50,27 @@ describe("SdkFollowupCoordinator", () => {
 			"answer",
 			["data:image/png;base64,abc"],
 			["/workspace/spec.md"],
+			undefined,
 		)
 		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+	})
+
+	it("hands the composer provenance to mention resolution separately from the flattened prompt", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		const provenance = { authorizedThreadIds: ["1_picked"] }
+
+		await coordinator.askResponse(
+			"> quoted thread:9_x\n\nmine thread:1_picked",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			provenance,
+		)
+
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("> quoted thread:9_x\n\nmine thread:1_picked", provenance)
 	})
 
 	it("sends a follow-up to an idle active session", async () => {
@@ -50,7 +79,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("hello @file", ["image.png"], ["a.ts"])
 
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[
 				expect.objectContaining({
@@ -68,7 +97,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.resetMessageTranslator.mock.invocationCallOrder[0]).toBeLessThan(
 			options.messages.appendAndEmit.mock.invocationCallOrder[0],
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("hello @file", undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			activeSession.sdkHost,
 			"session-123",
@@ -133,6 +162,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.interactions.resolvePendingToolApproval).toHaveBeenCalledWith(
 			"do the next thing after this",
 			"messageResponse",
+			undefined,
 			undefined,
 			undefined,
 		)
@@ -257,6 +287,7 @@ describe("SdkFollowupCoordinator", () => {
 			"messageResponse",
 			undefined,
 			undefined,
+			undefined,
 		)
 		expect(options.messages.appendAndEmit).not.toHaveBeenCalled()
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
@@ -302,7 +333,7 @@ describe("SdkFollowupCoordinator", () => {
 		expect(options.taskHistory.updateTaskHistoryItem).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "task-1", modelId: "model" }),
 		)
-		expect(options.resolveContextMentions).toHaveBeenCalledWith("continue")
+		expect(options.resolveContextMentions).toHaveBeenCalledWith("continue", undefined)
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
 			expect.objectContaining({ send: expect.any(Function) }),
 			"resumed-session",
@@ -449,7 +480,7 @@ describe("SdkFollowupCoordinator", () => {
 
 		expect(options.sessions.startNewSession).not.toHaveBeenCalled()
 		expect(options.loadInitialMessages).not.toHaveBeenCalled()
-		expect(options.sessions.setRunning).toHaveBeenCalledWith(true)
+		expect(options.sessions.markSendRunning).toHaveBeenCalledWith()
 		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
 		const [sdkHost, sessionId, sentPrompt] = options.sessions.fireAndForgetSend.mock.calls[0]
 		expect(sdkHost).toBe(activeSession.sdkHost)
@@ -587,12 +618,37 @@ describe("SdkFollowupCoordinator", () => {
 
 		await coordinator.askResponse("continue")
 
-		expect(options.onResumeFailed).toHaveBeenCalledOnce()
-		expect(options.messages.emitSessionEvents).toHaveBeenCalledWith(
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "continue", reason: "session start failed" }),
+		)
+		// Through appendAndEmit: only stamped, stored messages survive the webview's epoch fence.
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
 			[expect.objectContaining({ say: "error", text: expect.stringContaining("session start failed") })],
 			{ type: "status", payload: { sessionId: "task-1", status: "error" } },
 		)
 		expect(options.postStateToWebview).toHaveBeenCalledOnce()
+	})
+
+	it("reports a resume refused by the resolver with the message that didn't get through", async () => {
+		const task = makeTask("task-1")
+		const { coordinator, options } = makeCoordinator({ task })
+		options.sessionConfigBuilder.build.mockRejectedValue(new Error("Storage is busy in another window. Try again shortly."))
+
+		await coordinator.askResponse("continue", ["img"], ["file"])
+
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				prompt: "continue",
+				images: ["img"],
+				files: ["file"],
+				reason: expect.stringContaining("Storage is busy"),
+			}),
+		)
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: expect.stringContaining("Storage is busy") })],
+			expect.anything(),
+		)
 	})
 })
 
@@ -608,6 +664,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 	}
 	const options = {
 		stateManager: {
+			getGlobalStateKey: vi.fn(),
 			getGlobalSettingsKey: vi.fn(() => input.mode ?? "act"),
 		} as unknown as StateManager,
 		interactions: {
@@ -616,6 +673,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		},
 		sessions: {
 			getActiveSession: vi.fn(() => input.activeSession),
+			markSendRunning: vi.fn(),
 			setRunning: vi.fn(),
 			fireAndForgetSend: vi.fn(),
 			startNewSession: vi.fn().mockResolvedValue({
@@ -658,6 +716,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		}
 		sessions: SdkFollowupCoordinatorOptions["sessions"] & {
 			getActiveSession: ReturnType<typeof vi.fn>
+			markSendRunning: ReturnType<typeof vi.fn>
 			setRunning: ReturnType<typeof vi.fn>
 			fireAndForgetSend: ReturnType<typeof vi.fn>
 			startNewSession: ReturnType<typeof vi.fn>
@@ -729,3 +788,39 @@ function makeTask(taskId: string) {
 		taskState: {},
 	}
 }
+
+it("ignores a stale decision response instead of queuing or resuming a turn", async () => {
+	const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+	await coordinator.askResponse("stale", undefined, undefined, "yesButtonClicked", "awaiting_approval", undefined, "resolved-a")
+	expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+	expect(options.runExclusive).not.toHaveBeenCalled()
+})
+
+describe("a send to a thread whose rebuild was refused", () => {
+	it("refuses with the reason and sends nothing", async () => {
+		const { coordinator, options } = makeCoordinator({ activeSession: makeActiveSession() })
+		options.retryRefusedRebuild = vi.fn(async () => "This model has no model ID. Add it in Settings > Models.")
+		await coordinator.askResponse("hello")
+		expect(options.retryRefusedRebuild).toHaveBeenCalledWith("session-123")
+		expect(options.sessions.fireAndForgetSend).not.toHaveBeenCalled()
+		expect(options.messages.appendAndEmit).toHaveBeenCalledWith(
+			[expect.objectContaining({ say: "error", text: "This model has no model ID. Add it in Settings > Models." })],
+			{ type: "status", payload: { sessionId: "session-123", status: "error" } },
+		)
+		expect(options.onResumeFailed).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ prompt: "hello", reason: "This model has no model ID. Add it in Settings > Models." }),
+		)
+		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+	it("sends on the session the retry rebuilt", async () => {
+		const old = makeActiveSession()
+		const rebuilt = { ...makeActiveSession(), sdkHost: { send: vi.fn() } }
+		const { coordinator, options } = makeCoordinator({ activeSession: old })
+		options.retryRefusedRebuild = vi.fn(async () => {
+			options.sessions.getActiveSession.mockReturnValue(rebuilt as never)
+			return undefined
+		})
+		await coordinator.askResponse("hello")
+		expect(options.sessions.fireAndForgetSend.mock.calls[0][0]).toBe(rebuilt.sdkHost)
+	})
+})

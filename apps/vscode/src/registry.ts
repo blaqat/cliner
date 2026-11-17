@@ -12,6 +12,7 @@ const prefix = name === "claude-dev" ? "cline" : name
 const ClineCommands = {
 	PlusButton: prefix + ".plusButtonClicked",
 	McpButton: prefix + ".mcpButtonClicked",
+	RulesButton: prefix + ".rulesButtonClicked",
 	MarketplaceButton: prefix + ".marketplaceButtonClicked",
 	SettingsButton: prefix + ".settingsButtonClicked",
 	HistoryButton: prefix + ".historyButtonClicked",
@@ -23,6 +24,8 @@ const ClineCommands = {
 	ExplainCode: prefix + ".explainCode",
 	ImproveCode: prefix + ".improveCode",
 	FocusChatInput: prefix + ".focusChatInput",
+	SearchShortcut: prefix + ".searchShortcut",
+	StashShortcut: prefix + ".stashShortcut",
 	Walkthrough: prefix + ".openWalkthrough",
 	GenerateCommit: prefix + ".generateGitCommitMessage",
 	AbortCommit: prefix + ".abortGitCommitMessage",

@@ -13,7 +13,7 @@ import { ClineMessage } from "@shared/ExtensionMessage"
 import { HistoryItem } from "@shared/HistoryItem"
 import { Logger } from "@shared/services/Logger"
 import { GlobalStateAndSettings, Secrets } from "@shared/storage/state-keys"
-import { resolveDataDirFromEnv } from "@shared/storage/storage-context"
+import { resolveDataDirFromEnv, resolveStateDirFromEnv } from "@shared/storage/storage-context"
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -29,14 +29,21 @@ export function resolveDataDir(override?: string): string {
 	return override || resolveDataDirFromEnv()
 }
 
+/** A store's path: this build's own copy, or the shared file it's about to start from. */
+function stateFilePath(name: string, dataDir?: string): string {
+	if (dataDir) return path.join(dataDir, name)
+	const own = path.join(resolveStateDirFromEnv(), name)
+	return fs.existsSync(own) ? own : path.join(resolveDataDirFromEnv(), name)
+}
+
 /** Path to globalState.json */
 function globalStatePath(dataDir?: string): string {
-	return path.join(resolveDataDir(dataDir), "globalState.json")
+	return stateFilePath("globalState.json", dataDir)
 }
 
 /** Path to secrets.json */
 function secretsPath(dataDir?: string): string {
-	return path.join(resolveDataDir(dataDir), "secrets.json")
+	return stateFilePath("secrets.json", dataDir)
 }
 
 /** Path to taskHistory.json (stored in state/ subdirectory) */
