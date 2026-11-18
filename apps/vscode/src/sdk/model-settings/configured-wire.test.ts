@@ -306,6 +306,98 @@ describe("Azure API version", () => {
 	}
 })
 
+const KEY_LINES = ["authorization", "api-key", "ocp-apim-subscription-key"]
+describe("where an Azure or API Management key goes", () => {
+	const ref = "settings:v1:connection:connection:apiKey"
+	const lockedRef = "settings:v1:connection:connection:header-apim"
+	const sent = async (connection: Connection, secrets: Record<string, string>) => {
+		const store = noSecrets()
+		for (const [key, value] of Object.entries(secrets)) await store.set(key, value)
+		const config = await configuredProviderConfig(
+			settingsFor(connection, "gpt-41-prod"),
+			{ modelId: "row", levelId: "high" },
+			{ secrets: store, environment: {} },
+		)
+		const { url, headers, body } = await capture(config)
+		const lines = Object.fromEntries(KEY_LINES.flatMap((name) => (headers.has(name) ? [[name, headers.get(name)]] : [])))
+		return { url, lines, model: body.model, effort: body.reasoning?.effort ?? body.reasoning_effort }
+	}
+	const azureResponses = {
+		...compatibleConnection({ kind: "keychain", secretRef: ref }),
+		baseUrl: "https://contoso.openai.azure.com/openai",
+		apiFormat: "responses",
+		azureApiVersion: "2025-04-01-preview",
+	} as Connection
+	const lockedApim = {
+		...compatibleConnection({ kind: "none" }, [
+			{ id: "apim", name: "Ocp-Apim-Subscription-Key", storage: "secret", secretRef: lockedRef },
+		] as Connection["headers"]),
+		baseUrl: "https://acme.azure-api.net/team/openai",
+		azureApiVersion: "2024-10-21",
+	} as Connection
+	const keyedApim = {
+		...compatibleConnection({ kind: "keychain", secretRef: ref }),
+		baseUrl: "https://acme.azure-api.net/team/openai",
+		azureApiVersion: "2024-10-21",
+	} as Connection
+
+	// Each "as before" value is what the build before key headers sent, checked against that build.
+	it("an Azure Responses connection sends what it did before", async () => {
+		expect(await sent(azureResponses, { [ref]: "azure-key" })).toEqual({
+			url: "https://contoso.openai.azure.com/openai/responses?api-version=2025-04-01-preview",
+			lines: { authorization: "Bearer azure-key", "api-key": "azure-key" },
+			model: "gpt-41-prod",
+			effort: "high",
+		})
+	})
+	it("an API Management connection with a locked subscription key and no key sends what it did before", async () => {
+		expect(await sent(lockedApim, { [lockedRef]: "apim-key" })).toEqual({
+			url: "https://acme.azure-api.net/team/openai/deployments/gpt-41-prod/chat/completions?api-version=2024-10-21",
+			lines: { "ocp-apim-subscription-key": "apim-key" },
+			model: "gpt-41-prod",
+			effort: "high",
+		})
+	})
+	it("an API Management connection with a plain key still sends it as Bearer, as before", async () => {
+		expect((await sent(keyedApim, { [ref]: "apim-key" })).lines).toEqual({ authorization: "Bearer apim-key" })
+	})
+	it("a key header sends the key there and nowhere else, on Chat and Responses", async () => {
+		for (const apiFormat of ["chat", "responses"] as const) {
+			const connection = { ...keyedApim, apiFormat, keyHeader: "Ocp-Apim-Subscription-Key" } as Connection
+			const request = await sent(connection, { [ref]: "apim-key" })
+			expect(request.lines, apiFormat).toEqual({ "ocp-apim-subscription-key": "apim-key" })
+			expect(request.url, apiFormat).toContain("api-version=2024-10-21")
+		}
+	})
+	it("a key header on an Azure host replaces api-key and Bearer too", async () => {
+		const connection = { ...azureResponses, keyHeader: "x-team-key" } as Connection
+		expect((await sent(connection, { [ref]: "azure-key" })).lines).toEqual({})
+		const store = noSecrets()
+		await store.set(ref, "azure-key")
+		const config = await configuredProviderConfig(
+			settingsFor(connection, "gpt-41-prod"),
+			{ modelId: "row", levelId: "default" },
+			{ secrets: store, environment: {} },
+		)
+		expect((await capture(config)).headers.get("x-team-key")).toBe("azure-key")
+	})
+	it("a key header follows a rotated key", async () => {
+		const store = noSecrets()
+		await store.set(ref, "old-key")
+		const config = await configuredProviderConfig(
+			settingsFor({ ...keyedApim, keyHeader: "Ocp-Apim-Subscription-Key" } as Connection, "gpt-41-prod"),
+			{ modelId: "row", levelId: "default" },
+			{ secrets: store, environment: {} },
+		)
+		await store.set(ref, "new-key")
+		expect((await capture(config)).headers.get("ocp-apim-subscription-key")).toBe("new-key")
+	})
+	it("a key header with no key to send sends nothing extra", async () => {
+		const connection = { ...lockedApim, keyHeader: "x-unused" } as Connection
+		expect((await sent(connection, { [lockedRef]: "apim-key" })).lines).toEqual({ "ocp-apim-subscription-key": "apim-key" })
+	})
+})
+
 describe("OpenAI's built-in tools", () => {
 	it.each([
 		["https://acme-foundry-api.azure-api.net/openai", false],

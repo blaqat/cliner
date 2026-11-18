@@ -68,6 +68,11 @@ export type CompatibleConnection = ConnectionBase & {
 	kind: "openai-compatible"
 	apiFormat: ApiFormat
 	azureApiVersion: string | null
+	/**
+	 * The header the key goes in, alone (an API Management subscription key, say). Absent or null sends it
+	 * as `Authorization: Bearer`, plus `api-key` to Azure's own hosts, as connections always have.
+	 */
+	keyHeader?: string | null
 }
 // Preserve provider-specific values with the existing typed option vocabulary.
 // Host validators reject secret fields and fields that belong to a model/mode.
@@ -94,6 +99,11 @@ export type ModelRow = {
 	migratedValues?: MigratedValue[]
 	/** False keeps it set up but out of every model picker. Absent is on. */
 	enabled?: boolean
+	/**
+	 * The OpenAI catalog model a compatible connection's model runs (an Azure deployment named gpt-41-prod
+	 * runs gpt-4.1). Its catalog facts fill what the row doesn't set. Absent matches by the ID, as before.
+	 */
+	catalogModelId?: string
 }
 export type MigratedValue = "levels" | "reasoning"
 export type ModelPick = { modelId: ModelId; levelId: LevelId }
@@ -290,15 +300,19 @@ export const ConnectionAuthSchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("none") }).strict(),
 	z.object({ kind: z.literal("sdk-account"), providerId: id }).strict(),
 ])
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 export const HeaderSchema = z
 	.discriminatedUnion("storage", [
 		z.object({ id, name: id, storage: z.literal("plain"), value: z.string() }).strict(),
 		z.object({ id, name: id, storage: z.literal("secret"), secretRef: id }).strict(),
 	])
-	.refine(
-		(h) => /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(h.name) && (h.storage !== "plain" || !/[\r\n]/.test(h.value)),
-		"Invalid header",
-	)
+	.refine((h) => HEADER_NAME.test(h.name) && (h.storage !== "plain" || !/[\r\n]/.test(h.value)), "Invalid header")
+/** Authorization is the default, sent as Bearer, so naming it here would only send the bare key. */
+const KeyHeaderSchema = z
+	.string()
+	.regex(HEADER_NAME)
+	.refine((name) => name.toLowerCase() !== "authorization", "Leave the key header empty to send Authorization: Bearer")
+	.nullable()
 // Explicitly partition legacy provider fields. Credentials only appear as secretRefs.
 const connectionOptionShape = {
 	openRouterProviderSorting: z.string(),
@@ -367,6 +381,7 @@ export const ConnectionSchema = z
 				kind: z.literal("openai-compatible"),
 				apiFormat: z.enum(["chat", "responses"]),
 				azureApiVersion: z.string().nullable(),
+				keyHeader: KeyHeaderSchema.optional(),
 			})
 			.strict(),
 		z
@@ -388,6 +403,9 @@ export const ConnectionSchema = z
 		for (const ref of refs)
 			if (!ref.startsWith(`settings:v1:connection:${connection.id}:`))
 				ctx.addIssue({ code: "custom", message: "Secret reference belongs to another connection" })
+		const keyHeader = connection.kind === "openai-compatible" ? connection.keyHeader?.toLowerCase() : undefined
+		if (keyHeader && connection.headers.some((h) => h.name.toLowerCase() === keyHeader))
+			ctx.addIssue({ code: "custom", message: "The key header is also a custom header" })
 	})
 const valueKeys = Object.keys(ModelValuesSchema.shape) as [keyof ModelValues, ...Array<keyof ModelValues>]
 const optionKeys = Object.keys(connectionOptionShape) as [
@@ -415,6 +433,7 @@ export const ConnectionPatchSchema = z
 		defaults: ModelValuesSchema.partial().optional(),
 		apiFormat: z.enum(["chat", "responses"]).optional(),
 		azureApiVersion: z.string().nullable().optional(),
+		keyHeader: KeyHeaderSchema.optional(),
 		providerId: id.optional(),
 		options: ConnectionOptionsSchema.optional(),
 		secretRefs: z.record(id, id).optional(),
@@ -459,6 +478,7 @@ export const ModelRowSchema = z
 		migratedValues: z.array(z.enum(["levels", "reasoning"])).optional(),
 		/** False keeps it set up but out of every model picker. Absent is on. */
 		enabled: z.boolean().optional(),
+		catalogModelId: id.optional(),
 	})
 	.strict()
 export const ModelPickSchema = z.object({ modelId: id, levelId: id }).strict()

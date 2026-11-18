@@ -1,4 +1,4 @@
-import { acceptsApiVersion, createGateway, createHandler } from "@cline/llms"
+import { acceptsApiVersion, createGateway, createHandler, isAzureOpenAIHost } from "@cline/llms"
 import { type Connection, ModelPickSchema } from "@shared/model-settings"
 import { z } from "zod"
 import { modelAuthDependencies } from "@/sdk/model-settings/auth-dependencies"
@@ -10,7 +10,12 @@ import {
 	rememberDetectedModelMetadata,
 	resolveEffectiveConfiguredPick,
 } from "@/sdk/model-settings/host-settings"
-import { prepareModelRequest, redactModelRequest, resolveConnectionConfig } from "@/sdk/model-settings/request-adapter"
+import {
+	keyHeaderOf,
+	prepareModelRequest,
+	redactModelRequest,
+	resolveConnectionConfig,
+} from "@/sdk/model-settings/request-adapter"
 import { modelSettingsRolloutEnabled } from "@/sdk/model-settings/rollout"
 import { configuredProviderConfig } from "@/sdk/model-settings/runtime-config"
 import { ModelSettingsStore } from "@/sdk/model-settings/store"
@@ -34,6 +39,16 @@ function withConnectionApiVersion(url: string, connection: Connection): string {
 	if (!acceptsApiVersion(parsed.pathname)) return url
 	parsed.searchParams.set("api-version", version)
 	return parsed.toString()
+}
+
+/**
+ * A compatible connection's key the way its requests carry it: alone in its key header (already among the
+ * headers), else as Bearer, plus `api-key` to Azure's own hosts, which don't take Bearer on every path.
+ */
+function setCompatibleKey(headers: Headers, apiKey: string | undefined, connection: Connection, baseUrl: string): void {
+	if (!apiKey || keyHeaderOf(connection)) return
+	headers.set("Authorization", `Bearer ${apiKey}`)
+	if (isAzureOpenAIHost(baseUrl) && !headers.has("api-key")) headers.set("api-key", apiKey)
 }
 
 const PREVIEW_SENSITIVE_HEADER = /authorization|key|token|secret|cookie|credential/i
@@ -114,7 +129,8 @@ export async function modelSettingsDiagnostic(
 
 			if (!config.baseUrl) throw new Error("Connection URL is missing")
 			const headers = new Headers(config.headers)
-			if (config.apiKey) {
+			if (connection.kind === "openai-compatible") setCompatibleKey(headers, config.apiKey, connection, config.baseUrl)
+			else if (config.apiKey) {
 				if (providerId === "anthropic") {
 					headers.set("x-api-key", config.apiKey)
 					headers.set("anthropic-version", "2023-06-01")
@@ -221,7 +237,7 @@ export async function modelSettingsDiagnostic(
 			const resolved = resolveEffectiveConfiguredPick(state, settings, input.pick)
 			if (resolved.connection.kind === "openai-compatible" && config.baseUrl) {
 				const headers = new Headers(config.headers)
-				if (config.apiKey) headers.set("Authorization", `Bearer ${config.apiKey}`)
+				setCompatibleKey(headers, config.apiKey, resolved.connection, config.baseUrl)
 				try {
 					const response = await fetch(
 						withConnectionApiVersion(

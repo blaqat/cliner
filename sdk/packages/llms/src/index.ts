@@ -117,7 +117,7 @@ export {
 export { buildClineClientHeaders } from "./providers/cline-client-headers";
 export type * from "./providers/gateway";
 export { createGateway, DefaultGateway } from "./providers/gateway";
-export { acceptsApiVersion } from "./providers/vendors/http-error-context";
+export { acceptsApiVersion, isAzureOpenAIHost } from "./providers/vendors/http-error-context";
 export { toGatewayModelCapabilities } from "./providers/model-capabilities";
 export {
 	BUILTIN_MODEL_OPERATION_CAPABILITIES,

@@ -69,6 +69,23 @@ describe("model settings contract", () => {
 		for (const value of [0, -1, 1.1, Infinity])
 			expect(ModelValuesSchema.partial().safeParse({ contextWindow: value }).success).toBe(false)
 	})
+	it("takes a key header that isn't Authorization or a custom header, and old connections without one", () => {
+		const connection = createCompatibleConnection("c")
+		expect(ConnectionSchema.parse(connection)).not.toHaveProperty("keyHeader")
+		expect(ConnectionSchema.parse({ ...connection, keyHeader: "Ocp-Apim-Subscription-Key" })).toMatchObject({
+			keyHeader: "Ocp-Apim-Subscription-Key",
+		})
+		expect(ConnectionSchema.parse({ ...connection, keyHeader: null })).toMatchObject({ keyHeader: null })
+		for (const keyHeader of ["Authorization", "has space", ""])
+			expect(() => ConnectionSchema.parse({ ...connection, keyHeader }), keyHeader).toThrow()
+		expect(() =>
+			ConnectionSchema.parse({
+				...connection,
+				keyHeader: "api-key",
+				headers: [{ id: "h", name: "API-Key", storage: "plain", value: "x" }],
+			}),
+		).toThrow(/also a custom header/)
+	})
 	it("keeps old state unchanged on reads and only writes modelSettings", () => {
 		const state: Record<string, unknown> = {
 			actModeApiProvider: "anthropic",

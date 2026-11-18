@@ -151,6 +151,57 @@ describe("configured connection diagnostics", () => {
 	})
 })
 
+const KEY_LINES = ["authorization", "api-key", "ocp-apim-subscription-key"]
+describe("where the list and test send a compatible key", () => {
+	const ref = "settings:v1:connection:c:apiKey"
+	const keyLines = async (
+		operation: "testConnection" | "discoverConnectionModels" | "detectConfiguredModel",
+		baseUrl: string,
+		keyHeader?: string,
+	) => {
+		const { controller, settings, state } = fixture()
+		const connection = settings.connections[0]
+		if (connection.kind !== "openai-compatible") throw new Error("expected a compatible connection")
+		connection.baseUrl = baseUrl
+		connection.auth = { kind: "keychain", secretRef: ref }
+		if (keyHeader) connection.keyHeader = keyHeader
+		await state.connectionSecrets.set(ref, "the-key")
+		transport.mockResolvedValueOnce(Response.json({ data: [] }))
+		await modelSettingsDiagnostic(
+			controller as never,
+			operation,
+			JSON.stringify(
+				operation === "detectConfiguredModel"
+					? { expectedRevision: settings.revision, pick: { modelId: "m", levelId: "default" } }
+					: { expectedRevision: settings.revision, connectionId: "c" },
+			),
+			true,
+		)
+		const [, init] = transport.mock.calls.at(-1)!
+		const headers = new Headers(init.headers)
+		return Object.fromEntries(KEY_LINES.flatMap((name) => (headers.has(name) ? [[name, headers.get(name)]] : [])))
+	}
+	it.each([
+		"testConnection",
+		"discoverConnectionModels",
+		"detectConfiguredModel",
+	] as const)("%s sends api-key to an Azure host, as its requests do", async (operation) => {
+		expect(await keyLines(operation, "https://contoso.openai.azure.com/openai/v1")).toEqual({
+			authorization: "Bearer the-key",
+			"api-key": "the-key",
+		})
+	})
+	it.each(["testConnection", "detectConfiguredModel"] as const)("%s still sends Bearer alone elsewhere", async (operation) => {
+		expect(await keyLines(operation, "https://gateway.test/v1")).toEqual({ authorization: "Bearer the-key" })
+		expect(await keyLines(operation, "https://acme.azure-api.net/team/openai")).toEqual({ authorization: "Bearer the-key" })
+	})
+	it.each(["testConnection", "detectConfiguredModel"] as const)("%s sends a key header alone", async (operation) => {
+		expect(await keyLines(operation, "https://acme.azure-api.net/team/openai", "Ocp-Apim-Subscription-Key")).toEqual({
+			"ocp-apim-subscription-key": "the-key",
+		})
+	})
+})
+
 describe("request preview headers", () => {
 	it("sends the organization's locked values but keeps them redacted", async () => {
 		const f = fixture()

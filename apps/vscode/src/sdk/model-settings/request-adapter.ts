@@ -20,6 +20,11 @@ export interface ConnectionAuthDependencies {
 	/** Optional token source. Without one an identity connection sends no credential, as the legacy path does. */
 	azureIdentity?: () => Promise<string>
 }
+/** The header a compatible connection's own key goes in, when it has one and isn't sent as Bearer. */
+export function keyHeaderOf(connection: Connection): string | undefined {
+	if (connection.kind !== "openai-compatible" || !connection.keyHeader) return undefined
+	return connection.auth.kind === "keychain" || connection.auth.kind === "environment" ? connection.keyHeader : undefined
+}
 /** Construct per-request config. Never looks up a provider-wide key except an explicit sdk-account. */
 export async function resolveConnectionConfig(
 	connection: Connection,
@@ -54,6 +59,8 @@ export async function resolveConnectionConfig(
 		if (/[\r\n]/.test(value)) throw new Error("Invalid header value")
 		headers[h.name] = value
 	}
+	const keyHeader = keyHeaderOf(connection)
+	if (keyHeader && apiKey.trim()) headers[keyHeader] = apiKey
 	const options: Record<string, unknown> =
 		connection.kind === "provider" ? { ...connection.options } : { apiVersion: connection.azureApiVersion ?? undefined }
 	if (connection.kind === "provider")
@@ -158,9 +165,11 @@ async function assembleModelRequest(input: PrepareModelRequestInput, deps: Conne
 		for (const name of ["authorization", "api-key"]) if (!configuredHeaders.has(name)) headers.delete(name)
 	}
 	if (connection.kind === "openai-compatible") {
+		// A key in its own header is the only copy sent: the SDK's Bearer and api-key lines go.
 		const sendsNoCredential =
 			connection.auth.kind === "none" ||
-			(connection.auth.kind === "azure-identity" && !configuredHeaders.has("authorization"))
+			(connection.auth.kind === "azure-identity" && !configuredHeaders.has("authorization")) ||
+			!!keyHeaderOf(connection)
 		// The final vendor body is the single assembly used for sending and preview.
 		// A subagent builds this at its own level, so only that level reaches the wire.
 		const fetchAtLevel = (selected: LevelRequest): typeof fetch => {
