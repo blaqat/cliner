@@ -1,5 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { useLayoutEffect, useRef } from "react"
+import { openAutomationBuilder } from "@/components/automations/builderNavigation"
 import McpServersPanel from "@/components/chat/composer/McpServersPanel"
 import { HEADER_ICON_BUTTON_CLASS } from "@/components/chat/task-header/HeaderIconButton"
 import ClineRulesPanel from "@/components/cline-rules/ClineRulesPanel"
@@ -92,6 +93,10 @@ export function TopBarPanelOverlay() {
 							{shown === "mcp" && <McpServersPanel onOpenSettings={close} />}
 							{shown === "rules" && (
 								<ClineRulesPanel
+									onEditAutomation={(target) => {
+										close()
+										openAutomationBuilder(target)
+									}}
 									onUseScript={(name) => {
 										close()
 										requestScriptDraft(name)

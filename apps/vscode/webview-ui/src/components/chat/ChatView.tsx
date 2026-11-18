@@ -5,7 +5,9 @@ import { getApiMetrics, getCostBreakdown, getLastApiReqTotalTokens } from "@shar
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
+import { AutomationBuilder } from "@/components/automations/AutomationBuilder"
 import { AutomationRunBar } from "@/components/automations/AutomationRunBar"
+import { closeAutomationBuilder, useAutomationBuilderTarget } from "@/components/automations/builderNavigation"
 import { openTask } from "@/components/inbox/sessionActions"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { NewChatHero, NewChatListToggle } from "@/components/oneView/NewChatHero"
@@ -504,6 +506,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		if (taskTs !== undefined) setSearchQuery(null)
 	}, [taskTs])
 
+	// The automation builder is a page of its own; opening a thread or a task leaves it.
+	const builderTarget = useAutomationBuilderTarget()
+	useEffect(() => {
+		if (taskTs !== undefined || taskGroupView) closeAutomationBuilder()
+	}, [taskTs, taskGroupView])
+
 	// The task (group) page replaces chat/home in the sidebar.
 	const openTaskGroup = useTaskGroupPageNavigation({
 		taskTs,
@@ -647,9 +655,17 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 					{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
 					{/* Fixed slots (top, composer, spacer) so the composer never remounts between a new chat and a thread. */}
 					<div
-						className={cn("flex min-h-0 flex-1 flex-col", isNewChat ? "justify-end" : "overflow-hidden")}
+						className={cn(
+							"flex min-h-0 flex-1 flex-col",
+							isNewChat && !builderTarget ? "justify-end" : "overflow-hidden",
+						)}
 						data-testid={isNewChat ? "one-view-new-chat" : "one-view-content"}>
-						{isNewChat ? (
+						{builderTarget ? (
+							<AutomationBuilder
+								key={builderTarget.path ?? (builderTarget.describe ? "describe" : "new")}
+								target={builderTarget}
+							/>
+						) : isNewChat ? (
 							<>
 								<NewChatListToggle />
 								<NewChatHero />
@@ -687,12 +703,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						className={cn(
 							"flex shrink-0 flex-col bg-(--vscode-sidebar-background)",
 							isNewChat && "mx-auto w-full max-w-[680px]",
-							taskGroupView?.page === "notebook" && "hidden",
+							(taskGroupView?.page === "notebook" || builderTarget) && "hidden",
 						)}
 						data-testid="one-view-composer">
 						{composerControls}
 					</footer>
-					<div aria-hidden className={isNewChat ? "min-h-0 flex-1" : "hidden"} />
+					<div aria-hidden className={isNewChat && !builderTarget ? "min-h-0 flex-1" : "hidden"} />
 				</div>
 			</OneViewLayout>
 		)
@@ -702,7 +718,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-				{taskGroupView ? (
+				{builderTarget ? (
+					<AutomationBuilder
+						key={builderTarget.path ?? (builderTarget.describe ? "describe" : "new")}
+						target={builderTarget}
+					/>
+				) : taskGroupView ? (
 					taskGroupView.page === "notebook" ? (
 						<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
 					) : (
@@ -743,7 +764,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 			<footer
 				className={cn(
 					"bg-(--vscode-sidebar-background) flex flex-col",
-					(showSearch || taskGroupView?.page === "notebook") && "hidden",
+					(showSearch || taskGroupView?.page === "notebook" || builderTarget) && "hidden",
 				)}
 				style={{ gridRow: "2" }}>
 				{composerControls}
