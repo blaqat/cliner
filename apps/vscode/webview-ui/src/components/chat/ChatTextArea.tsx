@@ -1,5 +1,6 @@
 import { mentionRegex, mentionRegexGlobal } from "@shared/context-mentions"
 import { type ParsedMessageLink, parseMessageLink } from "@shared/message-links"
+import { StartAutomationRunRequest, TrustAutomationRequest } from "@shared/proto/cline/automation"
 import { StringRequest } from "@shared/proto/cline/common"
 import { FileSearchRequest, FileSearchType, RelativePathsRequest } from "@shared/proto/cline/file"
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
@@ -9,19 +10,20 @@ import { TriangleAlertIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
+import AutomationStartForm from "@/components/automations/AutomationStartForm"
+import { automationInputValues, completeAutomationInput, matchAutomationInput } from "@/components/automations/automationInput"
+import { runProblems } from "@/components/automations/willRun"
 import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
-import ScriptHelper from "@/components/scripts/ScriptHelper"
-import { completeScriptInput, isScriptInputSendable, matchScriptInput, scriptRunOf } from "@/components/scripts/scriptInput"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
+import { applyAutomationList, refreshAutomations, runnableAutomations, useAutomations } from "@/hooks/useAutomations"
 import { useNormalizedApiConfiguration } from "@/hooks/useNormalizedApiConfiguration"
-import { refreshScripts, usableScripts, useScripts } from "@/hooks/useScripts"
 import { cn } from "@/lib/utils"
-import { FileServiceClient, StateServiceClient } from "@/services/grpc-client"
+import { AutomationServiceClient, FileServiceClient, StateServiceClient } from "@/services/grpc-client"
 import {
 	ContextMenuOptionType,
 	getContextMenuOptionIndex,
@@ -225,24 +227,35 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [cursorPosition, setCursorPosition] = useState(0)
 		const [searchQuery, setSearchQuery] = useState("")
 		const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
-		// Saved scripts: offered by the slash menu and the rules panel's Scripts tab. A draft starting with `/script-name `
-		// shows the options helper above the input and cannot be sent until its required options are set.
-		const scriptsSnapshot = useScripts()
-		const usable = useMemo(() => usableScripts(scriptsSnapshot), [scriptsSnapshot])
+		// Automations: offered by the slash menu (where scripts were) and the Rules overlay's Automations tab. A draft
+		// starting with `/automation-name ` shows the start form above the input, and Run starts it instead of sending.
+		const automationsSnapshot = useAutomations()
+		const runnable = useMemo(() => runnableAutomations(automationsSnapshot.automations), [automationsSnapshot])
 		const scriptCommands = useMemo<SlashCommand[]>(
-			() => usable.map((script) => ({ name: script.name, description: script.description, section: "script" as const })),
-			[usable],
+			() =>
+				runnable.map((automation) => ({
+					name: automation.name,
+					description: automation.definition.description,
+					section: "script" as const,
+				})),
+			[runnable],
 		)
-		const scriptInput = useMemo(() => matchScriptInput(inputValue, usable), [inputValue, usable])
-		// Every edit made through this composer (typing, menu picks, the helper strip) is the user's own,
-		// so a draft that now starts with a runnable script is a script run the user asked for. Text
-		// that arrives another way (Add to Cline, restored drafts) never reaches here.
+		const automationInput = useMemo(() => matchAutomationInput(inputValue, runnable), [inputValue, runnable])
+		const [automationStarting, setAutomationStarting] = useState(false)
+		const [automationError, setAutomationError] = useState<string>()
+		useEffect(() => setAutomationError(undefined), [inputValue])
+		const automationReady =
+			!!automationInput &&
+			automationInput.automation.trusted &&
+			"values" in automationInputValues(automationInput) &&
+			runProblems(automationInput.automation.definition, modelSettings).length === 0
+		// The composer no longer starts scripts; a draft never carries a script-run marker.
 		const setInputValue = useCallback(
 			(value: string) => {
 				setDraftInputValue(value)
-				onScriptRun?.(scriptRunOf(value, usable))
+				onScriptRun?.(undefined)
 			},
-			[setDraftInputValue, onScriptRun, usable],
+			[setDraftInputValue, onScriptRun],
 		)
 		const modelBlock = modelSendBlock(modelSettings, composerApiSelection, mode)
 		// `/ask` and `/act` only switch modes, so alone they never wait on a model; text after one goes in the new mode.
@@ -254,7 +267,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			: modeCommand
 				? modelSendBlock(modelSettings, composerApiSelection, modeCommand.mode)
 				: modelBlock
-		const sendDisabled = sendingDisabled || !isScriptInputSendable(scriptInput) || !!sendBlock
+		const sendDisabled = automationInput ? !automationReady || automationStarting : sendingDisabled || !!sendBlock
 		const modelChipRef = useRef<HTMLButtonElement>(null)
 		// A script runs only when the message starts with it, so `/` mid-message doesn't offer scripts.
 		const slashAtMessageStart = useMemo(() => {
@@ -263,11 +276,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			return slashIndex >= 0 && beforeCursor.slice(0, slashIndex).trim() === ""
 		}, [inputValue, cursorPosition])
 		const menuScriptCommands = slashAtMessageStart ? scriptCommands : []
-		// Re-read the script folders whenever the slash menu opens, so a script just saved shows up.
+		// Re-read the automation folders whenever the slash menu opens, so one just saved shows up.
 		useEffect(() => {
-			if (showSlashCommandsMenu) void refreshScripts()
+			if (showSlashCommandsMenu) void refreshAutomations()
 		}, [showSlashCommandsMenu])
-		/** Starts a script draft from the rules panel's Scripts tab; whatever was typed becomes the note under the options line. */
+		/** Starts an automation draft from the rules panel's Automations tab (Run). */
 		const startScriptDraft = useCallback(
 			(name: string) => {
 				const prefix = `/${name} `
@@ -303,6 +316,41 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const noteTaskGroupId = currentTaskItem
 			? buildThreadPath(currentTaskItem, taskHistory ?? []).taskGroupId
 			: composerTaskGroupId
+		// A run started here goes into the task this composer's thread (or task page) belongs to.
+		const runTaskGroup = taskGroups?.find((group) => group.id === noteTaskGroupId)
+		const runTaskTitle = runTaskGroup?.title
+		const runTickets = useMemo(
+			() => [
+				...new Set(
+					[...(runTaskGroup?.tags ?? []), ...(currentTaskItem?.tags ?? [])]
+						.filter((tag) => tag.kind === "ticket")
+						.map((tag) => tag.value),
+				),
+			],
+			[runTaskGroup, currentTaskItem],
+		)
+		const runAutomation = useCallback(async () => {
+			if (!automationInput || automationStarting) return
+			const ready = automationInputValues(automationInput)
+			if (!("values" in ready)) return
+			setAutomationStarting(true)
+			try {
+				const response = await AutomationServiceClient.startAutomationRun(
+					StartAutomationRunRequest.create({
+						name: automationInput.automation.name,
+						values: ready.values,
+						taskGroupId: runTaskGroup ? runTaskGroup.id : undefined,
+						fingerprint: automationInput.automation.fingerprint,
+					}),
+				)
+				setInputValue("")
+				if (response.taskGroupId) onOpenTaskGroup?.(response.taskGroupId)
+			} catch (error) {
+				setAutomationError(error instanceof Error ? error.message : String(error))
+			} finally {
+				setAutomationStarting(false)
+			}
+		}, [automationInput, automationStarting, runTaskGroup, setInputValue, onOpenTaskGroup])
 		const noteMention = useMemo(() => findNoteMention(inputValue, cursorPosition), [inputValue, cursorPosition])
 		const [dismissedNoteMentionAt, setDismissedNoteMentionAt] = useState<number>()
 		const [selectedNoteIndex, setSelectedNoteIndex] = useState(0)
@@ -756,20 +804,21 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
-				// Tab in a script draft completes the option being typed, then jumps to the next missing required one.
+				// Tab in an automation draft completes the argument being typed, then jumps to the next missing required one.
 				if (
 					event.key === "Tab" &&
-					scriptInput &&
+					automationInput &&
 					!isComposing &&
 					!event.shiftKey &&
 					!event.metaKey &&
 					!event.ctrlKey &&
 					!event.altKey &&
 					// Anywhere on the options line; Tab in the note below keeps its normal behaviour.
-					(event.currentTarget.selectionStart ?? 0) <= scriptInput.prefix.length + scriptInput.optionsText.length
+					(event.currentTarget.selectionStart ?? 0) <=
+						automationInput.prefix.length + automationInput.optionsText.length
 				) {
 					event.preventDefault()
-					const completed = completeScriptInput(scriptInput)
+					const completed = completeAutomationInput(automationInput)
 					if (completed) {
 						setInputValue(completed.text)
 						setCursorPosition(completed.cursor)
@@ -799,7 +848,9 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						// blur desyncs it permanently (programmatic .focus() on an
 						// already-focused element never re-fires onFocus), which hides the
 						// plan/act mode outline until a real blur/refocus cycle.
-						if (submitKind === "send" || submitKind === "steer" || !onSendAs) {
+						if (automationInput) {
+							void runAutomation()
+						} else if (submitKind === "send" || submitKind === "steer" || !onSendAs) {
 							onSend()
 						} else {
 							onSendAs(submitKind)
@@ -889,7 +940,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				slashCommandsQuery,
 				handleSlashCommandsSelect,
 				sendDisabled,
-				scriptInput,
+				automationInput,
+				runAutomation,
 				menuScriptCommands,
 				onStash,
 				hasQuotes,
@@ -1614,18 +1666,35 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		return (
 			<div>
-				{scriptInput && (
-					<ScriptHelper
+				{automationInput && (
+					<AutomationStartForm
+						error={automationError}
+						input={automationInput}
 						onChange={(next) => {
-							const text = `${scriptInput.prefix}${next}${scriptInput.suffix}`
-							const cursor = scriptInput.prefix.length + next.length
+							const text = `${automationInput.prefix}${next}${automationInput.suffix}`
+							const cursor = automationInput.prefix.length + next.length
 							setInputValue(text)
 							setCursorPosition(cursor)
 							setIntendedCursorPosition(cursor)
 							setTimeout(() => textAreaRef.current?.focus(), 0)
 						}}
-						optionsText={scriptInput.optionsText}
-						script={scriptInput.script}
+						onTrust={() =>
+							AutomationServiceClient.trustAutomation(
+								TrustAutomationRequest.create({
+									path: automationInput.automation.path,
+									fingerprint: automationInput.automation.fingerprint,
+								}),
+							)
+								.then(applyAutomationList)
+								.catch((error) => setAutomationError(error?.message ?? String(error)))
+						}
+						onViewFile={() =>
+							FileServiceClient.openFile(StringRequest.create({ value: automationInput.automation.path })).catch(
+								(error) => console.error("Failed to open automation:", error),
+							)
+						}
+						taskTitle={runTaskTitle}
+						tickets={runTickets}
 					/>
 				)}
 				{/* One card: the text on top, the action row (📎 … chip, Send) inside the same border at its bottom edge. */}
@@ -1881,8 +1950,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								if (next !== mode) onModeToggle()
 							}}
 							onSend={() => {
-								if (!sendDisabled) onSend()
+								if (sendDisabled) return
+								if (automationInput) void runAutomation()
+								else onSend()
 							}}
+							runLabel={automationInput ? `Run ${automationInput.automation.name} (Enter)` : undefined}
 							running={
 								showRunningSendButtons
 									? {

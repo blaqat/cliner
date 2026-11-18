@@ -34,7 +34,7 @@ export function useTopBarPanel(): TopBarPanel | null {
 }
 
 /**
- * "Use" on a script in the rules overlay: the composer listens and starts a script draft. An event,
+ * Run on an automation in the rules overlay: the composer listens and starts `/name `. An event,
  * because the overlay lives above every view rather than inside the composer.
  */
 export const USE_SCRIPT_EVENT = "cline:use-script"

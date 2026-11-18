@@ -14,8 +14,8 @@ import {
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 import React, { useEffect, useState } from "react"
 import styled from "styled-components"
+import AutomationsPanel from "@/components/automations/AutomationsPanel"
 import { DocFileEditor, DocFileEditorContext, type DocFileTarget } from "@/components/docEditor/DocFileEditor"
-import ScriptsPanel from "@/components/scripts/ScriptsPanel"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import useRemoteConfigSettings from "@/hooks/useRemoteConfigSettings"
 import { FileServiceClient } from "@/services/grpc-client"
@@ -26,11 +26,15 @@ import RuleRow from "./RuleRow"
 import RulesToggleList from "./RulesToggleList"
 
 /**
- * Rules, hooks, skills, workflows and scripts. Shown in the overlay the view title bar's Rules &
+ * Rules, hooks, skills, workflows and automations. Shown in the overlay the view title bar's Rules &
  * workflows button opens; it refreshes from disk while mounted, so it should only be rendered
- * while open. `onUseScript` is the Scripts tab's "Use" (starts a script draft).
+ * while open. `onUseScript` is the Automations tab's Run (starts `/name` in the composer);
+ * `onEditAutomation` opens the builder.
  */
-const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ onUseScript }) => {
+const ClineRulesPanel: React.FC<{
+	onUseScript?: (name: string) => void
+	onEditAutomation?: (target: { path?: string; describe?: boolean }) => void
+}> = ({ onUseScript, onEditAutomation }) => {
 	const {
 		globalClineRulesToggles = {},
 		localClineRulesToggles = {},
@@ -59,7 +63,7 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 	const [localSkills, setLocalSkills] = useState<SkillInfo[]>([])
 
 	const isWindows = !isMacOSOrLinux()
-	const [currentView, setCurrentView] = useState<"rules" | "workflows" | "hooks" | "skills" | "scripts">("rules")
+	const [currentView, setCurrentView] = useState<"rules" | "workflows" | "hooks" | "skills" | "automations">("rules")
 	// A rule, workflow or skill open in the doc editor, in place of the list (Back returns).
 	const [editing, setEditing] = useState<DocFileTarget>()
 
@@ -418,12 +422,12 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 								Workflows
 							</TabButton>
 							<TabButton
-								isActive={currentView === "scripts"}
+								isActive={currentView === "automations"}
 								onClick={() => {
 									setEditing(undefined)
-									setCurrentView("scripts")
+									setCurrentView("automations")
 								}}>
-								Scripts
+								Automations
 							</TabButton>
 						</div>
 					</div>
@@ -449,8 +453,8 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 							</div>
 						) : null}
 
-						{/* Description text (the Scripts tab explains itself) */}
-						<div className={currentView === "scripts" ? "hidden" : "text-xs text-description mb-4"}>
+						{/* Description text (the Automations tab explains itself) */}
+						<div className={currentView === "automations" ? "hidden" : "text-xs text-description mb-4"}>
 							{currentView === "rules" ? (
 								<p>
 									Rules allow you to provide Cline with system-level guidance. Think of them as a persistent way
@@ -806,8 +810,8 @@ const ClineRulesPanel: React.FC<{ onUseScript?: (name: string) => void }> = ({ o
 									</div>
 								</div>
 							</>
-						) : currentView === "scripts" ? (
-							<ScriptsPanel onUse={onUseScript} />
+						) : currentView === "automations" ? (
+							<AutomationsPanel onEdit={onEditAutomation} onRun={onUseScript} />
 						) : null}
 					</div>
 				</div>

@@ -16,7 +16,7 @@ interface SlashCommandMenuProps {
 	remoteWorkflowToggles?: Record<string, boolean>
 	remoteWorkflows?: any[]
 	mcpServers?: McpServer[]
-	/** Saved scripts, listed with the workflows. Only passed when the slash is at the start of the message. */
+	/** Automations, listed after the workflows. Only passed when the slash is at the start of the message. */
 	scriptCommands?: SlashCommand[]
 }
 
@@ -152,7 +152,7 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 						{renderCommandSection(workflowCommands, "Workflow Commands", defaultCommands.length, false)}
 						{renderCommandSection(
 							scriptMenuCommands,
-							"Scripts",
+							"Automations",
 							defaultCommands.length + workflowCommands.length,
 							true,
 						)}

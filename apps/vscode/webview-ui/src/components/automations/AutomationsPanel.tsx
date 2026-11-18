@@ -1,0 +1,197 @@
+import { automationDisplayName } from "@shared/automations"
+import { TrustAutomationRequest } from "@shared/proto/cline/automation"
+import { StringRequest } from "@shared/proto/cline/common"
+import React, { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
+import { Button } from "@/components/ui/button"
+import { type AutomationEntry, applyAutomationList, useAutomations } from "@/hooks/useAutomations"
+import { cn } from "@/lib/utils"
+import { AutomationServiceClient, FileServiceClient } from "@/services/grpc-client"
+import { stepSummary } from "./automationSummary"
+
+function openFile(path: string) {
+	FileServiceClient.openFile(StringRequest.create({ value: path })).catch((error) =>
+		console.error("Failed to open automation:", error),
+	)
+}
+
+interface PanelActions {
+	/** Starts `/name ` in the composer. */
+	onRun?: (name: string) => void
+	/** Opens the builder: an existing file, a blank one, or the describe-it box. */
+	onEdit?: (target: { path?: string; describe?: boolean }) => void
+}
+
+const AutomationRow: React.FC<{ automation: AutomationEntry } & PanelActions> = ({ automation, onRun, onEdit }) => {
+	const [error, setError] = useState("")
+	const [confirmingDelete, setConfirmingDelete] = useState(false)
+	const invalid = !automation.definition
+	const title = automation.definition ? automationDisplayName(automation.definition) : automation.name
+	const run = (mutation: Promise<Parameters<typeof applyAutomationList>[0]>) =>
+		mutation.then(applyAutomationList).catch((err) => setError(err?.message ?? String(err)))
+	return (
+		<div className="mb-2.5 rounded bg-text-block-background px-2 py-1.5" data-testid={`automation-row-${automation.name}`}>
+			<div className="flex items-center gap-2">
+				<span aria-hidden className="codicon codicon-run-all shrink-0 text-[11px]! text-description" />
+				<button
+					className="ph-no-capture min-w-0 flex-1 cursor-pointer truncate border-0 bg-transparent p-0 text-left text-sm text-foreground hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+					onClick={() => (onEdit && !invalid ? onEdit({ path: automation.path }) : openFile(automation.path))}
+					title={invalid ? `Open ${automation.path}` : "Edit in the builder"}
+					type="button">
+					{title}
+					{title !== automation.name && (
+						<span className="ml-1.5 font-mono text-xs text-description">/{automation.name}</span>
+					)}
+				</button>
+				{onRun && !invalid && automation.trusted && (
+					<Button
+						className="shrink-0"
+						data-testid={`automation-run-${automation.name}`}
+						onClick={() => onRun(automation.name)}
+						size="xs"
+						variant="secondary">
+						Run
+					</Button>
+				)}
+				<button
+					aria-label={`Delete ${automation.name}`}
+					className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
+					onClick={() => setConfirmingDelete(true)}
+					title="Delete"
+					type="button">
+					<span aria-hidden className="codicon codicon-trash text-[12px]" />
+				</button>
+			</div>
+			{automation.description && <div className="mt-0.5 pl-5 text-xs text-description">{automation.description}</div>}
+			{automation.definition && (
+				<div className="mt-0.5 pl-5 text-[11px] text-description" data-testid={`automation-summary-${automation.name}`}>
+					{stepSummary(automation.definition)}
+				</div>
+			)}
+			{!invalid && !automation.trusted && (
+				<InlineNotice
+					actions={
+						<>
+							<Button onClick={() => openFile(automation.path)} size="xs" variant="secondary">
+								View file
+							</Button>
+							<Button
+								onClick={() =>
+									run(
+										AutomationServiceClient.trustAutomation(
+											TrustAutomationRequest.create({
+												path: automation.path,
+												fingerprint: automation.fingerprint,
+											}),
+										),
+									)
+								}
+								size="xs"
+								variant="secondary">
+								Trust this version
+							</Button>
+						</>
+					}
+					className="mt-1.5 ml-5"
+					tone="warning">
+					<span className="font-medium">Changed since you trusted it.</span> It can start threads and edit code, so look
+					at the file before running it.
+				</InlineNotice>
+			)}
+			{confirmingDelete && (
+				<div className="mt-1.5 ml-5 flex flex-wrap items-center gap-2 text-xs" role="alert">
+					<span className="min-w-0 flex-1">Delete {automation.name}? Its file is removed; earlier runs stay.</span>
+					<Button
+						onClick={() =>
+							run(AutomationServiceClient.deleteAutomation(StringRequest.create({ value: automation.path })))
+						}
+						size="xs"
+						variant="danger">
+						Delete
+					</Button>
+					<Button onClick={() => setConfirmingDelete(false)} size="xs" variant="secondary">
+						Cancel
+					</Button>
+				</div>
+			)}
+			{error && (
+				<InlineNotice className="mt-1.5 ml-5" tone="error">
+					{error}
+				</InlineNotice>
+			)}
+			{invalid && (
+				<ul className="m-0 mt-1 list-none pl-5 text-xs text-error" data-testid={`automation-errors-${automation.name}`}>
+					{automation.errors.map((problem) => (
+						<li key={problem}>{problem}</li>
+					))}
+				</ul>
+			)}
+		</div>
+	)
+}
+
+const Section: React.FC<{ title: string; folder: string; items: AutomationEntry[] } & PanelActions> = ({
+	title,
+	folder,
+	items,
+	...actions
+}) => (
+	<div className="mb-3">
+		<div className="mb-2 text-sm font-normal">{title}</div>
+		<div className="mb-1 text-[11px] text-description">{folder}</div>
+		{items.length === 0 && <div className="mb-2 text-xs text-description">None yet.</div>}
+		{items.map((automation) => (
+			<AutomationRow automation={automation} key={automation.path} {...actions} />
+		))}
+	</div>
+)
+
+/**
+ * The Automations tab of the Rules & workflows overlay (it replaced Scripts). Rows open the builder; Run
+ * starts `/name` in the composer. Only you start automations: Cline has no tool for them.
+ */
+const AutomationsPanel: React.FC<PanelActions> = ({ onRun, onEdit }) => {
+	const { automations, globalDir, workspaceDir } = useAutomations({ pollMs: 2000 })
+	return (
+		<div data-testid="automations-panel">
+			<div className="mb-3 text-xs text-description">
+				<p className="m-0">
+					Automations are steps you start with <span className="font-bold text-foreground">/name</span>: open a task,
+					start threads (one at a time or together, each on its own model), and stop to ask you. Only you start them.
+				</p>
+			</div>
+			{onEdit && (
+				<div className="mb-3 flex flex-wrap gap-2">
+					<Button data-testid="automation-new" onClick={() => onEdit({})} size="xs" variant="secondary">
+						＋ New automation
+					</Button>
+					<Button
+						data-testid="automation-describe"
+						onClick={() => onEdit({ describe: true })}
+						size="xs"
+						variant="secondary">
+						Describe it, Cline drafts it
+					</Button>
+				</div>
+			)}
+			<Section
+				folder={workspaceDir ? ".clinerules/automations/" : "Open a folder to keep automations in the repo."}
+				items={automations.filter((item) => item.scope === "workspace")}
+				onEdit={onEdit}
+				onRun={onRun}
+				title="Workspace"
+			/>
+			<div className={cn("-mb-2.5")}>
+				<Section
+					folder={globalDir ? "~/.cline/automations/" : ""}
+					items={automations.filter((item) => item.scope === "global")}
+					onEdit={onEdit}
+					onRun={onRun}
+					title="Global"
+				/>
+			</div>
+		</div>
+	)
+}
+
+export default AutomationsPanel

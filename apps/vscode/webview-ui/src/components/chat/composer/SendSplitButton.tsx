@@ -156,6 +156,8 @@ export interface SendSplitButtonProps {
 		modKey: string
 		onSteer: () => void
 	}
+	/** The draft starts an automation: the send part reads Run (its steps set their own modes, so no switch). */
+	runLabel?: string
 }
 
 /**
@@ -174,6 +176,7 @@ const SendSplitButton = ({
 	compactMode = false,
 	hideModeSwitch = false,
 	running,
+	runLabel,
 }: SendSplitButtonProps) => {
 	const label = MODE_LABELS[mode]
 	const plan = mode === "plan"
@@ -183,7 +186,9 @@ const SendSplitButton = ({
 
 	return (
 		<div className="flex shrink-0 items-center gap-1" data-testid="mode-and-send">
-			{!hideModeSwitch && <ModeSwitch compact={compactMode} keys={keys} mode={mode} onToggle={() => onPickMode(other)} />}
+			{!hideModeSwitch && !runLabel && (
+				<ModeSwitch compact={compactMode} keys={keys} mode={mode} onToggle={() => onPickMode(other)} />
+			)}
 			<Shell
 				$flash={flash}
 				className="flex h-5.5 shrink-0 items-stretch overflow-hidden rounded-xs"
@@ -191,19 +196,21 @@ const SendSplitButton = ({
 				data-testid="send-split"
 				style={MODE_FILL[mode]}>
 				<button
-					aria-label={running ? "Steer" : `Send (${label})`}
-					className={cn(PART_CLASS, SEND_CLASS, "px-2", { disabled })}
-					data-testid={running ? "steer-button" : "send-button"}
+					aria-label={runLabel ? "Run" : running ? "Steer" : `Send (${label})`}
+					className={cn(PART_CLASS, SEND_CLASS, "px-2", runLabel && "gap-1", { disabled })}
+					data-testid={runLabel ? "run-button" : running ? "steer-button" : "send-button"}
 					disabled={disabled}
-					onClick={running ? running.onSteer : onSend}
+					onClick={runLabel || !running ? onSend : running.onSteer}
 					title={
+						runLabel ??
 						disabledReason ??
 						(running
 							? `Steer (${keyFor("steer")}): queue this message for after the current turn\nInterject (${keyFor("interject")}): stop the current turn and send now`
 							: `${sendTitle}\n${MODE_DESCRIPTIONS[mode]}`)
 					}
 					type="button">
-					<span aria-hidden className="codicon codicon-send text-[13px]!" />
+					<span aria-hidden className={cn("codicon text-[13px]!", runLabel ? "codicon-play" : "codicon-send")} />
+					{runLabel && <span className="text-xs">Run</span>}
 				</button>
 			</Shell>
 		</div>
