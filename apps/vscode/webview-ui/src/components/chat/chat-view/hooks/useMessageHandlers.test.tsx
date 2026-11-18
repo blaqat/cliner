@@ -1,7 +1,7 @@
 import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE } from "@shared/cloud/cloud-sessions"
 import type { ClineMessage, TurnState } from "@shared/ExtensionMessage"
 import { act, renderHook } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ClineError } from "../../../../../../src/services/error/ClineError"
 
 // --- Mocks -------------------------------------------------------------------
@@ -65,10 +65,12 @@ vi.mock("@shared/proto/cline/common", () => ({
 
 // useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
 let mockTurnState: TurnState | undefined
+let mockCurrentTaskItem: { id: string; parentTaskId?: string; isSubagent?: boolean } | undefined
 let mockMode: "plan" | "act" = "act"
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		backgroundCommandRunning: false,
+		currentTaskItem: mockCurrentTaskItem,
 		turnState: mockTurnState,
 		mode: mockMode,
 	}),
@@ -1877,5 +1879,69 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 			await send(view, "an option button's text")
 			expect(askResponse.mock.calls[0][0].provenance).toBeUndefined()
 		})
+	})
+})
+
+describe("side composer commands", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		mockCurrentTaskItem = { id: "main" }
+		mockTurnState = { phase: "completed", seq: 1 }
+	})
+	afterEach(() => {
+		mockCurrentTaskItem = undefined
+	})
+	it.each(["side", "btw"])("forks the latest message for /%s with attachments and no main-thread send", async (command) => {
+		const state = makeChatState(completedConversation)
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, state))
+		await act(async () => {
+			await result.current.handleSendMessage(`/${command} explain this`, ["image"], ["file"])
+		})
+		expect(forkTaskAt).toHaveBeenCalledWith({ taskId: "main", messageTs: completedConversation.at(-1)!.ts })
+		expect(showTaskWithId).toHaveBeenCalledWith({ value: "aside-1" })
+		expect(askResponse).toHaveBeenCalledTimes(1)
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({ text: "explain this", images: ["image"], files: ["file"] }),
+		)
+		expect(togglePlanActModeProto).not.toHaveBeenCalled()
+		expect(newTask).not.toHaveBeenCalled()
+	})
+	it("forks while Main is running without canceling or interjecting", async () => {
+		mockTurnState = { phase: "streaming", seq: 1 } as TurnState
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/btw why?", [], [])
+		})
+		expect(forkTaskAt).toHaveBeenCalledTimes(1)
+		expect(cancelTask).not.toHaveBeenCalled()
+		expect(interjectPrompt).not.toHaveBeenCalled()
+	})
+	it.each([
+		undefined,
+		{ id: "side", parentTaskId: "main" },
+		{ id: "agent", isSubagent: true },
+	])("keeps the draft outside Main", async (item) => {
+		mockCurrentTaskItem = item
+		const state = makeChatState(completedConversation)
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, state))
+		await act(async () => {
+			await result.current.handleSendMessage("/side hello", [], [])
+		})
+		expect(forkTaskAt).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(state.setInputValue).not.toHaveBeenCalled()
+	})
+	it("keeps an empty command or a failed fork in the composer", async () => {
+		const state = makeChatState(completedConversation)
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, state))
+		await act(async () => {
+			await result.current.handleSendMessage("/side", [], [])
+		})
+		expect(forkTaskAt).not.toHaveBeenCalled()
+		forkTaskAt.mockRejectedValueOnce(new Error("unavailable"))
+		await act(async () => {
+			await result.current.handleSendMessage("/side hello", [], [])
+		})
+		expect(state.setInputValue).toHaveBeenLastCalledWith("/side hello")
 	})
 })

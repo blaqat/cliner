@@ -27,6 +27,7 @@ import { sdkMessagesToClineMessages } from "./message-translator"
 import { lastTurnCompleted } from "./sdk-restored-status"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { readCurrentMessages } from "./session-host"
+import { mergeSideThreadNotes, sideThreadNotes } from "./side-thread-notes"
 import { mergeNotebookChangesMessages } from "./task-groups/notebook-changes"
 import { clineMessagesToTranscript, sdkMessagesToTranscript, type TranscriptEntry } from "./task-groups/thread-transcript"
 import type { VscodeSessionHost } from "./vscode-session-host"
@@ -765,12 +766,46 @@ export class SdkTaskHistory {
 				? mergeLegacyUiMessagesWithResumedSdkMessages(readUiMessages(taskId, legacyTask.dataDir), clineMessages)
 				: clineMessages
 		let nextId = Math.max(0, ...projectedMessages.map((message) => message.ts))
-		const messages = mergeNotebookChangesMessages(
+		const notebookMessages = mergeNotebookChangesMessages(
 			projectedMessages,
 			sdkRecord?.metadata?.notebookChangesMessages,
 			() => this.options.getMinter?.().nextId() ?? ++nextId,
 		)
+		const messages = mergeSideThreadNotes(
+			notebookMessages,
+			sdkRecord?.metadata?.sideThreadNotes,
+			() => this.options.getMinter?.().nextId() ?? ++nextId,
+		)
 		return this.options.resolveNotebookChanges?.(taskId, messages) ?? messages
+	}
+
+	/** Save the visible row and pending context together, serialized with other metadata writes. */
+	async saveSideThreadNote(taskId: string, message: ClineMessage): Promise<void> {
+		await this.serializeMetadataWrite(taskId, () =>
+			this.withHistoryHost(async (host) => {
+				const record = await host.get(taskId)
+				if (!record) throw new Error("Main thread no longer exists")
+				const metadata = {
+					...record.metadata,
+					sideThreadNotes: [...sideThreadNotes(record.metadata?.sideThreadNotes), { message, pending: true }],
+				}
+				if (!(await host.update(taskId, { metadata })).updated) throw new Error("Could not save main-thread context")
+			}),
+		)
+		this.invalidateMetadataHistoryCache()
+	}
+
+	/** Called only at the start of a main-thread turn; never queues a prompt or wakes the model. */
+	async consumeSideThreadNotes(taskId: string): Promise<string | undefined> {
+		let text: string | undefined
+		await this.updateOwnedMetadata(taskId, (metadata) => {
+			const notes = sideThreadNotes(metadata.sideThreadNotes)
+			const pending = notes.filter((note) => note.pending)
+			if (!pending.length) return undefined
+			text = pending.map((note) => note.message.text).join("\n\n")
+			return { sideThreadNotes: notes.map((note) => ({ ...note, pending: false })) }
+		})
+		return text
 	}
 
 	async saveNotebookChangesMessage(taskId: string, message: ClineMessage): Promise<void> {

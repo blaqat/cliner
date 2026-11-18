@@ -61,6 +61,23 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		mockCreateVscodeExtraTools.mockReset().mockResolvedValue([])
 	})
 
+	it("holds side context until beforeRun, preserves existing hooks, and skips helper runs", async () => {
+		const consumeNotes = vi.fn(async () => "side context")
+		const beforeRun = vi.fn(async () => ({ appendContext: "existing context" }))
+		const sideThread = { sessionId: "git-task", consumeNotes, readMessages: vi.fn(), sendNote: vi.fn() }
+		const host = await VscodeSessionHost.create({ mcpHub: {} as never, resolveSideThread: async () => sideThread })
+		await host.start({ ...gitStartInput, config: { ...gitStartInput.config, hooks: { beforeRun } } })
+		expect(consumeNotes).not.toHaveBeenCalled()
+		const hook = mockInnerStart.mock.calls[0][0].config.hooks.beforeRun
+		expect(await hook({ snapshot: { agentId: "main", parentAgentId: "parent" } })).toEqual({
+			appendContext: "existing context",
+		})
+		expect(consumeNotes).not.toHaveBeenCalled()
+		expect(await hook({ snapshot: { agentId: "main" } })).toEqual({ appendContext: "existing context\n\nside context" })
+		expect(consumeNotes).toHaveBeenCalledTimes(1)
+		await host.dispose()
+	})
+
 	it("adds the notebook tool context and task prompt only for grouped sessions, including Ask mode", async () => {
 		const notebook = {
 			group: {

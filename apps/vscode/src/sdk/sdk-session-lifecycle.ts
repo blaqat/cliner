@@ -30,6 +30,7 @@ export interface SdkSessionLifecycleOptions {
 	resolveSessionWorkspace?: (id: string, cwd?: string) => Promise<string | undefined>
 	consumeWorkspaceNotice?: (id: string) => string | undefined
 	acquireSessionLease?: (id: string) => Promise<() => Promise<void>>
+	resolveSideThread?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveSideThread"]
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's mentioned-thread allow-list. */
 	resolveThreadTranscript?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveThreadTranscript"]
@@ -944,6 +945,7 @@ export class SdkSessionLifecycle {
 	private createHost(): Promise<SdkSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: this.options.resolveNotebook,
+			resolveSideThread: this.options.resolveSideThread,
 			resolveThreadTranscript: this.options.resolveThreadTranscript,
 			resolveScripts: this.options.resolveScripts,
 			mcpHub: this.options.mcpHub,

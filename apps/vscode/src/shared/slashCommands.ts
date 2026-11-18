@@ -41,6 +41,8 @@ export const BASE_SLASH_COMMANDS: SlashCommand[] = [
 
 // VS Code-only slash commands
 export const VSCODE_ONLY_COMMANDS: SlashCommand[] = [
+	{ name: "side", description: "Start an aside from the latest message", section: "default" },
+	{ name: "btw", description: "Alias for /side; send a prompt in an aside", section: "default" },
 	// `/ask` and `/act` are intercepted by the webview composer and routed
 	// through the same RPC as the Ask/Act toggle, so they must not reach the
 	// model as literal text. Any text after the command is sent in the new mode.

@@ -4,6 +4,7 @@ import {
 	getMatchingSlashCommands,
 	getMcpPromptCommands,
 	parseModeSwitchCommand,
+	parseSideCommand,
 	removeSlashCommand,
 	shouldShowSlashCommandsMenu,
 	slashCommandRegex,
@@ -376,5 +377,22 @@ describe("slash-commands", () => {
 			expect(shouldShowSlashCommandsMenu("/compact now /re tail", "/compact now /re".length)).toBe(true)
 			expect(shouldShowSlashCommandsMenu("text / tail", "text / ".length)).toBe(false)
 		})
+	})
+})
+
+describe("side commands", () => {
+	it("offers side and btw in the slash menu", () => {
+		for (const name of ["side", "btw"]) {
+			expect(getMatchingSlashCommands(name)).toContainEqual(
+				expect.objectContaining({ name, description: expect.any(String) }),
+			)
+			expect(validateSlashCommand(name)).toBe("full")
+		}
+	})
+	it.each(["/side hello", "/btw hello", " /SIDE hello"])("parses %s", (text) => {
+		expect(parseSideCommand(text)).toEqual({ rest: "hello" })
+	})
+	it.each(["/sidebar hello", "foo/side", "please /btw hello", "https://example.com/side"])("does not intercept %s", (text) => {
+		expect(parseSideCommand(text)).toBeNull()
 	})
 })

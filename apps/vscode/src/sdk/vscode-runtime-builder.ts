@@ -7,6 +7,7 @@ import { createPresentWalkthroughTool } from "@/services/walkthrough/authored-to
 import { Logger } from "@/shared/services/Logger"
 import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
+import { createSideThreadTools, type SideThreadContext } from "./side-thread-tools"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookTool } from "./task-groups/notebook-tool"
 import { createThreadTranscriptTools, type ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
@@ -63,6 +64,7 @@ export class McpHubToolProvider {
 
 export interface VscodeExtraToolsOptions {
 	notebook?: TaskNotebookContext
+	sideThread?: SideThreadContext
 	/** Mentioned-thread transcript access (grep_threads/read_thread), allow-listed per conversation. */
 	threadTranscript?: ThreadTranscriptToolsContext
 	/** The user's saved scripts (the `script` tool); approval is decided per script by the host. */
@@ -107,6 +109,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// response, and the turn-end inference in message-translator.ts styles that
 	// final text as the completion feedback row.
 	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
+	tools.push(...createSideThreadTools(options?.sideThread))
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
 	if (options?.scripts) tools.push(createScriptTool(options.scripts))

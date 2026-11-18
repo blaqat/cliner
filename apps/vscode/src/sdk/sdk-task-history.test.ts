@@ -1665,3 +1665,32 @@ it("mirrors exact configured picks between top-level metadata, apiSelection and 
 	expect(result.modelSelectionV1).toEqual(modelSelectionV1)
 	expect(result.apiSelection?.modelSelectionV1).toEqual(modelSelectionV1)
 })
+
+it("persists side notes and visible rows, serializes concurrent notes, and consumes context once", async () => {
+	const { history, getSession } = makeHistory([makeSessionRecord("main", { metadata: { threadTitle: "Keep" } })])
+	const message = (text: string, ts: number) => ({
+		ts,
+		type: "say" as const,
+		say: "subagent_update" as const,
+		text: `<side_thread_update thread="side">\n${text}\n</side_thread_update>`,
+		sdkMessageIndex: -1,
+	})
+	await Promise.all([
+		history.saveSideThreadNote("main", message("one", 1)),
+		history.saveSideThreadNote("main", message("two", 2)),
+	])
+	expect((await getSession("main"))?.metadata?.threadTitle).toBe("Keep")
+	const pending = await getSession("main")
+	expect(pending?.metadata?.sideThreadNotes).toHaveLength(2)
+	const rows = await history.getClineMessages("main")
+	expect(rows.filter((row) => row.say === "subagent_update").map((row) => row.text)).toEqual([
+		message("one", 1).text,
+		message("two", 2).text,
+	])
+	const context = await history.consumeSideThreadNotes("main")
+	expect(context).toContain("one")
+	expect(context).toContain("two")
+	expect(await history.consumeSideThreadNotes("main")).toBeUndefined()
+	expect((await history.getClineMessages("main")).filter((row) => row.say === "subagent_update")).toHaveLength(2)
+	await history.dispose()
+})

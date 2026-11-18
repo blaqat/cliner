@@ -142,6 +142,12 @@ export function parseModeSwitchCommand(text: string): { mode: "plan" | "act"; re
 	return { mode, rest }
 }
 
+/** Side-thread commands are composer actions and must lead the prompt. */
+export function parseSideCommand(text: string): { rest: string } | null {
+	const match = /^\s*\/(?:side|btw)(?=\s|$)\s*/i.exec(text)
+	return match ? { rest: text.slice(match[0].length).trim() } : null
+}
+
 /**
  * Removes a slash command at the cursor position
  */

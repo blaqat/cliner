@@ -184,6 +184,8 @@ import {
 	type SdkUserMessage,
 } from "./sdk-user-message-mapping"
 import { readCurrentMessages } from "./session-host"
+import { sideThreadNoteText } from "./side-thread-notes"
+import { resolveMainThread, type SideThreadContext } from "./side-thread-tools"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
 import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
@@ -740,6 +742,7 @@ export class Controller {
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveSideThread: (input) => this.resolveSideThreadContext(input),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			resolveScripts: (input) => this.scripts.toolContext(input.config.cwd),
 			requestToolApproval: async (request) =>
@@ -1716,6 +1719,7 @@ export class Controller {
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveSideThread: (input) => this.resolveSideThreadContext(input),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			mcpHub: this.mcpHub,
 			beforeStartSession: () => this.ensureRemoteConfigForSessionStart(),
@@ -2553,11 +2557,53 @@ export class Controller {
 		return (await this.taskHistory.getReferencedThreads(ownerThreadId)).includes(threadId)
 	}
 
-	/**
-	 * Context for the grep_threads/read_thread host tools. The allow-list is
-	 * scoped to the user-facing thread that owns the calling session — a
-	 * subagent inherits its owning thread's mentioned references.
-	 */
+	/** Aside-only tools and the durable next-turn inbox for every user-facing thread. */
+	private async resolveSideThreadContext(input: {
+		config: { sessionId?: string }
+		sessionMetadata?: Record<string, unknown>
+	}): Promise<SideThreadContext | undefined> {
+		const sessionId = input.config.sessionId
+		if (!sessionId) return undefined
+		const saved = await this.taskHistory.findHistoryItem(sessionId)
+		const metadata = input.sessionMetadata
+		const item = {
+			id: sessionId,
+			parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : saved?.parentTaskId,
+			isSubagent: metadata?.isSubagent === true || !!metadata?.parentAgentId || saved?.isSubagent,
+			runtimeOwnerTaskId:
+				typeof metadata?.runtimeOwnerTaskId === "string" ? metadata.runtimeOwnerTaskId : saved?.runtimeOwnerTaskId,
+		}
+		const mainThreadId = await resolveMainThread(item, (id) => this.taskHistory.findHistoryItem(id))
+		return {
+			sessionId,
+			mainThreadId,
+			readMessages: async (id) => {
+				if (!(await this.taskHistory.findHistoryItem(id))) throw new Error("Main thread no longer exists")
+				return this.taskHistory.readSessionMessages(id)
+			},
+			sendNote: async (mainId, sideId, text) => {
+				if (!(await this.taskHistory.findHistoryItem(mainId))) throw new Error("Main thread no longer exists")
+				const context = this.getTaskSessionContext(mainId)
+				if (!context.task.messageStateHandler.getClineMessages().length) {
+					context.messages.replaceMessages(await this.taskHistory.getClineMessages(mainId))
+				}
+				const message: ClineMessage = {
+					ts: context.translator.nextTs(),
+					type: "say",
+					say: "subagent_update",
+					partial: false,
+					text: sideThreadNoteText(sideId, text),
+					sdkMessageIndex: (await this.taskHistory.readSessionMessages(mainId)).length - 1,
+				}
+				await this.taskHistory.saveSideThreadNote(mainId, message)
+				context.messages.emitHookMessage(message)
+				await this.postStateToWebview()
+			},
+			consumeNotes: () => this.taskHistory.consumeSideThreadNotes(sessionId),
+		}
+	}
+
+	/** Mentioned-thread access belongs to the user-facing thread, including for its subagents. */
 	private async resolveThreadTranscriptContext(input: {
 		config: { sessionId?: string }
 	}): Promise<ThreadTranscriptToolsContext | undefined> {

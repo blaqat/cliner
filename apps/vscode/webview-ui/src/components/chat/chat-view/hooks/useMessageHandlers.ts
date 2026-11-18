@@ -9,7 +9,7 @@ import { noteThreadStopped } from "@/components/toasts/threadToastRules"
 import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
-import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand } from "@/utils/slash-commands"
+import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand, parseSideCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
 import { latestMessageTs, startAside } from "../utils/asideUtils"
@@ -142,7 +142,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			// host consume it directly when the switch auto-continues (a plan
 			// awaiting approval), otherwise it falls through to the normal send
 			// path below. The literal command text is never sent to the model.
-			const modeCommand = parseModeSwitchCommand(messageToSend)
+			const sideCommand = parseSideCommand(messageToSend)
+			if (sideCommand) messageToSend = sideCommand.rest
+			const modeCommand = sideCommand ? null : parseModeSwitchCommand(messageToSend)
 			if (modeCommand) {
 				messageToSend = modeCommand.rest
 			}
@@ -159,6 +161,46 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			// Prepend the quotes (each followed by its note) if there are any
 			if (submittedQuotes.length > 0) {
 				messageToSend = formatMessageWithQuotes(messageToSend, submittedQuotes)
+			}
+
+			if (sideCommand) {
+				const messageTs = latestMessageTs(messages)
+				// Keep the draft when there is no main thread to fork, or the prompt is empty.
+				if (
+					!currentTaskItem?.id ||
+					currentTaskItem.parentTaskId ||
+					currentTaskItem.isSubagent ||
+					messageTs === undefined ||
+					!hasContent
+				)
+					return
+				setInputValue("")
+				setQuotes([])
+				setMessageTags([])
+				setSelectedImages([])
+				setSelectedFiles([])
+				try {
+					await startAside({
+						taskId: currentTaskItem.id,
+						messageTs,
+						text: messageToSend,
+						provenance,
+						images: submittedImages,
+						files: submittedFiles,
+					})
+				} catch (error) {
+					setInputValue(submittedText)
+					setQuotes(submittedQuotes)
+					setMessageTags(messageTags)
+					setSelectedImages(submittedImages)
+					setSelectedFiles(submittedFiles)
+					if (sentAuth) chatState.restoreAuthorization(sentAuth)
+					console.error("Failed to start aside:", error)
+					return
+				}
+
+				if (recoveryDraft) chatState.consumeDraftSnapshot(recoveryDraft)
+				return
 			}
 
 			if (modeCommand) {
@@ -522,6 +564,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 		},
 		[
+			currentTaskItem,
 			createAskResponse,
 			composerGrants,
 			messages,

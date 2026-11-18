@@ -45,6 +45,7 @@ import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-teleme
 import type { ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
+import { type SideThreadContext, withSideThreadNotes } from "./side-thread-tools"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
@@ -82,6 +83,7 @@ export interface VscodeSessionHostOptions {
 	readFileExecutor?: ToolExecutors["readFile"]
 	/** Per-tool approval policies derived from the user's auto-approval settings. */
 	toolPolicies?: Record<string, ToolPolicy>
+	resolveSideThread?: (input: ClineCoreStartInput) => Promise<SideThreadContext | undefined>
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
 	resolveThreadTranscript?: (input: ClineCoreStartInput) => Promise<ThreadTranscriptToolsContext | undefined>
@@ -158,11 +160,13 @@ export class VscodeSessionHost implements SdkSessionHost {
 				? await remoteConfigIntegration.applyToStartSessionInput(input)
 				: input
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
+			const sideThread = await options.resolveSideThread?.(inputWithRemoteConfig)
 			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
 			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
 			const scripts = options.resolveScripts?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
+				sideThread,
 				threadTranscript,
 				scripts,
 				cwd: inputWithRemoteConfig.config.cwd,
@@ -199,6 +203,8 @@ export class VscodeSessionHost implements SdkSessionHost {
 				telemetry: inputWithRemoteConfig.config.telemetry ?? options.telemetry,
 				extraTools: [...(inputWithRemoteConfig.config.extraTools ?? []), ...extraTools],
 			}
+			if (sideThread) config.hooks = withSideThreadNotes(config.hooks, sideThread)
+
 			return {
 				...inputWithRemoteConfig,
 				toolPolicies: {
@@ -210,6 +216,8 @@ export class VscodeSessionHost implements SdkSessionHost {
 					grep_threads: { enabled: true, autoApprove: true },
 					read_thread: { enabled: true, autoApprove: true },
 					present_walkthrough: { enabled: true, autoApprove: true },
+					read_main_thread: { enabled: true, autoApprove: true },
+					send_to_main_thread: { enabled: true, autoApprove: true },
 					// Always routed through requestToolApproval: the interaction coordinator applies the
 					// script's own approval level (and Ask/Act mode) instead of the global toggles.
 					...(scripts ? { script: { enabled: true, autoApprove: false } } : {}),
