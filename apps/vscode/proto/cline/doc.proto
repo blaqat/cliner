@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// The sidebar doc editor for rules, workflows and skills: front matter as
+// fields and the markdown body, so editing never means opening a file.
+service DocService {
+  // Reads a rule, workflow or skill file the Rules panel lists.
+  rpc readDoc(DocRequest) returns (DocContent);
+  // Saves fields and body back; refuses when the file changed since it was read.
+  rpc saveDoc(SaveDocRequest) returns (DocContent);
+}
+
+message DocRequest {
+  Metadata metadata = 1;
+  string path = 2;
+  string kind = 3; // rule | workflow | skill
+}
+
+message DocContent {
+  string path = 1;
+  string body = 2;
+  // Front matter as a JSON object (unknown keys kept as they are).
+  string fields_json = 3;
+  // Hash of the file as read; saving checks it so a newer file is never overwritten.
+  string revision = 4;
+  // Set when the front matter can't be parsed: the doc is shown read-only.
+  string read_only_reason = 5;
+}
+
+message SaveDocRequest {
+  Metadata metadata = 1;
+  string path = 2;
+  string kind = 3;
+  string body = 4;
+  string fields_json = 5;
+  string base_revision = 6;
+}

@@ -1,4 +1,7 @@
 import { useLayoutEffect, useRef } from "react"
+import MarkdownBlock from "@/components/common/MarkdownBlock"
+import { FormatBar } from "@/components/docEditor/DocEditor"
+import { applyFormat, continueList, type FormatAction, type TextEdit } from "@/components/docEditor/docFormat"
 import { cn } from "@/lib/utils"
 import { getCurrentPlatform } from "@/utils/platformUtils"
 import { splitInlineCode } from "./walkthroughUtils"
@@ -52,14 +55,29 @@ export function NoteEditor({
 	onDone: () => void
 }) {
 	const textarea = useRef<HTMLTextAreaElement>(null)
-	// Grows with the text (from two lines) like the composer, then scrolls.
+	const pendingSelection = useRef<TextEdit>()
+	// Grows with the text (from two lines) like the composer, then scrolls; restores the selection after a format.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measure whenever the text changes
 	useLayoutEffect(() => {
 		const element = textarea.current
 		if (!element) return
 		element.style.height = "auto"
 		element.style.height = `${Math.min(element.scrollHeight, NOTE_MAX_HEIGHT)}px`
+		const selection = pendingSelection.current
+		if (selection) {
+			pendingSelection.current = undefined
+			element.focus()
+			element.setSelectionRange(selection.start, selection.end)
+		}
 	}, [value])
+	const apply = (edit: TextEdit) => {
+		pendingSelection.current = edit
+		onChange(edit.text)
+	}
+	const format = (action: FormatAction) => {
+		const element = textarea.current
+		if (element) apply(applyFormat(action, value, element.selectionStart, element.selectionEnd))
+	}
 	return (
 		<div
 			className={cn("mt-2 rounded-xs border border-solid border-input-border bg-input-background", className)}
@@ -74,6 +92,28 @@ export function NoteEditor({
 						event.preventDefault()
 						event.stopPropagation()
 						onDone()
+						return
+					}
+					const mod = getCurrentPlatform() === "mac" ? event.metaKey : event.ctrlKey
+					const shortcut = ({ b: "bold", e: "code", k: "link" } as Record<string, FormatAction>)[
+						event.key.toLowerCase()
+					]
+					if (mod && shortcut) {
+						event.preventDefault()
+						event.stopPropagation()
+						format(shortcut)
+						return
+					}
+					if (
+						event.key === "Enter" &&
+						!event.shiftKey &&
+						event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+					) {
+						const edit = continueList(value, event.currentTarget.selectionStart)
+						if (edit) {
+							event.preventDefault()
+							apply(edit)
+						}
 					}
 				}}
 				placeholder={placeholder}
@@ -98,6 +138,7 @@ export function NoteEditor({
 						</button>
 					))}
 				<span className="flex-1" />
+				<FormatBar compact onFormat={format} />
 				<span aria-hidden className="shrink-0 text-[10.5px] text-description">
 					{getCurrentPlatform() === "mac" ? "⌘↵" : "Ctrl+↵"}
 				</span>
@@ -116,17 +157,29 @@ export function NoteEditor({
 
 /** A saved note, shown as a quote on its stop or under Overall; click to edit. */
 export function NoteQuote({ label, note, onEdit }: { label: string; note: string; onEdit: () => void }) {
+	// A div acting as the button: the rendered note can hold links and code buttons of its own.
 	return (
-		<button
-			className="mt-2 block w-full cursor-pointer rounded-xs border-0 border-l-2 border-solid border-link bg-code px-2 py-1.5 text-left font-[inherit] text-xs text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
-			onClick={onEdit}
-			title="Edit"
-			type="button">
+		<div
+			className="mt-2 block w-full cursor-pointer rounded-xs border-0 border-l-2 border-solid border-link bg-code px-2 py-1.5 text-left text-xs text-foreground hover:bg-list-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+			onClick={(event) => {
+				if (!(event.target as HTMLElement).closest("a, button")) onEdit()
+			}}
+			onKeyDown={(event) => {
+				if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+					event.preventDefault()
+					onEdit()
+				}
+			}}
+			role="button"
+			tabIndex={0}
+			title="Edit">
 			<span className="mb-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-link">
 				<span aria-hidden className="codicon codicon-comment text-[11px]!" />
 				{label}
 			</span>
-			<span className="block whitespace-pre-wrap break-words">{note}</span>
-		</button>
+			<div className="break-words [&_.inline-markdown-block_p:last-child]:mb-0 [&_.inline-markdown-block_p]:my-0">
+				<MarkdownBlock compact markdown={note} />
+			</div>
+		</div>
 	)
 }

@@ -2,6 +2,7 @@ import { StringRequest } from "@shared/proto/cline/common"
 import { DeleteSkillRequest, RuleFileRequest } from "@shared/proto/index.cline"
 import { REMOTE_URI_SCHEME } from "@shared/remote-config/constants"
 import { EyeIcon, InfoIcon, PenIcon, Trash2Icon } from "lucide-react"
+import { docKindOfRuleType, useOpenDocFile } from "@/components/docEditor/DocFileEditor"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -40,6 +41,10 @@ const RuleRow: React.FC<{
 }> = ({ rulePath, enabled, isGlobal, toggleRule, ruleType, isRemote = false, alwaysEnabled = false, onDeleteSkill }) => {
 	const displayName = getDisplayNameFromPath(rulePath)
 	const skillDisplayName = getSkillDisplayNameFromSkillMdPath(rulePath)
+	// Inside the Rules panel, a local file opens in the doc editor; remote ones stay read-only tabs.
+	const openDocFile = useOpenDocFile()
+	const openInEditor =
+		openDocFile && !isRemote ? () => openDocFile({ path: rulePath, kind: docKindOfRuleType(ruleType), isGlobal }) : undefined
 
 	// For remote rules, the rulePath is already the display name
 	const finalDisplayName = isRemote ? rulePath : ruleType === "skill" ? skillDisplayName : displayName
@@ -107,6 +112,10 @@ const RuleRow: React.FC<{
 	}
 
 	const handleEditClick = () => {
+		if (openInEditor) {
+			openInEditor()
+			return
+		}
 		// For remote rules/workflows/skills, use the special remote:// URI format
 		const filePath = isRemote ? `${REMOTE_URI_SCHEME}${getRemoteUriType()}/${rulePath}` : rulePath
 		FileServiceClient.openFile(StringRequest.create({ value: filePath })).catch((err) =>
@@ -140,7 +149,17 @@ const RuleRow: React.FC<{
 			<div className="flex items-center px-2 py-4 rounded bg-text-block-background max-h-4">
 				<span className="flex-1 overflow-hidden break-all whitespace-normal flex items-center mr-1" title={rulePath}>
 					{getRuleTypeIcon() && <span className="mr-1.5">{getRuleTypeIcon()}</span>}
-					<span className="ph-no-capture">{finalDisplayName}</span>
+					{openInEditor ? (
+						<button
+							className="ph-no-capture cursor-pointer border-0 bg-transparent p-0 text-left font-[inherit] text-foreground hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+							onClick={openInEditor}
+							title={`Open ${finalDisplayName}`}
+							type="button">
+							{finalDisplayName}
+						</button>
+					) : (
+						<span className="ph-no-capture">{finalDisplayName}</span>
+					)}
 					{ruleType === "agents" && (
 						<Tooltip>
 							<TooltipTrigger asChild className="cursor-help">
