@@ -8,6 +8,11 @@ import ChatView from "./ChatView"
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown> }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
+// The thread panel has its own tests; here it only passes the chat through.
+vi.mock("@/components/threadPanel/ThreadPanelHost", () => ({
+	ThreadPanelHost: ({ children }: { children: ReactNode }) => children,
+	ThreadPanelLine: () => null,
+}))
 vi.mock("@/context/PlatformContext", () => ({
 	usePlatform: () => ({ showNavbar: false }),
 	useShowNavbar: () => false,

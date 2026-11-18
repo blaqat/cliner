@@ -83,7 +83,7 @@ export const formatTokensShort = (tokens: number) =>
 	tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}m` : tokens >= 1e3 ? `${Math.round(tokens / 1e3)}k` : String(tokens)
 
 /** Matches the SDK's auto-compaction trigger (COMPACTION_TRIGGER_RATIO). */
-const AUTO_COMPACT_PERCENT = 90
+export const AUTO_COMPACT_PERCENT = 90
 
 /** Theme chart colors for the cost rows, in order; subagents and earlier requests get their own. */
 const MODEL_COLORS = [

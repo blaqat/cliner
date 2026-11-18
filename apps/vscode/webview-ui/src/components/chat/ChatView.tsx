@@ -13,10 +13,13 @@ import { useNavigationHistory } from "@/components/navigation/NavigationHistoryC
 import { NewChatHero, NewChatListToggle } from "@/components/oneView/NewChatHero"
 import { OneViewLayout } from "@/components/oneView/OneViewLayout"
 import { SearchView } from "@/components/search/SearchView"
+import { OwnViewWrapUpCard, SideQuestionCard, SideThreadBanner } from "@/components/sideThreads/SideThreadCards"
+import { useWatchedSideThreads } from "@/components/sideThreads/useSideThread"
 import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/composerTaskGroup"
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
 import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
+import { type ThreadPanelData, ThreadPanelHost, ThreadPanelLine } from "@/components/threadPanel/ThreadPanelHost"
 import WalkthroughView from "@/components/walkthrough/WalkthroughView"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
@@ -589,8 +592,51 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		/>
 	)
 
+	useWatchedSideThreads(currentTaskItem?.id)
+	const startSideThreadInComposer = useCallback(() => {
+		setInputValue("/side ")
+		setTimeout(() => textAreaRef.current?.focus(), 0)
+	}, [setInputValue, textAreaRef])
+	const panelTotalCost = apiMetrics?.totalCost
+	const panelData = useMemo<ThreadPanelData | undefined>(
+		() =>
+			task && !taskGroupView && !subagentView && currentTaskItem
+				? {
+						item: currentTaskItem,
+						messages,
+						usage: { totalCost: panelTotalCost, lastApiReqTotalTokens },
+						onNewSideThread: startSideThreadInComposer,
+						onOpenSubagentPreview: openSubagentDetails,
+					}
+				: undefined,
+		[
+			task,
+			taskGroupView,
+			subagentView,
+			currentTaskItem,
+			messages,
+			panelTotalCost,
+			lastApiReqTotalTokens,
+			startSideThreadInComposer,
+			openSubagentDetails,
+		],
+	)
+	const threadLines = task && !subagentView && !taskGroupView && (
+		<>
+			<SideThreadBanner />
+			<ThreadPanelLine data={panelData} />
+			<ThreadStrip />
+		</>
+	)
+
 	const composerControls = (
 		<>
+			{!subagentView && task && !taskGroupView && (
+				<>
+					<SideQuestionCard />
+					<OwnViewWrapUpCard />
+				</>
+			)}
 			{(!subagentView || subagentView.pendingDecision === "approval") && (
 				<ActionButtons
 					chatState={chatState}
@@ -648,68 +694,73 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						taskId={currentTaskItem.id}
 					/>
 				)}
-				{/* biome-ignore lint/a11y/noStaticElementInteractions: Esc in an empty new chat returns to the last thread */}
-				<div
-					className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", walkthroughOpen && "hidden")}
-					onKeyDown={returnOnEscape}>
-					{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
-					{/* Fixed slots (top, composer, spacer) so the composer never remounts between a new chat and a thread. */}
+				<ThreadPanelHost data={panelData} hidden={walkthroughOpen}>
+					{/* biome-ignore lint/a11y/noStaticElementInteractions: Esc in an empty new chat returns to the last thread */}
 					<div
 						className={cn(
-							"flex min-h-0 flex-1 flex-col",
-							isNewChat && !builderTarget ? "justify-end" : "overflow-hidden",
+							"relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+							walkthroughOpen && "hidden",
 						)}
-						data-testid={isNewChat ? "one-view-new-chat" : "one-view-content"}>
-						{builderTarget ? (
-							<AutomationBuilder
-								key={builderTarget.path ?? (builderTarget.describe ? "describe" : "new")}
-								target={builderTarget}
-							/>
-						) : isNewChat ? (
-							<>
-								<NewChatListToggle />
-								<NewChatHero />
-							</>
-						) : (
-							<>
-								{taskGroupView ? (
-									taskGroupView.page === "notebook" ? (
-										<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
-									) : (
-										<TaskGroupView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
-									)
-								) : subagentView && currentTaskItem ? (
-									<SubagentThreadHeader
-										item={currentTaskItem}
-										onOpenSubagentPreview={openSubagentDetails}
-										view={subagentView}
-									/>
-								) : (
-									task && (
-										<TaskSection
-											messageHandlers={messageHandlers}
+						onKeyDown={returnOnEscape}>
+						{showNavbar && <Navbar startNewTask={messageHandlers.startNewTask} />}
+						{/* Fixed slots (top, composer, spacer) so the composer never remounts between a new chat and a thread. */}
+						<div
+							className={cn(
+								"flex min-h-0 flex-1 flex-col",
+								isNewChat && !builderTarget ? "justify-end" : "overflow-hidden",
+							)}
+							data-testid={isNewChat ? "one-view-new-chat" : "one-view-content"}>
+							{builderTarget ? (
+								<AutomationBuilder
+									key={builderTarget.path ?? (builderTarget.describe ? "describe" : "new")}
+									target={builderTarget}
+								/>
+							) : isNewChat ? (
+								<>
+									<NewChatListToggle />
+									<NewChatHero />
+								</>
+							) : (
+								<>
+									{taskGroupView ? (
+										taskGroupView.page === "notebook" ? (
+											<NotebookView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+										) : (
+											<TaskGroupView key={taskGroupView.id} taskGroupId={taskGroupView.id} />
+										)
+									) : subagentView && currentTaskItem ? (
+										<SubagentThreadHeader
+											item={currentTaskItem}
 											onOpenSubagentPreview={openSubagentDetails}
-											onOpenTaskGroup={openTaskGroup}
-											task={task}
+											view={subagentView}
 										/>
-									)
-								)}
-								{task && !subagentView && !taskGroupView && <ThreadStrip />}
-								{messagesArea}
-							</>
-						)}
+									) : (
+										task && (
+											<TaskSection
+												messageHandlers={messageHandlers}
+												onOpenSubagentPreview={openSubagentDetails}
+												onOpenTaskGroup={openTaskGroup}
+												task={task}
+											/>
+										)
+									)}
+									{threadLines}
+									{messagesArea}
+								</>
+							)}
+						</div>
+						<footer
+							className={cn(
+								"flex shrink-0 flex-col bg-(--vscode-sidebar-background)",
+								isNewChat && "mx-auto w-full max-w-[680px]",
+								(taskGroupView?.page === "notebook" || builderTarget) && "hidden",
+							)}
+							data-testid="one-view-composer">
+							{composerControls}
+						</footer>
+						<div aria-hidden className={isNewChat && !builderTarget ? "min-h-0 flex-1" : "hidden"} />
 					</div>
-					<footer
-						className={cn(
-							"flex shrink-0 flex-col bg-(--vscode-sidebar-background)",
-							isNewChat && "mx-auto w-full max-w-[680px]",
-							(taskGroupView?.page === "notebook" || builderTarget) && "hidden",
-						)}
-						data-testid="one-view-composer">
-						{composerControls}
-					</footer>
-					<div aria-hidden className={isNewChat && !builderTarget ? "min-h-0 flex-1" : "hidden"} />
-				</div>
+				</ThreadPanelHost>
 			</OneViewLayout>
 		)
 	}
@@ -758,7 +809,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 						version={version}
 					/>
 				)}
-				{task && !subagentView && !taskGroupView && <ThreadStrip />}
+				{threadLines}
 				{messagesArea}
 			</div>
 			<footer

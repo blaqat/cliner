@@ -1823,6 +1823,10 @@ export class Controller {
 			clearInterval(this.remoteConfigTimer)
 			this.remoteConfigTimer = undefined
 		}
+		if (this.sideThreadPostTimer) {
+			clearTimeout(this.sideThreadPostTimer)
+			this.sideThreadPostTimer = undefined
+		}
 		await this.setRemoteConfigCoreIntegration(undefined)
 		this.isDisposed = true
 		await this.taskHistory.flushMetadataWrites()
@@ -2044,7 +2048,7 @@ export class Controller {
 			isFocused: () => this.task?.taskId === id,
 			onMessages: (updates) => {
 				// A side thread shown beside Main isn't focused: its rows reach the webview through state.
-				if (this.watchedSideThreads.has(id) && this.task?.taskId !== id) void this.postStateToWebview()
+				if (this.watchedSideThreads?.has(id) && this.task?.taskId !== id) this.scheduleSideThreadPost()
 				const line = updates
 					.map(messageLastLine)
 					.filter((line) => line !== undefined)
@@ -2648,6 +2652,17 @@ export class Controller {
 	/** Side threads the webview shows without focusing them; their own rows go out in state. */
 	private watchedSideThreads = new Set<string>()
 
+	private sideThreadPostTimer?: ReturnType<typeof setTimeout>
+
+	/** Streaming rows of a watched side thread reach the webview at most every 200ms (state posts carry Main's rows too). */
+	private scheduleSideThreadPost(): void {
+		if (this.sideThreadPostTimer) return
+		this.sideThreadPostTimer = setTimeout(() => {
+			this.sideThreadPostTimer = undefined
+			void this.postStateToWebview()
+		}, 200)
+	}
+
 	watchSideThreads(ids: string[]): void {
 		this.watchedSideThreads = new Set(ids.filter(Boolean))
 		void this.postStateToWebview()
@@ -2733,7 +2748,7 @@ export class Controller {
 	/** A side thread opened from a message is titled from that message until its first own message. */
 	private async titleSideThreadFromFirstMessage(threadId: string, prompt?: string): Promise<void> {
 		if (!prompt?.trim()) return
-		const item = await this.taskHistory.findHistoryItem(threadId)
+		const item = await this.taskHistory.findHistoryItem?.(threadId)
 		if (!item?.parentTaskId || item.isSubagent || item.title || item.lastUserMessageTs) return
 		const task = sideThreadTitle(prompt)
 		if (task !== item.task) await this.taskHistory.updateTaskHistoryItem({ ...item, task })
@@ -3559,7 +3574,8 @@ export class Controller {
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
 		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length)) {
-			await this.titleSideThreadFromFirstMessage(submittedTaskId, prompt)
+			// Optional-called: unit tests drive askResponse with partial controller stubs.
+			await this.titleSideThreadFromFirstMessage?.(submittedTaskId, prompt)
 			await this.taskHistory.markUserMessage(submittedTaskId, prompt)
 		}
 		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
@@ -5869,7 +5885,8 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				deletedOpenThread: this.deletedOpenThread,
-				sideThreadViews: this.watchedSideThreads.size ? await this.buildSideThreadViews() : undefined,
+				// Optional-called: unit tests build state from partial controller stubs.
+				sideThreadViews: this.watchedSideThreads?.size ? await this.buildSideThreadViews() : undefined,
 				taskHistory: processedTaskHistory,
 				taskHistoryVersion: reuse
 					? cached.version
