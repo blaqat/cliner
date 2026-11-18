@@ -32,8 +32,10 @@ import {
 } from "@cline/core"
 import { loadCloudModels } from "@cline/core/cloud"
 import { createSessionId, formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
+import { sendAutomationRunsEvent } from "@core/controller/automation/subscribeToAutomationRuns"
 import type { ApiConfiguration } from "@shared/api"
 import { type TaskApiSelection, taskApiSelectionsEqual } from "@shared/api-profiles"
+import { resolveAutomationModel } from "@shared/automation-models"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE, CLOUD_SESSION_MODE, isCloudSessionId } from "@shared/cloud/cloud-sessions"
@@ -130,6 +132,8 @@ import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
+import { AutomationsHost } from "./automations/automation-host"
+import type { StartThreadInput } from "./automations/automation-runner"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
@@ -139,6 +143,7 @@ import { createProviderCatalog } from "./model-catalog/catalog"
 import type { Disposable, ProviderCatalog, ProviderConfigChange, ProviderConfigStore } from "./model-catalog/contracts"
 import { parseProviderId } from "./model-catalog/provider-id"
 import { createProviderConfigStore } from "./model-catalog/store"
+import { readModelSettingsState } from "./model-settings/host-settings"
 import {
 	PROVIDER_FAILURE_ERROR_TYPE,
 	PROVIDER_FAILURE_PHASE,
@@ -533,6 +538,20 @@ export class Controller {
 				})
 			).env,
 	})
+	/**
+	 * Automations: recipes the user starts with `/name` in the composer. Each step's threads are normal
+	 * background threads in the run's task. Nothing here is reachable from an agent tool.
+	 */
+	readonly automations = new AutomationsHost({
+		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
+		getStorageDir: () => HostProvider.get().globalStorageFsPath,
+		findOrCreateTask: (ticket, title) => this.findOrCreateTicketTask(ticket, title),
+		createTask: (title, ticket) =>
+			this.createTaskGroup({ title, tags: ticket ? [{ kind: "ticket", value: ticket, source: "user" }] : [] }),
+		startThread: (input) => this.startAutomationThread(input),
+		stopThread: (threadId) => this.stopBackgroundThread(threadId),
+		onRunsChanged: (runs) => void sendAutomationRunsEvent(runs),
+	})
 	private readonly notebookStore = new NotebookStore()
 	private readonly notebookEditors: { dispose(): void }[] = []
 	private readonly historySearcher = new HistorySearcher()
@@ -708,6 +727,11 @@ export class Controller {
 		this.sessions = new SdkSessionLifecycle({
 			onStatusChange: (id, status) => {
 				if (this.isDisposed) return
+				this.automations.runner.threadStatusChanged(
+					id,
+					status,
+					() => this.taskSessions.get(id)?.task.messageStateHandler.getClineMessages() ?? [],
+				)
 				void this.taskHistory
 					.saveThreadStatus(id, status)
 					.catch((error) => Logger.warn("[SdkController] Failed to persist thread status", error))
@@ -3046,6 +3070,10 @@ export class Controller {
 			runInWorktree?: boolean
 			provenance?: ComposerProvenance
 			rethrowStartFailure?: boolean
+			mode?: Mode
+			apiSelection?: TaskApiSelection
+			/** A title chosen by the caller (an automation step): no title is generated. */
+			title?: string
 		},
 	): Promise<string | undefined> {
 		const cloudTarget = options?.repoUrl ? { repoUrl: options.repoUrl, branch: options.branch } : undefined
@@ -3075,9 +3103,10 @@ export class Controller {
 			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
 			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
 		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
+		if (taskId && options?.title?.trim()) await this.renameTask(taskId, options.title.trim())
 		// Thread titles run once per new thread (never for resumed ones) when
 		// the feature is enabled; failures are logged inside and never block.
-		if (taskId && !historyItem && prompt?.trim()) {
+		else if (taskId && !historyItem && prompt?.trim()) {
 			// Captured now, from what the new thread actually started with
 			// (composer profile/effort overrides and mode included).
 			const context = this.taskSessions?.get(taskId)
@@ -4541,6 +4570,62 @@ export class Controller {
 	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
 		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
+		await this.postStateToWebview()
+	}
+
+	// ---- Automations ----
+
+	/** The task tagged with this ticket (newest first), else a new task with that tag. */
+	private async findOrCreateTicketTask(ticket: string, title: string): Promise<string> {
+		const wanted = ticket.trim().toLowerCase()
+		const groups = await this.taskGroupStore.listGroupSummaries()
+		const found = groups.find((group) =>
+			group.tags.some((tag) => tag.kind === "ticket" && tag.value.trim().toLowerCase() === wanted),
+		)
+		if (found) return found.id
+		return this.createTaskGroup({ title: title || ticket, tags: [{ kind: "ticket", value: ticket, source: "user" }] })
+	}
+
+	/** One automation thread: a background thread in the run's task, on the step's model, level and mode. */
+	private async startAutomationThread(input: StartThreadInput): Promise<string> {
+		let apiSelection: TaskApiSelection | undefined
+		if (useModelSettings(this.stateManager)) {
+			const resolved = resolveAutomationModel(
+				await readModelSettingsState(this.stateManager),
+				input.model,
+				input.level,
+				input.mode,
+			)
+			if (!resolved.ok) throw new Error(resolved.reason)
+			apiSelection = { modelSelectionV1: { version: 1, ask: resolved.pick, act: resolved.pick } }
+		}
+		const taskId = await this.initTask(input.prompt, undefined, undefined, undefined, undefined, {
+			background: true,
+			taskGroupId: input.taskGroupId,
+			runInWorktree: input.worktree,
+			mode: input.mode === "ask" ? "plan" : "act",
+			apiSelection,
+			title: input.title,
+			rethrowStartFailure: true,
+		})
+		if (!taskId) throw new Error("The thread couldn't start. Check that you're signed in to your model provider.")
+		return taskId
+	}
+
+	/** Stops one thread's turn, whether or not it's the one on screen (an automation's Stop). */
+	async stopBackgroundThread(threadId: string): Promise<void> {
+		if (this.task?.taskId === threadId) return this.cancelTask()
+		const session = this.sessions.getSession(threadId)
+		if (!session) return
+		this.taskSessions.get(threadId)?.interactions.clearPending("Automation stopped")
+		this.sessions.cancelHeldSends(threadId)
+		try {
+			await session.sdkHost.abort(threadId)
+		} catch (error) {
+			Logger.debug(`[SdkController] Abort while stopping ${threadId}:`, error)
+		}
+		this.sessions.setRunning(false, threadId)
+		this.sessions.setStatus(threadId, "stopped")
 		await this.postStateToWebview()
 	}
 

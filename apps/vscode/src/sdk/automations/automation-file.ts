@@ -35,6 +35,8 @@ export type AutomationScope = "global" | "workspace"
 export interface ParsedAutomationFile {
 	/** Absent when the file is invalid. */
 	definition?: AutomationDefinition
+	/** What could be read even with problems: a model's draft opens in the builder this way. */
+	draft?: AutomationDefinition
 	/** Best effort even for invalid files, so the list can show them. */
 	name: string
 	description: string
@@ -215,7 +217,9 @@ export function parseAutomationFile(content: string, fallbackName: string): Pars
 		steps: parseSteps(body, errors),
 	}
 	errors.push(...formatIssues(validateAutomation(definition)))
-	return errors.length > 0 ? { name, description, errors } : { name, description, errors, definition }
+	return errors.length > 0
+		? { name, description, errors, draft: definition }
+		: { name, description, errors, definition, draft: definition }
 }
 
 export function formatIssues(issues: readonly AutomationIssue[]): string[] {

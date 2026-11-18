@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// Automations: recipes of steps (open a task, prompt threads, threads together,
+// ask you) that only the user starts, with `/name` in the composer. Definitions
+// and runs travel as JSON matching src/shared/automations.ts, so the builder,
+// the start form and the run block share one set of types with the host.
+service AutomationService {
+  // Lists automation files (workspace first) with their definitions and problems
+  rpc listAutomations(EmptyRequest) returns (AutomationList);
+  // Writes a definition as its readable file and trusts that version
+  rpc saveAutomation(SaveAutomationRequest) returns (AutomationList);
+  // Deletes an automation file
+  rpc deleteAutomation(StringRequest) returns (AutomationList);
+  // Trusts a file someone else changed, if it is still the version shown
+  rpc trustAutomation(TrustAutomationRequest) returns (AutomationList);
+  // The readable file for a definition (JSON in, Markdown out), for "View file"
+  rpc previewAutomationFile(StringRequest) returns (String);
+  // Asks a model to draft a definition from a description the user typed
+  rpc draftAutomation(StringRequest) returns (DraftAutomationResponse);
+  // Starts a run the user asked for in the composer
+  rpc startAutomationRun(StartAutomationRunRequest) returns (StartAutomationRunResponse);
+  // Stops a run; finished steps and their threads stay
+  rpc stopAutomationRun(StringRequest) returns (Empty);
+  // Answers a run's "Ask you" step
+  rpc answerAutomationCheckpoint(AnswerAutomationCheckpointRequest) returns (Empty);
+  // Streams every run (current and recent) whenever one changes
+  rpc subscribeToAutomationRuns(EmptyRequest) returns (stream AutomationRuns);
+}
+
+message AutomationInfo {
+  string name = 1;
+  string description = 2;
+  string path = 3;
+  // "global" | "workspace"
+  string scope = 4;
+  // Problems that keep it from running; empty when valid.
+  repeated string errors = 5;
+  // The file is the version the user saved or trusted.
+  bool trusted = 6;
+  string fingerprint = 7;
+  // AutomationDefinition as JSON; empty when the file is invalid.
+  string definition_json = 8;
+  // The file as it is on disk.
+  string content = 9;
+}
+
+message AutomationList {
+  repeated AutomationInfo automations = 1;
+  // Where saveAutomation wrote the file.
+  string saved_path = 2;
+  // "global" | "workspace" folders, for the empty state.
+  string global_dir = 3;
+  string workspace_dir = 4;
+}
+
+message SaveAutomationRequest {
+  Metadata metadata = 1;
+  string definition_json = 2;
+  string scope = 3;
+  // The file being edited, so a rename moves it.
+  optional string previous_path = 4;
+}
+
+message TrustAutomationRequest {
+  Metadata metadata = 1;
+  string path = 2;
+  string fingerprint = 3;
+}
+
+message DraftAutomationResponse {
+  // AutomationDefinition as JSON (possibly with problems the builder shows).
+  string definition_json = 1;
+  // What the model couldn't tell from the description.
+  repeated string guesses = 2;
+  string model = 3;
+}
+
+message StartAutomationRunRequest {
+  Metadata metadata = 1;
+  string name = 2;
+  map<string, string> values = 3;
+  // The task the composer is in; empty lets the run find or make one.
+  optional string task_group_id = 4;
+  // The version the start form showed.
+  string fingerprint = 5;
+}
+
+message StartAutomationRunResponse {
+  string run_id = 1;
+  string task_group_id = 2;
+}
+
+message AnswerAutomationCheckpointRequest {
+  Metadata metadata = 1;
+  string run_id = 2;
+  string step_id = 3;
+  string choice = 4;
+}
+
+message AutomationRuns {
+  // AutomationRun[] as JSON.
+  string runs_json = 1;
+}

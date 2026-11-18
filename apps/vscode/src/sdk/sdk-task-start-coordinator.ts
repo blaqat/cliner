@@ -124,6 +124,10 @@ export class SdkTaskStartCoordinator {
 			provenance?: ComposerProvenance
 			/** The caller's composer takes the draft back, so it has to hear that the start failed. */
 			rethrowStartFailure?: boolean
+			/** Ask/Act for this thread only (an automation step); the global mode is left alone. */
+			mode?: Mode
+			/** The model and level for this thread only (an automation step), instead of the draft or defaults. */
+			apiSelection?: TaskApiSelection
 		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
@@ -141,11 +145,13 @@ export class SdkTaskStartCoordinator {
 
 			return await this.options.sessions.trackSessionStart(async () => {
 				let cwd = await this.options.getWorkspaceRoot()
-				const mode = this.getCurrentMode()
+				const mode = options?.mode ?? this.getCurrentMode()
 				let apiSelection =
+					options?.apiSelection ??
 					(!useModelSettings(this.options.stateManager) || !background
 						? this.options.consumeDraftApiSelection?.()
-						: undefined) ?? captureTaskApiSelection(this.options.stateManager)
+						: undefined) ??
+					captureTaskApiSelection(this.options.stateManager)
 				Logger.log(`[SdkController] Building session config: mode=${mode}, cwd=${cwd}`)
 				const config = await this.options.sessionConfigBuilder.build(
 					{

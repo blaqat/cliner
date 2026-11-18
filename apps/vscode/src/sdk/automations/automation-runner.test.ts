@@ -1,0 +1,230 @@
+import type { AutomationRun } from "@shared/automations"
+import type { ClineMessage } from "@shared/ExtensionMessage"
+import { describe, expect, it } from "vitest"
+import { ticketToPr } from "./automation-fixtures"
+import { AutomationRunner, classifyTurnEnd, type StartThreadInput } from "./automation-runner"
+
+const say = (sayKind: string, text: string): ClineMessage => ({ ts: 1, type: "say", say: sayKind as never, text })
+const ask = (askKind: string, text: string): ClineMessage => ({ ts: 1, type: "ask", ask: askKind as never, text })
+
+/** Lets the runner's awaits settle. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+function harness(definition = ticketToPr()) {
+	const started: (StartThreadInput & { threadId: string })[] = []
+	const stopped: string[] = []
+	const tasks: { ticket?: string; title: string }[] = []
+	let latest: readonly AutomationRun[] = []
+	let saved: readonly AutomationRun[] = []
+	let n = 0
+	const runner = new AutomationRunner({
+		findOrCreateTask: async (ticket, title) => {
+			tasks.push({ ticket, title })
+			return `group-${ticket}`
+		},
+		createTask: async (title, ticket) => {
+			tasks.push({ title, ticket })
+			return "group-new"
+		},
+		startThread: async (input) => {
+			const threadId = `thread-${++n}`
+			started.push({ ...input, threadId })
+			return threadId
+		},
+		stopThread: async (id) => {
+			stopped.push(id)
+		},
+		onChange: (runs) => {
+			latest = runs
+		},
+		save: async (runs) => {
+			saved = runs
+		},
+		newId: () => "run-1",
+		now: () => 1000,
+	})
+	/** The thread's turn ended with this reply. */
+	const finish = async (threadId: string, reply: string) => {
+		runner.threadStatusChanged(threadId, "done", () => [say("completion_result", reply)])
+		await flush()
+	}
+	return {
+		runner,
+		definition,
+		started,
+		stopped,
+		tasks,
+		finish,
+		run: () => latest[latest.length - 1],
+		saved: () => saved,
+	}
+}
+
+describe("classifyTurnEnd", () => {
+	it("uses the last reply: a completion, an Ask-mode response or plain text", () => {
+		expect(classifyTurnEnd([say("text", "early"), say("completion_result", "Done.")])).toEqual({
+			kind: "done",
+			reply: "Done.",
+		})
+		expect(classifyTurnEnd([ask("plan_mode_respond", JSON.stringify({ response: "The plan" }))])).toEqual({
+			kind: "done",
+			reply: "The plan",
+		})
+		expect(classifyTurnEnd([say("text", "Answer"), say("api_req_started", "{}")])).toEqual({ kind: "done", reply: "Answer" })
+	})
+
+	it("treats a question for the user as waiting", () => {
+		expect(classifyTurnEnd([say("text", "Hm"), ask("followup", JSON.stringify({ question: "Which?" }))])).toEqual({
+			kind: "waiting",
+		})
+	})
+})
+
+describe("AutomationRunner", () => {
+	it("runs Ticket to PR: task, thread, two threads together, a pick, then a worktree build", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-142" })
+		await flush()
+		expect(h.tasks).toEqual([{ ticket: "PROJ-142", title: "PROJ-142" }])
+		expect(h.started).toHaveLength(1)
+		expect(h.started[0]).toMatchObject({
+			taskGroupId: "group-PROJ-142",
+			title: "Research PROJ-142",
+			prompt: "Read PROJ-142 and the code it touches.",
+			model: "Sonnet 5.5",
+			level: "medium",
+			mode: "ask",
+			worktree: false,
+		})
+
+		await h.finish("thread-1", "502s come from the gateway.")
+		// Both plans start at once; Plan A gets the group's prompt, Plan B its own.
+		expect(h.started.map((thread) => thread.title)).toEqual(["Research PROJ-142", "Plan A", "Plan B"])
+		expect(h.started[1].prompt).toBe("Plan a fix for PROJ-142 using:\n\n502s come from the gateway.")
+		expect(h.started[2].prompt).toBe("## Different\nPlan it differently: 502s come from the gateway.")
+		expect(h.run().steps[2].threads.map((thread) => thread.status)).toEqual(["running", "running"])
+
+		await h.finish("thread-3", "Plan B: jitter")
+		expect(h.run().steps[2].status).toBe("running")
+		await h.finish("thread-2", "Plan A: retry 5 times")
+
+		// The checkpoint offers the group's threads and waits.
+		expect(h.run().status).toBe("waiting")
+		expect(h.run().steps[3]).toMatchObject({ status: "waiting", choices: ["Plan A", "Plan B"] })
+		expect(() => h.runner.answer("run-1", "pick", "Plan C")).toThrow("Pick one of")
+		h.runner.answer("run-1", "pick", "Plan A")
+		await flush()
+
+		// Build gets the picked thread's reply and the base default.
+		expect(h.started[3]).toMatchObject({
+			title: "Build PROJ-142",
+			prompt: "Build this plan from main:\n\nPlan A: retry 5 times",
+			mode: "act",
+			worktree: true,
+			model: "",
+		})
+		await h.finish("thread-4", "Built it.")
+		expect(h.run().status).toBe("done")
+		expect(h.run().steps.map((step) => step.status)).toEqual(["done", "done", "done", "done", "done"])
+		expect(h.run().steps[4].threads[0]).toMatchObject({ threadId: "thread-4", reply: "Built it." })
+		expect(h.saved().at(-1)?.status).toBe("done")
+	})
+
+	it("makes a task named after the automation when it has no task step and none was given", async () => {
+		const definition = ticketToPr()
+		definition.steps = definition.steps.slice(1, 2)
+		const h = harness(definition)
+		await h.runner.start(definition, { ticket: "PROJ-7" })
+		expect(h.tasks).toEqual([{ title: "Ticket to PR · PROJ-7", ticket: "PROJ-7" }])
+		expect(h.run().taskGroupId).toBe("group-new")
+
+		const inTask = harness(definition)
+		await inTask.runner.start(definition, { ticket: "PROJ-7" }, { taskGroupId: "mine" })
+		await flush()
+		expect(inTask.tasks).toEqual([])
+		expect(inTask.started[0].taskGroupId).toBe("mine")
+	})
+
+	it("refuses to start without required arguments", async () => {
+		const h = harness()
+		await expect(h.runner.start(h.definition, {})).rejects.toThrow("Needs ticket")
+	})
+
+	it("waits while a thread asks the user something, then goes on", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-1" })
+		await flush()
+		h.runner.threadStatusChanged("thread-1", "done", () => [ask("followup", JSON.stringify({ question: "Which repo?" }))])
+		expect(h.run().steps[1].threads[0].status).toBe("waiting")
+		expect(h.started).toHaveLength(1)
+		await h.finish("thread-1", "Found it")
+		expect(h.started).toHaveLength(3)
+	})
+
+	it("fails the run when a thread errors or can't start, and skips the rest", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-1" })
+		await flush()
+		h.runner.threadStatusChanged("thread-1", "error", () => [])
+		await flush()
+		expect(h.run().status).toBe("failed")
+		expect(h.run().error).toContain("Research PROJ-1")
+		expect(h.run().steps.map((step) => step.status)).toEqual(["done", "failed", "skipped", "skipped", "skipped"])
+	})
+
+	it("stops running threads and keeps what finished", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-1" })
+		await flush()
+		await h.finish("thread-1", "Findings")
+		await h.runner.stop("run-1")
+		await flush()
+		expect(h.stopped.sort()).toEqual(["thread-2", "thread-3"])
+		expect(h.run().status).toBe("stopped")
+		expect(h.run().error).toBeUndefined()
+		expect(h.run().steps.map((step) => step.status)).toEqual(["done", "done", "stopped", "skipped", "skipped"])
+		expect(h.started).toHaveLength(3)
+	})
+
+	it("stops at a checkpoint without starting anything else", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-1" })
+		await flush()
+		await h.finish("thread-1", "Findings")
+		await h.finish("thread-2", "A")
+		await h.finish("thread-3", "B")
+		await h.runner.stop("run-1")
+		await flush()
+		expect(h.run().status).toBe("stopped")
+		expect(h.run().steps[3].status).toBe("stopped")
+		expect(h.started).toHaveLength(3)
+	})
+
+	it("shows a run that was going when VS Code closed as stopped", async () => {
+		const running: AutomationRun = {
+			id: "old",
+			automation: "x",
+			title: "X",
+			values: {},
+			taskGroupId: "g",
+			status: "running",
+			startedAt: 1,
+			steps: [
+				{ id: "a", kind: "thread", title: "A", status: "running", threads: [] },
+				{ id: "b", kind: "thread", title: "B", status: "pending", threads: [] },
+			],
+		}
+		const runner = new AutomationRunner({
+			findOrCreateTask: async () => "",
+			createTask: async () => "",
+			startThread: async () => "",
+			stopThread: async () => {},
+			onChange: () => {},
+			load: async () => [running],
+			now: () => 5,
+		})
+		await runner.load()
+		expect(runner.list()[0]).toMatchObject({ status: "stopped", endedAt: 5 })
+		expect(runner.list()[0].steps.map((step) => step.status)).toEqual(["stopped", "skipped"])
+	})
+})
