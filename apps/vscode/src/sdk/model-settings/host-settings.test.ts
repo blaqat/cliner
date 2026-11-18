@@ -17,6 +17,7 @@ import {
 	catalogModelValues,
 	catalogReasoningLevels,
 	managedModelValues,
+	openAiCatalog,
 	readModelSettingsState,
 	rememberDetectedModelMetadata,
 	resolveEffectiveConfiguredPick,
@@ -746,6 +747,79 @@ describe("catalog levels and fix targets", () => {
 		})
 		const state = await readModelSettingsState(f.state as never)
 		expect(state.availability.m.target).toEqual({ page: "models", connectionId: "c" })
+	})
+})
+
+describe("which model a deployment is", () => {
+	const deployment = (catalogModelId?: string): ModelRow => ({
+		id: "m",
+		connectionId: "c",
+		upstreamId: "gpt-41-prod",
+		name: "",
+		kind: "chat",
+		overrides: {},
+		providerOptions: {},
+		...(catalogModelId ? { catalogModelId } : {}),
+	})
+	const azure = () => ({ ...createCompatibleConnection("c"), baseUrl: "https://contoso.openai.azure.com/openai/v1" })
+
+	it("knows nothing about a deployment name on its own, as before", () => {
+		expect(catalogModelValues(deployment(), azure())).toEqual({})
+	})
+	it("fills prices, limits, tools and images, and a no for reasoning, from a non-reasoning model", () => {
+		expect(catalogModelValues(deployment("gpt-4.1"), azure())).toEqual({
+			inputPrice: 2,
+			outputPrice: 8,
+			cacheReadPrice: 0.5,
+			cacheWritePrice: 0,
+			contextWindow: 1047576,
+			maxOutputTokens: 32768,
+			maxInputTokens: 1047576,
+			reasoning: "no",
+			tools: "yes",
+			images: "yes",
+			promptCache: "yes",
+		})
+	})
+	it("fills the levels a reasoning model offers", () => {
+		const values = catalogModelValues(deployment("gpt-5"), azure())
+		expect(values.reasoning).toBe("yes")
+		expect(values.levels?.map((level) => level.id)).toEqual(["default", "minimal", "low", "medium", "high"])
+		expect(values.inputPrice).toBeGreaterThan(0)
+		expect(values.contextWindow).toBeGreaterThan(0)
+	})
+	it("lists OpenAI's chat models to pick from, not its image models", () => {
+		const ids = openAiCatalog().map((m) => m.id)
+		expect(ids).toContain("gpt-4.1")
+		expect(ids.some((id) => id.includes("image"))).toBe(false)
+	})
+	it("reaches the page's effective values, and the row's own values still win", async () => {
+		const fx = fixture()
+		await fx.call("saveConnection", { expectedRevision: 0, connection: azure() })
+		await fx.call("saveConfiguredModels", {
+			expectedRevision: 1,
+			models: [{ ...deployment("gpt-4.1"), overrides: { contextWindow: 128000 } }],
+		})
+		const state = await readModelSettingsState(fx.state as never)
+		expect(state.openAiCatalog?.some((m) => m.id === "gpt-4.1" && m.name === "GPT-4.1")).toBe(true)
+		const effective = state.effective.m
+		expect(effective.inputPrice).toEqual({ value: 2, source: "metadata" })
+		expect(effective.outputPrice).toEqual({ value: 8, source: "metadata" })
+		expect(effective.maxOutputTokens).toEqual({ value: 32768, source: "metadata" })
+		expect(effective.tools).toEqual({ value: "yes", source: "metadata" })
+		expect(effective.images).toEqual({ value: "yes", source: "metadata" })
+		expect(effective.reasoning).toEqual({ value: "no", source: "metadata" })
+		expect(effective.contextWindow).toEqual({ value: 128000, source: "model" })
+	})
+	it("is a compatible connection's question only", () => {
+		const native = {
+			...createCompatibleConnection("c"),
+			kind: "provider" as const,
+			providerId: "anthropic",
+			options: {},
+			secretRefs: {},
+		}
+		expect(catalogModelValues(deployment("gpt-4.1"), native)).toEqual({})
 	})
 })
 

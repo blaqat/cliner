@@ -575,6 +575,46 @@ describe("subagent levels on the wire", () => {
 	})
 })
 
+describe("a deployment that says which model it is", () => {
+	const build = async (catalogModelId?: string) => {
+		const settings = settingsFor(
+			{ ...compatibleConnection({ kind: "none" }), baseUrl: "https://contoso.openai.azure.com/openai/v1" } as Connection,
+			"gpt-41-prod",
+			{ reasoning: undefined, levels: undefined },
+		)
+		settings.models[0].overrides = {}
+		if (catalogModelId) settings.models[0].catalogModelId = catalogModelId
+		// The policy view is the one threads run with: it adds catalog facts as metadata.
+		const state = { getRemoteConfigSettings: () => ({}), getGlobalStateKey: () => settings }
+		return configuredProviderConfig(
+			settings,
+			{ modelId: "row", levelId: "default" },
+			{ secrets: noSecrets(), environment: {} },
+			{
+				state: state as never,
+			},
+		)
+	}
+	it("sends tools and images, and prices the turn, from its catalog model", async () => {
+		const config = await build("gpt-4.1")
+		const known = config.knownModels![config.modelId!]
+		expect(config.modelId).toBe("gpt-41-prod")
+		expect(known.pricing).toMatchObject({ input: 2, output: 8, cacheRead: 0.5 })
+		expect(known.contextWindow).toBe(1047576)
+		expect(known.maxTokens).toBe(32768)
+		const body = await captureWithTools(config)
+		expect(body.model).toBe("gpt-41-prod")
+		expect(body.tools?.length).toBeGreaterThan(0)
+		expect(JSON.stringify(body.messages)).toContain("image_url")
+	})
+	it("without one, starts careful, as before", async () => {
+		const config = await build()
+		const body = await captureWithTools(config)
+		expect(body.tools).toBeUndefined()
+		expect(JSON.stringify(body.messages)).not.toContain("image_url")
+	})
+})
+
 describe("Tools and Images answers reach the request", () => {
 	const build = (overrides: Record<string, unknown>) =>
 		configuredProviderConfig(

@@ -19,4 +19,6 @@ export type ModelSettingsState = {
 	planning: Record<string, { contextWindowKnown: boolean; planningContextWindow: number }>
 	managed: string[]
 	migration: ModelSettingsMigrationStatus
+	/** OpenAI's chat models, for "Which model is it?" on a compatible connection's model. */
+	openAiCatalog?: Array<{ id: string; name: string }>
 }

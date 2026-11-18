@@ -128,6 +128,7 @@ async function buildModelSettingsState(state: StateManager): Promise<ModelSettin
 		availability,
 		managed: Object.keys(state.getRemoteConfigSettings()),
 		migration: state.getModelSettingsMigrationStatus(),
+		openAiCatalog: openAiCatalog(),
 	}
 }
 
@@ -508,15 +509,47 @@ export function catalogReasoningLevels(model: {
 	]
 }
 
-/** Maintained catalog facts remain metadata, never user overrides. */
+/** OpenAI's chat models, which a compatible connection's model can say it runs. */
+export function openAiCatalog(): Array<{ id: string; name: string }> {
+	return createGateway()
+		.listModels("openai-native")
+		.filter((m) => !m.operation || m.operation === "language")
+		.map((m) => ({ id: m.id, name: m.name ?? m.id }))
+}
+
+const price = (pricing: unknown, key: string) => {
+	const value = pricing && typeof pricing === "object" ? (pricing as Record<string, unknown>)[key] : undefined
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+/**
+ * Maintained catalog facts remain metadata, never user overrides. A compatible connection's model that
+ * names the OpenAI model it runs gets that model's facts, its prices too, and a no for what it can't do.
+ */
 export function catalogModelValues(row: ModelRow, connection: ModelSettings["connections"][number]): Partial<ModelValues> {
-	const providerId = connection.kind === "provider" ? connection.providerId : "openai-compatible"
+	const linked = connection.kind === "openai-compatible" ? row.catalogModelId : undefined
+	const providerId = connection.kind === "provider" ? connection.providerId : linked ? "openai-native" : "openai-compatible"
 	const model = createGateway()
 		.listModels(providerId)
-		.find((m) => m.id === row.upstreamId)
+		.find((m) => m.id === (linked ?? row.upstreamId))
 	if (!model) return {}
 	const levels = catalogReasoningLevels(model)
+	const pricing = linked ? model.metadata?.pricing : undefined
+	const prices = Object.fromEntries(
+		(
+			[
+				["inputPrice", "input"],
+				["outputPrice", "output"],
+				["cacheReadPrice", "cacheRead"],
+				["cacheWritePrice", "cacheWrite"],
+			] as const
+		).flatMap(([key, field]) => {
+			const value = price(pricing, field)
+			return value === undefined ? [] : [[key, value]]
+		}),
+	)
 	return {
+		...(linked ? { reasoning: "no" as const, tools: "no" as const, images: "no" as const, ...prices } : {}),
 		...(levels ? { levels } : {}),
 		...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
 		...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
