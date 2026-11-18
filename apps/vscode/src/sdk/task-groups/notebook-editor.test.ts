@@ -90,7 +90,7 @@ it("keeps a stale editor save as a draft instead of losing it", async () => {
 	expect((await store.readPending(groupId, "thread"))?.[0].content).toBe("new agent draft")
 	expect((await store.readDrafts(groupId, "thread")).plan).toMatchObject({ content: "stale text" })
 	const review = await store.reviewDiffs((await store.readPendingReview(groupId, "thread"))!, "thread")
-	expect(review.changes[0].draft?.reason).toContain("newest review card")
+	expect(review.changes[0].draft?.reason).toContain("agent changed this note")
 	// Closing the tab removes only the temp file; the draft survives.
 	editor.close?.(document)
 	await vi.waitFor(async () => expect(fs.access(document.uri.fsPath)).rejects.toThrow())

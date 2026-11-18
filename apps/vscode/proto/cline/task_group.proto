@@ -92,6 +92,7 @@ message NotebookNoteMeta {
   int64 updated_at = 5;
   optional NotebookNoteUpdatedBy updated_by = 6;
   int32 readers = 7; // distinct threads that read it (from the activity log)
+  int32 tokens = 1300; // rough token count of the body
 }
 
 // A thread row in a task group's timeline, newest first. read/wrote are the
@@ -189,6 +190,8 @@ message DiscardNotebookChangesRequest {
   string thread_id = 2;
   string revision = 3;
   string task_group_id = 4;
+  // Drops only these staged notes; empty drops every staged change.
+  repeated string slugs = 1300;
 }
 
 message SearchHistoryRequest {
@@ -219,13 +222,18 @@ message NotebookActionRequest {
   Metadata metadata = 1;
   string task_group_id = 2;
   string slug = 3;
-  string action = 4; // history | restore | edit | restore_pending | retry_draft | reload_draft | discard_draft | convert_preview | convert | open_conversion
+  string action = 4; // history | restore | edit | save | save_pending | delete | restore_pending | retry_draft | reload_draft | discard_draft | convert_preview | convert | open_conversion
   string thread_id = 5;
   string revision = 6;
   string version_id = 7;
   string kind = 8; // rule | skill | workflow
   bool is_global = 9;
   string description = 10;
+  // save / save_pending: the edited body, the body the editor opened with
+  // (a changed note never gets overwritten), and a new name for save.
+  string content = 1300;
+  optional string base_content = 1301;
+  string name = 1302;
 }
 
 message NotebookActionResponse {

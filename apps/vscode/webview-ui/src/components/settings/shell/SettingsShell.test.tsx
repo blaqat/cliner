@@ -34,6 +34,7 @@ vi.mock("@/services/grpc-client", () => ({
 		setSubagentPolicy: mocks.setSubagentPolicy,
 	},
 	StateServiceClient: { updateTerminalConnectionTimeout: vi.fn(), resetState: vi.fn() },
+	TaskGroupServiceClient: { getTaskGroup: vi.fn(async () => ({ notes: [], threads: [] })) },
 }))
 vi.mock("../sections/DebugSection", () => ({ default: () => <div>debug panel</div> }))
 vi.mock("../sections/RemoteConfigSection", () => ({ RemoteConfigSection: () => <div>remote config panel</div> }))

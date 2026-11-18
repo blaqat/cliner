@@ -63,14 +63,18 @@ import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
 import type { Settings } from "@shared/storage/state-keys"
 import { type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
-import type {
-	HistorySearchHit,
-	HistorySearchThread,
-	NotebookChange,
-	NotebookNoteMeta,
-	TaskGroupSummary,
-	TaskGroupThreadRow,
-	TaskTag,
+import {
+	ABOUT_YOU_ID,
+	ABOUT_YOU_TOKEN_CAP,
+	estimateTokens,
+	type HistorySearchHit,
+	type HistorySearchThread,
+	type NotebookChange,
+	type NotebookChangesPayload,
+	type NotebookNoteMeta,
+	type TaskGroupSummary,
+	type TaskGroupThreadRow,
+	type TaskTag,
 } from "@shared/task-groups"
 import type { ThreadWorktreeSettings, WorktreeActionResult } from "@shared/thread-worktrees"
 import { extractTicketTags } from "@shared/ticket-tags"
@@ -189,6 +193,7 @@ import { sideThreadNoteText } from "./side-thread-notes"
 import { resolveMainThread, type SideThreadContext } from "./side-thread-tools"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
+import { type AboutYouContext, aboutYouPrompt, aboutYouTokens } from "./task-groups/about-you"
 import { CurrentBranchWatcher } from "./task-groups/current-branch-watcher"
 import {
 	asideDescendantIds,
@@ -743,6 +748,7 @@ export class Controller {
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveAboutYou: (input) => this.resolveAboutYou(input.config.sessionId, input.sessionMetadata),
 			resolveSideThread: (input) => this.resolveSideThreadContext(input),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			resolveScripts: (input) => this.scripts.toolContext(input.config.cwd),
@@ -1720,6 +1726,7 @@ export class Controller {
 	private createRemoteConfigAwareSessionHost(): Promise<VscodeSessionHost> {
 		return VscodeSessionHost.create({
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveAboutYou: (input) => this.resolveAboutYou(input.config.sessionId, input.sessionMetadata),
 			resolveSideThread: (input) => this.resolveSideThreadContext(input),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
 			mcpHub: this.mcpHub,
@@ -2136,7 +2143,7 @@ export class Controller {
 				watchdog.observe(event)
 				if (hasActiveTurn()) watchdog.activity()
 			},
-			onTurnComplete: () => this.emitNotebookChanges(id),
+			onTurnComplete: () => this.emitNotebookChanges(id, { newTurn: true }),
 			sessionId: id,
 			messageTranslatorState: translator,
 			sessions: this.sessions,
@@ -4649,6 +4656,12 @@ export class Controller {
 	async getTaskGroup(
 		id: string,
 	): Promise<{ group: TaskGroupSummary; notes: NotebookNoteMeta[]; threads: TaskGroupThreadRow[] } | undefined> {
+		if (id === ABOUT_YOU_ID) {
+			// About you has no group.json and no threads: it's the same notebook UI, for every thread.
+			const notes = await this.notebookStore.listNotes(ABOUT_YOU_ID)
+			const group = { id, title: "About you", tags: [], createdAt: 0, updatedAt: 0, noteCount: notes.length }
+			return { group, notes, threads: [] }
+		}
 		const [group, notes, activity] = await Promise.all([
 			this.taskGroupStore.getGroup(id),
 			this.notebookStore.listNotes(id),
@@ -4750,7 +4763,11 @@ export class Controller {
 
 	/** Creates a note file in the group's notebook; returns its absolute path. */
 	async createNote(taskGroupId: string, name: string, description: string): Promise<string> {
-		if (!(await this.taskGroupStore.getGroup(taskGroupId))) {
+		if (taskGroupId === ABOUT_YOU_ID) {
+			const used = aboutYouTokens(await this.notebookStore.listNotes(ABOUT_YOU_ID))
+			if (used >= ABOUT_YOU_TOKEN_CAP)
+				throw new Error(`About you is full (${used} of ${ABOUT_YOU_TOKEN_CAP} tokens). Shorten or delete a note first.`)
+		} else if (!(await this.taskGroupStore.getGroup(taskGroupId))) {
 			throw new Error(`Task group not found: ${taskGroupId}`)
 		}
 		const note = await this.notebookStore.createNote(taskGroupId, { name, description })
@@ -4770,6 +4787,39 @@ export class Controller {
 
 	async notebookAction(input: NotebookActionRequest): Promise<unknown> {
 		const { taskGroupId: groupId, slug, threadId, revision } = input
+		if (input.action === "save") {
+			// The doc editor's save of a saved note (task notes and About you).
+			if (groupId === ABOUT_YOU_ID) await this.checkAboutYouCap(slug, input.content)
+			await this.notebookStore.saveNote(groupId, slug, {
+				name: input.name || undefined,
+				description: input.description,
+				content: input.content,
+				baseContent: input.baseContent,
+			})
+			this.taskGroupsSummaryCache = undefined
+			await this.postStateToWebview()
+			return {}
+		}
+		if (input.action === "delete") {
+			await this.notebookStore.deleteNote(groupId, slug)
+			this.taskGroupsSummaryCache = undefined
+			await this.postStateToWebview()
+			return {}
+		}
+		if (input.action === "save_pending") {
+			// The review row's inline editor. Conflicts never lose text: it becomes a draft on the row.
+			try {
+				await this.notebookStore.editPending(groupId, threadId, revision, slug, input.content, {
+					baseContent: input.baseContent,
+				})
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error)
+				await this.notebookStore.saveRejectedEdit(groupId, threadId, slug, input.content, reason.toLowerCase())
+			}
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			return {}
+		}
 		if (input.action === "edit" || input.action === "reload_draft") {
 			// Reload reopens the user's rejected text against the card's current revision.
 			const draft =
@@ -4869,11 +4919,11 @@ export class Controller {
 	): Promise<void> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
 		try {
+			if (taskGroupId === ABOUT_YOU_ID) await this.checkAboutYouCapForKeep(threadId, items)
 			const applied = await this.notebookStore.applyPendingChanges(taskGroupId, threadId, revision, items, {
 				threadTitle: item?.title ?? item?.task ?? "",
 			})
-			await this.finishNotebookChanges(threadId, taskGroupId, revision, "applied", applied)
-			await this.emitNotebookChanges(threadId)
+			await this.settleNotebookReview(threadId, taskGroupId, { kept: applied })
 		} catch (error) {
 			await this.emitNotebookChanges(threadId)
 			await this.postStateToWebview()
@@ -4883,18 +4933,45 @@ export class Controller {
 		await this.postStateToWebview()
 	}
 
-	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string): Promise<void> {
-		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
+	/** Drops the staged changes for `slugs`, or every staged change for the group when empty. */
+	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string, slugs?: string[]): Promise<void> {
 		try {
-			await this.notebookStore.discardPendingChanges(taskGroupId, threadId, revision)
+			const dropped = await this.notebookStore.discardPendingChanges(
+				taskGroupId,
+				threadId,
+				revision,
+				slugs?.length ? slugs : undefined,
+			)
+			await this.settleNotebookReview(threadId, taskGroupId, { dropped })
 		} catch (error) {
 			await this.emitNotebookChanges(threadId)
 			await this.postStateToWebview()
 			throw error
 		}
-		if (pending) await this.finishNotebookChanges(threadId, taskGroupId, revision, "discarded", pending.changes)
-		await this.emitNotebookChanges(threadId)
 		await this.postStateToWebview()
+	}
+
+	/** About you stays under its cap: a user save that would push it past is refused with the numbers. */
+	private async checkAboutYouCap(slug: string, content: string): Promise<void> {
+		const notes = await this.notebookStore.listNotes(ABOUT_YOU_ID)
+		const before = aboutYouTokens(notes)
+		const after = aboutYouTokens(notes.filter((note) => note.slug !== slug)) + estimateTokens(content)
+		if (after > ABOUT_YOU_TOKEN_CAP && after > before)
+			throw new Error(`About you would be ${after} of ${ABOUT_YOU_TOKEN_CAP} tokens. Shorten this or another note to fit.`)
+	}
+
+	private async checkAboutYouCapForKeep(threadId: string, items: { slug: string; include: boolean }[]): Promise<void> {
+		const pending = (await this.notebookStore.readPending(ABOUT_YOU_ID, threadId)) ?? []
+		const kept = pending.filter((change) => items.some((item) => item.include && item.slug === change.slug))
+		const notes = await this.notebookStore.listNotes(ABOUT_YOU_ID)
+		const before = aboutYouTokens(notes)
+		const after =
+			aboutYouTokens(notes.filter((note) => !kept.some((change) => change.slug === note.slug))) +
+			kept.filter((change) => change.op !== "delete").reduce((sum, change) => sum + estimateTokens(change.content ?? ""), 0)
+		if (after > ABOUT_YOU_TOKEN_CAP && after > before)
+			throw new Error(
+				`Keeping this would make About you ${after} of ${ABOUT_YOU_TOKEN_CAP} tokens. Shorten or delete a note in About you, then Keep.`,
+			)
 	}
 
 	/**
@@ -4949,7 +5026,37 @@ export class Controller {
 		}
 	}
 
-	private async emitNotebookChanges(threadId: string): Promise<void> {
+	private async resolveAboutYou(
+		threadId?: string,
+		metadata?: Record<string, unknown>,
+	): Promise<(AboutYouContext & { prompt?: string }) | undefined> {
+		if (!threadId) return undefined
+		try {
+			const item = (await this.taskHistory.findHistoryItem(threadId)) ?? {
+				...createHistoryItemFromSession(threadId, ""),
+				parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : undefined,
+				runtimeOwnerTaskId: typeof metadata?.runtimeOwnerTaskId === "string" ? metadata.runtimeOwnerTaskId : undefined,
+				isSubagent: metadata?.isSubagent === true,
+			}
+			const owner = await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))
+			return {
+				rootThreadId: owner.rootThreadId,
+				store: this.notebookStore,
+				prompt: await aboutYouPrompt(this.notebookStore),
+			}
+		} catch (error) {
+			Logger.warn("[SdkController] Failed to load About you:", error)
+			return undefined
+		}
+	}
+
+	/**
+	 * Shows each group's staged changes as one live review row. At the end of a
+	 * turn that staged more (`newTurn`), an unanswered row moves to the newest
+	 * turn and carries both (the old row is removed, never left "superseded").
+	 * Any other refresh updates the row in place.
+	 */
+	private async emitNotebookChanges(threadId: string, options?: { newTurn?: boolean }): Promise<void> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
 		const rootThreadId = item
 			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
@@ -4960,13 +5067,21 @@ export class Controller {
 		if (!context.task.messageStateHandler.getClineMessages().length) {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
 		}
+		let removed = false
 		for (const pending of reviews) {
 			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
-			const shown = latest ? JSON.parse(latest.text ?? "{}") : undefined
-			// Re-showing the same review keeps its card. A new revision (a later turn staged more)
-			// gets a new card at the end, where the user is reading; the old card then shows as
-			// superseded. Updating it in place left the newest changes up in an earlier turn.
-			const reuse = latest && shown?.status === "pending" && shown.revision === pending.revision
+			const shown = latest ? (JSON.parse(latest.text ?? "{}") as NotebookChangesPayload) : undefined
+			const live = latest && shown?.status === "pending" ? latest : undefined
+			// A later turn staged more: the row moves to the end, where the user is reading.
+			const moves = live && options?.newTurn && shown?.revision !== pending.revision
+			if (moves && (shown?.kept?.length || shown?.dropped?.length)) {
+				// Notes already answered on the old row stay there as its summary.
+				await this.finishNotebookReview(rootThreadId, live, shown)
+			} else if (moves) {
+				context.messages.removeMessage(live.ts)
+				removed = true
+			}
+			const inPlace = live && !moves
 			const message = notebookChangesMessage(
 				{
 					revision: pending.revision,
@@ -4974,41 +5089,102 @@ export class Controller {
 					threadId: rootThreadId,
 					status: "pending",
 					changes: (await this.notebookStore.reviewDiffs(pending, rootThreadId)).changes,
+					turns: inPlace
+						? shown?.turns
+						: moves && !shown?.kept?.length && !shown?.dropped?.length
+							? (shown?.turns ?? 1) + 1
+							: 1,
+					...(inPlace ? { kept: shown?.kept, dropped: shown?.dropped } : {}),
 				},
-				reuse ? latest.ts : context.translator.nextTs(),
+				inPlace ? live.ts : context.translator.nextTs(),
 			)
-			if (reuse) message.sdkMessageIndex = latest.sdkMessageIndex
+			if (inPlace) message.sdkMessageIndex = live.sdkMessageIndex
 			context.messages.emitHookMessage(message)
 			await this.taskHistory.saveNotebookChangesMessage(rootThreadId, message)
 		}
+		if (removed) await this.postStateToWebview()
 	}
 
-	private async finishNotebookChanges(
+	/**
+	 * Records notes kept or dropped from a review row. While anything is still
+	 * staged the row stays live (updated in place); once nothing is left it
+	 * resolves to its summary line.
+	 */
+	private async settleNotebookReview(
 		threadId: string,
 		taskGroupId: string,
-		revision: string,
-		status: "applied" | "discarded",
-		changes: NotebookChange[],
+		update: { kept?: NotebookChange[]; dropped?: NotebookChange[] },
 	): Promise<void> {
 		const context = this.getTaskSessionContext(threadId)
 		if (!context.task.messageStateHandler.getClineMessages().length) {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(threadId))
 		}
-		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), taskGroupId, revision)
-		const message = notebookChangesMessage(
+		const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), taskGroupId)
+		const shown = latest ? (JSON.parse(latest.text ?? "{}") as NotebookChangesPayload) : undefined
+		const live = latest && shown?.status === "pending" ? latest : undefined
+		const brief = (change: NotebookChange): NotebookChange => ({
+			op: change.op,
+			slug: change.slug,
+			name: change.name,
+			description: change.description,
+			...(change.editedByUser ? { editedByUser: true } : {}),
+		})
+		const kept = [...(live ? (shown?.kept ?? []) : []), ...(update.kept ?? []).map(brief)]
+		const dropped = [...(live ? (shown?.dropped ?? []) : []), ...(update.dropped ?? []).map(brief)]
+		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
+		if (pending?.changes.length) {
+			const message = notebookChangesMessage(
+				{
+					revision: pending.revision,
+					taskGroupId,
+					threadId,
+					status: "pending",
+					changes: (await this.notebookStore.reviewDiffs(pending, threadId)).changes,
+					turns: live ? shown?.turns : 1,
+					kept,
+					dropped,
+				},
+				live?.ts ?? context.translator.nextTs(),
+			)
+			message.sdkMessageIndex = live?.sdkMessageIndex
+			context.messages.emitHookMessage(message)
+			await this.taskHistory.saveNotebookChangesMessage(threadId, message)
+			return
+		}
+		const final = notebookChangesMessage(
 			{
 				taskGroupId,
 				threadId,
-				revision,
-				status,
-				changes,
-				...(status === "applied" ? { appliedSlugs: changes.map((change) => change.slug) } : {}),
+				revision: shown?.revision ?? "",
+				status: kept.length ? "applied" : "discarded",
+				changes: [...kept, ...dropped],
+				appliedSlugs: kept.map((change) => change.slug),
+				turns: shown?.turns,
+				kept,
+				dropped,
 			},
-			latest?.ts ?? context.translator.nextTs(),
+			live?.ts ?? context.translator.nextTs(),
 		)
-		message.sdkMessageIndex = latest?.sdkMessageIndex
-		context.messages.emitHookMessage(message)
-		await this.taskHistory.saveNotebookChangesMessage(threadId, message)
+		final.sdkMessageIndex = live?.sdkMessageIndex
+		context.messages.emitHookMessage(final)
+		await this.taskHistory.saveNotebookChangesMessage(threadId, final)
+	}
+
+	/** Resolves a live row that some notes were answered on, as its kept/dropped summary. */
+	private async finishNotebookReview(threadId: string, message: ClineMessage, shown: NotebookChangesPayload): Promise<void> {
+		const kept = shown.kept ?? []
+		const final = notebookChangesMessage(
+			{
+				...shown,
+				status: kept.length ? "applied" : "discarded",
+				changes: [...kept, ...(shown.dropped ?? [])],
+				appliedSlugs: kept.map((change) => change.slug),
+			},
+			message.ts,
+		)
+		final.sdkMessageIndex = message.sdkMessageIndex
+		this.getTaskSessionContext(threadId).messages.emitHookMessage(final)
+		await this.taskHistory.saveNotebookChangesMessage(threadId, final)
 	}
 
 	/**

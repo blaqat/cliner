@@ -3,7 +3,13 @@ import { promises as fs } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
-import type { NotebookActivity, NotebookChange, NotebookNoteMeta, NotebookVersion } from "@shared/task-groups"
+import {
+	estimateTokens,
+	type NotebookActivity,
+	type NotebookChange,
+	type NotebookNoteMeta,
+	type NotebookVersion,
+} from "@shared/task-groups"
 import * as yaml from "js-yaml"
 import { Logger } from "@/shared/services/Logger"
 import { compactNotebookDiff, notebookDiff } from "./notebook-diff"
@@ -254,6 +260,42 @@ export class NotebookStore {
 		return { slug, path: paths.noteFile(slug) }
 	}
 
+	/**
+	 * Saves the user's edit of a saved note from the doc editor. `baseContent` is
+	 * the body the editor opened with: if the note changed since, the user's text
+	 * goes to the note's history instead of overwriting the newer version.
+	 */
+	async saveNote(
+		groupId: string,
+		slug: string,
+		input: { name?: string; description?: string; content: string; baseContent?: string },
+	): Promise<void> {
+		const note = await this.readNote(groupId, slug)
+		if (!note) throw new Error("This note no longer exists")
+		if (input.baseContent !== undefined && note.content !== input.baseContent) {
+			await this.recordVersion(groupId, slug, input.content, "your unsaved edit")
+			throw new Error("This note changed after you opened it. Your text is saved in its History")
+		}
+		await this.captureSavedVersion(groupId, slug)
+		await writeFileAtomic(
+			this.notePath(groupId, slug),
+			serializeNote({
+				name: input.name?.trim() || note.meta.name,
+				description: input.description?.trim() ?? note.meta.description,
+				updatedAt: Date.now(),
+				updatedBy: { kind: "user" },
+				body: input.content,
+			}),
+		)
+		await this.recordVersion(groupId, slug, input.content, "you edited")
+	}
+
+	/** Deletes a saved note; its history stays, so History can bring it back. */
+	async deleteNote(groupId: string, slug: string): Promise<void> {
+		await this.captureSavedVersion(groupId, slug)
+		await fs.rm(this.notePath(groupId, slug), { force: true })
+	}
+
 	notePath(groupId: string, slug: string): string {
 		return taskGroupPaths(this.rootDir, groupId).noteFile(slug)
 	}
@@ -338,6 +380,8 @@ export class NotebookStore {
 			} else {
 				pending[index] = {
 					...change,
+					// A later write without its own summary keeps the earlier one.
+					...(change.summary || prev.summary ? { summary: change.summary || prev.summary } : {}),
 					op:
 						prev.op === "create"
 							? "create"
@@ -448,25 +492,26 @@ export class NotebookStore {
 		return (await this.listPending(threadId))[0]
 	}
 
-	private async requireRevision(groupId: string, threadId: string, revision: string): Promise<PendingNotebookChanges> {
-		const pending = await this.readPendingReview(groupId, threadId)
-		if (!revision || !pending || pending.revision !== revision) {
-			throw new Error("Notebook changes have changed since this review. Use the newest review card.")
-		}
-		return pending
+	/**
+	 * The review row always acts on the newest staged version: a click from a row
+	 * rendered before the agent staged more never fails, it applies to what is
+	 * staged now. Only the slugs the user picked are touched.
+	 */
+	private async currentPending(groupId: string, threadId: string): Promise<PendingNotebookChanges> {
+		return (await this.readPendingReview(groupId, threadId)) ?? { groupId, revision: "", changes: [] }
 	}
 
 	async applyPendingChanges(
 		groupId: string,
 		threadId: string,
-		revision: string,
+		_revision: string,
 		items: { slug: string; include: boolean; editedContent?: string }[],
 		options?: { threadTitle?: string },
 	): Promise<NotebookChange[]> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		for (const item of items) validateTaskGroupIdentifier(item.slug, "slug")
 		return this.serializePending(groupId, threadId, async () => {
-			const { changes } = await this.requireRevision(groupId, threadId, revision)
+			const { changes } = await this.currentPending(groupId, threadId)
 			const applied: NotebookChange[] = []
 			const completed = new Set<string>()
 			try {
@@ -513,19 +558,32 @@ export class NotebookStore {
 		})
 	}
 
-	async discardPendingChanges(groupId: string, threadId: string, revision: string): Promise<void> {
+	/** Discards the staged changes for `slugs` (every staged change when omitted); returns what was dropped. */
+	async discardPendingChanges(
+		groupId: string,
+		threadId: string,
+		_revision: string,
+		slugs?: string[],
+	): Promise<NotebookChange[]> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
+		for (const slug of slugs ?? []) validateTaskGroupIdentifier(slug, "slug")
 		return this.serializePending(groupId, threadId, async () => {
-			const pending = await this.requireRevision(groupId, threadId, revision)
-			for (const change of pending.changes) await this.settleDraft(groupId, threadId, change.slug)
-			for (const change of pending.changes)
+			const pending = await this.currentPending(groupId, threadId)
+			const dropped = pending.changes.filter((change) => !slugs || slugs.includes(change.slug))
+			for (const change of dropped) await this.settleDraft(groupId, threadId, change.slug)
+			for (const change of dropped)
 				await this.queueNotice(
 					groupId,
 					threadId,
 					change.slug,
 					`The user discarded your pending edits to \`${change.name}\``,
 				)
-			await this.writePending(groupId, threadId, [])
+			await this.writePending(
+				groupId,
+				threadId,
+				pending.changes.filter((change) => !dropped.includes(change)),
+			)
+			return dropped
 		})
 	}
 
@@ -622,12 +680,20 @@ export class NotebookStore {
 		revision: string,
 		slug: string,
 		content: string,
-		options?: { supersedesDraftTs?: number },
+		options?: { supersedesDraftTs?: number; baseContent?: string },
 	): Promise<string> {
 		return this.serializePending(groupId, threadId, async () => {
-			const pending = await this.requireRevision(groupId, threadId, revision)
-			const change = pending.changes.find((change) => change.slug === slug)
-			if (!change) throw new Error("Pending note no longer available")
+			const pending = await this.readPendingReview(groupId, threadId)
+			const change = pending?.changes.find((change) => change.slug === slug)
+			if (!pending || !change) throw new Error("This note is no longer waiting for review")
+			// An editor that knows the text it started from only conflicts when that note
+			// changed; otherwise the whole review must be the one it was opened against.
+			if (
+				options?.baseContent !== undefined
+					? (change.content ?? "") !== options.baseContent
+					: pending.revision !== revision
+			)
+				throw new Error("The agent changed this note while you were editing")
 			if (change.op === "delete") change.op = (await this.readNote(groupId, slug)) ? "update" : "create"
 			await this.captureSavedVersion(groupId, slug)
 			const before = change.content ?? ""
@@ -875,7 +941,7 @@ export class NotebookStore {
 		try {
 			const raw = rawOverride ?? (await fs.readFile(filePath, "utf8"))
 			const stat = await fs.stat(filePath)
-			const { data } = parseYamlFrontmatter(raw)
+			const { data, body } = parseYamlFrontmatter(raw)
 			const updated =
 				typeof data.updated === "string" && Number.isFinite(Date.parse(data.updated))
 					? Date.parse(data.updated)
@@ -888,6 +954,7 @@ export class NotebookStore {
 				updatedAt: stat.mtimeMs > updated + 2000 ? stat.mtimeMs : updated,
 				updatedBy: stat.mtimeMs > updated + 2000 ? { kind: "user" } : parseUpdatedBy(data.updatedBy),
 				readers: 0,
+				tokens: estimateTokens(body),
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {

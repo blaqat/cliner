@@ -49,6 +49,7 @@ export function taskGroupDetailsFromProto(response: GetTaskGroupResponse): TaskG
 					? { kind: "thread", threadId: note.updatedBy.threadId, threadTitle: note.updatedBy.threadTitle }
 					: { kind: "user" },
 			readers: note.readers,
+			tokens: note.tokens,
 		})),
 		threads: response.threads.map((thread) => ({
 			threadId: thread.threadId,
@@ -150,6 +151,19 @@ export function consumeNewNoteRequest(): boolean {
 	const requested = newNoteRequested
 	newNoteRequested = false
 	return requested
+}
+
+// A note card on the task page opens that note on the notebook page (the doc editor), the same way.
+let noteToOpen: string | undefined
+
+export function requestOpenNote(slug: string): void {
+	noteToOpen = slug
+}
+
+export function consumeOpenNoteRequest(): string | undefined {
+	const slug = noteToOpen
+	noteToOpen = undefined
+	return slug
 }
 
 /**

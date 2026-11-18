@@ -112,17 +112,64 @@ describe("NotebookView", () => {
 		expect(screen.getByText("No notes match.")).toBeInTheDocument()
 	})
 
-	it("opens a note page with editor and history actions", async () => {
+	it("opens a note page with the doc editor, history and the file as a fallback", async () => {
 		await renderView()
 		fireEvent.click(screen.getAllByTestId("notebook-note-row")[2])
 		await screen.findByText("Saved note")
 		expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Open in editor" }))
+		fireEvent.click(screen.getByRole("button", { name: "Open as file" }))
 		expect(mocks.openNote).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", slug: "ticket-brief" }))
 	})
 
-	it("＋ New note creates the note inline, then opens it", async () => {
+	it("edits a note in place: fields and body save together against the text it opened with", async () => {
 		await renderView()
+		fireEvent.click(screen.getAllByTestId("notebook-note-row")[2])
+		await screen.findByText("Saved note")
+		fireEvent.change(screen.getByDisplayValue("Problem, scope and 7 ACs"), { target: { value: "Scope" } })
+		fireEvent.click(screen.getByRole("radio", { name: "Edit" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "Ticket brief body" }), { target: { value: "# New" } })
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		await waitFor(() =>
+			expect(mocks.notebookAction).toHaveBeenCalledWith(
+				expect.objectContaining({
+					action: "save",
+					slug: "ticket-brief",
+					content: "# New",
+					baseContent: "# Saved note",
+					description: "Scope",
+				}),
+			),
+		)
+	})
+
+	it("pins About you at the top of a task's notebook", async () => {
+		await renderView()
+		fireEvent.click(screen.getByTestId("about-you-row"))
+		expect(mocks.state.navigateToTaskGroup).toHaveBeenCalledWith("about-you", "notebook")
+	})
+
+	it("shows About you with its size and blocks new notes once it's full", async () => {
+		mocks.getTaskGroup.mockResolvedValue(
+			GetTaskGroupResponse.fromPartial({
+				group: { id: "about-you", title: "About you", tags: [], noteCount: 1 },
+				notes: [{ slug: "tools", name: "Tools", description: "", size: 4100, updatedAt: NOW, readers: 0, tokens: 1000 }],
+			}),
+		)
+		render(<NotebookView now={NOW} taskGroupId="about-you" />)
+		await screen.findByText("Tools")
+		expect(screen.getByTestId("about-you-meter")).toHaveTextContent("1,000 / 1,000 tokens")
+		expect(screen.getByText(/About you is full/)).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "＋ New note" })).toBeDisabled()
+		expect(screen.queryByTestId("about-you-row")).not.toBeInTheDocument()
+	})
+
+	it("＋ New note creates the note inline, then opens it in Edit", async () => {
+		await renderView()
+		const created = GetTaskGroupResponse.fromPartial({
+			...FIXTURE,
+			notes: [...FIXTURE.notes, { slug: "open-questions", name: "Open questions", description: "Waiting on PM", size: 10 }],
+		})
+		mocks.getTaskGroup.mockResolvedValue(created)
 		expect(screen.queryByTestId("notebook-new-note-form")).toBeNull()
 		fireEvent.click(screen.getByRole("button", { name: "＋ New note" }))
 		const create = screen.getByRole("button", { name: "Create & open" })
@@ -135,12 +182,9 @@ describe("NotebookView", () => {
 				expect.objectContaining({ taskGroupId: "g1", name: "Open questions", description: "Waiting on PM" }),
 			),
 		)
-		await waitFor(() =>
-			expect(mocks.openNote).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", slug: "open-questions" })),
-		)
-		expect(screen.queryByTestId("notebook-new-note-form")).toBeNull()
-		// The list refreshes with the new note.
-		expect(mocks.getTaskGroup).toHaveBeenCalledTimes(2)
+		// The new note opens in the sidebar editor, not as a file.
+		expect(await screen.findByRole("textbox", { name: "Open questions body" })).toBeInTheDocument()
+		expect(mocks.openNote).not.toHaveBeenCalled()
 	})
 
 	it("Cancel closes the form without creating anything", async () => {

@@ -942,6 +942,16 @@ function sdkToolToClineSayTool(toolName: string, input?: unknown): ClineSayTool 
 			}
 		}
 
+		case "about_you": {
+			const action = getStringField(parsedInput, "action")
+			return {
+				tool: "notebook",
+				aboutYou: true,
+				action: action === "delete" ? "delete" : "write",
+				name: getStringField(parsedInput, "name") ?? "",
+			}
+		}
+
 		case "script": {
 			const options = parsedInput?.options
 			return {

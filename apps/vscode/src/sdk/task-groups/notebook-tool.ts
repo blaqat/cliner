@@ -8,6 +8,7 @@ interface NotebookInput {
 	name: string
 	description?: string
 	content?: string
+	summary?: string
 }
 
 export async function createNotebookTool(notebook: TaskNotebookContext): Promise<AgentTool> {
@@ -28,6 +29,10 @@ export async function createNotebookTool(notebook: TaskNotebookContext): Promise
 				name: { type: "string", description: "Note slug or name" },
 				description: { type: "string" },
 				content: { type: "string", description: "Markdown body for write" },
+				summary: {
+					type: "string",
+					description: "One short line for the user: what this edit changes and why (write and delete)",
+				},
 			},
 			required: ["action", "name"],
 		},
@@ -62,6 +67,7 @@ export async function createNotebookTool(notebook: TaskNotebookContext): Promise
 					name: staged?.name ?? saved?.name ?? input.name.trim(),
 					description: input.description ?? staged?.description ?? saved?.description ?? "",
 					...(input.action === "write" ? { content: input.content } : {}),
+					...(input.summary?.trim() ? { summary: input.summary.trim().slice(0, 200) } : {}),
 					baseUpdatedAt: staged?.baseUpdatedAt ?? saved?.updatedAt,
 				}
 				await store.stageChange(group.id, rootThreadId, change)

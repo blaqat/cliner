@@ -25,7 +25,7 @@ import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTa
 import { useSettleAll } from "./settleAll"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { sameTag, TaskTagEditor } from "./TaskTagEditor"
-import { formatNoteSize, openNote, requestNewNoteForm, threadRowTitle, useTaskGroup } from "./useTaskGroup"
+import { formatNoteSize, requestNewNoteForm, requestOpenNote, threadRowTitle, useTaskGroup } from "./useTaskGroup"
 
 /** How many notes the notebook preview grid shows. */
 const NOTE_PREVIEW_COUNT = 4
@@ -330,7 +330,14 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					) : (
 						<div className="grid grid-cols-2 gap-1.5 px-1" data-testid="task-group-note-grid">
 							{notes.slice(0, NOTE_PREVIEW_COUNT).map((note) => (
-								<NoteCard key={note.slug} note={note} onOpen={() => openNote(group.id, note.slug)} />
+								<NoteCard
+									key={note.slug}
+									note={note}
+									onOpen={() => {
+										requestOpenNote(note.slug)
+										navigateToTaskGroup(group.id, "notebook")
+									}}
+								/>
 							))}
 						</div>
 					)}

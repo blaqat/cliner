@@ -28,6 +28,8 @@ export interface NotebookNoteMeta {
 	updatedAt: number
 	updatedBy: { kind: "user" } | { kind: "thread"; threadId: string; threadTitle: string }
 	readers: number // distinct threads that read it (from activity log)
+	/** Rough token count of the body (about four characters a token). */
+	tokens?: number
 }
 export type NotebookChangeOp = "create" | "update" | "delete"
 export interface NotebookDiffLine {
@@ -54,6 +56,8 @@ export interface NotebookChange {
 	baseUpdatedAt?: number
 	/** The user's last editor save was rejected; their text is kept as a recoverable draft. */
 	draft?: { ts: number; reason: string }
+	/** The agent's one-line summary of this edit, passed with its notebook call. */
+	summary?: string
 }
 export interface NotebookActivity {
 	ts: number
@@ -69,6 +73,11 @@ export interface NotebookChangesPayload {
 	status: "pending" | "applied" | "discarded"
 	changes: NotebookChange[]
 	appliedSlugs?: string[]
+	/** How many turns this row covers: an unanswered row moves to the next turn that stages more. */
+	turns?: number
+	/** Notes already kept or dropped one at a time from this row (bodies omitted). */
+	kept?: NotebookChange[]
+	dropped?: NotebookChange[]
 }
 
 /** A thread row in a task group's timeline (newest first). read/wrote are note slugs from the activity log. */
@@ -109,4 +118,20 @@ export interface HistorySearchHit {
 	threadId?: string
 	/** Message hits: who wrote the message. */
 	author?: "you" | "agent"
+}
+
+/**
+ * About you: a global notebook (not tied to a task) whose notes go into every
+ * thread's system prompt. Stored like a task's notebook under this reserved id,
+ * which has no group.json, so it never lists as a task.
+ */
+export const ABOUT_YOU_ID = "about-you"
+/** About you is paid in every request: past the cap, adds are blocked. */
+export const ABOUT_YOU_TOKEN_CAP = 1000
+/** The meter warns from here; the agent may then only shorten or replace. */
+export const ABOUT_YOU_WARN_TOKENS = 750
+
+/** The same rough estimate everywhere a size is shown: about four characters a token. */
+export function estimateTokens(text: string): number {
+	return Math.ceil(text.trim().length / 4)
 }

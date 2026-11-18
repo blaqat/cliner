@@ -49,6 +49,7 @@ export function notebookNoteMetaToProto(note: NotebookNoteMeta): ProtoNotebookNo
 					})
 				: NotebookNoteUpdatedBy.create({ kind: "user" }),
 		readers: note.readers,
+		tokens: note.tokens ?? 0,
 	})
 }
 

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { getComposerPageTaskGroup, getComposerTaskGroup, setComposerTaskGroup } from "./composerTaskGroup"
 import { orderTimeline, TaskGroupView } from "./TaskGroupView"
-import { consumeNewNoteRequest } from "./useTaskGroup"
+import { consumeNewNoteRequest, consumeOpenNoteRequest } from "./useTaskGroup"
 
 const mocks = vi.hoisted(() => ({
 	getTaskGroup: vi.fn(),
@@ -195,7 +195,10 @@ describe("TaskGroupView", () => {
 		])
 		expect(cards[0]).toHaveTextContent("1.2 KB")
 		fireEvent.click(cards[1])
-		expect(mocks.openNote).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", slug: "decisions" }))
+		// Notes open on the notebook page, in the doc editor, not as a file.
+		expect(mocks.state.navigateToTaskGroup).toHaveBeenCalledWith("g1", "notebook")
+		expect(consumeOpenNoteRequest()).toBe("decisions")
+		expect(mocks.openNote).not.toHaveBeenCalled()
 	})
 
 	it("names the folder of a thread running outside what's open", async () => {

@@ -427,6 +427,8 @@ export interface ClineSayTool {
 		| "notebook"
 		| "script"
 	action?: "read" | "write" | "delete"
+	/** `notebook` rows from the `about_you` tool: the change is to About you, not a task's notebook. */
+	aboutYou?: boolean
 	name?: string
 	/** `script` tool: what is being asked and the option values; unreviewed definitions include the command template and cwd. */
 	scriptCommand?: string

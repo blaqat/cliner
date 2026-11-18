@@ -41,6 +41,7 @@ import {
 	type ToolDefinition,
 	type ToolPolicy,
 } from "@cline/shared"
+import { ABOUT_YOU_ID } from "@shared/task-groups"
 import { StateManager } from "@/core/storage/StateManager"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import { getDistinctId } from "@/services/logging/distinctId"
@@ -52,6 +53,7 @@ import type { ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import type { SdkSessionHost } from "./session-host"
 import { type SideThreadContext, withSideThreadNotes } from "./side-thread-tools"
+import type { AboutYouContext } from "./task-groups/about-you"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
@@ -91,6 +93,8 @@ export interface VscodeSessionHostOptions {
 	toolPolicies?: Record<string, ToolPolicy>
 	resolveSideThread?: (input: ClineCoreStartInput) => Promise<SideThreadContext | undefined>
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
+	/** About you: the user's global notes (added to the system prompt) and the tool that proposes changes to them. */
+	resolveAboutYou?: (input: ClineCoreStartInput) => Promise<(AboutYouContext & { prompt?: string }) | undefined>
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
 	resolveThreadTranscript?: (input: ClineCoreStartInput) => Promise<ThreadTranscriptToolsContext | undefined>
 	/** Adds the `script` tool (saved scripts); its approvals are decided per script by the interaction coordinator. */
@@ -170,10 +174,12 @@ export class VscodeSessionHost implements SdkSessionHost {
 			const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
 			const sideThread = await options.resolveSideThread?.(inputWithRemoteConfig)
 			const notebook = await options.resolveNotebook?.(inputWithRemoteConfig)
+			const aboutYou = await options.resolveAboutYou?.(inputWithRemoteConfig)
 			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
 			const scripts = options.resolveScripts?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
+				aboutYou,
 				sideThread,
 				threadTranscript,
 				scripts,
@@ -182,17 +188,27 @@ export class VscodeSessionHost implements SdkSessionHost {
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
 				foregroundCommands: options.foregroundCommands,
 			})
+			// Notices (the user discarded or edited a staged change) reach the agent before its next step.
+			const noticeSources = [
+				...(notebook ? [{ store: notebook.store, groupId: notebook.group.id, threadId: notebook.rootThreadId }] : []),
+				...(aboutYou ? [{ store: aboutYou.store, groupId: ABOUT_YOU_ID, threadId: aboutYou.rootThreadId }] : []),
+			]
+			const consumeNotices = async () =>
+				(await Promise.all(noticeSources.map((source) => source.store.consumeNotices(source.groupId, source.threadId))))
+					.filter(Boolean)
+					.join("\n\n") || undefined
+			let systemPrompt = inputWithRemoteConfig.config.systemPrompt ?? ""
+			if (notebook) systemPrompt = appendTaskNotebookPrompt(systemPrompt, notebook.group)
+			if (aboutYou?.prompt) systemPrompt = `${systemPrompt}\n\n${aboutYou.prompt}`
 			const config: ClineCoreStartInput["config"] = {
 				...inputWithRemoteConfig.config,
-				...(notebook
-					? { systemPrompt: appendTaskNotebookPrompt(inputWithRemoteConfig.config.systemPrompt ?? "", notebook.group) }
-					: {}),
-				hooks: notebook
+				...(notebook || aboutYou?.prompt ? { systemPrompt } : {}),
+				hooks: noticeSources.length
 					? {
 							...inputWithRemoteConfig.config.hooks,
 							beforeRun: async (context) => {
 								const result = await inputWithRemoteConfig.config.hooks?.beforeRun?.(context)
-								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								const notice = await consumeNotices()
 								return {
 									...result,
 									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
@@ -200,7 +216,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 							},
 							beforeTool: async (context) => {
 								const result = await inputWithRemoteConfig.config.hooks?.beforeTool?.(context)
-								const notice = await notebook.store.consumeNotices(notebook.group.id, notebook.rootThreadId)
+								const notice = await consumeNotices()
 								return {
 									...result,
 									appendContext: [result?.appendContext, notice].filter(Boolean).join("\n\n") || undefined,
@@ -233,6 +249,8 @@ export class VscodeSessionHost implements SdkSessionHost {
 				toolPolicies: {
 					...inputWithRemoteConfig.toolPolicies,
 					notebook: { enabled: true, autoApprove: true },
+					// Only stages a proposal; the user keeps or drops it in the review row.
+					about_you: { enabled: true, autoApprove: true },
 					// Read-only transcript access is auto-approved in every mode (Ask
 					// included): the allow-list itself is the guard — only thread ids
 					// the user mentioned are ever readable.

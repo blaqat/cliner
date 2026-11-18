@@ -62,7 +62,9 @@ describe("NotebookStore", () => {
 		expect(notice).toContain("-agent draft")
 		expect(notice).toContain("+user draft")
 		expect(await store.consumeNotices(groupId, "thread")).toBeUndefined()
-		await expect(store.editPending(groupId, "thread", first.revision, "plan", "stale")).rejects.toThrow("newest review")
+		await expect(store.editPending(groupId, "thread", first.revision, "plan", "stale")).rejects.toThrow(
+			"agent changed this note",
+		)
 		await store.stageChange(groupId, "thread", {
 			op: "create",
 			slug: "plan",
@@ -329,8 +331,8 @@ describe("NotebookStore", () => {
 			await expect(fs.stat(paths().noteFile("a"))).rejects.toThrow()
 		})
 
-		it("rejects a missing review instead of silently applying", async () => {
-			await expect(apply("nobody", [])).rejects.toThrow("newest review card")
+		it("keeps nothing, without failing, when nothing is staged", async () => {
+			await expect(apply("nobody", [{ slug: "a", include: true }])).resolves.toEqual([])
 		})
 	})
 
@@ -393,19 +395,47 @@ describe("NotebookStore", () => {
 		expect(write).not.toHaveBeenCalled()
 	})
 
-	it("rejects stale apply and discard revisions after the next stage", async () => {
+	it("acts on the newest staged version when a row from before the next stage is clicked", async () => {
 		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "v1" }
 		await store.stageChange(groupId, "thread", change)
 		const old = (await store.readPendingReview(groupId, "thread"))!
 		await store.stageChange(groupId, "thread", { ...change, content: "v2" })
-		await expect(
-			store.applyPendingChanges(groupId, "thread", old.revision, [{ slug: "plan", include: true }]),
-		).rejects.toThrow("newest review card")
-		await expect(store.discardPendingChanges(groupId, "thread", old.revision)).rejects.toThrow("newest review card")
-		expect(await store.readNote(groupId, "plan")).toBeUndefined()
-		expect((await store.readPendingReview(groupId, "thread"))?.revision).not.toBe(old.revision)
-		await apply("thread", [{ slug: "plan", include: true }])
+		await store.stageChange(groupId, "thread", { ...change, slug: "other", name: "Other", content: "o" })
+		const applied = await store.applyPendingChanges(groupId, "thread", old.revision, [{ slug: "plan", include: true }])
+		expect(applied.map((entry) => entry.content)).toEqual(["v2"])
 		expect((await store.readNote(groupId, "plan"))?.content).toBe("v2")
+		// Only the picked note leaves the review; the rest stays staged.
+		expect((await store.readPending(groupId, "thread"))?.map((entry) => entry.slug)).toEqual(["other"])
+		const dropped = await store.discardPendingChanges(groupId, "thread", old.revision, ["other"])
+		expect(dropped.map((entry) => entry.slug)).toEqual(["other"])
+		expect(await store.readPendingReview(groupId, "thread")).toBeUndefined()
+	})
+
+	it("keeps the agent's summary across later writes without one", async () => {
+		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "v1" }
+		await store.stageChange(groupId, "thread", { ...change, summary: "Why the plan exists" })
+		await store.stageChange(groupId, "thread", { ...change, content: "v2" })
+		expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({ content: "v2", summary: "Why the plan exists" })
+	})
+
+	it("edits a staged note against the text the editor opened with, whatever the revision", async () => {
+		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "v1" }
+		await store.stageChange(groupId, "thread", change)
+		await store.stageChange(groupId, "thread", { ...change, slug: "other", name: "Other", content: "o" })
+		await store.editPending(groupId, "thread", "stale", "plan", "mine", { baseContent: "v1" })
+		expect((await store.readPending(groupId, "thread"))?.[0]).toMatchObject({ content: "mine", editedByUser: true })
+		await expect(store.editPending(groupId, "thread", "stale", "plan", "again", { baseContent: "v1" })).rejects.toThrow(
+			"agent changed this note",
+		)
+	})
+
+	it("saves a saved note from the doc editor and refuses to overwrite a newer one", async () => {
+		await store.createNote(groupId, { name: "Plan", description: "d" })
+		await store.saveNote(groupId, "plan", { content: "body", baseContent: "", description: "new d" })
+		const note = await store.readNote(groupId, "plan")
+		expect(note).toMatchObject({ content: "body", meta: { description: "new d", tokens: 1 } })
+		await expect(store.saveNote(groupId, "plan", { content: "lost?", baseContent: "" })).rejects.toThrow("History")
+		expect((await store.history(groupId, "plan")).some((version) => version.content === "lost?")).toBe(true)
 	})
 
 	it.each(["apply", "discard"])("serializes a concurrent stage after %s without deleting it", async (action) => {

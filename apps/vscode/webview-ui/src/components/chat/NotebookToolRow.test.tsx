@@ -30,11 +30,13 @@ describe("NotebookToolRow", () => {
 		expect(screen.getByText("Codebase map")).toBeInTheDocument()
 	})
 
-	it("summarizes writes and deletes as staged changes", () => {
+	it("shows written notes as chips, reviewed at the end", () => {
 		const { rerender } = render(<NotebookToolRow info={{ action: "write", names: ["Decisions"] }} />)
-		expect(screen.getByTestId("notebook-tool-row")).toHaveTextContent("Staged 1 notebook change")
-		expect(screen.queryByText("Decisions")).not.toBeInTheDocument()
-		rerender(<NotebookToolRow info={{ action: "delete", names: ["A", "B"] }} />)
-		expect(screen.getByTestId("notebook-tool-row")).toHaveTextContent("Staged 2 notebook changes")
+		expect(screen.getByTestId("notebook-tool-row")).toHaveTextContent("Wrote")
+		expect(screen.getByText("Decisions")).toBeInTheDocument()
+		rerender(<NotebookToolRow info={{ action: "delete", names: ["A"] }} />)
+		expect(screen.getByTestId("notebook-tool-row")).toHaveTextContent("Wants to delete")
+		rerender(<NotebookToolRow info={{ action: "write", names: ["Tools"], aboutYou: true }} />)
+		expect(screen.getByText("About you › Tools")).toBeInTheDocument()
 	})
 })

@@ -8,6 +8,7 @@ import { Logger } from "@/shared/services/Logger"
 import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { createSideThreadTools, type SideThreadContext } from "./side-thread-tools"
+import { type AboutYouContext, createAboutYouTool } from "./task-groups/about-you"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookTool } from "./task-groups/notebook-tool"
 import { createThreadTranscriptTools, type ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
@@ -64,6 +65,7 @@ export class McpHubToolProvider {
 
 export interface VscodeExtraToolsOptions {
 	notebook?: TaskNotebookContext
+	aboutYou?: AboutYouContext
 	sideThread?: SideThreadContext
 	/** Mentioned-thread transcript access (grep_threads/read_thread), allow-listed per conversation. */
 	threadTranscript?: ThreadTranscriptToolsContext
@@ -111,6 +113,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
 	tools.push(...createSideThreadTools(options?.sideThread))
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
+	if (options?.aboutYou) tools.push(createAboutYouTool(options.aboutYou))
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
 	if (options?.scripts) tools.push(createScriptTool(options.scripts))
 

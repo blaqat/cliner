@@ -15,6 +15,7 @@ export async function discardNotebookChanges(controller: Controller, request: Di
 	if (!request.threadId) {
 		throw new Error("threadId is required")
 	}
-	await controller.discardNotebookChanges(request.threadId, request.taskGroupId, request.revision)
+	for (const slug of request.slugs) validateTaskGroupIdentifier(slug, "slug")
+	await controller.discardNotebookChanges(request.threadId, request.taskGroupId, request.revision, request.slugs)
 	return Empty.create({})
 }

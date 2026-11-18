@@ -26,17 +26,13 @@ export async function openPendingNoteEditor(
 	const vscode = await import("vscode")
 	const pending = await store.readPendingReview(input.taskGroupId, input.threadId)
 	const change = pending?.changes.find((change) => change.slug === input.slug)
-	if (
-		!pending ||
-		pending.revision !== input.revision ||
-		!change ||
-		(change.op === "delete" && options.initialContent === undefined)
-	)
-		throw new Error("Use the newest review card")
+	// Opens against what is staged now, whichever card the click came from.
+	if (!pending || !change || (change.op === "delete" && options.initialContent === undefined))
+		throw new Error("This note is no longer waiting for review")
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cline-pending-note-"))
 	const file = path.join(directory, `${input.slug}.md`)
 	await fs.writeFile(file, options.initialContent ?? change.content ?? "")
-	let revision = input.revision
+	let revision = pending.revision
 	let draftTs = options.draftTs
 	// Set when a rejected save could not be persisted anywhere else: the temp file is then the only copy.
 	let tempFileHoldsOnlyCopy = false

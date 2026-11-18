@@ -2285,11 +2285,12 @@ describe("task notebook fix round", () => {
 				threadId: "aside",
 				status: "pending",
 				changes: review.changes,
+				turns: 1,
 			})),
 		)
 	})
 
-	it("shows a later turn's notebook changes in a new card at the end, keeping the card for the same revision", async () => {
+	it("moves an unanswered review row to the newest turn, and updates it in place otherwise", async () => {
 		const controller = Object.create(SdkController.prototype)
 		const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "v2" }]
 		const earlier = {
@@ -2299,24 +2300,30 @@ describe("task notebook fix round", () => {
 			sdkMessageIndex: 3,
 			text: JSON.stringify({ taskGroupId: "A", threadId: "t", revision: "r1", status: "pending", changes }),
 		}
+		let messages: unknown[] = [{ ts: 1, type: "say", say: "task" }, earlier]
 		let review = { groupId: "A", revision: "r2", changes }
 		controller.taskHistory = { findHistoryItem: vi.fn(async () => ({ id: "t" })), saveNotebookChangesMessage: vi.fn() }
 		controller.notebookStore = { listPending: vi.fn(async () => [review]), reviewDiffs: vi.fn(async (pending) => pending) }
+		controller.postStateToWebview = vi.fn()
 		let ts = 10
 		const emitHookMessage = vi.fn()
+		const removeMessage = vi.fn()
 		controller.getTaskSessionContext = vi.fn(() => ({
-			task: { messageStateHandler: { getClineMessages: () => [{ ts: 1, type: "say", say: "task" }, earlier] } },
-			messages: { emitHookMessage },
+			task: { messageStateHandler: { getClineMessages: () => messages } },
+			messages: { emitHookMessage, removeMessage },
 			translator: { nextTs: () => ++ts },
 		}))
-		await controller.emitNotebookChanges("t")
-		// r2 staged more: a new card (new ts), not the r1 card updated in place up the chat.
+		await controller.emitNotebookChanges("t", { newTurn: true })
+		// r2 staged more in a later turn: the old row goes away and one row at the end carries both turns.
+		expect(removeMessage).toHaveBeenCalledWith(5)
 		expect(emitHookMessage.mock.calls[0][0].ts).toBe(11)
-		expect(JSON.parse(emitHookMessage.mock.calls[0][0].text).revision).toBe("r2")
+		expect(JSON.parse(emitHookMessage.mock.calls[0][0].text)).toMatchObject({ revision: "r2", turns: 2 })
 
-		review = { groupId: "A", revision: "r1", changes }
+		// A refresh after a user action (the revision changed too) keeps the row where it is.
+		messages = [{ ts: 1, type: "say", say: "task" }, earlier]
+		review = { groupId: "A", revision: "r3", changes }
 		await controller.emitNotebookChanges("t")
-		// The same revision again keeps its card where it is.
+		expect(removeMessage).toHaveBeenCalledTimes(1)
 		expect(emitHookMessage.mock.calls[1][0]).toMatchObject({ ts: 5, sdkMessageIndex: 3 })
 	})
 
@@ -2343,31 +2350,48 @@ describe("task notebook fix round", () => {
 	})
 })
 
-it("resolves only the addressed notebook group and revision when another group's card is newer", async () => {
+it("settles only the addressed group's row, live while anything is still staged", async () => {
 	const controller = Object.create(SdkController.prototype)
-	const changes = [{ op: "create", slug: "plan", name: "Plan", description: "", content: "Reviewed" }]
+	const plan = { op: "create", slug: "plan", name: "Plan", description: "", content: "Reviewed" }
+	const other = { ...plan, slug: "other", name: "Other" }
 	const messages = ["A", "B"].map((taskGroupId, index) => ({
 		ts: index + 1,
 		type: "say",
 		say: "notebook_changes",
 		sdkMessageIndex: 10,
-		text: JSON.stringify({ taskGroupId, threadId: "thread", revision: `r-${taskGroupId}`, status: "pending", changes }),
+		text: JSON.stringify({
+			taskGroupId,
+			threadId: "thread",
+			revision: `r-${taskGroupId}`,
+			status: "pending",
+			changes: [plan, other],
+		}),
 	}))
 	const emitHookMessage = vi.fn()
+	let pending: unknown = { groupId: "A", revision: "r-A2", changes: [other] }
 	controller.taskHistory = { saveNotebookChangesMessage: vi.fn() }
+	controller.notebookStore = { readPendingReview: vi.fn(async () => pending), reviewDiffs: vi.fn(async (review) => review) }
 	controller.getTaskSessionContext = vi.fn(() => ({
 		task: { messageStateHandler: { getClineMessages: () => messages } },
 		messages: { emitHookMessage },
 		translator: { nextTs: () => 3 },
 	}))
-	await controller.finishNotebookChanges("thread", "A", "r-A", "applied", changes)
-	const resolved = emitHookMessage.mock.calls[0][0]
+	await controller.settleNotebookReview("thread", "A", { kept: [plan] })
+	const live = emitHookMessage.mock.calls[0][0]
+	expect(live.ts).toBe(1)
+	expect(JSON.parse(live.text)).toMatchObject({ status: "pending", revision: "r-A2", kept: [{ slug: "plan" }] })
+	expect(JSON.parse(live.text).kept[0].content).toBeUndefined()
+
+	messages[0] = { ...messages[0], text: live.text }
+	pending = undefined
+	await controller.settleNotebookReview("thread", "A", { dropped: [other] })
+	const resolved = emitHookMessage.mock.calls[1][0]
 	expect(resolved.ts).toBe(1)
 	expect(JSON.parse(resolved.text)).toMatchObject({
 		taskGroupId: "A",
-		revision: "r-A",
 		status: "applied",
 		appliedSlugs: ["plan"],
+		dropped: [{ slug: "other" }],
 	})
 	expect(JSON.parse(messages[1].text).status).toBe("pending")
 })

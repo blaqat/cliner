@@ -50,38 +50,52 @@ beforeEach(() => {
 	mocks.action.mockReset().mockResolvedValue({})
 	mocks.state = { clineMessages: [message()] }
 })
+const open = () => fireEvent.click(screen.getByRole("button", { name: /^Plan/ }))
+
 describe("NotebookChangesRow", () => {
-	it("shows unified diff, expands context, and has no per-change selection", () => {
+	it("shows one row with a chip per note, and opens a note only on click", () => {
 		render(<NotebookChangesRow message={message()} />)
+		expect(screen.getByTestId("notebook-changes-card")).toHaveTextContent("1 note change · this turn")
+		expect(screen.getByRole("button", { name: /^Plan/ })).toHaveTextContent("+1 −1")
+		expect(screen.queryByTestId("notebook-opened-change")).not.toBeInTheDocument()
+		open()
+		// The note renders as a page with the new line marked, not as a diff.
+		expect(screen.getByTestId("marked-note")).toBeInTheDocument()
+		expect(screen.queryByText("−old")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Show as diff" }))
 		expect(screen.getByText("−old")).toBeInTheDocument()
-		expect(screen.getByText("+new")).toBeInTheDocument()
-		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Show 3 unchanged lines" }))
-		expect(screen.getByText("one")).toBeInTheDocument()
 	})
-	it("Edit opens the host editor with the exact review revision", async () => {
+	it("shows the agent's summary and how many turns the row carries", () => {
+		const withSummary = { ...payload, turns: 2, changes: [{ ...payload.changes[0], summary: "Why the plan changed" }] }
+		render(<NotebookChangesRow message={message(10, withSummary)} />)
+		expect(screen.getByTestId("notebook-changes-card")).toHaveTextContent("last 2 turns")
+		open()
+		expect(screen.getByText("“Why the plan changed”")).toBeInTheDocument()
+	})
+	it("edits a staged note in place against the text it showed", async () => {
 		render(<NotebookChangesRow message={message()} />)
+		open()
 		fireEvent.click(screen.getByRole("button", { name: "Edit Plan" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "Plan body" }), { target: { value: "mine" } })
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
 		await waitFor(() =>
 			expect(mocks.action).toHaveBeenCalledWith(
-				expect.objectContaining({ action: "edit", threadId: "t1", taskGroupId: "g1", slug: "plan", revision: "r1" }),
+				expect.objectContaining({ action: "save_pending", slug: "plan", content: "mine", baseContent: "new" }),
 			),
 		)
-		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 	})
-	it("shows a rejected-save draft with Retry / Reload that target the card revision", async () => {
+	it("shows a rejected-save draft with Retry / Reload / Discard draft", async () => {
 		const withDraft = {
 			...payload,
-			changes: [{ ...payload.changes[0], draft: { ts: 5, reason: "Notebook changes have changed since this review." } }],
+			changes: [{ ...payload.changes[0], draft: { ts: 5, reason: "the agent changed this note while you were editing" } }],
 		}
 		mocks.state = { clineMessages: [message(10, withDraft)] }
 		render(<NotebookChangesRow message={message(10, withDraft)} />)
+		open()
 		expect(screen.getByTestId("notebook-draft-notice")).toHaveTextContent("Your text is kept as a draft")
 		fireEvent.click(screen.getByRole("button", { name: /^Retry saving your edit/ }))
 		await waitFor(() =>
-			expect(mocks.action).toHaveBeenCalledWith(
-				expect.objectContaining({ action: "retry_draft", slug: "plan", revision: "r1" }),
-			),
+			expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "retry_draft", slug: "plan" })),
 		)
 		fireEvent.click(screen.getByRole("button", { name: /^Reload your draft/ }))
 		await waitFor(() =>
@@ -90,39 +104,41 @@ describe("NotebookChangesRow", () => {
 		fireEvent.click(screen.getByRole("button", { name: /^Discard your draft/ }))
 		await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "discard_draft" })))
 	})
-	it("shows a failed Retry inline", async () => {
-		const withDraft = { ...payload, changes: [{ ...payload.changes[0], draft: { ts: 5, reason: "stale" } }] }
-		mocks.state = { clineMessages: [message(10, withDraft)] }
-		mocks.action.mockRejectedValueOnce(new Error("Use the newest review card."))
-		render(<NotebookChangesRow message={message(10, withDraft)} />)
-		fireEvent.click(screen.getByRole("button", { name: /^Retry saving your edit/ }))
-		expect(await screen.findByText("Use the newest review card.")).toBeInTheDocument()
-	})
-	it("accepts every change and renders a summary", async () => {
+	it("keeps everything in one click and renders a summary", async () => {
 		render(<NotebookChangesRow message={message()} />)
-		fireEvent.click(screen.getByRole("button", { name: "Accept all" }))
-		await screen.findByText("Applied 1 notebook change")
+		fireEvent.click(screen.getByRole("button", { name: "Keep" }))
+		await screen.findByText("Kept 1 note change")
 		expect(mocks.apply).toHaveBeenCalledWith(
-			expect.objectContaining({
-				revision: "r1",
-				taskGroupId: "g1",
-				threadId: "t1",
-				items: [{ slug: "plan", include: true }],
-			}),
+			expect.objectContaining({ taskGroupId: "g1", threadId: "t1", items: [{ slug: "plan", include: true }] }),
 		)
 	})
-	it("discards all with the revision and renders a summary", async () => {
+	it("keeps or drops one note from its opened view", async () => {
+		const two = { ...payload, changes: [...payload.changes, { ...payload.changes[0], slug: "other", name: "Other" }] }
+		mocks.state = { clineMessages: [message(10, two)] }
+		render(<NotebookChangesRow message={message(10, two)} />)
+		open()
+		fireEvent.click(screen.getByRole("button", { name: "Keep Plan" }))
+		await waitFor(() =>
+			expect(mocks.apply).toHaveBeenCalledWith(expect.objectContaining({ items: [{ slug: "plan", include: true }] })),
+		)
+		// One of two kept: the row stays live until the host updates it.
+		expect(screen.getByTestId("notebook-changes-card")).toBeInTheDocument()
+		open()
+		fireEvent.click(screen.getByRole("button", { name: "Drop Plan" }))
+		await waitFor(() => expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ slugs: ["plan"] })))
+	})
+	it("discards everything and renders a summary", async () => {
 		render(<NotebookChangesRow message={message()} />)
-		fireEvent.click(screen.getByRole("button", { name: "Discard all" }))
-		await screen.findByText("Discarded notebook changes")
-		expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ revision: "r1", taskGroupId: "g1", threadId: "t1" }))
+		fireEvent.click(screen.getByRole("button", { name: "Discard" }))
+		await screen.findByText("Dropped note changes")
+		expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", threadId: "t1", slugs: [] }))
 	})
 	it("keeps failed actions reviewable", async () => {
-		mocks.apply.mockRejectedValue(new Error("stale revision"))
+		mocks.apply.mockRejectedValue(new Error("disk full"))
 		render(<NotebookChangesRow message={message()} />)
-		fireEvent.click(screen.getByRole("button", { name: "Accept all" }))
-		expect(await screen.findByRole("alert")).toHaveTextContent("stale revision")
-		expect(screen.getByRole("button", { name: "Accept all" })).toBeEnabled()
+		fireEvent.click(screen.getByRole("button", { name: "Keep" }))
+		expect(await screen.findByRole("alert")).toHaveTextContent("disk full")
+		expect(screen.getByRole("button", { name: "Keep" })).toBeEnabled()
 	})
 	it("shows the user edit row and offers restore when replaced", async () => {
 		render(
@@ -130,19 +146,30 @@ describe("NotebookChangesRow", () => {
 				message={message(10, { ...payload, changes: [{ ...payload.changes[0], replacedUserVersion: "user1" }] })}
 			/>,
 		)
-		expect(screen.getByText("agent replaced your edit")).toBeInTheDocument()
 		expect(screen.getByText(/You edited Plan/)).toBeInTheDocument()
+		open()
+		expect(screen.getByText("agent replaced your edit")).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("button", { name: "Restore" }))
 		await waitFor(() =>
 			expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "restore_pending", slug: "plan" })),
 		)
 	})
-	it("supersedes old pending cards while preserving resolved summaries", () => {
+	it("labels About you changes and opens About you from the summary", () => {
+		const aboutYou = { ...payload, taskGroupId: "about-you", status: "applied" as const, kept: payload.changes }
+		const navigate = vi.fn()
+		mocks.state = { clineMessages: [message(10, aboutYou)], navigateToTaskGroup: navigate } as never
+		render(<NotebookChangesRow message={message(10, aboutYou)} />)
+		expect(screen.getByText("Kept 1 About you change")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Open About you" }))
+		expect(navigate).toHaveBeenCalledWith("about-you", "notebook")
+	})
+	it("never offers actions on an older pending row, and keeps resolved summaries", () => {
 		mocks.state = { clineMessages: [message(), message(20)] }
 		const { rerender } = render(<NotebookChangesRow message={message()} />)
 		expect(screen.getByTestId("notebook-changes-superseded")).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Keep" })).not.toBeInTheDocument()
 		rerender(<NotebookChangesRow message={message(10, { ...payload, status: "discarded" })} />)
-		expect(screen.getByText("Discarded notebook changes")).toBeInTheDocument()
+		expect(screen.getByText("Dropped note changes")).toBeInTheDocument()
 	})
 	it("rejects malformed payloads", () => {
 		expect(parseNotebookChangesPayload("bad")).toBeNull()

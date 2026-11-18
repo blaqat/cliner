@@ -60,8 +60,11 @@ describe("task group RPC validation", () => {
 			{ threadId: "thread", taskGroupId: "group", revision: "r1", items: [] } as never,
 		)
 		expect(controller.applyNotebookChanges).toHaveBeenCalledWith("thread", "group", "r1", [])
-		await discardNotebookChanges(controller as never, { threadId: "thread", taskGroupId: "group", revision: "r2" } as never)
-		expect(controller.discardNotebookChanges).toHaveBeenCalledWith("thread", "group", "r2")
+		await discardNotebookChanges(
+			controller as never,
+			{ threadId: "thread", taskGroupId: "group", revision: "r2", slugs: ["plan"] } as never,
+		)
+		expect(controller.discardNotebookChanges).toHaveBeenCalledWith("thread", "group", "r2", ["plan"])
 	})
 
 	it("forwards the branch-suggestion dismissal on updateTaskGroup", async () => {

@@ -1,3 +1,5 @@
+import { WroteNoteChip } from "./NotebookChangesRow"
+
 /**
  * Compact row for the `notebook` tool. The tool message carries the tool input
  * (`{ action, name, description?, content? }`); `names` lets a merged read list
@@ -6,6 +8,8 @@
 export interface NotebookToolInfo {
 	action: "read" | "write" | "delete"
 	names: string[]
+	/** The `about_you` tool: a proposed change to About you. */
+	aboutYou?: boolean
 }
 
 export function parseNotebookTool(tool: unknown): NotebookToolInfo | null {
@@ -16,7 +20,7 @@ export function parseNotebookTool(tool: unknown): NotebookToolInfo | null {
 	const names = Array.isArray(record.names)
 		? record.names.filter((name): name is string => typeof name === "string" && name.length > 0)
 		: [record.name, record.path].filter((name): name is string => typeof name === "string" && name.length > 0).slice(0, 1)
-	return { action, names }
+	return record.aboutYou === true ? { action, names, aboutYou: true } : { action, names }
 }
 
 /** A note this thread read: neutral dashed chip with an eye, matching the task page timeline. */
@@ -29,19 +33,29 @@ export function ReadNoteChip({ name }: { name: string }) {
 	)
 }
 
+/**
+ * Reads show the notes read; writes and deletes show what was written, as the
+ * same chips the review row uses. Nothing applies until the user keeps it in
+ * the review row at the end of the turn.
+ */
 export function NotebookToolRow({ info }: { info: NotebookToolInfo }) {
 	const staged = info.action !== "read"
-	const count = Math.max(info.names.length, 1)
 	return (
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
 			data-testid="notebook-tool-row">
-			<i aria-hidden className="codicon codicon-book text-[var(--vscode-charts-purple)]" />
+			<i
+				aria-hidden
+				className={`codicon ${info.aboutYou ? "codicon-account" : "codicon-book"} text-[var(--vscode-charts-purple)]`}
+			/>
 			{staged ? (
 				<>
-					<span>{`Staged ${count} notebook change${count === 1 ? "" : "s"}`}</span>
+					<span>{info.action === "delete" ? "Wants to delete" : "Wrote"}</span>
+					{info.names.map((name) => (
+						<WroteNoteChip key={name} name={info.aboutYou ? `About you › ${name}` : name} />
+					))}
 					<span className="flex-1" />
-					<span className="text-[11px] text-description">reviewed at the end</span>
+					<span className="text-[11px] text-description">you keep it at the end</span>
 				</>
 			) : (
 				<>

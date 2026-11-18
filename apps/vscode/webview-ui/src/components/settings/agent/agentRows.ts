@@ -1,6 +1,6 @@
 import { type AutoApprovalSettings, DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { updateAutoApproveSettings } from "@/components/chat/auto-approve-menu/AutoApproveSettingsAPI"
-import { preference, stored } from "../shell/rowFactories"
+import { action, preference, stored } from "../shell/rowFactories"
 import { updateSetting } from "../utils/settingsHandlers"
 export const AGENT_ROWS = [
 	preference<AutoApprovalSettings["actions"]>({
@@ -29,6 +29,13 @@ export const AGENT_ROWS = [
 		label: "Language",
 		description: "The language Cline answers in.",
 		aliases: ["preferred language", "locale"],
+	}),
+	action({
+		id: "agent.about-you",
+		label: "About you",
+		description:
+			"Preferences every thread follows, in any workspace. Sent with every request, so it has a size cap. Project facts belong in a task's notebook.",
+		aliases: ["about me", "preferences", "memory", "remember", "personal", "global notes"],
 	}),
 	stored("enableCheckpointsSetting", true, {
 		id: "agent.checkpoints",
