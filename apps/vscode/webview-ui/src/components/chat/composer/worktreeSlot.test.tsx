@@ -10,7 +10,11 @@ const mocks = vi.hoisted(() => ({
 	navigateToSettings: vi.fn(),
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({ currentTaskItem: mocks.currentTaskItem, navigateToSettings: mocks.navigateToSettings }),
+	useExtensionState: () => ({
+		currentTaskItem: mocks.currentTaskItem,
+		navigateToSettings: mocks.navigateToSettings,
+		worktreesEnabled: { featureFlag: false, user: false },
+	}),
 }))
 vi.mock("@/services/grpc-client", () => ({
 	WorktreeServiceClient: {
@@ -62,7 +66,7 @@ beforeEach(() => {
 	mocks.navigateToSettings.mockReset()
 })
 
-it("lets a new thread pick a worktree, and the button and send path follow the pick", async () => {
+it("lets a new thread pick a worktree with upstream's rollout off, and the button and send path follow the pick", async () => {
 	render(<WorkspaceButton />)
 	expect(screen.getByTestId("workspace-button")).toHaveAccessibleName("Workspace: your workspace")
 	// "Your workspace" with a folder; a picked worktree reads "New worktree" with the green worktree icon.

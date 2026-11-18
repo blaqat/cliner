@@ -447,6 +447,18 @@ describe("managed rows", () => {
 })
 
 describe("deep links", () => {
+	it.each([
+		undefined,
+		{ featureFlag: false, user: false },
+		{ featureFlag: true, user: false },
+	])("keeps thread worktree settings available when upstream worktreesEnabled is %j", (worktreesEnabled) => {
+		mocks.state.worktreesEnabled = worktreesEnabled
+		renderShell("worktrees")
+		expect(visiblePage()).toBe("settings-page-tools")
+		expect(within(row("tools.worktrees") as HTMLElement).getByText("worktree settings")).toBeVisible()
+		expect(screen.queryByText(/Worktrees are unavailable in this build/)).toBeNull()
+	})
+
 	it.each<[SettingsNavigationTarget, string]>([
 		["api-config", "models"],
 		["profiles", "models"],

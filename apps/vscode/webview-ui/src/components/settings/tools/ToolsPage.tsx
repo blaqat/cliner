@@ -9,7 +9,7 @@ import { AdvancedFold } from "../shell/AdvancedFold"
 import { NumberRow, SelectRow, SettingBlock, SettingGroup, SettingRow, ToggleRow } from "../shell/SettingRow"
 
 export const ToolsPage = () => {
-	const { availableTerminalProfiles, navigateToMcp, worktreesEnabled } = useExtensionState()
+	const { availableTerminalProfiles, navigateToMcp } = useExtensionState()
 	const parseSeconds = (text: string) => {
 		const seconds = Number.parseFloat(text)
 		return Number.isNaN(seconds) || seconds <= 0 ? undefined : Math.round(seconds * 1000)
@@ -111,13 +111,8 @@ export const ToolsPage = () => {
 			</SettingGroup>
 			<SettingGroup title="Worktrees and hooks">
 				<SettingRow rowId="tools.worktrees">
-					{worktreesEnabled?.featureFlag ? (
-						<WorktreeSettings />
-					) : (
-						<p className="text-[12px] text-description">
-							Worktrees are unavailable in this build. Update the extension to configure them.
-						</p>
-					)}
+					{/* Thread worktrees use their own mode and workspace switch, independent of upstream's rollout. */}
+					<WorktreeSettings />
 				</SettingRow>
 				<ToggleRow rowId="tools.hooks" />
 			</SettingGroup>
