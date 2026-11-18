@@ -1,4 +1,5 @@
 import type { McpServer } from "@shared/mcp"
+import { RESERVED_COMMAND_NAMES } from "@shared/scripts"
 import { PLATFORM_CONFIG, PlatformType } from "@/config/platform.config"
 import { BASE_SLASH_COMMANDS, type SlashCommand, VSCODE_ONLY_COMMANDS } from "../../../src/shared/slashCommands.ts"
 
@@ -142,10 +143,10 @@ export function parseModeSwitchCommand(text: string): { mode: "plan" | "act"; re
 	return { mode, rest }
 }
 
-/** Side-thread commands are composer actions and must lead the prompt. */
-export function parseSideCommand(text: string): { rest: string } | null {
-	const match = /^\s*\/(?:side|btw)(?=\s|$)\s*/i.exec(text)
-	return match ? { rest: text.slice(match[0].length).trim() } : null
+/** Side-thread commands are composer actions and must lead the prompt: /side keeps a side thread, /btw asks a side question. */
+export function parseSideCommand(text: string): { kind: "side" | "btw"; rest: string } | null {
+	const match = /^\s*\/(side|btw)(?=\s|$)\s*/i.exec(text)
+	return match ? { kind: match[1].toLowerCase() === "btw" ? "btw" : "side", rest: text.slice(match[0].length).trim() } : null
 }
 
 /**
@@ -204,6 +205,11 @@ export function shouldShowSlashCommandsMenu(text: string, cursorPosition: number
 	return true
 }
 
+/** /side and /btw are composer commands: a workflow, script or prompt with that name can't shadow them. */
+function withoutReservedNames(commands: SlashCommand[]): SlashCommand[] {
+	return commands.filter((command) => !RESERVED_COMMAND_NAMES.includes(command.name.toLowerCase()))
+}
+
 /**
  * Gets filtered slash commands that match the current input
  */
@@ -223,7 +229,10 @@ export function getMatchingSlashCommands(
 		remoteWorkflows,
 	)
 	const mcpPromptCommands = getMcpPromptCommands(mcpServers)
-	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...scriptCommands, ...mcpPromptCommands]
+	const allCommands = [
+		...DEFAULT_SLASH_COMMANDS,
+		...withoutReservedNames([...workflowCommands, ...scriptCommands, ...mcpPromptCommands]),
+	]
 
 	if (!query) {
 		return allCommands
@@ -280,7 +289,10 @@ export function validateSlashCommand(
 		remoteWorkflows,
 	)
 	const mcpPromptCommands = getMcpPromptCommands(mcpServers)
-	const allCommands = [...DEFAULT_SLASH_COMMANDS, ...workflowCommands, ...scriptCommands, ...mcpPromptCommands]
+	const allCommands = [
+		...DEFAULT_SLASH_COMMANDS,
+		...withoutReservedNames([...workflowCommands, ...scriptCommands, ...mcpPromptCommands]),
+	]
 
 	// case insensitive matching
 	const exactMatch = allCommands.some((cmd) => cmd.name.toLowerCase() === command.toLowerCase())

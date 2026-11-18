@@ -25,6 +25,11 @@ export const detectMetaKeyChar = (platform: string) => {
 	return platform.match(platforms.mac) ? "⌘" : "Ctrl"
 }
 
+/** Label for the Alt/Option key: ⌥ on macOS, Alt elsewhere. */
+export const detectAltKeyChar = (platform: string) => {
+	return platform.match(platforms.mac) ? "⌥" : "Alt"
+}
+
 const userAgent = navigator?.userAgent || ""
 
 const isChrome = userAgent.indexOf("Chrome") >= 0

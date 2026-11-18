@@ -143,7 +143,8 @@ export function buildInbox(
 		.filter((item) => !nests(item))
 		.map((item) => {
 			const allChildren = childrenByParent.get(item.id) ?? []
-			const children = allChildren.filter((child) => !child.isSubagent)
+			// A side question that wasn't kept isn't a side thread the row counts.
+			const children = allChildren.filter((child) => !child.isSubagent && child.sideKind !== "btw")
 			const agents: HistoryItem[] = []
 			const seen = new Set([item.id])
 			const pending = allChildren.filter((child) => child.isSubagent)

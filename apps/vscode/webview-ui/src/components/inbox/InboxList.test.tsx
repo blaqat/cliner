@@ -95,7 +95,7 @@ describe("InboxList", () => {
 		expect(subagents).toHaveTextContent("1")
 		expect(subagents.querySelector(".codicon-type-hierarchy-sub")).not.toBeNull()
 		expect(subagents).toHaveAttribute("data-tone", "idle")
-		expect(screen.getByTitle("1 aside").querySelector(".codicon-repo-forked")).not.toBeNull()
+		expect(screen.getByTitle("1 side thread").querySelector(".codicon-repo-forked")).not.toBeNull()
 	})
 
 	it("ages a row by its newest subthread, not the parent's own ts", () => {

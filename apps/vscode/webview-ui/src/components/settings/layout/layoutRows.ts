@@ -27,7 +27,7 @@ export const LAYOUT_ROWS = [
 		id: "layout.enter",
 		label: "While working, Enter sends as",
 		description: (ctx) =>
-			`${detectMetaKeyChar(ctx.state.platform)}+Enter does the other one. ${detectOS(ctx.state.platform) === "mac" ? "⌥" : "Alt"}+Enter sends as an aside.`,
+			`${detectMetaKeyChar(ctx.state.platform)}+Enter does the other one. ${detectOS(ctx.state.platform) === "mac" ? "⌥" : "Alt"}+Enter sends as a side thread.`,
 		aliases: ["steer", "interject"],
 		format: (value) => (value === "interject" ? "Interject" : "Steer"),
 	}),

@@ -179,7 +179,9 @@ export function buildThreadItems(
 	const visit = (parentId: string, depth: number, trail: Set<string>) => {
 		for (const aside of [...(children.get(parentId) ?? [])].sort((a, b) => a.ts - b.ts)) {
 			if (trail.has(aside.id)) continue
-			if (hiddenIds.has(aside.id) && !containsFocused(aside.id)) continue
+			// Closed side threads and unkept side questions stay in the thread panel, not the strip.
+			const tucked = !!aside.sideClosedAt || aside.sideKind === "btw"
+			if ((hiddenIds.has(aside.id) || tucked) && !containsFocused(aside.id)) continue
 			items.push({
 				kind: "aside",
 				id: aside.id,
@@ -196,7 +198,9 @@ export function buildThreadItems(
 }
 
 export function asideTitle(item: HistoryItem): string {
-	return item.title?.trim() || item.task.replace(ASIDE_PREFIX, "") || "Aside"
+	return (
+		item.title?.trim() || item.task.replace(ASIDE_PREFIX, "") || (item.sideKind === "btw" ? "Side question" : "Side thread")
+	)
 }
 
 /** Display name for any thread: the user-set title, else its first message (asides drop their prefix). */

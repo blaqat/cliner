@@ -118,7 +118,11 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	}, [taskGroupId])
 
 	const notes = useMemo(() => [...(details?.notes ?? [])].sort((a, b) => b.updatedAt - a.updatedAt), [details?.notes])
-	const timeline = useMemo(() => orderTimeline(details?.threads ?? []), [details?.threads])
+	// A side question that wasn't kept isn't part of the task's story; its thread panel lists it.
+	const timeline = useMemo(() => {
+		const questions = new Set((taskHistory ?? []).filter((item) => item.sideKind === "btw").map((item) => item.id))
+		return orderTimeline((details?.threads ?? []).filter((thread) => !questions.has(thread.threadId)))
+	}, [details?.threads, taskHistory])
 	const threadCount = timeline.length
 	const noteNames = useMemo(() => new Map(notes.map((note) => [note.slug, note.name])), [notes])
 	const settledIds = useMemo(

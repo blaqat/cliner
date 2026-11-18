@@ -144,7 +144,7 @@ export interface SendSplitButtonProps {
 	flash?: boolean
 	/** "⌘+Shift+A" / "Ctrl+Shift+A". */
 	toggleKeys: string
-	/** What the send part does, with its keys ("Send (Enter) · Aside (Alt+Enter)"). */
+	/** What the send part does, with its keys ("Send (Enter) · Side thread (Alt+Enter)"). */
 	sendTitle: string
 	/** The tightest row: the mode switch shows only the current mode. */
 	compactMode?: boolean

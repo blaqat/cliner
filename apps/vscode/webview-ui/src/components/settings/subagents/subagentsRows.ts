@@ -52,7 +52,7 @@ export const SUBAGENTS_ROWS = [
 	preference<boolean>({
 		id: "subagents.enabled",
 		label: "Subagents",
-		description: "Main threads and asides can start helpers. Helpers cannot start their own.",
+		description: "Main threads and side threads can start helpers. Helpers cannot start their own.",
 		aliases: ["enable", "spawn", "helpers", "delegate"],
 		managedKeys: ["subagentsEnabled"],
 		defaultValue: () => POLICY_DEFAULTS.enabled,

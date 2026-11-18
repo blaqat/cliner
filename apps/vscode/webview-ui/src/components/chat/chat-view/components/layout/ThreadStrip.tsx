@@ -12,6 +12,7 @@ import { openTask } from "@/components/inbox/sessionActions"
 import type { ThreadStatus } from "@/components/inbox/threadStatus"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
+import { closeSideThread } from "../../utils/asideUtils"
 import { buildThreadItems, type ThreadItem } from "../../utils/threadUtils"
 
 /** A top-level aside and every aside under it, shown as one bracketed group when it has any. */
@@ -55,7 +56,7 @@ interface ThreadChipProps {
 
 const ThreadChip = ({ item, onOpen, onClose, inGroup = false, lead }: ThreadChipProps) => {
 	const clickable = !item.current
-	const tooltip = item.kind === "main" ? "Main conversation" : `Aside: ${item.title}`
+	const tooltip = item.kind === "main" ? "Main conversation" : `Side thread: ${item.title}`
 	const nested = (item.depth ?? 1) >= 2
 	const KindIcon = lead ? MessagesSquareIcon : nested ? CornerDownRightIcon : MessageSquareIcon
 	const folded = lead && !lead.expanded
@@ -97,7 +98,7 @@ const ThreadChip = ({ item, onOpen, onClose, inGroup = false, lead }: ThreadChip
 			{lead && (
 				<button
 					aria-expanded={lead.expanded}
-					aria-label={`${lead.expanded ? "Fold" : "Unfold"} ${item.title}'s asides`}
+					aria-label={`${lead.expanded ? "Fold" : "Unfold"} ${item.title}'s side threads`}
 					className="flex size-3.5 shrink-0 cursor-pointer items-center justify-center rounded-[3px] border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
 					data-testid="thread-group-toggle"
 					onClick={(event) => {
@@ -125,7 +126,7 @@ const ThreadChip = ({ item, onOpen, onClose, inGroup = false, lead }: ThreadChip
 			/>
 			{item.kind !== "main" && (
 				<button
-					aria-label={lead ? `Close aside ${item.title} and its asides` : `Close aside ${item.title}`}
+					aria-label={lead ? `Close side thread ${item.title} and its side threads` : `Close side thread ${item.title}`}
 					className="flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border-0 bg-transparent p-0 text-description opacity-60 hover:text-foreground hover:opacity-100 cursor-pointer"
 					onClick={(event) => {
 						event.stopPropagation()
@@ -142,9 +143,9 @@ const ThreadChip = ({ item, onOpen, onClose, inGroup = false, lead }: ThreadChip
 
 /**
  * Human-made threads of the focused chat, directly under the task header:
- * Main and its asides. Hidden when the chat has no asides; subagents are in
- * the header's subagent panel. Closing an aside only hides the chip (the
- * session keeps running).
+ * Main and its side threads. Hidden when the chat has no side threads; subagents
+ * are in the header's subagent panel. Closing one stops it if it runs; it stays
+ * listed under Main in the thread panel.
  *
  * An aside with asides of its own is a group, like a browser tab group in our
  * chip style: a chip-border bracket around it and everything under it, led by
@@ -170,9 +171,11 @@ const ThreadStrip = () => {
 
 	const main = items[0]
 	const handleClose = (item: ThreadItem) => {
-		// Closing a group's lead hides the whole group (buildThreadItems drops the subtree).
+		// Closing a group's lead hides the whole group (buildThreadItems drops the subtree). A
+		// running side thread stops; it stays listed under Main in the thread panel.
 		const group = groups.find((g) => g.lead.id === item.id)
 		setHiddenIds((current) => new Set(current).add(item.id))
+		void closeSideThread(item.id).catch((error) => console.error("Failed to close side thread:", error))
 		if (item.current || group?.members.some((member) => member.current)) {
 			void openTask(main.id)
 		}
@@ -206,7 +209,7 @@ const ThreadStrip = () => {
 						const expanded = !folded.has(lead.id) || lead.current || members.some((member) => member.current)
 						return (
 							<div
-								aria-label={`${lead.title} and its asides`}
+								aria-label={`${lead.title} and its side threads`}
 								className="flex shrink-0 items-center gap-0.5 rounded-xs border border-editor-group-border bg-input-background/20 p-px"
 								data-folded={expanded ? undefined : "true"}
 								data-testid="thread-group"

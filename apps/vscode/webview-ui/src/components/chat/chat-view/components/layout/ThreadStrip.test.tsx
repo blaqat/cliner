@@ -3,11 +3,16 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import ThreadStrip from "./ThreadStrip"
 
-const mocks = vi.hoisted(() => ({ showTaskWithId: vi.fn(), state: {} as Record<string, unknown> }))
+const mocks = vi.hoisted(() => ({
+	showTaskWithId: vi.fn(),
+	updateSideThread: vi.fn(async () => ({})),
+	state: {} as Record<string, unknown>,
+}))
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: { showTaskWithId: (request: unknown) => mocks.showTaskWithId(request) },
+	SideThreadServiceClient: { updateSideThread: (request: unknown) => mocks.updateSideThread(request) },
 }))
 
 const item = (id: string, ts: number, extra: Partial<HistoryItem> = {}): HistoryItem => ({
@@ -53,7 +58,7 @@ describe("ThreadStrip", () => {
 	it("focuses an aside on click and collapses", () => {
 		render(<ThreadStrip />)
 
-		fireEvent.click(screen.getByRole("button", { name: "Aside: why?" }))
+		fireEvent.click(screen.getByRole("button", { name: "Side thread: why?" }))
 		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "aside" }))
 
 		fireEvent.click(screen.getByRole("button", { name: /Threads/ }))
@@ -64,9 +69,21 @@ describe("ThreadStrip", () => {
 		mocks.state = { ...mocks.state, currentTaskItem: aside }
 		render(<ThreadStrip />)
 
-		fireEvent.click(screen.getByRole("button", { name: "Close aside why?" }))
+		fireEvent.click(screen.getByRole("button", { name: "Close side thread why?" }))
 
 		expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "root" }))
+		// Closing is saved (and stops it if it runs); it stays under Main in the thread panel.
+		expect(mocks.updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "aside", closed: true }))
+	})
+
+	it("leaves out closed side threads and side questions that weren't kept", () => {
+		const closed = item("closed", 4, { parentTaskId: "root", task: "closed one", sideClosedAt: 5 })
+		const question = item("question", 5, { parentTaskId: "root", task: "quick q", sideKind: "btw" })
+		mocks.state = { ...mocks.state, taskHistory: [root, aside, child, closed, question] }
+		render(<ThreadStrip />)
+		const chips = screen.getAllByTestId("thread-chip")
+		expect(chips).toHaveLength(2)
+		expect(chips[1]).toHaveTextContent("why?")
 	})
 
 	it("is hidden for a chat without asides, even when it has subagents", () => {
@@ -77,7 +94,7 @@ describe("ThreadStrip", () => {
 
 	it("is hidden once every aside chip is closed", () => {
 		render(<ThreadStrip />)
-		fireEvent.click(screen.getByRole("button", { name: "Close aside why?" }))
+		fireEvent.click(screen.getByRole("button", { name: "Close side thread why?" }))
 		expect(screen.queryByTestId("thread-strip")).toBeNull()
 	})
 
@@ -102,7 +119,7 @@ describe("ThreadStrip", () => {
 			const chips = screen.getAllByTestId("thread-chip")
 			expect(chips[0]).toHaveTextContent("Main")
 			expect(chips[0]).toHaveAttribute("data-kind", "main")
-			const group = screen.getByRole("group", { name: "hello again and its asides" })
+			const group = screen.getByRole("group", { name: "hello again and its side threads" })
 			expect(chipTitles(group)).toEqual(["hello again", "deeper", "deepest"])
 			// The plain aside isn't in the bracket.
 			expect(within(group).queryByText("why?")).toBeNull()
@@ -111,25 +128,25 @@ describe("ThreadStrip", () => {
 		it("folds to the lead with a count and the most urgent status inside, and unfolds", () => {
 			mocks.state = { currentTaskItem: root, taskHistory: history, sessionStatuses: { deepest: "running" } }
 			render(<ThreadStrip />)
-			fireEvent.click(screen.getByRole("button", { name: "Fold hello again's asides" }))
+			fireEvent.click(screen.getByRole("button", { name: "Fold hello again's side threads" }))
 			const group = screen.getByTestId("thread-group")
 			expect(group).toHaveAttribute("data-folded", "true")
 			expect(chipTitles(group)).toEqual(["hello again+2"])
 			expect(within(group).getByRole("img", { name: "deepest: running" })).toHaveClass("animate-spin")
-			fireEvent.click(screen.getByRole("button", { name: "Unfold hello again's asides" }))
+			fireEvent.click(screen.getByRole("button", { name: "Unfold hello again's side threads" }))
 			expect(chipTitles(screen.getByTestId("thread-group"))).toEqual(["hello again", "deeper", "deepest"])
 		})
 
 		it("never keeps the group you're in folded, and closing the lead hides the group", () => {
 			mocks.state = { currentTaskItem: root, taskHistory: history, sessionStatuses: {} }
 			const { unmount } = render(<ThreadStrip />)
-			fireEvent.click(screen.getByRole("button", { name: "Fold hello again's asides" }))
+			fireEvent.click(screen.getByRole("button", { name: "Fold hello again's side threads" }))
 			unmount()
 			mocks.state = { currentTaskItem: deeper, taskHistory: history, sessionStatuses: {} }
 			render(<ThreadStrip />)
 			const group = screen.getByTestId("thread-group")
 			expect(group).not.toHaveAttribute("data-folded")
-			fireEvent.click(screen.getByRole("button", { name: "Close aside hello again and its asides" }))
+			fireEvent.click(screen.getByRole("button", { name: "Close side thread hello again and its side threads" }))
 			// You were inside it, so you go back to Main (where buildThreadItems drops the closed group).
 			expect(mocks.showTaskWithId).toHaveBeenCalledWith(expect.objectContaining({ value: "root" }))
 		})

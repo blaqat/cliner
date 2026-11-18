@@ -3,17 +3,17 @@ import { memo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
-import { startAside } from "./chat-view/utils/asideUtils"
+import { startSideThread } from "./chat-view/utils/asideUtils"
 
 interface AsideButtonProps {
-	/** The aside copies the conversation through this message. */
+	/** The side thread copies the conversation through this message. */
 	messageTs: number
 	className?: string
 }
 
 /**
- * Row action beside Copy: branches the conversation at this message into an
- * aside (opens in Ask; the main chat keeps running in the background).
+ * Row action beside Copy: branches the conversation at this message into a side
+ * thread (in Ask), beside Main when there's room, else in its own view. Main keeps running.
  */
 const AsideButton = ({ messageTs, className }: AsideButtonProps) => {
 	const { currentTaskItem } = useExtensionState()
@@ -25,19 +25,19 @@ const AsideButton = ({ messageTs, className }: AsideButtonProps) => {
 
 	return (
 		<Button
-			aria-label="Aside from here"
+			aria-label="Side thread from here"
 			className={cn("scale-90", className)}
 			data-testid="aside-button"
 			disabled={starting}
 			onClick={(event) => {
 				event.stopPropagation()
 				setStarting(true)
-				startAside({ taskId, messageTs })
-					.catch((error) => console.error("Failed to start aside:", error))
+				startSideThread({ taskId, messageTs })
+					.catch((error) => console.error("Failed to start side thread:", error))
 					.finally(() => setStarting(false))
 			}}
 			size="icon"
-			title="Aside: branch the conversation from here (opens in Ask)"
+			title="Side thread from here (in Ask; Main keeps going)"
 			variant="icon">
 			<SplitIcon className="size-2" />
 		</Button>

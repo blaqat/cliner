@@ -11,7 +11,7 @@ const renderButton = (props: Partial<SendSplitButtonProps> = {}) => {
 			mode="act"
 			onPickMode={onPickMode}
 			onSend={onSend}
-			sendTitle="Send (Enter) · Aside (Alt+Enter)"
+			sendTitle="Send (Enter) · Side thread (Alt+Enter)"
 			toggleKeys="Ctrl+Shift+A"
 			{...props}
 		/>,
@@ -36,7 +36,7 @@ describe("SendSplitButton", () => {
 		const send = screen.getByTestId("send-button")
 		expect(send.querySelector(".codicon-send")).not.toBeNull()
 		expect(send).toHaveAccessibleName("Send (Act)")
-		expect(send.title).toContain("Send (Enter) · Aside (Alt+Enter)")
+		expect(send.title).toContain("Send (Enter) · Side thread (Alt+Enter)")
 		expect(send.title).toContain("In Act mode, Cline will complete the task immediately")
 		fireEvent.click(send)
 		expect(onSend).toHaveBeenCalledOnce()

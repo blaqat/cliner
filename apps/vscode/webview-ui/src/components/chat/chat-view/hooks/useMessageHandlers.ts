@@ -12,7 +12,7 @@ import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceCli
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand, parseSideCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
-import { latestMessageTs, startAside } from "../utils/asideUtils"
+import { latestMessageTs, startSideQuestion, startSideThread } from "../utils/asideUtils"
 import { type DraftAuthorization, toComposerProvenance } from "../utils/composerProvenance"
 import { formatMessageWithQuotes } from "../utils/quoteUtils"
 
@@ -163,31 +163,28 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				messageToSend = formatMessageWithQuotes(messageToSend, submittedQuotes)
 			}
 
-			if (sideCommand) {
-				const messageTs = latestMessageTs(messages)
-				// Keep the draft when there is no main thread to fork, or the prompt is empty.
-				if (
-					!currentTaskItem?.id ||
-					currentTaskItem.parentTaskId ||
-					currentTaskItem.isSubagent ||
-					messageTs === undefined ||
-					!hasContent
-				)
-					return
+			// Subagent threads are read-only: keep the draft. Outside a thread there's nothing to side
+			// from, so the text is just a new chat.
+			if (sideCommand && currentTaskItem?.isSubagent) return
+			const sideFrom = sideCommand && currentTaskItem?.id ? latestMessageTs(messages) : undefined
+			if (sideCommand && currentTaskItem?.id && !currentTaskItem.isSubagent && sideFrom !== undefined) {
+				// An empty /side or /btw keeps the draft: there's nothing to ask yet.
+				if (!hasContent) return
 				setInputValue("")
 				setQuotes([])
 				setMessageTags([])
 				setSelectedImages([])
 				setSelectedFiles([])
 				try {
-					await startAside({
+					const request = {
 						taskId: currentTaskItem.id,
-						messageTs,
+						messageTs: sideFrom,
 						text: messageToSend,
 						provenance,
 						images: submittedImages,
 						files: submittedFiles,
-					})
+					}
+					await (sideCommand.kind === "btw" ? startSideQuestion(request) : startSideThread(request))
 				} catch (error) {
 					setInputValue(submittedText)
 					setQuotes(submittedQuotes)
@@ -195,7 +192,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					setSelectedImages(submittedImages)
 					setSelectedFiles(submittedFiles)
 					if (sentAuth) chatState.restoreAuthorization(sentAuth)
-					console.error("Failed to start aside:", error)
+					console.error("Failed to start side thread:", error)
 					return
 				}
 
@@ -869,8 +866,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		[sendDraftVia],
 	)
 
-	// Aside: fork the focused task at `messageTs` (default: the latest message), open the
-	// fork (in Ask) and send the draft there. With no task yet, it is just a normal send.
+	// Side thread (Alt+Enter): fork the focused task at `messageTs` (default: the latest message)
+	// and send the draft there, beside Main when there's room, else in its own view (in Ask).
+	// With no task yet, it is just a normal send.
 	const handleAside = useCallback(
 		async (text: string, images: string[], files: string[], messageTs = latestMessageTs(messages)) => {
 			const taskId = currentTaskItem?.id
@@ -880,12 +878,12 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			const hasDraft = !!text.trim() || quotes.length > 0 || images.length > 0 || files.length > 0
 			const open = (message: string, provenance?: ComposerProvenance) =>
-				startAside({ taskId, messageTs, text: message, provenance, images, files })
+				startSideThread({ taskId, messageTs, text: message, provenance, images, files })
 			if (!hasDraft) {
-				await open("").catch((error) => console.error("Failed to start aside:", error))
+				await open("").catch((error) => console.error("Failed to start side thread:", error))
 				return
 			}
-			await sendDraftVia(text, images, files, open).catch((error) => console.error("Failed to start aside:", error))
+			await sendDraftVia(text, images, files, open).catch((error) => console.error("Failed to start side thread:", error))
 		},
 		[messages, currentTaskItem?.id, quotes.length, handleSendMessage, sendDraftVia],
 	)

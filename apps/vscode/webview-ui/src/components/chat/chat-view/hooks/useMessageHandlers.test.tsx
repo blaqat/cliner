@@ -16,6 +16,7 @@ const trackIntent = vi.fn().mockResolvedValue(undefined)
 const togglePlanActModeProto = vi.fn().mockResolvedValue({ value: false })
 const interjectPrompt = vi.fn().mockResolvedValue(undefined)
 const forkTaskAt = vi.fn().mockResolvedValue({ value: "aside-1" })
+const startSideThread = vi.fn().mockResolvedValue({ value: "aside-1" })
 const showTaskWithId = vi.fn().mockResolvedValue(undefined)
 
 vi.mock("@/services/grpc-client", () => ({
@@ -28,6 +29,9 @@ vi.mock("@/services/grpc-client", () => ({
 		interjectPrompt: (req: unknown) => interjectPrompt(req),
 		forkTaskAt: (req: unknown) => forkTaskAt(req),
 		showTaskWithId: (req: unknown) => showTaskWithId(req),
+	},
+	SideThreadServiceClient: {
+		startSideThread: (req: unknown) => startSideThread(req),
 	},
 	SlashServiceClient: {
 		condense: (req: unknown) => condense(req),
@@ -47,6 +51,12 @@ vi.mock("@shared/proto/cline/task", () => ({
 	NewTaskRequest: { create: (x: unknown) => x },
 	InterjectPromptRequest: { create: (x: unknown) => x },
 	ForkTaskAtRequest: { create: (x: unknown) => x },
+}))
+vi.mock("@shared/proto/cline/side_thread", () => ({
+	StartSideThreadRequest: { create: (x: unknown) => x },
+	SendToSideThreadRequest: { create: (x: unknown) => x },
+	SendSideThreadNoteRequest: { create: (x: unknown) => x },
+	UpdateSideThreadRequest: { create: (x: unknown) => x },
 }))
 vi.mock("@shared/proto/cline/state", () => ({
 	PlanActMode: { PLAN: 0, ACT: 1 },
@@ -76,6 +86,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	}),
 }))
 
+import { getSideThreadSlots, resetSideThreadSlots, setPanelRoom } from "@/components/sideThreads/sideThreadStore"
 import { getComposerTaskGroup, setComposerPageTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import type { ChatState } from "../types/chatTypes"
 import { useChatState } from "./useChatState"
@@ -1885,19 +1896,28 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 describe("side composer commands", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		resetSideThreadSlots()
 		mockCurrentTaskItem = { id: "main" }
 		mockTurnState = { phase: "completed", seq: 1 }
 	})
 	afterEach(() => {
 		mockCurrentTaskItem = undefined
+		resetSideThreadSlots()
 	})
-	it.each(["side", "btw"])("forks the latest message for /%s with attachments and no main-thread send", async (command) => {
+	it("opens /side as its own view when there's no room beside Main", async () => {
 		const state = makeChatState(completedConversation)
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, state))
 		await act(async () => {
-			await result.current.handleSendMessage(`/${command} explain this`, ["image"], ["file"])
+			await result.current.handleSendMessage("/side explain this", ["image"], ["file"])
 		})
-		expect(forkTaskAt).toHaveBeenCalledWith({ taskId: "main", messageTs: completedConversation.at(-1)!.ts })
+		expect(startSideThread).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "main",
+				messageTs: completedConversation.at(-1)!.ts,
+				kind: "side",
+				background: false,
+			}),
+		)
 		expect(showTaskWithId).toHaveBeenCalledWith({ value: "aside-1" })
 		expect(askResponse).toHaveBeenCalledTimes(1)
 		expect(askResponse).toHaveBeenCalledWith(
@@ -1906,30 +1926,66 @@ describe("side composer commands", () => {
 		expect(togglePlanActModeProto).not.toHaveBeenCalled()
 		expect(newTask).not.toHaveBeenCalled()
 	})
+	it("opens /side beside Main when there's room, without leaving Main", async () => {
+		setPanelRoom(true)
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/side explain this", [], [])
+		})
+		expect(startSideThread).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "side", text: "explain this", background: true }),
+		)
+		expect(showTaskWithId).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(getSideThreadSlots().beside).toEqual({ main: "aside-1" })
+	})
+	it("asks /btw as a side question card: no new view, no send to Main", async () => {
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/btw why?", [], [])
+		})
+		expect(startSideThread).toHaveBeenCalledWith(expect.objectContaining({ kind: "btw", text: "why?", background: true }))
+		expect(showTaskWithId).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(getSideThreadSlots().question).toEqual({ main: "aside-1" })
+	})
 	it("forks while Main is running without canceling or interjecting", async () => {
 		mockTurnState = { phase: "streaming", seq: 1 } as TurnState
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
 		await act(async () => {
 			await result.current.handleSendMessage("/btw why?", [], [])
 		})
-		expect(forkTaskAt).toHaveBeenCalledTimes(1)
+		expect(startSideThread).toHaveBeenCalledTimes(1)
 		expect(cancelTask).not.toHaveBeenCalled()
 		expect(interjectPrompt).not.toHaveBeenCalled()
 	})
-	it.each([
-		undefined,
-		{ id: "side", parentTaskId: "main" },
-		{ id: "agent", isSubagent: true },
-	])("keeps the draft outside Main", async (item) => {
-		mockCurrentTaskItem = item
+	it("works from a side thread too (it nests under it)", async () => {
+		mockCurrentTaskItem = { id: "side", parentTaskId: "main" }
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/btw why?", [], [])
+		})
+		expect(startSideThread).toHaveBeenCalledWith(expect.objectContaining({ taskId: "side", kind: "btw" }))
+	})
+	it("keeps the draft in a read-only subagent thread", async () => {
+		mockCurrentTaskItem = { id: "agent", isSubagent: true }
 		const state = makeChatState(completedConversation)
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, state))
 		await act(async () => {
 			await result.current.handleSendMessage("/side hello", [], [])
 		})
-		expect(forkTaskAt).not.toHaveBeenCalled()
+		expect(startSideThread).not.toHaveBeenCalled()
 		expect(askResponse).not.toHaveBeenCalled()
 		expect(state.setInputValue).not.toHaveBeenCalled()
+	})
+	it("starts a new chat with the text when no thread is open", async () => {
+		mockCurrentTaskItem = undefined
+		const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+		await act(async () => {
+			await result.current.handleSendMessage("/btw hello", [], [])
+		})
+		expect(startSideThread).not.toHaveBeenCalled()
+		expect(newTask).toHaveBeenCalledWith(expect.objectContaining({ text: "hello" }))
 	})
 	it("keeps an empty command or a failed fork in the composer", async () => {
 		const state = makeChatState(completedConversation)
@@ -1937,8 +1993,8 @@ describe("side composer commands", () => {
 		await act(async () => {
 			await result.current.handleSendMessage("/side", [], [])
 		})
-		expect(forkTaskAt).not.toHaveBeenCalled()
-		forkTaskAt.mockRejectedValueOnce(new Error("unavailable"))
+		expect(startSideThread).not.toHaveBeenCalled()
+		startSideThread.mockRejectedValueOnce(new Error("unavailable"))
 		await act(async () => {
 			await result.current.handleSendMessage("/side hello", [], [])
 		})

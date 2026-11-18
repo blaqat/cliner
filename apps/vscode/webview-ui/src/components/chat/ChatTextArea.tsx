@@ -35,7 +35,7 @@ import {
 	shouldShowContextMenu,
 } from "@/utils/context-mentions"
 import { useMetaKeyDetection, useShortcut } from "@/utils/hooks"
-import { isSafari, modKeyLabel } from "@/utils/platformUtils"
+import { detectAltKeyChar, isSafari, modKeyLabel } from "@/utils/platformUtils"
 import {
 	getMatchingSlashCommands,
 	insertSlashCommand,
@@ -1967,7 +1967,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							sendTitle={
 								isHome
 									? `Send (Enter) · Start in background (${metaKeyChar}+Enter)`
-									: "Send (Enter) · Aside (Alt+Enter)"
+									: `Send (Enter) · Side thread (${detectAltKeyChar(platform)}+Enter)`
 							}
 							toggleKeys={togglePlanActKeys}
 						/>

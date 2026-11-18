@@ -1011,10 +1011,11 @@ export const ChatRowContent = memo(
 					}
 					// The thread's first message renders like every later user message.
 					case "subagent_update":
-						return <SubagentUpdateRow text={message.text ?? ""} />
+						return <SubagentUpdateRow message={message} text={message.text ?? ""} />
 					case "task":
 					case "user_feedback":
-						if (message.text?.trim().startsWith("<subagent_update")) return <SubagentUpdateRow text={message.text} />
+						if (message.text?.trim().startsWith("<subagent_update"))
+							return <SubagentUpdateRow message={message} text={message.text} />
 						return (
 							<UserMessage
 								canRestoreWorkspace={

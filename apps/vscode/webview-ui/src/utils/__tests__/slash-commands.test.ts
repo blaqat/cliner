@@ -389,8 +389,18 @@ describe("side commands", () => {
 			expect(validateSlashCommand(name)).toBe("full")
 		}
 	})
-	it.each(["/side hello", "/btw hello", " /SIDE hello"])("parses %s", (text) => {
-		expect(parseSideCommand(text)).toEqual({ rest: "hello" })
+	it.each([
+		["/side hello", "side"],
+		["/btw hello", "btw"],
+		[" /SIDE hello", "side"],
+	])("parses %s", (text, kind) => {
+		expect(parseSideCommand(text)).toEqual({ kind, rest: "hello" })
+	})
+	it("keeps a script named side or btw from shadowing the commands", () => {
+		const scripts = [{ name: "side", description: "my script", section: "custom" as const }]
+		expect(getMatchingSlashCommands("side", {}, {}, undefined, undefined, [], scripts as never)).toEqual([
+			expect.objectContaining({ name: "side", description: "Side thread from here. Main keeps going." }),
+		])
 	})
 	it.each(["/sidebar hello", "foo/side", "please /btw hello", "https://example.com/side"])("does not intercept %s", (text) => {
 		expect(parseSideCommand(text)).toBeNull()

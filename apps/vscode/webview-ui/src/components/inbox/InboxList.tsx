@@ -143,7 +143,7 @@ const InboxRowView = ({ row, now, animateLayout, tags }: InboxRowViewProps) => {
 							<CountBadge
 								count={subthreadCount}
 								icon="repo-forked"
-								title={`${plural(subthreadCount, "aside")}${liveSubthreadCount ? `, ${liveSubthreadCount} running` : ""}`}
+								title={`${plural(subthreadCount, "side thread")}${liveSubthreadCount ? `, ${liveSubthreadCount} running` : ""}`}
 								tone={liveSubthreadCount > 0 ? "live" : "idle"}
 							/>
 						)}
