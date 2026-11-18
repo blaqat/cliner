@@ -17,12 +17,13 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-4",
 		title: "Release 4",
-		builds: "test build fork.64",
-		date: "2026-11-17",
+		builds: "test builds fork.64–65",
+		date: "2026-11-18",
 		notes: [
 			"Now built on Cline 4.1.26 (was 4.1.22), with its fixes: GPT-6 works on Azure and OpenAI-compatible endpoints, reasoning levels fit what each model accepts and Off works everywhere, a provider error mid-reply is retried, long local-model requests no longer time out after 5 minutes, and a reply that ends without a reason is continued",
 			"Also from 4.1.26: switching Ask/Act while a thread starts keeps your first message, a thread open in two apps, or in one that closes mid-reply, no longer gets stuck, attachments reach the model when you answer Cline's question, symlinked rules and .claude/skills load, disabled rules stay off, and running a command no longer moves focus to the terminal",
-			"Fixes: subagent cost is counted once per batch",
+			"Thread lists in one view show each thread's tags under its title, and new thread titles name what the thread is about rather than echoing the first words",
+			"Fixes: a reply that comes back as reasoning only is asked for its answer once, then explained instead of ending silently; a retried or cut-off reply no longer leaves Thinking open or repeats it; reasoning a model sends as <think> tags shows as Thinking, not in the answer; subagent cost is counted once per batch",
 		],
 	},
 	{

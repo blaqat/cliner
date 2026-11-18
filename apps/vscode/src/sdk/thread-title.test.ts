@@ -9,7 +9,7 @@ vi.mock("./sdk-api-handler", () => ({
 	buildApiHandler: mocks.buildApiHandler,
 }))
 
-import { maybeGenerateThreadTitle, sanitizeThreadTitle, type ThreadTitleDeps } from "./thread-title"
+import { maybeGenerateThreadTitle, sanitizeThreadTitle, type ThreadTitleDeps, titleFromReply } from "./thread-title"
 
 function streamOf(text: string, error?: string) {
 	return (async function* () {
@@ -196,6 +196,18 @@ describe("maybeGenerateThreadTitle with the thread's captured configuration", ()
 	})
 })
 
+describe("titleFromReply", () => {
+	it("reads the JSON title, fenced or not", () => {
+		expect(titleFromReply('{"title":"Fix Login Redirect Loop"}')).toBe("Fix Login Redirect Loop")
+		expect(titleFromReply('```json\n{ "title": "Thread List Tags" }\n```')).toBe("Thread List Tags")
+	})
+
+	it("falls back to the first line when the model ignores the format", () => {
+		expect(titleFromReply("Thread List Tags\nmore")).toBe("Thread List Tags")
+		expect(titleFromReply("{not json} Title")).toBe("{not json} Title")
+	})
+})
+
 describe("sanitizeThreadTitle", () => {
 	it("takes the first line, strips formatting and caps at 8 words", () => {
 		expect(sanitizeThreadTitle('"Fix the flaky login redirect test in auth today now."\nignored')).toBe(
@@ -203,5 +215,6 @@ describe("sanitizeThreadTitle", () => {
 		)
 		expect(sanitizeThreadTitle("**Short title**")).toBe("Short title")
 		expect(sanitizeThreadTitle("  \n")).toBe("")
+		expect(sanitizeThreadTitle("'Don't Drop Queued Messages'")).toBe("Don't Drop Queued Messages")
 	})
 })

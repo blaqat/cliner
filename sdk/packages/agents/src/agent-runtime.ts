@@ -98,6 +98,10 @@ const PROVIDER_ERROR_RETRY_MAX_DELAY_MS = 15_000;
 const CONTENT_FILTER_EMPTY_TURN_MESSAGE =
 	"Model returned no content because the response was blocked by a content filter. Retrying is unlikely to help — try rephrasing the request.";
 
+/** Shown when a model answers twice with nothing but reasoning: no reply text and no tool call. */
+const REASONING_ONLY_TURN_MESSAGE =
+	"The model replied with reasoning only, twice: no answer and no tool call. If this keeps happening, its server is probably putting the whole reply in the reasoning field, for example a reasoning parser still waiting for a </think> the model never wrote.";
+
 /**
  * Terminal message when a context-window overflow cannot be recovered because
  * there is no conversation history to compact — the system prompt, tools, and
@@ -921,6 +925,10 @@ export class AgentRuntime {
 						);
 					}
 				}
+				if (this.isReasoningOnlyTurn({ message, finishReason })) {
+					this.state.lastFinishReason = finishReason;
+					throw new Error(REASONING_ONLY_TURN_MESSAGE);
+				}
 				const toolCalls = message.content.filter(
 					(part: AgentMessagePart): part is AgentToolCallPart =>
 						part.type === "tool-call",
@@ -1233,7 +1241,18 @@ export class AgentRuntime {
 				this.generateAssistantMessageWithOverflowRecovery(),
 			);
 		const first = await issue();
-		if (first.finishReason !== "unknown" || first.interrupted) return first;
+		if (first.interrupted) return first;
+		if (this.isReasoningOnlyTurn(first)) {
+			// Nothing for the user and nothing to run: ask once for the reply itself.
+			await this.recordAssistantMessage(first.message, first.finishReason);
+			await this.addUserReminderMessage(
+				"Your previous reply contained only reasoning, with no answer and no tool call. Reply to the user or call a tool now.",
+				{ displayRole: "system" },
+			);
+			this.resetLastError();
+			return await issue();
+		}
+		if (first.finishReason !== "unknown") return first;
 
 		// Tool activity cannot be replayed, and local tool calls must receive
 		// their results before another request. Leave those turns to the loop.
@@ -1473,6 +1492,19 @@ export class AgentRuntime {
 	}
 
 	/** Tool activity executed outside AgentRuntime is recorded in metadata. */
+	/** A finished reply holding reasoning and nothing else: no text, media, tool call or provider tool activity. */
+	private isReasoningOnlyTurn(turn: {
+		message: AgentMessage;
+		finishReason: AgentModelFinishReason;
+	}): boolean {
+		return (
+			turn.finishReason === "stop" &&
+			turn.message.content.length > 0 &&
+			turn.message.content.every((part) => part.type === "reasoning") &&
+			!this.hasModelToolActivity(turn.message)
+		);
+	}
+
 	private hasModelToolActivity(message: AgentMessage): boolean {
 		const activities = message.metadata?.modelToolActivities;
 		return Array.isArray(activities) && activities.length > 0;

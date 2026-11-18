@@ -3,11 +3,12 @@ import type { KeyboardEvent, ReactNode } from "react"
 import type { InboxRow } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { toggleTaskSettled, toggleTaskStashed } from "@/components/inbox/sessionActions"
-import { ROW_META_CLASS, RowActions, threadRowActions } from "@/components/inbox/TaskGroupRow"
+import { ROW_META_CLASS, RowActions, RowTagChips, threadRowActions } from "@/components/inbox/TaskGroupRow"
 import { ThreadCwdTag } from "@/components/inbox/ThreadCwdTag"
 import { threadStatusLabel } from "@/components/inbox/threadStatus"
 import { treeRowStyle } from "@/components/inbox/treeGeometry"
 import type { SearchRow } from "@/components/search/searchUtils"
+import type { EffectiveTag } from "@/components/taskGroup/effectiveThreadTags"
 import { cn } from "@/lib/utils"
 import { findSubstringRegions } from "@/utils/highlight"
 import { formatListTime, listTimeTitle } from "./listTime"
@@ -87,10 +88,12 @@ interface ThreadRowProps {
 	/** What matched while searching. */
 	hit?: ThreadHit
 	query?: string
+	/** Its tags, ahead of the last line. A thread in a task leaves out the task's: its row shows them. */
+	tags?: readonly EffectiveTag[]
 }
 
-/** Status, title and time over the last line ("You: …", "Agent: …", "Needs you: …"); hover swaps the time for Stash and Settle. */
-export const ThreadRow = ({ row, now, current, onOpen, hit, query = "" }: ThreadRowProps) => {
+/** Status, title and time over its tags and last line ("You: …", "Agent: …", "Needs you: …"); hover swaps the time for Stash and Settle. */
+export const ThreadRow = ({ row, now, current, onOpen, hit, query = "", tags = [] }: ThreadRowProps) => {
 	const { item, settled, activityTs } = row
 	const title = item.title?.trim() || item.task
 	const line = rowLine(row, now)
@@ -136,27 +139,32 @@ export const ThreadRow = ({ row, now, current, onOpen, hit, query = "" }: Thread
 						className="self-center"
 					/>
 				</div>
-				<div className="ph-no-capture truncate text-[11px] leading-4 text-description" data-testid="one-view-row-line">
-					{snippet ? (
-						<>
-							{hit?.author && (
-								<span className={cn("font-medium", WHO_CLASS[hit.author])}>
-									{hit.author === "you" ? "You:" : "Agent:"}{" "}
-								</span>
-							)}
-							<Hit query={query} text={snippet} />
-						</>
-					) : (
-						<span
-							className={cn(
-								line.kind === "ask" && !line.prefix && "text-warning",
-								line.kind === "working" &&
-									"animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description",
-							)}>
-							{line.prefix && <span className={cn("font-medium", WHO_CLASS[line.kind])}>{line.prefix} </span>}
-							{line.text}
-						</span>
-					)}
+				<div
+					className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px] leading-4"
+					data-testid="one-view-row-detail">
+					<RowTagChips tags={tags} />
+					<span className="ph-no-capture min-w-0 truncate text-description" data-testid="one-view-row-line">
+						{snippet ? (
+							<>
+								{hit?.author && (
+									<span className={cn("font-medium", WHO_CLASS[hit.author])}>
+										{hit.author === "you" ? "You:" : "Agent:"}{" "}
+									</span>
+								)}
+								<Hit query={query} text={snippet} />
+							</>
+						) : (
+							<span
+								className={cn(
+									line.kind === "ask" && !line.prefix && "text-warning",
+									line.kind === "working" &&
+										"animate-shimmer bg-linear-90 from-foreground to-description bg-[length:200%_100%] bg-clip-text text-transparent motion-reduce:animate-none motion-reduce:text-description",
+								)}>
+								{line.prefix && <span className={cn("font-medium", WHO_CLASS[line.kind])}>{line.prefix} </span>}
+								{line.text}
+							</span>
+						)}
+					</span>
 				</div>
 			</div>
 		</div>

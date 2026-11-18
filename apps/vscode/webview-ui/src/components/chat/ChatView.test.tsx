@@ -1,8 +1,8 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { act, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import { forwardRef, type ReactNode } from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import ChatView from "./ChatView"
 
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown> }))
@@ -77,6 +77,7 @@ const userBubbles = () => within(screen.getByTestId("chat-list")).getAllByTitle(
 
 describe("ChatView first message", () => {
 	beforeEach(() => {
+		vi.useFakeTimers()
 		vi.stubGlobal(
 			"ResizeObserver",
 			class {
@@ -100,6 +101,16 @@ describe("ChatView first message", () => {
 			apiConfiguration: {},
 			navigateToSettings: vi.fn(),
 		}
+	})
+
+	afterEach(() => {
+		// ChatRow's react-use/useSize leaves a 35ms measurement timer after unmount.
+		// Flush it while jsdom still exists, before restoring real timers.
+		cleanup()
+		act(() => {
+			vi.runOnlyPendingTimers()
+		})
+		vi.useRealTimers()
 	})
 
 	it.each([

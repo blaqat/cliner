@@ -275,6 +275,23 @@ describe("ThreadList", () => {
 		fireEvent.click(screen.getByTestId("one-view-no-matches-clear"))
 		expect(screen.getByText("Home ordering")).toBeInTheDocument()
 	})
+	it("shows a thread's tags under its title, and in a task only the thread's own", () => {
+		mocks.state.taskGroups = [
+			{ id: "g1", title: "Release 3", tags: [{ kind: "label", value: "release" }], createdAt: NOW, updatedAt: NOW },
+		]
+		mocks.state.taskHistory = [
+			item("solo", { title: "Solo thread", tags: [{ kind: "ticket", value: "ENG-42" }] }),
+			item("member", { title: "Member thread", taskGroupId: "g1", tags: [{ kind: "label", value: "ui" }] }),
+		]
+		renderList()
+		const solo = within(rowFor("solo")).getByTestId("one-view-row-detail")
+		expect(solo).toHaveTextContent("ENG-42")
+		const member = within(rowFor("member")).getByTestId("one-view-row-detail")
+		expect(member).toHaveTextContent("ui")
+		expect(member).not.toHaveTextContent("release")
+		// The last line keeps its own element, so the tags don't run into it.
+		expect(within(rowFor("solo")).getByTestId("one-view-row-line")).not.toHaveTextContent("ENG-42")
+	})
 	it("filters typed tags without a text search request", () => {
 		mocks.state.taskHistory = [item("tagged", { tags: [{ kind: "label", value: "release" }] }), item("other")]
 		renderList()

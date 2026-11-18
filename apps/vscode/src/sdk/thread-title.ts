@@ -15,9 +15,45 @@ import { buildApiHandler } from "./sdk-api-handler"
  */
 
 export const THREAD_TITLE_MAX_WORDS = 8
-const MAX_PROMPT_CHARS = 2000
+const MAX_PROMPT_CHARS = 8000
 
-const SYSTEM_PROMPT = `You name conversations. Reply with a short title for the user's first message: plain text, no quotes, no emoji, no trailing punctuation, at most ${THREAD_TITLE_MAX_WORDS} words.`
+// From T3 Code's thread-title prompt, less its rules for tools, git and images: this call has neither.
+const SYSTEM_PROMPT = `Generate a title that will help the user recognize this Cline thread weeks later.
+Return only JSON with the key title.
+
+Before answering, silently reduce the request to:
+- Subject: What system, feature, or problem is this really about?
+- Outcome: What does the user ultimately want to understand or change?
+- Incidental instructions: What only describes how the agent should do the work?
+
+Title the subject and outcome. Discard incidental instructions.
+
+Editorial rules:
+- 3-${THREAD_TITLE_MAX_WORDS} words, fewer than 40 characters.
+- Use a compact noun phrase or clear action phrase.
+- Capture the umbrella goal when the request lists several symptoms or steps.
+- Name the product change, not the mock, plan, report, branch, or PR used to produce it.
+- Models, subagents, tools, output formats, and monitoring instructions do not belong in the title unless they are themselves the topic.
+- For reviews, name what is being reviewed and the relevant concern.
+- For research, name the question domain rather than the requested research process.
+- Do not claim the work is complete.
+- Do not copy and truncate the user's message.
+- Avoid project names already visible in the UI, quotes, labels, filler, and trailing punctuation.
+- If a linked PR or issue is the only source of the subject, use the user's stated action plus its number, such as "Take Over PR 8588". This is the one case where a PR or issue number belongs in the title.`
+
+/** The title from the model's JSON reply; a model that ignores the format still gets its first line used. */
+export function titleFromReply(reply: string): string {
+	const json = reply.match(/\{[\s\S]*\}/)?.[0]
+	if (json) {
+		try {
+			const title = (JSON.parse(json) as { title?: unknown }).title
+			if (typeof title === "string") return sanitizeThreadTitle(title)
+		} catch {
+			// Not JSON after all: fall through to the plain-text reading.
+		}
+	}
+	return sanitizeThreadTitle(reply)
+}
 
 export interface ThreadTitleDeps {
 	store: ApiProfileStore
@@ -30,8 +66,8 @@ export interface ThreadTitleDeps {
 export function sanitizeThreadTitle(raw: string): string {
 	const firstLine = raw.split(/\r?\n/, 1)[0] ?? ""
 	const cleaned = firstLine
-		.replace(/["'`]/g, "")
-		.replace(/^[#>*_~\-\s]+|[#>*_~\-.,…\s]+$/g, "")
+		.replace(/["`]/g, "")
+		.replace(/^[#>*_~'\-\s]+|[#>*_~'\-.,…\s]+$/g, "")
 		.trim()
 	return cleaned.split(/\s+/).filter(Boolean).slice(0, THREAD_TITLE_MAX_WORDS).join(" ")
 }
@@ -102,7 +138,7 @@ export async function maybeGenerateThreadTitle(
 			: buildApiHandler(configuration, mode, { disableReasoning: !reasoning })
 		if (!handler) return
 		const stream = handler.createMessage(SYSTEM_PROMPT, [
-			{ role: "user", content: `Name this conversation:\n\n${message.slice(0, MAX_PROMPT_CHARS)}` },
+			{ role: "user", content: `User message:\n${message.slice(0, MAX_PROMPT_CHARS)}` },
 		])
 		let response = ""
 		let streamError: string | undefined
@@ -114,7 +150,7 @@ export async function maybeGenerateThreadTitle(
 			Logger.warn(`[ThreadTitle] Generation failed for ${taskId}: ${streamError}`)
 			return
 		}
-		const title = sanitizeThreadTitle(response)
+		const title = titleFromReply(response)
 		if (title) await applyTitle(taskId, title)
 	} catch (error) {
 		Logger.warn(`[ThreadTitle] Failed to generate a title for ${taskId}:`, error)

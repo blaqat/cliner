@@ -439,6 +439,75 @@ describe("AgentRuntime", () => {
 		expect(JSON.stringify(assistant).split(data)).toHaveLength(2);
 	});
 
+	it("asks once for an answer when a finished reply is reasoning only", async () => {
+		const model = new ScriptedModel([
+			() => [
+				{ type: "reasoning-delta", text: "The whole reply ended up here" },
+				{ type: "finish", reason: "stop" },
+			],
+			(request) => {
+				expect(request.messages.at(-1)).toMatchObject({
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "Your previous reply contained only reasoning, with no answer and no tool call. Reply to the user or call a tool now.",
+						},
+					],
+					metadata: { displayRole: "system" },
+				});
+				return [
+					{ type: "text-delta", text: "Here is the answer" },
+					{ type: "finish", reason: "stop" },
+				];
+			},
+		]);
+		const runtime = new AgentRuntime({
+			model,
+			systemPrompt: "Base system instructions",
+		});
+		const result = await runtime.run("Hi");
+		expect(result.status).toBe("completed");
+		expect(result.outputText).toBe("Here is the answer");
+		expect(model.requests).toHaveLength(2);
+	});
+
+	it("fails with a reason, not silently, when the reply is reasoning only again", async () => {
+		const reasoningOnly = (): AgentModelEvent[] => [
+			{ type: "reasoning-delta", text: "Still only reasoning" },
+			{ type: "finish", reason: "stop" },
+		];
+		const model = new ScriptedModel([reasoningOnly, reasoningOnly]);
+		const runtime = new AgentRuntime({
+			model,
+			systemPrompt: "Base system instructions",
+		});
+		const result = await runtime.run("Hi");
+		expect(result.status).toBe("failed");
+		expect(String(result.error?.message ?? result.error)).toContain(
+			"reasoning only, twice",
+		);
+		expect(model.requests).toHaveLength(2);
+	});
+
+	it("leaves a reply with reasoning and an answer alone", async () => {
+		const model = new ScriptedModel([
+			() => [
+				{ type: "reasoning-delta", text: "Thinking" },
+				{ type: "text-delta", text: "Answer" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+		const runtime = new AgentRuntime({
+			model,
+			systemPrompt: "Base system instructions",
+		});
+		const result = await runtime.run("Hi");
+		expect(result.status).toBe("completed");
+		expect(result.outputText).toBe("Answer");
+		expect(model.requests).toHaveLength(1);
+	});
+
 	it.each([
 		"partial-text",
 		"reasoning",
@@ -3609,13 +3678,13 @@ describe("AgentRuntime", () => {
 		await runtime.run("Hi");
 
 		// Two chunks within a second report progress once.
-		expect(eventTypes.filter((type) => type === "tool-call-delta")).toHaveLength(
-			1,
-		);
+		expect(
+			eventTypes.filter((type) => type === "tool-call-delta"),
+		).toHaveLength(1);
 		const events = capture.mock.calls.map(([input]) => input);
-		expect(events.some((input) => input.event === "agent.tool-call-delta")).toBe(
-			false,
-		);
+		expect(
+			events.some((input) => input.event === "agent.tool-call-delta"),
+		).toBe(false);
 		expect(
 			events.find((input) => input.event === "agent.run-finished")?.properties,
 		).toEqual(expect.objectContaining({ maxIdleMs: 42, status: "completed" }));

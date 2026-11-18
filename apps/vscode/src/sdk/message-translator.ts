@@ -259,6 +259,14 @@ export class MessageTranslatorState {
 		return this.streamingReasoningText
 	}
 
+	/** The reasoning row a failed attempt left open, closed, so a retry starts its own; undefined when none is open. */
+	closeInterruptedReasoning(): ClineMessage | undefined {
+		if (this.streamingReasoningTs === undefined) return undefined
+		const reasoning = this.streamingReasoningText
+		const ts = this.clearStreamingReasoning()
+		return { ts, type: "say", say: "reasoning", text: reasoning, reasoning, partial: false }
+	}
+
 	/** Clear streaming reasoning (content ended) */
 	clearStreamingReasoning(): number {
 		const ts = this.streamingReasoningTs ?? this.nextTs()
@@ -612,6 +620,8 @@ export class MessageTranslatorState {
 		this.streamingTextTs = undefined
 		this.streamingText = ""
 		this.streamingReasoningTs = undefined
+		// A stream cut off by an abort or provider error never sends its content_end.
+		this.streamingReasoningText = ""
 		this.streamingToolTs = undefined
 		this.streamingToolInput = undefined
 		this.streamingToolName = undefined
@@ -2095,6 +2105,11 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 				if (INTERNAL_STATUS_NOTICES.has(event.message ?? "")) {
 					break
 				}
+				// A retried request streams its reasoning again from the start, with no content_end for the failed one.
+				if ((event.metadata as { reason?: unknown } | undefined)?.reason === "provider_error_retry") {
+					const interrupted = state.closeInterruptedReasoning()
+					if (interrupted) messages.push(interrupted)
+				}
 			}
 
 			// Non-status agent notices (and unrecognized status notices) are informational
@@ -2136,6 +2151,8 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 			// used this turn, otherwise awaiting_followup) — never from the message tail.
 			// A compaction divider still open here means the turn was aborted mid-compaction.
 			finalizeDanglingCompaction(state, messages, "cancelled")
+			const openReasoning = state.closeInterruptedReasoning()
+			if (openReasoning) messages.push(openReasoning)
 
 			// A turn can terminate with done(reason:"error") without a separate
 			// "error" event: a Hub-hosted (cloud) session forwards only the run's
@@ -2194,6 +2211,9 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 			}
 
 			finalizeDanglingCompaction(state, messages, "failed")
+			// A turn that fails mid-reasoning sends no content_end for it.
+			const openReasoning = state.closeInterruptedReasoning()
+			if (openReasoning) messages.push(openReasoning)
 			// An errored turn didn't end on its text response — no completion retag.
 			state.clearTurnFinalText()
 			if (state.isSuppressedToolApprovalDenial(event.error)) {

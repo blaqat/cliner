@@ -13,6 +13,12 @@ const message = (extra: Partial<ClineMessage>): ClineMessage => ({
 })
 
 describe("thread previews", () => {
+	it("previews a reply's answer, not reasoning it carried as <think> tags", () => {
+		expect(makeLastLine("agent", "<think>Let me see.</think>\n\nThe answer").text).toBe("The answer")
+		expect(makeLastLine("agent", "Weighing it. </think>\nThe answer").text).toBe("The answer")
+		expect(makeLastLine("agent", "<think>Only reasoning").text).toBe("Only reasoning")
+	})
+
 	it("uses complete agent text, completion and followup questions", () => {
 		expect(messageLastLine(message({}))).toEqual({ author: "agent", text: "Hello world" })
 		expect(messageLastLine(message({ say: "completion_result" }))?.author).toBe("agent")

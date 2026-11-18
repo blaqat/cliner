@@ -10,6 +10,7 @@ import {
 } from "@/components/inbox/inboxUtils"
 import { TaskGroupBlock, TaskGroupMembers, TaskGroupRow } from "@/components/inbox/TaskGroupRow"
 import type { SearchRow } from "@/components/search/searchUtils"
+import { effectiveThreadTags } from "@/components/taskGroup/effectiveThreadTags"
 import { openNote } from "@/components/taskGroup/useTaskGroup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -249,6 +250,7 @@ export const ThreadList = ({
 						onOpen={onOpenThread}
 						query={text}
 						row={entry.row}
+						tags={effectiveThreadTags(entry.row.item, history, taskGroups)}
 					/>
 				)
 			}
@@ -288,6 +290,7 @@ export const ThreadList = ({
 									onOpen={onOpenThread}
 									query={text}
 									row={member}
+									tags={(member.item.tags ?? []).map((tag) => ({ tag, inherited: false }))}
 								/>
 							))}
 							{hiddenSettled > 0 && (

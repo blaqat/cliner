@@ -10,6 +10,7 @@ import type { HistoryItem } from "@shared/HistoryItem"
 import { type MessageReferenceInfo, parseMessageReferences } from "@shared/message-references"
 import { resolveDataDirFromEnv } from "@shared/storage/storage-context"
 import type { TaskTag } from "@shared/task-groups"
+import { splitThinkTags } from "@shared/think-tags"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
@@ -34,7 +35,10 @@ export function makeLastLine(
 	author: NonNullable<HistoryItem["lastLine"]>["author"],
 	text: string,
 ): NonNullable<HistoryItem["lastLine"]> {
-	return { author, text: text.replace(/\s+/g, " ").trim().slice(0, 160) }
+	// A reply that carries its reasoning as <think> tags previews its answer, or the reasoning when that's all it has.
+	const { thinking, answer } = splitThinkTags(text, false)
+	const shown = answer.trim() || thinking || text
+	return { author, text: shown.replace(/\s+/g, " ").trim().slice(0, 160) }
 }
 
 function readLastLine(value: unknown): HistoryItem["lastLine"] {

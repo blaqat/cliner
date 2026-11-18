@@ -11,6 +11,7 @@ import {
 } from "@shared/ExtensionMessage"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { Mode } from "@shared/storage/types"
+import { type SplitThinking, splitThinkTags } from "@shared/think-tags"
 import deepEqual from "fast-deep-equal"
 import {
 	BellIcon,
@@ -154,6 +155,20 @@ const ChatRow = memo(
 )
 
 export default ChatRow
+
+/** The reasoning a reply carried as `<think>` tags, shown like a reasoning row. */
+const ThinkTagsRow = ({ split, isExpanded, onToggle }: { split: SplitThinking; isExpanded: boolean; onToggle: () => void }) => (
+	<ThinkingRow
+		isExpanded={(split.thinkingOpen && !!split.thinking) || isExpanded}
+		isStreaming={split.thinkingOpen}
+		isVisible={true}
+		onToggle={split.thinkingOpen ? undefined : onToggle}
+		reasoningContent={split.thinking}
+		showChevron={!split.thinkingOpen || !!split.thinking}
+		showTitle={true}
+		title={split.thinkingOpen ? "Thinking..." : "Thinking"}
+	/>
+)
 
 export const ChatRowContent = memo(
 	({
@@ -920,7 +935,9 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					case "text": {
-						const hasText = !!message.text?.trim()
+						const split = splitThinkTags(message.text ?? "", message.partial === true)
+						const { thinking, answer } = split
+						const hasText = !!answer.trim()
 						return (
 							<WithCopyButton
 								actions={
@@ -932,12 +949,15 @@ export const ChatRowContent = memo(
 								onMouseUp={handleMouseUp}
 								position="bottom-right"
 								ref={contentRef}
-								textToCopy={message.text}>
+								textToCopy={answer}>
+								{thinking !== undefined && (
+									<ThinkTagsRow isExpanded={isExpanded} onToggle={handleToggle} split={split} />
+								)}
 								{hasText && (
 									<div className="flex items-center">
 										<div className={cn("flex-1 min-w-0 pl-1")}>
 											<MarkdownRow
-												markdown={message.text}
+												markdown={answer}
 												showCursor={false}
 												streaming={message.partial === true}
 											/>
@@ -1039,36 +1059,52 @@ export const ChatRowContent = memo(
 						// Strip the legacy HAS_CHANGES sentinel that pre-SDK versions
 						// persisted on completion message text.
 						const hasLegacyChangesFlag = message.text?.endsWith(COMPLETION_RESULT_CHANGES_FLAG) ?? false
-						const text = hasLegacyChangesFlag
-							? message.text?.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length)
-							: message.text
+						const split = splitThinkTags(
+							(hasLegacyChangesFlag
+								? message.text?.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length)
+								: message.text) ?? "",
+							message.partial === true,
+						)
+						const text = split.answer
 
 						return (
-							<CompletionOutputRow
-								asideFromTs={message.ts}
-								contentRef={contentRef}
-								handleQuoteClick={handleQuoteClick}
-								onMouseUp={handleMouseUp}
-								onOpenWalkthrough={currentTaskItem?.isSubagent ? undefined : navigateToWalkthrough}
-								quoteButtonState={quoteButtonState}
-								showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
-								text={text || ""}
-							/>
+							<>
+								{split.thinking !== undefined && (
+									<ThinkTagsRow isExpanded={isExpanded} onToggle={handleToggle} split={split} />
+								)}
+								<CompletionOutputRow
+									asideFromTs={message.ts}
+									contentRef={contentRef}
+									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
+									onOpenWalkthrough={currentTaskItem?.isSubagent ? undefined : navigateToWalkthrough}
+									quoteButtonState={quoteButtonState}
+									showViewChanges={isLast && message.partial !== true && enableCheckpointsSetting}
+									text={text || ""}
+								/>
+							</>
 						)
 					}
-					case "plan_completion_result":
+					case "plan_completion_result": {
 						// Turn-final Ask-mode (internal "plan") response inferred at turn end (SDK path)
+						const split = splitThinkTags(message.text ?? "", message.partial === true)
 						return (
-							<PlanCompletionOutputRow
-								asideFromTs={message.ts}
-								contentRef={contentRef}
-								handleQuoteClick={handleQuoteClick}
-								onMouseUp={handleMouseUp}
-								quoteButtonState={quoteButtonState}
-								showContinueInAct={isLast && mode === "plan" && message.partial !== true}
-								text={message.text || ""}
-							/>
+							<>
+								{split.thinking !== undefined && (
+									<ThinkTagsRow isExpanded={isExpanded} onToggle={handleToggle} split={split} />
+								)}
+								<PlanCompletionOutputRow
+									asideFromTs={message.ts}
+									contentRef={contentRef}
+									handleQuoteClick={handleQuoteClick}
+									onMouseUp={handleMouseUp}
+									quoteButtonState={quoteButtonState}
+									showContinueInAct={isLast && mode === "plan" && message.partial !== true}
+									text={split.answer}
+								/>
+							</>
 						)
+					}
 					case "shell_integration_warning":
 						return (
 							<div className="flex flex-col bg-warning/20 p-2 rounded-xs border border-error">
@@ -1167,15 +1203,23 @@ export const ChatRowContent = memo(
 					case "completion_result":
 						if (message.text) {
 							const hasChanges = message.text.endsWith(COMPLETION_RESULT_CHANGES_FLAG) ?? false
-							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
+							const split = splitThinkTags(
+								hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text,
+								message.partial === true,
+							)
 							return (
-								<CompletionOutputRow
-									contentRef={contentRef}
-									handleQuoteClick={handleQuoteClick}
-									onMouseUp={handleMouseUp}
-									quoteButtonState={quoteButtonState}
-									text={text || ""}
-								/>
+								<>
+									{split.thinking !== undefined && (
+										<ThinkTagsRow isExpanded={isExpanded} onToggle={handleToggle} split={split} />
+									)}
+									<CompletionOutputRow
+										contentRef={contentRef}
+										handleQuoteClick={handleQuoteClick}
+										onMouseUp={handleMouseUp}
+										quoteButtonState={quoteButtonState}
+										text={split.answer}
+									/>
+								</>
 							)
 						}
 						// Virtuoso cannot handle zero-height items; render a spacer instead of null

@@ -96,6 +96,33 @@ describe("MessageTranslatorState", () => {
 		expect(newToolTs).toBeGreaterThan(toolTs)
 	})
 
+	it("reset clears reasoning a cut-off stream left behind, so it can't leak into the next turn", () => {
+		const state = new MessageTranslatorState()
+		expect(state.appendStreamingReasoning("stale ")).toBe("stale ")
+		state.reset()
+		expect(state.appendStreamingReasoning("fresh")).toBe("fresh")
+	})
+
+	it("a continuation after a finished reasoning block starts a fresh row", () => {
+		const state = new MessageTranslatorState()
+		state.appendStreamingReasoning("first attempt reasoning")
+		const endTs = state.clearStreamingReasoning()
+		expect(state.appendStreamingReasoning("second attempt reasoning")).toBe("second attempt reasoning")
+		expect(state.getStreamingReasoningTs()).not.toBe(endTs)
+	})
+
+	it("a retry closes the failed attempt's reasoning row and starts the next one fresh", () => {
+		const state = new MessageTranslatorState()
+		const streamed = state.getStreamingReasoningTs()
+		state.appendStreamingReasoning("first attempt ")
+		const closed = state.closeInterruptedReasoning()
+		expect(closed).toMatchObject({ ts: streamed, say: "reasoning", text: "first attempt ", partial: false })
+		expect(state.appendStreamingReasoning("second")).toBe("second")
+		expect(state.getStreamingReasoningTs()).not.toBe(streamed)
+		state.clearStreamingReasoning()
+		expect(state.closeInterruptedReasoning()).toBeUndefined()
+	})
+
 	it("reset clears stale approved tool prompt rows", () => {
 		const state = new MessageTranslatorState()
 		state.recordApprovedToolMessageTs("approved-call", 42)
