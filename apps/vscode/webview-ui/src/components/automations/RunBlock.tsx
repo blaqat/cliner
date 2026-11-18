@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient } from "@/services/grpc-client"
+import { ReadyForReview } from "./ReadyForReview"
 import { runProgress, STEP_STATUS_LABELS } from "./runFacts"
 
 const DOT: Record<Exclude<AutomationRunStepStatus, "running">, string> = {
@@ -147,6 +148,8 @@ interface RunBlockProps {
 	run: AutomationRun
 	statuses: ThreadStatuses
 	onOpenThread: (threadId: string) => void
+	/** Opens a worktree thread's walkthrough (the Ready for review card's Walk through). */
+	onWalkThrough?: (threadId: string) => void
 	now?: number
 	/** Finished runs start folded to one line. */
 	defaultOpen?: boolean
@@ -158,7 +161,7 @@ interface RunBlockProps {
  * together), elapsed time and cost, the Ask you choices right where they're needed, and Stop. Run
  * threads are normal threads: Open goes to one, and typing there steps in.
  */
-export function RunBlock({ run, statuses, onOpenThread, now = Date.now(), defaultOpen, children }: RunBlockProps) {
+export function RunBlock({ run, statuses, onOpenThread, onWalkThrough, now = Date.now(), defaultOpen, children }: RunBlockProps) {
 	const { taskHistory } = useExtensionState()
 	const live = isLiveRun(run)
 	const [open, setOpen] = useState(defaultOpen ?? live)
@@ -241,6 +244,9 @@ export function RunBlock({ run, statuses, onOpenThread, now = Date.now(), defaul
 				</ol>
 			)}
 			{live && <div className="mt-1 text-[11px] text-description">Open a thread and type to step in.</div>}
+			{!live && expanded && (
+				<ReadyForReview onOpenThread={onOpenThread} onWalkThrough={onWalkThrough ?? onOpenThread} run={run} />
+			)}
 			{children}
 		</div>
 	)

@@ -93,7 +93,7 @@ interface TaskGroupViewProps {
  * chat composer below it starts new threads in this task.
  */
 export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewProps) => {
-	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, taskHistory } = useExtensionState()
+	const { currentBranch, hideTaskGroupView, navigateToTaskGroup, navigateToWalkthrough, taskHistory } = useExtensionState()
 	const navigation = useNavigationHistory()
 	// Bumped on dismiss so the hint (read from storage) re-renders away.
 	const [, setBranchHintDismissals] = useState(0)
@@ -187,6 +187,15 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		}
 		hideTaskGroupView()
 		void openTask(threadId)
+	}
+
+	const openWalkthrough = (threadId: string) => {
+		if (navigation) {
+			navigation.navigate({ kind: "walkthrough", id: threadId })
+			return
+		}
+		hideTaskGroupView()
+		void openTask(threadId).then(() => navigateToWalkthrough())
 	}
 
 	const branchLinked = !currentBranch || group.tags.some((tag) => sameTag(tag, { kind: "branch", value: currentBranch }))
@@ -329,6 +338,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								key={run.id}
 								now={now}
 								onOpenThread={openThread}
+								onWalkThrough={openWalkthrough}
 								run={run}
 								statuses={threadStatuses}
 							/>

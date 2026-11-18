@@ -1,6 +1,7 @@
 import { GetTaskGroupResponse } from "@shared/proto/cline/task_group"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { setAutomationRunsForTest } from "@/hooks/useAutomationRuns"
 import { getComposerPageTaskGroup, getComposerTaskGroup, setComposerTaskGroup } from "./composerTaskGroup"
 import { orderTimeline, TaskGroupView } from "./TaskGroupView"
 import { consumeNewNoteRequest, consumeOpenNoteRequest } from "./useTaskGroup"
@@ -28,6 +29,8 @@ vi.mock("@/services/grpc-client", () => ({
 		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
 		toggleTaskSettled: (request: unknown) => mocks.toggleTaskSettled(request),
 	},
+	AutomationServiceClient: { subscribeToAutomationRuns: () => () => {} },
+	WorktreeServiceClient: { threadWorktreeAction: async () => ({ json: '{"summary":{"changedFiles":0,"commits":0}}' }) },
 }))
 
 const NOW = 10 * 86_400_000
@@ -133,6 +136,49 @@ const renderView = async () => {
 }
 
 describe("TaskGroupView", () => {
+	it("shows this task's automation runs above the notebook, newest open, and their outputs", async () => {
+		const run = (id: string, taskGroupId: string, status: "running" | "done") => ({
+			id,
+			automation: "review",
+			title: `Review ${id}`,
+			values: {},
+			taskGroupId,
+			status,
+			startedAt: NOW - HOUR,
+			...(status === "done" ? { endedAt: NOW } : {}),
+			steps: [
+				{
+					id: "s",
+					kind: "thread" as const,
+					title: "Review it",
+					status: status === "done" ? ("done" as const) : ("running" as const),
+					threads: [
+						{
+							id: "s",
+							threadId: `thread-${id}`,
+							title: "Review it",
+							model: "Opus",
+							level: "",
+							mode: "ask" as const,
+							worktree: false,
+							status: status === "done" ? ("done" as const) : ("running" as const),
+							reply: "Looks good",
+						},
+					],
+				},
+			],
+		})
+		setAutomationRunsForTest([run("old", "g1", "done"), run("other", "g2", "running"), run("new", "g1", "done")])
+		await renderView()
+		const section = screen.getByTestId("task-group-runs")
+		expect(section).toHaveTextContent("Automations · 2")
+		expect(section).not.toHaveTextContent("Review other")
+		expect(screen.getByTestId("run-steps-new")).toBeInTheDocument()
+		expect(screen.queryByTestId("run-steps-old")).not.toBeInTheDocument()
+		expect(screen.getByTestId("ready-for-review-new")).toHaveTextContent("Looks good")
+		setAutomationRunsForTest([])
+	})
+
 	beforeEach(() => {
 		vi.stubGlobal(
 			"ResizeObserver",
