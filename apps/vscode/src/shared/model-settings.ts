@@ -99,8 +99,10 @@ export type MigratedValue = "levels" | "reasoning"
 export type ModelPick = { modelId: ModelId; levelId: LevelId }
 export type ThreadModelPick = { kind: "thread"; level: "inherit" | LevelId }
 export type SubagentPick = { kind: "model"; pick: ModelPick } | ThreadModelPick
+export type WalkthroughAskContext = "thread" | "recent" | "selection"
 export type BackgroundUse = "titles" | "commitMessages" | "generate"
 export type RoleSettings = {
+	walkthroughAsk?: { pick: ModelPick | null; context: WalkthroughAskContext }
 	chat: ModelPick | null
 	ask: { enabled: boolean; pick: ModelPick | null }
 	subagents: SubagentPick
@@ -467,6 +469,10 @@ export const SubagentPickSchema = z.union([
 ])
 export const RoleSettingsSchema = z
 	.object({
+		walkthroughAsk: z
+			.object({ pick: ModelPickSchema.nullable(), context: z.enum(["thread", "recent", "selection"]) })
+			.strict()
+			.optional(),
 		chat: ModelPickSchema.nullable(),
 		ask: z.object({ enabled: z.boolean(), pick: ModelPickSchema.nullable() }).strict(),
 		subagents: SubagentPickSchema,
@@ -565,6 +571,7 @@ export const ModelSettingsSchema = z
 			if (m.overrides.reasoning && m.overrides.reasoning !== "yes" && p.levelId !== "default")
 				issue("Reasoning is unknown or unsupported")
 		}
+		check(s.roles.walkthroughAsk?.pick ?? null)
 		check(s.roles.chat)
 		check(s.roles.ask.pick)
 		check(s.roles.background.pick)
@@ -598,6 +605,7 @@ export function clearModelReferences(settings: ModelSettings, ids: readonly stri
 	if (gone(roles.chat)) roles.chat = null
 	if (gone(roles.ask.pick)) roles.ask = { enabled: false, pick: null }
 	if (roles.subagents.kind === "model" && gone(roles.subagents.pick)) roles.subagents = { kind: "thread", level: "inherit" }
+	if (roles.walkthroughAsk && gone(roles.walkthroughAsk.pick)) roles.walkthroughAsk.pick = null
 	if (gone(roles.background.pick)) roles.background.pick = null
 	const { overrides } = roles.background
 	for (const use of ["titles", "commitMessages", "generate"] as const) if (gone(overrides[use])) delete overrides[use]

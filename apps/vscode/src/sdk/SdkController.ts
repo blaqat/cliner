@@ -56,6 +56,7 @@ import type {
 import type { HistoryItem } from "@shared/HistoryItem"
 import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
 import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
+import { effectiveThreadPick, type ModelPick } from "@shared/model-settings"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
@@ -3750,6 +3751,34 @@ export class Controller {
 			sessionId: restored.sessionId,
 		}
 		await this.postStateToWebview()
+	}
+
+	async getWalkthroughAskModel(taskId: string): Promise<ModelPick | null> {
+		if (this.task?.taskId !== taskId) throw new Error("Open the requested thread first")
+		const session = this.sessions.getSession(taskId)
+		const history = await this.taskHistory.findHistoryItem(taskId)
+		const selection = this.taskSessions.get(taskId)?.apiSelection ?? session?.apiSnapshot?.selection ?? history?.apiSelection
+		const thread = selection?.modelSelectionV1 ?? history?.modelSelectionV1
+		const mode = session?.startConfig?.mode ?? this.stateManager.getGlobalSettingsKey("mode")
+		const settings = this.stateManager.getGlobalStateKey("modelSettings")
+		return settings
+			? effectiveThreadPick(settings, mode === "plan" ? thread?.ask : thread?.act, mode === "plan" ? "plan" : "act")
+			: null
+	}
+
+	async getWalkthroughAskContext(taskId: string) {
+		if (this.task?.taskId !== taskId) throw new Error("Open the requested thread first")
+		let temporaryHost: VscodeSessionHost | undefined
+		const host =
+			this.sessions.getSession(taskId)?.sdkHost ?? (temporaryHost = await this.createRemoteConfigAwareSessionHost())
+		try {
+			return {
+				messages: await readCurrentMessages(host, taskId),
+				prefix: host.readModelPrefix?.(taskId),
+			}
+		} finally {
+			await temporaryHost?.dispose("walkthroughAsk")
+		}
 	}
 
 	async getWalkthroughCollectionInput(taskId: string, scope: WalkthroughScope): Promise<CollectionInput> {

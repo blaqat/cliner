@@ -66,6 +66,7 @@ const ROLE_TARGET_ROWS: Readonly<Record<string, SettingsRowId>> = {
 	titles: "models.background.titles",
 	commitMessages: "models.background.commit-messages",
 	generate: "models.background.generate",
+	walkthroughAsk: "models.walkthrough.ask",
 }
 
 /** The host's structured fix target, as the string the shell parses. */

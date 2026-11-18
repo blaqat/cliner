@@ -20,7 +20,7 @@ import type {
 	StartSessionInput,
 	StartSessionResult,
 } from "@cline/core"
-import type { AgentResult } from "@cline/shared"
+import type { AgentResult, ToolDefinition } from "@cline/shared"
 
 export interface SdkSessionHost {
 	readonly runtimeAddress: string | undefined
@@ -48,6 +48,7 @@ export interface SdkSessionHost {
 	 * lost to the persisted transcript lagging behind.
 	 */
 	readLiveMessages?(sessionId: string): Promise<SdkInitialMessages>
+	readModelPrefix?(sessionId: string): { systemPrompt: string; tools: ToolDefinition[] } | undefined
 	updateSessionCompactionState?(sessionId: string, state: SessionCompactionState): Promise<{ updated: boolean }>
 	restore(input: RestoreInput): Promise<RestoreResult>
 	/** Diffs a checkpoint snapshot against the current working tree. */

@@ -2,6 +2,7 @@ import type { ModelPick } from "@shared/model-settings"
 import { StringRequest } from "@shared/proto/cline/common"
 import type {
 	ChangeWalkthrough,
+	WalkthroughAskThread,
 	WalkthroughHunk,
 	WalkthroughOrigin,
 	WalkthroughRequest,
@@ -19,6 +20,7 @@ import { LinkButton } from "@/components/common/LinkButton"
 import { MENU_ICON_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { useOneView } from "@/components/oneView/OneViewContext"
+import { settingsTargetFromHost } from "@/components/settings/settingsTargets"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -53,6 +55,7 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
+import { askTranscript, type DiffAsk } from "./WalkthroughAsk"
 import type { LineNotes } from "./WalkthroughDiff"
 import { ReviewChip, ReviewNoteCard, type ReviewNoteHandlers, ReviewPanel } from "./WalkthroughReviewNotes"
 import {
@@ -116,8 +119,8 @@ const EMPTY_HINT: Record<WalkthroughScope, string> = {
 
 /**
  * `Task › Thread › Walkthrough`: the thread's changes as one long scroll of
- * chapters and stops. Free by default (grouped by turn); Generate is the only
- * AI-cost action and runs only when clicked. Notes go to the thread as one message.
+ * chapters and stops. Free by default (grouped by turn); Generate and Ask make
+ * model calls only when clicked. Notes go to the thread as one message.
  *
  * With `authoredId` the page instead shows one stored agent-authored walkthrough
  * (e.g. a merge request the agent presented): no scope switch, no Generate, and
@@ -309,7 +312,7 @@ export default function WalkthroughView({
 
 	const updateRecord = (change: (current: ReviewRecord) => ReviewRecord) => {
 		if (!walk) return
-		persist({ ...store, [walk.fingerprint]: change(store[walk.fingerprint] ?? {}) })
+		persist({ ...storeRef.current, [walk.fingerprint]: change(storeRef.current[walk.fingerprint] ?? {}) })
 	}
 	const updateStop = (stopId: string, change: Partial<{ note: string; reviewed: boolean }>) =>
 		updateRecord((current) => {
@@ -383,6 +386,72 @@ export default function WalkthroughView({
 				collapsedHunks: { ...current.collapsedHunks, [hunk.fingerprint]: !current.collapsedHunks[hunk.fingerprint] },
 			})),
 		annotations: (hunk: WalkthroughHunk) => (walk?.annotations ?? []).filter((annotation) => annotation.hunkId === hunk.id),
+		ask: (hunk: WalkthroughHunk): DiffAsk => ({
+			config: walk?.askConfig && {
+				...walk.askConfig,
+				unavailable:
+					walk.askConfig.unavailable ??
+					(walk.askConfig.pick && modelSettings?.availability[walk.askConfig.pick.modelId]?.available === false
+						? modelSettings.availability[walk.askConfig.pick.modelId].reason
+						: undefined),
+			},
+			threads: (walk?.askThreads ?? []).filter((thread) => thread.hunkId === hunk.id),
+			disabledReason: moved ? "Changes moved. Refresh the walkthrough before asking." : undefined,
+			openSettings: () => {
+				const target = walk?.askConfig?.pick && modelSettings?.availability[walk.askConfig.pick.modelId]?.target
+				navigateToSettings(target ? settingsTargetFromHost(target) : "role:walkthroughAsk")
+			},
+			refresh: () => void refresh(),
+			ask: async (range, question, askId) => {
+				if (!walk) return
+				const id = sequence.current
+				const result = await TaskServiceClient.askWalkthrough(
+					StringRequest.create({
+						value: JSON.stringify({
+							taskId,
+							scope: activeScope,
+							authoredId,
+							fingerprint: walk.fingerprint,
+							hunkId: hunk.id,
+							line: range.start,
+							endLine: range.end,
+							quote: range.quote,
+							question,
+							askId,
+						}),
+					}),
+				)
+				const thread = JSON.parse(result.value) as WalkthroughAskThread
+				if (id !== sequence.current) return
+				setWalk((current) =>
+					current?.fingerprint === walk.fingerprint
+						? {
+								...current,
+								askThreads: [...(current.askThreads ?? []).filter((item) => item.id !== thread.id), thread],
+							}
+						: current,
+				)
+			},
+			isAdded: (thread) =>
+				lineNoteEntry(record.lineNotes?.[lineNoteKey(hunk, { start: thread.line, end: thread.endLine })]).note.includes(
+					askTranscript(thread),
+				),
+			addToSend: (thread) =>
+				updateRecord((current) => {
+					const key = lineNoteKey(hunk, { start: thread.line, end: thread.endLine })
+					const existing = lineNoteEntry(current.lineNotes?.[key])
+					return {
+						...current,
+						lineNotes: {
+							...current.lineNotes,
+							[key]: {
+								...existing,
+								note: [existing.note.trim(), askTranscript(thread)].filter(Boolean).join("\n\n"),
+							},
+						},
+					}
+				}),
+		}),
 		lineNotes: (hunk: WalkthroughHunk): LineNotes => ({
 			list: Object.entries(record.lineNotes ?? {}).flatMap(([key, value]) => {
 				const range = parseLineNoteKey(key)

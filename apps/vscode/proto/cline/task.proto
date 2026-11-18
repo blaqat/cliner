@@ -14,6 +14,7 @@ service TaskService {
   // JSON payloads use shared/Walkthrough.ts; all anchors resolve on the host.
   rpc getChangeWalkthrough(StringRequest) returns (String);
   rpc generateChangeWalkthrough(StringRequest) returns (String);
+  rpc askWalkthrough(StringRequest) returns (String);
   rpc openWalkthroughDiff(StringRequest) returns (Empty);
   rpc revertWalkthroughChange(StringRequest) returns (String);
   rpc sendWalkthroughNotes(StringRequest) returns (Empty);

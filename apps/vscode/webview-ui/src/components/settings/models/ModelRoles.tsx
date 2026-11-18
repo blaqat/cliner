@@ -339,6 +339,59 @@ export const ModelRoles = () => {
 							<GroupHeading>Background text</GroupHeading>
 							{useLine("commitMessages", "Commit messages")}
 							{useLine("generate", "Walkthrough Generate")}
+							<SettingRow
+								control={({ id, disabled }) => (
+									<ModelPickButton
+										disabledReason={disabled ? "Your organization manages this." : undefined}
+										id={id}
+										ladder={ladder}
+										modelsLabel="Walkthrough Ask"
+										onCommit={(next) =>
+											void setRoles("walkthroughAsk", (current) => ({
+												...current,
+												walkthroughAsk: {
+													context: current.walkthroughAsk?.context ?? "thread",
+													pick: next.rowId === "walkthrough" ? null : fromPick(next),
+												},
+											}))
+										}
+										onManage={onManage}
+										pick={
+											toPick(roles.walkthroughAsk?.pick ?? null) ?? {
+												rowId: "walkthrough",
+												levelId: "same",
+											}
+										}
+										rows={[sameRow("walkthrough", "Same as the walkthrough", "Its level"), ...rows]}
+									/>
+								)}
+								rowId="models.walkthrough.ask">
+								<PickWhy
+									onFixLevel={() => openRow("models.walkthrough.ask")}
+									pick={roles.walkthroughAsk?.pick ?? null}
+									state={state}
+									use="role.walkthroughAsk"
+								/>
+								{roleError("walkthroughAsk")}
+							</SettingRow>
+							<SettingRow<import("@shared/model-settings").WalkthroughAskContext>
+								control={({ id, disabled, value, write }) => (
+									<select
+										aria-label="Walkthrough Ask context"
+										className="max-w-full rounded-xs border border-solid border-input-border bg-input-background p-1 text-xs text-input-foreground"
+										disabled={disabled}
+										id={id}
+										onChange={(event) =>
+											write(event.target.value as import("@shared/model-settings").WalkthroughAskContext)
+										}
+										value={value}>
+										<option value="thread">This thread</option>
+										<option value="recent">Latest user turn</option>
+										<option value="selection">Selected lines only</option>
+									</select>
+								)}
+								rowId="models.walkthrough.ask-context"
+							/>
 							{useLine(
 								"titles",
 								"Thread titles",

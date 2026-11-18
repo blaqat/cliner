@@ -34,7 +34,13 @@ import {
 	type ToolExecutors,
 	toClineCoreStartInput,
 } from "@cline/core"
-import { RUNTIME_CONFIG_EXTENSION_KINDS, type ToolApprovalRequest, type ToolApprovalResult, type ToolPolicy } from "@cline/shared"
+import {
+	RUNTIME_CONFIG_EXTENSION_KINDS,
+	type ToolApprovalRequest,
+	type ToolApprovalResult,
+	type ToolDefinition,
+	type ToolPolicy,
+} from "@cline/shared"
 import { StateManager } from "@/core/storage/StateManager"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
 import { getDistinctId } from "@/services/logging/distinctId"
@@ -115,6 +121,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 		inner: ClineCore,
 		prepareStartSessionInput: (input: ClineCoreStartInput) => Promise<ClineCoreStartInput>,
 		options: VscodeSessionHostOptions,
+		private readonly modelPrefixes: Map<string, { systemPrompt: string; tools: ToolDefinition[] }>,
 	) {
 		this.inner = inner
 		this.runtimeAddress = inner.runtimeAddress
@@ -130,6 +137,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 		// When a terminal manager is available, suppress the SDK's built-in run_commands
 		// tool by setting bash to undefined. Our custom run_commands (provided via
 		// extraTools) replaces it with foreground/background terminal support.
+		const modelPrefixes = new Map<string, { systemPrompt: string; tools: ToolDefinition[] }>()
 		const toolExecutors: Partial<ToolExecutors> = {}
 		if (options.askQuestion) {
 			toolExecutors.askQuestion = options.askQuestion
@@ -204,6 +212,21 @@ export class VscodeSessionHost implements SdkSessionHost {
 				extraTools: [...(inputWithRemoteConfig.config.extraTools ?? []), ...extraTools],
 			}
 			if (sideThread) config.hooks = withSideThreadNotes(config.hooks, sideThread)
+			const beforeModel = config.hooks?.beforeModel
+			config.hooks = {
+				...config.hooks,
+				beforeModel: async (context) => {
+					const result = await beforeModel?.(context)
+					const metadata = context.request.options?.metadata as { sessionId?: string } | undefined
+					const id = metadata?.sessionId ?? config.sessionId
+					if (id && !result?.stop && !context.snapshot.parentAgentId)
+						modelPrefixes.set(id, {
+							systemPrompt: context.request.systemPrompt ?? "",
+							tools: structuredClone([...(result?.tools ?? context.request.tools)]),
+						})
+					return result
+				},
+			}
 
 			return {
 				...inputWithRemoteConfig,
@@ -255,7 +278,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 		if (options.getTerminalManager) {
 			Logger.log("[VscodeSessionHost] SDK run_commands suppressed; using custom foreground/background terminal tool")
 		}
-		return new VscodeSessionHost(inner, prepareStartSessionInput, options)
+		return new VscodeSessionHost(inner, prepareStartSessionInput, options, modelPrefixes)
 	}
 
 	async start(input: StartSessionInput): Promise<StartSessionResult>
@@ -311,12 +334,18 @@ export class VscodeSessionHost implements SdkSessionHost {
 		return this.inner.abortSubAgent(sessionId, toolCallId)
 	}
 
+	readModelPrefix(sessionId: string) {
+		return structuredClone(this.modelPrefixes.get(sessionId))
+	}
+
 	async stop(sessionId: string): Promise<void> {
+		this.modelPrefixes.delete(sessionId)
 		this.gitTelemetry.stop(sessionId)
 		return this.inner.stop(sessionId)
 	}
 
 	async dispose(reason?: string): Promise<void> {
+		this.modelPrefixes.clear()
 		this.gitTelemetry.dispose()
 		return this.inner.dispose(reason)
 	}

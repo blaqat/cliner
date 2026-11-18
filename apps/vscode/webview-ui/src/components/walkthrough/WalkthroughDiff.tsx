@@ -5,6 +5,7 @@ import "../common/codeblock-parser.css"
 import { diffCode as code, highlightDiff } from "./diffHighlight"
 import { type PlacedReviewNote, REVIEW_KINDS, sortReviewNotes } from "./reviewNotes"
 import type { LineRange } from "./reviewState"
+import { type AskRange, type DiffAsk, WalkthroughAsk } from "./WalkthroughAsk"
 import { InlineCodeProse, NoteEditor } from "./WalkthroughNote"
 
 /** "turn3" → "Turn 3"; the checkpoint-recovered turn has no number. */
@@ -79,12 +80,15 @@ export function WalkthroughDiff({
 	annotations,
 	notes,
 	review,
+	ask,
 }: {
 	hunk: WalkthroughHunk
 	annotations: WalkthroughAnnotation[]
 	notes: LineNotes
 	review?: DiffReview
+	ask?: DiffAsk
 }) {
+	const [asking, setAsking] = useState<AskRange>()
 	const body = useMemo(() => hunkBodyLines(hunk.patch), [hunk.patch])
 	const highlighted = useMemo(() => highlightDiff(body, hunk.path), [body, hunk.path])
 	const numbers = hunkLineNumbers(hunk)
@@ -164,7 +168,7 @@ export function WalkthroughDiff({
 				end,
 				quote,
 				top: rect.bottom - box.top + root.scrollTop + 2,
-				left: Math.max(0, Math.min(rect.left - box.left + root.scrollLeft, root.scrollWidth - 64)),
+				left: Math.max(0, Math.min(rect.left - box.left + root.scrollLeft, root.clientWidth - 130)),
 			})
 		}, 0)
 	}
@@ -196,7 +200,11 @@ export function WalkthroughDiff({
 			{body.map((raw, index) => {
 				const sign = raw[0] === "+" || raw[0] === "-" ? raw[0] : " "
 				const editing = notes.editing
-				const marked = covers(editing, index) || notes.list.some((saved) => covers(saved, index))
+				const marked =
+					covers(editing, index) ||
+					covers(asking, index) ||
+					notes.list.some((saved) => covers(saved, index)) ||
+					ask?.threads.some((thread) => index >= thread.line && index <= thread.endLine)
 				const ending = notes.list.filter((saved) => saved.end === index && saved.note.trim())
 				return (
 					<Fragment key={index}>
@@ -219,7 +227,13 @@ export function WalkthroughDiff({
 								aria-label={`Note on ${span({ start: index, end: index })}`}
 								className="w-9 shrink-0 cursor-pointer select-none border-0 bg-transparent p-0 pr-1.5 text-right font-mono text-[11px] leading-5 text-description/60 hover:text-foreground hover:underline"
 								onClick={() => notes.onEdit({ start: index, end: index })}
-								title="Note on this line (or select text to note it)"
+								onKeyDown={(event) => {
+									if (event.key.toLowerCase() === "a" && ask) {
+										event.preventDefault()
+										setAsking({ start: index, end: index })
+									}
+								}}
+								title="Note on this line. Press A to ask about it, or select text for Note and Ask."
 								type="button">
 								{numbers[index]}
 							</button>
@@ -244,6 +258,24 @@ export function WalkthroughDiff({
 						{ending
 							.filter((saved) => !(editing && editing.start === saved.start && editing.end === saved.end))
 							.map(noteRow)}
+						{ask?.threads
+							.filter((thread) => thread.endLine === index)
+							.map((thread) => (
+								<WalkthroughAsk
+									ask={ask}
+									key={thread.id}
+									range={{ start: thread.line, end: thread.endLine, quote: thread.quote }}
+									thread={thread}
+								/>
+							))}
+						{ask && asking?.end === index && (
+							<WalkthroughAsk
+								ask={ask}
+								key={`${asking.start}-${asking.end}`}
+								onClose={() => setAsking(undefined)}
+								range={asking}
+							/>
+						)}
 						{editing?.end === index && (
 							<div className="border-y border-x-0 border-solid border-editor-group-border bg-code px-2 py-1.5 font-sans">
 								{editing.quote && (
@@ -268,20 +300,39 @@ export function WalkthroughDiff({
 				)
 			})}
 			{pending && (
-				<button
-					className="absolute z-10 flex h-5.5 cursor-pointer items-center gap-1 rounded-xs border border-solid border-editor-group-border bg-menu px-1.5 font-sans text-[11px] text-menu-foreground shadow-md hover:bg-list-hover"
+				<div
+					className="absolute z-10 flex items-center rounded-xs border border-solid border-editor-group-border bg-menu shadow-md"
 					data-note-selection
-					data-testid="walkthrough-note-selection"
-					onClick={() => {
-						notes.onEdit({ start: pending.start, end: pending.end, quote: pending.quote })
-						window.getSelection()?.removeAllRanges()
-						setPending(undefined)
-					}}
-					style={{ top: pending.top, left: pending.left }}
-					type="button">
-					<span aria-hidden className="codicon codicon-comment text-[12px]!" />
-					Note
-				</button>
+					style={{ top: pending.top, left: pending.left }}>
+					<button
+						className="flex h-5.5 cursor-pointer items-center gap-1 border-0 bg-transparent px-1.5 font-sans text-[11px] text-menu-foreground hover:bg-list-hover"
+						data-note-selection
+						data-testid="walkthrough-note-selection"
+						onClick={() => {
+							notes.onEdit({ start: pending.start, end: pending.end, quote: pending.quote })
+							window.getSelection()?.removeAllRanges()
+							setPending(undefined)
+						}}
+						type="button">
+						<span aria-hidden className="codicon codicon-comment text-[12px]!" />
+						Note
+					</button>
+					{ask && (
+						<button
+							className="flex h-5.5 cursor-pointer items-center gap-1 border-0 border-l border-solid border-editor-group-border bg-transparent px-1.5 font-sans text-[11px] text-menu-foreground hover:bg-list-hover"
+							data-note-selection
+							onClick={() => {
+								setAsking({ start: pending.start, end: pending.end, quote: pending.quote })
+								window.getSelection()?.removeAllRanges()
+								setPending(undefined)
+							}}
+							title="Ask about these lines. Opens a question box; submitting starts a model call."
+							type="button">
+							<span aria-hidden className="codicon codicon-sparkle text-[12px]!" />
+							Ask
+						</button>
+					)}
+				</div>
 			)}
 		</div>
 	)

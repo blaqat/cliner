@@ -231,7 +231,7 @@ export const previewPick = (row: ModelRow, effective: Effective | undefined): Mo
 	return { modelId: row.id, levelId: levels[levels.length - 1]?.id ?? "default" }
 }
 
-export type RoleKey = "chat" | "ask" | "subagents" | "background" | "titles" | "commitMessages" | "generate"
+export type RoleKey = "chat" | "ask" | "subagents" | "background" | "titles" | "commitMessages" | "generate" | "walkthroughAsk"
 
 export const ROLE_LABELS: Record<RoleKey, string> = {
 	chat: "Chat",
@@ -241,6 +241,7 @@ export const ROLE_LABELS: Record<RoleKey, string> = {
 	titles: "Thread titles",
 	commitMessages: "Commit messages",
 	generate: "Walkthrough Generate",
+	walkthroughAsk: "Walkthrough Ask",
 }
 
 export const roleRowId: Record<RoleKey, string> = {
@@ -251,6 +252,7 @@ export const roleRowId: Record<RoleKey, string> = {
 	titles: "models.background.titles",
 	commitMessages: "models.background.commit-messages",
 	generate: "models.background.generate",
+	walkthroughAsk: "models.walkthrough.ask",
 }
 
 export const rolePick = (roles: RoleSettings, role: RoleKey): ModelPick | null => {
@@ -261,6 +263,8 @@ export const rolePick = (roles: RoleSettings, role: RoleKey): ModelPick | null =
 			return roles.ask.enabled ? roles.ask.pick : null
 		case "subagents":
 			return roles.subagents.kind === "model" ? roles.subagents.pick : null
+		case "walkthroughAsk":
+			return roles.walkthroughAsk?.pick ?? null
 		case "background":
 			return roles.background.pick
 		default:
@@ -277,6 +281,8 @@ export const clearRole = (roles: RoleSettings, role: RoleKey): RoleSettings => {
 			return { ...roles, ask: { enabled: false, pick: null } }
 		case "subagents":
 			return { ...roles, subagents: { kind: "thread", level: "inherit" } }
+		case "walkthroughAsk":
+			return { ...roles, walkthroughAsk: { context: roles.walkthroughAsk?.context ?? "thread", pick: null } }
 		case "background":
 			return { ...roles, background: { ...roles.background, pick: null } }
 		default: {

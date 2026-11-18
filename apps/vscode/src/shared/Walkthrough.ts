@@ -1,3 +1,5 @@
+import type { ModelPick, RoleSettings, WalkthroughAskContext } from "./model-settings"
+
 export type WalkthroughScope = "thread" | "last_turn" | "git" | "authored"
 
 export interface WalkthroughHunk {
@@ -117,6 +119,46 @@ export interface WalkthroughReviewResponse {
 	dismissed?: boolean
 }
 
+export interface WalkthroughAskTurn {
+	question: string
+	answer: string
+	pick: ModelPick
+	context: WalkthroughAskContext
+}
+
+export interface WalkthroughAskThread {
+	id: string
+	hunkId: string
+	line: number
+	endLine: number
+	quote?: string
+	turns: WalkthroughAskTurn[]
+}
+
+export interface WalkthroughAskConfig {
+	pick: ModelPick | null
+	context: WalkthroughAskContext
+	label: string
+	unavailable?: string
+}
+
+export interface WalkthroughAskRequest extends WalkthroughRequest {
+	question: string
+	askId?: string
+	line?: number
+	endLine?: number
+	quote?: string
+}
+
+/** Explicit saved choices win; an unavailable choice must be fixed, never silently replaced. */
+export function walkthroughAskPick(
+	roles: RoleSettings,
+	generated: ModelPick | undefined,
+	thread: ModelPick | null,
+): ModelPick | null {
+	return roles.walkthroughAsk?.pick ?? generated ?? thread
+}
+
 export interface ChangeWalkthrough {
 	version: 1
 	taskId: string
@@ -133,6 +175,9 @@ export interface ChangeWalkthrough {
 	/** Cline's review notes, when asked for (Generate "Add review notes", or the agent's present_walkthrough). */
 	review?: WalkthroughReview
 	warnings: string[]
+	generationPick?: ModelPick
+	askConfig?: WalkthroughAskConfig
+	askThreads?: WalkthroughAskThread[]
 	profileId?: string
 	cacheHit?: boolean
 	/** Authored walkthroughs only: the stored document's id within the thread. */

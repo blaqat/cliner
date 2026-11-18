@@ -1,4 +1,4 @@
-import type { ModelPick, RoleSettings, SubagentPick } from "@shared/model-settings"
+import type { ModelPick, RoleSettings, SubagentPick, WalkthroughAskContext } from "@shared/model-settings"
 import { ModelSettingsRequestV1 } from "@shared/proto/cline/models"
 import { ModelsServiceClient } from "@/services/grpc-client"
 import { action, preference, state } from "../shell/rowFactories"
@@ -122,6 +122,32 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 		"background text",
 	]),
 	useOverride("generate", "models.background.generate", "Walkthrough Generate", ["walkthrough", "profiles", "background text"]),
+	preference<ModelPick | null>({
+		id: "models.walkthrough.ask",
+		parent: "models.advanced",
+		label: "Walkthrough Ask",
+		description:
+			"Answers questions about selected lines. Defaults to the model and level that generated the walkthrough, then the thread's model.",
+		aliases: ["ask why", "walkthrough model"],
+		defaultValue: () => null,
+		read: (ctx) => rolesOf(ctx)?.walkthroughAsk?.pick ?? null,
+		write: (pick) =>
+			updateRoles((roles) => ({ ...roles, walkthroughAsk: { context: roles.walkthroughAsk?.context ?? "thread", pick } })),
+		format: (pick) => (pick ? "Its own model" : "Same as the walkthrough"),
+	}),
+	preference<WalkthroughAskContext>({
+		id: "models.walkthrough.ask-context",
+		parent: "models.advanced",
+		label: "Walkthrough Ask context",
+		description:
+			"What Ask sends with the selected lines. Follow-ups include earlier questions and answers. Full thread context can reuse the provider's prompt cache.",
+		aliases: ["ask why", "conversation", "selection"],
+		defaultValue: () => "thread",
+		read: (ctx) => rolesOf(ctx)?.walkthroughAsk?.context ?? "thread",
+		write: (context) =>
+			updateRoles((roles) => ({ ...roles, walkthroughAsk: { pick: roles.walkthroughAsk?.pick ?? null, context } })),
+		format: (context) => ({ thread: "This thread", recent: "Latest user turn", selection: "Selected lines only" })[context],
+	}),
 	useOverride("titles", "models.background.titles", "Thread titles", ["title model", "name", "background text"]),
 	preference<number | null>({
 		id: "models.timeout",

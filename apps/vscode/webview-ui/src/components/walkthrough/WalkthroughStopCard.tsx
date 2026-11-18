@@ -5,6 +5,7 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { PlacedReviewNote } from "./reviewNotes"
+import type { DiffAsk } from "./WalkthroughAsk"
 import { type DiffReview, type LineNotes, WalkthroughDiff } from "./WalkthroughDiff"
 import { InlineCodeProse, NoteEditor, NoteQuote } from "./WalkthroughNote"
 import { countChanges, type StopFile, stopFiles, syntheticReason } from "./walkthroughUtils"
@@ -27,6 +28,7 @@ export interface StopActions {
 	annotations: (hunk: WalkthroughHunk) => WalkthroughAnnotation[]
 	/** The reviewer's notes on this hunk's lines. */
 	lineNotes: (hunk: WalkthroughHunk) => LineNotes
+	ask?: (hunk: WalkthroughHunk) => DiffAsk
 	/** Cline's notes on this hunk's lines, when the walkthrough has a review. */
 	review?: (hunk: WalkthroughHunk) => DiffReview | undefined
 }
@@ -106,6 +108,7 @@ function HunkBlock({
 				<div className="border-t border-solid border-x-0 border-b-0 border-editor-group-border">
 					<WalkthroughDiff
 						annotations={actions.annotations(hunk)}
+						ask={actions.ask?.(hunk)}
 						hunk={hunk}
 						notes={actions.lineNotes(hunk)}
 						review={actions.review?.(hunk)}

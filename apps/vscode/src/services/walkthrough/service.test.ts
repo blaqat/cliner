@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, mock, setDefaultTimeout } 
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import type { Message } from "@cline/shared"
+import { createCompatibleConnection, createDefaultModelSettings } from "@shared/model-settings"
 import type { Controller } from "@/core/controller"
 import type { CollectionInput } from "./collection"
 import { git } from "./collection"
@@ -11,6 +13,11 @@ let directory = ""
 let requests = 0
 let input: CollectionInput
 let rejectGeneration = false
+let asking = false
+const modelRequests: unknown[][] = []
+const threadPick = { modelId: "thread-model", levelId: "default" }
+const generatePick = { modelId: "generated-model", levelId: "default" }
+let settings = createDefaultModelSettings()
 const askResponse = mock(async (_text: string) => {})
 let askResponseArgs: unknown[] = []
 const openMultiFileDiff = mock(async (_input: unknown) => ({}))
@@ -18,9 +25,14 @@ mock.module("@/core/storage/disk", () => ({ ensureTaskDirectoryExists: async () 
 mock.module("@/hosts/host-provider", () => ({ HostProvider: { diff: { openMultiFileDiff } } }))
 mock.module("@/sdk/sdk-api-handler", () => ({
 	buildApiHandler: () => ({
-		async *createMessage() {
+		async *createMessage(...args: unknown[]) {
+			modelRequests.push(args)
 			requests++
 			if (rejectGeneration) throw new Error("Provider failed")
+			if (asking) {
+				yield { type: "text", text: "The guard rejects empty input." }
+				return
+			}
 			yield {
 				type: "tool_calls",
 				id: "response",
@@ -70,6 +82,21 @@ mock.module("@/sdk/model-settings/background", () => ({
 const { WalkthroughService } = await import("./service")
 
 beforeEach(async () => {
+	asking = false
+	modelRequests.length = 0
+	settings = createDefaultModelSettings()
+	settings.connections = [{ ...createCompatibleConnection("test"), auth: { kind: "none" } }]
+	settings.models = [threadPick.modelId, generatePick.modelId, "override-model"].map((id) => ({
+		id,
+		connectionId: "test",
+		upstreamId: id,
+		name: id,
+		kind: "chat",
+		overrides: {},
+		providerOptions: {},
+	}))
+	settings.roles.chat = threadPick
+	settings.roles.background.pick = generatePick
 	configuredSettingsEnabled = true
 	actionPicks.length = 0
 	directory = await realpath(await mkdtemp(path.join(tmpdir(), "walkthrough-service-")))
@@ -118,9 +145,15 @@ function controller() {
 			},
 		},
 		stateManager: {
-			getGlobalStateKey: (key: string) => (key === "modelSettings" ? { revision: 1 } : undefined),
+			getGlobalStateKey: (key: string) => (key === "modelSettings" ? settings : undefined),
+			getRemoteConfigSettings: () => ({}),
 		},
 		postStateToWebview: async () => {},
+		getWalkthroughAskModel: async () => threadPick,
+		getWalkthroughAskContext: async () => ({
+			messages: input.messages,
+			prefix: { systemPrompt: "Thread system", tools: [] },
+		}),
 		getWalkthroughCollectionInput: async (_taskId: string, scope: CollectionInput["scope"]) => ({ ...input, scope }),
 		askResponse,
 	} as unknown as Controller
@@ -290,7 +323,7 @@ describe("authored walkthrough RPCs", () => {
 			stopNotes: { s1: "Explain remote." },
 		}
 		const rpc = { value: JSON.stringify(request) }
-		expect(JSON.parse((await getChangeWalkthrough(host, rpc)).value)).toEqual(walk)
+		expect(JSON.parse((await getChangeWalkthrough(host, rpc)).value)).toMatchObject(walk)
 		await sendWalkthroughNotes(host, rpc)
 		expect(askResponse.mock.calls[0][0]).toContain("Origin: MR !12 (https://example.com/mr/12)")
 		expect(askResponse.mock.calls[0][0]).toContain("> Stop: Validate remote input")
@@ -314,5 +347,110 @@ describe("authored walkthrough RPCs", () => {
 		await expect(generateChangeWalkthrough(host, rpc)).rejects.toThrow("cannot collect local changes or Generate")
 		expect(openMultiFileDiff).not.toHaveBeenCalled()
 		expect(requests).toBe(0)
+	})
+})
+
+describe("walkthrough Ask", () => {
+	it("builds a host-resolved request, persists answers across services and keeps the thread untouched", async () => {
+		input.messages.splice(2, 0, {
+			role: "user",
+			content: [{ type: "tool_result", tool_use_id: "edit", name: "editor", content: "Saved" }],
+		})
+		input.runSpans.push(0)
+		const host = controller()
+		const service = new WalkthroughService(host)
+		const walk = await service.get(request)
+		expect(requests).toBe(0)
+		expect(walk.askConfig?.pick).toEqual(threadPick)
+		asking = true
+		const original = structuredClone(input.messages)
+		const action = {
+			...request,
+			fingerprint: walk.fingerprint,
+			hunkId: walk.hunks[0].id,
+			line: 0,
+			endLine: 1,
+			question: "Why reject this?",
+		}
+		const result = await service.ask(action)
+		expect(modelRequests[0][0]).toBe("Thread system")
+		const built = modelRequests[0][1] as Message[]
+		expect(built.slice(0, original.length)).toEqual(original)
+		expect(built.at(-1)?.content).toContain("a.ts, lines")
+		expect(built.at(-1)?.content).toContain("-old\n+new")
+		expect(built.at(-1)?.content).toContain(action.question)
+		expect(input.messages).toEqual(original)
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(result.turns[0].pick).toEqual(threadPick)
+		const reopened = new WalkthroughService(host)
+		const loaded = await reopened.get(request)
+		expect(loaded.askThreads).toEqual([result])
+		const followup = await reopened.ask({ ...action, askId: result.id, question: "What about whitespace?" })
+		expect(followup.turns).toHaveLength(2)
+		const continued = modelRequests[1][1] as Message[]
+		expect(continued).toContainEqual({ role: "assistant", content: result.turns[0].answer })
+		expect(continued.at(-1)?.content).toBe("What about whitespace?")
+		expect((await new WalkthroughService(host).get(request)).askThreads).toEqual([followup])
+		expect(requests).toBe(2)
+	})
+
+	it("uses Ask settings before the exact generation pick, then the thread model", async () => {
+		const host = service()
+		const walk = await host.generate(request, generatePick)
+		expect(walk.generationPick).toEqual(generatePick)
+		asking = true
+		const action = { ...request, fingerprint: walk.fingerprint, hunkId: walk.hunks[0].id, line: 0, question: "Why?" }
+		await host.ask(action)
+		expect(actionPicks.at(-1)).toEqual(generatePick)
+		settings.roles.walkthroughAsk = { context: "selection", pick: { modelId: "override-model", levelId: "default" } }
+		await host.ask(action)
+		expect(actionPicks.at(-1)).toEqual(settings.roles.walkthroughAsk.pick)
+		const messages = modelRequests.at(-1)![1] as Message[]
+		expect(messages).toHaveLength(1)
+		expect(modelRequests.at(-1)![0]).not.toBe("Thread system")
+	})
+
+	it("rejects stale, forged and invalid selections before a model call", async () => {
+		const host = service()
+		const walk = await host.get(request)
+		const action = { ...request, fingerprint: walk.fingerprint, hunkId: walk.hunks[0].id, line: 0, question: "Why?" }
+		for (const extra of [
+			{ line: -1 },
+			{ line: 100 },
+			{ line: 1, endLine: 0 },
+			{ line: 0.5 },
+			{ hunkId: "forged" },
+			{ question: " " },
+			{ askId: "missing" },
+			{ fingerprint: "stale" },
+		]) {
+			await expect(host.ask({ ...action, ...extra })).rejects.toThrow()
+		}
+		expect(requests).toBe(0)
+	})
+
+	it("explains unavailable models and never silently changes an explicit choice", async () => {
+		const host = service()
+		settings.roles.walkthroughAsk = { context: "thread", pick: { modelId: "removed", levelId: "high" } }
+		const walk = await host.get(request)
+		expect(walk.askConfig?.unavailable).toContain("removed")
+		await expect(
+			host.ask({ ...request, fingerprint: walk.fingerprint, hunkId: "h1", line: 0, question: "Why?" }),
+		).rejects.toThrow("removed")
+		expect(actionPicks).toEqual([])
+		expect(requests).toBe(0)
+	})
+
+	it("leaves saved answers intact when a follow-up fails and permits a deliberate retry", async () => {
+		const host = service()
+		const walk = await host.get(request)
+		asking = true
+		const action = { ...request, fingerprint: walk.fingerprint, hunkId: "h1", line: 0, question: "Why?" }
+		const first = await host.ask(action)
+		rejectGeneration = true
+		await expect(host.ask({ ...action, askId: first.id })).rejects.toThrow("Provider failed")
+		expect((await host.get(request)).askThreads).toEqual([first])
+		rejectGeneration = false
+		expect((await host.ask({ ...action, askId: first.id })).turns).toHaveLength(2)
 	})
 })

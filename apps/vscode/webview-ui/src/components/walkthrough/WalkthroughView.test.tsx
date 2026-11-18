@@ -9,6 +9,7 @@ import WalkthroughView from "./WalkthroughView"
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	generate: vi.fn(),
+	ask: vi.fn(),
 	revert: vi.fn(),
 	send: vi.fn(),
 	open: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("@/services/grpc-client", () => ({
 	TaskServiceClient: {
 		getChangeWalkthrough: mocks.get,
 		generateChangeWalkthrough: mocks.generate,
+		askWalkthrough: mocks.ask,
 		revertWalkthroughChange: mocks.revert,
 		sendWalkthroughNotes: mocks.send,
 		openWalkthroughDiff: mocks.open,
@@ -861,4 +863,81 @@ it("Generate sends the shared model pick when modelSettings is present", async (
 	const body = JSON.parse(mocks.generate.mock.calls[0][0].value)
 	expect(body.pick).toEqual({ modelId: "g54", levelId: "high" })
 	expect(body).not.toHaveProperty("profileId")
+})
+
+describe("walkthrough Ask selection", () => {
+	it("opens Ask beside Note, sends host anchors, keeps answers inline and explicitly adds Q&A to Send", async () => {
+		const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+		const thread = {
+			id: "ask-1",
+			hunkId: "h1",
+			line: 1,
+			endLine: 2,
+			turns: [
+				{ question: "Why enqueue?", answer: "To avoid blocking the request.", pick: askConfig.pick, context: "thread" },
+			],
+		}
+		mocks.get.mockResolvedValue(response({ ...fixture, askConfig, askThreads: [] }))
+		mocks.ask.mockResolvedValue({ value: JSON.stringify(thread) })
+		await renderPage()
+		const first = stop("Stop the request waiting")
+		const lines = within(first).getAllByTestId("walkthrough-diff-line")
+		Range.prototype.getBoundingClientRect ??= () => new DOMRect(0, 0, 10, 10)
+		const range = document.createRange()
+		range.setStart(lines[1].querySelector(".whitespace-pre")!, 0)
+		range.setEndAfter(lines[2].querySelector(".whitespace-pre")!)
+		window.getSelection()?.removeAllRanges()
+		window.getSelection()?.addRange(range)
+		fireEvent.mouseUp(within(first).getAllByTestId("walkthrough-diff")[0])
+		expect(await within(first).findByTestId("walkthrough-note-selection")).toHaveTextContent("Note")
+		fireEvent.click(within(first).getByRole("button", { name: "Ask" }))
+		expect(mocks.ask).not.toHaveBeenCalled()
+		expect(mocks.send).not.toHaveBeenCalled()
+		fireEvent.change(screen.getByRole("textbox", { name: "Question about selected lines" }), {
+			target: { value: "Why enqueue?" },
+		})
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		await screen.findByText("To avoid blocking the request.")
+		expect(sent(mocks.ask)).toMatchObject({
+			taskId: "task",
+			scope: "thread",
+			fingerprint: "diff-1",
+			hunkId: "h1",
+			line: 1,
+			endLine: 2,
+			question: "Why enqueue?",
+		})
+		expect(mocks.send).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "Add to Send" }))
+		expect(mocks.send).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }))
+		await waitFor(() => expect(mocks.send).toHaveBeenCalledOnce())
+		expect(sent(mocks.send).lineNotes[0]).toMatchObject({ hunkId: "h1", line: 1, endLine: 2 })
+		expect(sent(mocks.send).lineNotes[0].note).toContain("Question: Why enqueue?\nAnswer: To avoid blocking the request.")
+	})
+	it("restores saved answers and allows keyboard access to asking about a line", async () => {
+		const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+		mocks.get.mockResolvedValue(
+			response({
+				...fixture,
+				askConfig,
+				askThreads: [
+					{
+						id: "saved",
+						hunkId: "h1",
+						line: 1,
+						endLine: 2,
+						turns: [{ question: "Why?", answer: "Saved explanation.", pick: askConfig.pick, context: "thread" }],
+					},
+				],
+			}),
+		)
+		await renderPage()
+		expect(screen.getByText("Saved explanation.")).toBeInTheDocument()
+		expect(screen.getByRole("textbox", { name: "Follow-up question" })).toBeInTheDocument()
+		expect(mocks.ask).not.toHaveBeenCalled()
+		const line = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")[0]
+		fireEvent.keyDown(line.querySelector("button")!, { key: "a" })
+		expect(screen.getByRole("textbox", { name: "Question about selected lines" })).toBeInTheDocument()
+	})
 })

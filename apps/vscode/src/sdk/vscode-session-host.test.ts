@@ -61,6 +61,31 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		mockCreateVscodeExtraTools.mockReset().mockResolvedValue([])
 	})
 
+	it("captures the system/tool cache prefix without credentials, preserving the existing hook", async () => {
+		const beforeModel = vi.fn(async () => undefined)
+		const host = await VscodeSessionHost.create({ mcpHub: {} as never })
+		await host.start({ ...gitStartInput, config: { ...gitStartInput.config, hooks: { beforeModel } } })
+		const hook = mockInnerStart.mock.calls[0][0].config.hooks.beforeModel
+		const tools = [{ name: "editor", description: "Edit files", inputSchema: { type: "object" } }]
+		await hook({
+			snapshot: { agentId: "main" },
+			request: { systemPrompt: "Thread system", messages: [], tools, options: { metadata: { sessionId: "git-task" } } },
+		})
+		expect(beforeModel).toHaveBeenCalledOnce()
+		expect(host.readModelPrefix("git-task")).toEqual({ systemPrompt: "Thread system", tools })
+		await hook({
+			snapshot: { agentId: "helper", parentAgentId: "main" },
+			request: { systemPrompt: "Helper system", messages: [], tools: [], options: { metadata: { sessionId: "git-task" } } },
+		})
+		expect(host.readModelPrefix("git-task")).toEqual({ systemPrompt: "Thread system", tools })
+		const prefix = host.readModelPrefix("git-task")!
+		prefix.tools[0].name = "changed"
+		expect(host.readModelPrefix("git-task")?.tools[0].name).toBe("editor")
+		await host.stop("git-task")
+		expect(host.readModelPrefix("git-task")).toBeUndefined()
+		await host.dispose()
+	})
+
 	it("holds side context until beforeRun, preserves existing hooks, and skips helper runs", async () => {
 		const consumeNotes = vi.fn(async () => "side context")
 		const beforeRun = vi.fn(async () => ({ appendContext: "existing context" }))
@@ -190,7 +215,7 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		})
 		const config = mockInnerStart.mock.calls[0][0].config
 		expect(config.providerConfig.fetch).toBe(fetch)
-		expect(config.hooks?.beforeModel).toBeUndefined()
+		expect(config.hooks?.beforeModel).toEqual(expect.any(Function))
 		expect(typeof config.hooks?.afterModel).toBe(providerId === "anthropic" ? "undefined" : "function")
 		await host.dispose()
 	})
