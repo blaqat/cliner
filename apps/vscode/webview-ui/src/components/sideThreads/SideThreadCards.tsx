@@ -233,7 +233,7 @@ export const SideQuestionCard = () => {
 	const answerText = sideThreadAnswerText(answer)
 	const asked = messages.find((message) => message.say === "user_feedback" || message.say === "task")?.text
 	const title = asked ?? (item ? asideTitle(item) : "Side question")
-	const failed = messages.findLast((message) => message.say === "error" || message.ask === "api_req_failed")
+	const failed = [...messages].reverse().find((message) => message.say === "error" || message.ask === "api_req_failed")
 
 	const act = async (action: () => Promise<void>) => {
 		setBusy(true)
