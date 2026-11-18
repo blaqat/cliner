@@ -13,8 +13,17 @@ function publish(next: readonly AutomationRun[]): void {
 	for (const listener of listeners) listener()
 }
 
+/** Pages that show runs must still work when the stream can't start, so a failure here only logs. */
 function subscribe(): void {
-	unsubscribe = AutomationServiceClient.subscribeToAutomationRuns(EmptyRequest.create({}), {
+	try {
+		unsubscribe = startSubscription()
+	} catch (error) {
+		console.error("Couldn't subscribe to automation runs:", error)
+	}
+}
+
+function startSubscription(): () => void {
+	return AutomationServiceClient.subscribeToAutomationRuns(EmptyRequest.create({}), {
 		onResponse: (response) => {
 			try {
 				const parsed = JSON.parse(response.runsJson || "[]")

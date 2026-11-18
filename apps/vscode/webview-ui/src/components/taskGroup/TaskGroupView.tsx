@@ -2,6 +2,7 @@ import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@sh
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { RunBlock } from "@/components/automations/RunBlock"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
@@ -18,6 +19,7 @@ import { useNavigationHistory } from "@/components/navigation/NavigationHistoryC
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { dismissBranchHint, isBranchHintDismissed } from "./branchSuggestion"
@@ -103,6 +105,9 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const [renameSignal, setRenameSignal] = useState(0)
 	const renameFromMenu = useRef(false)
 	const settleAll = useSettleAll(taskGroupId)
+	const allRuns = useAutomationRuns()
+	// Newest first; a finished run folds to one line.
+	const runs = useMemo(() => allRuns.filter((run) => run.taskGroupId === taskGroupId).reverse(), [allRuns, taskGroupId])
 
 	// The composer below starts threads in this task, however many are sent.
 	useEffect(() => {
@@ -171,6 +176,17 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		TaskGroupServiceClient.deleteTaskGroup(DeleteTaskGroupRequest.create({ id: group.id }))
 			.then(hideTaskGroupView)
 			.catch((error) => console.error("Failed to delete task:", error))
+	}
+
+	// Through the history layer, so Back returns here, not to the home screen
+	// the task page briefly passes through while the thread opens.
+	const openThread = (threadId: string) => {
+		if (navigation) {
+			navigation.navigate({ kind: "thread", id: threadId })
+			return
+		}
+		hideTaskGroupView()
+		void openTask(threadId)
 	}
 
 	const branchLinked = !currentBranch || group.tags.some((tag) => sameTag(tag, { kind: "branch", value: currentBranch }))
@@ -301,6 +317,24 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						</button>
 					</div>
 				)}
+				{runs.length > 0 && (
+					<section className="pb-1" data-testid="task-group-runs">
+						<div className={cn(SECTION_HEADER_CLASS, "px-4")}>
+							<span aria-hidden className="codicon codicon-run-all text-[12px]" />
+							Automations · {runs.length}
+						</div>
+						{runs.map((run, index) => (
+							<RunBlock
+								defaultOpen={index === 0}
+								key={run.id}
+								now={now}
+								onOpenThread={openThread}
+								run={run}
+								statuses={threadStatuses}
+							/>
+						))}
+					</section>
+				)}
 				<section className="px-2">
 					<div className={SECTION_HEADER_CLASS}>
 						<span aria-hidden className="codicon codicon-book text-[12px] text-(--vscode-charts-purple)" />
@@ -376,16 +410,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 										last={index === timeline.length - 1}
 										noteNames={noteNames}
 										now={now}
-										onOpen={() => {
-											// Through the history layer, so Back returns here, not to the home screen
-											// the task page briefly passes through while the thread opens.
-											if (navigation) {
-												navigation.navigate({ kind: "thread", id: thread.threadId })
-												return
-											}
-											hideTaskGroupView()
-											void openTask(thread.threadId)
-										}}
+										onOpen={() => openThread(thread.threadId)}
 										// A live thread is never shown as settled, even if the history flag lags.
 										settled={settledIds.has(thread.threadId) && !isLiveThreadStatus(status)}
 										status={status}

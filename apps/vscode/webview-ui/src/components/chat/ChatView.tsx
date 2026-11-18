@@ -5,6 +5,7 @@ import { getApiMetrics, getCostBreakdown, getLastApiReqTotalTokens } from "@shar
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMount } from "react-use"
+import { AutomationRunBar } from "@/components/automations/AutomationRunBar"
 import { openTask } from "@/components/inbox/sessionActions"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { NewChatHero, NewChatListToggle } from "@/components/oneView/NewChatHero"
@@ -592,6 +593,13 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 				/>
 			)}
 			{!subagentView && <QueuedPrompts items={queuedPrompts} />}
+			{!subagentView && (
+				<AutomationRunBar
+					onOpenTaskGroup={openTaskGroup}
+					taskGroupId={taskGroupView?.id ?? (task ? currentTaskItem?.taskGroupId : undefined)}
+					threadId={task && !taskGroupView ? currentTaskItem?.id : undefined}
+				/>
+			)}
 			{(!subagentView || subagentView.pendingDecision === "question") && (
 				<InputSection
 					apiMetrics={apiMetrics}
