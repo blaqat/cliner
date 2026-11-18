@@ -17,14 +17,19 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-4",
 		title: "Release 4",
-		builds: "test builds fork.64–66",
+		builds: "test builds fork.64–67",
 		date: "2026-11-18",
 		notes: [
 			"Now built on Cline 4.1.26 (was 4.1.22), with its fixes: GPT-6 works on Azure and OpenAI-compatible endpoints, reasoning levels fit what each model accepts and Off works everywhere, a provider error mid-reply is retried, long local-model requests no longer time out after 5 minutes, and a reply that ends without a reason is continued",
 			"Also from 4.1.26: switching Ask/Act while a thread starts keeps your first message, a thread open in two apps, or in one that closes mid-reply, no longer gets stuck, attachments reach the model when you answer Cline's question, symlinked rules and .claude/skills load, disabled rules stay off, and running a command no longer moves focus to the terminal",
-			"Asides can start from the composer with /side or /btw, read what the main thread has said since with a tool, and send a note back that shows in the main thread and reaches its next turn without starting one",
+			"Automations: build one from steps (prompt threads with their own models, threads that run together, a step that waits for your pick, find or open a task for a ticket) or describe it and Cline drafts it; start it with /name, watch it on the task page and above the composer, and review what's ready in one card. They replace Scripts",
+			"A This thread panel shows the thread's branch and changes, its side threads and subagents, its notes, and context and cost: a column beside the chat when there's room, a line under the header that opens it when narrow; choose which sections show",
+			"Side threads (/side, kept, beside the main thread when there's room) and side questions (/btw, answered in a card above the composer); a side thread can read the main thread and send it a note, and Wrap up drafts one for you",
+			"Notes: one row per turn with one-click Keep, About you notes that every thread reads, and a Preview / Edit editor for notes, rules, workflows and skills",
+			"Walkthroughs: select lines and Ask why; the answer appears under them, using the model set in Settings (by default the one that made the walkthrough)",
+			"Models: each connection shows what it sends, apart from its models; pasting a URL or curl fills the form, and picking which OpenAI model a deployment is fills its prices and limits",
 			"Thread lists in one view show each thread's tags under its title, and new thread titles name what the thread is about rather than echoing the first words",
-			"Fixes: worktree settings show again in Settings › Tools (they were hidden behind an upstream rollout); a reply that comes back as reasoning only is asked for its answer once, then explained instead of ending silently; a retried or cut-off reply no longer leaves Thinking open or repeats it; reasoning a model sends as <think> tags shows as Thinking, not in the answer; subagent cost is counted once per batch",
+			"Fixes: Azure keys reach the model list and connection test, and API Management keys can go in their own header; accepting notes never fails on an older card; worktree settings show again in Settings › Tools (they were hidden behind an upstream rollout); a reply that comes back as reasoning only is asked for its answer once, then explained instead of ending silently; a retried or cut-off reply no longer leaves Thinking open or repeats it; reasoning a model sends as <think> tags shows as Thinking, not in the answer; subagent cost is counted once per batch",
 		],
 	},
 	{
