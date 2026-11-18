@@ -731,6 +731,7 @@ export class Controller {
 					id,
 					status,
 					() => this.taskSessions.get(id)?.task.messageStateHandler.getClineMessages() ?? [],
+					() => this.taskSessions.get(id)?.cancelled === true,
 				)
 				void this.taskHistory
 					.saveThreadStatus(id, status)

@@ -209,7 +209,8 @@ function ThreadFields({
 			</div>
 			{thread.worktree && (
 				<div className="mt-0.5 text-[11px] text-description">
-					Uses Settings › Worktrees (git or mm). If worktrees are off there, the thread runs in your workspace.
+					Uses Settings › Worktrees (git or mm). If worktrees are off or can't be used here, the step stops and says
+					why.
 				</div>
 			)}
 		</>

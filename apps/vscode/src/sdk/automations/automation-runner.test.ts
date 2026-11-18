@@ -161,6 +161,23 @@ describe("AutomationRunner", () => {
 		expect(h.started).toHaveLength(3)
 	})
 
+	it("a turn the user cancelled in the thread waits for them instead of finishing the step", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-1" })
+		await flush()
+		h.runner.threadStatusChanged(
+			"thread-1",
+			"done",
+			() => [say("text", "half an answer")],
+			() => true,
+		)
+		await flush()
+		expect(h.run().steps[1].threads[0].status).toBe("waiting")
+		expect(h.started).toHaveLength(1)
+		await h.finish("thread-1", "The whole answer")
+		expect(h.started[1].prompt).toContain("The whole answer")
+	})
+
 	it("fails the run when a thread errors or can't start, and skips the rest", async () => {
 		const h = harness()
 		await h.runner.start(h.definition, { ticket: "PROJ-1" })

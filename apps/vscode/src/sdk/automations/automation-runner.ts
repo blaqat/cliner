@@ -397,12 +397,14 @@ export class AutomationRunner {
 
 	/**
 	 * A thread's session status changed. `messages` is read only when its turn ended, to tell a finished
-	 * reply from a question for the user. Threads no run is waiting on are ignored.
+	 * reply from a question for the user. A turn the user cancelled in the thread isn't a reply either:
+	 * the step waits until they resume it. Threads no run is waiting on are ignored.
 	 */
 	threadStatusChanged(
 		threadId: string,
 		status: "running" | "waiting" | "done" | "error" | "stopped",
 		readMessages: () => readonly ClineMessage[],
+		wasCancelled: () => boolean = () => false,
 	): void {
 		const found = this.threadOf(threadId)
 		const waiter = this.waiting.get(threadId)
@@ -419,6 +421,8 @@ export class AutomationRunner {
 			waiter.resolve({ kind: "failed", error: "The thread hit an error. Open it to see why, then retry there." })
 		} else if (status === "stopped") {
 			waiter.resolve({ kind: "stopped" })
+		} else if (wasCancelled()) {
+			set("waiting")
 		} else {
 			const end = classifyTurnEnd(readMessages())
 			if (end.kind === "waiting") set("waiting")
