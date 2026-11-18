@@ -1,6 +1,7 @@
 import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
 import {
 	DEFAULT_SCRIPT_APPROVAL,
+	reservedCommandNameError,
 	SCRIPT_APPROVALS,
 	SCRIPT_NAME_REGEX,
 	SCRIPT_OPTION_KINDS,
@@ -132,6 +133,8 @@ export function parseScriptFile(
 	const description = asString(data.description)?.trim() ?? ""
 	const command = asString(data.command)?.trim() ?? ""
 	if (!SCRIPT_NAME_REGEX.test(name)) errors.push('name must be lowercase letters, digits, "-" or "_" (it is typed as /name)')
+	const reserved = reservedCommandNameError(name)
+	if (reserved) errors.push(reserved)
 	if (!description) errors.push("description is required: say when the agent should use this script")
 	if (!command) errors.push("command is required")
 	const cwd = data.cwd === undefined ? undefined : asString(data.cwd)?.trim()

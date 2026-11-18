@@ -43,6 +43,13 @@ export const DEFAULT_PLATFORM = "unknown"
 
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
 
+/** A side thread shown without being the focused thread: only the messages after its fork. */
+export interface SideThreadView {
+	id: string
+	messages: ClineMessage[]
+	phase?: TurnPhase
+}
+
 /** See {@link ExtensionState.deletedOpenThread}. */
 export interface DeletedOpenThread {
 	id: string
@@ -174,6 +181,8 @@ export interface ExtensionState {
 	 * deletion so the webview leaves the dead thread once: for that task's page, else home.
 	 */
 	deletedOpenThread?: DeletedOpenThread
+	/** Own messages of the side threads the webview watches (shown beside main or in the side-question card). */
+	sideThreadViews?: SideThreadView[]
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
 	planActSeparateModelsSetting: boolean

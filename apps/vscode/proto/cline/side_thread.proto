@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// Side threads ("Side thread" for /side, "Side question" for /btw): forks of a
+// main thread that can run beside it. Internally they are asides
+// (HistoryItem.parentTaskId), like TaskGroup is "Task" in the UI.
+service SideThreadService {
+  // Forks a thread at a message into a side thread or side question. With text
+  // and background set, sends the text there without changing the thread on screen.
+  rpc startSideThread(StartSideThreadRequest) returns (String);
+  // Sends a message to a side thread, whether or not it is the thread on screen.
+  rpc sendToSideThread(SendToSideThreadRequest) returns (Empty);
+  // The side threads the webview shows beside main; their own messages are posted
+  // in state as sideThreadViews. An empty list stops watching.
+  rpc watchSideThreads(StringArrayRequest) returns (Empty);
+  // Sends a note the user approved to the side thread's main thread. Never starts a run.
+  rpc sendSideThreadNote(SendSideThreadNoteRequest) returns (Empty);
+  // Keeps a side question as a side thread, or closes one (stopping it if it runs).
+  rpc updateSideThread(UpdateSideThreadRequest) returns (Empty);
+}
+
+message StartSideThreadRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  int64 message_ts = 3;
+  // "side" (a side thread you keep) or "btw" (a side question).
+  string kind = 4;
+  string text = 5;
+  repeated string images = 6;
+  repeated string files = 7;
+  ComposerProvenance provenance = 8;
+  // Send the text without opening the side thread.
+  bool background = 9;
+}
+
+message SendToSideThreadRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  string text = 3;
+  repeated string images = 4;
+  repeated string files = 5;
+  ComposerProvenance provenance = 6;
+}
+
+message SendSideThreadNoteRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  string text = 3;
+}
+
+message UpdateSideThreadRequest {
+  Metadata metadata = 1;
+  string thread_id = 2;
+  // "side" keeps a side question as a side thread; empty leaves the kind.
+  string kind = 3;
+  optional bool closed = 4;
+}

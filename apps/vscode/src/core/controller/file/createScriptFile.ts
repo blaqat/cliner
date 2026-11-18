@@ -1,5 +1,5 @@
 import { CreateScriptRequest, RefreshedScripts } from "@shared/proto/cline/file"
-import { SCRIPT_NAME_REGEX } from "@shared/scripts"
+import { reservedCommandNameError, SCRIPT_NAME_REGEX } from "@shared/scripts"
 import fs from "fs/promises"
 import path from "path"
 import { HostProvider } from "@/hosts/host-provider"
@@ -21,6 +21,8 @@ export async function createScriptFile(controller: Controller, request: CreateSc
 	if (!SCRIPT_NAME_REGEX.test(name)) {
 		throw new Error("Script names use lowercase letters, digits, - and _")
 	}
+	const reserved = reservedCommandNameError(name)
+	if (reserved) throw new Error(reserved)
 	const dir = request.isGlobal ? globalScriptsDir() : workspaceScriptsDir(await controller.getWorkspaceRoot())
 	const filePath = path.join(dir, `${name}.md`)
 	if (await fileExistsAtPath(filePath)) {

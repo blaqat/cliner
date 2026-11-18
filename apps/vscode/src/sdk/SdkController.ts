@@ -53,6 +53,7 @@ import type {
 	ClineSay,
 	DeletedOpenThread,
 	ExtensionState,
+	SideThreadView,
 	TurnPhase,
 } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
@@ -62,6 +63,7 @@ import { effectiveThreadPick, type ModelPick } from "@shared/model-settings"
 import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray, TaskResponse } from "@shared/proto/cline/task"
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
+import { type SideThreadKind, sideThreadOwnMessages, sideThreadTitle } from "@shared/sideThreads"
 import type { Settings } from "@shared/storage/state-keys"
 import { type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -2041,6 +2043,8 @@ export class Controller {
 			getMinter: () => translator.getMinter(),
 			isFocused: () => this.task?.taskId === id,
 			onMessages: (updates) => {
+				// A side thread shown beside Main isn't focused: its rows reach the webview through state.
+				if (this.watchedSideThreads.has(id) && this.task?.taskId !== id) void this.postStateToWebview()
 				const line = updates
 					.map(messageLastLine)
 					.filter((line) => line !== undefined)
@@ -2614,26 +2618,154 @@ export class Controller {
 				if (!(await this.taskHistory.findHistoryItem(id))) throw new Error("Main thread no longer exists")
 				return this.taskHistory.readSessionMessages(id)
 			},
-			sendNote: async (mainId, sideId, text) => {
-				if (!(await this.taskHistory.findHistoryItem(mainId))) throw new Error("Main thread no longer exists")
-				const context = this.getTaskSessionContext(mainId)
-				if (!context.task.messageStateHandler.getClineMessages().length) {
-					context.messages.replaceMessages(await this.taskHistory.getClineMessages(mainId))
-				}
-				const message: ClineMessage = {
-					ts: context.translator.nextTs(),
-					type: "say",
-					say: "subagent_update",
-					partial: false,
-					text: sideThreadNoteText(sideId, text),
-					sdkMessageIndex: (await this.taskHistory.readSessionMessages(mainId)).length - 1,
-				}
-				await this.taskHistory.saveSideThreadNote(mainId, message)
-				context.messages.emitHookMessage(message)
-				await this.postStateToWebview()
-			},
+			sendNote: (mainId, sideId, text) => this.saveSideThreadNote(mainId, sideId, text),
 			consumeNotes: () => this.taskHistory.consumeSideThreadNotes(sessionId),
 		}
+	}
+
+	/** Shows a side-thread note in Main at once and holds it for Main's next turn. Never starts a run. */
+	private async saveSideThreadNote(mainId: string, sideId: string, text: string): Promise<void> {
+		if (!(await this.taskHistory.findHistoryItem(mainId))) throw new Error("Main thread no longer exists")
+		const context = this.getTaskSessionContext(mainId)
+		if (!context.task.messageStateHandler.getClineMessages().length) {
+			context.messages.replaceMessages(await this.taskHistory.getClineMessages(mainId))
+		}
+		const message: ClineMessage = {
+			ts: context.translator.nextTs(),
+			type: "say",
+			say: "subagent_update",
+			partial: false,
+			text: sideThreadNoteText(sideId, text),
+			sdkMessageIndex: (await this.taskHistory.readSessionMessages(mainId)).length - 1,
+		}
+		await this.taskHistory.saveSideThreadNote(mainId, message)
+		context.messages.emitHookMessage(message)
+		await this.postStateToWebview()
+	}
+
+	// ---- Side threads (/side, /btw) ----
+
+	/** Side threads the webview shows without focusing them; their own rows go out in state. */
+	private watchedSideThreads = new Set<string>()
+
+	watchSideThreads(ids: string[]): void {
+		this.watchedSideThreads = new Set(ids.filter(Boolean))
+		void this.postStateToWebview()
+	}
+
+	private async buildSideThreadViews(): Promise<SideThreadView[]> {
+		const views: SideThreadView[] = []
+		for (const id of this.watchedSideThreads) {
+			const item = await this.taskHistory.findHistoryItem(id)
+			if (!item?.parentTaskId || item.isSubagent) continue
+			const context = this.taskSessions.get(id)
+			const messages = context?.task.messageStateHandler.getClineMessages() ?? (await this.taskHistory.getClineMessages(id))
+			views.push({
+				id,
+				messages: sideThreadOwnMessages(messages, item.sideForkIndex),
+				phase: context?.turn.currentPhase,
+			})
+		}
+		return views
+	}
+
+	/**
+	 * Forks `taskId` at a message into a side thread (/side) or side question (/btw). With
+	 * `background`, the first message goes to it without changing the thread on screen;
+	 * otherwise the webview opens it and sends as usual.
+	 */
+	async startSideThread(input: {
+		taskId: string
+		messageTs: number
+		kind: SideThreadKind
+		text?: string
+		images?: string[]
+		files?: string[]
+		provenance?: ComposerProvenance
+		background?: boolean
+	}): Promise<string> {
+		const id = await this.forkTaskAt(input.taskId, input.messageTs, { kind: input.kind, title: input.text })
+		if (input.background && (input.text?.trim() || input.images?.length || input.files?.length)) {
+			await this.sendToSideThread(id, input.text, input.images, input.files, input.provenance)
+		}
+		return id
+	}
+
+	/** Sends to a side thread that may not be on screen. Never touches the focused thread. */
+	async sendToSideThread(
+		threadId: string,
+		prompt?: string,
+		images?: string[],
+		files?: string[],
+		provenance?: ComposerProvenance,
+	): Promise<void> {
+		if (this.task?.taskId === threadId) {
+			await this.titleSideThreadFromFirstMessage(threadId, prompt)
+			return this.askResponse(prompt, images, files, undefined, provenance)
+		}
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item?.parentTaskId || item.isSubagent) throw new Error("Only side threads take messages beside Main")
+		this.sessions.assertTaskAvailable(threadId)
+		const session = this.sessions.getSession(threadId)
+		if (!session) throw new Error("This side thread isn't running. Open it to continue.")
+		if (!prompt?.trim() && !images?.length && !files?.length) return
+		await this.titleSideThreadFromFirstMessage(threadId, prompt)
+		await this.taskHistory.markTaskActive(threadId)
+		await this.taskHistory.markUserMessage(threadId, prompt)
+		const context = this.getTaskSessionContext(threadId)
+		const resolved = prompt?.trim() ? await this.resolveContextMentions(prompt, undefined, provenance) : ""
+		const live = this.sessions.getSession(threadId)
+		if (!live) throw new Error("This side thread stopped. Open it to continue.")
+		if (live.isRunning) {
+			this.sessions.fireAndForgetSend(live.sdkHost, threadId, resolved, images, files, "queue")
+		} else {
+			context.translator.clearTurnOutcome()
+			context.turn.set("streaming")
+			context.messages.appendAndEmit(
+				[{ ts: Date.now(), type: "say", say: "user_feedback", text: prompt ?? "", images, files, partial: false }],
+				{ type: "status", payload: { sessionId: threadId, status: "running" } },
+			)
+			this.sessions.fireAndForgetSend(live.sdkHost, threadId, resolved, images, files)
+		}
+		await this.postStateToWebview()
+	}
+
+	/** A side thread opened from a message is titled from that message until its first own message. */
+	private async titleSideThreadFromFirstMessage(threadId: string, prompt?: string): Promise<void> {
+		if (!prompt?.trim()) return
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item?.parentTaskId || item.isSubagent || item.title || item.lastUserMessageTs) return
+		const task = sideThreadTitle(prompt)
+		if (task !== item.task) await this.taskHistory.updateTaskHistoryItem({ ...item, task })
+	}
+
+	/** The user approved a note (Wrap up, or Send to main on a side question). */
+	async sendSideThreadNote(threadId: string, text: string): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item) throw new Error("Side thread not found")
+		const mainId = await resolveMainThread(item, (id) => this.taskHistory.findHistoryItem(id))
+		if (!mainId) throw new Error("This thread has no main thread to send to")
+		const note = text.trim()
+		if (!note || note.length > 4000) throw new Error("A note needs 1 to 4000 characters")
+		await this.saveSideThreadNote(mainId, threadId, note)
+	}
+
+	/** Keep a side question as a side thread, or close one (a running one stops first). */
+	async updateSideThread(threadId: string, update: { kind?: SideThreadKind; closed?: boolean }): Promise<void> {
+		const item = await this.taskHistory.findHistoryItem(threadId)
+		if (!item?.parentTaskId || item.isSubagent) throw new Error("Side thread not found")
+		if (update.closed && this.sessions.getSession(threadId)?.isRunning) {
+			await this.sessions
+				.getSession(threadId)
+				?.sdkHost.abort(threadId)
+				.catch((error) => Logger.warn("[SdkController] Failed to stop a closed side thread:", error))
+		}
+		await this.taskHistory.updateTaskHistoryItem({
+			...item,
+			...(update.kind ? { sideKind: update.kind } : {}),
+			...(update.closed === undefined ? {} : { sideClosedAt: update.closed ? Date.now() : undefined }),
+		})
+		await this.postStateToWebview()
 	}
 
 	/** Mentioned-thread access belongs to the user-facing thread, including for its subagents. */
@@ -3426,8 +3558,10 @@ export class Controller {
 
 		const submittedTaskId = this.task?.taskId
 		if (submittedTaskId) await this.taskHistory.markTaskActive(submittedTaskId)
-		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length))
+		if (submittedTaskId && (prompt?.trim() || images?.length || files?.length)) {
+			await this.titleSideThreadFromFirstMessage(submittedTaskId, prompt)
 			await this.taskHistory.markUserMessage(submittedTaskId, prompt)
+		}
 		if (submittedTaskId && extractTicketTags(prompt).length) await this.autoTagThread(submittedTaskId, prompt)
 		this.sessions.assertTaskAvailable(submittedTaskId)
 		if (this.task?.taskId !== submittedTaskId || (decisionId && !this.interactions.hasPendingDecision(decisionId))) return
@@ -4431,7 +4565,11 @@ export class Controller {
 		return this.taskHistory.updateTaskHistory(item)
 	}
 
-	async forkTaskAt(taskId: string, messageTs: number): Promise<string> {
+	async forkTaskAt(
+		taskId: string,
+		messageTs: number,
+		options: { kind?: SideThreadKind; title?: string } = {},
+	): Promise<string> {
 		this.sessions.assertTaskAvailable(taskId)
 		let newId = ""
 		await this.sessionRebuilds.runExclusive(async () => {
@@ -4475,12 +4613,19 @@ export class Controller {
 					},
 				})
 				newId = startResult.sessionId
-				const item = {
-					...createHistoryItemFromSession(newId, `Aside: ${parent.task}`, config.modelId, cwd),
+				// Titled from its first message, else the message it came from: each one reads differently.
+				const fromText = visible.find((message) => message.ts === messageTs)?.text
+				const title = options.title?.trim()
+					? sideThreadTitle(options.title)
+					: sideThreadTitle(fromText, options.kind === "btw" ? "Side question" : "Side thread")
+				const item: HistoryItem = {
+					...createHistoryItemFromSession(newId, title, config.modelId, cwd),
 					apiSelection,
 					parentTaskId: taskId,
 					forkedAtTs: messageTs,
 					taskGroupId,
+					sideKind: options.kind ?? "side",
+					sideForkIndex: initialMessages.length,
 				}
 				await this.taskHistory.updateTaskHistoryItem(item)
 				const context = this.getTaskSessionContext(newId)
@@ -5724,6 +5869,7 @@ export class Controller {
 					? processedTaskHistory.find((item) => item.id === snapshotTask.taskId)
 					: undefined,
 				deletedOpenThread: this.deletedOpenThread,
+				sideThreadViews: this.watchedSideThreads.size ? await this.buildSideThreadViews() : undefined,
 				taskHistory: processedTaskHistory,
 				taskHistoryVersion: reuse
 					? cached.version

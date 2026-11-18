@@ -151,6 +151,18 @@ describe("SdkTaskHistory", () => {
 		expect(result).toMatchObject({ isSettled: true, settledAt: 100, parentTaskId: "parent", forkedAtTs: 42 })
 	})
 
+	it("round trips side-thread kind, close time and fork index, and leaves them unset on older asides", () => {
+		const item = makeHistoryItem("side", { parentTaskId: "main", sideKind: "btw", sideClosedAt: 7, sideForkIndex: 12 })
+		const result = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("side", { metadata: historyItemToSessionMetadata(item) }),
+		)
+		expect(result).toMatchObject({ sideKind: "btw", sideClosedAt: 7, sideForkIndex: 12 })
+		const older = sessionHistoryRecordToHistoryItem(
+			makeSessionRecord("aside", { metadata: { parentTaskId: "main", forkedAtTs: 42 } }),
+		)
+		expect(older).toMatchObject({ sideKind: undefined, sideClosedAt: undefined, sideForkIndex: undefined })
+	})
+
 	it("round trips when the user last sent a message, and leaves it unset on older threads", () => {
 		const item = makeHistoryItem("t", { lastUserMessageTs: 1234 })
 		const result = sessionHistoryRecordToHistoryItem(makeSessionRecord("t", { metadata: historyItemToSessionMetadata(item) }))

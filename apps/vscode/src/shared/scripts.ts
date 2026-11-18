@@ -29,6 +29,19 @@ export interface ScriptOption {
 export type ScriptValues = Record<string, string | boolean>
 
 export const SCRIPT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]{0,63}$/
+/**
+ * Composer commands a script or automation can't be named after: typed as /name,
+ * it would shadow the command in the slash menu.
+ */
+export const RESERVED_COMMAND_NAMES: readonly string[] = ["side", "btw"]
+
+/** Why a script or automation can't use `name`, or undefined when it can. */
+export function reservedCommandNameError(name: string): string | undefined {
+	return RESERVED_COMMAND_NAMES.includes(name.trim().toLowerCase())
+		? `/${name.trim().toLowerCase()} is a composer command (side threads), so pick another name`
+		: undefined
+}
+
 export const SCRIPT_OPTION_NAME_REGEX = /^[a-z][a-z0-9_-]{0,47}$/
 
 /** Longest text value accepted from the user or the agent. */

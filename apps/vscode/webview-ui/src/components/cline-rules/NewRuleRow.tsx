@@ -1,4 +1,5 @@
 import { CreateHookRequest, CreateScriptRequest, CreateSkillRequest, RuleFileRequest } from "@shared/proto/index.cline"
+import { reservedCommandNameError } from "@shared/scripts"
 import { PlusIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useClickAway } from "react-use"
@@ -95,6 +96,11 @@ const NewRuleRow: React.FC<NewRuleRowProps> = ({ isGlobal, ruleType, existingHoo
 			if (ruleType === "script") {
 				if (!/^[a-zA-Z0-9_-]+$/.test(trimmedFilename)) {
 					setError("Script name can only contain letters, numbers, dashes, and underscores")
+					return
+				}
+				const reserved = reservedCommandNameError(trimmedFilename)
+				if (reserved) {
+					setError(reserved)
 					return
 				}
 				try {

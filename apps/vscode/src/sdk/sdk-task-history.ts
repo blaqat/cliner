@@ -175,6 +175,9 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		isSubagent: item.isSubagent ?? false,
 		runtimeOwnerTaskId: item.runtimeOwnerTaskId ?? "",
 		forkedAtTs: item.forkedAtTs ?? 0,
+		sideKind: item.sideKind ?? "",
+		sideClosedAt: item.sideClosedAt ?? 0,
+		sideForkIndex: item.sideForkIndex ?? 0,
 		subagentCount: item.subagentCount ?? 0,
 		size: item.size ?? 0,
 		totalCost: item.totalCost ?? 0,
@@ -306,6 +309,10 @@ export function sessionRecordStartedTs(item: SessionHistoryRecord): number {
 	return dateStringToTimestamp(item.startedAt) || sessionRecordActivityTs(item)
 }
 
+function readSideKind(value: string | undefined): HistoryItem["sideKind"] {
+	return value === "side" || value === "btw" ? value : undefined
+}
+
 export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): HistoryItem {
 	const metadata = item.metadata
 	const lastActivityTs = sessionRecordActivityTs(item)
@@ -342,6 +349,9 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		spawnToolCallId: metadataString(metadata, "spawnToolCallId"),
 		subagentAccess: metadataString(metadata, "subagentAccess") === "write" ? "write" : "read",
 		forkedAtTs: metadataNumber(metadata, "forkedAtTs") || undefined,
+		sideKind: readSideKind(metadataString(metadata, "sideKind")),
+		sideClosedAt: metadataNumber(metadata, "sideClosedAt") || undefined,
+		sideForkIndex: metadataNumber(metadata, "sideForkIndex") || undefined,
 		lastUserMessageTs: metadataNumber(metadata, "lastUserMessageTs") || undefined,
 		subagentCount: metadataNumber(metadata, "subagentCount") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",

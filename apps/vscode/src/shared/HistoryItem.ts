@@ -35,6 +35,12 @@ export type HistoryItem = {
 	spawnToolCallId?: string
 	subagentAccess?: "read" | "write"
 	forkedAtTs?: number
+	/** Side threads only: "btw" is a side question (unlisted until kept), "side" a side thread. Older asides have none. */
+	sideKind?: "side" | "btw"
+	/** When the user closed this side thread; closed ones stay under Main in the thread panel. */
+	sideClosedAt?: number
+	/** Side threads only: SDK messages copied from Main at the fork. The thread's own messages start here. */
+	sideForkIndex?: number
 	/** Total subagents ever spawned by this task (persisted for inbox counts). */
 	subagentCount?: number
 
