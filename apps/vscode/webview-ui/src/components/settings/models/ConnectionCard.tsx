@@ -4,10 +4,19 @@ import { cn } from "@/lib/utils"
 import { settingsConnectionElementId, settingsModelElementId } from "../settingsTargets"
 import { AddModelsPanel } from "./AddModelsPanel"
 import { ConnectionForm, RequestTimeoutField } from "./ConnectionForm"
-import { ActionButton, Chevron, FieldGrid, GroupHeading, LockedIcon, SmallSwitch, Status, Why } from "./fields"
+import { ActionButton, Chevron, FieldGrid, GroupHeading, LinkButton, LockedIcon, SmallSwitch, Status, Why } from "./fields"
 import { ModelForm } from "./ModelForm"
 import { useModelsPage } from "./modelsPageContext"
-import { connectionName, ENV_EMPTY, formatTokens, KEY_MISSING, levelRange, modelName, priceSummary } from "./modelsView"
+import {
+	connectionName,
+	connectionSummary,
+	ENV_EMPTY,
+	formatTokens,
+	KEY_MISSING,
+	levelRange,
+	modelName,
+	priceSummary,
+} from "./modelsView"
 import { signOutProvider } from "./ProviderChooser"
 import { ProviderConnectionFields } from "./ProviderFields"
 import { providerSpec } from "./providerSpecs"
@@ -63,8 +72,12 @@ const ModelRowView = ({ row, connection, isDraft }: { row: ModelRow; connection:
 	}
 
 	const contextWindow = effective?.contextWindow.value
+	const runs = row.catalogModelId
+		? (store.state?.openAiCatalog?.find((model) => model.id === row.catalogModelId)?.name ?? row.catalogModelId)
+		: ""
 	const details = [
 		row.name && row.name !== row.upstreamId ? row.upstreamId : "",
+		runs,
 		effective?.reasoning.value === "yes" ? levelRange(effective) : "",
 		contextWindow != null ? formatTokens(contextWindow) : "",
 		priceSummary(effective),
@@ -225,16 +238,34 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 			</div>
 			{open && (
 				<div className="px-3 pb-3">
+					{/* Two groups, each saying what it holds: where requests go and how, then what's asked for there. */}
+					{!isDraft && (
+						<GroupHeading className="flex items-center gap-2 pt-3">
+							Connection
+							<span className="normal-case tracking-normal">· used by every model below</span>
+						</GroupHeading>
+					)}
 					{showForm && connection.kind === "openai-compatible" && (
-						<div className={isDraft ? "pb-1" : "mt-3 rounded-md border border-editor-group-border p-3"}>
+						<div className={isDraft ? "pb-1" : "rounded-md border border-editor-group-border p-3"}>
 							<ConnectionForm connection={connection} isDraft={isDraft} />
 						</div>
 					)}
 					{connection.kind === "provider" && editing && <ProviderEdit connection={connection} />}
-					{!isDraft && !isProvider && <SharedDefaults connection={connection} />}
+					{!isDraft && !editing && (
+						<div className="text-[12px] text-description" data-testid={`connection-summary-${connection.id}`}>
+							{connectionSummary(connection, store.state?.configuredSecrets ?? {})}.{" "}
+							<LinkButton
+								onClick={() => {
+									page.setOpenModel(null)
+									page.setEditingConnection(connection.id, true)
+								}}>
+								Edit
+							</LinkButton>
+						</div>
+					)}
 					{!isDraft && (
 						<>
-							<div className="mt-3 flex items-center justify-between gap-2 pb-1.5">
+							<div className="mt-4 flex items-center justify-between gap-2 pb-1.5">
 								<GroupHeading className="p-0">Models</GroupHeading>
 								<ActionButton
 									aria-expanded={adding}
@@ -246,6 +277,7 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 									Add models
 								</ActionButton>
 							</div>
+							{!isProvider && <SharedDefaults connection={connection} />}
 							{adding && (
 								<AddModelsPanel
 									connection={connection}

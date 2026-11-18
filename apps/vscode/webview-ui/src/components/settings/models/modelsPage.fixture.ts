@@ -120,6 +120,8 @@ export interface FakeHostOptions {
 	threadDependencies?: Record<string, string[]>
 	providers?: { id: string; name: string; protocol?: string }[]
 	catalog?: Record<string, Record<string, { name: string }>>
+	/** OpenAI's chat models, for "Which model is it?". */
+	openAiCatalog?: { id: string; name: string }[]
 }
 
 const DEFAULT_PROVIDERS = [
@@ -189,6 +191,7 @@ export const createFakeHost = (options: FakeHostOptions = {}) => {
 			availability,
 			managed: options.managed ?? [],
 			migration: { status: "complete", retryable: false },
+			...(options.openAiCatalog ? { openAiCatalog: options.openAiCatalog } : {}),
 		}) as ModelSettingsState
 	}
 

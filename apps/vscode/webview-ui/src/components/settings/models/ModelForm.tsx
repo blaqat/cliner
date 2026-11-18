@@ -9,6 +9,7 @@ import {
 	resolveModelValues,
 } from "@shared/model-settings"
 import { useEffect, useMemo, useState } from "react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ManagedTag } from "../shell/SettingRow"
 import { useSettingsShell } from "../shell/SettingsShellContext"
 import {
@@ -303,6 +304,17 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					/>
 				</Field>
 			</FieldGrid>
+			{connection.kind === "openai-compatible" && !!store.state?.openAiCatalog?.length && (
+				<WhichModel
+					catalog={store.state.openAiCatalog}
+					onChange={(catalogModelId) =>
+						void commit(({ catalogModelId: _old, ...current }) =>
+							catalogModelId ? { ...current, catalogModelId } : current,
+						)
+					}
+					row={row}
+				/>
+			)}
 
 			<div className="mt-3 scroll-my-2 rounded-xs" id={fieldAnchor(row.id, "levels")}>
 				<ControlRow id={fieldAnchor(row.id, "reasoning")} label="Reasoning" tag={tag("reasoning", "Reasoning")}>
@@ -491,6 +503,58 @@ export const ModelForm = ({ row, connection, isDraft }: { row: ModelRow; connect
 					</>
 				)}
 			</div>
+		</div>
+	)
+}
+
+const NOT_SET = "not-set"
+
+/**
+ * A deployment or alias isn't a catalog ID, so nothing is known about it until it says which model it runs.
+ * Picking one fills the catalog's facts; anything set on this model still wins, and Reset follows them again.
+ */
+const WhichModel = ({
+	row,
+	catalog,
+	onChange,
+}: {
+	row: ModelRow
+	catalog: { id: string; name: string }[]
+	onChange: (catalogModelId: string | undefined) => void
+}) => {
+	const picked = catalog.find((model) => model.id === row.catalogModelId)
+	return (
+		<div className="mt-3">
+			<Field
+				hint={
+					picked
+						? `Prices, limits, levels, tools and images come from ${picked.name}. Anything set below wins.`
+						: "For a deployment or alias: pick the OpenAI model it runs to fill in its prices, limits and what it can do."
+				}
+				id={fieldAnchor(row.id, "catalogModelId")}
+				label="Which model is it?">
+				<Select
+					onValueChange={(value) => onChange(value === NOT_SET ? undefined : value)}
+					value={row.catalogModelId ?? NOT_SET}>
+					<SelectTrigger
+						aria-label="Which model is it?"
+						className="w-full rounded-xs px-[7px] py-0 text-[12.5px] data-[size=default]:h-6"
+						id={fieldControl(row.id, "catalogModelId")}>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value={NOT_SET}>Not set</SelectItem>
+						{row.catalogModelId && !picked && (
+							<SelectItem value={row.catalogModelId}>{row.catalogModelId}</SelectItem>
+						)}
+						{catalog.map((model) => (
+							<SelectItem key={model.id} value={model.id}>
+								{model.name}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</Field>
 		</div>
 	)
 }

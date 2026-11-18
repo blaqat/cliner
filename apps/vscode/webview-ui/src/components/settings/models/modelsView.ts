@@ -1,5 +1,6 @@
 import {
 	BUILTIN_MODEL_VALUES,
+	type CompatibleConnection,
 	type Connection,
 	type ConnectionPatch,
 	type MigratedValue,
@@ -13,6 +14,7 @@ import {
 } from "@shared/model-settings"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { settingsModelElementId } from "../settingsTargets"
+import { isAzureOpenAiHost } from "./pasteConnection"
 
 export type Effective = ModelSettingsState["effective"][string]
 
@@ -46,6 +48,68 @@ export const isValidUrl = (text: string) => {
 }
 
 export const isAzureUrl = (url: string | null | undefined) => !!url && /\.azure\.com|\.azure-api\.net/i.test(url)
+
+const BEARER = "Authorization: Bearer"
+
+/** Where a compatible connection's key goes, the way its requests send it. */
+export const keySentIn = (connection: CompatibleConnection): string => {
+	if (connection.keyHeader) {
+		return connection.keyHeader
+	}
+	if (!isAzureOpenAiHost(connection.baseUrl)) {
+		return BEARER
+	}
+	if (connection.apiFormat === "chat") {
+		return "api-key"
+	}
+	// Responses sends api-key only where the SDK reshapes an Azure URL: the bare host, /openai, or a deployment.
+	const path = new URL(connection.baseUrl!).pathname.replace(/\/+$/, "")
+	return path === "" || path === "/openai" || /\/openai\/deployments\/[^/]+$/.test(path) ? "api-key" : BEARER
+}
+
+export const sentInWords = (header: string) => (header === BEARER ? "as Authorization: Bearer" : `in the ${header} header`)
+
+/** An Azure host at its root, /openai or /openai/v1 goes to the v1 path when no version is set, and needs none. */
+export const versionNotNeeded = (url: string | null | undefined) => {
+	if (!isAzureOpenAiHost(url)) {
+		return false
+	}
+	const path = new URL(url!).pathname.replace(/\/+$/, "")
+	return path === "" || path === "/openai" || /^\/openai\/v1(\/|$)/.test(path)
+}
+
+/** The connection in a line: how the key is sent and what goes with it. Shown under Connection when not editing. */
+export const connectionSummary = (connection: Connection, configured: Record<string, boolean>): string => {
+	const auth = connection.auth
+	const sent = connection.kind === "openai-compatible" ? ` ${sentInWords(keySentIn(connection))}` : ""
+	const key =
+		auth.kind === "keychain"
+			? configured[auth.secretRef]
+				? sent
+					? `Key sent${sent}`
+					: "Key saved"
+				: "Key missing"
+			: auth.kind === "environment"
+				? `Key from $${auth.variable}, sent${sent}`
+				: auth.kind === "azure-identity"
+					? "Azure ID, which sends no key yet"
+					: auth.kind === "sdk-account"
+						? "Signed in"
+						: connection.kind === "provider" && Object.keys(connection.secretRefs).length
+							? "Credentials saved"
+							: "No key"
+	const parts = [key]
+	if (connection.kind === "openai-compatible") {
+		parts.push(connection.apiFormat === "responses" ? "Responses" : "Chat")
+		if (connection.azureApiVersion) {
+			parts.push(`api-version ${connection.azureApiVersion}`)
+		}
+	}
+	if (connection.headers.length) {
+		parts.push(`${connection.headers.length} header${connection.headers.length === 1 ? "" : "s"}`)
+	}
+	return parts.join(" · ")
+}
 
 export const connectionName = (connection: Connection, providerName?: string) =>
 	connection.name || providerName || (connection.kind === "provider" ? connection.providerId : hostOf(connection.baseUrl))

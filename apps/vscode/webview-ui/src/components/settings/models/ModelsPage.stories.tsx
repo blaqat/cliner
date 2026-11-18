@@ -139,3 +139,55 @@ export const BedrockSetup = story({ settings: gatewaySettings(), availability: r
 	await userEvent.click(await canvas.findByRole("button", { name: "Add provider" }))
 	await userEvent.click(await canvas.findByRole("button", { name: "Amazon Bedrock" }))
 })
+
+const azureSettings = (): ModelSettings => {
+	const settings = gatewaySettings()
+	settings.connections[0] = {
+		...settings.connections[0],
+		name: "contoso-ai",
+		baseUrl: "https://contoso-ai.openai.azure.com/openai/v1",
+		auth: { kind: "keychain", secretRef: "settings:v1:connection:gateway:apiKey" },
+		headers: [],
+		apiFormat: "chat",
+		keyHeader: "api-key",
+	} as ModelSettings["connections"][number]
+	settings.models = [
+		{ ...modelRow("sol", "gateway", "gpt-41-prod", "", {}), catalogModelId: "gpt-4.1" },
+		modelRow("mini", "gateway", "o4mini-eu", "", {}),
+	]
+	settings.roles.chat = { modelId: "sol", levelId: "default" }
+	settings.roles.background.pick = { modelId: "sol", levelId: "default" }
+	return settings
+}
+const azureHost: FakeHostOptions = {
+	settings: azureSettings(),
+	availability: { sol: { available: true }, mini: { available: true } },
+	secrets: { "settings:v1:connection:gateway:apiKey": "key" },
+	metadata: { sol: { contextWindow: 1047576, inputPrice: 2, outputPrice: 8, tools: "yes", images: "yes", reasoning: "no" } },
+	openAiCatalog: [
+		{ id: "gpt-4.1", name: "GPT-4.1" },
+		{ id: "gpt-5", name: "GPT-5" },
+		{ id: "o3", name: "o3" },
+	],
+}
+
+export const AzureConnection = story(azureHost)
+
+export const AzureConnectionEditing = story(azureHost, async ({ canvasElement }) => {
+	await userEvent.click(await canvasOf(canvasElement).findByRole("button", { name: "Edit connection" }))
+})
+
+export const AzureDeploymentWhichModel = story(azureHost, async ({ canvasElement }) => {
+	const row = await canvasOf(canvasElement).findByTestId("model-row-sol")
+	await userEvent.click(within(row).getAllByRole("button")[0])
+})
+
+export const PastedApimCurl = story({}, async ({ canvasElement }) => {
+	const canvas = canvasOf(canvasElement)
+	const url = await canvas.findByLabelText("Base URL")
+	await userEvent.click(url)
+	await userEvent.paste(
+		`curl "https://acme-ai.azure-api.net/openai-gw/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21" -H "Ocp-Apim-Subscription-Key: fake-apim-key"`,
+	)
+	await userEvent.tab()
+})

@@ -1,4 +1,3 @@
-import { azureOpenAiDefaultApiVersion } from "@shared/api"
 import type { CompatibleConnection, Connection, ConnectionAuth, Header } from "@shared/model-settings"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
@@ -12,6 +11,7 @@ import {
 	FoldHeader,
 	Hint,
 	Icon,
+	LinkButton,
 	LockedIcon,
 	parseSeconds,
 	Segmented,
@@ -20,7 +20,19 @@ import {
 } from "./fields"
 import type { SecretMutation } from "./modelSettingsClient"
 import { useModelsPage } from "./modelsPageContext"
-import { isAzureUrl, isValidUrl, newId, secretField, secretRef } from "./modelsView"
+import {
+	isAzureUrl,
+	isValidUrl,
+	keySentIn,
+	listWords,
+	newId,
+	newModelRow,
+	secretField,
+	secretRef,
+	sentInWords,
+	versionNotNeeded,
+} from "./modelsView"
+import { type PastedConnection, readPastedConnection } from "./pasteConnection"
 
 const AUTH_OPTIONS = [
 	{ value: "keychain", label: "API key" },
@@ -93,6 +105,8 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 	const [moreOpen, setMoreOpen] = useState(false)
 	const [error, setError] = useState<string>()
 	const [pendingHeaders, setPendingHeaders] = useState<{ id: string; name: string; value: string }[]>([])
+	const [filled, setFilled] = useState<string>()
+	const [keyHeaderOpen, setKeyHeaderOpen] = useState(false)
 
 	const urlLocked = managedKey("openAiBaseUrl")
 	const headersLocked = managedKey("openAiHeaders")
@@ -151,6 +165,9 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		if (connection.headers.some((header) => header.name.toLowerCase() === pending.name.toLowerCase())) {
 			return "There's already a header with that name."
 		}
+		if (connection.keyHeader?.toLowerCase() === pending.name.toLowerCase()) {
+			return "The key already goes in that header."
+		}
 		const failed = await saveHeaders([
 			...connection.headers,
 			{ id: pending.id, name: pending.name, storage: "plain", value: pending.value },
@@ -208,6 +225,64 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 		await saveHeaders(connection.headers.filter((entry) => entry.id !== header.id))
 	}
 
+	/**
+	 * A pasted URL or curl command fills what it names. A saved connection only takes a key header from a paste
+	 * that carries a key, so editing its URL never changes where an existing key goes.
+	 */
+	const fillFrom = async (pasted: PastedConnection) => {
+		const taken = new Set(connection.headers.map((header) => header.name.toLowerCase()))
+		const keyHeader =
+			pasted.keyHeader !== undefined && (isDraft || pasted.key) && !taken.has(pasted.keyHeader?.toLowerCase() ?? "")
+				? pasted.keyHeader
+				: undefined
+		const added = pasted.headers.filter(
+			(header) => !taken.has(header.name.toLowerCase()) && header.name.toLowerCase() !== keyHeader?.toLowerCase(),
+		)
+		const change: Partial<CompatibleConnection> = {
+			baseUrl: pasted.baseUrl,
+			...(pasted.apiFormat ? { apiFormat: pasted.apiFormat } : {}),
+			...(pasted.azureApiVersion !== undefined ? { azureApiVersion: pasted.azureApiVersion } : {}),
+			...(keyHeader !== undefined ? { keyHeader } : {}),
+			...(added.length
+				? {
+						headers: [
+							...connection.headers,
+							...added.map(
+								(header): Header => ({ id: newId(), name: header.name, storage: "plain", value: header.value }),
+							),
+						],
+					}
+				: {}),
+		}
+		const secrets: SecretMutation[] = []
+		if (pasted.key && "value" in pasted.key) {
+			change.auth = { kind: "keychain", secretRef: keyRef }
+			secrets.push({ field: keyField, operation: "set", value: pasted.key.value })
+		} else if (pasted.key) {
+			change.auth = { kind: "environment", variable: pasted.key.variable }
+			if (!isDraft && connection.auth.kind === "keychain" && keyConfigured) {
+				secrets.push({ field: keyField, operation: "delete" })
+			}
+		}
+		const failed = await save(change, secrets)
+		if (failed) {
+			return failed
+		}
+		setAuthDraft(undefined)
+		const model = pasted.model
+		if (
+			model &&
+			!store.state?.settings.models.some((row) => row.connectionId === connection.id && row.upstreamId === model)
+		) {
+			const saved = await store.saveModels([newModelRow(connection.id, model)])
+			if (!saved.ok) {
+				setError(saved.message)
+			}
+		}
+		setFilled(listWords(pasted.notes))
+		return undefined
+	}
+
 	// A gateway in front of Azure has its own host, and a saved version has to stay reachable to clear it.
 	const azure =
 		isAzureUrl(connection.baseUrl) ||
@@ -242,9 +317,17 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 						mono
 						onCommit={(text) => {
 							const value = text.trim()
+							const pasted = readPastedConnection(value)
+							if (pasted && "problem" in pasted) {
+								return pasted.problem
+							}
+							if (pasted && (pasted.rich || (isDraft && pasted.kind !== "gateway"))) {
+								return fillFrom(pasted)
+							}
 							if (value && !isValidUrl(value)) {
 								return "That isn't a URL. It starts with http:// or https://."
 							}
+							setFilled(undefined)
 							return save({ baseUrl: value || null })
 						}}
 						placeholder="https://gateway.example/v1"
@@ -252,6 +335,12 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					/>
 				</Field>
 			</FieldGrid>
+			{filled ? (
+				<Why>Filled from your paste: {filled}.</Why>
+			) : (
+				isDraft &&
+				!urlLocked && <Hint>Or paste a URL or curl command from your provider, and the fields it names fill in.</Hint>
+			)}
 			{lockedWords.length > 0 && (
 				<Why tone="warn">
 					{organization} sets the {lockedWords.join(", ")} here. Ask your admin to change{" "}
@@ -307,6 +396,14 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 					}}
 					placeholder="MY_GATEWAY_KEY"
 					value={connection.auth.kind === "environment" ? connection.auth.variable : ""}
+				/>
+			)}
+			{(authKind === "keychain" || authKind === "environment") && (
+				<KeyHeaderField
+					connection={connection}
+					onSave={(keyHeader) => save({ keyHeader })}
+					open={keyHeaderOpen}
+					setOpen={setKeyHeaderOpen}
 				/>
 			)}
 			<div className="mt-2">
@@ -449,7 +546,11 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 								label="Azure API version"
 								mono
 								onCommit={(text) => save({ azureApiVersion: text.trim() || null })}
-								placeholder={`e.g. ${azureOpenAiDefaultApiVersion}`}
+								placeholder={
+									versionNotNeeded(connection.baseUrl)
+										? "None needed on the v1 path"
+										: "e.g. 2025-04-01-preview"
+								}
 								value={connection.azureApiVersion ?? ""}
 							/>
 						</Field>
@@ -471,6 +572,64 @@ export const ConnectionForm = ({ connection, isDraft }: { connection: Compatible
 			)}
 			{error && <Why tone="bad">{error}</Why>}
 		</div>
+	)
+}
+
+/** Where the key goes, in words, and the one place to change it (an API Management subscription header, say). */
+const KeyHeaderField = ({
+	connection,
+	onSave,
+	open,
+	setOpen,
+}: {
+	connection: CompatibleConnection
+	onSave: (keyHeader: string | null) => Promise<string | undefined>
+	open: boolean
+	setOpen: (open: boolean) => void
+}) => {
+	const commit = async (keyHeader: string | null) => {
+		const failed = await onSave(keyHeader)
+		if (!failed) {
+			setOpen(false)
+		}
+		return failed
+	}
+	return (
+		<>
+			<Hint>
+				Sent {sentInWords(keySentIn(connection))}.{" "}
+				{!open && <LinkButton onClick={() => setOpen(true)}>Change</LinkButton>}
+			</Hint>
+			{open && (
+				<div className="mt-1.5">
+					<Field label="Key header">
+						<CommitInput
+							label="Key header"
+							mono
+							onCommit={async (text) => {
+								const name = text.trim()
+								if (!name) {
+									return commit(null)
+								}
+								if (!HEADER_NAME.test(name)) {
+									return "Header names can't have spaces or punctuation like : or /."
+								}
+								if (name.toLowerCase() === "authorization") {
+									return "Leave it empty to send Authorization: Bearer."
+								}
+								if (connection.headers.some((header) => header.name.toLowerCase() === name.toLowerCase())) {
+									return "That's one of the custom headers below. Remove it there first."
+								}
+								return commit(name)
+							}}
+							placeholder="Authorization: Bearer"
+							value={connection.keyHeader ?? ""}
+						/>
+					</Field>
+					<Hint>Empty sends Authorization: Bearer. Azure API Management usually wants Ocp-Apim-Subscription-Key.</Hint>
+				</div>
+			)}
+		</>
 	)
 }
 

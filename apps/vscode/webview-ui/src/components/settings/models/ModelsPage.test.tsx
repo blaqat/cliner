@@ -1861,3 +1861,208 @@ it("saves Walkthrough Ask model, level and context separately and resets to the 
 	expect(host.state().settings.roles.walkthroughAsk?.pick).toBeNull()
 	expect(host.state().settings.roles.walkthroughAsk?.context).toBe("selection")
 })
+
+describe("connection and models, grouped", () => {
+	// With one connection, its card starts open.
+	const openCard = async () => () => within(screen.getByTestId("connection-gateway"))
+
+	it("says what the connection sends under its own heading, and models and their defaults under theirs", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		const card = await openCard()
+		const summary = card().getByTestId("connection-summary-gateway")
+		expect(summary).toHaveTextContent("Key from $AI_GATEWAY_KEY, sent as Authorization: Bearer · Responses · 1 header. Edit")
+		const [connection, models] = [card().getByText("Connection"), card().getByText("Models")]
+		const shared = card().getByTestId("shared-defaults-gateway")
+		// Document order: Connection, its summary, Models, then the defaults every model shares.
+		expect(connection.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		expect(summary.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		expect(models.compareDocumentPosition(shared) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+		fireEvent.click(within(summary).getByRole("button", { name: "Edit" }))
+		await flush()
+		expect(card().getByTestId("connection-form-gateway")).toBeInTheDocument()
+		expect(card().queryByTestId("connection-summary-gateway")).toBeNull()
+	})
+
+	it("says a saved key goes in api-key on an Azure host, and names the deployment's model on its row", async () => {
+		const settings = gatewaySettings()
+		const connection = settings.connections[0]
+		if (connection.kind !== "openai-compatible") throw new Error("compatible")
+		connection.baseUrl = "https://contoso.openai.azure.com/openai"
+		connection.apiFormat = "chat"
+		connection.auth = { kind: "keychain", secretRef: "settings:v1:connection:gateway:apiKey" }
+		connection.headers = []
+		settings.models[3].catalogModelId = "gpt-4.1"
+		setup({
+			settings,
+			availability: envAvailable,
+			secrets: { "settings:v1:connection:gateway:apiKey": "k" },
+			openAiCatalog: [{ id: "gpt-4.1", name: "GPT-4.1" }],
+		})
+		await flush()
+		const card = await openCard()
+		expect(card().getByTestId("connection-summary-gateway")).toHaveTextContent("Key sent in the api-key header · Chat.")
+		expect(within(screen.getByTestId("model-row-tuned")).getByText(/GPT-4\.1/)).toBeInTheDocument()
+	})
+})
+
+describe("pasting into Add connection", () => {
+	it("fills an API Management connection from a curl command, with its key, header, version and first model", async () => {
+		setup()
+		await flush()
+		change(
+			"Base URL",
+			`curl "https://acme-ai.azure-api.net/openai-gw/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21" -H "Ocp-Apim-Subscription-Key: fake-apim-key" -d '{"messages": []}'`,
+		)
+		await flush()
+		await flush()
+		const [connection] = host.state().settings.connections
+		expect(connection).toMatchObject({
+			baseUrl: "https://acme-ai.azure-api.net/openai-gw/openai",
+			azureApiVersion: "2024-10-21",
+			apiFormat: "chat",
+			keyHeader: "Ocp-Apim-Subscription-Key",
+			auth: { kind: "keychain" },
+		})
+		expect(host.secrets[`settings:v1:connection:${connection.id}:apiKey`]).toBe("fake-apim-key")
+		expect(host.state().settings.models).toMatchObject([{ connectionId: connection.id, upstreamId: "gpt-4o" }])
+		const form = within(screen.getByTestId(`connection-form-${connection.id}`))
+		expect(form.getByText(/Filled from your paste: Azure API Management/)).toHaveTextContent(
+			"API version 2024-10-21, the base URL split from the deployment URL, Chat, your key, sent in Ocp-Apim-Subscription-Key and gpt-4o as its first model.",
+		)
+		expect(form.getByText(/Sent in the Ocp-Apim-Subscription-Key header/)).toBeInTheDocument()
+		fireEvent.click(form.getByRole("button", { name: "Change" }))
+		await flush()
+		expect(form.getByLabelText("Key header")).toHaveValue("Ocp-Apim-Subscription-Key")
+	})
+
+	it("turns an Azure deployment URL into the resource on the v1 path, with no version", async () => {
+		setup()
+		await flush()
+		change(
+			"Base URL",
+			"https://contoso.openai.azure.com/openai/deployments/gpt-41-prod/chat/completions?api-version=2025-01-01-preview",
+		)
+		await flush()
+		await flush()
+		const [connection] = host.state().settings.connections
+		expect(connection).toMatchObject({
+			baseUrl: "https://contoso.openai.azure.com/openai/v1",
+			azureApiVersion: null,
+			keyHeader: "api-key",
+		})
+		expect(host.state().settings.models[0].upstreamId).toBe("gpt-41-prod")
+	})
+
+	it("leaves a saved connection's key alone when only a URL is pasted", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		const form = within(screen.getByTestId("connection-form-gateway"))
+		change(
+			"Base URL",
+			"https://acme.azure-api.net/team/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21",
+			form,
+		)
+		await flush()
+		const [connection] = host.state().settings.connections
+		expect(connection).toMatchObject({ baseUrl: "https://acme.azure-api.net/team/openai", azureApiVersion: "2024-10-21" })
+		expect(connection).not.toHaveProperty("keyHeader")
+		expect(connection.auth).toEqual({ kind: "environment", variable: "AI_GATEWAY_KEY" })
+	})
+
+	it("says a pasted key isn't a URL", async () => {
+		setup()
+		await flush()
+		change("Base URL", "sk-abcdefghijklmnop")
+		await flush()
+		expect(page().getByText("That looks like a key. Paste it in API key below.")).toBeInTheDocument()
+		expect(host.callsTo("saveConnection")).toHaveLength(0)
+	})
+})
+
+describe("where the key goes", () => {
+	it("says Bearer by default and takes a key header, then clears it", async () => {
+		setup({ settings: gatewaySettings(), availability: envAvailable })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		const form = () => within(screen.getByTestId("connection-form-gateway"))
+		expect(form().getByText(/Sent as Authorization: Bearer\./)).toBeInTheDocument()
+		fireEvent.click(form().getByRole("button", { name: "Change" }))
+		await flush()
+		change("Key header", "X-Team", form())
+		await flush()
+		expect(form().getByText("That's one of the custom headers below. Remove it there first.")).toBeInTheDocument()
+		change("Key header", "Ocp-Apim-Subscription-Key", form())
+		await flush()
+		expect(host.state().settings.connections[0]).toMatchObject({ keyHeader: "Ocp-Apim-Subscription-Key" })
+		expect(form().getByText(/Sent in the Ocp-Apim-Subscription-Key header\./)).toBeInTheDocument()
+		expect(form().queryByLabelText("Key header")).toBeNull()
+		fireEvent.click(form().getByRole("button", { name: "Change" }))
+		await flush()
+		change("Key header", "", form())
+		await flush()
+		expect(host.state().settings.connections[0]).toMatchObject({ keyHeader: null })
+		expect(form().getByText(/Sent as Authorization: Bearer\./)).toBeInTheDocument()
+	})
+
+	it("suggests no API version on Azure's v1 path, and a current one elsewhere", async () => {
+		const settings = gatewaySettings()
+		const connection = settings.connections[0]
+		if (connection.kind !== "openai-compatible") throw new Error("compatible")
+		connection.baseUrl = "https://contoso.openai.azure.com/openai/v1"
+		setup({ settings, availability: envAvailable })
+		await flush()
+		fireEvent.click(page().getByRole("button", { name: "Edit connection" }))
+		await flush()
+		const form = within(screen.getByTestId("connection-form-gateway"))
+		fireEvent.click(form.getByRole("button", { name: /^More/ }))
+		await flush()
+		expect(form.getByLabelText("Azure API version")).toHaveAttribute("placeholder", "None needed on the v1 path")
+		change("Base URL", "https://acme.azure-api.net/team/openai", form)
+		await flush()
+		expect(form.getByLabelText("Azure API version")).toHaveAttribute("placeholder", "e.g. 2025-04-01-preview")
+	})
+})
+
+describe("which model a model is", () => {
+	it("links a model to a catalog model and unlinks it", async () => {
+		setup({
+			settings: gatewaySettings(),
+			availability: envAvailable,
+			openAiCatalog: [
+				{ id: "gpt-4.1", name: "GPT-4.1" },
+				{ id: "gpt-5", name: "GPT-5" },
+			],
+		})
+		await flush()
+		const form = await openModel("tuned")
+		expect(form.getByText(/pick the OpenAI model it runs/)).toBeInTheDocument()
+		fireEvent.keyDown(form.getByRole("combobox", { name: "Which model is it?" }), { key: "Enter" })
+		fireEvent.keyDown(await screen.findByRole("option", { name: "GPT-4.1" }), { key: "Enter" })
+		await flush()
+		expect(savedRow("tuned")).toMatchObject({ catalogModelId: "gpt-4.1" })
+		expect(form.getByText(/come from GPT-4\.1\. Anything set below wins\./)).toBeInTheDocument()
+		fireEvent.keyDown(form.getByRole("combobox", { name: "Which model is it?" }), { key: "Enter" })
+		fireEvent.keyDown(await screen.findByRole("option", { name: "Not set" }), { key: "Enter" })
+		await flush()
+		expect(savedRow("tuned")).not.toHaveProperty("catalogModelId")
+	})
+
+	it("isn't asked on a provider's own models", async () => {
+		const settings = gatewaySettings()
+		settings.connections[0] = {
+			...settings.connections[0],
+			kind: "provider",
+			providerId: "anthropic",
+			options: {},
+			secretRefs: {},
+		} as never
+		setup({ settings, availability: envAvailable, openAiCatalog: [{ id: "gpt-4.1", name: "GPT-4.1" }] })
+		await flush()
+		const form = await openModel("tuned")
+		expect(form.queryByRole("combobox", { name: "Which model is it?" })).toBeNull()
+	})
+})
