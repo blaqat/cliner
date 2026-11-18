@@ -66,6 +66,12 @@ export interface StartThreadInput {
 	worktree: boolean
 }
 
+export interface AutomationThreadState {
+	status: "running" | "waiting" | "done" | "error" | "stopped"
+	messages: readonly ClineMessage[]
+	cancelled: boolean
+}
+
 export interface AutomationRunnerDeps {
 	/** The task tagged with this ticket, else a new one with that tag. */
 	findOrCreateTask: (ticket: string, title: string) => Promise<string>
@@ -73,6 +79,8 @@ export interface AutomationRunnerDeps {
 	createTask: (title: string, ticket?: string) => Promise<string>
 	/** Starts a background thread in the task; resolves to its id. Throws with a reason the user can act on. */
 	startThread: (input: StartThreadInput) => Promise<string>
+	/** Current state after startup, which may have outlasted the thread's first turn. */
+	readThreadState?: (threadId: string) => AutomationThreadState | undefined
 	stopThread: (threadId: string) => Promise<void>
 	onChange: (runs: readonly AutomationRun[]) => void
 	load?: () => Promise<AutomationRun[]>
@@ -372,7 +380,19 @@ export class AutomationRunner {
 		this.changed()
 		const outcome = live.stopped
 			? ({ kind: "stopped" } as const)
-			: await new Promise<ThreadOutcome>((resolve) => this.waiting.set(threadId, { runId: live.run.id, resolve }))
+			: await new Promise<ThreadOutcome>((resolve) => {
+					this.waiting.set(threadId, { runId: live.run.id, resolve })
+					// Startup can still be saving a title after the first turn has finished. Subscribe
+					// before reading back its state so neither an early nor a later outcome is lost.
+					const state = this.deps.readThreadState?.(threadId)
+					if (state)
+						this.threadStatusChanged(
+							threadId,
+							state.status,
+							() => state.messages,
+							() => state.cancelled,
+						)
+				})
 		this.waiting.delete(threadId)
 		if (outcome.kind === "done") {
 			runThread.status = "done"

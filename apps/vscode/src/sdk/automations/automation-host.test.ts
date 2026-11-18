@@ -45,6 +45,8 @@ describe("AutomationsHost.start", () => {
 		const run = await host.start("ticket-to-pr", { ticket: "P-1" }, { fingerprint: changed?.fingerprint ?? "" })
 		expect(run.automation).toBe("ticket-to-pr")
 		await expect(host.start("nope", {}, { fingerprint: "" })).rejects.toThrow("no automation called nope")
+		// The run persists asynchronously; finish its writes before afterEach removes storage.
+		await host.flushed()
 	})
 
 	it("keeps runs in extension storage across restarts", async () => {

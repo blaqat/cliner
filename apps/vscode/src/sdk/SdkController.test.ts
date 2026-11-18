@@ -11,10 +11,14 @@ import { ClineError } from "@/services/error/ClineError"
 import { telemetryService } from "@/services/telemetry"
 import { isClineManagedProvider } from "@/shared/utils/cline"
 import { LocalRuntimeHost } from "../../../../sdk/packages/core/dist/index.js"
+import { AutomationsHost } from "./automations/automation-host"
+import type { StartThreadInput } from "./automations/automation-runner"
 import { MessageTranslatorState } from "./message-translator"
 import { Controller as SdkController } from "./SdkController"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
+import type { SdkSessionEventCoordinator } from "./sdk-session-event-coordinator"
+import { SdkSessionLifecycle } from "./sdk-session-lifecycle"
 import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
@@ -1128,6 +1132,125 @@ describe("interject ordering", () => {
 })
 
 describe("task session contexts", () => {
+	it.each([false, true])("reconciles a background automation reply during startup, cancelled=%s", async (cancelled) => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "cline-automation-start-"))
+		type Context = {
+			task: TaskProxy
+			events: SdkSessionEventCoordinator
+			cancelled: boolean
+			messages: SdkMessageCoordinator
+			watchdog: { stop: () => void }
+		}
+		const internals = SdkController.prototype as unknown as {
+			getTaskSessionContext: (id: string) => Context
+			startAutomationThread: (input: StartThreadInput) => Promise<string>
+		}
+		const controller = {
+			getTaskSessionContext: internals.getTaskSessionContext,
+			initTask: SdkController.prototype.initTask,
+			startAutomationThread: internals.startAutomationThread,
+			sessions: undefined! as SdkSessionLifecycle,
+			automations: undefined! as AutomationsHost,
+			renameTask: vi.fn(async () => {}),
+			task: { taskId: "other-focused-thread" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: { emitSessionEvents: vi.fn() },
+			stateManager: { getGlobalSettingsKey: () => undefined, getGlobalStateKey: () => undefined },
+			taskHistory: {
+				recordLastLine: vi.fn(async () => {}),
+				markTaskActive: vi.fn(async () => {}),
+			},
+			postStateToWebview: vi.fn(async () => {}),
+			emitNotebookChanges: vi.fn(async () => {}),
+			waitForInitialRemoteConfig: vi.fn(async () => {}),
+			taskGroupStore: { getGroup: async () => ({ id: "group" }) },
+			// initTask starts sending before it awaits the caller's step title.
+			taskStart: { initTask: async () => "background" },
+		}
+		const sessions = new SdkSessionLifecycle({
+			onStatusChange: (id, status) =>
+				controller.automations.runner.threadStatusChanged(
+					id,
+					status,
+					() => controller.taskSessions.get(id)?.task.messageStateHandler.getClineMessages() ?? [],
+					() => controller.taskSessions.get(id)?.cancelled === true,
+				),
+		} as ConstructorParameters<typeof SdkSessionLifecycle>[0])
+		controller.sessions = sessions
+		// A real background session, with another thread still focused.
+		const session = { sessionId: "background", isRunning: true, startConfig: { mode: "plan" } }
+		;(sessions as unknown as { liveSessions: Map<string, unknown> }).liveSessions.set("background", session)
+		const context = controller.getTaskSessionContext("background") as Context
+		context.cancelled = cancelled
+		const finish = async () => {
+			for (const event of [
+				{ type: "content_end", contentType: "text", text: "Plain Ask reply" },
+				{ type: "done", reason: "completed", text: "", iterations: 1 },
+			])
+				await context.events.handleSessionEvent({
+					type: "agent_event",
+					payload: { sessionId: "background", event },
+				} as never)
+		}
+		controller.renameTask.mockImplementation(finish)
+		const host = new AutomationsHost({
+			getWorkspaceRoot: () => root,
+			getStorageDir: () => path.join(root, "storage"),
+			createTask: async () => "group",
+			findOrCreateTask: async () => "group",
+			startThread: (input) => controller.startAutomationThread(input),
+			readThreadState: (id) => ({
+				status: sessions.sessionStatuses[id],
+				messages: context.task.messageStateHandler.getClineMessages(),
+				cancelled: context.cancelled,
+			}),
+			stopThread: async () => {},
+			onRunsChanged: () => {},
+		})
+		controller.automations = host
+		try {
+			const saved = await host.store.save(
+				{
+					name: "quick-reply",
+					title: "Quick reply",
+					description: "Reply in Ask mode",
+					arguments: [],
+					steps: [
+						{
+							kind: "thread",
+							id: "reply",
+							title: "Reply",
+							prompt: "Say hello",
+							model: "",
+							level: "",
+							mode: "ask",
+							worktree: false,
+						},
+					],
+				},
+				"workspace",
+			)
+			// The same trusted start-form entry point used by /name.
+			await host.start("quick-reply", {}, { fingerprint: saved.fingerprint, taskGroupId: "group" })
+			await vi.waitFor(() => expect(host.runner.list()[0].steps[0].threads[0].status).toBe(cancelled ? "waiting" : "done"))
+			if (cancelled) {
+				expect(host.runner.list()[0].status).toBe("running")
+				context.cancelled = false
+				sessions.setRunning(true, "background")
+				await finish()
+			}
+			await vi.waitFor(() => expect(host.runner.list()[0].status).toBe("done"))
+			expect(host.runner.list()[0].steps[0].threads[0].reply).toBe("Plain Ask reply")
+			expect(controller.sessionEventStream.emitSessionEvents).not.toHaveBeenCalled()
+		} finally {
+			context.watchdog.stop()
+			context.messages.dispose()
+			await host.flushed()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	it.each([
 		"streaming",
 		"awaiting_approval",

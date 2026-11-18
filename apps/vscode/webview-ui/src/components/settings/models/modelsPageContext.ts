@@ -99,13 +99,14 @@ export const useModelsPageState = () => {
 				return "Name the env var first."
 			}
 			const named = { ...draft, name: draft.name || (draft.baseUrl ? hostOf(draft.baseUrl) : "Managed connection") }
+			// State can publish the saved connection before its RPC reply. Keep the form mounted.
+			setEditing((current) => ({ ...current, [draft.id]: true }))
 			const outcome = await store.saveConnection(named, draftSecrets.current[draft.id] ?? [])
 			if (!outcome.ok) {
 				return outcome.message
 			}
 			dropDraft(draft.id)
 			setOpenConnection(draft.id)
-			setEditing((current) => ({ ...current, [draft.id]: true }))
 			setAdding((current) => ({ ...current, [draft.id]: true }))
 			return undefined
 		},

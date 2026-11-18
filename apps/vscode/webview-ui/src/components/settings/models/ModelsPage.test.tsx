@@ -1954,6 +1954,38 @@ describe("pasting into Add connection", () => {
 		expect(host.state().settings.models[0].upstreamId).toBe("gpt-41-prod")
 	})
 
+	it("keeps the paste summary and form when saved settings arrive before the save reply", async () => {
+		const view = setup()
+		await flush()
+		const save = host.client.saveConnection
+		let release!: () => void
+		const reply = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		host.client.saveConnection = async (request) => {
+			const result = await save(request)
+			// Extension state is published independently of the RPC response.
+			mocks.state.modelSettings = host.state()
+			view.rerender(<SettingsShell onDone={() => {}} />)
+			await reply
+			return result
+		}
+		const input = change(
+			"Base URL",
+			"https://contoso.openai.azure.com/openai/deployments/gpt-41-prod/chat/completions?api-version=2025-01-01-preview",
+		)
+		await flush()
+		expect(page().getByLabelText("Base URL")).toBe(input)
+		release()
+		await flush()
+		await flush()
+		expect(page().getByText(/Filled from your paste:/)).toHaveTextContent("gpt-41-prod as its first model")
+		expect(host.state().settings.models[0].upstreamId).toBe("gpt-41-prod")
+		fireEvent.click(page().getByRole("button", { name: "Done editing" }))
+		await flush()
+		expect(page().queryByLabelText("Base URL")).toBeNull()
+	})
+
 	it("leaves a saved connection's key alone when only a URL is pasted", async () => {
 		setup({ settings: gatewaySettings(), availability: envAvailable })
 		await flush()

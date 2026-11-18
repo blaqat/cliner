@@ -551,6 +551,17 @@ export class Controller {
 		createTask: (title, ticket) =>
 			this.createTaskGroup({ title, tags: ticket ? [{ kind: "ticket", value: ticket, source: "user" }] : [] }),
 		startThread: (input) => this.startAutomationThread(input),
+		readThreadState: (id) => {
+			const status = this.sessions.sessionStatuses[id]
+			const context = this.taskSessions.get(id)
+			return status
+				? {
+						status,
+						messages: context?.task.messageStateHandler.getClineMessages() ?? [],
+						cancelled: context?.cancelled === true,
+					}
+				: undefined
+		},
 		stopThread: (threadId) => this.stopBackgroundThread(threadId),
 		onRunsChanged: (runs) => void sendAutomationRunsEvent(runs),
 	})
