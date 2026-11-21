@@ -17,7 +17,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-4",
 		title: "Release 4",
-		builds: "test builds fork.64–68",
+		builds: "test builds fork.64–69",
 		date: "2026-11-21",
 		notes: [
 			"Now built on Cline 4.1.26 (was 4.1.22), with its fixes: GPT-6 works on Azure and OpenAI-compatible endpoints, reasoning levels fit what each model accepts and Off works everywhere, a provider error mid-reply is retried, long local-model requests no longer time out after 5 minutes, and a reply that ends without a reason is continued",
@@ -33,7 +33,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Models: each connection shows what it sends, apart from its models; pasting a URL or curl fills the form, and picking which OpenAI model a deployment is fills its prices and limits",
 			"Thread lists in one view show each thread's tags under its title, and new thread titles name what the thread is about rather than echoing the first words",
 			"Faster: settling or stashing a whole task is instant and syncs to your other windows, ＋ always takes you home at once, the task page shows new threads as they start, and threads working in the background no longer open files in your editor",
-			"Workspaces: mm workspaces with git submodules work (submodules are set up all the way down), changes inside nested submodules show in the diff, are copied home and warned about before removal, and Cline reads mm's .mm.json like mm does. A worktree that can't be made or read says why and offers the fix",
+			"Workspaces: mm workspaces with git submodules work (submodules are set up all the way down), changes inside nested submodules show in the diff, are copied home and warned about before removal, and Cline asks mm which modules a workspace has (mm modules --json), so it always agrees with mm. A worktree that can't be made or read, or an mm.js too old to answer, says why and offers the fix",
 			"Fixes: Azure keys reach the model list and connection test, and API Management keys can go in their own header; accepting notes never fails on an older card; worktree settings show again in Settings › Tools (they were hidden behind an upstream rollout); a reply that comes back as reasoning only is asked for its answer once, then explained instead of ending silently; a retried or cut-off reply no longer leaves Thinking open or repeats it; reasoning a model sends as <think> tags shows as Thinking, not in the answer; subagent cost is counted once per batch; an edit whose real location is outside the thread's folder, such as through a symlink, always asks",
 		],
 	},
