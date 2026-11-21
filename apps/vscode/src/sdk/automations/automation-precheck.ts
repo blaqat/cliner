@@ -27,6 +27,7 @@ export function worktreeFix(reason: string | undefined): AutomationFix | undefin
 export function plainWorktreeReason(reason: string | undefined): string {
 	const text = (reason ?? "").trim()
 	if (!text) return "a worktree can't be made here."
+	if (/mm\.js path:/i.test(text)) return text
 	if (/worktrees are off/i.test(text)) return "worktrees are turned off."
 	if (/not a git repository/i.test(text))
 		return "this folder isn't a git repository. Open the repository's folder, or initialize git here."
@@ -58,12 +59,15 @@ export async function precheckSteps(steps: readonly AutomationStep[], context: P
 			})
 		} else {
 			const availability = await context.worktrees()
-			if (!availability.available)
+			if (!availability.available) {
+				const reason = plainWorktreeReason(availability.reason)
+				const fix = worktreeFix(availability.reason)
 				problems.push({
-					message: `${runsIn}, but ${plainWorktreeReason(availability.reason)}`,
-					...(worktreeFix(availability.reason) ? { fix: worktreeFix(availability.reason) } : {}),
+					message: /^[A-Z]/.test(reason) ? `${runsIn}. ${reason}` : `${runsIn}, but ${reason}`,
+					...(fix ? { fix } : {}),
 					stepId: worktreeSteps[0].id,
 				})
+			}
 		}
 	}
 	if (context.modelProblem) {

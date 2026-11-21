@@ -1,5 +1,5 @@
 import type { WorktreeActionResult, WorktreeState } from "@shared/thread-worktrees"
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { WorktreeServiceClient } from "@/services/grpc-client"
 
@@ -105,14 +105,21 @@ export function useWorktree(threadId?: string) {
 	const savedSettings = useSyncExternalStore(subscribeSettings, () => settingsVersion)
 	const [state, setState] = useState<WorktreeState>()
 	const [error, setError] = useState<string>()
-	const refresh = useCallback(async () => {
-		try {
-			setState((await threadWorktreeAction("state", threadId)).state)
-			setError(undefined)
-		} catch (error) {
-			setError(`Couldn't check worktrees: ${worktreeErrorText(error)}`)
-		}
-	}, [threadId])
+	const refreshId = useRef(0)
+	const refresh = useCallback(
+		async (refreshMm = false) => {
+			const id = ++refreshId.current
+			try {
+				const result = await threadWorktreeAction("state", threadId, refreshMm ? { refreshMm } : undefined)
+				if (id !== refreshId.current) return
+				setState(result.state)
+				setError(undefined)
+			} catch (error) {
+				if (id === refreshId.current) setError(`Couldn't check worktrees: ${worktreeErrorText(error)}`)
+			}
+		},
+		[threadId],
+	)
 	// Saved settings change availability for menus that stayed mounted (the composer's), not just Settings.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: savedSettings is the re-read trigger.
 	useEffect(() => {

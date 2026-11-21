@@ -251,12 +251,7 @@ export class WalkthroughService {
 		if (request.confirmed !== true) throw new Error("Confirm this revert inline first")
 		const { walk, changes } = await this.reviewed(request)
 		const input = await this.controller.getWalkthroughCollectionInput(request.taskId, request.scope)
-		await revertChange(
-			this.findChange(request, walk, changes),
-			walk,
-			request.hunkId,
-			await gitRoots(input.roots, input.includeMmWorkspace),
-		)
+		await revertChange(this.findChange(request, walk, changes), walk, request.hunkId, await gitRoots(input.roots))
 		this.documents.delete(this.key(request))
 		return this.get(request)
 	}

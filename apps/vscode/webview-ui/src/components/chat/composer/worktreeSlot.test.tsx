@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	state: {} as WorktreeState,
 	currentTaskItem: undefined as { id: string; isSubagent?: boolean } | undefined,
 	navigateToSettings: vi.fn(),
+	stateRequest: vi.fn(),
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
@@ -24,31 +25,34 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 }))
 vi.mock("@/services/grpc-client", () => ({
 	WorktreeServiceClient: {
-		threadWorktreeAction: async (request: { action: string }) => ({
-			json: JSON.stringify(
-				request.action === "summary"
-					? {
-							summary: {
-								changedFiles: 1,
-								commits: 0,
-								uncommittedFiles: 1,
-								uncopiedFiles: 1,
-								copied: false,
-								canUndo: false,
-								loseOnRemove: 1,
-								workspaceDirty: false,
-								takenOver: false,
-							},
-						}
-					: { state: mocks.state },
-			),
-		}),
+		threadWorktreeAction: async (request: { action: string; json: string }) => {
+			if (request.action === "state") mocks.stateRequest(request.json)
+			return {
+				json: JSON.stringify(
+					request.action === "summary"
+						? {
+								summary: {
+									changedFiles: 1,
+									commits: 0,
+									uncommittedFiles: 1,
+									uncopiedFiles: 1,
+									copied: false,
+									canUndo: false,
+									loseOnRemove: 1,
+									workspaceDirty: false,
+									takenOver: false,
+								},
+							}
+						: { state: mocks.state },
+				),
+			}
+		},
 	},
 }))
 
 const withMode = (mode: "off" | "git" | "mm", extra: Partial<WorktreeState["availability"]> = {}): WorktreeState => ({
 	settings: { mode, mmPath: "", nodePath: "node" },
-	availability: { mode, available: mode !== "off", hasMmrc: mode === "mm", workspaceOff: false, ...extra },
+	availability: { mode, available: mode !== "off", workspaceOff: false, ...extra },
 	settled: [],
 })
 
@@ -71,6 +75,7 @@ beforeEach(() => {
 	mocks.state = withMode("git")
 	mocks.currentTaskItem = undefined
 	mocks.navigateToSettings.mockReset()
+	mocks.stateRequest.mockReset()
 })
 
 it("lets a new thread pick a worktree with upstream's rollout off, and the button and send path follow the pick", async () => {
@@ -107,7 +112,20 @@ it("explains an mm setup gap and links to set it up", async () => {
 	await waitFor(() =>
 		expect(screen.getByTestId("workspace-blocker")).toHaveTextContent("Set the path to mm.js in Worktrees settings"),
 	)
-	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Set up mm in Settings")
+	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Open Worktrees settings")
+})
+
+it.each([
+	"This mm doesn't list its modules yet. Update mm.js. mm.js path: /tools/old-mm",
+	"Couldn't read mm configuration. .mm.json is not valid JSON. Config: /repo/.mm.json mm.js path: /tools/mm.js",
+])("displays the mm error and links directly to Worktrees settings", async (reason) => {
+	mocks.state = withMode("mm", { available: false, reason })
+	render(<WorkspaceButton />)
+	const menu = await openMenu()
+	await waitFor(() => expect(within(menu).getByTestId("workspace-blocker")).toHaveTextContent(reason))
+	expect(within(menu).getByTestId("workspace-worktree")).toBeDisabled()
+	fireEvent.click(within(menu).getByRole("menuitem", { name: "Open Worktrees settings" }))
+	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
 })
 
 it("in a worktree thread the header's branch chip opens the worktree menu", async () => {
@@ -198,7 +216,7 @@ it("offers an mm worktree as soon as a valid mm.js path is saved, without a rest
 	render(<WorkspaceButton />)
 	const menu = await openMenu()
 	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeDisabled())
-	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Set up mm in Settings")
+	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Open Worktrees settings")
 	// Settings saves while the composer's menu stays mounted.
 	const saved = { mode: "mm" as const, mmPath: "/tools/mm.js", nodePath: "node" }
 	mocks.state = { ...withMode("mm"), settings: saved }
@@ -212,8 +230,11 @@ it("re-checks worktree availability each time the workspace menu opens", async (
 	mocks.state = withMode("mm", { available: false, reason: "Set the path to mm.js in Worktrees settings" })
 	render(<WorkspaceButton />)
 	await waitFor(() => expect(screen.getByTestId("workspace-button")).toBeInTheDocument())
+	expect(mocks.stateRequest).toHaveBeenCalledWith("")
+	mocks.stateRequest.mockClear()
 	// Another window saved the path; this one hears nothing until its menu opens.
 	mocks.state = withMode("mm")
 	const menu = await openMenu()
 	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeEnabled())
+	expect(mocks.stateRequest).toHaveBeenCalledWith(JSON.stringify({ refreshMm: true }))
 })

@@ -4,9 +4,9 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import * as repositoryTools from "./repositories"
+import { mmPath } from "./temp-project.test-support"
 import { ThreadWorktreeManager } from "./thread-worktree-manager"
 
-const mmPath = "/Users/blaqat/dev/tools/scripts/mm.js"
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, {
 		cwd,
@@ -59,7 +59,7 @@ async function fixture(mode: "git" | "mm", configuredSubmodule = false) {
 	return { workspace, root, manager }
 }
 beforeEach(async () => {
-	temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-nested-submodules-"))
+	temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cline-nested-submodules-")))
 })
 afterEach(async () => {
 	vi.restoreAllMocks()
@@ -226,6 +226,14 @@ it("uses the nearest mm config, prefers .mm.json, and refuses free after module 
 	const mapping = await manager.create("config", "Config", root)
 	expect(mapping.workspace).toBe(workspace)
 	expect(mapping.modules.map((module) => module.name)).toEqual(["api"])
+	const config = await manager.mmWorkspace(root)
+	if (!config) throw new Error("Expected mm to report the workspace")
+	expect(config).toMatchObject({
+		root: workspace,
+		configFile: path.join(workspace, ".mm.json"),
+		modules: [{ name: "API", relativePath: "api", absolutePath: root, isolateFolder: "api" }],
+	})
+	expect(mapping.cwd).toBe(path.join(config.isolatesRoot, mapping.branch))
 	await write(workspace, ".mm.json", '{"modules":["other"]}')
 	await expect(manager.remove("config", true)).rejects.toThrow("configuration changed")
 	await fs.access(mapping.modules[0].path)

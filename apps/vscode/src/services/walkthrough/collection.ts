@@ -5,8 +5,7 @@ import { promisify } from "node:util"
 import type { Message, MessageWithMetadata } from "@cline/shared"
 import type { ChangeWalkthrough, WalkthroughScope } from "@shared/Walkthrough"
 import { applyPatch, reversePatch, structuredPatch } from "diff"
-import { assertRepository, exists, mmConfig, submoduleLinks, submodulePath } from "@/sdk/worktrees/repositories"
-import { parseMmModules } from "@/sdk/worktrees/thread-worktree-manager"
+import { assertRepository, exists, submoduleLinks, submodulePath } from "@/sdk/worktrees/repositories"
 import { Logger } from "@/shared/services/Logger"
 import { type ContentChange, type EditTurn, fallback, hash } from "./engine"
 
@@ -233,23 +232,10 @@ async function safeCanonical(filePath: string): Promise<string> {
 	return canonicalPath(filePath).catch(() => path.resolve(filePath))
 }
 
-async function resolveRoots(paths: string[], includeMmWorkspace = false) {
-	const candidates = new Set(paths)
-	if (includeMmWorkspace) {
-		for (const cwd of paths) {
-			try {
-				const config = await mmConfig(cwd)
-				if (config)
-					for (const module of parseMmModules(config.raw, config.file))
-						candidates.add(path.resolve(config.root, module))
-			} catch (error) {
-				Logger.warn("[walkthrough] Could not read mm modules", error)
-			}
-		}
-	}
+async function resolveRoots(paths: string[]) {
 	const roots = new Set<string>()
 	const repositories = new Set<string>()
-	for (const cwd of candidates) {
+	for (const cwd of new Set(paths)) {
 		try {
 			const root = await safeCanonical((await git(cwd, ["rev-parse", "--show-toplevel"])).trim())
 			roots.add(root)
@@ -261,8 +247,8 @@ async function resolveRoots(paths: string[], includeMmWorkspace = false) {
 	return { roots: [...roots].sort(), repositories }
 }
 
-export async function gitRoots(paths: string[], includeMmWorkspace = false): Promise<string[]> {
-	return (await resolveRoots(paths, includeMmWorkspace)).roots
+export async function gitRoots(paths: string[]): Promise<string[]> {
+	return (await resolveRoots(paths)).roots
 }
 
 async function snapshot(root: string, ref: string, file: string): Promise<{ text: string; exists: boolean }> {
@@ -407,7 +393,6 @@ export interface CollectionInput {
 	taskId: string
 	scope: WalkthroughScope
 	roots: string[]
-	includeMmWorkspace?: boolean
 	messages: Message[]
 	runSpans: number[]
 	edits: JournalEdit[]
@@ -418,7 +403,7 @@ export interface CollectionInput {
 export async function collect(
 	input: CollectionInput,
 ): Promise<{ walk: ChangeWalkthrough; turns: EditTurn[]; changes: ContentChange[] }> {
-	const { roots, repositories } = await resolveRoots(input.roots, input.includeMmWorkspace)
+	const { roots, repositories } = await resolveRoots(input.roots)
 	const { turns, toolTurns, toolNarration } = transcriptTurns(input.messages, input.runSpans)
 	const warnings: string[] = []
 

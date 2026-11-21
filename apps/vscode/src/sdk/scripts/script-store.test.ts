@@ -2,7 +2,9 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { globalScriptsDir, parseMmrcModules, readMmrcModules, ScriptStore, workspaceScriptsDir } from "./script-store"
+import { readMmWorkspace } from "../worktrees/mm-discovery"
+import { mmPath } from "../worktrees/temp-project.test-support"
+import { globalScriptsDir, ScriptStore, workspaceScriptsDir } from "./script-store"
 
 const script = (name: string, extra = "") =>
 	`---\nname: ${name}\ndescription: Does ${name}\ncommand: echo ${name}\n${extra}---\nNotes for ${name}\n`
@@ -13,7 +15,12 @@ describe("ScriptStore", () => {
 	let workspace: string
 	let toggles: { global: Record<string, boolean>; workspace: Record<string, boolean> }
 	const makeStore = () =>
-		new ScriptStore({ getGlobalDir: () => globalDir, getWorkspaceRoot: () => workspace, getToggles: () => toggles })
+		new ScriptStore({
+			getGlobalDir: () => globalDir,
+			getWorkspaceRoot: () => workspace,
+			getToggles: () => toggles,
+			getMmModules: async (cwd) => (await readMmWorkspace(cwd, { mode: "mm", mmPath, nodePath: "node" }))?.modules,
+		})
 
 	beforeEach(async () => {
 		root = await fs.mkdtemp(path.join(os.tmpdir(), "cline-scripts-"))
@@ -77,11 +84,12 @@ describe("ScriptStore", () => {
 		expect((await makeStore().find("t"))?.scope).toBe("global")
 	})
 
-	it("fills choicesFrom: mmrc with the modules of the nearest .mmrc", async () => {
+	it("fills choicesFrom: mmrc with the names from mm", async () => {
 		await fs.writeFile(
-			path.join(workspace, ".mmrc"),
+			path.join(root, ".mm.json"),
 			JSON.stringify({ modules: ["packages/api", { path: "apps/web", name: "site" }] }),
 		)
+		await fs.writeFile(path.join(root, ".mmrc"), "wrong\n")
 		await fs.writeFile(
 			path.join(globalDir, "m.md"),
 			script("m", "options:\n  - name: mod\n    kind: choice\n    choicesFrom: mmrc\n"),
@@ -89,6 +97,10 @@ describe("ScriptStore", () => {
 		const store = makeStore()
 		const found = await store.find("m")
 		expect(found?.options[0].choices).toEqual(["api", "site"])
+		await fs.writeFile(path.join(root, ".mm.json"), "{")
+		const [invalid] = await store.list()
+		expect(invalid.errors.join()).toContain(".mm.json is not valid JSON")
+		expect(invalid.script).toBeUndefined()
 	})
 
 	it("peekEnabled serves the last load for synchronous prompt text", async () => {
@@ -97,26 +109,6 @@ describe("ScriptStore", () => {
 		expect(store.peekEnabled()).toEqual([])
 		await store.list()
 		expect(store.peekEnabled().map((entry) => entry.name)).toEqual(["g"])
-	})
-})
-
-describe("mmrc", () => {
-	it("parses JSON object, JSON array and one-path-per-line formats", () => {
-		expect(parseMmrcModules('{"modules": ["a/api", {"path": "b/web", "name": "site"}]}')).toEqual(["api", "site"])
-		expect(parseMmrcModules('["x", "y/"]')).toEqual(["x", "y"])
-		expect(parseMmrcModules("# comment\napi\n\nweb\napi\n")).toEqual(["api", "web"])
-		expect(parseMmrcModules("{ not json")).toEqual([])
-	})
-
-	it("searches upward from the start directory", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "cline-mmrc-"))
-		try {
-			await fs.mkdir(path.join(root, "a", "b"), { recursive: true })
-			await fs.writeFile(path.join(root, ".mmrc"), "one\ntwo\n")
-			expect(await readMmrcModules(path.join(root, "a", "b"))).toEqual(["one", "two"])
-		} finally {
-			await fs.rm(root, { recursive: true, force: true })
-		}
 	})
 })
 

@@ -36,7 +36,7 @@ beforeEach(() => {
 	mocks.thread++
 	mocks.state = {
 		settings: { mode: "git", mmPath: "", nodePath: "node" },
-		availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+		availability: { mode: "git", available: true, workspaceOff: false },
 		settled: [],
 	}
 	mocks.action.mockReset().mockImplementation(async (request) => ({

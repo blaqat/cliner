@@ -62,7 +62,7 @@ vi.mock("@/services/grpc-client", () => ({
 			json: JSON.stringify({
 				state: {
 					settings: { mode: "git", mmPath: "", nodePath: "node" },
-					availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+					availability: { mode: "git", available: true, workspaceOff: false },
 					settled: [],
 				},
 			}),

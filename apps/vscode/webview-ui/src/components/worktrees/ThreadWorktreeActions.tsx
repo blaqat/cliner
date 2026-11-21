@@ -159,7 +159,7 @@ export function ThreadWorktreeActions({
 				{statusTone === "warning" && (
 					<span aria-hidden className="codicon codicon-warning shrink-0 self-start pt-0.5 text-[11px]! text-warning" />
 				)}
-				<span className="min-w-0 line-clamp-2" title={statusText}>
+				<span className={cn("min-w-0 wrap-anywhere", statusTone !== "warning" && "line-clamp-2")} title={statusText}>
 					{statusText}
 				</span>
 				{!busy && outcome?.undo && summary?.canUndo && (

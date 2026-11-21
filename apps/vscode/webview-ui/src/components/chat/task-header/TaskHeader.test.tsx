@@ -157,7 +157,7 @@ describe("TaskHeader", () => {
 	it("shows the branch chip for a thread in its own worktree", async () => {
 		mocks.worktreeState = {
 			settings: { mode: "git", mmPath: "", nodePath: "node" },
-			availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+			availability: { mode: "git", available: true, workspaceOff: false },
 			settled: [],
 			mapping: {
 				threadId: "t1",
@@ -179,7 +179,7 @@ describe("TaskHeader", () => {
 	it("has no branch chip for a thread in your workspace", async () => {
 		mocks.worktreeState = {
 			settings: { mode: "git", mmPath: "", nodePath: "node" },
-			availability: { mode: "git", available: true, hasMmrc: false, workspaceOff: false },
+			availability: { mode: "git", available: true, workspaceOff: false },
 			settled: [],
 		}
 		render(<TaskHeader onClose={vi.fn()} task={task} />)

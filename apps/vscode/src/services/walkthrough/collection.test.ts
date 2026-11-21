@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } f
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Message } from "@cline/shared"
+import { readMmWorkspace } from "@/sdk/worktrees/mm-discovery"
+import { mmPath } from "@/sdk/worktrees/temp-project.test-support"
 import {
 	changesBetween,
 	collect,
@@ -80,11 +82,15 @@ describe("walkthrough collection", () => {
 		await writeFile(path.join(child, "a.ts"), "edit inside nested submodule\n")
 		await git(child, ["add", "a.ts"])
 		await writeFile(path.join(child, "new.ts"), "untracked nested file\n")
+		const config =
+			layout === "main mm workspace" ? await readMmWorkspace(base, { mode: "mm", mmPath, nodePath: "node" }) : undefined
 		const input = {
 			taskId: "task",
 			scope: "git" as const,
-			roots: layout === "mm worktree" ? [base, root, path.join(base, "module2")] : [base],
-			includeMmWorkspace: layout === "main mm workspace",
+			roots:
+				layout === "mm worktree"
+					? [base, root, path.join(base, "module2")]
+					: [base, ...(config?.modules.map((m) => m.absolutePath) ?? [])],
 			checkpointRoot: base,
 			messages: [],
 			runSpans: [],

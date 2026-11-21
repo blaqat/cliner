@@ -4,9 +4,9 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { alive, owner, storageLock } from "./storage-lock"
-import { parseMmModules, ThreadWorktreeManager } from "./thread-worktree-manager"
+import { mmPath } from "./temp-project.test-support"
+import { ThreadWorktreeManager } from "./thread-worktree-manager"
 
-const mmPath = "/Users/blaqat/dev/tools/scripts/mm.js"
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim()
 let temp: string
@@ -25,7 +25,7 @@ async function repo(dir: string) {
 	git(dir, "commit", "-m", "base")
 }
 beforeEach(async () => {
-	temp = await fs.mkdtemp(path.join(os.tmpdir(), "cline-thread-worktrees-"))
+	temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cline-thread-worktrees-")))
 	workspace = path.join(temp, "workspace")
 	storage = path.join(temp, "storage")
 	manager = new ThreadWorktreeManager(storage)
@@ -36,12 +36,65 @@ afterEach(async () => {
 	await fs.rm(temp, { recursive: true, force: true })
 }, 60_000)
 
-it("parses legacy and JSON mmrc and rejects ambiguous or escaping paths", () => {
-	expect(parseMmModules("# modules\napi\nweb\n")).toEqual(["api", "web"])
-	expect(parseMmModules('{"modules":["api",{"path":"packages/web","name":"UI"}]}')).toEqual(["api", "packages/web"])
-	expect(() => parseMmModules('{"modules":["a/api","b/api"]}')).toThrow("share")
-	expect(() => parseMmModules("../outside")).toThrow("inside")
-}, 60_000)
+it.each([
+	["prints the former text output", 'console.log("  1 api /workspace/api")'],
+	["does not recognize the option", 'console.error("unknown option --json"); process.exitCode = 1'],
+	["fails before reaching the command", 'console.error("mm: no .mm.json found"); process.exitCode = 1'],
+])("blocks Git fallback when old mm %s", async (_label, source) => {
+	const oldMm = path.join(temp, "old-mm.js")
+	await fs.writeFile(oldMm, source)
+	await manager.configure({ mode: "git", mmPath: oldMm, nodePath: "node" })
+	const reason = `This mm doesn't list its modules yet. Update mm.js. mm.js path: ${oldMm}`
+	expect(await manager.availability(workspace)).toMatchObject({ mode: "mm", available: false, reason })
+	await expect(manager.create("old-mm", "Old mm", workspace)).rejects.toThrow(reason)
+	expect(await manager.get("old-mm")).toBeUndefined()
+})
+
+it("reports unset mm, a missing mm script, and missing Node with paths to fix", async () => {
+	await manager.configure({ mode: "mm", mmPath: "", nodePath: "node" })
+	expect((await manager.availability(workspace)).reason).toBe(
+		"Set the path to mm.js in Worktrees settings. mm.js path: (not set)",
+	)
+	const missingMm = path.join(temp, "missing.js")
+	await manager.configure({ mode: "mm", mmPath: missingMm, nodePath: "node" })
+	expect((await manager.availability(workspace)).reason).toContain(
+		`Couldn't find mm.js. Check its path in Worktrees settings. mm.js path: ${missingMm}`,
+	)
+	const missingNode = path.join(temp, "missing-node")
+	await manager.configure({ mode: "git", mmPath, nodePath: missingNode })
+	expect((await manager.availability(workspace)).reason).toBe(
+		`Couldn't run Node. Check its path in Worktrees settings. Node path: ${missingNode}. mm.js path: ${mmPath}`,
+	)
+})
+
+it("caches discovery until settings, an explicit refresh, or create request new results", async () => {
+	expect(await manager.availability(workspace)).toMatchObject({ mode: "git", available: true })
+	await write(workspace, ".mm.json", "{")
+	expect(await manager.availability(workspace)).toMatchObject({ mode: "git", available: true })
+	const fresh = await manager.availability(workspace, false, true)
+	expect(fresh).toMatchObject({ mode: "mm", available: false })
+	expect(fresh.reason).toContain(".mm.json is not valid JSON")
+	expect(fresh.reason).toContain(`Config: ${path.join(workspace, ".mm.json")}`)
+	expect(fresh.reason).toContain(`mm.js path: ${mmPath}`)
+
+	await fs.rm(path.join(workspace, ".mm.json"))
+	expect(await manager.availability(workspace)).toEqual(fresh)
+	await manager.configure(await manager.settings())
+	expect(await manager.availability(workspace)).toMatchObject({ mode: "git", available: true })
+	await write(workspace, ".mm.json", "{")
+	await expect(manager.create("broken-mm", "Broken mm", workspace)).rejects.toThrow(".mm.json is not valid JSON")
+	expect(await manager.get("broken-mm")).toBeUndefined()
+})
+
+it("rejects duplicate isolate folders and modules that escape the workspace", async () => {
+	await repo(path.join(workspace, "a", "api"))
+	await repo(path.join(workspace, "b", "api"))
+	await write(workspace, ".mm.json", '["a/api","b/api"]')
+	expect((await manager.availability(workspace)).reason).toContain("share the isolate folder name api")
+	await write(workspace, ".mm.json", '["../outside"]')
+	expect((await manager.availability(workspace, false, true)).reason).toContain("must be inside the workspace")
+})
+
 it("creates a git worktree, persists its mapping, reuses it and removes it", async () => {
 	const mapping = await manager.create("thread-1", "Fix the login", workspace)
 	expect(git(mapping.cwd, "branch", "--show-current")).toBe(mapping.branch)

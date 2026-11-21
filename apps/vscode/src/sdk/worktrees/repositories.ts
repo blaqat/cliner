@@ -41,18 +41,6 @@ export async function assertRepository(dir: string) {
 	await git(dir, ["rev-parse", "--verify", "HEAD"])
 }
 
-/** mm searches upward, choosing .mm.json before .mmrc at each directory. */
-export async function mmConfig(workspace: string): Promise<{ root: string; file: string; raw: string } | undefined> {
-	let root = path.resolve(workspace)
-	while (true) {
-		for (const file of [".mm.json", ".mmrc"])
-			if (await exists(path.join(root, file))) return { root, file, raw: await fs.readFile(path.join(root, file), "utf8") }
-		const parent = path.dirname(root)
-		if (parent === root) return undefined
-		root = parent
-	}
-}
-
 export async function gitlinks(dir: string, tree: string) {
 	return parseGitlinks(await git(dir, ["ls-tree", "-rz", tree]), 2)
 }

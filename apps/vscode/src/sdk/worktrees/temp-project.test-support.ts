@@ -3,9 +3,11 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 import { ThreadWorktreeManager } from "./thread-worktree-manager"
 
+export const mmPath = process.env.CLINE_TEST_MM_PATH ?? "/Users/blaqat/dev/tools/scripts/mm.js"
+
 /** All callers supply a newly allocated temporary directory. */
 export async function worktreeProject(temp: string, mode: "git" | "mm") {
-	const workspace = path.join(temp, "workspace")
+	const workspace = path.join(await fs.realpath(temp), "workspace")
 	const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe" })
 	for (const module of mode === "mm" ? ["api", "web"] : [""]) {
 		const dir = path.join(workspace, module)
@@ -20,6 +22,6 @@ export async function worktreeProject(temp: string, mode: "git" | "mm") {
 	if (mode === "mm") await fs.writeFile(path.join(workspace, ".mmrc"), "api\nweb\n")
 	const storage = path.join(temp, "storage")
 	const manager = new ThreadWorktreeManager(storage)
-	await manager.configure({ mode: "git", mmPath: "/Users/blaqat/dev/tools/scripts/mm.js", nodePath: "node" })
+	await manager.configure({ mode: "git", mmPath: mode === "mm" ? mmPath : "", nodePath: "node" })
 	return { workspace, storage, manager }
 }

@@ -34,7 +34,7 @@ function WorkspaceMenuBody({
 	// Re-check on open: mm.js, git history or another window's settings may have changed since.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per open.
 	useEffect(() => {
-		void refresh()
+		void refresh(true)
 	}, [])
 	const mapping = threadId ? state?.mapping : undefined
 	const off = !availability || availability.mode === "off"
@@ -92,7 +92,7 @@ function WorkspaceMenuBody({
 			{/* A worktree thread already has its worktree; only a failure to read it matters there. */}
 			{(mapping ? error : blocker) && (
 				<p
-					className="m-0 px-2 pt-0.5 text-[11px] text-description"
+					className="m-0 line-clamp-none wrap-anywhere px-2 pt-0.5 text-[11px] text-description"
 					data-testid="workspace-blocker"
 					role={error ? "alert" : undefined}>
 					{mapping ? error : blocker}
@@ -101,7 +101,7 @@ function WorkspaceMenuBody({
 							{" "}
 							<button
 								className="cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
-								onClick={() => void refresh()}
+								onClick={() => void refresh(true)}
 								type="button">
 								Try again
 							</button>
@@ -127,7 +127,7 @@ function WorkspaceMenuBody({
 							? "Turn on in Settings"
 							: blocker
 								? mm
-									? "Set up mm in Settings"
+									? "Open Worktrees settings"
 									: "Fix in Settings"
 								: "Worktree settings"}
 				</span>

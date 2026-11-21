@@ -33,7 +33,7 @@ export function WorktreeSettings() {
 	return (
 		<FeatureGroup aria-label="Worktrees" id="worktree-features" title="Worktrees">
 			<FeatureField
-				description="Workspaces with .mmrc use mm automatically. In other workspaces, mm mode uses Git worktrees. New threads start in your workspace."
+				description="Set the path to mm.js to detect mm workspaces. In other Git workspaces, mm mode uses Git worktrees."
 				htmlFor="worktrees-mode"
 				label="Mode">
 				<Select
@@ -50,7 +50,7 @@ export function WorktreeSettings() {
 					</SelectContent>
 				</Select>
 			</FeatureField>
-			{(settings.mode === "mm" || state.availability.hasMmrc) && (
+			{(settings.mode === "mm" || settings.mmPath || state.availability.mode === "mm") && (
 				<>
 					<FeatureField className="pt-0" htmlFor="worktrees-mm-path" label="Path to mm.js">
 						<Input
@@ -92,7 +92,9 @@ export function WorktreeSettings() {
 				description={
 					<>
 						New threads in this workspace never start in a worktree.
-						{state.availability.reason && <span className="mt-1 block">{state.availability.reason}</span>}
+						{state.availability.reason && (
+							<span className="mt-1 block wrap-anywhere">{state.availability.reason}</span>
+						)}
 					</>
 				}
 				disabled={busy}

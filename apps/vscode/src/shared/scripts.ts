@@ -18,7 +18,7 @@ export interface ScriptOption {
 	description: string
 	/** Allowed values for `choice` options (already resolved when `choicesFrom` is set). */
 	choices?: string[]
-	/** Resolve `choices` from the workspace's `.mmrc` module list. */
+	/** Resolve `choices` from mm's module list. */
 	choicesFrom?: "mmrc"
 	/** Permit leading-dash text arguments. Only enable when the command handles them safely. */
 	allowDash?: boolean

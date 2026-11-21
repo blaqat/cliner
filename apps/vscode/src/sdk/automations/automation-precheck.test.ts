@@ -59,6 +59,18 @@ describe("precheckSteps", () => {
 		expect(problem).toMatchObject({ fix: "worktrees", message: expect.stringContaining("turned off") })
 	})
 
+	it.each([
+		"This mm doesn't list its modules yet. Update mm.js. mm.js path: /tools/multi-module",
+		"Set the path to mm.js in Worktrees settings. mm.js path: (not set)",
+		"Couldn't read mm configuration. .mm.json is not valid JSON. Config: /repo/.mm.json mm.js path: /tools/mm.js",
+	])("preserves the mm diagnosis and links to Worktrees settings", async (reason) => {
+		const [problem] = await precheckSteps(steps, {
+			workspace: "/repo",
+			worktrees: async () => ({ available: false, reason }),
+		})
+		expect(problem).toMatchObject({ fix: "worktrees", message: expect.stringContaining(reason) })
+	})
+
 	it("links a repository with no commits to Source Control", async () => {
 		const [problem] = await precheckSteps(steps, {
 			workspace: "/repo",

@@ -37,52 +37,6 @@ export interface ScriptToggles {
 	workspace: Record<string, boolean>
 }
 
-/**
- * Module names from `.mmrc`, searching upward from `startDir` like `mm` does.
- * The file is either JSON (`{ "modules": [...] }` or a bare array whose entries are
- * paths or `{ path, name }`) or one module path per line with `#` comments.
- */
-export async function readMmrcModules(startDir: string): Promise<string[]> {
-	let dir = path.resolve(startDir)
-	for (;;) {
-		try {
-			const raw = await fs.readFile(path.join(dir, ".mmrc"), "utf8")
-			return parseMmrcModules(raw)
-		} catch {
-			const parent = path.dirname(dir)
-			if (parent === dir) return []
-			dir = parent
-		}
-	}
-}
-
-export function parseMmrcModules(raw: string): string[] {
-	let entries: unknown[]
-	const trimmed = raw.trimStart()
-	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-		try {
-			const parsed = JSON.parse(raw) as unknown
-			const list = Array.isArray(parsed) ? parsed : (parsed as { modules?: unknown })?.modules
-			entries = Array.isArray(list) ? list : []
-		} catch {
-			return []
-		}
-	} else {
-		entries = raw
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#"))
-	}
-	const names: string[] = []
-	for (const entry of entries) {
-		const modulePath = typeof entry === "string" ? entry : (entry as { path?: string })?.path
-		const explicit = typeof entry === "object" && entry !== null ? (entry as { name?: string }).name : undefined
-		const name = explicit || (modulePath ? path.basename(modulePath.replace(/[\\/]+$/, "")) : "")
-		if (name && !names.includes(name)) names.push(name)
-	}
-	return names
-}
-
 async function readScriptDirectory(dir: string, scope: ScriptScope, toggles: Record<string, boolean>): Promise<LoadedScript[]> {
 	let entries: string[]
 	try {
@@ -117,6 +71,7 @@ export interface ScriptStoreDeps {
 	getTrustFile?: () => string
 	getGlobalDir?: () => string
 	getWorkspaceRoot: () => string | undefined
+	getMmModules?: (workspace: string) => Promise<readonly { name: string }[] | undefined>
 	getToggles: () => ScriptToggles
 }
 
@@ -140,12 +95,19 @@ export class ScriptStore {
 			readScriptDirectory((this.deps.getGlobalDir ?? globalScriptsDir)(), "global", toggles.global),
 		])
 		const all = [...workspace, ...global]
-		const mmrcModules = all.some((item) => item.script?.options.some((option) => option.choicesFrom === "mmrc"))
-			? await readMmrcModules(root ?? process.cwd())
-			: []
-		for (const item of all) {
-			for (const option of item.script?.options ?? []) {
-				if (option.choicesFrom === "mmrc") option.choices = [...mmrcModules]
+		const scriptsWithMmChoices = all.filter((item) => item.script?.options.some((option) => option.choicesFrom === "mmrc"))
+		if (scriptsWithMmChoices.length) {
+			try {
+				const modules = await this.deps.getMmModules?.(root ?? process.cwd())
+				const names = [...new Set(modules?.map((module) => module.name))]
+				for (const item of scriptsWithMmChoices)
+					for (const option of item.script?.options ?? [])
+						if (option.choicesFrom === "mmrc") option.choices = [...names]
+			} catch (error) {
+				for (const item of scriptsWithMmChoices) {
+					item.errors.push((error as Error).message)
+					item.script = undefined
+				}
 			}
 		}
 		for (const item of all) {

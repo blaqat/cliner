@@ -8,6 +8,8 @@ vi.mock("./openFile", () => ({ openFile: mocks.openFile }))
 vi.mock("@/hosts/host-provider", () => ({ HostProvider: { window: { showMessage: mocks.showMessage } } }))
 
 import { ScriptsHost } from "@/sdk/scripts/script-host"
+import { readMmWorkspace } from "@/sdk/worktrees/mm-discovery"
+import { mmPath } from "@/sdk/worktrees/temp-project.test-support"
 import { createScriptFile } from "./createScriptFile"
 import { refreshScripts } from "./refreshScripts"
 import { setScriptApproval } from "./setScriptApproval"
@@ -34,6 +36,7 @@ describe("script RPC handlers", () => {
 		const scripts = new ScriptsHost({
 			getToggles: () => ({ global: globalToggles, workspace: workspaceToggles }),
 			getWorkspaceRoot: () => workspace,
+			getMmModules: async (cwd) => (await readMmWorkspace(cwd, { mode: "mm", mmPath, nodePath: "node" }))?.modules,
 			getLogDir: () => path.join(root, "logs"),
 			resolveEnv: async () => ({}),
 		})

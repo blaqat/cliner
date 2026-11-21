@@ -11,6 +11,7 @@ import type {
 
 import { createWorktree } from "@/utils/git-worktree"
 
+import { type MmWorkspace, mmError, readMmWorkspace } from "./mm-discovery"
 import {
 	assertRepository,
 	detachHead,
@@ -18,7 +19,6 @@ import {
 	git,
 	importCommit,
 	initializeSubmodules,
-	mmConfig,
 	ownStatus,
 	repositories,
 	run,
@@ -56,35 +56,32 @@ export function bringClashMessage(module: string, gitError: string): string {
 	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then copy again.`
 }
 
-export function parseMmModules(raw: string, file = ".mmrc"): string[] {
-	const text = raw.trim()
-	const parsed =
-		file === ".mm.json" || text.startsWith("{") || text.startsWith("[")
-			? JSON.parse(text)
-			: text
-					.split("\n")
-					.map((s) => s.trim())
-					.filter((s) => s && !s.startsWith("#"))
-	const entries = Array.isArray(parsed) ? parsed : parsed?.modules
-	if (!Array.isArray(entries) || !entries.length) throw new Error(`${file} has no modules`)
-	const modules = entries
-		.filter((entry) => typeof entry === "string" || entry?.path)
-		.map((entry) => (typeof entry === "string" ? entry : entry.path))
-	if (!modules.length) throw new Error(`${file} has no modules`)
-	const names = new Set<string>()
-	for (const module of modules) {
-		if (typeof module !== "string" || !module || path.isAbsolute(module) || module.split(/[\\/]/).includes(".."))
-			throw new Error("mm modules must be relative paths inside the workspace")
-		const name = path.basename(path.normalize(module))
-		if (names.has(name)) throw new Error(`mm modules share the isolate folder name ${name}`)
-		names.add(name)
+async function assertMmRepositories(config: MmWorkspace) {
+	const roots: string[] = []
+	const folders = new Set<string>()
+	for (const module of config.modules) {
+		const relative = path.relative(config.root, module.absolutePath)
+		if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
+			throw new Error("mm modules must be inside the workspace.")
+		const folder = module.isolateFolder
+		if (folder === ".." || path.basename(folder) !== folder) throw new Error(`Invalid mm isolate folder: ${folder}.`)
+		if (folders.has(folder)) throw new Error(`mm modules share the isolate folder name ${folder}.`)
+		folders.add(folder)
+		await assertRepository(module.absolutePath)
+		const canonical = await fs.realpath(module.absolutePath)
+		if (roots.includes(canonical)) throw new Error(`mm lists the same repository twice: ${module.absolutePath}.`)
+		if (roots.some((other) => canonical.startsWith(other + path.sep) || other.startsWith(canonical + path.sep)))
+			throw new Error(
+				"mm modules include both a repository and its descendant. Select either the parent or its submodules in the mm configuration.",
+			)
+		roots.push(canonical)
 	}
-	return modules
 }
 
 /** All mutations are serialized, including settings and mapping persistence. */
 export class ThreadWorktreeManager {
 	private queue: Promise<unknown> = Promise.resolve()
+	private readonly mmWorkspaces = new Map<string, { settingsKey: string; result: Promise<MmWorkspace | undefined> }>()
 	private assertMutationOwner: () => void | Promise<void> = async () => {}
 	constructor(readonly storageDir: string) {}
 	async exclusive<T>(action: () => Promise<T>): Promise<T> {
@@ -195,6 +192,7 @@ export class ThreadWorktreeManager {
 			)
 				throw new Error("Invalid worktree settings")
 			await this.write("settings.json", settings)
+			this.mmWorkspaces.clear()
 		})
 	}
 	private mappingFile(id: string) {
@@ -229,37 +227,64 @@ export class ThreadWorktreeManager {
 		const ids = new Set([...history.filter((item) => item.isSettled).map((item) => item.id), ...doneIds])
 		return Object.values(await this.list()).filter((item) => ids.has(item.threadId))
 	}
-	async availability(workspace: string, workspaceOff = false): Promise<WorktreeAvailability> {
-		const settings = await this.settings()
-		const config = await mmConfig(workspace)
-		const hasMmrc = !!config
-		const mode = workspaceOff ? "off" : hasMmrc ? "mm" : settings.mode === "mm" ? "git" : settings.mode
-		const result: WorktreeAvailability = { mode, available: false, workspaceOff, hasMmrc }
-		try {
-			if (mode === "off") throw new Error("Worktrees are off for this workspace")
-			if (mode === "mm") {
-				if (!settings.mmPath) throw new Error("Set the path to mm.js in Worktrees settings")
-				await fs.access(settings.mmPath)
-				await run(settings.nodePath, ["--version"], workspace)
-				if (!config) throw new Error("mm configuration is missing")
-				const modules = parseMmModules(config.raw, config.file)
-				const roots: string[] = []
-				for (const module of modules) {
-					const root = path.resolve(config.root, module)
-					await assertRepository(root)
-					const canonical = await fs.realpath(root)
-					if (roots.some((other) => canonical.startsWith(other + path.sep) || other.startsWith(canonical + path.sep)))
-						throw new Error(
-							"mm modules include both a repository and its descendant. Select either the parent or its submodules in the mm configuration.",
-						)
-					roots.push(canonical)
-				}
-			} else await git(workspace, ["rev-parse", "--verify", "HEAD"])
-			result.available = true
-		} catch (error) {
-			result.reason = (error as Error).message
-		}
+	private discoverMm(workspace: string, settings: ThreadWorktreeSettings, refresh: boolean) {
+		const key = path.resolve(workspace)
+		const settingsKey = JSON.stringify([settings.mode, settings.nodePath, settings.mmPath])
+		const cached = this.mmWorkspaces.get(key)
+		if (!refresh && cached?.settingsKey === settingsKey) return cached.result
+		const result = readMmWorkspace(key, settings)
+		this.mmWorkspaces.set(key, { settingsKey, result })
 		return result
+	}
+
+	invalidateMmWorkspace(workspace: string) {
+		this.mmWorkspaces.delete(path.resolve(workspace))
+	}
+
+	async mmWorkspace(workspace: string, options: { required?: boolean; refresh?: boolean } = {}) {
+		const settings = await this.settings()
+		if (!settings.mmPath && settings.mode !== "mm" && !options.required) return undefined
+		return this.discoverMm(workspace, settings, !!options.refresh)
+	}
+
+	private async checkAvailability(
+		workspace: string,
+		settings: ThreadWorktreeSettings,
+		workspaceOff: boolean,
+		refreshMm: boolean,
+	): Promise<{ availability: WorktreeAvailability; config?: MmWorkspace }> {
+		const availability: WorktreeAvailability = {
+			mode: workspaceOff ? "off" : settings.mode,
+			available: false,
+			workspaceOff,
+		}
+		let config: MmWorkspace | undefined
+		try {
+			if (!workspaceOff && (settings.mmPath || settings.mode === "mm")) {
+				availability.mode = "mm"
+				config = await this.discoverMm(workspace, settings, refreshMm)
+				if (config) {
+					try {
+						await assertMmRepositories(config)
+					} catch (error) {
+						throw mmError(settings, (error as Error).message)
+					}
+				} else {
+					// mm explicitly reported that this is not an mm workspace.
+					availability.mode = settings.mode === "off" ? "off" : "git"
+				}
+			}
+			if (availability.mode === "off") throw new Error("Worktrees are off for this workspace")
+			if (availability.mode === "git") await git(workspace, ["rev-parse", "--verify", "HEAD"])
+			availability.available = true
+		} catch (error) {
+			availability.reason = (error as Error).message
+		}
+		return { availability, config }
+	}
+
+	async availability(workspace: string, workspaceOff = false, refreshMm = false): Promise<WorktreeAvailability> {
+		return (await this.checkAvailability(workspace, await this.settings(), workspaceOff, refreshMm)).availability
 	}
 	async create(threadId: string, title: string, workspace: string, workspaceOff = false): Promise<ThreadWorktree> {
 		return this.exclusive(async () => {
@@ -268,7 +293,8 @@ export class ThreadWorktreeManager {
 				await this.assertPresent(existing)
 				return existing
 			}
-			const availability = await this.availability(workspace, workspaceOff)
+			const settings = await this.settings()
+			const { availability, config } = await this.checkAvailability(workspace, settings, workspaceOff, true)
 			if (!availability.available || availability.mode === "off") throw new Error(availability.reason)
 			const suffix = createHash("sha256").update(threadId).digest("hex").slice(0, 10)
 			const slug =
@@ -279,12 +305,15 @@ export class ThreadWorktreeManager {
 					.slice(0, 44) || "thread"
 			const branch = `cline/${slug}-${suffix}`
 			const mode = availability.mode
-			const config = mode === "mm" ? await mmConfig(workspace) : undefined
 			if (config) workspace = config.root
-			const cwd =
-				mode === "mm" ? path.join(workspace, "isolates", branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
-			if (mode === "mm" && !config) throw new Error("mm configuration is missing")
-			const modules = config ? parseMmModules(config.raw, config.file) : [""]
+			const cwd = config ? path.join(config.isolatesRoot, branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
+			const modules = config
+				? config.modules.map((module) => ({
+						name: module.relativePath,
+						workspacePath: module.absolutePath,
+						path: path.join(cwd, module.isolateFolder),
+					}))
+				: [{ name: "", workspacePath: (await git(workspace, ["rev-parse", "--show-toplevel"])).trim(), path: cwd }]
 			const mapping: ThreadWorktree = {
 				threadId,
 				mode,
@@ -296,24 +325,18 @@ export class ThreadWorktreeManager {
 				modules: [],
 			}
 			for (const module of modules) {
-				const workspacePath =
-					mode === "git"
-						? (await git(workspace, ["rev-parse", "--show-toplevel"])).trim()
-						: path.join(workspace, module)
-				const base = (await git(workspacePath, ["rev-parse", "HEAD"])).trim()
-				mapping.modules.push({
-					name: module,
-					workspacePath,
-					path: mode === "mm" ? path.join(cwd, path.basename(path.normalize(module))) : cwd,
-					base,
-				})
+				const base = (await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
+				mapping.modules.push({ ...module, base })
 			}
 			// Journal first: partial mm failures remain visible and removable, never orphaned.
 			await this.save(mapping)
 			if (mode === "mm") {
-				const settings = await this.settings()
 				await this.assertMutationOwner()
-				await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
+				try {
+					await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
+				} catch (error) {
+					throw mmError(settings, (error as Error).message.trim())
+				}
 			} else {
 				await this.assertMutationOwner()
 				const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
@@ -837,6 +860,7 @@ export class ThreadWorktreeManager {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
+			let warning: string | undefined
 			if (!confirmed && mapping.takenOver) {
 				// The branch is in the workspace; only edits made in the leftover folder since would be lost.
 				let leftover = true
@@ -845,7 +869,7 @@ export class ThreadWorktreeManager {
 				} catch {
 					/* Unreadable descendants require explicit confirmation. */
 				}
-				if (leftover) return { warning: "The leftover worktree folder has edits of its own. Remove it and discard them?" }
+				if (leftover) warning = "The leftover worktree folder has edits of its own. Remove it and discard them?"
 			} else if (!confirmed) {
 				let changed = true
 				try {
@@ -859,22 +883,42 @@ export class ThreadWorktreeManager {
 					changed = true
 					/* Partial isolates and unreadable indexes still need explicit removal. */
 				}
-				if (changed) return { warning: "Changes were never copied here. Remove this worktree and discard them?" }
+				if (changed) warning = "Changes were never copied here. Remove this worktree and discard them?"
 			}
+			const settings = await this.settings()
 			if (mapping.mode === "mm") {
-				const config = await mmConfig(mapping.workspace)
+				const config = await this.discoverMm(mapping.workspace, settings, true)
+				// Older mappings can use a symlinked path to the same workspace.
+				const root = await fs.realpath(mapping.workspace)
+				const recordedPath = (file: string) => path.resolve(root, path.relative(mapping.workspace, file))
 				if (
 					!config ||
-					config.root !== mapping.workspace ||
-					JSON.stringify(parseMmModules(config.raw, config.file)) !==
-						JSON.stringify(mapping.modules.map((module) => module.name))
-				)
-					throw new Error(
-						"mm configuration changed since this workspace was created. Restore its module list before removing it.",
+					config.root !== root ||
+					path.join(config.isolatesRoot, mapping.branch) !== recordedPath(mapping.cwd) ||
+					config.modules.length !== mapping.modules.length ||
+					config.modules.some(
+						(module, i) =>
+							module.absolutePath !== recordedPath(mapping.modules[i].workspacePath) ||
+							path.join(config.isolatesRoot, mapping.branch, module.isolateFolder) !==
+								recordedPath(mapping.modules[i].path),
 					)
-				const settings = await this.settings()
+				)
+					throw mmError(
+						settings,
+						"mm configuration changed since this workspace was created. Restore its module and isolate paths before removing it.",
+					)
+			} else if (settings.mmPath || settings.mode === "mm") {
+				// Refresh discovery for the menu while removing a previously created Git worktree.
+				await this.discoverMm(mapping.workspace, settings, true).catch(() => {})
+			}
+			if (warning) return { warning }
+			if (mapping.mode === "mm") {
 				await this.assertMutationOwner()
-				await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
+				try {
+					await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
+				} catch (error) {
+					throw mmError(settings, (error as Error).message.trim())
+				}
 			} else {
 				const registered = await git(mapping.workspace, ["worktree", "list", "--porcelain", "-z"])
 				const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)

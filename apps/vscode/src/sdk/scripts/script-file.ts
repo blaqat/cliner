@@ -228,6 +228,6 @@ Usage notes for the agent: what the script does, what its options mean, and what
 - \`approval\` is one of \`always_ask\`, \`ask_in_ask_mode\` (default) or \`always_allow\`.
 - Text values cannot start with \`-\` unless the option declares \`allowDash: true\`. Enable this only for commands that safely accept such arguments.
 - Placeholders must be standalone shell words outside quotes and substitutions.
-- A choice option can list its \`choices\`, or use \`choicesFrom: mmrc\` to list the modules in \`.mmrc\`.
+- A choice option can list its \`choices\`, or use \`choicesFrom: mmrc\` to list the module names reported by mm.
 `
 }

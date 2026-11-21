@@ -61,7 +61,6 @@ export interface WorktreeAvailability {
 	available: boolean
 	reason?: string
 	workspaceOff: boolean
-	hasMmrc: boolean
 }
 export interface WorktreeState {
 	settings: ThreadWorktreeSettings

@@ -538,6 +538,8 @@ export class Controller {
 			workspace: StateManager.get().getWorkspaceStateKey("scriptToggles") ?? {},
 		}),
 		getWorkspaceRoot: () => this.lastKnownWorkspaceRoot,
+		getMmModules: async (workspace) =>
+			(await this.threadWorktrees.mmWorkspace(workspace, { required: true, refresh: true }))?.modules,
 		getLogDir: () => path.join(HostProvider.get().globalStorageFsPath, "script-logs"),
 		getTrustFile: () => path.join(HostProvider.get().globalStorageFsPath, "script-trust.json"),
 		// The same environment every other command Cline runs gets (settings + .env + PATH).
@@ -3203,7 +3205,7 @@ export class Controller {
 				return {
 					state: {
 						settings: await this.threadWorktrees.settings(),
-						availability: await this.threadWorktrees.availability(workspace, workspaceOff),
+						availability: await this.threadWorktrees.availability(workspace, workspaceOff, data.refreshMm === true),
 						mapping: id ? await this.threadWorktrees.get(id) : undefined,
 						settled: (
 							await this.threadWorktrees.settled(
@@ -3227,7 +3229,7 @@ export class Controller {
 			case "initRepository": {
 				const folder = (await HostProvider.workspace.getWorkspacePaths({})).paths[0]
 				if (!folder) throw new Error("Open a folder first.")
-				const reason = (await this.threadWorktrees.availability(folder, workspaceOff)).reason
+				const reason = (await this.threadWorktrees.availability(folder, workspaceOff, true)).reason
 				if (worktreeFix(reason) !== "repository") return {}
 				await git(folder, ["init"])
 				return {}
@@ -3235,6 +3237,7 @@ export class Controller {
 			case "workspaceOff":
 				this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
 				await this.stateManager.flushPendingState()
+				this.threadWorktrees.invalidateMmWorkspace(workspace)
 				return {}
 			case "diffs":
 				return { diffs: await this.threadWorktrees.diffs(id) }
@@ -4061,15 +4064,24 @@ export class Controller {
 			// An isolated thread's changes live only in its worktree (one per module with mm), not
 			// in the user's own workspace folders.
 			const isolated = worktree && !worktree.takenOver
-			const rootPaths = isolated ? worktree.modules.map((module) => module.path) : workspace.paths
+			const roots = new Set([cwd, ...(isolated ? worktree.modules.map((module) => module.path) : workspace.paths)])
+			if (!isolated) {
+				for (const root of [...roots]) {
+					try {
+						const config = await this.threadWorktrees.mmWorkspace(root)
+						for (const module of config?.modules ?? []) roots.add(module.absolutePath)
+					} catch (error) {
+						Logger.warn("[walkthrough] Could not read mm modules", error)
+					}
+				}
+			}
 			return {
 				taskId,
 				scope,
 				messages,
 				runSpans: messages.map(getUserRunSpan),
 				edits,
-				roots: [...new Set([cwd, ...rootPaths])],
-				includeMmWorkspace: !isolated,
+				roots: [...roots],
 				checkpointRoot: cwd,
 				checkpoints: readSessionCheckpointHistory(session),
 			}
@@ -4909,6 +4921,7 @@ export class Controller {
 				this.threadWorktrees.availability(
 					workspace,
 					!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+					true,
 				),
 			modelProblem: modelSettings
 				? (model, level, mode) => {
