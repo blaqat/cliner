@@ -452,6 +452,7 @@ export class Controller {
 			this.taskSessions.get(previous.taskId)?.messages.dispose()
 			this.taskSessions.delete(previous.taskId)
 		}
+		if (previous?.taskId !== task?.taskId) this.diffEdits?.onFocusChanged()
 		this.focusedTask = task
 		const context = task ? this.getTaskSessionContext(task.taskId, task) : this.homeContext
 		if (!context) return
@@ -726,6 +727,7 @@ export class Controller {
 			getCwd: async (sessionId) =>
 				this.sessions?.getSession(sessionId ?? "")?.startConfig?.cwd || (await this.getWorkspaceRoot()),
 			isBackgroundEditEnabled: () => !!this.stateManager.getGlobalSettingsKey("backgroundEditEnabled"),
+			isSessionVisible: (sessionId, agentId) => this.isEditSessionVisible(sessionId, agentId),
 			getWorkspaceRoot: () => this.getWorkspaceRoot(),
 		})
 		this.interactions = new SdkInteractionCoordinator({
@@ -740,7 +742,13 @@ export class Controller {
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
 			// Open the diff editor preview before the approval buttons render.
 			onToolApprovalAsk: (request) =>
-				this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId),
+				this.diffEdits.openForApproval(
+					request.toolCallId,
+					request.toolName,
+					request.input,
+					request.sessionId,
+					request.agentId,
+				),
 			recordApprovedToolMessage: (toolCallId, messageTs) =>
 				this.messageTranslatorState.recordApprovedToolMessageTs(toolCallId, messageTs),
 			recordDeniedToolApproval: (toolCallId, toolName, reason) => {
@@ -2169,9 +2177,13 @@ export class Controller {
 			setTurnPhase: setPhase,
 			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? id)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 			onToolApprovalAsk: (request) =>
-				this.task?.taskId === id
-					? this.diffEdits.openForApproval(request.toolCallId, request.toolName, request.input, request.sessionId ?? id)
-					: Promise.resolve(),
+				this.diffEdits.openForApproval(
+					request.toolCallId,
+					request.toolName,
+					request.input,
+					request.sessionId ?? id,
+					request.agentId,
+				),
 			recordApprovedToolMessage: (callId, ts, agentId) => {
 				const child = Array.from(this.subagentThreads?.values() ?? []).find(
 					(item) => (item.runtimeOwnerTaskId ?? item.parentTaskId) === id && item.agentId === agentId,
@@ -2248,6 +2260,15 @@ export class Controller {
 		this.taskSessions.set(id, context)
 		if (!this.sessions.getSession(id) && task?.messageStateHandler.getClineMessages().length === 0) setPhase("streaming")
 		return context
+	}
+
+	/** Subagents execute with their owner's session id; their agent id identifies the visible thread. */
+	private isEditSessionVisible(sessionId?: string, agentId?: string): boolean {
+		if (!sessionId || !this.task) return false
+		const child = Array.from(this.subagentThreads.values()).find(
+			(item) => !!agentId && item.agentId === agentId && (item.runtimeOwnerTaskId ?? item.parentTaskId) === sessionId,
+		)
+		return this.task.taskId === (child?.id ?? sessionId)
 	}
 
 	/**
@@ -5062,7 +5083,14 @@ export class Controller {
 		const startedTs = new Map(records.map((record) => [record.sessionId, sessionRecordStartedTs(record)]))
 		const historyItems = records.map(sessionHistoryRecordToHistoryItem)
 		const byId = new Map(historyItems.map((item) => [item.id, item]))
-		const threads: TaskGroupThreadRow[] = historyItems
+		// Match state posts during the gap before Core persists a newly started thread.
+		for (const session of (this.sessions.getSessions?.() ?? new Map()).values()) {
+			if (byId.has(session.sessionId)) continue
+			const item = this.liveTaskHistoryItem(session.sessionId)
+			if (item) byId.set(item.id, item)
+		}
+		for (const child of this.subagentThreads.values()) byId.set(child.id, child)
+		const threads: TaskGroupThreadRow[] = Array.from(byId.values())
 			.filter((item) => this.effectiveTaskGroupId(item, byId) === id)
 			.map((item) => ({
 				threadId: item.id,

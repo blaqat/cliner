@@ -34,6 +34,8 @@ export interface SdkDiffEditCoordinatorOptions {
 	getCwd: (sessionId?: string) => Promise<string>
 	/** When Background Edit is enabled, edits apply headlessly with no preview. */
 	isBackgroundEditEnabled: () => boolean
+	/** Only the thread currently on screen may open or reveal editors. */
+	isSessionVisible: (sessionId?: string, agentId?: string) => boolean
 	/** Injectable for tests. Defaults to the host-registered factory. */
 	createEditPreview?: () => EditPreview
 	/** Injectable for tests. Defaults to the SDK's disk-writing editor executor. */
@@ -82,6 +84,8 @@ interface DiffEditSession {
  */
 export class SdkDiffEditCoordinator {
 	private readonly sessions = new Map<string, DiffEditSession>()
+	private readonly approvalVisibility = new Map<string, () => boolean>()
+	private focusGeneration = 0
 	private readonly fallbackEditorExecutor: EditorExecutor
 	private readonly fallbackApplyPatchExecutor: ApplyPatchExecutor
 	private readonly autoApprovePreviewLingerMs: number
@@ -99,20 +103,50 @@ export class SdkDiffEditCoordinator {
 	 * user decides while looking at the actual change. Never throws; on any failure the
 	 * approval flow proceeds without a preview and the executor still applies the edit.
 	 */
-	async openForApproval(toolCallId: string, toolName: string, input: unknown, sessionId?: string): Promise<void> {
-		if (this.options.isBackgroundEditEnabled() || this.sessions.has(toolCallId)) {
-			return
-		}
+	async openForApproval(
+		toolCallId: string,
+		toolName: string,
+		input: unknown,
+		sessionId?: string,
+		agentId?: string,
+	): Promise<void> {
+		if (toolName !== "editor" && toolName !== "apply_patch") return
+		const mayShow = this.approvalVisibility.get(toolCallId) ?? this.visibilityGuard(sessionId, agentId)
+		this.approvalVisibility.set(toolCallId, mayShow)
+		if (!mayShow() || this.sessions.has(toolCallId)) return
 		try {
 			if (toolName === "editor") {
-				await this.openEditorPreview(toolCallId, input as EditFileInput, await this.options.getCwd(sessionId))
+				await this.openEditorPreview(toolCallId, input as EditFileInput, await this.options.getCwd(sessionId), mayShow)
 			} else if (toolName === "apply_patch") {
-				await this.openPatchPreview(toolCallId, input as ApplyPatchInput, await this.options.getCwd(sessionId))
+				await this.openPatchPreview(toolCallId, input as ApplyPatchInput, await this.options.getCwd(sessionId), mayShow)
 			}
 		} catch (error) {
 			Logger.warn(`[SdkDiffEditCoordinator] Failed to open diff preview for ${toolName}: ${error}`)
 			await this.discardPreview(toolCallId)
+			this.approvalVisibility.set(toolCallId, mayShow)
 		}
+	}
+
+	/** Invalidate late previews/reveals even if the user switches back before an edit completes. */
+	onFocusChanged(): void {
+		this.focusGeneration++
+		for (const session of this.sessions.values()) {
+			const preview = session.preview
+			session.preview = undefined
+			void preview
+				?.close()
+				.catch((error) => Logger.warn(`[SdkDiffEditCoordinator] Failed to close hidden preview: ${error}`))
+		}
+	}
+
+	private visibilityGuard(sessionId?: string, agentId?: string): () => boolean {
+		const generation = this.focusGeneration
+		const visible = this.options.isSessionVisible(sessionId, agentId) && !this.options.isBackgroundEditEnabled()
+		return () =>
+			visible &&
+			generation === this.focusGeneration &&
+			this.options.isSessionVisible(sessionId, agentId) &&
+			!this.options.isBackgroundEditEnabled()
 	}
 
 	/**
@@ -122,13 +156,14 @@ export class SdkDiffEditCoordinator {
 	 */
 	async executeEditorTool(input: EditFileInput, cwd: string, context: AgentToolContext): Promise<string> {
 		const toolCallId = context.toolCallId ?? ""
+		const mayShow = this.approvalVisibility.get(toolCallId) ?? this.visibilityGuard(context.sessionId, context.agentId)
 		const hadPreApprovalPreview = this.sessions.has(toolCallId)
 		try {
-			if (!hadPreApprovalPreview && !this.options.isBackgroundEditEnabled()) {
+			if (!hadPreApprovalPreview && mayShow()) {
 				// Auto-approved (or hook-approved) edit: no preview was opened at approval
 				// time, so show one now. Best-effort — never blocks the edit.
 				try {
-					await this.openEditorPreview(toolCallId, input, cwd)
+					await this.openEditorPreview(toolCallId, input, cwd, mayShow)
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve preview: ${error}`)
 				}
@@ -139,7 +174,7 @@ export class SdkDiffEditCoordinator {
 				// just cuts the linger short (the edit has already been applied).
 				await lingerDelay(this.autoApprovePreviewLingerMs, context.signal)
 			}
-			if (!context.signal?.aborted) {
+			if (!context.signal?.aborted && mayShow()) {
 				await this.showEditedFile(this.livePreviewRevealPath(toolCallId))
 			}
 			return result
@@ -155,6 +190,7 @@ export class SdkDiffEditCoordinator {
 	 */
 	async executeApplyPatchTool(input: ApplyPatchInput, cwd: string, context: AgentToolContext): Promise<string> {
 		const toolCallId = context.toolCallId ?? ""
+		const mayShow = this.approvalVisibility.get(toolCallId) ?? this.visibilityGuard(context.sessionId, context.agentId)
 		const hadPreApprovalPreview = this.sessions.has(toolCallId)
 		// The pre-approval preview is discarded before the patch applies, so remember
 		// which file it showed for the post-edit reveal.
@@ -162,9 +198,9 @@ export class SdkDiffEditCoordinator {
 		try {
 			if (hadPreApprovalPreview) {
 				await this.discardPreview(toolCallId)
-			} else if (!this.options.isBackgroundEditEnabled()) {
+			} else if (mayShow()) {
 				try {
-					await this.openPatchPreview(toolCallId, input, cwd)
+					await this.openPatchPreview(toolCallId, input, cwd, mayShow)
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve patch preview: ${error}`)
 				}
@@ -174,7 +210,7 @@ export class SdkDiffEditCoordinator {
 			if (!hadPreApprovalPreview && this.sessions.get(toolCallId)?.preview) {
 				await lingerDelay(this.autoApprovePreviewLingerMs, context.signal)
 			}
-			if (!context.signal?.aborted) {
+			if (!context.signal?.aborted && mayShow()) {
 				await this.showEditedFile(preApprovalRevealPath ?? this.livePreviewRevealPath(toolCallId))
 			}
 			return result
@@ -225,6 +261,7 @@ export class SdkDiffEditCoordinator {
 	async discardPreview(toolCallId: string): Promise<void> {
 		const session = this.sessions.get(toolCallId)
 		this.sessions.delete(toolCallId)
+		this.approvalVisibility.delete(toolCallId)
 		if (!session?.preview) {
 			return
 		}
@@ -246,7 +283,12 @@ export class SdkDiffEditCoordinator {
 		}
 	}
 
-	private async openEditorPreview(toolCallId: string, input: EditFileInput, cwd: string): Promise<void> {
+	private async openEditorPreview(
+		toolCallId: string,
+		input: EditFileInput,
+		cwd: string,
+		mayShow: () => boolean,
+	): Promise<void> {
 		if (typeof input?.path !== "string" || input.path.length === 0 || typeof input.new_text !== "string") {
 			throw new Error("editor input missing path or new_text")
 		}
@@ -265,17 +307,26 @@ export class SdkDiffEditCoordinator {
 		const editType = originalContent === undefined ? "create" : "modify"
 		const newContent = computeNewEditorContent(originalContent ?? "", input, absolutePath, editType)
 
-		await this.openPreview(toolCallId, {
-			absolutePath,
-			where: await this.elsewhereLabel(cwd),
-			displayPath: input.path,
-			editType,
-			leftContent: originalContent ?? "",
-			rightContent: newContent,
-		})
+		await this.openPreview(
+			toolCallId,
+			{
+				absolutePath,
+				where: await this.elsewhereLabel(cwd),
+				displayPath: input.path,
+				editType,
+				leftContent: originalContent ?? "",
+				rightContent: newContent,
+			},
+			mayShow,
+		)
 	}
 
-	private async openPatchPreview(toolCallId: string, input: ApplyPatchInput, cwd: string): Promise<void> {
+	private async openPatchPreview(
+		toolCallId: string,
+		input: ApplyPatchInput,
+		cwd: string,
+		mayShow: () => boolean,
+	): Promise<void> {
 		if (typeof input?.input !== "string" || input.input.length === 0) {
 			return
 		}
@@ -291,15 +342,19 @@ export class SdkDiffEditCoordinator {
 			return
 		}
 		const [filePath, change] = first
-		await this.openPreview(toolCallId, {
-			absolutePath: resolveEditPath(cwd, filePath),
-			revealPath: resolveEditPath(cwd, change.movePath ?? filePath),
-			where: await this.elsewhereLabel(cwd),
-			displayPath: filePath,
-			editType: change.type === PatchActionType.ADD ? "create" : "modify",
-			leftContent: change.oldContent ?? "",
-			rightContent: change.newContent ?? "",
-		})
+		await this.openPreview(
+			toolCallId,
+			{
+				absolutePath: resolveEditPath(cwd, filePath),
+				revealPath: resolveEditPath(cwd, change.movePath ?? filePath),
+				where: await this.elsewhereLabel(cwd),
+				displayPath: filePath,
+				editType: change.type === PatchActionType.ADD ? "create" : "modify",
+				leftContent: change.oldContent ?? "",
+				rightContent: change.newContent ?? "",
+			},
+			mayShow,
+		)
 	}
 
 	private async openPreview(
@@ -314,7 +369,9 @@ export class SdkDiffEditCoordinator {
 			leftContent: string
 			rightContent: string
 		},
+		mayShow: () => boolean,
 	): Promise<void> {
+		if (!mayShow()) return
 		// A newer preview for the same file supersedes an older pending one (approvals
 		// resolve sequentially, so the older edit is already decided — its executor only
 		// needs the session entry, not the tab).
@@ -330,6 +387,7 @@ export class SdkDiffEditCoordinator {
 			}
 		}
 
+		if (!mayShow()) return
 		const preview = this.createPreview()
 		const fileName = path.basename(content.absolutePath) + (content.where ? ` (${content.where})` : "")
 		const title =
@@ -361,6 +419,10 @@ export class SdkDiffEditCoordinator {
 			// is never registered on failure, so discardPreview couldn't reach it.)
 			void opened.catch(() => {}).finally(() => preview.close().catch(() => {}))
 			throw failure
+		}
+		if (!mayShow()) {
+			await preview.close()
+			return
 		}
 		this.sessions.set(toolCallId, {
 			preview,

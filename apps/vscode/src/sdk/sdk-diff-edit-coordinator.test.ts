@@ -1,4 +1,11 @@
-import type { AgentToolContext, ApplyPatchExecutor, EditFileInput, EditorExecutor } from "@cline/core"
+import {
+	type AgentToolContext,
+	type ApplyPatchExecutor,
+	createApplyPatchExecutor,
+	createEditorExecutor,
+	type EditFileInput,
+	type EditorExecutor,
+} from "@cline/core"
 import * as diff from "diff"
 import * as fs from "fs/promises"
 import * as os from "os"
@@ -282,6 +289,7 @@ describe("SdkDiffEditCoordinator", () => {
 		return new SdkDiffEditCoordinator({
 			getCwd: async () => tempDir,
 			isBackgroundEditEnabled: () => backgroundEdit,
+			isSessionVisible: () => true,
 			createEditPreview: () => {
 				const preview = new FakeEditPreview()
 				previewTweak?.(preview)
@@ -348,6 +356,94 @@ describe("SdkDiffEditCoordinator", () => {
 		await fs.writeFile(absolutePath, content)
 		return absolutePath
 	}
+
+	for (const tool of ["editor", "apply_patch"] as const) {
+		const input =
+			tool === "editor"
+				? { path: "background.ts", new_text: "new" }
+				: { input: "*** Begin Patch\n*** Add File: background.ts\n+new\n*** End Patch" }
+		const context = { ...makeContext("background"), sessionId: "background" }
+		const execute = () =>
+			tool === "editor"
+				? coordinator.executeEditorTool(input as EditFileInput, tempDir, context)
+				: coordinator.executeApplyPatchTool(input as { input: string }, tempDir, context)
+
+		it.each([false, true])(`${tool}: background edits apply without editors, manual approval = %s`, async (manual) => {
+			let visible = false
+			coordinator = makeCoordinator({
+				isSessionVisible: () => visible,
+				fallbackEditorExecutor: createEditorExecutor(),
+				fallbackApplyPatchExecutor: createApplyPatchExecutor(),
+			})
+			if (manual) {
+				await coordinator.openForApproval("background", tool, input, "background")
+				await coordinator.discardAllPreviews("another thread completed")
+				// Opening the thread to approve it must not replay the suppressed preview.
+				visible = true
+				coordinator.onFocusChanged()
+			}
+			await execute()
+			expect(await fs.readFile(path.join(tempDir, "background.ts"), "utf8")).toMatch(/^new/)
+			expect(previews).toHaveLength(0)
+			expect(showEditedFile).not.toHaveBeenCalled()
+		})
+
+		it(`${tool}: switching away during a write prevents a late reveal, including after switching back`, async () => {
+			let started!: () => void
+			let finish!: () => void
+			const writing = new Promise<void>((resolve) => {
+				started = resolve
+			})
+			const gate = new Promise<void>((resolve) => {
+				finish = resolve
+			})
+			const write = async () => {
+				started()
+				await gate
+				return "written"
+			}
+			coordinator = makeCoordinator({ fallbackEditorExecutor: write, fallbackApplyPatchExecutor: write })
+			const operation = execute()
+			await writing
+			expect(previews).toHaveLength(1)
+			coordinator.onFocusChanged()
+			coordinator.onFocusChanged()
+			finish()
+			expect(await operation).toBe("written")
+			expect(previews[0].closed).toBe(1)
+			expect(showEditedFile).not.toHaveBeenCalled()
+		})
+
+		it(`${tool}: rechecks visibility after preparing the preview`, async () => {
+			let resolveCwd!: (cwd: string) => void
+			coordinator = makeCoordinator({
+				getCwd: () =>
+					new Promise((resolve) => {
+						resolveCwd = resolve
+					}),
+			})
+			const opening = coordinator.openForApproval("background", tool, input, "background")
+			coordinator.onFocusChanged()
+			resolveCwd(tempDir)
+			await opening
+			await execute()
+			expect(previews).toHaveLength(0)
+			expect(showEditedFile).not.toHaveBeenCalled()
+		})
+	}
+
+	it("closes a preview that finishes opening after a thread switch", async () => {
+		previewTweak = (preview) => {
+			preview.hangOpen = true
+		}
+		const opening = coordinator.openForApproval("late", "editor", { path: "late.ts", new_text: "new" })
+		await vi.waitFor(() => expect(previews).toHaveLength(1))
+		coordinator.onFocusChanged()
+		previews[0].finishOpen()
+		await opening
+		expect(previews[0].closed).toBe(1)
+		expect(showEditedFile).not.toHaveBeenCalled()
+	})
 
 	it("opens a populated preview before approval for an existing-file edit", async () => {
 		await writeFile("a.ts", "line1\nline2\n")

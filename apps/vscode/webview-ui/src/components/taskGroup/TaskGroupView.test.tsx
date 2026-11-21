@@ -563,6 +563,25 @@ describe("TaskGroupView", () => {
 		}
 	})
 
+	it("updates the timeline when a background thread joins without changing task summaries", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true })
+		try {
+			const { rerender } = await renderView()
+			const added = { threadId: "automation-step", task: "Automation step", ts: NOW, read: [], wrote: [] }
+			mocks.getTaskGroup.mockResolvedValue(
+				GetTaskGroupResponse.fromPartial({ ...FIXTURE, threads: [...FIXTURE.threads, added] }),
+			)
+			mocks.state = { ...mocks.state, taskHistory: [{ id: added.threadId, task: added.task, ts: NOW, taskGroupId: "g1" }] }
+			rerender(<TaskGroupView now={NOW} taskGroupId="g1" />)
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(600)
+			})
+			expect(screen.getByText("Automation step")).toBeInTheDocument()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("says so when the task is gone", async () => {
 		mocks.getTaskGroup.mockRejectedValue(new Error("Task group not found"))
 		render(<TaskGroupView now={NOW} taskGroupId="g1" />)

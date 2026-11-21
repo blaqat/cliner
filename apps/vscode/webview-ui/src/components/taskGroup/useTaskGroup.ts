@@ -68,11 +68,11 @@ export function taskGroupDetailsFromProto(response: GetTaskGroupResponse): TaskG
 
 /**
  * Loads a task group's page data (group, notes, timeline). Refetches whenever
- * `taskGroups` state changes: the backend watcher posts state when notes are
+ * `taskGroups` or thread history changes: the backend watcher posts state when notes are
  * edited on disk, so the page picks up hand edits and applied changes.
  */
 export function useTaskGroup(id: string) {
-	const { taskGroups } = useExtensionState()
+	const { taskGroups, taskHistory } = useExtensionState()
 	const [details, setDetails] = useState<TaskGroupDetails>()
 	const [missing, setMissing] = useState(false)
 	const requestRef = useRef(0)
@@ -99,10 +99,15 @@ export function useTaskGroup(id: string) {
 		setDetails(undefined)
 		setMissing(false)
 		refresh()
+		return () => {
+			requestRef.current++
+			clearTimeout(timerRef.current)
+			timerRef.current = undefined
+		}
 	}, [refresh])
 
 	const firstStateRef = useRef(true)
-	// biome-ignore lint/correctness/useExhaustiveDependencies: taskGroups is the refetch signal
+	// biome-ignore lint/correctness/useExhaustiveDependencies: taskGroups and taskHistory are the refetch signals
 	useEffect(() => {
 		if (firstStateRef.current) {
 			firstStateRef.current = false
@@ -113,7 +118,7 @@ export function useTaskGroup(id: string) {
 			timerRef.current = undefined
 			refresh()
 		}, REFETCH_WINDOW_MS)
-	}, [taskGroups])
+	}, [taskGroups, taskHistory])
 
 	useEffect(() => () => clearTimeout(timerRef.current), [])
 

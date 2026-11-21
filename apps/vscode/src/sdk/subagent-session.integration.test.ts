@@ -122,7 +122,7 @@ describe("subagents through the real parent session", () => {
 				lastKnownWorkspaceRoot: dir,
 				messageTranslatorState: new MessageTranslatorState(),
 				foregroundCommands: { isRunning: false },
-				diffEdits: { openForApproval: async () => {}, discardPreview: async () => {} },
+				diffEdits: { openForApproval: async () => {}, discardPreview: async () => {}, onFocusChanged: () => {} },
 				stateManager: {
 					getGlobalSettingsKey: (key: string) => (key === "autoApprovalSettings" ? settings : mode),
 					getGlobalStateKey: () => undefined,

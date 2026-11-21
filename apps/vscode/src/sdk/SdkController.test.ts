@@ -2643,3 +2643,54 @@ describe("thread reference authorization", () => {
 function controllerFixture<T extends object>(properties: T): T & SdkController {
 	return Object.defineProperties(Object.create(SdkController.prototype), Object.getOwnPropertyDescriptors(properties))
 }
+
+describe("task timeline history", () => {
+	it("includes unpersisted background threads and subagents, and follows moves", async () => {
+		const controller = Object.create(SdkController.prototype)
+		const task = createTaskProxy("automation", vi.fn(), vi.fn())
+		task.messageStateHandler.addMessages([{ ts: 42, type: "say", say: "task", text: "Automation step" }])
+		const live = new Map([["automation", { sessionId: "automation", startConfig: {} }]])
+		Object.assign(controller, {
+			taskGroupStore: { getGroup: async (id: string) => ({ id }) },
+			notebookStore: { listNotes: async () => [], summarizeActivity: async () => new Map() },
+			taskHistory: { listHistory: async () => [] },
+			taskSessions: new Map([["automation", { task, taskGroupId: "g1" }]]),
+			sessions: { getSessions: () => live, getSession: (id: string) => live.get(id) },
+			subagentThreads: new Map([
+				["child", { id: "child", ts: 43, task: "Child step", isSubagent: true, parentTaskId: "automation" }],
+				["aside", { id: "aside", ts: 44, task: "Side step", parentTaskId: "automation" }],
+			]),
+		})
+		expect((await controller.getTaskGroup("g1")).threads.map((item: { threadId: string }) => item.threadId)).toEqual([
+			"automation",
+			"child",
+			"aside",
+		])
+		controller.taskSessions.get("automation").taskGroupId = "g2"
+		expect((await controller.getTaskGroup("g1")).threads).toEqual([])
+		expect((await controller.getTaskGroup("g2")).threads).toHaveLength(3)
+	})
+})
+
+describe("edit editor visibility", () => {
+	it("matches the visible subagent rather than its shared runtime owner", () => {
+		const controller = Object.create(SdkController.prototype)
+		Object.assign(controller, {
+			focusedTask: { taskId: "parent" },
+			subagentThreads: new Map([
+				["child", { id: "child", agentId: "child-agent", runtimeOwnerTaskId: "parent" }],
+				["sibling", { id: "sibling", agentId: "sibling-agent", runtimeOwnerTaskId: "parent" }],
+			]),
+		})
+		expect(controller.isEditSessionVisible("parent", "parent-agent")).toBe(true)
+		expect(controller.isEditSessionVisible("parent", "child-agent")).toBe(false)
+		expect(controller.isEditSessionVisible("automation", "automation-agent")).toBe(false)
+		controller.focusedTask = { taskId: "child" }
+		expect(controller.isEditSessionVisible("parent", "child-agent")).toBe(true)
+		expect(controller.isEditSessionVisible("parent", "sibling-agent")).toBe(false)
+		expect(controller.isEditSessionVisible("parent", "parent-agent")).toBe(false)
+		controller.focusedTask = undefined
+		expect(controller.isEditSessionVisible("parent", "child-agent")).toBe(false)
+		expect(controller.isEditSessionVisible(undefined, "child-agent")).toBe(false)
+	})
+})
