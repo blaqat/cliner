@@ -4940,6 +4940,7 @@ export class Controller {
 			settings: this.stateManager.getGlobalSettingsKey("autoApprovalSettings"),
 			cwd: this.sessions.getSession(sessionId)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 			confined: !!automationThread?.worktree,
+			workspaceRoots: this._workspaceManager?.getRoots().map((root) => root.path),
 			approveInside: (root) =>
 				this.diffEdits.approveInWorktree(request.toolCallId, request.toolName, request.input, root, sessionId),
 		})

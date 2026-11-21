@@ -1,5 +1,6 @@
 import type { AutoApprovalSettings } from "@shared/AutoApprovalSettings"
 import type { McpHub } from "@/services/mcp/McpHub"
+import { arePathsEqual } from "@/utils/path"
 
 /**
  * Build SDK `toolPolicies` for tools governed by Cline's auto-approval UI.
@@ -76,6 +77,11 @@ export interface ToolApprovalScope {
 	cwd?: string
 	/** An automation thread in a worktree: its reads must stay inside that worktree too. */
 	confined?: boolean
+	/**
+	 * Every folder of a multi-root workspace. A thread working in one of them may edit the others
+	 * without asking, as before; a thread in its own worktree only counts that worktree.
+	 */
+	workspaceRoots?: string[]
 	/** True when every path the call names really is inside `root` (symlinks resolved); keeps that check for execution. */
 	approveInside: (root: string) => boolean
 }
@@ -89,7 +95,11 @@ export interface ToolApprovalScope {
 export function approvesWithoutAsking(toolName: string, scope: ToolApprovalScope): boolean {
 	if (!scope.settings || !isToolAutoApproved(toolName, scope.settings)) return false
 	if (!isEditTool(toolName) && !(scope.confined && isReadTool(toolName))) return true
-	return !!scope.cwd && scope.approveInside(scope.cwd)
+	if (!scope.cwd) return false
+	if (scope.approveInside(scope.cwd)) return true
+	const roots = scope.workspaceRoots ?? []
+	if (scope.confined || !roots.some((root) => arePathsEqual(root, scope.cwd))) return false
+	return roots.some((root) => !arePathsEqual(root, scope.cwd) && scope.approveInside(root))
 }
 
 export function isReadTool(toolName: string): boolean {
