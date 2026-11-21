@@ -1,3 +1,4 @@
+import { setInstructionFileToggle } from "@core/context/instructions/user-instructions/file-toggles"
 import { ClineRulesToggles, RuleScope, ToggleWorkflowRequest } from "@shared/proto/cline/file"
 import { Logger } from "@/shared/services/Logger"
 import { Controller } from ".."
@@ -20,26 +21,17 @@ export async function toggleWorkflow(controller: Controller, request: ToggleWork
 		throw new Error("Missing or invalid parameters for toggleWorkflow")
 	}
 
-	// Handle the three different scopes
+	const state = controller.stateManager
 	let toggles: Record<string, boolean>
-
 	switch (scope) {
-		case RuleScope.GLOBAL: {
-			toggles = controller.stateManager.getGlobalSettingsKey("globalWorkflowToggles")
-			toggles[workflowPath] = enabled
-			controller.stateManager.setGlobalState("globalWorkflowToggles", toggles)
+		case RuleScope.GLOBAL:
+		case RuleScope.LOCAL:
+			toggles = await setInstructionFileToggle(state, "workflow", workflowPath, scope === RuleScope.GLOBAL, enabled)
 			break
-		}
-		case RuleScope.LOCAL: {
-			toggles = controller.stateManager.getWorkspaceStateKey("workflowToggles")
-			toggles[workflowPath] = enabled
-			controller.stateManager.setWorkspaceState("workflowToggles", toggles)
-			break
-		}
 		case RuleScope.REMOTE: {
-			toggles = controller.stateManager.getGlobalStateKey("remoteWorkflowToggles")
-			toggles[workflowPath] = enabled
-			controller.stateManager.setGlobalState("remoteWorkflowToggles", toggles)
+			toggles = { ...state.getGlobalStateKey("remoteWorkflowToggles"), [workflowPath]: enabled }
+			state.setGlobalState("remoteWorkflowToggles", toggles)
+			await state.flushPendingState()
 			break
 		}
 		default:
@@ -48,6 +40,5 @@ export async function toggleWorkflow(controller: Controller, request: ToggleWork
 
 	await controller.postStateToWebview()
 
-	// Return the updated toggles
-	return ClineRulesToggles.create({ toggles: toggles })
+	return ClineRulesToggles.create({ toggles })
 }

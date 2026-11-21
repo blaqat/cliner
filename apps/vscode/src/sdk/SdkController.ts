@@ -5647,6 +5647,7 @@ export class Controller {
 			name: change.name,
 			description: change.description,
 			...(change.editedByUser ? { editedByUser: true } : {}),
+			...(change.skill ? { skill: { kind: change.skill.kind, scope: change.skill.scope } } : {}),
 		})
 		const kept = [...(live ? (shown?.kept ?? []) : []), ...(update.kept ?? []).map(brief)]
 		const dropped = [...(live ? (shown?.dropped ?? []) : []), ...(update.dropped ?? []).map(brief)]

@@ -2,7 +2,8 @@ import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type React from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { StateServiceClient } from "@/services/grpc-client"
+import { getSideThreadSlots, resetSideThreadSlots, showQuestion } from "@/components/sideThreads/sideThreadStore"
+import { SideThreadServiceClient, StateServiceClient } from "@/services/grpc-client"
 import ChatTextArea from "./ChatTextArea"
 
 const mocks = vi.hoisted(() => ({
@@ -49,6 +50,9 @@ vi.mock("@/services/grpc-client", () => ({
 	},
 	StateServiceClient: {
 		togglePlanActModeProto: vi.fn(async () => ({})),
+	},
+	SideThreadServiceClient: {
+		updateSideThread: vi.fn(async () => ({})),
 	},
 }))
 
@@ -149,6 +153,11 @@ describe("ChatTextArea image attachments vs. model capability", () => {
 })
 
 describe("ChatTextArea stash and mode toggle", () => {
+	afterEach(() => {
+		mocks.state = {}
+		resetSideThreadSlots()
+	})
+
 	function renderComposer(props: Partial<React.ComponentProps<typeof ChatTextArea>> = {}) {
 		render(
 			<ChatTextArea
@@ -194,6 +203,39 @@ describe("ChatTextArea stash and mode toggle", () => {
 		fireEvent.keyDown(textarea, { key: "Escape" })
 
 		expect(onStash).not.toHaveBeenCalled()
+	})
+
+	it("dismisses the current side question on an otherwise unused composer Escape", () => {
+		mocks.state.currentTaskItem = { id: "main" }
+		showQuestion("main", "side")
+		showQuestion("other", "other-side")
+		const onStash = vi.fn(() => false)
+		const textarea = renderComposer({ inputValue: "draft", onStash })
+
+		expect(fireEvent.keyDown(textarea, { key: "Escape" })).toBe(false)
+		expect(onStash).toHaveBeenCalledTimes(1)
+		expect(getSideThreadSlots().question).toEqual({ other: "other-side" })
+		expect(SideThreadServiceClient.updateSideThread).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: "side", closed: true }),
+		)
+	})
+
+	it("lets the slash menu and a successful stash use Escape before the side question", () => {
+		mocks.state.currentTaskItem = { id: "main" }
+		showQuestion("main", "side")
+		const onStash = vi.fn(() => true)
+		const textarea = renderComposer({ inputValue: "draft", onStash })
+		fireEvent.change(textarea, { target: { value: "/b", selectionStart: 2 } })
+		expect(screen.getByText("/btw")).toBeInTheDocument()
+
+		expect(fireEvent.keyDown(textarea, { key: "Escape" })).toBe(false)
+		expect(screen.queryByText("/btw")).not.toBeInTheDocument()
+		expect(onStash).not.toHaveBeenCalled()
+		expect(getSideThreadSlots().question.main).toBe("side")
+
+		expect(fireEvent.keyDown(textarea, { key: "Escape" })).toBe(false)
+		expect(onStash).toHaveBeenCalledTimes(1)
+		expect(getSideThreadSlots().question.main).toBe("side")
 	})
 
 	it("shows the stash icon only when the stash has entries", () => {

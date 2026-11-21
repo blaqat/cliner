@@ -101,6 +101,11 @@ function changeIcon(kind: ReviewKind, change: NotebookChange): string {
 	return "edit"
 }
 
+/** Kept workflows open in the Workflows tab; anything with a skill opens Skills. */
+function draftsTab(changes: NotebookChange[]): "skills" | "workflows" {
+	return changes.length && changes.every((change) => change.skill?.kind === "workflow") ? "workflows" : "skills"
+}
+
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
 
 /** "2 note changes, 1 About you change, 1 skill": counts by kind, in a fixed order. */
@@ -109,12 +114,10 @@ export function countPhrase(entries: { kind: ReviewKind; change: NotebookChange 
 	const about = entries.filter((entry) => entry.kind === "about").length
 	const skills = entries.filter((entry) => entry.kind === "skills" && entry.change.skill?.kind !== "workflow").length
 	const workflows = entries.filter((entry) => entry.kind === "skills" && entry.change.skill?.kind === "workflow").length
-	return [
-		notes && plural(notes, "note change"),
-		about && plural(about, "About you change"),
-		skills && plural(skills, "skill"),
-		workflows && plural(workflows, "workflow"),
-	]
+	const instructions = [skills && plural(skills, "skill"), workflows && plural(workflows, "workflow")]
+		.filter(Boolean)
+		.join(" and ")
+	return [notes && plural(notes, "note change"), about && plural(about, "About you change"), instructions]
 		.filter(Boolean)
 		.join(", ")
 }
@@ -191,8 +194,8 @@ function TurnReview({
 	const summary = settledGroups.length > 0 && (
 		<TurnSummary
 			groups={settledGroups.map((group) => ({ ...group, payload: group.settled }))}
-			onOpen={(group) => {
-				if (group.kind === "skills") openSkills({ tab: "skills" })
+			onOpen={(group, tab) => {
+				if (group.kind === "skills") openSkills({ tab })
 				else openTaskGroup?.(group.payload.taskGroupId, group.kind === "about" ? "notebook" : undefined)
 			}}
 		/>
@@ -227,7 +230,7 @@ function TurnSummary({
 	onOpen,
 }: {
 	groups: { payload: NotebookChangesPayload; status: string; kind: ReviewKind }[]
-	onOpen: (group: { payload: NotebookChangesPayload; kind: ReviewKind }) => void
+	onOpen: (group: { payload: NotebookChangesPayload; kind: ReviewKind }, tab: "skills" | "workflows") => void
 }) {
 	const keptOf = (group: { payload: NotebookChangesPayload; status: string }) =>
 		group.payload.kept ??
@@ -246,11 +249,13 @@ function TurnSummary({
 		: only === "about"
 			? "Dropped About you changes"
 			: only === "skills"
-				? "Dropped the skill"
+				? `Dropped ${countPhrase(dropped)}`
 				: only === "notes"
 					? "Dropped note changes"
 					: "Dropped the changes"
-	const links = groups.filter((group) => keptOf(group).length || groups.length === 1)
+	const links = groups
+		.filter((group) => keptOf(group).length || groups.length === 1)
+		.map((group) => ({ group, tab: draftsTab(keptOf(group).length ? keptOf(group) : droppedOf(group)) }))
 	return (
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
@@ -269,9 +274,13 @@ function TurnSummary({
 			))}
 			{kept.length > 0 && dropped.length > 0 && <span className="text-description">· dropped {dropped.length}</span>}
 			<span className="flex-1" />
-			{links.map((group) => (
-				<LinkButton className="text-[11px]" key={group.payload.taskGroupId} onClick={() => onOpen(group)}>
-					{group.kind === "about" ? "Open About you" : group.kind === "skills" ? "Open in Skills" : "Open task"}
+			{links.map(({ group, tab }) => (
+				<LinkButton className="text-[11px]" key={group.payload.taskGroupId} onClick={() => onOpen(group, tab)}>
+					{group.kind === "about"
+						? "Open About you"
+						: group.kind === "skills"
+							? `Open in ${tab === "workflows" ? "Workflows" : "Skills"}`
+							: "Open task"}
 				</LinkButton>
 			))}
 		</div>

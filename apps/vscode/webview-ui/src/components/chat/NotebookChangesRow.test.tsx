@@ -1,4 +1,5 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
+import { SKILL_DRAFTS_ID } from "@shared/skillsets"
 import type { NotebookChangesPayload } from "@shared/task-groups"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -9,6 +10,11 @@ const mocks = vi.hoisted(() => ({
 	apply: vi.fn(),
 	discard: vi.fn(),
 	action: vi.fn(),
+	openSkills: vi.fn(),
+}))
+vi.mock("@/components/skills/skillsetStore", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/components/skills/skillsetStore")>()),
+	openSkills: mocks.openSkills,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
 vi.mock("@/services/grpc-client", () => ({
@@ -164,6 +170,25 @@ describe("NotebookChangesRow", () => {
 		expect(screen.getByText("Kept 1 About you change")).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("button", { name: "Open About you" }))
 		expect(navigate).toHaveBeenCalledWith("about-you", "notebook")
+	})
+	it.each([
+		[["workflow"], "1 workflow", "Workflows"],
+		[["skill", "workflow"], "1 skill and 1 workflow", "Skills"],
+		[["skill", "workflow", "workflow"], "1 skill and 2 workflows", "Skills"],
+	] as const)("counts final kinds %j in the saved Keep summary", (kinds, count, tab) => {
+		const kept = kinds.map((kind, index) => ({
+			op: "create" as const,
+			slug: `skill-draft-${index}`,
+			name: `draft-${index}`,
+			description: "",
+			skill: { kind, scope: "workspace" as const },
+		}))
+		const settled = message(10, { ...payload, taskGroupId: SKILL_DRAFTS_ID, status: "applied", changes: kept, kept })
+		mocks.state.clineMessages = [settled]
+		render(<NotebookChangesRow message={settled} />)
+		expect(screen.getByText(`Kept ${count}`)).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: `Open in ${tab}` }))
+		expect(mocks.openSkills).toHaveBeenLastCalledWith({ tab: tab.toLowerCase() })
 	})
 	it("never offers actions on an older pending row, and keeps resolved summaries", () => {
 		mocks.state = { clineMessages: [message(), message(20)] }

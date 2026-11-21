@@ -18,6 +18,7 @@ import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
 import SlashCommandMenu from "@/components/chat/SlashCommandMenu"
 import Thumbnails from "@/components/common/Thumbnails"
 import { getModeSpecificFields } from "@/components/settings/utils/providerUtils"
+import { getSideThreadSlots } from "@/components/sideThreads/sideThreadStore"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { usePlatform } from "@/context/PlatformContext"
 import { applyAutomationList, refreshAutomations, runnableAutomations, useAutomations } from "@/hooks/useAutomations"
@@ -51,6 +52,7 @@ import { useResolvedComposerTaskGroup } from "../taskGroup/composerTaskGroup"
 import DetectedTicketChips from "../taskGroup/DetectedTicketChips"
 import { USE_SCRIPT_EVENT } from "../topbar/topBarPanels"
 import { getModeToggleDraftAction } from "./chat-textarea-mode-toggle"
+import { dismissSideQuestion } from "./chat-view/utils/asideUtils"
 import { type EnterSendsAs, resolveSubmitKey, type SendKind } from "./chat-view/utils/composerKeys"
 import type { PromptStashEntry } from "./chat-view/utils/promptStash"
 import { buildThreadPath } from "./chat-view/utils/threadUtils"
@@ -651,6 +653,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 				// Safari does not support InputEvent.isComposing (always false), so we need to fallback to keyCode === 229 for it
 				const isComposing = isSafari ? event.nativeEvent.keyCode === 229 : (event.nativeEvent?.isComposing ?? false)
+				if (event.key === "Escape" && (isComposing || event.defaultPrevented)) return
 
 				if (showNoteMentionMenu && noteMention && !isComposing) {
 					if (event.key === "Escape") {
@@ -694,6 +697,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 				if (showSlashCommandsMenu) {
 					if (event.key === "Escape") {
+						event.preventDefault()
 						setShowSlashCommandsMenu(false)
 						setSlashCommandsQuery("")
 						return
@@ -747,6 +751,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				}
 				if (showContextMenu) {
 					if (event.key === "Escape") {
+						event.preventDefault()
 						setShowContextMenu(false)
 						setSelectedType(null)
 						setSelectedMenuIndex(DEFAULT_CONTEXT_MENU_OPTION)
@@ -827,11 +832,17 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					return
 				}
 
-				// Esc with an open menu closes it (handled above); otherwise it stashes a non-empty draft.
-				if (event.key === "Escape" && !isComposing && onStash && (inputValue.trim() || hasQuotes)) {
-					if (onStash()) {
+				if (event.key === "Escape") {
+					// Menus and a successful stash get the first chance to use Escape.
+					if (onStash && (inputValue.trim() || hasQuotes) && onStash()) {
 						event.preventDefault()
 						setCursorPosition(0)
+						return
+					}
+					const threadId = currentTaskItem?.id
+					if (threadId && getSideThreadSlots().question[threadId]) {
+						event.preventDefault()
+						void dismissSideQuestion(threadId)
 					}
 					return
 				}
@@ -945,6 +956,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				menuScriptCommands,
 				onStash,
 				hasQuotes,
+				currentTaskItem?.id,
 				isRunning,
 				isHome,
 				enterSendsAs,

@@ -1,10 +1,9 @@
 import { createCoreSettingsService } from "@cline/core"
 import { resolveClineDataDir } from "@cline/shared/storage"
-import { setSkillDisabledInFrontmatter } from "@core/context/instructions/user-instructions/skills"
+import { setInstructionFileToggle } from "@core/context/instructions/user-instructions/file-toggles"
 import { refreshWorkflowToggles } from "@core/context/instructions/user-instructions/workflows"
 import { ensureAgentSkillsDirectoryExists, ensureWorkflowsDirectoryExists, GlobalFileNames } from "@core/storage/disk"
 import { getSkillsDirectoriesForScan } from "@core/storage/skill-directories"
-import type { SkillItemKind } from "@shared/skillsets"
 import os from "os"
 import * as path from "path"
 import type { Controller } from "@/core/controller"
@@ -17,18 +16,6 @@ import type { SkillsetEnvironment } from "./skillset-service"
 export async function vscodeSkillsetEnvironment(controller: Controller): Promise<SkillsetEnvironment> {
 	const workspaceRoot = (await HostProvider.workspace.getWorkspacePaths({})).paths[0]
 	const state = controller.stateManager
-	const setToggle = (key: "globalSkillsToggles" | "globalWorkflowToggles", itemPath: string, enabled?: boolean) => {
-		const toggles = { ...(state.getGlobalSettingsKey(key) || {}) }
-		if (enabled === undefined) delete toggles[itemPath]
-		else toggles[itemPath] = enabled
-		state.setGlobalState(key, toggles)
-	}
-	const setWorkspaceToggle = (key: "localSkillsToggles" | "workflowToggles", itemPath: string, enabled?: boolean) => {
-		const toggles = { ...(state.getWorkspaceStateKey(key) || {}) }
-		if (enabled === undefined) delete toggles[itemPath]
-		else toggles[itemPath] = enabled
-		state.setWorkspaceState(key, toggles)
-	}
 	return {
 		globalSkillsDir: () => ensureAgentSkillsDirectoryExists({ isGlobal: true }),
 		globalWorkflowsDir: () => ensureWorkflowsDirectoryExists(),
@@ -68,20 +55,13 @@ export async function vscodeSkillsetEnvironment(controller: Controller): Promise
 			]
 		},
 		setSkillEnabled: async (skillMdPath, isGlobal, enabled) => {
-			if (isGlobal) setToggle("globalSkillsToggles", skillMdPath, enabled)
-			else setWorkspaceToggle("localSkillsToggles", skillMdPath, enabled)
-			await setSkillDisabledInFrontmatter(skillMdPath, enabled)
+			await setInstructionFileToggle(state, "skill", skillMdPath, isGlobal, enabled)
 		},
 		setWorkflowEnabled: async (workflowPath, isGlobal, enabled) => {
-			if (isGlobal) setToggle("globalWorkflowToggles", workflowPath, enabled)
-			else setWorkspaceToggle("workflowToggles", workflowPath, enabled)
+			await setInstructionFileToggle(state, "workflow", workflowPath, isGlobal, enabled)
 		},
-		forgetToggle: async (kind: SkillItemKind, itemPath: string, isGlobal: boolean) => {
-			if (kind === "skill") {
-				if (isGlobal) setToggle("globalSkillsToggles", itemPath)
-				else setWorkspaceToggle("localSkillsToggles", itemPath)
-			} else if (isGlobal) setToggle("globalWorkflowToggles", itemPath)
-			else setWorkspaceToggle("workflowToggles", itemPath)
+		forgetToggle: async (kind, itemPath, isGlobal) => {
+			await setInstructionFileToggle(state, kind, itemPath, isGlobal)
 		},
 		appVersion: ExtensionRegistryInfo.version,
 	}

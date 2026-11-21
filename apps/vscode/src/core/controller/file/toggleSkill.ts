@@ -1,4 +1,4 @@
-import { setSkillDisabledInFrontmatter } from "@core/context/instructions/user-instructions/skills"
+import { setInstructionFileToggle } from "@core/context/instructions/user-instructions/file-toggles"
 import { SkillsToggles, ToggleSkillRequest } from "@shared/proto/cline/file"
 import { Logger } from "@/shared/services/Logger"
 import { Controller } from ".."
@@ -21,37 +21,23 @@ export async function toggleSkill(controller: Controller, request: ToggleSkillRe
 		throw new Error("Missing or invalid parameters for toggleSkill")
 	}
 
-	let globalToggles = controller.stateManager.getGlobalSettingsKey("globalSkillsToggles") || {}
-	let localToggles = controller.stateManager.getWorkspaceStateKey("localSkillsToggles") || {}
-
-	let remoteToggles = controller.stateManager.getGlobalStateKey("remoteSkillsToggles") || {}
+	const state = controller.stateManager
 
 	// Remote skills are identified by a "remote:" path prefix. They use a separate toggle store
 	// keyed by skill name (the part after "remote:") rather than the file path.
 	if (skillPath.startsWith("remote:")) {
 		const name = skillPath.replace("remote:", "")
-		remoteToggles = { ...remoteToggles, [name]: enabled }
-		controller.stateManager.setGlobalState("remoteSkillsToggles", remoteToggles)
-	} else if (isGlobal) {
-		globalToggles = { ...globalToggles, [skillPath]: enabled }
-		controller.stateManager.setGlobalState("globalSkillsToggles", globalToggles)
+		state.setGlobalState("remoteSkillsToggles", { ...state.getGlobalStateKey("remoteSkillsToggles"), [name]: enabled })
+		await state.flushPendingState()
 	} else {
-		localToggles = { ...localToggles, [skillPath]: enabled }
-		controller.stateManager.setWorkspaceState("localSkillsToggles", localToggles)
+		await setInstructionFileToggle(state, "skill", skillPath, isGlobal, enabled)
 	}
-
-	// Persist the enabled state to the SKILL.md frontmatter as well. The SDK
-	// builds the model's skill list / `skills` tool from the frontmatter
-	// `disabled` flag, not from the extension's UI toggle state, so without this
-	// write a skill toggled off in the sidebar would still be offered to the
-	// model (ENG-1995). The helper is a no-op for remote skills (no backing file).
-	await setSkillDisabledInFrontmatter(skillPath, enabled)
 
 	await controller.postStateToWebview()
 
 	return SkillsToggles.create({
-		globalSkillsToggles: globalToggles,
-		localSkillsToggles: localToggles,
-		remoteSkillsToggles: remoteToggles,
+		globalSkillsToggles: state.getGlobalSettingsKey("globalSkillsToggles"),
+		localSkillsToggles: state.getWorkspaceStateKey("localSkillsToggles"),
+		remoteSkillsToggles: state.getGlobalStateKey("remoteSkillsToggles"),
 	})
 }

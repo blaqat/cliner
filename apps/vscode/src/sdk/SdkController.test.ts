@@ -7,6 +7,7 @@ import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnState } from "@shared/ExtensionMessage"
 import { GetTaskHistoryRequest } from "@shared/proto/cline/task"
 import { ShowMessageType } from "@shared/proto/host/window"
+import { SKILL_DRAFTS_ID } from "@shared/skillsets"
 import { describe, expect, it, vi } from "vitest"
 import { HostProvider } from "@/hosts/host-provider"
 import { ClineError } from "@/services/error/ClineError"
@@ -2524,6 +2525,42 @@ it("settles only the addressed group's row, live while anything is still staged"
 		dropped: [{ slug: "other" }],
 	})
 	expect(JSON.parse(messages[1].text).status).toBe("pending")
+})
+
+it("saves the final kind when a staged skill is kept as a workflow", async () => {
+	const controller = Object.create(SdkController.prototype)
+	const change = {
+		op: "create",
+		slug: "skill-deploy",
+		name: "deploy",
+		description: "Deploy",
+		content: "Steps",
+		skill: { kind: "skill", scope: "global" },
+	}
+	const message = {
+		ts: 1,
+		type: "say",
+		say: "notebook_changes",
+		text: JSON.stringify({
+			taskGroupId: SKILL_DRAFTS_ID,
+			threadId: "thread",
+			revision: "r1",
+			status: "pending",
+			changes: [change],
+		}),
+	}
+	const saveNotebookChangesMessage = vi.fn()
+	controller.taskHistory = { saveNotebookChangesMessage }
+	controller.notebookStore = { readPendingReview: vi.fn(async () => undefined) }
+	controller.getTaskSessionContext = vi.fn(() => ({
+		task: { messageStateHandler: { getClineMessages: () => [message] } },
+		messages: { emitHookMessage: vi.fn() },
+	}))
+	await controller.settleNotebookReview("thread", SKILL_DRAFTS_ID, {
+		kept: [{ ...change, skill: { kind: "workflow", scope: "workspace", baseContent: "omit from summary" } }],
+	})
+	const { kept } = JSON.parse(saveNotebookChangesMessage.mock.calls[0][1].text)
+	expect(kept[0].skill).toEqual({ kind: "workflow", scope: "workspace" })
 })
 
 for (const mode of ["git", "mm"] as const) {
