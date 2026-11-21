@@ -331,8 +331,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		[closeMarketplaceView, closeMcpView],
 	)
 
-	const navigateToChat = useCallback(() => {
-		setHomePending(false)
+	const revealChat = useCallback(() => {
 		closeMarketplaceView()
 		setShowSettings(false)
 		closeMcpView()
@@ -343,6 +342,11 @@ export const ExtensionStateContextProvider: React.FC<{
 		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
+	const navigateToChat = useCallback(() => {
+		setHomePending(false)
+		revealChat()
+	}, [revealChat])
+
 	useEffect(() => {
 		const leaveHome = (event: Event) => {
 			requestedThreadRef.current = (event as CustomEvent<string>).detail ?? "*"
@@ -352,7 +356,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	}, [])
 
 	const navigateHome = useCallback(() => {
-		navigateToChat()
+		revealChat()
 		homeSourceTaskRef.current = currentTaskIdRef.current
 		requestedThreadRef.current = undefined
 		setShowAnnouncement(false)
@@ -360,7 +364,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		closeAutomationBuilder()
 		document.dispatchEvent(new Event("cline:home"))
 		setHomePending(true)
-	}, [navigateToChat])
+	}, [revealChat])
 
 	const navigateToWalkthrough = useCallback(
 		(authoredId?: string) => {
@@ -705,10 +709,9 @@ export const ExtensionStateContextProvider: React.FC<{
 		chatButtonUnsubscribeRef.current = UiServiceClient.subscribeToChatButtonClicked(
 			{},
 			{
-				onResponse: () => {
-					// When chat button is clicked, navigate to chat
-					console.log("[DEBUG] Received chat button clicked event from gRPC stream")
-					navigateHome()
+				onResponse: (event) => {
+					if (event.goHome) navigateHome()
+					else revealChat()
 				},
 				onError: (error: any) => {
 					console.error("Error in chat button subscription:", error)
@@ -885,6 +888,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		openMessageUnsubscribeRef.current = UiServiceClient.subscribeToOpenMessage(EmptyRequest.create({}), {
 			onResponse: (event: any) => {
 				if (event?.threadId) {
+					revealChat()
 					setOpenMessageTarget({
 						threadId: event.threadId,
 						messageIndex: event.messageIndex,

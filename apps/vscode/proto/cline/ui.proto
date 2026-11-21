@@ -274,6 +274,10 @@ message IntentEvent {
   int32 text_length = 7;
 }
 
+message ChatButtonClickedEvent {
+  bool go_home = 1;
+}
+
 // UiService provides methods for managing UI interactions
 service UiService {
   // Shows the Cline output channel.
@@ -299,8 +303,8 @@ service UiService {
   // Subscribe to history button click events
   rpc subscribeToHistoryButtonClicked(EmptyRequest) returns (stream Empty);
 
-  // Subscribe to chat button clicked events (when the chat button is clicked in VSCode)
-  rpc subscribeToChatButtonClicked(EmptyRequest) returns (stream Empty);
+  // Reveal chat, or go Home when the VS Code plus button is clicked.
+  rpc subscribeToChatButtonClicked(EmptyRequest) returns (stream ChatButtonClickedEvent);
 
   // Subscribe to account button click events
   rpc subscribeToAccountButtonClicked(EmptyRequest) returns (stream Empty);

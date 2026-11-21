@@ -128,6 +128,41 @@ describe("history projection cache", () => {
 		}
 	})
 
+	it.each(["settled", "stashed"] as const)("pushes batched %s changes to a window sharing the history store", async (kind) => {
+		const f = await fixture()
+		const dir = path.dirname(f.store.sessionDbPath())
+		const peerPath = path.join(dir, "peer")
+		await fs.symlink(dir, peerPath, "dir")
+		const peerStore = new SqliteSessionStore({ sessionsDir: peerPath })
+		const peerHistory = new SdkTaskHistory({
+			databaseDir: peerPath,
+			sessions: { getActiveSession: () => ({ sdkHost: { listHistory: async () => peerStore.list(100) } }) },
+		} as never)
+		const peer = { ...f.controller, taskHistory: peerHistory }
+		try {
+			f.create("another")
+			const initial = await peer.getStateToPostToWebview()
+			const delivered = vi.fn(async () => peer.getStateToPostToWebview())
+			const watcher = peerHistory.watchHistory(() => void delivered())
+			await new Promise<void>((resolve) => watcher.once("ready", resolve))
+			if (kind === "settled") await f.history.setTasksSettled(["root", "another"], true)
+			else await f.history.setTasksStashed(["root", "another"], true)
+			await vi.waitFor(async () => {
+				expect(delivered).toHaveBeenCalled()
+				const update = await delivered.mock.results.at(-1)?.value
+				expect(update.taskHistoryVersion).not.toBe(initial.taskHistoryVersion)
+				expect(update.taskHistory).toHaveLength(2)
+				for (const item of update.taskHistory) {
+					expect(kind === "settled" ? item.isSettled : item.isStashed).toBe(true)
+				}
+			})
+		} finally {
+			await peerHistory.dispose()
+			peerStore.close()
+			await f.close()
+		}
+	})
+
 	it("observes writes from a different store connection, but ignores reads", async () => {
 		const f = await fixture()
 		const writer = new SqliteSessionStore({ sessionsDir: path.dirname(f.store.sessionDbPath()) })

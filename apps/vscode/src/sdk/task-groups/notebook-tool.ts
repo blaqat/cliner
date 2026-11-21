@@ -11,17 +11,24 @@ interface NotebookInput {
 	summary?: string
 }
 
-export async function createNotebookTool(notebook: TaskNotebookContext): Promise<AgentTool> {
-	const { group, rootThreadId, store } = notebook
-	await store.listNotes(group.id)
+const PERSONAL_NOTE_NAME = /^(?:about (?:me|you|the user)|(?:user|personal) preferences?)$/i
+const PERSONAL_FACT = /^\s*(?:[-*]\s+)?(?:(?:the )?user\s+|i\s+)?(?:prefers?|likes?|(?:am|is) on (?:macos|windows|linux))\b/im
+const WORK_CONTEXT = /\b(?:this|current) (?:task|project|work|workspace|repository)\b/i
+
+export async function createNotebookTool(notebook?: TaskNotebookContext): Promise<AgentTool> {
+	if (notebook) await notebook.store.listNotes(notebook.group.id)
 	const baseDescription =
-		"Read, write or delete notes shared by this task's threads. Use a note's slug or name. " +
+		"Read, write or delete work notes shared by a task's threads, including project facts, plans, decisions and progress. " +
+		"Save lasting personal preferences and facts about the user with about_you, even when asked alongside a work note. " +
+		"Use a note's slug or name. " +
 		"Writes and deletes are staged for the user to review when you finish, including in Ask mode. " +
 		"Only read loads a note's body."
 	const tool = createTool<NotebookInput, string | { error: string }>({
 		name: "notebook",
 		metadata: { subagentAccess: "read" },
-		description: baseDescription,
+		description: notebook
+			? baseDescription
+			: `${baseDescription} This thread must be filed in a task before it can access work notes.`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -38,9 +45,25 @@ export async function createNotebookTool(notebook: TaskNotebookContext): Promise
 		},
 		retryable: false,
 		execute: async (input, context) => {
+			if (!notebook) {
+				return {
+					error:
+						"This thread isn't in a task. Ask the user if they want to file it in a task and which task to use. " +
+						"They can use File into a task in the thread's menu. Save the work notes once the thread is in a task.",
+				}
+			}
+			const { group, rootThreadId, store } = notebook
 			try {
 				if (!input.name?.trim() || !["read", "write", "delete"].includes(input.action)) {
 					return { error: "A note name and action (read, write or delete) are required." }
+				}
+				if (
+					input.action === "write" &&
+					PERSONAL_NOTE_NAME.test(input.name.trim()) &&
+					PERSONAL_FACT.test(input.content ?? "") &&
+					!WORK_CONTEXT.test(input.content ?? "")
+				) {
+					return { error: "This looks like a lasting personal preference. Use about_you for it." }
 				}
 				const notes = await store.listNotes(group.id)
 				const pending = (await store.readPending(group.id, rootThreadId)) ?? []
@@ -77,6 +100,8 @@ export async function createNotebookTool(notebook: TaskNotebookContext): Promise
 			}
 		},
 	})
+	if (!notebook) return tool as AgentTool
+	const { group, store } = notebook
 	Object.defineProperty(tool, "description", {
 		get() {
 			const notes = store.getNoteIndex(group.id)

@@ -114,7 +114,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	// final text as the completion feedback row.
 	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
 	tools.push(...createSideThreadTools(options?.sideThread))
-	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
+	tools.push(await createNotebookTool(options?.notebook))
 	if (options?.aboutYou) {
 		tools.push(createAboutYouTool(options.aboutYou))
 		// Skill drafts are reviewed in the same thread as About you (a subagent's root thread).

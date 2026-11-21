@@ -22,6 +22,18 @@ describe("parseNotebookTool", () => {
 })
 
 describe("NotebookToolRow", () => {
+	it("shows a rejected note write without offering a review", () => {
+		const info = parseNotebookTool({
+			tool: "notebook",
+			action: "write",
+			name: "Work notes",
+			notebookError: "This thread isn't in a task.",
+		})
+		render(<NotebookToolRow info={info!} />)
+		expect(screen.getByTestId("notebook-tool-row")).toHaveTextContent("Couldn't write note")
+		expect(screen.queryByText("you keep it at the end")).toBeNull()
+	})
+
 	it("shows read notes as chips", () => {
 		render(<NotebookToolRow info={{ action: "read", names: ["Dev plan", "Codebase map"] }} />)
 		const row = screen.getByTestId("notebook-tool-row")

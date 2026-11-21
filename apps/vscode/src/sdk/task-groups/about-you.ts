@@ -33,9 +33,8 @@ export async function aboutYouPrompt(store: NotebookStore): Promise<string> {
 		"# About the user",
 		"About you holds lasting facts about the user, such as preferences, working style and environment. " +
 			"They apply across workspaces. Follow them unless the user says otherwise here.",
-		"Use the task notebook for notes about the current work, including plans, decisions and progress. " +
-			"If the user asks to save work notes and the notebook tool is unavailable, explain that work notes live in a task " +
-			"and offer to put this thread in a task first.",
+		"Use `about_you` for lasting personal preferences and `notebook` for current work, including plans, decisions and progress. " +
+			"If a request includes both, propose each change in its respective notebook.",
 		...sections,
 	].join("\n\n")
 }
@@ -47,6 +46,9 @@ interface AboutYouInput {
 	summary?: string
 }
 
+const WORK_NOTE_HEADING =
+	/^\s*#*\s*(?:(?:this|current) )?(?:project|task|work) (?:notes?|plans?|status|progress|decisions?|summar(?:y|ies))\b/im
+
 /**
  * Lets the agent propose About you changes when the user asks it to remember a
  * general preference. Like notebook writes, they are staged and reviewed in the
@@ -56,13 +58,10 @@ interface AboutYouInput {
 export function createAboutYouTool(context: AboutYouContext): AgentTool {
 	const { store, rootThreadId } = context
 	const baseDescription =
-		"Propose a change to About you, the global notebook included in every thread in every workspace. " +
-		"Use it only when the user asks you to remember lasting facts about themselves: preferences, working style " +
-		"or their environment, such as how they like answers or which shell they use. Never save task or project " +
-		"notes, plans, decisions, progress, research or work summaries here, even if the user says 'save notes' " +
-		"or 'remember this'. Use the notebook tool for those. If no notebook tool is available, this thread has no " +
-		"task notebook. Tell the user that work notes live in a task and offer to put this thread in a task first. " +
-		"Do not claim you moved the thread or saved work notes. Changes are staged for the user " +
+		"Remember lasting facts about the user across workspaces, such as 'prefers Bun over npm', 'is on macOS', or 'likes short answers'. " +
+		"Use this only for personal preferences, working style or environment the user asks you to remember. " +
+		"Use the notebook tool for project facts, task notes, plans, decisions, progress, research and work summaries. " +
+		"Changes to About you are staged for the user " +
 		`to review when you finish. About you is capped at ${ABOUT_YOU_TOKEN_CAP.toLocaleString("en-US")} tokens; ` +
 		`from ${ABOUT_YOU_WARN_TOKENS} you may only shorten or replace notes. Keep each line short.`
 	const tool = createTool<AboutYouInput, string | { error: string }>({
@@ -83,6 +82,12 @@ export function createAboutYouTool(context: AboutYouContext): AgentTool {
 			try {
 				if (!input.name?.trim() || !["write", "delete"].includes(input.action)) {
 					return { error: "A note name and action (write or delete) are required." }
+				}
+				if (
+					input.action === "write" &&
+					(WORK_NOTE_HEADING.test(input.name) || WORK_NOTE_HEADING.test(input.content ?? ""))
+				) {
+					return { error: "This looks like a work note. Use the notebook tool for plans, decisions and project facts." }
 				}
 				const slug = slugifyNoteName(input.name)
 				if (!slug) return { error: "Use a note name containing letters or numbers." }

@@ -10,6 +10,7 @@ export interface NotebookToolInfo {
 	names: string[]
 	/** The `about_you` tool: a proposed change to About you. */
 	aboutYou?: boolean
+	error?: string
 }
 
 export function parseNotebookTool(tool: unknown): NotebookToolInfo | null {
@@ -20,7 +21,12 @@ export function parseNotebookTool(tool: unknown): NotebookToolInfo | null {
 	const names = Array.isArray(record.names)
 		? record.names.filter((name): name is string => typeof name === "string" && name.length > 0)
 		: [record.name, record.path].filter((name): name is string => typeof name === "string" && name.length > 0).slice(0, 1)
-	return record.aboutYou === true ? { action, names, aboutYou: true } : { action, names }
+	return {
+		action,
+		names,
+		...(record.aboutYou === true ? { aboutYou: true } : {}),
+		...(typeof record.notebookError === "string" ? { error: record.notebookError } : {}),
+	}
 }
 
 /** A note this thread read: neutral dashed chip with an eye, matching the task page timeline. */
@@ -43,12 +49,22 @@ export function NotebookToolRow({ info }: { info: NotebookToolInfo }) {
 	return (
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
-			data-testid="notebook-tool-row">
+			data-testid="notebook-tool-row"
+			title={info.error}>
 			<i
 				aria-hidden
 				className={`codicon ${info.aboutYou ? "codicon-account" : "codicon-book"} text-[var(--vscode-charts-purple)]`}
 			/>
-			{staged ? (
+			{info.error ? (
+				<>
+					<span>{info.action === "delete" ? "Couldn't delete note" : "Couldn't write note"}</span>
+					{info.names.map((name) => (
+						<span className="text-description" key={name}>
+							{info.aboutYou ? `About you › ${name}` : name}
+						</span>
+					))}
+				</>
+			) : staged ? (
 				<>
 					<span>{info.action === "delete" ? "Wants to delete" : "Wrote"}</span>
 					{info.names.map((name) => (

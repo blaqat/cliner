@@ -12,6 +12,7 @@ import { resolveDataDirFromEnv } from "@shared/storage/storage-context"
 import type { TaskTag } from "@shared/task-groups"
 import { splitThinkTags } from "@shared/think-tags"
 import { extractTicketTags, mergeAutoTicketTags } from "@shared/ticket-tags"
+import { type FSWatcher, watch } from "chokidar"
 import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
@@ -396,20 +397,33 @@ export class SdkTaskHistory {
 	}
 	private projectionRevision = 0
 	private storeRevision = SqliteSessionStore.historyRevision
-
+	private historyWatcher?: FSWatcher
 	private historyFileVersion?: string
 
-	/** Check file metadata only, so an idle settings post never re-enumerates history. */
-	get revision(): number {
+	private historyPaths(): string[] {
 		const databasePath = path.join(this.options.databaseDir ?? resolveDbDataDir(), "sessions.db")
 		const paths = [databasePath, `${databasePath}-wal`, path.join(resolveDataDirFromEnv(), "state", "taskHistory.json")]
 		if (this.options.legacyExtensionStorageDir) {
 			paths.push(path.join(this.options.legacyExtensionStorageDir.trim(), "state", "taskHistory.json"))
 		}
+		return paths
+	}
+
+	/** Trigger a state post when another extension host changes the shared store. */
+	watchHistory(onChange: () => void): FSWatcher {
+		this.historyWatcher ??= watch(this.historyPaths(), { ignoreInitial: true, persistent: false })
+			.on("all", onChange)
+			.on("ready", onChange)
+			.on("error", (error) => Logger.warn("[SdkTaskHistory] Could not watch shared history:", error))
+		return this.historyWatcher
+	}
+
+	/** Check file metadata only, so an idle settings post never re-enumerates history. */
+	get revision(): number {
 		// The counter covers every in-process session write. File stamps also
 		// catch external writers, imports and database replacement without a TTL
 		// that forces an expensive read when nothing has changed.
-		const fileVersion = paths
+		const fileVersion = this.historyPaths()
 			.map((file) => {
 				try {
 					const stat = statSync(file, { bigint: true })
@@ -557,6 +571,7 @@ export class SdkTaskHistory {
 	async dispose(): Promise<void> {
 		await this.flushMetadataWrites()
 		this.disposed = true
+		await this.historyWatcher?.close()
 		this.invalidateMetadataHistoryCache()
 		if (this.cachedHistoryHostPromise) {
 			await this.cachedHistoryHostPromise.catch(() => undefined)

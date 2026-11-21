@@ -1046,6 +1046,14 @@ export class Controller {
 				delete: (id) => this.cloud.deleteSession(id),
 			},
 		})
+		this.taskHistory.watchHistory(() => {
+			const cached = this.historyProjectionCache
+			if (cached && cached.revision !== this.taskHistory.revision) {
+				void this.postStateToWebview().catch((error) =>
+					Logger.warn("[SdkController] Could not refresh shared history:", error),
+				)
+			}
+		})
 		void this.ensureTaskGroupsWatcher()
 		this.mode = new SdkModeCoordinator({
 			getTaskApiSelection: (id) =>

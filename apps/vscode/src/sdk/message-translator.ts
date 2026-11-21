@@ -2030,6 +2030,9 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 					}
 
 					const sayTool = toDisplaySayTool(sdkToolToClineSayTool(toolName, storedInput), state.currentCwd())
+					if (sayTool.tool === "notebook" && sayTool.action !== "read") {
+						sayTool.notebookError = getStringField(parseToolInput(event.output), "error") ?? event.error
+					}
 					// A script run carries its outcome (exit code, output tail, log path) on the same row.
 					if (toolName === "script" && sayTool.tool === "script" && sayTool.scriptAction === "run") {
 						const output = event.output
@@ -2042,7 +2045,7 @@ function translateAgentEvent(event: AgentEvent, state: MessageTranslatorState): 
 						if (outcome) sayTool.content = outcome
 					}
 					// If there's an error, include it in the tool message
-					if (event.error) {
+					if (event.error && !sayTool.notebookError) {
 						messages.push({
 							ts,
 							type: "say",

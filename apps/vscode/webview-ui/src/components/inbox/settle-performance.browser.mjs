@@ -174,7 +174,7 @@ for (const count of process.argv[2] ? [Number(process.argv[2])] : [1, 3, 5, 10])
 	}, dark)
 	await page.screenshot({ path: path.join(output, `settled-${count}-wide-dark.png`) })
 	// The VS Code title-bar + is delivered through this same subscribed event.
-	await page.evaluate(() => window.reply(window.fixture.subscriptions.subscribeToChatButtonClicked, {}))
+	await page.evaluate(() => window.reply(window.fixture.subscriptions.subscribeToChatButtonClicked, { goHome: true }))
 	await page.getByTestId("inbox-task-group-row").waitFor()
 	if (!(await page.locator("body").innerText()).includes("What can I do for you?"))
 		throw new Error("Plus failed to return home during pending settle")

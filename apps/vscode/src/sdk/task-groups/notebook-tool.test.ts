@@ -26,9 +26,9 @@ describe("task notebook agent tool", () => {
 	const makeTool = () =>
 		createNotebookTool({ group, threadId: "root", rootThreadId: "root", store, resolveReaderThreadId: () => "child" })
 
-	it("registers notebook only for grouped threads and exposes it to reader subagents", async () => {
+	it("registers notebook in every thread and exposes it to reader subagents", async () => {
 		const hub = { getServers: () => [] } as never
-		expect((await createVscodeExtraTools(hub)).map((tool) => tool.name)).toEqual(["present_walkthrough"])
+		expect((await createVscodeExtraTools(hub)).map((tool) => tool.name)).toEqual(["present_walkthrough", "notebook"])
 		const tools = await createVscodeExtraTools(hub, {
 			notebook: { group, threadId: "root", rootThreadId: "root", store },
 		})

@@ -54,22 +54,35 @@ function startRequest(request: AsideRequest, kind: SideThreadKind, background: b
  * running in the background. Resolves with the side thread's id.
  */
 export async function startAside({ text = "", images = [], files = [], ...request }: AsideRequest): Promise<string> {
-	const { value: asideId } = await SideThreadServiceClient.startSideThread(
-		startRequest({ ...request, text: "" }, "side", false),
-	)
-	await TaskServiceClient.showTaskWithId(StringRequest.create({ value: asideId }))
-	if (text.trim() || images.length > 0 || files.length > 0) {
-		await TaskServiceClient.askResponse(
-			AskResponseRequest.create({
-				responseType: "messageResponse",
-				text: text.trim(),
-				images,
-				files,
-				provenance: request.provenance,
-			}),
-		)
+	let wentHome = false
+	const markHome = () => {
+		wentHome = true
 	}
-	return asideId
+	document.addEventListener("cline:home", markHome)
+	try {
+		const { value: asideId } = await SideThreadServiceClient.startSideThread(
+			startRequest({ ...request, text: "" }, "side", false),
+		)
+		if (!wentHome) await TaskServiceClient.showTaskWithId(StringRequest.create({ value: asideId }))
+		if (text.trim() || images.length > 0 || files.length > 0) {
+			if (wentHome) {
+				await sendToSideThread(asideId, text.trim(), request.provenance, images, files)
+			} else {
+				await TaskServiceClient.askResponse(
+					AskResponseRequest.create({
+						responseType: "messageResponse",
+						text: text.trim(),
+						images,
+						files,
+						provenance: request.provenance,
+					}),
+				)
+			}
+		}
+		return asideId
+	} finally {
+		document.removeEventListener("cline:home", markHome)
+	}
 }
 
 /**
@@ -112,10 +125,14 @@ export function openSideThread(mainId: string, sideId: string): void {
 	)
 }
 
-export async function sendToSideThread(threadId: string, text: string, provenance?: ComposerProvenance): Promise<void> {
-	await SideThreadServiceClient.sendToSideThread(
-		SendToSideThreadRequest.create({ threadId, text, images: [], files: [], provenance }),
-	)
+export async function sendToSideThread(
+	threadId: string,
+	text: string,
+	provenance?: ComposerProvenance,
+	images: string[] = [],
+	files: string[] = [],
+): Promise<void> {
+	await SideThreadServiceClient.sendToSideThread(SendToSideThreadRequest.create({ threadId, text, images, files, provenance }))
 }
 
 /** Sends a note the user approved to the side thread's main thread. */

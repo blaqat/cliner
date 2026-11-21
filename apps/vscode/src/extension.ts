@@ -140,7 +140,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const sidebarInstance = WebviewProvider.getInstance()
 			telemetryService.captureNewTaskClicked("activity_bar_plus", !!sidebarInstance.controller.task)
 			// Reveal home before persistence or an in-flight task transition finishes.
-			await sendChatButtonClickedEvent()
+			await sendChatButtonClickedEvent({ goHome: true })
 			await sidebarInstance.controller.clearTask()
 		}),
 	)

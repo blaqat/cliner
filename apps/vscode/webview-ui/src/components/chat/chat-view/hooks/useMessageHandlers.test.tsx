@@ -18,6 +18,7 @@ const interjectPrompt = vi.fn().mockResolvedValue(undefined)
 const forkTaskAt = vi.fn().mockResolvedValue({ value: "aside-1" })
 const updateSideThread = vi.fn().mockResolvedValue({})
 const startSideThread = vi.fn().mockResolvedValue({ value: "aside-1" })
+const sendToSideThread = vi.fn().mockResolvedValue({})
 const showTaskWithId = vi.fn().mockResolvedValue(undefined)
 
 vi.mock("@/services/grpc-client", () => ({
@@ -33,6 +34,7 @@ vi.mock("@/services/grpc-client", () => ({
 	},
 	SideThreadServiceClient: {
 		startSideThread: (req: unknown) => startSideThread(req),
+		sendToSideThread: (req: unknown) => sendToSideThread(req),
 		updateSideThread: (req: unknown) => updateSideThread(req),
 	},
 	SlashServiceClient: {
@@ -1965,6 +1967,30 @@ describe("side composer commands", () => {
 		expect(showTaskWithId).not.toHaveBeenCalled()
 		expect(askResponse).not.toHaveBeenCalled()
 		expect(getSideThreadSlots().beside).toEqual({ main: "aside-1" })
+	})
+
+	it("keeps Home visible when a slow side thread starts and delivers its prompt to the side thread", async () => {
+		let finish!: (result: { value: string }) => void
+		startSideThread.mockReturnValueOnce(
+			new Promise<{ value: string }>((resolve) => {
+				finish = resolve
+			}),
+		)
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		let send!: Promise<void>
+		act(() => {
+			send = result.current.handleSendMessage("/side explain this", ["image"], ["file"])
+		})
+		await act(async () => {
+			document.dispatchEvent(new Event("cline:home"))
+			finish({ value: "slow-side" })
+			await send
+		})
+		expect(showTaskWithId).not.toHaveBeenCalled()
+		expect(askResponse).not.toHaveBeenCalled()
+		expect(sendToSideThread).toHaveBeenCalledWith(
+			expect.objectContaining({ threadId: "slow-side", text: "explain this", images: ["image"], files: ["file"] }),
+		)
 	})
 	it("asks /btw as a side question card: no new view, no send to Main", async () => {
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))

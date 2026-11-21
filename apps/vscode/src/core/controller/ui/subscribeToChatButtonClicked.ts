@@ -1,10 +1,11 @@
-import { Empty, EmptyRequest } from "@shared/proto/cline/common"
+import type { EmptyRequest } from "@shared/proto/cline/common"
+import { ChatButtonClickedEvent } from "@shared/proto/cline/ui"
 import { Logger } from "@/shared/services/Logger"
 import { getRequestRegistry, StreamingResponseHandler } from "../grpc-handler"
 import { Controller } from "../index"
 
 // Keep track of active chatButtonClicked subscriptions
-const activeChatButtonClickedSubscriptions = new Set<StreamingResponseHandler<Empty>>()
+const activeChatButtonClickedSubscriptions = new Set<StreamingResponseHandler<ChatButtonClickedEvent>>()
 
 /**
  * Subscribe to chatButtonClicked events
@@ -16,7 +17,7 @@ const activeChatButtonClickedSubscriptions = new Set<StreamingResponseHandler<Em
 export async function subscribeToChatButtonClicked(
 	_controller: Controller,
 	_request: EmptyRequest,
-	responseStream: StreamingResponseHandler<Empty>,
+	responseStream: StreamingResponseHandler<ChatButtonClickedEvent>,
 	requestId?: string,
 ): Promise<void> {
 	// Add this subscription to the active subscriptions
@@ -36,11 +37,11 @@ export async function subscribeToChatButtonClicked(
 /**
  * Send a chatButtonClicked event to all active subscribers
  */
-export async function sendChatButtonClickedEvent(): Promise<void> {
+export async function sendChatButtonClickedEvent(options: Partial<ChatButtonClickedEvent> = {}): Promise<void> {
 	// Send the event to all active subscribers
 	const promises = Array.from(activeChatButtonClickedSubscriptions).map(async (responseStream) => {
 		try {
-			const event = Empty.create({})
+			const event = ChatButtonClickedEvent.create(options)
 			await responseStream(
 				event,
 				false, // Not the last message

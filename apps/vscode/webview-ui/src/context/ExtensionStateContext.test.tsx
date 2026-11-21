@@ -2,15 +2,16 @@ import { act, cleanup, render } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
 import { ExtensionStateContextProvider, useExtensionState } from "@/context/ExtensionStateContext"
 
-const h = vi.hoisted(() => ({ receive: null as any }))
+const h = vi.hoisted(() => ({ receive: null as any, receiveChat: null as any }))
 vi.mock("@/services/grpc-client", () => {
 	const client = new Proxy(
 		{},
 		{
 			get: (_, key) =>
-				key === "subscribeToState"
+				key === "subscribeToState" || key === "subscribeToChatButtonClicked"
 					? (_: any, cb: any) => {
-							h.receive = cb.onResponse
+							if (key === "subscribeToState") h.receive = cb.onResponse
+							else h.receiveChat = cb.onResponse
 							return () => {}
 						}
 					: String(key).startsWith("subscribe")
@@ -26,6 +27,45 @@ vi.mock("@/services/grpc-client", () => {
 		TaskServiceClient: client,
 		TaskGroupServiceClient: client,
 		WorktreeServiceClient: client,
+	}
+})
+
+it.each(["saved thread", "side thread"])("keeps the %s visible after the host reveals chat", async (id) => {
+	let state: ReturnType<typeof useExtensionState>
+	const Probe = () => {
+		state = useExtensionState()
+		return null
+	}
+	const view = render(
+		<ExtensionStateContextProvider>
+			<Probe />
+		</ExtensionStateContextProvider>,
+	)
+	try {
+		act(() => state.navigateToHistory())
+		await act(async () => {
+			h.receive({
+				stateJson: JSON.stringify({
+					...state,
+					version: "test",
+					welcomeViewCompleted: true,
+					currentTaskItem: { id },
+					clineMessages: [{ ts: 10, type: "say", say: "task", text: id }],
+				}),
+			})
+			h.receiveChat({})
+		})
+		expect(state!.showHistory).toBe(false)
+		expect(state!.currentTaskItem?.id).toBe(id)
+		expect(state!.clineMessages).toMatchObject([{ text: id }])
+
+		act(() => h.receiveChat({ goHome: true }))
+		expect(state!.currentTaskItem).toBeUndefined()
+		expect(state!.clineMessages).toEqual([])
+		act(() => h.receiveChat({}))
+		expect(state!.currentTaskItem).toBeUndefined()
+	} finally {
+		view.unmount()
 	}
 })
 it("preserves history identity and waits for the host value on settings clicks", async () => {

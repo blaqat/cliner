@@ -3173,6 +3173,28 @@ describe("translateSessionEvent — run_commands bare array/string input (ENG-18
 // ---------------------------------------------------------------------------
 
 describe("sdkToolToClineSayTool — fetch_web_content and skills (S6-39, S6-40)", () => {
+	it.each(["notebook", "about_you"])("reports a rejected %s write in the live and restored tool row", (toolName) => {
+		const state = new MessageTranslatorState()
+		const input = { action: "write", name: "Work notes" }
+		const output = { error: "This thread isn't in a task." }
+		const translate = (event: AgentEvent) =>
+			translateSessionEvent({ type: "agent_event", payload: { sessionId: "root", event } }, state)
+		translate({ type: "content_start", contentType: "tool", toolName, toolCallId: "note-call", input })
+		const live = translate({ type: "content_end", contentType: "tool", toolName, toolCallId: "note-call", output })
+		expect(JSON.parse(live.messages[0].text ?? "{}")).toMatchObject({ notebookError: output.error })
+
+		const history = sdkMessagesToClineMessages([
+			{ role: "assistant", content: [{ type: "tool_use", id: "note-call", name: toolName, input }] },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "note-call", name: toolName, content: JSON.stringify(output) }],
+			},
+		])
+		expect(JSON.parse(history.find((message) => message.say === "tool")?.text ?? "{}")).toMatchObject({
+			notebookError: output.error,
+		})
+	})
+
 	it.each(["read", "write", "delete"])("preserves notebook %s inputs for the compact tool row", (action) => {
 		const state = new MessageTranslatorState()
 		const { messages } = translateSessionEvent(

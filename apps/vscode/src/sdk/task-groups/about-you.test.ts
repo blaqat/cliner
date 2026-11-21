@@ -24,19 +24,45 @@ describe("About you", () => {
 	it("is offered to every thread, not only threads in a task", async () => {
 		const hub = { getServers: () => [] } as never
 		const tools = await createVscodeExtraTools(hub, { aboutYou: { rootThreadId: "t", store } })
-		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "about_you", "skill_draft"])
+		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "notebook", "about_you", "skill_draft"])
 	})
 
 	it("routes work notes to a task and offers filing when the thread has no notebook", async () => {
 		const tools = await createVscodeExtraTools({ getServers: () => [] } as never, { aboutYou: { rootThreadId: "t", store } })
-		expect(tools.find((tool) => tool.name === "notebook")).toBeUndefined()
-		const description = tools.find((tool) => tool.name === "about_you")!.description
-		expect(description).toContain("lasting facts about themselves")
-		expect(description).toContain(
-			"Never save task or project notes, plans, decisions, progress, research or work summaries here",
-		)
-		expect(description).toContain("Tell the user that work notes live in a task and offer to put this thread in a task first")
-		expect(description).toContain("Do not claim you moved the thread or saved work notes")
+		const input = {
+			action: "write",
+			name: "Project notes - blue dashboard with daily totals",
+			content: "We are planning to create a small blue dashboard that displays daily totals.",
+		}
+		const aboutYou = tools.find((tool) => tool.name === "about_you")!
+		expect(await aboutYou.execute(input, context)).toEqual({ error: expect.stringContaining("notebook") })
+		expect(await store.readPending(ABOUT_YOU_ID, "t")).toBeUndefined()
+		const notebook = tools.find((tool) => tool.name === "notebook")!
+		expect(await notebook.execute(input, context)).toEqual({
+			error: expect.stringContaining("Ask the user"),
+		})
+		expect(await store.listPending("t")).toEqual([])
+	})
+
+	it("stages a work note and a personal preference in their own notebooks for the same thread", async () => {
+		const group = await new TaskGroupStore(root).createGroup({ title: "Dashboard" })
+		const tools = await createVscodeExtraTools({ getServers: () => [] } as never, {
+			notebook: { group, threadId: "t", rootThreadId: "t", store },
+			aboutYou: { rootThreadId: "t", store },
+		})
+		const notebook = tools.find((tool) => tool.name === "notebook")!
+		const aboutYou = tools.find((tool) => tool.name === "about_you")!
+		const personal = { action: "write", name: "About Me", content: "Prefers concise answers." }
+		expect(await notebook.execute(personal, context)).toEqual({ error: expect.stringContaining("about_you") })
+		expect(
+			await notebook.execute(
+				{ action: "write", name: "Task Notes", content: "The dashboard reports daily support tickets." },
+				context,
+			),
+		).toContain("Staged")
+		expect(await aboutYou.execute(personal, context)).toContain("Staged")
+		expect(await store.readPending(group.id, "t")).toEqual([expect.objectContaining({ name: "Task Notes" })])
+		expect(await store.readPending(ABOUT_YOU_ID, "t")).toEqual([expect.objectContaining({ name: "About Me" })])
 	})
 
 	it("stages proposals for review in the thread, with the agent's summary", async () => {
@@ -73,9 +99,8 @@ describe("About you", () => {
 	it("tells the model where work notes go even when About you is empty", async () => {
 		const prompt = await aboutYouPrompt(store)
 		expect(prompt).toContain("About you holds lasting facts about the user")
-		expect(prompt).toContain("Use the task notebook for notes about the current work")
-		expect(prompt).toContain("If the user asks to save work notes and the notebook tool is unavailable")
-		expect(prompt).toContain("offer to put this thread in a task first")
+		expect(prompt).toContain("`notebook` for current work")
+		expect(prompt).toContain("propose each change in its respective notebook")
 	})
 
 	it("puts saved About you facts in the system prompt", async () => {
