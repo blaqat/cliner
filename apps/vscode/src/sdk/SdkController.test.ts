@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import type { TaskApiSelection } from "@shared/api-profiles"
 import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE } from "@shared/cloud/cloud-sessions"
 import type { ComposerProvenance } from "@shared/composer-provenance"
@@ -18,6 +19,7 @@ import { AutomationsHost } from "./automations/automation-host"
 import type { StartThreadInput } from "./automations/automation-runner"
 import { MessageTranslatorState } from "./message-translator"
 import { Controller as SdkController } from "./SdkController"
+import { SdkDiffEditCoordinator } from "./sdk-diff-edit-coordinator"
 import type { SdkInteractionCoordinator } from "./sdk-interaction-coordinator"
 import type { SdkMessageCoordinator } from "./sdk-message-coordinator"
 import type { SdkSessionEventCoordinator } from "./sdk-session-event-coordinator"
@@ -1409,6 +1411,117 @@ describe("child approval task ownership", () => {
 		)
 		await expect(second).resolves.toMatchObject({ approved: false })
 		expect(statuses["background-ask"]).toBe("running")
+	})
+})
+
+describe("tool approval through a symlink", () => {
+	type Context = { task: TaskProxy; interactions: SdkInteractionCoordinator }
+
+	async function approvalFixture(automation: boolean, autoApprovalSettings?: object) {
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cline-symlink-approval-")))
+		const workspace = path.join(root, "ws")
+		const worktree = path.join(workspace, ".worktrees", "step")
+		const outside = path.join(root, "outside")
+		await fs.mkdir(worktree, { recursive: true })
+		await fs.mkdir(outside)
+		await fs.writeFile(path.join(outside, "x.txt"), "outside\n")
+		const cwd = automation ? worktree : workspace
+		await fs.symlink(outside, path.join(cwd, "link"), "dir")
+		const run = {
+			status: "running",
+			steps: [{ threads: [{ threadId: "thread", worktree: automation ? "step" : undefined, mode: "act" }] }],
+		}
+		const controller = controllerFixture({
+			task: { taskId: "thread" },
+			taskSessions: new Map<string, Context>(),
+			homeContext: { translator: new MessageTranslatorState() },
+			sessionEventStream: { emitSessionEvents: vi.fn() },
+			stateManager: {
+				getGlobalSettingsKey: (key: string) =>
+					key === "autoApprovalSettings" ? (autoApprovalSettings ?? DEFAULT_AUTO_APPROVAL_SETTINGS) : undefined,
+			},
+			sessions: {
+				assertTaskAvailable: vi.fn(),
+				getSession: () => ({ isRunning: true, startConfig: { cwd } }),
+				setStatus: vi.fn(),
+			},
+			lastKnownWorkspaceRoot: workspace,
+			automations: { runner: { runForThread: () => (automation ? run : undefined) } },
+			taskHistory: {},
+			postStateToWebview: vi.fn(async () => {}),
+			diffEdits: new SdkDiffEditCoordinator({
+				getCwd: async () => cwd,
+				isBackgroundEditEnabled: () => true,
+				isSessionVisible: () => false,
+			}),
+		})
+		const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
+			.getTaskSessionContext
+		const context = factory.call(controller, "thread")
+		const approve = (toolCallId: string, toolName: string, input: unknown) =>
+			context.interactions.handleRequestToolApproval({
+				sessionId: "thread",
+				agentId: "agent",
+				conversationId: "conversation",
+				iteration: 1,
+				toolCallId,
+				toolName,
+				input,
+				policy: { autoApprove: false },
+			})
+		return { context, approve, outside }
+	}
+
+	async function asks(context: Context, approval: Promise<{ approved: boolean }>) {
+		await vi.waitFor(() => expect(context.interactions.getPendingDecision()).toBeDefined())
+		context.interactions.resolvePendingToolApproval(
+			undefined,
+			"noButtonClicked",
+			undefined,
+			undefined,
+			context.interactions.getPendingDecision()?.id,
+		)
+		return (await approval).approved
+	}
+
+	it.each([
+		{ automation: true, label: "an automation step in its worktree" },
+		{ automation: false, label: "a thread in the workspace" },
+	])("asks before $label edits through a symlink that leaves its folder", async ({ automation }) => {
+		const { context, approve, outside } = await approvalFixture(automation)
+		await expect(approve("inside", "editor", { path: "feature.txt", new_text: "ok" })).resolves.toEqual({ approved: true })
+		expect(await asks(context, approve("link", "editor", { path: "link/x.txt", new_text: "changed" }))).toBe(false)
+		expect(
+			await asks(
+				context,
+				approve("patch", "apply_patch", { input: "*** Begin Patch\n*** Add File: link/new.txt\n+x\n*** End Patch" }),
+			),
+		).toBe(false)
+		expect(await asks(context, approve("absolute", "editor", { path: path.join(outside, "y.txt"), new_text: "y" }))).toBe(
+			false,
+		)
+		expect(await fs.readFile(path.join(outside, "x.txt"), "utf8")).toBe("outside\n")
+	})
+
+	it("holds an automation step's reads to its worktree but leaves a workspace thread's reads to the toggle", async () => {
+		const step = await approvalFixture(true)
+		expect(await asks(step.context, step.approve("read", "read_files", { files: [{ path: "link/x.txt" }] }))).toBe(false)
+		await expect(step.approve("read-in", "read_files", { files: [{ path: "README.md" }] })).resolves.toEqual({
+			approved: true,
+		})
+		const thread = await approvalFixture(false)
+		await expect(thread.approve("read", "read_files", { files: [{ path: "link/x.txt" }] })).resolves.toEqual({
+			approved: true,
+		})
+	})
+
+	it("still asks for workspace edits when Edit files is off", async () => {
+		const settings = {
+			...DEFAULT_AUTO_APPROVAL_SETTINGS,
+			actions: { ...DEFAULT_AUTO_APPROVAL_SETTINGS.actions, editFiles: false },
+		}
+		const { context, approve } = await approvalFixture(false, settings)
+		expect(await asks(context, approve("inside", "editor", { path: "feature.txt", new_text: "ok" }))).toBe(false)
 	})
 })
 

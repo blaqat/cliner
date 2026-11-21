@@ -12,6 +12,7 @@ export const ACTION_METADATA: ActionMetadata[] = [
 		label: "Edit files",
 		shortName: "Edit",
 		icon: "codicon-edit",
+		note: "Edits outside the thread's folder, even through a symlink, always ask.",
 	},
 	{
 		id: "executeSafeCommands",

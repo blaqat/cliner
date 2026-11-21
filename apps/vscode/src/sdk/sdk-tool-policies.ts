@@ -70,7 +70,29 @@ export function isToolAutoApproved(toolName: string, settings: AutoApprovalSetti
 	return false
 }
 
-function isReadTool(toolName: string): boolean {
+export interface ToolApprovalScope {
+	settings?: AutoApprovalSettings
+	/** The thread's own folder: its workspace, or its worktree. */
+	cwd?: string
+	/** An automation thread in a worktree: its reads must stay inside that worktree too. */
+	confined?: boolean
+	/** True when every path the call names really is inside `root` (symlinks resolved); keeps that check for execution. */
+	approveInside: (root: string) => boolean
+}
+
+/**
+ * Whether a tool call runs without asking. The toggles say which kinds of tools may; file tools
+ * are then judged by where their paths really are. An edit whose real location is outside the
+ * thread's folder (directly, or through a symlink) is an external edit and always asks: no setting
+ * approves those in advance. An automation thread's reads are held to its worktree the same way.
+ */
+export function approvesWithoutAsking(toolName: string, scope: ToolApprovalScope): boolean {
+	if (!scope.settings || !isToolAutoApproved(toolName, scope.settings)) return false
+	if (!isEditTool(toolName) && !(scope.confined && isReadTool(toolName))) return true
+	return !!scope.cwd && scope.approveInside(scope.cwd)
+}
+
+export function isReadTool(toolName: string): boolean {
 	return ["read_files", "read_file", "list_files", "list_code_definition_names", "search_codebase", "search_files"].includes(
 		toolName,
 	)

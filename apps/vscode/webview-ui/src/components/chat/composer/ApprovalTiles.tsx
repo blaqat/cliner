@@ -59,6 +59,12 @@ export function ApprovalTiles() {
 								<span className="text-description">
 									{on ? "Auto-approved · click to ask first" : "Asks first · click to auto-approve"}
 								</span>
+								{action.note && (
+									<>
+										<br />
+										<span className="text-description">{action.note}</span>
+									</>
+								)}
 							</TooltipContent>
 						</Tooltip>
 					)

@@ -193,7 +193,7 @@ import {
 } from "./sdk-task-history"
 import { SdkTaskStartCoordinator } from "./sdk-task-start-coordinator"
 import { createVscodeSdkTelemetryHandle, type VscodeSdkTelemetryHandle } from "./sdk-telemetry"
-import { isToolAutoApproved } from "./sdk-tool-policies"
+import { approvesWithoutAsking } from "./sdk-tool-policies"
 import {
 	extractSdkUserText,
 	findSdkUserMessageIndexByOrdinal,
@@ -757,10 +757,7 @@ export class Controller {
 				// manual Reject and clearPending (task cancel/abort) in one place.
 				void this.diffEdits.discardPreview(toolCallId)
 			},
-			shouldAutoApproveTool: (request) => {
-				const autoApprovalSettings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
-				return autoApprovalSettings ? isToolAutoApproved(request.toolName, autoApprovalSettings) : false
-			},
+			shouldAutoApproveTool: (request) => this.approvesWithoutAsking(request.sessionId ?? "", request),
 			getCwd: (sessionId) => this.sessions.getSession(sessionId ?? "")?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
 		})
 		this.sessions = new SdkSessionLifecycle({
@@ -2207,13 +2204,7 @@ export class Controller {
 				ownerTranslator.recordDeniedToolApproval(callId, name, reason)
 				void this.diffEdits.discardPreview(callId)
 			},
-			shouldAutoApproveTool: (request) => {
-				// Test doubles build contexts without the automations host.
-				if (this.automations && this.automationApproves(id, request.toolCallId, request.toolName, request.input))
-					return true
-				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
-				return settings ? isToolAutoApproved(request.toolName, settings) : false
-			},
+			shouldAutoApproveTool: (request) => this.approvesWithoutAsking(id, request),
 			prepareScriptApproval: (request, scriptMode) =>
 				this.scripts.prepareApproval(
 					request,
@@ -4907,6 +4898,34 @@ export class Controller {
 						return resolved.ok ? undefined : resolved.reason
 					}
 				: undefined,
+		})
+	}
+
+	/**
+	 * The one place a tool call is approved without asking: an automation's own worktree rule first,
+	 * then the auto-approve toggles, which never cover an edit whose real path leaves the thread's
+	 * folder (see approvesWithoutAsking). The approving check also guards the write itself.
+	 */
+	private approvesWithoutAsking(
+		threadId: string,
+		request: { sessionId?: string; toolCallId: string; toolName: string; input: unknown },
+	): boolean {
+		// Test doubles build contexts without the automations host.
+		const automationThread = this.automations
+			? this.automations.runner
+					.runForThread(threadId)
+					?.steps.flatMap((step) => step.threads)
+					.find((candidate) => candidate.threadId === threadId)
+			: undefined
+		if (automationThread && this.automationApproves(threadId, request.toolCallId, request.toolName, request.input))
+			return true
+		const sessionId = request.sessionId || threadId
+		return approvesWithoutAsking(request.toolName, {
+			settings: this.stateManager.getGlobalSettingsKey("autoApprovalSettings"),
+			cwd: this.sessions.getSession(sessionId)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
+			confined: !!automationThread?.worktree,
+			approveInside: (root) =>
+				this.diffEdits.approveInWorktree(request.toolCallId, request.toolName, request.input, root, sessionId),
 		})
 	}
 
