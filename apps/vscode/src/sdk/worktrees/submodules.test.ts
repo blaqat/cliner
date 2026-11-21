@@ -284,3 +284,30 @@ it("protects descendant commits with no net file changes even when Git ignores s
 	expect((await manager.summary("empty-child")).loseOnRemove).toBe(0)
 	expect((await manager.remove("empty-child")).warning).toBeUndefined()
 }, 120_000)
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: takeover carries staged gitlinks even when the child is checked back out at HEAD`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		const mapping = await manager.create("staged-link", "Staged link", workspace)
+		const parent = mapping.modules[0].path
+		const child = path.join(parent, "vendor")
+		const original = git(child, "rev-parse", "HEAD")
+		identity(child)
+		git(child, "commit", "--allow-empty", "-m", "gitlink B")
+		const staged = git(child, "rev-parse", "HEAD")
+		git(parent, "add", "vendor")
+		git(child, "checkout", "--detach", original)
+		git(parent, "config", "submodule.vendor.ignore", "all")
+		git(parent, "config", "diff.ignoreSubmodules", "all")
+		expect(git(parent, "status", "--porcelain", "--ignore-submodules=none")).toContain("MM vendor")
+		expect((await manager.summary("staged-link")).uncommittedFiles).toBeGreaterThan(0)
+		const result = await manager.takeOver("staged-link")
+		expect(result.warning).toBeUndefined()
+		expect(git(root, "rev-parse", ":vendor")).toBe(staged)
+		expect(git(path.join(root, "vendor"), "cat-file", "-t", staged)).toBe("commit")
+		expect(git(path.join(root, "vendor"), "rev-parse", "HEAD")).toBe(original)
+		expect(git(parent, "diff", "--cached", "--ignore-submodules=none")).toBe("")
+		expect((await manager.summary("staged-link")).loseOnRemove).toBe(0)
+		expect(git(parent, "config", "submodule.vendor.ignore")).toBe("all")
+	}, 120_000)
+}

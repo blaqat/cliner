@@ -32,6 +32,9 @@ export interface EditorExecutorOptions {
 	 */
 	encoding?: BufferEncoding;
 
+	/** Host path policy, rechecked synchronously before reads and mutations. */
+	validatePath?: (filePath: string) => void;
+
 	/**
 	 * Restrict relative-path file operations to paths inside cwd.
 	 * Absolute paths are always accepted as-is.
@@ -150,11 +153,14 @@ async function createFile(
 	fileText: string,
 	encoding: BufferEncoding,
 	signal?: AbortSignal,
+	validatePath?: (filePath: string) => void,
 ): Promise<string> {
 	throwIfAborted(signal);
+	validatePath?.(filePath);
 	validateSnapshot(filePath, undefined);
 	fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
 	const content = normalizeNewFileLineEndings(fileText);
+	validatePath?.(filePath);
 	validateSnapshot(filePath, undefined);
 	createFileExclusive(filePath, content, encoding);
 	return `File created successfully at: ${filePath}`;
@@ -176,8 +182,13 @@ async function replaceInFile(
 	encoding: BufferEncoding,
 	maxDiffLines: number,
 	signal?: AbortSignal,
+	validatePath?: (filePath: string) => void,
 ): Promise<string> {
-	const bytes = await fs.readFile(filePath);
+	validatePath?.(filePath);
+	// A guarded read cannot yield between the host's path check and opening the file.
+	const bytes = validatePath
+		? fsSync.readFileSync(filePath)
+		: await fs.readFile(filePath);
 	throwIfAborted(signal);
 	const snapshot = contentHash(bytes);
 	const content = bytes.toString(encoding);
@@ -200,6 +211,7 @@ async function replaceInFile(
 	// are inserted literally instead of being expanded by String.replace.
 	const updated = content.replace(normalizedOldStr, () => normalizedNewStr);
 	throwIfAborted(signal);
+	validatePath?.(filePath);
 	validateSnapshot(filePath, snapshot);
 	fsSync.writeFileSync(filePath, updated, { encoding });
 
@@ -213,8 +225,13 @@ async function insertInFile(
 	newStr: string,
 	encoding: BufferEncoding,
 	signal?: AbortSignal,
+	validatePath?: (filePath: string) => void,
 ): Promise<string> {
-	const bytes = await fs.readFile(filePath);
+	validatePath?.(filePath);
+	// A guarded read cannot yield between the host's path check and opening the file.
+	const bytes = validatePath
+		? fsSync.readFileSync(filePath)
+		: await fs.readFile(filePath);
 	throwIfAborted(signal);
 	const snapshot = contentHash(bytes);
 	const content = bytes.toString(encoding);
@@ -236,6 +253,7 @@ async function insertInFile(
 		.concat(newStr.split(/\r\n|\n/), lines.slice(insertLine))
 		.join(eol);
 	throwIfAborted(signal);
+	validatePath?.(filePath);
 	validateSnapshot(filePath, snapshot);
 	fsSync.writeFileSync(filePath, updated, { encoding });
 
@@ -252,6 +270,7 @@ export function createEditorExecutor(
 		encoding = "utf-8",
 		restrictToCwd = true,
 		maxDiffLines = 200,
+		validatePath,
 	} = options;
 
 	return async (
@@ -261,6 +280,7 @@ export function createEditorExecutor(
 	): Promise<string> => {
 		throwIfAborted(context.signal);
 		const filePath = resolveFilePath(cwd, input.path, restrictToCwd);
+		validatePath?.(filePath);
 
 		if (input.insert_line != null) {
 			return insertInFile(
@@ -269,13 +289,20 @@ export function createEditorExecutor(
 				input.new_text,
 				encoding,
 				context.signal,
+				validatePath,
 			);
 		}
 
 		const exists = await fileExists(filePath);
 		throwIfAborted(context.signal);
 		if (!exists) {
-			return createFile(filePath, input.new_text, encoding, context.signal);
+			return createFile(
+				filePath,
+				input.new_text,
+				encoding,
+				context.signal,
+				validatePath,
+			);
 		}
 		if (input.old_text == null) {
 			// Models that fill optional params with null hit this repeatedly and
@@ -295,6 +322,7 @@ export function createEditorExecutor(
 			encoding,
 			maxDiffLines,
 			context.signal,
+			validatePath,
 		);
 	};
 }

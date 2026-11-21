@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest"
+import * as fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { describeDecision, staysInWorktree } from "./automation-approvals"
 import { ticketToPr } from "./automation-fixtures"
 import { automationFromTask } from "./automation-from-task"
@@ -63,8 +66,15 @@ describe("precheckSteps", () => {
 })
 
 describe("automation approvals", () => {
+	let temp: string
+	let wt: string
+	beforeEach(() => {
+		temp = fs.mkdtempSync(path.join(os.tmpdir(), "automation-approvals-"))
+		wt = path.join(temp, "wt")
+		fs.mkdirSync(wt)
+	})
+	afterEach(() => fs.rmSync(temp, { recursive: true, force: true }))
 	it("approves reads and edits only inside the worktree", () => {
-		const wt = "/repo/.worktrees/build-1"
 		expect(staysInWorktree("editor", { path: `${wt}/src/a.ts`, new_text: "x" }, wt)).toBe(true)
 		expect(staysInWorktree("editor", { path: "src/a.ts", new_text: "x" }, wt)).toBe(true)
 		expect(staysInWorktree("editor", { path: "/repo/src/a.ts", new_text: "x" }, wt)).toBe(false)
@@ -78,11 +88,43 @@ describe("automation approvals", () => {
 		expect(staysInWorktree("search_codebase", { queries: ["foo"] }, wt)).toBe(true)
 	})
 
+	it("asks for existing and new files reached through escaping or dangling symlinks", () => {
+		const outside = path.join(temp, "outside")
+		fs.mkdirSync(outside)
+		fs.writeFileSync(path.join(outside, "config.json"), "outside")
+		fs.symlinkSync(outside, path.join(wt, "link"), "dir")
+		fs.symlinkSync(path.join(outside, "config.json"), path.join(wt, "file"))
+		fs.symlinkSync(path.join(outside, "missing"), path.join(wt, "dangling"))
+		fs.symlinkSync(wt, path.join(outside, "back"), "dir")
+		for (const candidate of ["link/config.json", "link/new/deep.json", "file", "dangling", "link/back/new.json"]) {
+			expect(staysInWorktree("editor", { path: candidate }, wt), candidate).toBe(false)
+			expect(staysInWorktree("read_files", { files: [candidate] }, wt), candidate).toBe(false)
+		}
+		expect(staysInWorktree("apply_patch", { input: "*** Add File: link/new.json" }, wt)).toBe(false)
+	})
+
+	it("uses filesystem casing and real worktree roots, without accepting sibling prefixes", () => {
+		fs.mkdirSync(path.join(temp, "wt2"))
+		fs.mkdirSync(path.join(wt, "src"))
+		fs.symlinkSync(path.join(wt, "src"), path.join(wt, "local"), "dir")
+		fs.symlinkSync(wt, path.join(temp, "alias"), "dir")
+		expect(staysInWorktree("editor", { path: "local/new/file" }, wt)).toBe(true)
+		expect(staysInWorktree("editor", { path: "new/file" }, path.join(temp, "alias"))).toBe(true)
+		expect(staysInWorktree("editor", { path: path.join(temp, "wt2", "new") }, wt)).toBe(false)
+		expect(staysInWorktree("editor", { path: "../wt2/new" }, wt)).toBe(false)
+		expect(staysInWorktree("editor", { path: "..notes/new" }, wt)).toBe(true)
+		const alternateCase = path.join(temp, "WT")
+		const caseInsensitive = fs.existsSync(alternateCase)
+		expect(staysInWorktree("editor", { path: path.join(alternateCase, "src", "new") }, wt)).toBe(caseInsensitive)
+	})
+
 	it("never approves commands, MCP or the web", () => {
-		const wt = "/repo/.worktrees/build-1"
 		expect(staysInWorktree("run_commands", { commands: ["ls"] }, wt)).toBe(false)
 		expect(staysInWorktree("server__tool", { path: `${wt}/a` }, wt)).toBe(false)
 		expect(staysInWorktree("web_fetch", { url: "https://x" }, wt)).toBe(false)
+		// Only SDK edit tools with an execution-time path guard get automation approval.
+		for (const tool of ["replace_in_file", "write_to_file", "delete_file"])
+			expect(staysInWorktree(tool, { path: "file" }, wt)).toBe(false)
 	})
 
 	it("describes what a waiting thread needs", () => {

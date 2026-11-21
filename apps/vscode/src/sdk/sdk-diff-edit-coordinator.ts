@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import {
 	type ApplyPatchExecutor,
 	type ApplyPatchInput,
@@ -14,6 +15,7 @@ import * as path from "path"
 import { HostProvider } from "@/hosts/host-provider"
 import type { EditPreview } from "@/integrations/editor/EditPreview"
 import { Logger } from "@/shared/services/Logger"
+import { staysInWorktree, toolPaths, worktreePathGuard } from "./automations/automation-approvals"
 
 /**
  * How long an auto-approved edit's preview stays visible after the write, so the
@@ -86,6 +88,7 @@ export class SdkDiffEditCoordinator {
 	private readonly sessions = new Map<string, DiffEditSession>()
 	private readonly approvalVisibility = new Map<string, () => boolean>()
 	private focusGeneration = 0
+	private readonly worktreeApprovals = new Map<string, (filePath: string) => void>()
 	private readonly fallbackEditorExecutor: EditorExecutor
 	private readonly fallbackApplyPatchExecutor: ApplyPatchExecutor
 	private readonly autoApprovePreviewLingerMs: number
@@ -96,6 +99,20 @@ export class SdkDiffEditCoordinator {
 		this.fallbackApplyPatchExecutor = options.fallbackApplyPatchExecutor ?? createApplyPatchExecutor()
 		this.autoApprovePreviewLingerMs = options.autoApprovePreviewLingerMs ?? AUTO_APPROVE_PREVIEW_LINGER_MS
 		this.previewOpenTimeoutMs = options.previewOpenTimeoutMs ?? PREVIEW_OPEN_TIMEOUT_MS
+	}
+
+	/** Keep automation approval's path policy through preview and every executor await. */
+	approveInWorktree(toolCallId: string, toolName: string, input: unknown, cwd: string, sessionId = ""): boolean {
+		if (!staysInWorktree(toolName, input, cwd)) return false
+		if (toolName === "editor" || toolName === "apply_patch") {
+			if (!toolCallId) return false
+			try {
+				this.worktreeApprovals.set(`${sessionId}:${toolCallId}`, worktreePathGuard(cwd))
+			} catch {
+				return false
+			}
+		}
+		return true
 	}
 
 	/**
@@ -157,18 +174,22 @@ export class SdkDiffEditCoordinator {
 	async executeEditorTool(input: EditFileInput, cwd: string, context: AgentToolContext): Promise<string> {
 		const toolCallId = context.toolCallId ?? ""
 		const mayShow = this.approvalVisibility.get(toolCallId) ?? this.visibilityGuard(context.sessionId, context.agentId)
+		const approvalKey = `${context.sessionId ?? ""}:${toolCallId}`
 		const hadPreApprovalPreview = this.sessions.has(toolCallId)
 		try {
+			this.worktreeApprovals.get(approvalKey)?.(path.resolve(cwd, input.path))
 			if (!hadPreApprovalPreview && mayShow()) {
 				// Auto-approved (or hook-approved) edit: no preview was opened at approval
 				// time, so show one now. Best-effort — never blocks the edit.
 				try {
-					await this.openEditorPreview(toolCallId, input, cwd, mayShow)
+					await this.openEditorPreview(toolCallId, input, cwd, mayShow, this.worktreeApprovals.get(approvalKey))
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve preview: ${error}`)
 				}
 			}
-			const result = await this.fallbackEditorExecutor(input, cwd, context)
+			const validatePath = this.worktreeApprovals.get(approvalKey)
+			const executor = validatePath ? createEditorExecutor({ validatePath }) : this.fallbackEditorExecutor
+			const result = await executor(input, cwd, context)
 			if (!hadPreApprovalPreview && this.sessions.get(toolCallId)?.preview) {
 				// Keep the auto-approve preview visible briefly after the write; an abort
 				// just cuts the linger short (the edit has already been applied).
@@ -179,6 +200,7 @@ export class SdkDiffEditCoordinator {
 			}
 			return result
 		} finally {
+			this.worktreeApprovals.delete(approvalKey)
 			await this.discardPreview(toolCallId)
 		}
 	}
@@ -191,22 +213,27 @@ export class SdkDiffEditCoordinator {
 	async executeApplyPatchTool(input: ApplyPatchInput, cwd: string, context: AgentToolContext): Promise<string> {
 		const toolCallId = context.toolCallId ?? ""
 		const mayShow = this.approvalVisibility.get(toolCallId) ?? this.visibilityGuard(context.sessionId, context.agentId)
+		const approvalKey = `${context.sessionId ?? ""}:${toolCallId}`
 		const hadPreApprovalPreview = this.sessions.has(toolCallId)
 		// The pre-approval preview is discarded before the patch applies, so remember
 		// which file it showed for the post-edit reveal.
 		const preApprovalRevealPath = this.livePreviewRevealPath(toolCallId)
 		try {
+			const guard = this.worktreeApprovals.get(approvalKey)
+			if (guard) toolPaths("apply_patch", input)?.forEach(guard)
 			if (hadPreApprovalPreview) {
 				await this.discardPreview(toolCallId)
 			} else if (mayShow()) {
 				try {
-					await this.openPatchPreview(toolCallId, input, cwd, mayShow)
+					await this.openPatchPreview(toolCallId, input, cwd, mayShow, guard)
 				} catch (error) {
 					Logger.warn(`[SdkDiffEditCoordinator] Failed to show auto-approve patch preview: ${error}`)
 				}
 			}
 
-			const result = await this.fallbackApplyPatchExecutor(input, cwd, context)
+			const validatePath = this.worktreeApprovals.get(approvalKey)
+			const executor = validatePath ? createApplyPatchExecutor({ validatePath }) : this.fallbackApplyPatchExecutor
+			const result = await executor(input, cwd, context)
 			if (!hadPreApprovalPreview && this.sessions.get(toolCallId)?.preview) {
 				await lingerDelay(this.autoApprovePreviewLingerMs, context.signal)
 			}
@@ -215,6 +242,7 @@ export class SdkDiffEditCoordinator {
 			}
 			return result
 		} finally {
+			this.worktreeApprovals.delete(approvalKey)
 			await this.discardPreview(toolCallId)
 		}
 	}
@@ -288,6 +316,7 @@ export class SdkDiffEditCoordinator {
 		input: EditFileInput,
 		cwd: string,
 		mayShow: () => boolean,
+		validatePath?: (filePath: string) => void,
 	): Promise<void> {
 		if (typeof input?.path !== "string" || input.path.length === 0 || typeof input.new_text !== "string") {
 			throw new Error("editor input missing path or new_text")
@@ -295,7 +324,8 @@ export class SdkDiffEditCoordinator {
 		const absolutePath = resolveEditPath(cwd, input.path)
 		let originalContent: string | undefined
 		try {
-			originalContent = await fs.readFile(absolutePath, "utf-8")
+			validatePath?.(absolutePath)
+			originalContent = validatePath ? readFileSync(absolutePath, "utf-8") : await fs.readFile(absolutePath, "utf-8")
 		} catch {
 			originalContent = undefined
 		}
@@ -326,11 +356,12 @@ export class SdkDiffEditCoordinator {
 		input: ApplyPatchInput,
 		cwd: string,
 		mayShow: () => boolean,
+		validatePath?: (filePath: string) => void,
 	): Promise<void> {
 		if (typeof input?.input !== "string" || input.input.length === 0) {
 			return
 		}
-		const { changes } = await computePatchChanges(input.input, cwd)
+		const { changes } = await computePatchChanges(input.input, cwd, { validatePath })
 		// Preview the first file the patch creates or updates. Multi-file patches are
 		// uncommon; any remaining files apply without a preview.
 		const first = Object.entries(changes).find(

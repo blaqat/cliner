@@ -137,7 +137,7 @@ import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
-import { describeDecision, staysInWorktree } from "./automations/automation-approvals"
+import { describeDecision } from "./automations/automation-approvals"
 import { automationFromTask } from "./automations/automation-from-task"
 import { AutomationsHost } from "./automations/automation-host"
 import { plainWorktreeReason, precheckSteps, worktreeSettingsFix } from "./automations/automation-precheck"
@@ -2201,7 +2201,8 @@ export class Controller {
 			},
 			shouldAutoApproveTool: (request) => {
 				// Test doubles build contexts without the automations host.
-				if (this.automations && this.automationApproves(id, request.toolName, request.input)) return true
+				if (this.automations && this.automationApproves(id, request.toolCallId, request.toolName, request.input))
+					return true
 				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return settings ? isToolAutoApproved(request.toolName, settings) : false
 			},
@@ -4880,14 +4881,14 @@ export class Controller {
 	 * An automation's Act thread in its own worktree reads and edits files there without asking (see
 	 * automation-approvals.ts). Only while its run is going, and never for a path outside that worktree.
 	 */
-	private automationApproves(threadId: string, toolName: string, input: unknown): boolean {
+	private automationApproves(threadId: string, toolCallId: string, toolName: string, input: unknown): boolean {
 		const run = this.automations.runner.runForThread(threadId)
 		const thread = run?.steps.flatMap((step) => step.threads).find((candidate) => candidate.threadId === threadId)
 		if (!run || !thread?.worktree || thread.mode !== "act" || (run.status !== "running" && run.status !== "waiting"))
 			return false
 		const cwd = this.sessions.getSession(threadId)?.startConfig?.cwd
 		if (!cwd || !this.lastKnownWorkspaceRoot || arePathsEqual(cwd, this.lastKnownWorkspaceRoot)) return false
-		return staysInWorktree(toolName, input, cwd)
+		return this.diffEdits.approveInWorktree(toolCallId, toolName, input, cwd, threadId)
 	}
 
 	/** One automation thread: a background thread in the run's task, on the step's model, level and mode. */

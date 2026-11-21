@@ -304,6 +304,43 @@ describe("SdkDiffEditCoordinator", () => {
 		})
 	}
 
+	it.each([
+		{ tool: "editor", create: false },
+		{ tool: "editor", create: true },
+		{ tool: "apply_patch", create: false },
+		{ tool: "apply_patch", create: true },
+	])("blocks a symlink planted after automation approval for $tool, new file=$create", async ({ tool, create }) => {
+		backgroundEdit = true
+		coordinator = makeCoordinator({ fallbackEditorExecutor: undefined, fallbackApplyPatchExecutor: undefined })
+		const root = path.join(tempDir, "wt")
+		const outside = path.join(tempDir, "outside")
+		await fs.mkdir(root)
+		await fs.mkdir(outside)
+		await fs.writeFile(path.join(outside, "config.json"), "original")
+		const input =
+			tool === "editor"
+				? {
+						path: create ? "link/new/deep.json" : "link/config.json",
+						old_text: create ? undefined : "original",
+						new_text: "changed",
+					}
+				: {
+						input: create
+							? "*** Begin Patch\n*** Add File: link/new/deep.json\n+changed\n*** End Patch"
+							: "*** Begin Patch\n*** Update File: link/config.json\n@@\n-original\n+changed\n*** End Patch",
+					}
+		expect(coordinator.approveInWorktree("auto", tool, input, root, "automation")).toBe(true)
+		await fs.symlink(outside, path.join(root, "link"), "dir")
+		const context = { agentId: "a", iteration: 1, toolCallId: "auto", sessionId: "automation" }
+		const write =
+			tool === "editor"
+				? coordinator.executeEditorTool(input as EditFileInput, root, context)
+				: coordinator.executeApplyPatchTool(input as { input: string }, root, context)
+		await expect(write).rejects.toThrow(/worktree|symlink/)
+		expect(await fs.readFile(path.join(outside, "config.json"), "utf8")).toBe("original")
+		await expect(fs.access(path.join(outside, "new"))).rejects.toThrow()
+	})
+
 	for (const mode of ["git", "mm"] as const) {
 		it(`${mode}: previews and reveals follow the calling session when focus changes`, async () => {
 			const { manager, workspace } = await worktreeProject(tempDir, mode)

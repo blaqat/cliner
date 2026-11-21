@@ -55,6 +55,9 @@ export interface ApplyPatchExecutorOptions {
 	 */
 	encoding?: BufferEncoding;
 
+	/** Host path policy, rechecked synchronously before reads and mutations. */
+	validatePath?: (filePath: string) => void;
+
 	/** Cancel parsing/matching before any filesystem mutation. */
 	signal?: AbortSignal;
 
@@ -219,6 +222,7 @@ async function loadFiles(
 	encoding: BufferEncoding,
 	restrictToCwd: boolean,
 	signal?: AbortSignal,
+	validatePath?: (filePath: string) => void,
 ): Promise<LoadedFiles> {
 	const filesToLoad = extractFilesForOperations(lines, [
 		PATCH_MARKERS.UPDATE,
@@ -231,9 +235,12 @@ async function loadFiles(
 
 	for (const filePath of filesToLoad) {
 		const absolutePath = resolveFilePath(cwd, filePath, restrictToCwd);
+		validatePath?.(absolutePath);
 		let fileContent: string;
 		try {
-			const bytes = await fs.readFile(absolutePath);
+			const bytes = validatePath
+				? fsSync.readFileSync(absolutePath)
+				: await fs.readFile(absolutePath);
 			throwIfAborted(signal);
 			if (!(absolutePath in snapshots))
 				snapshots[absolutePath] = contentHash(bytes);
@@ -255,8 +262,11 @@ async function loadFiles(
 		PATCH_MARKERS.MOVE,
 	])) {
 		const absolutePath = resolveFilePath(cwd, filePath, restrictToCwd);
+		validatePath?.(absolutePath);
 		try {
-			const bytes = await fs.readFile(absolutePath);
+			const bytes = validatePath
+				? fsSync.readFileSync(absolutePath)
+				: await fs.readFile(absolutePath);
 			throwIfAborted(signal);
 			if (!(absolutePath in snapshots))
 				snapshots[absolutePath] = contentHash(bytes);
@@ -346,12 +356,14 @@ function applyChanges(
 	restrictToCwd: boolean,
 	snapshots: Record<string, string | undefined>,
 	signal?: AbortSignal,
+	validatePath?: (filePath: string) => void,
 ): string[] {
 	throwIfAborted(signal);
 	// Preserve the up-front validation, then narrow the external-process race
 	// with another check immediately before each mutation. General filesystems
 	// cannot atomically compare contents and replace/delete an existing file.
 	for (const [filePath, snapshot] of Object.entries(snapshots)) {
+		validatePath?.(filePath);
 		validateSnapshot(filePath, snapshot);
 	}
 	throwIfAborted(signal);
@@ -394,6 +406,8 @@ function applyChanges(
 	try {
 		for (const operation of operations) {
 			const { absolutePath, content } = operation;
+			validatePath?.(absolutePath);
+			if (operation.sourcePath) validatePath?.(operation.sourcePath);
 			if (content === undefined) {
 				validateSnapshot(absolutePath, expected[absolutePath]);
 				fsSync.rmSync(absolutePath, { force: true });
@@ -456,7 +470,12 @@ async function preparePatchChanges(
 	fuzz: number;
 	snapshots: Record<string, string | undefined>;
 }> {
-	const { encoding = "utf-8", restrictToCwd = true, signal } = options;
+	const {
+		encoding = "utf-8",
+		restrictToCwd = true,
+		signal,
+		validatePath,
+	} = options;
 	const normalizedInput = normalizePatchInput(patchText);
 	const loaded = await loadFiles(
 		normalizedInput.lines,
@@ -464,6 +483,7 @@ async function preparePatchChanges(
 		encoding,
 		restrictToCwd,
 		signal,
+		validatePath,
 	);
 	const parser = new PatchParser(normalizedInput.lines, loaded.files, signal);
 	const { patch, fuzz } = await parser.parseAsync();
@@ -494,7 +514,12 @@ export async function computePatchChanges(
 export function createApplyPatchExecutor(
 	options: ApplyPatchExecutorOptions = {},
 ): ApplyPatchExecutor {
-	const { encoding = "utf-8", restrictToCwd = true, signal } = options;
+	const {
+		encoding = "utf-8",
+		restrictToCwd = true,
+		signal,
+		validatePath,
+	} = options;
 
 	return async (
 		input: ApplyPatchInput,
@@ -509,6 +534,7 @@ export function createApplyPatchExecutor(
 				encoding,
 				restrictToCwd,
 				signal: patchSignal,
+				validatePath,
 			},
 		);
 		const touched = applyChanges(
@@ -518,6 +544,7 @@ export function createApplyPatchExecutor(
 			restrictToCwd,
 			snapshots,
 			patchSignal,
+			validatePath,
 		);
 
 		const responseLines = [

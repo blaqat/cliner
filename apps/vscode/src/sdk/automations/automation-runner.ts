@@ -181,6 +181,7 @@ function runStepFor(step: AutomationStep): AutomationRunStep {
  */
 export class AutomationRunner {
 	private readonly live = new Map<string, LiveRun>()
+	private readonly resuming = new Set<string>()
 	private runs: AutomationRun[] = []
 	private readonly waiting = new Map<string, { runId: string; resolve: (outcome: ThreadOutcome) => void }>()
 	/** Full replies of every run's steps, by run id (the wire copy is trimmed). */
@@ -305,66 +306,80 @@ export class AutomationRunner {
 	 * already replied. Checks the workspace first, so nothing changes when something still needs fixing.
 	 */
 	async resume(runId: string, definition: AutomationDefinition, fromStepId?: string): Promise<AutomationRun> {
-		await this.load()
-		const prior = this.runs.find((run) => run.id === runId)
-		if (!prior) throw new Error("That run is gone. Start the automation again.")
-		if (this.live.has(runId) || isLiveRun(prior)) throw new Error("That run is still going.")
-		const points = resumePoints(prior, definition)
-		const retryId = points.at(-1)
-		const fromId = fromStepId || retryId
-		const fromIndex = definition.steps.findIndex((step) => step.id === fromId)
-		if (fromIndex < 0 || !points.includes(fromId as string))
-			throw new Error(
-				fromStepId
-					? "That step can't run yet: a step before it didn't finish, or the automation changed. Resume from an earlier step."
-					: "Every step of this run finished. Use Run again for a fresh run.",
-			)
-		const args = withArgumentDefaults(definition.arguments, prior.values)
-		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
-		if (missing.length)
-			throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
-		await this.precheck(definition.steps.slice(fromIndex))
+		// Reserve before even loading: two requests must not pass the precheck together.
+		if (this.resuming.has(runId)) throw new Error("That run is already running.")
+		this.resuming.add(runId)
+		try {
+			await this.load()
+			const prior = this.runs.find((run) => run.id === runId)
+			if (!prior) throw new Error("That run is gone. Start the automation again.")
+			if (this.live.has(runId) || isLiveRun(prior)) throw new Error("That run is already running.")
+			const points = resumePoints(prior, definition)
+			const retryId = points.at(-1)
+			const fromId = fromStepId ?? (prior.status === "done" ? undefined : retryId)
+			const fromIndex = definition.steps.findIndex((step) => step.id === fromId)
+			if (fromIndex < 0 || !points.includes(fromId as string))
+				throw new Error(
+					fromStepId
+						? "That step can't run yet: a step before it didn't finish, or the automation changed. Resume from an earlier step."
+						: "Every step of this run finished. Use Run again for a fresh run.",
+				)
+			const args = withArgumentDefaults(definition.arguments, prior.values)
+			const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
+			if (missing.length)
+				throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
+			await this.precheck(definition.steps.slice(fromIndex))
 
-		const priorOutputs = this.outputs.get(runId) ?? {}
-		const outputs: Record<string, string> = {}
-		const steps = definition.steps.map((step, index): AutomationRunStep => {
-			const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
-			if (index < fromIndex && kept) {
-				outputs[step.id] = priorOutputs[step.id] ?? ""
-				for (const thread of kept.threads) outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
-				return structuredClone(kept)
+			const priorOutputs = this.outputs.get(runId) ?? {}
+			const outputs: Record<string, string> = {}
+			const steps = definition.steps.map((step, index): AutomationRunStep => {
+				const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
+				if (index < fromIndex && kept) {
+					outputs[step.id] = priorOutputs[step.id] ?? ""
+					for (const thread of kept.threads) outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
+					return structuredClone(kept)
+				}
+				const fresh = runStepFor(step)
+				// Retrying a together step keeps the threads that already replied; only the others start again.
+				if (
+					index === fromIndex &&
+					fromStepId === undefined &&
+					fromId === retryId &&
+					(prior.status === "failed" || prior.status === "stopped") &&
+					(kept?.status === "failed" || kept?.status === "stopped") &&
+					step.kind === "together"
+				) {
+					fresh.threads = fresh.threads.map((thread) => {
+						const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
+						if (!done || priorOutputs[thread.id] === undefined) return thread
+						outputs[thread.id] = priorOutputs[thread.id]
+						return structuredClone(done)
+					})
+				}
+				return fresh
+			})
+			const now = this.now()
+			const run: AutomationRun = {
+				...structuredClone(prior),
+				title: automationDisplayName(definition),
+				values: args,
+				status: "running",
+				steps,
+				priorMs: runActiveMs(prior, now),
+				resumedAt: now,
+				endedAt: undefined,
+				error: undefined,
+				fix: undefined,
+				...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
 			}
-			const fresh = runStepFor(step)
-			// Retrying a together step keeps the threads that already replied; only the others start again.
-			if (index === fromIndex && fromId === retryId && kept && step.kind === "together") {
-				fresh.threads = fresh.threads.map((thread) => {
-					const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
-					if (!done || priorOutputs[thread.id] === undefined) return thread
-					outputs[thread.id] = priorOutputs[thread.id]
-					return structuredClone(done)
-				})
-			}
-			return fresh
-		})
-		const now = this.now()
-		const run: AutomationRun = {
-			...structuredClone(prior),
-			title: automationDisplayName(definition),
-			values: args,
-			status: "running",
-			steps,
-			priorMs: runActiveMs(prior, now),
-			resumedAt: now,
-			endedAt: undefined,
-			error: undefined,
-			fix: undefined,
-			...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
+			const live: LiveRun = { run, stopped: false, outputs, answers: new Map(), costBase: this.spent(run) }
+			this.live.set(run.id, live)
+			this.changed()
+			void this.execute(live, definition, args, fromIndex)
+			return structuredClone(run)
+		} finally {
+			this.resuming.delete(runId)
 		}
-		const live: LiveRun = { run, stopped: false, outputs, answers: new Map(), costBase: this.spent(run) }
-		this.live.set(run.id, live)
-		this.changed()
-		void this.execute(live, definition, args, fromIndex)
-		return structuredClone(run)
 	}
 
 	/** A fresh run of a finished one: same values, same task. */

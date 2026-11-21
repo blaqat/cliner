@@ -315,6 +315,64 @@ describe("AutomationRunner", () => {
 		expect(h.run().steps[2].threads[0]).toMatchObject({ status: "done", threadId: "thread-2" })
 	})
 
+	it("reserves a resume while precheck awaits and releases it when precheck fails", async () => {
+		let check: (() => Promise<never[]>) | undefined
+		const h = harness(undefined, { precheck: () => check?.() ?? Promise.resolve([]) })
+		await h.runner.start(h.definition, { ticket: "PROJ-3" })
+		await flush()
+		await h.runner.stop("run-1")
+		await flush()
+		let rejectCheck!: (error: Error) => void
+		check = () =>
+			new Promise((_, reject) => {
+				rejectCheck = reject
+			})
+		const first = h.runner.resume("run-1", h.definition)
+		await flush()
+		const duplicate = h.runner.resume("run-1", h.definition)
+		await expect(duplicate).rejects.toThrow("already running")
+		rejectCheck(new Error("precheck failed"))
+		await expect(first).rejects.toThrow("precheck failed")
+		check = undefined
+		await h.runner.resume("run-1", h.definition)
+		await flush()
+		expect(h.started).toHaveLength(2)
+		await h.runner.stop("run-1")
+	})
+
+	it.each(["go back", "run again"])("reruns every thread of a completed final together step on %s", async (action) => {
+		const definition = ticketToPr()
+		definition.steps = definition.steps.slice(2, 3)
+		const h = harness(definition)
+		await h.runner.start(definition, { ticket: "PROJ-3" })
+		await flush()
+		await h.finish("thread-1", "A")
+		await h.finish("thread-2", "B")
+		expect(h.run().status).toBe("done")
+		if (action === "go back") await h.runner.resume("run-1", definition, definition.steps[0].id)
+		else {
+			;(h.runner as unknown as { deps: { newId: () => string } }).deps.newId = () => "run-2"
+			await h.runner.runAgain("run-1", definition)
+		}
+		await flush()
+		expect(h.started.slice(2).map((thread) => thread.title)).toEqual(["Plan A", "Plan B"])
+		await h.runner.stop(h.run().id)
+	})
+
+	it("explicitly going back to a stopped together step reruns its finished threads too", async () => {
+		const h = harness()
+		await h.runner.start(h.definition, { ticket: "PROJ-3" })
+		await flush()
+		await h.finish("thread-1", "Notes")
+		await h.finish("thread-2", "A")
+		await h.runner.stop("run-1")
+		await flush()
+		await h.runner.resume("run-1", h.definition, h.definition.steps[2].id)
+		await flush()
+		expect(h.started.slice(3).map((thread) => thread.title)).toEqual(["Plan A", "Plan B"])
+		await h.runner.stop("run-1")
+	})
+
 	it("resumes after VS Code restarts, from the replies kept on disk", async () => {
 		const first = harness()
 		await first.runner.start(first.definition, { ticket: "PROJ-4" })

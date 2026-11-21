@@ -67,14 +67,16 @@ export async function gitlinks(dir: string, tree: string) {
 
 export interface Repository extends WorktreeModule {
 	configured: boolean
+	/** Commit the parent index names, which can differ from the checked-out child HEAD. */
+	indexHead?: string
 }
 
 /** Every descendant has its own object database and index, and may have detached HEAD. */
 export async function repositories(mapping: ThreadWorktree): Promise<Repository[]> {
 	const result: Repository[] = []
-	async function visit(module: WorktreeModule, configured: boolean) {
+	async function visit(module: WorktreeModule, configured: boolean, indexHead?: string) {
 		await assertRepository(module.path)
-		result.push({ ...module, configured })
+		result.push({ ...module, configured, indexHead })
 		const baseLinks = await gitlinks(module.path, module.base)
 		const currentLinks = await gitlinks(module.path, "HEAD")
 		const indexLinks = (await git(module.path, ["ls-files", "--stage", "-z"]))
@@ -104,6 +106,7 @@ export async function repositories(mapping: ThreadWorktree): Promise<Repository[
 					base: baseLinks.get(relative)!,
 				},
 				false,
+				indexLinks.find((entry) => entry.slice(entry.indexOf("\t") + 1) === relative)?.split(" ")[1],
 			)
 		}
 	}
@@ -167,9 +170,34 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 	}
 }
 
-/** File status in this repository; descendants are inspected separately, even with ignore=all. */
-export const ownStatus = (dir: string) =>
-	git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all", "--", ".", ":(exclude).worktrees"])
+/** Own files and staged gitlinks; descendant worktrees and unstaged HEAD moves are inspected separately. */
+export async function ownStatus(dir: string): Promise<string> {
+	const [status, index] = await Promise.all([
+		git(dir, [
+			"status",
+			"--porcelain",
+			"-z",
+			"--no-renames",
+			"--untracked-files=all",
+			"--ignore-submodules=dirty",
+			"--",
+			".",
+			":(exclude).worktrees",
+		]),
+		git(dir, ["ls-files", "--stage", "-z"]),
+	])
+	const links = new Set(
+		index
+			.split("\0")
+			.filter((entry) => entry.startsWith("160000 "))
+			.map((entry) => entry.slice(entry.indexOf("\t") + 1)),
+	)
+	return status
+		.split("\0")
+		.filter((entry) => entry && (entry[0] !== " " || !links.has(entry.slice(3))))
+		.map((entry) => entry.replace(/\n/g, "\\n"))
+		.join("\n")
+}
 
 export async function importCommit(target: string, source: string, commit: string) {
 	await git(target, ["cat-file", "-e", `${commit}^{commit}`]).catch(() =>

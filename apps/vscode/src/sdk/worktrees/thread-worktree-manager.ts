@@ -735,8 +735,7 @@ export class ThreadWorktreeManager {
 					const uncommitted = lineCount(await ownStatus(module.path))
 					if (uncommitted) {
 						await this.assertMutationOwner()
-						await git(module.path, [
-							"stash",
+						await this.stash(module.path, [
 							"push",
 							"--include-untracked",
 							"-m",
@@ -753,6 +752,7 @@ export class ThreadWorktreeManager {
 					if (module.configured) await git(module.workspacePath, ["checkout", mapping.branch])
 					else {
 						await importCommit(module.workspacePath, module.path, step.isolateHead)
+						if (module.indexHead) await importCommit(module.workspacePath, module.path, module.indexHead)
 						await git(module.workspacePath, ["checkout", "--detach", step.isolateHead])
 					}
 					step.switched = true
@@ -760,7 +760,7 @@ export class ThreadWorktreeManager {
 						await this.assertMutationOwner()
 						await importCommit(module.workspacePath, module.path, step.stash)
 						step.applied = true
-						await git(module.workspacePath, ["stash", "apply", "--index", step.stash])
+						await this.stash(module.workspacePath, ["apply", "--index", step.stash])
 					}
 				}
 			} catch (error) {
@@ -809,9 +809,24 @@ export class ThreadWorktreeManager {
 			}
 		})
 	}
+	/** Git stash hides staged gitlinks too when a submodule is configured with ignore=all. */
+	private async stash(cwd: string, args: string[]) {
+		const ignored = await git(cwd, ["config", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.ignore$"]).catch(
+			() => "",
+		)
+		const keys = ["diff.ignoreSubmodules", ...ignored.split("\0").filter(Boolean)]
+		const offset = Number(process.env.GIT_CONFIG_COUNT ?? 0)
+		const env: NodeJS.ProcessEnv = { GIT_CONFIG_COUNT: String(offset + keys.length) }
+		keys.forEach((key, index) => {
+			env[`GIT_CONFIG_KEY_${offset + index}`] = key
+			env[`GIT_CONFIG_VALUE_${offset + index}`] = "none"
+		})
+		return git(cwd, ["stash", ...args], undefined, env)
+	}
+
 	/** Puts a carried stash back where it came from and removes it from the stash list. */
 	private async popStash(cwd: string, stash: string) {
-		await git(cwd, ["stash", "apply", "--index", stash])
+		await this.stash(cwd, ["apply", "--index", stash])
 		await this.dropStash(cwd, stash)
 	}
 	private async dropStash(cwd: string, stash: string) {

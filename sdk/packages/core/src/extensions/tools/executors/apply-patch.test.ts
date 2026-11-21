@@ -1,3 +1,4 @@
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,6 +14,43 @@ describe("createApplyPatchExecutor", () => {
 
 	afterEach(async () => {
 		await fs.rm(tempDir, { recursive: true, force: true });
+	});
+
+	it("rechecks the host path policy after parsing before mutating a replaced parent", async () => {
+		const folder = path.join(tempDir, "folder");
+		const outside = path.join(tempDir, "outside");
+		await fs.mkdir(folder);
+		await fs.mkdir(outside);
+		await fs.writeFile(path.join(folder, "file"), "original\n");
+		await fs.writeFile(path.join(outside, "file"), "original\n");
+		const realFolder = fsSync.realpathSync(folder);
+		let scheduled = false;
+		const executor = createApplyPatchExecutor({
+			validatePath: (filePath) => {
+				if (fsSync.realpathSync(path.dirname(filePath)) !== realFolder)
+					throw new Error("Path policy rejected a replaced parent");
+				if (!scheduled) {
+					scheduled = true;
+					queueMicrotask(() => {
+						fsSync.renameSync(folder, folder + "-original");
+						fsSync.symlinkSync(outside, folder, "dir");
+					});
+				}
+			},
+		});
+		await expect(
+			executor(
+				{
+					input:
+						"*** Begin Patch\n*** Update File: folder/file\n@@\n-original\n+changed\n*** End Patch",
+				},
+				tempDir,
+				{ agentId: "a", iteration: 1 },
+			),
+		).rejects.toThrow("Path policy rejected");
+		expect(await fs.readFile(path.join(outside, "file"), "utf8")).toBe(
+			"original\n",
+		);
 	});
 
 	it("applies the documented freeform patch format without shell wrappers", async () => {

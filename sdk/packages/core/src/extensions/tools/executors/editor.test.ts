@@ -1,3 +1,4 @@
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,6 +26,46 @@ async function withTempFile(
 }
 
 describe("createEditorExecutor", () => {
+	it("rechecks the host path policy after an await before writing through a replaced parent", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "editor-path-policy-"));
+		try {
+			const folder = path.join(dir, "folder");
+			const outside = path.join(dir, "outside");
+			await fs.mkdir(folder);
+			await fs.mkdir(outside);
+			await fs.writeFile(path.join(folder, "file"), "original");
+			await fs.writeFile(path.join(outside, "file"), "original");
+			const realFolder = fsSync.realpathSync(folder);
+			let scheduled = false;
+			const editor = createEditorExecutor({
+				validatePath: (filePath) => {
+					if (fsSync.realpathSync(path.dirname(filePath)) !== realFolder) {
+						throw new Error("Path policy rejected a replaced parent");
+					}
+					if (!scheduled) {
+						scheduled = true;
+						queueMicrotask(() => {
+							fsSync.renameSync(folder, folder + "-original");
+							fsSync.symlinkSync(outside, folder, "dir");
+						});
+					}
+				},
+			});
+			await expect(
+				editor(
+					{ path: "folder/file", old_text: "original", new_text: "changed" },
+					dir,
+					context,
+				),
+			).rejects.toThrow("Path policy rejected");
+			expect(await fs.readFile(path.join(outside, "file"), "utf8")).toBe(
+				"original",
+			);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("creates a missing file when edit is used", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agents-editor-"));
 		const filePath = path.join(dir, "example.txt");

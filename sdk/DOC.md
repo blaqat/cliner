@@ -618,3 +618,18 @@ rendering. The VS Code webview renders updates as compact expandable rows.
 Live delegated runtimes survive parent Stop and interjection. Root disposal,
 thread deletion, and extension shutdown stop children. After reload, saved
 transcripts remain available, but restored handles cannot resume their runtime.
+
+
+## Editor path validation
+
+`createEditorExecutor`, `createApplyPatchExecutor`, and `computePatchChanges`
+accept an optional `validatePath: (absolutePath: string) => void` callback in
+their options. The host can throw from this callback to reject a path. The SDK
+calls it before file reads, snapshot checks, and mutations, including patch move
+destinations. Without a callback, existing executor behavior is unchanged.
+
+Guarded reads run synchronously, so another tool in the same process cannot
+replace a parent directory between the path check and file open. The SDK also
+rechecks the callback after asynchronous work, before each mutation. A separate
+process can still change paths between filesystem syscalls. Hosts that require
+protection from hostile local processes need operating-system isolation.
