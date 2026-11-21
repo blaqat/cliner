@@ -62,7 +62,7 @@ import SendSplitButton, { PLAN_MODE_COLOR } from "./composer/SendSplitButton"
 import { ShrinkSlot } from "./composer/ShrinkSlot"
 import { selectedModelOffersLevels } from "./composer/selectedConfiguredModel"
 import WherePill, { ComposerTaskGroupSheet } from "./composer/WherePill"
-import { WorkspaceButton } from "./composer/worktreeSlot"
+import { WorkspaceButton, WorktreeStartNotice } from "./composer/worktreeSlot"
 import NoteMentionMenu from "./NoteMentionMenu"
 import {
 	findNoteMention,
@@ -2017,6 +2017,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				<DetectedTicketChips text={inputValue} />
 				<ComposerTaskGroupSheet draftText={inputValue} />
 				{/* A new thread picks where it runs and which task it goes into; inside a thread both live in the header. */}
+				{!currentTaskItem && <WorktreeStartNotice />}
 				{!currentTaskItem && (
 					<div
 						className="flex min-w-0 items-center gap-0.5 -mt-1 px-3 pb-2 text-[11px] text-description"

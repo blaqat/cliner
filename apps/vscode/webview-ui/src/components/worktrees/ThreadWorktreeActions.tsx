@@ -36,6 +36,8 @@ interface Outcome {
 	undo?: boolean
 	/** Offer the Source Control view (the workspace's own changes are in the way). */
 	sourceControl?: boolean
+	/** Offer to read the worktree again (its status couldn't be read). */
+	retry?: boolean
 }
 
 const BUSY_TEXT: Partial<Record<Action, string>> = {
@@ -72,11 +74,16 @@ export function ThreadWorktreeActions({
 	const [busy, setBusy] = useState<Action>()
 	const [confirmRemove, setConfirmRemove] = useState(false)
 
+	// The status couldn't be read (say, the folder is gone): Remove still works, so the thread is never stuck with it.
+	const [summaryFailed, setSummaryFailed] = useState(false)
+
 	const refresh = useCallback(async () => {
 		try {
 			setSummary((await threadWorktreeAction("summary", threadId)).summary)
+			setSummaryFailed(false)
 		} catch (error) {
-			setOutcome({ tone: "warning", text: errorText(error) })
+			setSummaryFailed(true)
+			setOutcome({ tone: "warning", text: `Couldn't read this worktree: ${errorText(error)}`, retry: true })
 		}
 	}, [threadId])
 	useEffect(() => {
@@ -160,6 +167,20 @@ export function ThreadWorktreeActions({
 						<span aria-hidden>·</span>
 						<button className={LINK_CLASS} onClick={() => void act("undo")} type="button">
 							Undo
+						</button>
+					</>
+				)}
+				{!busy && outcome?.retry && (
+					<>
+						<span aria-hidden>·</span>
+						<button
+							className={cn(LINK_CLASS, "shrink-0")}
+							onClick={() => {
+								setOutcome(undefined)
+								void refresh()
+							}}
+							type="button">
+							Try again
 						</button>
 					</>
 				)}
@@ -260,8 +281,9 @@ export function ThreadWorktreeActions({
 			) : (
 				<button
 					className={MENU_ROW_CLASS}
-					disabled={disabled || running}
-					onClick={() => (summary?.loseOnRemove ? setConfirmRemove(true) : void act("remove"))}
+					disabled={!!busy || (!summary && !summaryFailed) || running}
+					// Unreadable, nobody can say what would be lost, so it asks first.
+					onClick={() => (summary?.loseOnRemove || summaryFailed ? setConfirmRemove(true) : void act("remove"))}
 					role="menuitem"
 					title={running ? "Wait for the thread to finish" : undefined}
 					type="button">

@@ -128,6 +128,27 @@ it("asks on the Remove row itself before losing uncopied files", async () => {
 	expect(screen.queryByRole("dialog")).toBeNull()
 })
 
+it("when the worktree can't be read, says why, offers Try again, and still lets you remove it", async () => {
+	let fail = true
+	mocks.action.mockImplementation(async (request) => {
+		if (request.action === "summary") {
+			if (fail) throw new Error("Error: ENOENT: no such file or directory '/isolate'")
+			return { json: JSON.stringify({ summary: SUMMARY }) }
+		}
+		return { json: JSON.stringify({ message: "Worktree removed" }) }
+	})
+	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)
+	await waitFor(() => expect(status()).toHaveTextContent("Couldn't read this worktree: ENOENT: no such file or directory"))
+	const remove = screen.getByRole("menuitem", { name: "Remove worktree" })
+	expect(remove).toBeEnabled()
+	fireEvent.click(remove)
+	expect(screen.getByTestId("worktree-remove-confirm")).toBeInTheDocument()
+	fireEvent.click(within(screen.getByTestId("worktree-remove-confirm")).getByRole("button", { name: "Cancel" }))
+	fail = false
+	fireEvent.click(within(status()).getByRole("button", { name: "Try again" }))
+	await waitFor(() => expect(status()).toHaveTextContent(worktreeStatusText(SUMMARY)))
+})
+
 it("removes without asking when nothing would be lost", async () => {
 	serve({ ...SUMMARY, uncopiedFiles: 0, copied: true, loseOnRemove: 0 }, { remove: { message: "Worktree removed" } })
 	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)

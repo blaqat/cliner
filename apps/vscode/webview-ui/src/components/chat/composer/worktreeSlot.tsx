@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
 import {
 	COMPOSER_LINE_CHIP_CLASS,
 	COMPOSER_MENU_SCROLL_CLASS,
@@ -7,7 +8,7 @@ import {
 } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ThreadWorktreeActions } from "@/components/worktrees/ThreadWorktreeActions"
-import { useWorktree } from "@/components/worktrees/useWorktree"
+import { clearWorktreeStartFailure, useWorktree, useWorktreeStartFailure } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKeyboard"
@@ -38,6 +39,7 @@ function WorkspaceMenuBody({
 	const blocker = error || (off ? "Worktrees are off." : availability?.available ? "" : (availability?.reason ?? ""))
 	const pick = (value: boolean) => {
 		void setEnabled(value)
+		clearWorktreeStartFailure()
 		onClose()
 	}
 
@@ -89,6 +91,17 @@ function WorkspaceMenuBody({
 					data-testid="workspace-blocker"
 					role={error ? "alert" : undefined}>
 					{mapping ? error : blocker}
+					{error && (
+						<>
+							{" "}
+							<button
+								className="cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
+								onClick={() => void refresh()}
+								type="button">
+								Try again
+							</button>
+						</>
+					)}
 				</p>
 			)}
 			<div className={MENU_SEPARATOR_CLASS} />
@@ -210,5 +223,65 @@ export function ThreadBranchChip() {
 				<WorkspaceMenuBody onClose={() => setOpen(false)} threadId={threadId} worktree={worktree} />
 			</PopoverContent>
 		</Popover>
+	)
+}
+
+const NOTICE_LINK_CLASS = "cursor-pointer border-0 bg-transparent p-0 text-[12px] text-link hover:underline"
+
+/**
+ * Above a new thread's "In … for …" line when it couldn't start because its worktree couldn't be
+ * made: what happened, and the two ways on (fix it in Settings, or run in your workspace instead).
+ * The message stays in the composer, so Send again is all it takes.
+ */
+export function WorktreeStartNotice() {
+	const { navigateToSettings } = useExtensionState()
+	const failure = useWorktreeStartFailure()
+	const worktree = useWorktree()
+	if (!failure) return null
+	return (
+		<InlineNotice
+			actions={
+				<button
+					aria-label="Dismiss"
+					className="flex size-5 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground"
+					onClick={clearWorktreeStartFailure}
+					title="Dismiss"
+					type="button">
+					<span aria-hidden className="codicon codicon-close text-[12px]" />
+				</button>
+			}
+			className="mx-3 mb-1.5"
+			data-testid="worktree-start-failure"
+			tone="error">
+			<span className="min-w-0 flex-1">
+				<b className="font-semibold">Couldn't make a worktree for this thread.</b> {failure}{" "}
+				<span className="whitespace-nowrap">
+					<button
+						className={NOTICE_LINK_CLASS}
+						onClick={() => {
+							clearWorktreeStartFailure()
+							navigateToSettings("worktrees")
+						}}
+						type="button">
+						Worktree settings
+					</button>
+					{worktree.enabled && (
+						<>
+							{" · "}
+							<button
+								className={NOTICE_LINK_CLASS}
+								onClick={() => {
+									void worktree.setEnabled(false)
+									clearWorktreeStartFailure()
+								}}
+								title="Send again to start it in your workspace"
+								type="button">
+								Use your workspace instead
+							</button>
+						</>
+					)}
+				</span>
+			</span>
+		</InlineNotice>
 	)
 }

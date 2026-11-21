@@ -1,8 +1,13 @@
 import type { WorktreeState } from "@shared/thread-worktrees"
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
-import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
-import { ThreadBranchChip, WorkspaceButton } from "./worktreeSlot"
+import {
+	clearDraftRunInWorktree,
+	clearWorktreeStartFailure,
+	getDraftRunInWorktree,
+	reportWorktreeStartFailure,
+} from "@/components/worktrees/useWorktree"
+import { ThreadBranchChip, WorkspaceButton, WorktreeStartNotice } from "./worktreeSlot"
 
 const mocks = vi.hoisted(() => ({
 	state: {} as WorktreeState,
@@ -61,6 +66,7 @@ beforeEach(() => {
 		},
 	)
 	clearDraftRunInWorktree()
+	clearWorktreeStartFailure()
 	mocks.state = withMode("git")
 	mocks.currentTaskItem = undefined
 	mocks.navigateToSettings.mockReset()
@@ -157,4 +163,30 @@ it("has no branch chip for a thread in your workspace, or with no thread", async
 	rerender(<ThreadBranchChip />)
 	// Its state loads, and still no worktree: nothing to show.
 	await waitFor(() => expect(container).toBeEmptyDOMElement())
+})
+
+it("says when a new thread couldn't start for its worktree, with the fix and a way around it", async () => {
+	render(
+		<>
+			<WorktreeStartNotice />
+			<WorkspaceButton />
+		</>,
+	)
+	expect(screen.queryByTestId("worktree-start-failure")).toBeNull()
+	fireEvent.click(within(await openMenu()).getByTestId("workspace-worktree"))
+	expect(getDraftRunInWorktree()).toBe(true)
+
+	act(() => reportWorktreeStartFailure(new Error("Error: Failed to start task: mm is not on PATH")))
+	const notice = await screen.findByTestId("worktree-start-failure")
+	expect(notice).toHaveTextContent("Couldn't make a worktree for this thread. mm is not on PATH")
+	fireEvent.click(within(notice).getByRole("button", { name: "Use your workspace instead" }))
+	expect(getDraftRunInWorktree()).toBe(false)
+	expect(screen.queryByTestId("worktree-start-failure")).toBeNull()
+
+	act(() => reportWorktreeStartFailure("Error: git worktree add failed"))
+	fireEvent.click(
+		within(await screen.findByTestId("worktree-start-failure")).getByRole("button", { name: "Worktree settings" }),
+	)
+	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
+	expect(screen.queryByTestId("worktree-start-failure")).toBeNull()
 })

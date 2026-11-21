@@ -6,7 +6,12 @@ import { IntentEvent } from "@shared/proto/cline/ui"
 import { useCallback, useRef, useState } from "react"
 import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { noteThreadStopped } from "@/components/toasts/threadToastRules"
-import { clearDraftRunInWorktree, getDraftRunInWorktree } from "@/components/worktrees/useWorktree"
+import {
+	clearDraftRunInWorktree,
+	clearWorktreeStartFailure,
+	getDraftRunInWorktree,
+	reportWorktreeStartFailure,
+} from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand, parseSideCommand } from "@/utils/slash-commands"
@@ -435,11 +440,14 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					} catch (error) {
 						rollbackPendingResponse(id, optimisticMessage)
 						restorePendingMessageState()
+						// Most start failures with a worktree are the worktree's: the composer says so and offers the fix.
+						if (request.runInWorktree) reportWorktreeStartFailure(error)
 						throw error
 					}
 					// The where pill's picks applied to this thread; the next new thread starts unfiled, in the workspace.
 					setComposerTaskGroup(undefined)
 					clearDraftRunInWorktree()
+					clearWorktreeStartFailure()
 					messageSent = true
 				} else if (turnState?.phase === "awaiting_approval") {
 					await sendAskResponseWithPendingState(

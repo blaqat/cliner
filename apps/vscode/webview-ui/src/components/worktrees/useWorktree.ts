@@ -18,6 +18,43 @@ export async function threadWorktreeAction(
 	return JSON.parse(response.json)
 }
 
+/** gRPC errors arrive as "Error: git worktree add: …"; people want the sentence. */
+export function worktreeErrorText(error: unknown): string {
+	return String(error instanceof Error ? error.message : error)
+		.replace(/^(Error:\s*)+/, "")
+		.replace(/^Failed to start task:\s*/, "")
+		.trim()
+}
+
+let startFailure: string | undefined
+const startFailureListeners = new Set<() => void>()
+function setStartFailure(value: string | undefined) {
+	if (startFailure === value) return
+	startFailure = value
+	for (const listener of startFailureListeners) listener()
+}
+
+/** A new thread couldn't start because its worktree couldn't be made; the composer says so until handled. */
+export function reportWorktreeStartFailure(error: unknown): void {
+	setStartFailure(worktreeErrorText(error) || "The worktree couldn't be made.")
+}
+
+export function clearWorktreeStartFailure(): void {
+	setStartFailure(undefined)
+}
+
+export function useWorktreeStartFailure(): string | undefined {
+	return useSyncExternalStore(
+		(listener) => {
+			startFailureListeners.add(listener)
+			return () => {
+				startFailureListeners.delete(listener)
+			}
+		},
+		() => startFailure,
+	)
+}
+
 let enabled = false
 let draftThreadId: string | undefined
 const listeners = new Set<() => void>()
@@ -55,7 +92,7 @@ export function useWorktree(threadId?: string) {
 			setState((await threadWorktreeAction("state", threadId)).state)
 			setError(undefined)
 		} catch (error) {
-			setError(String(error))
+			setError(`Couldn't check worktrees: ${worktreeErrorText(error)}`)
 		}
 	}, [threadId])
 	useEffect(() => {
