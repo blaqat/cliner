@@ -175,7 +175,9 @@ describe("TaskGroupView", () => {
 		expect(section).not.toHaveTextContent("Review other")
 		expect(screen.getByTestId("run-steps-new")).toBeInTheDocument()
 		expect(screen.queryByTestId("run-steps-old")).not.toBeInTheDocument()
-		expect(screen.getByTestId("ready-for-review-new")).toHaveTextContent("Looks good")
+		// The reply is on its step; Ready for review only lists what to look at.
+		expect(screen.getByTestId("run-steps-new")).toHaveTextContent("Looks good")
+		expect(await screen.findByTestId("review-nothing-new")).toBeInTheDocument()
 		setAutomationRunsForTest([])
 	})
 

@@ -1,9 +1,11 @@
 import { useSyncExternalStore } from "react"
 
-/** What the builder page shows: a saved file, a blank automation, or the describe-it box first. */
+/** What the builder page shows: a saved file, a blank automation, the describe-it box, or a task's draft. */
 export interface AutomationBuilderTarget {
 	path?: string
 	describe?: boolean
+	/** A task whose threads become the draft ("Save as an automation"). */
+	fromTask?: string
 }
 
 let target: AutomationBuilderTarget | null = null
@@ -31,4 +33,11 @@ export function useAutomationBuilderTarget(): AutomationBuilderTarget | null {
 		},
 		() => target,
 	)
+}
+
+/** "Save as an automation" on a task page: leaves the page and opens the builder with a draft of the task. */
+export function saveTaskAsAutomation(taskGroupId: string, leaveTaskPage: () => void): void {
+	leaveTaskPage()
+	// After the page closes: opening a task page closes the builder.
+	setTimeout(() => openAutomationBuilder({ fromTask: taskGroupId }), 0)
 }

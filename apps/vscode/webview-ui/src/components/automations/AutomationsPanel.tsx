@@ -94,8 +94,8 @@ const AutomationRow: React.FC<{ automation: AutomationEntry } & PanelActions> = 
 					}
 					className="mt-1.5 ml-5"
 					tone="warning">
-					<span className="font-medium">Changed since you trusted it.</span> It can start threads and edit code, so look
-					at the file before running it.
+					<span className="font-medium">Not trusted yet</span> (new, or changed since you trusted it). It can start
+					threads and edit code, so look at the file before running it.
 				</InlineNotice>
 			)}
 			{confirmingDelete && (
@@ -151,15 +151,17 @@ const Section: React.FC<{ title: string; folder: string; items: AutomationEntry[
  * starts `/name` in the composer. Only you start automations: Cline has no tool for them.
  */
 const AutomationsPanel: React.FC<PanelActions> = ({ onRun, onEdit }) => {
-	const { automations, globalDir, workspaceDir } = useAutomations({ pollMs: 2000 })
+	const { automations, globalDir, workspaceDir, loaded } = useAutomations({ pollMs: 2000 })
+	const workspace = automations.filter((item) => item.scope === "workspace")
+	const global = automations.filter((item) => item.scope === "global")
+	const empty = loaded && automations.length === 0
 	return (
 		<div data-testid="automations-panel">
-			<div className="mb-3 text-xs text-description">
-				<p className="m-0">
-					Automations are steps you start with <span className="font-bold text-foreground">/name</span>: open a task,
-					start threads (one at a time or together, each on its own model), and stop to ask you. Only you start them.
-				</p>
-			</div>
+			<p className="m-0 mb-3 text-xs text-description">
+				Steps you start by typing <span className="font-mono text-foreground">/name</span> in the chat: plan, build in a
+				worktree, have several models review, and stop to ask you. Each step is a normal thread you can open. Only you
+				start them.
+			</p>
 			{onEdit && (
 				<div className="mb-3 flex flex-wrap gap-2">
 					<Button data-testid="automation-new" onClick={() => onEdit({})} size="xs" variant="secondary">
@@ -174,22 +176,37 @@ const AutomationsPanel: React.FC<PanelActions> = ({ onRun, onEdit }) => {
 					</Button>
 				</div>
 			)}
-			<Section
-				folder={workspaceDir ? ".clinerules/automations/" : "Open a folder to keep automations in the repo."}
-				items={automations.filter((item) => item.scope === "workspace")}
-				onEdit={onEdit}
-				onRun={onRun}
-				title="Workspace"
-			/>
-			<div className={cn("-mb-2.5")}>
-				<Section
-					folder={globalDir ? "~/.cline/automations/" : ""}
-					items={automations.filter((item) => item.scope === "global")}
-					onEdit={onEdit}
-					onRun={onRun}
-					title="Global"
-				/>
-			</div>
+			{empty ? (
+				<div
+					className="rounded-sm border border-dashed border-editor-group-border px-3 py-2.5 text-xs text-description"
+					data-testid="automations-empty">
+					<div className="mb-1 font-medium text-foreground">No automations yet</div>
+					Start with ＋ New automation, describe one and let Cline draft it, or open a task and pick ⋯ › Save as an
+					automation to repeat what its threads did.
+					{!workspaceDir && <div className="mt-1">Open a folder to keep automations in its repo.</div>}
+				</div>
+			) : (
+				<>
+					{(workspace.length > 0 || workspaceDir) && (
+						<Section
+							folder={workspaceDir ? ".clinerules/automations/ · shared with the repo" : ""}
+							items={workspace}
+							onEdit={onEdit}
+							onRun={onRun}
+							title="This repo"
+						/>
+					)}
+					<div className={cn("-mb-2.5")}>
+						<Section
+							folder={globalDir ? "~/.cline/automations/ · just you, in every workspace" : ""}
+							items={global}
+							onEdit={onEdit}
+							onRun={onRun}
+							title="Everywhere"
+						/>
+					</div>
+				</>
+			)}
 		</div>
 	)
 }

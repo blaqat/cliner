@@ -2,6 +2,7 @@ import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@sh
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { saveTaskAsAutomation } from "@/components/automations/builderNavigation"
 import { RunBlock } from "@/components/automations/RunBlock"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
@@ -125,6 +126,10 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	}, [details?.threads, taskHistory])
 	const threadCount = timeline.length
 	const noteNames = useMemo(() => new Map(notes.map((note) => [note.slug, note.name])), [notes])
+	const notesWritten = useMemo(
+		() => new Map((details?.threads ?? []).map((thread) => [thread.threadId, thread.wrote])),
+		[details?.threads],
+	)
 	const settledIds = useMemo(
 		() => new Set((taskHistory ?? []).filter((item) => item.isSettled).map((item) => item.id)),
 		[taskHistory],
@@ -254,6 +259,20 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								{settleAll.plan.mode === "settle" ? "Settle all" : "Unsettle all"}
 							</button>
 							<button
+								className={MENU_ITEM_CLASS}
+								data-testid="task-group-save-automation"
+								disabled={threadCount === 0}
+								onClick={() => {
+									setMenuOpen(false)
+									saveTaskAsAutomation(group.id, hideTaskGroupView)
+								}}
+								role="menuitem"
+								title={threadCount === 0 ? "Start a thread first: its prompt becomes a step" : undefined}
+								type="button">
+								<span aria-hidden className="codicon codicon-run-all text-[13px]" />
+								Save as an automation…
+							</button>
+							<button
 								className={cn(MENU_ITEM_CLASS, "text-error")}
 								onClick={() => {
 									setMenuOpen(false)
@@ -340,7 +359,13 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							<RunBlock
 								defaultOpen={index === 0}
 								key={run.id}
+								noteNames={noteNames}
+								notesWritten={notesWritten}
 								now={now}
+								onOpenNote={(slug) => {
+									requestOpenNote(slug)
+									navigateToTaskGroup(group.id, "notebook")
+								}}
 								onOpenThread={openThread}
 								onWalkThrough={openWalkthrough}
 								run={run}

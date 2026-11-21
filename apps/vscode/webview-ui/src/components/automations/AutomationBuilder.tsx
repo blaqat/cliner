@@ -64,14 +64,14 @@ function ArgumentRow({
 			<div className="flex items-center gap-1.5">
 				<input
 					aria-label="Argument name"
-					className={cn(FIELD_CLASS, "font-mono")}
+					className={cn(FIELD_CLASS, "min-w-0 flex-1 font-mono")}
 					onChange={(event) => onChange({ ...arg, name: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })}
 					placeholder="ticket"
 					value={arg.name}
 				/>
 				<select
 					aria-label="Kind"
-					className={cn(FIELD_CLASS, "w-auto")}
+					className={cn(FIELD_CLASS, "w-auto shrink-0")}
 					onChange={(event) => onChange({ ...arg, kind: event.target.value as AutomationArgument["kind"] })}
 					value={arg.kind}>
 					{AUTOMATION_ARG_KINDS.map((kind) => (
@@ -210,6 +210,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	const [showDescribe, setShowDescribe] = useState(!!target.describe)
 	const [guesses, setGuesses] = useState<string[]>([])
 	const [draftedWith, setDraftedWith] = useState("")
+	const [fromTask, setFromTask] = useState<"loading" | "done" | "">(target.fromTask ? "loading" : "")
 	const [showFile, setShowFile] = useState(false)
 	const [fileText, setFileText] = useState("")
 	const [saving, setSaving] = useState(false)
@@ -225,6 +226,29 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 		setOpenStep(existing.definition.steps[0]?.id)
 		setHydrated(true)
 	}, [existing, hydrated])
+
+	// "Save as an automation" on a task page: its threads become the draft (no model call).
+	useEffect(() => {
+		if (!target.fromTask) return
+		let cancelled = false
+		AutomationServiceClient.draftAutomationFromTask(StringRequest.create({ value: target.fromTask }))
+			.then((response) => {
+				if (cancelled) return
+				const draft = JSON.parse(response.definitionJson) as AutomationDefinition
+				setDefinition(draft)
+				setGuesses(response.guesses)
+				setOpenStep(draft.steps[0]?.id)
+				setFromTask("done")
+			})
+			.catch((err) => {
+				if (cancelled) return
+				setError(err?.message ?? String(err))
+				setFromTask("")
+			})
+		return () => {
+			cancelled = true
+		}
+	}, [target.fromTask])
 
 	const issues = useMemo(() => validateAutomation(definition), [definition])
 	const issuesAt = (id: string) => issues.filter((issue) => issue.at === id)
@@ -292,7 +316,12 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 
 	const editor = (
 		<div className="min-w-0 flex-1 px-4 pb-4">
-			{(showDescribe || (definition.steps.length === 0 && !path)) && (
+			{fromTask === "loading" && (
+				<div className="mt-2 text-description" data-testid="builder-from-task-loading">
+					Reading the task's threads…
+				</div>
+			)}
+			{fromTask !== "loading" && (showDescribe || (definition.steps.length === 0 && !path && !fromTask)) && (
 				<DescribeBox
 					onDraft={(draft, nextGuesses, model) => {
 						update({ ...draft, arguments: draft.arguments ?? [], steps: draft.steps ?? [] })
@@ -303,9 +332,13 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 					}}
 				/>
 			)}
-			{(guesses.length > 0 || draftedWith) && (
+			{(guesses.length > 0 || draftedWith || fromTask === "done") && (
 				<InlineNotice className="mt-2" data-testid="builder-guesses" tone="info">
-					<div>Drafted{draftedWith ? ` with ${draftedWith}` : ""}. Check it before saving.</div>
+					<div>
+						{fromTask === "done"
+							? `Made from the task's threads (${definition.steps.length} ${definition.steps.length === 1 ? "step" : "steps"}). Check it before saving.`
+							: `Drafted${draftedWith ? ` with ${draftedWith}` : ""}. Check it before saving.`}
+					</div>
 					{guesses.length > 0 && (
 						<ul className="m-0 mt-1 pl-4">
 							{guesses.map((guess) => (
@@ -348,6 +381,11 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 					value={definition.description}
 				/>
 			</label>
+			<CostLimitField
+				key={`${hydrated}-${fromTask}`}
+				onChange={(costLimit) => update({ ...definition, costLimit })}
+				value={definition.costLimit}
+			/>
 			<div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
 				<span className="text-description">Save to</span>
 				{(["workspace", "global"] as const).map((value) => (
@@ -451,11 +489,6 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 											<span className="w-full truncate text-[11px] text-description">{stepLine(step)}</span>
 										)}
 									</button>
-									<span
-										className="shrink-0 font-mono text-[10.5px] text-description"
-										title="Later steps use its reply with this">
-										{step.kind === "task" ? "" : `{{steps.${step.id}}}`}
-									</span>
 									<HeaderIconButton
 										disabled={index === 0 || step.kind === "task"}
 										icon="arrow-up"
@@ -484,6 +517,12 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 											<li key={`${issue.at}-${issue.message}`}>{issue.message}</li>
 										))}
 									</ul>
+								)}
+								{open && step.kind !== "task" && (
+									<div className="truncate pl-5.5 text-[11px] text-description" title={`{{steps.${step.id}}}`}>
+										Later steps use its reply as{" "}
+										<span className="font-mono text-foreground">{`{{steps.${step.id}}}`}</span>
+									</div>
 								)}
 								{open && (
 									<div className="pl-5.5">
@@ -583,6 +622,35 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 				)}
 			</div>
 		</div>
+	)
+}
+
+/** Dollars a run may spend; empty for no limit. Keeps what's typed ("2.") while the number is unfinished. */
+function CostLimitField({ value, onChange }: { value: number | undefined; onChange: (next: number | undefined) => void }) {
+	const [text, setText] = useState(value === undefined ? "" : String(value))
+	return (
+		<label className="block">
+			<span className={LABEL_CLASS}>Cost limit (optional)</span>
+			<span className="flex items-center gap-1.5">
+				<span className="text-description">$</span>
+				<input
+					className={cn(FIELD_CLASS, "w-20 shrink-0")}
+					data-testid="builder-cost-limit"
+					inputMode="decimal"
+					onChange={(event) => {
+						const next = event.target.value.replace(/[^0-9.]/g, "")
+						setText(next)
+						const number = Number(next)
+						onChange(next && Number.isFinite(number) && number > 0 ? number : undefined)
+					}}
+					placeholder="none"
+					value={text}
+				/>
+			</span>
+			<span className="mt-0.5 block text-[11px] text-description">
+				A run stops itself once its threads spend this much. Resuming allows it again.
+			</span>
+		</label>
 	)
 }
 

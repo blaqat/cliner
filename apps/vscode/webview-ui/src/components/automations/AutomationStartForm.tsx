@@ -1,11 +1,13 @@
-import { type AutomationArgument, automationDisplayName } from "@shared/automations"
+import { type AutomationArgument, type AutomationProblem, automationDisplayName, automationThreads } from "@shared/automations"
 import { parseTypedOptions, setTypedOption, typedFocus } from "@shared/scripts"
 import type React from "react"
+import { useEffect, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
 import { type AutomationInput, automationInputValues } from "./automationInput"
+import { checkAutomation, ProblemList } from "./runActions"
 import { describeRun, summarizeRun } from "./willRun"
 
 interface AutomationStartFormProps {
@@ -35,6 +37,28 @@ const CHIP_CLASS =
 
 const SECTION_CLASS = "mt-2 text-[10.5px] font-medium uppercase tracking-wider text-description"
 
+/** How often the open form re-checks the workspace, so a fix made in Settings shows without retyping. */
+const CHECK_MS = 4000
+
+/** What must be fixed before `name` can run, kept current while the form is open. */
+function useWorkspaceCheck(name: string): AutomationProblem[] {
+	const [problems, setProblems] = useState<AutomationProblem[]>([])
+	useEffect(() => {
+		let cancelled = false
+		const check = () =>
+			void checkAutomation(name).then((found) => {
+				if (!cancelled) setProblems((current) => (JSON.stringify(current) === JSON.stringify(found) ? current : found))
+			})
+		check()
+		const timer = setInterval(check, CHECK_MS)
+		return () => {
+			cancelled = true
+			clearInterval(timer)
+		}
+	}, [name])
+	return problems
+}
+
 /**
  * The start form above the composer for `/name`: arguments (typed inline like script options, or
  * clicked), then every step with its model, so what will run and roughly what it costs is clear before
@@ -63,7 +87,17 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 		earlierRuns: runs,
 		history: taskHistory,
 	})
-	const blocked = "reason" in ready ? ready.reason : willRun.problems.length ? "Fix the steps marked below first" : undefined
+	// Models are checked here; the host checks what only it can see (can a worktree be made?).
+	const workspaceProblems = useWorkspaceCheck(automation.name).filter((problem) => problem.fix !== "models")
+	const autoApproved = automationThreads(definition.steps).some(({ thread }) => thread.worktree && thread.mode === "act")
+	const blocked =
+		"reason" in ready
+			? ready.reason
+			: willRun.problems.length
+				? "Fix the steps marked below first"
+				: workspaceProblems.length
+					? "Fix this first; nothing runs until then"
+					: undefined
 	const status = !automation.trusted
 		? { text: "Trust this version before running it", tone: "error" as const }
 		: blocked
@@ -100,8 +134,9 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 				<div
 					className="mt-1.5 flex flex-wrap items-center gap-2 rounded-xs border border-warning/50 px-2 py-1 text-warning"
 					data-testid="automation-untrusted">
-					<span className="min-w-0 flex-1">
-						Changed since you trusted it. It can start threads and edit code, so look at the file first.
+					<span className="min-w-0 basis-full">
+						This version isn't trusted yet (it's new, or changed since you trusted it). It can start threads and edit
+						code, so look at the file first.
 					</span>
 					<button
 						className={CHIP_CLASS}
@@ -215,7 +250,13 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 			</ol>
 			<div className="mt-1.5 text-description" data-testid="automation-cost">
 				{willRun.cost}
+				{definition.costLimit ? ` Stops itself at $${definition.costLimit.toFixed(2)}.` : ""}
 			</div>
+			{autoApproved && (
+				<div className="mt-1 text-description" data-testid="automation-auto-approve">
+					In its worktree, Act steps read and edit files without asking; commands and anything outside it still ask.
+				</div>
+			)}
 			<div className="mt-1 text-description">
 				{taskTitle
 					? `Runs in this task: ${taskTitle}.`
@@ -224,6 +265,11 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 						: "Runs in a new task."}{" "}
 				Its threads are normal threads: open one and type to step in.
 			</div>
+			{workspaceProblems.length > 0 && (
+				<div className="mt-1.5" data-testid="automation-precheck">
+					<ProblemList automation={automation.name} problems={workspaceProblems} />
+				</div>
+			)}
 			<div
 				className={cn("mt-1.5", error || status.tone === "error" ? "text-error" : "text-success")}
 				data-testid="automation-start-status"

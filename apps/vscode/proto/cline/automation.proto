@@ -33,6 +33,12 @@ service AutomationService {
   rpc answerAutomationCheckpoint(AnswerAutomationCheckpointRequest) returns (Empty);
   // Streams every run (current and recent) whenever one changes
   rpc subscribeToAutomationRuns(EmptyRequest) returns (stream AutomationRuns);
+  // Goes on with a finished run (retry the step that didn't finish, or from a step) or runs it again fresh
+  rpc resumeAutomationRun(ResumeAutomationRunRequest) returns (StartAutomationRunResponse);
+  // What must be fixed before `/name` can run (a worktree that can't be made), for the start form
+  rpc checkAutomationRun(StringRequest) returns (AutomationCheck);
+  // A draft automation made from a task's threads (their prompts, models and modes); no model call
+  rpc draftAutomationFromTask(StringRequest) returns (DraftAutomationResponse);
 }
 
 message AutomationInfo {
@@ -108,4 +114,18 @@ message AnswerAutomationCheckpointRequest {
 message AutomationRuns {
   // AutomationRun[] as JSON.
   string runs_json = 1;
+}
+
+message ResumeAutomationRunRequest {
+  Metadata metadata = 1;
+  string run_id = 2;
+  // The step to go on from; empty retries the first step that didn't finish.
+  string step_id = 3;
+  // A fresh run with the same values in the same task.
+  bool fresh = 4;
+}
+
+message AutomationCheck {
+  // AutomationProblem[] as JSON; empty when it can run.
+  string problems_json = 1;
 }

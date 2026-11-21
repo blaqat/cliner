@@ -1,95 +1,187 @@
-import { isLiveRun } from "@shared/automations"
+import { type AutomationRun, isLiveRun } from "@shared/automations"
 import { useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { openTask } from "@/components/inbox/sessionActions"
+import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
-import { StepStatusIcon, stopRun } from "./RunBlock"
-import { runForThread, runProgress } from "./runFacts"
+import { StepStatusIcon } from "./RunBlock"
+import { FixLink, ProblemList, stopRun, useRunActions } from "./runActions"
+import { currentStep, runFailure, runForThread, runFraction, runNeeds } from "./runFacts"
 
 interface AutomationRunBarProps {
 	/** The thread on screen, if any. */
 	threadId?: string
-	/** The task on screen (its page, or the thread's task). */
+	/** The task on screen (the thread's task). */
 	taskGroupId?: string
 	onOpenTaskGroup?: (taskGroupId: string) => void
-	now?: number
+}
+
+/** Failed runs the user closed the bar for (this session). */
+const dismissed = new Set<string>()
+
+/** A finished run stays in the bar this long, pointing at Ready for review. */
+const DONE_SHOWN_MS = 30 * 60_000
+
+/** The run this bar is about: a live one here, else one that just ended here (failed, or done to review). */
+function pickRun(
+	runs: readonly AutomationRun[],
+	threadId: string | undefined,
+	taskGroupId: string | undefined,
+	now: number,
+): AutomationRun | undefined {
+	const own = runForThread(runs, threadId)
+	const inTask = [...runs].reverse().filter((run) => !!taskGroupId && run.taskGroupId === taskGroupId)
+	const live = own && isLiveRun(own) ? own : inTask.find(isLiveRun)
+	if (live) return live
+	const latest = own ?? inTask[0]
+	if (!latest || dismissed.has(latest.id)) return undefined
+	if (latest.status === "failed") return latest
+	return latest.status === "done" && now - (latest.endedAt ?? 0) < DONE_SHOWN_MS ? latest : undefined
 }
 
 /**
- * A slim bar above the composer while a run is going in this task or thread: name, current step,
- * time and cost, a progress line, Stop, and a fold that lists the steps in place (no popup). The full
- * run lives on the task page.
+ * A slim bar above the composer for where a run is now and what needs you: the step it's on, or what
+ * it's waiting for with a jump to it, or why it failed with the fix and Retry. Steps, outcomes, time and
+ * cost live on the task page (Task page).
  */
-export function AutomationRunBar({ threadId, taskGroupId, onOpenTaskGroup, now = Date.now() }: AutomationRunBarProps) {
+export function AutomationRunBar({ threadId, taskGroupId, onOpenTaskGroup }: AutomationRunBarProps) {
 	const runs = useAutomationRuns()
-	const { taskHistory } = useExtensionState()
-	const [open, setOpen] = useState(false)
-	const ownRun = runForThread(runs, threadId)
-	const run =
-		ownRun && isLiveRun(ownRun)
-			? ownRun
-			: [...runs]
-					.reverse()
-					.find((candidate) => isLiveRun(candidate) && !!taskGroupId && candidate.taskGroupId === taskGroupId)
+	const navigation = useNavigationHistory()
+	const [, setClosed] = useState(0)
+	const run = pickRun(runs, threadId, taskGroupId, Date.now())
 	if (!run) return null
-	const progress = runProgress(run, taskHistory, now)
-	const here = ownRun?.id === run.id ? run.steps.findIndex((step) => step.threads.some((t) => t.threadId === threadId)) : -1
-	const current = progress.currentStep
+	const openThread = (id: string) => (navigation ? navigation.navigate({ kind: "thread", id }) : void openTask(id))
+	return (
+		<RunBarBody
+			key={run.id}
+			onClose={() => {
+				dismissed.add(run.id)
+				setClosed((count) => count + 1)
+			}}
+			onOpenTaskGroup={onOpenTaskGroup}
+			onOpenThread={openThread}
+			run={run}
+			threadId={threadId}
+		/>
+	)
+}
+
+function RunBarBody({
+	run,
+	threadId,
+	onOpenThread,
+	onOpenTaskGroup,
+	onClose,
+}: {
+	run: AutomationRun
+	threadId?: string
+	onOpenThread: (threadId: string) => void
+	onOpenTaskGroup?: (taskGroupId: string) => void
+	onClose: () => void
+}) {
+	const actions = useRunActions(run)
+	const at = currentStep(run)
+	const needs = runNeeds(run)
+	const failure = run.status === "failed" ? runFailure(run) : undefined
+	const done = run.status === "done"
+	// A need in another thread comes first; this thread's own approval is already on screen above.
+	const need = needs.find((candidate) => candidate.threadId !== threadId) ?? needs[0]
+	const needHere = !!need?.threadId && need.threadId === threadId
+	const hereIndex = run.steps.findIndex((step) => step.threads.some((thread) => thread.threadId === threadId))
+	const status = failure
+		? `Failed at step ${at?.number ?? "?"}: ${failure.message}`
+		: done
+			? "Done. Ready for review is on the task page."
+			: need
+				? needHere
+					? `Waiting for you here: ${need.text}`
+					: `Waiting for you: ${need.text}`
+				: at
+					? `Step ${at.number} of ${run.steps.length}: ${at.step.title}`
+					: "Running"
 	return (
 		<div
-			className="mx-3.5 -mb-1 rounded-t-xs border border-b-0 border-editor-group-border bg-(--vscode-editorWidget-background) px-2.5 pt-1 pb-1.5 text-xs"
+			className={cn(
+				"mx-3.5 -mb-1 rounded-t-xs border border-b-0 bg-(--vscode-editorWidget-background) px-2.5 pt-1 pb-1.5 text-xs",
+				failure ? "border-error/50" : need ? "border-warning/50" : "border-editor-group-border",
+			)}
 			data-testid="automation-run-bar">
 			<div className="flex min-w-0 items-center gap-1.5">
-				<span aria-hidden className="codicon codicon-run-all shrink-0 text-[11px]! text-description" />
-				<button
-					aria-expanded={open}
-					className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-1.5 border-0 bg-transparent p-0 text-left text-foreground"
-					onClick={() => setOpen((value) => !value)}
-					title={open ? "Hide the steps" : "Show the steps"}
-					type="button">
-					<span className="min-w-0 shrink truncate font-semibold">{run.title}</span>
-					<span className={cn("shrink-0", run.status === "waiting" ? "text-warning" : "text-description")}>
-						{run.status === "waiting" ? "waiting for you" : current ? current.title : progress.status}
-					</span>
-					<span className="min-w-0 truncate text-description">{progress.line}</span>
-					<span
-						aria-hidden
-						className={cn("codicon shrink-0 text-[10px]!", open ? "codicon-chevron-down" : "codicon-chevron-up")}
-					/>
-				</button>
-				{onOpenTaskGroup && (
-					<LinkButton className="shrink-0" onClick={() => onOpenTaskGroup(run.taskGroupId)}>
-						Task page
+				<StepStatusIcon status={failure ? "failed" : done ? "done" : need ? "waiting" : "running"} />
+				<span className="min-w-0 flex-1 truncate font-semibold">{run.title}</span>
+				{need?.threadId && !needHere && (
+					<LinkButton
+						className="shrink-0"
+						data-testid="automation-run-bar-go"
+						onClick={() => onOpenThread(need.threadId as string)}>
+						Go to it
 					</LinkButton>
 				)}
-				<LinkButton className="shrink-0" data-testid="automation-run-bar-stop" onClick={() => void stopRun(run.id)}>
-					Stop
-				</LinkButton>
+				{onOpenTaskGroup && run.taskGroupId && (
+					<LinkButton
+						className="shrink-0"
+						data-testid="automation-run-bar-task"
+						onClick={() => onOpenTaskGroup(run.taskGroupId)}>
+						{need && !need.threadId ? "Pick on the task page" : done ? "Review" : "Task page"}
+					</LinkButton>
+				)}
+				{isLiveRun(run) ? (
+					<LinkButton className="shrink-0" data-testid="automation-run-bar-stop" onClick={() => void stopRun(run.id)}>
+						Stop
+					</LinkButton>
+				) : (
+					<button
+						aria-label="Close"
+						className="flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
+						onClick={onClose}
+						title="Close (the run stays on the task page)"
+						type="button">
+						<span aria-hidden className="codicon codicon-close text-[11px]!" />
+					</button>
+				)}
 			</div>
-			<div aria-hidden className="mt-1 h-0.5 w-full overflow-hidden rounded-full bg-editor-group-border">
-				<div
-					className="h-full bg-(--vscode-progressBar-background)"
-					style={{ width: `${Math.round(progress.fraction * 100)}%` }}
-				/>
+			{/* Its own line, so it wraps instead of being cut off in a narrow sidebar. */}
+			<div
+				className={cn("mt-0.5 min-w-0 pl-4.5", failure ? "text-error" : need ? "text-warning" : "text-description")}
+				data-testid="automation-run-bar-status">
+				{status}
+				{failure?.fix && (
+					<>
+						{" "}
+						<FixLink automation={run.automation} className="whitespace-nowrap" fix={failure.fix} />
+					</>
+				)}
+				{failure && (
+					<>
+						{" "}
+						<LinkButton
+							className="whitespace-nowrap"
+							data-testid="automation-run-bar-retry"
+							disabled={actions.busy}
+							onClick={() => void actions.retry()}>
+							{actions.busy ? "Checking…" : "Fixed it? Retry"}
+						</LinkButton>
+					</>
+				)}
 			</div>
-			{here >= 0 && (
-				<div className="mt-1 text-description">
-					This thread is step {here + 1}. Typing here steps in; the step finishes when this thread replies.
+			{isLiveRun(run) && (
+				<div aria-hidden className="mt-1 h-0.5 w-full overflow-hidden rounded-full bg-editor-group-border">
+					<div
+						className="h-full bg-(--vscode-progressBar-background) transition-[width] motion-reduce:transition-none"
+						style={{ width: `${Math.round(runFraction(run) * 100)}%` }}
+					/>
 				</div>
 			)}
-			{open && (
-				<ol className="m-0 mt-1 list-none p-0" data-testid="automation-run-bar-steps">
-					{run.steps.map((step, index) => (
-						<li className="flex min-w-0 items-center gap-1.5 py-px" key={step.id}>
-							<StepStatusIcon status={step.status} />
-							<span className={cn("min-w-0 truncate", index === here && "font-semibold")}>{step.title}</span>
-							{step.threads.length > 1 && (
-								<span className="shrink-0 text-description">· {step.threads.length} together</span>
-							)}
-						</li>
-					))}
-				</ol>
+			{actions.problems.length > 0 && (
+				<div className="mt-0.5 pl-4.5">
+					<ProblemList automation={run.automation} problems={actions.problems} />
+				</div>
+			)}
+			{hereIndex >= 0 && isLiveRun(run) && ["running", "waiting"].includes(run.steps[hereIndex].status) && (
+				<div className="mt-1 text-[11px] text-description">
+					This thread is step {hereIndex + 1} of {run.steps.length}. Typing here steps in.
+				</div>
 			)}
 		</div>
 	)

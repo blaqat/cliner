@@ -1,5 +1,7 @@
 import {
 	type AutomationDefinition,
+	type AutomationFix,
+	type AutomationProblem,
 	type AutomationRun,
 	type AutomationRunStep,
 	type AutomationRunThread,
@@ -10,10 +12,33 @@ import {
 	automationDisplayName,
 	fillPlaceholders,
 	isLiveRun,
+	resumePoints,
+	runActiveMs,
 	threadPrompt,
+	ticketKey,
 	withArgumentDefaults,
 } from "@shared/automations"
 import type { ClineMessage } from "@shared/ExtensionMessage"
+
+/** A failure with a known fix ("Worktrees settings"); the run block links there. */
+export class AutomationFixableError extends Error {
+	constructor(
+		message: string,
+		readonly fix: AutomationFix,
+	) {
+		super(message)
+	}
+}
+
+/** The pre-check found something to fix before anything runs. */
+export class AutomationCheckError extends Error {
+	constructor(readonly problems: AutomationProblem[]) {
+		super(problems.map((problem) => problem.message).join(" "))
+	}
+}
+
+/** A finished run as kept on disk: the wire run plus every step's full reply, so a resume can use them. */
+export type StoredAutomationRun = AutomationRun & { outputs?: Record<string, string> }
 
 /** How a run thread's turn ended, from its messages. */
 export type ThreadTurnEnd = { kind: "done"; reply: string } | { kind: "waiting" }
@@ -82,14 +107,28 @@ export interface AutomationRunnerDeps {
 	/** Current state after startup, which may have outlasted the thread's first turn. */
 	readThreadState?: (threadId: string) => AutomationThreadState | undefined
 	stopThread: (threadId: string) => Promise<void>
+	/**
+	 * What must be fixed before these steps can run (a worktree that can't be made, no folder open).
+	 * Start and resume call it first, so nothing runs when it finds a problem.
+	 */
+	precheck?: (steps: readonly AutomationStep[]) => Promise<AutomationProblem[]>
+	/** Makes sure a run thread keeps the step's title once its turn ends. */
+	nameThread?: (threadId: string, title: string) => Promise<void>
+	/** What a waiting thread needs from the user, in a few words ("Approve an edit to src/app.ts"). */
+	describeWaiting?: (threadId: string) => string | undefined
+	/** Dollars a thread has spent so far; undefined once it's no longer loaded. */
+	threadCost?: (threadId: string) => number | undefined
 	onChange: (runs: readonly AutomationRun[]) => void
-	load?: () => Promise<AutomationRun[]>
-	save?: (runs: readonly AutomationRun[]) => Promise<void>
+	load?: () => Promise<StoredAutomationRun[]>
+	save?: (runs: readonly StoredAutomationRun[]) => Promise<void>
 	now?: () => number
 	newId?: () => string
 }
 
-type ThreadOutcome = { kind: "done"; reply: string } | { kind: "failed"; error: string } | { kind: "stopped" }
+type ThreadOutcome =
+	| { kind: "done"; reply: string }
+	| { kind: "failed"; error: string; fix?: AutomationFix }
+	| { kind: "stopped" }
 
 interface LiveRun {
 	run: AutomationRun
@@ -98,7 +137,12 @@ interface LiveRun {
 	outputs: Record<string, string>
 	/** Checkpoint answers waiting by step id. */
 	answers: Map<string, (choice: string) => void>
+	/** Spent before this go (a resume allows the limit again). */
+	costBase: number
 }
+
+/** How often a run with a cost limit checks what its threads spent. */
+const COST_POLL_MS = 3000
 
 function trimReply(reply: string): string {
 	return reply.length > WIRE_REPLY_CHARS ? `${reply.slice(0, WIRE_REPLY_CHARS).trimEnd()}…` : reply
@@ -139,6 +183,11 @@ export class AutomationRunner {
 	private readonly live = new Map<string, LiveRun>()
 	private runs: AutomationRun[] = []
 	private readonly waiting = new Map<string, { runId: string; resolve: (outcome: ThreadOutcome) => void }>()
+	/** Full replies of every run's steps, by run id (the wire copy is trimmed). */
+	private readonly outputs = new Map<string, Record<string, string>>()
+	/** Last known spend per thread, for threads no longer loaded. */
+	private readonly costs = new Map<string, number>()
+	private costTimer: ReturnType<typeof setInterval> | undefined
 	private loaded: Promise<void> | undefined
 
 	constructor(private readonly deps: AutomationRunnerDeps) {}
@@ -151,20 +200,24 @@ export class AutomationRunner {
 		return this.deps.newId?.() ?? `run-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 	}
 
-	/** Earlier runs from disk. A run that was going when VS Code closed can't pick up again: it shows as stopped. */
+	/** Earlier runs from disk. A run that was going when VS Code closed shows as stopped; Resume picks it up. */
 	load(): Promise<void> {
 		this.loaded ??= (async () => {
 			const stored = (await this.deps.load?.().catch(() => [])) ?? []
 			const known = new Set(this.runs.map((run) => run.id))
 			const restored = stored
 				.filter((run) => !known.has(run.id))
+				.map(({ outputs, ...run }): AutomationRun => {
+					if (outputs) this.outputs.set(run.id, outputs)
+					return run
+				})
 				.map((run) =>
 					isLiveRun(run)
 						? {
 								...run,
 								status: "stopped" as const,
 								endedAt: run.endedAt ?? this.now(),
-								error: "VS Code closed while it ran. Its threads are kept.",
+								error: "VS Code closed while it ran. Finished steps are kept: resume to go on.",
 								steps: run.steps.map((step) =>
 									step.status === "running" || step.status === "waiting" || step.status === "pending"
 										? {
@@ -193,10 +246,17 @@ export class AutomationRunner {
 	private changed(): void {
 		this.runs = this.runs.map((run) => {
 			const live = this.live.get(run.id)
+			if (live) this.outputs.set(run.id, live.outputs)
 			return live ? structuredClone(live.run) : run
 		})
 		this.deps.onChange(this.runs)
-		void this.deps.save?.(this.runs.slice(-KEPT_RUNS)).catch(() => {})
+		const kept = this.runs.slice(-KEPT_RUNS)
+		void this.deps.save?.(kept.map((run) => ({ ...run, outputs: this.outputs.get(run.id) }))).catch(() => {})
+	}
+
+	private async precheck(steps: readonly AutomationStep[]): Promise<void> {
+		const problems = (await this.deps.precheck?.(steps)) ?? []
+		if (problems.length) throw new AutomationCheckError(problems)
 	}
 
 	/**
@@ -212,6 +272,7 @@ export class AutomationRunner {
 		const args = withArgumentDefaults(definition.arguments, values)
 		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
 		if (missing.length) throw new Error(`Needs ${missing.map((arg) => arg.name).join(", ")}`)
+		await this.precheck(definition.steps)
 		const run: AutomationRun = {
 			id: this.newId(),
 			automation: definition.name,
@@ -221,26 +282,111 @@ export class AutomationRunner {
 			status: "running",
 			steps: definition.steps.map(runStepFor),
 			startedAt: this.now(),
+			...(definition.costLimit ? { costLimit: definition.costLimit } : {}),
 		}
 		// The first step that needs a task decides it: an Open a task step, or a task made now.
 		if (!run.taskGroupId && definition.steps[0]?.kind !== "task") {
 			const ticketArg = definition.arguments.find((arg) => arg.kind === "ticket" && args[arg.name])
-			const ticket = ticketArg ? args[ticketArg.name] : undefined
+			const ticket = ticketArg ? ticketKey(args[ticketArg.name]) : undefined
 			run.taskGroupId = await this.deps.createTask(ticket ? `${run.title} · ${ticket}` : run.title, ticket)
 		}
-		const live: LiveRun = { run, stopped: false, outputs: {}, answers: new Map() }
+		const live: LiveRun = { run, stopped: false, outputs: {}, answers: new Map(), costBase: 0 }
 		this.live.set(run.id, live)
 		this.runs = [...this.runs, structuredClone(run)]
 		this.changed()
-		void this.execute(live, definition, args)
+		void this.execute(live, definition, args, 0)
 		return structuredClone(run)
 	}
 
-	private async execute(live: LiveRun, definition: AutomationDefinition, args: Record<string, string>): Promise<void> {
+	/**
+	 * Goes on with a finished run (failed, stopped, or done) from one of its steps, using the automation as
+	 * it is now, so a fix to the file counts. Steps before `fromStepId` keep their threads and replies;
+	 * without it, the first step that didn't finish runs again (Retry), keeping any of its threads that
+	 * already replied. Checks the workspace first, so nothing changes when something still needs fixing.
+	 */
+	async resume(runId: string, definition: AutomationDefinition, fromStepId?: string): Promise<AutomationRun> {
+		await this.load()
+		const prior = this.runs.find((run) => run.id === runId)
+		if (!prior) throw new Error("That run is gone. Start the automation again.")
+		if (this.live.has(runId) || isLiveRun(prior)) throw new Error("That run is still going.")
+		const points = resumePoints(prior, definition)
+		const retryId = points.at(-1)
+		const fromId = fromStepId || retryId
+		const fromIndex = definition.steps.findIndex((step) => step.id === fromId)
+		if (fromIndex < 0 || !points.includes(fromId as string))
+			throw new Error(
+				fromStepId
+					? "That step can't run yet: a step before it didn't finish, or the automation changed. Resume from an earlier step."
+					: "Every step of this run finished. Use Run again for a fresh run.",
+			)
+		const args = withArgumentDefaults(definition.arguments, prior.values)
+		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
+		if (missing.length)
+			throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
+		await this.precheck(definition.steps.slice(fromIndex))
+
+		const priorOutputs = this.outputs.get(runId) ?? {}
+		const outputs: Record<string, string> = {}
+		const steps = definition.steps.map((step, index): AutomationRunStep => {
+			const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
+			if (index < fromIndex && kept) {
+				outputs[step.id] = priorOutputs[step.id] ?? ""
+				for (const thread of kept.threads) outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
+				return structuredClone(kept)
+			}
+			const fresh = runStepFor(step)
+			// Retrying a together step keeps the threads that already replied; only the others start again.
+			if (index === fromIndex && fromId === retryId && kept && step.kind === "together") {
+				fresh.threads = fresh.threads.map((thread) => {
+					const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
+					if (!done || priorOutputs[thread.id] === undefined) return thread
+					outputs[thread.id] = priorOutputs[thread.id]
+					return structuredClone(done)
+				})
+			}
+			return fresh
+		})
+		const now = this.now()
+		const run: AutomationRun = {
+			...structuredClone(prior),
+			title: automationDisplayName(definition),
+			values: args,
+			status: "running",
+			steps,
+			priorMs: runActiveMs(prior, now),
+			resumedAt: now,
+			endedAt: undefined,
+			error: undefined,
+			fix: undefined,
+			...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
+		}
+		const live: LiveRun = { run, stopped: false, outputs, answers: new Map(), costBase: this.spent(run) }
+		this.live.set(run.id, live)
+		this.changed()
+		void this.execute(live, definition, args, fromIndex)
+		return structuredClone(run)
+	}
+
+	/** A fresh run of a finished one: same values, same task. */
+	async runAgain(runId: string, definition: AutomationDefinition): Promise<AutomationRun> {
+		await this.load()
+		const prior = this.runs.find((run) => run.id === runId)
+		if (!prior) throw new Error("That run is gone. Start the automation again.")
+		return this.start(definition, prior.values, { taskGroupId: prior.taskGroupId || undefined })
+	}
+
+	private async execute(
+		live: LiveRun,
+		definition: AutomationDefinition,
+		args: Record<string, string>,
+		fromIndex: number,
+	): Promise<void> {
 		const { run } = live
 		const fill = (text: string) => fillPlaceholders(text, { args, outputs: live.outputs })
+		this.watchCosts()
 		try {
 			for (const [index, step] of definition.steps.entries()) {
+				if (index < fromIndex) continue
 				if (live.stopped) break
 				const runStep = run.steps[index]
 				runStep.title = fill(step.title) || step.id
@@ -250,7 +396,8 @@ export class AutomationRunner {
 					case "task": {
 						const ticket = fill(step.ticket).trim()
 						if (!ticket) throw new Error("No ticket to find the task by. Fill in the ticket and run it again.")
-						run.taskGroupId = await this.deps.findOrCreateTask(ticket, fill(step.newTaskTitle).trim() || ticket)
+						const key = ticketKey(ticket)
+						run.taskGroupId = await this.deps.findOrCreateTask(key, fill(step.newTaskTitle).trim() || key)
 						live.outputs[step.id] = ticket
 						runStep.status = "done"
 						break
@@ -292,7 +439,7 @@ export class AutomationRunner {
 						runStep.question = fill(step.question)
 						runStep.choices = choices
 						runStep.status = "waiting"
-						run.status = "waiting"
+						this.syncStatus(live)
 						this.changed()
 						const choice = await new Promise<string>((resolve) => live.answers.set(step.id, resolve))
 						live.answers.delete(step.id)
@@ -301,7 +448,7 @@ export class AutomationRunner {
 						const picked = source?.threads[choices.indexOf(choice)]
 						live.outputs[step.id] = picked ? (live.outputs[picked.id] ?? "") : choice
 						runStep.status = "done"
-						run.status = "running"
+						this.syncStatus(live)
 						break
 					}
 				}
@@ -313,9 +460,19 @@ export class AutomationRunner {
 			}
 		} catch (error) {
 			run.status = "failed"
-			run.error = error instanceof Error ? error.message : String(error)
+			const message = error instanceof Error ? error.message : String(error)
+			const fix = error instanceof AutomationFixableError ? error.fix : undefined
 			run.endedAt = this.now()
-			for (const step of run.steps) if (step.status === "running") step.status = "failed"
+			const failed = run.steps.find((step) => step.status === "running")
+			// The step that failed says why; the run only carries what belongs to no step.
+			if (failed) {
+				failed.status = "failed"
+				failed.error = message
+				failed.fix = fix
+			} else {
+				run.error = message
+				run.fix = fix
+			}
 		} finally {
 			if (run.status !== "running" && run.status !== "waiting") this.skipRest(run)
 			// Record the final state while the run is still live, then let it go.
@@ -327,18 +484,66 @@ export class AutomationRunner {
 	private finishStep(live: LiveRun, runStep: AutomationRunStep, outcome: ThreadOutcome): void {
 		const { run } = live
 		if (outcome.kind === "failed") {
+			// The thread row says why (it's the thread's problem); the step only marks where it stopped.
 			runStep.status = "failed"
-			runStep.error = outcome.error
+			runStep.fix = outcome.fix
 			run.status = "failed"
-			run.error = `${runStep.title}: ${outcome.error}`
 		} else {
 			runStep.status = "stopped"
 			if (run.status !== "stopped") {
 				run.status = "stopped"
-				run.error = live.stopped ? undefined : `${runStep.title} was stopped`
+				run.error = live.stopped ? undefined : "A thread was stopped from its own page."
 			}
 		}
 		run.endedAt = this.now()
+	}
+
+	/** Waiting when any thread or Ask you step needs the user; running otherwise. */
+	private syncStatus(live: LiveRun): void {
+		if (!isLiveRun(live.run)) return
+		const waiting = live.run.steps.some(
+			(step) => step.status === "waiting" || step.threads.some((thread) => thread.status === "waiting"),
+		)
+		live.run.status = waiting ? "waiting" : "running"
+	}
+
+	/** Dollars the run's threads have spent in all. */
+	private spent(run: AutomationRun): number {
+		let total = 0
+		for (const step of run.steps) {
+			for (const thread of step.threads) {
+				if (!thread.threadId) continue
+				const cost = this.deps.threadCost?.(thread.threadId)
+				if (cost !== undefined) this.costs.set(thread.threadId, cost)
+				total += this.costs.get(thread.threadId) ?? 0
+			}
+		}
+		return total
+	}
+
+	/** Stops runs that went past their cost limit. Polls only while such a run is going. */
+	private watchCosts(): void {
+		if (this.costTimer || !this.deps.threadCost) return
+		this.costTimer = setInterval(() => {
+			const limited = [...this.live.values()].filter((live) => live.run.costLimit && !live.stopped)
+			if (!limited.length) {
+				clearInterval(this.costTimer)
+				this.costTimer = undefined
+				return
+			}
+			for (const live of limited) this.checkCost(live)
+		}, COST_POLL_MS)
+		;(this.costTimer as { unref?: () => void }).unref?.()
+	}
+
+	private checkCost(live: LiveRun): void {
+		const limit = live.run.costLimit
+		if (!limit || live.stopped) return
+		const spent = this.spent(live.run) - live.costBase
+		if (spent < limit) return
+		void this.stop(live.run.id, {
+			error: `Stopped at its $${limit.toFixed(2)} cost limit ($${spent.toFixed(2)} spent). Resume to allow another $${limit.toFixed(2)}.`,
+		})
 	}
 
 	private skipRest(run: AutomationRun): void {
@@ -356,6 +561,9 @@ export class AutomationRunner {
 		fill: (text: string) => string,
 	): Promise<ThreadOutcome> {
 		if (live.stopped) return { kind: "stopped" }
+		// Kept from before a retry: it already replied.
+		if (runThread.status === "done" && live.outputs[spec.id] !== undefined)
+			return { kind: "done", reply: live.outputs[spec.id] }
 		runThread.title = fill(spec.title) || spec.id
 		runThread.status = "running"
 		let threadId: string
@@ -373,8 +581,9 @@ export class AutomationRunner {
 		} catch (error) {
 			runThread.status = "failed"
 			runThread.error = error instanceof Error ? error.message : String(error)
+			runThread.fix = error instanceof AutomationFixableError ? error.fix : undefined
 			this.changed()
-			return { kind: "failed", error: runThread.error }
+			return { kind: "failed", error: runThread.error, fix: runThread.fix }
 		}
 		runThread.threadId = threadId
 		this.changed()
@@ -394,13 +603,17 @@ export class AutomationRunner {
 						)
 				})
 		this.waiting.delete(threadId)
+		runThread.waitingOn = undefined
 		if (outcome.kind === "done") {
 			runThread.status = "done"
 			runThread.reply = trimReply(outcome.reply)
+			live.outputs[spec.id] = outcome.reply
+			void this.deps.nameThread?.(threadId, runThread.title).catch(() => {})
 		} else if (outcome.kind === "failed") {
 			runThread.status = "failed"
 			runThread.error = outcome.error
 		} else runThread.status = "stopped"
+		this.syncStatus(live)
 		this.changed()
 		return outcome
 	}
@@ -417,8 +630,9 @@ export class AutomationRunner {
 
 	/**
 	 * A thread's session status changed. `messages` is read only when its turn ended, to tell a finished
-	 * reply from a question for the user. A turn the user cancelled in the thread isn't a reply either:
-	 * the step waits until they resume it. Threads no run is waiting on are ignored.
+	 * reply from a question for the user. A turn the user cancelled in the thread isn't a reply either,
+	 * and neither is an error: the step waits until they retry or resume it in the thread (or stop the
+	 * run and retry the step from the run). Threads no run is waiting on are ignored.
 	 */
 	threadStatusChanged(
 		threadId: string,
@@ -429,23 +643,28 @@ export class AutomationRunner {
 		const found = this.threadOf(threadId)
 		const waiter = this.waiting.get(threadId)
 		if (!found || !waiter) return
-		const { thread } = found
-		const set = (next: AutomationRunThread["status"]) => {
-			if (thread.status === next) return
+		const { live, thread } = found
+		const set = (next: AutomationRunThread["status"], waitingOn?: string) => {
+			if (thread.status === next && thread.waitingOn === waitingOn) return
 			thread.status = next
+			thread.waitingOn = next === "waiting" ? waitingOn : undefined
+			this.syncStatus(live)
 			this.changed()
 		}
-		if (status === "running" || status === "waiting") {
-			set(status)
+		this.checkCost(live)
+		if (status === "running") {
+			set("running")
+		} else if (status === "waiting") {
+			set("waiting", this.deps.describeWaiting?.(threadId) ?? "Needs your answer in the thread")
 		} else if (status === "error") {
-			waiter.resolve({ kind: "failed", error: "The thread hit an error. Open it to see why, then retry there." })
+			set("waiting", "Hit an error: open it and press Retry")
 		} else if (status === "stopped") {
 			waiter.resolve({ kind: "stopped" })
 		} else if (wasCancelled()) {
-			set("waiting")
+			set("waiting", "You stopped its turn: send a message there to go on")
 		} else {
 			const end = classifyTurnEnd(readMessages())
-			if (end.kind === "waiting") set("waiting")
+			if (end.kind === "waiting") set("waiting", this.deps.describeWaiting?.(threadId) ?? "Answer its question")
 			else waiter.resolve({ kind: "done", reply: end.reply })
 		}
 	}
@@ -461,17 +680,22 @@ export class AutomationRunner {
 	}
 
 	/** Stops a run: running threads are stopped, the rest is skipped. Everything done so far stays. */
-	async stop(runId: string): Promise<void> {
+	async stop(runId: string, options: { error?: string } = {}): Promise<void> {
 		const live = this.live.get(runId)
-		if (!live) return
+		if (!live || live.stopped) return
 		live.stopped = true
 		live.run.status = "stopped"
+		live.run.error = options.error
 		live.run.endedAt = this.now()
 		const running: string[] = []
 		for (const step of live.run.steps) {
 			if (step.status === "running" || step.status === "waiting") step.status = "stopped"
 			for (const thread of step.threads) {
 				if (thread.threadId && (thread.status === "running" || thread.status === "waiting")) running.push(thread.threadId)
+				if (thread.status === "running" || thread.status === "waiting") {
+					thread.status = "stopped"
+					thread.waitingOn = undefined
+				}
 			}
 		}
 		for (const answer of live.answers.values()) answer("")

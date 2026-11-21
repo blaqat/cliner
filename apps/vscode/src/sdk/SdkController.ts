@@ -56,6 +56,7 @@ import type {
 	SideThreadView,
 	TurnPhase,
 } from "@shared/ExtensionMessage"
+import { getApiMetrics } from "@shared/getApiMetrics"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { buildMessageLinkPath, type MessageLinkAnchor } from "@shared/message-links"
 import { formatMessageReference, prependMessageReferences } from "@shared/message-references"
@@ -134,8 +135,11 @@ import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
+import { describeDecision, staysInWorktree } from "./automations/automation-approvals"
+import { automationFromTask } from "./automations/automation-from-task"
 import { AutomationsHost } from "./automations/automation-host"
-import type { StartThreadInput } from "./automations/automation-runner"
+import { plainWorktreeReason, precheckSteps, worktreeSettingsFix } from "./automations/automation-precheck"
+import { AutomationFixableError, type StartThreadInput } from "./automations/automation-runner"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
@@ -563,6 +567,16 @@ export class Controller {
 				: undefined
 		},
 		stopThread: (threadId) => this.stopBackgroundThread(threadId),
+		precheck: (steps) => this.precheckAutomationSteps(steps),
+		nameThread: async (id, title) => {
+			// The end-of-turn history save can drop the title set at start; put it back once.
+			if (!(await this.taskHistory.getThreadTitleState(id)).hasTitle) await this.renameTask(id, title)
+		},
+		describeWaiting: (id) => describeDecision(this.taskSessions.get(id)?.interactions.getPendingDecision()?.message),
+		threadCost: (id) => {
+			const context = this.taskSessions.get(id)
+			return context ? getApiMetrics(context.task.messageStateHandler.getClineMessages()).totalCost : undefined
+		},
 		onRunsChanged: (runs) => void sendAutomationRunsEvent(runs),
 	})
 	private readonly notebookStore = new NotebookStore()
@@ -2170,6 +2184,8 @@ export class Controller {
 				void this.diffEdits.discardPreview(callId)
 			},
 			shouldAutoApproveTool: (request) => {
+				// Test doubles build contexts without the automations host.
+				if (this.automations && this.automationApproves(id, request.toolName, request.input)) return true
 				const settings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 				return settings ? isToolAutoApproved(request.toolName, settings) : false
 			},
@@ -4782,6 +4798,73 @@ export class Controller {
 		return this.createTaskGroup({ title: title || ticket, tags: [{ kind: "ticket", value: ticket, source: "user" }] })
 	}
 
+	/** "Save this task as an automation": a draft from the task's threads, for the builder. No model call. */
+	async draftAutomationFromTask(taskGroupId: string) {
+		const details = await this.getTaskGroup(taskGroupId)
+		if (!details) throw new Error("That task is gone.")
+		const roots = details.threads.filter((thread) => !thread.isSubagent && !thread.parentTaskId)
+		if (!roots.length) throw new Error("This task has no threads yet. Start one, then save the task as an automation.")
+		const history = new Map(
+			(await this.taskHistory.listHistory({ hydrate: false })).map((record) => {
+				const item = sessionHistoryRecordToHistoryItem(record)
+				return [item.id, item] as const
+			}),
+		)
+		const modelSettings = useModelSettings(this.stateManager) ? await readModelSettingsState(this.stateManager) : undefined
+		const threads = await Promise.all(
+			roots.map(async (row) => {
+				const item = history.get(row.threadId)
+				const worktree = !!(await this.threadWorktrees.get(row.threadId).catch(() => undefined))
+				const pick = item?.modelSelectionV1?.act ?? item?.modelSelectionV1?.ask ?? undefined
+				const model = pick ? modelSettings?.settings.models.find((candidate) => candidate.id === pick.modelId) : undefined
+				return {
+					title: row.title || row.task.split("\n")[0].slice(0, 60),
+					prompt: row.task,
+					startedTs: row.startedTs,
+					model: model?.name ?? "",
+					level: model && pick?.levelId && pick.levelId !== "default" ? pick.levelId : "",
+					worktree,
+				}
+			}),
+		)
+		const ticket = details.group.tags.find((tag) => tag.kind === "ticket")?.value
+		return automationFromTask({ title: details.group.title, ticket, threads })
+	}
+
+	/** What must be fixed before these automation steps can run: worktrees and models, checked up front. */
+	private async precheckAutomationSteps(steps: Parameters<typeof precheckSteps>[0]) {
+		const workspace = await this.getWorkspaceRoot()
+		const modelSettings = useModelSettings(this.stateManager) ? await readModelSettingsState(this.stateManager) : undefined
+		return precheckSteps(steps, {
+			workspace,
+			worktrees: () =>
+				this.threadWorktrees.availability(
+					workspace,
+					!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+				),
+			modelProblem: modelSettings
+				? (model, level, mode) => {
+						const resolved = resolveAutomationModel(modelSettings, model, level, mode)
+						return resolved.ok ? undefined : resolved.reason
+					}
+				: undefined,
+		})
+	}
+
+	/**
+	 * An automation's Act thread in its own worktree reads and edits files there without asking (see
+	 * automation-approvals.ts). Only while its run is going, and never for a path outside that worktree.
+	 */
+	private automationApproves(threadId: string, toolName: string, input: unknown): boolean {
+		const run = this.automations.runner.runForThread(threadId)
+		const thread = run?.steps.flatMap((step) => step.threads).find((candidate) => candidate.threadId === threadId)
+		if (!run || !thread?.worktree || thread.mode !== "act" || (run.status !== "running" && run.status !== "waiting"))
+			return false
+		const cwd = this.sessions.getSession(threadId)?.startConfig?.cwd
+		if (!cwd || !this.lastKnownWorkspaceRoot || arePathsEqual(cwd, this.lastKnownWorkspaceRoot)) return false
+		return staysInWorktree(toolName, input, cwd)
+	}
+
 	/** One automation thread: a background thread in the run's task, on the step's model, level and mode. */
 	private async startAutomationThread(input: StartThreadInput): Promise<string> {
 		let apiSelection: TaskApiSelection | undefined
@@ -4792,19 +4875,39 @@ export class Controller {
 				input.level,
 				input.mode,
 			)
-			if (!resolved.ok) throw new Error(resolved.reason)
+			if (!resolved.ok) throw new AutomationFixableError(resolved.reason, "models")
 			apiSelection = { modelSelectionV1: { version: 1, ask: resolved.pick, act: resolved.pick } }
 		}
-		const taskId = await this.initTask(input.prompt, undefined, undefined, undefined, undefined, {
-			background: true,
-			taskGroupId: input.taskGroupId,
-			runInWorktree: input.worktree,
-			mode: input.mode === "ask" ? "plan" : "act",
-			apiSelection,
-			title: input.title,
-			rethrowStartFailure: true,
-		})
-		if (!taskId) throw new Error("The thread couldn't start. Check that you're signed in to your model provider.")
+		let taskId: string | undefined
+		try {
+			taskId = await this.initTask(input.prompt, undefined, undefined, undefined, undefined, {
+				background: true,
+				taskGroupId: input.taskGroupId,
+				runInWorktree: input.worktree,
+				mode: input.mode === "ask" ? "plan" : "act",
+				apiSelection,
+				title: input.title,
+				rethrowStartFailure: true,
+			})
+		} catch (error) {
+			if (!input.worktree) throw error
+			// Most start failures of a worktree step are the worktree: say which, in words the user can act on.
+			const workspace = await this.getWorkspaceRoot()
+			const availability = await this.threadWorktrees.availability(
+				workspace,
+				!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
+			)
+			const message = error instanceof Error ? error.message : String(error)
+			const reason = !availability.available
+				? availability.reason
+				: /worktree|isolate|git/i.test(message)
+					? message
+					: undefined
+			if (reason === undefined) throw error
+			const text = `Couldn't make its worktree: ${plainWorktreeReason(reason)}`
+			throw worktreeSettingsFix(reason) ? new AutomationFixableError(text, "worktrees") : new Error(text)
+		}
+		if (!taskId) throw new AutomationFixableError("The thread couldn't start. Check your model provider is set up.", "models")
 		return taskId
 	}
 

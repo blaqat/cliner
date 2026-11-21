@@ -1,4 +1,11 @@
-import { type AutomationRun, type AutomationRunStepStatus, isLiveRun, runThreadIds } from "@shared/automations"
+import {
+	type AutomationFix,
+	type AutomationRun,
+	type AutomationRunStep,
+	type AutomationRunStepStatus,
+	runActiveMs,
+	runThreadIds,
+} from "@shared/automations"
 import type { HistoryItem } from "@shared/HistoryItem"
 
 /** Dollars spent by the run's threads so far (from their history rows). */
@@ -20,28 +27,74 @@ export function formatElapsed(ms: number): string {
 	return `${Math.floor(minutes / 60)} h ${minutes % 60} min`
 }
 
-const STATUS_WORDS: Record<AutomationRun["status"], string> = {
-	running: "running",
-	waiting: "waiting for you",
-	done: "done",
-	failed: "failed",
-	stopped: "stopped",
+/** The step a run is on (running or waiting), else the first that didn't finish. */
+export function currentStep(run: AutomationRun): { step: AutomationRunStep; number: number } | undefined {
+	const live = run.steps.findIndex((step) => step.status === "running" || step.status === "waiting")
+	const index = live >= 0 ? live : run.steps.findIndex((step) => step.status !== "done")
+	return index >= 0 ? { step: run.steps[index], number: index + 1 } : undefined
 }
 
-/** "3 of 6 · 4 min · $0.31" plus the run's status word. */
-export function runProgress(run: AutomationRun, history: readonly HistoryItem[] | undefined, now: number) {
-	const finished = run.steps.filter((step) => step.status === "done").length
-	const current = run.steps.findIndex((step) => step.status === "running" || step.status === "waiting")
-	const elapsed = formatElapsed((run.endedAt ?? now) - run.startedAt)
-	const cost = formatCost(runCost(run, history))
-	const step = current >= 0 ? `${current + 1} of ${run.steps.length}` : `${finished} of ${run.steps.length}`
-	return {
-		status: STATUS_WORDS[run.status],
-		line: [isLiveRun(run) ? step : "", elapsed, cost].filter(Boolean).join(" · "),
-		/** 0–1, for the run bar's progress line. */
-		fraction: run.steps.length ? finished / run.steps.length : 0,
-		currentStep: current >= 0 ? run.steps[current] : undefined,
+/** The run's status in a few words: "Running", "Failed at step 3". The task page's header says this. */
+export function runStatusText(run: AutomationRun): string {
+	const at = currentStep(run)
+	switch (run.status) {
+		case "running":
+			return "Running"
+		case "waiting":
+			return "Waiting for you"
+		case "done":
+			return "Done"
+		case "failed":
+			return at ? `Failed at step ${at.number}` : "Failed"
+		case "stopped":
+			return at ? `Stopped at step ${at.number}` : "Stopped"
 	}
+}
+
+/** "4 min · $0.31": the run's time (not counting the pause before a resume) and spend. */
+export function runTimeAndCost(run: AutomationRun, history: readonly HistoryItem[] | undefined, now: number): string {
+	const cost = formatCost(runCost(run, history))
+	const limit = run.costLimit ? ` of $${run.costLimit.toFixed(2)}` : ""
+	return [formatElapsed(runActiveMs(run, now)), cost ? `${cost}${limit}` : ""].filter(Boolean).join(" · ")
+}
+
+/** 0–1, for the run bar's progress line. */
+export function runFraction(run: AutomationRun): number {
+	return run.steps.length ? run.steps.filter((step) => step.status === "done").length / run.steps.length : 0
+}
+
+/** What the run needs from the user right now, and where to do it. */
+export interface RunNeed {
+	/** "Approve an edit to src/a.ts", "Pick a plan". */
+	text: string
+	stepId: string
+	/** The thread to open; absent for an Ask you step (answered on the task page). */
+	threadId?: string
+}
+
+export function runNeeds(run: AutomationRun): RunNeed[] {
+	return run.steps.flatMap((step): RunNeed[] => {
+		if (step.kind === "checkpoint" && step.status === "waiting")
+			return [{ text: step.question?.trim() ? `Pick: ${step.question.trim()}` : "Pick how to go on", stepId: step.id }]
+		return step.threads
+			.filter((thread) => thread.status === "waiting" && thread.threadId)
+			.map((thread) => ({
+				text: `${thread.waitingOn ?? "Needs your answer"}${step.threads.length > 1 ? ` (${thread.title})` : ""}`,
+				stepId: step.id,
+				threadId: thread.threadId,
+			}))
+	})
+}
+
+/** Why a finished run stopped short, and where the fix is: the failed thread's error, else the run's. */
+export function runFailure(run: AutomationRun): { message: string; fix?: AutomationFix; stepId?: string } | undefined {
+	for (const step of run.steps) {
+		if (step.status !== "failed") continue
+		const thread = step.threads.find((candidate) => candidate.status === "failed" && candidate.error)
+		if (thread) return { message: thread.error as string, fix: thread.fix ?? step.fix, stepId: step.id }
+		if (step.error) return { message: step.error, fix: step.fix, stepId: step.id }
+	}
+	return run.error ? { message: run.error, fix: run.fix } : undefined
 }
 
 /** The run that started this thread. */
@@ -58,4 +111,10 @@ export const STEP_STATUS_LABELS: Record<AutomationRunStepStatus, string> = {
 	failed: "Failed",
 	stopped: "Stopped",
 	skipped: "Skipped",
+}
+
+export const FIX_LABELS: Record<AutomationFix, string> = {
+	worktrees: "Open Worktrees settings",
+	models: "Open Models settings",
+	automation: "Edit the automation",
 }

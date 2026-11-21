@@ -1237,7 +1237,8 @@ describe("task session contexts", () => {
 			await host.start("quick-reply", {}, { fingerprint: saved.fingerprint, taskGroupId: "group" })
 			await vi.waitFor(() => expect(host.runner.list()[0].steps[0].threads[0].status).toBe(cancelled ? "waiting" : "done"))
 			if (cancelled) {
-				expect(host.runner.list()[0].status).toBe("running")
+				// A turn the user stopped waits for them, so the run says it's waiting.
+				expect(host.runner.list()[0].status).toBe("waiting")
 				context.cancelled = false
 				sessions.setRunning(true, "background")
 				await finish()

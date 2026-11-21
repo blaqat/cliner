@@ -85,6 +85,8 @@ export interface AutomationDefinition {
 	description: string
 	arguments: AutomationArgument[]
 	steps: AutomationStep[]
+	/** Dollars a run may spend before it stops itself; absent means no limit. A resume allows this much again. */
+	costLimit?: number
 }
 
 export const AUTOMATION_STEP_LABELS: Record<AutomationStepKind, string> = {
@@ -124,6 +126,27 @@ export function withArgumentDefaults(
 	const filled: Record<string, string> = {}
 	for (const arg of args) filled[arg.name] = values[arg.name] ?? arg.default ?? ""
 	return filled
+}
+
+/**
+ * A short key for a ticket argument, which may be pasted text or a URL: "PROJ-7" from either, else a
+ * URL's last part, else the first line cut short. Tasks are named and tagged with it.
+ */
+export function ticketKey(value: string): string {
+	const text = value.trim()
+	const key = /\b[A-Z][A-Z0-9]+-\d+\b/.exec(text)?.[0]
+	if (key) return key
+	const url = /https?:\/\/\S+/.exec(text)?.[0]
+	if (url) {
+		const parts = url
+			.replace(/[?#].*$/, "")
+			.split("/")
+			.filter(Boolean)
+		const last = parts.at(-1) ?? ""
+		return /^\d+$/.test(last) && parts.length > 1 ? `${parts.at(-2)} ${last}` : last || url
+	}
+	const line = text.split("\n")[0].trim()
+	return line.length > 40 ? `${line.slice(0, 39).trimEnd()}…` : line
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +212,8 @@ export interface AutomationIssue {
 
 export function validateAutomation(definition: AutomationDefinition): AutomationIssue[] {
 	const issues: AutomationIssue[] = []
+	if (definition.costLimit !== undefined && !(definition.costLimit > 0))
+		issues.push({ message: "The cost limit must be more than $0, or leave it empty" })
 	if (!SCRIPT_NAME_REGEX.test(definition.name))
 		issues.push({ message: 'Name must be lowercase letters, digits, "-" or "_" (it is typed as /name)' })
 	if (!definition.description.trim()) issues.push({ message: "Add a description: one line on what it does" })
@@ -330,6 +355,17 @@ export function emptyAutomation(): AutomationDefinition {
 // ---------------------------------------------------------------------------
 
 export type AutomationRunStatus = "running" | "waiting" | "done" | "failed" | "stopped"
+
+/** Where the fix for a problem lives: the run block and start form link there. */
+export type AutomationFix = "worktrees" | "models" | "automation"
+
+/** Something that keeps a run (or a step) from going, in plain words, with where to fix it. */
+export interface AutomationProblem {
+	message: string
+	fix?: AutomationFix
+	/** The step it belongs to, when it's one step's problem. */
+	stepId?: string
+}
 export type AutomationRunStepStatus = "pending" | "running" | "waiting" | "done" | "failed" | "stopped" | "skipped"
 
 export interface AutomationRunThread {
@@ -346,6 +382,9 @@ export interface AutomationRunThread {
 	/** Final reply (trimmed for the wire). */
 	reply?: string
 	error?: string
+	fix?: AutomationFix
+	/** While waiting: what it needs from the user ("Approve an edit to src/app.ts"). */
+	waitingOn?: string
 }
 
 export interface AutomationRunStep {
@@ -359,6 +398,7 @@ export interface AutomationRunStep {
 	choices?: string[]
 	choice?: string
 	error?: string
+	fix?: AutomationFix
 }
 
 export interface AutomationRun {
@@ -372,6 +412,12 @@ export interface AutomationRun {
 	startedAt: number
 	endedAt?: number
 	error?: string
+	fix?: AutomationFix
+	/** When it was last resumed; time before that is in `priorMs`. */
+	resumedAt?: number
+	priorMs?: number
+	/** Stops itself once its threads have spent this many dollars in all. */
+	costLimit?: number
 }
 
 export function isLiveRun(run: Pick<AutomationRun, "status">): boolean {
@@ -381,4 +427,33 @@ export function isLiveRun(run: Pick<AutomationRun, "status">): boolean {
 /** Thread ids a run started, in step order. */
 export function runThreadIds(run: AutomationRun): string[] {
 	return run.steps.flatMap((step) => step.threads.flatMap((thread) => (thread.threadId ? [thread.threadId] : [])))
+}
+
+/** Time the run has spent going, not counting the gap before a resume. */
+export function runActiveMs(run: Pick<AutomationRun, "startedAt" | "endedAt" | "resumedAt" | "priorMs">, now: number): number {
+	return (run.priorMs ?? 0) + Math.max(0, (run.endedAt ?? now) - (run.resumedAt ?? run.startedAt))
+}
+
+/**
+ * Steps a finished run can go on from, in order: each one whose earlier steps all finished. The last is
+ * the first step that didn't finish (Retry). With the automation's current definition, a step must still
+ * be there (same id and kind) for its finished work to be kept.
+ */
+export function resumePoints(run: AutomationRun, definition?: AutomationDefinition): string[] {
+	if (isLiveRun(run)) return []
+	const steps = definition?.steps ?? run.steps
+	const points: string[] = []
+	for (const step of steps) {
+		points.push(step.id)
+		const prior = run.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
+		if (prior?.status !== "done") break
+	}
+	// A run where every step finished can redo any step, but there's nothing to retry.
+	return points
+}
+
+/** The first step that didn't finish: what Retry runs again. */
+export function retryPoint(run: AutomationRun): AutomationRunStep | undefined {
+	if (isLiveRun(run)) return undefined
+	return run.steps.find((step) => step.status !== "done")
 }

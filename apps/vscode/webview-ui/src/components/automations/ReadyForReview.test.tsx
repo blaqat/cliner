@@ -74,28 +74,38 @@ describe("ReadyForReview", () => {
 		}))
 	})
 
-	it("marks the picked thread", () => {
-		expect(finishedThreads(run).map((t) => [t.title, t.picked])).toEqual([
-			["Plan A", true],
-			["Plan B", false],
-			["Build", false],
-			["Docs", false],
-		])
+	it("lists threads that replied, in step order", () => {
+		expect(finishedThreads(run).map((t) => t.title)).toEqual(["Plan A", "Plan B", "Build", "Docs"])
 	})
 
-	it("lists worktrees with changes and every thread that replied", async () => {
-		const onOpenThread = vi.fn()
+	it("lists only what to look at: worktrees with changes and notes the run wrote", async () => {
 		const onWalkThrough = vi.fn()
-		render(<ReadyForReview onOpenThread={onOpenThread} onWalkThrough={onWalkThrough} run={run} />)
+		const onOpenNote = vi.fn()
+		render(
+			<ReadyForReview
+				noteNames={new Map([["plan", "The plan"]])}
+				notesWritten={new Map([["t1", ["plan"]]])}
+				onOpenNote={onOpenNote}
+				onWalkThrough={onWalkThrough}
+				run={run}
+			/>,
+		)
 		const code = await screen.findByTestId("review-code-build")
 		expect(code).toHaveTextContent("6 files changed · 1 commit")
 		expect(screen.queryByTestId("review-code-docs")).not.toBeInTheDocument()
-		expect(screen.getByTestId("review-thread-a")).toHaveTextContent("you picked it")
-		expect(screen.getByTestId("review-thread-b")).toHaveTextContent("Plan B reply")
+		// Replies stay with their steps on the run block, not here.
+		expect(screen.getByTestId("ready-for-review-run-1")).not.toHaveTextContent("Plan B reply")
 		fireEvent.click(screen.getByRole("button", { name: "Walk through" }))
 		expect(onWalkThrough).toHaveBeenCalledWith("t3")
-		fireEvent.click(screen.getAllByRole("button", { name: "Read" })[1])
-		expect(onOpenThread).toHaveBeenCalledWith("t2")
+		expect(screen.getByTestId("review-note-plan")).toHaveTextContent("The plan")
+		fireEvent.click(screen.getByRole("button", { name: "Open note" }))
+		expect(onOpenNote).toHaveBeenCalledWith("plan")
 		expect(mocks.action).toHaveBeenCalledTimes(2)
+	})
+
+	it("says when there's nothing to review", async () => {
+		mocks.action.mockResolvedValue({ summary: { changedFiles: 0, commits: 0 } })
+		render(<ReadyForReview onWalkThrough={vi.fn()} run={run} />)
+		expect(await screen.findByTestId("review-nothing-run-1")).toHaveTextContent("No code or notes changed")
 	})
 })

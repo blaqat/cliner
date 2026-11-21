@@ -7,27 +7,27 @@ import { threadWorktreeAction } from "@/components/worktrees/useWorktree"
 
 interface ReadyForReviewProps {
 	run: AutomationRun
-	onOpenThread: (threadId: string) => void
 	onWalkThrough: (threadId: string) => void
+	/** Notes each thread wrote (slugs), from the task page. */
+	notesWritten?: ReadonlyMap<string, readonly string[]>
+	noteNames?: ReadonlyMap<string, string>
+	onOpenNote?: (slug: string) => void
 }
 
-type Finished = AutomationRunThread & { threadId: string; picked: boolean }
+type Finished = AutomationRunThread & { threadId: string }
 
-/** Threads that replied, in step order, marking the one an Ask you step picked. */
+/** Threads that replied, in step order. */
 export function finishedThreads(run: AutomationRun): Finished[] {
-	const picked = new Set(run.steps.flatMap((step) => (step.kind === "checkpoint" && step.choice ? [step.choice] : [])))
 	return run.steps.flatMap((step) =>
-		step.threads
-			.filter(
-				(thread): thread is AutomationRunThread & { threadId: string } => !!thread.threadId && thread.status === "done",
-			)
-			.map((thread) => ({ ...thread, picked: step.kind === "together" && picked.has(thread.title) })),
+		step.threads.filter(
+			(thread): thread is AutomationRunThread & { threadId: string } => !!thread.threadId && thread.status === "done",
+		),
 	)
 }
 
 /** Where each worktree thread's changes stand; threads without changes drop out. */
-function useWorktreeChanges(threads: readonly Finished[]): Map<string, WorktreeSummary> {
-	const [changes, setChanges] = useState(new Map<string, WorktreeSummary>())
+function useWorktreeChanges(threads: readonly Finished[]): Map<string, WorktreeSummary> | undefined {
+	const [changes, setChanges] = useState<Map<string, WorktreeSummary>>()
 	const key = threads
 		.filter((thread) => thread.worktree)
 		.map((thread) => thread.threadId)
@@ -62,52 +62,53 @@ function useWorktreeChanges(threads: readonly Finished[]): Map<string, WorktreeS
 }
 
 /**
- * What a finished run made, right where it ran: worktrees with changes (Walk through opens that thread's
- * walkthrough) and every thread that replied (Read opens it). Notes and code stay where they are; this
- * only points at them.
+ * What a finished run left for you to look at: code its worktree threads changed (Walk through opens that
+ * thread's walkthrough) and notes its threads wrote. Replies stay with their steps above; this only
+ * points at what needs a review. Says so when there's nothing to review.
  */
-export function ReadyForReview({ run, onOpenThread, onWalkThrough }: ReadyForReviewProps) {
+export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, onOpenNote }: ReadyForReviewProps) {
 	const threads = finishedThreads(run)
 	const changes = useWorktreeChanges(threads)
-	if (threads.length === 0) return null
-	const withChanges = threads.filter((thread) => changes.has(thread.threadId))
+	const withChanges = threads.filter((thread) => changes?.has(thread.threadId))
+	const notes = [...new Set(threads.flatMap((thread) => notesWritten?.get(thread.threadId) ?? []))]
+	// Wait for the worktrees before saying there's nothing.
+	const nothing = !!changes && withChanges.length === 0 && notes.length === 0
 	return (
 		<div
 			className="mt-1.5 rounded-xs border border-link/30 bg-link/10 px-2 py-1.5"
 			data-testid={`ready-for-review-${run.id}`}>
-			<div className="mb-0.5 flex items-center gap-1.5 font-semibold">
+			<div className="flex items-center gap-1.5 font-semibold">
 				<span aria-hidden className="codicon codicon-checklist text-[12px]!" />
 				Ready for review
 			</div>
+			{nothing && (
+				<div className="mt-0.5 text-description" data-testid={`review-nothing-${run.id}`}>
+					No code or notes changed. Each step's reply is above.
+				</div>
+			)}
 			{withChanges.map((thread) => (
-				<div
-					className="flex min-w-0 items-center gap-1.5 py-0.5"
-					data-testid={`review-code-${thread.id}`}
-					key={`code-${thread.id}`}>
-					<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-description" />
-					<span className="min-w-0 shrink truncate">Code · {thread.title}</span>
-					<span className="min-w-0 flex-1 truncate text-description">
-						{worktreeStatusText(changes.get(thread.threadId) as WorktreeSummary)}
-					</span>
-					<LinkButton className="shrink-0" onClick={() => onWalkThrough(thread.threadId)}>
-						Walk through
-					</LinkButton>
+				<div className="py-0.5" data-testid={`review-code-${thread.id}`} key={thread.id}>
+					<div className="flex min-w-0 items-center gap-1.5">
+						<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-description" />
+						<span className="min-w-0 flex-1 truncate">{thread.title}</span>
+						<LinkButton className="shrink-0" onClick={() => onWalkThrough(thread.threadId)}>
+							Walk through
+						</LinkButton>
+					</div>
+					<div className="pl-4.5 text-description">
+						{worktreeStatusText(changes?.get(thread.threadId) as WorktreeSummary)}
+					</div>
 				</div>
 			))}
-			{threads.map((thread) => (
-				<div
-					className="flex min-w-0 items-center gap-1.5 py-0.5"
-					data-testid={`review-thread-${thread.id}`}
-					key={thread.id}>
-					<span aria-hidden className="codicon codicon-comment shrink-0 text-[12px]! text-description" />
-					<span className="min-w-0 shrink truncate">{thread.title}</span>
-					{thread.picked && <span className="shrink-0 text-description">· you picked it</span>}
-					<span className="min-w-0 flex-1 truncate text-description" title={thread.reply}>
-						{thread.reply}
-					</span>
-					<LinkButton className="shrink-0" onClick={() => onOpenThread(thread.threadId)}>
-						Read
-					</LinkButton>
+			{notes.map((slug) => (
+				<div className="flex min-w-0 items-center gap-1.5 py-0.5" data-testid={`review-note-${slug}`} key={slug}>
+					<span aria-hidden className="codicon codicon-book shrink-0 text-[12px]! text-description" />
+					<span className="min-w-0 flex-1 truncate">{noteNames?.get(slug) ?? slug}</span>
+					{onOpenNote && (
+						<LinkButton className="shrink-0" onClick={() => onOpenNote(slug)}>
+							Open note
+						</LinkButton>
+					)}
 				</div>
 			))}
 		</div>

@@ -652,11 +652,12 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 				/>
 			)}
 			{!subagentView && <QueuedPrompts items={queuedPrompts} />}
-			{!subagentView && (
+			{/* On the task page the run block itself shows where the run is, so the bar stays away. */}
+			{!subagentView && !taskGroupView && task && (
 				<AutomationRunBar
 					onOpenTaskGroup={openTaskGroup}
-					taskGroupId={taskGroupView?.id ?? (task ? currentTaskItem?.taskGroupId : undefined)}
-					threadId={task && !taskGroupView ? currentTaskItem?.id : undefined}
+					taskGroupId={currentTaskItem?.taskGroupId}
+					threadId={currentTaskItem?.id}
 				/>
 			)}
 			{(!subagentView || subagentView.pendingDecision === "question") && (

@@ -216,6 +216,11 @@ export function parseAutomationFile(content: string, fallbackName: string): Pars
 		arguments: args,
 		steps: parseSteps(body, errors),
 	}
+	if (data["cost limit"] !== undefined) {
+		const limit = Number(String(data["cost limit"]).replace(/^\$/, ""))
+		if (Number.isFinite(limit) && limit > 0) definition.costLimit = limit
+		else errors.push('"cost limit" must be a dollar amount, like 5 or 2.50')
+	}
 	errors.push(...formatIssues(validateAutomation(definition)))
 	return errors.length > 0
 		? { name, description, errors, draft: definition }
@@ -273,6 +278,7 @@ export function serializeAutomation(definition: AutomationDefinition): string {
 				name: definition.name,
 				...(definition.title.trim() ? { title: definition.title.trim() } : {}),
 				description: definition.description.trim(),
+				...(definition.costLimit ? { "cost limit": definition.costLimit } : {}),
 				...(definition.arguments.length
 					? {
 							arguments: definition.arguments.map((arg) => ({
