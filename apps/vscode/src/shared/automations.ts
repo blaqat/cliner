@@ -430,6 +430,12 @@ export function isLiveRun(run: Pick<AutomationRun, "status">): boolean {
 	return run.status === "running" || run.status === "waiting"
 }
 
+const subCentCost = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 4, useGrouping: false })
+
+export function formatAutomationCost(dollars: number): string {
+	return `$${dollars > 0 && dollars < 0.01 ? subCentCost.format(dollars) : dollars.toFixed(2)}`
+}
+
 /** Thread ids a run started, in step order. */
 export function runThreadIds(run: AutomationRun): string[] {
 	return run.steps.flatMap((step) => step.threads.flatMap((thread) => (thread.threadId ? [thread.threadId] : [])))

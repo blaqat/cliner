@@ -18,7 +18,7 @@ import { useAutomations } from "@/hooks/useAutomations"
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient } from "@/services/grpc-client"
 import { ReadyForReview } from "./ReadyForReview"
-import { FixLink, ProblemList, stopRun, useRunActions } from "./runActions"
+import { ProblemDetails, ProblemList, stopRun, useRunActions } from "./runActions"
 import { runStatusText, runTimeAndCost, STEP_STATUS_LABELS } from "./runFacts"
 
 export { stopRun } from "./runActions"
@@ -66,6 +66,7 @@ function ThreadRow({
 	nested,
 	statuses,
 	onOpenThread,
+	actions,
 }: {
 	run: AutomationRun
 	thread: AutomationRunThread
@@ -73,6 +74,7 @@ function ThreadRow({
 	nested: boolean
 	statuses: ThreadStatuses
 	onOpenThread: (threadId: string) => void
+	actions: ReturnType<typeof useRunActions>
 }) {
 	const status = liveThreadStatus(thread, statuses)
 	const detail = [thread.model || "Default model", thread.mode === "act" ? "Act" : "Ask", thread.worktree ? "worktree" : ""]
@@ -107,9 +109,13 @@ function ThreadRow({
 					)}
 				</div>
 			)}
-			{thread.error && (
+			{thread.error && !actions.problems && (
 				<div className={cn("text-error", under)} data-testid={`run-error-${thread.id}`}>
-					{thread.error} {thread.fix && <FixLink automation={run.automation} fix={thread.fix} />}
+					<ProblemDetails
+						automation={run.automation}
+						onRecheck={actions.onRecheck}
+						problem={{ message: thread.error, fix: thread.fix }}
+					/>
 				</div>
 			)}
 			{thread.reply && status === "done" && (
@@ -174,10 +180,9 @@ function CheckpointChoices({
 }
 
 /** Retry, Resume from an earlier step, and Run again, under a finished run. */
-function RunActions({ run }: { run: AutomationRun }) {
+function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<typeof useRunActions> }) {
 	const { automations } = useAutomations()
 	const definition = automations.find((item) => item.name === run.automation)?.definition
-	const actions = useRunActions(run)
 	const [choosing, setChoosing] = useState(false)
 	const retry = run.status === "done" ? undefined : retryPoint(run)
 	const retryNumber = retry ? run.steps.indexOf(retry) + 1 : 0
@@ -253,11 +258,12 @@ function RunActions({ run }: { run: AutomationRun }) {
 					</div>
 				</div>
 			)}
-			{actions.problems.length > 0 && (
+			{!!actions.problems?.length && (
 				<div className="mt-1">
-					<ProblemList automation={run.automation} problems={actions.problems} />
+					<ProblemList automation={run.automation} onRecheck={actions.onRecheck} problems={actions.problems} />
 				</div>
 			)}
+			{actions.ready && <div className="mt-1 text-description">Git is set up. Retry the step.</div>}
 		</div>
 	)
 }
@@ -296,6 +302,8 @@ export function RunBlock({
 	defaultOpen,
 }: RunBlockProps) {
 	const { taskHistory } = useExtensionState()
+	const actions = useRunActions(run)
+	const timeAndCost = runTimeAndCost(run, taskHistory, now)
 	const live = isLiveRun(run)
 	const [open, setOpen] = useState(defaultOpen ?? live)
 	const expanded = open || live || run.status === "failed"
@@ -339,8 +347,8 @@ export function RunBlock({
 					<span className={cn("shrink-0", tone)} data-testid={`run-status-${run.id}`}>
 						{runStatusText(run)}
 					</span>
-					<span className="ml-auto min-w-0 shrink truncate pl-1 text-description">
-						{runTimeAndCost(run, taskHistory, now)}
+					<span className="ml-auto min-w-0 shrink truncate pl-1 text-description" title={timeAndCost}>
+						{timeAndCost}
 					</span>
 				</button>
 				{live && (
@@ -370,15 +378,20 @@ export function RunBlock({
 									<span className="min-w-0 truncate text-description">· you picked {step.choice}</span>
 								)}
 							</div>
-							{step.error && step.threads.every((thread) => !thread.error) && (
+							{step.error && !actions.problems && step.threads.every((thread) => !thread.error) && (
 								<div className="ml-9 text-error">
-									{step.error} {step.fix && <FixLink automation={run.automation} fix={step.fix} />}
+									<ProblemDetails
+										automation={run.automation}
+										onRecheck={actions.onRecheck}
+										problem={{ message: step.error, fix: step.fix }}
+									/>
 								</div>
 							)}
 							{step.threads.length > 0 && step.status !== "pending" && step.status !== "skipped" && (
 								<ul className="m-0 list-none p-0">
 									{step.threads.map((thread) => (
 										<ThreadRow
+											actions={actions}
 											key={thread.id}
 											nested={step.kind === "together"}
 											onOpenThread={onOpenThread}
@@ -396,9 +409,13 @@ export function RunBlock({
 					))}
 				</ol>
 			)}
-			{expanded && run.error && (
+			{expanded && run.error && !actions.problems && (
 				<div className={cn("mt-1", run.status === "failed" ? "text-error" : "text-description")}>
-					{run.error} {run.fix && <FixLink automation={run.automation} fix={run.fix} />}
+					<ProblemDetails
+						automation={run.automation}
+						onRecheck={actions.onRecheck}
+						problem={{ message: run.error, fix: run.fix }}
+					/>
 				</div>
 			)}
 			{live && expanded && (
@@ -415,7 +432,7 @@ export function RunBlock({
 					run={run}
 				/>
 			)}
-			{!live && expanded && <RunActions run={run} />}
+			{!live && expanded && <RunActions actions={actions} run={run} />}
 		</div>
 	)
 }

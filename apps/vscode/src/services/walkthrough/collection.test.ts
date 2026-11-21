@@ -30,6 +30,24 @@ async function repo(name: string): Promise<string> {
 	await git(root, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-qm", "initial"])
 	return root
 }
+
+async function addSubmodule(root: string, source: string, name: string) {
+	await git(root, ["-c", "protocol.file.allow=always", "submodule", "add", source, name])
+	await git(root, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-qm", `Add ${name}`])
+}
+
+async function repoWithNestedSubmodule(name: string) {
+	const leaf = await repo("leaf")
+	const middle = await repo("middle")
+	await addSubmodule(middle, leaf, "nested")
+	const root = await repo(name)
+	await addSubmodule(root, middle, "sub")
+	return root
+}
+
+async function checkoutSubmodules(root: string) {
+	await git(root, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"])
+}
 beforeEach(async () => {
 	directory = await realpath(await mkdtemp(path.join(tmpdir(), "walkthrough-test-")))
 })
@@ -38,6 +56,129 @@ afterEach(async () => {
 })
 
 describe("walkthrough collection", () => {
+	it.each([
+		"mm worktree",
+		"plain Git workspace",
+		"main mm workspace",
+	])("reviews nested submodule files in a %s", async (layout) => {
+		const workspace = path.join(directory, "workspace")
+		const mm = layout !== "plain Git workspace"
+		const original = await repoWithNestedSubmodule(mm ? "workspace/module1" : "workspace")
+		if (mm) {
+			await repo("workspace/module2")
+			await writeFile(path.join(workspace, ".mmrc"), "module1\nmodule2\n")
+		}
+		const base = layout === "mm worktree" ? path.join(workspace, "isolates", "thread") : workspace
+		const root = mm ? path.join(base, "module1") : base
+		if (layout === "mm worktree") {
+			await git(original, ["worktree", "add", "--detach", root])
+			await git(path.join(workspace, "module2"), ["worktree", "add", "--detach", path.join(base, "module2")])
+		}
+		await checkoutSubmodules(root)
+		await git(root, ["config", "submodule.sub.ignore", "all"])
+		const child = path.join(root, "sub", "nested")
+		await writeFile(path.join(child, "a.ts"), "edit inside nested submodule\n")
+		await git(child, ["add", "a.ts"])
+		await writeFile(path.join(child, "new.ts"), "untracked nested file\n")
+		const input = {
+			taskId: "task",
+			scope: "git" as const,
+			roots: layout === "mm worktree" ? [base, root, path.join(base, "module2")] : [base],
+			includeMmWorkspace: layout === "main mm workspace",
+			checkpointRoot: base,
+			messages: [],
+			runSpans: [],
+			edits: [],
+			checkpoints: [],
+		}
+		const prefix = mm ? "module1/" : ""
+		const { walk, changes } = await collect(input)
+		expect(walk.hunks.map((hunk) => hunk.path)).toEqual([`${prefix}sub/nested/a.ts`, `${prefix}sub/nested/new.ts`])
+		expect(walk.hunks[0].patch).toContain("-old\n+edit inside nested submodule")
+		expect(changes[0].filePath).toBe(path.join(child, "a.ts"))
+		expect(walk.warnings).toEqual([])
+	})
+	it("uses the nested gitlinks at each checkpoint for per-stop diffs", async () => {
+		const root = await repoWithNestedSubmodule("root")
+		await checkoutSubmodules(root)
+		const first = (await git(root, ["rev-parse", "HEAD"])).trim()
+		const child = path.join(root, "sub", "nested")
+		await writeFile(path.join(child, "a.ts"), "committed by first turn\n")
+		const commit = (dir: string, message: string) =>
+			git(dir, [
+				"-c",
+				"user.name=Test",
+				"-c",
+				"user.email=test@example.invalid",
+				"-c",
+				"commit.gpgsign=false",
+				"commit",
+				"-qam",
+				message,
+			])
+		for (const dir of [child, path.dirname(child), root]) await commit(dir, "First turn")
+		const second = (await git(root, ["rev-parse", "HEAD"])).trim()
+		await writeFile(path.join(child, "a.ts"), "edited by second turn\n")
+		await commit(child, "Second turn")
+		const input = {
+			taskId: "task",
+			scope: "thread" as const,
+			roots: [root],
+			checkpointRoot: root,
+			messages: [
+				{ role: "user", content: "Commit" },
+				{ role: "user", content: "Edit again" },
+			] as Message[],
+			runSpans: [1, 1],
+			edits: [],
+			checkpoints: [
+				{ ref: first, runCount: 1, kind: "commit" as const },
+				{ ref: second, runCount: 2, kind: "commit" as const },
+			],
+		}
+		const { turns } = await collect(input)
+		expect(turns[0].changes).toEqual([
+			expect.objectContaining({ path: "sub/nested/a.ts", before: "old\n", after: "committed by first turn\n" }),
+		])
+		const { walk } = await collect({ ...input, scope: "last_turn" })
+		expect(walk.hunks[0]).toMatchObject({ path: "sub/nested/a.ts", turnId: "turn2" })
+		expect(walk.hunks[0].patch).toContain("-committed by first turn\n+edited by second turn")
+	})
+
+	it("keeps the recorded baseline and leaves pre-existing nested edits in the whole diff", async () => {
+		const root = await repoWithNestedSubmodule("root")
+		await checkoutSubmodules(root)
+		const filePath = path.join(root, "sub", "nested", "a.ts")
+		await writeFile(filePath, "the thread's edit\n")
+		const input = {
+			taskId: "task",
+			scope: "last_turn" as const,
+			roots: [root],
+			checkpointRoot: root,
+			messages: [
+				{ role: "user", content: "Edit the file" },
+				{ role: "assistant", content: [{ type: "tool_use", id: "edit", name: "edit_files", input: {} }] },
+			] as Message[],
+			runSpans: [1, 0],
+			edits: [
+				{
+					toolCallId: "edit",
+					runId: "run",
+					filePath,
+					before: "local change before the turn\n",
+					after: "the thread's edit\n",
+					beforeExists: true,
+					afterExists: true,
+				},
+			],
+			checkpoints: [{ ref: (await git(root, ["rev-parse", "HEAD"])).trim(), kind: "commit" as const, runCount: 1 }],
+		}
+		const { changes } = await collect(input)
+		expect(changes).toEqual([expect.objectContaining({ path: "sub/nested/a.ts", before: "local change before the turn\n" })])
+		expect((await collect({ ...input, edits: [] })).walk.hunks).toEqual([])
+		expect((await collect({ ...input, scope: "git", edits: [] })).walk.hunks[0].path).toBe("sub/nested/a.ts")
+	})
+
 	it("keeps reviewable files when another changed file exceeds the size limit", async () => {
 		const root = await repo("repo")
 		await writeFile(path.join(root, "a.ts"), "review this\n")

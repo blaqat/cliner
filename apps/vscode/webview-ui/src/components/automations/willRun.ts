@@ -4,6 +4,7 @@ import {
 	type AutomationRun,
 	type AutomationThreadSpec,
 	fillPlaceholders,
+	formatAutomationCost,
 	runThreadIds,
 	withArgumentDefaults,
 } from "@shared/automations"
@@ -40,8 +41,6 @@ export interface WillRun {
 	/** "Cost depends on…" or a range from earlier runs. */
 	cost: string
 }
-
-const dollars = (value: number) => `$${value < 10 ? value.toFixed(2) : value.toFixed(0)}`
 
 /** Every step with what it will start, so nothing runs before the user has seen its models. */
 export function describeRun(
@@ -84,7 +83,7 @@ export function describeRun(
 		if (resolved.inputPrice !== null && resolved.outputPrice !== null)
 			prices.set(
 				resolved.label,
-				`${resolved.label} ${dollars(resolved.inputPrice)} in / ${dollars(resolved.outputPrice)} out`,
+				`${resolved.label} ${formatAutomationCost(resolved.inputPrice)} in / ${formatAutomationCost(resolved.outputPrice)} out`,
 			)
 		return thread
 	}
@@ -138,7 +137,7 @@ export function describeRun(
 		const low = Math.min(...costs)
 		const high = Math.max(...costs)
 		const label = costs.length === 1 ? "Last run" : `Last ${costs.length} runs`
-		cost = `${label} ${low === high ? dollars(low) : `${dollars(low)}–${dollars(high)}`}`
+		cost = `${label} ${low === high ? formatAutomationCost(low) : `${formatAutomationCost(low)}–${formatAutomationCost(high)}`}`
 	} else if (threadCount === 0) {
 		cost = "No model calls"
 	} else {

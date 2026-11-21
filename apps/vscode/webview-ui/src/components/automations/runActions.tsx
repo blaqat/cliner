@@ -17,25 +17,21 @@ export const stopRun = (runId: string) =>
 
 /** What must be fixed before `/name` can run (worktrees, models); empty when it can. */
 export async function checkAutomation(name: string): Promise<AutomationProblem[]> {
-	try {
-		const response = await AutomationServiceClient.checkAutomationRun(StringRequest.create({ value: name }))
-		const parsed = JSON.parse(response.problemsJson || "[]")
-		return Array.isArray(parsed) ? (parsed as AutomationProblem[]) : []
-	} catch {
-		return []
-	}
+	const response = await AutomationServiceClient.checkAutomationRun(StringRequest.create({ value: name }))
+	const parsed = JSON.parse(response.problemsJson || "[]")
+	if (!Array.isArray(parsed)) throw new Error("Couldn't check the workspace.")
+	return parsed as AutomationProblem[]
 }
 
 /**
  * The link to where a problem is fixed: Worktrees or Models settings, the automation in the builder,
  * or the folder itself (open another, initialize git here, or commit in Source Control).
  */
-export function FixLink({ fix, automation, className }: { fix: AutomationFix; automation?: string; className?: string }) {
+function FixLink({ fix, automation }: { fix: Exclude<AutomationFix, "repository">; automation: string }) {
 	const { navigateToSettings } = useExtensionState()
 	const { automations } = useAutomations()
 	const path = automations.find((item) => item.name === automation)?.path
 	if (fix === "automation" && !path) return null
-	if (fix === "repository") return <RepositoryFix automation={automation} className={className} />
 	const onClick =
 		fix === "automation"
 			? () => openAutomationBuilder({ path })
@@ -46,7 +42,7 @@ export function FixLink({ fix, automation, className }: { fix: AutomationFix; au
 					: () => navigateToSettings(fix)
 	return (
 		<LinkButton
-			className={className}
+			className="whitespace-nowrap"
 			data-testid={`run-fix-${fix}`}
 			onClick={onClick}
 			onMouseDown={(event) => event.preventDefault()}>
@@ -59,22 +55,31 @@ export function FixLink({ fix, automation, className }: { fix: AutomationFix; au
  * The folder isn't a git repository: open the right folder, or make this one a repository. git init
  * runs only on the click, then the automation is checked again and says what's left (or that it's ready).
  */
-function RepositoryFix({ automation, className }: { automation?: string; className?: string }) {
-	const [result, setResult] = useState<{ busy?: boolean; left?: AutomationProblem[]; error?: string }>({})
+function RepositoryFix({ automation, onRecheck }: ProblemDetailsProps) {
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState("")
 	const initialize = async () => {
-		setResult({ busy: true })
+		setBusy(true)
+		setError("")
 		try {
-			await threadWorktreeAction("initRepository")
-			setResult({ left: automation ? await checkAutomation(automation) : [] })
-		} catch (error) {
-			setResult({ error: `Couldn't initialize git: ${worktreeErrorText(error)}` })
+			try {
+				await threadWorktreeAction("initRepository")
+			} catch (error) {
+				setError(`Couldn't initialize git: ${worktreeErrorText(error)}`)
+				return
+			}
+			onRecheck(await checkAutomation(automation))
+		} catch {
+			setError("Git is initialized. Couldn't re-check the workspace.")
+		} finally {
+			setBusy(false)
 		}
 	}
-	const left = result.left?.find((problem) => problem.fix !== "repository") ?? result.left?.[0]
 	return (
 		<>
-			<span className={className} data-testid="run-fix-repository">
+			<span data-testid="run-fix-repository">
 				<LinkButton
+					className="whitespace-nowrap"
 					data-testid="run-fix-open-folder"
 					onClick={() => void threadWorktreeAction("openFolder")}
 					onMouseDown={(event) => event.preventDefault()}>
@@ -82,44 +87,52 @@ function RepositoryFix({ automation, className }: { automation?: string; classNa
 				</LinkButton>
 				{" · "}
 				<LinkButton
+					className="whitespace-nowrap"
 					data-testid="run-fix-git-init"
-					disabled={result.busy}
+					disabled={busy}
 					onClick={() => void initialize()}
 					onMouseDown={(event) => event.preventDefault()}>
-					{result.busy ? "Initializing…" : "Initialize git here"}
+					{busy ? "Initializing…" : "Initialize git here"}
 				</LinkButton>
 			</span>
-			{/* Its own line under the links: the sentence it answers is still above. */}
-			{result.left && !left && (
-				<span className="block text-description" data-testid="run-fix-ready">
-					Git is set up. Retry the step.
-				</span>
-			)}
-			{left && (
-				<span className="block text-description" data-testid="run-fix-left">
-					Git is set up, but {left.message.replace(/^.*?, but /, "")}{" "}
-					{left.fix && left.fix !== "repository" && (
-						<FixLink automation={automation} className="whitespace-nowrap" fix={left.fix} />
-					)}
-				</span>
-			)}
-			{result.error && (
+			{error && (
 				<span className="block" data-testid="run-fix-error">
-					{result.error}
+					{error}
 				</span>
 			)}
 		</>
 	)
 }
 
+interface ProblemDetailsProps {
+	automation: string
+	onRecheck: (problems: AutomationProblem[]) => void
+}
+
+export function ProblemDetails({ problem, automation, onRecheck }: ProblemDetailsProps & { problem: AutomationProblem }) {
+	return (
+		<>
+			{problem.message}{" "}
+			{problem.fix === "repository" ? (
+				<RepositoryFix automation={automation} onRecheck={onRecheck} />
+			) : problem.fix ? (
+				<FixLink automation={automation} fix={problem.fix} />
+			) : null}
+		</>
+	)
+}
+
 /** Problems with their fix links, one per line. */
-export function ProblemList({ problems, automation }: { problems: readonly AutomationProblem[]; automation?: string }) {
+export function ProblemList({
+	problems,
+	automation,
+	onRecheck,
+}: ProblemDetailsProps & { problems: readonly AutomationProblem[] }) {
 	return (
 		<ul className="m-0 list-none p-0" data-testid="run-problems" role="alert">
 			{problems.map((problem) => (
 				<li className="text-error" key={problem.message}>
-					{problem.message}{" "}
-					{problem.fix && <FixLink automation={automation} className="whitespace-nowrap" fix={problem.fix} />}
+					<ProblemDetails automation={automation} onRecheck={onRecheck} problem={problem} />
 				</li>
 			))}
 		</ul>
@@ -166,17 +179,18 @@ export function clearRunStartsForTest() {
 export function useRunActions(run: AutomationRun) {
 	const shape = runShape(run)
 	const busy = useSyncExternalStore(subscribeStarting, () => starting.get(run.id) === shape)
-	const [problems, setProblems] = useState<AutomationProblem[]>([])
+	const [lastCheck, setLastCheck] = useState<{ shape: string; problems: AutomationProblem[]; ready?: boolean }>()
+	const check = lastCheck?.shape === shape ? lastCheck : undefined
+	const onRecheck = (problems: AutomationProblem[]) => setLastCheck({ shape, problems, ready: problems.length === 0 })
 	const send = useCallback(
 		async (options: { stepId?: string; fresh?: boolean }) => {
 			// Checked synchronously: a double click lands before React re-renders the disabled button.
 			if (starting.get(run.id) === shape) return
 			setStarting(run.id, shape)
-			setProblems([])
 			try {
 				const found = await checkAutomation(run.automation)
+				setLastCheck({ shape, problems: found })
 				if (found.length) {
-					setProblems(found)
 					setStarting(run.id, undefined)
 					return
 				}
@@ -193,7 +207,7 @@ export function useRunActions(run: AutomationRun) {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error)
 				// Another window (or a click before this one) already got it going: not a failure.
-				if (!/already running/i.test(message)) setProblems([{ message }])
+				if (!/already running/i.test(message)) setLastCheck({ shape, problems: [{ message }] })
 				setStarting(run.id, undefined)
 			}
 		},
@@ -201,7 +215,9 @@ export function useRunActions(run: AutomationRun) {
 	)
 	return {
 		busy,
-		problems,
+		problems: check?.problems,
+		ready: check?.ready,
+		onRecheck,
 		retry: () => send({}),
 		resumeFrom: (stepId: string) => send({ stepId }),
 		runAgain: () => send({ fresh: true }),

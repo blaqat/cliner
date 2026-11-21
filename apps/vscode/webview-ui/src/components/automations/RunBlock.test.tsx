@@ -138,6 +138,12 @@ describe("RunBlock", () => {
 		expect(screen.queryByTestId("run-thread-build")).not.toBeInTheDocument()
 	})
 
+	it("shows a sub-cent run cost and limit in the header", () => {
+		mocks.history = [{ id: "t1", totalCost: 0.00054 }]
+		render(<RunBlock now={4 * 60_000} onOpenThread={vi.fn()} run={{ ...waitingRun(), costLimit: 0.001 }} statuses={{}} />)
+		expect(screen.getByTestId("run-block-run-1")).toHaveTextContent("4 min · $0.00054 of $0.001")
+	})
+
 	it("answers the Ask you step and opens a choice's thread to read it", () => {
 		const onOpenThread = vi.fn()
 		render(<RunBlock onOpenThread={onOpenThread} run={waitingRun()} statuses={{}} />)
@@ -204,7 +210,10 @@ describe("RunBlock", () => {
 		await waitFor(() => expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ fresh: true })))
 	})
 
-	it("offers to open a folder or initialize git when the folder isn't a repository, and re-checks after", async () => {
+	it.each([
+		"task page",
+		"thread run bar",
+	])("replaces stale git recovery guidance on the %s after initializing", async (where) => {
 		const run = failedRun()
 		run.steps[3] = {
 			...run.steps[3],
@@ -217,8 +226,16 @@ describe("RunBlock", () => {
 				},
 			],
 		}
-		render(<RunBlock onOpenThread={vi.fn()} run={run} statuses={{}} />)
-		const block = screen.getByTestId("run-block-run-1")
+		setAutomationRunsForTest([run])
+		render(
+			where === "task page" ? (
+				<RunBlock onOpenThread={vi.fn()} run={run} statuses={{}} />
+			) : (
+				<AutomationRunBar taskGroupId="g1" threadId="t1" />
+			),
+		)
+		const block = screen.getByTestId(where === "task page" ? "run-block-run-1" : "automation-run-bar")
+		expect(block).toHaveTextContent("isn't a git repository")
 		fireEvent.click(within(block).getByTestId("run-fix-open-folder"))
 		expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "openFolder" }))
 		// git init only runs on its own click.
@@ -238,16 +255,36 @@ describe("RunBlock", () => {
 		await waitFor(() =>
 			expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "initRepository" })),
 		)
-		expect(await within(block).findByTestId("run-fix-left")).toHaveTextContent(
-			"Git is set up, but the repository has no commits yet.",
-		)
-		fireEvent.click(within(block).getByTestId("run-fix-commit"))
+		const commit = await within(block).findByTestId("run-fix-commit")
+		expect(block).toHaveTextContent("the repository has no commits yet.")
+		expect(block).not.toHaveTextContent("isn't a git repository")
+		expect(within(block).queryByTestId("run-fix-git-init")).not.toBeInTheDocument()
+		expect(within(block).queryByTestId("run-fix-open-folder")).not.toBeInTheDocument()
+		fireEvent.click(commit)
 		expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "openSourceControl" }))
 
-		// Once nothing is left, it says so; Retry is right below.
-		fireEvent.click(within(block).getByTestId("run-fix-git-init"))
-		expect(await within(block).findByTestId("run-fix-ready")).toHaveTextContent("Retry the step")
-		expect(screen.getByTestId("run-retry-run-1")).toBeEnabled()
+		const retry = within(block).getByTestId(where === "task page" ? "run-retry-run-1" : "automation-run-bar-retry")
+		fireEvent.click(retry)
+		await waitFor(() => expect(mocks.resume).toHaveBeenCalledTimes(1))
+		expect(block).not.toHaveTextContent("the repository has no commits yet.")
+	})
+
+	it("replaces the blocked resume notice after initializing git", async () => {
+		const run = failedRun()
+		run.status = "stopped"
+		run.steps[3] = { ...run.steps[3], status: "stopped", fix: undefined, threads: [thread("build", undefined, "stopped")] }
+		mocks.check
+			.mockResolvedValueOnce({ problemsJson: '[{"message":"This folder is not a git repository.","fix":"repository"}]' })
+			.mockResolvedValueOnce({ problemsJson: '[{"message":"The repository has no commits yet.","fix":"commit"}]' })
+		render(<RunBlock defaultOpen onOpenThread={vi.fn()} run={run} statuses={{}} />)
+		fireEvent.click(screen.getByTestId("run-retry-run-1"))
+		const problems = await screen.findByTestId("run-problems")
+		expect(problems).toHaveTextContent("This folder is not a git repository.")
+		fireEvent.click(within(problems).getByTestId("run-fix-git-init"))
+		expect(await within(problems).findByTestId("run-fix-commit")).toBeVisible()
+		expect(problems).toHaveTextContent("The repository has no commits yet.")
+		expect(problems).not.toHaveTextContent("This folder is not a git repository.")
+		expect(within(problems).queryByTestId("run-fix-git-init")).not.toBeInTheDocument()
 	})
 
 	it("disables Retry everywhere while a resume is starting, until the run reports it", async () => {

@@ -46,7 +46,10 @@ describe("describeRun", () => {
 		expect(describeRun(noTask, {}, undefined, { inTask: true }).steps[0].title).toBe("Plan")
 	})
 
-	it("uses what earlier runs cost when there are some", () => {
+	it.each([
+		[0.4, 0.5, 1.2, "Last 2 runs $0.90–$1.20"],
+		[0.0004, 0.0006, 12.5, "Last 2 runs $0.001–$12.50"],
+	])("formats earlier run costs of %s, %s and %s", (first, second, third, label) => {
 		const run = (id: string, threads: string[]): AutomationRun => ({
 			id,
 			automation: "ship",
@@ -75,16 +78,16 @@ describe("describeRun", () => {
 			],
 		})
 		const history = [
-			{ id: "a", totalCost: 0.4 },
-			{ id: "b", totalCost: 0.5 },
-			{ id: "c", totalCost: 1.2 },
+			{ id: "a", totalCost: first },
+			{ id: "b", totalCost: second },
+			{ id: "c", totalCost: third },
 		] as HistoryItem[]
 		const willRun = describeRun(definition, {}, undefined, {
 			inTask: true,
 			earlierRuns: [run("1", ["a", "b"]), run("2", ["c"])],
 			history,
 		})
-		expect(willRun.cost).toBe("Last 2 runs $0.90–$1.20")
+		expect(willRun.cost).toBe(label)
 	})
 })
 

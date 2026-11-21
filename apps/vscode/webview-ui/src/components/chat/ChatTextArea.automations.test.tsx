@@ -194,6 +194,15 @@ describe("ChatTextArea automations", () => {
 		expect(screen.getByTestId("run-button")).toBeInTheDocument()
 	})
 
+	it.each([
+		[0.001, "$0.001"],
+		[12.5, "$12.50"],
+	])("shows the %s cost limit in the automation start form", async (costLimit, label) => {
+		mocks.listAutomations.mockResolvedValue(AutomationList.create({ automations: [info({ ...review, costLimit })] }))
+		await renderComposer("/review-ticket ticket:PROJ-1")
+		expect(await screen.findByTestId("automation-cost")).toHaveTextContent(`Stops itself at ${label}.`)
+	})
+
 	it("blocks Run until required arguments are set, then starts the run instead of sending", async () => {
 		const { onSend, textarea } = await renderComposer("/review-ticket ")
 		expect(await screen.findByTestId("automation-start-status")).toHaveTextContent("Needs ticket")

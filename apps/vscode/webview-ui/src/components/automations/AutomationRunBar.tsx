@@ -6,7 +6,7 @@ import { useNavigationHistory } from "@/components/navigation/NavigationHistoryC
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
 import { StepStatusIcon } from "./RunBlock"
-import { FixLink, ProblemList, stopRun, useRunActions } from "./runActions"
+import { ProblemDetails, ProblemList, stopRun, useRunActions } from "./runActions"
 import { currentStep, runFailure, runForThread, runFraction, runNeeds } from "./runFacts"
 
 interface AutomationRunBarProps {
@@ -90,7 +90,7 @@ function RunBarBody({
 	const needHere = !!need?.threadId && need.threadId === threadId
 	const hereIndex = run.steps.findIndex((step) => step.threads.some((thread) => thread.threadId === threadId))
 	const status = failure
-		? `Failed at step ${at?.number ?? "?"}: ${failure.message}`
+		? `Failed at step ${at?.number ?? "?"}`
 		: done
 			? "Done. Ready for review is on the task page."
 			: need
@@ -146,10 +146,10 @@ function RunBarBody({
 				className={cn("mt-0.5 min-w-0 pl-4.5", failure ? "text-error" : need ? "text-warning" : "text-description")}
 				data-testid="automation-run-bar-status">
 				{status}
-				{failure?.fix && (
+				{failure && !actions.problems && (
 					<>
-						{" "}
-						<FixLink automation={run.automation} className="whitespace-nowrap" fix={failure.fix} />
+						{": "}
+						<ProblemDetails automation={run.automation} onRecheck={actions.onRecheck} problem={failure} />
 					</>
 				)}
 				{failure && (
@@ -173,11 +173,12 @@ function RunBarBody({
 					/>
 				</div>
 			)}
-			{actions.problems.length > 0 && (
+			{!!actions.problems?.length && (
 				<div className="mt-0.5 pl-4.5">
-					<ProblemList automation={run.automation} problems={actions.problems} />
+					<ProblemList automation={run.automation} onRecheck={actions.onRecheck} problems={actions.problems} />
 				</div>
 			)}
+			{actions.ready && <div className="mt-0.5 pl-4.5 text-description">Git is set up. Retry the step.</div>}
 			{hereIndex >= 0 && isLiveRun(run) && ["running", "waiting"].includes(run.steps[hereIndex].status) && (
 				<div className="mt-1 text-[11px] text-description">
 					This thread is step {hereIndex + 1} of {run.steps.length}. Typing here steps in.

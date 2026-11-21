@@ -11,6 +11,7 @@ import {
 	type AutomationTogetherStep,
 	automationDisplayName,
 	fillPlaceholders,
+	formatAutomationCost,
 	isLiveRun,
 	resumePoints,
 	runActiveMs,
@@ -173,6 +174,26 @@ function runStepFor(step: AutomationStep): AutomationRunStep {
 	}
 }
 
+function costStopMessage(limit: number, spent: string): string {
+	const formattedLimit = formatAutomationCost(limit)
+	return `Stopped at its ${formattedLimit} cost limit (${spent} spent). Resume to allow another ${formattedLimit}.`
+}
+
+function restoreCostStopMessage(run: AutomationRun): AutomationRun {
+	if (run.status !== "stopped" || !run.costLimit || run.costLimit >= 0.01 || !run.error) return run
+	// Old runs saved the exact limit and only the rounded spend in the stop message.
+	const legacy =
+		/^Stopped at its \$\d+\.\d{2} cost limit \(\$(\d+\.\d{2}) spent\)\. Resume to allow another \$\d+\.\d{2}\.$/.exec(
+			run.error,
+		)
+	if (!legacy) return run
+	const spent = Number(legacy[1])
+	return {
+		...run,
+		error: costStopMessage(run.costLimit, spent ? formatAutomationCost(spent) : `less than ${formatAutomationCost(0.01)}`),
+	}
+}
+
 /**
  * Runs automations: one step after another, a together step's threads at the same time, a checkpoint
  * waits for the user's pick. Every thread is a normal background thread in the run's task, so the user
@@ -210,7 +231,7 @@ export class AutomationRunner {
 				.filter((run) => !known.has(run.id))
 				.map(({ outputs, ...run }): AutomationRun => {
 					if (outputs) this.outputs.set(run.id, outputs)
-					return run
+					return restoreCostStopMessage(run)
 				})
 				.map((run) =>
 					isLiveRun(run)
@@ -557,7 +578,7 @@ export class AutomationRunner {
 		const spent = this.spent(live.run) - live.costBase
 		if (spent < limit) return
 		void this.stop(live.run.id, {
-			error: `Stopped at its $${limit.toFixed(2)} cost limit ($${spent.toFixed(2)} spent). Resume to allow another $${limit.toFixed(2)}.`,
+			error: costStopMessage(limit, formatAutomationCost(spent)),
 		})
 	}
 

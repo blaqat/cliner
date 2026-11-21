@@ -1,7 +1,13 @@
-import { type AutomationArgument, type AutomationProblem, automationDisplayName, automationThreads } from "@shared/automations"
+import {
+	type AutomationArgument,
+	type AutomationProblem,
+	automationDisplayName,
+	automationThreads,
+	formatAutomationCost,
+} from "@shared/automations"
 import { parseTypedOptions, setTypedOption, typedFocus } from "@shared/scripts"
 import type React from "react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
@@ -41,22 +47,41 @@ const SECTION_CLASS = "mt-2 text-[10.5px] font-medium uppercase tracking-wider t
 const CHECK_MS = 4000
 
 /** What must be fixed before `name` can run, kept current while the form is open. */
-function useWorkspaceCheck(name: string): AutomationProblem[] {
-	const [problems, setProblems] = useState<AutomationProblem[]>([])
+function useWorkspaceCheck(name: string) {
+	const [checkResult, setCheckResult] = useState<{ name: string; problems: AutomationProblem[] }>()
+	const active = useRef<{ name: string; sent: number; applied: number }>()
+	const onRecheck = (problems: AutomationProblem[]) => {
+		const state = active.current
+		if (state?.name !== name) return
+		state.applied = state.sent
+		setCheckResult({ name, problems })
+	}
 	useEffect(() => {
-		let cancelled = false
-		const check = () =>
-			void checkAutomation(name).then((found) => {
-				if (!cancelled) setProblems((current) => (JSON.stringify(current) === JSON.stringify(found) ? current : found))
-			})
-		check()
-		const timer = setInterval(check, CHECK_MS)
+		const state = { name, sent: 0, applied: 0 }
+		active.current = state
+		const check = async () => {
+			const request = ++state.sent
+			try {
+				const problems = await checkAutomation(name)
+				if (active.current !== state || request <= state.applied) return
+				state.applied = request
+				setCheckResult((current) =>
+					current?.name === name && JSON.stringify(current.problems) === JSON.stringify(problems)
+						? current
+						: { name, problems },
+				)
+			} catch {
+				// Keep the last verified result while the host is unavailable.
+			}
+		}
+		void check()
+		const timer = setInterval(() => void check(), CHECK_MS)
 		return () => {
-			cancelled = true
+			active.current = undefined
 			clearInterval(timer)
 		}
 	}, [name])
-	return problems
+	return { problems: checkResult?.name === name ? checkResult.problems : [], onRecheck }
 }
 
 /**
@@ -88,7 +113,8 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 		history: taskHistory,
 	})
 	// Models are checked here; the host checks what only it can see (can a worktree be made?).
-	const workspaceProblems = useWorkspaceCheck(automation.name).filter((problem) => problem.fix !== "models")
+	const workspaceCheck = useWorkspaceCheck(automation.name)
+	const workspaceProblems = workspaceCheck.problems.filter((problem) => problem.fix !== "models")
 	const autoApproved = automationThreads(definition.steps).some(({ thread }) => thread.worktree && thread.mode === "act")
 	const blocked =
 		"reason" in ready
@@ -250,7 +276,7 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 			</ol>
 			<div className="mt-1.5 text-description" data-testid="automation-cost">
 				{willRun.cost}
-				{definition.costLimit ? ` Stops itself at $${definition.costLimit.toFixed(2)}.` : ""}
+				{definition.costLimit ? ` Stops itself at ${formatAutomationCost(definition.costLimit)}.` : ""}
 			</div>
 			{autoApproved && (
 				<div className="mt-1 text-description" data-testid="automation-auto-approve">
@@ -267,7 +293,7 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 			</div>
 			{workspaceProblems.length > 0 && (
 				<div className="mt-1.5" data-testid="automation-precheck">
-					<ProblemList automation={automation.name} problems={workspaceProblems} />
+					<ProblemList automation={automation.name} onRecheck={workspaceCheck.onRecheck} problems={workspaceProblems} />
 				</div>
 			)}
 			<div

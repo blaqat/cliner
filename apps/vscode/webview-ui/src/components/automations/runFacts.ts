@@ -3,6 +3,7 @@ import {
 	type AutomationRun,
 	type AutomationRunStep,
 	type AutomationRunStepStatus,
+	formatAutomationCost,
 	runActiveMs,
 	runThreadIds,
 } from "@shared/automations"
@@ -12,10 +13,6 @@ import type { HistoryItem } from "@shared/HistoryItem"
 export function runCost(run: AutomationRun, history: readonly HistoryItem[] | undefined): number {
 	const ids = new Set(runThreadIds(run))
 	return (history ?? []).filter((item) => ids.has(item.id)).reduce((sum, item) => sum + (item.totalCost ?? 0), 0)
-}
-
-export function formatCost(dollars: number): string {
-	return dollars > 0 ? `$${dollars.toFixed(2)}` : ""
 }
 
 /** "4 min", "45 s", "1 h 5 min". */
@@ -53,9 +50,11 @@ export function runStatusText(run: AutomationRun): string {
 
 /** "4 min · $0.31": the run's time (not counting the pause before a resume) and spend. */
 export function runTimeAndCost(run: AutomationRun, history: readonly HistoryItem[] | undefined, now: number): string {
-	const cost = formatCost(runCost(run, history))
-	const limit = run.costLimit ? ` of $${run.costLimit.toFixed(2)}` : ""
-	return [formatElapsed(runActiveMs(run, now)), cost ? `${cost}${limit}` : ""].filter(Boolean).join(" · ")
+	const cost = runCost(run, history)
+	const limit = run.costLimit ? ` of ${formatAutomationCost(run.costLimit)}` : ""
+	return [formatElapsed(runActiveMs(run, now)), cost > 0 ? `${formatAutomationCost(cost)}${limit}` : ""]
+		.filter(Boolean)
+		.join(" · ")
 }
 
 /** 0–1, for the run bar's progress line. */

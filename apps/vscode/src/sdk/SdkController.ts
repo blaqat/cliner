@@ -4060,7 +4060,8 @@ export class Controller {
 			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
 			// An isolated thread's changes live only in its worktree (one per module with mm), not
 			// in the user's own workspace folders.
-			const rootPaths = worktree && !worktree.takenOver ? worktree.modules.map((module) => module.path) : workspace.paths
+			const isolated = worktree && !worktree.takenOver
+			const rootPaths = isolated ? worktree.modules.map((module) => module.path) : workspace.paths
 			return {
 				taskId,
 				scope,
@@ -4068,6 +4069,7 @@ export class Controller {
 				runSpans: messages.map(getUserRunSpan),
 				edits,
 				roots: [...new Set([cwd, ...rootPaths])],
+				includeMmWorkspace: !isolated,
 				checkpointRoot: cwd,
 				checkpoints: readSessionCheckpointHistory(session),
 			}

@@ -54,15 +54,47 @@ export async function mmConfig(workspace: string): Promise<{ root: string; file:
 }
 
 export async function gitlinks(dir: string, tree: string) {
-	const entries = (await git(dir, ["ls-tree", "-rz", tree])).split("\0").filter(Boolean)
-	return new Map(
-		entries
-			.filter((entry) => entry.startsWith("160000 "))
-			.map((entry) => {
-				const tab = entry.indexOf("\t")
-				return [entry.slice(tab + 1), entry.slice(0, tab).split(" ")[2]]
-			}),
-	)
+	return parseGitlinks(await git(dir, ["ls-tree", "-rz", tree]), 2)
+}
+
+function parseGitlinks(output: string, oidField: number): Map<string, string> {
+	const links = new Map<string, string>()
+	for (const entry of output.split("\0")) {
+		if (!entry.startsWith("160000 ")) continue
+		const tab = entry.indexOf("\t")
+		const relative = entry.slice(tab + 1)
+		if (!links.has(relative)) links.set(relative, entry.slice(0, tab).split(" ")[oidField])
+	}
+	return links
+}
+
+/** Compare gitlink entries without relying on Git's submodule-ignore settings. */
+export async function submoduleLinks(
+	dir: string,
+	beforeRef: string | undefined,
+	afterRef: string | undefined,
+	includeIndex: boolean,
+) {
+	const [before, after, index] = await Promise.all([
+		beforeRef ? gitlinks(dir, beforeRef) : new Map<string, string>(),
+		afterRef ? gitlinks(dir, afterRef) : new Map<string, string>(),
+		includeIndex
+			? git(dir, ["ls-files", "--stage", "-z"]).then((output) => parseGitlinks(output, 1))
+			: new Map<string, string>(),
+	])
+	return [...new Set([...before.keys(), ...after.keys(), ...index.keys()])].map((relative) => ({
+		relative,
+		before: before.get(relative),
+		after: after.get(relative),
+		index: index.get(relative),
+	}))
+}
+
+export async function submodulePath(dir: string, relative: string): Promise<string> {
+	const child = path.resolve(dir, relative)
+	if (!child.startsWith(dir + path.sep) || !(await fs.realpath(child)).startsWith((await fs.realpath(dir)) + path.sep))
+		throw new Error(`Submodule outside its repository: ${relative}`)
+	return child
 }
 
 export interface Repository extends WorktreeModule {
@@ -77,36 +109,20 @@ export async function repositories(mapping: ThreadWorktree): Promise<Repository[
 	async function visit(module: WorktreeModule, configured: boolean, indexHead?: string) {
 		await assertRepository(module.path)
 		result.push({ ...module, configured, indexHead })
-		const baseLinks = await gitlinks(module.path, module.base)
-		const currentLinks = await gitlinks(module.path, "HEAD")
-		const indexLinks = (await git(module.path, ["ls-files", "--stage", "-z"]))
-			.split("\0")
-			.filter((entry) => entry.startsWith("160000 "))
-		const paths = new Set([
-			...baseLinks.keys(),
-			...currentLinks.keys(),
-			...indexLinks.map((entry) => entry.slice(entry.indexOf("\t") + 1)),
-		])
-		for (const relative of paths) {
-			if (!baseLinks.has(relative) || !currentLinks.has(relative))
+		for (const { relative, before, after, index } of await submoduleLinks(module.path, module.base, "HEAD", true)) {
+			if (!before || !after)
 				throw new Error(
 					`Submodule added or removed at ${relative}. Commit or preserve this workspace before removing it; copying submodule layout changes is not supported.`,
 				)
-			const child = path.resolve(module.path, relative)
-			if (
-				!child.startsWith(module.path + path.sep) ||
-				!(await fs.realpath(child)).startsWith((await fs.realpath(module.path)) + path.sep)
-			)
-				throw new Error(`Submodule outside its repository: ${relative}`)
 			await visit(
 				{
 					name: [module.name, relative].filter(Boolean).join("/"),
-					path: child,
+					path: await submodulePath(module.path, relative),
 					workspacePath: path.join(module.workspacePath, relative),
-					base: baseLinks.get(relative)!,
+					base: before,
 				},
 				false,
-				indexLinks.find((entry) => entry.slice(entry.indexOf("\t") + 1) === relative)?.split(" ")[1],
+				index,
 			)
 		}
 	}
@@ -186,12 +202,7 @@ export async function ownStatus(dir: string): Promise<string> {
 		]),
 		git(dir, ["ls-files", "--stage", "-z"]),
 	])
-	const links = new Set(
-		index
-			.split("\0")
-			.filter((entry) => entry.startsWith("160000 "))
-			.map((entry) => entry.slice(entry.indexOf("\t") + 1)),
-	)
+	const links = parseGitlinks(index, 1)
 	return status
 		.split("\0")
 		.filter((entry) => entry && (entry[0] !== " " || !links.has(entry.slice(3))))

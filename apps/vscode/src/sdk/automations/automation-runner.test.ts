@@ -58,6 +58,7 @@ function harness(
 		save: async (runs) => {
 			saved = runs
 		},
+		load: overrides.load,
 		newId: () => "run-1",
 		now: () => 1000,
 	})
@@ -412,24 +413,58 @@ describe("AutomationRunner", () => {
 		expect(again).toMatchObject({ id: "run-2", values: { ticket: "PROJ-5", base: "main" }, status: "running" })
 	})
 
-	it("stops itself at its cost limit, and a resume allows the limit again", async () => {
-		const definition = { ...ticketToPr(), costLimit: 1 }
+	it.each([
+		{ limit: 1, spent: 1.2, displayLimit: "$1.00", displaySpent: "$1.20" },
+		{ limit: 0.001, spent: 0.00123456, displayLimit: "$0.001", displaySpent: "$0.001235" },
+	])("stops at a $displayLimit cost limit and allows it again on resume", async ({
+		limit,
+		spent,
+		displayLimit,
+		displaySpent,
+	}) => {
+		const definition = { ...ticketToPr(), costLimit: limit }
 		const costs: Record<string, number> = {}
 		const h = harness(definition, { threadCost: (id) => costs[id] })
 		await h.runner.start(definition, { ticket: "PROJ-6" })
 		await flush()
-		costs["thread-1"] = 0.4
+		costs["thread-1"] = limit / 2
 		h.runner.threadStatusChanged("thread-1", "running", () => [])
 		expect(h.run().status).toBe("running")
-		costs["thread-1"] = 1.2
+		costs["thread-1"] = spent
 		h.runner.threadStatusChanged("thread-1", "running", () => [])
 		await flush()
 		expect(h.run().status).toBe("stopped")
-		expect(h.run().error).toContain("$1.00 cost limit")
+		expect(h.run().error).toBe(
+			`Stopped at its ${displayLimit} cost limit (${displaySpent} spent). Resume to allow another ${displayLimit}.`,
+		)
 		expect(h.stopped).toEqual(["thread-1"])
 		await h.runner.resume("run-1", definition)
 		await flush()
 		expect(h.run().status).toBe("running")
+	})
+
+	it("restores the exact sub-cent limit in a saved stop message", async () => {
+		const h = harness(undefined, {
+			load: async () => [
+				{
+					id: "legacy",
+					title: "Cost test",
+					automation: "cost-test",
+					taskGroupId: "task",
+					values: {},
+					steps: [],
+					status: "stopped",
+					startedAt: 1,
+					endedAt: 2,
+					costLimit: 0.001,
+					error: "Stopped at its $0.00 cost limit ($0.00 spent). Resume to allow another $0.00.",
+				},
+			],
+		})
+		await h.runner.load()
+		expect(h.runner.list()[0].error).toBe(
+			"Stopped at its $0.001 cost limit (less than $0.01 spent). Resume to allow another $0.001.",
+		)
 	})
 
 	it("stops running threads and keeps what finished", async () => {

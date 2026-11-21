@@ -5,6 +5,8 @@ import { promisify } from "node:util"
 import type { Message, MessageWithMetadata } from "@cline/shared"
 import type { ChangeWalkthrough, WalkthroughScope } from "@shared/Walkthrough"
 import { applyPatch, reversePatch, structuredPatch } from "diff"
+import { assertRepository, exists, mmConfig, submoduleLinks, submodulePath } from "@/sdk/worktrees/repositories"
+import { parseMmModules } from "@/sdk/worktrees/thread-worktree-manager"
 import { Logger } from "@/shared/services/Logger"
 import { type ContentChange, type EditTurn, fallback, hash } from "./engine"
 
@@ -231,16 +233,36 @@ async function safeCanonical(filePath: string): Promise<string> {
 	return canonicalPath(filePath).catch(() => path.resolve(filePath))
 }
 
-export async function gitRoots(paths: string[]): Promise<string[]> {
+async function resolveRoots(paths: string[], includeMmWorkspace = false) {
+	const candidates = new Set(paths)
+	if (includeMmWorkspace) {
+		for (const cwd of paths) {
+			try {
+				const config = await mmConfig(cwd)
+				if (config)
+					for (const module of parseMmModules(config.raw, config.file))
+						candidates.add(path.resolve(config.root, module))
+			} catch (error) {
+				Logger.warn("[walkthrough] Could not read mm modules", error)
+			}
+		}
+	}
 	const roots = new Set<string>()
-	for (const cwd of paths) {
+	const repositories = new Set<string>()
+	for (const cwd of candidates) {
 		try {
-			roots.add(await safeCanonical((await git(cwd, ["rev-parse", "--show-toplevel"])).trim()))
+			const root = await safeCanonical((await git(cwd, ["rev-parse", "--show-toplevel"])).trim())
+			roots.add(root)
+			repositories.add(root)
 		} catch {
 			roots.add(await safeCanonical(cwd))
 		}
 	}
-	return [...roots].sort()
+	return { roots: [...roots].sort(), repositories }
+}
+
+export async function gitRoots(paths: string[], includeMmWorkspace = false): Promise<string[]> {
+	return (await resolveRoots(paths, includeMmWorkspace)).roots
 }
 
 async function snapshot(root: string, ref: string, file: string): Promise<{ text: string; exists: boolean }> {
@@ -289,37 +311,93 @@ export async function changesBetween(
 	afterRef?: string,
 	warnings: string[] = [],
 ): Promise<ContentChange[]> {
+	const comparison = beforeRef === "HEAD" ? "wholeGit" : "checkpoint"
+	return (await repositoryChanges(root, roots, beforeRef, afterRef, warnings, comparison)).map(({ change }) => change)
+}
+
+async function repositoryChanges(
+	root: string,
+	roots: string[],
+	beforeRef: string | undefined,
+	// Undefined is the live checkout. Null means the submodule is absent in the later tree.
+	afterRef: string | undefined | null,
+	warnings: string[],
+	comparison: "wholeGit" | "checkpoint" | "checkpointSubmodule",
+): Promise<{ change: ContentChange; repository: string }[]> {
+	if (beforeRef && beforeRef === afterRef) return []
 	// Commit trees cannot expose stash-only third parents.
 	if (beforeRef === "HEAD") beforeRef = "HEAD^{tree}"
 	if (afterRef === "HEAD") afterRef = "HEAD^{tree}"
-	const changed = afterRef
-		? (await git(root, ["diff", "--no-renames", "--name-only", "-z", beforeRef, afterRef, "--"])).split("\0").filter(Boolean)
-		: (await git(root, ["diff", "--no-renames", "--name-only", "-z", beforeRef, "--"])).split("\0").filter(Boolean)
-	const extras = afterRef
-		? await snapshotPaths(root, afterRef).then((paths) => paths.filter(Boolean))
-		: (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+	const live = afterRef === undefined
+	// Parent checkpoints record only the child's commit. Reading its dirty files here
+	// would attribute pre-existing edits to the thread and offer to revert them.
+	const workingFiles = live && comparison !== "checkpointSubmodule"
+	const afterTree = live && !workingFiles ? "HEAD^{tree}" : afterRef
+	const links = await submoduleLinks(root, beforeRef, live ? "HEAD" : (afterRef ?? undefined), workingFiles)
+	const submodules = new Set(links.map((link) => link.relative))
+	let changed: string[]
+	if (beforeRef && (afterTree || workingFiles)) {
+		changed = (
+			await git(root, ["diff", "--no-renames", "--name-only", "-z", beforeRef, ...(afterTree ? [afterTree] : []), "--"])
+		)
+			.split("\0")
+			.filter(Boolean)
+	} else {
+		// A submodule may exist in just one of the two trees (or only in the working copy).
+		const ref = beforeRef ?? afterTree
+		changed = (await git(root, ref ? ["ls-tree", "-r", "-z", "--name-only", ref] : ["ls-files", "--cached", "-z"]))
+			.split("\0")
+			.filter(Boolean)
+	}
+	const extras = afterTree
+		? await snapshotPaths(root, afterTree)
+		: workingFiles
+			? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+			: []
 	// Include checkpoint-untracked files, including ones subsequently deleted.
-	const beforeUntracked = await snapshotPaths(root, beforeRef)
+	const beforeUntracked = beforeRef ? await snapshotPaths(root, beforeRef) : []
 	const files = new Set([...changed, ...extras, ...beforeUntracked])
-	const changes: ContentChange[] = []
+	const changes: { change: ContentChange; repository: string }[] = []
+	const missing = { text: "", exists: false }
 	for (const file of [...files].sort()) {
+		if (submodules.has(file)) continue
 		try {
 			const filePath = path.resolve(root, file)
 			const displayPath = modulePath(filePath, roots)
-			const after = afterRef ? await snapshot(root, afterRef, file) : await readDisk(filePath)
-			const snapshotBefore = await snapshot(root, beforeRef, file)
+			const after = afterTree ? await snapshot(root, afterTree, file) : workingFiles ? await readDisk(filePath) : missing
+			const snapshotBefore = beforeRef ? await snapshot(root, beforeRef, file) : missing
 			const before = { ...snapshotBefore, text: matchLineEndings(snapshotBefore.text, after.text) }
 			if (before.text !== after.text || before.exists !== after.exists)
 				changes.push({
-					filePath,
-					path: displayPath,
-					before: before.text,
-					after: after.text,
-					beforeExists: before.exists,
-					afterExists: after.exists,
+					repository: root,
+					change: {
+						filePath,
+						path: displayPath,
+						before: before.text,
+						after: after.text,
+						beforeExists: before.exists,
+						afterExists: after.exists,
+					},
 				})
 		} catch (error) {
 			warnings.push(warningFor(relativeLabel(path.resolve(root, file), roots, file), error))
+		}
+	}
+	for (const link of links) {
+		if (!live && link.before === link.after) continue
+		const child = path.resolve(root, link.relative)
+		try {
+			if (!(await exists(path.join(child, ".git")))) {
+				if (link.before === (workingFiles ? link.index : link.after)) continue
+				throw new ReviewError("Submodule is not checked out")
+			}
+			await assertRepository(await submodulePath(root, link.relative))
+			const before = link.before ? `${link.before}^{tree}` : undefined
+			const after = live ? undefined : link.after ? `${link.after}^{tree}` : null
+			const childComparison = comparison === "wholeGit" ? comparison : "checkpointSubmodule"
+			changes.push(...(await repositoryChanges(child, roots, before, after, warnings, childComparison)))
+		} catch (error) {
+			warnings.push(warningFor(relativeLabel(child, roots, link.relative), error))
 		}
 	}
 	return changes
@@ -329,6 +407,7 @@ export interface CollectionInput {
 	taskId: string
 	scope: WalkthroughScope
 	roots: string[]
+	includeMmWorkspace?: boolean
 	messages: Message[]
 	runSpans: number[]
 	edits: JournalEdit[]
@@ -339,7 +418,7 @@ export interface CollectionInput {
 export async function collect(
 	input: CollectionInput,
 ): Promise<{ walk: ChangeWalkthrough; turns: EditTurn[]; changes: ContentChange[] }> {
-	const roots = await gitRoots(input.roots)
+	const { roots, repositories } = await resolveRoots(input.roots, input.includeMmWorkspace)
 	const { turns, toolTurns, toolNarration } = transcriptTurns(input.messages, input.runSpans)
 	const warnings: string[] = []
 
@@ -405,16 +484,19 @@ export async function collect(
 		try {
 			const root = (await git(input.checkpointRoot, ["rev-parse", "--show-toplevel"])).trim()
 			const next = turns[index + 1] ? checkpointFor(turns[index + 1]) : undefined
-			const changes = await changesBetween(
+			const changes = await repositoryChanges(
 				root,
 				roots,
 				checkpointRef(checkpoint),
 				next ? checkpointRef(next) : undefined,
 				warnings,
+				"checkpoint",
 			)
-			for (const change of changes) {
+			for (const { change, repository } of changes) {
 				const recorded = turn.changes.find((candidate) => candidate.filePath === change.filePath)
 				if (recorded) {
+					// A parent checkpoint records a child's commit, so it cannot recover the child's dirty baseline.
+					if (repository !== root) continue
 					recorded.before = matchLineEndings(change.before, recorded.after)
 					recorded.beforeExists = change.beforeExists
 				} else turn.changes.push({ ...change, turnId: turn.id })
@@ -425,14 +507,19 @@ export async function collect(
 	}
 
 	if (input.scope === "git") {
-		const changes: ContentChange[] = []
+		const byFile = new Map<string, ContentChange>()
 		for (const root of roots) {
+			// An mm container is useful for naming paths even when it has no Git history of its own.
+			if (!repositories.has(root) && [...repositories].some((repo) => repo.startsWith(root + path.sep))) continue
 			try {
-				changes.push(...(await changesBetween(root, roots, "HEAD", undefined, warnings)))
+				for (const change of await changesBetween(root, roots, "HEAD", undefined, warnings)) {
+					if (!byFile.has(change.filePath)) byFile.set(change.filePath, change)
+				}
 			} catch (error) {
 				warnings.push(warningFor(path.basename(root), error))
 			}
 		}
+		const changes = [...byFile.values()]
 		return { walk: fallback(input.taskId, input.scope, turns, changes, warnings), turns, changes }
 	}
 	const selected = input.scope === "last_turn" ? turns.slice(-1) : turns
