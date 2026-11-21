@@ -2,7 +2,7 @@ import type { CostBreakdownRow } from "@shared/getApiMetrics"
 import { effectiveThreadPick } from "@shared/model-settings"
 import type { Mode } from "@shared/storage/types"
 import { FoldVerticalIcon, Minimize2Icon } from "lucide-react"
-import { memo, useState } from "react"
+import { memo, type ReactNode, useState } from "react"
 import { COMPOSER_MENU_SCROLL_CLASS } from "@/components/common/menuStyles"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -40,6 +40,8 @@ export interface ContextUsageIndicatorProps {
 	showCost?: boolean
 	/** Narrow rows show the Compact pill as its icon alone. */
 	inlineCompactNudge?: boolean
+	/** Extra lines at the end of the Context section, mounted only while the details are open. */
+	contextExtra?: (close: () => void) => ReactNode
 }
 
 const RING_SIZE = 14
@@ -172,6 +174,7 @@ export const ContextUsageIndicator = memo(
 		onCompact,
 		showCost = true,
 		inlineCompactNudge = true,
+		contextExtra,
 	}: ContextUsageIndicatorProps) => {
 		const [open, setOpen] = useState(false)
 		const [tokensOpen, setTokensOpen] = useState(false)
@@ -293,6 +296,7 @@ export const ContextUsageIndicator = memo(
 									The window size of {modelId ?? "this model"} is unknown.
 								</div>
 							)}
+							{contextExtra?.(() => setOpen(false))}
 						</section>
 
 						<section

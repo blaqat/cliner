@@ -12,6 +12,7 @@ import {
 } from "@/components/chat/composer/contextUsage"
 import { MessageTagList, sameMessageTag } from "@/components/chat/MessageTag"
 import { QuoteTagList } from "@/components/chat/QuoteTag"
+import { AboutYouContextLine } from "@/components/taskGroup/AboutYouMeter"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
 import { modKeyLabel } from "@/utils/platformUtils"
@@ -290,6 +291,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
 									cacheReads={apiMetrics.totalCacheReads}
 									cacheWrites={apiMetrics.totalCacheWrites}
 									canCompact={canCompact}
+									contextExtra={(close) => <AboutYouContextLine onOpen={close} />}
 									inlineCompactNudge={inlineCompactNudge}
 									onCompact={() =>
 										void messageHandlers

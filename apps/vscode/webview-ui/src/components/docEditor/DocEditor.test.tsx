@@ -53,4 +53,13 @@ describe("DocEditor", () => {
 		expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument()
 		expect(screen.getByText("Fix the front matter first.")).toBeInTheDocument()
 	})
+	it("moves between Preview and Edit with the arrow keys, like any radio group", () => {
+		render(<DocEditor label="Note body" onSave={vi.fn()} value="Hello" />)
+		const preview = screen.getByRole("radio", { name: "Preview" })
+		expect(preview).toHaveAttribute("tabindex", "0")
+		expect(screen.getByRole("radio", { name: "Edit" })).toHaveAttribute("tabindex", "-1")
+		fireEvent.keyDown(preview, { key: "ArrowRight" })
+		expect(screen.getByRole("textbox", { name: "Note body" })).toBeInTheDocument()
+		expect(screen.getByRole("radio", { name: "Edit" })).toHaveAttribute("aria-checked", "true")
+	})
 })

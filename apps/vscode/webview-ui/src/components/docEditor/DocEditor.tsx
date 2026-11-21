@@ -21,7 +21,20 @@ export function PreviewEditSwitch({ mode, onChange }: { mode: DocEditorMode; onC
 		{ value: "edit", label: "Edit" },
 	]
 	return (
-		<div aria-label="View" className={SWITCH_CLASS} data-testid="doc-editor-switch" role="radiogroup">
+		<div
+			aria-label="View"
+			className={SWITCH_CLASS}
+			data-testid="doc-editor-switch"
+			onKeyDown={(event) => {
+				// A radio group moves with the arrow keys, and focus follows the choice.
+				if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return
+				event.preventDefault()
+				const next = mode === "preview" ? "edit" : "preview"
+				onChange(next)
+				const target = event.currentTarget.querySelector<HTMLButtonElement>(`[data-mode="${next}"]`)
+				target?.focus()
+			}}
+			role="radiogroup">
 			<span
 				aria-hidden
 				className={cn("absolute inset-y-0 left-0 w-1/2 rounded-full bg-(--vscode-button-background)", SLIDE_CLASS)}
@@ -34,9 +47,11 @@ export function PreviewEditSwitch({ mode, onChange }: { mode: DocEditorMode; onC
 						"relative flex cursor-pointer items-center justify-center border-0 bg-transparent px-2 font-[inherit] text-[11px] transition-colors duration-200 focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-2 focus-visible:outline-(--vscode-focusBorder) motion-reduce:transition-none",
 						mode === option.value ? "text-(--vscode-button-foreground)" : "text-description hover:text-foreground",
 					)}
+					data-mode={option.value}
 					key={option.value}
 					onClick={() => onChange(option.value)}
 					role="radio"
+					tabIndex={mode === option.value ? 0 : -1}
 					type="button">
 					{option.label}
 				</button>
@@ -315,7 +330,7 @@ export function DocEditor({
 								onClick={() => void save()}
 								size="xs"
 								title={`Save (${mod}${plus}S)`}>
-								Save
+								{saving ? "Saving…" : "Save"}
 							</Button>
 						</>
 					)}

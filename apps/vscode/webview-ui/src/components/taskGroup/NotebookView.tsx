@@ -171,6 +171,15 @@ export const NotebookView = ({ taskGroupId, now = Date.now() }: NotebookViewProp
 							taskGroupId={taskGroupId}
 						/>
 					)}
+					{!details && (
+						<div className="flex items-center gap-1.5 px-4 py-1 text-xs text-description" role="status">
+							<span
+								aria-hidden
+								className="codicon codicon-loading codicon-modifier-spin text-[12px] motion-reduce:animate-none"
+							/>
+							Loading notes…
+						</div>
+					)}
 					{details && notes.length === 0 && (
 						<div className="px-4 py-1 text-xs text-description">
 							{filter.trim()
