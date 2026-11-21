@@ -11,6 +11,7 @@ import type {
 	WalkthroughStop,
 } from "@shared/Walkthrough"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { latestMessageTs, startSideThread } from "@/components/chat/chat-view/utils/asideUtils"
 import { buildThreadPath } from "@/components/chat/chat-view/utils/threadUtils"
 import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { Breadcrumb, type Crumb } from "@/components/chat/task-header/Breadcrumb"
@@ -55,7 +56,7 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
-import { askTranscript, type DiffAsk } from "./WalkthroughAsk"
+import { askSideThreadPrompt, askTranscript, type DiffAsk } from "./WalkthroughAsk"
 import type { LineNotes } from "./WalkthroughDiff"
 import { ReviewChip, ReviewNoteCard, type ReviewNoteHandlers, ReviewPanel } from "./WalkthroughReviewNotes"
 import {
@@ -402,6 +403,16 @@ export default function WalkthroughView({
 				navigateToSettings(target ? settingsTargetFromHost(target) : "role:walkthroughAsk")
 			},
 			refresh: () => void refresh(),
+			// The walkthrough's own thread forks; a subagent's or a side thread's doesn't.
+			openAsSideThread:
+				currentTaskItem?.id === taskId && !currentTaskItem.isSubagent && !currentTaskItem.parentTaskId
+					? async (thread) => {
+							const messageTs = latestMessageTs(clineMessages ?? [])
+							if (messageTs === undefined) throw new Error("This thread has no messages to start from yet.")
+							await startSideThread({ taskId, messageTs, text: askSideThreadPrompt(hunk.path, thread) })
+							onDone()
+						}
+					: undefined,
 			ask: async (range, question, askId) => {
 				if (!walk) return
 				const id = sequence.current

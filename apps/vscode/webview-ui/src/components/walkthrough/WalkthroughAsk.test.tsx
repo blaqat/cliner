@@ -1,7 +1,7 @@
 import type { WalkthroughAskThread } from "@shared/Walkthrough"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { type DiffAsk, WalkthroughAsk } from "./WalkthroughAsk"
+import { askSideThreadPrompt, type DiffAsk, WalkthroughAsk } from "./WalkthroughAsk"
 
 const range = { start: 1, end: 2, quote: "if (!value) return" }
 const thread: WalkthroughAskThread = {
@@ -87,5 +87,31 @@ describe("walkthrough Ask", () => {
 		expect(ask.ask).toHaveBeenCalledOnce()
 		fireEvent.click(screen.getByRole("button", { name: "Ask follow-up" }))
 		await waitFor(() => expect(ask.ask).toHaveBeenCalledTimes(2))
+	})
+	it("asks with Ctrl/⌘+Enter, closes with Esc, and says why it failed", async () => {
+		const ask = props()
+		vi.mocked(ask.ask).mockRejectedValueOnce(new Error("Rate limited."))
+		const onClose = vi.fn()
+		render(<WalkthroughAsk ask={ask} onClose={onClose} range={range} />)
+		const box = screen.getByRole("textbox")
+		expect(box).toHaveFocus()
+		fireEvent.change(box, { target: { value: "Why?" } })
+		fireEvent.keyDown(box, { key: "Enter", ctrlKey: true })
+		expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't get an answer: Rate limited.")
+		fireEvent.keyDown(box, { key: "Escape" })
+		expect(onClose).toHaveBeenCalledOnce()
+	})
+	it("opens an answer as a side thread only on request", async () => {
+		const ask = props()
+		ask.openAsSideThread = vi.fn().mockResolvedValue(undefined)
+		render(<WalkthroughAsk ask={ask} range={range} thread={thread} />)
+		expect(ask.openAsSideThread).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "Open as side thread" }))
+		await waitFor(() => expect(ask.openAsSideThread).toHaveBeenCalledWith(thread))
+	})
+	it("builds the side thread's first message from the question and answer", () => {
+		expect(askSideThreadPrompt("src/a.ts", { ...thread, quote: "if (!value) return" })).toBe(
+			"From the walkthrough, about src/a.ts:\n\n```\nif (!value) return\n```\n\nQuestion: Why?\nAnswer: Reject empty input.\n\nLet's keep talking about this here.",
+		)
 	})
 })

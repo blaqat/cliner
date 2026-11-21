@@ -1,7 +1,8 @@
 import type { WalkthroughAskConfig, WalkthroughAskThread } from "@shared/Walkthrough"
-import { useRef, useState } from "react"
+import { type KeyboardEvent, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { Button } from "@/components/ui/button"
+import { modKeyLabel } from "@/utils/platformUtils"
 import type { LineRange } from "./reviewState"
 import { InlineCodeProse } from "./WalkthroughNote"
 
@@ -15,10 +16,23 @@ export interface DiffAsk {
 	isAdded: (thread: WalkthroughAskThread) => boolean
 	openSettings: () => void
 	refresh?: () => void
+	/** Continues the conversation in a side thread of this walkthrough's thread; undefined when it can't. */
+	openAsSideThread?: (thread: WalkthroughAskThread) => Promise<void>
 }
 
 export const askTranscript = (thread: WalkthroughAskThread) =>
 	thread.turns.map((turn) => `Question: ${turn.question}\nAnswer: ${turn.answer}`).join("\n\n")
+
+/** The first message of a side thread opened from an Ask why answer. */
+export const askSideThreadPrompt = (path: string, thread: WalkthroughAskThread) =>
+	[
+		`From the walkthrough, about ${path}:`,
+		thread.quote ? `\`\`\`\n${thread.quote}\n\`\`\`` : "",
+		askTranscript(thread),
+		"Let's keep talking about this here.",
+	]
+		.filter(Boolean)
+		.join("\n\n")
 
 const CONTEXT_LABEL = { thread: "This thread", recent: "Latest user turn", selection: "Selected lines only" }
 
@@ -38,10 +52,11 @@ export function WalkthroughAsk({
 	const [busy, setBusy] = useState(false)
 	const inFlight = useRef(false)
 	const [error, setError] = useState("")
+	const [opening, setOpening] = useState(false)
 	const unavailable =
 		ask.disabledReason ??
 		ask.config?.unavailable ??
-		(!ask.config?.pick ? "Choose an Ask model in Settings > Models." : undefined)
+		(!ask.config?.pick ? "Ask why has no model yet. Choose one in Settings › Models." : undefined)
 	const submit = async () => {
 		if (!question.trim() || unavailable || inFlight.current) return
 		inFlight.current = true
@@ -56,6 +71,27 @@ export function WalkthroughAsk({
 		} finally {
 			inFlight.current = false
 			setBusy(false)
+		}
+	}
+	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+			event.preventDefault()
+			void submit()
+		} else if (event.key === "Escape" && onClose && !busy) {
+			event.preventDefault()
+			onClose()
+		}
+	}
+	const openAsSide = async () => {
+		if (!thread || !ask.openAsSideThread || opening) return
+		setOpening(true)
+		setError("")
+		try {
+			await ask.openAsSideThread(thread)
+		} catch (error) {
+			setError(error instanceof Error ? error.message : String(error))
+		} finally {
+			setOpening(false)
 		}
 	}
 	return (
@@ -79,15 +115,35 @@ export function WalkthroughAsk({
 				</div>
 			))}
 			{thread && (
-				<Button
-					className="mt-2"
-					disabled={ask.isAdded(thread)}
-					onClick={() => ask.addToSend(thread)}
-					size="xs"
-					title="Adds this conversation to your walkthrough notes. Send delivers it to the thread."
-					variant="secondary">
-					{ask.isAdded(thread) ? "Added to Send" : "Add to Send"}
-				</Button>
+				<div className="mt-2 flex flex-wrap items-center gap-1.5">
+					<Button
+						disabled={ask.isAdded(thread)}
+						onClick={() => ask.addToSend(thread)}
+						size="xs"
+						title="Adds this conversation to your walkthrough notes. Send delivers it to the thread."
+						variant="secondary">
+						<span
+							aria-hidden
+							className={`codicon text-[12px]! ${ask.isAdded(thread) ? "codicon-check" : "codicon-add"}`}
+						/>
+						{ask.isAdded(thread) ? "Added to Send" : "Add to Send"}
+					</Button>
+					{ask.openAsSideThread && (
+						<Button
+							aria-busy={opening || undefined}
+							disabled={opening || busy}
+							onClick={() => void openAsSide()}
+							size="xs"
+							title="Starts a side thread of this thread with this question and answer as its first message. It replies once."
+							variant="secondary">
+							<span
+								aria-hidden
+								className={`codicon text-[12px]! ${opening ? "codicon-loading codicon-modifier-spin" : "codicon-comment-discussion"}`}
+							/>
+							Open as side thread
+						</Button>
+					)}
+				</div>
 			)}
 			{!thread && (
 				<LinkButton className="mt-2 block text-[11px]" onClick={() => setQuestion("Why this approach?")}>
@@ -96,10 +152,13 @@ export function WalkthroughAsk({
 			)}
 			<textarea
 				aria-label={thread ? "Follow-up question" : "Question about selected lines"}
+				// biome-ignore lint/a11y/noAutofocus: the box opens because the user chose Ask
+				autoFocus={!thread}
 				className="mt-2 box-border w-full resize-y rounded-xs border border-solid border-input-border bg-input-background px-2 py-1 font-sans text-xs text-input-foreground focus:outline focus:outline-1 focus:outline-(--vscode-focusBorder)"
 				disabled={busy}
 				maxLength={8000}
 				onChange={(event) => setQuestion(event.target.value)}
+				onKeyDown={onKeyDown}
 				placeholder={thread ? "Ask a follow-up…" : "Ask about these lines…"}
 				rows={2}
 				value={question}
@@ -109,8 +168,8 @@ export function WalkthroughAsk({
 			</div>
 			{(error || unavailable) && (
 				<div className="mt-1 text-[11px] text-error" role="alert">
-					{error || unavailable}{" "}
-					{ask.disabledReason && ask.refresh ? (
+					{error ? `Couldn't get an answer: ${error}` : unavailable}{" "}
+					{!error && ask.disabledReason && ask.refresh ? (
 						<LinkButton onClick={ask.refresh}>Refresh walkthrough</LinkButton>
 					) : (
 						<LinkButton onClick={ask.openSettings}>Open Settings</LinkButton>
@@ -136,7 +195,7 @@ export function WalkthroughAsk({
 					{busy ? "Asking…" : thread ? "Ask follow-up" : "Ask"}
 				</Button>
 				<span className="text-[11px] text-description">
-					{busy ? "Waiting for the model…" : "Stays here until you send it."}
+					{busy ? "Waiting for the model…" : `${modKeyLabel()}+Enter · the answer stays on this walkthrough`}
 				</span>
 			</div>
 		</section>
