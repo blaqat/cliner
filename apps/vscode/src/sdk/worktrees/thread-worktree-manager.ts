@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import path from "node:path"
@@ -12,36 +11,27 @@ import type {
 
 import { createWorktree } from "@/utils/git-worktree"
 
+import {
+	assertRepository,
+	detachHead,
+	exists,
+	git,
+	importCommit,
+	initializeSubmodules,
+	mmConfig,
+	ownStatus,
+	repositories,
+	run,
+} from "./repositories"
+
 import { alive, heartbeatMs, type Owner, owner, storageLock } from "./storage-lock"
 
 const defaults: ThreadWorktreeSettings = { mode: "off", mmPath: "", nodePath: "node" }
-const exists = async (file: string) =>
-	fs.access(file).then(
-		() => true,
-		() => false,
-	)
-
-async function run(command: string, args: string[], cwd: string, input?: string, env?: NodeJS.ProcessEnv): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const child = execFile(
-			command,
-			args,
-			{ cwd, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 },
-			(error, stdout, stderr) => {
-				if (error) reject(new Error(`${command} ${args[0]}: ${stderr || error.message}`))
-				else resolve(stdout)
-			},
-		)
-		child.stdin?.on("error", () => {})
-		child.stdin?.end(input)
-	})
-}
-const git = (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) => run("git", args, cwd, input, env)
 const lineCount = (output: string) => output.split("\n").filter((line) => line.trim()).length
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
 // The workspace's own changes; its .worktrees folder (where git-mode thread worktrees live) isn't one.
 const workspaceStatus = (workspacePath: string) =>
-	git(workspacePath, ["status", "--porcelain", "--", ".", ":(exclude).worktrees"])
+	git(workspacePath, ["status", "--porcelain", "--ignore-submodules=none", "--", ".", ":(exclude).worktrees"])
 
 /** The folder a thread runs in: its worktree, or the workspace once the workspace took over its branch. */
 export function threadRunFolder(mapping: ThreadWorktree): string {
@@ -66,23 +56,26 @@ export function bringClashMessage(module: string, gitError: string): string {
 	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then copy again.`
 }
 
-export function parseMmModules(raw: string): string[] {
+export function parseMmModules(raw: string, file = ".mmrc"): string[] {
 	const text = raw.trim()
 	const parsed =
-		text.startsWith("{") || text.startsWith("[")
+		file === ".mm.json" || text.startsWith("{") || text.startsWith("[")
 			? JSON.parse(text)
 			: text
 					.split("\n")
 					.map((s) => s.trim())
 					.filter((s) => s && !s.startsWith("#"))
-	const entries = Array.isArray(parsed) ? parsed : parsed.modules
-	if (!Array.isArray(entries) || !entries.length) throw new Error(".mmrc has no modules")
-	const modules = entries.map((entry) => (typeof entry === "string" ? entry : entry.path))
+	const entries = Array.isArray(parsed) ? parsed : parsed?.modules
+	if (!Array.isArray(entries) || !entries.length) throw new Error(`${file} has no modules`)
+	const modules = entries
+		.filter((entry) => typeof entry === "string" || entry?.path)
+		.map((entry) => (typeof entry === "string" ? entry : entry.path))
+	if (!modules.length) throw new Error(`${file} has no modules`)
 	const names = new Set<string>()
 	for (const module of modules) {
 		if (typeof module !== "string" || !module || path.isAbsolute(module) || module.split(/[\\/]/).includes(".."))
 			throw new Error("mm modules must be relative paths inside the workspace")
-		const name = path.basename(module)
+		const name = path.basename(path.normalize(module))
 		if (names.has(name)) throw new Error(`mm modules share the isolate folder name ${name}`)
 		names.add(name)
 	}
@@ -238,7 +231,8 @@ export class ThreadWorktreeManager {
 	}
 	async availability(workspace: string, workspaceOff = false): Promise<WorktreeAvailability> {
 		const settings = await this.settings()
-		const hasMmrc = await exists(path.join(workspace, ".mmrc"))
+		const config = await mmConfig(workspace)
+		const hasMmrc = !!config
 		const mode = workspaceOff ? "off" : hasMmrc ? "mm" : settings.mode === "mm" ? "git" : settings.mode
 		const result: WorktreeAvailability = { mode, available: false, workspaceOff, hasMmrc }
 		try {
@@ -247,8 +241,19 @@ export class ThreadWorktreeManager {
 				if (!settings.mmPath) throw new Error("Set the path to mm.js in Worktrees settings")
 				await fs.access(settings.mmPath)
 				await run(settings.nodePath, ["--version"], workspace)
-				const modules = parseMmModules(await fs.readFile(path.join(workspace, ".mmrc"), "utf8"))
-				for (const module of modules) await git(path.join(workspace, module), ["rev-parse", "--verify", "HEAD"])
+				if (!config) throw new Error("mm configuration is missing")
+				const modules = parseMmModules(config.raw, config.file)
+				const roots: string[] = []
+				for (const module of modules) {
+					const root = path.resolve(config.root, module)
+					await assertRepository(root)
+					const canonical = await fs.realpath(root)
+					if (roots.some((other) => canonical.startsWith(other + path.sep) || other.startsWith(canonical + path.sep)))
+						throw new Error(
+							"mm modules include both a repository and its descendant. Select either the parent or its submodules in the mm configuration.",
+						)
+					roots.push(canonical)
+				}
 			} else await git(workspace, ["rev-parse", "--verify", "HEAD"])
 			result.available = true
 		} catch (error) {
@@ -274,9 +279,12 @@ export class ThreadWorktreeManager {
 					.slice(0, 44) || "thread"
 			const branch = `cline/${slug}-${suffix}`
 			const mode = availability.mode
+			const config = mode === "mm" ? await mmConfig(workspace) : undefined
+			if (config) workspace = config.root
 			const cwd =
 				mode === "mm" ? path.join(workspace, "isolates", branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
-			const modules = mode === "mm" ? parseMmModules(await fs.readFile(path.join(workspace, ".mmrc"), "utf8")) : [""]
+			if (mode === "mm" && !config) throw new Error("mm configuration is missing")
+			const modules = config ? parseMmModules(config.raw, config.file) : [""]
 			const mapping: ThreadWorktree = {
 				threadId,
 				mode,
@@ -296,7 +304,7 @@ export class ThreadWorktreeManager {
 				mapping.modules.push({
 					name: module,
 					workspacePath,
-					path: mode === "mm" ? path.join(cwd, path.basename(module)) : cwd,
+					path: mode === "mm" ? path.join(cwd, path.basename(path.normalize(module))) : cwd,
 					base,
 				})
 			}
@@ -310,18 +318,27 @@ export class ThreadWorktreeManager {
 				await this.assertMutationOwner()
 				const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
 				if (!result.success) throw new Error(result.message)
+				await initializeSubmodules(cwd, mapping.modules[0].workspacePath)
 			}
 			await this.assertPresent(mapping)
 			return mapping
 		})
 	}
 	async assertPresent(mapping: ThreadWorktree) {
-		for (const module of mapping.modules) {
-			if (!(await exists(path.join(module.path, ".git"))))
-				throw new Error(`Worktree missing: ${module.path}. Remove it or restore it before resuming.`)
+		const modules = await repositories(mapping)
+		for (const module of modules) {
+			if (!module.configured) continue
 			const branch = (await git(module.path, ["branch", "--show-current"])).trim()
 			if (branch !== mapping.branch && !mapping.takenOver) throw new Error(`Worktree branch changed at ${module.path}`)
+			const originalCommon = path.resolve(
+				module.workspacePath,
+				(await git(module.workspacePath, ["rev-parse", "--git-common-dir"])).trim(),
+			)
+			const common = path.resolve(module.path, (await git(module.path, ["rev-parse", "--git-common-dir"])).trim())
+			if ((await fs.realpath(originalCommon)) !== (await fs.realpath(common)))
+				throw new Error(`Worktree repository changed at ${module.path}`)
 		}
+		return modules
 	}
 	private async required(id: string) {
 		const mapping = await this.get(id)
@@ -331,20 +348,48 @@ export class ThreadWorktreeManager {
 	/** Includes committed, staged, unstaged and untracked files without touching the real index. */
 	async diffs(id: string, incremental = false): Promise<ThreadModuleDiff[]> {
 		const mapping = await this.required(id)
-		await this.assertPresent(mapping)
+		const modules = await this.assertPresent(mapping)
 		const result: ThreadModuleDiff[] = []
-		for (const module of mapping.modules) {
+		for (const module of modules) {
 			await fs.mkdir(this.storageDir, { recursive: true })
 			const index = path.join(this.storageDir, `index-${randomUUID()}`)
 			const env = { GIT_INDEX_FILE: index }
-			const base = incremental ? (module.lastBroughtTree ?? module.base) : module.base
+			const previous = mapping.repositoryCopies?.[module.name]
+			const base = incremental ? (previous?.tree ?? module.lastBroughtTree ?? module.base) : module.base
 			try {
 				await git(module.path, ["read-tree", "HEAD"], undefined, env)
-				await git(module.path, ["add", "-A", "--", "."], undefined, env)
-				const patch = await git(module.path, ["diff", "--cached", "--binary", "--full-index", base, "--"], undefined, env)
-				const names = await git(module.path, ["diff", "--cached", "--name-only", "-z", base, "--"], undefined, env)
+				await git(module.path, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
+				const patch = await git(
+					module.path,
+					[
+						"diff",
+						"--cached",
+						"--ignore-submodules=none",
+						"--submodule=short",
+						"--no-ext-diff",
+						"--no-textconv",
+						"--binary",
+						"--full-index",
+						base,
+						"--",
+					],
+					undefined,
+					env,
+				)
+				if (/^(?:new file mode|deleted file mode|new mode|old mode) 160000$/m.test(patch))
+					throw new Error(
+						"Copying added or removed submodules is not supported. Preserve this workspace before removing it.",
+					)
+				const names = await git(
+					module.path,
+					["diff", "--cached", "--ignore-submodules=none", "--name-only", "-z", base, "--"],
+					undefined,
+					env,
+				)
 				result.push({
 					module: module.name,
+					head: !module.configured ? (await git(module.path, ["rev-parse", "HEAD"])).trim() : undefined,
+					baseHead: !module.configured ? (incremental ? (previous?.head ?? module.base) : module.base) : undefined,
 					workspacePath: module.workspacePath,
 					worktreePath: module.path,
 					base,
@@ -363,20 +408,58 @@ export class ThreadWorktreeManager {
 	}
 	private fingerprint(diffs: ThreadModuleDiff[]) {
 		return createHash("sha256")
-			.update(JSON.stringify(diffs.map((d) => [d.module, d.tree])))
+			.update(JSON.stringify(diffs.map((d) => [d.module, d.tree, d.head])))
 			.digest("hex")
+	}
+	private async uncopiedStaged(diffs: ThreadModuleDiff[]) {
+		let count = 0
+		for (const diff of diffs) {
+			const staged = await git(diff.worktreePath, ["diff", "--cached", "--binary", "--ignore-submodules=none", "HEAD"])
+			if (
+				staged &&
+				(!diff.tree ||
+					(await git(diff.worktreePath, ["diff", "--cached", "--binary", "--ignore-submodules=none", diff.tree])))
+			)
+				count++
+		}
+		return count
+	}
+	private async repositoryState(mapping: ThreadWorktree, heads?: Map<string, string>) {
+		const diffs = await this.diffs(mapping.threadId)
+		const states = []
+		for (const diff of diffs)
+			states.push([
+				diff.module,
+				diff.tree,
+				heads?.get(diff.module) ?? (await git(diff.worktreePath, ["rev-parse", "HEAD"])).trim(),
+				await git(diff.worktreePath, ["ls-files", "--stage", "-z"]),
+			])
+		return createHash("sha256").update(JSON.stringify(states)).digest("hex")
+	}
+	private async leftoverChanges(mapping: ThreadWorktree) {
+		if (!mapping.leftoverState || mapping.leftoverState !== (await this.repositoryState(mapping))) return true
+		const diffs = await this.diffs(mapping.threadId)
+		if (await this.uncopiedStaged(diffs)) return true
+		for (const diff of diffs) if ((await ownStatus(diff.worktreePath)).trim()) return true
+		return false
 	}
 	/** Where the thread's changes stand (see WorktreeSummary). Read-only. */
 	async summary(id: string): Promise<WorktreeSummary> {
 		const mapping = await this.required(id)
 		let workspaceDirty = false
-		for (const module of mapping.modules) if ((await workspaceStatus(module.workspacePath)).trim()) workspaceDirty = true
+		const repos = await repositories(mapping)
+		for (const module of repos) if ((await workspaceStatus(module.workspacePath)).trim()) workspaceDirty = true
 		if (mapping.takenOver) {
 			// The branch lives in the workspace now; only edits made in the leftover folder since would be lost.
-			let leftover = 0
-			for (const module of mapping.modules)
-				if (await exists(path.join(module.path, ".git")))
-					leftover += lineCount(await git(module.path, ["status", "--porcelain"]))
+			const leftover = (await this.leftoverChanges(mapping))
+				? Math.max(
+						1,
+						(await Promise.all(repos.map(async (module) => lineCount(await ownStatus(module.path))))).reduce(
+							(a, b) => a + b,
+							0,
+						),
+					)
+				: 0
 			return {
 				changedFiles: 0,
 				commits: 0,
@@ -393,13 +476,20 @@ export class ThreadWorktreeManager {
 		const incremental = await this.diffs(id, true)
 		let commits = 0
 		let uncommittedFiles = 0
-		for (const module of mapping.modules) {
+		for (const module of repos) {
 			commits += Number((await git(module.path, ["rev-list", "--count", `${module.base}..HEAD`])).trim()) || 0
-			uncommittedFiles += lineCount(await git(module.path, ["status", "--porcelain"]))
+			uncommittedFiles += lineCount(await ownStatus(module.path))
 		}
-		const changedFiles = full.reduce((count, diff) => count + diff.paths.length, 0)
-		const uncopiedFiles = incremental.reduce((count, diff) => count + diff.paths.length, 0)
-		const copied = mapping.modules.some((module) => module.lastBroughtTree)
+		const changedFiles = Math.max(
+			full.reduce((count, diff) => count + diff.paths.length, 0),
+			full.some((diff) => diff.head && diff.head !== diff.baseHead) ? 1 : 0,
+		)
+		const uncopiedFiles = Math.max(
+			incremental.reduce((count, diff) => count + diff.paths.length, 0),
+			incremental.some((diff) => diff.head && diff.head !== diff.baseHead) ? 1 : 0,
+		)
+		const copied =
+			mapping.modules.some((module) => module.lastBroughtTree) || !!Object.keys(mapping.repositoryCopies ?? {}).length
 		const kept = !!mapping.transferredDiff && this.fingerprint(full) === mapping.transferredDiff
 		return {
 			changedFiles,
@@ -408,7 +498,7 @@ export class ThreadWorktreeManager {
 			uncopiedFiles,
 			copied,
 			canUndo: mapping.bringIns.some((bring) => bring.patches.some((patch) => patch.applied && !patch.undone)),
-			loseOnRemove: changedFiles > 0 && !kept ? uncopiedFiles || changedFiles : 0,
+			loseOnRemove: (await this.uncopiedStaged(full)) || (changedFiles > 0 && !kept ? uncopiedFiles || changedFiles : 0),
 			workspaceDirty,
 			takenOver: false,
 		}
@@ -418,12 +508,23 @@ export class ThreadWorktreeManager {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
 			const captured = await this.diffs(id, true)
-			const diffs = captured.filter((d) => d.patch)
+			const diffs = captured.filter((d) => d.patch || (d.head && d.head !== d.baseHead))
 			if (!diffs.length) return { message: "Nothing new to copy here" }
-			const files = diffs.reduce((count, diff) => count + diff.paths.length, 0)
+			const files = Math.max(
+				diffs.reduce((count, diff) => count + diff.paths.length, 0),
+				diffs.some((diff) => diff.head && diff.head !== diff.baseHead) ? 1 : 0,
+			)
 			for (const diff of diffs) {
 				try {
-					await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
+					await assertRepository(diff.workspacePath)
+					if (diff.head && diff.head !== diff.baseHead) {
+						if ((await workspaceStatus(diff.workspacePath)).trim()) throw new Error("Submodule has local changes")
+						const current = (await git(diff.workspacePath, ["rev-parse", "HEAD"])).trim()
+						if (current !== diff.baseHead && current !== diff.head)
+							throw new Error("Submodule HEAD differs from the last copied commit")
+						await importCommit(diff.workspacePath, diff.worktreePath, diff.head)
+					}
+					if (diff.patch) await git(diff.workspacePath, ["apply", "--check", "--binary", "-"], diff.patch)
 				} catch (error) {
 					throw new Error(bringClashMessage(diff.module, String(error)))
 				}
@@ -438,7 +539,17 @@ export class ThreadWorktreeManager {
 					module: diff.module,
 					file,
 					applied: false,
-					previousTree: mapping.modules.find((m) => m.name === diff.module)?.lastBroughtTree,
+					workspacePath: diff.workspacePath,
+					previousTree:
+						mapping.repositoryCopies?.[diff.module]?.tree ??
+						mapping.modules.find((m) => m.name === diff.module)?.lastBroughtTree,
+					previousBroughtHead: mapping.repositoryCopies?.[diff.module]?.head,
+					head: diff.head,
+					previousHead:
+						diff.head && diff.head !== diff.baseHead
+							? (await git(diff.workspacePath, ["rev-parse", "HEAD"])).trim()
+							: undefined,
+					previousBranch: diff.head ? (await git(diff.workspacePath, ["branch", "--show-current"])).trim() : undefined,
 					tree: diff.tree,
 				})
 			}
@@ -454,11 +565,27 @@ export class ThreadWorktreeManager {
 			mapping.bringIns.push(bring)
 			await this.save(mapping)
 			for (const patch of bring.patches) {
-				const module = mapping.modules.find((m) => m.name === patch.module)!
+				const target = patch.workspacePath ?? mapping.modules.find((m) => m.name === patch.module)?.workspacePath
+				if (!target) throw new Error(`Missing saved repository: ${patch.module}`)
 				await this.assertMutationOwner()
-				await git(module.workspacePath, ["apply", "--binary", patch.file])
+				if ((await fs.readFile(patch.file, "utf8")).trim()) await git(target, ["apply", "--binary", patch.file])
+				if (patch.head && patch.previousHead && patch.head !== patch.previousHead)
+					await detachHead(target, patch.head, true)
 				patch.applied = true
-				module.lastBroughtTree = patch.tree
+				await this.save(mapping)
+				// Store copied blobs in this repository too, so three-way undo works across independent clones.
+				const index = path.join(this.storageDir, `copy-index-${randomUUID()}`)
+				try {
+					const env = { GIT_INDEX_FILE: index }
+					await git(target, ["read-tree", "HEAD"], undefined, env)
+					await git(target, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
+				} finally {
+					await fs.rm(index, { force: true })
+				}
+				mapping.repositoryCopies ??= {}
+				mapping.repositoryCopies[patch.module] = { tree: patch.tree!, head: patch.head }
+				const module = mapping.modules.find((m) => m.name === patch.module)
+				if (module) module.lastBroughtTree = patch.tree
 				await this.save(mapping)
 			}
 			mapping.transferredDiff = this.fingerprint(captured)
@@ -474,17 +601,42 @@ export class ThreadWorktreeManager {
 			if (!bring) return { message: "Nothing to undo" }
 			const conflicts: string[] = []
 			for (const patch of bring.patches.filter((p) => p.applied && !p.undone)) {
-				const module = mapping.modules.find((m) => m.name === patch.module)!
+				const module = {
+					name: patch.module,
+					workspacePath: patch.workspacePath ?? mapping.modules.find((m) => m.name === patch.module)?.workspacePath,
+				}
+				if (!module.workspacePath) throw new Error(`Missing saved repository: ${patch.module}`)
+				if (
+					patch.head &&
+					patch.previousHead &&
+					patch.head !== patch.previousHead &&
+					(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim() !== patch.head
+				)
+					throw new Error(`Submodule HEAD changed at ${module.workspacePath}. Restore it before undoing the copy.`)
+				const resetIndex =
+					patch.head &&
+					patch.head !== patch.previousHead &&
+					!(
+						await git(module.workspacePath, [
+							"diff",
+							"--cached",
+							"--ignore-submodules=none",
+							"--name-only",
+							patch.head,
+						])
+					).trim()
 				try {
-					await git(module.workspacePath, ["apply", "--check", "-R", patch.file])
+					if ((await fs.readFile(patch.file, "utf8")).trim())
+						await git(module.workspacePath, ["apply", "--check", "-R", patch.file])
 					await this.assertMutationOwner()
-					await git(module.workspacePath, ["apply", "-R", patch.file])
+					if ((await fs.readFile(patch.file, "utf8")).trim())
+						await git(module.workspacePath, ["apply", "-R", patch.file])
 				} catch {
 					const index = path.join(this.storageDir, `undo-index-${randomUUID()}`)
 					const env = { GIT_INDEX_FILE: index }
 					try {
 						await git(module.workspacePath, ["read-tree", "HEAD"], undefined, env)
-						await git(module.workspacePath, ["add", "-A", "--", "."], undefined, env)
+						await git(module.workspacePath, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
 						try {
 							await this.assertMutationOwner()
 							await git(module.workspacePath, ["apply", "-3", "-R", "--index", patch.file], undefined, env)
@@ -501,8 +653,19 @@ export class ThreadWorktreeManager {
 						await fs.rm(index, { force: true })
 					}
 				}
+				if (patch.head && patch.previousHead && patch.head !== patch.previousHead) {
+					await detachHead(module.workspacePath, patch.previousHead, !!resetIndex)
+					if (patch.previousBranch)
+						await git(module.workspacePath, ["symbolic-ref", "HEAD", `refs/heads/${patch.previousBranch}`])
+				}
 				patch.undone = true
-				module.lastBroughtTree = patch.previousTree
+				if (mapping.repositoryCopies) {
+					if (patch.previousTree)
+						mapping.repositoryCopies[patch.module] = { tree: patch.previousTree, head: patch.previousBroughtHead }
+					else delete mapping.repositoryCopies[patch.module]
+				}
+				const configured = mapping.modules.find((m) => m.name === patch.module)
+				if (configured) configured.lastBroughtTree = patch.previousTree
 				await this.save(mapping)
 			}
 			mapping.transferredDiff = undefined
@@ -527,7 +690,8 @@ export class ThreadWorktreeManager {
 			const mapping = await this.required(id)
 			await this.assertPresent(mapping)
 			if (mapping.takenOver) return { message: "Your workspace is on this branch now", mapping }
-			for (const module of mapping.modules) {
+			const repos = await repositories(mapping)
+			for (const module of repos) {
 				if ((await workspaceStatus(module.workspacePath)).trim())
 					return {
 						warning: `Your workspace has uncommitted changes${mapping.modules.length > 1 ? ` in ${module.name}` : ""}. Commit or stash them, then switch.`,
@@ -546,7 +710,7 @@ export class ThreadWorktreeManager {
 			const transferredDiff = this.fingerprint(await this.diffs(id))
 			// Each step is recorded as it happens so a failure part-way undoes exactly what was done.
 			const steps: {
-				module: ThreadWorktree["modules"][number]
+				module: Awaited<ReturnType<typeof repositories>>[number]
 				original: string
 				isolateBranch: string
 				isolateHead: string
@@ -557,7 +721,7 @@ export class ThreadWorktreeManager {
 			}[] = []
 			let carried = 0
 			try {
-				for (const module of mapping.modules) {
+				for (const module of repos) {
 					const original =
 						(await git(module.workspacePath, ["branch", "--show-current"])).trim() ||
 						(await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
@@ -568,7 +732,7 @@ export class ThreadWorktreeManager {
 						isolateHead: (await git(module.path, ["rev-parse", "HEAD"])).trim(),
 					}
 					steps.push(step)
-					const uncommitted = lineCount(await git(module.path, ["status", "--porcelain"]))
+					const uncommitted = lineCount(await ownStatus(module.path))
 					if (uncommitted) {
 						await this.assertMutationOwner()
 						await git(module.path, [
@@ -586,12 +750,17 @@ export class ThreadWorktreeManager {
 					await git(module.path, ["checkout", "--detach"])
 					step.detached = true
 					await this.assertMutationOwner()
-					await git(module.workspacePath, ["checkout", mapping.branch])
+					if (module.configured) await git(module.workspacePath, ["checkout", mapping.branch])
+					else {
+						await importCommit(module.workspacePath, module.path, step.isolateHead)
+						await git(module.workspacePath, ["checkout", "--detach", step.isolateHead])
+					}
 					step.switched = true
 					if (step.stash) {
 						await this.assertMutationOwner()
+						await importCommit(module.workspacePath, module.path, step.stash)
 						step.applied = true
-						await git(module.workspacePath, ["stash", "apply", step.stash])
+						await git(module.workspacePath, ["stash", "apply", "--index", step.stash])
 					}
 				}
 			} catch (error) {
@@ -626,6 +795,11 @@ export class ThreadWorktreeManager {
 			mapping.transferredDiff = transferredDiff
 			mapping.takenOver = true
 			await this.save(mapping)
+			mapping.leftoverState = await this.repositoryState(
+				mapping,
+				new Map(steps.map((step) => [step.module.name, step.isolateHead])),
+			)
+			await this.save(mapping)
 			return {
 				message: carried
 					? `Your workspace is on this branch now, with its ${plural(carried, "uncommitted file")}`
@@ -652,28 +826,20 @@ export class ThreadWorktreeManager {
 				// The branch is in the workspace; only edits made in the leftover folder since would be lost.
 				let leftover = true
 				try {
-					leftover = false
-					for (const module of mapping.modules)
-						if (
-							(await exists(path.join(module.path, ".git"))) &&
-							(await git(module.path, ["status", "--porcelain"])).trim()
-						)
-							leftover = true
+					leftover = await this.leftoverChanges(mapping)
 				} catch {
-					leftover = true
+					/* Unreadable descendants require explicit confirmation. */
 				}
 				if (leftover) return { warning: "The leftover worktree folder has edits of its own. Remove it and discard them?" }
 			} else if (!confirmed) {
 				let changed = true
 				try {
 					const diffs = await this.diffs(id)
-					changed = diffs.some((d) => d.patch) && this.fingerprint(diffs) !== mapping.transferredDiff
-					// A working-file snapshot cannot represent a different staged version.
-					for (const diff of diffs) {
-						const staged = await git(diff.worktreePath, ["diff", "--cached", "--binary", "HEAD"])
-						if (staged && (!diff.tree || (await git(diff.worktreePath, ["diff", "--cached", "--binary", diff.tree]))))
-							changed = true
-					}
+					changed =
+						diffs.some((d) => d.patch || (d.head && d.head !== d.baseHead)) &&
+						this.fingerprint(diffs) !== mapping.transferredDiff
+					// A working-file snapshot cannot represent a different staged version in any descendant.
+					if (await this.uncopiedStaged(diffs)) changed = true
 				} catch {
 					changed = true
 					/* Partial isolates and unreadable indexes still need explicit removal. */
@@ -681,6 +847,16 @@ export class ThreadWorktreeManager {
 				if (changed) return { warning: "Changes were never copied here. Remove this worktree and discard them?" }
 			}
 			if (mapping.mode === "mm") {
+				const config = await mmConfig(mapping.workspace)
+				if (
+					!config ||
+					config.root !== mapping.workspace ||
+					JSON.stringify(parseMmModules(config.raw, config.file)) !==
+						JSON.stringify(mapping.modules.map((module) => module.name))
+				)
+					throw new Error(
+						"mm configuration changed since this workspace was created. Restore its module list before removing it.",
+					)
 				const settings = await this.settings()
 				await this.assertMutationOwner()
 				await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
@@ -689,12 +865,7 @@ export class ThreadWorktreeManager {
 				const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)
 				if (registered.split("\0").includes(`worktree ${canonical}`)) {
 					await this.assertMutationOwner()
-					await git(mapping.workspace, [
-						"worktree",
-						"remove",
-						...(confirmed || mapping.transferredDiff ? ["--force"] : []),
-						mapping.cwd,
-					])
+					await git(mapping.workspace, ["worktree", "remove", "--force", mapping.cwd])
 				} else if (await exists(mapping.cwd))
 					throw new Error(
 						"The recorded path is no longer a registered worktree. Inspect it before removing the thread mapping.",

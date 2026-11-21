@@ -22,9 +22,24 @@ export interface ThreadWorktree {
 	/** The exact diff last brought in or taken over, not just a boolean. */
 	takenOver?: boolean
 	transferredDiff?: string
+	/** Snapshots for descendant repositories, whose HEADs need not be on the thread branch. */
+	repositoryCopies?: Record<string, { tree: string; head?: string }>
+	leftoverState?: string
 	bringIns: {
 		id: string
-		patches: { module: string; file: string; applied: boolean; undone?: boolean; previousTree?: string; tree?: string }[]
+		patches: {
+			module: string
+			file: string
+			applied: boolean
+			undone?: boolean
+			previousTree?: string
+			tree?: string
+			workspacePath?: string
+			head?: string
+			previousHead?: string
+			previousBranch?: string
+			previousBroughtHead?: string
+		}[]
 	}[]
 }
 export interface ThreadModuleDiff {
@@ -32,6 +47,9 @@ export interface ThreadModuleDiff {
 	workspacePath: string
 	worktreePath: string
 	base: string
+	/** Descendant checkout HEAD and its original or last copied commit. */
+	head?: string
+	baseHead?: string
 	/** Unified binary-capable git patch, with paths relative to this module. */
 	tree?: string
 	patch: string
