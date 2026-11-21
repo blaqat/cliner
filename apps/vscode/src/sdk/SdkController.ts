@@ -140,7 +140,7 @@ import { AuthService, LogoutReason } from "./auth-service"
 import { describeDecision } from "./automations/automation-approvals"
 import { automationFromTask } from "./automations/automation-from-task"
 import { AutomationsHost } from "./automations/automation-host"
-import { plainWorktreeReason, precheckSteps, worktreeSettingsFix } from "./automations/automation-precheck"
+import { plainWorktreeReason, precheckSteps, worktreeFix } from "./automations/automation-precheck"
 import { AutomationFixableError, type StartThreadInput } from "./automations/automation-runner"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
@@ -236,6 +236,7 @@ import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
+import { git } from "./worktrees/repositories"
 import { ThreadWorktreeManager, threadRunFolder } from "./worktrees/thread-worktree-manager"
 
 /**
@@ -3216,6 +3217,21 @@ export class Controller {
 			case "configure":
 				await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
 				return {}
+			// The fixes an automation's worktree failure links to; each only on the user's click.
+			case "openFolder":
+				await HostProvider.workspace.openFolder({ path: "", newWindow: false })
+				return {}
+			case "openSourceControl":
+				await HostProvider.workspace.openSourceControlPanel({})
+				return {}
+			case "initRepository": {
+				const folder = (await HostProvider.workspace.getWorkspacePaths({})).paths[0]
+				if (!folder) throw new Error("Open a folder first.")
+				const reason = (await this.threadWorktrees.availability(folder, workspaceOff)).reason
+				if (worktreeFix(reason) !== "repository") return {}
+				await git(folder, ["init"])
+				return {}
+			}
 			case "workspaceOff":
 				this.stateManager.setWorkspaceState("worktreeToggles", { disabled: !!data.disabled })
 				await this.stateManager.flushPendingState()
@@ -4983,7 +4999,8 @@ export class Controller {
 					: undefined
 			if (reason === undefined) throw error
 			const text = `Couldn't make its worktree: ${plainWorktreeReason(reason)}`
-			throw worktreeSettingsFix(reason) ? new AutomationFixableError(text, "worktrees") : new Error(text)
+			const fix = worktreeFix(reason)
+			throw fix ? new AutomationFixableError(text, fix) : new Error(text)
 		}
 		if (!taskId) throw new AutomationFixableError("The thread couldn't start. Check your model provider is set up.", "models")
 		return taskId

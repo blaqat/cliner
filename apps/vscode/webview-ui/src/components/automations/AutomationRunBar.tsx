@@ -160,7 +160,7 @@ function RunBarBody({
 							data-testid="automation-run-bar-retry"
 							disabled={actions.busy}
 							onClick={() => void actions.retry()}>
-							{actions.busy ? "Checking…" : "Fixed it? Retry"}
+							{actions.busy ? "Starting…" : "Fixed it? Retry"}
 						</LinkButton>
 					</>
 				)}

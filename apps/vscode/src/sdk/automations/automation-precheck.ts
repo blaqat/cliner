@@ -1,4 +1,4 @@
-import { type AutomationProblem, type AutomationStep, automationThreads } from "@shared/automations"
+import { type AutomationFix, type AutomationProblem, type AutomationStep, automationThreads } from "@shared/automations"
 
 export interface PrecheckContext {
 	/** The open folder; undefined when none is open. */
@@ -14,15 +14,24 @@ export function worktreeSettingsFix(reason: string | undefined): boolean {
 	return /worktrees are off|mm\.js|mm isn't set up/i.test(reason ?? "")
 }
 
+/** Where a worktree failure is fixed: Worktrees settings, or the folder's git repository itself. */
+export function worktreeFix(reason: string | undefined): AutomationFix | undefined {
+	if (worktreeSettingsFix(reason)) return "worktrees"
+	if (/not a git repository/i.test(reason ?? "")) return "repository"
+	if (/unknown revision|needed a single revision|ambiguous argument 'HEAD'|does not have any commits/i.test(reason ?? ""))
+		return "commit"
+	return undefined
+}
+
 /** A worktree failure in plain words: git's and mm's messages, said the way the user can act on them. */
 export function plainWorktreeReason(reason: string | undefined): string {
 	const text = (reason ?? "").trim()
 	if (!text) return "a worktree can't be made here."
 	if (/worktrees are off/i.test(text)) return "worktrees are turned off."
 	if (/not a git repository/i.test(text))
-		return "this folder isn't a git repository. Open the repository's folder, or run git init."
+		return "this folder isn't a git repository. Open the repository's folder, or initialize git here."
 	if (/unknown revision|needed a single revision|ambiguous argument 'HEAD'|does not have any commits/i.test(text))
-		return "the repository has no commits yet. Make a first commit."
+		return "the repository has no commits yet. Make a first commit in Source Control."
 	if (/mm\.js/i.test(text)) return "mm isn't set up. Set the path to mm.js."
 	if (/ENOENT|no such file/i.test(text)) return `a file it needs is missing: ${text.replace(/\.$/, "")}.`
 	if (/already exists/i.test(text)) return `a worktree folder is in the way: ${text.replace(/\.$/, "")}.`
@@ -44,6 +53,7 @@ export async function precheckSteps(steps: readonly AutomationStep[], context: P
 		if (!context.workspace) {
 			problems.push({
 				message: `${runsIn}, but no folder is open. Open the repository's folder first.`,
+				fix: "folder",
 				stepId: worktreeSteps[0].id,
 			})
 		} else {
@@ -51,7 +61,7 @@ export async function precheckSteps(steps: readonly AutomationStep[], context: P
 			if (!availability.available)
 				problems.push({
 					message: `${runsIn}, but ${plainWorktreeReason(availability.reason)}`,
-					...(worktreeSettingsFix(availability.reason) ? { fix: "worktrees" as const } : {}),
+					...(worktreeFix(availability.reason) ? { fix: worktreeFix(availability.reason) } : {}),
 					stepId: worktreeSteps[0].id,
 				})
 		}

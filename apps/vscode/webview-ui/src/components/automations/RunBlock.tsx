@@ -217,7 +217,11 @@ function RunActions({ run }: { run: AutomationRun }) {
 						{retry ? "Go back to an earlier step…" : "Redo from a step…"}
 					</LinkButton>
 				)}
-				{actions.busy && <span className="text-description">Checking…</span>}
+				{actions.busy && (
+					<span className="text-description" data-testid={`run-starting-${run.id}`} role="status">
+						Starting the run…
+					</span>
+				)}
 			</div>
 			{choosing && (
 				<div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">

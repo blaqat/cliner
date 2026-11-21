@@ -359,8 +359,11 @@ export function emptyAutomation(): AutomationDefinition {
 
 export type AutomationRunStatus = "running" | "waiting" | "done" | "failed" | "stopped"
 
-/** Where the fix for a problem lives: the run block and start form link there. */
-export type AutomationFix = "worktrees" | "models" | "automation"
+/**
+ * Where the fix for a problem lives: the run block and start form link there. "folder": no folder is
+ * open; "repository": the folder isn't a git repository; "commit": the repository has no commits.
+ */
+export type AutomationFix = "worktrees" | "models" | "automation" | "folder" | "repository" | "commit"
 
 /** Something that keeps a run (or a step) from going, in plain words, with where to fix it. */
 export interface AutomationProblem {

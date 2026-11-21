@@ -117,4 +117,7 @@ export const FIX_LABELS: Record<AutomationFix, string> = {
 	worktrees: "Open Worktrees settings",
 	models: "Open Models settings",
 	automation: "Edit the automation",
+	folder: "Open folder…",
+	repository: "Open folder…",
+	commit: "Open Source Control",
 }

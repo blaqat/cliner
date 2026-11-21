@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { setAutomationRunsForTest } from "@/hooks/useAutomationRuns"
 import { AutomationRunBar } from "./AutomationRunBar"
 import { RunBlock } from "./RunBlock"
+import { clearRunStartsForTest } from "./runActions"
 
 const mocks = vi.hoisted(() => ({
 	stop: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 	check: vi.fn(),
 	settings: vi.fn(),
 	navigate: vi.fn(),
+	worktreeAction: vi.fn(),
 	history: [] as unknown[],
 }))
 
@@ -29,6 +31,9 @@ vi.mock("@/services/grpc-client", () => ({
 		checkAutomationRun: (request: unknown) => mocks.check(request),
 		listAutomations: vi.fn(async () => ({ automations: [] })),
 		subscribeToAutomationRuns: vi.fn(() => () => {}),
+	},
+	WorktreeServiceClient: {
+		threadWorktreeAction: (request: { action: string }) => mocks.worktreeAction(request),
 	},
 }))
 
@@ -111,6 +116,8 @@ beforeEach(() => {
 	mocks.check.mockReset().mockResolvedValue({ problemsJson: "[]" })
 	mocks.settings.mockReset()
 	mocks.navigate.mockReset()
+	mocks.worktreeAction.mockReset().mockResolvedValue({ json: "{}" })
+	clearRunStartsForTest()
 	mocks.history = [
 		{ id: "t1", totalCost: 0.1 },
 		{ id: "t2", totalCost: 0.2 },
@@ -186,13 +193,97 @@ describe("RunBlock", () => {
 	})
 
 	it("goes back to an earlier step, or runs again fresh", async () => {
-		render(<RunBlock onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />)
+		const { rerender } = render(<RunBlock onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />)
 		fireEvent.click(screen.getByTestId("run-resume-from-run-1"))
 		fireEvent.change(screen.getByTestId("run-resume-step-run-1"), { target: { value: "plan" } })
 		fireEvent.click(screen.getByRole("button", { name: "Go on from here" }))
 		await waitFor(() => expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ stepId: "plan" })))
+		// The resumed run went and failed again; its actions are back.
+		rerender(<RunBlock onOpenThread={vi.fn()} run={{ ...failedRun(), resumedAt: 1 }} statuses={{}} />)
 		fireEvent.click(screen.getByTestId("run-again-run-1"))
 		await waitFor(() => expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ fresh: true })))
+	})
+
+	it("offers to open a folder or initialize git when the folder isn't a repository, and re-checks after", async () => {
+		const run = failedRun()
+		run.steps[3] = {
+			...run.steps[3],
+			fix: "repository",
+			threads: [
+				{
+					...run.steps[3].threads[0],
+					error: "Couldn't make its worktree: this folder isn't a git repository. Open the repository's folder, or initialize git here.",
+					fix: "repository",
+				},
+			],
+		}
+		render(<RunBlock onOpenThread={vi.fn()} run={run} statuses={{}} />)
+		const block = screen.getByTestId("run-block-run-1")
+		fireEvent.click(within(block).getByTestId("run-fix-open-folder"))
+		expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "openFolder" }))
+		// git init only runs on its own click.
+		expect(mocks.worktreeAction).not.toHaveBeenCalledWith(expect.objectContaining({ action: "initRepository" }))
+
+		mocks.check.mockResolvedValueOnce({
+			problemsJson: JSON.stringify([
+				{
+					message:
+						"“Build” runs in a new worktree, but the repository has no commits yet. Make a first commit in Source Control.",
+					fix: "commit",
+					stepId: "build",
+				},
+			]),
+		})
+		fireEvent.click(within(block).getByTestId("run-fix-git-init"))
+		await waitFor(() =>
+			expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "initRepository" })),
+		)
+		expect(await within(block).findByTestId("run-fix-left")).toHaveTextContent(
+			"Git is set up, but the repository has no commits yet.",
+		)
+		fireEvent.click(within(block).getByTestId("run-fix-commit"))
+		expect(mocks.worktreeAction).toHaveBeenCalledWith(expect.objectContaining({ action: "openSourceControl" }))
+
+		// Once nothing is left, it says so; Retry is right below.
+		fireEvent.click(within(block).getByTestId("run-fix-git-init"))
+		expect(await within(block).findByTestId("run-fix-ready")).toHaveTextContent("Retry the step")
+		expect(screen.getByTestId("run-retry-run-1")).toBeEnabled()
+	})
+
+	it("disables Retry everywhere while a resume is starting, until the run reports it", async () => {
+		let release: () => void = () => {}
+		mocks.check.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ problemsJson: "[]" }))))
+		setAutomationRunsForTest([failedRun()])
+		const { rerender } = render(
+			<>
+				<RunBlock onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />
+				<AutomationRunBar taskGroupId="g1" threadId="t1" />
+			</>,
+		)
+		fireEvent.click(screen.getByTestId("run-retry-run-1"))
+		fireEvent.click(screen.getByTestId("run-retry-run-1"))
+		fireEvent.click(screen.getByTestId("automation-run-bar-retry"))
+		expect(screen.getByTestId("run-retry-run-1")).toBeDisabled()
+		expect(screen.getByTestId("automation-run-bar-retry")).toBeDisabled()
+		expect(screen.getByTestId("run-starting-run-1")).toHaveTextContent("Starting the run")
+		release()
+		await waitFor(() => expect(mocks.resume).toHaveBeenCalledTimes(1))
+		// Resumed, but the run stream hasn't said so yet: a click now would only be refused.
+		expect(screen.getByTestId("run-retry-run-1")).toBeDisabled()
+		fireEvent.click(screen.getByTestId("run-retry-run-1"))
+		expect(mocks.resume).toHaveBeenCalledTimes(1)
+		// It failed again: Retry is back.
+		rerender(<RunBlock onOpenThread={vi.fn()} run={{ ...failedRun(), resumedAt: 1 }} statuses={{}} />)
+		expect(screen.getByTestId("run-retry-run-1")).toBeEnabled()
+	})
+
+	it("says nothing went wrong when another click already got the run going", async () => {
+		mocks.resume.mockRejectedValueOnce(new Error("That run is already running."))
+		render(<RunBlock onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />)
+		fireEvent.click(screen.getByTestId("run-retry-run-1"))
+		await waitFor(() => expect(mocks.resume).toHaveBeenCalled())
+		await waitFor(() => expect(screen.getByTestId("run-retry-run-1")).toBeEnabled())
+		expect(screen.queryByTestId("run-problems")).not.toBeInTheDocument()
 	})
 
 	it("folds a finished run to one line", () => {

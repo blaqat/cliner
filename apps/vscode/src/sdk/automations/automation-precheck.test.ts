@@ -21,7 +21,8 @@ describe("precheckSteps", () => {
 		expect(problems).toEqual([
 			{
 				message:
-					"“Build {{ticket}}” runs in a new worktree, but this folder isn't a git repository. Open the repository's folder, or run git init.",
+					"“Build {{ticket}}” runs in a new worktree, but this folder isn't a git repository. Open the repository's folder, or initialize git here.",
+				fix: "repository",
 				stepId: "build",
 			},
 		])
@@ -36,7 +37,7 @@ describe("precheckSteps", () => {
 		expect(await precheckSteps(steps.slice(0, 2), { workspace: "/repo", worktrees })).toEqual([])
 		expect(asked).toBe(false)
 		const [problem] = await precheckSteps(steps, { workspace: undefined, worktrees })
-		expect(problem.message).toContain("no folder is open")
+		expect(problem).toMatchObject({ fix: "folder", message: expect.stringContaining("no folder is open") })
 	})
 
 	it("adds model problems with the Models fix", async () => {
@@ -56,6 +57,14 @@ describe("precheckSteps", () => {
 			worktrees: async () => ({ available: false, reason: "Worktrees are off for this workspace" }),
 		})
 		expect(problem).toMatchObject({ fix: "worktrees", message: expect.stringContaining("turned off") })
+	})
+
+	it("links a repository with no commits to Source Control", async () => {
+		const [problem] = await precheckSteps(steps, {
+			workspace: "/repo",
+			worktrees: async () => ({ available: false, reason: "fatal: ambiguous argument 'HEAD': unknown revision" }),
+		})
+		expect(problem).toMatchObject({ fix: "commit", message: expect.stringContaining("no commits yet") })
 	})
 
 	it("puts git's errors in plain words", () => {

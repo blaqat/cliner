@@ -1353,7 +1353,7 @@ describe("child approval task ownership", () => {
 		const statuses: Record<string, string> = {}
 		let focusedMode = "plan"
 		const stream = { emitSessionEvents: vi.fn() }
-		const controller = {
+		const controller = controllerFixture({
 			task: { taskId: "focused-act" },
 			taskSessions: new Map<string, Context>(),
 			homeContext: { translator: new MessageTranslatorState() },
@@ -1372,7 +1372,8 @@ describe("child approval task ownership", () => {
 			taskHistory: {},
 			postStateToWebview: vi.fn(async () => {}),
 			diffEdits: { discardPreview: vi.fn() },
-		}
+		})
+
 		const factory = (SdkController.prototype as unknown as { getTaskSessionContext: (id: string) => Context })
 			.getTaskSessionContext
 		const owner = factory.call(controller, "background-ask")
@@ -1522,6 +1523,53 @@ describe("tool approval through a symlink", () => {
 		}
 		const { context, approve } = await approvalFixture(false, settings)
 		expect(await asks(context, approve("inside", "editor", { path: "feature.txt", new_text: "ok" }))).toBe(false)
+	})
+})
+
+describe("automation workspace fixes", () => {
+	it("initializes git only in an open folder that isn't a repository yet", async () => {
+		const folder = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cline-git-init-")))
+		const getWorkspacePaths = vi.fn(async () => ({ paths: [folder] }))
+		const workspace = vi
+			.spyOn(HostProvider, "workspace", "get")
+			.mockReturnValue({ getWorkspacePaths } as unknown as typeof HostProvider.workspace)
+		const availability = vi.fn(async (dir: string) =>
+			(await fs.stat(path.join(dir, ".git")).catch(() => undefined))
+				? { mode: "git", available: false, reason: "fatal: ambiguous argument 'HEAD': unknown revision" }
+				: {
+						mode: "git",
+						available: false,
+						reason: "fatal: not a git repository (or any of the parent directories): .git",
+					},
+		)
+		const controller = controllerFixture({
+			getWorkspaceRoot: async () => folder,
+			sessions: { getSession: () => undefined },
+			stateManager: { getWorkspaceStateKey: () => undefined },
+			threadWorktrees: { availability },
+		})
+		const init = () =>
+			(controller as unknown as SdkController).threadWorktreeAction({
+				action: "initRepository",
+				threadId: "",
+				json: "",
+				confirmed: false,
+			})
+		try {
+			await init()
+			const head = await fs.readFile(path.join(folder, ".git", "HEAD"), "utf8")
+			// Already a repository: a second click changes nothing.
+			await fs.writeFile(path.join(folder, ".git", "HEAD"), "ref: refs/heads/kept\n")
+			await init()
+			expect(head).toMatch(/^ref: /)
+			expect(await fs.readFile(path.join(folder, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/kept\n")
+			// No folder open: it says so instead of making the fallback folder a repository.
+			getWorkspacePaths.mockResolvedValueOnce({ paths: [] })
+			await expect(init()).rejects.toThrow("Open a folder first.")
+		} finally {
+			workspace.mockRestore()
+			await fs.rm(folder, { recursive: true, force: true })
+		}
 	})
 })
 
