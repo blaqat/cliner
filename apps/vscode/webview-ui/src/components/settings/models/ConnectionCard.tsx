@@ -126,7 +126,7 @@ const ProviderEdit = ({ connection }: { connection: Extract<Connection, { kind: 
 	const [error, setError] = useState<string>()
 	const spec = providerSpec(connection.providerId)
 	return (
-		<div className="mt-3 rounded-md border border-editor-group-border p-3">
+		<div>
 			<ProviderConnectionFields connection={connection} onError={setError} spec={spec} />
 			<FieldGrid>
 				<RequestTimeoutField
@@ -212,11 +212,18 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 							<span className="min-w-0 truncate text-[13px] font-medium">{name}</span>
 							{managedHere && <LockedIcon title={`${page.organization} manages this connection`} />}
 						</span>
-						{!isProvider && (
-							<span className="mt-0.5 block truncate font-mono text-[12px] text-description">
-								{connection.baseUrl || "No base URL yet"}
-							</span>
-						)}
+						{/* Where it points, then what lives under it, so a closed card still reads as "a connection with models". */}
+						<span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-description">
+							{!isProvider && (
+								<span className="min-w-0 truncate font-mono">{connection.baseUrl || "No base URL yet"}</span>
+							)}
+							{!isDraft && (
+								<span className="shrink-0 whitespace-nowrap">
+									{!isProvider && "· "}
+									{saved.length ? plural(saved.length, "model") : "No models yet"}
+								</span>
+							)}
+						</span>
 					</span>
 				</button>
 				{(status || !isDraft) && (
@@ -238,35 +245,49 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 			</div>
 			{open && (
 				<div className="px-3 pb-3">
-					{/* Two groups, each saying what it holds: where requests go and how, then what's asked for there. */}
-					{!isDraft && (
-						<GroupHeading className="flex items-center gap-2 pt-3">
-							Connection
-							<span className="normal-case tracking-normal">· used by every model below</span>
-						</GroupHeading>
-					)}
-					{showForm && connection.kind === "openai-compatible" && (
-						<div className={isDraft ? "pb-1" : "rounded-md border border-editor-group-border p-3"}>
+					{/* Two groups, each saying what it holds: where requests go and how (one box, read or edited in
+					    place), then the models asked for there. */}
+					{/* One element for a draft and a saved connection, so a draft saved mid-form keeps what's typed. */}
+					<section
+						aria-label={`${name} connection`}
+						className={
+							isDraft
+								? "pb-1"
+								: "mt-3 rounded-md border border-editor-group-border bg-(--vscode-sideBar-background) px-3 pt-2 pb-3"
+						}>
+						{!isDraft && (
+							<GroupHeading className="flex flex-wrap items-center gap-x-1.5 p-0 pb-1.5">
+								<span aria-hidden className="codicon codicon-plug text-[12px]" />
+								Connection
+								<span className="whitespace-nowrap normal-case tracking-normal">· used by every model below</span>
+							</GroupHeading>
+						)}
+						{showForm && connection.kind === "openai-compatible" && (
 							<ConnectionForm connection={connection} isDraft={isDraft} />
-						</div>
-					)}
-					{connection.kind === "provider" && editing && <ProviderEdit connection={connection} />}
-					{!isDraft && !editing && (
-						<div className="text-[12px] text-description" data-testid={`connection-summary-${connection.id}`}>
-							{connectionSummary(connection, store.state?.configuredSecrets ?? {})}.{" "}
-							<LinkButton
-								onClick={() => {
-									page.setOpenModel(null)
-									page.setEditingConnection(connection.id, true)
-								}}>
-								Edit
-							</LinkButton>
-						</div>
-					)}
+						)}
+						{connection.kind === "provider" && editing && <ProviderEdit connection={connection} />}
+						{!isDraft && !editing && (
+							<div className="text-[12px] text-description" data-testid={`connection-summary-${connection.id}`}>
+								{connectionSummary(connection, store.state?.configuredSecrets ?? {})}.{" "}
+								<LinkButton
+									onClick={() => {
+										page.setOpenModel(null)
+										page.setEditingConnection(connection.id, true)
+									}}>
+									Edit
+								</LinkButton>
+							</div>
+						)}
+					</section>
 					{!isDraft && (
 						<>
 							<div className="mt-4 flex items-center justify-between gap-2 pb-1.5">
-								<GroupHeading className="p-0">Models</GroupHeading>
+								<GroupHeading className="flex items-center gap-1.5 p-0">
+									Models
+									{allRows.length > 0 && (
+										<span className="normal-case tracking-normal">· {allRows.length}</span>
+									)}
+								</GroupHeading>
 								<ActionButton
 									aria-expanded={adding}
 									icon="add"
@@ -287,6 +308,9 @@ export const ConnectionCard = ({ connection, isDraft }: { connection: Connection
 							{allRows.map((row) => (
 								<ModelRowView connection={connection} isDraft={drafts.includes(row)} key={row.id} row={row} />
 							))}
+							{allRows.length === 0 && !adding && (
+								<Why>Nothing runs on this connection yet. Add models picks the ones you want from it.</Why>
+							)}
 							<div className="mt-1 flex flex-wrap justify-end border-t border-editor-group-border pt-3">
 								<RemoveFlow
 									label={`Remove ${isProvider ? name : "connection"}`}

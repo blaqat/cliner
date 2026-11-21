@@ -305,7 +305,7 @@ export const ROLE_LABELS: Record<RoleKey, string> = {
 	titles: "Thread titles",
 	commitMessages: "Commit messages",
 	generate: "Walkthrough Generate",
-	walkthroughAsk: "Walkthrough Ask",
+	walkthroughAsk: "Walkthrough Ask why",
 }
 
 export const roleRowId: Record<RoleKey, string> = {

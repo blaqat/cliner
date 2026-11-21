@@ -75,6 +75,7 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	preference<SubagentPick>({
 		id: "models.subagents",
 		label: "Subagents",
+		description: "What helpers run on.",
 		aliases: ["helpers", "what helpers run on", "default subagent model"],
 		mirrorOf: "subagents.default",
 		defaultValue: () => ({ kind: "thread", level: "inherit" }),
@@ -99,7 +100,7 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	state({
 		id: "models.advanced",
 		label: "Models: Advanced",
-		description: "Different model for Ask, background text one by one, request timeout.",
+		description: "Different model for Ask, background text one by one, walkthrough Ask why, request timeout.",
 		// There's nothing to pick from until a model exists.
 		visible: (ctx) => (ctx.state.modelSettings?.settings.models.length ?? 0) > 0,
 	}),
@@ -125,9 +126,9 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	preference<ModelPick | null>({
 		id: "models.walkthrough.ask",
 		parent: "models.advanced",
-		label: "Walkthrough Ask",
+		label: "Walkthrough Ask why",
 		description:
-			"Answers questions about selected lines. Defaults to the model and level that generated the walkthrough, then the thread's model.",
+			"Answers questions about lines you select in a walkthrough. Defaults to the model and level that generated the walkthrough, then the thread's model.",
 		aliases: ["ask why", "walkthrough model"],
 		defaultValue: () => null,
 		read: (ctx) => rolesOf(ctx)?.walkthroughAsk?.pick ?? null,
@@ -138,9 +139,9 @@ export const MODELS_ROWS: readonly SettingsRow[] = [
 	preference<WalkthroughAskContext>({
 		id: "models.walkthrough.ask-context",
 		parent: "models.advanced",
-		label: "Walkthrough Ask context",
+		label: "Walkthrough Ask why context",
 		description:
-			"What Ask sends with the selected lines. Follow-ups include earlier questions and answers. Full thread context can reuse the provider's prompt cache.",
+			"What Ask why sends with the selected lines. Follow-ups include earlier questions and answers. Full thread context can reuse the provider's prompt cache.",
 		aliases: ["ask why", "conversation", "selection"],
 		defaultValue: () => "thread",
 		read: (ctx) => rolesOf(ctx)?.walkthroughAsk?.context ?? "thread",

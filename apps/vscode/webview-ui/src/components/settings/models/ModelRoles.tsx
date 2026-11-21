@@ -253,8 +253,8 @@ export const ModelRoles = () => {
 						/>
 					)}
 					rowId={roleRowId.subagents}>
-					<div className="text-[12px] text-description">
-						What helpers run on. <LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
+					<div className="mt-1 text-[12px] text-description">
+						<LinkButton onClick={() => openRow("subagents")}>More on Subagents</LinkButton>
 					</div>
 					{roles.subagents.kind === "model" && (
 						<PickWhy
@@ -299,7 +299,7 @@ export const ModelRoles = () => {
 				<ToggleRow rowId="models.background.titles-enabled" />
 				<SettingBlock rowId="models.advanced">
 					<div className="pb-3">
-						<AdvancedFold featureId="models.advanced" summary="Ask model, background text, timeout">
+						<AdvancedFold featureId="models.advanced" summary="Ask model, background text, Ask why, timeout">
 							<GroupHeading>Chat</GroupHeading>
 							<SettingRow
 								control={({ id, disabled }) => {
@@ -345,7 +345,7 @@ export const ModelRoles = () => {
 										disabledReason={disabled ? "Your organization manages this." : undefined}
 										id={id}
 										ladder={ladder}
-										modelsLabel="Walkthrough Ask"
+										modelsLabel="Walkthrough Ask why"
 										onCommit={(next) =>
 											void setRoles("walkthroughAsk", (current) => ({
 												...current,
@@ -377,7 +377,7 @@ export const ModelRoles = () => {
 							<SettingRow<import("@shared/model-settings").WalkthroughAskContext>
 								control={({ id, disabled, value, write }) => (
 									<select
-										aria-label="Walkthrough Ask context"
+										aria-label="Walkthrough Ask why context"
 										className="max-w-full rounded-xs border border-solid border-input-border bg-input-background p-1 text-xs text-input-foreground"
 										disabled={disabled}
 										id={id}
