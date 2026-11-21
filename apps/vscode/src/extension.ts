@@ -17,6 +17,7 @@ import { sendStashShortcutEvent } from "./core/controller/ui/subscribeToStashSho
 import { sendWorktreesButtonClickedEvent } from "./core/controller/ui/subscribeToWorktreesButtonClicked"
 import { WebviewProvider } from "./core/webview"
 import { createClineAPI } from "./exports"
+import { runAddSkillsetCommand } from "./sdk/skills/skillset-handlers"
 import "./utils/path" // necessary to have access to String.prototype.toPosix
 import path from "node:path"
 import type { ExtensionContext } from "vscode"
@@ -145,6 +146,14 @@ export async function activate(context: vscode.ExtensionContext) {
 	)
 	context.subscriptions.push(vscode.commands.registerCommand(commands.McpButton, () => sendMcpButtonClickedEvent()))
 	context.subscriptions.push(vscode.commands.registerCommand(commands.RulesButton, () => sendRulesButtonClickedEvent()))
+	context.subscriptions.push(
+		vscode.commands.registerCommand(commands.AddSkillset, () => {
+			const webview = WebviewProvider.getInstance() as VscodeWebviewProvider
+			const controller = webview.controller
+			if (!controller) return
+			return runAddSkillsetCommand(controller, async () => vscode.commands.executeCommand(commands.FocusChatInput, true))
+		}),
+	)
 	context.subscriptions.push(
 		vscode.commands.registerCommand(commands.MarketplaceButton, () => sendMarketplaceButtonClickedEvent()),
 	)

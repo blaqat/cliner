@@ -1,3 +1,5 @@
+import type { SkillDraftMeta } from "./skillsets"
+
 // Task groups ("Tasks" in the UI): a named group of threads with a shared
 // notebook. Named TaskGroup/taskGroupId internally because `task*` already
 // means a single chat/session everywhere else in this codebase.
@@ -58,6 +60,8 @@ export interface NotebookChange {
 	draft?: { ts: number; reason: string }
 	/** The agent's one-line summary of this edit, passed with its notebook call. */
 	summary?: string
+	/** A staged skill or workflow (only under SKILL_DRAFTS_ID): what it is and where it goes. */
+	skill?: SkillDraftMeta
 }
 export interface NotebookActivity {
 	ts: number

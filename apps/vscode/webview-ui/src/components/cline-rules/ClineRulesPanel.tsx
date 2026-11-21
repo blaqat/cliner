@@ -12,10 +12,15 @@ import {
 	ToggleWorkflowRequest,
 } from "@shared/proto/cline/file"
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import styled from "styled-components"
 import AutomationsPanel from "@/components/automations/AutomationsPanel"
 import { DocFileEditor, DocFileEditorContext, type DocFileTarget } from "@/components/docEditor/DocFileEditor"
+import { NewSkillsStrip } from "@/components/skills/NewSkillsStrip"
+import { ShareSkillsetPage } from "@/components/skills/ShareSkillsetPage"
+import { SkillsetToolbar } from "@/components/skills/SkillsetToolbar"
+import { type RulesTab, takeSkillsRequest, useSkillsetState } from "@/components/skills/skillsetStore"
+import { useSkillsetLibrary } from "@/components/skills/useSkillsetLibrary"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import useRemoteConfigSettings from "@/hooks/useRemoteConfigSettings"
 import { FileServiceClient } from "@/services/grpc-client"
@@ -63,9 +68,44 @@ const ClineRulesPanel: React.FC<{
 	const [localSkills, setLocalSkills] = useState<SkillInfo[]>([])
 
 	const isWindows = !isMacOSOrLinux()
-	const [currentView, setCurrentView] = useState<"rules" | "workflows" | "hooks" | "skills" | "automations">("rules")
+	// A skillset toast's View (or Share…) can ask for a tab before the panel opens; take it once.
+	const [initialRequest] = useState(() => takeSkillsRequest())
+	const [currentView, setCurrentView] = useState<RulesTab>(initialRequest?.tab ?? "rules")
 	// A rule, workflow or skill open in the doc editor, in place of the list (Back returns).
 	const [editing, setEditing] = useState<DocFileTarget>()
+	// The Share a skillset page, in place of the list (Back returns).
+	const [sharing, setSharing] = useState(!!initialRequest?.share)
+	// The set a toast's View came from: its New strip comes first and is outlined.
+	const [highlightSetId, setHighlightSetId] = useState(initialRequest?.setId)
+	const pendingRequest = useSkillsetState((state) => state.request)
+	useEffect(() => {
+		if (!pendingRequest) return
+		const request = takeSkillsRequest()
+		if (!request) return
+		setEditing(undefined)
+		setCurrentView(request.tab)
+		setSharing(!!request.share)
+		if (request.setId) setHighlightSetId(request.setId)
+	}, [pendingRequest])
+	const skillsOrWorkflows = currentView === "skills" || currentView === "workflows"
+	const { library: skillsetLibrary, refresh: refreshSkillsetLibrary } = useSkillsetLibrary({
+		includeFiles: true,
+		pollMs: 2000,
+		enabled: skillsOrWorkflows && !sharing,
+	})
+	// Items still marked new show in the New strip, not twice.
+	const newPaths = useMemo(
+		() =>
+			new Set(
+				(skillsetLibrary?.sets ?? []).flatMap((set) => set.items.filter((item) => item.isNew).map((item) => item.path)),
+			),
+		[skillsetLibrary],
+	)
+	const switchTab = (view: RulesTab) => {
+		setEditing(undefined)
+		setSharing(false)
+		setCurrentView(view)
+	}
 
 	// Auto-switch to rules tab if hooks become disabled while viewing hooks tab
 	useEffect(() => {
@@ -215,6 +255,7 @@ const ClineRulesPanel: React.FC<{
 		.sort(([a], [b]) => a.localeCompare(b))
 
 	const globalWorkflows = Object.entries(globalWorkflowToggles || {})
+		.filter(([path]) => !newPaths.has(path))
 		.map(([path, enabled]): [string, boolean] => [path, enabled as boolean])
 		.sort(([a], [b]) => a.localeCompare(b))
 
@@ -387,46 +428,21 @@ const ClineRulesPanel: React.FC<{
 					{/* Tabs container */}
 					<div className="mb-2.5 flex justify-between overflow-hidden">
 						<div className="flex flex-wrap gap-px border-b border-solid border-x-0 border-t-0 border-(--vscode-panel-border)">
-							<TabButton
-								isActive={currentView === "rules"}
-								onClick={() => {
-									setEditing(undefined)
-									setCurrentView("rules")
-								}}>
+							<TabButton isActive={currentView === "rules"} onClick={() => switchTab("rules")}>
 								Rules
 							</TabButton>
 							{hooksEnabled && (
-								<TabButton
-									isActive={currentView === "hooks"}
-									onClick={() => {
-										setEditing(undefined)
-										setCurrentView("hooks")
-									}}>
+								<TabButton isActive={currentView === "hooks"} onClick={() => switchTab("hooks")}>
 									Hooks
 								</TabButton>
 							)}
-							<TabButton
-								isActive={currentView === "skills"}
-								onClick={() => {
-									setEditing(undefined)
-									setCurrentView("skills")
-								}}>
+							<TabButton isActive={currentView === "skills"} onClick={() => switchTab("skills")}>
 								Skills
 							</TabButton>
-							<TabButton
-								isActive={currentView === "workflows"}
-								onClick={() => {
-									setEditing(undefined)
-									setCurrentView("workflows")
-								}}>
+							<TabButton isActive={currentView === "workflows"} onClick={() => switchTab("workflows")}>
 								Workflows
 							</TabButton>
-							<TabButton
-								isActive={currentView === "automations"}
-								onClick={() => {
-									setEditing(undefined)
-									setCurrentView("automations")
-								}}>
+							<TabButton isActive={currentView === "automations"} onClick={() => switchTab("automations")}>
 								Automations
 							</TabButton>
 						</div>
@@ -436,7 +452,8 @@ const ClineRulesPanel: React.FC<{
 				{/* Scrollable content area */}
 				<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3" data-testid="rules-panel-scroll">
 					{editing && <DocFileEditor key={editing.path} onBack={() => setEditing(undefined)} target={editing} />}
-					<div className={editing ? "hidden" : undefined}>
+					{sharing && !editing && <ShareSkillsetPage onBack={() => setSharing(false)} />}
+					<div className={editing || sharing ? "hidden" : undefined}>
 						{/* Remote config banner */}
 						{(currentView === "rules" && hasRemoteRules) ||
 						(currentView === "workflows" && hasRemoteWorkflows) ||
@@ -490,6 +507,16 @@ const ClineRulesPanel: React.FC<{
 								</p>
 							)}
 						</div>
+						{skillsOrWorkflows && (
+							<>
+								<SkillsetToolbar onAdded={setHighlightSetId} onShare={() => setSharing(true)} />
+								<NewSkillsStrip
+									highlightSetId={highlightSetId}
+									onChanged={() => void refreshSkillsetLibrary()}
+									sets={skillsetLibrary?.sets ?? []}
+								/>
+							</>
+						)}
 						{isRemoteConfigLoading && remoteConfigSettings.length === 0 && (
 							<div className="text-xs text-description mb-3" role="status">
 								Loading managed configuration…
@@ -774,7 +801,7 @@ const ClineRulesPanel: React.FC<{
 									<div className="text-sm font-normal mb-2">Global Skills</div>
 									<div className="flex flex-col gap-0">
 										{globalSkills
-											.filter((s) => !s.path.startsWith("remote:"))
+											.filter((s) => !s.path.startsWith("remote:") && !newPaths.has(s.path))
 											.sort((a, b) => a.name.localeCompare(b.name))
 											.map((skill) => (
 												<RuleRow
@@ -795,6 +822,7 @@ const ClineRulesPanel: React.FC<{
 									<div className="text-sm font-normal mb-2">Workspace Skills</div>
 									<div className="flex flex-col gap-0">
 										{localSkills
+											.filter((s) => !newPaths.has(s.path))
 											.sort((a, b) => a.name.localeCompare(b.name))
 											.map((skill) => (
 												<RuleRow

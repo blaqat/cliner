@@ -8,6 +8,7 @@ import McpView from "./components/mcp/configuration/McpConfigurationView"
 import { openClinePassSubscriptionIfPending } from "./components/onboarding/clinePassSubscribe"
 import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
+import { SkillsetDropLayer } from "./components/skills/SkillsetDropLayer"
 import { ThreadToasts } from "./components/toasts/ThreadToasts"
 import { TopBarPanelOverlay } from "./components/topbar/TopBarPanelOverlay"
 import WalkthroughView from "./components/walkthrough/WalkthroughView"
@@ -91,6 +92,7 @@ const AppContent = () => {
 		<div className="relative flex h-screen w-full flex-col">
 			<ThreadToasts />
 			<TopBarPanelOverlay />
+			<SkillsetDropLayer />
 			{(accountSwitch || accountSwitchError) && !showAccount && (
 				<div className="z-50 bg-editor-background p-2 text-xs" role="status">
 					{accountSwitch

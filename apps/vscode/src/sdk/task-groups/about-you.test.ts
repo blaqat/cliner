@@ -24,7 +24,7 @@ describe("About you", () => {
 	it("is offered to every thread, not only threads in a task", async () => {
 		const hub = { getServers: () => [] } as never
 		const tools = await createVscodeExtraTools(hub, { aboutYou: { rootThreadId: "t", store } })
-		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "about_you"])
+		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "about_you", "skill_draft"])
 	})
 
 	it("stages proposals for review in the thread, with the agent's summary", async () => {

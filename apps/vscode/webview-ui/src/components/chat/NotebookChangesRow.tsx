@@ -1,5 +1,6 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { ApplyNotebookChangesRequest, DiscardNotebookChangesRequest, NotebookActionRequest } from "@shared/proto/cline/task_group"
+import { SKILL_DRAFTS_ID } from "@shared/skillsets"
 import { ABOUT_YOU_ID, estimateTokens, type NotebookChange, type NotebookChangesPayload } from "@shared/task-groups"
 import { useMemo, useState } from "react"
 import { InlineNotice } from "@/components/common/InlineNotice"
@@ -7,11 +8,14 @@ import { LinkButton } from "@/components/common/LinkButton"
 import { DocEditor } from "@/components/docEditor/DocEditor"
 import { MarkedNote } from "@/components/docEditor/MarkedNote"
 import { changedSection, diffCounts } from "@/components/docEditor/noteBlocks"
+import { OpenedSkillDraft } from "@/components/skills/OpenedSkillDraft"
+import { openSkills } from "@/components/skills/skillsetStore"
 import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { type TaskGroupPage, useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { TaskGroupServiceClient } from "@/services/grpc-client"
+import { notebookTurnRun } from "./notebookTurnRows"
 
 function parseChanges(raw: unknown): NotebookChange[] | undefined {
 	if (!Array.isArray(raw)) return undefined
@@ -56,20 +60,24 @@ export function parseNotebookChangesPayload(text: string | undefined): NotebookC
 }
 
 /** A note this thread wrote: solid purple chip with a pencil, matching the task page timeline. */
-export function WroteNoteChip({ name }: { name: string }) {
+export function WroteNoteChip({ name, icon = "edit" }: { name: string; icon?: string }) {
 	return (
 		<span className="inline-flex max-w-40 min-w-0 items-center gap-1 rounded-xs border border-[color-mix(in_srgb,var(--vscode-charts-purple)_45%,transparent)] bg-[color-mix(in_srgb,var(--vscode-charts-purple)_15%,transparent)] px-1.5 text-[11px] leading-4">
-			<i aria-hidden className="codicon codicon-edit text-[10px]!" />
+			<i aria-hidden className={`codicon codicon-${icon} text-[10px]!`} />
 			<span className="truncate">{name}</span>
 		</span>
 	)
 }
 
-/** What a chip says about one change: "new · 5 lines", "+2 −1 in Gotchas", "delete". */
+/** What a chip says about one change: "new · 5 lines", "+2 −1 in Gotchas", "delete", "new skill · 2 files". */
 export function changeMeta(change: NotebookChange): string {
 	if (change.op === "delete") return "delete"
 	const content = change.content ?? ""
 	if (change.op === "create") {
+		if (change.skill) {
+			const files = 1 + (change.skill.kind === "skill" ? (change.skill.files?.length ?? 0) : 0)
+			return `new ${change.skill.kind}${files > 1 ? ` · ${files} files` : ""}`
+		}
 		const lines = content.split("\n").filter((line) => line.trim()).length
 		return `new · ${lines} ${lines === 1 ? "line" : "lines"}`
 	}
@@ -79,132 +87,225 @@ export function changeMeta(change: NotebookChange): string {
 	return section ? `${counts} in ${section}` : counts
 }
 
+type ReviewKind = "notes" | "about" | "skills"
+
+function kindOf(groupId: string): ReviewKind {
+	return groupId === ABOUT_YOU_ID ? "about" : groupId === SKILL_DRAFTS_ID ? "skills" : "notes"
+}
+
+/** The chip's icon: a note's pencil, About you's person, a skill's sparkle, a workflow's list. */
+function changeIcon(kind: ReviewKind, change: NotebookChange): string {
+	if (change.op === "delete") return "trash"
+	if (kind === "about") return "account"
+	if (kind === "skills") return change.skill?.kind === "workflow" ? "list-ordered" : "sparkle"
+	return "edit"
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+
+/** "2 note changes, 1 About you change, 1 skill": counts by kind, in a fixed order. */
+export function countPhrase(entries: { kind: ReviewKind; change: NotebookChange }[]): string {
+	const notes = entries.filter((entry) => entry.kind === "notes").length
+	const about = entries.filter((entry) => entry.kind === "about").length
+	const skills = entries.filter((entry) => entry.kind === "skills" && entry.change.skill?.kind !== "workflow").length
+	const workflows = entries.filter((entry) => entry.kind === "skills" && entry.change.skill?.kind === "workflow").length
+	return [
+		notes && plural(notes, "note change"),
+		about && plural(about, "About you change"),
+		skills && plural(skills, "skill"),
+		workflows && plural(workflows, "workflow"),
+	]
+		.filter(Boolean)
+		.join(", ")
+}
+
 interface NotebookChangesRowProps {
 	message: ClineMessage
 	/** Opens the task page; defaults to the sidebar task page navigation. */
 	onOpenTaskGroup?: (taskGroupId: string, page?: TaskGroupPage) => void
 }
 
+type Resolved = Pick<NotebookChangesPayload, "status" | "kept" | "dropped">
+
 /**
- * The review row for notebook (and About you) changes staged in a thread: one
- * row per group, at the end of the newest turn that staged something. A chip
- * per note with its summary; Keep keeps everything in one click; a note opens
- * only on click. Every action applies to the newest staged version, so a click
- * never fails on a stale row.
+ * The review row at the end of a turn that staged changes: task notes, About
+ * you and skills together, one row per turn. A chip per change with the
+ * agent's summary; Keep keeps everything in one click; a change opens only on
+ * click. Every action applies to the newest staged version, so a click never
+ * fails on a stale row.
  */
 export function NotebookChangesRow({ message, onOpenTaskGroup }: NotebookChangesRowProps) {
-	const { clineMessages, navigateToTaskGroup, taskGroups } = useExtensionState()
+	const { clineMessages } = useExtensionState()
+	// The other kinds this turn staged ride along in this row (they render nothing themselves).
+	const members = useMemo(() => {
+		const index = clineMessages.findIndex((entry) => entry.ts === message.ts && entry.say === "notebook_changes")
+		const run = index >= 0 ? notebookTurnRun(clineMessages, index) : []
+		if (!run.length) return [message]
+		if (run[0].ts !== message.ts) return []
+		// The row renders from the message it was given (freshest), the rest from state.
+		return run.map((entry) => (entry.ts === message.ts ? message : entry))
+	}, [clineMessages, message])
+	const payloads = useMemo(
+		() =>
+			members
+				.map((member) => ({ message: member, payload: parseNotebookChangesPayload(member.text) }))
+				.filter((entry): entry is { message: ClineMessage; payload: NotebookChangesPayload } => !!entry.payload),
+		[members],
+	)
+	if (!payloads.length) return null
+	return <TurnReview entries={payloads} onOpenTaskGroup={onOpenTaskGroup} />
+}
+
+function TurnReview({
+	entries,
+	onOpenTaskGroup,
+}: {
+	entries: { message: ClineMessage; payload: NotebookChangesPayload }[]
+	onOpenTaskGroup?: (taskGroupId: string, page?: TaskGroupPage) => void
+}) {
+	const { clineMessages, navigateToTaskGroup, taskGroups, workspaceRoots } = useExtensionState()
 	const openTaskGroup = onOpenTaskGroup ?? navigateToTaskGroup
-	const payload = useMemo(() => parseNotebookChangesPayload(message.text), [message.text])
-	const isNewest = useMemo(() => {
+	// Shown right after Keep/Discard succeeds, until the backend rewrites the message status.
+	const [resolved, setResolved] = useState<Record<string, Resolved>>({})
+
+	const groups = entries.map(({ message, payload }) => {
+		let isNewest = true
 		for (let i = clineMessages.length - 1; i >= 0; i--) {
-			if (clineMessages[i].say === "notebook_changes") {
-				const candidate = parseNotebookChangesPayload(clineMessages[i].text)
-				if (candidate?.taskGroupId === payload?.taskGroupId && candidate?.threadId === payload?.threadId)
-					return clineMessages[i].ts === message.ts
+			if (clineMessages[i].say !== "notebook_changes") continue
+			const candidate = parseNotebookChangesPayload(clineMessages[i].text)
+			if (candidate?.taskGroupId === payload.taskGroupId && candidate?.threadId === payload.threadId) {
+				isNewest = clineMessages[i].ts === message.ts
+				break
 			}
 		}
-		return true
-	}, [clineMessages, message.ts, payload?.taskGroupId, payload?.threadId])
-	// Shown right after Keep/Discard succeeds, until the backend rewrites the message status.
-	const [resolved, setResolved] = useState<Pick<NotebookChangesPayload, "status" | "kept" | "dropped"> | null>(null)
+		const local = resolved[payload.taskGroupId]
+		const status = payload.status === "pending" ? (local?.status ?? payload.status) : payload.status
+		const settled = payload.status === "pending" && local ? { ...payload, ...local } : payload
+		return { payload, settled, status, isNewest, kind: kindOf(payload.taskGroupId) }
+	})
 
-	if (!payload) return null
-	const aboutYou = payload.taskGroupId === ABOUT_YOU_ID
-	const status = payload.status === "pending" ? (resolved?.status ?? payload.status) : payload.status
-	if (status !== "pending") {
-		const settled = payload.status === "pending" && resolved ? { ...payload, ...resolved } : payload
-		const kept =
-			settled.kept ??
-			(status === "applied"
-				? settled.appliedSlugs
-					? settled.changes.filter((change) => settled.appliedSlugs?.includes(change.slug))
-					: settled.changes
-				: [])
-		return (
-			<div>
-				<NotebookSummaryRow
-					aboutYou={aboutYou}
-					dropped={settled.dropped ?? (status === "discarded" ? settled.changes : [])}
-					kept={kept}
-					onOpen={() => openTaskGroup?.(payload.taskGroupId, aboutYou ? "notebook" : undefined)}
-				/>
-				<NotebookUserEdits changes={payload.changes} />
-			</div>
-		)
-	}
-	if (!isNewest || payload.changes.length === 0) {
-		// Only older histories have these: a newer turn's row now carries the changes.
-		return (
-			<div className="flex items-center gap-1.5 text-xs text-description" data-testid="notebook-changes-superseded">
-				<i aria-hidden className="codicon codicon-book" />
-				<span>Note changes moved to a later turn</span>
-			</div>
-		)
-	}
-	return (
-		<NotebookReviewRow
-			aboutYou={aboutYou}
-			key={payload.taskGroupId}
-			onResolved={setResolved}
-			payload={payload}
-			taskGroupTitle={taskGroups?.find((group) => group.id === payload.taskGroupId)?.title}
+	const pending = groups.filter((group) => group.status === "pending" && group.isNewest && group.payload.changes.length)
+	const settledGroups = groups.filter((group) => group.status !== "pending")
+	const superseded = groups.filter((group) => group.status === "pending" && (!group.isNewest || !group.payload.changes.length))
+
+	const summary = settledGroups.length > 0 && (
+		<TurnSummary
+			groups={settledGroups.map((group) => ({ ...group, payload: group.settled }))}
+			onOpen={(group) => {
+				if (group.kind === "skills") openSkills({ tab: "skills" })
+				else openTaskGroup?.(group.payload.taskGroupId, group.kind === "about" ? "notebook" : undefined)
+			}}
 		/>
+	)
+	const allChanges = groups.flatMap((group) => group.payload.changes)
+
+	return (
+		<div className="flex flex-col gap-1">
+			{pending.length > 0 && (
+				<ReviewCard
+					groups={pending.map((group) => group.payload)}
+					hasWorkspace={(workspaceRoots?.length ?? 0) > 0}
+					onResolved={(groupId, value) => setResolved((current) => ({ ...current, [groupId]: value }))}
+					taskGroupTitle={(groupId) => taskGroups?.find((group) => group.id === groupId)?.title}
+				/>
+			)}
+			{summary}
+			{!pending.length && superseded.length > 0 && (
+				// Only older histories have these: a newer turn's row now carries the changes.
+				<div className="flex items-center gap-1.5 text-xs text-description" data-testid="notebook-changes-superseded">
+					<i aria-hidden className="codicon codicon-book" />
+					<span>Note changes moved to a later turn</span>
+				</div>
+			)}
+			<NotebookUserEdits changes={allChanges} />
+		</div>
 	)
 }
 
-function NotebookSummaryRow({
-	kept,
-	dropped,
-	aboutYou,
+function TurnSummary({
+	groups,
 	onOpen,
 }: {
-	kept: NotebookChange[]
-	dropped: NotebookChange[]
-	aboutYou: boolean
-	onOpen: () => void
+	groups: { payload: NotebookChangesPayload; status: string; kind: ReviewKind }[]
+	onOpen: (group: { payload: NotebookChangesPayload; kind: ReviewKind }) => void
 }) {
-	const noun = aboutYou ? "About you change" : "note change"
+	const keptOf = (group: { payload: NotebookChangesPayload; status: string }) =>
+		group.payload.kept ??
+		(group.status === "applied"
+			? group.payload.appliedSlugs
+				? group.payload.changes.filter((change) => group.payload.appliedSlugs?.includes(change.slug))
+				: group.payload.changes
+			: [])
+	const droppedOf = (group: { payload: NotebookChangesPayload; status: string }) =>
+		group.payload.dropped ?? (group.status === "discarded" ? group.payload.changes : [])
+	const kept = groups.flatMap((group) => keptOf(group).map((change) => ({ kind: group.kind, change })))
+	const dropped = groups.flatMap((group) => droppedOf(group).map((change) => ({ kind: group.kind, change })))
+	const only = groups.length === 1 ? groups[0].kind : undefined
 	const label = kept.length
-		? `Kept ${kept.length} ${noun}${kept.length === 1 ? "" : "s"}`
-		: `Dropped ${aboutYou ? "About you changes" : "note changes"}`
+		? `Kept ${countPhrase(kept)}`
+		: only === "about"
+			? "Dropped About you changes"
+			: only === "skills"
+				? "Dropped the skill"
+				: only === "notes"
+					? "Dropped note changes"
+					: "Dropped the changes"
+	const links = groups.filter((group) => keptOf(group).length || groups.length === 1)
 	return (
 		<div
 			className="flex flex-wrap items-center gap-1.5 rounded-xs border border-editor-group-border bg-code px-2.5 py-1.5 text-xs"
 			data-testid="notebook-changes-summary">
 			<i
 				aria-hidden
-				className={cn("codicon text-(--vscode-charts-purple)", aboutYou ? "codicon-account" : "codicon-book")}
+				className={cn("codicon", kept.length ? "codicon-pass text-success" : "codicon-circle-slash text-description")}
 			/>
 			<span>{label}</span>
-			{kept.map((change) => (
-				<WroteNoteChip key={change.slug} name={change.name} />
+			{kept.map(({ kind, change }) => (
+				<WroteNoteChip
+					icon={changeIcon(kind, { ...change, op: "update" })}
+					key={`${kind}:${change.slug}`}
+					name={change.name}
+				/>
 			))}
 			{kept.length > 0 && dropped.length > 0 && <span className="text-description">· dropped {dropped.length}</span>}
 			<span className="flex-1" />
-			<LinkButton className="text-[11px]" onClick={onOpen}>
-				{aboutYou ? "Open About you" : "Open task"}
-			</LinkButton>
+			{links.map((group) => (
+				<LinkButton className="text-[11px]" key={group.payload.taskGroupId} onClick={() => onOpen(group)}>
+					{group.kind === "about" ? "Open About you" : group.kind === "skills" ? "Open in Skills" : "Open task"}
+				</LinkButton>
+			))}
 		</div>
 	)
 }
 
-function NotebookReviewRow({
-	payload,
+function ReviewCard({
+	groups,
 	taskGroupTitle,
-	aboutYou,
+	hasWorkspace,
 	onResolved,
 }: {
-	payload: NotebookChangesPayload
-	taskGroupTitle?: string
-	aboutYou: boolean
-	onResolved: (resolved: Pick<NotebookChangesPayload, "status" | "kept" | "dropped">) => void
+	groups: NotebookChangesPayload[]
+	taskGroupTitle: (groupId: string) => string | undefined
+	hasWorkspace: boolean
+	onResolved: (groupId: string, resolved: Resolved) => void
 }) {
 	const [open, setOpen] = useState<string>()
 	const [sending, setSending] = useState(false)
 	const [error, setError] = useState<string | null>(null)
-	const opened = payload.changes.find((change) => change.slug === open)
-	const address = { threadId: payload.threadId, taskGroupId: payload.taskGroupId, revision: payload.revision }
+	const entries = groups.flatMap((payload) =>
+		payload.changes.map((change) => ({
+			payload,
+			change,
+			kind: kindOf(payload.taskGroupId),
+			key: `${payload.taskGroupId}:${change.slug}`,
+		})),
+	)
+	const opened = entries.find((entry) => entry.key === open)
+	const address = (payload: NotebookChangesPayload) => ({
+		threadId: payload.threadId,
+		taskGroupId: payload.taskGroupId,
+		revision: payload.revision,
+	})
 
 	const run = async (operation: () => Promise<unknown>, failure: string) => {
 		setSending(true)
@@ -218,122 +319,174 @@ function NotebookReviewRow({
 		}
 	}
 
-	const keep = (slugs: string[]) =>
+	const keepIn = async (payload: NotebookChangesPayload, slugs: string[]) => {
+		await TaskGroupServiceClient.applyNotebookChanges(
+			ApplyNotebookChangesRequest.create({ ...address(payload), items: slugs.map((slug) => ({ slug, include: true })) }),
+		)
+		if (slugs.length === payload.changes.length)
+			onResolved(payload.taskGroupId, {
+				status: "applied",
+				kept: [...(payload.kept ?? []), ...payload.changes],
+				dropped: payload.dropped,
+			})
+	}
+	const dropIn = async (payload: NotebookChangesPayload, slugs: string[]) => {
+		await TaskGroupServiceClient.discardNotebookChanges(
+			DiscardNotebookChangesRequest.create({
+				...address(payload),
+				slugs: slugs.length === payload.changes.length ? [] : slugs,
+			}),
+		)
+		if (slugs.length === payload.changes.length) {
+			const kept = payload.kept ?? []
+			onResolved(payload.taskGroupId, {
+				status: kept.length ? "applied" : "discarded",
+				kept,
+				dropped: [...(payload.dropped ?? []), ...payload.changes],
+			})
+		}
+	}
+
+	const keepAll = () =>
 		run(async () => {
-			await TaskGroupServiceClient.applyNotebookChanges(
-				ApplyNotebookChangesRequest.create({ ...address, items: slugs.map((slug) => ({ slug, include: true })) }),
-			)
-			if (slugs.length === payload.changes.length)
-				onResolved({
-					status: "applied",
-					kept: [...(payload.kept ?? []), ...payload.changes],
-					dropped: payload.dropped,
-				})
+			for (const payload of groups)
+				await keepIn(
+					payload,
+					payload.changes.map((change) => change.slug),
+				)
 			setOpen(undefined)
 		}, "Couldn't keep the changes.")
-
-	const drop = (slugs: string[]) =>
+	const dropAll = () =>
 		run(async () => {
-			await TaskGroupServiceClient.discardNotebookChanges(
-				DiscardNotebookChangesRequest.create({ ...address, slugs: slugs.length === payload.changes.length ? [] : slugs }),
-			)
-			if (slugs.length === payload.changes.length) {
-				const kept = payload.kept ?? []
-				onResolved({
-					status: kept.length ? "applied" : "discarded",
-					kept,
-					dropped: [...(payload.dropped ?? []), ...payload.changes],
-				})
-			}
+			for (const payload of groups)
+				await dropIn(
+					payload,
+					payload.changes.map((change) => change.slug),
+				)
 			setOpen(undefined)
 		}, "Couldn't drop the changes.")
-
-	const action = (slug: string, action: string, extra: Partial<NotebookActionRequest> = {}) =>
+	const keepOne = (payload: NotebookChangesPayload, slug: string) =>
+		run(async () => {
+			await keepIn(payload, [slug])
+			setOpen(undefined)
+		}, "Couldn't keep it.")
+	const dropOne = (payload: NotebookChangesPayload, slug: string) =>
+		run(async () => {
+			await dropIn(payload, [slug])
+			setOpen(undefined)
+		}, "Couldn't drop it.")
+	const action = (payload: NotebookChangesPayload, slug: string, name: string, extra: Partial<NotebookActionRequest> = {}) =>
 		run(
-			() => TaskGroupServiceClient.notebookAction(NotebookActionRequest.create({ ...address, slug, action, ...extra })),
-			"Couldn't update the note.",
+			() =>
+				TaskGroupServiceClient.notebookAction(
+					NotebookActionRequest.create({ ...address(payload), slug, action: name, ...extra }),
+				),
+			"Couldn't update it.",
 		)
 
-	const count = payload.changes.length
-	const noun = aboutYou ? "About you change" : "note change"
-	const when = payload.turns ? `last ${payload.turns} turns` : "this turn"
-	const all = payload.changes.map((change) => change.slug)
-	const answered = [
-		...(payload.kept ?? []).map((c) => `kept ${c.name}`),
-		...(payload.dropped ?? []).map((c) => `dropped ${c.name}`),
-	]
+	const turns = Math.max(...groups.map((payload) => payload.turns ?? 1))
+	const when = turns > 1 ? `last ${turns} turns` : "this turn"
+	const notesGroup = groups.find((payload) => kindOf(payload.taskGroupId) === "notes")
+	const where = notesGroup
+		? taskGroupTitle(notesGroup.taskGroupId)
+		: groups.length === 1 && kindOf(groups[0].taskGroupId) === "about"
+			? "every thread"
+			: undefined
+	const many = entries.length > 1
+	const answered = groups.flatMap((payload) => [
+		...(payload.kept ?? []).map((change) => `kept ${change.name}`),
+		...(payload.dropped ?? []).map((change) => `dropped ${change.name}`),
+	])
+	const headIcon =
+		groups.length > 1
+			? "checklist"
+			: kindOf(groups[0].taskGroupId) === "about"
+				? "account"
+				: kindOf(groups[0].taskGroupId) === "skills"
+					? "sparkle"
+					: "book"
 
 	return (
-		<div>
-			<div
-				className="rounded-xs border border-editor-group-border bg-code px-2.5 py-2 text-xs"
-				data-testid="notebook-changes-card">
-				<div className="flex flex-wrap items-center gap-1.5">
-					<i
-						aria-hidden
-						className={cn("codicon text-(--vscode-charts-purple)", aboutYou ? "codicon-account" : "codicon-book")}
-					/>
-					<span className="min-w-0 flex-1 truncate">
-						<span className="font-semibold">
-							{count} {noun}
-							{count === 1 ? "" : "s"}
-						</span>
-						<span className="text-description">
-							{" "}
-							· {when}
-							{aboutYou ? " · every thread" : taskGroupTitle ? ` · ${taskGroupTitle}` : ""}
-						</span>
+		<div
+			className="rounded-xs border border-editor-group-border bg-code px-2.5 py-2 text-xs"
+			data-testid="notebook-changes-card">
+			<div className="flex flex-wrap items-center gap-1.5">
+				<i aria-hidden className={`codicon codicon-${headIcon} text-(--vscode-charts-purple)`} />
+				<span className="min-w-0 flex-1 truncate">
+					<span className="font-semibold">{countPhrase(entries)}</span>
+					<span className="text-description">
+						{" "}
+						· {when}
+						{where ? ` · ${where}` : ""}
 					</span>
-					<Button disabled={sending} onClick={() => void drop(all)} size="xs" variant="secondary">
-						Discard
-					</Button>
-					<Button disabled={sending} onClick={() => void keep(all)} size="xs">
-						Keep
-					</Button>
-				</div>
-				<div className="mt-1.5 flex flex-wrap gap-1">
-					{payload.changes.map((change) => (
-						<button
-							aria-expanded={open === change.slug}
+				</span>
+				<Button disabled={sending} onClick={() => void dropAll()} size="xs" variant="secondary">
+					{many ? "Discard all" : "Discard"}
+				</Button>
+				<Button disabled={sending} onClick={() => void keepAll()} size="xs">
+					{many ? "Keep all" : "Keep"}
+				</Button>
+			</div>
+			<div className="mt-1.5 flex flex-wrap gap-1">
+				{entries.map(({ change, kind, key }) => (
+					<button
+						aria-expanded={open === key}
+						className={cn(
+							"inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-xs border border-solid px-1.5 py-0.5 text-left font-[inherit] text-[11px] leading-4 text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+							open === key
+								? "border-(--vscode-focusBorder) bg-[color-mix(in_srgb,var(--vscode-charts-purple)_22%,transparent)]"
+								: "border-[color-mix(in_srgb,var(--vscode-charts-purple)_45%,transparent)] bg-[color-mix(in_srgb,var(--vscode-charts-purple)_12%,transparent)] hover:bg-[color-mix(in_srgb,var(--vscode-charts-purple)_22%,transparent)]",
+						)}
+						key={key}
+						onClick={() => setOpen((current) => (current === key ? undefined : key))}
+						title={change.summary ?? `Open ${change.name}`}
+						type="button">
+						<i
+							aria-hidden
 							className={cn(
-								"inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-xs border border-solid px-1.5 py-0.5 text-left font-[inherit] text-[11px] leading-4 text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
-								open === change.slug
-									? "border-(--vscode-focusBorder) bg-[color-mix(in_srgb,var(--vscode-charts-purple)_22%,transparent)]"
-									: "border-[color-mix(in_srgb,var(--vscode-charts-purple)_45%,transparent)] bg-[color-mix(in_srgb,var(--vscode-charts-purple)_12%,transparent)] hover:bg-[color-mix(in_srgb,var(--vscode-charts-purple)_22%,transparent)]",
+								`codicon codicon-${changeIcon(kind, change)} text-[10px]!`,
+								kind === "skills" && change.op !== "delete" && "text-(--vscode-charts-yellow)",
 							)}
-							key={change.slug}
-							onClick={() => setOpen((current) => (current === change.slug ? undefined : change.slug))}
-							title={change.summary ?? `Open ${change.name}`}
-							type="button">
-							<i
-								aria-hidden
-								className={cn("codicon text-[10px]!", change.op === "delete" ? "codicon-trash" : "codicon-edit")}
-							/>
-							<span className="truncate font-medium">{change.name}</span>
-							<span className="shrink-0 text-description">{changeMeta(change)}</span>
-							{change.editedByUser && <span className="shrink-0 text-success">· edited by you</span>}
-						</button>
-					))}
-				</div>
-				{answered.length > 0 && <div className="mt-1 text-[11px] text-description">Already {answered.join(", ")}</div>}
-				{opened && (
-					<OpenedChange
-						aboutYou={aboutYou}
-						change={opened}
-						key={opened.slug}
-						onAction={(name, extra) => void action(opened.slug, name, extra)}
-						onDrop={() => void drop([opened.slug])}
-						onKeep={() => void keep([opened.slug])}
+						/>
+						<span className="truncate font-medium">{change.name}</span>
+						<span className="shrink-0 text-description">{changeMeta(change)}</span>
+						{change.editedByUser && <span className="shrink-0 text-success">· edited by you</span>}
+					</button>
+				))}
+			</div>
+			{!opened && entries.length === 1 && entries[0].change.summary && (
+				<p className="m-0 mt-1.5 truncate text-[11px] italic text-description" title={entries[0].change.summary}>
+					“{entries[0].change.summary}”
+				</p>
+			)}
+			{answered.length > 0 && <div className="mt-1 text-[11px] text-description">Already {answered.join(", ")}</div>}
+			{opened &&
+				(opened.kind === "skills" ? (
+					<OpenedSkillDraft
+						change={opened.change}
+						hasWorkspace={hasWorkspace}
+						key={opened.key}
+						onAction={(name, extra) => void action(opened.payload, opened.change.slug, name, extra)}
+						onDrop={() => void dropOne(opened.payload, opened.change.slug)}
+						onKeep={() => void keepOne(opened.payload, opened.change.slug)}
 						sending={sending}
 					/>
-				)}
-				{error && (
-					<InlineNotice className="mt-2" tone="error">
-						{error}
-					</InlineNotice>
-				)}
-			</div>
-			<NotebookUserEdits changes={payload.changes} />
+				) : (
+					<OpenedChange
+						aboutYou={opened.kind === "about"}
+						change={opened.change}
+						key={opened.key}
+						onAction={(name, extra) => void action(opened.payload, opened.change.slug, name, extra)}
+						onDrop={() => void dropOne(opened.payload, opened.change.slug)}
+						onKeep={() => void keepOne(opened.payload, opened.change.slug)}
+						sending={sending}
+					/>
+				))}
+			{error && (
+				<InlineNotice className="mt-2" tone="error">
+					{error}
+				</InlineNotice>
+			)}
 		</div>
 	)
 }

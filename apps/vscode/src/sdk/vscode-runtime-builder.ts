@@ -8,6 +8,8 @@ import { Logger } from "@/shared/services/Logger"
 import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { createSideThreadTools, type SideThreadContext } from "./side-thread-tools"
+import { createSkillDraftTool } from "./skills/skill-drafts"
+import { vscodeSkillDraftPlaces } from "./skills/vscode-skillset-env"
 import { type AboutYouContext, createAboutYouTool } from "./task-groups/about-you"
 import type { TaskNotebookContext } from "./task-groups/notebook-context"
 import { createNotebookTool } from "./task-groups/notebook-tool"
@@ -113,7 +115,17 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	const tools: AgentTool[] = [...mcpTools.flat(), createPresentWalkthroughTool() as AgentTool]
 	tools.push(...createSideThreadTools(options?.sideThread))
 	if (options?.notebook) tools.push(await createNotebookTool(options.notebook))
-	if (options?.aboutYou) tools.push(createAboutYouTool(options.aboutYou))
+	if (options?.aboutYou) {
+		tools.push(createAboutYouTool(options.aboutYou))
+		// Skill drafts are reviewed in the same thread as About you (a subagent's root thread).
+		tools.push(
+			await createSkillDraftTool({
+				rootThreadId: options.aboutYou.rootThreadId,
+				store: options.aboutYou.store,
+				places: vscodeSkillDraftPlaces(options.cwd),
+			}),
+		)
+	}
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
 	if (options?.scripts) tools.push(createScriptTool(options.scripts))
 

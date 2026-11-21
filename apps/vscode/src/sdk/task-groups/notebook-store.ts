@@ -450,9 +450,11 @@ export class NotebookStore {
 					...change,
 					...(drafts[change.slug] ? { draft: { ts: drafts[change.slug].ts, reason: drafts[change.slug].reason } } : {}),
 					diff: notebookDiff(
-						(await this.readNote(review.groupId, change.slug))?.content ??
-							(await this.tombstonedContent(review.groupId, change)) ??
-							"",
+						// A staged skill diffs against the skill it edits, not a note.
+						(change.skill
+							? change.skill.baseContent
+							: ((await this.readNote(review.groupId, change.slug))?.content ??
+								(await this.tombstonedContent(review.groupId, change)))) ?? "",
 						change.op === "delete" ? "" : (change.content ?? ""),
 					),
 				})),
@@ -506,7 +508,11 @@ export class NotebookStore {
 		threadId: string,
 		_revision: string,
 		items: { slug: string; include: boolean; editedContent?: string }[],
-		options?: { threadTitle?: string },
+		options?: {
+			threadTitle?: string
+			/** Writes a change somewhere other than the notebook (staged skills); returns the slug it kept. */
+			apply?: (change: NotebookChange, editedContent?: string) => Promise<string>
+		},
 	): Promise<NotebookChange[]> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		for (const item of items) validateTaskGroupIdentifier(item.slug, "slug")
@@ -519,11 +525,13 @@ export class NotebookStore {
 					const item = items.find((entry) => entry.slug === change.slug)
 					if (!item?.include) continue
 					await this.settleDraft(groupId, threadId, change.slug)
-					const slug = await this.applyChange(groupId, change, item.editedContent, {
-						kind: "thread",
-						threadId,
-						threadTitle: options?.threadTitle ?? "",
-					})
+					const slug = options?.apply
+						? await options.apply(change, item.editedContent)
+						: await this.applyChange(groupId, change, item.editedContent, {
+								kind: "thread",
+								threadId,
+								threadTitle: options?.threadTitle ?? "",
+							})
 					completed.add(change.slug)
 					applied.push({
 						...change,
@@ -719,6 +727,29 @@ export class NotebookStore {
 				}
 			}
 			return updated.revision
+		})
+	}
+
+	/**
+	 * Changes what a staged skill is or where it goes (the review row's Kind and
+	 * Where switches, its name and description), keeping the body as is.
+	 */
+	async updatePendingSkill(
+		groupId: string,
+		threadId: string,
+		slug: string,
+		patch: { kind?: "skill" | "workflow"; scope?: "global" | "workspace"; name?: string; description?: string },
+	): Promise<void> {
+		validateTaskGroupIdentifier(slug, "slug")
+		await this.serializePending(groupId, threadId, async () => {
+			const pending = await this.readPendingReview(groupId, threadId)
+			const change = pending?.changes.find((entry) => entry.slug === slug)
+			if (!pending || !change?.skill) throw new Error("This skill is no longer waiting for review")
+			if (patch.kind) change.skill.kind = patch.kind
+			if (patch.scope) change.skill.scope = patch.scope
+			if (patch.name?.trim()) change.name = patch.name.trim()
+			if (patch.description !== undefined) change.description = patch.description.trim()
+			await this.writePending(groupId, threadId, pending.changes)
 		})
 	}
 

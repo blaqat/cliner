@@ -233,6 +233,11 @@
 				"command": "cline.openWalkthrough",
 				"title": "Open Walkthrough",
 				"category": "Cline"
+			},
+			{
+				"command": "cline.addSkillset",
+				"title": "Add skillset…",
+				"category": "Cline"
 			}
 		],
 		"keybindings": [

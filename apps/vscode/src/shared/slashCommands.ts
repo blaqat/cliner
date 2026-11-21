@@ -43,6 +43,7 @@ export const BASE_SLASH_COMMANDS: SlashCommand[] = [
 export const VSCODE_ONLY_COMMANDS: SlashCommand[] = [
 	{ name: "side", description: "Side thread from here. Main keeps going.", section: "default" },
 	{ name: "btw", description: "Quick question on the side. Doesn't interrupt.", section: "default" },
+	{ name: "skill", description: "Make a skill or workflow from this thread", section: "default" },
 	// `/ask` and `/act` are intercepted by the webview composer and routed
 	// through the same RPC as the Ask/Act toggle, so they must not reach the
 	// model as literal text. Any text after the command is sent in the new mode.

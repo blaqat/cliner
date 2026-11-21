@@ -27,6 +27,7 @@ const ClineCommands = {
 	SearchShortcut: prefix + ".searchShortcut",
 	StashShortcut: prefix + ".stashShortcut",
 	Walkthrough: prefix + ".openWalkthrough",
+	AddSkillset: prefix + ".addSkillset",
 	GenerateCommit: prefix + ".generateGitCommitMessage",
 	AbortCommit: prefix + ".abortGitCommitMessage",
 	// Jupyter Notebook commands

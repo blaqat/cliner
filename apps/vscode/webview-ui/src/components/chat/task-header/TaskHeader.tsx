@@ -1,6 +1,6 @@
 import { ClineMessage } from "@shared/ExtensionMessage"
 import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
 import { useBranchTaskSuggestion } from "@/components/chat/composer/BranchTaskSuggestion"
 import { TASK_MENU_CLASS, TaskPickerMenu } from "@/components/chat/composer/WherePill"
@@ -10,6 +10,7 @@ import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { useOneView } from "@/components/oneView/OneViewContext"
 import { ThreadPanelToggle } from "@/components/threadPanel/ThreadPanelHost"
+import { requestScriptDraft } from "@/components/topbar/topBarPanels"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -61,6 +62,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 	const oneView = useOneView()
 	const [menuOpen, setMenuOpen] = useState(false)
 	// The ⋯ menu's "Move to task…" swaps the menu for the task picker in the same popover.
+	const composerTakesFocus = useRef(false)
 	const [menuView, setMenuView] = useState<"menu" | "task">("menu")
 	// Kept here (always mounted) so dismissing it in the picker sticks after the menu closes.
 	const branchSuggestion = useBranchTaskSuggestion()
@@ -189,6 +191,12 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 							align="end"
 							className={cn(menuView === "task" ? TASK_MENU_CLASS : "w-56 p-1", "motion-reduce:animate-none")}
 							data-testid="task-header-menu"
+							onCloseAutoFocus={(event) => {
+								// Make a skill… hands focus to the composer, not back to ⋯.
+								if (!composerTakesFocus.current) return
+								composerTakesFocus.current = false
+								event.preventDefault()
+							}}
 							onEscapeKeyDown={(event) => {
 								// Escape in the task picker steps back to the menu; a second one closes it.
 								if (menuView === "task") {
@@ -246,6 +254,22 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 										type="button">
 										<span aria-hidden className="codicon codicon-diff text-[13px]" />
 										Walkthrough
+									</button>
+									<button
+										className={MENU_ITEM_CLASS}
+										data-testid="make-a-skill"
+										disabled={!taskId}
+										onClick={() => {
+											composerTakesFocus.current = true
+											setMenuOpen(false)
+											// Fills /skill into the composer; it runs as a normal turn when sent.
+											requestScriptDraft("skill")
+										}}
+										role="menuitem"
+										type="button">
+										<span aria-hidden className="codicon codicon-sparkle text-[13px]" />
+										<span className="flex-1">Make a skill…</span>
+										<span className="text-[11px] text-description">/skill</span>
 									</button>
 									<button
 										className={MENU_ITEM_CLASS}

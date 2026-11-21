@@ -171,6 +171,65 @@ describe("NotebookChangesRow", () => {
 		rerender(<NotebookChangesRow message={message(10, { ...payload, status: "discarded" })} />)
 		expect(screen.getByText("Dropped note changes")).toBeInTheDocument()
 	})
+	it("shows one row for a turn that changed notes, About you and a skill", async () => {
+		const aboutYou = {
+			...payload,
+			taskGroupId: "about-you",
+			revision: "r2",
+			changes: [{ ...payload.changes[0], slug: "tools", name: "Tools", op: "create" as const }],
+		}
+		const skills = {
+			...payload,
+			taskGroupId: "skill-drafts",
+			revision: "r3",
+			changes: [
+				{
+					op: "create" as const,
+					slug: "release-checklist",
+					name: "release-checklist",
+					description: "Cut a release",
+					content: "1. Bump",
+					summary: "Release steps from this thread",
+					skill: {
+						kind: "skill" as const,
+						scope: "global" as const,
+						files: [{ path: "scripts/verify.sh", content: "" }],
+					},
+				},
+			],
+		}
+		const rows = [message(10), message(11, aboutYou), message(12, skills)]
+		mocks.state = { clineMessages: rows, workspaceRoots: [{ path: "/w" }] } as never
+		const { container } = render(
+			<>
+				{rows.map((row) => (
+					<NotebookChangesRow key={row.ts} message={row} />
+				))}
+			</>,
+		)
+		expect(screen.getAllByTestId("notebook-changes-card")).toHaveLength(1)
+		expect(screen.getByTestId("notebook-changes-card")).toHaveTextContent(
+			"1 note change, 1 About you change, 1 skill · this turn",
+		)
+		expect(container.querySelectorAll("[data-testid=notebook-changes-card] button[aria-expanded]")).toHaveLength(3)
+		expect(screen.getByRole("button", { name: /^release-checklist/ })).toHaveTextContent("new skill · 2 files")
+
+		// The skill opens with Kind, Where, its files (the script flagged) and the body.
+		fireEvent.click(screen.getByRole("button", { name: /^release-checklist/ }))
+		expect(screen.getByTestId("skill-draft-opened")).toHaveTextContent("scripts/verify.sh")
+		expect(screen.getByTestId("skill-draft-opened")).toHaveTextContent("Runs code")
+		fireEvent.click(screen.getByRole("radio", { name: "Workflow" }))
+		await waitFor(() =>
+			expect(mocks.action).toHaveBeenCalledWith(
+				expect.objectContaining({ action: "skill_target", slug: "release-checklist", kind: "workflow", isGlobal: true }),
+			),
+		)
+
+		fireEvent.click(screen.getByRole("button", { name: "Keep all" }))
+		await screen.findByText("Kept 1 note change, 1 About you change, 1 skill")
+		expect(mocks.apply.mock.calls.map(([request]) => request.taskGroupId)).toEqual(["g1", "about-you", "skill-drafts"])
+		expect(screen.getByRole("button", { name: "Open in Skills" })).toBeInTheDocument()
+	})
 	it("rejects malformed payloads", () => {
 		expect(parseNotebookChangesPayload("bad")).toBeNull()
 		expect(parseNotebookChangesPayload(JSON.stringify({ threadId: "t1" }))).toBeNull()

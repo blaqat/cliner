@@ -16,6 +16,7 @@ import getFolderSize from "get-folder-size"
 import type { McpHub } from "@/services/mcp/McpHub"
 import type { TelemetryService } from "@/services/telemetry/TelemetryService"
 import { Logger } from "@/shared/services/Logger"
+import { collapseBuiltinSlashCommands } from "./builtin-slash-commands"
 import { deleteLegacyTask, readApiConversationHistory, readTaskHistory, readUiMessages, taskDirPath } from "./legacy-state-reader"
 import {
 	appendLegacyResumeWarning,
@@ -273,7 +274,7 @@ export function sanitizeSdkUserMessagesForDisplay(messages: SdkMessage[]): SdkDi
 		const display = (text: string) => {
 			const parsed = parseMessageReferences(text)
 			messageReferences.push(...parsed.references)
-			return formatDisplayUserInput(parsed.text)
+			return collapseBuiltinSlashCommands(formatDisplayUserInput(parsed.text))
 		}
 		const withReferences = () => (messageReferences.length > 0 ? { messageReferences } : {})
 		if (typeof message.content === "string") {

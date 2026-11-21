@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// Skillsets: a name.skillset.zip of skills and workflows. Results are JSON
+// (types in src/shared/skillsets.ts), like the notebook's actions.
+service SkillsetService {
+  // Adds a dropped skillset: the bytes of a file dropped from the OS, or the path of one dragged from the Explorer.
+  rpc importSkillset(ImportSkillsetRequest) returns (SkillsetJson);
+  // Add skillset…: VS Code's open dialog, then the same import. A closed dialog returns cancelled.
+  rpc pickSkillset(EmptyRequest) returns (SkillsetJson);
+  // Skills and workflows with their files, and the sets that were added (SkillsetLibrary).
+  rpc listSkillsetLibrary(ListSkillsetLibraryRequest) returns (SkillsetJson);
+  // Turn on, remove or mark seen the items of an added set.
+  rpc updateSkillsetItems(UpdateSkillsetItemsRequest) returns (Empty);
+  // Saves picked skills and workflows as a set through VS Code's save dialog (SkillsetExportResult).
+  rpc exportSkillset(ExportSkillsetRequest) returns (SkillsetJson);
+  // Shows a saved set in Finder / Explorer.
+  rpc revealSkillset(StringRequest) returns (Empty);
+  // Imports started outside the webview (the Cline: Add skillset command), so the panel can play the moment.
+  rpc subscribeToSkillsetImports(EmptyRequest) returns (stream SkillsetJson);
+}
+
+message ImportSkillsetRequest {
+  Metadata metadata = 1;
+  string file_name = 2;
+  // Base64 of a file dropped from the OS.
+  string data_base64 = 3;
+  // A file:// URI or path dragged from VS Code's Explorer.
+  string uri = 4;
+}
+
+message ListSkillsetLibraryRequest {
+  Metadata metadata = 1;
+  // List each skill's files (the Share page and the New strip); off for a quick refresh.
+  bool include_files = 2;
+}
+
+message UpdateSkillsetItemsRequest {
+  Metadata metadata = 1;
+  string set_id = 2;
+  // turn_on | remove | seen
+  string action = 3;
+  // Empty: every item in the set.
+  repeated string paths = 4;
+}
+
+message ExportSkillsetRequest {
+  Metadata metadata = 1;
+  string name = 2;
+  string description = 3;
+  // JSON: [{ kind, path }]
+  string items_json = 4;
+}
+
+message SkillsetJson {
+  string json = 1;
+}

@@ -90,6 +90,19 @@ Below is the user's input when they indicated that they wanted to create a compr
 </explicit_instructions>
 `
 
+const MAKE_SKILL_INSTRUCTIONS = `<explicit_instructions type="skill">
+The user wants to turn what happened in this thread into a reusable skill or workflow.
+
+1. Look back over the thread: what was done, the steps that worked, the commands and checks, and the gotchas found along the way. Read any files you need to get paths and commands exactly right.
+2. Choose the kind. A skill is instructions Cline loads by itself whenever a task matches its description; it can carry scripts/ and references/ files, and a step that must run the same way every time belongs in a script. A workflow is a list of steps the user starts on purpose by typing /its-name. If the user named a kind, use it.
+3. If one of the user's existing skills or workflows already covers this, edit it rather than making a near copy.
+4. Write it with the skill_draft tool: a short lowercase-with-dashes name; for a skill, a one-line description saying when to use it; a body that is a tight checklist of what to do and what to watch for (not a story of this thread); and a one-line summary for the user. Scope is global unless the user asked for this project only or it only makes sense in this repo.
+5. Then tell the user in one or two sentences what you made and why you picked that kind. It's staged: they keep, edit or drop it in the review row below. Don't write the files yourself.
+
+Below is anything the user added about what to capture.
+</explicit_instructions>
+`
+
 /**
  * Appended after the discovered workflow/skill commands in
  * SdkController.resolveSlashCommands. Declared as kind "skill" so the
@@ -102,4 +115,23 @@ export const BUILTIN_SLASH_COMMANDS: AvailableRuntimeCommand[] = [
 		instructions: DEEP_PLANNING_INSTRUCTIONS,
 		kind: "skill",
 	},
+	{
+		id: "builtin:skill",
+		name: "skill",
+		instructions: MAKE_SKILL_INSTRUCTIONS,
+		kind: "skill",
+	},
 ]
+
+const BUILTIN_EXPANSION = new RegExp(
+	`<explicit_instructions type="(${BUILTIN_SLASH_COMMANDS.map((command) => command.name).join("|")})">[\\s\\S]*?</explicit_instructions>\\s*`,
+	"g",
+)
+
+/**
+ * Shows a built-in command as the user typed it (`/skill only the release
+ * steps`), not its expanded instructions, when a sent message is displayed.
+ */
+export function collapseBuiltinSlashCommands(text: string): string {
+	return text.replace(BUILTIN_EXPANSION, (_match, name: string) => `/${name} `).trim()
+}

@@ -53,6 +53,7 @@ import {
 	isClineFreePromotionEndedMessage,
 	MODEL_NOT_FOUND_GUIDANCE,
 } from "../services/error/ClineError"
+import { collapseBuiltinSlashCommands } from "./builtin-slash-commands"
 import { MessageIdMinter } from "./message-id-minter"
 import { describeCredentialRejectedError, describeMissingCredentialError } from "./provider-credential-error"
 import { extractPersistedHookContextChips, isSyntheticSdkUserMessage, isSyntheticUserPrompt } from "./sdk-user-message-mapping"
@@ -2391,7 +2392,9 @@ export function translateSessionEvent(
 			// notice elements (e.g. mode_notice) that normalizeUserInput must
 			// preserve, since the latter also sanitizes model-bound prompts.
 			const { text: promptWithoutReferences, references } = parseMessageReferences(prompt)
-			const displayPrompt = isSyntheticUserPrompt(prompt) ? "" : formatDisplayUserInput(promptWithoutReferences)
+			const displayPrompt = isSyntheticUserPrompt(prompt)
+				? ""
+				: collapseBuiltinSlashCommands(formatDisplayUserInput(promptWithoutReferences))
 			const hasPrompt = displayPrompt.trim().length > 0
 			const hasImages = (userImages?.length ?? 0) > 0
 			const hasFiles = (userFiles?.length ?? 0) > 0

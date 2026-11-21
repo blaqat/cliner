@@ -11,6 +11,7 @@ import { NextMessageModelSelections } from "./model-settings-resolver"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
+import * as os from "node:os"
 import * as path from "node:path"
 import {
 	type CompareCheckpointResult,
@@ -65,6 +66,7 @@ import { DeleteAllTaskHistoryCount, type GetTaskHistoryRequest, TaskHistoryArray
 import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import type { ThreadWorktreeActionRequest } from "@shared/proto/cline/worktree"
 import { type SideThreadKind, sideThreadOwnMessages, sideThreadTitle } from "@shared/sideThreads"
+import { SKILL_DRAFTS_ID, type SkillItemKind } from "@shared/skillsets"
 import type { Settings } from "@shared/storage/state-keys"
 import { type Mode } from "@shared/storage/types"
 import type { TelemetrySetting } from "@shared/TelemetrySetting"
@@ -202,6 +204,8 @@ import {
 import { readCurrentMessages } from "./session-host"
 import { sideThreadNoteText } from "./side-thread-notes"
 import { resolveMainThread, type SideThreadContext } from "./side-thread-tools"
+import { applySkillDraft } from "./skills/skill-drafts"
+import { vscodeSkillDraftPlaces, vscodeSkillsetEnvironment } from "./skills/vscode-skillset-env"
 import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
 import { type AboutYouContext, aboutYouPrompt, aboutYouTokens } from "./task-groups/about-you"
@@ -5238,6 +5242,18 @@ export class Controller {
 			await this.postStateToWebview()
 			return {}
 		}
+		if (input.action === "skill_target") {
+			// The review row's Kind / Where switches and name and description fields for a staged skill.
+			await this.notebookStore.updatePendingSkill(groupId, threadId, slug, {
+				kind: input.kind === "workflow" ? "workflow" : input.kind === "skill" ? "skill" : undefined,
+				scope: input.kind ? (input.isGlobal ? "global" : "workspace") : undefined,
+				name: input.name || undefined,
+				description: input.description,
+			})
+			await this.emitNotebookChanges(threadId)
+			await this.postStateToWebview()
+			return {}
+		}
 		if (input.action === "restore_pending") {
 			const pending = await this.notebookStore.readPendingReview(groupId, threadId)
 			const change = pending?.changes.find((change) => change.slug === slug)
@@ -5306,8 +5322,26 @@ export class Controller {
 		const item = await this.taskHistory.findHistoryItem(threadId)
 		try {
 			if (taskGroupId === ABOUT_YOU_ID) await this.checkAboutYouCapForKeep(threadId, items)
+			const skillDrafts = taskGroupId === SKILL_DRAFTS_ID
+			// The thread's own folder (its worktree, if any), else the open workspace; never the no-workspace fallback.
+			const places = skillDrafts
+				? vscodeSkillDraftPlaces(
+						this.sessions?.getSession(threadId)?.startConfig?.cwd ||
+							(await HostProvider.workspace.getWorkspacePaths({}).catch(() => ({ paths: [] as string[] })))
+								.paths[0],
+					)
+				: undefined
 			const applied = await this.notebookStore.applyPendingChanges(taskGroupId, threadId, revision, items, {
 				threadTitle: item?.title ?? item?.task ?? "",
+				// Staged skills and workflows are written to their own folders, switched on.
+				...(places
+					? {
+							apply: (change, editedContent) =>
+								applySkillDraft(change, editedContent, places, (kind, itemPath, isGlobal) =>
+									this.enableKeptSkill(kind, itemPath, isGlobal, places.workspaceRoot),
+								),
+						}
+					: {}),
 			})
 			await this.settleNotebookReview(threadId, taskGroupId, { kept: applied })
 		} catch (error) {
@@ -5317,6 +5351,19 @@ export class Controller {
 		}
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview()
+	}
+
+	/** A skill or workflow the user kept from the review row starts switched on. */
+	private async enableKeptSkill(
+		kind: SkillItemKind,
+		itemPath: string,
+		isGlobal: boolean,
+		workspaceRoot?: string,
+	): Promise<void> {
+		const env = await vscodeSkillsetEnvironment(this)
+		if (kind === "skill") return env.setSkillEnabled(itemPath, isGlobal, true)
+		await refreshWorkflowToggles(this, workspaceRoot ?? os.homedir())
+		await env.setWorkflowEnabled(itemPath, isGlobal, true)
 	}
 
 	/** Drops the staged changes for `slugs`, or every staged change for the group when empty. */
@@ -5454,12 +5501,22 @@ export class Controller {
 			context.messages.replaceMessages(await this.taskHistory.getClineMessages(rootThreadId))
 		}
 		let removed = false
-		for (const pending of reviews) {
-			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), pending.groupId)
+		const shownFor = (groupId: string) => {
+			const latest = latestNotebookChangesMessage(context.task.messageStateHandler.getClineMessages(), groupId)
 			const shown = latest ? (JSON.parse(latest.text ?? "{}") as NotebookChangesPayload) : undefined
-			const live = latest && shown?.status === "pending" ? latest : undefined
+			return { latest, shown, live: latest && shown?.status === "pending" ? latest : undefined }
+		}
+		// One turn shows one review row: when any kind moves to the newest turn, the others move with it.
+		const anyMoves =
+			options?.newTurn &&
+			reviews.some((pending) => {
+				const { shown, live } = shownFor(pending.groupId)
+				return !live || shown?.revision !== pending.revision
+			})
+		for (const pending of reviews) {
+			const { shown, live } = shownFor(pending.groupId)
 			// A later turn staged more: the row moves to the end, where the user is reading.
-			const moves = live && options?.newTurn && shown?.revision !== pending.revision
+			const moves = live && options?.newTurn && (shown?.revision !== pending.revision || anyMoves)
 			if (moves && (shown?.kept?.length || shown?.dropped?.length)) {
 				// Notes already answered on the old row stay there as its summary.
 				await this.finishNotebookReview(rootThreadId, live, shown)

@@ -124,7 +124,12 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "More actions" }))
 		const items = within(screen.getByRole("menu")).getAllByRole("menuitem")
-		expect(items.map((row) => row.textContent)).toEqual(["File into a task…", "Walkthrough", "Copy first message"])
+		expect(items.map((row) => row.textContent)).toEqual([
+			"File into a task…",
+			"Walkthrough",
+			"Make a skill…/skill",
+			"Copy first message",
+		])
 		expect(screen.queryByText(firstMessage)).toBeNull()
 	})
 

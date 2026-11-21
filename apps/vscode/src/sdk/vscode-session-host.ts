@@ -41,6 +41,7 @@ import {
 	type ToolDefinition,
 	type ToolPolicy,
 } from "@cline/shared"
+import { SKILL_DRAFTS_ID } from "@shared/skillsets"
 import { ABOUT_YOU_ID } from "@shared/task-groups"
 import { StateManager } from "@/core/storage/StateManager"
 import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTerminalManager"
@@ -192,6 +193,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 			const noticeSources = [
 				...(notebook ? [{ store: notebook.store, groupId: notebook.group.id, threadId: notebook.rootThreadId }] : []),
 				...(aboutYou ? [{ store: aboutYou.store, groupId: ABOUT_YOU_ID, threadId: aboutYou.rootThreadId }] : []),
+				...(aboutYou ? [{ store: aboutYou.store, groupId: SKILL_DRAFTS_ID, threadId: aboutYou.rootThreadId }] : []),
 			]
 			const consumeNotices = async () =>
 				(await Promise.all(noticeSources.map((source) => source.store.consumeNotices(source.groupId, source.threadId))))

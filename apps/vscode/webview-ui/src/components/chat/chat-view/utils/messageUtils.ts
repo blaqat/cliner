@@ -10,6 +10,7 @@ import type {
 	ClineSayTool,
 } from "@shared/ExtensionMessage"
 import { FileIcon, FolderOpenDotIcon, FolderOpenIcon, SearchIcon, ShapesIcon, WrenchIcon } from "lucide-react"
+import { isNotebookRunFollower } from "@/components/chat/notebookTurnRows"
 
 /**
  * Low-stakes tool types that should be grouped together
@@ -178,6 +179,10 @@ export function filterVisibleMessages(messages: ClineMessage[]): ClineMessage[] 
 				break
 			case "mcp_server_request_started":
 				return false
+			case "notebook_changes":
+				// A turn's review rows (notes, About you, skills) show as one, led by the first.
+				if (isNotebookRunFollower(arr, index)) return false
+				break
 			case "use_subagents":
 				if (arr.slice(index + 1).some((candidate) => candidate.type === "say" && candidate.say === "subagent")) {
 					return false
