@@ -62,6 +62,11 @@ describe("validateAutomation", () => {
 		expect(validateAutomation(ticketToPr())).toEqual([])
 	})
 
+	it("refuses a name that is already a built-in command", () => {
+		const messages = validateAutomation({ ...ticketToPr(), name: "skill" }).map((issue) => issue.message)
+		expect(messages).toContain("/skill is already a Cline command; pick another name")
+	})
+
 	it("catches placeholders that point nowhere or later, and misplaced steps", () => {
 		const definition = ticketToPr()
 		const [task, research, plan] = definition.steps

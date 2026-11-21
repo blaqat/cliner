@@ -6,6 +6,7 @@
  */
 
 import { SCRIPT_NAME_REGEX, type ScriptOption } from "./scripts"
+import { BASE_SLASH_COMMANDS, VSCODE_ONLY_COMMANDS } from "./slashCommands"
 
 export type AutomationArgKind = "text" | "ticket" | "branch" | "choice"
 export const AUTOMATION_ARG_KINDS: readonly AutomationArgKind[] = ["text", "ticket", "branch", "choice"]
@@ -216,6 +217,8 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		issues.push({ message: "The cost limit must be more than $0, or leave it empty" })
 	if (!SCRIPT_NAME_REGEX.test(definition.name))
 		issues.push({ message: 'Name must be lowercase letters, digits, "-" or "_" (it is typed as /name)' })
+	else if ([...BASE_SLASH_COMMANDS, ...VSCODE_ONLY_COMMANDS].some((command) => command.name === definition.name))
+		issues.push({ message: `/${definition.name} is already a Cline command; pick another name` })
 	if (!definition.description.trim()) issues.push({ message: "Add a description: one line on what it does" })
 
 	const argNames = new Set<string>()
