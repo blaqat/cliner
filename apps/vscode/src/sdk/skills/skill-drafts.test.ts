@@ -105,6 +105,18 @@ describe("skill drafts", () => {
 		expect(enabled).toEqual([file])
 	})
 
+	it("edits only the row the user saw and returns the revision a keep needs", async () => {
+		await execute({ kind: "skill", name: "deploy", description: "Deploy", content: "Steps" })
+		const seen = (await store.readPendingReview(SKILL_DRAFTS_ID, "t1"))!.revision
+		const next = await store.updatePendingSkill(SKILL_DRAFTS_ID, "t1", "skill-deploy", { description: "Ship it" }, seen)
+		const pending = (await store.readPendingReview(SKILL_DRAFTS_ID, "t1"))!
+		expect(next).toBe(pending.revision)
+		expect(pending.changes[0].description).toBe("Ship it")
+		await expect(
+			store.updatePendingSkill(SKILL_DRAFTS_ID, "t1", "skill-deploy", { description: "Stale" }, seen),
+		).rejects.toThrow("These changes were updated")
+	})
+
 	it("edits an existing skill in place, diffed against what's there", async () => {
 		const dir = path.join(root, "global-skills", "sql-style")
 		await fs.mkdir(dir, { recursive: true })

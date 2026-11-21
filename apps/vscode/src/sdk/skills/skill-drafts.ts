@@ -84,7 +84,8 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 	let index = await listExistingItems(places)
 	const baseDescription =
 		"Propose a new skill or workflow, or a change to an existing one, when the user asks you to turn work into a " +
-		"skill or workflow. A skill is instructions Cline loads by itself when a task matches its description (it can " +
+		'skill or workflow (for example "can we make this a skill"). Always use this tool for that: never write ' +
+		"SKILL.md or workflow files with file-editing tools, so the user can review the proposal first. A skill is instructions Cline loads by itself when a task matches its description (it can " +
 		"carry extra files such as scripts/ and references/). A workflow is steps the user starts by typing /its-name. " +
 		"Pick the one that fits and say why in one line. Nothing is written: the proposal is staged for the user to " +
 		"review when you finish. content is the markdown body only (no front matter); for an edit, pass the full new " +

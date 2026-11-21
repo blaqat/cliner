@@ -5277,14 +5277,27 @@ export class Controller {
 			return {}
 		}
 
-		if (input.action === "skill_target") {
+		if (input.action === "skill_target" || input.action === "skill_target_keep") {
 			// The review row's Kind / Where switches and name and description fields for a staged skill.
-			await this.notebookStore.updatePendingSkill(groupId, threadId, slug, {
-				kind: input.kind === "workflow" ? "workflow" : input.kind === "skill" ? "skill" : undefined,
-				scope: input.kind ? (input.isGlobal ? "global" : "workspace") : undefined,
-				name: input.name || undefined,
-				description: input.description,
-			})
+			// skill_target_keep saves fields the user hasn't left yet and keeps the skill in one step,
+			// so a quick Keep never loses the edit.
+			const keep = input.action === "skill_target_keep"
+			const nextRevision = await this.notebookStore.updatePendingSkill(
+				groupId,
+				threadId,
+				slug,
+				{
+					kind: input.kind === "workflow" ? "workflow" : input.kind === "skill" ? "skill" : undefined,
+					scope: input.kind ? (input.isGlobal ? "global" : "workspace") : undefined,
+					name: input.name || undefined,
+					description: input.description,
+				},
+				keep ? revision : undefined,
+			)
+			if (keep) {
+				await this.applyNotebookChanges(threadId, groupId, nextRevision, [{ slug, include: true }])
+				return {}
+			}
 			await this.emitNotebookChanges(threadId)
 			await this.postStateToWebview()
 			return {}

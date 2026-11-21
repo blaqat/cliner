@@ -115,6 +115,19 @@ export function OpenedSkillDraft({
 	const commitDescription = () => {
 		if (description.trim() !== change.description) target({ description: description.trim() })
 	}
+	// Keep takes fields the user hasn't left yet with it, in one step.
+	const keep = () => {
+		const trimmedName = name.trim()
+		const nameEdited = !editsExisting && !!trimmedName && trimmedName !== change.name
+		const descriptionEdited = kind === "skill" && description.trim() !== change.description
+		if (!nameEdited && !descriptionEdited) return onKeep()
+		onAction("skill_target_keep", {
+			kind,
+			isGlobal: scope === "global",
+			name: nameEdited ? trimmedName : change.name,
+			description: descriptionEdited ? description.trim() : change.description,
+		})
+	}
 
 	return (
 		<div className="mt-2 border-0 border-t border-solid border-editor-group-border pt-2" data-testid="skill-draft-opened">
@@ -263,7 +276,13 @@ export function OpenedSkillDraft({
 			</div>
 			{!editing && (
 				<div className="mt-2 flex flex-wrap items-center gap-1.5">
-					<Button aria-label={`Keep ${change.name}`} disabled={sending || !!draft?.conflict} onClick={onKeep} size="xs">
+					<Button
+						aria-label={`Keep ${change.name}`}
+						disabled={sending || !!draft?.conflict}
+						onClick={keep}
+						// Don't blur a field on press: the field's own save would race the Keep.
+						onMouseDown={(event) => event.preventDefault()}
+						size="xs">
 						Keep this one
 					</Button>
 					<Button aria-label={`Drop ${change.name}`} disabled={sending} onClick={onDrop} size="xs" variant="secondary">

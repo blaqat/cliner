@@ -744,17 +744,22 @@ export class NotebookStore {
 
 	/**
 	 * Changes what a staged skill is or where it goes (the review row's Kind and
-	 * Where switches, its name and description), keeping the body as is.
+	 * Where switches, its name and description), keeping the body as is. With a
+	 * revision it only edits the row the user saw. Returns the new revision.
 	 */
 	async updatePendingSkill(
 		groupId: string,
 		threadId: string,
 		slug: string,
 		patch: { kind?: "skill" | "workflow"; scope?: "global" | "workspace"; name?: string; description?: string },
-	): Promise<void> {
+		revision?: string,
+	): Promise<string> {
 		validateTaskGroupIdentifier(slug, "slug")
-		await this.serializePending(groupId, threadId, async () => {
-			const pending = await this.readPendingReview(groupId, threadId)
+		return this.serializePending(groupId, threadId, async () => {
+			const pending =
+				revision === undefined
+					? await this.readPendingReview(groupId, threadId)
+					: await this.currentPending(groupId, threadId, revision)
 			const change = pending?.changes.find((entry) => entry.slug === slug)
 			if (!pending || !change?.skill) throw new Error("This skill is no longer waiting for review")
 			if (patch.kind) change.skill.kind = patch.kind
@@ -762,6 +767,7 @@ export class NotebookStore {
 			if (patch.name?.trim()) change.name = patch.name.trim()
 			if (patch.description !== undefined) change.description = patch.description.trim()
 			await this.writePending(groupId, threadId, pending.changes)
+			return (await this.readPendingReview(groupId, threadId))!.revision
 		})
 	}
 
