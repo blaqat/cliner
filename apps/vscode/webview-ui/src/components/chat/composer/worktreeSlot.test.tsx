@@ -6,6 +6,7 @@ import {
 	clearWorktreeStartFailure,
 	getDraftRunInWorktree,
 	reportWorktreeStartFailure,
+	threadWorktreeAction,
 } from "@/components/worktrees/useWorktree"
 import { ThreadBranchChip, WorkspaceButton, WorktreeStartNotice } from "./worktreeSlot"
 
@@ -189,4 +190,30 @@ it("says when a new thread couldn't start for its worktree, with the fix and a w
 	)
 	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
 	expect(screen.queryByTestId("worktree-start-failure")).toBeNull()
+})
+
+it("offers an mm worktree as soon as a valid mm.js path is saved, without a restart", async () => {
+	const unset = withMode("mm", { available: false, reason: "Set the path to mm.js in Worktrees settings" })
+	mocks.state = unset
+	render(<WorkspaceButton />)
+	const menu = await openMenu()
+	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeDisabled())
+	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Set up mm in Settings")
+	// Settings saves while the composer's menu stays mounted.
+	const saved = { mode: "mm" as const, mmPath: "/tools/mm.js", nodePath: "node" }
+	mocks.state = { ...withMode("mm"), settings: saved }
+	await act(() => threadWorktreeAction("configure", "", saved))
+	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeEnabled())
+	expect(within(menu).queryByTestId("workspace-blocker")).toBeNull()
+	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Worktree settings")
+})
+
+it("re-checks worktree availability each time the workspace menu opens", async () => {
+	mocks.state = withMode("mm", { available: false, reason: "Set the path to mm.js in Worktrees settings" })
+	render(<WorkspaceButton />)
+	await waitFor(() => expect(screen.getByTestId("workspace-button")).toBeInTheDocument())
+	// Another window saved the path; this one hears nothing until its menu opens.
+	mocks.state = withMode("mm")
+	const menu = await openMenu()
+	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeEnabled())
 })

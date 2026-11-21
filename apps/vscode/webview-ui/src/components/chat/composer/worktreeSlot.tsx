@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import {
 	COMPOSER_LINE_CHIP_CLASS,
@@ -31,6 +31,11 @@ function WorkspaceMenuBody({
 }) {
 	const { navigateToSettings } = useExtensionState()
 	const { availability, state, enabled, setEnabled, error, refresh } = worktree
+	// Re-check on open: mm.js, git history or another window's settings may have changed since.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once per open.
+	useEffect(() => {
+		void refresh()
+	}, [])
 	const mapping = threadId ? state?.mapping : undefined
 	const off = !availability || availability.mode === "off"
 	const canUse = !off && !!availability?.available

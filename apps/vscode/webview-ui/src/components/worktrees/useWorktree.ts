@@ -15,7 +15,24 @@ export async function threadWorktreeAction(
 		json: data === undefined ? "" : JSON.stringify(data),
 		confirmed,
 	})
-	return JSON.parse(response.json)
+	const result: WorktreeActionResult = JSON.parse(response.json)
+	if (SETTINGS_ACTIONS.has(action)) settingsSaved()
+	return result
+}
+
+/** Actions that change what every worktree menu offers; each mounted useWorktree re-reads after one. */
+const SETTINGS_ACTIONS = new Set(["configure", "workspaceOff"])
+let settingsVersion = 0
+const settingsListeners = new Set<() => void>()
+function settingsSaved() {
+	settingsVersion++
+	for (const listener of settingsListeners) listener()
+}
+function subscribeSettings(listener: () => void) {
+	settingsListeners.add(listener)
+	return () => {
+		settingsListeners.delete(listener)
+	}
 }
 
 /** gRPC errors arrive as "Error: git worktree add: …"; people want the sentence. */
@@ -85,6 +102,7 @@ export function useWorktree(threadId?: string) {
 		},
 		() => enabled,
 	)
+	const savedSettings = useSyncExternalStore(subscribeSettings, () => settingsVersion)
 	const [state, setState] = useState<WorktreeState>()
 	const [error, setError] = useState<string>()
 	const refresh = useCallback(async () => {
@@ -95,9 +113,11 @@ export function useWorktree(threadId?: string) {
 			setError(`Couldn't check worktrees: ${worktreeErrorText(error)}`)
 		}
 	}, [threadId])
+	// Saved settings change availability for menus that stayed mounted (the composer's), not just Settings.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: savedSettings is the re-read trigger.
 	useEffect(() => {
 		void refresh()
-	}, [refresh])
+	}, [refresh, savedSettings])
 	useEffect(() => {
 		if (draftThreadId !== currentTaskItem?.id) {
 			draftThreadId = currentTaskItem?.id
