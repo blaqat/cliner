@@ -30,6 +30,8 @@ const stashShortcut = vi.hoisted(() => ({
 }))
 vi.mock("@/services/grpc-client", () => ({
 	StateServiceClient: { updateSettings: vi.fn(() => Promise.resolve({})) },
+	// The context details read About you's size while open.
+	TaskGroupServiceClient: { getTaskGroup: vi.fn(() => new Promise(() => {})) },
 	TaskServiceClient: { resolveMessageLink: (request: unknown) => resolveMessageLink(request) },
 	UiServiceClient: {
 		subscribeToStashShortcut: (_request: unknown, callbacks: { onResponse: () => void }) => {

@@ -165,6 +165,14 @@ describe("thread panel", () => {
 		expect(screen.queryByTestId("thread-panel-overlay")).toBeNull()
 		expect(toggle).toHaveAttribute("aria-expanded", "false")
 
+		// A click elsewhere in VS Code only blurs the webview: that closes it too.
+		fireEvent.click(toggle)
+		expect(await screen.findByTestId("thread-panel-overlay")).toBeInTheDocument()
+		act(() => {
+			window.dispatchEvent(new Event("blur"))
+		})
+		expect(screen.queryByTestId("thread-panel-overlay")).toBeNull()
+
 		// Clicking the toggle again closes it, too.
 		fireEvent.click(toggle)
 		expect(await screen.findByTestId("thread-panel-overlay")).toBeInTheDocument()

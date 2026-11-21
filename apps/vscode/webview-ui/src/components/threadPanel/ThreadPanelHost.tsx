@@ -152,6 +152,16 @@ export const ThreadPanelFrame = ({ data, children }: { data?: ThreadPanelData; c
 		setThreadPanelUi({ overlayOpen: false })
 	}, [room, available, threadId])
 	useEffect(() => () => setThreadPanelUi({ available: false, overlayOpen: false }), [])
+	// A click in the editor or elsewhere in VS Code never reaches the webview; it only loses focus.
+	useEffect(() => {
+		if (!overlayOpen) return
+		const close = () => {
+			interactedOutside.current = true
+			setThreadPanelUi({ overlayOpen: false })
+		}
+		window.addEventListener("blur", close)
+		return () => window.removeEventListener("blur", close)
+	}, [overlayOpen])
 
 	const anchor = useMemo(() => ({ current: toggle }), [toggle])
 	const setOverlayOpen = useCallback((open: boolean) => setThreadPanelUi({ overlayOpen: open }), [])
