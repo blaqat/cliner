@@ -2,6 +2,7 @@ import type { NotebookActionRequest } from "@shared/proto/cline/task_group"
 import { looksRunnable } from "@shared/skillsets"
 import type { NotebookChange } from "@shared/task-groups"
 import { useEffect, useState } from "react"
+import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { DocEditor } from "@/components/docEditor/DocEditor"
 import { MarkedNote } from "@/components/docEditor/MarkedNote"
@@ -92,6 +93,7 @@ export function OpenedSkillDraft({
 	useEffect(() => setName(change.name), [change.name])
 	useEffect(() => setDescription(change.description), [change.description])
 	const content = change.content ?? ""
+	const [showBoth, setShowBoth] = useState(false)
 	const files = draftFiles(change)
 	const scripts = files.filter((file) => file.runsCode).length
 	const editsExisting = change.op === "update" && !!draft?.targetPath
@@ -116,6 +118,40 @@ export function OpenedSkillDraft({
 
 	return (
 		<div className="mt-2 border-0 border-t border-solid border-editor-group-border pt-2" data-testid="skill-draft-opened">
+			{draft?.conflict && (
+				<InlineNotice className="mb-2 bg-(--vscode-editor-background)" tone="warning">
+					Changed on disk: {Object.keys(draft.conflict).join(", ")}. Mine is the file on disk. Theirs is the proposed
+					change.
+					<div className="mt-1.5 flex flex-wrap gap-1.5">
+						<Button disabled={sending} onClick={onDrop} size="xs" variant="secondary">
+							Keep mine
+						</Button>
+						<Button disabled={sending} onClick={() => onAction("skill_keep_theirs")} size="xs">
+							Keep theirs
+						</Button>
+						<Button onClick={() => setShowBoth((value) => !value)} size="xs" variant="secondary">
+							Open both
+						</Button>
+					</div>
+					{showBoth &&
+						Object.entries(draft.conflict).map(([file, disk]) => (
+							<div className="mt-2" key={file}>
+								<div className="break-all">{file} · Mine on disk</div>
+								<pre className="whitespace-pre-wrap break-all">
+									{disk === null
+										? "File removed"
+										: new TextDecoder().decode(Uint8Array.from(atob(disk), (char) => char.charCodeAt(0)))}
+								</pre>
+								<div>Theirs from this turn</div>
+								<pre className="whitespace-pre-wrap break-all">
+									{file === "SKILL.md" || kind === "workflow"
+										? content
+										: draft.files?.find((entry) => entry.path === file)?.content}
+								</pre>
+							</div>
+						))}
+				</InlineNotice>
+			)}
 			{change.summary && <p className="m-0 mb-2 italic text-description">“{change.summary}”</p>}
 			<div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5">
 				<span className="text-[11px] text-description">Kind</span>
@@ -227,7 +263,7 @@ export function OpenedSkillDraft({
 			</div>
 			{!editing && (
 				<div className="mt-2 flex flex-wrap items-center gap-1.5">
-					<Button aria-label={`Keep ${change.name}`} disabled={sending} onClick={onKeep} size="xs">
+					<Button aria-label={`Keep ${change.name}`} disabled={sending || !!draft?.conflict} onClick={onKeep} size="xs">
 						Keep this one
 					</Button>
 					<Button aria-label={`Drop ${change.name}`} disabled={sending} onClick={onDrop} size="xs" variant="secondary">

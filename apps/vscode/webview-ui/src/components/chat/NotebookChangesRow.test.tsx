@@ -131,7 +131,9 @@ describe("NotebookChangesRow", () => {
 		render(<NotebookChangesRow message={message()} />)
 		fireEvent.click(screen.getByRole("button", { name: "Discard" }))
 		await screen.findByText("Dropped note changes")
-		expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ taskGroupId: "g1", threadId: "t1", slugs: [] }))
+		expect(mocks.discard).toHaveBeenCalledWith(
+			expect.objectContaining({ taskGroupId: "g1", threadId: "t1", slugs: ["plan"] }),
+		)
 	})
 	it("keeps failed actions reviewable", async () => {
 		mocks.apply.mockRejectedValue(new Error("disk full"))
@@ -234,4 +236,40 @@ describe("NotebookChangesRow", () => {
 		expect(parseNotebookChangesPayload("bad")).toBeNull()
 		expect(parseNotebookChangesPayload(JSON.stringify({ threadId: "t1" }))).toBeNull()
 	})
+})
+
+it("sends the visible item list and revision for Discard all", async () => {
+	const p = { ...payload, changes: [...payload.changes, { ...payload.changes[0], slug: "second", name: "Second" }] }
+	mocks.state.clineMessages = [message(10, p)]
+	render(<NotebookChangesRow message={message(10, p)} />)
+	fireEvent.click(screen.getByRole("button", { name: "Discard all" }))
+	await waitFor(() =>
+		expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({ revision: "r1", slugs: ["plan", "second"] })),
+	)
+})
+
+it("shows disk conflicts on the skill chip with version choices and both texts", async () => {
+	const p: NotebookChangesPayload = {
+		...payload,
+		taskGroupId: "skill-drafts",
+		changes: [
+			{
+				...payload.changes[0],
+				slug: "skill-plan",
+				skill: { kind: "skill", scope: "global", conflict: { "SKILL.md": btoa("disk text") } },
+			},
+		],
+	}
+	mocks.state.clineMessages = [message(10, p)]
+	render(<NotebookChangesRow message={message(10, p)} />)
+	expect(screen.getByRole("button", { name: /^Plan/ })).toHaveTextContent("changed on disk")
+	open()
+	fireEvent.click(screen.getByRole("button", { name: "Open both" }))
+	expect(screen.getByText("disk text")).toBeInTheDocument()
+	fireEvent.click(screen.getByRole("button", { name: "Keep theirs" }))
+	await waitFor(() =>
+		expect(mocks.action).toHaveBeenCalledWith(
+			expect.objectContaining({ action: "skill_keep_theirs", slug: "skill-plan", revision: "r1" }),
+		),
+	)
 })

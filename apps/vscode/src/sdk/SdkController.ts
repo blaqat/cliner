@@ -5271,6 +5271,12 @@ export class Controller {
 			await this.postStateToWebview()
 			return {}
 		}
+		if (input.action === "skill_keep_theirs") {
+			const nextRevision = await this.notebookStore.acceptSkillConflict(groupId, threadId, revision, slug)
+			await this.applyNotebookChanges(threadId, groupId, nextRevision, [{ slug, include: true }])
+			return {}
+		}
+
 		if (input.action === "skill_target") {
 			// The review row's Kind / Where switches and name and description fields for a staged skill.
 			await this.notebookStore.updatePendingSkill(groupId, threadId, slug, {
@@ -5395,15 +5401,10 @@ export class Controller {
 		await env.setWorkflowEnabled(itemPath, isGlobal, true)
 	}
 
-	/** Drops the staged changes for `slugs`, or every staged change for the group when empty. */
+	/** Drops the chosen staged changes from the revision the row showed. */
 	async discardNotebookChanges(threadId: string, taskGroupId: string, revision: string, slugs?: string[]): Promise<void> {
 		try {
-			const dropped = await this.notebookStore.discardPendingChanges(
-				taskGroupId,
-				threadId,
-				revision,
-				slugs?.length ? slugs : undefined,
-			)
+			const dropped = await this.notebookStore.discardPendingChanges(taskGroupId, threadId, revision, slugs)
 			await this.settleNotebookReview(threadId, taskGroupId, { dropped })
 		} catch (error) {
 			await this.emitNotebookChanges(threadId)

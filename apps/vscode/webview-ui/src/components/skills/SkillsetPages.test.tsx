@@ -141,3 +141,16 @@ describe("ShareSkillsetPage", () => {
 		)
 	})
 })
+
+it("shows the reader limits and prevents saving an oversized selection", async () => {
+	const item = { ...set.items[0], files: Array.from({ length: 400 }, (_, i) => ({ path: `${i}.md`, size: 100 })) }
+	mocks.list.mockResolvedValue({ json: JSON.stringify({ skills: [item], workflows: [], sets: [], hasWorkspace: true }) })
+	render(<ShareSkillsetPage onBack={() => {}} />)
+	fireEvent.click(await screen.findByRole("checkbox", { name: /flaky-test-hunter/ }))
+	expect(screen.getByTestId("share-skillset")).toHaveTextContent("402 files")
+	expect(screen.getByText(/Over the limit. Pick fewer/)).toBeInTheDocument()
+	const save = screen.getByRole("button", { name: "Save skillset…" })
+	expect(save).toBeDisabled()
+	fireEvent.click(save)
+	expect(mocks.exportSkillset).not.toHaveBeenCalled()
+})

@@ -189,4 +189,125 @@ describe("skillsets", () => {
 		expect((await importSkillset(profile.env, none, "notes.zip")).error).toMatch(/No skills or workflows/)
 		expect((await importSkillset(profile.env, Buffer.from("nope"), "x.zip")).error).toMatch(/zip/)
 	})
+	it("exports only public markdown workflows and never follows outside links", async () => {
+		const p = await tempProfile(root)
+		const files = [".env", "credentials.md", "plain.txt", "okay.md", "linked.md"]
+		for (const name of files.slice(0, -1)) await fs.writeFile(path.join(p.globalWorkflows, name), "secret")
+		await fs.writeFile(path.join(root, "secret.md"), "external secret")
+		await fs.symlink(path.join(root, "secret.md"), path.join(p.globalWorkflows, "linked.md"))
+		const built = await buildSkillsetZip(
+			files.map((name) => ({ kind: "workflow", path: path.join(p.globalWorkflows, name) })),
+			{ name: "safe" },
+		)
+		expect(
+			readZip(built.zip)
+				.filter((entry) => entry.path.startsWith("workflows/"))
+				.map((entry) => entry.path),
+		).toEqual(["workflows/okay.md"])
+		expect((await listSkillsetLibrary(p.env, { includeFiles: true })).workflows.map((item) => item.name)).toEqual(["okay"])
+	})
+
+	it("reserves every existing path and removes only installed files", async () => {
+		const p = await tempProfile(root)
+		await fs.mkdir(path.join(p.globalSkills, "foo"))
+		await fs.writeFile(path.join(p.globalSkills, "foo", "mine.txt"), "mine")
+		const zip = writeZip([{ path: "skills/foo/SKILL.md", data: Buffer.from("---\nname: foo\ndescription: foo\n---\nbody") }])
+		const result = await importSkillset(p.env, zip, "foo.zip")
+		expect(result.set?.items[0].name).toBe("foo-2")
+		await fs.writeFile(path.join(p.globalSkills, "foo-2", "later.txt"), "later")
+		await updateSkillsetItems(p.env, { setId: result.set!.id, action: "remove" })
+		expect(await fs.readFile(path.join(p.globalSkills, "foo", "mine.txt"), "utf8")).toBe("mine")
+		expect(await fs.readFile(path.join(p.globalSkills, "foo-2", "later.txt"), "utf8")).toBe("later")
+	})
+
+	it("refuses Remove all through a replaced folder link", async () => {
+		const p = await tempProfile(root)
+		const zip = writeZip([
+			{ path: "skills/foo/SKILL.md", data: Buffer.from("---\nname: foo\ndescription: foo\n---\nbody") },
+			{ path: "skills/foo/scripts/keep.md", data: Buffer.from("installed") },
+		])
+		const result = await importSkillset(p.env, zip, "foo.zip")
+		const outside = path.join(root, "outside")
+		await fs.mkdir(outside)
+		await fs.writeFile(path.join(outside, "keep.md"), "mine")
+		await fs.rm(path.join(p.globalSkills, "foo", "scripts"), { recursive: true })
+		await fs.symlink(outside, path.join(p.globalSkills, "foo", "scripts"))
+		await expect(updateSkillsetItems(p.env, { setId: result.set!.id, action: "remove" })).rejects.toThrow("linked")
+		expect(await fs.readFile(path.join(outside, "keep.md"), "utf8")).toBe("mine")
+		expect(await fs.readFile(result.set!.items[0].path, "utf8")).toContain("body")
+	})
+
+	it("refuses imports through a linked destination root", async () => {
+		const p = await tempProfile(root)
+		const outside = path.join(root, "outside")
+		await fs.mkdir(outside)
+		await fs.rmdir(p.globalSkills)
+		await fs.symlink(outside, p.globalSkills)
+		const result = await importSkillset(
+			p.env,
+			writeZip([{ path: "skills/foo/SKILL.md", data: Buffer.from("body") }]),
+			"foo.zip",
+		)
+		expect(result.error).toMatch(/linked/)
+		expect(await fs.readdir(outside)).toEqual([])
+	})
+
+	it("rolls back malformed trees before installing any item", async () => {
+		const p = await tempProfile(root)
+		const zip = writeZip([
+			{ path: "skills/first/SKILL.md", data: Buffer.from("first") },
+			{ path: "skills/foo/SKILL.md", data: Buffer.from("foo") },
+			{ path: "skills/foo/a", data: Buffer.from("file") },
+			{ path: "skills/foo/a/b", data: Buffer.from("child") },
+		])
+		expect((await importSkillset(p.env, zip, "broken.zip")).error).toBeTruthy()
+		expect(await fs.readdir(p.globalSkills)).toEqual([])
+		expect(JSON.parse(await fs.readFile(p.env.registryPath, "utf8").catch(() => '{"sets":[]}')).sets).toEqual([])
+		expect(p.toggles).toEqual({})
+	})
+
+	it("rolls back moves and registry if switching off an import fails", async () => {
+		const p = await tempProfile(root)
+		p.env.setWorkflowEnabled = async () => {
+			throw new Error("disk full")
+		}
+		const zip = writeZip([
+			{ path: "skills/foo/SKILL.md", data: Buffer.from("foo") },
+			{ path: "workflows/bar.md", data: Buffer.from("bar") },
+		])
+		expect((await importSkillset(p.env, zip, "broken.zip")).error).toContain("disk full")
+		expect(await fs.readdir(p.globalSkills)).toEqual([])
+		expect(await fs.readdir(p.globalWorkflows)).toEqual([])
+		expect(JSON.parse(await fs.readFile(p.env.registryPath, "utf8").catch(() => '{"sets":[]}')).sets).toEqual([])
+		expect(p.toggles).toEqual({})
+	})
+
+	it("compares binary files as bytes when detecting identical copies", async () => {
+		const p = await tempProfile(root)
+		await p.addSkill(p.globalSkills, "foo", "body")
+		await fs.writeFile(path.join(p.globalSkills, "foo", "data.bin"), Buffer.from([0xff]))
+		const zip = writeZip([
+			{ path: "skills/foo/SKILL.md", data: Buffer.from("---\nname: foo\ndescription: foo things\n---\nbody\n") },
+			{ path: "skills/foo/data.bin", data: Buffer.from([0xfe]) },
+		])
+		const result = await importSkillset(p.env, zip, "binary.zip")
+		expect(result).toMatchObject({ skills: 1, alreadyHad: 0 })
+		expect(await fs.readFile(path.join(p.globalSkills, "foo-2", "data.bin"))).toEqual(Buffer.from([0xfe]))
+	})
+
+	it("refuses exports above the reader's file and total byte limits", async () => {
+		const p = await tempProfile(root)
+		await p.addSkill(p.globalSkills, "many", "body")
+		for (let i = 0; i < 399; i++) await fs.writeFile(path.join(p.globalSkills, "many", `${i}.txt`), "x")
+		await expect(
+			buildSkillsetZip([{ kind: "skill", path: path.join(p.globalSkills, "many", "SKILL.md") }], { name: "many" }),
+		).rejects.toThrow("400-file limit")
+		const workflows = []
+		for (let i = 0; i < 11; i++) {
+			const file = path.join(p.globalWorkflows, `${i}.md`)
+			await fs.writeFile(file, Buffer.alloc(2 * 1024 * 1024))
+			workflows.push({ kind: "workflow" as const, path: file })
+		}
+		await expect(buildSkillsetZip(workflows, { name: "large" })).rejects.toThrow("20 MB limit")
+	})
 })

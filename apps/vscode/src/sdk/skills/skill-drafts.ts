@@ -4,7 +4,7 @@ import type { NotebookChange } from "@shared/task-groups"
 import * as fs from "fs/promises"
 import * as path from "path"
 import type { NotebookStore } from "../task-groups/notebook-store"
-import { buildSkillMarkdown, exists, parseSkillMarkdown, writeInside } from "./skill-files"
+import { assertSafePath, buildSkillMarkdown, exists, parseSkillMarkdown, shareableWorkflow, writeInside } from "./skill-files"
 import { safeZipPath } from "./zip"
 
 /** Where skills and workflows are found and kept; injected so tests use temp folders. */
@@ -63,7 +63,7 @@ export async function listExistingItems(places: SkillDraftPlaces): Promise<Exist
 	for (const dir of await places.workflowDirs()) {
 		const names = await fs.readdir(dir.path).catch(() => [] as string[])
 		for (const file of names.sort()) {
-			if (!/\.md$/i.test(file)) continue
+			if (!(await shareableWorkflow(path.join(dir.path, file)))) continue
 			const name = file.replace(/\.md$/i, "")
 			if (seen.has(`workflow:${name}`)) continue
 			seen.add(`workflow:${name}`)
@@ -150,7 +150,8 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 				index = await listExistingItems(places)
 				const existing = index.find((item) => item.kind === input.kind && item.name === slug)
 				const pending = (await store.readPending(SKILL_DRAFTS_ID, rootThreadId)) ?? []
-				const staged = pending.find((change) => change.slug === slug)
+				const draftKey = `${input.kind}-${slug}`
+				const staged = pending.find((change) => change.slug === draftKey)
 				let baseContent: string | undefined
 				let description = input.description?.trim() ?? ""
 				if (existing) {
@@ -162,15 +163,30 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 				if (input.kind === "skill" && !description) {
 					return { error: "A skill needs a description: one line saying when Cline should use it." }
 				}
+				const baseFiles: Record<string, string | null> = Object.fromEntries(
+					[input.kind === "skill" ? "SKILL.md" : `${slug}.md`, ...files.map((file) => file.path)].map((file) => [
+						file,
+						null,
+					]),
+				)
+				if (existing) {
+					for (const relative of [path.basename(existing.path), ...files.map((file) => file.path)]) {
+						const target = await assertSafePath(path.dirname(existing.path), relative)
+						baseFiles[relative] = await readDraftBase(target)
+					}
+				}
 				const skill: SkillDraftMeta = {
 					kind: input.kind,
 					scope: existing ? (existing.isGlobal ? "global" : "workspace") : scope,
+					baseFiles,
 					...(files.length ? { files } : {}),
-					...(existing ? { targetPath: existing.path, baseContent } : {}),
+					...(existing
+						? { targetPath: existing.path, baseContent, baseFiles: { ...baseFiles, ...staged?.skill?.baseFiles } }
+						: {}),
 				}
 				const change: NotebookChange = {
 					op: existing ? "update" : "create",
-					slug,
+					slug: draftKey,
 					name: slug,
 					description,
 					content: input.content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ""),
@@ -201,6 +217,16 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 	return tool as AgentTool
 }
 
+/** Exact disk bytes, including binary extras. Missing is different from empty. */
+async function readDraftBase(target: string): Promise<string | null> {
+	try {
+		return (await fs.readFile(target)).toString("base64")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+		throw error
+	}
+}
+
 /**
  * Keeps a staged skill or workflow: writes its files and switches it on (the
  * user just made it). Returns the change's slug, as the notebook's apply does.
@@ -221,6 +247,25 @@ export async function applySkillDraft(
 	}
 	const isGlobal = draft.scope === "global"
 	const keepsTarget = !!draft.targetPath && (draft.kind === "skill") === /SKILL\.md$/i.test(draft.targetPath)
+	if (keepsTarget && draft.targetPath) {
+		const root = path.dirname(draft.targetPath)
+		const relatives = [
+			path.basename(draft.targetPath),
+			...(draft.kind === "skill" ? (draft.files ?? []).map((file) => file.path) : []),
+		]
+		const conflict: Record<string, string | null> = {}
+		// Preflight every file before writing the main file or any extras.
+		for (const relative of relatives) {
+			const target = await assertSafePath(root, relative)
+			const current = await readDraftBase(target)
+			if (!draft.baseFiles || current !== draft.baseFiles[relative]) conflict[relative] = current
+		}
+		if (Object.keys(conflict).length) {
+			draft.conflict = conflict
+			throw new Error(`${name} changed on disk. Open its chip and choose Keep mine, Keep theirs, or Open both.`)
+		}
+		delete draft.conflict
+	}
 	if (draft.kind === "skill") {
 		let dir: string
 		let extra: Record<string, unknown> = {}
@@ -233,6 +278,7 @@ export async function applySkillDraft(
 			for (let n = 2; await exists(path.join(root, folder)); n++) folder = `${name}-${n}`
 			dir = path.join(root, folder)
 		}
+		for (const file of draft.files ?? []) await assertSafePath(dir, file.path)
 		const skillMd = await writeInside(
 			dir,
 			"SKILL.md",

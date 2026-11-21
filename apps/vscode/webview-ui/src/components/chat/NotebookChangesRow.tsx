@@ -334,7 +334,7 @@ function ReviewCard({
 		await TaskGroupServiceClient.discardNotebookChanges(
 			DiscardNotebookChangesRequest.create({
 				...address(payload),
-				slugs: slugs.length === payload.changes.length ? [] : slugs,
+				slugs,
 			}),
 		)
 		if (slugs.length === payload.changes.length) {
@@ -450,6 +450,9 @@ function ReviewCard({
 						/>
 						<span className="truncate font-medium">{change.name}</span>
 						<span className="shrink-0 text-description">{changeMeta(change)}</span>
+						{change.skill?.conflict && (
+							<span className="shrink-0 text-(--vscode-editorWarning-foreground)">· changed on disk</span>
+						)}
 						{change.editedByUser && <span className="shrink-0 text-success">· edited by you</span>}
 					</button>
 				))}

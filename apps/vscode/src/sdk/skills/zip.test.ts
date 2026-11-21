@@ -63,3 +63,10 @@ describe("zip", () => {
 		expect(() => readZip(Buffer.from("hello world, definitely not a zip file"))).toThrow(/isn't a zip/)
 	})
 })
+
+it("rejects a same-size payload with a bad CRC", () => {
+	const zip = writeZip([{ path: "SKILL.md", data: Buffer.from("abc") }])
+	const dataStart = 30 + zip.readUInt16LE(26)
+	zip[dataStart] ^= 1
+	expect(() => readZip(zip)).toThrow(/damaged.*new copy/)
+})

@@ -53,6 +53,8 @@ export function ShareSkillsetPage({ onBack }: { onBack: () => void }) {
 	const effectiveName = nameTouched ? name : (chosen[0]?.name ?? "")
 	const fileName = `${slugifySkillName(effectiveName) || "skillset"}.skillset.zip`
 	const bytes = chosen.reduce((sum, item) => sum + item.files.reduce((total, file) => total + file.size, 0), 0)
+	const fileCount = 2 + chosen.reduce((sum, item) => sum + item.files.length, 0)
+	const overLimit = fileCount > 400 || bytes > 20 * 1024 * 1024
 	const runsCode = chosen.filter((item) => item.runsCode).length
 	const skipped = chosen.flatMap((item) => (item.skippedFiles ?? []).map((file) => `${item.name}/${file}`))
 
@@ -233,6 +235,14 @@ export function ShareSkillsetPage({ onBack }: { onBack: () => void }) {
 						<span>Pick at least one skill or workflow to save.</span>
 					)}
 				</div>
+				<div
+					className={cn(
+						"mt-1 text-[11px]",
+						overLimit ? "text-(--vscode-editorWarning-foreground)" : "text-description",
+					)}>
+					{fileCount} files · {formatSize(bytes)} · limits: 400 files, 20 MB
+					{overLimit && ". Over the limit. Pick fewer skills or workflows."}
+				</div>
 				{skipped.length > 0 && (
 					<div className="mt-1 text-[11px] text-description">
 						Leaves out {skipped.slice(0, 3).join(", ")}
@@ -249,7 +259,7 @@ export function ShareSkillsetPage({ onBack }: { onBack: () => void }) {
 						Cancel
 					</Button>
 					<Button
-						disabled={!chosen.length || !effectiveName.trim() || saving}
+						disabled={!chosen.length || !effectiveName.trim() || saving || overLimit}
 						onClick={() => void save()}
 						size="xs"
 						title={

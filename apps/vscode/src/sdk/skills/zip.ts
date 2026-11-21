@@ -1,3 +1,4 @@
+import * as zlib from "node:zlib"
 import { deflateRawSync, inflateRawSync } from "node:zlib"
 
 // A small zip reader and writer over Node's zlib, for skillsets. The reader
@@ -80,6 +81,7 @@ export function readZip(buffer: Buffer, limits: ZipLimits = DEFAULT_ZIP_LIMITS):
 		const madeBy = buffer.readUInt16LE(offset + 4) >> 8
 		const flags = buffer.readUInt16LE(offset + 8)
 		const method = buffer.readUInt16LE(offset + 10)
+		const expectedCrc = buffer.readUInt32LE(offset + 16)
 		const compressedSize = buffer.readUInt32LE(offset + 20)
 		const size = buffer.readUInt32LE(offset + 24)
 		const nameLength = buffer.readUInt16LE(offset + 28)
@@ -130,6 +132,7 @@ export function readZip(buffer: Buffer, limits: ZipLimits = DEFAULT_ZIP_LIMITS):
 			throw new ZipError(`${name} uses a compression this reader doesn't support.`)
 		}
 		if (data.length !== size) throw new ZipError(`${name} is damaged.`)
+		if (crc32(data) !== expectedCrc) throw new ZipError(`${name} is damaged. Get a new copy of the skillset and try again.`)
 		entries.push({ path: name, data, mode: mode & 0o7777 })
 	}
 	return entries
@@ -137,6 +140,7 @@ export function readZip(buffer: Buffer, limits: ZipLimits = DEFAULT_ZIP_LIMITS):
 
 let crcTable: Uint32Array | undefined
 function crc32(data: Buffer): number {
+	if (typeof zlib.crc32 === "function") return zlib.crc32(data) >>> 0
 	if (!crcTable) {
 		crcTable = new Uint32Array(256)
 		for (let n = 0; n < 256; n++) {

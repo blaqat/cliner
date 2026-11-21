@@ -116,6 +116,10 @@ export interface SkillDraftMeta {
 	targetPath?: string
 	/** The existing body the edit is diffed against. */
 	baseContent?: string
+	/** Exact bytes at staging time; null means the file did not exist. */
+	baseFiles?: Record<string, string | null>
+	/** Disk versions found on Keep, retained until the user chooses a version. */
+	conflict?: Record<string, string | null>
 }
 
 /** The reserved notebook id staged skill drafts live under (like About you). */

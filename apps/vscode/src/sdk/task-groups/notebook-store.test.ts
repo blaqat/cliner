@@ -395,20 +395,21 @@ describe("NotebookStore", () => {
 		expect(write).not.toHaveBeenCalled()
 	})
 
-	it("acts on the newest staged version when a row from before the next stage is clicked", async () => {
+	it("refuses Keep and Discard on a revision the user has not seen", async () => {
 		const change: NotebookChange = { op: "create", slug: "plan", name: "Plan", description: "", content: "v1" }
 		await store.stageChange(groupId, "thread", change)
 		const old = (await store.readPendingReview(groupId, "thread"))!
 		await store.stageChange(groupId, "thread", { ...change, content: "v2" })
 		await store.stageChange(groupId, "thread", { ...change, slug: "other", name: "Other", content: "o" })
-		const applied = await store.applyPendingChanges(groupId, "thread", old.revision, [{ slug: "plan", include: true }])
-		expect(applied.map((entry) => entry.content)).toEqual(["v2"])
-		expect((await store.readNote(groupId, "plan"))?.content).toBe("v2")
-		// Only the picked note leaves the review; the rest stays staged.
+		await expect(
+			store.applyPendingChanges(groupId, "thread", old.revision, [{ slug: "plan", include: true }]),
+		).rejects.toThrow("refreshed row")
+		await expect(store.discardPendingChanges(groupId, "thread", old.revision)).rejects.toThrow("refreshed row")
+		expect(await store.readNote(groupId, "plan")).toBeUndefined()
+		const current = (await store.readPendingReview(groupId, "thread"))!
+		expect(current.changes).toHaveLength(2)
+		await store.discardPendingChanges(groupId, "thread", current.revision, ["plan"])
 		expect((await store.readPending(groupId, "thread"))?.map((entry) => entry.slug)).toEqual(["other"])
-		const dropped = await store.discardPendingChanges(groupId, "thread", old.revision, ["other"])
-		expect(dropped.map((entry) => entry.slug)).toEqual(["other"])
-		expect(await store.readPendingReview(groupId, "thread")).toBeUndefined()
 	})
 
 	it("keeps the agent's summary across later writes without one", async () => {

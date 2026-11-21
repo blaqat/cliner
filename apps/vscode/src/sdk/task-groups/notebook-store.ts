@@ -364,6 +364,18 @@ export class NotebookStore {
 			pending.push(change)
 		} else {
 			const prev = pending[index]
+			if (
+				prev.skill &&
+				change.skill &&
+				prev.skill.kind === change.skill.kind &&
+				prev.skill.targetPath === change.skill.targetPath
+			) {
+				change.skill = {
+					...change.skill,
+					baseContent: prev.skill.baseContent,
+					baseFiles: { ...change.skill.baseFiles, ...prev.skill.baseFiles },
+				}
+			}
 			if (prev.editedByUser) {
 				const version = await this.recordVersion(groupId, prev.slug, prev.content ?? "", "you edited")
 				change = { ...change, replacedUserVersion: version.id }
@@ -494,19 +506,19 @@ export class NotebookStore {
 		return (await this.listPending(threadId))[0]
 	}
 
-	/**
-	 * The review row always acts on the newest staged version: a click from a row
-	 * rendered before the agent staged more never fails, it applies to what is
-	 * staged now. Only the slugs the user picked are touched.
-	 */
-	private async currentPending(groupId: string, threadId: string): Promise<PendingNotebookChanges> {
-		return (await this.readPendingReview(groupId, threadId)) ?? { groupId, revision: "", changes: [] }
+	/** A click only approves the version the user saw. */
+	private async currentPending(groupId: string, threadId: string, revision: string): Promise<PendingNotebookChanges> {
+		const pending = await this.readPendingReview(groupId, threadId)
+		if (!pending && !revision) return { groupId, revision: "", changes: [] }
+		if (!pending || pending.revision !== revision)
+			throw new Error("These changes were updated. Review the refreshed row and try again.")
+		return pending
 	}
 
 	async applyPendingChanges(
 		groupId: string,
 		threadId: string,
-		_revision: string,
+		revision: string,
 		items: { slug: string; include: boolean; editedContent?: string }[],
 		options?: {
 			threadTitle?: string
@@ -517,7 +529,7 @@ export class NotebookStore {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		for (const item of items) validateTaskGroupIdentifier(item.slug, "slug")
 		return this.serializePending(groupId, threadId, async () => {
-			const { changes } = await this.currentPending(groupId, threadId)
+			const { changes } = await this.currentPending(groupId, threadId, revision)
 			const applied: NotebookChange[] = []
 			const completed = new Set<string>()
 			try {
@@ -570,13 +582,13 @@ export class NotebookStore {
 	async discardPendingChanges(
 		groupId: string,
 		threadId: string,
-		_revision: string,
+		revision: string,
 		slugs?: string[],
 	): Promise<NotebookChange[]> {
 		taskGroupPaths(this.rootDir, groupId).pendingFile(threadId)
 		for (const slug of slugs ?? []) validateTaskGroupIdentifier(slug, "slug")
 		return this.serializePending(groupId, threadId, async () => {
-			const pending = await this.currentPending(groupId, threadId)
+			const pending = await this.currentPending(groupId, threadId, revision)
 			const dropped = pending.changes.filter((change) => !slugs || slugs.includes(change.slug))
 			for (const change of dropped) await this.settleDraft(groupId, threadId, change.slug)
 			for (const change of dropped)
@@ -750,6 +762,18 @@ export class NotebookStore {
 			if (patch.name?.trim()) change.name = patch.name.trim()
 			if (patch.description !== undefined) change.description = patch.description.trim()
 			await this.writePending(groupId, threadId, pending.changes)
+		})
+	}
+
+	async acceptSkillConflict(groupId: string, threadId: string, revision: string, slug: string): Promise<string> {
+		return this.serializePending(groupId, threadId, async () => {
+			const pending = await this.currentPending(groupId, threadId, revision)
+			const change = pending.changes.find((entry) => entry.slug === slug)
+			if (!change?.skill?.conflict) throw new Error("This conflict changed. Review the refreshed row and try again.")
+			change.skill.baseFiles = { ...change.skill.baseFiles, ...change.skill.conflict }
+			delete change.skill.conflict
+			await this.writePending(groupId, threadId, pending.changes)
+			return (await this.readPendingReview(groupId, threadId))!.revision
 		})
 	}
 
