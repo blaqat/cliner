@@ -79,7 +79,6 @@ export const WrapUpCard = ({ sideId, messages, phase, onDone }: WrapUpCardProps)
 			<div className="flex min-w-0 items-center gap-1.5 text-[11.5px] font-semibold">
 				<span aria-hidden className="codicon codicon-reply text-[12px]" />
 				<span className="flex-1">Send this to main?</span>
-				<span className="text-[11px] font-normal text-description">then this side thread is done</span>
 			</div>
 			{editing ? (
 				<textarea
@@ -104,6 +103,7 @@ export const WrapUpCard = ({ sideId, messages, phase, onDone }: WrapUpCardProps)
 					className={PRIMARY_BUTTON_CLASS}
 					disabled={wrap.busy || !text.trim()}
 					onClick={() => void wrap.send(text).then((sent) => sent && onDone?.())}
+					title="Main reads it at its next step; this side thread then closes"
 					type="button">
 					Send to main
 				</button>
@@ -286,15 +286,18 @@ export const SideQuestionCard = () => {
 					<MarkdownBlock compact markdown={answerText} showCursor={!!answer?.partial} />
 				) : failed ? (
 					<span className="text-error">
-						{failed.text?.split("\n")[0] || "It couldn't answer."} Keep it to retry in a side thread.
+						{failed.text?.split("\n")[0] || "It couldn't answer."} Keep it as a side thread to try again there.
 					</span>
 				) : (
-					<span className="flex items-center gap-1.5 text-description">
+					<span className="flex items-center gap-1.5 text-description" role="status">
 						<span
 							aria-hidden
-							className="codicon codicon-loading codicon-modifier-spin text-[12px] motion-reduce:animate-none"
+							className={cn(
+								"codicon text-[12px]",
+								running ? "codicon-loading codicon-modifier-spin motion-reduce:animate-none" : "codicon-info",
+							)}
 						/>
-						{running ? "Thinking… Main keeps going." : "No answer yet."}
+						{running ? "Thinking… Main keeps going." : "It finished without an answer. Keep it to ask again."}
 					</span>
 				)}
 			</div>

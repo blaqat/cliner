@@ -75,7 +75,7 @@ export const SideThreadColumn = ({ mainId, sideId }: { mainId: string; sideId: s
 					className="cursor-pointer border-0 bg-transparent p-0 text-[12px] text-link hover:underline"
 					onClick={() => clearBeside(mainId)}
 					type="button">
-					Back to the thread panel
+					Hide this column
 				</button>
 			</div>
 		)
@@ -89,12 +89,12 @@ export const SideThreadColumn = ({ mainId, sideId }: { mainId: string; sideId: s
 				</span>
 				<StatusDot status={status} />
 				<button
-					aria-label="Back to the thread panel"
+					aria-label="Hide the side thread"
 					className={ICON_BUTTON_CLASS}
 					onClick={() => clearBeside(mainId)}
-					title="This thread's panel (the side thread keeps going)"
+					title="Hide it (it keeps going; reopen it from This thread › Agents)"
 					type="button">
-					<span aria-hidden className="codicon codicon-layout-sidebar-right text-[14px]" />
+					<span aria-hidden className="codicon codicon-chrome-minimize text-[14px]" />
 				</button>
 				<button
 					aria-label="Open full width"
@@ -108,13 +108,17 @@ export const SideThreadColumn = ({ mainId, sideId }: { mainId: string; sideId: s
 					aria-label="Close the side thread"
 					className={ICON_BUTTON_CLASS}
 					onClick={close}
-					title="Close · stays under Main"
+					title="Close it (stops it; it stays listed under This thread › Agents)"
 					type="button">
 					<span aria-hidden className="codicon codicon-close text-[14px]" />
 				</button>
 			</div>
 			<div className="flex shrink-0 items-center gap-1 px-3 pt-1.5 text-[11px] text-description">
-				<span className="flex-1">Side thread of Main · in Ask</span>
+				<span
+					className="min-w-0 flex-1 truncate"
+					title="It reads Main and answers in Ask; open it full width to let it edit">
+					Beside Main · Ask
+				</span>
 				<WrapUpButton messages={messages} phase={view?.phase} sideId={sideId} />
 			</div>
 			<div className="min-h-0 flex-1 overflow-y-auto px-3 py-2" ref={scrollRef}>
@@ -122,7 +126,7 @@ export const SideThreadColumn = ({ mainId, sideId }: { mainId: string; sideId: s
 					messages.length ? (
 						<SideThreadTranscript messages={messages} onOpenFull={openFull} running={running} />
 					) : (
-						<span className="text-[12px] text-description">Ask it anything; Main keeps going.</span>
+						<span className="text-[12px] text-description">Ask it anything here. Main keeps going.</span>
 					)
 				) : (
 					<span className="flex items-center gap-1.5 text-[12px] text-description">
@@ -140,12 +144,18 @@ export const SideThreadColumn = ({ mainId, sideId }: { mainId: string; sideId: s
 			<div className="shrink-0 px-2 pt-1 pb-2">
 				{error && (
 					<div className="flex items-center gap-1.5 px-1 pb-1 text-[11px] text-error" role="alert">
-						<span className="min-w-0 flex-1">{error}</span>
+						<span className="min-w-0 flex-1">Couldn't send: {error}</span>
+						<button
+							className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
+							onClick={() => void send()}
+							type="button">
+							Retry
+						</button>
 						<button
 							className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
 							onClick={openFull}
 							type="button">
-							Open it
+							Open full width
 						</button>
 					</div>
 				)}

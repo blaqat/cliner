@@ -11,7 +11,8 @@ vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => moc
 // The thread panel has its own tests; here it only passes the chat through.
 vi.mock("@/components/threadPanel/ThreadPanelHost", () => ({
 	ThreadPanelHost: ({ children }: { children: ReactNode }) => children,
-	ThreadPanelLine: () => null,
+	ThreadPanelFrame: ({ children }: { children: ReactNode }) => children,
+	ThreadPanelToggle: () => null,
 }))
 vi.mock("@/context/PlatformContext", () => ({
 	usePlatform: () => ({ showNavbar: false }),

@@ -11,15 +11,20 @@ export const PANEL_SECTION_LABEL: Record<PanelSection, string> = {
 	context: "Context & cost",
 }
 
-/** The panel column beside the chat. */
-export const PANEL_COLUMN_WIDTH = 280
-/** The panel is a column once the chat keeps its minimum room beside it; below that it's the summary line. */
-export const PANEL_COLUMN_MIN_WIDTH = MAIN_MIN_WIDTH + PANEL_COLUMN_WIDTH
+/** The panel card beside the messages. */
+export const PANEL_WIDTH = 272
+/** The gap around the card beside the messages. */
+const PANEL_GUTTER = 12
+/** The panel sits beside the messages once they keep their minimum room; below that it opens over them. */
+export const PANEL_MIN_ROOM = MAIN_MIN_WIDTH + PANEL_WIDTH + PANEL_GUTTER
+/** A side thread's column beside Main. */
+export const SIDE_COLUMN_WIDTH = 300
+/** A side thread opens beside Main once Main keeps its minimum room; below that it opens on its own. */
+export const SIDE_COLUMN_MIN_ROOM = MAIN_MIN_WIDTH + SIDE_COLUMN_WIDTH
 
 const HIDDEN_KEY = "threadPanel.hiddenSections"
 const FOLDED_KEY = "threadPanel.foldedSections"
-const COLUMN_KEY = "threadPanel.columnOpen"
-const LINE_KEY = "threadPanel.lineOpen"
+const OPEN_KEY = "threadPanel.columnOpen"
 
 function read(key: string): string | null {
 	try {
@@ -51,10 +56,8 @@ export interface ThreadPanelPrefs {
 	hidden: PanelSection[]
 	/** Sections folded to their header. */
 	folded: PanelSection[]
-	/** Wide: the column shows (open when wide until closed, then remembered). */
-	columnOpen: boolean
-	/** Narrow: the summary line is opened in place (closed until opened, then remembered). */
-	lineOpen: boolean
+	/** The header toggle: the panel shows beside the messages when there's room (open until hidden, then remembered). */
+	open: boolean
 }
 
 let prefs: ThreadPanelPrefs = loadPrefs()
@@ -64,8 +67,7 @@ function loadPrefs(): ThreadPanelPrefs {
 	return {
 		hidden: readSections(HIDDEN_KEY),
 		folded: readSections(FOLDED_KEY),
-		columnOpen: read(COLUMN_KEY) !== "0",
-		lineOpen: read(LINE_KEY) === "1",
+		open: read(OPEN_KEY) !== "0",
 	}
 }
 
@@ -73,8 +75,7 @@ function setPrefs(next: Partial<ThreadPanelPrefs>): void {
 	prefs = { ...prefs, ...next }
 	if (next.hidden) write(HIDDEN_KEY, JSON.stringify(next.hidden))
 	if (next.folded) write(FOLDED_KEY, JSON.stringify(next.folded))
-	if (next.columnOpen !== undefined) write(COLUMN_KEY, next.columnOpen ? "1" : "0")
-	if (next.lineOpen !== undefined) write(LINE_KEY, next.lineOpen ? "1" : "0")
+	if (next.open !== undefined) write(OPEN_KEY, next.open ? "1" : "0")
 	for (const listener of listeners) listener()
 }
 
@@ -103,7 +104,46 @@ export function useThreadPanelPrefs() {
 		toggleShown: useCallback((section: PanelSection) => setPrefs({ hidden: toggled(prefs.hidden, section) }), []),
 		showAll: useCallback(() => setPrefs({ hidden: [] }), []),
 		toggleFolded: useCallback((section: PanelSection) => setPrefs({ folded: toggled(prefs.folded, section) }), []),
-		setColumnOpen: useCallback((open: boolean) => setPrefs({ columnOpen: open }), []),
-		setLineOpen: useCallback((open: boolean) => setPrefs({ lineOpen: open }), []),
+		setOpen: useCallback((open: boolean) => setPrefs({ open }), []),
 	}
+}
+
+/**
+ * The panel on screen right now (session only): whether a thread with a panel is showing,
+ * whether it has room beside the messages, and, when it doesn't, whether the toggle opened
+ * it over them. The header toggle and the frame around the messages share it.
+ */
+export interface ThreadPanelUi {
+	available: boolean
+	room: boolean
+	overlayOpen: boolean
+	/** The header toggle, which the overlay hangs from. */
+	toggle: HTMLElement | null
+}
+
+let ui: ThreadPanelUi = { available: false, room: false, overlayOpen: false, toggle: null }
+const uiListeners = new Set<() => void>()
+
+export function setThreadPanelUi(next: Partial<ThreadPanelUi>): void {
+	if (Object.entries(next).every(([key, value]) => ui[key as keyof ThreadPanelUi] === value)) return
+	ui = { ...ui, ...next }
+	for (const listener of uiListeners) listener()
+}
+
+export function useThreadPanelUi(): ThreadPanelUi {
+	return useSyncExternalStore(
+		(listener) => {
+			uiListeners.add(listener)
+			return () => {
+				uiListeners.delete(listener)
+			}
+		},
+		() => ui,
+	)
+}
+
+/** Tests only. */
+export function resetThreadPanelUi(): void {
+	ui = { available: false, room: false, overlayOpen: false, toggle: null }
+	for (const listener of uiListeners) listener()
 }

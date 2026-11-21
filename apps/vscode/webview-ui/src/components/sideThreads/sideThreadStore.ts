@@ -2,18 +2,18 @@ import { useSyncExternalStore } from "react"
 
 /**
  * What the webview shows beside the thread on screen, per main thread: the side thread
- * open in the panel column (wide only) and the side question card above the composer.
+ * open in the column beside it (wide only) and the side question card above the composer.
  * Session-only: reopening a thread shows the panel again, and a side question that
  * wasn't kept or closed is still listed under Main in the panel.
  */
 export interface SideThreadSlots {
-	/** Main thread id → the side thread shown in the panel column. */
+	/** Main thread id → the side thread shown in the column beside it. */
 	beside: Readonly<Record<string, string>>
 	/** Thread id → its open side question. */
 	question: Readonly<Record<string, string>>
 	/** Side thread id → Wrap up was asked; the card shows the answer as a draft once it lands. */
 	wrapUp: Readonly<Record<string, true>>
-	/** The thread panel has room for its column (wide). */
+	/** There's room for a side thread's column beside Main (wide). */
 	room: boolean
 }
 
@@ -54,7 +54,7 @@ export function showBeside(mainId: string, sideId: string): void {
 	update({ beside: { ...slots.beside, [mainId]: sideId } })
 }
 
-/** Back to the thread panel; the side thread stays listed in it. */
+/** Hides the side thread beside Main; it keeps going and stays listed in the panel. */
 export function clearBeside(mainId: string): void {
 	if (slots.beside[mainId]) update({ beside: without(slots.beside, mainId) })
 }

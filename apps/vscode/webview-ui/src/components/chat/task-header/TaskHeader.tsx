@@ -9,6 +9,7 @@ import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { useOneView } from "@/components/oneView/OneViewContext"
+import { ThreadPanelToggle } from "@/components/threadPanel/ThreadPanelHost"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -152,6 +153,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 					<ThreadBranchChip />
 				</div>
 				<div className="flex shrink-0 items-center gap-0.5">
+					<ThreadPanelToggle />
 					<SubagentPanelButton onOpenPreview={onOpenSubagentPreview} />
 					{taskId && (
 						<HeaderIconButton

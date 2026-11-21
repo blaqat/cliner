@@ -19,7 +19,7 @@ import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/compos
 import { NotebookView } from "@/components/taskGroup/NotebookView"
 import { TaskGroupView } from "@/components/taskGroup/TaskGroupView"
 import { useTaskGroupPageNavigation } from "@/components/taskGroup/useTaskGroup"
-import { type ThreadPanelData, ThreadPanelHost, ThreadPanelLine } from "@/components/threadPanel/ThreadPanelHost"
+import { type ThreadPanelData, ThreadPanelFrame, ThreadPanelHost } from "@/components/threadPanel/ThreadPanelHost"
 import WalkthroughView from "@/components/walkthrough/WalkthroughView"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useShowNavbar } from "@/context/PlatformContext"
@@ -624,7 +624,6 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const threadLines = task && !subagentView && !taskGroupView && (
 		<>
 			<SideThreadBanner />
-			<ThreadPanelLine data={panelData} />
 			<ThreadStrip />
 		</>
 	)
@@ -745,7 +744,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 										)
 									)}
 									{threadLines}
-									{messagesArea}
+									{messagesArea && <ThreadPanelFrame data={panelData}>{messagesArea}</ThreadPanelFrame>}
 								</>
 							)}
 						</div>
@@ -810,7 +809,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 					/>
 				)}
 				{threadLines}
-				{messagesArea}
+				{messagesArea && <ThreadPanelFrame data={panelData}>{messagesArea}</ThreadPanelFrame>}
 			</div>
 			<footer
 				className={cn(

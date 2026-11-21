@@ -5,8 +5,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SideQuestionCard } from "@/components/sideThreads/SideThreadCards"
 import { getSideThreadSlots, resetSideThreadSlots, showBeside, showQuestion } from "@/components/sideThreads/sideThreadStore"
-import { type ThreadPanelData, ThreadPanelHost, ThreadPanelLine } from "./ThreadPanelHost"
-import { reloadThreadPanelPrefs } from "./threadPanelPrefs"
+import { type ThreadPanelData, ThreadPanelFrame, ThreadPanelHost, ThreadPanelToggle } from "./ThreadPanelHost"
+import { reloadThreadPanelPrefs, resetThreadPanelUi } from "./threadPanelPrefs"
 
 const mocks = vi.hoisted(() => ({
 	state: {} as Record<string, unknown>,
@@ -66,13 +66,19 @@ const data: ThreadPanelData = {
 	onNewSideThread: vi.fn(),
 }
 
-function renderPanel() {
-	return render(
-		<ThreadPanelHost data={data}>
-			<ThreadPanelLine />
+const Chat = ({ panel = data }: { panel?: ThreadPanelData }) => (
+	<ThreadPanelHost data={panel}>
+		<header>
+			<ThreadPanelToggle />
+		</header>
+		<ThreadPanelFrame data={panel}>
 			<div>chat</div>
-		</ThreadPanelHost>,
-	)
+		</ThreadPanelFrame>
+	</ThreadPanelHost>
+)
+
+function renderPanel() {
+	return render(<Chat />)
 }
 
 describe("thread panel", () => {
@@ -97,6 +103,7 @@ describe("thread panel", () => {
 			},
 		)
 		reloadThreadPanelPrefs()
+		resetThreadPanelUi()
 		resetSideThreadSlots()
 		for (const fn of Object.values(mocks.rpc)) fn.mockClear()
 		mocks.width = 900
@@ -114,8 +121,8 @@ describe("thread panel", () => {
 		}
 	})
 
-	it("is a column beside the chat when wide, with every section; hiding it leaves the line to bring it back", () => {
-		renderPanel()
+	it("sits beside the messages when there's room; the header toggle hides it and remembers", () => {
+		const { unmount } = renderPanel()
 		const column = screen.getByTestId("thread-panel-column")
 		expect(within(column).getByText("This thread")).toBeInTheDocument()
 		expect(
@@ -125,28 +132,63 @@ describe("thread panel", () => {
 		).toEqual(["where", "agents", "notes", "context"])
 		expect(within(column).getByText("412k / 1m")).toBeInTheDocument()
 		expect(within(column).getByText("$1.84")).toBeInTheDocument()
-		expect(screen.queryByTestId("thread-panel-line")).toBeNull()
 		expect(getSideThreadSlots().room).toBe(true)
 
-		fireEvent.click(screen.getByRole("button", { name: "Hide the thread panel" }))
+		const toggle = screen.getByTestId("thread-panel-toggle")
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		fireEvent.click(toggle)
 		expect(screen.queryByTestId("thread-panel-column")).toBeNull()
-		fireEvent.click(screen.getByTestId("thread-panel-summary"))
-		expect(screen.getByTestId("thread-panel-column")).toBeInTheDocument()
-	})
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		unmount()
 
-	it("is a summary line when narrow that opens the panel in place, and Esc closes it", () => {
-		mocks.width = 400
+		reloadThreadPanelPrefs()
 		renderPanel()
 		expect(screen.queryByTestId("thread-panel-column")).toBeNull()
+		fireEvent.click(screen.getByTestId("thread-panel-toggle"))
+		expect(screen.getByTestId("thread-panel-column")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Hide the thread panel" }))
+		expect(screen.queryByTestId("thread-panel-column")).toBeNull()
+	})
+
+	it("opens over the messages when narrow, from the toggle; Esc closes it and the choice isn't remembered", async () => {
+		mocks.width = 400
+		const { unmount } = renderPanel()
+		expect(screen.queryByTestId("thread-panel-column")).toBeNull()
 		expect(getSideThreadSlots().room).toBe(false)
-		const summary = screen.getByTestId("thread-panel-summary")
-		expect(summary).toHaveTextContent("1 file")
-		expect(summary).toHaveTextContent("41%")
-		fireEvent.click(summary)
-		expect(summary).toHaveAttribute("aria-expanded", "true")
-		const drawer = screen.getByTestId("thread-panel-drawer")
-		fireEvent.keyDown(drawer, { key: "Escape" })
-		expect(screen.queryByTestId("thread-panel-drawer")).toBeNull()
+		const toggle = screen.getByTestId("thread-panel-toggle")
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(toggle)
+		const overlay = await screen.findByTestId("thread-panel-overlay")
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		expect(within(overlay).getAllByTestId("thread-panel-section")).toHaveLength(4)
+		fireEvent.keyDown(overlay, { key: "Escape" })
+		expect(screen.queryByTestId("thread-panel-overlay")).toBeNull()
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+
+		// Clicking the toggle again closes it, too.
+		fireEvent.click(toggle)
+		expect(await screen.findByTestId("thread-panel-overlay")).toBeInTheDocument()
+		fireEvent.click(toggle)
+		expect(screen.queryByTestId("thread-panel-overlay")).toBeNull()
+
+		// Open when the thread goes away: it doesn't open by itself next time.
+		fireEvent.click(toggle)
+		expect(await screen.findByTestId("thread-panel-overlay")).toBeInTheDocument()
+		unmount()
+		renderPanel()
+		expect(screen.queryByTestId("thread-panel-overlay")).toBeNull()
+	})
+
+	it("has no toggle without a thread", () => {
+		render(
+			<ThreadPanelHost>
+				<ThreadPanelToggle />
+				<ThreadPanelFrame>
+					<div>chat</div>
+				</ThreadPanelFrame>
+			</ThreadPanelHost>,
+		)
+		expect(screen.queryByTestId("thread-panel-toggle")).toBeNull()
 	})
 
 	it("lets the user choose which sections show, remembered, and never leaves it empty without a way back", () => {
@@ -215,11 +257,7 @@ describe("thread panel", () => {
 		await act(async () => {
 			fireEvent.click(screen.getByTestId("wrap-up-button"))
 		})
-		rerender(
-			<ThreadPanelHost data={{ ...data }}>
-				<div>chat</div>
-			</ThreadPanelHost>,
-		)
+		rerender(<Chat panel={{ ...data }} />)
 		expect(screen.getByText("Send this to main?")).toBeInTheDocument()
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: "Send to main" }))
