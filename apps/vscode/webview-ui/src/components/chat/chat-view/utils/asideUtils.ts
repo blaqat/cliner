@@ -16,6 +16,7 @@ import {
 	showBeside,
 	showQuestion,
 } from "@/components/sideThreads/sideThreadStore"
+import { noteThreadStopped } from "@/components/toasts/threadToastRules"
 import { SideThreadServiceClient, TaskServiceClient } from "@/services/grpc-client"
 
 export interface AsideRequest {
@@ -149,6 +150,8 @@ export async function keepSideQuestion(threadId: string, questionId: string): Pr
 
 /** Closes a side thread or side question (stopping it if it runs). It stays listed under Main. */
 export async function closeSideThread(sideId: string): Promise<void> {
+	// Closing stops it on purpose: its running → done is not a finish worth a toast.
+	noteThreadStopped(sideId)
 	forgetSideThread(sideId)
 	await SideThreadServiceClient.updateSideThread(UpdateSideThreadRequest.create({ threadId: sideId, closed: true }))
 }
