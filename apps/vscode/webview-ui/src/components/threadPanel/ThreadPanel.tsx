@@ -105,6 +105,9 @@ const WhereSection = ({ item, messages }: { item: HistoryItem; messages: readonl
 	const [summary, setSummary] = useState<WorktreeSummary>()
 	const status = sessionStatuses?.[item.id]
 	const files = useMemo(() => changedFiles(messages), [messages])
+	// In a worktree git knows every changed file, including ones changed by commands or inside
+	// nested submodules; the thread's edit tools only know their own.
+	const changedCount = mapping && summary ? Math.max(files.length, summary.changedFiles) : files.length
 	useEffect(() => {
 		if (!mapping) return
 		let cancelled = false
@@ -140,13 +143,19 @@ const WhereSection = ({ item, messages }: { item: HistoryItem; messages: readonl
 					<span className={META_CLASS}>workspace</span>
 				</div>
 			)}
-			<div className={ROW_CLASS} title={files.join("\n") || undefined}>
+			<div
+				className={ROW_CLASS}
+				title={
+					changedCount > files.length
+						? `${[...files, "Open the walkthrough for the whole diff"].join("\n")}`
+						: files.join("\n") || undefined
+				}>
 				<span aria-hidden className="codicon codicon-diff shrink-0 text-[13px] text-description" />
 				<span className="min-w-0 flex-1 truncate">
-					{files.length ? (
+					{changedCount ? (
 						<>
 							Changes{" "}
-							<span className="text-description">· {files.length === 1 ? "1 file" : `${files.length} files`}</span>
+							<span className="text-description">· {changedCount === 1 ? "1 file" : `${changedCount} files`}</span>
 						</>
 					) : (
 						<span className="text-description">No file changes yet</span>
