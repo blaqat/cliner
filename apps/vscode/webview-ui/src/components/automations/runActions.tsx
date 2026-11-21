@@ -72,38 +72,43 @@ function RepositoryFix({ automation, className }: { automation?: string; classNa
 	}
 	const left = result.left?.find((problem) => problem.fix !== "repository") ?? result.left?.[0]
 	return (
-		<span className={className} data-testid="run-fix-repository">
-			<LinkButton
-				className="whitespace-nowrap"
-				data-testid="run-fix-open-folder"
-				onClick={() => void threadWorktreeAction("openFolder")}
-				onMouseDown={(event) => event.preventDefault()}>
-				{FIX_LABELS.repository}
-			</LinkButton>
-			{" · "}
-			<LinkButton
-				className="whitespace-nowrap"
-				data-testid="run-fix-git-init"
-				disabled={result.busy}
-				onClick={() => void initialize()}
-				onMouseDown={(event) => event.preventDefault()}>
-				{result.busy ? "Initializing…" : "Initialize git here"}
-			</LinkButton>
+		<>
+			<span className={className} data-testid="run-fix-repository">
+				<LinkButton
+					data-testid="run-fix-open-folder"
+					onClick={() => void threadWorktreeAction("openFolder")}
+					onMouseDown={(event) => event.preventDefault()}>
+					{FIX_LABELS.repository}
+				</LinkButton>
+				{" · "}
+				<LinkButton
+					data-testid="run-fix-git-init"
+					disabled={result.busy}
+					onClick={() => void initialize()}
+					onMouseDown={(event) => event.preventDefault()}>
+					{result.busy ? "Initializing…" : "Initialize git here"}
+				</LinkButton>
+			</span>
+			{/* Its own line under the links: the sentence it answers is still above. */}
 			{result.left && !left && (
-				<span className="text-description" data-testid="run-fix-ready">
-					{" "}
+				<span className="block text-description" data-testid="run-fix-ready">
 					Git is set up. Retry the step.
 				</span>
 			)}
 			{left && (
-				<span className="text-description" data-testid="run-fix-left">
-					{" "}
+				<span className="block text-description" data-testid="run-fix-left">
 					Git is set up, but {left.message.replace(/^.*?, but /, "")}{" "}
-					{left.fix && left.fix !== "repository" && <FixLink automation={automation} fix={left.fix} />}
+					{left.fix && left.fix !== "repository" && (
+						<FixLink automation={automation} className="whitespace-nowrap" fix={left.fix} />
+					)}
 				</span>
 			)}
-			{result.error && <span data-testid="run-fix-error"> {result.error}</span>}
-		</span>
+			{result.error && (
+				<span className="block" data-testid="run-fix-error">
+					{result.error}
+				</span>
+			)}
+		</>
 	)
 }
 
