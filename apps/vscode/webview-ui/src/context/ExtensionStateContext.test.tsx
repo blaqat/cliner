@@ -69,3 +69,37 @@ it("preserves history identity and waits for the host value on settings clicks",
 	expect(state.currentTaskItem).toBeUndefined()
 	cleanup()
 })
+
+it("shows home immediately through stale snapshots and closes every overlay", async () => {
+	let state: any
+	const Probe = () => {
+		state = useExtensionState()
+		return null
+	}
+	render(
+		<ExtensionStateContextProvider>
+			<Probe />
+		</ExtensionStateContextProvider>,
+	)
+	const snapshot = {
+		...state,
+		version: "test",
+		welcomeViewCompleted: true,
+		currentTaskItem: { id: "running" },
+		clineMessages: [{ ts: 10, type: "say", say: "task", text: "Running" }],
+	}
+	await act(async () => h.receive({ stateJson: JSON.stringify(snapshot) }))
+	act(() => state.navigateToSettings())
+	act(() => state.navigateHome())
+	expect(state.showSettings).toBe(false)
+	expect(state.currentTaskItem).toBeUndefined()
+	expect(state.clineMessages).toEqual([])
+	await act(async () => h.receive({ stateJson: JSON.stringify(snapshot) }))
+	expect(state.currentTaskItem).toBeUndefined()
+	expect(state.clineMessages).toEqual([])
+	await act(async () =>
+		h.receive({ stateJson: JSON.stringify({ ...snapshot, currentTaskItem: undefined, clineMessages: [], epoch: 100 }) }),
+	)
+	expect(state.currentTaskItem).toBeUndefined()
+	cleanup()
+})

@@ -498,6 +498,10 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	const navigation = useNavigationHistory()
 	const registerChatNavigation = navigation?.registerChat
 	const reportSearch = navigation?.reportSearch
+	useEffect(() => {
+		document.addEventListener("cline:home", closeSearch)
+		return () => document.removeEventListener("cline:home", closeSearch)
+	}, [closeSearch])
 	const closeThread = messageHandlers.handleTaskCloseButtonClick
 	useEffect(
 		() => registerChatNavigation?.({ closeThread: () => void closeThread(), openSearch, closeSearch }),
@@ -518,7 +522,9 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 	// The task (group) page replaces chat/home in the sidebar.
 	const openTaskGroup = useTaskGroupPageNavigation({
 		taskTs,
-		closeThread: messageHandlers.handleTaskCloseButtonClick,
+		closeThread: () => {
+			void messageHandlers.startNewTask("chat_new_task", false)
+		},
 		onPageOpen: closeSearch,
 	})
 

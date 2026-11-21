@@ -225,8 +225,8 @@ describe("ThreadList", () => {
 		const handlers = renderList()
 		const row = screen.getByTestId("one-view-task-row")
 		fireEvent.click(within(row).getByRole("button", { name: "Stash Release 3" }))
-		await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(2))
-		expect(mocks.toggleTaskStashed.mock.calls.map(([request]) => request.taskId)).toEqual(["wait", "second"])
+		await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(1))
+		expect(mocks.toggleTaskStashed.mock.calls.flatMap(([request]) => request.taskIds)).toEqual(["wait", "second"])
 		fireEvent.click(within(row).getByRole("button", { name: "Settle Release 3" }))
 		// The waiting thread is live: settle leaves it open and says so.
 		await waitFor(() =>

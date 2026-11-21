@@ -60,11 +60,8 @@ const TaskSessionControls = ({ onShowInbox }: TaskSessionControlsProps) => {
 							data-testid="settle-task"
 							onClick={(event) => {
 								stop(event)
-								void toggleTaskSettled(taskId).then(() => {
-									if (!settled) {
-										onShowInbox()
-									}
-								})
+								void toggleTaskSettled(taskId)
+								if (!settled) onShowInbox()
 							}}
 							size="xs"
 							variant="icon">

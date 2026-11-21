@@ -10,7 +10,15 @@ import { convertProtoToClineMessage } from "@shared/proto-conversions/cline-mess
 import { convertProtoMcpServersToMcpServers } from "@shared/proto-conversions/mcp/mcp-server-conversion"
 import { fromProtobufModels } from "@shared/proto-conversions/models/typeConversion"
 import type React from "react"
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { closeAutomationBuilder } from "@/components/automations/builderNavigation"
+import {
+	historyPatchesVersion,
+	observeHistory,
+	patchHistoryItem,
+	subscribeHistoryPatches,
+} from "@/components/inbox/optimisticHistory"
+import { openTopBarPanel } from "@/components/topbar/topBarPanels"
 import {
 	type ModelInfo,
 	openRouterDefaultModelId,
@@ -146,6 +154,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	/** Opens a task group's page (or its notebook) in the sidebar. */
 	navigateToTaskGroup: (id: string, page?: TaskGroupPage) => void
 	navigateToChat: () => void
+	/** Shows home before the host finishes detaching the current session. */
+	navigateHome: () => void
 
 	// Hide functions
 	hideSettings: () => void
@@ -191,6 +201,10 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowWalkthrough(false)
 		setWalkthroughAuthoredId(undefined)
 	}, [])
+	const [homePending, setHomePending] = useState(false)
+	const homeSourceTaskRef = useRef<string>()
+	const currentTaskIdRef = useRef<string>()
+	const requestedThreadRef = useRef<string>()
 	const [taskGroupView, setTaskGroupView] = useState<TaskGroupViewState | null>(null)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [windowFocused, setWindowFocused] = useState(true)
@@ -318,6 +332,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	)
 
 	const navigateToChat = useCallback(() => {
+		setHomePending(false)
 		closeMarketplaceView()
 		setShowSettings(false)
 		closeMcpView()
@@ -327,6 +342,25 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowWalkthrough(false)
 		setTaskGroupView(null)
 	}, [closeMarketplaceView, setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
+
+	useEffect(() => {
+		const leaveHome = (event: Event) => {
+			requestedThreadRef.current = (event as CustomEvent<string>).detail ?? "*"
+		}
+		document.addEventListener("cline:open-thread", leaveHome)
+		return () => document.removeEventListener("cline:open-thread", leaveHome)
+	}, [])
+
+	const navigateHome = useCallback(() => {
+		navigateToChat()
+		homeSourceTaskRef.current = currentTaskIdRef.current
+		requestedThreadRef.current = undefined
+		setShowAnnouncement(false)
+		openTopBarPanel(null)
+		closeAutomationBuilder()
+		document.dispatchEvent(new Event("cline:home"))
+		setHomePending(true)
+	}, [navigateToChat])
 
 	const navigateToWalkthrough = useCallback(
 		(authoredId?: string) => {
@@ -413,6 +447,12 @@ export const ExtensionStateContextProvider: React.FC<{
 		multiRootSetting: { user: false, featureFlag: false },
 		hooksEnabled: false,
 	})
+	currentTaskIdRef.current = state.currentTaskItem?.id
+	const patchVersion = useSyncExternalStore(subscribeHistoryPatches, historyPatchesVersion)
+	const optimisticHistory = useMemo(() => {
+		observeHistory(state.taskHistory)
+		return state.taskHistory.map(patchHistoryItem)
+	}, [state.taskHistory, patchVersion])
 	const [expandTaskHeader, setExpandTaskHeader] = useState(true)
 	const [didHydrateState, setDidHydrateState] = useState(false)
 
@@ -534,6 +574,15 @@ export const ExtensionStateContextProvider: React.FC<{
 				if (response.stateJson) {
 					try {
 						const stateData = JSON.parse(response.stateJson) as ExtensionStateUpdate
+						const requested = requestedThreadRef.current
+						if (
+							("version" in stateData && !stateData.currentTaskItem) ||
+							(requested &&
+								stateData.currentTaskItem &&
+								(requested === stateData.currentTaskItem.id ||
+									(requested === "*" && stateData.currentTaskItem.id !== homeSourceTaskRef.current)))
+						)
+							setHomePending(false)
 						setState((prevState) => {
 							// Versioning logic for autoApprovalSettings
 							const incomingVersion = stateData.autoApprovalSettings?.version ?? 1
@@ -659,7 +708,7 @@ export const ExtensionStateContextProvider: React.FC<{
 				onResponse: () => {
 					// When chat button is clicked, navigate to chat
 					console.log("[DEBUG] Received chat button clicked event from gRPC stream")
-					navigateToChat()
+					navigateHome()
 				},
 				onError: (error: any) => {
 					console.error("Error in chat button subscription:", error)
@@ -994,6 +1043,9 @@ export const ExtensionStateContextProvider: React.FC<{
 
 	const contextValue: ExtensionStateContextType = {
 		...state,
+		taskHistory: optimisticHistory,
+		currentTaskItem: homePending ? undefined : state.currentTaskItem ? patchHistoryItem(state.currentTaskItem) : undefined,
+		...(homePending ? { clineMessages: [], turnState: undefined, queuedPrompts: [] } : {}),
 		didHydrateState,
 		showWelcome,
 		onboardingModels,
@@ -1047,6 +1099,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToWalkthrough,
 		navigateToTaskGroup,
 		navigateToChat,
+		navigateHome,
 
 		// Message deep links
 		openMessageTarget,

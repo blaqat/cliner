@@ -507,7 +507,7 @@ describe("TaskGroupView", () => {
 		const notice = await screen.findByTestId("task-group-settle-notice")
 		// impl is running: skipped. refine was already settled; the subagent and other task's thread are not counted.
 		expect(notice).toHaveTextContent("Settled 2 · 1 still running")
-		expect(mocks.toggleTaskSettled.mock.calls.map(([request]) => request.taskId)).toEqual(["plan", "aside-late"])
+		expect(mocks.toggleTaskSettled.mock.calls.flatMap(([request]) => request.taskIds)).toEqual(["plan", "aside-late"])
 		fireEvent.click(within(notice).getByRole("button", { name: "Dismiss" }))
 		expect(screen.queryByTestId("task-group-settle-notice")).toBeNull()
 	})
@@ -524,7 +524,7 @@ describe("TaskGroupView", () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
 		fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle all" }))
-		await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+		await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(1))
 		expect(await screen.findByTestId("task-group-settle-notice")).toHaveTextContent("Unsettled 2")
 	})
 

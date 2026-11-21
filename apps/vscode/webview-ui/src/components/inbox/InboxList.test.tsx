@@ -442,7 +442,7 @@ describe("InboxList task groups", () => {
 			mocks.toggleTaskStashed.mockReset().mockResolvedValue({})
 		})
 		const ids = (mock: typeof mocks.toggleTaskSettled) =>
-			mock.mock.calls.map(([request]) => (request as { taskId: string }).taskId)
+			mock.mock.calls.flatMap(([request]) => (request as { taskIds: string[] }).taskIds)
 
 		it("Settle settles every idle thread in the task without opening it, skips running ones and says so", async () => {
 			const onOpenTaskGroup = vi.fn()
@@ -481,7 +481,7 @@ describe("InboxList task groups", () => {
 			const row = screen.getByTestId("inbox-task-group-row")
 			expect(isAfter(row, screen.getByRole("button", { name: "Collapse stashed chats" }))).toBe(true)
 			fireEvent.click(within(row).getByRole("button", { name: "Unstash Bulk invoice export" }))
-			await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(2))
+			await waitFor(() => expect(mocks.toggleTaskStashed).toHaveBeenCalledTimes(1))
 			expect(ids(mocks.toggleTaskStashed)).toEqual(["m1", "m2"])
 			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unstashed 2")
 		})
@@ -495,7 +495,7 @@ describe("InboxList task groups", () => {
 			render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
 			fireEvent.click(screen.getByRole("button", { name: "Unsettle Bulk invoice export" }))
-			await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(2))
+			await waitFor(() => expect(mocks.toggleTaskSettled).toHaveBeenCalledTimes(1))
 			expect(await screen.findByTestId("inbox-task-group-settle-notice")).toHaveTextContent("Unsettled 2")
 		})
 

@@ -100,6 +100,9 @@ message TaskFavoriteRequest {
 message TaskSettledRequest {
   Metadata metadata = 1;
   string task_id = 2;
+  // Bulk state switches use explicit values so retries cannot undo an earlier write.
+  repeated string task_ids = 1650;
+  optional bool value = 1651;
 }
 
 message ForkTaskAtRequest {

@@ -138,9 +138,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand(commands.PlusButton, async () => {
 			const sidebarInstance = WebviewProvider.getInstance()
 			telemetryService.captureNewTaskClicked("activity_bar_plus", !!sidebarInstance.controller.task)
-			await sidebarInstance.controller.clearTask()
-			await sidebarInstance.controller.postStateToWebview()
+			// Reveal home before persistence or an in-flight task transition finishes.
 			await sendChatButtonClickedEvent()
+			await sidebarInstance.controller.clearTask()
 		}),
 	)
 	context.subscriptions.push(vscode.commands.registerCommand(commands.McpButton, () => sendMcpButtonClickedEvent()))

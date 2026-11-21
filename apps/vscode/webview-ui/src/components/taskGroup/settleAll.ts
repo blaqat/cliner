@@ -1,7 +1,7 @@
 import type { HistoryItem } from "@shared/HistoryItem"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { type SessionStatuses, statusFor } from "@/components/inbox/inboxUtils"
-import { toggleTaskSettled, toggleTaskStashed } from "@/components/inbox/sessionActions"
+import { setTasksSettled, setTasksStashed } from "@/components/inbox/sessionActions"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 
 /** What "Settle all" / "Unsettle all" would do to a task's threads right now. */
@@ -109,9 +109,13 @@ export function useSettleAll(taskGroupId: string) {
 
 	const run = useCallback(async () => {
 		const { mode, targets, running } = plan
-		// One at a time: each toggle rewrites the history store.
-		for (const id of targets) await toggleTaskSettled(id)
-		show(settleAllMessage(mode, targets.length, running), running > 0)
+		try {
+			await setTasksSettled(targets, mode === "settle")
+			show(settleAllMessage(mode, targets.length, running), running > 0)
+		} catch (error) {
+			console.error("Failed to settle task threads:", error)
+			show("Couldn't update all threads. Try again.", true)
+		}
 	}, [plan, show])
 
 	return { plan, message, run, dismiss, disabled: plan.total === 0 }
@@ -128,8 +132,13 @@ export function useTaskRowActions(taskGroupId: string) {
 	const notice = useBulkNotice()
 	const runStash = useCallback(async () => {
 		settle.dismiss()
-		for (const id of stashPlan.targets) await toggleTaskStashed(id)
-		notice.show(stashAllMessage(stashPlan.mode, stashPlan.targets.length), false)
+		try {
+			await setTasksStashed(stashPlan.targets, stashPlan.mode === "stash")
+			notice.show(stashAllMessage(stashPlan.mode, stashPlan.targets.length), false)
+		} catch (error) {
+			console.error("Failed to stash task threads:", error)
+			notice.show("Couldn't update all threads. Try again.", true)
+		}
 	}, [stashPlan, notice.show, settle.dismiss])
 	const runSettle = useCallback(async () => {
 		notice.dismiss()

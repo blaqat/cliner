@@ -1706,3 +1706,69 @@ it("persists side notes and visible rows, serializes concurrent notes, and consu
 	expect((await history.getClineMessages("main")).filter((row) => row.say === "subagent_update")).toHaveLength(2)
 	await history.dispose()
 })
+
+it("batches explicit state changes without losing concurrent metadata and can undo them", async () => {
+	const {
+		history,
+		getSession,
+		getSession: get,
+		updateSession,
+	} = makeHistory([
+		makeSessionRecord("one", { metadata: { isSettled: false, taskGroupId: "keep", lastActivityTs: 42 } }),
+		makeSessionRecord("two", { metadata: { isSettled: false } }),
+	])
+	await Promise.all([
+		history.setTasksSettled(["one", "two", "one"], true),
+		history.renameTask("one", "New title"),
+		history.setTaskFavorite("one", true),
+		history.setThreadTags("one", [{ kind: "label", value: "keep", source: "user" }], []),
+	])
+	expect((await get("one"))?.metadata).toMatchObject({
+		isSettled: true,
+		threadTitle: "New title",
+		isFavorited: true,
+		taskGroupId: "keep",
+		lastActivityTs: 42,
+		tags: [{ value: "keep" }],
+	})
+	expect((await getSession("two"))?.metadata?.isSettled).toBe(true)
+	// Explicit retries don't flip it back; duplicates need only one write.
+	await history.setTasksSettled(["one", "one"], true)
+	await history.setTasksSettled(["one", "two"], false)
+	expect((await get("one"))?.metadata?.isSettled).toBe(false)
+	await history.setTasksStashed(["one", "two"], true)
+	expect((await get("two"))?.metadata).toMatchObject({ isSettled: false, isStashed: true })
+	await history.setTasksSettled(["one", "two"], true)
+	expect((await get("two"))?.metadata).toMatchObject({ isSettled: true, isStashed: false })
+	expect(updateSession).toHaveBeenCalledTimes(12)
+	await history.dispose()
+})
+
+it("waits for all batch writes before reporting a partial failure", async () => {
+	const { history, updateSession, getSession } = makeHistory([
+		makeSessionRecord("one", { metadata: { isSettled: false } }),
+		makeSessionRecord("two", { metadata: { isSettled: false } }),
+	])
+	const update = updateSession.getMockImplementation()!
+	let release!: () => void
+	const gate = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	updateSession.mockImplementation(async (id, patch) => {
+		if (id === "one") throw new Error("write failed")
+		await gate
+		return update(id, patch)
+	})
+	let completed = false
+	const batch = history.setTasksSettled(["one", "two"], true)
+	const result = batch.catch(() => {
+		completed = true
+	})
+	await vi.waitFor(() => expect(updateSession).toHaveBeenCalledTimes(2))
+	expect(completed).toBe(false)
+	release()
+	await result
+	expect((await getSession("two"))?.metadata?.isSettled).toBe(true)
+	expect((await getSession("one"))?.metadata?.isSettled).toBe(false)
+	await history.dispose()
+})

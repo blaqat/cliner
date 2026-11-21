@@ -139,7 +139,7 @@ export interface MessageHandlers {
 	handleAside: (text: string, images: string[], files: string[], messageTs?: number) => Promise<void>
 	handleTaskCloseButtonClick: () => void
 	retryFailedRequest: () => Promise<boolean>
-	startNewTask: (source?: "chat_new_task" | "navbar") => Promise<boolean>
+	startNewTask: (source?: "chat_new_task" | "navbar", showHome?: boolean) => Promise<boolean>
 }
 
 /**

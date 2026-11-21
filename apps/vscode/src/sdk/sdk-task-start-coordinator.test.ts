@@ -24,6 +24,33 @@ describe("SdkTaskStartCoordinator", () => {
 		vi.mocked(isDirectory).mockResolvedValue(false)
 	})
 
+	it("keeps a slow start in the background after the user goes home", async () => {
+		const { coordinator, options } = makeCoordinator()
+		let superseded = false
+		let finishBuild!: (config: any) => void
+		options.sessionConfigBuilder.build.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishBuild = resolve
+				}),
+		)
+		const backgroundMessages = { appendAndEmit: vi.fn(), emitHookMessage: vi.fn() }
+		Object.assign(options, {
+			createTaskContext: (id: string) => ({ task: createTaskProxy(id, vi.fn(), vi.fn()), messages: backgroundMessages }),
+		})
+		const starting = coordinator.initTask("hello", undefined, undefined, undefined, undefined, {
+			isViewSuperseded: () => superseded,
+		})
+		await vi.waitFor(() => expect(options.sessionConfigBuilder.build).toHaveBeenCalled())
+		superseded = true
+		finishBuild({ providerId: "anthropic", modelId: "model", apiKey: "key" })
+		await starting
+		expect(options.setTask).not.toHaveBeenCalled()
+		expect(options.sessions.startNewSession).toHaveBeenCalledWith(expect.anything(), { focus: false })
+		expect(backgroundMessages.appendAndEmit).toHaveBeenCalled()
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalled()
+	})
+
 	it("starts the session and sends the first prompt inside one tracked session start", async () => {
 		const { coordinator, options } = makeCoordinator()
 		let tracking = false

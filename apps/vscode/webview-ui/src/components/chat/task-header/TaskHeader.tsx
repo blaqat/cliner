@@ -160,11 +160,10 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 							data-testid="settle-task"
 							icon={settled ? "issue-reopened" : "check"}
 							label={settled ? "Unsettle task" : "Settle task"}
-							onClick={() =>
-								void toggleTaskSettled(taskId).then(() => {
-									if (!settled) onClose()
-								})
-							}
+							onClick={() => {
+								void toggleTaskSettled(taskId)
+								if (!settled) onClose()
+							}}
 							tooltip={settled ? "Move back to Active" : "Settle: move to the Settled list and return home"}
 						/>
 					)}

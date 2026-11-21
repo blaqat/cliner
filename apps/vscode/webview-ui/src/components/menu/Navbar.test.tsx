@@ -39,13 +39,19 @@ describe("Navbar", () => {
 		expect(navigateToChat).toHaveBeenCalledTimes(1)
 	})
 
-	it("does not navigate when another recovery action owns the task", async () => {
+	it("navigates even when another recovery action owns the task", async () => {
 		const startNewTask = vi.fn().mockResolvedValue(false)
 		render(<Navbar startNewTask={startNewTask} />)
 
 		fireEvent.click(screen.getByRole("button", { name: "New Task" }))
 
 		await vi.waitFor(() => expect(startNewTask).toHaveBeenCalledWith("navbar"))
-		expect(navigateToChat).not.toHaveBeenCalled()
+		expect(navigateToChat).toHaveBeenCalledTimes(1)
+	})
+	it("navigates before a slow clear RPC finishes", () => {
+		const startNewTask = vi.fn(() => new Promise<boolean>(() => {}))
+		render(<Navbar startNewTask={startNewTask} />)
+		fireEvent.click(screen.getByRole("button", { name: "New Task" }))
+		expect(navigateToChat).toHaveBeenCalledTimes(1)
 	})
 })

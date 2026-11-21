@@ -20,10 +20,9 @@ export const Navbar = ({ startNewTask }: NavbarProps) => {
 				tooltip: "New Task",
 				icon: PlusIcon,
 				navigate: async () => {
+					navigateToChat()
 					try {
-						if (await startNewTask("navbar")) {
-							navigateToChat()
-						}
+						await startNewTask("navbar")
 					} catch (error) {
 						console.error("Failed to clear task:", error)
 					}

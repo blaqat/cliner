@@ -535,6 +535,29 @@ describe("SdkSessionLifecycle", () => {
 		expect(lifecycle.getActiveSession()?.sessionId).toBe("focused")
 	})
 
+	it("keeps home focused when a foreground start finishes after navigation", async () => {
+		let finish!: (result: { sessionId: string }) => void
+		const host = makeSdkHost({
+			start: vi.fn(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve
+					}),
+			),
+		})
+		mockCreateSessionHost.mockResolvedValue(host)
+		const lifecycle = makeLifecycle()
+		let focus = true
+		const starting = lifecycle.startNewSession({} as StartInput, { focus: () => focus })
+		await vi.waitFor(() => expect(host.start).toHaveBeenCalled())
+		focus = false
+		lifecycle.focusSession()
+		finish({ sessionId: "slow" })
+		await starting
+		expect(lifecycle.getSession("slow")).toBeDefined()
+		expect(lifecycle.getActiveSession()).toBeUndefined()
+	})
+
 	it("leaves nothing focused when a background session starts from the inbox", async () => {
 		const host = makeSdkHost()
 		mockCreateSessionHost.mockResolvedValue(host)

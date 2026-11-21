@@ -162,6 +162,12 @@ export const OneViewLayout = ({
 		return () => document.removeEventListener("pointerdown", onPointerDown, true)
 	}, [dropdownOpen])
 
+	useEffect(() => {
+		const close = () => setDropdownOpen(false)
+		document.addEventListener("cline:home", close)
+		return () => document.removeEventListener("cline:home", close)
+	}, [])
+
 	// The dropdown only exists for the strip.
 	useEffect(() => {
 		if (side) setDropdownOpen(false)

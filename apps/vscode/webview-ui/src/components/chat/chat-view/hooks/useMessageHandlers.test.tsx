@@ -1359,6 +1359,23 @@ describe("useMessageHandlers — send routing", () => {
 		expect(rollbackResponse(pendingResponse)).toBeUndefined()
 	})
 
+	it("drops a pending startup view immediately when the title-bar plus opens home", () => {
+		const { result } = renderHook(() => {
+			const chatState = useChatState([])
+			useMessageHandlers([], chatState)
+			return chatState
+		})
+		act(() => {
+			result.current.setPendingUserMessage({ afterTs: 0, message: { ts: 1, type: "say", say: "task", text: "starting" } })
+			result.current.setPendingResponse({ id: 1, messageCount: 0 })
+			result.current.setSendingDisabled(true)
+		})
+		act(() => document.dispatchEvent(new Event("cline:home")))
+		expect(result.current.pendingUserMessage).toBeUndefined()
+		expect(result.current.pendingResponse).toBeUndefined()
+		expect(result.current.sendingDisabled).toBe(false)
+	})
+
 	it("startNewTask drops any unconfirmed optimistic message so it cannot be re-injected after clearTask", async () => {
 		mockTurnState = { phase: "streaming", seq: 2 }
 		const streamingConversation: ClineMessage[] = [

@@ -1208,32 +1208,64 @@ export class SdkTaskHistory {
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		this.activityUnsettled.delete(taskId)
-		await this.updateOwnedMetadata(taskId, (metadata) => {
-			const isSettled = !(metadata.isSettled ?? item.isSettled)
-			return {
-				lastActivityTs: metadata.lastActivityTs ?? item.ts,
-				isSettled,
-				settledAt: isSettled ? Date.now() : 0,
-				...(isSettled ? { isStashed: false, stashedAt: 0 } : {}),
-			}
-		})
+		await this.setTasksSettled([taskId])
+	}
+
+	async setTasksSettled(taskIds: string[], value?: boolean): Promise<void> {
+		await this.finishMetadataBatch(
+			[...new Set(taskIds)].map((taskId) => {
+				this.activityUnsettled.delete(taskId)
+				return this.updateOwnedMetadata(taskId, (metadata, record) => {
+					const isSettled =
+						value ?? !(metadata.isSettled ?? (record.status !== "running" && record.status !== "pending"))
+					return {
+						lastActivityTs: metadata.lastActivityTs ?? sessionHistoryRecordToHistoryItem(record).ts,
+						isSettled,
+						settledAt: isSettled ? Date.now() : 0,
+						...(isSettled ? { isStashed: false, stashedAt: 0 } : {}),
+					}
+				})
+			}),
+		)
 	}
 
 	async toggleTaskStashed(taskId: string): Promise<void> {
-		const item = await this.findHistoryItem(taskId)
-		if (!item) return
-		await this.updateOwnedMetadata(taskId, (metadata) => {
-			const isStashed = !metadata.isStashed
-			return {
-				lastActivityTs: metadata.lastActivityTs ?? item.ts,
-				isStashed,
-				stashedAt: isStashed ? Date.now() : 0,
-				...(isStashed ? { isSettled: false, settledAt: 0 } : {}),
-			}
+		await this.setTasksStashed([taskId])
+	}
+
+	async setTasksStashed(taskIds: string[], value?: boolean): Promise<void> {
+		await this.finishMetadataBatch(
+			[...new Set(taskIds)].map((taskId) =>
+				this.updateOwnedMetadata(taskId, (metadata, record) => {
+					const isStashed = value ?? !metadata.isStashed
+					return {
+						lastActivityTs: metadata.lastActivityTs ?? sessionHistoryRecordToHistoryItem(record).ts,
+						isStashed,
+						stashedAt: isStashed ? Date.now() : 0,
+						...(isStashed ? { isSettled: false, settledAt: 0 } : {}),
+					}
+				}),
+			),
+		)
+	}
+
+	private async finishMetadataBatch(writes: Promise<void>[]): Promise<void> {
+		// Do not report failure while another write in this batch is still changing state.
+		const results = await Promise.allSettled(writes)
+		const failure = results.find((result) => result.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
+	}
+
+	async setTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {
+		let found = false
+		await this.updateOwnedMetadata(taskId, () => {
+			found = true
+			return { isFavorited }
 		})
+		if (!found) {
+			const legacy = this.findLegacyTask(taskId)?.item
+			if (legacy) await this.updateTaskHistoryItem({ ...legacy, isFavorited })
+		}
 	}
 
 	async recordLastLine(taskId: string, lastLine: HistoryItem["lastLine"]): Promise<void> {
@@ -1254,14 +1286,17 @@ export class SdkTaskHistory {
 
 	private updateOwnedMetadata(
 		taskId: string,
-		update: (metadata: Record<string, unknown>) => Record<string, unknown> | undefined,
+		update: (metadata: Record<string, unknown>, record: SessionHistoryRecord) => Record<string, unknown> | undefined,
 	): Promise<void> {
 		return this.serializeMetadataWrite(taskId, async () => {
 			await this.withHistoryHost(async (host) => {
 				const record = await host.get(taskId)
 				if (!record) return
-				const patch = update(record.metadata ?? {})
-				if (patch) await host.update(taskId, { metadata: { ...record.metadata, ...patch } })
+				const patch = update(record.metadata ?? {}, record)
+				if (patch) {
+					const result = await host.update(taskId, { metadata: { ...record.metadata, ...patch } })
+					if (!result.updated) throw new Error("The thread changed in another window. Try again.")
+				}
 			})
 			this.invalidateMetadataHistoryCache()
 		})

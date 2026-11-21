@@ -311,7 +311,9 @@ describe("SDK remote-config coordination", () => {
 
 		expect(taskId).toBe("task-id")
 		expect(events).toEqual(["policy", "task"])
-		expect(initTask).toHaveBeenCalledWith("start immediately", undefined, undefined, undefined, undefined)
+		expect(initTask).toHaveBeenCalledWith("start immediately", undefined, undefined, undefined, undefined, {
+			isViewSuperseded: expect.any(Function),
+		})
 	})
 
 	it("hands thread-title generation the new thread's captured mode and selection", async () => {

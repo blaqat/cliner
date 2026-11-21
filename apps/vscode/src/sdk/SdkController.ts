@@ -3215,6 +3215,8 @@ export class Controller {
 
 	// ---- Task lifecycle ----
 
+	private homeNavigationRevision = 0
+
 	async initTask(
 		prompt?: string,
 		images?: string[],
@@ -3235,6 +3237,7 @@ export class Controller {
 			title?: string
 		},
 	): Promise<string | undefined> {
+		const navigationRevision = this.homeNavigationRevision ?? 0
 		const cloudTarget = options?.repoUrl ? { repoUrl: options.repoUrl, branch: options.branch } : undefined
 		if (cloudTarget) {
 			// Register the cloud start before the first await so a Cancel that
@@ -3258,9 +3261,10 @@ export class Controller {
 			options = { ...options, taskGroupId: undefined }
 		}
 		// A new task is starting — the agent is about to stream.
-		const taskId = await (options
-			? this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, options)
-			: this.taskStart.initTask(prompt, images, files, historyItem, taskSettings))
+		const taskId = await this.taskStart.initTask(prompt, images, files, historyItem, taskSettings, {
+			...options,
+			isViewSuperseded: () => (this.homeNavigationRevision ?? 0) !== navigationRevision,
+		})
 		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
 		if (taskId && options?.title?.trim()) await this.renameTask(taskId, options.title.trim())
 		// Thread titles run once per new thread (never for resumed ones) when
@@ -3395,6 +3399,7 @@ export class Controller {
 	}
 
 	async clearTask(): Promise<void> {
+		this.homeNavigationRevision = (this.homeNavigationRevision ?? 0) + 1
 		this.pendingClineAuthRetry = undefined
 		// No active task — UI returns to idle (input enabled, no buttons/thinking).
 		// A cloud task still provisioning has no SDK session for taskControl to end;
@@ -3402,7 +3407,7 @@ export class Controller {
 		this.cloud?.cancelPendingStart()
 		await this.taskControl.clearTask()
 		this.turnStateTracker.set("idle")
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	async handleTaskCreation(prompt: string): Promise<void> {
@@ -4726,24 +4731,42 @@ export class Controller {
 
 	async toggleTaskStashed(taskId: string): Promise<void> {
 		await this.taskHistory.toggleTaskStashed(taskId)
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
 		await this.taskHistory.toggleTaskSettled(taskId)
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
+	}
+
+	async setTasksSettled(taskIds: string[], value: boolean): Promise<void> {
+		try {
+			await this.taskHistory.setTasksSettled(taskIds, value)
+		} finally {
+			// Partial failures must still publish the writes that succeeded.
+			await this.postStateToWebview(true)
+		}
+	}
+
+	async setTasksStashed(taskIds: string[], value: boolean): Promise<void> {
+		try {
+			await this.taskHistory.setTasksStashed(taskIds, value)
+		} finally {
+			// Partial failures must still publish the writes that succeeded.
+			await this.postStateToWebview(true)
+		}
 	}
 
 	/** Sets (or clears, when empty) the thread's user-set title. */
 	async renameTask(taskId: string, title: string): Promise<void> {
 		await this.taskHistory.renameTask(taskId, title)
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
 		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	// ---- Automations ----
@@ -4965,7 +4988,7 @@ export class Controller {
 			throw new Error(`Task group not found: ${id}`)
 		}
 		this.taskGroupsSummaryCache = undefined
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 		return { ...group, noteCount: await this.taskGroupStore.noteCount(id) }
 	}
 
@@ -4985,7 +5008,7 @@ export class Controller {
 				this.sessionConfigChanges.handleTaskGroupChanged(record.sessionId)
 		}
 		this.taskGroupsSummaryCache = undefined
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	/** Files a thread into a task group (empty taskGroupId unfiles it). */
@@ -4994,7 +5017,7 @@ export class Controller {
 			throw new Error(`Task group not found: ${taskGroupId}`)
 		}
 		await this.fileThread(threadId, taskGroupId || undefined)
-		await this.postStateToWebview()
+		await this.postStateToWebview(true)
 	}
 
 	/**
@@ -5010,13 +5033,15 @@ export class Controller {
 		)
 		const byId = new Map(items.map((item) => [item.id, item]))
 		const rootId = asideRootId(threadId, byId)
-		await this.taskHistory.setTaskGroup(rootId, taskGroupId)
-		this.sessionConfigChanges.handleTaskGroupChanged(rootId)
-		for (const id of asideDescendantIds(rootId, items)) {
-			if ((byId.get(id)?.taskGroupId || undefined) === taskGroupId) continue
-			await this.taskHistory.setTaskGroup(id, taskGroupId)
-			this.sessionConfigChanges.handleTaskGroupChanged(id)
-		}
+		const ids = [rootId, ...asideDescendantIds(rootId, items)].filter(
+			(id) => (byId.get(id)?.taskGroupId || undefined) !== taskGroupId,
+		)
+		await Promise.all(
+			ids.map(async (id) => {
+				await this.taskHistory.setTaskGroup(id, taskGroupId)
+				this.sessionConfigChanges.handleTaskGroupChanged(id)
+			}),
+		)
 	}
 
 	/** Creates a note file in the group's notebook; returns its absolute path. */
@@ -5536,17 +5561,8 @@ export class Controller {
 	}
 
 	async toggleTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {
-		const historyItem = await this.taskHistory.findHistoryItem(taskId)
-		if (!historyItem) {
-			Logger.log(`[toggleTaskFavorite] Task not found in history: ${taskId}`)
-			return
-		}
-
-		await this.taskHistory.updateTaskHistory({
-			...historyItem,
-			isFavorited,
-		})
-		await this.postStateToWebview()
+		await this.taskHistory.setTaskFavorite(taskId, isFavorited)
+		await this.postStateToWebview(true)
 	}
 
 	// ---- Background command state ----

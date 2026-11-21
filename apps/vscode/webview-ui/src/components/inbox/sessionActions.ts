@@ -1,9 +1,11 @@
 import { StringRequest } from "@shared/proto/cline/common"
 import { RenameTaskRequest, StopSubagentRequest, TaskSettledRequest } from "@shared/proto/cline/task"
 import { TaskServiceClient } from "@/services/grpc-client"
+import { beginHistoryPatch } from "./optimisticHistory"
 
 /** Focuses a task (history or live session) without stopping the one that was focused. */
 export function openTask(taskId: string): Promise<void> {
+	document.dispatchEvent(new CustomEvent("cline:open-thread", { detail: taskId }))
 	return TaskServiceClient.showTaskWithId(StringRequest.create({ value: taskId })).then(
 		() => undefined,
 		(error) => console.error("Error showing task:", error),
@@ -21,19 +23,47 @@ export function renameTask(taskId: string, title: string): Promise<boolean> {
 	)
 }
 
+async function switchTasks(taskIds: string[], kind: "settled" | "stashed", value?: boolean): Promise<void> {
+	if (!taskIds.length) return
+	const finish = beginHistoryPatch(taskIds, (item) => {
+		if (kind === "settled") {
+			const isSettled = value ?? !item.isSettled
+			return {
+				isSettled,
+				settledAt: isSettled ? Date.now() : undefined,
+				...(isSettled ? { isStashed: false, stashedAt: undefined } : {}),
+			}
+		}
+		const isStashed = value ?? !item.isStashed
+		return {
+			isStashed,
+			stashedAt: isStashed ? Date.now() : undefined,
+			...(isStashed ? { isSettled: false, settledAt: undefined } : {}),
+		}
+	})
+	try {
+		const request = TaskSettledRequest.create(value === undefined ? { taskId: taskIds[0] } : { taskIds, value })
+		await (kind === "settled" ? TaskServiceClient.toggleTaskSettled(request) : TaskServiceClient.toggleTaskStashed(request))
+	} finally {
+		finish()
+	}
+}
+
+export function setTasksSettled(taskIds: string[], value: boolean): Promise<void> {
+	return switchTasks(taskIds, "settled", value)
+}
+
+export function setTasksStashed(taskIds: string[], value: boolean): Promise<void> {
+	return switchTasks(taskIds, "stashed", value)
+}
+
 export function toggleTaskStashed(taskId: string): Promise<void> {
-	return TaskServiceClient.toggleTaskStashed(TaskSettledRequest.create({ taskId })).then(
-		() => undefined,
-		(error) => console.error("Failed to stash task:", error),
-	)
+	return switchTasks([taskId], "stashed").catch((error) => console.error("Failed to stash task:", error))
 }
 
 /** Flips a task between the Active and Settled inbox groups. */
 export function toggleTaskSettled(taskId: string): Promise<void> {
-	return TaskServiceClient.toggleTaskSettled(TaskSettledRequest.create({ taskId })).then(
-		() => undefined,
-		(error) => console.error("Failed to toggle settled:", error),
-	)
+	return switchTasks([taskId], "settled").catch((error) => console.error("Failed to toggle settled:", error))
 }
 
 /**

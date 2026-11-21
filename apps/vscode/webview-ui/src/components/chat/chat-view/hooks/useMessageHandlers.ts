@@ -3,7 +3,7 @@ import { type ComposerProvenance, EmptyRequest, StringRequest } from "@shared/pr
 import { PlanActMode, TogglePlanActModeRequest } from "@shared/proto/cline/state"
 import { AskResponseRequest, InterjectPromptRequest, NewTaskRequest } from "@shared/proto/cline/task"
 import { IntentEvent } from "@shared/proto/cline/ui"
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { getComposerSendTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { noteThreadStopped } from "@/components/toasts/threadToastRules"
 import {
@@ -36,7 +36,7 @@ function isCompactionCommand(text: string): boolean {
  * Handles sending messages, button clicks, and task management
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
-	const { backgroundCommandRunning, turnState, currentTaskItem, mode } = useExtensionState()
+	const { backgroundCommandRunning, turnState, currentTaskItem, mode, navigateHome } = useExtensionState()
 	// Read at cancel time so a stop never counts as a finished thread for toasts.
 	const currentTaskItemIdRef = useRef(currentTaskItem?.id)
 	currentTaskItemIdRef.current = currentTaskItem?.id
@@ -83,6 +83,18 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 	)
 	const cancelInFlightRef = useRef(false)
 	const pendingResponseIdRef = useRef(0)
+	useEffect(() => {
+		const clearPendingView = () => {
+			setPendingUserMessage(undefined)
+			setPendingResponse(undefined)
+			setQuotes([])
+			setMessageTags([])
+			setSendingDisabled(false)
+			setEnableButtons(false)
+		}
+		document.addEventListener("cline:home", clearPendingView)
+		return () => document.removeEventListener("cline:home", clearPendingView)
+	}, [setPendingUserMessage, setPendingResponse, setQuotes, setMessageTags, setSendingDisabled, setEnableButtons])
 	// A failed send's text, back in the composer. Retry sends it too, so a success takes it out again.
 	const restoredDraftRef = useRef<string | undefined>(undefined)
 	// The first recovery action for an authoritative turn sequence owns that
@@ -436,6 +448,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						partial: false,
 					})
 					try {
+						document.dispatchEvent(new Event("cline:open-thread"))
 						await TaskServiceClient.newTask(request)
 					} catch (error) {
 						rollbackPendingResponse(id, optimisticMessage)
@@ -620,10 +633,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 
 	// Start a new task
 	const startNewTask = useCallback(
-		async (source: "chat_new_task" | "navbar" = "chat_new_task") => {
-			if (!claimErrorRecovery()) {
-				return false
-			}
+		async (source: "chat_new_task" | "navbar" = "chat_new_task", showHome = true) => {
+			// Home is navigation and always wins, even while recovery or a start is pending.
+			claimErrorRecovery()
+			if (showHome) navigateHome?.()
 			// Quotes refer to rows in the task being closed. Keep independent draft
 			// text and attachments, but do not carry stale task context forward.
 			setQuotes([])
@@ -636,7 +649,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 			return true
 		},
-		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes, setMessageTags],
+		[claimErrorRecovery, clearTask, releaseErrorRecoveryClaim, setQuotes, setMessageTags, navigateHome],
 	)
 
 	// Execute button action based on type

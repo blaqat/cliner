@@ -119,6 +119,7 @@ export class SdkTaskStartCoordinator {
 		taskSettings?: Partial<Settings>,
 		options?: {
 			background?: boolean
+			isViewSuperseded?: () => boolean
 			taskGroupId?: string
 			runInWorktree?: boolean
 			provenance?: ComposerProvenance
@@ -131,7 +132,7 @@ export class SdkTaskStartCoordinator {
 		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
-		const background = options?.background === true
+		let background = options?.background === true
 		let taskSessionId: string | undefined
 		let providerId: string | undefined
 		let modelId: string | undefined
@@ -141,7 +142,7 @@ export class SdkTaskStartCoordinator {
 		try {
 			// A background start must not touch the task view: no focus change, no
 			// task-settings overlay drop, no clearing of what the user is looking at.
-			if (!background) await this.options.clearTask()
+			if (!background && !options?.isViewSuperseded?.()) await this.options.clearTask()
 
 			return await this.options.sessions.trackSessionStart(async () => {
 				let cwd = await this.options.getWorkspaceRoot()
@@ -239,6 +240,7 @@ export class SdkTaskStartCoordinator {
 				// Focused starts install the task proxy as the current view; background
 				// starts park it in the per-task context so its transcript and turn state
 				// accumulate offscreen and the chat appears in the inbox as running.
+				background ||= options?.isViewSuperseded?.() === true
 				context = background ? this.options.createTaskContext?.(taskSessionId) : undefined
 				if (background && !context) throw new Error("Background task contexts are unavailable")
 				const task = context?.task ?? this.createAndSetTask(taskSessionId)
@@ -261,7 +263,9 @@ export class SdkTaskStartCoordinator {
 				this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 				const { startResult, sdkHost } = background
 					? await this.options.sessions.startNewSession(startInput, { focus: false })
-					: await this.options.sessions.startNewSession(startInput)
+					: options?.isViewSuperseded
+						? await this.options.sessions.startNewSession(startInput, { focus: () => !options.isViewSuperseded?.() })
+						: await this.options.sessions.startNewSession(startInput)
 				sessionStarted = true
 				if (startResult.sessionId !== taskSessionId) {
 					Logger.warn(
@@ -301,6 +305,10 @@ export class SdkTaskStartCoordinator {
 				return taskSessionId
 			})
 		} catch (error) {
+			if (options?.isViewSuperseded?.()) {
+				background = true
+				if (taskSessionId) context ??= this.options.createTaskContext?.(taskSessionId, shownTask)
+			}
 			this.options.captureProviderApiError?.({
 				sessionId: taskSessionId,
 				error,

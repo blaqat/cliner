@@ -427,12 +427,12 @@ export class SdkSessionLifecycle {
 
 	async startNewSession(
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
-		hostOrOptions?: SdkSessionHost | { focus?: boolean },
+		hostOrOptions?: SdkSessionHost | { focus?: boolean | (() => boolean) },
 		shouldContinue: () => boolean = () => true,
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
 		if (!shouldContinue()) throw new SessionStartSupersededError()
 		const hostOverride = hostOrOptions && "start" in hostOrOptions ? hostOrOptions : undefined
-		const options = hostOverride ? undefined : (hostOrOptions as { focus?: boolean } | undefined)
+		const options = hostOverride ? undefined : (hostOrOptions as { focus?: boolean | (() => boolean) } | undefined)
 		if (!hostOverride && this.options.acquireSessionLease && !startInput.config?.sessionId) {
 			startInput = { ...startInput, config: { ...startInput.config, sessionId: createSessionId() } }
 		}
@@ -462,7 +462,7 @@ export class SdkSessionLifecycle {
 
 	private async performStartNewSession(
 		startInput: Parameters<VscodeSessionHost["start"]>[0],
-		options?: { focus?: boolean },
+		options?: { focus?: boolean | (() => boolean) },
 		hostOverride?: SdkSessionHost,
 		shouldContinue: () => boolean = () => true,
 	): Promise<{ startResult: StartSessionResult; sdkHost: SdkSessionHost }> {
@@ -539,8 +539,8 @@ export class SdkSessionLifecycle {
 		this.focusSession(
 			hostOverride
 				? startResult.sessionId
-				: options?.focus === false
-					? (this.focusedSessionId ?? focusedIdAtStart)
+				: (typeof options?.focus === "function" ? options.focus() : options?.focus) === false
+					? this.focusedSessionId
 					: (this.focusedSessionId ?? focusedIdAtStart ?? startResult.sessionId),
 		)
 		await this.pruneIdleSessions()
