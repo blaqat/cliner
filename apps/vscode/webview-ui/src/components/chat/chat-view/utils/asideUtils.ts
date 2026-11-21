@@ -83,11 +83,22 @@ export async function startSideThread(request: AsideRequest): Promise<string> {
 	return sideId
 }
 
+const pendingQuestions = new Map<string, symbol>()
+
 /** /btw: a side question answered in a card above the composer. Main is never interrupted. */
 export async function startSideQuestion(request: AsideRequest): Promise<string> {
-	const { value: questionId } = await SideThreadServiceClient.startSideThread(startRequest(request, "btw", true))
-	showQuestion(request.taskId, questionId)
-	return questionId
+	const { taskId } = request
+	void dismissSideQuestion(taskId)
+	const pending = Symbol()
+	pendingQuestions.set(taskId, pending)
+	try {
+		const { value: questionId } = await SideThreadServiceClient.startSideThread(startRequest(request, "btw", true))
+		if (pendingQuestions.get(taskId) === pending) showQuestion(taskId, questionId)
+		else await closeDismissedQuestion(questionId)
+		return questionId
+	} finally {
+		if (pendingQuestions.get(taskId) === pending) pendingQuestions.delete(taskId)
+	}
 }
 
 /** Opens an existing side thread beside Main when there's room, else as its own view. */
@@ -131,3 +142,18 @@ export async function reopenSideThread(sideId: string): Promise<void> {
 }
 
 export { clearBeside }
+
+/** Dismisses the quick card on the user's next action, stopping its answer if needed. */
+export async function dismissSideQuestion(threadId: string): Promise<void> {
+	pendingQuestions.delete(threadId)
+	const questionId = getSideThreadSlots().question[threadId]
+	if (questionId) await closeDismissedQuestion(questionId)
+}
+
+async function closeDismissedQuestion(questionId: string): Promise<void> {
+	try {
+		await closeSideThread(questionId)
+	} catch (error) {
+		console.error("Failed to close side question:", error)
+	}
+}

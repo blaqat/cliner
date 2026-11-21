@@ -14,6 +14,7 @@ import { NewChatHero, NewChatListToggle } from "@/components/oneView/NewChatHero
 import { OneViewLayout } from "@/components/oneView/OneViewLayout"
 import { SearchView } from "@/components/search/SearchView"
 import { OwnViewWrapUpCard, SideQuestionCard, SideThreadBanner } from "@/components/sideThreads/SideThreadCards"
+import { useSideQuestionDismissal } from "@/components/sideThreads/useSideQuestionDismissal"
 import { useWatchedSideThreads } from "@/components/sideThreads/useSideThread"
 import { useClearComposerTaskOnLeavingTask } from "@/components/taskGroup/composerTaskGroup"
 import { NotebookView } from "@/components/taskGroup/NotebookView"
@@ -97,6 +98,7 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		hideTaskGroupView,
 		navigateToChat,
 	} = useExtensionState()
+	useSideQuestionDismissal(currentTaskItem?.id, messages)
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
 

@@ -6,7 +6,9 @@ import { CLOUD_CREATION_UNCONFIRMED_ERROR_CODE } from "@shared/cloud/cloud-sessi
 import type { ComposerProvenance } from "@shared/composer-provenance"
 import type { ClineMessage, TurnState } from "@shared/ExtensionMessage"
 import { GetTaskHistoryRequest } from "@shared/proto/cline/task"
+import { ShowMessageType } from "@shared/proto/host/window"
 import { describe, expect, it, vi } from "vitest"
+import { HostProvider } from "@/hosts/host-provider"
 import { ClineError } from "@/services/error/ClineError"
 import { telemetryService } from "@/services/telemetry"
 import { isClineManagedProvider } from "@/shared/utils/cline"
@@ -1153,7 +1155,6 @@ describe("task session contexts", () => {
 			startAutomationThread: internals.startAutomationThread,
 			sessions: undefined! as SdkSessionLifecycle,
 			automations: undefined! as AutomationsHost,
-			renameTask: vi.fn(async () => {}),
 			task: { taskId: "other-focused-thread" },
 			taskSessions: new Map<string, Context>(),
 			homeContext: { translator: new MessageTranslatorState() },
@@ -1167,8 +1168,7 @@ describe("task session contexts", () => {
 			emitNotebookChanges: vi.fn(async () => {}),
 			waitForInitialRemoteConfig: vi.fn(async () => {}),
 			taskGroupStore: { getGroup: async () => ({ id: "group" }) },
-			// initTask starts sending before it awaits the caller's step title.
-			taskStart: { initTask: async () => "background" },
+			taskStart: { initTask: vi.fn() },
 		}
 		const sessions = new SdkSessionLifecycle({
 			onStatusChange: (id, status) =>
@@ -1195,7 +1195,11 @@ describe("task session contexts", () => {
 					payload: { sessionId: "background", event },
 				} as never)
 		}
-		controller.renameTask.mockImplementation(finish)
+		controller.taskStart.initTask.mockImplementation(async () => {
+			// The turn can finish before the startup promise returns its thread id.
+			await finish()
+			return "background"
+		})
 		const host = new AutomationsHost({
 			getWorkspaceRoot: () => root,
 			getStorageDir: () => path.join(root, "storage"),
@@ -2643,6 +2647,49 @@ describe("thread reference authorization", () => {
 function controllerFixture<T extends object>(properties: T): T & SdkController {
 	return Object.defineProperties(Object.create(SdkController.prototype), Object.getOwnPropertyDescriptors(properties))
 }
+
+it("sends a side thread's first message when saving its automatic title fails", async () => {
+	const side = { id: "side", parentTaskId: "main", task: "Forked message" }
+	const updateTaskHistoryItem = vi.fn().mockRejectedValue(new Error("disk unavailable"))
+	const askResponse = vi.fn().mockResolvedValue(undefined)
+	const controller = controllerFixture({
+		task: { taskId: side.id },
+		taskHistory: { findHistoryItem: async () => side, updateTaskHistoryItem },
+		askResponse,
+	})
+	await (controller as SdkController).sendToSideThread(side.id, "How does this work?")
+	expect(updateTaskHistoryItem).toHaveBeenCalledWith({ ...side, task: "How does this work?" })
+	expect(askResponse).toHaveBeenCalledWith("How does this work?", undefined, undefined, undefined, undefined)
+})
+
+describe("explicit thread edits", () => {
+	it.each([
+		["settle", "toggleTaskSettled", (controller: SdkController) => controller.toggleTaskSettled("thread")],
+		["stash", "toggleTaskStashed", (controller: SdkController) => controller.toggleTaskStashed("thread")],
+		["rename", "renameTask", (controller: SdkController) => controller.renameTask("thread", "New title")],
+		["tags", "setThreadTags", (controller: SdkController) => controller.setThreadTags("thread", [], [])],
+	] as const)("reports a %s conflict and refreshes the saved thread", async (_action, method, edit) => {
+		const showMessage = vi.fn<typeof HostProvider.window.showMessage>().mockResolvedValue({})
+		const window = vi
+			.spyOn(HostProvider, "window", "get")
+			.mockReturnValue({ showMessage } as unknown as typeof HostProvider.window)
+		const conflict = new Error("The thread changed in another window. Try again.")
+		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
+		const controller = controllerFixture({
+			taskHistory: { [method]: vi.fn().mockRejectedValue(conflict) },
+			postStateToWebview,
+		})
+		try {
+			await expect(edit(controller as SdkController)).rejects.toBe(conflict)
+			expect(showMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: ShowMessageType.ERROR, message: conflict.message }),
+			)
+			expect(postStateToWebview).toHaveBeenCalledWith(true)
+		} finally {
+			window.mockRestore()
+		}
+	})
+})
 
 describe("task timeline history", () => {
 	it("includes unpersisted background threads and subagents, and follows moves", async () => {

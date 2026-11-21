@@ -809,45 +809,51 @@ export class SdkTaskHistory {
 	/** Called only at the start of a main-thread turn; never queues a prompt or wakes the model. */
 	async consumeSideThreadNotes(taskId: string): Promise<string | undefined> {
 		let text: string | undefined
-		await this.updateOwnedMetadata(taskId, (metadata) => {
+		const consumed = await this.updateOwnedMetadata(taskId, "best-effort", (metadata) => {
 			const notes = sideThreadNotes(metadata.sideThreadNotes)
 			const pending = notes.filter((note) => note.pending)
 			if (!pending.length) return undefined
 			text = pending.map((note) => note.message.text).join("\n\n")
 			return { sideThreadNotes: notes.map((note) => ({ ...note, pending: false })) }
 		})
-		return text
+		return consumed ? text : undefined
 	}
 
 	async saveNotebookChangesMessage(taskId: string, message: ClineMessage): Promise<void> {
-		await this.serializeMetadataWrite(taskId, () =>
-			this.withHistoryHost(async (host) => {
-				const record = await host.get(taskId)
-				if (!record) return
-				const metadata = { ...record.metadata }
-				const saved = Array.isArray(metadata.notebookChangesMessages) ? metadata.notebookChangesMessages : []
-				const payload = JSON.parse(message.text ?? "{}")
-				const status = payload.status
-				if (message.sdkMessageIndex === undefined)
-					message.sdkMessageIndex = (await readCurrentMessages(host, taskId)).length - 1
-				const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
-					try {
-						const previous = JSON.parse(entry.text ?? "{}")
-						return (
-							previous.taskGroupId === payload.taskGroupId &&
-							(status === "pending" ? previous.status === "pending" : previous.revision === payload.revision)
-						)
-					} catch {
-						return false
-					}
-				})
-				const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
-				metadata.notebookChangesMessages =
-					index >= 0 ? saved.map((entry, i) => (i === index ? message : entry)) : [...saved, message]
-				await host.update(taskId, { metadata })
-			}),
-		)
-		this.invalidateMetadataHistoryCache()
+		try {
+			await this.serializeMetadataWrite(taskId, () =>
+				this.withHistoryHost(async (host) => {
+					const record = await host.get(taskId)
+					if (!record) return
+					const metadata = { ...record.metadata }
+					const saved = Array.isArray(metadata.notebookChangesMessages) ? metadata.notebookChangesMessages : []
+					const payload = JSON.parse(message.text ?? "{}")
+					const status = payload.status
+					if (message.sdkMessageIndex === undefined)
+						message.sdkMessageIndex = (await readCurrentMessages(host, taskId)).length - 1
+					const reverseIndex = [...saved].reverse().findIndex((entry: ClineMessage) => {
+						try {
+							const previous = JSON.parse(entry.text ?? "{}")
+							return (
+								previous.taskGroupId === payload.taskGroupId &&
+								(status === "pending" ? previous.status === "pending" : previous.revision === payload.revision)
+							)
+						} catch {
+							return false
+						}
+					})
+					const index = reverseIndex < 0 ? -1 : saved.length - 1 - reverseIndex
+					metadata.notebookChangesMessages =
+						index >= 0 ? saved.map((entry, i) => (i === index ? message : entry)) : [...saved, message]
+					if (!(await host.update(taskId, { metadata })).updated)
+						throw new Error("The thread changed in another window. Try again.")
+				}),
+			)
+		} catch (error) {
+			Logger.warn(`[SdkTaskHistory] Could not save the notebook review row for ${taskId}:`, error)
+		} finally {
+			this.invalidateMetadataHistoryCache()
+		}
 	}
 
 	/**
@@ -915,7 +921,7 @@ export class SdkTaskHistory {
 	 * `TaskApiSelection`) so reopening the chat restores it. Reads it back via
 	 * `findHistoryItem().apiSelection` or `getTaskApiSelection`.
 	 */
-	private readonly selectionWrites = new Map<string, Promise<void>>()
+	private readonly selectionWrites = new Map<string, Promise<unknown>>()
 
 	setTaskApiSelection(taskId: string, selection: TaskApiSelection): Promise<void> {
 		const captured = structuredClone(selection)
@@ -935,7 +941,7 @@ export class SdkTaskHistory {
 		})
 	}
 
-	private serializeMetadataWrite(taskId: string, operation: () => Promise<void>): Promise<void> {
+	private serializeMetadataWrite<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
 		const previous = this.selectionWrites.get(taskId) ?? Promise.resolve()
 		const write = previous.catch(() => {}).then(operation)
 		this.selectionWrites.set(taskId, write)
@@ -1214,19 +1220,19 @@ export class SdkTaskHistory {
 
 	async setTasksSettled(taskIds: string[], value?: boolean): Promise<void> {
 		await this.finishMetadataBatch(
-			[...new Set(taskIds)].map((taskId) => {
-				this.activityUnsettled.delete(taskId)
-				return this.updateOwnedMetadata(taskId, (metadata, record) => {
-					const isSettled =
-						value ?? !(metadata.isSettled ?? (record.status !== "running" && record.status !== "pending"))
+			[...new Set(taskIds)].map((taskId) =>
+				this.updateOwnedMetadata(taskId, "required", (metadata, record) => {
+					this.activityUnsettled.delete(taskId)
+					const item = sessionHistoryRecordToHistoryItem(record)
+					const isSettled = value ?? !item.isSettled
 					return {
-						lastActivityTs: metadata.lastActivityTs ?? sessionHistoryRecordToHistoryItem(record).ts,
+						lastActivityTs: metadata.lastActivityTs ?? item.ts,
 						isSettled,
 						settledAt: isSettled ? Date.now() : 0,
 						...(isSettled ? { isStashed: false, stashedAt: 0 } : {}),
 					}
-				})
-			}),
+				}),
+			),
 		)
 	}
 
@@ -1237,7 +1243,7 @@ export class SdkTaskHistory {
 	async setTasksStashed(taskIds: string[], value?: boolean): Promise<void> {
 		await this.finishMetadataBatch(
 			[...new Set(taskIds)].map((taskId) =>
-				this.updateOwnedMetadata(taskId, (metadata, record) => {
+				this.updateOwnedMetadata(taskId, "required", (metadata, record) => {
 					const isStashed = value ?? !metadata.isStashed
 					return {
 						lastActivityTs: metadata.lastActivityTs ?? sessionHistoryRecordToHistoryItem(record).ts,
@@ -1250,7 +1256,7 @@ export class SdkTaskHistory {
 		)
 	}
 
-	private async finishMetadataBatch(writes: Promise<void>[]): Promise<void> {
+	private async finishMetadataBatch(writes: Promise<boolean>[]): Promise<void> {
 		// Do not report failure while another write in this batch is still changing state.
 		const results = await Promise.allSettled(writes)
 		const failure = results.find((result) => result.status === "rejected")
@@ -1258,20 +1264,17 @@ export class SdkTaskHistory {
 	}
 
 	async setTaskFavorite(taskId: string, isFavorited: boolean): Promise<void> {
-		let found = false
-		await this.updateOwnedMetadata(taskId, () => {
-			found = true
-			return { isFavorited }
-		})
-		if (!found) {
-			const legacy = this.findLegacyTask(taskId)?.item
-			if (legacy) await this.updateTaskHistoryItem({ ...legacy, isFavorited })
+		const legacy = this.findLegacyTask(taskId)?.item
+		if (legacy && !(await this.getSdkRecord(taskId))) {
+			await this.updateTaskHistoryItem({ ...legacy, isFavorited })
+			return
 		}
+		await this.updateOwnedMetadata(taskId, "required", () => ({ isFavorited }))
 	}
 
 	async recordLastLine(taskId: string, lastLine: HistoryItem["lastLine"]): Promise<void> {
 		if (!lastLine) return
-		await this.updateOwnedMetadata(taskId, (metadata) => {
+		await this.updateOwnedMetadata(taskId, "best-effort", (metadata) => {
 			const previous = readLastLine(metadata.lastLine)
 			return previous?.author === lastLine.author && previous.text === lastLine.text ? undefined : { lastLine }
 		})
@@ -1282,29 +1285,41 @@ export class SdkTaskHistory {
 	}
 
 	async saveThreadStatus(taskId: string, status: ExtensionState["sessionStatuses"][string]): Promise<void> {
-		await this.updateOwnedMetadata(taskId, () => ({ vscodeThreadStatus: status }))
+		await this.updateOwnedMetadata(taskId, "best-effort", () => ({ vscodeThreadStatus: status }))
 	}
 
 	private updateOwnedMetadata(
 		taskId: string,
+		policy: "required" | "best-effort",
 		update: (metadata: Record<string, unknown>, record: SessionHistoryRecord) => Record<string, unknown> | undefined,
-	): Promise<void> {
+	): Promise<boolean> {
 		return this.serializeMetadataWrite(taskId, async () => {
-			await this.withHistoryHost(async (host) => {
-				const record = await host.get(taskId)
-				if (!record) return
-				const patch = update(record.metadata ?? {}, record)
-				if (patch) {
+			try {
+				return await this.withHistoryHost(async (host) => {
+					const record = await host.get(taskId)
+					if (!record) {
+						if (policy === "required") throw new Error("That thread no longer exists.")
+						return false
+					}
+					const patch = update(record.metadata ?? {}, record)
+					if (!patch) return false
 					const result = await host.update(taskId, { metadata: { ...record.metadata, ...patch } })
 					if (!result.updated) throw new Error("The thread changed in another window. Try again.")
-				}
-			})
-			this.invalidateMetadataHistoryCache()
+					return true
+				})
+			} catch (error) {
+				if (policy === "required") throw error
+				Logger.warn(`[SdkTaskHistory] Could not save thread bookkeeping for ${taskId}:`, error)
+				return false
+			} finally {
+				// A rejected write may race deletion or an external edit. Never keep the old projection.
+				this.invalidateMetadataHistoryCache()
+			}
 		})
 	}
 
 	async renameTask(taskId: string, title: string): Promise<void> {
-		await this.updateOwnedMetadata(taskId, () => ({ threadTitle: title.trim() }))
+		await this.updateOwnedMetadata(taskId, "required", () => ({ threadTitle: title.trim() }))
 	}
 
 	/**
@@ -1326,24 +1341,21 @@ export class SdkTaskHistory {
 	 * title or a previous generation both keep it from running twice.
 	 */
 	async applyGeneratedThreadTitle(taskId: string, title: string): Promise<boolean> {
-		let changed = false
-		await this.updateOwnedMetadata(taskId, (metadata) => {
+		return this.updateOwnedMetadata(taskId, "best-effort", (metadata) => {
 			if (metadataString(metadata, "threadTitle")?.trim()) return undefined
 			if (metadataString(metadata, "threadTitleGenerated") === "true") return undefined
-			changed = true
 			return { threadTitle: title.trim(), threadTitleGenerated: "true" }
 		})
-		return changed
 	}
 
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
 		const capturedTags = tags.map((tag) => ({ ...tag }))
 		const capturedDismissed = [...dismissedAutoTags]
-		await this.updateOwnedMetadata(taskId, () => ({ tags: capturedTags, dismissedAutoTags: capturedDismissed }))
+		await this.updateOwnedMetadata(taskId, "required", () => ({ tags: capturedTags, dismissedAutoTags: capturedDismissed }))
 	}
 
 	async setTaskGroup(taskId: string, taskGroupId: string | undefined): Promise<void> {
-		await this.updateOwnedMetadata(taskId, () => ({ taskGroupId: taskGroupId || "" }))
+		await this.updateOwnedMetadata(taskId, "required", () => ({ taskGroupId: taskGroupId || "" }))
 	}
 
 	/**
@@ -1353,7 +1365,7 @@ export class SdkTaskHistory {
 	 */
 	async addReferencedThreads(taskId: string, threadIds: string[]): Promise<void> {
 		const captured = [...new Set(threadIds)]
-		await this.updateOwnedMetadata(taskId, (metadata) => {
+		await this.updateOwnedMetadata(taskId, "required", (metadata) => {
 			const existing = metadataStringArray(metadata, "referencedThreadIds") ?? []
 			const next = [...new Set([...existing, ...captured])]
 			return next.length === existing.length ? undefined : { referencedThreadIds: next }
@@ -1393,35 +1405,26 @@ export class SdkTaskHistory {
 	async addAutoTicketTags(taskId: string, text: string | undefined): Promise<boolean> {
 		const detected = extractTicketTags(text)
 		if (!detected.length) return false
-		let changed = false
-		await this.updateOwnedMetadata(taskId, (metadata) => {
+		return this.updateOwnedMetadata(taskId, "best-effort", (metadata) => {
 			const tags = mergeAutoTicketTags(
 				metadataTaskTags(metadata, "tags"),
 				detected,
 				metadataStringArray(metadata, "dismissedAutoTags"),
 			)
-			if (!tags) return undefined
-			changed = true
-			return { tags }
+			return tags ? { tags } : undefined
 		})
-		return changed
 	}
 
 	async markTaskActive(taskId: string): Promise<void> {
-		if (this.activityUnsettled.has(taskId)) return
+		if (this.isCloudTask(taskId) || this.activityUnsettled.has(taskId)) return
 		const pending = this.activityWrites.get(taskId)
 		if (pending) return pending
 		const write = (async () => {
-			const item = await this.findHistoryItem(taskId)
-			if (!item) return
-			// First interaction of this activity window: stamp it, and unsettle if needed.
-			const now = Date.now()
-			await this.updateTaskHistoryItem(
-				item.isSettled
-					? { ...item, isSettled: false, settledAt: undefined, ts: now, lastActivityTs: now }
-					: { ...item, ts: now, lastActivityTs: now },
-			)
-			this.activityUnsettled.add(taskId)
+			const written = await this.updateOwnedMetadata(taskId, "best-effort", (_, record) => ({
+				lastActivityTs: Date.now(),
+				...(sessionHistoryRecordToHistoryItem(record).isSettled ? { isSettled: false, settledAt: 0 } : {}),
+			}))
+			if (written) this.activityUnsettled.add(taskId)
 		})().finally(() => this.activityWrites.delete(taskId))
 		this.activityWrites.set(taskId, write)
 		return write
@@ -1429,7 +1432,7 @@ export class SdkTaskHistory {
 
 	/** Stamps the time the user sent the thread a message (not the agent's replies). */
 	async markUserMessage(taskId: string, text?: string): Promise<void> {
-		await this.updateOwnedMetadata(taskId, () => ({
+		await this.updateOwnedMetadata(taskId, "best-effort", () => ({
 			isStashed: false,
 			stashedAt: 0,
 			lastUserMessageTs: Date.now(),

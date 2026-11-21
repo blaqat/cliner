@@ -16,6 +16,7 @@ const trackIntent = vi.fn().mockResolvedValue(undefined)
 const togglePlanActModeProto = vi.fn().mockResolvedValue({ value: false })
 const interjectPrompt = vi.fn().mockResolvedValue(undefined)
 const forkTaskAt = vi.fn().mockResolvedValue({ value: "aside-1" })
+const updateSideThread = vi.fn().mockResolvedValue({})
 const startSideThread = vi.fn().mockResolvedValue({ value: "aside-1" })
 const showTaskWithId = vi.fn().mockResolvedValue(undefined)
 
@@ -32,6 +33,7 @@ vi.mock("@/services/grpc-client", () => ({
 	},
 	SideThreadServiceClient: {
 		startSideThread: (req: unknown) => startSideThread(req),
+		updateSideThread: (req: unknown) => updateSideThread(req),
 	},
 	SlashServiceClient: {
 		condense: (req: unknown) => condense(req),
@@ -86,7 +88,7 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	}),
 }))
 
-import { getSideThreadSlots, resetSideThreadSlots, setPanelRoom } from "@/components/sideThreads/sideThreadStore"
+import { getSideThreadSlots, resetSideThreadSlots, setPanelRoom, showQuestion } from "@/components/sideThreads/sideThreadStore"
 import { getComposerTaskGroup, setComposerPageTaskGroup, setComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import type { ChatState } from "../types/chatTypes"
 import { useChatState } from "./useChatState"
@@ -832,13 +834,15 @@ describe("useMessageHandlers — send routing", () => {
 		})
 
 		expect(askResponse).toHaveBeenCalledTimes(1)
-		expect(askResponse).toHaveBeenCalledWith({
-			responseType: "messageResponse",
-			text: "try a different approach",
-			provenance: undefined,
-			images: ["image.png"],
-			files: ["notes.txt"],
-		})
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				responseType: "messageResponse",
+				text: "try a different approach",
+				provenance: undefined,
+				images: ["image.png"],
+				files: ["notes.txt"],
+			}),
+		)
 		expect(askResponse).not.toHaveBeenCalledWith(expect.objectContaining({ responseType: "yesButtonClicked" }))
 		expect(setPendingUserMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -959,7 +963,7 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.handlers.handleSendMessage("try a different approach", [], [])
 		})
 		expect(askResponse).toHaveBeenCalledTimes(1)
-		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "yesButtonClicked" }))
 
 		await act(async () => {
 			resolveAskResponse()
@@ -1465,7 +1469,7 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.executeButtonAction({ type: "retry" })
 		})
 
-		expect(askResponse).toHaveBeenCalledWith({ responseType: "yesButtonClicked" })
+		expect(askResponse).toHaveBeenCalledWith(expect.objectContaining({ responseType: "yesButtonClicked" }))
 		expect(setInputValue).not.toHaveBeenCalled()
 		expect(setQuotes).not.toHaveBeenCalled()
 		expect(setSelectedImages).not.toHaveBeenCalled()
@@ -1495,13 +1499,15 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.executeButtonAction({ type: "approve", draft })
 		})
 
-		expect(askResponse).toHaveBeenCalledWith({
-			responseType: "yesButtonClicked",
-			text: `> selected context\n\n${draft.text}`,
-			provenance: undefined,
-			images: draft.images,
-			files: draft.files,
-		})
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				responseType: "yesButtonClicked",
+				text: `> selected context\n\n${draft.text}`,
+				provenance: undefined,
+				images: draft.images,
+				files: draft.files,
+			}),
+		)
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 
@@ -1528,13 +1534,15 @@ describe("useMessageHandlers — send routing", () => {
 			await result.current.executeButtonAction({ type: "approve", draft })
 		})
 
-		expect(askResponse).toHaveBeenCalledWith({
-			responseType: "yesButtonClicked",
-			text: "> selected context",
-			provenance: undefined,
-			images: [],
-			files: [],
-		})
+		expect(askResponse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				responseType: "yesButtonClicked",
+				text: "> selected context",
+				provenance: undefined,
+				images: [],
+				files: [],
+			}),
+		)
 		expect(consumeDraftSnapshot).toHaveBeenCalledWith(draft)
 	})
 
@@ -1683,7 +1691,9 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 
 		const request = newTask.mock.calls[0][0]
 		expect(request.text).toContain("thread:9_secret")
-		expect(request.provenance).toEqual({ ...PICKED, scriptInvocation: undefined })
+		expect(request.provenance).toMatchObject(PICKED)
+		expect(request.provenance?.messageLinks ?? []).toEqual([])
+		expect(request.provenance?.scriptInvocation).toBeUndefined()
 	})
 
 	it("sends no provenance for thread text that was typed or inserted without picking it", async () => {
@@ -1784,7 +1794,7 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 		const view = composer(completedConversation)
 		typeAndPick(view, "/ask look at thread:1_picked", "1_picked")
 		await send(view)
-		expect(togglePlanActModeProto.mock.calls[0][0].chatContent.provenance).toEqual(PICKED)
+		expect(togglePlanActModeProto.mock.calls[0][0].chatContent.provenance).toMatchObject(PICKED)
 		mockMode = "act"
 	})
 
@@ -1804,7 +1814,7 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 		})
 		expect(view.result.current.chatState.inputValue).toBe("what about thread:1_picked?")
 		await send(view)
-		expect(askResponse.mock.calls[1][0].provenance).toEqual(PICKED)
+		expect(askResponse.mock.calls[1][0].provenance).toMatchObject(PICKED)
 	})
 
 	it("sends the script marker only when the composer recorded a script run for the draft", async () => {
@@ -1812,7 +1822,7 @@ describe("useMessageHandlers — explicit composer provenance", () => {
 		act(() => view.result.current.chatState.setInputValue("/deploy env:prod"))
 		act(() => view.result.current.chatState.setScriptRun({ name: "deploy", values: { env: "prod", dry: true } }))
 		await send(view)
-		expect(newTask.mock.calls[0][0].provenance).toEqual({
+		expect(newTask.mock.calls[0][0].provenance).toMatchObject({
 			authorizedThreadIds: [],
 			scriptInvocation: { name: "deploy", values: { env: "prod" }, flags: { dry: true } },
 		})
@@ -1966,6 +1976,59 @@ describe("side composer commands", () => {
 		expect(askResponse).not.toHaveBeenCalled()
 		expect(getSideThreadSlots().question).toEqual({ main: "aside-1" })
 	})
+	it("closes the previous card before starting another /btw", async () => {
+		showQuestion("main", "old-question")
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/btw another?", [], [])
+		})
+		expect(updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "old-question", closed: true }))
+		expect(updateSideThread.mock.invocationCallOrder.at(-1)).toBeLessThan(startSideThread.mock.invocationCallOrder.at(-1)!)
+		expect(getSideThreadSlots().question).toEqual({ main: "aside-1" })
+	})
+
+	it("keeps the newer /btw card when starts resolve out of order", async () => {
+		let finishFirst!: (result: { value: string }) => void
+		const earlier = new Promise<{ value: string }>((resolve) => {
+			finishFirst = resolve
+		})
+		startSideThread.mockReturnValueOnce(earlier).mockResolvedValueOnce({ value: "new-question" })
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		let first: Promise<void>
+		act(() => {
+			first = result.current.handleSendMessage("/btw first?", [], [])
+		})
+		await act(async () => {
+			await result.current.handleSendMessage("/btw second?", [], [])
+		})
+		await act(async () => {
+			finishFirst({ value: "old-question" })
+			await first
+		})
+		expect(getSideThreadSlots().question).toEqual({ main: "new-question" })
+		expect(updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "old-question", closed: true }))
+	})
+
+	it("keeps the quick card open when the user runs /compact", async () => {
+		showQuestion("main", "old-question")
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("/compact", [], [])
+		})
+		expect(condense).toHaveBeenCalled()
+		expect(getSideThreadSlots().question).toEqual({ main: "old-question" })
+	})
+
+	it("closes the quick card as soon as the user sends the next message", async () => {
+		showQuestion("main", "old-question")
+		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))
+		await act(async () => {
+			await result.current.handleSendMessage("Continue", [], [])
+		})
+		expect(updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "old-question", closed: true }))
+		expect(getSideThreadSlots().question).toEqual({})
+	})
+
 	it("forks while Main is running without canceling or interjecting", async () => {
 		mockTurnState = { phase: "streaming", seq: 1 } as TurnState
 		const { result } = renderHook(() => useMessageHandlers(completedConversation, makeChatState(completedConversation)))

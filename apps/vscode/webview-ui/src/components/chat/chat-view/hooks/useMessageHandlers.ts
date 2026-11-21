@@ -17,7 +17,7 @@ import { SlashServiceClient, StateServiceClient, TaskServiceClient, UiServiceCli
 import { MODE_SWITCHED_BY_COMMAND_EVENT, parseModeSwitchCommand, parseSideCommand } from "@/utils/slash-commands"
 import { buttonsForPhase, getTurnStateMessage } from "../shared/buttonConfig"
 import type { ButtonActionInvocation, ChatState, MessageHandlers } from "../types/chatTypes"
-import { latestMessageTs, startSideQuestion, startSideThread } from "../utils/asideUtils"
+import { dismissSideQuestion, latestMessageTs, startSideQuestion, startSideThread } from "../utils/asideUtils"
 import { type DraftAuthorization, toComposerProvenance } from "../utils/composerProvenance"
 import { formatMessageWithQuotes } from "../utils/quoteUtils"
 
@@ -247,6 +247,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						return
 					}
 					if (consumed) {
+						if (hasContent && currentTaskItem?.id) void dismissSideQuestion(currentTaskItem.id)
 						// The host echoed the message itself as part of the switch, so
 						// clear the composer like a completed send.
 						setInputValue("")
@@ -292,6 +293,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			}
 
 			if (hasContent) {
+				if (currentTaskItem?.id) void dismissSideQuestion(currentTaskItem.id)
 				console.log("[ChatView] handleSendMessage - Sending message:", messageToSend)
 				let messageSent = false
 				const trackPromptSubmitted = (hasActiveTask: boolean) => {

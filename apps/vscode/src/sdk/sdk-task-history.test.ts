@@ -1772,3 +1772,72 @@ it("waits for all batch writes before reporting a partial failure", async () => 
 	expect((await getSession("one"))?.metadata?.isSettled).toBe(false)
 	await history.dispose()
 })
+
+it.each(["rejected", "thrown"])("keeps internal bookkeeping nonfatal after a %s write", async (failure) => {
+	const { history, updateSession, getSession } = makeHistory([
+		makeSessionRecord("one", {
+			metadata: {
+				sideThreadNotes: [
+					{ pending: true, message: { ts: 1, type: "say", say: "subagent_update", text: "Read next turn" } },
+				],
+			},
+		}),
+	])
+	if (failure === "rejected") updateSession.mockResolvedValue({ updated: false })
+	else updateSession.mockRejectedValue(new Error("disk unavailable"))
+	await expect(history.recordLastLine("one", { author: "agent", text: "Answer" })).resolves.toBeUndefined()
+	await expect(history.saveThreadStatus("one", "running")).resolves.toBeUndefined()
+	await expect(history.markTaskActive("one")).resolves.toBeUndefined()
+	await expect(
+		history.saveNotebookChangesMessage("one", {
+			ts: 2,
+			type: "say",
+			say: "notebook_changes",
+			text: '{"status":"pending"}',
+			sdkMessageIndex: 0,
+		}),
+	).resolves.toBeUndefined()
+	await expect(history.markUserMessage("one", "Hello")).resolves.toBeUndefined()
+	await expect(history.applyGeneratedThreadTitle("one", "Generated")).resolves.toBe(false)
+	await expect(history.addAutoTicketTags("one", "PROJ-142")).resolves.toBe(false)
+	await expect(history.consumeSideThreadNotes("one")).resolves.toBeUndefined()
+	expect((await getSession("one"))?.metadata?.sideThreadNotes).toMatchObject([{ pending: true }])
+	expect((await getSession("one"))?.metadata?.lastActivityTs).toBeUndefined()
+	updateSession.mockReset()
+	updateSession.mockImplementation(async () => ({ updated: true }))
+	await history.markTaskActive("one")
+	expect(updateSession).toHaveBeenCalledWith(
+		"one",
+		expect.objectContaining({
+			metadata: expect.objectContaining({ lastActivityTs: expect.any(Number) }),
+		}),
+	)
+	await history.dispose()
+})
+
+it.each([
+	"settle",
+	"stash",
+	"rename",
+	"favorite",
+	"tags",
+	"task",
+	"reference",
+])("reports a rejected explicit %s write and invalidates the cached history", async (action) => {
+	const { history, updateSession, listHistory } = makeHistory([makeSessionRecord("one")])
+	await history.listHistory({ hydrate: false })
+	updateSession.mockResolvedValue({ updated: false })
+	const actions: Record<string, () => Promise<unknown>> = {
+		settle: () => history.setTasksSettled(["one"], true),
+		stash: () => history.setTasksStashed(["one"], true),
+		rename: () => history.renameTask("one", "New"),
+		favorite: () => history.setTaskFavorite("one", true),
+		tags: () => history.setThreadTags("one", [], []),
+		task: () => history.setTaskGroup("one", "group"),
+		reference: () => history.addReferencedThreads("one", ["other"]),
+	}
+	await expect(actions[action]()).rejects.toThrow("The thread changed in another window")
+	await history.listHistory({ hydrate: false })
+	expect(listHistory).toHaveBeenCalledTimes(2)
+	await history.dispose()
+})

@@ -575,7 +575,7 @@ export class Controller {
 		precheck: (steps) => this.precheckAutomationSteps(steps),
 		nameThread: async (id, title) => {
 			// The end-of-turn history save can drop the title set at start; put it back once.
-			if (!(await this.taskHistory.getThreadTitleState(id)).hasTitle) await this.renameTask(id, title)
+			if (await this.taskHistory.applyGeneratedThreadTitle(id, title)) await this.postStateToWebview()
 		},
 		describeWaiting: (id) => describeDecision(this.taskSessions.get(id)?.interactions.getPendingDecision()?.message),
 		threadCost: (id) => {
@@ -2801,10 +2801,14 @@ export class Controller {
 	/** A side thread opened from a message is titled from that message until its first own message. */
 	private async titleSideThreadFromFirstMessage(threadId: string, prompt?: string): Promise<void> {
 		if (!prompt?.trim()) return
-		const item = await this.taskHistory.findHistoryItem?.(threadId)
-		if (!item?.parentTaskId || item.isSubagent || item.title || item.lastUserMessageTs) return
-		const task = sideThreadTitle(prompt)
-		if (task !== item.task) await this.taskHistory.updateTaskHistoryItem({ ...item, task })
+		try {
+			const item = await this.taskHistory.findHistoryItem?.(threadId)
+			if (!item?.parentTaskId || item.isSubagent || item.title || item.lastUserMessageTs) return
+			const task = sideThreadTitle(prompt)
+			if (task !== item.task) await this.taskHistory.updateTaskHistoryItem({ ...item, task })
+		} catch (error) {
+			Logger.warn(`[SdkController] Could not title side thread ${threadId}:`, error)
+		}
 	}
 
 	/** The user approved a note (Wrap up, or Send to main on a side question). */
@@ -3308,10 +3312,9 @@ export class Controller {
 			isViewSuperseded: () => (this.homeNavigationRevision ?? 0) !== navigationRevision,
 		})
 		if (taskId && extractTicketTags(prompt).length) await this.autoTagThread(taskId, prompt)
-		if (taskId && options?.title?.trim()) await this.renameTask(taskId, options.title.trim())
 		// Thread titles run once per new thread (never for resumed ones) when
 		// the feature is enabled; failures are logged inside and never block.
-		else if (taskId && !historyItem && prompt?.trim()) {
+		if (taskId && !options?.title?.trim() && !historyItem && prompt?.trim()) {
 			// Captured now, from what the new thread actually started with
 			// (composer profile/effort overrides and mode included).
 			const context = this.taskSessions?.get(taskId)
@@ -4772,13 +4775,11 @@ export class Controller {
 	}
 
 	async toggleTaskStashed(taskId: string): Promise<void> {
-		await this.taskHistory.toggleTaskStashed(taskId)
-		await this.postStateToWebview(true)
+		await this.saveThreadEdit(() => this.taskHistory.toggleTaskStashed(taskId))
 	}
 
 	async toggleTaskSettled(taskId: string): Promise<void> {
-		await this.taskHistory.toggleTaskSettled(taskId)
-		await this.postStateToWebview(true)
+		await this.saveThreadEdit(() => this.taskHistory.toggleTaskSettled(taskId))
 	}
 
 	async setTasksSettled(taskIds: string[], value: boolean): Promise<void> {
@@ -4801,13 +4802,37 @@ export class Controller {
 
 	/** Sets (or clears, when empty) the thread's user-set title. */
 	async renameTask(taskId: string, title: string): Promise<void> {
-		await this.taskHistory.renameTask(taskId, title)
-		await this.postStateToWebview(true)
+		await this.saveThreadEdit(() => this.taskHistory.renameTask(taskId, title))
 	}
 
 	/** Replaces a thread's tags and the dismissed-auto-tags list wholesale. */
 	async setThreadTags(taskId: string, tags: TaskTag[], dismissedAutoTags: string[]): Promise<void> {
-		await this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags)
+		await this.saveThreadEdit(() => this.taskHistory.setThreadTags(taskId, tags, dismissedAutoTags))
+	}
+
+	private async saveThreadEdit(write: () => Promise<void>): Promise<void> {
+		try {
+			await write()
+		} catch (error) {
+			// Single-thread edits roll back on rejection. Refresh their saved values
+			// and surface the error through the host, even if the user navigated away.
+			void Promise.resolve()
+				.then(() =>
+					HostProvider.window.showMessage(
+						ShowMessageRequest.create({
+							type: ShowMessageType.ERROR,
+							message: error instanceof Error ? error.message : String(error),
+						}),
+					),
+				)
+				.catch((notificationError) =>
+					Logger.warn("[SdkController] Could not report thread edit failure:", notificationError),
+				)
+			await this.postStateToWebview(true).catch((stateError) => {
+				Logger.warn("[SdkController] Could not refresh state after thread edit failure:", stateError)
+			})
+			throw error
+		}
 		await this.postStateToWebview(true)
 	}
 

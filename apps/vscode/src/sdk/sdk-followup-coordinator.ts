@@ -321,7 +321,9 @@ export class SdkFollowupCoordinator {
 			if (historyItem) {
 				historyItem.ts = Date.now()
 				historyItem.modelId = resumeStart.config.modelId
-				await this.options.taskHistory.updateTaskHistoryItem(historyItem)
+				await this.options.taskHistory.updateTaskHistoryItem(historyItem).catch((error) => {
+					Logger.warn(`[SdkController] Could not refresh thread history for ${taskId}:`, error)
+				})
 				if (this.options.getTask()?.taskId !== taskId) {
 					await this.endStartedResume(sdkHost, startResult.sessionId)
 					await this.abandonFollowUp(`Task changed while updating history for ${taskId}; cancelled follow-up`)

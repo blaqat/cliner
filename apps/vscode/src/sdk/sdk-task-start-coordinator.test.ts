@@ -1,8 +1,18 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { registerHandler } from "@cline/llms"
+import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { StateManager } from "@/core/storage/StateManager"
 import { isDirectory } from "@/utils/fs"
+import { ClineCore } from "../../../../sdk/packages/core/dist/index.js"
+import { ticketToPr } from "./automations/automation-fixtures"
+import { AutomationRunner } from "./automations/automation-runner"
 import { PROVIDER_FAILURE_ERROR_TYPE, PROVIDER_FAILURE_PHASE } from "./provider-failure-telemetry"
+import { Controller } from "./SdkController"
+import { SdkTaskHistory } from "./sdk-task-history"
 import { SdkTaskStartCoordinator, type SdkTaskStartCoordinatorOptions } from "./sdk-task-start-coordinator"
 import { createTaskProxy } from "./task-proxy"
 
@@ -232,6 +242,141 @@ describe("SdkTaskStartCoordinator", () => {
 			[],
 		)
 		expect(options.postStateToWebview).toHaveBeenCalled()
+	})
+
+	it("sends the first prompt if the initial history update throws", async () => {
+		const { coordinator, options } = makeCoordinator()
+		options.taskHistory.updateTaskHistoryItem.mockRejectedValueOnce(new Error("disk unavailable"))
+
+		await expect(
+			coordinator.initTask("hello", undefined, undefined, undefined, undefined, {
+				rethrowStartFailure: true,
+			}),
+		).resolves.toEqual(expect.any(String))
+		expect(options.sessions.fireAndForgetSend).toHaveBeenCalledOnce()
+	})
+
+	it("starts an automation against live unpersisted history and gets past step 1", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "automation-start-"))
+		vi.stubEnv("CLINE_DATA_DIR", dir)
+		vi.stubEnv("CLINE_HOOKS_LOG_PATH", join(dir, "hooks.jsonl"))
+		let core: ClineCore | undefined
+		let history: SdkTaskHistory | undefined
+		try {
+			registerHandler("automation-start-fixture", () => ({
+				getMessages: (_system, messages) => messages,
+				getModel: () => ({ id: "fixture", info: { id: "fixture", contextWindow: 100_000, maxTokens: 1000 } }),
+				async *createMessage() {
+					yield { type: "text", id: "answer", text: "The plan" } as const
+					yield { type: "done", id: "done", success: true } as const
+				},
+			}))
+			core = await ClineCore.create({ backendMode: "local", distinctId: "test" })
+			history = new SdkTaskHistory({
+				mcpHub: {} as never,
+				sessions: { getActiveSession: () => ({ sdkHost: core }) } as never,
+			})
+			const { options } = makeCoordinator()
+			const controller = Object.create(Controller.prototype)
+			const contexts = new Map<string, { task: ReturnType<typeof createTaskProxy>; taskGroupId?: string }>()
+			const live = new Map<string, { sessionId: string }>()
+			Object.assign(options, {
+				taskHistory: history,
+				createTaskContext: (id: string) => {
+					const task = createTaskProxy(id, vi.fn(), vi.fn())
+					const messages = {
+						...options.messages,
+						appendAndEmit: (rows: ClineMessage[]) => task.messageStateHandler.addMessages(rows),
+					}
+					const context = { task, messages }
+					contexts.set(id, context)
+					return context
+				},
+				recordTaskGroup: (id: string, taskGroupId: string) => {
+					contexts.get(id)!.taskGroupId = taskGroupId
+				},
+				getWorkspaceRoot: async () => dir,
+				sessionConfigBuilder: {
+					build: async () => ({
+						providerId: "automation-start-fixture",
+						modelId: "fixture",
+						apiKey: "fake",
+						cwd: dir,
+						systemPrompt: "Test",
+						enableTools: false,
+						enableSpawnAgent: false,
+						enableAgentTeams: false,
+					}),
+				},
+			})
+			// Match VS Code: start is interactive and prompt-free; send is asynchronous.
+			options.sessions.startNewSession.mockImplementation(async (input) => {
+				const startResult = await core!.start({ ...input, prompt: undefined })
+				live.set(startResult.sessionId, startResult)
+				return { startResult, sdkHost: core }
+			})
+			Object.assign(controller, {
+				stateManager: options.stateManager,
+				taskHistory: history,
+				taskSessions: contexts,
+				taskStart: new SdkTaskStartCoordinator(options),
+				waitForInitialRemoteConfig: async () => {},
+				taskGroupStore: { getGroup: async () => ({ id: "group" }) },
+				notebookStore: { listNotes: async () => [], summarizeActivity: async () => new Map() },
+				sessions: { getSessions: () => live, getSession: (id: string) => live.get(id) },
+				subagentThreads: new Map(),
+				postStateToWebview: async () => {},
+			})
+			const update = vi.spyOn(core, "update")
+			const runner = new AutomationRunner({
+				findOrCreateTask: async () => "group",
+				createTask: async () => "group",
+				startThread: (input) => controller.startAutomationThread(input),
+				stopThread: async () => {},
+				onChange: () => {},
+			})
+			await runner.start(ticketToPr(), { ticket: "PROJ-142" })
+			await vi.waitFor(() => expect(runner.list()[0].steps[1].threads[0].threadId).toBeTruthy())
+			const first = runner.list()[0].steps[1].threads[0]
+			const id = first.threadId!
+			expect((await controller.getTaskGroup("group")).threads).toContainEqual(
+				expect.objectContaining({
+					threadId: id,
+					title: "Research PROJ-142",
+				}),
+			)
+			expect((await core.get(id))?.metadata).toMatchObject({ threadTitle: "Research PROJ-142", taskGroupId: "group" })
+			// This is the real host behavior that used to turn a startup rename into a run failure.
+			expect(await core.update(id, { metadata: { probe: true } })).toEqual({ updated: false })
+			expect(
+				update.mock.calls.some(([, patch]) => patch.metadata?.threadTitle === "Research PROJ-142" && !patch.prompt),
+			).toBe(false)
+			expect((await core.get(id))?.metadata?.tags).toContainEqual({
+				kind: "ticket",
+				value: "PROJ-142",
+				source: "auto",
+			})
+			expect(options.sessions.fireAndForgetSend).toHaveBeenCalledWith(
+				core,
+				id,
+				"resolved: Read PROJ-142 and the code it touches.",
+				undefined,
+				undefined,
+			)
+			const [, , prompt] = options.sessions.fireAndForgetSend.mock.calls[0]
+			await core.send({ sessionId: id, prompt })
+			expect(JSON.stringify(await core.readMessages(id))).toContain("The plan")
+			expect((await core.get(id))?.metadata?.threadTitle).toBe("Research PROJ-142")
+			runner.threadStatusChanged(id, "done", () => [{ ts: 1, type: "say", say: "completion_result", text: "The plan" }])
+			await vi.waitFor(() => expect(runner.list()[0].steps[1].status).toBe("done"))
+			await vi.waitFor(() => expect(runner.list()[0].steps[2].threads.every((thread) => !!thread.threadId)).toBe(true))
+			expect(runner.list()[0].status).not.toBe("failed")
+		} finally {
+			await history?.dispose()
+			await core?.dispose()
+			vi.unstubAllEnvs()
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 
 	it("records the new thread's task group before the first state post", async () => {
@@ -468,9 +613,7 @@ describe("SdkTaskStartCoordinator", () => {
 
 	it("ends the session when the start fails after it was created, so Retry doesn't leave it running", async () => {
 		const { coordinator, options, state } = makeCoordinator()
-		options.taskHistory.updateTaskHistoryItem.mockRejectedValue(
-			new Error("Storage is busy in another window. Try again shortly."),
-		)
+		options.resolveContextMentions.mockRejectedValue(new Error("Could not resolve the prompt."))
 		options.sessions.startNewSession.mockImplementation(async ({ config }: { config: { sessionId: string } }) => ({
 			startResult: { sessionId: config.sessionId },
 			sdkHost: {},

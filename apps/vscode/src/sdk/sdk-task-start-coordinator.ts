@@ -129,6 +129,8 @@ export class SdkTaskStartCoordinator {
 			mode?: Mode
 			/** The model and level for this thread only (an automation step), instead of the draft or defaults. */
 			apiSelection?: TaskApiSelection
+			/** Caller-supplied title, saved with the first turn rather than renamed before persistence. */
+			title?: string
 		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
@@ -234,6 +236,7 @@ export class SdkTaskStartCoordinator {
 					...startInput.sessionMetadata,
 					apiSelection,
 					...(options?.taskGroupId ? { taskGroupId: options.taskGroupId } : {}),
+					...(options?.title?.trim() ? { threadTitle: options.title.trim() } : {}),
 					// The record is first saved during the first send, so a write after this start would find nothing to tag.
 					...(autoTags ? { tags: autoTags } : {}),
 				}
@@ -284,7 +287,9 @@ export class SdkTaskStartCoordinator {
 					apiSelection,
 					taskGroupId: options?.taskGroupId,
 				}
-				await this.options.taskHistory.updateTaskHistoryItem(newHistoryItem)
+				await this.options.taskHistory.updateTaskHistoryItem(newHistoryItem).catch((error) => {
+					Logger.warn(`[SdkController] Could not save initial thread history for ${taskSessionId}:`, error)
+				})
 				this.options.recordTaskApiSelection?.(taskSessionId, apiSelection, mode)
 				await this.options.postStateToWebview()
 

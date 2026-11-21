@@ -606,7 +606,7 @@ export class AutomationRunner {
 			? ({ kind: "stopped" } as const)
 			: await new Promise<ThreadOutcome>((resolve) => {
 					this.waiting.set(threadId, { runId: live.run.id, resolve })
-					// Startup can still be saving a title after the first turn has finished. Subscribe
+					// The first turn may finish before startup returns. Subscribe
 					// before reading back its state so neither an early nor a later outcome is lost.
 					const state = this.deps.readThreadState?.(threadId)
 					if (state)

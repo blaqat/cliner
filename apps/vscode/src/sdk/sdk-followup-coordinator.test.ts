@@ -300,7 +300,7 @@ describe("SdkFollowupCoordinator", () => {
 		)
 	})
 
-	it("resumes a displayed task before sending a follow-up when there is no live session", async () => {
+	it.each([false, true])("sends a resumed follow-up with no live session, history write fails=%s", async (writeFails) => {
 		const task = makeTask("task-1")
 		const historyItem = {
 			id: "task-1",
@@ -312,6 +312,7 @@ describe("SdkFollowupCoordinator", () => {
 			cwdOnTaskInitialization: "/task-cwd",
 		}
 		const { coordinator, options } = makeCoordinator({ task, historyItem })
+		if (writeFails) options.taskHistory.updateTaskHistoryItem.mockRejectedValueOnce(new Error("disk unavailable"))
 
 		await coordinator.askResponse("continue")
 

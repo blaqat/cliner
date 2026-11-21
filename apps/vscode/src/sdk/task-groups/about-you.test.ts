@@ -27,6 +27,18 @@ describe("About you", () => {
 		expect(tools.map((tool) => tool.name)).toEqual(["present_walkthrough", "about_you", "skill_draft"])
 	})
 
+	it("routes work notes to a task and offers filing when the thread has no notebook", async () => {
+		const tools = await createVscodeExtraTools({ getServers: () => [] } as never, { aboutYou: { rootThreadId: "t", store } })
+		expect(tools.find((tool) => tool.name === "notebook")).toBeUndefined()
+		const description = tools.find((tool) => tool.name === "about_you")!.description
+		expect(description).toContain("lasting facts about themselves")
+		expect(description).toContain(
+			"Never save task or project notes, plans, decisions, progress, research or work summaries here",
+		)
+		expect(description).toContain("Tell the user that work notes live in a task and offer to put this thread in a task first")
+		expect(description).toContain("Do not claim you moved the thread or saved work notes")
+	})
+
 	it("stages proposals for review in the thread, with the agent's summary", async () => {
 		const tool = createAboutYouTool({ rootThreadId: "t", store })
 		const result = await tool.execute(
@@ -58,8 +70,15 @@ describe("About you", () => {
 		expect(await tool.execute({ action: "write", name: "Style", content: "y".repeat(100) }, context)).toContain("Staged")
 	})
 
-	it("puts every note in the system prompt, and nothing when empty", async () => {
-		expect(await aboutYouPrompt(store)).toBeUndefined()
+	it("tells the model where work notes go even when About you is empty", async () => {
+		const prompt = await aboutYouPrompt(store)
+		expect(prompt).toContain("About you holds lasting facts about the user")
+		expect(prompt).toContain("Use the task notebook for notes about the current work")
+		expect(prompt).toContain("If the user asks to save work notes and the notebook tool is unavailable")
+		expect(prompt).toContain("offer to put this thread in a task first")
+	})
+
+	it("puts saved About you facts in the system prompt", async () => {
 		await store.createNote(ABOUT_YOU_ID, { name: "Writing", description: "" })
 		await store.saveNote(ABOUT_YOU_ID, "writing", { content: "Short commit messages." })
 		const prompt = await aboutYouPrompt(store)

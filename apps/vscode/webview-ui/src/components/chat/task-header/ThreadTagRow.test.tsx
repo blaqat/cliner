@@ -1,5 +1,5 @@
 import type { HistoryItem } from "@shared/HistoryItem"
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { ThreadTagRow } from "./ThreadTagRow"
 
@@ -52,6 +52,22 @@ describe("ThreadTagRow inherited tags", () => {
 		expect(within(chips[0]).queryByRole("button")).toBeNull()
 		expect(within(chips[2]).getByRole("button", { name: "Remove tag mine" })).toBeInTheDocument()
 		expect(screen.getAllByRole("button", { name: /Remove tag/ })).toHaveLength(1)
+	})
+
+	it("restores the saved tags when the edit conflicts", async () => {
+		let rejectWrite!: (error: Error) => void
+		const write = new Promise<never>((_, reject) => {
+			rejectWrite = reject
+		})
+		mocks.setThreadTags.mockReturnValueOnce(write)
+		render(<ThreadTagRow item={thread} />)
+
+		fireEvent.click(screen.getByRole("button", { name: "Remove tag mine" }))
+		expect(screen.queryByRole("button", { name: "Remove tag mine" })).toBeNull()
+		await act(async () => {
+			rejectWrite(new Error("The thread changed in another window. Try again."))
+		})
+		expect(screen.getByRole("button", { name: "Remove tag mine" })).toBeInTheDocument()
 	})
 
 	it("hides the branch suggestion when the task already has that branch", () => {

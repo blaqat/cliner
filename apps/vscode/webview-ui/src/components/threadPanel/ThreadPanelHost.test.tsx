@@ -1,10 +1,11 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { WRAP_UP_PROMPT } from "@shared/sideThreads"
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SideQuestionCard } from "@/components/sideThreads/SideThreadCards"
 import { getSideThreadSlots, resetSideThreadSlots, showBeside, showQuestion } from "@/components/sideThreads/sideThreadStore"
+import { useSideQuestionDismissal } from "@/components/sideThreads/useSideQuestionDismissal"
 import { type ThreadPanelData, ThreadPanelFrame, ThreadPanelHost, ThreadPanelToggle } from "./ThreadPanelHost"
 import { reloadThreadPanelPrefs, resetThreadPanelUi } from "./threadPanelPrefs"
 
@@ -309,6 +310,45 @@ describe("side question card", () => {
 		expect(mocks.rpc.sendSideThreadNote).toHaveBeenCalledWith({ threadId: "q", text: "No, it fits." })
 		expect(mocks.rpc.updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "q", closed: true }))
 		expect(getSideThreadSlots().question).toEqual({})
+	})
+
+	it("keeps a completed answer readable until the next user message, then closes it", async () => {
+		const initial: ClineMessage[] = [{ ts: 1, type: "say", say: "task", text: "Main question" }]
+		const { rerender } = renderHook(({ messages }) => useSideQuestionDismissal("main", messages), {
+			initialProps: { messages: initial },
+		})
+		render(<SideQuestionCard />)
+		expect(screen.getByText("No, it fits.")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Keep as side thread/ })).toBeEnabled()
+		await act(async () => rerender({ messages: [...initial, { ts: 2, type: "say", say: "text", text: "Main reply" }] }))
+		expect(mocks.rpc.updateSideThread).not.toHaveBeenCalled()
+		await act(async () => rerender({ messages: [...initial, { ts: 3, type: "say", say: "user_feedback", text: "Next" }] }))
+		expect(getSideThreadSlots().question).toEqual({})
+		expect(screen.queryByTestId("side-question-card")).not.toBeInTheDocument()
+		expect(mocks.rpc.updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "q", closed: true }))
+	})
+
+	it.each(["other", undefined])("closes a side question when switching to %s and does not restore it on return", async (id) => {
+		const { rerender } = renderHook(
+			({ threadId }: { threadId: string | undefined }) => useSideQuestionDismissal(threadId, []),
+			{
+				initialProps: { threadId: "main" as string | undefined },
+			},
+		)
+		expect(getSideThreadSlots().question).toEqual({ main: "q" })
+		await act(async () => rerender({ threadId: id }))
+		await act(async () => rerender({ threadId: "main" }))
+		expect(getSideThreadSlots().question).toEqual({})
+		expect(mocks.rpc.updateSideThread).toHaveBeenCalledTimes(1)
+	})
+
+	it("closes the card with its close button", async () => {
+		render(<SideQuestionCard />)
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Close the side question" }))
+		})
+		expect(screen.queryByTestId("side-question-card")).not.toBeInTheDocument()
+		expect(mocks.rpc.updateSideThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: "q", closed: true }))
 	})
 
 	it("keeps it as a side thread, or closes with Esc", async () => {

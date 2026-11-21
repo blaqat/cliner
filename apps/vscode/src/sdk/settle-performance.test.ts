@@ -91,7 +91,7 @@ it("benchmarks settling 1, 3, 5 and 10 threads", async () => {
 				for (let i = 0; i < count; i++) {
 					const id = `thread-${i}`
 					const item = await history.findHistoryItem(id)
-					await (history as any).updateOwnedMetadata(id, (metadata: any) => ({
+					await (history as any).updateOwnedMetadata(id, "required", (metadata: any) => ({
 						lastActivityTs: metadata.lastActivityTs ?? item?.ts,
 						isSettled: true,
 						settledAt: Date.now(),

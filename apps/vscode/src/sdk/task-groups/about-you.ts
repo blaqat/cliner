@@ -21,16 +21,23 @@ export function aboutYouTokens(notes: Pick<NotebookNoteMeta, "tokens">[]): numbe
 	return notes.reduce((sum, note) => sum + (note.tokens ?? 0), 0)
 }
 
-/** The system prompt section for About you, or undefined when it is empty. Oldest notes first, so it reads stably. */
-export async function aboutYouPrompt(store: NotebookStore): Promise<string | undefined> {
+/** About you guidance and any saved notes, sorted by name for a stable system prompt. */
+export async function aboutYouPrompt(store: NotebookStore): Promise<string> {
 	const notes = [...(await store.listNotes(ABOUT_YOU_ID))].sort((a, b) => a.name.localeCompare(b.name))
 	const sections: string[] = []
 	for (const note of notes) {
 		const body = (await store.readNote(ABOUT_YOU_ID, note.slug))?.content.trim()
 		if (body) sections.push(`## ${note.name}\n\n${body}`)
 	}
-	if (!sections.length) return undefined
-	return `# About the user\n\nThe user's own preferences. They apply to every thread in any workspace; follow them unless the user says otherwise here.\n\n${sections.join("\n\n")}`
+	return [
+		"# About the user",
+		"About you holds lasting facts about the user, such as preferences, working style and environment. " +
+			"They apply across workspaces. Follow them unless the user says otherwise here.",
+		"Use the task notebook for notes about the current work, including plans, decisions and progress. " +
+			"If the user asks to save work notes and the notebook tool is unavailable, explain that work notes live in a task " +
+			"and offer to put this thread in a task first.",
+		...sections,
+	].join("\n\n")
 }
 
 interface AboutYouInput {
@@ -49,9 +56,13 @@ interface AboutYouInput {
 export function createAboutYouTool(context: AboutYouContext): AgentTool {
 	const { store, rootThreadId } = context
 	const baseDescription =
-		"Propose a change to About you: the user's general preferences that every thread follows in any workspace " +
-		"(tools they use, how they like answers, commit style). Use it only when the user asks you to remember a " +
-		"general preference. Project facts belong in a task's notebook, never here. Changes are staged for the user " +
+		"Propose a change to About you, the global notebook included in every thread in every workspace. " +
+		"Use it only when the user asks you to remember lasting facts about themselves: preferences, working style " +
+		"or their environment, such as how they like answers or which shell they use. Never save task or project " +
+		"notes, plans, decisions, progress, research or work summaries here, even if the user says 'save notes' " +
+		"or 'remember this'. Use the notebook tool for those. If no notebook tool is available, this thread has no " +
+		"task notebook. Tell the user that work notes live in a task and offer to put this thread in a task first. " +
+		"Do not claim you moved the thread or saved work notes. Changes are staged for the user " +
 		`to review when you finish. About you is capped at ${ABOUT_YOU_TOKEN_CAP.toLocaleString("en-US")} tokens; ` +
 		`from ${ABOUT_YOU_WARN_TOKENS} you may only shorten or replace notes. Keep each line short.`
 	const tool = createTool<AboutYouInput, string | { error: string }>({
