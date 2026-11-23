@@ -95,6 +95,19 @@ it("only offers to open the home workspace when a task worktree belongs elsewher
 	)
 })
 
+it("reads the worktree again when the view regains focus, so edits made by hand show up", async () => {
+	const clean = { ...SUMMARY, changedFiles: 0, commits: 0, uncommittedFiles: 0, uncopiedFiles: 0, loseOnRemove: 0 }
+	serve(clean)
+	const onChanged = vi.fn(async () => {})
+	render(<ThreadWorktreeActions mapping={mapping} onChanged={onChanged} threadId="thread" />)
+	await waitFor(() => expect(status()).toHaveTextContent("No changes yet"))
+	serve(SUMMARY)
+	fireEvent.focus(window)
+	await waitFor(() => expect(status()).toHaveTextContent("2 files changed · 1 commit · not copied here"))
+	// Another window may have replaced the worktree: the caller reads its state again too.
+	expect(onChanged).toHaveBeenCalled()
+})
+
 it("says where the changes stand and lists only what applies", async () => {
 	serve(SUMMARY)
 	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)
@@ -235,7 +248,10 @@ it("waits for a running thread before copying, switching or removing", async () 
 
 describe("worktreeStatusText", () => {
 	it("words each state", () => {
-		expect(worktreeStatusText({ ...SUMMARY, changedFiles: 0, commits: 0 })).toBe("No changes yet")
+		expect(worktreeStatusText({ ...SUMMARY, changedFiles: 0, commits: 0, loseOnRemove: 0 })).toBe("No changes yet")
+		expect(worktreeStatusText({ ...SUMMARY, changedFiles: 0, commits: 0, loseOnRemove: 1 })).toBe(
+			"Staged changes not copied here",
+		)
 		expect(worktreeStatusText({ ...SUMMARY, changedFiles: 1, commits: 0, uncopiedFiles: 1 })).toBe(
 			"1 file changed · not copied here",
 		)

@@ -324,12 +324,13 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 			<div className="flex-1 overflow-y-auto pb-2">
 				<div ref={worktreeSectionRef}>
 					<TaskWorktreeSection
-						refreshKey={timeline
+						// Opening the delete confirm reads the worktree too, so both say the same thing.
+						refreshKey={`${confirmingDelete}|${timeline
 							.map(
 								({ thread }) =>
 									`${thread.threadId}:${threadStatusFor(threadStatuses, thread.threadId)}:${settledIds.has(thread.threadId)}`,
 							)
-							.join(",")}
+							.join(",")}`}
 						worktree={taskWorktree}
 					/>
 				</div>

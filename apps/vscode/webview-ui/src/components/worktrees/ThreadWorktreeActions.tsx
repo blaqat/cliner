@@ -1,5 +1,5 @@
 import type { ThreadWorktree, WorktreeSummary } from "@shared/thread-worktrees"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { MENU_ROW_CLASS } from "@/components/chat/composer/menuKeyboard"
 import { MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { cn } from "@/lib/utils"
@@ -10,7 +10,9 @@ const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ?
 /** "2 files changed · 1 commit · not copied here": where the thread's changes stand. */
 export function worktreeStatusText(summary: WorktreeSummary): string {
 	if (summary.takenOver) return "Your workspace is on this branch now"
-	if (summary.changedFiles === 0 && summary.commits === 0) return "No changes yet"
+	if (summary.changedFiles === 0 && summary.commits === 0)
+		// Staged versions differ from what's on disk: Remove would still discard them.
+		return summary.loseOnRemove > 0 ? "Staged changes not copied here" : "No changes yet"
 	const copy =
 		summary.uncopiedFiles === 0
 			? "copied here"
@@ -96,6 +98,24 @@ export function ThreadWorktreeActions({
 	useEffect(() => {
 		void refresh()
 	}, [refresh, refreshKey])
+	// Edits made outside a thread's run (by hand, in an editor, by another window) change no thread's
+	// status, so read the worktree again when the user comes back to this view. The caller's state too:
+	// another window may have removed or replaced the worktree.
+	const changed = useRef(onChanged)
+	changed.current = onChanged
+	useEffect(() => {
+		const onFocus = () => {
+			void refresh()
+			void changed.current?.()
+		}
+		const onVisible = () => document.visibilityState === "visible" && onFocus()
+		window.addEventListener("focus", onFocus)
+		document.addEventListener("visibilitychange", onVisible)
+		return () => {
+			window.removeEventListener("focus", onFocus)
+			document.removeEventListener("visibilitychange", onVisible)
+		}
+	}, [refresh])
 	useEffect(() => {
 		if (!taskGroupId || !summary?.running) return
 		const timer = setInterval(() => void refresh(), 1500)
