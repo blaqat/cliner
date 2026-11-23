@@ -456,6 +456,60 @@ describe("AutomationRunner", () => {
 		expect(started[0].prompt).toBe("Plan a fix for PROJ-4 using:\n\nKept research")
 	})
 
+	it("retries a previously finished step when editing adds a required output", async () => {
+		const definition = ticketToPr()
+		const [, research, , , build] = definition.steps
+		if (research.kind !== "thread" || build.kind !== "thread") throw new Error("fixture changed")
+		definition.steps = [research, build]
+		const h = harness(definition)
+		await h.runner.start(definition, { ticket: "PROJ-1" })
+		await flush()
+		await h.finish(h.started[0].threadId, "Old research")
+		await h.runner.stop(h.run().id)
+
+		research.outputs = [{ name: "findings", description: "Findings" }]
+		build.prompt = "Findings: {{steps.research.findings}}"
+		await expect(h.runner.resume(h.run().id, definition, build.id)).rejects.toThrow("Resume from an earlier step")
+		await h.runner.resume(h.run().id, definition)
+		await flush()
+		const restarted = h.started[2]
+		expect(restarted.title).toBe(h.started[0].title)
+		await h.finish(restarted.threadId, "Still missing findings")
+		expect(h.run().steps[0].threads[0].missingOutputs).toEqual(["findings"])
+		expect(h.started).toHaveLength(3)
+		await h.runner.answerMissingOutputs(h.run().id, restarted.threadId, false)
+		await flush()
+		expect(h.started[3].prompt).toBe("Findings: ")
+		await h.runner.stop(h.run().id)
+	})
+
+	it("clears an interrupted missing-output wait and resumes with a fresh thread", async () => {
+		const definition = ticketToPr()
+		const [, research] = definition.steps
+		if (research.kind !== "thread") throw new Error("fixture changed")
+		definition.steps = [research]
+		research.outputs = [{ name: "findings", description: "Findings" }]
+		const first = harness(definition)
+		await first.runner.start(definition, { ticket: "PROJ-1" })
+		await flush()
+		await first.finish(first.started[0].threadId, "Missing findings")
+		expect(first.run().steps[0].threads[0].missingOutputs).toEqual(["findings"])
+
+		const restored = harness(definition, { load: async () => structuredClone([...first.saved()]) })
+		await restored.runner.load()
+		const stopped = restored.runner.list()[0]
+		expect(stopped.status).toBe("stopped")
+		const [thread] = stopped.steps[0].threads
+		expect(thread.status).toBe("stopped")
+		expect(thread.waitingOn).toBeUndefined()
+		expect(thread.missingOutputs).toBeUndefined()
+		await restored.runner.resume(stopped.id, definition)
+		await flush()
+		expect(restored.started).toHaveLength(1)
+		await restored.runner.stop(stopped.id)
+		await first.runner.stop(stopped.id)
+	})
+
 	it("runs again fresh with the same values in the same task", async () => {
 		const h = harness()
 		await h.runner.start(h.definition, { ticket: "PROJ-5" }, { taskGroupId: "mine" })

@@ -205,6 +205,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	const { automations, loaded, workspaceDir } = useAutomations()
 	const existing = target.path ? automations.find((item) => item.path === target.path) : undefined
 	const [definition, setDefinition] = useState<AutomationDefinition>(() => existing?.definition ?? emptyAutomation())
+	const [baseFingerprint, setBaseFingerprint] = useState(existing?.fingerprint)
 	const [scope, setScope] = useState<"workspace" | "global">(existing?.scope ?? (workspaceDir ? "workspace" : "global"))
 	const [path, setPath] = useState(target.path)
 	const [openStep, setOpenStep] = useState<string | undefined>(definition.steps[0]?.id)
@@ -225,6 +226,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	useEffect(() => {
 		if (hydrated || !existing?.definition) return
 		setDefinition(existing.definition)
+		setBaseFingerprint(existing.fingerprint)
 		setScope(existing.scope)
 		setOpenStep(existing.definition.steps[0]?.id)
 		setHydrated(true)
@@ -293,6 +295,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 		)
 			.then((response) => {
 				applyAutomationList(response)
+				setBaseFingerprint(response.automations.find((item) => item.path === response.savedPath)?.fingerprint)
 				setPath(response.savedPath)
 				setSaved(true)
 				setDirty(false)
@@ -312,7 +315,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 				/>
 				<div className="min-h-0 flex-1 overflow-y-auto">
 					<AutomationPromptEdit
-						editorDefinition={dirty ? definition : undefined}
+						editorDraft={dirty ? { definition, baseFingerprint } : undefined}
 						onDrop={() => setShowPromptEdit(false)}
 						onKeep={(list) => {
 							const entry = list.automations.find((item) => item.path === list.savedPath)
@@ -324,6 +327,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 								setHydrated(true)
 							}
 							applyAutomationList(list)
+							setBaseFingerprint(entry?.fingerprint)
 							setPath(list.savedPath)
 							setSaved(true)
 							setDirty(false)

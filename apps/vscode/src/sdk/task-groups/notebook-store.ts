@@ -205,6 +205,7 @@ export class NotebookStore {
 		rootThreadId: string,
 		slug: string,
 		readerThreadId: string,
+		onSavedRead?: (fingerprint: string) => void,
 	): Promise<{ name: string; content: string } | undefined> {
 		taskGroupPaths(this.rootDir, groupId).noteFile(slug)
 		validateTaskGroupIdentifier(readerThreadId, "threadId")
@@ -215,6 +216,7 @@ export class NotebookStore {
 			return { name: staged.name, content: staged.content ?? "" }
 		}
 		const note = await this.readNote(groupId, slug, readerThreadId)
+		if (note) onSavedRead?.(note.fingerprint)
 		return note ? { name: note.meta.name, content: note.content } : undefined
 	}
 
@@ -226,7 +228,7 @@ export class NotebookStore {
 		groupId: string,
 		slug: string,
 		threadId?: string,
-	): Promise<{ meta: NotebookNoteMeta; content: string } | undefined> {
+	): Promise<{ meta: NotebookNoteMeta; content: string; fingerprint: string } | undefined> {
 		const filePath = taskGroupPaths(this.rootDir, groupId).noteFile(slug)
 		if (threadId !== undefined) validateTaskGroupIdentifier(threadId, "threadId")
 		try {
@@ -236,7 +238,11 @@ export class NotebookStore {
 			if (threadId) {
 				await this.appendActivity(groupId, { ts: Date.now(), threadId, kind: "read", slug })
 			}
-			return { meta, content: parseYamlFrontmatter(raw).body.trimStart() }
+			return {
+				meta,
+				content: parseYamlFrontmatter(raw).body.trimStart(),
+				fingerprint: createHash("sha256").update(raw).digest("hex"),
+			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 				Logger.warn(`[NotebookStore] Failed to read note ${groupId}/${slug}:`, error)
@@ -361,13 +367,16 @@ export class NotebookStore {
 	}
 
 	private async performStageChange(groupId: string, threadId: string, change: NotebookChange): Promise<void> {
-		await this.captureSavedVersion(groupId, change.slug)
+		const savedFingerprint = await this.captureSavedVersion(groupId, change.slug)
 		const pending = (await this.readPending(groupId, threadId)) ?? []
 		const index = pending.findIndex((entry) => entry.slug === change.slug)
 		if (index === -1) {
+			if (change.op !== "create") change = { ...change, baseFingerprint: change.baseFingerprint ?? savedFingerprint }
 			pending.push(change)
 		} else {
 			const prev = pending[index]
+			// Later edits of a staged change are still based on its original saved version.
+			change = { ...change, baseFingerprint: prev.baseFingerprint }
 			if (
 				prev.skill &&
 				change.skill &&
@@ -544,7 +553,7 @@ export class NotebookStore {
 					if (!item?.include) continue
 					if (options?.unchangedOnly && change.op !== "create") {
 						const current = await this.readNote(groupId, change.slug)
-						if (!current || current.meta.updatedAt !== change.baseUpdatedAt) continue
+						if (!current || current.fingerprint !== change.baseFingerprint) continue
 					}
 					await this.settleDraft(groupId, threadId, change.slug)
 					const slug = options?.apply
@@ -714,9 +723,10 @@ export class NotebookStore {
 		return version
 	}
 
-	async captureSavedVersion(groupId: string, slug: string): Promise<void> {
+	async captureSavedVersion(groupId: string, slug: string): Promise<string | undefined> {
 		const note = await this.readNote(groupId, slug)
 		if (note) await this.recordVersion(groupId, slug, note.content, "saved")
+		return note?.fingerprint
 	}
 
 	async restoreVersion(groupId: string, slug: string, versionId: string): Promise<void> {
@@ -1033,9 +1043,6 @@ export class NotebookStore {
 			await fs.rm(filePath, { force: true })
 			return change.slug
 		}
-		// `baseUpdatedAt` records which on-disk revision the agent based the
-		// change on; apply wins unconditionally because the user already
-		// reviewed the staged content (and can edit it inline before applying).
 		const existing = await fs.readFile(filePath, "utf8").catch(() => undefined)
 		const body = editedContent ?? change.content ?? (existing !== undefined ? parseYamlFrontmatter(existing).body : "")
 		const name = change.name.trim() || change.slug

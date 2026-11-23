@@ -20,6 +20,7 @@ export default defineConfig({
 			"src/shared/proto-conversions/models/**/*.test.ts",
 			"src/core/storage/remote-config/**/*.test.ts",
 			"src/core/controller/account/setUserOrganization.test.ts",
+			"src/core/controller/automation/**/*.test.ts",
 			"src/services/cloud/workspace-cloud-defaults.test.ts",
 			"src/core/controller/remoteConfig/**/*.test.ts",
 			"src/core/controller/state/**/*.test.ts",

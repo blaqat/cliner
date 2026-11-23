@@ -485,26 +485,36 @@ export function runActiveMs(run: Pick<AutomationRun, "startedAt" | "endedAt" | "
 	return (run.priorMs ?? 0) + Math.max(0, (run.endedAt ?? now) - (run.resumedAt ?? run.startedAt))
 }
 
-/**
- * Steps a finished run can go on from, in order: each one whose earlier steps all finished. The last is
- * the first step that didn't finish (Retry). With the automation's current definition, a step must still
- * be there (same id and kind) for its finished work to be kept.
- */
-export function resumePoints(run: AutomationRun, definition?: AutomationDefinition): string[] {
-	if (isLiveRun(run)) return []
+/** An already declared but unrecorded output was waived with Continue without. New outputs need a turn. */
+export function hasNewAutomationOutputs(thread: AutomationRunThread | undefined, outputs?: readonly AutomationOutput[]): boolean {
+	return (outputs ?? []).some(
+		({ name }) =>
+			!thread?.declaredOutputs?.some((output) => output.name === name) &&
+			!thread?.outputs?.some((output) => output.name === name),
+	)
+}
+
+/** Steps a finished run can resume from, up to the first step whose work can't be reused. */
+export function resumePoints(run: AutomationRun, definition?: AutomationDefinition): { points: string[]; retryId?: string } {
+	if (isLiveRun(run)) return { points: [] }
 	const steps = definition?.steps ?? run.steps
+	const threads = definition ? automationThreads(definition.steps) : []
 	const points: string[] = []
 	for (const step of steps) {
 		points.push(step.id)
 		const prior = run.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
-		if (prior?.status !== "done") break
+		if (
+			prior?.status !== "done" ||
+			threads.some(
+				({ step: parent, thread }) =>
+					parent.id === step.id &&
+					hasNewAutomationOutputs(
+						prior.threads.find(({ id }) => id === thread.id),
+						thread.outputs,
+					),
+			)
+		)
+			return { points, retryId: step.id }
 	}
-	// A run where every step finished can redo any step, but there's nothing to retry.
-	return points
-}
-
-/** The first step that didn't finish: what Retry runs again. */
-export function retryPoint(run: AutomationRun): AutomationRunStep | undefined {
-	if (isLiveRun(run)) return undefined
-	return run.steps.find((step) => step.status !== "done")
+	return { points }
 }

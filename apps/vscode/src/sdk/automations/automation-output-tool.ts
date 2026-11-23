@@ -4,13 +4,14 @@ import type { AutomationOutput } from "@shared/automations"
 export interface AutomationOutputContext {
 	outputs: AutomationOutput[]
 	active: () => boolean
+	missing: () => AutomationOutput[]
 	record: (name: string, value: string) => void
 }
 
-export function automationOutputPrompt(context: AutomationOutputContext): string {
+export function automationOutputPrompt(outputs: readonly AutomationOutput[]): string {
 	return [
-		"Record each of this automation step's declared outputs using automation_output before ending your turn. Use the tool for these outputs instead of writing notebook notes.",
-		...context.outputs.map((output) => `- ${output.name}: ${output.description}`),
+		"Record these outstanding automation outputs before ending your turn. Use this tool for these outputs instead of writing notebook notes.",
+		...outputs.map((output) => `- ${output.name}: ${output.description}`),
 	].join("\n")
 }
 

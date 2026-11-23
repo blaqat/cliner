@@ -449,7 +449,10 @@ describe("NotebookStore", () => {
 				: store.discardPendingChanges(groupId, "thread", review.revision)
 		const stage = store.stageChange(groupId, "thread", { ...change, op: "update", content: "v2" })
 		await Promise.all([finish, stage])
-		expect(await store.readPending(groupId, "thread")).toEqual([{ ...change, op: "update", content: "v2" }])
+		const current = await store.readNote(groupId, "plan")
+		expect(await store.readPending(groupId, "thread")).toEqual([
+			{ ...change, op: "update", content: "v2", baseFingerprint: current?.fingerprint },
+		])
 	})
 
 	it.each(["apply", "discard"])("preserves another store's stage while %s holds the pending lock", async (action) => {
@@ -511,7 +514,8 @@ describe("NotebookStore", () => {
 			resume()
 			await Promise.all([finish, stage])
 		}
-		expect(await store.readPending(groupId, "thread")).toEqual([nextChange])
+		const current = await store.readNote(groupId, "plan")
+		expect(await store.readPending(groupId, "thread")).toEqual([{ ...nextChange, baseFingerprint: current?.fingerprint }])
 		if (action === "apply") expect((await store.readNote(groupId, "plan"))?.content).toBe("v1")
 		await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 	})
@@ -654,5 +658,29 @@ describe("NotebookStore", () => {
 		const edited = (await store.readNote(groupId, "plan"))!.meta
 		expect(edited.updatedAt).toBeCloseTo(original.updatedAt + 3000, 0)
 		expect(edited.updatedBy).toEqual({ kind: "user" })
+	})
+
+	it("auto-keeps only notes whose saved bytes still match the staged base", async () => {
+		for (const name of ["Changed", "Unchanged"]) {
+			const { slug } = await store.createNote(groupId, { name, description: "Original description" })
+			const original = (await store.readNote(groupId, slug))!
+			await store.stageChange(groupId, "thread", {
+				op: "update",
+				slug,
+				name,
+				description: "Original description",
+				content: "Agent edit",
+				baseUpdatedAt: original.meta.updatedAt,
+			})
+			if (name === "Changed") {
+				await fs.appendFile(paths().noteFile(slug), "Other window edit\n")
+				await fs.utimes(paths().noteFile(slug), new Date(), new Date(original.meta.updatedAt + 1000))
+				expect((await store.readNote(groupId, slug))?.meta.updatedAt).toBe(original.meta.updatedAt)
+			}
+		}
+		const review = (await store.readPendingReview(groupId, "thread"))!
+		expect((await store.keepAutomationNotes(review, "thread", "Research")).map(({ slug }) => slug)).toEqual(["unchanged"])
+		expect((await store.readPending(groupId, "thread"))?.map(({ slug }) => slug)).toEqual(["changed"])
+		expect((await store.readNote(groupId, "changed"))?.content).toContain("Other window edit")
 	})
 })

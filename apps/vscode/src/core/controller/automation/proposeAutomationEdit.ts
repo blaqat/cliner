@@ -14,6 +14,8 @@ export async function proposeAutomationEdit(
 	await controller.getWorkspaceRoot()
 	const current = await controller.automations.store.findByPath(request.path)
 	if (!current) throw new Error("This automation file is gone.")
+	const fingerprint = request.editorDefinitionJson ? request.editorBaseFingerprint : current.fingerprint
+	if (!fingerprint) throw new Error("The editor's original version is unavailable. Propose again from disk.")
 	const base = request.editorDefinitionJson
 		? serializeAutomation(parseDefinitionJson(request.editorDefinitionJson))
 		: current.content
@@ -22,7 +24,7 @@ export async function proposeAutomationEdit(
 	const proposal = parseAutomationFile(text, current.name)
 	const { hunks } = structuredPatch(current.name, proposal.name, base, text, "", "", { context: 2 })
 	return ProposeAutomationEditResponse.create({
-		fingerprint: current.fingerprint,
+		fingerprint,
 		proposedFile: text,
 		diff: hunks
 			.flatMap((hunk) => [`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, ...hunk.lines])

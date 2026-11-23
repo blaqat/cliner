@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	save: vi.fn(),
 	preview: vi.fn(),
 	draft: vi.fn(),
+	propose: vi.fn(),
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
@@ -21,6 +22,7 @@ vi.mock("@/services/grpc-client", () => ({
 		saveAutomation: (request: unknown) => mocks.save(request),
 		previewAutomationFile: (request: unknown) => mocks.preview(request),
 		draftAutomation: (request: unknown) => mocks.draft(request),
+		proposeAutomationEdit: (request: unknown) => mocks.propose(request),
 	},
 	FileServiceClient: { openFile: vi.fn(async () => ({})) },
 }))
@@ -67,6 +69,26 @@ describe("AutomationBuilder", () => {
 		mocks.save.mockReset().mockResolvedValue(AutomationList.create({ savedPath: "/repo/.clinerules/automations/fix-it.md" }))
 		mocks.preview.mockReset().mockResolvedValue({ value: "---\nname: fix-it\n---\n" })
 		mocks.draft.mockReset()
+		mocks.propose
+			.mockReset()
+			.mockResolvedValue({ fingerprint: "fp", proposedFile: "updated", diff: "+updated", errors: [], guesses: [] })
+	})
+
+	it("uses the revision the dirty editor opened with and can propose again from disk", async () => {
+		mocks.save.mockRejectedValue(new Error("This automation changed in another window. Propose again from disk."))
+		render(<AutomationBuilder target={{ path: savedEntry.path }} />)
+		fireEvent.change(screen.getByTestId("builder-description"), { target: { value: "Window A draft" } })
+		act(() => resetAutomationsForTest([{ ...savedEntry, fingerprint: "fp-b" }]))
+		fireEvent.click(screen.getByRole("button", { name: "Change with a prompt…" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "What should change?" }), { target: { value: "Add a step" } })
+		fireEvent.click(screen.getByRole("button", { name: "Propose changes" }))
+		await waitFor(() => expect(mocks.propose).toHaveBeenCalledWith(expect.objectContaining({ editorBaseFingerprint: "fp" })))
+		fireEvent.click(await screen.findByRole("button", { name: "Keep" }))
+		expect(await screen.findByText(/changed in another window/)).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Propose from disk" }))
+		await waitFor(() =>
+			expect(mocks.propose).toHaveBeenLastCalledWith(expect.objectContaining({ editorDefinitionJson: undefined })),
+		)
 	})
 
 	it("builds one from blank: problems show as you go, then Save writes it", async () => {

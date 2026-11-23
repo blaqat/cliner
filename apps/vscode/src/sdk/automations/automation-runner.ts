@@ -13,6 +13,7 @@ import {
 	automationDisplayName,
 	fillPlaceholders,
 	formatAutomationCost,
+	hasNewAutomationOutputs,
 	isLiveRun,
 	resumePoints,
 	runActiveMs,
@@ -259,6 +260,17 @@ export class AutomationRunner {
 										? {
 												...step,
 												status: step.status === "pending" ? ("skipped" as const) : ("stopped" as const),
+												threads: step.threads.map((thread) => {
+													if (thread.status === "pending")
+														return { ...thread, status: "skipped" as const }
+													if (thread.status !== "waiting" && thread.status !== "running") return thread
+													return {
+														...thread,
+														status: "stopped" as const,
+														waitingOn: undefined,
+														missingOutputs: undefined,
+													}
+												}),
 											}
 										: step,
 								),
@@ -381,9 +393,8 @@ export class AutomationRunner {
 			const prior = this.runs.find((run) => run.id === runId)
 			if (!prior) throw new Error("That run is gone. Start the automation again.")
 			if (this.live.has(runId) || isLiveRun(prior)) throw new Error("That run is already running.")
-			const points = resumePoints(prior, definition)
-			const retryId = points.at(-1)
-			const fromId = fromStepId ?? (prior.status === "done" ? undefined : retryId)
+			const { points, retryId } = resumePoints(prior, definition)
+			const fromId = fromStepId ?? retryId
 			const fromIndex = definition.steps.findIndex((step) => step.id === fromId)
 			if (fromIndex < 0 || !points.includes(fromId as string))
 				throw new Error(
@@ -425,7 +436,12 @@ export class AutomationRunner {
 				) {
 					fresh.threads = fresh.threads.map((thread) => {
 						const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
-						if (!done || priorOutputs[thread.id] === undefined) return thread
+						if (
+							!done ||
+							priorOutputs[thread.id] === undefined ||
+							hasNewAutomationOutputs(done, thread.declaredOutputs)
+						)
+							return thread
 						keepThreadOutputs(done)
 						return structuredClone(done)
 					})
@@ -762,6 +778,7 @@ export class AutomationRunner {
 		return {
 			outputs,
 			active,
+			missing: () => outputs.filter(({ name }) => live.outputs[`${thread.id}.${name}`] === undefined),
 			record: (name: string, value: string) => {
 				if (!active() || thread.status !== "running")
 					throw new Error("This automation step is no longer recording outputs.")

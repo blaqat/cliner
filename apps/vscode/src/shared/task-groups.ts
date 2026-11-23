@@ -56,6 +56,8 @@ export interface NotebookChange {
 	editedByUser?: boolean
 	replacedUserVersion?: string
 	baseUpdatedAt?: number
+	/** Hash of the saved note, including front matter, before this edit. */
+	baseFingerprint?: string
 	/** The user's last editor save was rejected; their text is kept as a recoverable draft. */
 	draft?: { ts: number; reason: string }
 	/** The agent's one-line summary of this edit, passed with its notebook call. */

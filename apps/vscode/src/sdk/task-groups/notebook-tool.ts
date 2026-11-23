@@ -17,6 +17,7 @@ const WORK_CONTEXT = /\b(?:this|current) (?:task|project|work|workspace|reposito
 
 export async function createNotebookTool(notebook?: TaskNotebookContext): Promise<AgentTool> {
 	if (notebook) await notebook.store.listNotes(notebook.group.id)
+	const readFingerprints = new Map<string, string>()
 	const baseDescription =
 		"Read, write or delete work notes shared by a task's threads, including project facts, plans, decisions and progress. " +
 		"Save lasting personal preferences and facts about the user with about_you, even when asked alongside a work note. " +
@@ -75,7 +76,9 @@ export async function createNotebookTool(notebook?: TaskNotebookContext): Promis
 				const noteSlug = existing?.slug ?? slug
 				if (input.action === "read") {
 					const readerThreadId = notebook.resolveReaderThreadId?.(context.agentId) ?? notebook.threadId
-					const note = await store.readThreadNote(group.id, rootThreadId, noteSlug, readerThreadId)
+					const note = await store.readThreadNote(group.id, rootThreadId, noteSlug, readerThreadId, (fingerprint) => {
+						readFingerprints.set(noteSlug, fingerprint)
+					})
 					return note ? note.content : { error: `Note not found: ${input.name}` }
 				}
 				if (input.action === "write" && typeof input.content !== "string") {
@@ -92,6 +95,7 @@ export async function createNotebookTool(notebook?: TaskNotebookContext): Promis
 					...(input.action === "write" ? { content: input.content } : {}),
 					...(input.summary?.trim() ? { summary: input.summary.trim().slice(0, 200) } : {}),
 					baseUpdatedAt: staged?.baseUpdatedAt ?? saved?.updatedAt,
+					baseFingerprint: readFingerprints.get(noteSlug),
 				}
 				await store.stageChange(group.id, rootThreadId, change)
 				return "Staged; the user reviews notebook changes when you finish."

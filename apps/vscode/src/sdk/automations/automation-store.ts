@@ -1,12 +1,15 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
 import path from "node:path"
 import { resolveClineDir } from "@cline/shared/storage"
 import { type AutomationDefinition, validateAutomation } from "@shared/automations"
+import { assertSafePath } from "../skills/skill-files"
 import { type AutomationScope, formatIssues, parseAutomationFile, serializeAutomation } from "./automation-file"
 
 /** Workspace automations sit next to the workspace workflows and scripts (`.clinerules/…`). */
 export const WORKSPACE_AUTOMATIONS_DIR = path.join(".clinerules", "automations")
+
+const STALE_PROPOSAL = "This automation changed in another window. Propose again from disk."
 
 /** Global automations: `~/.cline/automations/` (redirected by `CLINE_DIR`, so tests never touch the real one). */
 export function globalAutomationsDir(): string {
@@ -153,8 +156,9 @@ export class AutomationStore {
 
 	async saveProposal(previousPath: string, fingerprint: string, content: string): Promise<LoadedAutomation> {
 		const current = await this.findByPath(previousPath)
-		if (!current || current.fingerprint !== fingerprint)
-			throw new Error("The file changed on disk. Propose the change again.")
+		if (!current) throw new Error(STALE_PROPOSAL)
+		await this.writablePath(current.scope, previousPath)
+		if (current.fingerprint !== fingerprint) throw new Error(STALE_PROPOSAL)
 		const parsed = parseAutomationFile(content, current.name)
 		if (!parsed.definition) throw new Error(parsed.errors[0] ?? "The proposed file has problems.")
 		return this.write(parsed.definition.name, content, current.scope, previousPath, fingerprint)
@@ -166,26 +170,58 @@ export class AutomationStore {
 		return write
 	}
 
+	private async writablePath(scope: AutomationScope, filePath: string): Promise<string> {
+		const dir = this.dirFor(scope)
+		if (!dir || path.resolve(path.dirname(filePath)) !== path.resolve(dir))
+			throw new Error("Choose a file inside the automations folder and try again.")
+		const root = scope === "workspace" ? this.deps.getWorkspaceRoot()! : path.dirname(dir)
+		const relative = path.relative(root, filePath)
+		// The workspace or global storage root can be a user-selected alias. Everything inside it must be regular.
+		const realRoot = await fs.realpath(root).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return root
+			throw error
+		})
+		return assertSafePath(realRoot, relative)
+	}
+
 	private async writeFile(name: string, content: string, scope: AutomationScope, previousPath?: string, fingerprint?: string) {
 		const dir = this.dirFor(scope)
 		if (!dir) throw new Error("Open a folder to save automations in this workspace.")
 		const filePath = path.join(dir, `${name}.md`)
+		const checkedPath = await this.writablePath(scope, filePath)
 		const entries = await this.list()
 		const clash = entries.find(
 			(item) =>
 				item.scope === scope && (item.name === name || item.filePath === filePath) && item.filePath !== previousPath,
 		)
 		if (clash) throw new Error(`An automation called ${name} already exists here.`)
-		await fs.mkdir(dir, { recursive: true })
-		if (fingerprint && previousPath) {
-			const latest = await fs.readFile(previousPath, "utf8").catch(() => undefined)
-			if (latest === undefined || automationFingerprint(previousPath, latest) !== fingerprint)
-				throw new Error("The file changed on disk. Propose the change again.")
+		const previous = entries.find((item) => item.filePath === previousPath)
+		if (previousPath && !previous)
+			throw new Error(fingerprint ? STALE_PROPOSAL : "This automation file is gone. Reopen it and try again.")
+		if (previous) await this.writablePath(previous.scope, previous.filePath)
+		await fs.mkdir(path.dirname(checkedPath), { recursive: true })
+		const destination = await this.writablePath(scope, filePath)
+		const temp = path.join(path.dirname(destination), `.${randomUUID()}.tmp`)
+		await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx" })
+		try {
+			if (fingerprint && previous) {
+				const source = await this.writablePath(previous.scope, previous.filePath)
+				const latest = await fs.readFile(source, "utf8").catch(() => undefined)
+				if (latest === undefined || automationFingerprint(previous.filePath, latest) !== fingerprint)
+					throw new Error(STALE_PROPOSAL)
+			}
+			if ((await this.writablePath(scope, filePath)) !== destination)
+				throw new Error("The automations folder moved. Reopen it and try again.")
+			// Rename replaces the directory entry without ever opening the save destination for writing.
+			await fs.rename(temp, destination)
+		} finally {
+			await fs.rm(temp, { force: true })
 		}
-		await fs.writeFile(filePath, content, "utf8")
 		await this.trust.set(filePath, automationFingerprint(filePath, content))
-		if (previousPath && path.resolve(previousPath) !== path.resolve(filePath)) {
-			await this.remove(previousPath)
+		if (previous && path.resolve(previous.filePath) !== path.resolve(filePath)) {
+			const source = await this.writablePath(previous.scope, previous.filePath)
+			await fs.rm(source, { force: true })
+			await this.trust.set(previous.filePath, undefined)
 		}
 		const saved = await this.findByPath(filePath)
 		if (!saved) throw new Error("The automation was saved but couldn't be read back.")

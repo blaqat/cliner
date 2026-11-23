@@ -5,7 +5,6 @@ import {
 	type AutomationRunThread,
 	isLiveRun,
 	resumePoints,
-	retryPoint,
 } from "@shared/automations"
 import { AnswerAutomationCheckpointRequest } from "@shared/proto/cline/automation"
 import { LoaderCircleIcon } from "lucide-react"
@@ -210,21 +209,22 @@ function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<
 	const { automations } = useAutomations()
 	const definition = automations.find((item) => item.name === run.automation)?.definition
 	const [choosing, setChoosing] = useState(false)
-	const retry = run.status === "done" ? undefined : retryPoint(run)
-	const retryNumber = retry ? run.steps.indexOf(retry) + 1 : 0
+	const { points: resumeIds, retryId } = resumePoints(run, definition)
+	const steps = definition?.steps ?? run.steps
+	const retryNumber = steps.findIndex((step) => step.id === retryId) + 1
 	// Earlier steps the run can go back to (the retry step has its own button).
-	const points = resumePoints(run, definition).filter((id) => id !== retry?.id)
+	const points = resumeIds.filter((id) => id !== retryId)
 	const [from, setFrom] = useState("")
 	const fromId = points.includes(from) ? from : (points.at(-1) ?? "")
 	const stepLabel = (id: string) => {
-		const index = run.steps.findIndex((step) => step.id === id)
-		const title = run.steps[index]?.title ?? definition?.steps.find((step) => step.id === id)?.title ?? id
+		const index = steps.findIndex((step) => step.id === id)
+		const title = run.steps.find((step) => step.id === id)?.title ?? steps[index]?.title ?? id
 		return `${index >= 0 ? index + 1 : "?"} · ${title}`
 	}
 	return (
 		<div className="mt-1.5" data-testid={`run-actions-${run.id}`}>
 			<div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-				{retry && (
+				{retryId && (
 					<Button
 						data-testid={`run-retry-${run.id}`}
 						disabled={actions.busy}
@@ -245,7 +245,7 @@ function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<
 				</Button>
 				{points.length > 0 && !choosing && (
 					<LinkButton data-testid={`run-resume-from-${run.id}`} onClick={() => setChoosing(true)}>
-						{retry ? "Go back to an earlier step…" : "Redo from a step…"}
+						{retryId ? "Go back to an earlier step…" : "Redo from a step…"}
 					</LinkButton>
 				)}
 				{actions.busy && (

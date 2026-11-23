@@ -111,6 +111,8 @@ message ProposeAutomationEditRequest {
   string request = 3;
   // The editor’s definition if it has unsaved changes.
   optional string editor_definition_json = 4;
+  // The disk revision the editor loaded before those changes.
+  optional string editor_base_fingerprint = 1762;
 }
 
 message ProposeAutomationEditResponse {

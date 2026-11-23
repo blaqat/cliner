@@ -147,6 +147,31 @@ describe("VscodeSessionHost telemetry wiring", () => {
 		await host.dispose()
 	})
 
+	it("only asks for outstanding automation outputs on requests that can record them", async () => {
+		const outputs = [{ name: "findings", description: "The findings" }]
+		let active = true
+		let missing = outputs
+		const host = await VscodeSessionHost.create({
+			mcpHub: {} as never,
+			resolveAutomationOutput: () => ({ outputs, active: () => active, missing: () => missing, record: vi.fn() }),
+		})
+		await host.start(gitStartInput)
+		const { config } = mockInnerStart.mock.calls[0][0]
+		const tools = [{ name: "automation_output", description: "Record an output", inputSchema: { type: "object" } }]
+		const request = { systemPrompt: config.systemPrompt, messages: [], tools }
+		const hook = (parentAgentId?: string) => config.hooks.beforeModel({ snapshot: { parentAgentId }, request })
+		expect(config.systemPrompt).toBe("test")
+		expect((await hook()).tools[0].description).toContain("findings: The findings")
+		expect((await hook("main")).tools).toEqual([])
+		missing = []
+		expect((await hook()).tools).toEqual([])
+		missing = outputs
+		active = false
+		expect((await hook()).tools).toEqual([])
+		expect(request.systemPrompt).toBe("test")
+		await host.dispose()
+	})
+
 	it("delivers notebook notices at the next turn or tool boundary and preserves existing hook context", async () => {
 		const consumeNotices = vi.fn().mockResolvedValueOnce("user edited Plan").mockResolvedValueOnce("user discarded Plan")
 		const host = await VscodeSessionHost.create({

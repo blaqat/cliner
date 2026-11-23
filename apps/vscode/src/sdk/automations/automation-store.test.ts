@@ -54,9 +54,24 @@ describe("AutomationStore", () => {
 		expect(kept.content).toBe(proposed)
 		expect(kept.trusted).toBe(true)
 		await expect(store.saveProposal(original.filePath, original.fingerprint, original.content)).rejects.toThrow(
-			"changed on disk",
+			"changed in another window. Propose again from disk",
 		)
 		expect(await fs.readFile(original.filePath, "utf8")).toBe(proposed)
+	})
+
+	it.each(["Save", "Keep"])("%s refuses to write through a linked automation file", async (action) => {
+		const store = makeStore()
+		const original = await store.save(ticketToPr(), "workspace")
+		const target = path.join(path.dirname(original.filePath), "original.txt")
+		await fs.rename(original.filePath, target)
+		await fs.symlink(target, original.filePath)
+		const edited = { ...ticketToPr(), description: "An edit" }
+		const save =
+			action === "Keep"
+				? store.saveProposal(original.filePath, original.fingerprint, serializeAutomation(edited))
+				: store.save(edited, "workspace", original.filePath)
+		await expect(save).rejects.toThrow(/linked folder or file.*regular folder or file/i)
+		expect(await fs.readFile(target, "utf8")).toBe(original.content)
 	})
 
 	it("lists workspace before global, and a workspace automation shadows a global one", async () => {

@@ -14,12 +14,12 @@ import { PromptField } from "./BuilderStepEditor"
 
 export function AutomationPromptEdit({
 	path,
-	editorDefinition,
+	editorDraft,
 	onKeep,
 	onDrop,
 }: {
 	path: string
-	editorDefinition?: AutomationDefinition
+	editorDraft?: { definition: AutomationDefinition; baseFingerprint?: string }
 	onKeep: (list: AutomationList) => void
 	onDrop: () => void
 }) {
@@ -27,17 +27,22 @@ export function AutomationPromptEdit({
 	const [proposal, setProposal] = useState<ProposeAutomationEditResponse>()
 	const [busy, setBusy] = useState<"propose" | "keep">()
 	const [error, setError] = useState("")
-	const propose = async () => {
+	const [fromDisk, setFromDisk] = useState(false)
+	const canProposeFromDisk = !!editorDraft && !fromDisk && error.includes("Propose again from disk.")
+	const propose = async (useDisk = fromDisk) => {
+		setFromDisk(useDisk)
 		setBusy("propose")
 		setError("")
 		setProposal(undefined)
 		try {
+			const draft = useDisk ? undefined : editorDraft
 			setProposal(
 				await AutomationServiceClient.proposeAutomationEdit(
 					ProposeAutomationEditRequest.create({
 						path,
 						request,
-						editorDefinitionJson: editorDefinition ? JSON.stringify(editorDefinition) : undefined,
+						editorDefinitionJson: draft ? JSON.stringify(draft.definition) : undefined,
+						editorBaseFingerprint: draft?.baseFingerprint,
 					}),
 				),
 			)
@@ -84,19 +89,28 @@ export function AutomationPromptEdit({
 				value={request}
 			/>
 			<p className="my-1.5 text-[11px] text-description">
-				{editorDefinition ? "Uses your current editor changes." : "Uses the file on disk."} Cline uses your background
-				model to propose changes for you to review.
+				{editorDraft && !fromDisk ? "Uses your current editor changes." : "Uses the file on disk."} Cline uses your
+				background model to propose changes for you to review.
 			</p>
 			<div className="my-2 flex flex-wrap items-center gap-2">
-				<Button
-					disabled={!request.trim() || !!busy}
-					onClick={() => void propose()}
-					size="xs"
-					variant={proposal ? "secondary" : "default"}>
-					{busy === "propose" ? "Proposing…" : proposal ? "Propose again" : "Propose changes"}
-				</Button>
+				{canProposeFromDisk ? (
+					<Button disabled={!!busy} onClick={() => void propose(true)} size="xs">
+						Propose from disk
+					</Button>
+				) : (
+					<Button
+						disabled={!request.trim() || !!busy}
+						onClick={() => void propose()}
+						size="xs"
+						variant={proposal ? "secondary" : "default"}>
+						{busy === "propose" ? "Proposing…" : proposal ? "Propose again" : "Propose changes"}
+					</Button>
+				)}
 				{proposal && (
-					<Button disabled={!!busy || !!proposal.errors.length || !proposal.diff} onClick={() => void keep()} size="xs">
+					<Button
+						disabled={!!busy || canProposeFromDisk || !!proposal.errors.length || !proposal.diff}
+						onClick={() => void keep()}
+						size="xs">
 						{busy === "keep" ? "Keeping…" : "Keep"}
 					</Button>
 				)}

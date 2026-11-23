@@ -206,10 +206,9 @@ export class VscodeSessionHost implements SdkSessionHost {
 			let systemPrompt = inputWithRemoteConfig.config.systemPrompt ?? ""
 			if (notebook) systemPrompt = appendTaskNotebookPrompt(systemPrompt, notebook.group)
 			if (aboutYou?.prompt) systemPrompt = `${systemPrompt}\n\n${aboutYou.prompt}`
-			if (automationOutput) systemPrompt = `${systemPrompt}\n\n${automationOutputPrompt(automationOutput)}`
 			const config: ClineCoreStartInput["config"] = {
 				...inputWithRemoteConfig.config,
-				...(notebook || aboutYou?.prompt || automationOutput ? { systemPrompt } : {}),
+				...(notebook || aboutYou?.prompt ? { systemPrompt } : {}),
 				hooks: noticeSources.length
 					? {
 							...inputWithRemoteConfig.config.hooks,
@@ -240,15 +239,19 @@ export class VscodeSessionHost implements SdkSessionHost {
 				...config.hooks,
 				beforeModel: async (context) => {
 					const result = await beforeModel?.(context)
-					const scoped =
-						automationOutput && (!automationOutput.active() || context.snapshot.parentAgentId)
-							? {
-									...result,
-									tools: (result?.tools ?? context.request.tools).filter(
-										(tool) => tool.name !== "automation_output",
-									),
-								}
-							: result
+					let scoped = result
+					if (automationOutput) {
+						const missing =
+							automationOutput.active() && !context.snapshot.parentAgentId ? automationOutput.missing() : []
+						scoped = {
+							...result,
+							tools: (result?.tools ?? context.request.tools).flatMap((tool) => {
+								if (tool.name !== "automation_output") return [tool]
+								if (!missing.length) return []
+								return [{ ...tool, description: `${tool.description}\n\n${automationOutputPrompt(missing)}` }]
+							}),
+						}
+					}
 					const metadata = context.request.options?.metadata as { sessionId?: string } | undefined
 					const id = metadata?.sessionId ?? config.sessionId
 					if (id && !scoped?.stop && !context.snapshot.parentAgentId)
