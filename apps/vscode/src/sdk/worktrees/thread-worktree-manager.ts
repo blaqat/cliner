@@ -1,12 +1,18 @@
 import { createHash, randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
+import os from "node:os"
 import path from "node:path"
-import type {
-	ThreadModuleDiff,
-	ThreadWorktree,
-	ThreadWorktreeSettings,
-	WorktreeAvailability,
-	WorktreeSummary,
+import {
+	NO_COMMITS,
+	NOT_A_REPOSITORY,
+	type ThreadModuleDiff,
+	type ThreadWorktree,
+	type ThreadWorktreeSettings,
+	WORKTREES_OFF,
+	WORKTREES_OFF_HERE,
+	type WorktreeAvailability,
+	type WorktreeSummary,
+	worktreeFixFor,
 } from "@shared/thread-worktrees"
 
 import { createWorktree } from "@/utils/git-worktree"
@@ -54,6 +60,18 @@ export function bringClashMessage(module: string, gitError: string): string {
 	]
 	const which = files.length ? files.map((file) => `\`${file}\``).join(", ") : "the same files"
 	return `Your workspace has its own changes to ${which} that clash with this thread's. Commit, stash or undo them in your workspace, then copy again.`
+}
+
+/** A Git worktree needs a repository with a commit to branch from; git's own errors, said plainly. */
+async function assertCommitted(workspace: string) {
+	try {
+		await git(workspace, ["rev-parse", "--verify", "HEAD"])
+	} catch (error) {
+		const message = (error as Error).message
+		if (/not a git repository/i.test(message)) throw new Error(NOT_A_REPOSITORY)
+		if (/unknown revision|needed a single revision|ambiguous argument 'HEAD'/i.test(message)) throw new Error(NO_COMMITS)
+		throw error
+	}
 }
 
 async function assertMmRepositories(config: MmWorkspace) {
@@ -191,7 +209,8 @@ export class ThreadWorktreeManager {
 				typeof settings.nodePath !== "string"
 			)
 				throw new Error("Invalid worktree settings")
-			await this.write("settings.json", settings)
+			const home = (value: string) => value.trim().replace(/^~(?=$|[\\/])/, os.homedir())
+			await this.write("settings.json", { ...settings, mmPath: home(settings.mmPath), nodePath: home(settings.nodePath) })
 			this.mmWorkspaces.clear()
 		})
 	}
@@ -237,6 +256,18 @@ export class ThreadWorktreeManager {
 		return result
 	}
 
+	/** For Settings: whether the folder looks like an mm workspace (a hint only) and whether mm.js is where it's set. */
+	async setupHints(workspace: string): Promise<{ mmConfigFile?: string; mmFound?: boolean }> {
+		const { mmPath } = await this.settings()
+		let mmConfigFile: string | undefined
+		for (const name of [".mm.json", ".mmrc"])
+			if (await exists(path.join(workspace, name))) {
+				mmConfigFile = name
+				break
+			}
+		return { mmConfigFile, mmFound: mmPath ? await exists(path.resolve(workspace, mmPath)) : undefined }
+	}
+
 	invalidateMmWorkspace(workspace: string) {
 		this.mmWorkspaces.delete(path.resolve(workspace))
 	}
@@ -260,7 +291,12 @@ export class ThreadWorktreeManager {
 		}
 		let config: MmWorkspace | undefined
 		try {
-			if (!workspaceOff && (settings.mmPath || settings.mode === "mm")) {
+			// Off means off: name the switch that's off, the Mode first since the workspace switch can't help
+			// alone. Picking a mode in Settings turns this workspace back on too.
+			if (settings.mode === "off") throw new Error(WORKTREES_OFF)
+			if (workspaceOff) throw new Error(WORKTREES_OFF_HERE)
+			// A set mm.js path detects mm workspaces in Git mode too; mm mode in a plain repository uses Git.
+			if (settings.mmPath || settings.mode === "mm") {
 				availability.mode = "mm"
 				config = await this.discoverMm(workspace, settings, refreshMm)
 				if (config) {
@@ -269,16 +305,17 @@ export class ThreadWorktreeManager {
 					} catch (error) {
 						throw mmError(settings, (error as Error).message)
 					}
+					availability.modules = config.modules.map((module) => module.name)
 				} else {
 					// mm explicitly reported that this is not an mm workspace.
-					availability.mode = settings.mode === "off" ? "off" : "git"
+					availability.mode = "git"
 				}
 			}
-			if (availability.mode === "off") throw new Error("Worktrees are off for this workspace")
-			if (availability.mode === "git") await git(workspace, ["rev-parse", "--verify", "HEAD"])
+			if (availability.mode === "git") await assertCommitted(workspace)
 			availability.available = true
 		} catch (error) {
 			availability.reason = (error as Error).message
+			availability.fix = worktreeFixFor(availability.reason)
 		}
 		return { availability, config }
 	}

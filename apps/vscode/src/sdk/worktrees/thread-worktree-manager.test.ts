@@ -2,7 +2,9 @@ import { execFileSync, spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { NO_COMMITS, NOT_A_REPOSITORY, WORKTREES_OFF, WORKTREES_OFF_HERE, worktreeFixFor } from "@shared/thread-worktrees"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { worktreeFix } from "../automations/automation-precheck"
 import { alive, owner, storageLock } from "./storage-lock"
 import { mmPath } from "./temp-project.test-support"
 import { ThreadWorktreeManager } from "./thread-worktree-manager"
@@ -65,6 +67,68 @@ it("reports unset mm, a missing mm script, and missing Node with paths to fix", 
 	expect((await manager.availability(workspace)).reason).toBe(
 		`Couldn't run Node. Check its path in Worktrees settings. Node path: ${missingNode}. mm.js path: ${mmPath}`,
 	)
+})
+
+it("names the switch that's off, or the folder's git problem, and where each is fixed", async () => {
+	await manager.configure({ mode: "off", mmPath, nodePath: "node" })
+	expect(await manager.availability(workspace)).toMatchObject({
+		available: false,
+		fix: "mode",
+		reason: "Worktrees are off. Choose Git worktree or mm.",
+	})
+	expect(await manager.availability(workspace, true)).toMatchObject({
+		fix: "mode",
+		reason: "Worktrees are off. Choose Git worktree or mm.",
+	})
+	await manager.configure({ mode: "git", mmPath: "", nodePath: "node" })
+	expect(await manager.availability(workspace, true)).toMatchObject({
+		available: false,
+		fix: "workspace",
+		reason: "Worktrees are off for this workspace. Turn on Use worktrees in this workspace.",
+	})
+	const plain = path.join(temp, "plain")
+	await fs.mkdir(plain)
+	expect(await manager.availability(plain)).toMatchObject({ available: false, fix: "repository" })
+	expect((await manager.availability(plain)).reason).toContain("not a git repository")
+	git(plain, "init", "-b", "main")
+	expect(await manager.availability(plain)).toMatchObject({
+		available: false,
+		fix: "commit",
+		reason: "This repository does not have any commits yet. Make a first commit.",
+	})
+	await manager.configure({ mode: "mm", mmPath: "", nodePath: "node" })
+	expect(await manager.availability(workspace)).toMatchObject({ available: false, fix: "mm" })
+})
+
+it.each([
+	[WORKTREES_OFF, "mode", "worktrees"],
+	[WORKTREES_OFF_HERE, "workspace", "worktrees"],
+	["Couldn't find mm.js. Check its path in Worktrees settings. mm.js path: /x/mm.js", "mm", "worktrees"],
+	[NOT_A_REPOSITORY, "repository", "repository"],
+	[NO_COMMITS, "commit", "commit"],
+	// Reasons stored before this wording keep their fix.
+	["Worktrees are off for this workspace", "workspace", "worktrees"],
+])("links %s to its fix here and in automations", (reason, fix, automationFix) => {
+	expect(worktreeFixFor(reason)).toBe(fix)
+	expect(worktreeFix(reason)).toBe(automationFix)
+})
+
+it("hints at mm config in the folder, checks mm.js is there and expands ~ in paths", async () => {
+	expect(await manager.setupHints(workspace)).toEqual({ mmConfigFile: undefined, mmFound: true })
+	await write(workspace, ".mmrc", "api\n")
+	expect((await manager.setupHints(workspace)).mmConfigFile).toBe(".mmrc")
+	await write(workspace, ".mm.json", "{}")
+	expect((await manager.setupHints(workspace)).mmConfigFile).toBe(".mm.json")
+	await manager.configure({ mode: "mm", mmPath: path.join(temp, "missing.js"), nodePath: "node" })
+	expect((await manager.setupHints(workspace)).mmFound).toBe(false)
+	await manager.configure({ mode: "mm", mmPath: "", nodePath: "node" })
+	expect((await manager.setupHints(workspace)).mmFound).toBeUndefined()
+	await manager.configure({ mode: "mm", mmPath: " ~/tools/mm.js ", nodePath: "~" })
+	expect(await manager.settings()).toEqual({
+		mode: "mm",
+		mmPath: path.join(os.homedir(), "tools/mm.js"),
+		nodePath: os.homedir(),
+	})
 })
 
 it("caches discovery until settings, an explicit refresh, or create request new results", async () => {
@@ -269,8 +333,13 @@ describe("mm integration", () => {
 		await repo(path.join(workspace, "web"))
 		await write(workspace, ".mmrc", '{"modules":["api","web"]}')
 	}, 60_000)
+	it("keeps worktrees off when Mode is Off, even with mm.js set in an mm workspace", async () => {
+		await manager.configure({ mode: "off", mmPath, nodePath: "node" })
+		expect(await manager.availability(workspace)).toMatchObject({ mode: "off", available: false, fix: "mode" })
+		await expect(manager.create("off", "Off", workspace)).rejects.toThrow("Worktrees are off.")
+	})
 	it("auto-selects mm, creates both module worktrees and verifies real mm free", async () => {
-		expect((await manager.availability(workspace)).mode).toBe("mm")
+		expect(await manager.availability(workspace)).toMatchObject({ mode: "mm", available: true, modules: ["api", "web"] })
 		const m = await manager.create("mm", "Two modules", workspace)
 		expect(m.mode).toBe("mm")
 		for (const module of m.modules) expect(git(module.path, "branch", "--show-current")).toBe(m.branch)

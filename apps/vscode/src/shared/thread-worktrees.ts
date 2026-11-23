@@ -56,17 +56,54 @@ export interface ThreadModuleDiff {
 	/** Paths for display/checkpoints, prefixed with the module for mm. */
 	paths: string[]
 }
+/**
+ * What to change so a worktree can be made: the Mode, this workspace's switch, the mm paths (or
+ * mm's own config), or the folder's git (not a repository, no commits yet).
+ */
+export type WorktreeFix = "mode" | "workspace" | "mm" | "repository" | "commit"
+
+export const WORKTREES_OFF = "Worktrees are off. Choose Git worktree or mm."
+export const WORKTREES_OFF_HERE = "Worktrees are off for this workspace. Turn on Use worktrees in this workspace."
+export const NOT_A_REPOSITORY = "This folder is not a git repository. Initialize git here or open the repository's folder."
+export const NO_COMMITS = "This repository does not have any commits yet. Make a first commit."
+
+/**
+ * Where a worktree reason is fixed. Reasons are also stored as text (a thread that couldn't start,
+ * automation runs), so this reads the words; the host's messages above keep these phrases.
+ */
+export function worktreeFixFor(reason: string | undefined): WorktreeFix | undefined {
+	const text = reason ?? ""
+	if (/worktrees are off for this workspace/i.test(text)) return "workspace"
+	if (/worktrees are off/i.test(text)) return "mode"
+	if (/mm\.js|node path:/i.test(text)) return "mm"
+	if (/not a git repository/i.test(text)) return "repository"
+	if (/does not have any commits|unknown revision|needed a single revision|ambiguous argument 'HEAD'/i.test(text))
+		return "commit"
+	return undefined
+}
+
 export interface WorktreeAvailability {
 	mode: WorktreeMode
 	available: boolean
 	reason?: string
+	/** Set when not available and the reason has a known fix. */
+	fix?: WorktreeFix
 	workspaceOff: boolean
+	/** mm module names, when this folder is an mm workspace that's ready. */
+	modules?: string[]
 }
 export interface WorktreeState {
 	settings: ThreadWorktreeSettings
 	availability: WorktreeAvailability
 	mapping?: ThreadWorktree
 	settled: ThreadWorktree[]
+	/**
+	 * `.mm.json` or `.mmrc` when the open folder has one at its root: only a hint to suggest mm.
+	 * Modules always come from `mm modules --json`.
+	 */
+	mmConfigFile?: string
+	/** Whether mm.js is at the set path; undefined when no path is set. */
+	mmFound?: boolean
 }
 /**
  * Where a worktree thread's changes stand, for the workspace menu: its status line and which

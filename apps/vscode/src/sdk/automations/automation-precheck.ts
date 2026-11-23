@@ -28,6 +28,8 @@ export function plainWorktreeReason(reason: string | undefined): string {
 	const text = (reason ?? "").trim()
 	if (!text) return "a worktree can't be made here."
 	if (/mm\.js path:/i.test(text)) return text
+	// Today's messages name the switch that's off and how to turn it on; older stored ones didn't.
+	if (/^Worktrees are off\b.*\.$/.test(text)) return text
 	if (/worktrees are off/i.test(text)) return "worktrees are turned off."
 	if (/not a git repository/i.test(text))
 		return "this folder isn't a git repository. Open the repository's folder, or initialize git here."

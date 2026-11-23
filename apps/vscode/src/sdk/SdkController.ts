@@ -3235,6 +3235,7 @@ export class Controller {
 								history.filter((item) => item.status === "completed").map((item) => item.sessionId),
 							)
 						).filter((m) => m.workspace === workspace && !this.sessions.getSession(m.threadId)?.isRunning),
+						...(await this.threadWorktrees.setupHints(workspace)),
 					},
 				}
 			}

@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { WORKTREES_OFF, WORKTREES_OFF_HERE } from "@shared/thread-worktrees"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { describeDecision, staysInWorktree } from "./automation-approvals"
 import { ticketToPr } from "./automation-fixtures"
@@ -81,6 +82,9 @@ describe("precheckSteps", () => {
 
 	it("puts git's errors in plain words", () => {
 		expect(plainWorktreeReason("Worktrees are off for this workspace")).toBe("worktrees are turned off.")
+		// Today's messages already say which switch is off and how to turn it on.
+		expect(plainWorktreeReason(WORKTREES_OFF)).toBe(WORKTREES_OFF)
+		expect(plainWorktreeReason(WORKTREES_OFF_HERE)).toBe(WORKTREES_OFF_HERE)
 		expect(plainWorktreeReason("fatal: ambiguous argument 'HEAD': unknown revision")).toContain("no commits yet")
 		expect(plainWorktreeReason("Set the path to mm.js in Worktrees settings")).toBe("mm isn't set up. Set the path to mm.js.")
 	})
