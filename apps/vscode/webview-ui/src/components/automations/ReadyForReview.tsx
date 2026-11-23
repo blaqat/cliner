@@ -83,7 +83,7 @@ export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, on
 			</div>
 			{nothing && (
 				<div className="mt-0.5 text-description" data-testid={`review-nothing-${run.id}`}>
-					No code or notes changed. Each step's reply is above.
+					No code or notes changed. Each step's reply is in its step above.
 				</div>
 			)}
 			{withChanges.map((thread) => (

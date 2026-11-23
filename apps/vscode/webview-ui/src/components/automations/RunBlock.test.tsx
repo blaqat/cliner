@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { setAutomationRunsForTest } from "@/hooks/useAutomationRuns"
 import { AutomationRunBar } from "./AutomationRunBar"
-import { RunBlock } from "./RunBlock"
+import { clearRunFoldsForTest, RunBlock } from "./RunBlock"
 import { clearRunStartsForTest } from "./runActions"
 
 const mocks = vi.hoisted(() => ({
@@ -118,6 +118,7 @@ beforeEach(() => {
 	mocks.navigate.mockReset()
 	mocks.worktreeAction.mockReset().mockResolvedValue({ json: "{}" })
 	clearRunStartsForTest()
+	clearRunFoldsForTest()
 	mocks.history = [
 		{ id: "t1", totalCost: 0.1 },
 		{ id: "t2", totalCost: 0.2 },
@@ -130,6 +131,9 @@ describe("RunBlock", () => {
 		const block = screen.getByTestId("run-block-run-1")
 		expect(screen.getByTestId("run-status-run-1")).toHaveTextContent("Waiting for you")
 		expect(block).toHaveTextContent("4 min · $0.30")
+		// A finished step folds once a later one has started; unfolding shows its threads and replies.
+		expect(screen.queryByTestId("run-thread-r")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("run-step-toggle-research"))
 		expect(screen.getByTestId("run-thread-r")).toHaveTextContent("Gateway 502s")
 		// A single thread's title is the step's: it isn't said twice.
 		expect(screen.getByTestId("run-step-research").textContent?.match(/Research P-1/g)).toHaveLength(1)
@@ -340,6 +344,107 @@ describe("RunBlock", () => {
 		expect(steps()).not.toBeInTheDocument()
 		fireEvent.click(header)
 		expect(steps()).toBeInTheDocument()
+	})
+
+	it("folds a live run; the folded line keeps its status, step, Stop and what it waits on", () => {
+		const { rerender } = render(<RunBlock onOpenThread={vi.fn()} run={waitingRun()} statuses={{}} />)
+		const header = screen.getByTestId("run-toggle-run-1")
+		expect(header).toHaveAttribute("aria-expanded", "true")
+		expect(header).toHaveAttribute("title", "Fold")
+		fireEvent.click(header)
+		expect(header).toHaveAttribute("aria-expanded", "false")
+		expect(header).toHaveAttribute("title", "Unfold")
+		expect(screen.queryByTestId("run-steps-run-1")).not.toBeInTheDocument()
+		expect(screen.getByTestId("run-status-run-1")).toHaveTextContent("Waiting for you")
+		expect(screen.getByTestId("run-stop-run-1")).toBeInTheDocument()
+		// The Ask you step is answered here: Show unfolds the run to it.
+		expect(screen.getByTestId("run-folded-need-run-1")).toHaveTextContent("Pick: Which plan?")
+		fireEvent.click(within(screen.getByTestId("run-folded-need-run-1")).getByRole("button", { name: "Show" }))
+		expect(screen.getByTestId("run-checkpoint-pick")).toBeInTheDocument()
+
+		// Running with nothing to answer: the folded line says which step it's on.
+		const running = waitingRun()
+		running.status = "running"
+		running.steps[2] = { ...running.steps[2], status: "done", choice: "Plan A" }
+		running.steps[3] = { ...running.steps[3], status: "running", threads: [thread("build", "t4", "running")] }
+		rerender(<RunBlock onOpenThread={vi.fn()} run={running} statuses={{}} />)
+		fireEvent.click(screen.getByTestId("run-toggle-run-1"))
+		expect(screen.getByTestId("run-folded-step-run-1")).toHaveTextContent("Step 4 of 4: Build")
+	})
+
+	it("sends you to a thread that needs an answer, and to the task page for missing outputs", () => {
+		const onOpenThread = vi.fn()
+		const run = waitingRun()
+		run.steps[2] = { ...run.steps[2], status: "done", choice: "Plan A" }
+		run.steps[3] = {
+			...run.steps[3],
+			status: "running",
+			threads: [thread("build", "t4", "waiting", { waitingOn: "Approve an edit to a.ts" })],
+		}
+		const { rerender } = render(<RunBlock onOpenThread={onOpenThread} run={run} statuses={{}} />)
+		fireEvent.click(screen.getByTestId("run-toggle-run-1"))
+		fireEvent.click(within(screen.getByTestId("run-folded-need-run-1")).getByRole("button", { name: "Go to it" }))
+		expect(onOpenThread).toHaveBeenCalledWith("t4")
+
+		run.steps[3].threads = [
+			thread("build", "t4", "waiting", { waitingOn: "Missing outputs: summary", missingOutputs: ["summary"] }),
+		]
+		rerender(<RunBlock onOpenThread={onOpenThread} run={{ ...run }} statuses={{}} />)
+		const need = screen.getByTestId("run-folded-need-run-1")
+		expect(need).toHaveTextContent("Missing outputs: summary")
+		fireEvent.click(within(need).getByRole("button", { name: "Show" }))
+		expect(screen.getByRole("button", { name: "Continue without" })).toBeInTheDocument()
+	})
+
+	it("folds each step: finished ones once a later one starts, keeping its outputs count and your choices", () => {
+		const run = waitingRun()
+		run.steps[0].threads[0].outputs = [
+			{ name: "findings", firstLine: "Gateway 502s" },
+			{ name: "links", firstLine: "a, b" },
+		]
+		const { rerender } = render(<RunBlock onOpenThread={vi.fn()} run={run} statuses={{}} />)
+		const research = screen.getByTestId("run-step-toggle-research")
+		expect(research).toHaveAttribute("aria-expanded", "false")
+		expect(research).toHaveAttribute("title", "Unfold")
+		expect(screen.getByTestId("run-step-outputs-research")).toHaveTextContent("2 outputs")
+		// The waiting step is open; a step that hasn't started has nothing to fold.
+		expect(screen.getByTestId("run-step-toggle-pick")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.queryByTestId("run-step-toggle-build")).not.toBeInTheDocument()
+
+		fireEvent.click(research)
+		fireEvent.click(screen.getByTestId("run-step-toggle-pick"))
+		expect(screen.getByText("findings")).toBeInTheDocument()
+		expect(screen.queryByTestId("run-checkpoint-pick")).not.toBeInTheDocument()
+		// A folded step that needs you says so on its line.
+		expect(screen.getByTestId("run-step-needs-pick")).toHaveTextContent("needs you")
+
+		// A streamed update keeps both choices.
+		rerender(<RunBlock now={9_000} onOpenThread={vi.fn()} run={{ ...run, steps: [...run.steps] }} statuses={{}} />)
+		expect(screen.getByTestId("run-step-toggle-research")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByTestId("run-step-toggle-pick")).toHaveAttribute("aria-expanded", "false")
+	})
+
+	it("shows a finished run's last step open and the earlier ones folded", () => {
+		const run = failedRun()
+		run.status = "done"
+		run.steps[3] = { ...run.steps[3], status: "done", threads: [thread("build", "t4", "done", { reply: "Shipped" })] }
+		render(<RunBlock defaultOpen onOpenThread={vi.fn()} run={run} statuses={{}} />)
+		expect(screen.getByTestId("run-step-toggle-build")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByTestId("run-step-toggle-research")).toHaveAttribute("aria-expanded", "false")
+		expect(screen.getByTestId("run-step-toggle-plan")).toHaveAttribute("aria-expanded", "false")
+	})
+
+	it("keeps the run's fold when a live run ends", () => {
+		const { rerender } = render(<RunBlock defaultOpen={false} onOpenThread={vi.fn()} run={waitingRun()} statuses={{}} />)
+		expect(screen.getByTestId("run-steps-run-1")).toBeInTheDocument()
+		// Watched it finish: it stays open.
+		rerender(<RunBlock defaultOpen={false} onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />)
+		const done = { ...failedRun(), status: "done" as const }
+		rerender(<RunBlock defaultOpen={false} onOpenThread={vi.fn()} run={done} statuses={{}} />)
+		expect(screen.getByTestId("run-steps-run-1")).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("run-toggle-run-1"))
+		rerender(<RunBlock defaultOpen={false} onOpenThread={vi.fn()} run={{ ...done, endedAt: 99 }} statuses={{}} />)
+		expect(screen.queryByTestId("run-steps-run-1")).not.toBeInTheDocument()
 	})
 })
 

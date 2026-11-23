@@ -8,7 +8,7 @@ import {
 } from "@shared/automations"
 import { AnswerAutomationCheckpointRequest } from "@shared/proto/cline/automation"
 import { LoaderCircleIcon } from "lucide-react"
-import { useState } from "react"
+import { useReducer, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { type ThreadStatuses, threadStatusFor } from "@/components/inbox/threadStatus"
 import { Button } from "@/components/ui/button"
@@ -19,7 +19,7 @@ import { AutomationServiceClient } from "@/services/grpc-client"
 import { ReadyForReview } from "./ReadyForReview"
 import { MissingOutputs, RunOutput } from "./RunThreadOutputs"
 import { ProblemDetails, ProblemList, stopRun, useRunActions } from "./runActions"
-import { runStatusText, runTimeAndCost, STEP_STATUS_LABELS } from "./runFacts"
+import { currentStep, runNeeds, runStatusText, runTimeAndCost, STEP_STATUS_LABELS } from "./runFacts"
 
 export { stopRun } from "./runActions"
 
@@ -294,6 +294,200 @@ function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<
 	)
 }
 
+/** Folds the user picked this session, by run and by step. A resumed run starts over with the defaults. */
+const userFolds = new Map<string, boolean>()
+
+export function clearRunFoldsForTest() {
+	userFolds.clear()
+}
+
+function foldKey(run: AutomationRun, stepId?: string): string {
+	return `${run.id}@${run.resumedAt ?? 0}${stepId ? `#${stepId}` : ""}`
+}
+
+/** A step's status with its threads in mind: a running step with a thread waiting on you is waiting. */
+function stepStatus(step: AutomationRunStep): AutomationRunStepStatus {
+	return step.status === "running" && step.threads.some((thread) => thread.status === "waiting") ? "waiting" : step.status
+}
+
+const started = (step: AutomationRunStep) => step.status !== "pending" && step.status !== "skipped"
+
+/**
+ * Whether a step starts open: the one running or waiting and a failed one do; a finished one folds once a
+ * later step has started, so a finished run shows its last step open.
+ */
+export function stepOpenByDefault(run: AutomationRun, index: number): boolean {
+	const step = run.steps[index]
+	const status = stepStatus(step)
+	if (status === "running" || status === "waiting" || status === "failed" || step.error) return true
+	if (!started(step)) return false
+	return !run.steps.slice(index + 1).some(started)
+}
+
+function Caret({ open }: { open: boolean }) {
+	return (
+		<span
+			aria-hidden
+			className={cn(
+				"codicon codicon-chevron-right w-2.5 shrink-0 self-center text-[10px]! transition-transform duration-150 motion-reduce:transition-none",
+				open && "rotate-90",
+			)}
+		/>
+	)
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+
+function StepRow({
+	run,
+	step,
+	index,
+	open,
+	onToggle,
+	statuses,
+	onOpenThread,
+	onOpenNote,
+	actions,
+}: {
+	run: AutomationRun
+	step: AutomationRunStep
+	index: number
+	open: boolean
+	onToggle: () => void
+	statuses: ThreadStatuses
+	onOpenThread: (threadId: string) => void
+	onOpenNote?: (slug: string) => void
+	actions: ReturnType<typeof useRunActions>
+}) {
+	const status = stepStatus(step)
+	const showError = !!step.error && !actions.problems && step.threads.every((thread) => !thread.error)
+	const showThreads = step.threads.length > 0 && started(step)
+	const showChoices = step.kind === "checkpoint" && step.status === "waiting"
+	const foldable = showError || showThreads || showChoices
+	const outputs = step.threads.reduce((count, thread) => count + (thread.outputs?.length ?? 0), 0)
+	const needsYou =
+		status === "waiting" || step.threads.some((thread) => liveThreadStatus(thread, statuses) === "waiting" && started(step))
+	const headerClass = "flex w-full min-w-0 items-center gap-1.5 text-left text-foreground"
+	const header = (
+		<>
+			{foldable ? <Caret open={open} /> : <span aria-hidden className="w-2.5 shrink-0" />}
+			<StepStatusIcon status={status} />
+			<span className="w-3 shrink-0 text-right text-description">{index + 1}</span>
+			<span className={cn("min-w-0 truncate", started(step) ? "" : "text-description")}>{step.title}</span>
+			{step.kind === "together" && <span className="shrink-0 text-description">· {step.threads.length} together</span>}
+			{step.kind === "checkpoint" && step.choice && (
+				<span className="min-w-0 truncate text-description">· you picked {step.choice}</span>
+			)}
+			{outputs > 0 && (
+				<span className="shrink-0 text-description" data-testid={`run-step-outputs-${step.id}`}>
+					· {plural(outputs, "output")}
+				</span>
+			)}
+			{foldable && !open && needsYou && (
+				<span className="shrink-0 text-warning" data-testid={`run-step-needs-${step.id}`}>
+					· needs you
+				</span>
+			)}
+		</>
+	)
+	return (
+		<li className="py-0.5" data-testid={`run-step-${step.id}`}>
+			{foldable ? (
+				<button
+					aria-controls={`run-step-body-${run.id}-${step.id}`}
+					aria-expanded={open}
+					className={cn(
+						headerClass,
+						"cursor-pointer rounded-xs border-0 bg-transparent p-0 font-[inherit] focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)",
+					)}
+					data-testid={`run-step-toggle-${step.id}`}
+					onClick={onToggle}
+					title={open ? "Fold" : "Unfold"}
+					type="button">
+					{header}
+				</button>
+			) : (
+				<div className={headerClass}>{header}</div>
+			)}
+			{foldable && open && (
+				<div className="pl-4" id={`run-step-body-${run.id}-${step.id}`}>
+					{showError && (
+						<div className="ml-9 text-error">
+							<ProblemDetails
+								automation={run.automation}
+								onRecheck={actions.onRecheck}
+								problem={{ message: step.error as string, fix: step.fix }}
+							/>
+						</div>
+					)}
+					{showThreads && (
+						<ul className="m-0 list-none p-0">
+							{step.threads.map((thread) => (
+								<ThreadRow
+									actions={actions}
+									key={thread.id}
+									nested={step.kind === "together"}
+									onOpenNote={onOpenNote}
+									onOpenThread={onOpenThread}
+									run={run}
+									statuses={statuses}
+									thread={thread}
+								/>
+							))}
+						</ul>
+					)}
+					{showChoices && <CheckpointChoices onOpenThread={onOpenThread} run={run} step={step} />}
+				</div>
+			)}
+		</li>
+	)
+}
+
+/** The folded run's second line: what it waits on (with where to answer it), else the step it's on. */
+function FoldedRunLine({
+	run,
+	onOpenThread,
+	onShow,
+}: {
+	run: AutomationRun
+	onOpenThread: (threadId: string) => void
+	onShow: (stepId: string) => void
+}) {
+	const need = runNeeds(run)[0]
+	if (need) {
+		const thread = run.steps
+			.find((step) => step.id === need.stepId)
+			?.threads.find((candidate) => candidate.threadId === need.threadId)
+		// Missing outputs and Ask you steps are answered here, on the task page.
+		const answerHere = !need.threadId || !!thread?.missingOutputs?.length
+		return (
+			<div
+				className="mt-0.5 flex min-w-0 items-baseline gap-1.5 rounded-xs bg-warning/10 px-1.5 py-0.5"
+				data-testid={`run-folded-need-${run.id}`}>
+				{/* The header already says Waiting for you. */}
+				<span className="min-w-0 flex-1 text-warning">{need.text}</span>
+				{answerHere ? (
+					<LinkButton className="shrink-0" onClick={() => onShow(need.stepId)}>
+						Show
+					</LinkButton>
+				) : (
+					<LinkButton className="shrink-0" onClick={() => onOpenThread(need.threadId as string)}>
+						Go to it
+					</LinkButton>
+				)}
+			</div>
+		)
+	}
+	if (!isLiveRun(run)) return null
+	const at = currentStep(run)
+	if (!at) return null
+	return (
+		<div className="mt-0.5 min-w-0 truncate pl-4 text-description" data-testid={`run-folded-step-${run.id}`}>
+			Step {at.number} of {run.steps.length}: {at.step.title}
+		</div>
+	)
+}
+
 interface RunBlockProps {
 	run: AutomationRun
 	statuses: ThreadStatuses
@@ -305,7 +499,7 @@ interface RunBlockProps {
 	noteNames?: ReadonlyMap<string, string>
 	onOpenNote?: (slug: string) => void
 	now?: number
-	/** Finished runs start folded to one line. */
+	/** Whether it starts open; live and failed runs always do. */
 	defaultOpen?: boolean
 }
 
@@ -313,7 +507,7 @@ interface RunBlockProps {
  * A run on its task page: the one place with its steps and their outcomes. Each step shows its threads
  * (indented when they ran together) and replies; what it's waiting for, with a jump to it; why it failed,
  * with a link to the fix; then Retry, Resume from a step, or Run again once it ends. Time and cost live
- * in its header. Ready for review (when done) lists only what to look at: code to walk through and notes
+ * in its header. The run and each step fold; a folded run still says what it waits on. Ready for review (when done) lists only what to look at: code to walk through and notes
  * the run wrote.
  */
 export function RunBlock({
@@ -331,11 +525,17 @@ export function RunBlock({
 	const actions = useRunActions(run)
 	const timeAndCost = runTimeAndCost(run, taskHistory, now)
 	const live = isLiveRun(run)
-	const [fold, setFold] = useState<{ status: AutomationRun["status"]; resumedAt?: number; expanded: boolean }>()
+	const [, refold] = useReducer((count: number) => count + 1, 0)
 	const [initialOpen] = useState(defaultOpen ?? live)
-	const expanded =
-		live ||
-		(fold?.status === run.status && fold.resumedAt === run.resumedAt ? fold.expanded : run.status === "failed" || initialOpen)
+	// A run you watched finish stays open.
+	const sawLive = useRef(live)
+	if (live) sawLive.current = true
+	const setOpen = (key: string, open: boolean) => {
+		userFolds.set(key, open)
+		refold()
+	}
+	const expanded = userFolds.get(foldKey(run)) ?? (live || run.status === "failed" || sawLive.current || initialOpen)
+	const stepOpen = (index: number) => userFolds.get(foldKey(run, run.steps[index].id)) ?? stepOpenByDefault(run, index)
 	const tone =
 		run.status === "failed"
 			? "text-error"
@@ -344,18 +544,6 @@ export function RunBlock({
 				: run.status === "done"
 					? "text-success"
 					: "text-description"
-	const headerClass = "flex min-w-0 flex-1 items-baseline gap-1.5 text-left text-foreground"
-	const headerContent = (
-		<>
-			<span className="min-w-0 truncate font-semibold">{run.title}</span>
-			<span className={cn("shrink-0", tone)} data-testid={`run-status-${run.id}`}>
-				{runStatusText(run)}
-			</span>
-			<span className="ml-auto min-w-0 shrink truncate pl-1 text-description" title={timeAndCost}>
-				{timeAndCost}
-			</span>
-		</>
-	)
 	return (
 		<div
 			className={cn(
@@ -368,87 +556,54 @@ export function RunBlock({
 			)}
 			data-testid={`run-block-${run.id}`}>
 			<div className="flex min-w-0 items-center gap-1.5">
-				{live ? (
-					<div className={headerClass}>{headerContent}</div>
-				) : (
-					<button
-						aria-expanded={expanded}
-						className={cn(headerClass, "cursor-pointer border-0 bg-transparent p-0")}
-						onClick={() => setFold({ status: run.status, resumedAt: run.resumedAt, expanded: !expanded })}
-						title={expanded ? "Fold" : "Show the steps"}
-						type="button">
-						<span
-							aria-hidden
-							className={cn(
-								"codicon shrink-0 self-center text-[10px]!",
-								expanded ? "codicon-chevron-down" : "codicon-chevron-right",
-							)}
-						/>
-						{headerContent}
-					</button>
-				)}
+				<button
+					aria-controls={`run-steps-${run.id}`}
+					aria-expanded={expanded}
+					className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-1.5 rounded-xs border-0 bg-transparent p-0 text-left font-[inherit] text-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder)"
+					data-testid={`run-toggle-${run.id}`}
+					onClick={() => setOpen(foldKey(run), !expanded)}
+					title={expanded ? "Fold" : "Unfold"}
+					type="button">
+					<Caret open={expanded} />
+					<span className="min-w-0 truncate font-semibold">{run.title}</span>
+					<span className={cn("shrink-0", tone)} data-testid={`run-status-${run.id}`}>
+						{runStatusText(run)}
+					</span>
+					<span className="ml-auto min-w-0 shrink truncate pl-1 text-description" title={timeAndCost}>
+						{timeAndCost}
+					</span>
+				</button>
 				{live && (
 					<Button data-testid={`run-stop-${run.id}`} onClick={() => void stopRun(run.id)} size="xs" variant="secondary">
 						Stop
 					</Button>
 				)}
 			</div>
+			{!expanded && (
+				<FoldedRunLine
+					onOpenThread={onOpenThread}
+					onShow={(stepId) => {
+						userFolds.set(foldKey(run, stepId), true)
+						setOpen(foldKey(run), true)
+					}}
+					run={run}
+				/>
+			)}
 			{expanded && (
-				<ol className="m-0 mt-1 list-none p-0" data-testid={`run-steps-${run.id}`}>
+				<ol className="m-0 mt-1 list-none p-0" data-testid={`run-steps-${run.id}`} id={`run-steps-${run.id}`}>
 					{run.steps.map((step, index) => (
-						<li className="py-0.5" data-testid={`run-step-${step.id}`} key={step.id}>
-							<div className="flex min-w-0 items-center gap-1.5">
-								<StepStatusIcon
-									status={
-										step.status === "running" && step.threads.some((thread) => thread.status === "waiting")
-											? "waiting"
-											: step.status
-									}
-								/>
-								<span className="w-3 shrink-0 text-right text-description">{index + 1}</span>
-								<span
-									className={cn(
-										"min-w-0 truncate",
-										step.status === "skipped" || step.status === "pending" ? "text-description" : "",
-									)}>
-									{step.title}
-								</span>
-								{step.kind === "together" && (
-									<span className="shrink-0 text-description">· {step.threads.length} together</span>
-								)}
-								{step.kind === "checkpoint" && step.choice && (
-									<span className="min-w-0 truncate text-description">· you picked {step.choice}</span>
-								)}
-							</div>
-							{step.error && !actions.problems && step.threads.every((thread) => !thread.error) && (
-								<div className="ml-9 text-error">
-									<ProblemDetails
-										automation={run.automation}
-										onRecheck={actions.onRecheck}
-										problem={{ message: step.error, fix: step.fix }}
-									/>
-								</div>
-							)}
-							{step.threads.length > 0 && step.status !== "pending" && step.status !== "skipped" && (
-								<ul className="m-0 list-none p-0">
-									{step.threads.map((thread) => (
-										<ThreadRow
-											actions={actions}
-											key={thread.id}
-											nested={step.kind === "together"}
-											onOpenNote={onOpenNote}
-											onOpenThread={onOpenThread}
-											run={run}
-											statuses={statuses}
-											thread={thread}
-										/>
-									))}
-								</ul>
-							)}
-							{step.kind === "checkpoint" && step.status === "waiting" && (
-								<CheckpointChoices onOpenThread={onOpenThread} run={run} step={step} />
-							)}
-						</li>
+						<StepRow
+							actions={actions}
+							index={index}
+							key={step.id}
+							onOpenNote={onOpenNote}
+							onOpenThread={onOpenThread}
+							onToggle={() => setOpen(foldKey(run, step.id), !stepOpen(index))}
+							open={stepOpen(index)}
+							run={run}
+							statuses={statuses}
+							step={step}
+						/>
 					))}
 				</ol>
 			)}
