@@ -126,10 +126,10 @@ export function describeRun(
 				const last = definition.steps.length
 				const items = fill(step.items)
 				const listed = splitEachItems(items)
-				const what = listed.length > 1 ? `${listed.length} items` : listed[0]
+				const what = listed.length > 1 ? `each of ${listed.length} items` : listed[0] || "each item"
 				return {
 					...base,
-					detail: `Steps ${first === last ? first : `${first}–${last}`} run for ${what ? `each of ${what}` : "each item"}, ${step.atOnce} at a time, each in its own task`,
+					detail: `${first === last ? `Step ${first} runs` : `Steps ${first}–${last} run`} for ${what}. Up to ${step.atOnce} items at a time, each in its own task.`,
 					threads: [],
 				}
 			}

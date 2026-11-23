@@ -46,6 +46,22 @@ describe("describeRun", () => {
 		expect(describeRun(noTask, {}, undefined, { inTask: true }).steps[0].title).toBe("Plan")
 	})
 
+	it("shows the workspace of the parent and each item's steps separately", () => {
+		const fanOut: AutomationDefinition = {
+			...definition,
+			steps: [
+				definition.steps[1],
+				{ kind: "each", id: "each", title: "For each", items: "{{context}}", ticket: "", newTaskTitle: "", atOnce: 2 },
+				definition.steps[3],
+			],
+		}
+		const run = describeRun(fanOut, {}, undefined, { inTask: true, text: "A-1, A-2" })
+		expect(run.steps[0].threads[0].worktreeScope).toBeUndefined()
+		expect(run.steps[1].detail).toBe("Step 3 runs for each of 2 items. Up to 2 items at a time, each in its own task.")
+		expect(run.steps[2]).toMatchObject({ perItem: true, threads: [{ worktreeScope: "task" }] })
+		expect(summarizeRun(run)).toBe("1 thread · 1 thread, 1 worktree per item")
+	})
+
 	it.each([
 		[0.4, 0.5, 1.2, "Last 2 runs $0.90–$1.20"],
 		[0.0004, 0.0006, 12.5, "Last 2 runs $0.001–$12.50"],

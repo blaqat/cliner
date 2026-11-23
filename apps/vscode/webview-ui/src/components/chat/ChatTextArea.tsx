@@ -1387,9 +1387,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			highlightLayerRef.current.scrollLeft = textAreaRef.current.scrollLeft
 		}, [localWorkflowToggles, globalWorkflowToggles, remoteWorkflowToggles, remoteConfigSettings, scriptCommands])
 
+		// The whole draft too: becoming an automation draft can leave the text box's own text ("") unchanged.
 		useLayoutEffect(() => {
 			updateHighlights()
-		}, [inputValue, updateHighlights])
+		}, [inputValue, draftValue, updateHighlights])
 
 		const updateCursorPosition = useCallback(() => {
 			if (textAreaRef.current) {

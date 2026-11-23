@@ -556,7 +556,7 @@ describe("RunBlock for each and context", () => {
 		render(<RunBlock now={60_000} onOpenTask={onOpenTask} onOpenThread={vi.fn()} run={fanOutRun()} statuses={{}} />)
 		expect(screen.getByTestId("run-step-items-each")).toHaveTextContent("2 of 3 done, 1 didn't finish")
 		const items = screen.getByTestId("run-items")
-		expect(within(items).getByTestId("run-item-A-2")).toHaveTextContent("A-2at Fix A-2")
+		expect(within(items).getByTestId("run-item-A-2")).toHaveTextContent("A-2Failed at Fix A-2")
 		expect(within(items).getByTestId("run-item-A-2")).toHaveTextContent("The model refused.")
 		fireEvent.click(within(within(items).getByTestId("run-item-A-2")).getByText("Open task"))
 		expect(onOpenTask).toHaveBeenCalledWith("g-a2")

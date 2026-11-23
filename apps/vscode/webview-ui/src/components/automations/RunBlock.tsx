@@ -365,7 +365,8 @@ function ItemRows({ items, onOpenTask }: { items: readonly AutomationRunItem[]; 
 						? (item.at ?? "")
 						: item.status === "done"
 							? ""
-							: (ITEM_STATUS_TEXT[item.status] ?? (item.at ? `at ${item.at}` : ""))
+							: (ITEM_STATUS_TEXT[item.status] ??
+								`${STEP_STATUS_LABELS[item.status]}${item.at ? ` at ${item.at}` : ""}`)
 				return (
 					<li className="flex min-w-0 flex-col py-0.5 pl-9" data-testid={`run-item-${item.label}`} key={item.item}>
 						<div className="flex min-w-0 items-center gap-1.5">
