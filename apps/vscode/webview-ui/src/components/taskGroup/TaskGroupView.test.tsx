@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
 	getTaskGroup: vi.fn(),
 	updateTaskGroup: vi.fn(),
 	deleteTaskGroup: vi.fn(),
+	previewTaskGroupDelete: vi.fn(),
+	deleteTaskGroupWithThreads: vi.fn(),
 	toggleTaskSettled: vi.fn(),
 	openNote: vi.fn(),
 	showTaskWithId: vi.fn(),
@@ -24,6 +26,10 @@ vi.mock("@/services/grpc-client", () => ({
 		updateTaskGroup: (request: unknown) => mocks.updateTaskGroup(request),
 		deleteTaskGroup: (request: unknown) => mocks.deleteTaskGroup(request),
 		openNote: (request: unknown) => mocks.openNote(request),
+	},
+	TaskGroupDeleteServiceClient: {
+		previewTaskGroupDelete: (request: unknown) => mocks.previewTaskGroupDelete(request),
+		deleteTaskGroupWithThreads: (request: unknown) => mocks.deleteTaskGroupWithThreads(request),
 	},
 	TaskServiceClient: {
 		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
@@ -193,6 +199,16 @@ describe("TaskGroupView", () => {
 		mocks.getTaskGroup.mockReset().mockResolvedValue(FIXTURE)
 		mocks.updateTaskGroup.mockReset().mockResolvedValue({})
 		mocks.deleteTaskGroup.mockReset().mockResolvedValue({})
+		mocks.previewTaskGroupDelete.mockReset().mockResolvedValue({
+			threads: ["t1", "t2", "t3", "t4", "t5"].map((id) => ({
+				id,
+				title: id,
+				worktreeNote: "",
+				worktreeLosses: 0,
+				subagents: 0,
+			})),
+		})
+		mocks.deleteTaskGroupWithThreads.mockReset().mockResolvedValue({ deleted: true, blocked: "" })
 		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
 		mocks.openNote.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
@@ -455,7 +471,7 @@ describe("TaskGroupView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
 		fireEvent.click(screen.getByRole("menuitem", { name: /Delete task/ }))
 		const confirm = screen.getByTestId("task-group-delete-confirm")
-		expect(confirm).toHaveTextContent("5 threads stay, just unfiled")
+		await waitFor(() => expect(confirm).toHaveTextContent("keep its 5 threads (they stay, just unfiled)"))
 		expect(screen.queryByRole("dialog")).toBeNull()
 		expect(screen.queryByRole("alertdialog")).toBeNull()
 
@@ -465,8 +481,12 @@ describe("TaskGroupView", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
 		fireEvent.click(screen.getByRole("menuitem", { name: /Delete task/ }))
-		fireEvent.click(within(screen.getByTestId("task-group-delete-confirm")).getByRole("button", { name: "Delete" }))
+		const only = await within(screen.getByTestId("task-group-delete-confirm")).findByRole("button", {
+			name: "Delete task only (keep threads)",
+		})
+		fireEvent.click(only)
 		expect(mocks.deleteTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
+		expect(mocks.deleteTaskGroupWithThreads).not.toHaveBeenCalled()
 		await waitFor(() => expect(mocks.state.hideTaskGroupView).toHaveBeenCalled())
 	})
 

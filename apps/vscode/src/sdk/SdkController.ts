@@ -235,6 +235,13 @@ import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/no
 import { createNotebookConversion, type NotebookConversionKind, notebookConversion } from "./task-groups/notebook-convert"
 import { notebookDiff } from "./task-groups/notebook-diff"
 import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
+import {
+	deleteTaskGroupWithThreads,
+	previewTaskGroupDelete,
+	type TaskGroupDeleteDeps,
+	type TaskGroupDeleteResult,
+	type TaskGroupDeleteThread,
+} from "./task-groups/task-group-delete"
 import { TaskGroupStore, taskGroupsRootDir, validateTaskGroupIdentifier } from "./task-groups/task-group-store"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
@@ -1159,9 +1166,9 @@ export class Controller {
 		this.taskHistory.watchHistory(() => {
 			const cached = this.historyProjectionCache
 			if (cached && cached.revision !== this.taskHistory.revision) {
-				void this.postStateToWebview().catch((error) =>
-					Logger.warn("[SdkController] Could not refresh shared history:", error),
-				)
+				void this.leaveThreadDeletedElsewhere(cached.history)
+					.then(() => this.postStateToWebview())
+					.catch((error) => Logger.warn("[SdkController] Could not refresh shared history:", error))
 			}
 		})
 		void this.ensureTaskGroupsWatcher()
@@ -4776,6 +4783,28 @@ export class Controller {
 	}
 
 	/**
+	 * Another window deleted the thread open here (alone, or with its task): close it like a local
+	 * delete, so this window leaves for its task page or home instead of showing a thread that's gone.
+	 * Only a thread the last history listing had counts; a new one may not be saved yet.
+	 */
+	private async leaveThreadDeletedElsewhere(previous: readonly HistoryItem[]): Promise<void> {
+		const openId = this.task?.taskId
+		if (!openId || this.subagentThreads?.has(openId) || this.sessions.getSession(openId)?.isRunning) return
+		const listed = previous.find((item) => item.id === openId)
+		if (!listed || (await this.taskHistory.findHistoryItem(openId).catch(() => listed))) return
+		if (this.task?.taskId !== openId) return
+		this.deletedOpenThread = {
+			id: openId,
+			taskGroupId: listed.taskGroupId,
+			seq: (this.deletedOpenThread?.seq ?? 0) + 1,
+		}
+		// As beforeDeleteSession does: nothing left to save may write the deleted thread back.
+		this.taskSessions.get(openId)?.messages.cancelPendingSave()
+		await this.sessions.removeSession(openId)
+		await this.clearTask()
+	}
+
+	/**
 	 * The open thread, when deleting `ids` removes it: it is one of them, or its owning parent is
 	 * (the same rule beforeDeleteSession clears the task by). Its task is read before the rows go.
 	 */
@@ -5467,6 +5496,37 @@ export class Controller {
 		}
 		this.taskGroupsSummaryCache = undefined
 		await this.postStateToWebview(true)
+	}
+
+	/** What deleting a task with its threads covers; see task-group-delete.ts. */
+	async previewTaskGroupDelete(id: string): Promise<TaskGroupDeleteThread[]> {
+		return previewTaskGroupDelete(id, this.taskGroupDeleteDeps())
+	}
+
+	/** Deletes a task and every thread in it, after the same checks a single thread's worktree removal makes. */
+	async deleteTaskGroupWithThreads(id: string, discardWorktreeWork: boolean): Promise<TaskGroupDeleteResult> {
+		if (!(await this.taskGroupStore.getGroup(id))) throw new Error(`Task group not found: ${id}`)
+		const result = await deleteTaskGroupWithThreads(id, discardWorktreeWork, this.taskGroupDeleteDeps())
+		if (!result.deleted) await this.postStateToWebview(true)
+		return result
+	}
+
+	private taskGroupDeleteDeps(): TaskGroupDeleteDeps {
+		return {
+			listThreads: async () =>
+				(await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+					sessionHistoryRecordToHistoryItem,
+				),
+			isLoaded: (threadId) => !!this.sessions.getSession(threadId),
+			isRunning: (threadId) => !!this.sessions.getSession(threadId)?.isRunning,
+			worktrees: this.threadWorktrees,
+			beginDeletion: (threadId) => this.sessions.beginTaskDeletion(threadId),
+			stopThread: (threadId) => this.sessions.removeSession(threadId),
+			deleteThreads: async (ids) => {
+				await this.deleteTasksFromState(ids)
+			},
+			deleteGroup: (groupId) => this.deleteTaskGroup(groupId),
+		}
 	}
 
 	/** Files a thread into a task group (empty taskGroupId unfiles it). */

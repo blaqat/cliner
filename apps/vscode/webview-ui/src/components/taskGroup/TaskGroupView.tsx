@@ -1,4 +1,4 @@
-import { DeleteTaskGroupRequest, TaskTagList, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
+import { TaskTagList, UpdateTaskGroupRequest } from "@shared/proto/cline/task_group"
 import type { NotebookNoteMeta, TaskGroupThreadRow, TaskTag } from "@shared/task-groups"
 import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -29,6 +29,7 @@ import { TaskGroupServiceClient } from "@/services/grpc-client"
 import { dismissBranchHint, isBranchHintDismissed } from "./branchSuggestion"
 import { getComposerPageTaskGroup, setComposerPageTaskGroup } from "./composerTaskGroup"
 import { useSettleAll } from "./settleAll"
+import { TaskGroupDeleteConfirm } from "./TaskGroupDeleteConfirm"
 import { TaskGroupPageHeader } from "./TaskGroupPageHeader"
 import { sameTag, TaskTagEditor } from "./TaskTagEditor"
 import { formatNoteSize, requestNewNoteForm, requestOpenNote, threadRowTitle, useTaskGroup } from "./useTaskGroup"
@@ -184,12 +185,6 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		update({ tags: [...group.tags, { ...tag, source: "user" }] })
 	}
 	const removeTag = (tag: TaskTag) => update({ tags: group.tags.filter((other) => other !== tag) })
-	const deleteGroup = () => {
-		setConfirmingDelete(false)
-		TaskGroupServiceClient.deleteTaskGroup(DeleteTaskGroupRequest.create({ id: group.id }))
-			.then(hideTaskGroupView)
-			.catch((error) => taskWorktree.setMessage({ text: String(error), error: true }))
-	}
 
 	// Through the history layer, so Back returns here, not to the home screen
 	// the task page briefly passes through while the thread opens.
@@ -314,20 +309,14 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 				</InlineNotice>
 			)}
 			{confirmingDelete && (
-				<div
-					className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-xs border border-error/50 bg-error/10 px-2 py-1.5 text-xs"
-					data-testid="task-group-delete-confirm"
-					role="alert">
-					<span className="min-w-0 flex-1">
-						Delete this task? Its {plural(threadCount, "thread")} stay, just unfiled. Notes are deleted.
-					</span>
-					<Button onClick={deleteGroup} size="xs" variant="danger">
-						Delete
-					</Button>
-					<Button onClick={() => setConfirmingDelete(false)} size="xs" variant="secondary">
-						Cancel
-					</Button>
-				</div>
+				<TaskGroupDeleteConfirm
+					onCancel={() => setConfirmingDelete(false)}
+					onDeleted={() => {
+						setConfirmingDelete(false)
+						hideTaskGroupView()
+					}}
+					taskGroupId={group.id}
+				/>
 			)}
 			<div className="flex-1 overflow-y-auto pb-2">
 				<TaskWorktreeSection

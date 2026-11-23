@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package cline;
+
+import "cline/common.proto";
+
+option go_package = "github.com/cline/grpc-go/cline";
+option java_multiple_files = true;
+option java_package = "bot.cline.proto";
+
+// Deleting a task ("TaskGroup" internally) together with every thread filed in
+// it: its threads, their side threads, and (through their parents) their
+// subagent threads, plus each thread's worktree.
+service TaskGroupDeleteService {
+  // What deleting the task with its threads would stop, remove and lose. Read-only.
+  rpc previewTaskGroupDelete(TaskGroupDeleteRequest) returns (TaskGroupDeletePreview);
+  // Stops the task's running threads, removes their worktrees, then deletes the
+  // threads and the task. Removes nothing when a check fails: the result says why.
+  rpc deleteTaskGroupWithThreads(TaskGroupDeleteRequest) returns (TaskGroupDeleteResult);
+}
+
+message TaskGroupDeleteRequest {
+  Metadata metadata = 1;
+  string id = 2;
+  // The user saw the listed worktree losses and chose to discard them.
+  bool discard_worktree_work = 3;
+}
+
+message TaskGroupDeleteThread {
+  string id = 1;
+  string title = 2;
+  // Running in this window: deleting stops it.
+  bool running = 3;
+  // Busy in another window or session: it has to be stopped there first.
+  bool busy_elsewhere = 4;
+  // A side thread (aside) of another thread in the task.
+  bool aside = 5;
+  bool has_worktree = 6;
+  // Changes in its worktree that were never copied to the workspace (files), 0 when none.
+  int32 worktree_losses = 7;
+  // Why its worktree can't be removed or what removing it discards, in plain words.
+  string worktree_note = 8;
+  // Subagent threads that go with it.
+  int32 subagents = 9;
+}
+
+message TaskGroupDeletePreview {
+  repeated TaskGroupDeleteThread threads = 1;
+}
+
+message TaskGroupDeleteResult {
+  bool deleted = 1;
+  // Why nothing was deleted (a thread busy elsewhere, a worktree that can't be removed, new unsaved work).
+  string blocked = 2;
+  // The fresh preview when blocked, so the confirm can show what changed.
+  TaskGroupDeletePreview preview = 3;
+}
