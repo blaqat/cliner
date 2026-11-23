@@ -73,13 +73,6 @@
 	--color-success: var(--vscode-charts-green);
 	--color-warning: var(--vscode-charts-yellow);
 	/* Minimap + hover widget (semantic tokens so Tailwind classes follow the VS Code theme) */
-	/* Squares take the color of the chat block they jump to (see ChatRow / UserMessage). */
-	--color-minimap-user: var(--vscode-badge-background);
-	--color-minimap-agent: var(--vscode-descriptionForeground);
-	--color-minimap-completion: var(--color-success);
-	--color-minimap-answer: var(--color-warning);
-	--color-minimap-question: var(--vscode-foreground);
-	--color-minimap-current: var(--vscode-focusBorder);
 	--color-minimap-rail: var(--vscode-panel-border);
 	--color-hover-widget: var(--vscode-editorHoverWidget-background);
 	--color-hover-widget-foreground: var(--vscode-editorHoverWidget-foreground);
@@ -150,7 +143,7 @@
 		}
 	}
 
-	/* The in-progress minimap reply: fades only the fill, so the current-square outline stays steady. */
+	/* The in-progress minimap turn: its strip's fill fades in and out. */
 	--animate-minimap-live: minimap-live 2.4s ease-in-out infinite;
 	@keyframes minimap-live {
 		50% {

@@ -1,26 +1,44 @@
 import type { ClineMessage, ClinePlanModeResponse } from "@shared/ExtensionMessage"
 
 /**
- * What a square stands for, so it takes the color of the chat block it jumps to: the user's
- * message, or the block that ended the agent's turn (completed task, Ask-mode answer,
- * followup question, or plain agent output).
+ * What the block that ended a turn's reply is: a completed task, an Ask-mode answer, a followup
+ * question, or plain agent output. The preview names it; it doesn't color the strip.
  */
-export type MinimapKind = "user" | "agent" | "completion" | "answer" | "question"
+export type MinimapKind = "agent" | "completion" | "answer" | "question"
 
-export interface MinimapItem {
-	/** Index into the rendered (grouped) list to jump to, for scrollToIndex. */
+/** A turn that ends waiting on the user, or on an error: its strip takes that color. */
+export type MinimapAttention = "approval" | "question" | "error"
+
+/** One strip of the minimap: a turn, from the user's prompt to the end of the agent's reply. */
+export interface MinimapTurn {
+	/** Row the strip jumps to (the prompt's row), for scrollToIndex. */
 	index: number
-	/** First row index the square covers; the square is "current" from here on. */
+	/** First row the turn covers; the turn is "current" from here on. */
 	startIndex: number
+	/** Last rendered row of the turn: the reply's last row, or the prompt's while there's no reply. */
+	endIndex: number
+	/** The prompt's timestamp. */
 	ts: number
-	role: "user" | "agent"
-	kind: MinimapKind
-	snippet: string
+	/** The prompt, flattened ("" for agent output before any prompt). */
+	prompt: string
+	/** The reply's latest text, flattened. */
+	reply?: string
+	/** The block the reply's latest text came from. */
+	replyKind: MinimapKind
+	/** Tool calls, commands, browser and MCP calls in the reply. */
+	tools: number
+	/** Errors the reply ran into (it may have recovered). */
+	errors: number
+	/** The turn ended waiting on the user, or on an error it didn't recover from. */
+	attention?: MinimapAttention
 	/** The reply is still streaming. */
 	streaming: boolean
 }
 
-const SNIPPET_LENGTH = 140
+const SNIPPET_LENGTH = 280
+
+/** Fewer turns than this and the thread fits on screen: no minimap (T3 Code's rule). */
+export const MINIMAP_MIN_TURNS = 2
 
 function toSnippet(text: string): string {
 	const flat = text.replace(/\s+/g, " ").trim()
@@ -45,8 +63,8 @@ function agentText(message: ClineMessage): string | undefined {
 	return undefined
 }
 
-/** The block kind an agent message renders as (see ChatRow): drives its square's color. */
-export function getMinimapKind(message: ClineMessage): Exclude<MinimapKind, "user"> {
+/** The block kind an agent message renders as (see ChatRow). */
+export function getMinimapKind(message: ClineMessage): MinimapKind {
 	if (message.type === "say") {
 		if (message.say === "completion_result") {
 			return "completion"
@@ -68,8 +86,32 @@ export function getMinimapKind(message: ClineMessage): Exclude<MinimapKind, "use
 	}
 }
 
+const TOOL_TYPES = new Set(["tool", "command", "browser_action_launch", "use_mcp_server", "use_subagents"])
+const ERROR_SAYS = new Set(["error", "diff_error", "clineignore_error", "command_permission_denied"])
+const ERROR_ASKS = new Set(["api_req_failed", "mistake_limit_reached"])
+/** Asks that wait for the user to approve a tool, command, browser, MCP call or subagents. */
+const APPROVAL_ASKS = new Set(["tool", "command", "browser_action_launch", "use_mcp_server", "use_subagents"])
+
+function isToolCall(message: ClineMessage): boolean {
+	return TOOL_TYPES.has((message.type === "say" ? message.say : message.ask) ?? "")
+}
+
+function isError(message: ClineMessage): boolean {
+	return message.type === "say" ? ERROR_SAYS.has(message.say ?? "") : ERROR_ASKS.has(message.ask ?? "")
+}
+
 function isUserMessage(message: ClineMessage): boolean {
 	return message.type === "say" && message.say === "user_feedback"
+}
+
+/** Messages that don't change what the turn ended on (progress, bookkeeping). */
+function isBookkeeping(message: ClineMessage): boolean {
+	return (
+		message.type === "say" &&
+		["api_req_started", "api_req_finished", "checkpoint_created", "reasoning", "info", "deleted_api_reqs"].includes(
+			message.say ?? "",
+		)
+	)
 }
 
 function userSnippet(message: ClineMessage): string {
@@ -89,41 +131,48 @@ function indexRows(rows: readonly (ClineMessage | ClineMessage[])[]): Map<number
 }
 
 /**
- * One minimap square per user message, each followed by one square for the agent's reply
- * to that turn. The task prompt (the list's first row, kept out of `messages`) is the first
- * user square. Everything the agent produced between two user messages (tool groups, reasoning,
- * partial text) collapses into the reply square, which jumps to the turn's last rendered
- * row and previews its latest agent text.
+ * One minimap turn per user prompt, like T3 Code's timeline minimap. The task prompt (the
+ * list's first row, kept out of `messages`) is the first turn. Everything the agent produced
+ * until the next prompt (text, tool groups, approvals, errors) belongs to the turn: the preview
+ * shows its latest text and counts its tools and errors, and a turn that ended waiting on the
+ * user or on an error is flagged.
  *
- * Turns come from the unfiltered transcript (`messages`), since the rendered `rows` hide
- * some user messages (e.g. the echo of a selected followup option); jump targets are then
- * mapped onto the rendered rows.
+ * Turns come from the unfiltered transcript (`messages`), since the rendered `rows` hide some
+ * user messages (e.g. the echo of a selected followup option); jump targets are then mapped
+ * onto the rendered rows.
  */
-export function getMinimapItems(
+export function getMinimapTurns(
 	messages: readonly ClineMessage[],
 	rows: readonly (ClineMessage | ClineMessage[])[],
 	task?: ClineMessage,
 	/**
 	 * The backend reports an active turn. When given, it decides whether the last reply is
-	 * streaming: `partial` flips off and on between every message of a turn, which would
-	 * restart the square's animation each time.
+	 * streaming: `partial` flips off and on between every message of a turn.
 	 */
 	turnActive?: boolean,
-): MinimapItem[] {
-	const items: MinimapItem[] = []
+): MinimapTurn[] {
+	const turns: MinimapTurn[] = []
 	const rowByTs = indexRows(rows)
-	if (task) {
-		// The task prompt is the list's first row.
-		const index = rowByTs.get(task.ts) ?? 0
-		items.push({
+	let turn: MinimapTurn | undefined
+	// What the turn's reply ended on, to flag a turn left waiting or failed.
+	let last: ClineMessage | undefined
+	const start = (index: number, ts: number, prompt: string) => {
+		turn = {
 			index,
 			startIndex: index,
-			ts: task.ts,
-			role: "user",
-			kind: "user",
-			snippet: userSnippet(task),
+			endIndex: index,
+			ts,
+			prompt,
+			replyKind: "agent",
+			tools: 0,
+			errors: 0,
 			streaming: false,
-		})
+		}
+		last = undefined
+		turns.push(turn)
+	}
+	if (task) {
+		start(rowByTs.get(task.ts) ?? 0, task.ts, userSnippet(task))
 	}
 
 	// Nearest rendered row at or after message `from`.
@@ -137,91 +186,157 @@ export function getMinimapItems(
 		return undefined
 	}
 
-	let turnStart = -1
-	let lastIndex = -1
-	let lastMessage: ClineMessage | undefined
-	let lastText: string | undefined
-	let lastKind: MinimapKind = "agent"
-	const flushTurn = (isLastTurn: boolean) => {
-		if (lastIndex >= 0 && lastMessage) {
-			// Only the last turn can be in progress.
-			const streaming = turnActive === undefined ? lastMessage.partial === true : isLastTurn && turnActive
-			items.push({
-				index: lastIndex,
-				startIndex: turnStart,
-				ts: lastMessage.ts,
-				role: "agent",
-				kind: lastKind,
-				snippet: lastText ?? (streaming ? "Working…" : "Used tools"),
-				streaming,
-			})
-		}
-		turnStart = -1
-		lastIndex = -1
-		lastMessage = undefined
-		lastText = undefined
-		lastKind = "agent"
-	}
-
 	messages.forEach((message, messageIndex) => {
 		const row = rowByTs.get(message.ts)
 		if (isUserMessage(message)) {
-			flushTurn(false)
 			// A hidden user message (the echo of a selected followup option) jumps to the
 			// question row that shows the selection, else to the next rendered row.
 			const previous = messages[messageIndex - 1]
 			const optionRow = previous?.type === "ask" ? rowByTs.get(previous.ts) : undefined
 			const index = row ?? optionRow ?? nextRenderedRow(messageIndex + 1)
 			if (index !== undefined) {
-				items.push({
-					index,
-					startIndex: index,
-					ts: message.ts,
-					role: "user",
-					kind: "user",
-					snippet: userSnippet(message),
-					streaming: false,
-				})
+				start(index, message.ts, userSnippet(message))
 			}
 			return
 		}
+		if (!turn) {
+			// Agent output before any prompt (no task row): a turn without a prompt.
+			if (row === undefined) {
+				return
+			}
+			start(row, message.ts, "")
+		}
+		const current = turn as MinimapTurn
 		const text = agentText(message)?.trim()
 		if (text) {
-			// The block that previews the turn is the one the square takes its color from.
-			lastText = toSnippet(text)
-			lastKind = getMinimapKind(message)
+			current.reply = toSnippet(text)
+			current.replyKind = getMinimapKind(message)
 		}
-		if (row === undefined) {
-			return
+		if (!message.partial && isToolCall(message)) {
+			current.tools++
 		}
-		if (turnStart < 0) {
-			turnStart = row
+		if (isError(message)) {
+			current.errors++
 		}
-		// Keep the containing row of the latest rendered message, even when it's a grouped row.
-		lastIndex = row
-		lastMessage = message
+		if (!isBookkeeping(message)) {
+			last = message
+		}
+		if (row !== undefined && row > current.endIndex) {
+			current.endIndex = row
+		}
 	})
-	flushTurn(true)
-	return items
+
+	const final = turns.at(-1)
+	if (final) {
+		const hasReply = final.endIndex > final.startIndex || !!final.reply || final.tools > 0
+		final.streaming = turnActive === undefined ? last?.partial === true : turnActive && hasReply
+	}
+	// Only the last turn can still be waiting on the user.
+	if (final && last && !final.streaming && !last.partial) {
+		if (last.type === "ask" && APPROVAL_ASKS.has(last.ask ?? "")) {
+			final.attention = "approval"
+		} else if (last.type === "ask" && last.ask === "followup") {
+			final.attention = "question"
+		}
+	}
+	// A turn that ended on an error (rather than recovering) is flagged wherever it is.
+	for (const [i, item] of turns.entries()) {
+		if (item.errors === 0 || item.attention) {
+			continue
+		}
+		const endedOn = i === turns.length - 1 ? last : undefined
+		if (endedOn ? isError(endedOn) : endsOnError(messages, rowByTs, item)) {
+			item.attention = "error"
+		}
+	}
+	return turns
 }
 
-/** Stable identity of a square: unlike `ts`, it doesn't change as the turn it covers grows. */
-export function minimapItemKey(item: MinimapItem): string {
-	return `${item.role}:${item.startIndex}`
+/** Whether the last non-bookkeeping message rendered in a finished turn's rows is an error. */
+function endsOnError(messages: readonly ClineMessage[], rowByTs: Map<number, number>, turn: MinimapTurn): boolean {
+	let ended: ClineMessage | undefined
+	for (const message of messages) {
+		const row = rowByTs.get(message.ts)
+		if (row === undefined || row < turn.startIndex || row > turn.endIndex) {
+			continue
+		}
+		if (!isUserMessage(message) && !isBookkeeping(message)) {
+			ended = message
+		}
+	}
+	return !!ended && isError(ended)
+}
+
+/** Stable identity of a strip: unlike `ts` of the reply, it doesn't change as the turn grows. */
+export function minimapTurnKey(turn: MinimapTurn): string {
+	return `turn:${turn.startIndex}`
 }
 
 /**
- * The item covering the row at the top of the viewport: the last item starting at or before
- * `topIndex`. Pass `Number.MAX_SAFE_INTEGER` while the list follows new output: the reader is
- * at the live end, so the last turn stays current however the rows above shift as it grows.
+ * The turns whose rows overlap the visible rows `first..last` (T3 Code highlights these), and
+ * the current turn: the first visible one, else the last one starting above the viewport.
  */
-export function getCurrentMinimapItem(items: readonly MinimapItem[], topIndex: number): MinimapItem | undefined {
-	let current: MinimapItem | undefined
-	for (const item of items) {
-		if (item.startIndex > topIndex) {
-			break
+export function getVisibleMinimapTurns(
+	turns: readonly MinimapTurn[],
+	first: number,
+	last: number,
+): { inView: Set<number>; current: number | undefined } {
+	const inView = new Set<number>()
+	let current: number | undefined
+	turns.forEach((turn, i) => {
+		const end = turns[i + 1] ? Math.max(turn.endIndex, turns[i + 1].startIndex - 1) : Number.MAX_SAFE_INTEGER
+		if (turn.startIndex <= last && end >= first) {
+			inView.add(i)
+			current ??= i
 		}
-		current = item
+	})
+	if (current === undefined) {
+		for (const [i, turn] of turns.entries()) {
+			if (turn.startIndex <= first) {
+				current = i
+			}
+		}
 	}
-	return current ?? items[0]
+	return { inView, current: current ?? (turns.length ? 0 : undefined) }
+}
+
+/** A strip's position on the rail, as a percent of its height (first at 0, last at 100). */
+export function minimapTopPercent(index: number, count: number): number {
+	if (count <= 1) {
+		return 0
+	}
+	return (Math.max(0, Math.min(index, count - 1)) / (count - 1)) * 100
+}
+
+/** The turn under the pointer on a rail `railTop..railTop+railHeight` tall. */
+export function minimapIndexFromPointer(count: number, railTop: number, railHeight: number, pointerY: number): number | null {
+	if (count <= 0 || railHeight <= 0) {
+		return null
+	}
+	if (count === 1) {
+		return 0
+	}
+	const progress = Math.max(0, Math.min(1, (pointerY - railTop) / railHeight))
+	return Math.round(progress * (count - 1))
+}
+
+/** The preview's last line: what the turn did, or what it's waiting for. */
+export function minimapTurnStatus(turn: MinimapTurn): string | undefined {
+	if (turn.streaming) {
+		return "Working…"
+	}
+	if (turn.attention === "approval") {
+		return "Waiting for your approval"
+	}
+	if (turn.attention === "question") {
+		return "Waiting for your answer"
+	}
+	const parts: string[] = []
+	if (turn.tools) {
+		parts.push(`${turn.tools} tool${turn.tools === 1 ? "" : "s"}`)
+	}
+	if (turn.errors) {
+		parts.push(turn.attention === "error" ? "ended on an error" : `${turn.errors} error${turn.errors === 1 ? "" : "s"}`)
+	}
+	return parts.join(" · ") || undefined
 }

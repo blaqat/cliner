@@ -1,6 +1,6 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { HistoryItem } from "@shared/HistoryItem"
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { forwardRef, type ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import ChatView from "./ChatView"
@@ -153,8 +153,11 @@ describe("ChatView first message", () => {
 		)
 		await renderChat()
 
-		const squares = within(screen.getByTestId("chat-minimap")).getAllByRole("button")
-		expect(squares.map((square) => square.dataset.kind)).toEqual(["user", "agent", "user", "agent"])
+		// One strip per turn: the first message's, then the follow-up's.
+		expect(within(screen.getByTestId("chat-minimap")).getAllByTestId("chat-minimap-strip")).toHaveLength(2)
+		act(() => screen.getByTestId("chat-minimap-rail").focus())
+		fireEvent.keyDown(screen.getByTestId("chat-minimap-rail"), { key: "Home" })
+		expect(screen.getByTestId("chat-minimap-preview")).toHaveTextContent(firstMessage)
 	})
 
 	it("shows a subagent's prompt as its first bubble under the prompt header, without edit", async () => {
