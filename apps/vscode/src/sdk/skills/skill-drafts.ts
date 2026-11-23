@@ -40,6 +40,22 @@ interface SkillDraftInput {
 const MAX_EXTRA_FILES = 20
 const MAX_FILE_CHARS = 200_000
 
+const FRONT_MATTER = /^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)(?:[ \t]*\r?\n)*/
+
+/**
+ * A workflow's front matter, exactly as written, and the body below it. The agent sends
+ * only a body, so an edit is diffed against the body and kept under the same front matter.
+ */
+function splitWorkflow(text: string): { head: string; body: string } {
+	const head = text.match(FRONT_MATTER)?.[0] ?? ""
+	return { head, body: text.slice(head.length) }
+}
+
+/** `text` with the line endings `like` uses, so keeping a one-line edit of a CRLF file changes one line. */
+function withLineEndings(text: string, like: string): string {
+	return like.includes("\r\n") ? text.replace(/\r?\n/g, "\r\n") : text
+}
+
 interface ExistingItem {
 	kind: SkillItemKind
 	name: string
@@ -158,7 +174,7 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 				if (existing) {
 					const text = await fs.readFile(existing.path, "utf8")
 					const parsed = parseSkillMarkdown(text)
-					baseContent = input.kind === "skill" ? parsed.body : text
+					baseContent = input.kind === "skill" ? parsed.body : splitWorkflow(text).body
 					description ||= parsed.description ?? ""
 				}
 				if (input.kind === "skill" && !description) {
@@ -270,9 +286,11 @@ export async function applySkillDraft(
 	if (draft.kind === "skill") {
 		let dir: string
 		let extra: Record<string, unknown> = {}
+		let current = ""
 		if (keepsTarget && draft.targetPath) {
 			dir = path.dirname(draft.targetPath)
-			extra = parseSkillMarkdown(await fs.readFile(draft.targetPath, "utf8").catch(() => "")).extra
+			current = await fs.readFile(draft.targetPath, "utf8").catch(() => "")
+			extra = parseSkillMarkdown(current).extra
 		} else {
 			const root = await places.skillsDir(draft.scope)
 			let folder = name
@@ -283,12 +301,15 @@ export async function applySkillDraft(
 		const skillMd = await writeInside(
 			dir,
 			"SKILL.md",
-			buildSkillMarkdown(body, {
-				name: path.basename(dir),
-				description: change.description || name,
-				disabled: extra.disabled === true,
-				extra,
-			}),
+			withLineEndings(
+				buildSkillMarkdown(body, {
+					name: path.basename(dir),
+					description: change.description || name,
+					disabled: extra.disabled === true,
+					extra,
+				}),
+				current,
+			),
 		)
 		// A script the agent wrote (a shebang) is executable, as it would be in a shared set.
 		for (const file of draft.files ?? [])
@@ -297,15 +318,18 @@ export async function applySkillDraft(
 		return change.slug
 	}
 	let target: string
+	let current = ""
 	if (keepsTarget && draft.targetPath) {
 		target = draft.targetPath
+		current = await fs.readFile(target, "utf8").catch(() => "")
 	} else {
 		const root = await places.workflowsDir(draft.scope)
 		let file = name
 		for (let n = 2; await exists(path.join(root, `${file}.md`)); n++) file = `${name}-${n}`
 		target = path.join(root, `${file}.md`)
 	}
-	await writeInside(path.dirname(target), path.basename(target), body.endsWith("\n") ? body : `${body}\n`)
+	const text = `${splitWorkflow(current).head}${body.endsWith("\n") ? body : `${body}\n`}`
+	await writeInside(path.dirname(target), path.basename(target), withLineEndings(text, current))
 	if (!keepsTarget) await setEnabled("workflow", target, isGlobal)
 	return change.slug
 }

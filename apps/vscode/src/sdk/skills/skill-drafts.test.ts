@@ -235,4 +235,22 @@ describe("skill drafts", () => {
 		await expect(keep("workflow-foo")).rejects.toThrow("changed on disk")
 		await expect(fs.access(file)).rejects.toThrow()
 	})
+	it("diffs a one-line edit of a CRLF workflow with front matter as one line, and keeps both", async () => {
+		await fs.mkdir(path.join(root, "workflows"))
+		const file = path.join(root, "workflows", "release.md")
+		const steps = Array.from({ length: 30 }, (_, i) => `${i + 1}. Check item ${i + 1}.`)
+		const original = `---\r\ndescription: Release steps\r\n---\r\n\r\n# Release\r\n\r\n${steps.join("\r\n")}\r\n`
+		await fs.writeFile(file, original)
+		// The agent sends the body only, with plain newlines, as a model does.
+		const body = `# Release\n\n${steps.join("\n").replace("12. Check item 12.", "12. Check item 12, then tag it.")}`
+		await execute({ kind: "workflow", name: "release", content: body })
+		const review = await store.reviewDiffs((await store.readPendingReview(SKILL_DRAFTS_ID, "t1"))!)
+		const changed = review.changes[0].diff?.filter((line) => line.kind === "add" || line.kind === "remove")
+		expect(changed).toEqual([
+			{ kind: "remove", text: "12. Check item 12." },
+			{ kind: "add", text: "12. Check item 12, then tag it." },
+		])
+		await keep("workflow-release")
+		expect(await fs.readFile(file, "utf8")).toBe(original.replace("12. Check item 12.", "12. Check item 12, then tag it."))
+	})
 })

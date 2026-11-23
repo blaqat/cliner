@@ -15,6 +15,9 @@ import { Logger } from "@/shared/services/Logger"
 import { compactNotebookDiff, notebookDiff } from "./notebook-diff"
 import { taskGroupPaths, taskGroupsRootDir, validateTaskGroupIdentifier, writeFileAtomic } from "./task-group-store"
 
+/** Unchanged lines shown beside each change in a review; longer runs fold. */
+const REVIEW_DIFF_CONTEXT = 3
+
 export interface PendingNotebookChanges {
 	groupId: string
 	revision: string
@@ -469,6 +472,7 @@ export class NotebookStore {
 							: ((await this.readNote(review.groupId, change.slug))?.content ??
 								(await this.tombstonedContent(review.groupId, change)))) ?? "",
 						change.op === "delete" ? "" : (change.content ?? ""),
+						REVIEW_DIFF_CONTEXT,
 					),
 				})),
 			),

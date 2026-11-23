@@ -6,7 +6,7 @@ import { InlineNotice } from "@/components/common/InlineNotice"
 import { LinkButton } from "@/components/common/LinkButton"
 import { DocEditor } from "@/components/docEditor/DocEditor"
 import { MarkedNote } from "@/components/docEditor/MarkedNote"
-import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
+import { NotebookDiff, PROPOSAL_BODY_CLASS } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { RunsCodeChip } from "./SkillBits"
@@ -87,7 +87,8 @@ export function OpenedSkillDraft({
 	const kind = draft?.kind ?? "skill"
 	const scope = draft?.scope ?? "global"
 	const [editing, setEditing] = useState(false)
-	const [asDiff, setAsDiff] = useState(false)
+	// An edit opens on what changed; the whole document is one click away.
+	const [whole, setWhole] = useState(false)
 	const [name, setName] = useState(change.name)
 	const [description, setDescription] = useState(change.description)
 	useEffect(() => setName(change.name), [change.name])
@@ -266,11 +267,15 @@ export function OpenedSkillDraft({
 						}}
 						value={content}
 					/>
-				) : asDiff ? (
-					<NotebookDiff lines={change.diff ?? []} />
 				) : (
-					<div className="rounded-xs bg-(--vscode-editor-background) px-1 py-1">
-						<MarkedNote content={content} diff={change.op === "create" ? [] : (change.diff ?? [])} />
+					<div className={PROPOSAL_BODY_CLASS} data-testid="skill-draft-body">
+						{change.op === "update" && !whole ? (
+							<NotebookDiff lines={change.diff ?? []} />
+						) : (
+							<div className="rounded-xs bg-(--vscode-editor-background) px-1 py-1">
+								<MarkedNote content={content} diff={change.op === "create" ? [] : (change.diff ?? [])} />
+							</div>
+						)}
 					</div>
 				)}
 			</div>
@@ -298,8 +303,8 @@ export function OpenedSkillDraft({
 					</Button>
 					<span className="flex-1" />
 					{change.op === "update" && (
-						<LinkButton className="text-[11px]" onClick={() => setAsDiff((value) => !value)}>
-							{asDiff ? `Show as ${kind}` : "Show as diff"}
+						<LinkButton className="text-[11px]" onClick={() => setWhole((value) => !value)}>
+							{whole ? "Show changes" : `Show whole ${kind}`}
 						</LinkButton>
 					)}
 					<span className="text-[11px] text-description">

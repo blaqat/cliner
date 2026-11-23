@@ -10,7 +10,7 @@ import { MarkedNote } from "@/components/docEditor/MarkedNote"
 import { changedSection, diffCounts } from "@/components/docEditor/noteBlocks"
 import { OpenedSkillDraft } from "@/components/skills/OpenedSkillDraft"
 import { openSkills } from "@/components/skills/skillsetStore"
-import { NotebookDiff } from "@/components/taskGroup/NotebookDiff"
+import { NotebookDiff, PROPOSAL_BODY_CLASS } from "@/components/taskGroup/NotebookDiff"
 import { Button } from "@/components/ui/button"
 import { type TaskGroupPage, useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
@@ -531,7 +531,8 @@ function OpenedChange({
 	onDrop: () => void
 	onAction: (action: string, extra?: Partial<NotebookActionRequest>) => void
 }) {
-	const [asDiff, setAsDiff] = useState(false)
+	// An update opens on what changed; the whole note is one click away.
+	const [whole, setWhole] = useState(false)
 	const [editing, setEditing] = useState(false)
 	const content = change.content ?? ""
 	return (
@@ -550,11 +551,15 @@ function OpenedChange({
 				/>
 			) : change.op === "delete" ? (
 				<p className="m-0 text-description">Deletes this note. History keeps its last version.</p>
-			) : asDiff ? (
-				<NotebookDiff lines={change.diff ?? []} />
 			) : (
-				<div className="rounded-xs bg-(--vscode-editor-background) px-1 py-1">
-					<MarkedNote content={content} diff={change.op === "create" ? [] : (change.diff ?? [])} />
+				<div className={PROPOSAL_BODY_CLASS} data-testid="notebook-change-body">
+					{change.op === "update" && !whole ? (
+						<NotebookDiff lines={change.diff ?? []} />
+					) : (
+						<div className="rounded-xs bg-(--vscode-editor-background) px-1 py-1">
+							<MarkedNote content={content} diff={change.op === "create" ? [] : (change.diff ?? [])} />
+						</div>
+					)}
 				</div>
 			)}
 			{change.draft && (
@@ -622,8 +627,8 @@ function OpenedChange({
 					)}
 					<span className="flex-1" />
 					{change.op === "update" && (
-						<LinkButton className="text-[11px]" onClick={() => setAsDiff((value) => !value)}>
-							{asDiff ? "Show as note" : "Show as diff"}
+						<LinkButton className="text-[11px]" onClick={() => setWhole((value) => !value)}>
+							{whole ? "Show changes" : "Show whole note"}
 						</LinkButton>
 					)}
 					{aboutYou && change.op !== "delete" && (

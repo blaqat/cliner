@@ -65,11 +65,17 @@ describe("NotebookChangesRow", () => {
 		expect(screen.getByRole("button", { name: /^Plan/ })).toHaveTextContent("+1 −1")
 		expect(screen.queryByTestId("notebook-opened-change")).not.toBeInTheDocument()
 		open()
-		// The note renders as a page with the new line marked, not as a diff.
+		// An update opens on what changed, long unchanged runs folded.
+		expect(screen.getByTestId("notebook-diff")).toHaveTextContent("old")
+		expect(screen.getByRole("button", { name: "Show 3 unchanged lines" })).toBeInTheDocument()
+		// However long the note, it scrolls inside a capped box instead of taking over the chat.
+		expect(screen.getByTestId("notebook-change-body")).toHaveClass("max-h-[50vh]", "overflow-y-auto")
+		// The whole note, with the new line marked, is one click away.
+		fireEvent.click(screen.getByRole("button", { name: "Show whole note" }))
 		expect(screen.getByTestId("marked-note")).toBeInTheDocument()
-		expect(screen.queryByText("−old")).not.toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Show as diff" }))
-		expect(screen.getByText("−old")).toBeInTheDocument()
+		expect(screen.queryByTestId("notebook-diff")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Show changes" }))
+		expect(screen.getByTestId("notebook-diff")).toBeInTheDocument()
 	})
 	it("shows the agent's summary and how many turns the row carries", () => {
 		const withSummary = { ...payload, turns: 2, changes: [{ ...payload.changes[0], summary: "Why the plan changed" }] }

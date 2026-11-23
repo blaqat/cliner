@@ -57,7 +57,7 @@ it("opens a history breadcrumb page and compares an original version against cur
 	await screen.findByText("2 versions")
 	fireEvent.click(screen.getByRole("button", { name: /Original/ }))
 	expect(screen.getByText("Selected version → current")).toBeInTheDocument()
-	expect(screen.getByText("−original")).toBeInTheDocument()
+	expect(screen.getByTestId("notebook-diff").querySelector("[data-kind=remove]")).toHaveTextContent("original")
 	fireEvent.click(screen.getByRole("button", { name: "Restore" }))
 	await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "restore", versionId: "v1" })))
 })

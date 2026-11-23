@@ -1,9 +1,19 @@
 import type { NotebookDiffLine } from "@shared/task-groups"
 import { diffLines } from "diff"
 
-/** Keep two unchanged lines beside each change. Hidden runs retain their text for expansion. */
+/**
+ * What a reader compares: a byte-order mark, Windows line endings and a missing final
+ * newline aren't changes anyone can see, and left in they turn a one-line edit of a
+ * CRLF file into every line removed and added.
+ */
+function comparable(text: string): string {
+	const lf = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n")
+	return lf && !lf.endsWith("\n") ? `${lf}\n` : lf
+}
+
+/** Keep `context` unchanged lines beside each change. Hidden runs retain their text for expansion. */
 export function notebookDiff(before: string, after: string, context = 2): NotebookDiffLine[] {
-	const lines = diffLines(before, after).flatMap((part) => {
+	const lines = diffLines(comparable(before), comparable(after)).flatMap((part) => {
 		const text = part.value.replace(/\n$/, "")
 		return text.split("\n").map((text) => ({
 			kind: part.added ? ("add" as const) : part.removed ? ("remove" as const) : ("context" as const),
