@@ -1,5 +1,5 @@
 import type { TaskGroupSummary } from "@shared/task-groups"
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	getComposerTaskGroup,
@@ -153,7 +153,7 @@ describe("WherePill: task", () => {
 		expect(getComposerTaskGroup()).toBe("sso")
 	})
 
-	it("in an existing thread, picking moves the thread and clicking its own task opens it", () => {
+	it("in an existing thread, picking moves the thread and clicking its own task opens it", async () => {
 		mocks.state.currentTaskItem = { id: "thread-1", taskGroupId: "bulk" }
 		const onOpenTaskGroup = vi.fn()
 		render(<WherePill onOpenTaskGroup={onOpenTaskGroup} />)
@@ -171,6 +171,8 @@ describe("WherePill: task", () => {
 		expect(mocks.setThreadTaskGroup).toHaveBeenCalledWith(
 			expect.objectContaining({ threadId: "thread-1", taskGroupId: "sso" }),
 		)
+		// The menu closes once the move lands, so a refused move can say why in place.
+		await waitFor(() => expect(screen.queryByTestId("where-menu")).toBeNull())
 
 		fireEvent.click(within(openMenu()).getByText("No task"))
 		expect(mocks.setThreadTaskGroup).toHaveBeenLastCalledWith(

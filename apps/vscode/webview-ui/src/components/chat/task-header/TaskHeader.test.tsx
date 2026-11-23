@@ -133,7 +133,7 @@ describe("TaskHeader", () => {
 		expect(screen.queryByText(firstMessage)).toBeNull()
 	})
 
-	it("moves the thread to another task from ⋯ › Move to task (the composer no longer has the task pill)", () => {
+	it("moves the thread to another task from ⋯ › Move to task (the composer no longer has the task pill)", async () => {
 		const groups = [
 			{ id: "sso", title: "SSO redirect loop", tags: [], createdAt: 0, updatedAt: 2, noteCount: 0 },
 			{ id: "bulk", title: "Bulk export", tags: [], createdAt: 0, updatedAt: 1, noteCount: 0 },
@@ -151,7 +151,8 @@ describe("TaskHeader", () => {
 		fireEvent.click(screen.getByTestId("move-to-task"))
 		fireEvent.click(within(screen.getByTestId("task-header-menu")).getByRole("menuitemradio", { name: /Bulk export/ }))
 		expect(mocks.setThreadTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t1", taskGroupId: "bulk" }))
-		expect(screen.queryByTestId("task-header-menu")).toBeNull()
+		// The menu closes once the move lands, so a refused move can say why in place.
+		await waitFor(() => expect(screen.queryByTestId("task-header-menu")).toBeNull())
 	})
 
 	it("shows the branch chip for a thread in its own worktree", async () => {
