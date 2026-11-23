@@ -19,7 +19,7 @@ describe("useScrollBehavior", () => {
 		vi.useRealTimers()
 	})
 
-	it("scrolls to bottom after command output layout has been quiet for 500ms", () => {
+	it("follows growing output on the next frame, then settles once it has been quiet for 500ms", () => {
 		const { result } = renderHook(() => useScrollBehavior([], [], [], {}, vi.fn()))
 		const scrollTo = vi.fn()
 		act(() => {
@@ -30,24 +30,26 @@ describe("useScrollBehavior", () => {
 		act(() => {
 			result.current.handleLastRowContentChange()
 		})
-
 		expect(scrollTo).not.toHaveBeenCalled()
 
 		act(() => {
-			vi.advanceTimersByTime(499)
+			vi.advanceTimersToNextFrame()
 		})
-		expect(scrollTo).not.toHaveBeenCalled()
+		expect(scrollTo).toHaveBeenCalledTimes(1)
+		expect(scrollTo).toHaveBeenLastCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
 
 		act(() => {
-			vi.advanceTimersByTime(1)
+			vi.advanceTimersByTime(499 - 16)
 		})
-		expect(scrollTo).toHaveBeenCalledWith({
-			top: Number.MAX_SAFE_INTEGER,
-			behavior: "smooth",
+		expect(scrollTo).toHaveBeenCalledTimes(1)
+
+		act(() => {
+			vi.advanceTimersByTime(20)
 		})
+		expect(scrollTo).toHaveBeenLastCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" })
 	})
 
-	it("resets the 500ms wait when another command output change arrives", () => {
+	it("keeps following while output streams in faster than the settle wait", () => {
 		const { result } = renderHook(() => useScrollBehavior([], [], [], {}, vi.fn()))
 		const scrollTo = vi.fn()
 		act(() => {
@@ -55,23 +57,17 @@ describe("useScrollBehavior", () => {
 		})
 		;(result.current.virtuosoRef as MutableRefObject<{ scrollTo: typeof scrollTo } | null>).current = { scrollTo }
 
+		// A chunk every 100ms for 2s: the 500ms settle never gets a quiet window.
 		act(() => {
-			result.current.handleLastRowContentChange()
-			scrollTo.mockClear()
-			vi.advanceTimersByTime(400)
-			result.current.handleLastRowContentChange()
-			scrollTo.mockClear()
-			vi.advanceTimersByTime(499)
+			for (let i = 0; i < 20; i++) {
+				result.current.handleLastRowContentChange()
+				result.current.handleRowHeightChange(true)
+				vi.advanceTimersByTime(100)
+			}
 		})
-		expect(scrollTo).not.toHaveBeenCalled()
-
-		act(() => {
-			vi.advanceTimersByTime(1)
-		})
-		expect(scrollTo).toHaveBeenCalledWith({
-			top: Number.MAX_SAFE_INTEGER,
-			behavior: "smooth",
-		})
+		const follows = scrollTo.mock.calls.filter(([options]) => options.behavior === "auto")
+		expect(follows).toHaveLength(20)
+		expect(scrollTo.mock.calls.some(([options]) => options.behavior === "smooth")).toBe(false)
 	})
 
 	it("does not re-pin command output changes after auto-scroll is disabled", () => {

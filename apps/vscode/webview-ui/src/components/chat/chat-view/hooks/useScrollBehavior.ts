@@ -88,6 +88,7 @@ export function useScrollBehavior(
 	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const disableAutoScrollRef = useRef(false)
 	const layoutSettleScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const followFrameRef = useRef<number | null>(null)
 	const jumpSettleCleanupRef = useRef<(() => void) | null>(null)
 	// The direction of the user's latest scroll gesture (wheel, keys, touch) in the chat.
 	const lastScrollIntentRef = useRef<ScrollIntent | null>(null)
@@ -373,6 +374,10 @@ export function useScrollBehavior(
 			clearTimeout(layoutSettleScrollTimerRef.current)
 			layoutSettleScrollTimerRef.current = null
 		}
+		if (followFrameRef.current !== null) {
+			cancelAnimationFrame(followFrameRef.current)
+			followFrameRef.current = null
+		}
 	}, [])
 
 	const keepPinnedToBottomAfterLayout = useCallback(() => {
@@ -380,6 +385,17 @@ export function useScrollBehavior(
 			return
 		}
 
+		// Follow growth right away, at most once a frame and without smooth scrolling, so a streaming
+		// reply stays in view. The settle below alone never fired while text kept arriving: every
+		// change restarted its wait, so the chat only caught up once the reply finished.
+		if (followFrameRef.current === null) {
+			followFrameRef.current = requestAnimationFrame(() => {
+				followFrameRef.current = null
+				if (!disableAutoScrollRef.current) {
+					scrollToBottomAuto()
+				}
+			})
+		}
 		if (layoutSettleScrollTimerRef.current !== null) {
 			clearTimeout(layoutSettleScrollTimerRef.current)
 		}
@@ -389,7 +405,7 @@ export function useScrollBehavior(
 			}
 			layoutSettleScrollTimerRef.current = null
 		}, 500)
-	}, [scrollToBottomSmooth])
+	}, [scrollToBottomSmooth, scrollToBottomAuto])
 
 	const handleRowHeightChange = useCallback(
 		(_isTaller: boolean) => {
