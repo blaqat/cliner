@@ -1210,9 +1210,11 @@ export class ThreadWorktreeManager {
 			if (mapping.mode === "mm") {
 				await this.assertMutationOwner()
 				try {
+					// Cline has already checked or confirmed this removal, like git mode below.
+					// mm still refuses a worktree on another branch or of another repository.
 					await run(
 						settings.nodePath,
-						[settings.mmPath, "free", mapping.branch, ...(confirmed ? ["--force"] : [])],
+						[settings.mmPath, "free", mapping.branch, "--force"],
 						await worktreePath.key(mapping.workspace),
 					)
 				} catch (error) {
