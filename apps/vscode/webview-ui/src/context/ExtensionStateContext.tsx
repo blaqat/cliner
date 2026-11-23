@@ -19,6 +19,7 @@ import {
 	subscribeHistoryPatches,
 } from "@/components/inbox/optimisticHistory"
 import { openTopBarPanel } from "@/components/topbar/topBarPanels"
+import { dismissMenus } from "@/utils/dismissMenus"
 import {
 	type ModelInfo,
 	openRouterDefaultModelId,
@@ -662,6 +663,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			{},
 			{
 				onResponse: () => {
+					dismissMenus()
 					// The title bar's MCP servers button opens the servers overlay, or closes it when open (its "MCP server settings…" reaches the full page).
 					toggleTopBarPanel("mcp")
 				},
@@ -677,6 +679,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		marketplaceButtonUnsubscribeRef.current = UiServiceClient.subscribeToMarketplaceButtonClicked(EmptyRequest.create({}), {
 			onResponse: () => {
 				console.log("[DEBUG] Received marketplaceButtonClicked event from gRPC stream")
+				dismissMenus()
 				navigateToMarketplace()
 			},
 			onError: (error: any) => {
@@ -694,6 +697,7 @@ export const ExtensionStateContextProvider: React.FC<{
 				onResponse: () => {
 					// When history button is clicked, navigate to history view
 					console.log("[DEBUG] Received history button clicked event from gRPC stream")
+					dismissMenus()
 					navigateToHistory()
 				},
 				onError: (error: any) => {
@@ -710,6 +714,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			{},
 			{
 				onResponse: (event) => {
+					dismissMenus()
 					if (event.goHome) navigateHome()
 					else revealChat()
 				},
@@ -740,6 +745,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		settingsButtonClickedSubscriptionRef.current = UiServiceClient.subscribeToSettingsButtonClicked(EmptyRequest.create({}), {
 			onResponse: () => {
 				// When settings button is clicked, navigate to settings
+				dismissMenus()
 				navigateToSettings()
 			},
 			onError: (error: any) => {
@@ -756,6 +762,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			{
 				onResponse: () => {
 					// When worktrees button is clicked, navigate to worktrees
+					dismissMenus()
 					navigateToWorktrees()
 				},
 				onError: (error: any) => {
@@ -769,7 +776,10 @@ export const ExtensionStateContextProvider: React.FC<{
 
 		// The title bar's Rules & workflows button opens the rules overlay (again: closes it).
 		rulesButtonClickedSubscriptionRef.current = UiServiceClient.subscribeToRulesButtonClicked(EmptyRequest.create({}), {
-			onResponse: () => toggleTopBarPanel("rules"),
+			onResponse: () => {
+				dismissMenus()
+				toggleTopBarPanel("rules")
+			},
 			onError: (error: any) => {
 				console.error("Error in rules button clicked subscription:", error)
 			},
@@ -865,6 +875,7 @@ export const ExtensionStateContextProvider: React.FC<{
 			onResponse: () => {
 				// When account button is clicked, navigate to account view
 				console.log("[DEBUG] Received account button clicked event from gRPC stream")
+				dismissMenus()
 				navigateToAccount()
 			},
 			onError: (error: any) => {

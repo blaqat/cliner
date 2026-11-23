@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { dismissMenus } from "@/utils/dismissMenus"
 import { ModelPickButton } from "./ModelPickButton"
 import { ModelSelector, type ModelSelectorProps, type SelectorRow } from "./ModelSelector"
 import { STANDARD_LEVELS, sameAsThreadRow } from "./modelSelectorRows"
@@ -76,6 +77,17 @@ beforeEach(() => {
 })
 
 describe("ModelSelector", () => {
+	it("closes and keeps the pick when a VS Code title bar button is clicked", async () => {
+		const onClose = vi.fn()
+		renderSelector({ onClose })
+		await openMenu()
+		fireEvent.click(option(models(), "GPT-5.4"))
+		act(() => dismissMenus())
+		expect(screen.queryByTestId("model-menu")).not.toBeInTheDocument()
+		expect(onClose).toHaveBeenCalledWith(true, expect.anything())
+		expect(onCommit).toHaveBeenCalledWith(expect.objectContaining({ rowId: "g54" }))
+	})
+
 	describe("keys and saving", () => {
 		it("arrow keys work across the lists; Enter saves both in one call", async () => {
 			renderSelector()

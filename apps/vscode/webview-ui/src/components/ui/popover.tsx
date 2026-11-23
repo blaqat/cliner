@@ -2,8 +2,26 @@ import * as PopoverPrimitive from "@radix-ui/react-popover"
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import { useDismissOnLeave } from "@/utils/dismissMenus"
 
-const Popover = PopoverPrimitive.Root
+/**
+ * Radix's popover root, plus closing when a click lands outside this page (a VS Code title bar
+ * button), another view takes over, or the page loses focus; see {@link useDismissOnLeave}.
+ */
+function Popover({ open: openProp, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
+	const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen ?? false)
+	const controlled = openProp !== undefined
+	const open = controlled ? openProp : uncontrolledOpen
+	const setOpen = React.useCallback(
+		(next: boolean) => {
+			if (!controlled) setUncontrolledOpen(next)
+			onOpenChange?.(next)
+		},
+		[controlled, onOpenChange],
+	)
+	useDismissOnLeave(open, () => setOpen(false))
+	return <PopoverPrimitive.Root onOpenChange={setOpen} open={open} {...props} />
+}
 
 const PopoverTrigger = PopoverPrimitive.Trigger
 

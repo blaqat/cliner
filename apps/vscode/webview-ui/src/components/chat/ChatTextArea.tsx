@@ -35,6 +35,7 @@ import {
 	type SearchResult,
 	shouldShowContextMenu,
 } from "@/utils/context-mentions"
+import { useDismissOnLeave } from "@/utils/dismissMenus"
 import { useMetaKeyDetection, useShortcut } from "@/utils/hooks"
 import { detectAltKeyChar, isSafari, modKeyLabel } from "@/utils/platformUtils"
 import {
@@ -488,6 +489,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				document.removeEventListener("mousedown", handleClickOutside)
 			}
 		}, [showContextMenu, setShowContextMenu])
+
+		// A click outside this page (a title bar button) or a view change closes them too.
+		useDismissOnLeave(showContextMenu, () => setShowContextMenu(false))
+		useDismissOnLeave(showSlashCommandsMenu, () => setShowSlashCommandsMenu(false))
 
 		useEffect(() => {
 			const handleClickOutsideSlashMenu = (event: MouseEvent) => {

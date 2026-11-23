@@ -7,6 +7,7 @@ import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton
 import { type Dock, readDock } from "@/components/oneView/layoutPrefs"
 import { SideThreadColumn } from "@/components/sideThreads/SideThreadColumn"
 import { setPanelRoom, useSideThreadSlots } from "@/components/sideThreads/sideThreadStore"
+import { Popover } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { PanelSectionsMenu, ROW_ICON_BUTTON_CLASS, ThreadPanelSections, type ThreadUsage } from "./ThreadPanel"
 import {
@@ -186,7 +187,7 @@ export const ThreadPanelFrame = ({ data, children }: { data?: ThreadPanelData; c
 				</aside>
 			)}
 			{data && !room && toggle && (
-				<PopoverPrimitive.Root onOpenChange={setOverlayOpen} open={overlayOpen}>
+				<Popover onOpenChange={setOverlayOpen} open={overlayOpen}>
 					<PopoverPrimitive.Anchor virtualRef={anchor as RefObject<HTMLElement>} />
 					<PopoverPrimitive.Portal>
 						<PopoverPrimitive.Content
@@ -214,7 +215,7 @@ export const ThreadPanelFrame = ({ data, children }: { data?: ThreadPanelData; c
 							</div>
 						</PopoverPrimitive.Content>
 					</PopoverPrimitive.Portal>
-				</PopoverPrimitive.Root>
+				</Popover>
 			)}
 		</div>
 	)
