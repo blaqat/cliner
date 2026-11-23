@@ -3,9 +3,11 @@ import { StringArrayRequest, StringRequest } from "@shared/proto/cline/common"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildThreadPath, type LineageRow, threadTitle } from "@/components/chat/chat-view/utils/threadUtils"
 import { useBranchTaskSuggestion } from "@/components/chat/composer/BranchTaskSuggestion"
+import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { TASK_MENU_CLASS, TaskPickerMenu } from "@/components/chat/composer/WherePill"
 import { ThreadBranchChip } from "@/components/chat/composer/worktreeSlot"
-import { MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MenuItem } from "@/components/common/MenuItem"
+import { HEADER_MENU_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { countBackgroundRunning } from "@/components/inbox/inboxUtils"
 import { openTask, renameTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
 import { useOneView } from "@/components/oneView/OneViewContext"
@@ -189,7 +191,10 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 						</PopoverTrigger>
 						<PopoverContent
 							align="end"
-							className={cn(menuView === "task" ? TASK_MENU_CLASS : "w-56 p-1", "motion-reduce:animate-none")}
+							className={cn(
+								menuView === "task" ? TASK_MENU_CLASS : HEADER_MENU_CLASS,
+								"motion-reduce:animate-none",
+							)}
 							data-testid="task-header-menu"
 							onCloseAutoFocus={(event) => {
 								// Make a skill… hands focus to the composer, not back to ⋯.
@@ -204,6 +209,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 									setMenuView("menu")
 								}
 							}}
+							onKeyDown={handleMenuKeyDown}
 							side="bottom">
 							{menuView === "task" ? (
 								<>
@@ -225,94 +231,72 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, onClose, onOpenSubagentPr
 									/>
 								</>
 							) : (
-								<div className="flex flex-col" role="menu">
+								<div aria-label="More actions" className="flex flex-col" role="menu">
 									{taskId && !currentTaskItem?.isSubagent && (
-										<button
-											className={MENU_ITEM_CLASS}
+										<MenuItem
 											data-testid="move-to-task"
+											hint={<span aria-hidden className="codicon codicon-chevron-right text-[12px]!" />}
+											icon="tasklist"
+											label={currentTaskItem?.taskGroupId ? "Move to task…" : "File into a task…"}
 											onClick={() => setMenuView("task")}
-											role="menuitem"
-											type="button">
-											<span aria-hidden className="codicon codicon-tasklist text-[13px]" />
-											<span className="flex-1">
-												{currentTaskItem?.taskGroupId ? "Move to task…" : "File into a task…"}
-											</span>
-											<span
-												aria-hidden
-												className="codicon codicon-chevron-right text-[12px] text-description"
-											/>
-										</button>
+										/>
 									)}
-									<button
-										className={MENU_ITEM_CLASS}
+									<MenuItem
 										disabled={!taskId}
+										icon="diff"
+										label="Walkthrough"
 										onClick={() => {
 											setMenuOpen(false)
 											navigateToWalkthrough()
 										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-diff text-[13px]" />
-										Walkthrough
-									</button>
-									<button
-										className={MENU_ITEM_CLASS}
+										reason="Send a message first."
+									/>
+									<MenuItem
 										data-testid="make-a-skill"
 										disabled={!taskId}
+										hint="/skill"
+										icon="sparkle"
+										label="Make a skill…"
 										onClick={() => {
 											composerTakesFocus.current = true
 											setMenuOpen(false)
 											// Fills /skill into the composer; it runs as a normal turn when sent.
 											requestScriptDraft("skill")
 										}}
-										role="menuitem"
-										type="button">
-										<span aria-hidden className="codicon codicon-sparkle text-[13px]" />
-										<span className="flex-1">Make a skill…</span>
-										<span className="text-[11px] text-description">/skill</span>
-									</button>
-									<button
-										className={MENU_ITEM_CLASS}
+										reason="Send a message first."
+									/>
+									<MenuItem
 										disabled={!task.text}
+										icon={copied ? "check" : "copy"}
+										label={copied ? "Copied" : "Copy first message"}
 										onClick={copyFirstMessage}
-										role="menuitem"
-										type="button">
-										<span
-											aria-hidden
-											className={cn("codicon text-[13px]", copied ? "codicon-check" : "codicon-copy")}
-										/>
-										{copied ? "Copied" : "Copy first message"}
-									</button>
+										reason="The first message has no text."
+									/>
 									{backgroundRunning > 0 && !oneView.enabled && (
-										<button
-											className={MENU_ITEM_CLASS}
-											onClick={() => {
-												setMenuOpen(false)
-												onClose()
-											}}
-											role="menuitem"
-											type="button">
-											<span
-												aria-hidden
-												className="codicon codicon-loading codicon-modifier-spin text-[13px] motion-reduce:animate-none"
+										<>
+											<hr className={MENU_SEPARATOR_CLASS} />
+											<MenuItem
+												icon="loading"
+												iconClassName="codicon-modifier-spin motion-reduce:animate-none"
+												label={`${backgroundRunning} other chat${backgroundRunning === 1 ? "" : "s"} running`}
+												onClick={() => {
+													setMenuOpen(false)
+													onClose()
+												}}
 											/>
-											{backgroundRunning} other chat{backgroundRunning === 1 ? "" : "s"} running
-										</button>
+										</>
 									)}
 									{IS_DEV && taskId && (
-										<button
-											className={MENU_ITEM_CLASS}
+										<MenuItem
+											icon="go-to-file"
+											label="Open conversation history file"
 											onClick={() => {
 												setMenuOpen(false)
 												TaskServiceClient.exportTaskWithId(StringRequest.create({ value: taskId })).catch(
 													(err) => console.error("Failed to export task:", err),
 												)
 											}}
-											role="menuitem"
-											type="button">
-											<span aria-hidden className="codicon codicon-go-to-file text-[13px]" />
-											Open conversation history file
-										</button>
+										/>
 									)}
 								</div>
 							)}

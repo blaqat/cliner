@@ -530,6 +530,49 @@ describe("TaskGroupView", () => {
 		expect(await screen.findByTestId("task-group-settle-notice")).toHaveTextContent("Unsettled 2")
 	})
 
+	it("says why a ⋯ row is greyed out and sets Delete apart", async () => {
+		mocks.state = { ...mocks.state, sessionStatuses: {}, taskHistory: [] }
+		mocks.getTaskGroup.mockResolvedValue(GetTaskGroupResponse.fromPartial({ ...FIXTURE, threads: [] }))
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		const settle = screen.getByRole("menuitem", { name: "Settle all" })
+		expect(settle).toBeDisabled()
+		expect(settle).toHaveAccessibleDescription("No threads yet.")
+		const save = screen.getByRole("menuitem", { name: "Save as an automation…" })
+		expect(save).toBeDisabled()
+		expect(save).toHaveAccessibleDescription("Start a thread first: its prompt becomes step 1.")
+		// Delete sits below a divider, in the error color.
+		const remove = screen.getByRole("menuitem", { name: "Delete task…" })
+		expect(remove.previousElementSibling?.tagName).toBe("HR")
+		expect(remove.className).toContain("text-error")
+	})
+
+	it("can't settle while every open thread is still running, and says so", async () => {
+		mocks.state = {
+			...mocks.state,
+			sessionStatuses: { a: "running" },
+			taskHistory: [{ id: "a", ts: 1, task: "a", taskGroupId: "g1" }],
+		}
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		expect(screen.getByRole("menuitem", { name: "Settle all" })).toHaveAccessibleDescription(
+			"1 thread still running; settle when it stops.",
+		)
+	})
+
+	it("moves through the ⋯ menu with the arrow keys, skipping greyed-out rows", async () => {
+		mocks.state = { ...mocks.state, sessionStatuses: {}, taskHistory: [] }
+		mocks.getTaskGroup.mockResolvedValue(GetTaskGroupResponse.fromPartial({ ...FIXTURE, threads: [] }))
+		await renderView()
+		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))
+		const rename = screen.getByRole("menuitem", { name: "Rename task" })
+		rename.focus()
+		fireEvent.keyDown(rename, { key: "ArrowDown" })
+		expect(screen.getByRole("menuitem", { name: "Delete task…" })).toHaveFocus()
+		fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+		expect(rename).toHaveFocus()
+	})
+
 	it("renames from the ⋯ menu", async () => {
 		await renderView()
 		fireEvent.click(screen.getByRole("button", { name: "Task actions" }))

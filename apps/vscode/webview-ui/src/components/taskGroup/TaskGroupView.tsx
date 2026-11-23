@@ -4,11 +4,13 @@ import { CheckIcon, RotateCcwIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { saveTaskAsAutomation } from "@/components/automations/builderNavigation"
 import { RunBlock } from "@/components/automations/RunBlock"
+import { handleMenuKeyDown } from "@/components/chat/composer/menuKeyboard"
 import { WroteNoteChip } from "@/components/chat/NotebookChangesRow"
 import { ReadNoteChip } from "@/components/chat/NotebookToolRow"
 import { HeaderIconButton } from "@/components/chat/task-header/HeaderIconButton"
 import { InlineNotice } from "@/components/common/InlineNotice"
-import { MENU_ICON_CLASS, MENU_ITEM_CLASS } from "@/components/common/menuStyles"
+import { MenuItem } from "@/components/common/MenuItem"
+import { HEADER_MENU_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
 import { formatAge } from "@/components/inbox/inboxUtils"
 import { SessionStatusIcon } from "@/components/inbox/SessionStatusIcon"
 import { openTask, toggleTaskSettled } from "@/components/inbox/sessionActions"
@@ -207,6 +209,14 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		void openTask(threadId).then(() => navigateToWalkthrough())
 	}
 
+	// A greyed-out row says why (never stuck).
+	const settleReason =
+		settleAll.plan.total === 0
+			? "No threads yet."
+			: settleAll.plan.targets.length === 0
+				? `${plural(settleAll.plan.running, "thread")} still running; settle when ${settleAll.plan.running === 1 ? "it stops" : "they stop"}.`
+				: undefined
+
 	const branchLinked = !currentBranch || group.tags.some((tag) => sameTag(tag, { kind: "branch", value: currentBranch }))
 
 	return (
@@ -218,7 +228,8 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 					</PopoverTrigger>
 					<PopoverContent
 						align="end"
-						className="w-48 p-1 motion-reduce:animate-none"
+						className={HEADER_MENU_CLASS}
+						data-testid="task-group-menu"
 						// Rename moves focus into the breadcrumb; returning it to ⋯ would end the rename at once.
 						onCloseAutoFocus={(event) => {
 							if (renameFromMenu.current) {
@@ -226,63 +237,49 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 								event.preventDefault()
 							}
 						}}
+						onKeyDown={handleMenuKeyDown}
 						side="bottom">
-						<div className="flex flex-col" role="menu">
-							<button
-								className={MENU_ITEM_CLASS}
+						<div aria-label="Task actions" className="flex flex-col" role="menu">
+							<MenuItem
+								icon="edit"
+								label="Rename task"
 								onClick={() => {
 									renameFromMenu.current = true
 									setMenuOpen(false)
 									setRenameSignal((count) => count + 1)
 								}}
-								role="menuitem"
-								type="button">
-								<span aria-hidden className="codicon codicon-edit text-[13px]" />
-								Rename task
-							</button>
-							<button
-								className={MENU_ITEM_CLASS}
-								disabled={settleAll.disabled}
+							/>
+							<MenuItem
+								disabled={settleReason !== undefined}
+								icon={settleAll.plan.mode === "settle" ? "check-all" : "discard"}
+								label={settleAll.plan.mode === "settle" ? "Settle all" : "Unsettle all"}
 								onClick={() => {
 									setMenuOpen(false)
 									void settleAll.run()
 								}}
-								role="menuitem"
-								type="button">
-								<span
-									aria-hidden
-									className={cn(
-										MENU_ICON_CLASS,
-										settleAll.plan.mode === "settle" ? "codicon-check-all" : "codicon-discard",
-									)}
-								/>
-								{settleAll.plan.mode === "settle" ? "Settle all" : "Unsettle all"}
-							</button>
-							<button
-								className={MENU_ITEM_CLASS}
+								reason={settleReason}
+							/>
+							<MenuItem
 								data-testid="task-group-save-automation"
 								disabled={threadCount === 0}
+								icon="run-all"
+								label="Save as an automation…"
 								onClick={() => {
 									setMenuOpen(false)
 									saveTaskAsAutomation(group.id, hideTaskGroupView)
 								}}
-								role="menuitem"
-								title={threadCount === 0 ? "Start a thread first: its prompt becomes a step" : undefined}
-								type="button">
-								<span aria-hidden className="codicon codicon-run-all text-[13px]" />
-								Save as an automation…
-							</button>
-							<button
-								className={cn(MENU_ITEM_CLASS, "text-error")}
+								reason="Start a thread first: its prompt becomes step 1."
+							/>
+							<hr className={MENU_SEPARATOR_CLASS} />
+							<MenuItem
+								destructive
+								icon="trash"
+								label="Delete task…"
 								onClick={() => {
 									setMenuOpen(false)
 									setConfirmingDelete(true)
 								}}
-								role="menuitem"
-								type="button">
-								<span aria-hidden className="codicon codicon-trash text-[13px]" />
-								Delete task…
-							</button>
+							/>
 						</div>
 					</PopoverContent>
 				</Popover>

@@ -11,6 +11,12 @@ export const MENU_HEADING_CLASS = "px-2 pt-1 pb-0.5 text-[10px] font-medium uppe
 /** Divider between groups of menu rows. */
 export const MENU_SEPARATOR_CLASS = "my-1 h-px border-0 bg-menu-foreground/10"
 
+/**
+ * A header ⋯ menu (task page, thread): wide enough that no row wraps at sidebar width, never
+ * wider than the window, and no zoom when the user asks for reduced motion.
+ */
+export const HEADER_MENU_CLASS = "w-60 max-w-[calc(100vw-16px)] p-1 motion-reduce:animate-none"
+
 /** Leading codicon in a menu row. */
 export const MENU_ICON_CLASS = "codicon shrink-0 text-[13px]!"
 
