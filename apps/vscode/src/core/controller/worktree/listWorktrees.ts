@@ -1,9 +1,10 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
 import { WorktreeList } from "@shared/proto/cline/worktree"
 import { getGitRootPath, listWorktrees as listWorktreesUtil } from "@utils/git-worktree"
-import { arePathsEqual, getWorkspacePath } from "@utils/path"
+import { getWorkspacePath } from "@utils/path"
 import { HostProvider } from "@/hosts/host-provider"
 import { Logger } from "@/shared/services/Logger"
+import { worktreePath } from "@/utils/worktree-paths"
 import { Controller } from ".."
 
 /**
@@ -40,22 +41,18 @@ export async function listWorktrees(_controller: Controller, _request: EmptyRequ
 		})
 	}
 
-	// Check if workspace is a subfolder of a git repo (not at repo root)
-	const gitRootPath = await getGitRootPath(cwd)
-	const isSubfolder = gitRootPath !== null && !arePathsEqual(cwd, gitRootPath)
-
-	if (isSubfolder) {
-		return WorktreeList.create({
-			worktrees: [],
-			isGitRepo: true,
-			isMultiRoot: false,
-			isSubfolder: true,
-			gitRootPath: gitRootPath || "",
-			error: "",
-		})
-	}
-
 	try {
+		const gitRootPath = await getGitRootPath(cwd)
+		if (gitRootPath && !(await worktreePath.same(cwd, gitRootPath))) {
+			return WorktreeList.create({
+				worktrees: [],
+				isGitRepo: true,
+				isMultiRoot: false,
+				isSubfolder: true,
+				gitRootPath,
+				error: "",
+			})
+		}
 		const result = await listWorktreesUtil(cwd)
 
 		return WorktreeList.create({

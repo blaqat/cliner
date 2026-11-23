@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { Logger } from "@/shared/services/Logger"
 import * as repositoryTools from "./repositories"
 import { mmPath } from "./temp-project.test-support"
 import { ThreadWorktreeManager } from "./thread-worktree-manager"
@@ -67,6 +68,59 @@ afterEach(async () => {
 }, 60_000)
 
 for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: leaves unavailable uncached submodules unset through diff, copy, takeover and removal`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		const original = path.join(root, "vendor", "nested child")
+		const parent = path.dirname(original)
+		const logs = vi.spyOn(Logger, "log")
+		git(parent, "submodule", "deinit", "-f", "--", "nested child")
+		const metadata = git(parent, "rev-parse", "--absolute-git-dir")
+		await fs.rm(path.join(metadata, "modules", "nested child"), { recursive: true })
+		git(parent, "config", "submodule.nested child.url", path.join(temp, "unavailable"))
+		const mapping = await manager.create("skip", "Skipped submodule", workspace)
+		const child = path.join(mapping.modules[0].path, "vendor", "nested child")
+		expect(logs).toHaveBeenCalledWith(expect.stringMatching(/left nested child unset, like your workspace/i))
+		expect(mapping.unsetSubmodules?.[0]).toMatch(/vendor\/nested child$/)
+		await expect(fs.access(path.join(child, ".git"))).rejects.toThrow()
+		expect((await manager.summary("skip")).changedFiles).toBe(0)
+		await write(mapping.modules[0].path, "file.txt", "thread change\n")
+		expect((await manager.diffs("skip")).flatMap((diff) => diff.paths)).toEqual([
+			[mapping.modules[0].name, "file.txt"].filter(Boolean).join("/"),
+		])
+		expect((await manager.summary("skip")).changedFiles).toBe(1)
+		expect((await manager.remove("skip")).warning).toContain("never copied here")
+		await manager.bring("skip")
+		expect(await read(root, "file.txt")).toBe("thread change\n")
+		expect((await manager.summary("skip")).loseOnRemove).toBe(0)
+		expect(await manager.settled([{ id: "skip", isSettled: true }])).toHaveLength(1)
+		await manager.undo("skip")
+		expect((await manager.takeOver("skip")).warning).toBeUndefined()
+		expect(await read(root, "file.txt")).toBe("thread change\n")
+		await expect(fs.access(path.join(original, ".git"))).rejects.toThrow()
+		expect((await manager.remove("skip")).warning).toBeUndefined()
+		await expect(fs.access(mapping.cwd)).rejects.toThrow()
+	}, 120_000)
+
+	it(`${mode}: warns and finishes when a checked-out submodule cannot fetch the recorded commit`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		const source = path.join(root, "vendor")
+		const original = git(source, "rev-parse", "HEAD")
+		const unavailable = "1".repeat(original.length)
+		git(root, "submodule", "set-url", "vendor", path.join(temp, "unavailable"))
+		git(root, "add", ".gitmodules")
+		git(root, "update-index", "--cacheinfo", `160000,${unavailable},vendor`)
+		git(root, "commit", "-m", "record unavailable gitlink")
+		const warnings = vi.spyOn(Logger, "warn")
+		const mapping = await manager.create("fetch", "Unavailable commit", workspace)
+		expect(warnings).toHaveBeenCalledWith(expect.stringContaining("Git couldn't fetch"))
+		expect(warnings).toHaveBeenCalledWith(expect.stringMatching(/left vendor unset\./i))
+		expect(mapping.unsetSubmodules?.[0]).toMatch(/vendor$/)
+		await expect(fs.access(path.join(mapping.modules[0].path, "vendor", ".git"))).rejects.toThrow()
+		expect(git(source, "rev-parse", "HEAD")).toBe(original)
+		expect((await manager.summary("fetch")).changedFiles).toBe(0)
+		expect((await manager.remove("fetch")).warning).toBeUndefined()
+	}, 120_000)
+
 	it(`${mode}: create, diff, bring, undo, try and remove nested relative-URL submodules`, async () => {
 		const { workspace, root, manager } = await fixture(mode)
 		const mapping = await manager.create("nested", "Nested", workspace)
@@ -223,6 +277,10 @@ for (const mode of ["git", "mm"] as const) {
 
 it("uses the nearest mm config, prefers .mm.json, and refuses free after module configuration changes", async () => {
 	const { workspace, root, manager } = await fixture("mm")
+	expect(await manager.availability(root)).toMatchObject({
+		mmCwd: workspace,
+		mmConfigPath: path.join(workspace, ".mm.json"),
+	})
 	const mapping = await manager.create("config", "Config", root)
 	expect(mapping.workspace).toBe(workspace)
 	expect(mapping.modules.map((module) => module.name)).toEqual(["api"])
@@ -238,6 +296,30 @@ it("uses the nearest mm config, prefers .mm.json, and refuses free after module 
 	await expect(manager.remove("config", true)).rejects.toThrow("configuration changed")
 	await fs.access(mapping.modules[0].path)
 }, 120_000)
+
+it("reports the mm working folder when discovery fails", async () => {
+	const { workspace, manager } = await fixture("mm")
+	await write(workspace, ".mm.json", "malformed")
+	expect(await manager.availability(workspace)).toMatchObject({
+		mode: "mm",
+		available: false,
+		mmCwd: workspace,
+		reason: expect.stringContaining("Couldn't read mm configuration"),
+	})
+}, 120_000)
+
+it.skipIf(process.platform !== "darwin")(
+	"creates and removes an isolate from a case-mismatched workspace path",
+	async (ctx) => {
+		const { workspace, manager } = await fixture("mm")
+		const alias = path.join(path.dirname(workspace), path.basename(workspace).toUpperCase())
+		if (!(await repositoryTools.exists(alias))) ctx.skip("case-sensitive filesystem")
+		const mapping = await manager.create("case", "Case", alias)
+		await manager.assertPresent(mapping)
+		expect((await manager.remove("case")).warning).toBeUndefined()
+	},
+	120_000,
+)
 
 it("mm: configured modules may themselves be submodules with .git files", async () => {
 	const { workspace, root, manager } = await fixture("mm", true)

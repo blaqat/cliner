@@ -2,6 +2,8 @@ import { execFile } from "node:child_process"
 import { promises as fs } from "node:fs"
 import path from "node:path"
 import type { ThreadWorktree, WorktreeModule } from "@shared/thread-worktrees"
+import { Logger } from "@/shared/services/Logger"
+import { worktreePath } from "@/utils/worktree-paths"
 
 export async function run(
 	command: string,
@@ -9,6 +11,7 @@ export async function run(
 	cwd: string,
 	input?: string,
 	env?: NodeJS.ProcessEnv,
+	onStderr?: (stderr: string) => void,
 ): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const child = execFile(
@@ -17,7 +20,10 @@ export async function run(
 			{ cwd, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 },
 			(error, stdout, stderr) => {
 				if (error) reject(new Error(`${command} ${args[0]}: ${stderr || error.message}`))
-				else resolve(stdout)
+				else {
+					onStderr?.(stderr)
+					resolve(stdout)
+				}
 			},
 		)
 		child.stdin?.on("error", () => {})
@@ -35,7 +41,7 @@ export const exists = (file: string) =>
 export async function assertRepository(dir: string) {
 	if (
 		!(await exists(path.join(dir, ".git"))) ||
-		(await fs.realpath((await git(dir, ["rev-parse", "--show-toplevel"])).trim())) !== (await fs.realpath(dir))
+		!(await worktreePath.same((await git(dir, ["rev-parse", "--show-toplevel"])).trim(), dir))
 	)
 		throw new Error(`Worktree missing or not a repository root: ${dir}. Restore it before resuming.`)
 	await git(dir, ["rev-parse", "--verify", "HEAD"])
@@ -80,9 +86,18 @@ export async function submoduleLinks(
 
 export async function submodulePath(dir: string, relative: string): Promise<string> {
 	const child = path.resolve(dir, relative)
-	if (!child.startsWith(dir + path.sep) || !(await fs.realpath(child)).startsWith((await fs.realpath(dir)) + path.sep))
+	if (!worktreePath.isInside(dir, child) || !(await worktreePath.inside(dir, child)))
 		throw new Error(`Submodule outside its repository: ${relative}`)
 	return child
+}
+
+async function emptyOrMissing(dir: string) {
+	try {
+		return (await fs.lstat(dir)).isDirectory() && (await fs.readdir(dir)).length === 0
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+		throw error
+	}
 }
 
 export interface Repository extends WorktreeModule {
@@ -92,8 +107,9 @@ export interface Repository extends WorktreeModule {
 }
 
 /** Every descendant has its own object database and index, and may have detached HEAD. */
-export async function repositories(mapping: ThreadWorktree): Promise<Repository[]> {
+export async function repositories(mapping: ThreadWorktree, recordUnset?: (name: string) => void): Promise<Repository[]> {
 	const result: Repository[] = []
+	const unset = new Set(mapping.unsetSubmodules)
 	async function visit(module: WorktreeModule, configured: boolean, indexHead?: string) {
 		await assertRepository(module.path)
 		result.push({ ...module, configured, indexHead })
@@ -102,10 +118,16 @@ export async function repositories(mapping: ThreadWorktree): Promise<Repository[
 				throw new Error(
 					`Submodule added or removed at ${relative}. Commit or preserve this workspace before removing it; copying submodule layout changes is not supported.`,
 				)
+			const name = [module.name, relative].filter(Boolean).join("/")
+			const child = await submodulePath(module.path, relative)
+			if ((recordUnset || unset.has(name)) && before === after && after === index && (await emptyOrMissing(child))) {
+				recordUnset?.(name)
+				continue
+			}
 			await visit(
 				{
-					name: [module.name, relative].filter(Boolean).join("/"),
-					path: await submodulePath(module.path, relative),
+					name,
+					path: child,
 					workspacePath: path.join(module.workspacePath, relative),
 					base: before,
 				},
@@ -118,7 +140,7 @@ export async function repositories(mapping: ThreadWorktree): Promise<Repository[
 	return result
 }
 
-/** Clone local caches independently, including deinitialized descendants. Keep each source's upstream URL. */
+/** Mirror checked-out or cached submodules in an independent clone. */
 export async function initializeSubmodules(dir: string, source: string, sourceGitDir?: string) {
 	const links = await gitlinks(dir, "HEAD")
 	if (!links.size) return
@@ -130,23 +152,30 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 		const key = entries.find((entry) => entry.slice(entry.indexOf("\n") + 1) === relative)?.split("\n")[0]
 		if (!key) throw new Error(`Submodule path missing from .gitmodules: ${relative}`)
 		const name = key.slice("submodule.".length, -".path".length)
-		const child = path.resolve(dir, relative)
-		const original = path.resolve(source, relative)
-		if (!child.startsWith(dir + path.sep)) throw new Error(`Submodule outside its repository: ${relative}`)
-		let cached: string
-		if (await exists(path.join(original, ".git"))) {
+		const child = await submodulePath(dir, relative)
+		const original = await submodulePath(source, relative)
+		const checkedOut = await exists(path.join(original, ".git"))
+		let cached = await submodulePath(path.join(metadata, "modules"), name)
+		if (checkedOut) {
 			await assertRepository(original)
 			cached = (await git(original, ["rev-parse", "--absolute-git-dir"])).trim()
-		} else {
-			cached = path.resolve(metadata, "modules", name)
-			if (!cached.startsWith(path.join(metadata, "modules") + path.sep)) throw new Error(`Invalid submodule name: ${name}`)
-			await git(dir, [`--git-dir=${cached}`, `--work-tree=${dir}`, "cat-file", "-e", `${commit}^{commit}`]).catch(() => {
-				throw new Error(
-					`Initialize ${relative} in your workspace with git submodule update --init --recursive, then retry workspace creation.`,
-				)
-			})
 		}
 		if (!(await exists(path.join(child, ".git")))) {
+			const local = await git(
+				dir,
+				[`--git-dir=${cached}`, `--work-tree=${dir}`, "cat-file", "-e", `${commit}^{commit}`],
+				undefined,
+				{ GIT_NO_LAZY_FETCH: "1" },
+			).then(
+				() => true,
+				() => false,
+			)
+			if (!checkedOut && !local) {
+				Logger.log(`Left ${relative} unset, like your workspace.`)
+				continue
+			}
+			if (!(await emptyOrMissing(child)))
+				throw new Error(`Uninitialized submodule ${relative} contains files. Move them aside before retrying.`)
 			await git(dir, ["clone", "--no-hardlinks", "--no-checkout", "--", cached, child])
 			const upstream = await git(dir, [
 				`--git-dir=${cached}`,
@@ -159,6 +188,19 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 				() => original,
 			)
 			await git(child, ["remote", "set-url", "origin", upstream])
+			if (!local) {
+				try {
+					await git(child, ["fetch", "--no-tags", "origin", commit])
+				} catch {
+					await fs.rm(child, { force: true, recursive: true })
+					await fs.mkdir(child)
+					Logger.warn(
+						`Left ${relative} unset. Git couldn't fetch ${commit}. Check the submodule URL and your access, then run git submodule update --init --recursive in the worktree.`,
+					)
+					continue
+				}
+			}
+			await git(child, ["checkout", "--detach", commit])
 			const urlKey = key.slice(0, -"path".length) + "url"
 			// Root worktrees share config with the source. Keep any existing local URL override.
 			if (
@@ -168,7 +210,6 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 				))
 			)
 				await git(dir, ["config", urlKey, upstream])
-			await git(child, ["checkout", "--detach", commit])
 		}
 		await initializeSubmodules(child, original, cached)
 	}

@@ -2,6 +2,7 @@ import * as path from "path"
 import simpleGit from "simple-git"
 import { Logger } from "@/shared/services/Logger"
 import { copyWorktreeIncludeFiles } from "./worktree-include"
+import { worktreePath as pathComparison } from "./worktree-paths"
 
 export interface Worktree {
 	path: string
@@ -120,7 +121,7 @@ export async function listWorktrees(cwd: string): Promise<{ worktrees: Worktree[
 			for (const line of lines) {
 				if (line.startsWith("worktree ")) {
 					worktree.path = line.substring(9)
-					worktree.isCurrent = worktree.path === currentPath
+					worktree.isCurrent = await pathComparison.same(worktree.path, currentPath)
 				} else if (line.startsWith("HEAD ")) {
 					worktree.commitHash = line.substring(5)
 				} else if (line.startsWith("branch ")) {
@@ -205,7 +206,9 @@ export async function createWorktree(
 
 		// Get the created worktree info
 		const { worktrees } = await listWorktrees(cwd)
-		const createdWorktree = worktrees.find((w) => w.path === absoluteWorktreePath)
+		const createdKey = await pathComparison.key(absoluteWorktreePath)
+		const worktreeKeys = await Promise.all(worktrees.map((worktree) => pathComparison.key(worktree.path)))
+		const createdWorktree = worktrees[worktreeKeys.indexOf(createdKey)]
 
 		let message = `Worktree created at ${worktreePath}`
 		if (copiedCount > 0) {

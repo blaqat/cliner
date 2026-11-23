@@ -14,10 +14,11 @@ import {
 	type WorktreeSummary,
 	worktreeFixFor,
 } from "@shared/thread-worktrees"
-
+import { Logger } from "@/shared/services/Logger"
 import { createWorktree } from "@/utils/git-worktree"
+import { worktreePath } from "@/utils/worktree-paths"
 
-import { type MmWorkspace, mmError, readMmWorkspace } from "./mm-discovery"
+import { type MmWorkspace, mmDisplayPath, mmError, mmWorkingDirectory, readMmWorkspace } from "./mm-discovery"
 import {
 	assertRepository,
 	detachHead,
@@ -77,23 +78,34 @@ async function assertCommitted(workspace: string) {
 async function assertMmRepositories(config: MmWorkspace) {
 	const roots: string[] = []
 	const folders = new Set<string>()
+	const root = await worktreePath.key(config.root)
 	for (const module of config.modules) {
-		const relative = path.relative(config.root, module.absolutePath)
-		if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
+		const canonical = await worktreePath.key(module.absolutePath)
+		if (canonical !== root && !worktreePath.isInside(root, canonical))
 			throw new Error("mm modules must be inside the workspace.")
 		const folder = module.isolateFolder
 		if (folder === ".." || path.basename(folder) !== folder) throw new Error(`Invalid mm isolate folder: ${folder}.`)
-		if (folders.has(folder)) throw new Error(`mm modules share the isolate folder name ${folder}.`)
-		folders.add(folder)
+		const folderKey = await worktreePath.key(path.join(config.isolatesRoot, folder))
+		if (folders.has(folderKey)) throw new Error(`mm modules share the isolate folder name ${folder}.`)
+		folders.add(folderKey)
 		await assertRepository(module.absolutePath)
-		const canonical = await fs.realpath(module.absolutePath)
 		if (roots.includes(canonical)) throw new Error(`mm lists the same repository twice: ${module.absolutePath}.`)
-		if (roots.some((other) => canonical.startsWith(other + path.sep) || other.startsWith(canonical + path.sep)))
+		if (roots.some((other) => worktreePath.isInside(other, canonical) || worktreePath.isInside(canonical, other)))
 			throw new Error(
 				"mm modules include both a repository and its descendant. Select either the parent or its submodules in the mm configuration.",
 			)
 		roots.push(canonical)
 	}
+}
+
+async function isRegisteredWorktree(workspace: string, dir: string, lockedOnly = false) {
+	const registered = await git(workspace, ["worktree", "list", "--porcelain", "-z"])
+	for (const entry of registered.split("\0\0")) {
+		const [location, ...fields] = entry.split("\0")
+		if (!location.startsWith("worktree ") || (lockedOnly && !fields.some((field) => /^locked(?: |$)/.test(field)))) continue
+		if (await worktreePath.same(location.slice("worktree ".length), dir)) return true
+	}
+	return false
 }
 
 /** All mutations are serialized, including settings and mapping persistence. */
@@ -311,6 +323,7 @@ export class ThreadWorktreeManager {
 			// A set mm.js path detects mm workspaces in Git mode too; mm mode in a plain repository uses Git.
 			if (settings.mmPath || settings.mode === "mm") {
 				availability.mode = "mm"
+				availability.mmCwd = mmDisplayPath(path.resolve(workspace))
 				config = await this.discoverMm(workspace, settings, refreshMm)
 				if (config) {
 					try {
@@ -319,9 +332,12 @@ export class ThreadWorktreeManager {
 						throw mmError(settings, (error as Error).message)
 					}
 					availability.modules = config.modules.map((module) => module.name)
+					availability.mmCwd = mmDisplayPath(config.root)
+					availability.mmConfigPath = mmDisplayPath(config.configFile)
 				} else {
 					// mm explicitly reported that this is not an mm workspace.
 					availability.mode = "git"
+					delete availability.mmCwd
 				}
 			}
 			if (availability.mode === "git") await assertCommitted(workspace)
@@ -345,7 +361,8 @@ export class ThreadWorktreeManager {
 			}
 			const settings = await this.settings()
 			const { availability, config } = await this.checkAvailability(workspace, settings, workspaceOff, true)
-			if (!availability.available || availability.mode === "off") throw new Error(availability.reason)
+			if (!availability.available || availability.mode === "off")
+				throw new Error(availability.reason + (availability.mmCwd ? `\nmm working folder is ${availability.mmCwd}.` : ""))
 			const suffix = createHash("sha256").update(threadId).digest("hex").slice(0, 10)
 			const slug =
 				title
@@ -383,9 +400,21 @@ export class ThreadWorktreeManager {
 			if (mode === "mm") {
 				await this.assertMutationOwner()
 				try {
-					await run(settings.nodePath, [settings.mmPath, "isolate", branch], workspace)
+					const output = await run(
+						settings.nodePath,
+						[settings.mmPath, "isolate", branch],
+						mmWorkingDirectory(workspace),
+						undefined,
+						undefined,
+						(stderr) => {
+							for (const line of stderr.split("\n").map((line) => line.trim()))
+								if (line.startsWith("warning: left ")) Logger.warn(line.slice("warning: ".length))
+						},
+					)
+					for (const line of output.split("\n").map((line) => line.trim()))
+						if (line.startsWith("left ") && line.endsWith("unset, like your workspace")) Logger.log(line)
 				} catch (error) {
-					throw mmError(settings, (error as Error).message.trim())
+					throw mmError(settings, (error as Error).message.trim(), workspace)
 				}
 			} else {
 				await this.assertMutationOwner()
@@ -393,12 +422,17 @@ export class ThreadWorktreeManager {
 				if (!result.success) throw new Error(result.message)
 				await initializeSubmodules(cwd, mapping.modules[0].workspacePath)
 			}
-			await this.assertPresent(mapping)
+			const unset: string[] = []
+			await this.assertPresent(mapping, (name) => unset.push(name))
+			if (unset.length) {
+				mapping.unsetSubmodules = unset
+				await this.save(mapping)
+			}
 			return mapping
 		})
 	}
-	async assertPresent(mapping: ThreadWorktree) {
-		const modules = await repositories(mapping)
+	async assertPresent(mapping: ThreadWorktree, recordUnset?: (name: string) => void) {
+		const modules = await repositories(mapping, recordUnset)
 		for (const module of modules) {
 			if (!module.configured) continue
 			const branch = (await git(module.path, ["branch", "--show-current"])).trim()
@@ -408,7 +442,7 @@ export class ThreadWorktreeManager {
 				(await git(module.workspacePath, ["rev-parse", "--git-common-dir"])).trim(),
 			)
 			const common = path.resolve(module.path, (await git(module.path, ["rev-parse", "--git-common-dir"])).trim())
-			if ((await fs.realpath(originalCommon)) !== (await fs.realpath(common)))
+			if (!(await worktreePath.same(originalCommon, common)))
 				throw new Error(`Worktree repository changed at ${module.path}`)
 		}
 		return modules
@@ -521,7 +555,9 @@ export class ThreadWorktreeManager {
 		const mapping = await this.required(id)
 		let workspaceDirty = false
 		const repos = await repositories(mapping)
-		for (const module of repos) if ((await workspaceStatus(module.workspacePath)).trim()) workspaceDirty = true
+		for (const module of repos)
+			if ((await exists(path.join(module.workspacePath, ".git"))) && (await workspaceStatus(module.workspacePath)).trim())
+				workspaceDirty = true
 		if (mapping.takenOver) {
 			// The branch lives in the workspace now; only edits made in the leftover folder since would be lost.
 			const leftover = (await this.leftoverChanges(mapping))
@@ -765,19 +801,14 @@ export class ThreadWorktreeManager {
 			if (mapping.takenOver) return { message: "Your workspace is on this branch now", mapping }
 			const repos = await repositories(mapping)
 			for (const module of repos) {
+				await assertRepository(module.workspacePath)
 				if ((await workspaceStatus(module.workspacePath)).trim())
 					return {
 						warning: `Your workspace has uncommitted changes${mapping.modules.length > 1 ? ` in ${module.name}` : ""}. Commit or stash them, then switch.`,
 					}
 			}
 			for (const module of mapping.modules) {
-				const registered = await git(module.workspacePath, ["worktree", "list", "--porcelain", "-z"])
-				const canonical = await fs.realpath(module.path)
-				if (
-					registered
-						.split("\0\0")
-						.some((entry) => entry.includes(`worktree ${canonical}\0`) && entry.includes("\0locked"))
-				)
+				if (await isRegisteredWorktree(module.workspacePath, module.path, true))
 					return { warning: `Unlock ${module.name || "the worktree"} before switching to its branch.` }
 			}
 			const transferredDiff = this.fingerprint(await this.diffs(id))
@@ -938,24 +969,27 @@ export class ThreadWorktreeManager {
 			const settings = await this.settings()
 			if (mapping.mode === "mm") {
 				const config = await this.discoverMm(mapping.workspace, settings, true)
-				// Older mappings can use a symlinked path to the same workspace.
-				const root = await fs.realpath(mapping.workspace)
-				const recordedPath = (file: string) => path.resolve(root, path.relative(mapping.workspace, file))
 				if (
 					!config ||
-					config.root !== root ||
-					path.join(config.isolatesRoot, mapping.branch) !== recordedPath(mapping.cwd) ||
+					!(await worktreePath.same(config.root, mapping.workspace)) ||
+					!(await worktreePath.same(path.join(config.isolatesRoot, mapping.branch), mapping.cwd)) ||
 					config.modules.length !== mapping.modules.length ||
-					config.modules.some(
-						(module, i) =>
-							module.absolutePath !== recordedPath(mapping.modules[i].workspacePath) ||
-							path.join(config.isolatesRoot, mapping.branch, module.isolateFolder) !==
-								recordedPath(mapping.modules[i].path),
-					)
+					!(
+						await Promise.all(
+							config.modules.flatMap((module, i) => [
+								worktreePath.same(module.absolutePath, mapping.modules[i].workspacePath),
+								worktreePath.same(
+									path.join(config.isolatesRoot, mapping.branch, module.isolateFolder),
+									mapping.modules[i].path,
+								),
+							]),
+						)
+					).every(Boolean)
 				)
 					throw mmError(
 						settings,
 						"mm configuration changed since this workspace was created. Restore its module and isolate paths before removing it.",
+						mapping.workspace,
 					)
 			} else if (settings.mmPath || settings.mode === "mm") {
 				// Refresh discovery for the menu while removing a previously created Git worktree.
@@ -965,14 +999,12 @@ export class ThreadWorktreeManager {
 			if (mapping.mode === "mm") {
 				await this.assertMutationOwner()
 				try {
-					await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mapping.workspace)
+					await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mmWorkingDirectory(mapping.workspace))
 				} catch (error) {
-					throw mmError(settings, (error as Error).message.trim())
+					throw mmError(settings, (error as Error).message.trim(), mapping.workspace)
 				}
 			} else {
-				const registered = await git(mapping.workspace, ["worktree", "list", "--porcelain", "-z"])
-				const canonical = await fs.realpath(mapping.cwd).catch(() => mapping.cwd)
-				if (registered.split("\0").includes(`worktree ${canonical}`)) {
+				if (await isRegisteredWorktree(mapping.workspace, mapping.cwd)) {
 					await this.assertMutationOwner()
 					await git(mapping.workspace, ["worktree", "remove", "--force", mapping.cwd])
 				} else if (await exists(mapping.cwd))

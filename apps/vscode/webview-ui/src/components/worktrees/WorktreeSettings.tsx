@@ -121,29 +121,42 @@ function PathField({
 }
 
 /** Where things stand: ready (and how to start one), or why not and what fixes it. */
-function Status({ state }: { state: WorktreeState }) {
+function Status({ state, hideReason }: { state: WorktreeState; hideReason: boolean }) {
 	const { availability } = state
-	if (availability.available) {
-		const where = availability.modules?.length ? `in mm worktrees of ${availability.modules.join(", ")}` : "in a Git worktree"
-		return (
-			<Feedback ok testId="worktrees-status">
-				Ready. Pick New worktree under the message box to start a thread {where}.
-			</Feedback>
-		)
-	}
+	const where = availability.modules?.length ? `in mm worktrees of ${availability.modules.join(", ")}` : "in a Git worktree"
 	const fixInFolder = availability.fix === "repository" || availability.fix === "commit"
 	return (
-		<Feedback testId="worktrees-status">
-			{availability.reason ?? "A worktree can't be made here."}
-			{fixInFolder && (
-				<>
-					{" "}
-					<LinkButton id={WORKTREE_CONTROLS.folder} onClick={() => void threadWorktreeAction("openSourceControl")}>
-						Open Source Control
-					</LinkButton>
-				</>
+		<div className="space-y-1 py-2">
+			{!hideReason && (
+				<Feedback ok={availability.available} testId="worktrees-status">
+					{availability.available
+						? `Ready. Pick New worktree under the message box to start a thread ${where}.`
+						: (availability.reason ?? "A worktree can't be made here.")}
+					{fixInFolder && (
+						<>
+							{" "}
+							<LinkButton
+								id={WORKTREE_CONTROLS.folder}
+								onClick={() => void threadWorktreeAction("openSourceControl")}>
+								Open Source Control
+							</LinkButton>
+						</>
+					)}
+				</Feedback>
 			)}
-		</Feedback>
+			{availability.mmCwd && (
+				<div className="ph-no-capture pl-[18px] text-xs text-description">
+					<div className="truncate" title={availability.mmCwd}>
+						mm working folder <span className="font-mono">{availability.mmCwd}</span>
+					</div>
+					{availability.mmConfigPath && (
+						<div className="truncate" title={availability.mmConfigPath}>
+							Config file <span className="font-mono">{availability.mmConfigPath}</span>
+						</div>
+					)}
+				</div>
+			)}
+		</div>
 	)
 }
 
@@ -336,11 +349,7 @@ export function WorktreeSettings() {
 				</div>
 			)}
 
-			{!(mmPathProblem && availability.fix === "mm") && (
-				<div className="py-2">
-					<Status state={state} />
-				</div>
-			)}
+			<Status hideReason={mmPathProblem && availability.fix === "mm"} state={state} />
 			{(message || error) && (
 				<InlineNotice className="my-1" tone="error">
 					{message || error}

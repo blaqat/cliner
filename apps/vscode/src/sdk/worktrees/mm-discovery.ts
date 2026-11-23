@@ -28,8 +28,16 @@ const errorSchema = z.object({
 
 export type MmWorkspace = z.infer<typeof workspaceSchema>
 
-export function mmError(settings: ThreadWorktreeSettings, message: string): Error {
-	return new Error(`${message} mm.js path: ${settings.mmPath || "(not set)"}`)
+export function mmError(settings: ThreadWorktreeSettings, message: string, cwd?: string): Error {
+	return new Error(`${message} mm.js path: ${settings.mmPath || "(not set)"}${cwd ? `\nRan mm in ${mmDisplayPath(cwd)}.` : ""}`)
+}
+
+export function mmWorkingDirectory(workspace: string, platform = process.platform): string {
+	return platform === "win32" ? workspace.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) : workspace
+}
+
+export function mmDisplayPath(file: string): string {
+	return process.platform === "win32" ? path.win32.normalize(mmWorkingDirectory(file)) : file
 }
 
 function parseJson(stdout: string): unknown {
@@ -40,7 +48,11 @@ function parseJson(stdout: string): unknown {
 	}
 }
 
-export async function readMmWorkspace(workspace: string, settings: ThreadWorktreeSettings): Promise<MmWorkspace | undefined> {
+export async function readMmWorkspace(
+	workspace: string,
+	settings: ThreadWorktreeSettings,
+	platform = process.platform,
+): Promise<MmWorkspace | undefined> {
 	const { mmPath, nodePath } = settings
 	if (!mmPath) throw mmError(settings, "Set the path to mm.js in Worktrees settings.")
 	if (!(await exists(path.resolve(workspace, mmPath))))
@@ -49,14 +61,19 @@ export async function readMmWorkspace(workspace: string, settings: ThreadWorktre
 	const update = "This mm doesn't list its modules yet. Update mm.js."
 	let stdout: string
 	try {
-		stdout = (await execFileAsync(nodePath, [mmPath, "modules", "--json"], { cwd: workspace, timeout: 10000 })).stdout
+		stdout = (
+			await execFileAsync(nodePath, [mmPath, "modules", "--json"], {
+				cwd: mmWorkingDirectory(workspace, platform),
+				timeout: 10000,
+			})
+		).stdout
 	} catch (error) {
 		const failure = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean }
 		const response = errorSchema.safeParse(parseJson(failure.stdout ?? ""))
 		if (response.success) {
 			const { code, message, configFile } = response.data.error
 			if (code === "NO_CONFIG") return undefined
-			const file = configFile ? ` Config: ${configFile}` : ""
+			const file = configFile ? ` Config: ${mmDisplayPath(configFile)}` : ""
 			throw mmError(settings, `Couldn't read mm configuration. ${message}.${file}`)
 		}
 		const stderr = failure.stderr?.trim() ?? ""

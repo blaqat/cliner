@@ -258,6 +258,28 @@ const configured = () =>
 	mocks.action.mock.calls.filter(([request]) => request.action === "configure").map(([request]) => JSON.parse(request.json))
 
 describe("WorktreeSettings", () => {
+	it.each([true, false])("shows where mm runs when availability is %s", async (available) => {
+		const cwd = "C:\\Users\\Example\\Project"
+		const config = cwd + "\\.mmrc"
+		mocks.state = {
+			...mocks.state,
+			settings: { mode: "mm", mmPath: "C:\\Tools\\mm.js", nodePath: "node" },
+			mmFound: true,
+			availability: {
+				mode: "mm",
+				available,
+				workspaceOff: false,
+				mmCwd: cwd,
+				...(available ? { mmConfigPath: config, modules: ["api"] } : { reason: "Couldn't run Node." }),
+			},
+		}
+		serveSettings()
+		render(<WorktreeSettings />)
+		expect(await screen.findByTitle(cwd)).toHaveTextContent(cwd)
+		expect(screen.queryByTitle(config)?.textContent).toBe(available ? `Config file ${config}` : undefined)
+		expect(screen.getByTestId("worktrees-status")).toHaveTextContent(available ? "Ready." : "Couldn't run Node.")
+	})
+
 	it("saves the mode as it changes and paths on Enter or leaving the box, with no Save button", async () => {
 		serveSettings()
 		render(<WorktreeSettings />)
