@@ -80,6 +80,7 @@ export interface AutomationStoreDeps {
 
 export class AutomationStore {
 	private readonly trust: AutomationTrustStore
+	private writing: Promise<unknown> = Promise.resolve()
 	constructor(private readonly deps: AutomationStoreDeps) {
 		this.trust = new AutomationTrustStore(deps.getTrustFile)
 	}
@@ -147,15 +148,40 @@ export class AutomationStore {
 	async save(definition: AutomationDefinition, scope: AutomationScope, previousPath?: string): Promise<LoadedAutomation> {
 		const issues = validateAutomation(definition)
 		if (issues.length > 0) throw new Error(formatIssues(issues)[0])
+		return this.write(definition.name, serializeAutomation(definition), scope, previousPath)
+	}
+
+	async saveProposal(previousPath: string, fingerprint: string, content: string): Promise<LoadedAutomation> {
+		const current = await this.findByPath(previousPath)
+		if (!current || current.fingerprint !== fingerprint)
+			throw new Error("The file changed on disk. Propose the change again.")
+		const parsed = parseAutomationFile(content, current.name)
+		if (!parsed.definition) throw new Error(parsed.errors[0] ?? "The proposed file has problems.")
+		return this.write(parsed.definition.name, content, current.scope, previousPath, fingerprint)
+	}
+
+	private write(name: string, content: string, scope: AutomationScope, previousPath?: string, fingerprint?: string) {
+		const write = this.writing.then(() => this.writeFile(name, content, scope, previousPath, fingerprint))
+		this.writing = write.catch(() => {})
+		return write
+	}
+
+	private async writeFile(name: string, content: string, scope: AutomationScope, previousPath?: string, fingerprint?: string) {
 		const dir = this.dirFor(scope)
 		if (!dir) throw new Error("Open a folder to save automations in this workspace.")
-		const filePath = path.join(dir, `${definition.name}.md`)
-		const clash = (await this.list()).find(
-			(item) => item.scope === scope && item.name === definition.name && item.filePath !== previousPath,
+		const filePath = path.join(dir, `${name}.md`)
+		const entries = await this.list()
+		const clash = entries.find(
+			(item) =>
+				item.scope === scope && (item.name === name || item.filePath === filePath) && item.filePath !== previousPath,
 		)
-		if (clash) throw new Error(`An automation called ${definition.name} already exists here.`)
-		const content = serializeAutomation(definition)
+		if (clash) throw new Error(`An automation called ${name} already exists here.`)
 		await fs.mkdir(dir, { recursive: true })
+		if (fingerprint && previousPath) {
+			const latest = await fs.readFile(previousPath, "utf8").catch(() => undefined)
+			if (latest === undefined || automationFingerprint(previousPath, latest) !== fingerprint)
+				throw new Error("The file changed on disk. Propose the change again.")
+		}
 		await fs.writeFile(filePath, content, "utf8")
 		await this.trust.set(filePath, automationFingerprint(filePath, content))
 		if (previousPath && path.resolve(previousPath) !== path.resolve(filePath)) {

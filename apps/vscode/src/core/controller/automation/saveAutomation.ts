@@ -7,10 +7,13 @@ import { buildAutomationList } from "./listAutomations"
 export async function saveAutomation(controller: Controller, request: SaveAutomationRequest): Promise<AutomationList> {
 	const scope = request.scope === "global" ? "global" : "workspace"
 	await controller.getWorkspaceRoot()
-	const saved = await controller.automations.store.save(
-		parseDefinitionJson(request.definitionJson),
-		scope,
-		request.previousPath || undefined,
-	)
+	const store = controller.automations.store
+	let saved: Awaited<ReturnType<typeof store.save>>
+	if (request.proposedFile !== undefined) {
+		if (!request.previousPath || !request.expectedFingerprint) throw new Error("Propose the change again before keeping it.")
+		saved = await store.saveProposal(request.previousPath, request.expectedFingerprint, request.proposedFile)
+	} else {
+		saved = await store.save(parseDefinitionJson(request.definitionJson), scope, request.previousPath || undefined)
+	}
 	return buildAutomationList(controller, saved.filePath)
 }

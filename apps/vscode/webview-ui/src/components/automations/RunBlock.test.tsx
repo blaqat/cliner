@@ -330,6 +330,17 @@ describe("RunBlock", () => {
 		fireEvent.click(screen.getByRole("button", { name: /Ticket to PR/ }))
 		expect(screen.getByTestId("run-steps-run-1")).toBeInTheDocument()
 	})
+
+	it("starts a failed run expanded and lets you fold and unfold it", () => {
+		render(<RunBlock defaultOpen={false} onOpenThread={vi.fn()} run={failedRun()} statuses={{}} />)
+		const header = screen.getByRole("button", { name: /Ticket to PR/ })
+		const steps = () => screen.queryByTestId("run-steps-run-1")
+		expect(steps()).toBeInTheDocument()
+		fireEvent.click(header)
+		expect(steps()).not.toBeInTheDocument()
+		fireEvent.click(header)
+		expect(steps()).toBeInTheDocument()
+	})
 })
 
 describe("AutomationRunBar", () => {

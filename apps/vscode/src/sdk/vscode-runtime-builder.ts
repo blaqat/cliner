@@ -5,6 +5,7 @@ import type { McpHub } from "@/services/mcp/McpHub"
 import { resolveMcpServerTimeoutMs } from "@/services/mcp/timeout"
 import { createPresentWalkthroughTool } from "@/services/walkthrough/authored-tool"
 import { Logger } from "@/shared/services/Logger"
+import { type AutomationOutputContext, createAutomationOutputTool } from "./automations/automation-output-tool"
 import { createScriptTool, type ScriptToolContext } from "./scripts/script-tool"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { createSideThreadTools, type SideThreadContext } from "./side-thread-tools"
@@ -66,6 +67,7 @@ export class McpHubToolProvider {
 }
 
 export interface VscodeExtraToolsOptions {
+	automationOutput?: AutomationOutputContext
 	notebook?: TaskNotebookContext
 	aboutYou?: AboutYouContext
 	sideThread?: SideThreadContext
@@ -128,6 +130,7 @@ export async function createVscodeExtraTools(mcpHub: McpHub, options?: VscodeExt
 	}
 	if (options?.threadTranscript) tools.push(...(await createThreadTranscriptTools(options.threadTranscript)))
 	if (options?.scripts) tools.push(createScriptTool(options.scripts))
+	if (options?.automationOutput) tools.push(createAutomationOutputTool(options.automationOutput) as AgentTool)
 
 	// Add the custom run_commands tool when a terminal manager is available.
 	// This replaces the SDK's built-in run_commands, which is suppressed via

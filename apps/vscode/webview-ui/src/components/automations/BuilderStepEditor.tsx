@@ -1,8 +1,10 @@
 import { automationModelName, findAutomationModel } from "@shared/automation-models"
 import {
 	type AutomationDefinition,
+	type AutomationOutput,
 	type AutomationStep,
 	type AutomationThreadSpec,
+	automationThreads,
 	blankThread,
 	uniqueStepId,
 } from "@shared/automations"
@@ -30,6 +32,9 @@ export function placeholdersBefore(definition: AutomationDefinition, stepId: str
 				? []
 				: [`{{steps.${step.id}}}`, ...(step.kind === "together" ? step.threads.map((t) => `{{steps.${t.id}}}`) : [])],
 		),
+		...automationThreads(earlier).flatMap(({ thread }) =>
+			(thread.outputs ?? []).filter(({ name }) => !!name).map(({ name }) => `{{steps.${thread.id}.${name}}}`),
+		),
 	]
 }
 
@@ -40,6 +45,7 @@ export function PromptField({
 	onChange,
 	placeholders,
 	placeholder,
+	readOnly,
 	rows = 4,
 	testId,
 }: {
@@ -48,6 +54,7 @@ export function PromptField({
 	onChange: (next: string) => void
 	placeholders: string[]
 	placeholder?: string
+	readOnly?: boolean
 	rows?: number
 	testId?: string
 }) {
@@ -70,6 +77,7 @@ export function PromptField({
 				data-testid={testId}
 				onChange={(event) => onChange(event.target.value)}
 				placeholder={placeholder}
+				readOnly={readOnly}
 				ref={ref}
 				rows={rows}
 				value={value}
@@ -213,7 +221,65 @@ function ThreadFields({
 					why.
 				</div>
 			)}
+			<OutputFields onChange={(outputs) => onChange({ outputs })} thread={thread} />
 		</>
+	)
+}
+
+function OutputFields({ thread, onChange }: { thread: AutomationThreadSpec; onChange: (outputs: AutomationOutput[]) => void }) {
+	const outputs = thread.outputs ?? []
+	const update = (index: number, patch: Partial<AutomationOutput>) =>
+		onChange(outputs.map((output, i) => (i === index ? { ...output, ...patch } : output)))
+	return (
+		<div className="mt-2">
+			<div className="flex items-center justify-between gap-2">
+				<span className="text-[11px] text-description">Outputs</span>
+				<button
+					className="cursor-pointer border-0 bg-transparent p-0 text-[11px] text-link hover:underline"
+					onClick={() => onChange([...outputs, { name: "", description: "" }])}
+					type="button">
+					Add output
+				</button>
+			</div>
+			{outputs.map((output, index) => (
+				<div className="mt-1.5 rounded-xs border border-editor-group-border p-1.5" key={index}>
+					<div className="flex items-center gap-1.5">
+						<input
+							aria-label="Output name"
+							className={cn(FIELD_CLASS, "font-mono")}
+							onChange={(event) => update(index, { name: event.target.value })}
+							placeholder="e.g. findings"
+							value={output.name}
+						/>
+						<button
+							aria-label={`Remove output ${output.name || index + 1}`}
+							className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent text-description hover:bg-list-hover hover:text-foreground"
+							onClick={() => onChange(outputs.filter((_, i) => i !== index))}
+							type="button">
+							<span aria-hidden className="codicon codicon-close text-[12px]" />
+						</button>
+					</div>
+					<input
+						aria-label="Output description"
+						className={cn(FIELD_CLASS, "mt-1")}
+						onChange={(event) => update(index, { description: event.target.value })}
+						placeholder="What should the thread record?"
+						value={output.description}
+					/>
+					<label className="mt-1 flex items-center gap-1 text-[11px]">
+						<input
+							checked={!!output.saveAsNote}
+							onChange={(event) => update(index, { saveAsNote: event.target.checked })}
+							type="checkbox"
+						/>
+						Also save as a task note
+					</label>
+					{output.name && (
+						<code className="block break-all text-[10.5px] text-description">{`{{steps.${thread.id}.${output.name}}}`}</code>
+					)}
+				</div>
+			))}
+		</div>
 	)
 }
 

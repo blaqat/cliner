@@ -1168,7 +1168,7 @@ describe("task session contexts", () => {
 				markTaskActive: vi.fn(async () => {}),
 			},
 			postStateToWebview: vi.fn(async () => {}),
-			emitNotebookChanges: vi.fn(async () => {}),
+			completeNotebookTurn: vi.fn(async () => {}),
 			waitForInitialRemoteConfig: vi.fn(async () => {}),
 			taskGroupStore: { getGroup: async () => ({ id: "group" }) },
 			taskStart: { initTask: vi.fn() },

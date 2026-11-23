@@ -1,6 +1,7 @@
 import {
 	type AutomationArgument,
 	type AutomationDefinition,
+	type AutomationOutput,
 	type AutomationStep,
 	type AutomationThreadSpec,
 	slugifyStepId,
@@ -20,6 +21,7 @@ export interface TaskThreadForAutomation {
 	worktree: boolean
 	/** When the mode the thread started in isn't known, worktree threads count as Act, others as Ask. */
 	mode?: "ask" | "act"
+	outputs?: AutomationOutput[]
 }
 
 const TOGETHER_WINDOW_MS = 60_000
@@ -63,6 +65,7 @@ export function automationFromTask(task: { title: string; ticket?: string; threa
 			level: thread.level,
 			mode: thread.mode ?? (thread.worktree ? "act" : "ask"),
 			worktree: thread.worktree,
+			...(thread.outputs?.length ? { outputs: thread.outputs } : {}),
 		}
 	}
 	for (let index = 0; index < threads.length; index++) {
@@ -90,7 +93,7 @@ export function automationFromTask(task: { title: string; ticket?: string; threa
 	if (guessedModes) guesses.push("Modes are a guess: threads in a worktree are Act, the rest Ask.")
 	if (threads.length > 1)
 		guesses.push(
-			"Steps run in the order the threads started. Later steps don't see earlier replies yet: add {{steps.id}} where they should.",
+			"Steps run in the order the threads started. Insert an earlier reply or named output in a later prompt where you need it.",
 		)
 	if (threads.length < task.threads.length)
 		guesses.push("Threads with no first message, or repeating an earlier one, were left out.")

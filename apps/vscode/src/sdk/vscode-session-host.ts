@@ -48,6 +48,7 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import { getDistinctId } from "@/services/logging/distinctId"
 import type { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
+import { type AutomationOutputContext, automationOutputPrompt } from "./automations/automation-output-tool"
 import { appendTaskNotebookPrompt } from "./cline-session-factory"
 import { type VscodeGitTelemetry, VscodeGitTelemetryManager } from "./git-telemetry"
 import type { ScriptToolContext } from "./scripts/script-tool"
@@ -94,6 +95,7 @@ export interface VscodeSessionHostOptions {
 	toolPolicies?: Record<string, ToolPolicy>
 	resolveSideThread?: (input: ClineCoreStartInput) => Promise<SideThreadContext | undefined>
 	resolveNotebook?: (input: ClineCoreStartInput) => Promise<TaskNotebookContext | undefined>
+	resolveAutomationOutput?: (input: ClineCoreStartInput) => AutomationOutputContext | undefined
 	/** About you: the user's global notes (added to the system prompt) and the tool that proposes changes to them. */
 	resolveAboutYou?: (input: ClineCoreStartInput) => Promise<(AboutYouContext & { prompt?: string }) | undefined>
 	/** Adds the grep_threads/read_thread transcript tools, gated by the conversation's user-mentioned thread ids. */
@@ -178,12 +180,14 @@ export class VscodeSessionHost implements SdkSessionHost {
 			const aboutYou = await options.resolveAboutYou?.(inputWithRemoteConfig)
 			const threadTranscript = await options.resolveThreadTranscript?.(inputWithRemoteConfig)
 			const scripts = options.resolveScripts?.(inputWithRemoteConfig)
+			const automationOutput = options.resolveAutomationOutput?.(inputWithRemoteConfig)
 			const extraTools = await createVscodeExtraTools(options.mcpHub, {
 				notebook,
 				aboutYou,
 				sideThread,
 				threadTranscript,
 				scripts,
+				automationOutput,
 				cwd: inputWithRemoteConfig.config.cwd,
 				getTerminalManager: options.getTerminalManager,
 				vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
@@ -202,9 +206,10 @@ export class VscodeSessionHost implements SdkSessionHost {
 			let systemPrompt = inputWithRemoteConfig.config.systemPrompt ?? ""
 			if (notebook) systemPrompt = appendTaskNotebookPrompt(systemPrompt, notebook.group)
 			if (aboutYou?.prompt) systemPrompt = `${systemPrompt}\n\n${aboutYou.prompt}`
+			if (automationOutput) systemPrompt = `${systemPrompt}\n\n${automationOutputPrompt(automationOutput)}`
 			const config: ClineCoreStartInput["config"] = {
 				...inputWithRemoteConfig.config,
-				...(notebook || aboutYou?.prompt ? { systemPrompt } : {}),
+				...(notebook || aboutYou?.prompt || automationOutput ? { systemPrompt } : {}),
 				hooks: noticeSources.length
 					? {
 							...inputWithRemoteConfig.config.hooks,
@@ -235,14 +240,23 @@ export class VscodeSessionHost implements SdkSessionHost {
 				...config.hooks,
 				beforeModel: async (context) => {
 					const result = await beforeModel?.(context)
+					const scoped =
+						automationOutput && (!automationOutput.active() || context.snapshot.parentAgentId)
+							? {
+									...result,
+									tools: (result?.tools ?? context.request.tools).filter(
+										(tool) => tool.name !== "automation_output",
+									),
+								}
+							: result
 					const metadata = context.request.options?.metadata as { sessionId?: string } | undefined
 					const id = metadata?.sessionId ?? config.sessionId
-					if (id && !result?.stop && !context.snapshot.parentAgentId)
+					if (id && !scoped?.stop && !context.snapshot.parentAgentId)
 						modelPrefixes.set(id, {
 							systemPrompt: context.request.systemPrompt ?? "",
-							tools: structuredClone([...(result?.tools ?? context.request.tools)]),
+							tools: structuredClone([...(scoped?.tools ?? context.request.tools)]),
 						})
-					return result
+					return scoped
 				},
 			}
 
@@ -251,6 +265,7 @@ export class VscodeSessionHost implements SdkSessionHost {
 				toolPolicies: {
 					...inputWithRemoteConfig.toolPolicies,
 					notebook: { enabled: true, autoApprove: true },
+					...(automationOutput ? { automation_output: { enabled: true, autoApprove: true } } : {}),
 					// Only stages a proposal; the user keeps or drops it in the review row.
 					about_you: { enabled: true, autoApprove: true },
 					// Read-only transcript access is auto-approved in every mode (Ask

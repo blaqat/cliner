@@ -1,6 +1,7 @@
 import {
 	type AutomationDefinition,
 	type AutomationFix,
+	type AutomationOutput,
 	type AutomationProblem,
 	type AutomationRun,
 	type AutomationRunStep,
@@ -90,6 +91,7 @@ export interface StartThreadInput {
 	level: string
 	mode: "ask" | "act"
 	worktree: boolean
+	onSessionId?: (id: string) => void
 }
 
 export interface AutomationThreadState {
@@ -108,6 +110,13 @@ export interface AutomationRunnerDeps {
 	/** Current state after startup, which may have outlasted the thread's first turn. */
 	readThreadState?: (threadId: string) => AutomationThreadState | undefined
 	stopThread: (threadId: string) => Promise<void>
+	askForOutputs?: (threadId: string, names: string[]) => Promise<void>
+	saveOutputNote?: (
+		groupId: string,
+		thread: { threadId: string; title: string },
+		output: AutomationOutput,
+		value: string,
+	) => Promise<string>
 	/**
 	 * What must be fixed before these steps can run (a worktree that can't be made, no folder open).
 	 * Start and resume call it first, so nothing runs when it finds a problem.
@@ -140,6 +149,7 @@ interface LiveRun {
 	answers: Map<string, (choice: string) => void>
 	/** Spent before this go (a resume allows the limit again). */
 	costBase: number
+	keepNotes?: boolean
 }
 
 /** How often a run with a cost limit checks what its threads spent. */
@@ -158,6 +168,7 @@ function runThreadFor(spec: AutomationThreadSpec): AutomationRunThread {
 		mode: spec.mode,
 		worktree: spec.worktree,
 		status: "pending",
+		...(spec.outputs?.length ? { declaredOutputs: spec.outputs } : {}),
 	}
 }
 
@@ -204,7 +215,10 @@ export class AutomationRunner {
 	private readonly live = new Map<string, LiveRun>()
 	private readonly resuming = new Set<string>()
 	private runs: AutomationRun[] = []
-	private readonly waiting = new Map<string, { runId: string; resolve: (outcome: ThreadOutcome) => void }>()
+	private readonly waiting = new Map<
+		string,
+		{ runId: string; resolve: (outcome: ThreadOutcome) => void; reply?: string; askingAgain?: boolean }
+	>()
 	/** Full replies of every run's steps, by run id (the wire copy is trimmed). */
 	private readonly outputs = new Map<string, Record<string, string>>()
 	/** Last known spend per thread, for threads no longer loaded. */
@@ -265,6 +279,24 @@ export class AutomationRunner {
 		return this.runs.find((run) => run.steps.some((step) => step.threads.some((thread) => thread.threadId === threadId)))
 	}
 
+	noteGroupToKeep(threadId: string): string | undefined {
+		const found = this.threadOf(threadId)
+		if (
+			found &&
+			!found.live.stopped &&
+			found.live.keepNotes &&
+			(found.thread.status === "running" || found.thread.status === "waiting")
+		)
+			return found.live.run.taskGroupId
+		return undefined
+	}
+
+	outputValue(runId: string, stepId: string, name: string): string {
+		const value = this.outputs.get(runId)?.[`${stepId}.${name}`]
+		if (value === undefined) throw new Error("That output is no longer available.")
+		return value
+	}
+
 	private changed(): void {
 		this.runs = this.runs.map((run) => {
 			const live = this.live.get(run.id)
@@ -273,7 +305,14 @@ export class AutomationRunner {
 		})
 		this.deps.onChange(this.runs)
 		const kept = this.runs.slice(-KEPT_RUNS)
-		void this.deps.save?.(kept.map((run) => ({ ...run, outputs: this.outputs.get(run.id) }))).catch(() => {})
+		void this.deps
+			.save?.(
+				kept.map((run) => ({
+					...run,
+					outputs: { ...this.outputs.get(run.id) },
+				})),
+			)
+			.catch(() => {})
 	}
 
 	private async precheck(steps: readonly AutomationStep[]): Promise<void> {
@@ -312,7 +351,14 @@ export class AutomationRunner {
 			const ticket = ticketArg ? ticketKey(args[ticketArg.name]) : undefined
 			run.taskGroupId = await this.deps.createTask(ticket ? `${run.title} · ${ticket}` : run.title, ticket)
 		}
-		const live: LiveRun = { run, stopped: false, outputs: {}, answers: new Map(), costBase: 0 }
+		const live: LiveRun = {
+			run,
+			stopped: false,
+			outputs: {},
+			answers: new Map(),
+			costBase: 0,
+			keepNotes: definition.keepNotes,
+		}
 		this.live.set(run.id, live)
 		this.runs = [...this.runs, structuredClone(run)]
 		this.changed()
@@ -353,11 +399,18 @@ export class AutomationRunner {
 
 			const priorOutputs = this.outputs.get(runId) ?? {}
 			const outputs: Record<string, string> = {}
+			const keepThreadOutputs = (thread: AutomationRunThread) => {
+				outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
+				for (const output of thread.outputs ?? []) {
+					const key = `${thread.id}.${output.name}`
+					if (priorOutputs[key] !== undefined) outputs[key] = priorOutputs[key]
+				}
+			}
 			const steps = definition.steps.map((step, index): AutomationRunStep => {
 				const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
 				if (index < fromIndex && kept) {
 					outputs[step.id] = priorOutputs[step.id] ?? ""
-					for (const thread of kept.threads) outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
+					for (const thread of kept.threads) keepThreadOutputs(thread)
 					return structuredClone(kept)
 				}
 				const fresh = runStepFor(step)
@@ -373,7 +426,7 @@ export class AutomationRunner {
 					fresh.threads = fresh.threads.map((thread) => {
 						const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
 						if (!done || priorOutputs[thread.id] === undefined) return thread
-						outputs[thread.id] = priorOutputs[thread.id]
+						keepThreadOutputs(done)
 						return structuredClone(done)
 					})
 				}
@@ -393,7 +446,14 @@ export class AutomationRunner {
 				fix: undefined,
 				...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
 			}
-			const live: LiveRun = { run, stopped: false, outputs, answers: new Map(), costBase: this.spent(run) }
+			const live: LiveRun = {
+				run,
+				stopped: false,
+				outputs,
+				answers: new Map(),
+				costBase: this.spent(run),
+				keepNotes: definition.keepNotes,
+			}
 			this.live.set(run.id, live)
 			this.changed()
 			void this.execute(live, definition, args, fromIndex)
@@ -613,6 +673,13 @@ export class AutomationRunner {
 				level: spec.level,
 				mode: spec.mode,
 				worktree: spec.worktree,
+				...(spec.outputs?.length || live.keepNotes
+					? {
+							onSessionId: (id: string) => {
+								runThread.threadId = id
+							},
+						}
+					: {}),
 			})
 		} catch (error) {
 			runThread.status = "failed"
@@ -640,7 +707,26 @@ export class AutomationRunner {
 				})
 		this.waiting.delete(threadId)
 		runThread.waitingOn = undefined
+		runThread.missingOutputs = undefined
 		if (outcome.kind === "done") {
+			try {
+				for (const output of spec.outputs ?? []) {
+					const recorded = runThread.outputs?.find(({ name }) => name === output.name)
+					if (recorded && output.saveAsNote && this.deps.saveOutputNote)
+						recorded.noteSlug = await this.deps.saveOutputNote(
+							live.run.taskGroupId,
+							{ threadId, title: runThread.title },
+							output,
+							live.outputs[`${spec.id}.${output.name}`],
+						)
+					if (live.stopped) return { kind: "stopped" }
+				}
+			} catch (error) {
+				runThread.status = "failed"
+				runThread.error = `Couldn't save an output as a note. ${error instanceof Error ? error.message : String(error)}`
+				this.changed()
+				return { kind: "failed", error: runThread.error }
+			}
 			runThread.status = "done"
 			runThread.reply = trimReply(outcome.reply)
 			live.outputs[spec.id] = outcome.reply
@@ -662,6 +748,59 @@ export class AutomationRunner {
 			}
 		}
 		return undefined
+	}
+
+	outputsForThread(threadId: string) {
+		const found = this.threadOf(threadId)
+		if (!found) return undefined
+		const { live, thread } = found
+		const outputs = thread.declaredOutputs
+		if (!outputs?.length) return undefined
+		const active = () =>
+			!live.stopped && (thread.status === "running" || thread.status === "waiting") && this.live.get(live.run.id) === live
+		if (!active()) return undefined
+		return {
+			outputs,
+			active,
+			record: (name: string, value: string) => {
+				if (!active() || thread.status !== "running")
+					throw new Error("This automation step is no longer recording outputs.")
+				if (!outputs.some((output) => output.name === name)) throw new Error(`"${name}" is not declared by this step.`)
+				live.outputs[`${thread.id}.${name}`] = value
+				thread.outputs = [
+					...(thread.outputs ?? []).filter((output) => output.name !== name),
+					{ name, firstLine: trimReply(value.trimStart().split(/\r?\n/, 1)[0]) },
+				]
+				this.changed()
+			},
+		}
+	}
+
+	async answerMissingOutputs(runId: string, threadId: string, askAgain: boolean): Promise<void> {
+		const found = this.threadOf(threadId)
+		const waiter = this.waiting.get(threadId)
+		const missing = found?.thread.missingOutputs
+		if (
+			!found ||
+			found.live.stopped ||
+			waiter?.runId !== runId ||
+			waiter.reply === undefined ||
+			!missing?.length ||
+			waiter.askingAgain
+		)
+			throw new Error("That step is no longer waiting for outputs.")
+		if (!askAgain) {
+			found.thread.missingOutputs = undefined
+			waiter.resolve({ kind: "done", reply: waiter.reply })
+			return
+		}
+		if (!this.deps.askForOutputs) throw new Error("Open the thread and ask it for the missing outputs.")
+		waiter.askingAgain = true
+		try {
+			await this.deps.askForOutputs(threadId, missing)
+		} finally {
+			waiter.askingAgain = false
+		}
 	}
 
 	/**
@@ -688,7 +827,9 @@ export class AutomationRunner {
 			this.changed()
 		}
 		this.checkCost(live)
+		if (live.stopped) return
 		if (status === "running") {
+			thread.missingOutputs = undefined
 			set("running")
 		} else if (status === "waiting") {
 			set("waiting", this.deps.describeWaiting?.(threadId) ?? "Needs your answer in the thread")
@@ -701,7 +842,16 @@ export class AutomationRunner {
 		} else {
 			const end = classifyTurnEnd(readMessages())
 			if (end.kind === "waiting") set("waiting", this.deps.describeWaiting?.(threadId) ?? "Answer its question")
-			else waiter.resolve({ kind: "done", reply: end.reply })
+			else {
+				const missing = thread.declaredOutputs
+					?.filter(({ name }) => live.outputs[`${thread.id}.${name}`] === undefined)
+					.map(({ name }) => name)
+				if (missing?.length) {
+					waiter.reply = end.reply
+					thread.missingOutputs = missing
+					set("waiting", `Missing outputs: ${missing.join(", ")}`)
+				} else waiter.resolve({ kind: "done", reply: end.reply })
+			}
 		}
 	}
 
@@ -731,6 +881,7 @@ export class AutomationRunner {
 				if (thread.status === "running" || thread.status === "waiting") {
 					thread.status = "stopped"
 					thread.waitingOn = undefined
+					thread.missingOutputs = undefined
 				}
 			}
 		}

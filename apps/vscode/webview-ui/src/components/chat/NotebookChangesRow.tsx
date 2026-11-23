@@ -53,6 +53,7 @@ export function parseNotebookChangesPayload(text: string | undefined): NotebookC
 			turns: typeof parsed.turns === "number" && parsed.turns > 1 ? parsed.turns : undefined,
 			kept: parseChanges(parsed.kept),
 			dropped: parseChanges(parsed.dropped),
+			autoKept: typeof parsed.autoKept === "number" ? parsed.autoKept : undefined,
 		}
 	} catch {
 		return null
@@ -196,7 +197,11 @@ function TurnReview({
 			groups={settledGroups.map((group) => ({ ...group, payload: group.settled }))}
 			onOpen={(group, tab) => {
 				if (group.kind === "skills") openSkills({ tab })
-				else openTaskGroup?.(group.payload.taskGroupId, group.kind === "about" ? "notebook" : undefined)
+				else
+					openTaskGroup?.(
+						group.payload.taskGroupId,
+						group.kind === "about" || group.payload.autoKept ? "notebook" : undefined,
+					)
 			}}
 		/>
 	)
@@ -244,6 +249,7 @@ function TurnSummary({
 	const kept = groups.flatMap((group) => keptOf(group).map((change) => ({ kind: group.kind, change })))
 	const dropped = groups.flatMap((group) => droppedOf(group).map((change) => ({ kind: group.kind, change })))
 	const only = groups.length === 1 ? groups[0].kind : undefined
+	const autoKept = groups.reduce((count, group) => count + (group.payload.autoKept ?? 0), 0)
 	const label = kept.length
 		? `Kept ${countPhrase(kept)}`
 		: only === "about"
@@ -265,6 +271,11 @@ function TurnSummary({
 				className={cn("codicon", kept.length ? "codicon-pass text-success" : "codicon-circle-slash text-description")}
 			/>
 			<span>{label}</span>
+			{autoKept > 0 && (
+				<span className="text-description">
+					{autoKept === kept.length ? "automatically" : `· ${autoKept} automatically`}
+				</span>
+			)}
 			{kept.map(({ kind, change }) => (
 				<WroteNoteChip
 					icon={changeIcon(kind, { ...change, op: "update" })}
@@ -280,7 +291,9 @@ function TurnSummary({
 						? "Open About you"
 						: group.kind === "skills"
 							? `Open in ${tab === "workflows" ? "Workflows" : "Skills"}`
-							: "Open task"}
+							: group.payload.autoKept
+								? "Notebook and history"
+								: "Open task"}
 				</LinkButton>
 			))}
 		</div>

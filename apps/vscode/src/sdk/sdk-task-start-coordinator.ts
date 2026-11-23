@@ -131,6 +131,7 @@ export class SdkTaskStartCoordinator {
 			apiSelection?: TaskApiSelection
 			/** Caller-supplied title, saved with the first turn rather than renamed before persistence. */
 			title?: string
+			onSessionId?: (id: string) => void
 		},
 	): Promise<string | undefined> {
 		Logger.log(`[SdkController] initTask called: "${prompt?.substring(0, 50)}"`)
@@ -188,6 +189,7 @@ export class SdkTaskStartCoordinator {
 				}
 
 				taskSessionId = config.sessionId?.trim() || createSessionId()
+				options?.onSessionId?.(taskSessionId)
 				if (this.options.prepareWorkspace) {
 					const isolatedCwd = await this.options.prepareWorkspace(
 						taskSessionId,
@@ -276,6 +278,7 @@ export class SdkTaskStartCoordinator {
 					)
 					task.taskId = startResult.sessionId
 					taskSessionId = startResult.sessionId
+					options?.onSessionId?.(taskSessionId)
 					if (options?.taskGroupId) this.options.recordTaskGroup?.(taskSessionId, options.taskGroupId)
 				}
 

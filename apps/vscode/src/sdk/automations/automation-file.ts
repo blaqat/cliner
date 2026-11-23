@@ -6,6 +6,7 @@ import {
 	type AutomationDefinition,
 	type AutomationIssue,
 	type AutomationMode,
+	type AutomationOutput,
 	type AutomationStep,
 	type AutomationThreadSpec,
 	validateAutomation,
@@ -46,6 +47,8 @@ export interface ParsedAutomationFile {
 const STEP_KINDS = ["task", "thread", "together", "checkpoint"] as const
 const FENCE = "````"
 const HEADER_COMMENT = "<!-- Made with the automation builder (Rules & workflows › Automations). Edit it there. -->"
+const META_LINE = /^- ([a-z][a-z ]*):[ \t]*(.*)$/
+const OUTPUT_LINE = /^- (note )?output(?: ([^:]*))?:[ \t]*(.*)$/
 
 function asString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : typeof value === "number" ? String(value) : undefined
@@ -81,6 +84,7 @@ interface Section {
 	level: 2 | 3
 	heading: string
 	meta: Record<string, string>
+	outputs: AutomationOutput[]
 	body: string
 }
 
@@ -93,10 +97,21 @@ function splitSections(body: string): Section[] {
 	const flush = () => {
 		if (!current) return
 		const meta: Record<string, string> = {}
+		const outputs: AutomationOutput[] = []
 		let index = 0
 		while (index < current.lines.length && current.lines[index].trim() === "") index++
 		for (; index < current.lines.length; index++) {
-			const match = /^- ([a-z][a-z ]*):[ \t]*(.*)$/.exec(current.lines[index])
+			const line = current.lines[index]
+			const output = OUTPUT_LINE.exec(line)
+			if (output) {
+				outputs.push({
+					name: output[2]?.trim() ?? "",
+					description: output[3].trim(),
+					...(output[1] ? { saveAsNote: true } : {}),
+				})
+				continue
+			}
+			const match = META_LINE.exec(line)
 			if (!match) break
 			meta[match[1].trim()] = match[2].trim()
 		}
@@ -104,7 +119,7 @@ function splitSections(body: string): Section[] {
 		if (text.startsWith(FENCE) && text.endsWith(FENCE)) {
 			text = text.slice(text.indexOf("\n") + 1, text.length - FENCE.length).replace(/\n$/, "")
 		}
-		sections.push({ level: current.level, heading: current.heading, meta, body: text })
+		sections.push({ level: current.level, heading: current.heading, meta, outputs, body: text })
 	}
 	for (const line of lines) {
 		if (line.startsWith(FENCE)) inFence = !inFence
@@ -139,6 +154,7 @@ function threadSpec(section: Section, fallbackId: string, errors: string[]): Aut
 		level: section.meta.level ?? "",
 		mode: readMode(section.meta.mode, `Step "${id}"`, errors),
 		worktree: readWorktree(section.meta.worktree),
+		...(section.outputs.length ? { outputs: section.outputs } : {}),
 	}
 }
 
@@ -155,6 +171,8 @@ function parseSteps(body: string, errors: string[]): AutomationStep[] {
 			continue
 		}
 		const kind = section.meta.kind ?? "thread"
+		if (kind !== "thread" && section.outputs.length)
+			errors.push(`Step "${section.heading}": declare outputs on a prompt thread`)
 		const id = section.meta.id || `step-${steps.length + 1}`
 		if (!(STEP_KINDS as readonly string[]).includes(kind)) {
 			errors.push(`Step "${section.heading}": kind must be one of ${STEP_KINDS.join(", ")}`)
@@ -221,6 +239,8 @@ export function parseAutomationFile(content: string, fallbackName: string): Pars
 		if (Number.isFinite(limit) && limit > 0) definition.costLimit = limit
 		else errors.push('"cost limit" must be a dollar amount, like 5 or 2.50')
 	}
+	if (data["task notes"] === "keep") definition.keepNotes = true
+	else if (data["task notes"] !== undefined && data["task notes"] !== "ask") errors.push('"task notes" must be ask or keep')
 	errors.push(...formatIssues(validateAutomation(definition)))
 	return errors.length > 0
 		? { name, description, errors, draft: definition }
@@ -247,13 +267,15 @@ function metaValue(text: string): string {
 function promptBlock(prompt: string): string {
 	const text = prompt.replace(/\r\n/g, "\n").trim()
 	if (!text) return ""
-	return /^(#|- [a-z][a-z ]*:|`{3,})/m.test(text) ? `${FENCE}text\n${text}\n${FENCE}` : text
+	return /^(#|- [a-z][a-z ]*:|- (?:note )?output [^:]*:|`{3,})/m.test(text) ? `${FENCE}text\n${text}\n${FENCE}` : text
 }
 
 function section(level: 2 | 3, heading: string, meta: [string, string][], prompt = ""): string {
 	const lines = [
 		`${"#".repeat(level)} ${heading}`,
-		...meta.filter(([, value]) => value !== "").map(([k, v]) => `- ${k}: ${metaValue(v)}`),
+		...meta
+			.filter(([key, value]) => value !== "" || /^(?:note )?output /.test(key))
+			.map(([key, value]) => `- ${key}: ${metaValue(value)}`),
 	]
 	const block = promptBlock(prompt)
 	return block ? `${lines.join("\n")}\n\n${block}` : lines.join("\n")
@@ -267,6 +289,10 @@ function threadMeta(thread: AutomationThreadSpec, withKind: boolean): [string, s
 		["level", thread.level],
 		["mode", thread.mode],
 		["worktree", thread.worktree ? "new" : ""],
+		...(thread.outputs ?? []).map((output): [string, string] => [
+			`${output.saveAsNote ? "note " : ""}output ${output.name}`,
+			output.description,
+		]),
 	]
 }
 
@@ -279,6 +305,7 @@ export function serializeAutomation(definition: AutomationDefinition): string {
 				...(definition.title.trim() ? { title: definition.title.trim() } : {}),
 				description: definition.description.trim(),
 				...(definition.costLimit ? { "cost limit": definition.costLimit } : {}),
+				...(definition.keepNotes ? { "task notes": "keep" } : {}),
 				...(definition.arguments.length
 					? {
 							arguments: definition.arguments.map((arg) => ({

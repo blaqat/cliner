@@ -16,6 +16,14 @@ const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 
 function thread(raw: unknown): AutomationThreadSpec {
 	const entry = record(raw)
+	const outputs = list(entry.outputs).map((rawOutput) => {
+		const output = record(rawOutput)
+		return {
+			name: str(output.name),
+			description: str(output.description),
+			...(output.saveAsNote === true ? { saveAsNote: true } : {}),
+		}
+	})
 	return {
 		id: str(entry.id),
 		title: str(entry.title),
@@ -24,6 +32,7 @@ function thread(raw: unknown): AutomationThreadSpec {
 		level: str(entry.level),
 		mode: entry.mode === "act" ? "act" : "ask",
 		worktree: entry.worktree === true,
+		...(outputs.length ? { outputs } : {}),
 	}
 }
 
@@ -83,5 +92,7 @@ export function parseDefinitionJson(json: string): AutomationDefinition {
 		steps: list(entry.steps)
 			.map(step)
 			.filter((item): item is AutomationStep => !!item),
+		...(typeof entry.costLimit === "number" && Number.isFinite(entry.costLimit) ? { costLimit: entry.costLimit } : {}),
+		...(entry.keepNotes === true ? { keepNotes: true } : {}),
 	}
 }

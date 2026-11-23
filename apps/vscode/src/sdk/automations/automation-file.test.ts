@@ -19,6 +19,24 @@ describe("automation file", () => {
 		expect(parsed.definition).toEqual(definition)
 	})
 
+	it("round-trips named outputs and checks references across thread and together steps", () => {
+		const definition = ticketToPr()
+		const [, research, together, , build] = definition.steps
+		if (research.kind !== "thread" || together.kind !== "together" || build.kind !== "thread")
+			throw new Error("fixture changed")
+		definition.keepNotes = true
+		research.outputs = [{ name: "findings", description: "Findings: What you learned", saveAsNote: true }]
+		together.threads[0].outputs = [{ name: "risk_1", description: "The highest risk" }]
+		build.prompt = "Use {{steps.research.findings}} and {{steps.plan-a.risk_1}}."
+		const parsed = parseAutomationFile(serializeAutomation(definition), "fallback")
+		expect(parsed.definition).toEqual(definition)
+		build.prompt = "Use {{steps.plan-a.missing}}."
+		expect(validateAutomation(definition)).toContainEqual({
+			at: build.id,
+			message: "{{steps.plan-a.missing}} isn't a declared output",
+		})
+	})
+
 	it("writes a file a person can read: a heading per step, meta lines, then the prompt", () => {
 		const text = serializeAutomation(ticketToPr())
 		expect(text).toContain("# Ticket to PR")

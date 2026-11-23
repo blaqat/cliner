@@ -82,6 +82,7 @@ export interface NotebookChangesPayload {
 	/** Notes already kept or dropped one at a time from this row (bodies omitted). */
 	kept?: NotebookChange[]
 	dropped?: NotebookChange[]
+	autoKept?: number
 }
 
 /** A thread row in a task group's timeline (newest first). read/wrote are note slugs from the activity log. */

@@ -46,6 +46,19 @@ describe("AutomationStore", () => {
 		expect((await store.findByPath(saved.filePath))?.trusted).toBe(true)
 	})
 
+	it("keeps the file the user reviewed and rejects stale proposals", async () => {
+		const store = makeStore()
+		const original = await store.save(ticketToPr(), "workspace")
+		const proposed = original.content.replace("Read {{ticket}}", "Read {{ticket}} carefully")
+		const kept = await store.saveProposal(original.filePath, original.fingerprint, proposed)
+		expect(kept.content).toBe(proposed)
+		expect(kept.trusted).toBe(true)
+		await expect(store.saveProposal(original.filePath, original.fingerprint, original.content)).rejects.toThrow(
+			"changed on disk",
+		)
+		expect(await fs.readFile(original.filePath, "utf8")).toBe(proposed)
+	})
+
 	it("lists workspace before global, and a workspace automation shadows a global one", async () => {
 		await fs.mkdir(globalDir, { recursive: true })
 		await fs.writeFile(path.join(globalDir, "ticket-to-pr.md"), serializeAutomation(ticketToPr()))

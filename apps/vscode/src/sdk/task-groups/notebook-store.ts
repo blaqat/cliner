@@ -156,6 +156,7 @@ function parseActivityLine(line: string): NotebookActivity | undefined {
 export class NotebookStore {
 	private readonly noteIndexes = new Map<string, NotebookNoteMeta[]>()
 	private readonly pendingWrites = new Map<string, Promise<unknown>>()
+	private readonly autoKeeps = new Map<string, Promise<NotebookChange[]>>()
 
 	constructor(private readonly rootDir: string = taskGroupsRootDir()) {}
 
@@ -522,6 +523,7 @@ export class NotebookStore {
 		items: { slug: string; include: boolean; editedContent?: string }[],
 		options?: {
 			threadTitle?: string
+			unchangedOnly?: boolean
 			/** Writes a change somewhere other than the notebook (staged skills); returns the slug it kept. */
 			apply?: (change: NotebookChange, editedContent?: string) => Promise<string>
 		},
@@ -536,6 +538,10 @@ export class NotebookStore {
 				for (const change of changes) {
 					const item = items.find((entry) => entry.slug === change.slug)
 					if (!item?.include) continue
+					if (options?.unchangedOnly && change.op !== "create") {
+						const current = await this.readNote(groupId, change.slug)
+						if (!current || current.meta.updatedAt !== change.baseUpdatedAt) continue
+					}
 					await this.settleDraft(groupId, threadId, change.slug)
 					const slug = options?.apply
 						? await options.apply(change, item.editedContent)
@@ -576,6 +582,52 @@ export class NotebookStore {
 			)
 			return applied
 		})
+	}
+
+	/** Keeps the run's task notes, leaving edits based on an older note revision for review. */
+	async keepAutomationNotes(review: PendingNotebookChanges, threadId: string, threadTitle: string): Promise<NotebookChange[]> {
+		const { groupId, revision, changes } = review
+		const prior = this.autoKeeps.get(groupId)
+		const keep = Promise.resolve(prior)
+			.catch(() => {})
+			.then(() =>
+				this.applyPendingChanges(
+					groupId,
+					threadId,
+					revision,
+					changes.map(({ slug }) => ({ slug, include: true })),
+					{ threadTitle, unchangedOnly: true },
+				),
+			)
+		this.autoKeeps.set(groupId, keep)
+		try {
+			return await keep
+		} finally {
+			if (this.autoKeeps.get(groupId) === keep) this.autoKeeps.delete(groupId)
+		}
+	}
+
+	async saveAutomationOutput(
+		groupId: string,
+		threadId: string,
+		threadTitle: string,
+		output: { name: string; description: string; value: string },
+	): Promise<string> {
+		const slug = await this.applyChange(
+			groupId,
+			{
+				op: "create",
+				slug: slugifyNoteName(output.name) || "output",
+				name: output.name,
+				description: output.description,
+				content: output.value,
+			},
+			undefined,
+			{ kind: "thread", threadId, threadTitle },
+		)
+		await this.appendActivity(groupId, { ts: Date.now(), threadId, kind: "write", slug })
+		await this.listNotes(groupId)
+		return slug
 	}
 
 	/** Discards the staged changes for `slugs` (every staged change when omitted); returns what was dropped. */

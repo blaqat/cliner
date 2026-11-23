@@ -71,7 +71,7 @@ export function NotebookToolRow({ info }: { info: NotebookToolInfo }) {
 						<WroteNoteChip key={name} name={info.aboutYou ? `About you › ${name}` : name} />
 					))}
 					<span className="flex-1" />
-					<span className="text-[11px] text-description">you keep it at the end</span>
+					<span className="text-[11px] text-description">staged until the turn ends</span>
 				</>
 			) : (
 				<>

@@ -8,6 +8,7 @@ import { type AutomationEntry, applyAutomationList, useAutomations } from "@/hoo
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient, FileServiceClient } from "@/services/grpc-client"
 import { stepSummary } from "./automationSummary"
+import type { AutomationBuilderTarget } from "./builderNavigation"
 
 function openFile(path: string) {
 	FileServiceClient.openFile(StringRequest.create({ value: path })).catch((error) =>
@@ -19,12 +20,13 @@ interface PanelActions {
 	/** Starts `/name ` in the composer. */
 	onRun?: (name: string) => void
 	/** Opens the builder: an existing file, a blank one, or the describe-it box. */
-	onEdit?: (target: { path?: string; describe?: boolean }) => void
+	onEdit?: (target: AutomationBuilderTarget) => void
 }
 
 const AutomationRow: React.FC<{ automation: AutomationEntry } & PanelActions> = ({ automation, onRun, onEdit }) => {
 	const [error, setError] = useState("")
 	const [confirmingDelete, setConfirmingDelete] = useState(false)
+	const [showActions, setShowActions] = useState(false)
 	const invalid = !automation.definition
 	const title = automation.definition ? automationDisplayName(automation.definition) : automation.name
 	const run = (mutation: Promise<Parameters<typeof applyAutomationList>[0]>) =>
@@ -54,14 +56,36 @@ const AutomationRow: React.FC<{ automation: AutomationEntry } & PanelActions> = 
 					</Button>
 				)}
 				<button
-					aria-label={`Delete ${automation.name}`}
+					aria-expanded={showActions}
+					aria-label={`Actions for ${automation.name}`}
 					className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-list-hover hover:text-foreground"
-					onClick={() => setConfirmingDelete(true)}
-					title="Delete"
+					onClick={() => setShowActions((open) => !open)}
+					title="Automation actions"
 					type="button">
-					<span aria-hidden className="codicon codicon-trash text-[12px]" />
+					<span aria-hidden className="codicon codicon-ellipsis text-[12px]" />
 				</button>
 			</div>
+			{showActions && (
+				<div className="mt-1 ml-5 flex flex-wrap items-center gap-1.5">
+					{onEdit && (
+						<Button
+							onClick={() => onEdit({ path: automation.path, changeWithPrompt: true })}
+							size="xs"
+							variant="secondary">
+							Change with a prompt…
+						</Button>
+					)}
+					<Button
+						onClick={() => {
+							setConfirmingDelete(true)
+							setShowActions(false)
+						}}
+						size="xs"
+						variant="secondary">
+						Delete
+					</Button>
+				</div>
+			)}
 			{automation.description && <div className="mt-0.5 pl-5 text-xs text-description">{automation.description}</div>}
 			{automation.definition && (
 				<div className="mt-0.5 pl-5 text-[11px] text-description" data-testid={`automation-summary-${automation.name}`}>

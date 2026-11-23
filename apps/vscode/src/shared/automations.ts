@@ -24,6 +24,12 @@ export interface AutomationArgument {
 /** "ask" is the UI name of the internal "plan" mode. */
 export type AutomationMode = "ask" | "act"
 
+export interface AutomationOutput {
+	name: string
+	description: string
+	saveAsNote?: boolean
+}
+
 /** One prompt thread: a `thread` step, or one member of a `together` step. */
 export interface AutomationThreadSpec {
 	id: string
@@ -38,6 +44,7 @@ export interface AutomationThreadSpec {
 	mode: AutomationMode
 	/** Run in a new worktree (Settings › Worktrees decides git or mm). */
 	worktree: boolean
+	outputs?: AutomationOutput[]
 }
 
 export interface AutomationTaskStep {
@@ -88,6 +95,7 @@ export interface AutomationDefinition {
 	steps: AutomationStep[]
 	/** Dollars a run may spend before it stops itself; absent means no limit. A resume allows this much again. */
 	costLimit?: number
+	keepNotes?: boolean
 }
 
 export const AUTOMATION_STEP_LABELS: Record<AutomationStepKind, string> = {
@@ -102,6 +110,7 @@ export const AUTOMATION_ARG_NAME_REGEX = /^[a-z][a-z0-9_-]{0,47}$/
 const MAX_ARGUMENTS = 20
 const MAX_STEPS = 40
 const MAX_TOGETHER = 8
+const MAX_OUTPUTS = 20
 
 export function automationDisplayName(definition: Pick<AutomationDefinition, "name" | "title">): string {
 	return definition.title.trim() || definition.name
@@ -240,6 +249,8 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 	if (definition.steps.length > MAX_STEPS) issues.push({ message: `At most ${MAX_STEPS} steps` })
 
 	const seen = new Map<string, AutomationStepKind>()
+	const threads = new Map(automationThreads(definition.steps).map(({ thread }) => [thread.id, thread]))
+	const stepIds = new Set(definition.steps.map((step) => step.id))
 	const claim = (id: string, kind: AutomationStepKind) => {
 		if (!AUTOMATION_ID_REGEX.test(id))
 			issues.push({ at: id, message: `Step id "${id}" must be lowercase letters, digits or -` })
@@ -250,10 +261,17 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		for (const ref of placeholderRefs(text)) {
 			if (ref.kind === "arg" && !argNames.has(ref.name)) issues.push({ at, message: `${ref.raw} isn't an argument` })
 			if (ref.kind === "step" && !available.has(ref.name)) {
-				const later = definition.steps.some(
-					(step) => step.id === ref.name || (step.kind === "together" && step.threads.some((t) => t.id === ref.name)),
-				)
-				issues.push({ at, message: later ? `${ref.raw} runs later, so it has no reply yet` : `${ref.raw} isn't a step` })
+				const [id, output, extra] = ref.name.split(".")
+				const exists =
+					output !== undefined
+						? extra === undefined && threads.get(id)?.outputs?.some(({ name }) => name === output)
+						: stepIds.has(id) || threads.has(id)
+				issues.push({
+					at,
+					message: exists
+						? `${ref.raw} runs later, so it has no ${output !== undefined ? "value" : "reply"} yet`
+						: `${ref.raw} isn't ${output !== undefined ? "a declared output" : "a step"}`,
+				})
 			}
 		}
 	}
@@ -262,6 +280,16 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		if (thread.mode !== "ask" && thread.mode !== "act") issues.push({ at, message: "Mode must be Ask or Act" })
 		checkText(at, prompt, available)
 		checkText(at, thread.title, available)
+		const names = new Set<string>()
+		const outputs = thread.outputs ?? []
+		if (outputs.length > MAX_OUTPUTS) issues.push({ at, message: `At most ${MAX_OUTPUTS} outputs` })
+		for (const output of outputs) {
+			if (!AUTOMATION_ARG_NAME_REGEX.test(output.name))
+				issues.push({ at, message: "Output names start with a lowercase letter and use letters, digits, - or _" })
+			else if (names.has(output.name)) issues.push({ at, message: `Output "${output.name}" is declared twice` })
+			if (!output.description.trim()) issues.push({ at, message: `Describe what to record for output "${output.name}"` })
+			names.add(output.name)
+		}
 	}
 
 	// Outputs a step may use: every step (and together member) before it.
@@ -299,6 +327,8 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		}
 		available.add(step.id)
 		if (step.kind === "together") for (const thread of step.threads) available.add(thread.id)
+		const specs = step.kind === "thread" ? [step] : step.kind === "together" ? step.threads : []
+		for (const thread of specs) for (const output of thread.outputs ?? []) available.add(`${thread.id}.${output.name}`)
 	})
 	return issues
 }
@@ -374,6 +404,12 @@ export interface AutomationProblem {
 }
 export type AutomationRunStepStatus = "pending" | "running" | "waiting" | "done" | "failed" | "stopped" | "skipped"
 
+export interface RecordedAutomationOutput {
+	name: string
+	firstLine: string
+	noteSlug?: string
+}
+
 export interface AutomationRunThread {
 	/** The spec id from the definition. */
 	id: string
@@ -391,6 +427,9 @@ export interface AutomationRunThread {
 	fix?: AutomationFix
 	/** While waiting: what it needs from the user ("Approve an edit to src/app.ts"). */
 	waitingOn?: string
+	declaredOutputs?: AutomationOutput[]
+	outputs?: RecordedAutomationOutput[]
+	missingOutputs?: string[]
 }
 
 export interface AutomationRunStep {

@@ -50,6 +50,8 @@ function harness(
 			stopped.push(id)
 		},
 		precheck: overrides.precheck,
+		askForOutputs: overrides.askForOutputs,
+		saveOutputNote: overrides.saveOutputNote,
 		describeWaiting: overrides.describeWaiting,
 		threadCost: overrides.threadCost,
 		onChange: (runs) => {
@@ -97,6 +99,58 @@ describe("classifyTurnEnd", () => {
 			kind: "waiting",
 		})
 	})
+})
+
+it("waits for missing named outputs, accepts both answers, and reuses kept values after reload", async () => {
+	const definition = ticketToPr()
+	const [, research, , , build] = definition.steps
+	if (research.kind !== "thread" || build.kind !== "thread") throw new Error("fixture changed")
+	definition.steps = [research, build]
+	research.outputs = [
+		{ name: "findings", description: "The findings", saveAsNote: true },
+		{ name: "risks", description: "The risks" },
+		{ name: "details", description: "The details" },
+	]
+	build.prompt = "Findings: {{steps.research.findings}}. Risks: {{steps.research.risks}}. Details: {{steps.research.details}}."
+	const asked: string[][] = []
+	const noteWrites: string[] = []
+	const h = harness(definition, {
+		askForOutputs: async (_, names) => {
+			asked.push(names)
+		},
+		saveOutputNote: async (_, __, output, value) => {
+			noteWrites.push(value)
+			return output.name
+		},
+	})
+	await h.runner.start(definition, { ticket: "PROJ-1" })
+	await flush()
+	const id = h.started[0].threadId
+	const tool = h.runner.outputsForThread(id)!
+	tool.record("findings", "first line\nsecond line")
+	await h.finish(id, "Research finished")
+	expect(h.run().status).toBe("waiting")
+	expect(h.run().steps[0].threads[0].missingOutputs).toEqual(["risks", "details"])
+	await h.runner.answerMissingOutputs(h.run().id, id, true)
+	expect(asked).toEqual([["risks", "details"]])
+	h.runner.threadStatusChanged(id, "running", () => [])
+	tool.record("risks", "one risk")
+	await h.finish(id, "Added the risks")
+	await h.runner.answerMissingOutputs(h.run().id, id, false)
+	await flush()
+	expect(h.started[1].prompt).toBe("Findings: first line\nsecond line. Risks: one risk. Details: .")
+	expect(h.run().steps[0].threads[0].outputs).toContainEqual({
+		name: "findings",
+		firstLine: "first line",
+		noteSlug: "findings",
+	})
+	expect(noteWrites).toEqual(["first line\nsecond line"])
+	await h.finish(h.started[1].threadId, "Build finished")
+	const restored = harness(definition, { load: async () => [...h.saved()] })
+	await restored.runner.resume(h.run().id, definition, build.id)
+	await flush()
+	expect(restored.started[0].prompt).toBe(h.started[1].prompt)
+	expect(restored.runner.outputValue(h.run().id, research.id, "findings")).toBe("first line\nsecond line")
 })
 
 describe("AutomationRunner", () => {

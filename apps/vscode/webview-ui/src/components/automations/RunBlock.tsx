@@ -18,6 +18,7 @@ import { useAutomations } from "@/hooks/useAutomations"
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient } from "@/services/grpc-client"
 import { ReadyForReview } from "./ReadyForReview"
+import { MissingOutputs, RunOutput } from "./RunThreadOutputs"
 import { ProblemDetails, ProblemList, stopRun, useRunActions } from "./runActions"
 import { runStatusText, runTimeAndCost, STEP_STATUS_LABELS } from "./runFacts"
 
@@ -66,6 +67,7 @@ function ThreadRow({
 	nested,
 	statuses,
 	onOpenThread,
+	onOpenNote,
 	actions,
 }: {
 	run: AutomationRun
@@ -74,6 +76,7 @@ function ThreadRow({
 	nested: boolean
 	statuses: ThreadStatuses
 	onOpenThread: (threadId: string) => void
+	onOpenNote?: (slug: string) => void
 	actions: ReturnType<typeof useRunActions>
 }) {
 	const status = liveThreadStatus(thread, statuses)
@@ -95,7 +98,17 @@ function ThreadRow({
 					</LinkButton>
 				)}
 			</div>
-			{waiting && (
+			{waiting && !!thread.missingOutputs?.length && thread.threadId && (
+				<div className={under}>
+					<MissingOutputs
+						names={thread.missingOutputs}
+						onOpenThread={onOpenThread}
+						runId={run.id}
+						threadId={thread.threadId}
+					/>
+				</div>
+			)}
+			{waiting && !thread.missingOutputs?.length && (
 				<div
 					className={cn("mt-0.5 flex min-w-0 items-baseline gap-1.5 rounded-xs bg-warning/10 px-1.5 py-0.5", under)}
 					data-testid={`run-waiting-${thread.id}`}>
@@ -122,6 +135,19 @@ function ThreadRow({
 				<div className={cn("line-clamp-2 text-description", under)} title={thread.reply}>
 					{thread.reply}
 				</div>
+			)}
+			{!!thread.outputs?.length && (
+				<ul className={cn("m-0 list-none p-0", under)}>
+					{thread.outputs.map((output) => (
+						<RunOutput
+							key={`${thread.threadId}:${output.name}`}
+							onOpenNote={onOpenNote}
+							output={output}
+							runId={run.id}
+							stepId={thread.id}
+						/>
+					))}
+				</ul>
 			)}
 		</li>
 	)
@@ -305,8 +331,11 @@ export function RunBlock({
 	const actions = useRunActions(run)
 	const timeAndCost = runTimeAndCost(run, taskHistory, now)
 	const live = isLiveRun(run)
-	const [open, setOpen] = useState(defaultOpen ?? live)
-	const expanded = open || live || run.status === "failed"
+	const [fold, setFold] = useState<{ status: AutomationRun["status"]; resumedAt?: number; expanded: boolean }>()
+	const [initialOpen] = useState(defaultOpen ?? live)
+	const expanded =
+		live ||
+		(fold?.status === run.status && fold.resumedAt === run.resumedAt ? fold.expanded : run.status === "failed" || initialOpen)
 	const tone =
 		run.status === "failed"
 			? "text-error"
@@ -315,6 +344,18 @@ export function RunBlock({
 				: run.status === "done"
 					? "text-success"
 					: "text-description"
+	const headerClass = "flex min-w-0 flex-1 items-baseline gap-1.5 text-left text-foreground"
+	const headerContent = (
+		<>
+			<span className="min-w-0 truncate font-semibold">{run.title}</span>
+			<span className={cn("shrink-0", tone)} data-testid={`run-status-${run.id}`}>
+				{runStatusText(run)}
+			</span>
+			<span className="ml-auto min-w-0 shrink truncate pl-1 text-description" title={timeAndCost}>
+				{timeAndCost}
+			</span>
+		</>
+	)
 	return (
 		<div
 			className={cn(
@@ -327,14 +368,15 @@ export function RunBlock({
 			)}
 			data-testid={`run-block-${run.id}`}>
 			<div className="flex min-w-0 items-center gap-1.5">
-				<button
-					aria-expanded={expanded}
-					className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-1.5 border-0 bg-transparent p-0 text-left text-foreground disabled:cursor-default"
-					disabled={live || run.status === "failed"}
-					onClick={() => setOpen((value) => !value)}
-					title={live ? undefined : expanded ? "Fold" : "Show the steps"}
-					type="button">
-					{!live && run.status !== "failed" && (
+				{live ? (
+					<div className={headerClass}>{headerContent}</div>
+				) : (
+					<button
+						aria-expanded={expanded}
+						className={cn(headerClass, "cursor-pointer border-0 bg-transparent p-0")}
+						onClick={() => setFold({ status: run.status, resumedAt: run.resumedAt, expanded: !expanded })}
+						title={expanded ? "Fold" : "Show the steps"}
+						type="button">
 						<span
 							aria-hidden
 							className={cn(
@@ -342,15 +384,9 @@ export function RunBlock({
 								expanded ? "codicon-chevron-down" : "codicon-chevron-right",
 							)}
 						/>
-					)}
-					<span className="min-w-0 truncate font-semibold">{run.title}</span>
-					<span className={cn("shrink-0", tone)} data-testid={`run-status-${run.id}`}>
-						{runStatusText(run)}
-					</span>
-					<span className="ml-auto min-w-0 shrink truncate pl-1 text-description" title={timeAndCost}>
-						{timeAndCost}
-					</span>
-				</button>
+						{headerContent}
+					</button>
+				)}
 				{live && (
 					<Button data-testid={`run-stop-${run.id}`} onClick={() => void stopRun(run.id)} size="xs" variant="secondary">
 						Stop
@@ -362,7 +398,13 @@ export function RunBlock({
 					{run.steps.map((step, index) => (
 						<li className="py-0.5" data-testid={`run-step-${step.id}`} key={step.id}>
 							<div className="flex min-w-0 items-center gap-1.5">
-								<StepStatusIcon status={step.status} />
+								<StepStatusIcon
+									status={
+										step.status === "running" && step.threads.some((thread) => thread.status === "waiting")
+											? "waiting"
+											: step.status
+									}
+								/>
 								<span className="w-3 shrink-0 text-right text-description">{index + 1}</span>
 								<span
 									className={cn(
@@ -394,6 +436,7 @@ export function RunBlock({
 											actions={actions}
 											key={thread.id}
 											nested={step.kind === "together"}
+											onOpenNote={onOpenNote}
 											onOpenThread={onOpenThread}
 											run={run}
 											statuses={statuses}

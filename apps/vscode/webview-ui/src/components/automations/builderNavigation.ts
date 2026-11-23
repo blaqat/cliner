@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react"
 export interface AutomationBuilderTarget {
 	path?: string
 	describe?: boolean
+	changeWithPrompt?: boolean
 	/** A task whose threads become the draft ("Save as an automation"). */
 	fromTask?: string
 }

@@ -11,21 +11,26 @@ import { Controller } from ".."
 export async function draftAutomation(controller: Controller, request: StringRequest): Promise<DraftAutomationResponse> {
 	const description = request.value.trim()
 	if (!description) throw new Error("Describe the automation first.")
+	const { reply, model } = await generateAutomationFile(controller, DRAFT_SYSTEM_PROMPT, draftPrompt(description))
+	const draft = parseDraftReply(reply)
+	return DraftAutomationResponse.create({
+		definitionJson: JSON.stringify(draft.definition),
+		guesses: draft.guesses,
+		model,
+	})
+}
+
+export async function generateAutomationFile(controller: Controller, system: string, prompt: string) {
 	if (!useModelSettings(controller.stateManager))
 		throw new Error("Drafting needs the new model settings. Set up a model in Settings › Models.")
 	const handler = await backgroundHandler(controller.stateManager, "generate")
 	if (!handler) throw new Error("No model is set for generating text. Pick one in Settings › Models › Background text.")
 	let reply = ""
 	let failure: string | undefined
-	for await (const chunk of handler.createMessage(DRAFT_SYSTEM_PROMPT, [{ role: "user", content: draftPrompt(description) }])) {
+	for await (const chunk of handler.createMessage(system, [{ role: "user", content: prompt }])) {
 		if (chunk.type === "text") reply += chunk.text
 		else if (chunk.type === "done" && chunk.success === false) failure = chunk.error
 	}
 	if (failure) throw new Error(`The draft failed: ${failure}`)
-	const draft = parseDraftReply(reply)
-	return DraftAutomationResponse.create({
-		definitionJson: JSON.stringify(draft.definition),
-		guesses: draft.guesses,
-		model: handler.getModel?.().id ?? "",
-	})
+	return { reply, model: handler.getModel?.().id ?? "" }
 }

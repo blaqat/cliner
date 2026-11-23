@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { applyAutomationList, useAutomations } from "@/hooks/useAutomations"
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient, FileServiceClient } from "@/services/grpc-client"
+import { AutomationPromptEdit } from "./AutomationPromptEdit"
 import { stepSummary } from "./automationSummary"
 import { BuilderStepEditor, FIELD_CLASS, PromptField } from "./BuilderStepEditor"
 import { type AutomationBuilderTarget, closeAutomationBuilder } from "./builderNavigation"
@@ -216,6 +217,8 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	const [saving, setSaving] = useState(false)
 	const [saved, setSaved] = useState(false)
 	const [error, setError] = useState("")
+	const [dirty, setDirty] = useState(false)
+	const [showPromptEdit, setShowPromptEdit] = useState(!!target.changeWithPrompt)
 
 	// A saved file arrives with the first list after the page opens.
 	const [hydrated, setHydrated] = useState(!!existing?.definition || !target.path)
@@ -267,6 +270,7 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	const update = (next: AutomationDefinition) => {
 		setDefinition(next)
 		setSaved(false)
+		setDirty(true)
 	}
 	const updateStep = (index: number, step: AutomationStep) =>
 		update({ ...definition, steps: definition.steps.map((candidate, i) => (i === index ? step : candidate)) })
@@ -291,12 +295,47 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 				applyAutomationList(response)
 				setPath(response.savedPath)
 				setSaved(true)
+				setDirty(false)
 			})
 			.catch((err) => setError(err?.message ?? String(err)))
 			.finally(() => setSaving(false))
 	}
 	const saveBlock = issues.length ? `Fix ${issues.length === 1 ? "the problem" : `${issues.length} problems`} first` : undefined
 	const title = automationDisplayName(definition) || "New automation"
+
+	if (path && showPromptEdit) {
+		return (
+			<div className="flex flex-1 flex-col overflow-hidden" data-testid="automation-builder">
+				<BuilderHeader
+					onBack={() => setShowPromptEdit(false)}
+					title={title === "New automation" ? existing?.name || "Automation" : title}
+				/>
+				<div className="min-h-0 flex-1 overflow-y-auto">
+					<AutomationPromptEdit
+						editorDefinition={dirty ? definition : undefined}
+						onDrop={() => setShowPromptEdit(false)}
+						onKeep={(list) => {
+							const entry = list.automations.find((item) => item.path === list.savedPath)
+							if (entry?.definitionJson) {
+								const kept = JSON.parse(entry.definitionJson) as AutomationDefinition
+								setDefinition(kept)
+								setScope(entry.scope === "global" ? "global" : "workspace")
+								setOpenStep(kept.steps[0]?.id)
+								setHydrated(true)
+							}
+							applyAutomationList(list)
+							setPath(list.savedPath)
+							setSaved(true)
+							setDirty(false)
+							setError("")
+							setShowPromptEdit(false)
+						}}
+						path={path}
+					/>
+				</div>
+			</div>
+		)
+	}
 
 	if (target.path && !hydrated) {
 		return (
@@ -386,6 +425,21 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 				onChange={(costLimit) => update({ ...definition, costLimit })}
 				value={definition.costLimit}
 			/>
+			<label className="mt-1.5 block">
+				<span className={LABEL_CLASS}>Notes from this automation</span>
+				<select
+					className={FIELD_CLASS}
+					onChange={(event) => update({ ...definition, keepNotes: event.target.value === "keep" || undefined })}
+					value={definition.keepNotes ? "keep" : "ask"}>
+					<option value="ask">Ask me</option>
+					<option value="keep">Keep automatically</option>
+				</select>
+				{definition.keepNotes && (
+					<span className="mt-0.5 block text-[11px] text-description">
+						Keeps task notes after each turn. About you, skills and workflows still ask.
+					</span>
+				)}
+			</label>
 			<div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
 				<span className="text-description">Save to</span>
 				{(["workspace", "global"] as const).map((value) => (
@@ -589,6 +643,11 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 	return (
 		<div className="flex flex-1 flex-col overflow-hidden" data-testid="automation-builder">
 			<BuilderHeader title={title}>
+				{path && (
+					<LinkButton className="shrink-0 text-[11px]" onClick={() => setShowPromptEdit(true)}>
+						Change with a prompt…
+					</LinkButton>
+				)}
 				<HeaderIconButton
 					aria-pressed={showFile}
 					className={showFile ? "text-foreground" : undefined}
@@ -654,10 +713,18 @@ function CostLimitField({ value, onChange }: { value: number | undefined; onChan
 	)
 }
 
-function BuilderHeader({ title, children }: { title: string; children?: React.ReactNode }) {
+function BuilderHeader({
+	title,
+	children,
+	onBack = closeAutomationBuilder,
+}: {
+	title: string
+	children?: React.ReactNode
+	onBack?: () => void
+}) {
 	return (
 		<div className="flex min-h-8 items-center gap-1 border-b border-editor-group-border px-2 py-1">
-			<HeaderIconButton icon="arrow-left" label="Back" onClick={closeAutomationBuilder} />
+			<HeaderIconButton icon="arrow-left" label="Back" onClick={onBack} />
 			<span className="min-w-0 truncate text-xs text-description">Automations ›</span>
 			<span className="min-w-0 flex-1 truncate text-xs font-semibold" data-testid="builder-title">
 				{title}

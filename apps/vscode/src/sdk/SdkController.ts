@@ -563,8 +563,19 @@ export class Controller {
 		createTask: (title, ticket) =>
 			this.createTaskGroup({ title, tags: ticket ? [{ kind: "ticket", value: ticket, source: "user" }] : [] }),
 		startThread: (input) => this.startAutomationThread(input),
+		askForOutputs: (threadId, names) => this.askForAutomationOutputs(threadId, names),
+		saveOutputNote: async (groupId, thread, output, value) => {
+			const slug = await this.notebookStore.saveAutomationOutput(groupId, thread.threadId, thread.title, {
+				...output,
+				value,
+			})
+			this.taskGroupsSummaryCache = undefined
+			void this.postStateToWebview()
+			return slug
+		},
 		readThreadState: (id) => {
-			const status = this.sessions.sessionStatuses[id]
+			const current = this.sessions.sessionStatuses[id]
+			const status = current === "done" && this.automationNoteTurns.has(id) ? "running" : current
 			const context = this.taskSessions.get(id)
 			return status
 				? {
@@ -587,6 +598,7 @@ export class Controller {
 		},
 		onRunsChanged: (runs) => void sendAutomationRunsEvent(runs),
 	})
+	private readonly automationNoteTurns = new Map<string, Promise<void>>()
 	private readonly notebookStore = new NotebookStore()
 	private readonly notebookEditors: { dispose(): void }[] = []
 	private readonly historySearcher = new HistorySearcher()
@@ -766,12 +778,21 @@ export class Controller {
 		this.sessions = new SdkSessionLifecycle({
 			onStatusChange: (id, status) => {
 				if (this.isDisposed) return
-				this.automations.runner.threadStatusChanged(
-					id,
-					status,
-					() => this.taskSessions.get(id)?.task.messageStateHandler.getClineMessages() ?? [],
-					() => this.taskSessions.get(id)?.cancelled === true,
-				)
+				const notifyRun = () =>
+					this.automations.runner.threadStatusChanged(
+						id,
+						status,
+						() => this.taskSessions.get(id)?.task.messageStateHandler.getClineMessages() ?? [],
+						() => this.taskSessions.get(id)?.cancelled === true,
+					)
+				const keepingNotes = status === "done" ? this.automationNoteTurns.get(id) : undefined
+				if (keepingNotes) {
+					void keepingNotes
+						.catch(() => {})
+						.then(() => {
+							if (!this.isDisposed && this.sessions.sessionStatuses[id] === status) notifyRun()
+						})
+				} else notifyRun()
 				void this.taskHistory
 					.saveThreadStatus(id, status)
 					.catch((error) => Logger.warn("[SdkController] Failed to persist thread status", error))
@@ -812,6 +833,7 @@ export class Controller {
 			mcpHub: this.mcpHub,
 			telemetry: this.sdkTelemetry.telemetry,
 			resolveNotebook: (input) => this.resolveTaskNotebook(input.config.sessionId, input.sessionMetadata),
+			resolveAutomationOutput: (input) => this.automations.runner.outputsForThread(input.config.sessionId ?? ""),
 			resolveAboutYou: (input) => this.resolveAboutYou(input.config.sessionId, input.sessionMetadata),
 			resolveSideThread: (input) => this.resolveSideThreadContext(input),
 			resolveThreadTranscript: (input) => this.resolveThreadTranscriptContext(input),
@@ -2222,7 +2244,7 @@ export class Controller {
 				watchdog.observe(event)
 				if (hasActiveTurn()) watchdog.activity()
 			},
-			onTurnComplete: () => this.emitNotebookChanges(id, { newTurn: true }),
+			onTurnComplete: () => this.completeNotebookTurn(id),
 			sessionId: id,
 			messageTranslatorState: translator,
 			sessions: this.sessions,
@@ -3299,6 +3321,7 @@ export class Controller {
 			apiSelection?: TaskApiSelection
 			/** A title chosen by the caller (an automation step): no title is generated. */
 			title?: string
+			onSessionId?: (id: string) => void
 		},
 	): Promise<string | undefined> {
 		const navigationRevision = this.homeNavigationRevision ?? 0
@@ -4884,6 +4907,7 @@ export class Controller {
 		if (!details) throw new Error("That task is gone.")
 		const roots = details.threads.filter((thread) => !thread.isSubagent && !thread.parentTaskId)
 		if (!roots.length) throw new Error("This task has no threads yet. Start one, then save the task as an automation.")
+		await this.automations.runner.load()
 		const history = new Map(
 			(await this.taskHistory.listHistory({ hydrate: false })).map((record) => {
 				const item = sessionHistoryRecordToHistoryItem(record)
@@ -4904,6 +4928,10 @@ export class Controller {
 					model: model?.name ?? "",
 					level: model && pick?.levelId && pick.levelId !== "default" ? pick.levelId : "",
 					worktree,
+					outputs: this.automations.runner
+						.runForThread(row.threadId)
+						?.steps.flatMap((step) => step.threads)
+						.find((thread) => thread.threadId === row.threadId)?.declaredOutputs,
 				}
 			}),
 		)
@@ -4997,6 +5025,7 @@ export class Controller {
 				mode: input.mode === "ask" ? "plan" : "act",
 				apiSelection,
 				title: input.title,
+				onSessionId: input.onSessionId,
 				rethrowStartFailure: true,
 			})
 		} catch (error) {
@@ -5020,6 +5049,22 @@ export class Controller {
 		}
 		if (!taskId) throw new AutomationFixableError("The thread couldn't start. Check your model provider is set up.", "models")
 		return taskId
+	}
+
+	private async askForAutomationOutputs(threadId: string, names: string[]): Promise<void> {
+		const session = this.sessions.getSession(threadId)
+		if (!session) throw new Error("Open the thread to continue it, then try again.")
+		this.sessions.assertTaskAvailable(threadId)
+		if (session.isRunning) throw new Error("The thread is already working.")
+		const prompt = `Record these missing outputs with automation_output: ${names.join(", ")}.`
+		const context = this.getTaskSessionContext(threadId)
+		context.translator.clearTurnOutcome()
+		context.turn.set("streaming")
+		context.messages.appendAndEmit(
+			[{ ts: context.translator.nextTs(), type: "say", say: "user_feedback", text: prompt, partial: false }],
+			{ type: "status", payload: { sessionId: threadId, status: "running" } },
+		)
+		this.sessions.fireAndForgetSend(session.sdkHost, threadId, prompt)
 	}
 
 	/** Stops one thread's turn, whether or not it's the one on screen (an automation's Stop). */
@@ -5617,12 +5662,40 @@ export class Controller {
 	 * turn and carries both (the old row is removed, never left "superseded").
 	 * Any other refresh updates the row in place.
 	 */
-	private async emitNotebookChanges(threadId: string, options?: { newTurn?: boolean }): Promise<void> {
+	private completeNotebookTurn(threadId: string): Promise<void> {
+		const keepNotes = this.taskSessions.get(threadId)?.cancelled
+			? undefined
+			: this.automations?.runner.noteGroupToKeep(threadId)
+		if (!keepNotes) return this.emitNotebookChanges(threadId, { newTurn: true })
+		const pending = this.emitNotebookChanges(threadId, { newTurn: true, keepNotes }).finally(() => {
+			if (this.automationNoteTurns.get(threadId) === pending) this.automationNoteTurns.delete(threadId)
+		})
+		this.automationNoteTurns.set(threadId, pending)
+		return pending
+	}
+
+	private async emitNotebookChanges(threadId: string, options?: { newTurn?: boolean; keepNotes?: string }): Promise<void> {
 		const item = await this.taskHistory.findHistoryItem(threadId)
 		const rootThreadId = item
 			? (await resolveNotebookOwner(item, (id) => this.taskHistory.findHistoryItem(id))).rootThreadId
 			: threadId
-		const reviews = await this.notebookStore.listPending(rootThreadId)
+		let reviews = await this.notebookStore.listPending(rootThreadId)
+		const auto = reviews.find((pending) => pending.groupId === options?.keepNotes)
+		if (auto && item?.taskGroupId === auto.groupId && ![ABOUT_YOU_ID, SKILL_DRAFTS_ID].includes(auto.groupId)) {
+			try {
+				const kept = await this.notebookStore.keepAutomationNotes(auto, rootThreadId, item.title ?? item.task ?? "")
+				if (kept.length) {
+					await this.settleNotebookReview(rootThreadId, auto.groupId, { kept, automatic: true })
+					await this.notebookStore.listNotes(auto.groupId)
+					this.taskGroupsSummaryCache = undefined
+					await this.postStateToWebview()
+					reviews = reviews.filter((pending) => pending !== auto)
+				}
+			} catch (error) {
+				Logger.warn("Couldn't keep this automation's notes automatically", error)
+				reviews = await this.notebookStore.listPending(rootThreadId)
+			}
+		}
 		if (!reviews.length) return
 		const context = this.getTaskSessionContext(rootThreadId)
 		if (!context.task.messageStateHandler.getClineMessages().length) {
@@ -5665,7 +5738,7 @@ export class Controller {
 						: moves && !shown?.kept?.length && !shown?.dropped?.length
 							? (shown?.turns ?? 1) + 1
 							: 1,
-					...(inPlace ? { kept: shown?.kept, dropped: shown?.dropped } : {}),
+					...(inPlace ? { kept: shown?.kept, dropped: shown?.dropped, autoKept: shown?.autoKept } : {}),
 				},
 				inPlace ? live.ts : context.translator.nextTs(),
 			)
@@ -5684,7 +5757,7 @@ export class Controller {
 	private async settleNotebookReview(
 		threadId: string,
 		taskGroupId: string,
-		update: { kept?: NotebookChange[]; dropped?: NotebookChange[] },
+		update: { kept?: NotebookChange[]; dropped?: NotebookChange[]; automatic?: boolean },
 	): Promise<void> {
 		const context = this.getTaskSessionContext(threadId)
 		if (!context.task.messageStateHandler.getClineMessages().length) {
@@ -5703,6 +5776,7 @@ export class Controller {
 		})
 		const kept = [...(live ? (shown?.kept ?? []) : []), ...(update.kept ?? []).map(brief)]
 		const dropped = [...(live ? (shown?.dropped ?? []) : []), ...(update.dropped ?? []).map(brief)]
+		const autoKept = (live ? (shown?.autoKept ?? 0) : 0) + (update.automatic ? (update.kept?.length ?? 0) : 0)
 		const pending = await this.notebookStore.readPendingReview(taskGroupId, threadId)
 		if (pending?.changes.length) {
 			const message = notebookChangesMessage(
@@ -5715,6 +5789,7 @@ export class Controller {
 					turns: live ? shown?.turns : 1,
 					kept,
 					dropped,
+					...(autoKept ? { autoKept } : {}),
 				},
 				live?.ts ?? context.translator.nextTs(),
 			)
@@ -5734,6 +5809,7 @@ export class Controller {
 				turns: shown?.turns,
 				kept,
 				dropped,
+				...(autoKept ? { autoKept } : {}),
 			},
 			live?.ts ?? context.translator.nextTs(),
 		)
