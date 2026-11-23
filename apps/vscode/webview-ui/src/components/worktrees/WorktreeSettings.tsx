@@ -120,6 +120,17 @@ function PathField({
 	)
 }
 
+function MmPathLine({ label, path }: { label: string; path: string }) {
+	return (
+		<div className="flex min-w-0 gap-1" title={path}>
+			<span className="shrink-0">{label}</span>{" "}
+			<span className="min-w-0 truncate text-left font-mono" dir="rtl">
+				<bdi dir="ltr">{path}</bdi>
+			</span>
+		</div>
+	)
+}
+
 /** Where things stand: ready (and how to start one), or why not and what fixes it. */
 function Status({ state, hideReason }: { state: WorktreeState; hideReason: boolean }) {
 	const { availability } = state
@@ -146,14 +157,8 @@ function Status({ state, hideReason }: { state: WorktreeState; hideReason: boole
 			)}
 			{availability.mmCwd && (
 				<div className="ph-no-capture pl-[18px] text-xs text-description">
-					<div className="truncate" title={availability.mmCwd}>
-						mm working folder <span className="font-mono">{availability.mmCwd}</span>
-					</div>
-					{availability.mmConfigPath && (
-						<div className="truncate" title={availability.mmConfigPath}>
-							Config file <span className="font-mono">{availability.mmConfigPath}</span>
-						</div>
-					)}
+					<MmPathLine label="mm working folder" path={availability.mmCwd} />
+					{availability.mmConfigPath && <MmPathLine label="Config file" path={availability.mmConfigPath} />}
 				</div>
 			)}
 		</div>
