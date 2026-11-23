@@ -38,8 +38,8 @@ service AutomationService {
   rpc subscribeToAutomationRuns(EmptyRequest) returns (stream AutomationRuns);
   // Goes on with a finished run (retry the step that didn't finish, or from a step) or runs it again fresh
   rpc resumeAutomationRun(ResumeAutomationRunRequest) returns (StartAutomationRunResponse);
-  // What must be fixed before `/name` can run (a worktree that can't be made), for the start form
-  rpc checkAutomationRun(StringRequest) returns (AutomationCheck);
+  // What must be fixed before starting or resuming a run
+  rpc checkAutomationRun(CheckAutomationRunRequest) returns (AutomationCheck);
   // A draft automation made from a task's threads (their prompts, models and modes); no model call
   rpc draftAutomationFromTask(StringRequest) returns (DraftAutomationResponse);
 }
@@ -103,6 +103,11 @@ message StartAutomationRunRequest {
   optional string task_group_id = 4;
   // The version the start form showed.
   string fingerprint = 5;
+  // Extra context the user typed after the arguments; threads get it as "Context from you".
+  optional string context = 1900;
+  // Images (data URLs) and files (paths) attached with that context.
+  repeated string context_images = 1901;
+  repeated string context_files = 1902;
 }
 
 message ProposeAutomationEditRequest {
@@ -161,6 +166,12 @@ message ResumeAutomationRunRequest {
   string step_id = 3;
   // A fresh run with the same values in the same task.
   bool fresh = 4;
+}
+
+message CheckAutomationRunRequest {
+  string value = 2; // Automation name. Field 2 matches the previous StringRequest.
+  optional string task_group_id = 3;
+  ResumeAutomationRunRequest resume = 4;
 }
 
 message AutomationCheck {

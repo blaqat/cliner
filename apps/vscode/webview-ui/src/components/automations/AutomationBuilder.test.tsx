@@ -143,6 +143,23 @@ describe("AutomationBuilder", () => {
 		expect(screen.getByTestId("builder-status")).toHaveTextContent("Fix 2 problems first")
 	})
 
+	it("adds a For each step: the steps after it sit in its bracket and get {{item}}", async () => {
+		render(<AutomationBuilder target={{ path: savedEntry.path }} />)
+		fireEvent.click(screen.getByTestId("builder-add-each"))
+		expect(screen.getByTestId("builder-issues-each")).toHaveTextContent("Add the steps to run for each item after it")
+		fireEvent.change(screen.getByTestId("builder-items-each"), { target: { value: "{{ticket}}" } })
+		// Only one For each per automation.
+		expect(screen.queryByTestId("builder-add-each")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("builder-add-thread"))
+		const after = screen.getByTestId("builder-step-thread").closest("li") as HTMLElement
+		expect(after).toHaveAttribute("data-per-item", "true")
+		expect(after).toHaveTextContent("then, in each item's task")
+		expect(within(after).getByRole("button", { name: "{{item}}" })).toBeInTheDocument()
+		expect(within(after).getByRole("button", { name: "{{context}}" })).toBeInTheDocument()
+		expect(screen.getByTestId("builder-step-research").closest("li")).not.toHaveAttribute("data-per-item")
+		expect(screen.queryByTestId("builder-issues-each")).not.toBeInTheDocument()
+	})
+
 	it("drafts from a description and opens the draft with its guesses", async () => {
 		mocks.draft.mockResolvedValue({
 			definitionJson: JSON.stringify({ ...saved, name: "drafted" }),

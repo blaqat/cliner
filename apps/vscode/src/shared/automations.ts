@@ -1,6 +1,7 @@
 /**
  * Automations: a named recipe of steps the user starts with `/name` (never the agent). Steps open a
- * task, start prompt threads (alone or several together), and pause for the user. This module is shared
+ * task, start prompt threads (alone or several together), pause for the user, and fan out over a list
+ * (For each: one task per item, running the steps after it in each). This module is shared
  * by the extension (file format, runtime) and the webview (builder, start form, run block), so it must
  * stay free of Node and DOM imports.
  */
@@ -89,7 +90,30 @@ export interface AutomationCheckpointStep {
 	choices: string[]
 }
 
-export type AutomationStep = AutomationTaskStep | AutomationThreadStep | AutomationTogetherStep | AutomationCheckpointStep
+/**
+ * For each: splits `items` (after placeholders) into a list and runs every step after this one once per
+ * item, each in its own task, a few at a time. `{{item}}` is the item in those steps.
+ */
+export interface AutomationEachStep {
+	kind: "each"
+	id: string
+	title: string
+	/** The list: usually `{{tickets}}` or `{{steps.plan.list}}`. One item per line, a JSON list, or commas. */
+	items: string
+	/** Ticket to find each item's task by, usually `{{item}}`; empty makes a new task per item. */
+	ticket: string
+	/** Title for a new task; empty uses the item. */
+	newTaskTitle: string
+	/** Items running at the same time. */
+	atOnce: number
+}
+
+export type AutomationStep =
+	| AutomationTaskStep
+	| AutomationThreadStep
+	| AutomationTogetherStep
+	| AutomationCheckpointStep
+	| AutomationEachStep
 export type AutomationStepKind = AutomationStep["kind"]
 
 export interface AutomationDefinition {
@@ -110,6 +134,7 @@ export const AUTOMATION_STEP_LABELS: Record<AutomationStepKind, string> = {
 	thread: "Prompt thread",
 	together: "Threads together",
 	checkpoint: "Ask you",
+	each: "For each",
 }
 
 export const AUTOMATION_ID_REGEX = /^[a-z][a-z0-9-]{0,47}$/
@@ -118,6 +143,18 @@ const MAX_ARGUMENTS = 20
 const MAX_STEPS = 40
 const MAX_TOGETHER = 8
 const MAX_OUTPUTS = 20
+/** Items one For each step can fan out to. */
+export const MAX_EACH_ITEMS = 20
+/** Items running at once, at most. */
+export const MAX_EACH_AT_ONCE = 8
+export const DEFAULT_EACH_AT_ONCE = 3
+
+/** `{{context}}`: what the user added when starting the run. Usable in every step. */
+export const CONTEXT_PLACEHOLDER = "context"
+/** `{{item}}`: the current item, in the steps after a For each step. */
+export const ITEM_PLACEHOLDER = "item"
+/** Placeholder names an argument can't take. */
+const RESERVED_ARG_NAMES = new Set(["steps", CONTEXT_PLACEHOLDER, ITEM_PLACEHOLDER])
 
 export function automationDisplayName(definition: Pick<AutomationDefinition, "name" | "title">): string {
 	return definition.title.trim() || definition.name
@@ -212,7 +249,7 @@ export function automationThreads(
 	)
 }
 
-/** Counts and marks the worktrees shared by the threads between each Open a task step. */
+/** Counts and marks shared worktrees. Open a task and For each start a new task's steps. */
 export function automationTaskWorktrees(steps: readonly AutomationStep[]) {
 	const threadSteps = new Set<string>()
 	let count = 0
@@ -225,7 +262,7 @@ export function automationTaskWorktrees(steps: readonly AutomationStep[]) {
 		span = []
 	}
 	for (const step of steps) {
-		if (step.kind === "task") finish()
+		if (step.kind === "task" || step.kind === "each") finish()
 		else span.push(step)
 	}
 	finish()
@@ -235,6 +272,90 @@ export function automationTaskWorktrees(steps: readonly AutomationStep[]) {
 /** The prompt a thread is sent before placeholders are filled. */
 export function threadPrompt(step: AutomationThreadStep | AutomationTogetherStep, thread: AutomationThreadSpec): string {
 	return step.kind === "together" && !thread.prompt.trim() ? step.prompt : thread.prompt
+}
+
+// ---------------------------------------------------------------------------
+// Context from the user, and For each
+// ---------------------------------------------------------------------------
+
+/** Every text a step fills placeholders in. */
+function stepTexts(step: AutomationStep): string[] {
+	switch (step.kind) {
+		case "task":
+			return [step.title, step.ticket, step.newTaskTitle]
+		case "thread":
+			return [step.title, step.prompt]
+		case "together":
+			return [step.title, step.prompt, ...step.threads.flatMap((thread) => [thread.title, thread.prompt])]
+		case "checkpoint":
+			return [step.title, step.question]
+		case "each":
+			return [step.title, step.items, step.ticket, step.newTaskTitle]
+	}
+}
+
+/**
+ * Whether the automation puts `{{context}}` somewhere itself. When it does, the context goes only there;
+ * otherwise every prompt thread gets it as a "Context from you" block after its prompt.
+ */
+export function placesContext(steps: readonly AutomationStep[]): boolean {
+	return steps.some((step) =>
+		stepTexts(step).some((text) =>
+			placeholderRefs(text).some((ref) => ref.kind === "arg" && ref.name === CONTEXT_PLACEHOLDER),
+		),
+	)
+}
+
+/** A thread's prompt with the user's context after it, clearly marked as theirs. */
+export function withContextBlock(prompt: string, context: string): string {
+	const text = context.trim()
+	return text ? `${prompt.trimEnd()}\n\n## Context from you\n\n${text}` : prompt
+}
+
+/** Index of the For each step, or -1. Steps after it run once per item. */
+export function eachStepIndex(steps: readonly AutomationStep[]): number {
+	return steps.findIndex((step) => step.kind === "each")
+}
+
+/**
+ * The steps a run goes through: up to and including For each for a run of the whole automation, and
+ * the steps after it for one item's run.
+ */
+export function stepsForRun(steps: readonly AutomationStep[], run?: Pick<AutomationRun, "parent">): readonly AutomationStep[] {
+	if (run?.parent) {
+		const at = steps.findIndex((step) => step.id === run.parent?.stepId && step.kind === "each")
+		return at >= 0 ? steps.slice(at + 1) : []
+	}
+	const each = eachStepIndex(steps)
+	return each >= 0 ? steps.slice(0, each + 1) : steps
+}
+
+/**
+ * The list a For each step goes through: a JSON list, else one item per line (list markers dropped),
+ * else a single line split at commas. Blank and repeated items are dropped.
+ */
+export function splitEachItems(text: string): string[] {
+	const trimmed = text.trim()
+	if (!trimmed) return []
+	let items: string[] | undefined
+	if (trimmed.startsWith("[")) {
+		try {
+			const parsed = JSON.parse(trimmed)
+			if (Array.isArray(parsed)) items = parsed.map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+		} catch {
+			/* Not JSON: read it as lines. */
+		}
+	}
+	if (!items) {
+		const lines = trimmed.split(/\r?\n/).map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))
+		items = lines.filter((line) => line.trim()).length > 1 ? lines : trimmed.split(",")
+	}
+	return [...new Set(items.map((item) => item.trim()).filter(Boolean))]
+}
+
+/** A short name for an item in lists and task titles. */
+export function eachItemLabel(item: string): string {
+	return ticketKey(item)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +385,14 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		if (!AUTOMATION_ARG_NAME_REGEX.test(arg.name))
 			issues.push({ at, message: "Argument names are lowercase letters, digits, - or _, starting with a letter" })
 		else if (argNames.has(arg.name)) issues.push({ at, message: `Argument "${arg.name}" is declared twice` })
-		else if (arg.name === "steps") issues.push({ at, message: '"steps" is reserved for earlier steps' })
+		else if (RESERVED_ARG_NAMES.has(arg.name))
+			issues.push({
+				at,
+				message:
+					arg.name === "steps"
+						? '"steps" is reserved for earlier steps'
+						: `"${arg.name}" is reserved: {{${arg.name}}} is filled in for you`,
+			})
 		argNames.add(arg.name)
 		if (!AUTOMATION_ARG_KINDS.includes(arg.kind)) issues.push({ at, message: `Argument "${arg.name}" has an unknown kind` })
 		if (arg.kind === "choice" && !arg.choices?.length) issues.push({ at, message: `Argument "${arg.name}" needs choices` })
@@ -284,8 +412,15 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 		else if (seen.has(id)) issues.push({ at: id, message: `Two steps are called "${id}"` })
 		seen.set(id, kind)
 	}
-	const checkText = (at: string, text: string, available: ReadonlySet<string>) => {
+	// Whether the step being checked runs once per item (after For each), so `{{item}}` has a value.
+	let perItem = false
+	const checkText = (at: string, text: string, available: ReadonlySet<string>, item = perItem) => {
 		for (const ref of placeholderRefs(text)) {
+			if (ref.kind === "arg" && ref.name === ITEM_PLACEHOLDER && !argNames.has(ref.name)) {
+				if (!item) issues.push({ at, message: `${ref.raw} only has a value in a For each step and the steps after it` })
+				continue
+			}
+			if (ref.kind === "arg" && ref.name === CONTEXT_PLACEHOLDER) continue
 			if (ref.kind === "arg" && !argNames.has(ref.name)) issues.push({ at, message: `${ref.raw} isn't an argument` })
 			if (ref.kind === "step" && !available.has(ref.name)) {
 				const [id, output, extra] = ref.name.split(".")
@@ -346,9 +481,27 @@ export function validateAutomation(definition: AutomationDefinition): Automation
 				checkText(step.id, step.question, available)
 				if (step.choicesFrom) {
 					const source = definition.steps.find((candidate) => candidate.id === step.choicesFrom)
+					const sourceIndex = definition.steps.findIndex((candidate) => candidate.id === step.choicesFrom)
+					const each = eachStepIndex(definition.steps)
 					if (!source || source.kind !== "together" || !available.has(source.id))
 						issues.push({ at: step.id, message: "Choices must come from an earlier Threads together step" })
+					else if (each >= 0 && index > each && sourceIndex < each)
+						issues.push({ at: step.id, message: "Choices must come from a Threads together step after For each" })
 				}
+				break
+			}
+			case "each": {
+				if (eachStepIndex(definition.steps) !== index)
+					issues.push({ at: step.id, message: "Only one For each step: put every per-item step after the first" })
+				if (index === definition.steps.length - 1)
+					issues.push({ at: step.id, message: "Add the steps to run for each item after it" })
+				if (!step.items.trim()) issues.push({ at: step.id, message: "Say which list to go through, like {{tickets}}" })
+				if (!Number.isInteger(step.atOnce) || step.atOnce < 1 || step.atOnce > MAX_EACH_AT_ONCE)
+					issues.push({ at: step.id, message: `Run 1 to ${MAX_EACH_AT_ONCE} items at once` })
+				checkText(step.id, step.items, available, false)
+				checkText(step.id, step.ticket, available, true)
+				checkText(step.id, step.newTaskTitle, available, true)
+				perItem = true
 				break
 			}
 		}
@@ -403,6 +556,16 @@ export function blankStep(kind: AutomationStepKind, steps: readonly AutomationSt
 		}
 		case "checkpoint":
 			return { kind, id: uniqueStepId("pick", steps), title: "Ask you", question: "", choicesFrom: "", choices: [] }
+		case "each":
+			return {
+				kind,
+				id: uniqueStepId("each", steps),
+				title: "For each item",
+				items: "",
+				ticket: "",
+				newTaskTitle: "",
+				atOnce: DEFAULT_EACH_AT_ONCE,
+			}
 	}
 }
 
@@ -460,12 +623,29 @@ export interface AutomationRunThread {
 	missingOutputs?: string[]
 }
 
+/** One item of a For each step: its own run, in its own task. */
+export interface AutomationRunItem {
+	item: string
+	/** Short name: a ticket key, else the first line. */
+	label: string
+	/** The item's run, once it started. */
+	runId?: string
+	taskGroupId?: string
+	status: AutomationRunStepStatus
+	/** The step it's on, or where it stopped. */
+	at?: string
+	/** Why it didn't finish (its run says more). */
+	error?: string
+}
+
 export interface AutomationRunStep {
 	id: string
 	kind: AutomationStepKind
 	title: string
 	status: AutomationRunStepStatus
 	threads: AutomationRunThread[]
+	/** For each: every item with its run. */
+	items?: AutomationRunItem[]
 	/** Checkpoint: the question and its choices once known. */
 	question?: string
 	choices?: string[]
@@ -491,6 +671,27 @@ export interface AutomationRun {
 	priorMs?: number
 	/** Stops itself once its threads have spent this many dollars in all. */
 	costLimit?: number
+	/** What the user added when starting it. */
+	context?: AutomationRunContext
+	/** One item's run of a For each step: the run that fanned out, and which item. */
+	parent?: AutomationRunParent
+}
+
+export interface AutomationRunContext {
+	text: string
+	/** Attached files, as paths. */
+	files?: string[]
+	/** How many images were attached (the images themselves stay on disk with the run). */
+	images?: number
+}
+
+export interface AutomationRunParent {
+	runId: string
+	stepId: string
+	item: string
+	/** 0-based position in the list. */
+	index: number
+	total: number
 }
 
 export function isLiveRun(run: Pick<AutomationRun, "status">): boolean {
@@ -525,7 +726,7 @@ export function hasNewAutomationOutputs(thread: AutomationRunThread | undefined,
 /** Steps a finished run can resume from, up to the first step whose work can't be reused. */
 export function resumePoints(run: AutomationRun, definition?: AutomationDefinition): { points: string[]; retryId?: string } {
 	if (isLiveRun(run)) return { points: [] }
-	const steps = definition?.steps ?? run.steps
+	const steps = definition ? stepsForRun(definition.steps, run) : run.steps
 	const threads = definition ? automationThreads(definition.steps) : []
 	const points: string[] = []
 	for (const step of steps) {

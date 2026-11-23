@@ -5239,7 +5239,7 @@ export class Controller {
 		}
 		let taskId: string | undefined
 		try {
-			taskId = await this.initTask(input.prompt, undefined, undefined, undefined, undefined, {
+			taskId = await this.initTask(input.prompt, input.images, input.files, undefined, undefined, {
 				background: true,
 				taskGroupId: input.taskGroupId,
 				worktreeScope: input.worktreeScope ?? (input.worktree ? "task" : undefined),

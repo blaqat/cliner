@@ -2,7 +2,7 @@ import { resolveAutomationModel } from "@shared/automation-models"
 import { createDefaultModelSettings, type ModelRow, resolveModelValues } from "@shared/model-settings"
 import type { ModelSettingsState } from "@shared/model-settings-state"
 import { describe, expect, it } from "vitest"
-import { parseDraftReply } from "./automation-draft"
+import { DRAFT_SYSTEM_PROMPT, parseDraftReply } from "./automation-draft"
 import { serializeAutomation } from "./automation-file"
 import { ticketToPr } from "./automation-fixtures"
 import { parseDefinitionJson } from "./automation-json"
@@ -132,5 +132,21 @@ describe("resolveAutomationModel", () => {
 			ok: false,
 			reason: expect.stringContaining("No default"),
 		})
+	})
+})
+
+describe("DRAFT_SYSTEM_PROMPT", () => {
+	it("teaches For each and {{context}}, and its For each example parses", () => {
+		expect(DRAFT_SYSTEM_PROMPT).toContain("- kind: each")
+		expect(DRAFT_SYSTEM_PROMPT).toContain("{{item}}")
+		expect(DRAFT_SYSTEM_PROMPT).toContain("{{context}}")
+		const example = DRAFT_SYSTEM_PROMPT.slice(
+			DRAFT_SYSTEM_PROMPT.indexOf("## For each ticket"),
+			DRAFT_SYSTEM_PROMPT.indexOf("\nRules:"),
+		)
+		const draft = parseDraftReply(
+			`---\nname: fix-all\ndescription: Fix them\narguments:\n  - name: tickets\n    kind: text\n---\n\n${example}`,
+		)
+		expect(draft.definition.steps.map((step) => step.kind)).toEqual(["each", "thread"])
 	})
 })

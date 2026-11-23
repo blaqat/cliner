@@ -1,9 +1,12 @@
 import {
 	type AutomationDefinition,
+	type AutomationEachStep,
 	type AutomationFix,
 	type AutomationOutput,
 	type AutomationProblem,
 	type AutomationRun,
+	type AutomationRunItem,
+	type AutomationRunStatus,
 	type AutomationRunStep,
 	type AutomationRunThread,
 	type AutomationStep,
@@ -13,15 +16,26 @@ import {
 	automationDisplayName,
 	automationTaskWorktrees,
 	automationWorkspace,
+	CONTEXT_PLACEHOLDER,
+	DEFAULT_EACH_AT_ONCE,
+	eachItemLabel,
 	fillPlaceholders,
 	formatAutomationCost,
 	hasNewAutomationOutputs,
+	ITEM_PLACEHOLDER,
 	isLiveRun,
+	MAX_EACH_AT_ONCE,
+	MAX_EACH_ITEMS,
+	placeholderRefs,
+	placesContext,
 	resumePoints,
 	runActiveMs,
+	splitEachItems,
+	stepsForRun,
 	threadPrompt,
 	ticketKey,
 	withArgumentDefaults,
+	withContextBlock,
 } from "@shared/automations"
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type { ThreadWorkspaceChoice } from "@shared/thread-worktrees"
@@ -43,8 +57,22 @@ export class AutomationCheckError extends Error {
 	}
 }
 
-/** A finished run as kept on disk: the wire run plus every step's full reply, so a resume can use them. */
-export type StoredAutomationRun = AutomationRun & { outputs?: Record<string, string> }
+/**
+ * A finished run as kept on disk: the wire run plus every step's full reply and the images the user
+ * attached, so a resume can use them.
+ */
+export type StoredAutomationRun = AutomationRun & {
+	outputs?: Record<string, string>
+	contextText?: string
+	contextImages?: string[]
+}
+
+/** What the user adds when starting a run: text, and attachments the composer allows. */
+export interface AutomationStartContext {
+	text?: string
+	images?: string[]
+	files?: string[]
+}
 
 /** How a run thread's turn ended, from its messages. */
 export type ThreadTurnEnd = { kind: "done"; reply: string } | { kind: "waiting" }
@@ -96,6 +124,9 @@ export interface StartThreadInput {
 	mode: "ask" | "act"
 	worktree: boolean
 	worktreeScope?: ThreadWorkspaceChoice
+	/** Attached with the user's context, on the threads that get it. */
+	images?: string[]
+	files?: string[]
 	onSessionId?: (id: string) => void
 }
 
@@ -155,7 +186,12 @@ interface LiveRun {
 	/** Spent before this go (a resume allows the limit again). */
 	costBase: number
 	keepNotes?: boolean
+	/** The user's context; `placed` when the automation puts `{{context}}` itself. */
+	context: { text: string; images: string[]; files: string[]; placed: boolean }
 }
+
+/** The longest context kept on the wire for the run block; threads get all of it. */
+const WIRE_CONTEXT_CHARS = 2000
 
 /** How often a run with a cost limit checks what its threads spent. */
 const COST_POLL_MS = 3000
@@ -188,7 +224,29 @@ function runStepFor(step: AutomationStep): AutomationRunStep {
 			return { id: step.id, kind: step.kind, title: step.title, status: "pending", threads: [] }
 		case "task":
 			return { id: step.id, kind: step.kind, title: step.title, status: "pending", threads: [] }
+		case "each":
+			return { id: step.id, kind: step.kind, title: step.title, status: "pending", threads: [], items: [] }
 	}
+}
+
+function wireContext(context: AutomationStartContext): AutomationRun["context"] {
+	const text = context.text?.trim() ?? ""
+	if (!text && !context.images?.length && !context.files?.length) return undefined
+	return {
+		text: text.length > WIRE_CONTEXT_CHARS ? `${text.slice(0, WIRE_CONTEXT_CHARS).trimEnd()}…` : text,
+		...(context.files?.length ? { files: [...context.files] } : {}),
+		...(context.images?.length ? { images: context.images.length } : {}),
+	}
+}
+
+/** Placeholder values every step gets besides the arguments: the context, and the item in a For each. */
+function runArgs(args: Record<string, string>, context: string, parent?: AutomationRun["parent"]): Record<string, string> {
+	return { ...args, [CONTEXT_PLACEHOLDER]: context, ...(parent ? { [ITEM_PLACEHOLDER]: parent.item } : {}) }
+}
+
+/** An item's status from its run's. */
+function itemStatus(status: AutomationRunStatus): AutomationRunItem["status"] {
+	return status
 }
 
 function costStopMessage(limit: number, spent: string): string {
@@ -227,6 +285,8 @@ export class AutomationRunner {
 	>()
 	/** Full replies of every run's steps, by run id (the wire copy is trimmed). */
 	private readonly outputs = new Map<string, Record<string, string>>()
+	/** The user's full context text and images, by run id (the wire copy is trimmed and counts images). */
+	private readonly contexts = new Map<string, { text: string; images: string[] }>()
 	/** Last known spend per thread, for threads no longer loaded. */
 	private readonly costs = new Map<string, number>()
 	private costTimer: ReturnType<typeof setInterval> | undefined
@@ -249,8 +309,10 @@ export class AutomationRunner {
 			const known = new Set(this.runs.map((run) => run.id))
 			const restored = stored
 				.filter((run) => !known.has(run.id))
-				.map(({ outputs, ...run }): AutomationRun => {
+				.map(({ outputs, contextText, contextImages, ...run }): AutomationRun => {
 					if (outputs) this.outputs.set(run.id, outputs)
+					if (contextText !== undefined || contextImages?.length)
+						this.contexts.set(run.id, { text: contextText ?? run.context?.text ?? "", images: contextImages ?? [] })
 					return restoreCostStopMessage(run)
 				})
 				.map((run) =>
@@ -265,6 +327,17 @@ export class AutomationRunner {
 										? {
 												...step,
 												status: step.status === "pending" ? ("skipped" as const) : ("stopped" as const),
+												...(step.items
+													? {
+															items: step.items.map((item) =>
+																item.status === "pending"
+																	? { ...item, status: "skipped" as const }
+																	: item.status === "running" || item.status === "waiting"
+																		? { ...item, status: "stopped" as const }
+																		: item,
+															),
+														}
+													: {}),
 												threads: step.threads.map((thread) => {
 													if (thread.status === "pending")
 														return { ...thread, status: "skipped" as const }
@@ -315,6 +388,7 @@ export class AutomationRunner {
 	}
 
 	private changed(): void {
+		this.syncItems()
 		this.runs = this.runs.map((run) => {
 			const live = this.live.get(run.id)
 			if (live) this.outputs.set(run.id, live.outputs)
@@ -324,17 +398,88 @@ export class AutomationRunner {
 		const kept = this.runs.slice(-KEPT_RUNS)
 		void this.deps
 			.save?.(
-				kept.map((run) => ({
-					...run,
-					outputs: { ...this.outputs.get(run.id) },
-				})),
+				kept.map((run) => {
+					const context = this.contexts.get(run.id)
+					return {
+						...run,
+						outputs: { ...this.outputs.get(run.id) },
+						...(context && context.text !== (run.context?.text ?? "") ? { contextText: context.text } : {}),
+						...(context?.images.length ? { contextImages: context.images } : {}),
+					}
+				}),
 			)
 			.catch(() => {})
+	}
+
+	/** A run by id, live first. */
+	private runById(id: string): AutomationRun | undefined {
+		return this.live.get(id)?.run ?? this.runs.find((run) => run.id === id)
+	}
+
+	/**
+	 * Brings each For each step's items up to date with their runs (an item's run can also be resumed on
+	 * its own task page). A finished fan-out whose last unfinished item then finishes is done.
+	 */
+	private syncItems(): void {
+		const sync = (run: AutomationRun): boolean => {
+			let touched = false
+			for (const step of run.steps) {
+				for (const item of step.items ?? []) {
+					const child = item.runId ? this.runById(item.runId) : undefined
+					if (!child) continue
+					const at = child.steps.find((candidate) => candidate.status !== "done" && candidate.status !== "pending")
+					const failed = child.steps.find((candidate) => candidate.status === "failed")
+					const next = {
+						status: itemStatus(child.status),
+						at: at ? at.title : undefined,
+						error:
+							child.status === "failed" || child.status === "stopped"
+								? (failed?.threads.find((thread) => thread.error)?.error ?? failed?.error ?? child.error)
+								: undefined,
+					}
+					if (item.status === next.status && item.at === next.at && item.error === next.error) continue
+					Object.assign(item, next)
+					touched = true
+				}
+			}
+			return touched
+		}
+		for (const live of this.live.values()) if (sync(live.run)) this.syncStatus(live)
+		this.runs = this.runs.map((run) => {
+			if (this.live.has(run.id) || !run.steps.some((step) => step.items?.some((item) => item.runId))) return run
+			const copy = structuredClone(run)
+			if (!sync(copy)) return run
+			const each = copy.steps.find((step) => step.kind === "each")
+			if (each?.items?.length && each.items.every((item) => item.status === "done") && !isLiveRun(copy)) {
+				each.status = "done"
+				each.error = undefined
+				each.fix = undefined
+				if (copy.steps.every((step) => step.status === "done")) {
+					copy.status = "done"
+					copy.error = undefined
+					copy.fix = undefined
+				}
+			}
+			return copy
+		})
 	}
 
 	private async precheck(steps: readonly AutomationStep[], taskGroupId?: string): Promise<void> {
 		const problems = (await this.deps.precheck?.(steps, taskGroupId)) ?? []
 		if (problems.length) throw new AutomationCheckError(problems)
+	}
+
+	/** Checks the steps the requested action will run in this task. Items are checked in their own tasks. */
+	async checkResume(
+		run: AutomationRun,
+		definition: AutomationDefinition,
+		{ stepId, fresh }: { stepId?: string; fresh?: boolean },
+	): Promise<AutomationProblem[]> {
+		const steps = stepsForRun(definition.steps, run)
+		const fromId = stepId || resumePoints(run, definition).retryId
+		const fromIndex = fresh ? 0 : steps.findIndex((step) => step.id === fromId)
+		if (fromIndex < 0) return []
+		return (await this.deps.precheck?.(steps.slice(fromIndex), run.taskGroupId)) ?? []
 	}
 
 	/**
@@ -344,13 +489,14 @@ export class AutomationRunner {
 	async start(
 		definition: AutomationDefinition,
 		values: Readonly<Record<string, string>>,
-		options: { taskGroupId?: string } = {},
+		options: { taskGroupId?: string; context?: AutomationStartContext } = {},
 	): Promise<AutomationRun> {
 		await this.load()
 		const args = withArgumentDefaults(definition.arguments, values)
 		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
 		if (missing.length) throw new Error(`Needs ${missing.map((arg) => arg.name).join(", ")}`)
-		await this.precheck(definition.steps, options.taskGroupId)
+		const steps = stepsForRun(definition.steps)
+		await this.precheck(steps, options.taskGroupId)
 		const run: AutomationRun = {
 			id: this.newId(),
 			automation: definition.name,
@@ -358,10 +504,13 @@ export class AutomationRunner {
 			values: args,
 			taskGroupId: options.taskGroupId ?? "",
 			status: "running",
-			steps: definition.steps.map(runStepFor),
+			steps: steps.map(runStepFor),
 			startedAt: this.now(),
 			...(definition.costLimit ? { costLimit: definition.costLimit } : {}),
 		}
+		const context = wireContext(options.context ?? {})
+		if (context) run.context = context
+		const fullContext = { text: options.context?.text?.trim() ?? "", images: [...(options.context?.images ?? [])] }
 		// The first step that needs a task decides it: an Open a task step, or a task made now.
 		if (!run.taskGroupId && definition.steps[0]?.kind !== "task") {
 			const ticketArg = definition.arguments.find((arg) => arg.kind === "ticket" && args[arg.name])
@@ -375,11 +524,13 @@ export class AutomationRunner {
 			answers: new Map(),
 			costBase: 0,
 			keepNotes: definition.keepNotes,
+			context: { ...fullContext, files: context?.files ?? [], placed: placesContext(definition.steps) },
 		}
+		if (context) this.contexts.set(run.id, fullContext)
 		this.live.set(run.id, live)
 		this.runs = [...this.runs, structuredClone(run)]
 		this.changed()
-		void this.execute(live, definition, args, 0)
+		void this.execute(live, definition, steps, runArgs(args, fullContext.text), 0)
 		return structuredClone(run)
 	}
 
@@ -398,90 +549,132 @@ export class AutomationRunner {
 			const prior = this.runs.find((run) => run.id === runId)
 			if (!prior) throw new Error("That run is gone. Start the automation again.")
 			if (this.live.has(runId) || isLiveRun(prior)) throw new Error("That run is already running.")
-			const { points, retryId } = resumePoints(prior, definition)
-			const fromId = fromStepId ?? retryId
-			const fromIndex = definition.steps.findIndex((step) => step.id === fromId)
-			if (fromIndex < 0 || !points.includes(fromId as string))
+			const busyItem = this.itemRuns(prior).find(
+				(child) => this.live.has(child.id) || this.resuming.has(child.id) || isLiveRun(child),
+			)
+			if (busyItem)
 				throw new Error(
-					fromStepId
-						? "That step can't run yet: a step before it didn't finish, or the automation changed. Resume from an earlier step."
-						: "Every step of this run finished. Use Run again for a fresh run.",
+					`${busyItem.parent ? eachItemLabel(busyItem.parent.item) : "An item"} is still running. Wait for it or stop it first.`,
 				)
-			const args = withArgumentDefaults(definition.arguments, prior.values)
-			const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
-			if (missing.length)
-				throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
-			await this.precheck(definition.steps.slice(fromIndex), prior.taskGroupId)
-
-			const priorOutputs = this.outputs.get(runId) ?? {}
-			const outputs: Record<string, string> = {}
-			const keepThreadOutputs = (thread: AutomationRunThread) => {
-				outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
-				for (const output of thread.outputs ?? []) {
-					const key = `${thread.id}.${output.name}`
-					if (priorOutputs[key] !== undefined) outputs[key] = priorOutputs[key]
-				}
-			}
-			const steps = definition.steps.map((step, index): AutomationRunStep => {
-				const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
-				if (index < fromIndex && kept) {
-					outputs[step.id] = priorOutputs[step.id] ?? ""
-					for (const thread of kept.threads) keepThreadOutputs(thread)
-					return structuredClone(kept)
-				}
-				const fresh = runStepFor(step)
-				// Retrying a together step keeps the threads that already replied; only the others start again.
-				if (
-					index === fromIndex &&
-					fromStepId === undefined &&
-					fromId === retryId &&
-					(prior.status === "failed" || prior.status === "stopped") &&
-					(kept?.status === "failed" || kept?.status === "stopped") &&
-					step.kind === "together"
-				) {
-					fresh.threads = fresh.threads.map((thread) => {
-						const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
-						if (
-							!done ||
-							priorOutputs[thread.id] === undefined ||
-							hasNewAutomationOutputs(done, thread.declaredOutputs)
-						)
-							return thread
-						keepThreadOutputs(done)
-						return structuredClone(done)
-					})
-				}
-				return fresh
-			})
-			const now = this.now()
-			const run: AutomationRun = {
-				...structuredClone(prior),
-				title: automationDisplayName(definition),
-				values: args,
-				status: "running",
-				steps,
-				priorMs: runActiveMs(prior, now),
-				resumedAt: now,
-				endedAt: undefined,
-				error: undefined,
-				fix: undefined,
-				...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
-			}
-			const live: LiveRun = {
-				run,
-				stopped: false,
-				outputs,
-				answers: new Map(),
-				costBase: this.spent(run),
-				keepNotes: definition.keepNotes,
-			}
-			this.live.set(run.id, live)
+			if (prior.parent && (this.live.has(prior.parent.runId) || this.resuming.has(prior.parent.runId)))
+				throw new Error("The run this item belongs to is still going. Stop it first, or let it retry this item.")
+			const resumed = this.prepareResume(prior, definition, fromStepId)
+			await this.precheck(resumed.steps.slice(resumed.fromIndex), prior.taskGroupId)
+			this.live.set(prior.id, resumed.live)
 			this.changed()
-			void this.execute(live, definition, args, fromIndex)
-			return structuredClone(run)
+			void this.execute(resumed.live, definition, resumed.steps, resumed.args, resumed.fromIndex)
+			return structuredClone(resumed.live.run)
 		} finally {
 			this.resuming.delete(runId)
 		}
+	}
+
+	/** The runs of a run's For each items. */
+	private itemRuns(run: AutomationRun): AutomationRun[] {
+		return run.steps.flatMap((step) =>
+			(step.items ?? []).flatMap((item) => {
+				const child = item.runId ? this.runById(item.runId) : undefined
+				return child ? [child] : []
+			}),
+		)
+	}
+
+	/**
+	 * A finished run made ready to go on from a step (or, without one, the first step that didn't finish),
+	 * with the automation as it is now. Steps before that keep their threads and replies; a retried
+	 * together step keeps threads that replied, and a retried For each keeps items that finished.
+	 */
+	private prepareResume(
+		prior: AutomationRun,
+		definition: AutomationDefinition,
+		fromStepId?: string,
+	): { live: LiveRun; steps: readonly AutomationStep[]; args: Record<string, string>; fromIndex: number } {
+		const steps = stepsForRun(definition.steps, prior)
+		if (prior.parent && !steps.length)
+			throw new Error("The automation no longer has this For each step. Start the automation again.")
+		const { points, retryId } = resumePoints(prior, definition)
+		const fromId = fromStepId ?? retryId
+		const fromIndex = steps.findIndex((step) => step.id === fromId)
+		if (fromIndex < 0 || !points.includes(fromId as string))
+			throw new Error(
+				fromStepId
+					? "That step can't run yet: a step before it didn't finish, or the automation changed. Resume from an earlier step."
+					: "Every step of this run finished. Use Run again for a fresh run.",
+			)
+		const args = withArgumentDefaults(definition.arguments, prior.values)
+		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
+		if (missing.length)
+			throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
+
+		const priorOutputs = this.outputs.get(prior.id) ?? {}
+		const outputs: Record<string, string> = {}
+		// An item's run starts with the replies of the steps before For each: keep those.
+		if (prior.parent) {
+			const own = new Set(
+				steps.flatMap((step) => [step.id, ...(step.kind === "together" ? step.threads.map((t) => t.id) : [])]),
+			)
+			for (const [key, value] of Object.entries(priorOutputs)) if (!own.has(key.split(".")[0])) outputs[key] = value
+		}
+		const keepThreadOutputs = (thread: AutomationRunThread) => {
+			outputs[thread.id] = priorOutputs[thread.id] ?? thread.reply ?? ""
+			for (const output of thread.outputs ?? []) {
+				const key = `${thread.id}.${output.name}`
+				if (priorOutputs[key] !== undefined) outputs[key] = priorOutputs[key]
+			}
+		}
+		const retrying = (kept: AutomationRunStep | undefined, index: number): kept is AutomationRunStep =>
+			index === fromIndex &&
+			fromStepId === undefined &&
+			fromId === retryId &&
+			(prior.status === "failed" || prior.status === "stopped") &&
+			(kept?.status === "failed" || kept?.status === "stopped")
+		const runSteps = steps.map((step, index): AutomationRunStep => {
+			const kept = prior.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind)
+			if (index < fromIndex && kept) {
+				outputs[step.id] = priorOutputs[step.id] ?? ""
+				for (const thread of kept.threads) keepThreadOutputs(thread)
+				return structuredClone(kept)
+			}
+			const fresh = runStepFor(step)
+			// Retrying a together step keeps the threads that already replied; only the others start again.
+			if (retrying(kept, index) && step.kind === "together") {
+				fresh.threads = fresh.threads.map((thread) => {
+					const done = kept.threads.find((candidate) => candidate.id === thread.id && candidate.status === "done")
+					if (!done || priorOutputs[thread.id] === undefined || hasNewAutomationOutputs(done, thread.declaredOutputs))
+						return thread
+					keepThreadOutputs(done)
+					return structuredClone(done)
+				})
+			}
+			// Retrying a For each keeps every item and its run: finished ones stay, the others go on.
+			if (retrying(kept, index) && step.kind === "each") fresh.items = structuredClone(kept.items ?? [])
+			return fresh
+		})
+		const now = this.now()
+		const run: AutomationRun = {
+			...structuredClone(prior),
+			title: automationDisplayName(definition),
+			values: args,
+			status: "running",
+			steps: runSteps,
+			priorMs: runActiveMs(prior, now),
+			resumedAt: now,
+			endedAt: undefined,
+			error: undefined,
+			fix: undefined,
+			...(definition.costLimit ? { costLimit: definition.costLimit } : { costLimit: undefined }),
+		}
+		const context = this.contexts.get(prior.id) ?? { text: prior.context?.text ?? "", images: [] }
+		const live: LiveRun = {
+			run,
+			stopped: false,
+			outputs,
+			answers: new Map(),
+			costBase: this.spent(run),
+			keepNotes: definition.keepNotes,
+			context: { ...context, files: prior.context?.files ?? [], placed: placesContext(definition.steps) },
+		}
+		return { live, steps, args: runArgs(args, context.text, prior.parent), fromIndex }
 	}
 
 	/** A fresh run of a finished one: same values, same task. */
@@ -489,21 +682,38 @@ export class AutomationRunner {
 		await this.load()
 		const prior = this.runs.find((run) => run.id === runId)
 		if (!prior) throw new Error("That run is gone. Start the automation again.")
-		return this.start(definition, prior.values, { taskGroupId: prior.taskGroupId || undefined })
+		// One item's run goes again from its first step, in its task, still part of its fan-out.
+		if (prior.parent) {
+			const first = stepsForRun(definition.steps, prior)[0]
+			if (!first) throw new Error("The automation no longer has this For each step. Start the automation again.")
+			return this.resume(runId, definition, first.id)
+		}
+		const context = this.contexts.get(runId)
+		return this.start(definition, prior.values, {
+			taskGroupId: prior.taskGroupId || undefined,
+			context: { text: context?.text ?? prior.context?.text, images: context?.images, files: prior.context?.files },
+		})
 	}
 
+	/**
+	 * Runs `steps` (the run's part of the automation) from `fromIndex`. `args` holds the arguments plus
+	 * `context`, and `item` in an item's run.
+	 */
 	private async execute(
 		live: LiveRun,
 		definition: AutomationDefinition,
+		steps: readonly AutomationStep[],
 		args: Record<string, string>,
 		fromIndex: number,
+		checkItemWorkspace = false,
 	): Promise<void> {
 		const { run } = live
 		const fill = (text: string) => fillPlaceholders(text, { args, outputs: live.outputs })
-		const { threadSteps: taskWorktreeSteps } = automationTaskWorktrees(definition.steps)
+		const { threadSteps: taskWorktreeSteps } = automationTaskWorktrees(steps)
 		this.watchCosts()
 		try {
-			for (const [index, step] of definition.steps.entries()) {
+			if (checkItemWorkspace) await this.precheck(steps.slice(fromIndex), run.taskGroupId)
+			for (const [index, step] of steps.entries()) {
 				if (index < fromIndex) continue
 				if (live.stopped) break
 				const runStep = run.steps[index]
@@ -572,6 +782,18 @@ export class AutomationRunner {
 						this.syncStatus(live)
 						break
 					}
+					case "each": {
+						const outcome = await this.runEach(live, definition, step, runStep, args, fill)
+						if (outcome === "stopped") break
+						if (outcome === "failed") {
+							runStep.status = "failed"
+							run.status = "failed"
+							run.endedAt = this.now()
+							return
+						}
+						runStep.status = "done"
+						break
+					}
 				}
 				this.changed()
 			}
@@ -580,9 +802,15 @@ export class AutomationRunner {
 				run.endedAt = this.now()
 			}
 		} catch (error) {
+			if (live.stopped) return
 			run.status = "failed"
 			const message = error instanceof Error ? error.message : String(error)
-			const fix = error instanceof AutomationFixableError ? error.fix : undefined
+			const fix =
+				error instanceof AutomationCheckError
+					? error.problems[0]?.fix
+					: error instanceof AutomationFixableError
+						? error.fix
+						: undefined
 			run.endedAt = this.now()
 			const failed = run.steps.find((step) => step.status === "running")
 			// The step that failed says why; the run only carries what belongs to no step.
@@ -600,6 +828,149 @@ export class AutomationRunner {
 			this.changed()
 			this.live.delete(run.id)
 		}
+	}
+
+	/**
+	 * For each: one run per item, each in the item's task, running the steps after this one, `atOnce` at a
+	 * time. An item that fails doesn't stop the others; the step fails once they've all ended, and a retry
+	 * goes on with only the items that didn't finish.
+	 */
+	private async runEach(
+		live: LiveRun,
+		definition: AutomationDefinition,
+		step: AutomationEachStep,
+		runStep: AutomationRunStep,
+		args: Record<string, string>,
+		fill: (text: string) => string,
+	): Promise<"done" | "failed" | "stopped"> {
+		const items = splitEachItems(fill(step.items))
+		if (!items.length)
+			throw new Error(`The list to go through is empty (${step.items.trim() || "no items"}). Fill it in and retry.`)
+		if (items.length > MAX_EACH_ITEMS)
+			throw new Error(`That's ${items.length} items; a run goes through at most ${MAX_EACH_ITEMS}. Shorten the list.`)
+		const body = definition.steps.slice(definition.steps.indexOf(step) + 1)
+		const kept = runStep.items ?? []
+		runStep.items = items.map(
+			(item): AutomationRunItem =>
+				kept.find((candidate) => candidate.item === item) ?? { item, label: eachItemLabel(item), status: "pending" },
+		)
+		runStep.error = undefined
+		this.changed()
+		const queue = runStep.items.filter(
+			(entry) => entry.status !== "done" || !entry.runId || this.runById(entry.runId)?.status !== "done",
+		)
+		const claimedTasks = new Set([live.run.taskGroupId, ...kept.flatMap((item) => item.taskGroupId ?? [])])
+		for (const entry of queue) if (entry.status !== "pending") entry.status = "pending"
+		const atOnce = Math.min(MAX_EACH_AT_ONCE, Math.max(1, Math.floor(step.atOnce) || DEFAULT_EACH_AT_ONCE))
+		const work = async () => {
+			for (let entry = queue.shift(); entry; entry = queue.shift()) {
+				if (live.stopped) {
+					entry.status = "skipped"
+					continue
+				}
+				await this.runItem(live, definition, step, body, entry, items, args, claimedTasks)
+			}
+		}
+		await Promise.all(Array.from({ length: Math.min(atOnce, queue.length) }, work))
+		this.changed()
+		if (live.stopped) return "stopped"
+		const unfinished = runStep.items.filter((entry) => entry.status !== "done")
+		if (unfinished.length) {
+			runStep.error = `${unfinished.length} of ${items.length} items didn't finish. Retry goes on with only ${
+				unfinished.length === 1 ? "that one" : "those"
+			}.`
+			return "failed"
+		}
+		live.outputs[step.id] = items.join("\n")
+		return "done"
+	}
+
+	/** One item: a run of the steps after For each in the item's task, or the item's earlier run going on. */
+	private async runItem(
+		live: LiveRun,
+		definition: AutomationDefinition,
+		step: AutomationEachStep,
+		body: readonly AutomationStep[],
+		entry: AutomationRunItem,
+		items: readonly string[],
+		args: Record<string, string>,
+		claimedTasks: Set<string>,
+	): Promise<void> {
+		const { run } = live
+		entry.status = "running"
+		entry.error = undefined
+		this.changed()
+		try {
+			const prior = entry.runId ? this.runs.find((candidate) => candidate.id === entry.runId) : undefined
+			let item: { live: LiveRun; steps: readonly AutomationStep[]; args: Record<string, string>; fromIndex: number }
+			if (prior && !this.live.has(prior.id) && (prior.status === "failed" || prior.status === "stopped")) {
+				// Retry: the item's run goes on from its step that didn't finish.
+				item = this.prepareResume(prior, definition)
+				item.live.run.costLimit = undefined
+				item.live.outputs = { ...live.outputs, ...item.live.outputs }
+			} else {
+				const itemArgs = { ...args, [ITEM_PLACEHOLDER]: entry.item }
+				const fillItem = (text: string) => fillPlaceholders(text, { args: itemArgs, outputs: live.outputs })
+				const ticket = fillItem(step.ticket).trim()
+				const key = ticket ? ticketKey(ticket) : undefined
+				const title = fillItem(step.newTaskTitle).trim() || key || entry.label
+				let taskGroupId = key ? await this.deps.findOrCreateTask(key, title) : await this.deps.createTask(title)
+				// Distinct items may resolve to the same ticket. Each gets its own task.
+				if (claimedTasks.has(taskGroupId)) taskGroupId = await this.deps.createTask(title, key)
+				claimedTasks.add(taskGroupId)
+				if (live.stopped) {
+					entry.status = "skipped"
+					return
+				}
+				const parent = {
+					runId: run.id,
+					stepId: step.id,
+					item: entry.item,
+					index: items.indexOf(entry.item),
+					total: items.length,
+				}
+				const itemRun: AutomationRun = {
+					id: this.newId(),
+					automation: run.automation,
+					title: run.title,
+					values: run.values,
+					taskGroupId,
+					status: "running",
+					steps: body.map(runStepFor),
+					startedAt: this.now(),
+					...(run.context ? { context: run.context } : {}),
+					parent,
+				}
+				item = {
+					live: {
+						run: itemRun,
+						stopped: false,
+						outputs: { ...live.outputs },
+						answers: new Map(),
+						costBase: 0,
+						keepNotes: live.keepNotes,
+						context: live.context,
+					},
+					steps: body,
+					args: itemArgs,
+					fromIndex: 0,
+				}
+				const context = this.contexts.get(run.id)
+				if (context) this.contexts.set(itemRun.id, context)
+				this.runs = [...this.runs, structuredClone(itemRun)]
+			}
+			entry.runId = item.live.run.id
+			entry.taskGroupId = item.live.run.taskGroupId
+			this.live.set(entry.runId, item.live)
+			this.changed()
+			await this.execute(item.live, definition, item.steps, item.args, item.fromIndex, true)
+			const ended = this.runById(entry.runId)
+			if (ended) entry.status = itemStatus(ended.status)
+		} catch (error) {
+			entry.status = "failed"
+			entry.error = error instanceof Error ? error.message : String(error)
+		}
+		this.changed()
 	}
 
 	private finishStep(live: LiveRun, runStep: AutomationRunStep, outcome: ThreadOutcome): void {
@@ -623,7 +994,10 @@ export class AutomationRunner {
 	private syncStatus(live: LiveRun): void {
 		if (!isLiveRun(live.run)) return
 		const waiting = live.run.steps.some(
-			(step) => step.status === "waiting" || step.threads.some((thread) => thread.status === "waiting"),
+			(step) =>
+				step.status === "waiting" ||
+				step.threads.some((thread) => thread.status === "waiting") ||
+				!!step.items?.some((item) => item.status === "waiting"),
 		)
 		live.run.status = waiting ? "waiting" : "running"
 	}
@@ -632,6 +1006,10 @@ export class AutomationRunner {
 	private spent(run: AutomationRun): number {
 		let total = 0
 		for (const step of run.steps) {
+			for (const item of step.items ?? []) {
+				const child = item.runId ? this.runById(item.runId) : undefined
+				if (child) total += this.spent(child)
+			}
 			for (const thread of step.threads) {
 				if (!thread.threadId) continue
 				const cost = this.deps.threadCost?.(thread.threadId)
@@ -657,7 +1035,10 @@ export class AutomationRunner {
 		;(this.costTimer as { unref?: () => void }).unref?.()
 	}
 
-	private checkCost(live: LiveRun): void {
+	private checkCost(itemOrRun: LiveRun): void {
+		// An item's run counts toward the limit of the run it belongs to.
+		const parentId = itemOrRun.run.parent?.runId
+		const live = (parentId && this.live.get(parentId)) || itemOrRun
 		const limit = live.run.costLimit
 		if (!limit || live.stopped) return
 		const spent = this.spent(live.run) - live.costBase
@@ -670,6 +1051,7 @@ export class AutomationRunner {
 	private skipRest(run: AutomationRun): void {
 		for (const step of run.steps) {
 			if (step.status === "pending") step.status = "skipped"
+			for (const item of step.items ?? []) if (item.status === "pending") item.status = "skipped"
 			for (const thread of step.threads) if (thread.status === "pending") thread.status = "skipped"
 		}
 	}
@@ -691,18 +1073,27 @@ export class AutomationRunner {
 		const scope = automationWorkspace(spec) ?? (useTaskWorktree ? "task" : undefined)
 		runThread.worktreeScope = scope
 		runThread.worktree = scope === "task" || scope === "thread"
+		const template = threadPrompt(step, spec)
+		const { context } = live
+		// The user's context goes where the automation puts {{context}}, else after every thread's prompt.
+		const getsContext = context.placed
+			? placeholderRefs(template).some((ref) => ref.kind === "arg" && ref.name === CONTEXT_PLACEHOLDER)
+			: !!context.text || context.images.length > 0 || context.files.length > 0
+		const prompt = fill(template)
 		let threadId: string
 		try {
 			threadId = await this.deps.startThread({
 				runId: live.run.id,
 				taskGroupId: live.run.taskGroupId,
 				title: runThread.title,
-				prompt: fill(threadPrompt(step, spec)),
+				prompt: context.placed ? prompt : withContextBlock(prompt, context.text),
 				model: spec.model,
 				level: spec.level,
 				mode: spec.mode,
 				worktree: runThread.worktree,
 				...(scope ? { worktreeScope: scope } : {}),
+				...(getsContext && context.images.length ? { images: [...context.images] } : {}),
+				...(getsContext && context.files.length ? { files: [...context.files] } : {}),
 				...(spec.outputs?.length || live.keepNotes
 					? {
 							onSessionId: (id: string) => {
@@ -919,6 +1310,10 @@ export class AutomationRunner {
 		for (const answer of live.answers.values()) answer("")
 		for (const [threadId, waiter] of this.waiting) if (waiter.runId === runId) waiter.resolve({ kind: "stopped" })
 		this.changed()
-		await Promise.all(running.map((id) => this.deps.stopThread(id).catch(() => {})))
+		const items = [...this.live.values()].filter((candidate) => candidate.run.parent?.runId === runId)
+		await Promise.all([
+			...running.map((id) => this.deps.stopThread(id).catch(() => {})),
+			...items.map((item) => this.stop(item.run.id)),
+		])
 	}
 }

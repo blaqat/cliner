@@ -512,3 +512,77 @@ describe("AutomationRunBar", () => {
 		expect(screen.queryByTestId("automation-run-bar")).not.toBeInTheDocument()
 	})
 })
+
+describe("RunBlock for each and context", () => {
+	function fanOutRun(): AutomationRun {
+		return {
+			id: "run-p",
+			automation: "fix-all",
+			title: "Fix all",
+			values: { tickets: "A-1, A-2, A-3" },
+			taskGroupId: "g-parent",
+			status: "failed",
+			startedAt: 0,
+			endedAt: 60_000,
+			context: { text: "Only the API.\nNo UI changes.", files: ["/repo/docs/api.md"], images: 1 },
+			steps: [
+				{
+					id: "each",
+					kind: "each",
+					title: "Each ticket",
+					status: "failed",
+					threads: [],
+					error: "1 of 3 items didn't finish. Retry goes on with only that one.",
+					items: [
+						{ item: "A-1", label: "A-1", runId: "run-a1", taskGroupId: "g-a1", status: "done" },
+						{
+							item: "A-2",
+							label: "A-2",
+							runId: "run-a2",
+							taskGroupId: "g-a2",
+							status: "failed",
+							at: "Fix A-2",
+							error: "The model refused.",
+						},
+						{ item: "A-3", label: "A-3", runId: "run-a3", taskGroupId: "g-a3", status: "done" },
+					],
+				},
+			],
+		}
+	}
+
+	it("lists every item with its status and task, and says what the user added", () => {
+		const onOpenTask = vi.fn()
+		render(<RunBlock now={60_000} onOpenTask={onOpenTask} onOpenThread={vi.fn()} run={fanOutRun()} statuses={{}} />)
+		expect(screen.getByTestId("run-step-items-each")).toHaveTextContent("2 of 3 done, 1 didn't finish")
+		const items = screen.getByTestId("run-items")
+		expect(within(items).getByTestId("run-item-A-2")).toHaveTextContent("A-2at Fix A-2")
+		expect(within(items).getByTestId("run-item-A-2")).toHaveTextContent("The model refused.")
+		fireEvent.click(within(within(items).getByTestId("run-item-A-2")).getByText("Open task"))
+		expect(onOpenTask).toHaveBeenCalledWith("g-a2")
+		const context = screen.getByTestId("run-context")
+		expect(context).toHaveTextContent("Context from you")
+		expect(context).toHaveTextContent("Only the API.")
+		expect(context).toHaveTextContent("1 image · api.md")
+	})
+
+	it("an item's run says which item it is and links back to all of them", () => {
+		const parent = fanOutRun()
+		const item: AutomationRun = {
+			...parent,
+			id: "run-a2",
+			taskGroupId: "g-a2",
+			context: undefined,
+			parent: { runId: "run-p", stepId: "each", item: "A-2", index: 1, total: 3 },
+			steps: [{ id: "fix", kind: "thread", title: "Fix A-2", status: "failed", threads: [] }],
+		}
+		setAutomationRunsForTest([parent, item])
+		const onOpenTask = vi.fn()
+		render(<RunBlock now={60_000} onOpenTask={onOpenTask} onOpenThread={vi.fn()} run={item} statuses={{}} />)
+		expect(screen.getByTestId("run-item-of-run-a2")).toHaveTextContent("Item 2 of 3: A-2")
+		fireEvent.click(screen.getByText("All items"))
+		expect(onOpenTask).toHaveBeenCalledWith("g-parent")
+		expect(screen.getByTestId("run-again-run-a2")).toHaveTextContent("Run this item again")
+		setAutomationRunsForTest([])
+	})
+})

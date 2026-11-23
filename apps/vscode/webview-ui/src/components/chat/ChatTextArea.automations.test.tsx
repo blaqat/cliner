@@ -108,33 +108,37 @@ const listResponse = (extra: Partial<AutomationInfo> = {}) =>
 		globalDir: "/home/.cline/automations",
 	})
 
-function Harness({ initial = "", onSend }: { initial?: string; onSend: () => void }) {
+function Harness({ initial = "", onSend, images = [] }: { initial?: string; onSend: () => void; images?: string[] }) {
 	const [value, setValue] = useState(initial)
+	const [selectedImages, setSelectedImages] = useState(images)
 	return (
-		<ChatTextArea
-			inputValue={value}
-			onOpenTaskGroup={mocks.onOpenTaskGroup}
-			onScriptRun={mocks.onScriptRun}
-			onSelectFilesAndImages={vi.fn()}
-			onSend={onSend}
-			placeholderText="Type a message"
-			selectedFiles={[]}
-			selectedImages={[]}
-			sendingDisabled={false}
-			setInputValue={setValue}
-			setSelectedFiles={vi.fn()}
-			setSelectedImages={vi.fn()}
-			shouldDisableFilesAndImages={false}
-		/>
+		<>
+			<output data-testid="draft">{value}</output>
+			<ChatTextArea
+				inputValue={value}
+				onOpenTaskGroup={mocks.onOpenTaskGroup}
+				onScriptRun={mocks.onScriptRun}
+				onSelectFilesAndImages={vi.fn()}
+				onSend={onSend}
+				placeholderText="Type a message"
+				selectedFiles={[]}
+				selectedImages={selectedImages}
+				sendingDisabled={false}
+				setInputValue={setValue}
+				setSelectedFiles={vi.fn()}
+				setSelectedImages={setSelectedImages}
+				shouldDisableFilesAndImages={false}
+			/>
+		</>
 	)
 }
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-async function renderComposer(initial = "") {
+async function renderComposer(initial = "", images: string[] = []) {
 	const onSend = vi.fn()
-	render(<Harness initial={initial} onSend={onSend} />)
-	const textarea = screen.getByPlaceholderText("Type a message") as HTMLTextAreaElement
+	render(<Harness images={images} initial={initial} onSend={onSend} />)
+	const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement
 	await waitFor(() => expect(mocks.listAutomations).toHaveBeenCalled())
 	await reactAct(settle)
 	return { onSend, textarea }
@@ -143,6 +147,9 @@ async function renderComposer(initial = "") {
 function type(textarea: HTMLTextAreaElement, value: string) {
 	fireEvent.change(textarea, { target: { value, selectionStart: value.length, selectionEnd: value.length } })
 }
+
+const draft = () => screen.getByTestId("draft").textContent
+const field = (name: string) => screen.getByTestId(`automation-field-${name}`) as HTMLInputElement
 
 describe("ChatTextArea automations", () => {
 	beforeEach(() => {
@@ -175,55 +182,89 @@ describe("ChatTextArea automations", () => {
 		expect(await screen.findByTestId("slash-commands-menu")).not.toHaveTextContent("review-ticket")
 	})
 
-	it("picking one from the menu opens the start form with its arguments and what will run", async () => {
+	it("picking one from the menu turns it into chips: the command, then a field per argument", async () => {
 		const { textarea } = await renderComposer()
 		type(textarea, "/review")
 		await screen.findByTestId("slash-commands-menu")
 		fireEvent.keyDown(textarea, { key: "Enter" })
-		await waitFor(() => expect(textarea.value).toBe("/review-ticket "))
+		await waitFor(() => expect(draft()).toBe("/review-ticket "))
+		expect(screen.getByTestId("automation-command-chip")).toHaveTextContent("/review-ticket")
+		expect(field("ticket")).toHaveAccessibleName("ticket, required: The ticket key")
+		expect(field("depth")).toHaveAttribute("placeholder", "quick")
+		// The caret goes to the first argument to fill; the text box below is for context.
+		await waitFor(() => expect(field("ticket")).toHaveFocus())
+		expect(textarea.value).toBe("")
+		expect(textarea).toHaveAttribute("placeholder", "Add context for this run (optional): notes, @files, images")
+		expect(screen.getByTestId("automation-arg-help")).toHaveTextContent("ticket · required · The ticket key")
 		const form = await screen.findByTestId("automation-start-form")
 		expect(form).toHaveTextContent("Review a ticket")
-		expect(screen.getByTestId("automation-arg-ticket")).toHaveTextContent("required")
-		expect(screen.getByTestId("automation-arg-depth")).toHaveTextContent("default quick")
 		const willRun = screen.getByTestId("automation-will-run")
 		expect(willRun).toHaveTextContent("New task")
 		expect(willRun).toHaveTextContent("Review {ticket}")
 		expect(willRun).toHaveTextContent("Opus 5.5 · high· Ask")
 		expect(willRun).toHaveTextContent("Your current model")
+		expect(screen.getByTestId("automation-uses-1")).toHaveTextContent("uses ticket")
 		expect(screen.getByTestId("automation-cost")).toHaveTextContent("Cost depends on")
 		expect(screen.getByTestId("run-button")).toBeInTheDocument()
 	})
 
-	it.each([
-		[0.001, "$0.001"],
-		[12.5, "$12.50"],
-	])("shows the %s cost limit in the automation start form", async (costLimit, label) => {
-		mocks.listAutomations.mockResolvedValue(AutomationList.create({ automations: [info({ ...review, costLimit })] }))
-		await renderComposer("/review-ticket ticket:PROJ-1")
-		expect(await screen.findByTestId("automation-cost")).toHaveTextContent(`Stops itself at ${label}.`)
+	it("fills the chips from text typed or pasted fast, the rest is context", async () => {
+		const { textarea } = await renderComposer()
+		type(textarea, "/review-ticket PROJ-7 deep and check the login page\nToo")
+		await waitFor(() => expect(field("ticket").value).toBe("PROJ-7"))
+		expect(field("depth").value).toBe("deep")
+		expect(textarea.value).toBe("and check the login page\nToo")
 	})
 
-	it("blocks Run until required arguments are set, then starts the run instead of sending", async () => {
-		const { onSend, textarea } = await renderComposer("/review-ticket ")
+	it("reads the older name:value form too", async () => {
+		await renderComposer('/review-ticket depth:deep ticket:"PROJ 8"')
+		await waitFor(() => expect(field("ticket").value).toBe("PROJ 8"))
+		expect(field("depth").value).toBe("deep")
+	})
+
+	it("blocks Run until required arguments are set, then starts the run with its context", async () => {
+		const { onSend, textarea } = await renderComposer("/review-ticket ", ["data:image/png;base64,AAA"])
 		expect(await screen.findByTestId("automation-start-status")).toHaveTextContent("Needs ticket")
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		expect(mocks.startAutomationRun).not.toHaveBeenCalled()
+		expect(field("ticket")).toHaveFocus()
+		expect(screen.getByTestId("automation-chip-ticket").className).toContain("border-error")
 
-		type(textarea, "/review-ticket ticket:PROJ-1 depth:deep")
+		fireEvent.change(field("ticket"), { target: { value: "PROJ-1" } })
+		fireEvent.keyDown(field("ticket"), { key: "Tab" })
+		expect(field("depth")).toHaveFocus()
+		fireEvent.keyDown(field("depth"), { key: "ArrowDown" })
+		expect(field("depth").value).toBe("deep")
+		fireEvent.keyDown(field("depth"), { key: "Tab" })
+		expect(textarea).toHaveFocus()
+		type(textarea, "Only the API")
+		expect(draft()).toBe("/review-ticket ticket:PROJ-1 depth:deep\nOnly the API")
 		expect(screen.getByTestId("automation-start-status")).toHaveTextContent("Ready")
+		expect(screen.getByTestId("automation-context")).toHaveTextContent(
+			"Your context (1 line, 1 image) goes with every thread",
+		)
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		await waitFor(() => expect(mocks.startAutomationRun).toHaveBeenCalledTimes(1))
 		expect(mocks.startAutomationRun.mock.calls[0][0]).toMatchObject({
 			name: "review-ticket",
 			values: { ticket: "PROJ-1", depth: "deep" },
 			fingerprint: "fp-review-ticket",
+			context: "Only the API",
+			contextImages: ["data:image/png;base64,AAA"],
 		})
 		expect(onSend).not.toHaveBeenCalled()
-		await waitFor(() => expect(textarea.value).toBe(""))
+		await waitFor(() => expect(draft()).toBe(""))
 		expect(mocks.onOpenTaskGroup).toHaveBeenCalledWith("group-1")
 	})
 
-	it("offers the task's ticket and fills a clicked choice", async () => {
+	it("Enter in the last field runs it", async () => {
+		await renderComposer("/review-ticket ticket:PROJ-1")
+		fireEvent.keyDown(field("depth"), { key: "Enter" })
+		await waitFor(() => expect(mocks.startAutomationRun).toHaveBeenCalledTimes(1))
+		expect(mocks.startAutomationRun.mock.calls[0][0].values).toEqual({ ticket: "PROJ-1" })
+	})
+
+	it("offers the task's ticket and the choices under the field being edited", async () => {
 		mocks.state = {
 			currentTaskItem: {
 				id: "t1",
@@ -235,20 +276,46 @@ describe("ChatTextArea automations", () => {
 			taskHistory: [{ id: "t1", task: "x", ts: 1, taskGroupId: "g1" }],
 			taskGroups: [{ id: "g1", title: "Retries", tags: [], createdAt: 1, updatedAt: 1, noteCount: 0 }],
 		}
-		const { textarea } = await renderComposer("/review-ticket ")
-		await screen.findByTestId("automation-start-form")
-		fireEvent.click(screen.getByTestId("automation-arg-ticket-PROJ-9"))
-		expect(textarea.value).toBe("/review-ticket ticket:PROJ-9 ")
-		fireEvent.click(screen.getByTestId("automation-arg-depth-deep"))
-		expect(textarea.value).toBe("/review-ticket ticket:PROJ-9 depth:deep ")
+		await renderComposer("/review-ticket ")
+		await waitFor(() => expect(field("ticket")).toHaveFocus())
+		fireEvent.click(screen.getByTestId("automation-option-ticket-PROJ-9"))
+		expect(draft()).toBe("/review-ticket ticket:PROJ-9")
+		expect(field("depth")).toHaveFocus()
+		fireEvent.click(screen.getByTestId("automation-option-depth-deep"))
+		expect(draft()).toBe("/review-ticket ticket:PROJ-9 depth:deep")
 		expect(screen.getByTestId("automation-start-form")).toHaveTextContent("Runs in this task: Retries")
 	})
 
-	it("Tab jumps to the next missing required argument", async () => {
+	it("Space ends a one-word value, and Backspace steps back to the command and removes it", async () => {
 		const { textarea } = await renderComposer("/review-ticket ")
-		await screen.findByTestId("automation-start-form")
-		fireEvent.keyDown(textarea, { key: "Tab" })
-		expect(textarea.value).toBe("/review-ticket ticket:")
+		await waitFor(() => expect(field("ticket")).toHaveFocus())
+		fireEvent.change(field("ticket"), { target: { value: "PROJ-2" } })
+		fireEvent.keyDown(field("ticket"), { key: " " })
+		expect(field("depth")).toHaveFocus()
+		// A partly typed choice becomes the choice it starts.
+		fireEvent.change(field("depth"), { target: { value: "de" } })
+		fireEvent.keyDown(field("depth"), { key: "Tab" })
+		expect(draft()).toBe("/review-ticket ticket:PROJ-2 depth:deep")
+		// Backspace at the start of the context goes back to the last field.
+		fireEvent.keyDown(textarea, { key: "Backspace" })
+		expect(field("depth")).toHaveFocus()
+		field("ticket").focus()
+		field("ticket").setSelectionRange(0, 0)
+		fireEvent.keyDown(field("ticket"), { key: "Backspace" })
+		expect(screen.getByTestId("automation-command-chip")).toHaveFocus()
+		fireEvent.keyDown(screen.getByTestId("automation-command-chip"), { key: "Backspace" })
+		await waitFor(() => expect(draft()).toBe("/review-ticket"))
+		expect(screen.queryByTestId("automation-args-row")).not.toBeInTheDocument()
+		expect(textarea.value).toBe("/review-ticket")
+	})
+
+	it.each([
+		[0.001, "$0.001"],
+		[12.5, "$12.50"],
+	])("shows the %s cost limit in the automation start form", async (costLimit, label) => {
+		mocks.listAutomations.mockResolvedValue(AutomationList.create({ automations: [info({ ...review, costLimit })] }))
+		await renderComposer("/review-ticket ticket:PROJ-1")
+		expect(await screen.findByTestId("automation-cost")).toHaveTextContent(`Stops itself at ${label}.`)
 	})
 
 	it("won't run a version that changed since it was trusted, and trusts it on request", async () => {
@@ -268,7 +335,7 @@ describe("ChatTextArea automations", () => {
 		await screen.findByTestId("automation-start-form")
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		await waitFor(() => expect(screen.getByTestId("automation-start-status")).toHaveTextContent("Opus 5.5 isn't set up."))
-		expect(textarea.value).toBe("/review-ticket ticket:PROJ-1")
+		expect(draft()).toBe("/review-ticket ticket:PROJ-1")
 	})
 
 	it("leaves ordinary messages alone", async () => {
@@ -285,7 +352,9 @@ describe("ChatTextArea automations", () => {
 		reactAct(() => openTopBarPanel("rules"))
 		fireEvent.click(within(screen.getByTestId("rules-panel")).getByRole("button", { name: "Automations" }))
 		fireEvent.click(await screen.findByTestId("automation-run-review-ticket"))
-		await waitFor(() => expect(textarea.value).toBe("/review-ticket "))
+		await waitFor(() => expect(draft()).toBe("/review-ticket "))
+		expect(textarea.value).toBe("")
+		await waitFor(() => expect(field("ticket")).toHaveFocus())
 		expect(screen.queryByTestId("top-bar-panel")).not.toBeInTheDocument()
 		expect(await screen.findByTestId("automation-start-form")).toBeInTheDocument()
 	})

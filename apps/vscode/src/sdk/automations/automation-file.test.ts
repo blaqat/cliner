@@ -1,8 +1,11 @@
 import {
+	type AutomationDefinition,
 	automationArgsAsOptions,
 	blankStep,
 	fillPlaceholders,
 	placeholderRefs,
+	placesContext,
+	splitEachItems,
 	uniqueStepId,
 	validateAutomation,
 } from "@shared/automations"
@@ -70,7 +73,7 @@ describe("automation file", () => {
 		)
 		expect(parsed.errors).toEqual([
 			'"### Stray" must sit under a together step',
-			'Step "Odd": kind must be one of task, thread, together, checkpoint',
+			'Step "Odd": kind must be one of task, thread, together, checkpoint, each',
 		])
 	})
 })
@@ -149,5 +152,103 @@ describe("builder helpers", () => {
 		expect(parsed.values).toEqual({ ticket: "PROJ-142" })
 		expect(parsed.missing).toEqual([])
 		expect(parseTypedOptions("", options, { final: true }).missing.map((option) => option.name)).toEqual(["ticket"])
+	})
+})
+
+describe("For each and context", () => {
+	const fanOut = (): AutomationDefinition => ({
+		...ticketToPr(),
+		arguments: [{ name: "tickets", kind: "text", required: true, description: "Tickets" }],
+		steps: [
+			{
+				kind: "each",
+				id: "each",
+				title: "Each ticket",
+				items: "{{tickets}}",
+				ticket: "{{item}}",
+				newTaskTitle: "",
+				atOnce: 4,
+			},
+			{
+				kind: "thread",
+				id: "fix",
+				title: "Fix {{item}}",
+				prompt: "Fix {{item}}. {{context}}",
+				model: "",
+				level: "",
+				mode: "act",
+				worktree: true,
+			},
+		],
+	})
+
+	it("round-trips a For each step through the readable file", () => {
+		const text = serializeAutomation(fanOut())
+		expect(text).toContain("- kind: each\n- items: {{tickets}}\n- ticket: {{item}}\n- at once: 4")
+		const parsed = parseAutomationFile(text, "x")
+		expect(parsed.errors).toEqual([])
+		expect(parsed.definition).toEqual(fanOut())
+	})
+
+	it("allows {{context}} anywhere and {{item}} only from For each on", () => {
+		expect(validateAutomation(fanOut())).toEqual([])
+		const early = fanOut()
+		early.steps.unshift({
+			kind: "thread",
+			id: "pre",
+			title: "Pre",
+			prompt: "Look at {{item}}",
+			model: "",
+			level: "",
+			mode: "ask",
+			worktree: false,
+		})
+		expect(validateAutomation(early).map((issue) => issue.message)).toEqual([
+			"{{item}} only has a value in a For each step and the steps after it",
+		])
+	})
+
+	it("checks a For each step: a list, steps after it, only one, and how many at once", () => {
+		const bad = fanOut()
+		bad.steps = [{ kind: "each", id: "each", title: "Each", items: "", ticket: "", newTaskTitle: "", atOnce: 12 }]
+		expect(validateAutomation(bad).map((issue) => issue.message)).toEqual([
+			"Add the steps to run for each item after it",
+			"Say which list to go through, like {{tickets}}",
+			"Run 1 to 8 items at once",
+		])
+		const twice = fanOut()
+		twice.steps.push({
+			kind: "each",
+			id: "again",
+			title: "Again",
+			items: "{{tickets}}",
+			ticket: "",
+			newTaskTitle: "",
+			atOnce: 1,
+		})
+		expect(validateAutomation(twice).map((issue) => issue.message)).toContain(
+			"Only one For each step: put every per-item step after the first",
+		)
+	})
+
+	it("reserves the context and item names for arguments", () => {
+		const definition = fanOut()
+		definition.arguments.push({ name: "context", kind: "text", required: false, description: "" })
+		expect(validateAutomation(definition).map((issue) => issue.message)).toContain(
+			'"context" is reserved: {{context}} is filled in for you',
+		)
+	})
+
+	it("splits a list from lines, JSON, or commas", () => {
+		expect(splitEachItems("- A-1\n- A-2\n\n3. A-3")).toEqual(["A-1", "A-2", "A-3"])
+		expect(splitEachItems('["a b", "c", "a b"]')).toEqual(["a b", "c"])
+		expect(splitEachItems("A-1, A-2 ,A-3")).toEqual(["A-1", "A-2", "A-3"])
+		expect(splitEachItems("one, two\nthree")).toEqual(["one, two", "three"])
+		expect(splitEachItems("  ")).toEqual([])
+	})
+
+	it("knows whether the automation places the context itself", () => {
+		expect(placesContext(fanOut().steps)).toBe(true)
+		expect(placesContext(ticketToPr().steps)).toBe(false)
 	})
 })

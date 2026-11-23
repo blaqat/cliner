@@ -57,7 +57,7 @@ export function plainWorktreeReason(reason: string | undefined): string {
 export async function precheckSteps(steps: readonly AutomationStep[], context: PrecheckContext): Promise<AutomationProblem[]> {
 	const problems: AutomationProblem[] = []
 	const threads = automationThreads(steps)
-	const firstTask = steps.findIndex((step) => step.kind === "task")
+	const firstTask = steps.findIndex((step) => step.kind === "task" || step.kind === "each")
 	const existingTaskSteps = context.reuseTaskWorktree ? new Set(firstTask < 0 ? steps : steps.slice(0, firstTask)) : undefined
 	const worktreeSteps = [
 		...new Set(

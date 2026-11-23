@@ -9,9 +9,19 @@ import {
 } from "@shared/automations"
 import type { HistoryItem } from "@shared/HistoryItem"
 
-/** Dollars spent by the run's threads so far (from their history rows). */
-export function runCost(run: AutomationRun, history: readonly HistoryItem[] | undefined): number {
-	const ids = new Set(runThreadIds(run))
+/** Thread ids of a run and, for a For each, of its items' runs. */
+function threadIdsWithItems(run: AutomationRun, runs: readonly AutomationRun[] | undefined): string[] {
+	const items = (runs ?? []).filter((candidate) => candidate.parent?.runId === run.id)
+	return [...runThreadIds(run), ...items.flatMap(runThreadIds)]
+}
+
+/** Dollars spent by the run's threads so far (from their history rows), its For each items' included. */
+export function runCost(
+	run: AutomationRun,
+	history: readonly HistoryItem[] | undefined,
+	runs?: readonly AutomationRun[],
+): number {
+	const ids = new Set(threadIdsWithItems(run, runs))
 	return (history ?? []).filter((item) => ids.has(item.id)).reduce((sum, item) => sum + (item.totalCost ?? 0), 0)
 }
 
@@ -49,8 +59,13 @@ export function runStatusText(run: AutomationRun): string {
 }
 
 /** "4 min · $0.31": the run's time (not counting the pause before a resume) and spend. */
-export function runTimeAndCost(run: AutomationRun, history: readonly HistoryItem[] | undefined, now: number): string {
-	const cost = runCost(run, history)
+export function runTimeAndCost(
+	run: AutomationRun,
+	history: readonly HistoryItem[] | undefined,
+	now: number,
+	runs?: readonly AutomationRun[],
+): string {
+	const cost = runCost(run, history, runs)
 	const limit = run.costLimit ? ` of ${formatAutomationCost(run.costLimit)}` : ""
 	return [formatElapsed(runActiveMs(run, now)), cost > 0 ? `${formatAutomationCost(cost)}${limit}` : ""]
 		.filter(Boolean)
@@ -75,6 +90,11 @@ export function runNeeds(run: AutomationRun): RunNeed[] {
 	return run.steps.flatMap((step): RunNeed[] => {
 		if (step.kind === "checkpoint" && step.status === "waiting")
 			return [{ text: step.question?.trim() ? `Pick: ${step.question.trim()}` : "Pick how to go on", stepId: step.id }]
+		// An item waiting is answered in its own task: the step's rows link there.
+		if (step.items?.length)
+			return step.items
+				.filter((item) => item.status === "waiting")
+				.map((item) => ({ text: `${item.label} needs you in its task`, stepId: step.id }))
 		return step.threads
 			.filter((thread) => thread.status === "waiting" && thread.threadId)
 			.map((thread) => ({

@@ -8,6 +8,7 @@ import {
 	automationDisplayName,
 	automationWorkspace,
 	blankStep,
+	eachStepIndex,
 	emptyAutomation,
 	validateAutomation,
 } from "@shared/automations"
@@ -28,7 +29,7 @@ import { type AutomationBuilderTarget, closeAutomationBuilder } from "./builderN
 
 const SECTION_CLASS = "mt-3 mb-1 flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-wider text-description"
 const LABEL_CLASS = "mt-1.5 mb-0.5 block text-[11px] text-description"
-const ADD_KINDS: AutomationStepKind[] = ["thread", "together", "checkpoint", "task"]
+const ADD_KINDS: AutomationStepKind[] = ["thread", "together", "checkpoint", "each", "task"]
 
 function stepLine(step: AutomationStep): string {
 	switch (step.kind) {
@@ -39,7 +40,13 @@ function stepLine(step: AutomationStep): string {
 			return [
 				step.model || "Default model",
 				step.mode === "act" ? "Act" : "Ask",
-				scope === "task" ? "task worktree" : scope === "thread" ? "own worktree" : "",
+				scope === "task"
+					? "task worktree"
+					: scope === "thread"
+						? "own worktree"
+						: scope === "workspace"
+							? "your workspace"
+							: "",
 			]
 				.filter(Boolean)
 				.join(" · ")
@@ -52,6 +59,8 @@ function stepLine(step: AutomationStep): string {
 				: step.choices.length
 					? step.choices.join(" / ")
 					: "You continue"
+		case "each":
+			return `Each item of ${step.items || "a list"} gets its own task and the steps below, ${step.atOnce} at a time`
 	}
 }
 
@@ -519,21 +528,33 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 			<ol className="m-0 list-none p-0" data-testid="builder-steps">
 				{definition.steps.map((step, index) => {
 					const open = openStep === step.id
+					const each = eachStepIndex(definition.steps)
+					// Steps after For each run once per item: drawn inside its bracket.
+					const perItem = each >= 0 && index > each
 					const stepIssues = [
 						...issuesAt(step.id),
 						...(step.kind === "together" ? step.threads.flatMap((t) => issuesAt(t.id)) : []),
 					]
 					return (
-						<li key={step.id}>
+						<li
+							className={cn(perItem && "ml-2 border-0 border-l-2 border-solid border-link/40 pl-1.5")}
+							data-per-item={perItem || undefined}
+							key={step.id}>
 							{index > 0 && (
 								<div className="py-0.5 pl-2.5 text-[10.5px] text-description">
-									{step.kind === "together" ? "then, together" : "then"}
+									{index === each + 1 && perItem
+										? "then, in each item's task"
+										: step.kind === "together"
+											? "then, together"
+											: "then"}
 								</div>
 							)}
 							<div
 								className={cn(
 									"rounded-xs border px-2 py-1",
-									step.kind === "together" ? "border-link/40" : "border-editor-group-border",
+									step.kind === "together" || step.kind === "each"
+										? "border-link/40"
+										: "border-editor-group-border",
 									stepIssues.length > 0 && !open && "border-error/50",
 								)}
 								data-testid={`builder-step-${step.id}`}>
@@ -605,7 +626,11 @@ export function AutomationBuilder({ target }: { target: AutomationBuilderTarget 
 			</ol>
 			<div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
 				<span className="text-description">Add a step</span>
-				{ADD_KINDS.filter((kind) => kind !== "task" || definition.steps[0]?.kind !== "task").map((kind) => (
+				{ADD_KINDS.filter(
+					(kind) =>
+						(kind !== "task" || definition.steps[0]?.kind !== "task") &&
+						(kind !== "each" || eachStepIndex(definition.steps) < 0),
+				).map((kind) => (
 					<button
 						className="cursor-pointer rounded-full border border-solid border-editor-group-border bg-transparent px-2 leading-4 text-foreground hover:bg-list-hover"
 						data-testid={`builder-add-${kind}`}

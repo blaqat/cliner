@@ -1,7 +1,12 @@
 import { promises as fs } from "node:fs"
 import path from "node:path"
-import type { AutomationProblem, AutomationRun } from "@shared/automations"
-import { AutomationRunner, type AutomationRunnerDeps, type StoredAutomationRun } from "./automation-runner"
+import { type AutomationProblem, type AutomationRun, stepsForRun } from "@shared/automations"
+import {
+	AutomationRunner,
+	type AutomationRunnerDeps,
+	type AutomationStartContext,
+	type StoredAutomationRun,
+} from "./automation-runner"
 import { AutomationStore } from "./automation-store"
 
 export interface AutomationsHostDeps extends Omit<AutomationRunnerDeps, "load" | "save" | "onChange"> {
@@ -64,24 +69,34 @@ export class AutomationsHost {
 	async start(
 		name: string,
 		values: Record<string, string>,
-		options: { taskGroupId?: string; fingerprint: string },
+		options: { taskGroupId?: string; fingerprint: string; context?: AutomationStartContext },
 	): Promise<AutomationRun> {
 		const loaded = await this.store.find(name)
 		if (!loaded?.definition) throw new Error(`There's no automation called ${name}.`)
 		if (loaded.fingerprint !== options.fingerprint)
 			throw new Error(`${name} changed since the start form opened. Check what will run, then run it again.`)
 		if (!loaded.trusted) throw new Error(`${name} changed since you last trusted it. Review it in Automations first.`)
-		return this.runner.start(loaded.definition, values, { taskGroupId: options.taskGroupId })
+		return this.runner.start(loaded.definition, values, { taskGroupId: options.taskGroupId, context: options.context })
 	}
 
 	/**
-	 * What must be fixed before `/name` can run (for the start form), so the user sees it before pressing
-	 * Run. Empty when it can run, or when there's no such automation (the start form says that itself).
+	 * What must be fixed in the task before starting or resuming. For each items are checked once
+	 * their task is known.
 	 */
-	async check(name: string): Promise<AutomationProblem[]> {
+	async check(
+		name: string,
+		options: { taskGroupId?: string; resume?: { runId: string; stepId?: string; fresh?: boolean } } = {},
+	): Promise<AutomationProblem[]> {
 		const loaded = await this.store.find(name)
 		if (!loaded?.definition) return []
-		return (await this.precheck?.(loaded.definition.steps)) ?? []
+		if (options.resume) {
+			await this.runner.load()
+			const run = this.runner
+				.list()
+				.find((candidate) => candidate.id === options.resume?.runId && candidate.automation === name)
+			return run ? this.runner.checkResume(run, loaded.definition, options.resume) : []
+		}
+		return (await this.precheck?.(stepsForRun(loaded.definition.steps), options.taskGroupId)) ?? []
 	}
 
 	/**

@@ -382,6 +382,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 									requestOpenNote(slug)
 									navigateToTaskGroup(group.id, "notebook")
 								}}
+								onOpenTask={(id) => navigateToTaskGroup(id)}
 								onOpenThread={openThread}
 								onWalkThrough={openWalkthrough}
 								run={run}

@@ -10,8 +10,14 @@ import { TriangleAlertIcon } from "lucide-react"
 import type React from "react"
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import DynamicTextArea from "react-textarea-autosize"
+import { AutomationArgsRow, type AutomationArgsRowHandle } from "@/components/automations/AutomationArgsRow"
 import AutomationStartForm from "@/components/automations/AutomationStartForm"
-import { automationInputValues, completeAutomationInput, matchAutomationInput } from "@/components/automations/automationInput"
+import {
+	type AutomationDraft,
+	automationDraftValues,
+	parseAutomationDraft,
+	serializeAutomationDraft,
+} from "@/components/automations/automationInput"
 import { runProblems } from "@/components/automations/willRun"
 import ContextMenu from "@/components/chat/ContextMenu"
 import { CHAT_CONSTANTS } from "@/components/chat/chat-view/constants"
@@ -165,7 +171,7 @@ const QUOTE_ROW_HEIGHT = 24
 const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 	(
 		{
-			inputValue,
+			inputValue: draftValue,
 			setInputValue: setDraftInputValue,
 			onThreadPicked,
 			onScriptRun,
@@ -213,6 +219,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			currentTaskItem,
 			taskHistory,
 			taskGroups,
+			currentBranch,
 		} = useExtensionState()
 		const [isTextAreaFocused, setIsTextAreaFocused] = useState(false)
 		const [isDraggingOver, setIsDraggingOver] = useState(false)
@@ -243,23 +250,81 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				})),
 			[runnable],
 		)
-		const automationInput = useMemo(() => matchAutomationInput(inputValue, runnable), [inputValue, runnable])
+		// A draft starting with `/automation-name ` is an automation draft: its arguments show as chips above
+		// the text box, and the text box holds only the context for the run. Everything below that reads or
+		// writes `inputValue` (mentions, notes, paste, the highlight layer) works on that context.
+		const automationInput = useMemo(() => parseAutomationDraft(draftValue, runnable), [draftValue, runnable])
+		const automationDraftRef = useRef<AutomationDraft | null>(automationInput)
+		automationDraftRef.current = automationInput
+		const inputValue = automationInput ? automationInput.context : draftValue
+		const argsRowRef = useRef<AutomationArgsRowHandle>(null)
+		/** Set when a draft was started from elsewhere: the next focus of the text box goes to its first argument. */
+		const focusArgsOnTextFocus = useRef(false)
 		const [automationStarting, setAutomationStarting] = useState(false)
 		const [automationError, setAutomationError] = useState<string>()
-		useEffect(() => setAutomationError(undefined), [inputValue])
+		const [focusedAutomationArg, setFocusedAutomationArg] = useState<string>()
+		const [showMissingArgs, setShowMissingArgs] = useState(false)
+		useEffect(() => setAutomationError(undefined), [draftValue])
+		const automationValues = automationInput ? automationDraftValues(automationInput) : undefined
 		const automationReady =
 			!!automationInput &&
 			automationInput.automation.trusted &&
-			"values" in automationInputValues(automationInput) &&
+			!!automationValues &&
+			"values" in automationValues &&
 			runProblems(automationInput.automation.definition, modelSettings).length === 0
 		// The composer no longer starts scripts; a draft never carries a script-run marker.
-		const setInputValue = useCallback(
+		const setDraftText = useCallback(
 			(value: string) => {
 				setDraftInputValue(value)
 				onScriptRun?.(undefined)
 			},
 			[setDraftInputValue, onScriptRun],
 		)
+		/** Sets the text box: the whole draft, or only the context of an automation draft. */
+		const setInputValue = useCallback(
+			(value: string) => {
+				const draft = automationDraftRef.current
+				setDraftText(
+					draft
+						? serializeAutomationDraft(
+								draft.automation.name,
+								draft.automation.definition.arguments,
+								draft.values,
+								value,
+							)
+						: value,
+				)
+			},
+			[setDraftText],
+		)
+		const setAutomationValues = useCallback(
+			(values: Record<string, string>) => {
+				const draft = automationDraftRef.current
+				if (!draft) return
+				setDraftText(
+					serializeAutomationDraft(draft.automation.name, draft.automation.definition.arguments, values, draft.context),
+				)
+			},
+			[setDraftText],
+		)
+		// Becoming an automation draft (picked from the menu, typed, pasted) moves the caret to its first
+		// argument still to fill, so typing goes on there.
+		const armedName = automationInput?.automation.name
+		const lastArmed = useRef<string | undefined>(armedName)
+		useLayoutEffect(() => {
+			if (armedName && lastArmed.current !== armedName) {
+				// Only when the caret was in the composer (or nowhere); again after the menu that inserted the
+				// name puts it back in the text box.
+				const moveCaret = () => {
+					const active = document.activeElement
+					if (!active || active === document.body || active === textAreaRef.current) argsRowRef.current?.focus("start")
+				}
+				moveCaret()
+				setTimeout(moveCaret, 0)
+				setShowMissingArgs(false)
+			}
+			lastArmed.current = armedName
+		}, [armedName])
 		const modelBlock = modelSendBlock(modelSettings, composerApiSelection, mode)
 		// `/ask` and `/act` only switch modes, so alone they never wait on a model; text after one goes in the new mode.
 		const modeCommand = parseModeSwitchCommand(inputValue.trim())
@@ -287,13 +352,16 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const startScriptDraft = useCallback(
 			(name: string) => {
 				const prefix = `/${name} `
-				const existing = textAreaRef.current?.value ?? inputValue
-				setInputValue(existing.trim() ? `${prefix}\n${existing}` : prefix)
-				setCursorPosition(prefix.length)
-				setIntendedCursorPosition(prefix.length)
-				setTimeout(() => textAreaRef.current?.focus(), 0)
+				const existing = automationDraftRef.current ? automationDraftRef.current.context : draftValue
+				setDraftText(existing.trim() ? `${prefix}\n${existing}` : prefix)
+				// The overlay this came from gives focus back to the text box as it closes: pass it on then.
+				focusArgsOnTextFocus.current = true
+				setTimeout(() => argsRowRef.current?.focus("start"), 0)
+				setTimeout(() => {
+					focusArgsOnTextFocus.current = false
+				}, 1500)
 			},
-			[inputValue, setInputValue],
+			[draftValue, setDraftText],
 		)
 		// "Use" on a script in the title bar's Rules & workflows overlay.
 		useEffect(() => {
@@ -334,26 +402,46 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		)
 		const runAutomation = useCallback(async () => {
 			if (!automationInput || automationStarting) return
-			const ready = automationInputValues(automationInput)
-			if (!("values" in ready)) return
+			const ready = automationDraftValues(automationInput)
+			if (!("values" in ready)) {
+				setShowMissingArgs(true)
+				argsRowRef.current?.focus("start")
+				return
+			}
 			setAutomationStarting(true)
 			try {
+				const context = automationInput.context.trim()
 				const response = await AutomationServiceClient.startAutomationRun(
 					StartAutomationRunRequest.create({
 						name: automationInput.automation.name,
 						values: ready.values,
 						taskGroupId: runTaskGroup ? runTaskGroup.id : undefined,
 						fingerprint: automationInput.automation.fingerprint,
+						...(context ? { context } : {}),
+						contextImages: selectedImages,
+						contextFiles: selectedFiles,
 					}),
 				)
-				setInputValue("")
+				setDraftText("")
+				setSelectedImages([])
+				setSelectedFiles([])
 				if (response.taskGroupId) onOpenTaskGroup?.(response.taskGroupId)
 			} catch (error) {
 				setAutomationError(error instanceof Error ? error.message : String(error))
 			} finally {
 				setAutomationStarting(false)
 			}
-		}, [automationInput, automationStarting, runTaskGroup, setInputValue, onOpenTaskGroup])
+		}, [
+			automationInput,
+			automationStarting,
+			runTaskGroup,
+			setDraftText,
+			onOpenTaskGroup,
+			selectedImages,
+			selectedFiles,
+			setSelectedImages,
+			setSelectedFiles,
+		])
 		const noteMention = useMemo(() => findNoteMention(inputValue, cursorPosition), [inputValue, cursorPosition])
 		const [dismissedNoteMentionAt, setDismissedNoteMentionAt] = useState<number>()
 		const [selectedNoteIndex, setSelectedNoteIndex] = useState(0)
@@ -814,27 +902,19 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 
-				// Tab in an automation draft completes the argument being typed, then jumps to the next missing required one.
-				if (
-					event.key === "Tab" &&
-					automationInput &&
-					!isComposing &&
-					!event.shiftKey &&
-					!event.metaKey &&
-					!event.ctrlKey &&
-					!event.altKey &&
-					// Anywhere on the options line; Tab in the note below keeps its normal behaviour.
-					(event.currentTarget.selectionStart ?? 0) <=
-						automationInput.prefix.length + automationInput.optionsText.length
-				) {
-					event.preventDefault()
-					const completed = completeAutomationInput(automationInput)
-					if (completed) {
-						setInputValue(completed.text)
-						setCursorPosition(completed.cursor)
-						setIntendedCursorPosition(completed.cursor)
+				// In an automation draft's context box: Shift+Tab, or Backspace at its very start, goes back to the
+				// last argument chip.
+				if (automationInput && !isComposing) {
+					const textarea = event.currentTarget
+					const atStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0
+					if (
+						(event.key === "Tab" && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) ||
+						(event.key === "Backspace" && atStart)
+					) {
+						event.preventDefault()
+						argsRowRef.current?.focus("last")
+						return
 					}
-					return
 				}
 
 				if (event.key === "Escape") {
@@ -871,6 +951,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						} else {
 							onSendAs(submitKind)
 						}
+					} else if (automationValues && "reason" in automationValues) {
+						// A required argument is still empty: mark it and go there.
+						setShowMissingArgs(true)
+						argsRowRef.current?.focus("start")
 					}
 				}
 
@@ -957,6 +1041,7 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				handleSlashCommandsSelect,
 				sendDisabled,
 				automationInput,
+				automationValues,
 				runAutomation,
 				menuScriptCommands,
 				onStash,
@@ -1028,7 +1113,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					showMenu = false
 				}
 
-				setShowSlashCommandsMenu(showSlashCommandsMenu)
+				// The context of an automation draft runs no commands.
+				setShowSlashCommandsMenu(showSlashCommandsMenu && !automationDraftRef.current)
 				setShowContextMenu(showMenu)
 
 				if (showSlashCommandsMenu) {
@@ -1323,9 +1409,11 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const onModeToggle = useCallback(() => {
 			void (async () => {
 				const convertedProtoMode = mode === "plan" ? PlanActMode.ACT : PlanActMode.PLAN
-				const submittedText = inputValue
-				const submittedImages = selectedImages
-				const submittedFiles = selectedFiles
+				// An automation draft stays put: its context isn't a message to send.
+				const armed = !!automationDraftRef.current
+				const submittedText = armed ? "" : inputValue
+				const submittedImages = armed ? [] : selectedImages
+				const submittedFiles = armed ? [] : selectedFiles
 				const response = await StateServiceClient.togglePlanActModeProto(
 					TogglePlanActModeRequest.create({
 						mode: convertedProtoMode,
@@ -1685,16 +1773,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			<div>
 				{automationInput && (
 					<AutomationStartForm
+						attachments={{ images: selectedImages.length, files: selectedFiles.length }}
+						draft={automationInput}
 						error={automationError}
-						input={automationInput}
-						onChange={(next) => {
-							const text = `${automationInput.prefix}${next}${automationInput.suffix}`
-							const cursor = automationInput.prefix.length + next.length
-							setInputValue(text)
-							setCursorPosition(cursor)
-							setIntendedCursorPosition(cursor)
-							setTimeout(() => textAreaRef.current?.focus(), 0)
-						}}
+						focusedArg={focusedAutomationArg}
 						onTrust={() =>
 							AutomationServiceClient.trustAutomation(
 								TrustAutomationRequest.create({
@@ -1710,8 +1792,8 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								(error) => console.error("Failed to open automation:", error),
 							)
 						}
+						taskGroupId={runTaskGroup?.id}
 						taskTitle={runTaskTitle}
-						tickets={runTickets}
 					/>
 				)}
 				{/* One card: the text on top, the action row (📎 … chip, Send) inside the same border at its bottom edge. */}
@@ -1738,6 +1820,35 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								: "none",
 						outlineOffset: isDraggingOver && !showUnsupportedFileError ? "1px" : "0px",
 					}}>
+					{automationInput && (
+						<AutomationArgsRow
+							draft={automationInput}
+							onChange={setAutomationValues}
+							onFocusArg={setFocusedAutomationArg}
+							onFocusContext={() => {
+								const textarea = textAreaRef.current
+								if (!textarea) return
+								textarea.focus()
+								textarea.setSelectionRange(0, 0)
+								setCursorPosition(0)
+							}}
+							onRemove={() => {
+								const { automation, context } = automationInput
+								const text = `/${automation.name}${context ? `\n${context}` : ""}`
+								setDraftText(text)
+								setIntendedCursorPosition(automation.name.length + 1)
+								setTimeout(() => textAreaRef.current?.focus(), 0)
+							}}
+							onSubmit={() => {
+								if (!sendDisabled) void runAutomation()
+							}}
+							ref={argsRowRef}
+							showMissing={showMissingArgs}
+							suggestionsFor={(arg) =>
+								arg.kind === "ticket" ? runTickets : arg.kind === "branch" && currentBranch ? [currentBranch] : []
+							}
+						/>
+					)}
 					<div className="relative flex">
 						{showDimensionError && (
 							<div className="absolute inset-0 bg-[rgba(var(--vscode-errorForeground-rgb),0.1)] border-2 border-error rounded-xs flex items-center justify-center z-10 pointer-events-none">
@@ -1833,6 +1944,10 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								updateHighlights()
 							}}
 							onFocus={() => {
+								if (focusArgsOnTextFocus.current) {
+									focusArgsOnTextFocus.current = false
+									if (automationDraftRef.current) setTimeout(() => argsRowRef.current?.focus("start"), 0)
+								}
 								setIsTextAreaFocused(true)
 								onFocusChange?.(true) // Call prop on focus
 							}}
@@ -1848,7 +1963,13 @@ const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							onPaste={handlePaste}
 							onScroll={() => updateHighlights()}
 							onSelect={updateCursorPosition}
-							placeholder={showUnsupportedFileError || showDimensionError ? "" : placeholderText}
+							placeholder={
+								showUnsupportedFileError || showDimensionError
+									? ""
+									: automationInput
+										? "Add context for this run (optional): notes, @files, images"
+										: placeholderText
+							}
 							ref={(el) => {
 								if (typeof ref === "function") {
 									ref(el)

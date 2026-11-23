@@ -1,10 +1,12 @@
 import {
 	type AutomationRun,
+	type AutomationRunItem,
 	type AutomationRunStep,
 	type AutomationRunStepStatus,
 	type AutomationRunThread,
 	isLiveRun,
 	resumePoints,
+	stepsForRun,
 } from "@shared/automations"
 import { AnswerAutomationCheckpointRequest } from "@shared/proto/cline/automation"
 import { LoaderCircleIcon } from "lucide-react"
@@ -13,6 +15,7 @@ import { LinkButton } from "@/components/common/LinkButton"
 import { type ThreadStatuses, threadStatusFor } from "@/components/inbox/threadStatus"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { useAutomations } from "@/hooks/useAutomations"
 import { cn } from "@/lib/utils"
 import { AutomationServiceClient } from "@/services/grpc-client"
@@ -214,7 +217,7 @@ function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<
 	const definition = automations.find((item) => item.name === run.automation)?.definition
 	const [choosing, setChoosing] = useState(false)
 	const { points: resumeIds, retryId } = resumePoints(run, definition)
-	const steps = definition?.steps ?? run.steps
+	const steps = definition ? stepsForRun(definition.steps, run) : run.steps
 	const retryNumber = steps.findIndex((step) => step.id === retryId) + 1
 	// Earlier steps the run can go back to (the retry step has its own button).
 	const points = resumeIds.filter((id) => id !== retryId)
@@ -243,9 +246,13 @@ function RunActions({ run, actions }: { run: AutomationRun; actions: ReturnType<
 					disabled={actions.busy}
 					onClick={() => void actions.runAgain()}
 					size="xs"
-					title="A fresh run with the same values, in this task"
+					title={
+						run.parent
+							? "Runs this item's steps again from the first, in this task"
+							: "A fresh run with the same values and context, in this task"
+					}
 					variant="secondary">
-					Run again
+					{run.parent ? "Run this item again" : "Run again"}
 				</Button>
 				{points.length > 0 && !choosing && (
 					<LinkButton data-testid={`run-resume-from-${run.id}`} onClick={() => setChoosing(true)}>
@@ -342,6 +349,62 @@ function Caret({ open }: { open: boolean }) {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
+const ITEM_STATUS_TEXT: Partial<Record<AutomationRunStepStatus, string>> = {
+	pending: "Waiting its turn",
+	waiting: "Needs you in its task",
+	skipped: "Skipped",
+}
+
+/** A For each step's items: each with its status, where it is, and its task. */
+function ItemRows({ items, onOpenTask }: { items: readonly AutomationRunItem[]; onOpenTask?: (taskGroupId: string) => void }) {
+	return (
+		<ul className="m-0 list-none p-0" data-testid="run-items">
+			{items.map((item) => {
+				const where =
+					item.status === "running"
+						? (item.at ?? "")
+						: item.status === "done"
+							? ""
+							: (ITEM_STATUS_TEXT[item.status] ?? (item.at ? `at ${item.at}` : ""))
+				return (
+					<li className="flex min-w-0 flex-col py-0.5 pl-9" data-testid={`run-item-${item.label}`} key={item.item}>
+						<div className="flex min-w-0 items-center gap-1.5">
+							<StepStatusIcon status={item.status} />
+							<span className="ph-no-capture min-w-0 shrink truncate" title={item.item}>
+								{item.label}
+							</span>
+							<span
+								className={cn(
+									"min-w-0 flex-1 truncate",
+									item.status === "waiting" ? "text-warning" : "text-description",
+								)}>
+								{where}
+							</span>
+							{item.taskGroupId && onOpenTask && (
+								<LinkButton className="shrink-0" onClick={() => onOpenTask(item.taskGroupId as string)}>
+									Open task
+								</LinkButton>
+							)}
+						</div>
+						{item.error && (item.status === "failed" || item.status === "stopped") && (
+							<div className="ml-4.5 line-clamp-2 text-error" title={item.error}>
+								{item.error}
+							</div>
+						)}
+					</li>
+				)
+			})}
+		</ul>
+	)
+}
+
+/** "2 of 3 done" for a For each step's header. */
+function itemsSummary(items: readonly AutomationRunItem[]): string {
+	const done = items.filter((item) => item.status === "done").length
+	const failed = items.filter((item) => item.status === "failed" || item.status === "stopped").length
+	return [`${done} of ${items.length} done`, failed ? `${failed} didn't finish` : ""].filter(Boolean).join(", ")
+}
+
 function StepRow({
 	run,
 	step,
@@ -351,6 +414,7 @@ function StepRow({
 	statuses,
 	onOpenThread,
 	onOpenNote,
+	onOpenTask,
 	actions,
 }: {
 	run: AutomationRun
@@ -361,13 +425,15 @@ function StepRow({
 	statuses: ThreadStatuses
 	onOpenThread: (threadId: string) => void
 	onOpenNote?: (slug: string) => void
+	onOpenTask?: (taskGroupId: string) => void
 	actions: ReturnType<typeof useRunActions>
 }) {
 	const status = stepStatus(step)
 	const showError = !!step.error && !actions.problems && step.threads.every((thread) => !thread.error)
 	const showThreads = step.threads.length > 0 && started(step)
 	const showChoices = step.kind === "checkpoint" && step.status === "waiting"
-	const foldable = showError || showThreads || showChoices
+	const showItems = !!step.items?.length
+	const foldable = showError || showThreads || showChoices || showItems
 	const outputs = step.threads.reduce((count, thread) => count + (thread.outputs?.length ?? 0), 0)
 	const needsYou =
 		status === "waiting" || step.threads.some((thread) => liveThreadStatus(thread, statuses) === "waiting" && started(step))
@@ -379,6 +445,11 @@ function StepRow({
 			<span className="w-3 shrink-0 text-right text-description">{index + 1}</span>
 			<span className={cn("min-w-0 truncate", started(step) ? "" : "text-description")}>{step.title}</span>
 			{step.kind === "together" && <span className="shrink-0 text-description">· {step.threads.length} together</span>}
+			{showItems && (
+				<span className="min-w-0 truncate text-description" data-testid={`run-step-items-${step.id}`}>
+					· {itemsSummary(step.items ?? [])}
+				</span>
+			)}
 			{step.kind === "checkpoint" && step.choice && (
 				<span className="min-w-0 truncate text-description">· you picked {step.choice}</span>
 			)}
@@ -441,6 +512,7 @@ function StepRow({
 						</ul>
 					)}
 					{showChoices && <CheckpointChoices onOpenThread={onOpenThread} run={run} step={step} />}
+					{showItems && <ItemRows items={step.items ?? []} onOpenTask={onOpenTask} />}
 				</div>
 			)}
 		</li>
@@ -502,9 +574,49 @@ interface RunBlockProps {
 	notesWritten?: ReadonlyMap<string, readonly string[]>
 	noteNames?: ReadonlyMap<string, string>
 	onOpenNote?: (slug: string) => void
+	/** Opens a task page: a For each item's task, or the task of the run an item belongs to. */
+	onOpenTask?: (taskGroupId: string) => void
 	now?: number
 	/** Whether it starts open; live and failed runs always do. */
 	defaultOpen?: boolean
+}
+
+/** What the user added when starting the run: its text (two lines, all on hover) and attachments. */
+function RunContext({ context }: { context: NonNullable<AutomationRun["context"]> }) {
+	const attached = [
+		context.images ? `${context.images} image${context.images === 1 ? "" : "s"}` : "",
+		...(context.files ?? []).map((file) => file.split(/[\\/]/).at(-1) ?? file),
+	].filter(Boolean)
+	return (
+		<div className="mt-1 rounded-xs bg-text-block-background px-1.5 py-0.5" data-testid="run-context">
+			<div className="text-[11px] text-description">Context from you</div>
+			{context.text && (
+				<div className="ph-no-capture line-clamp-2 whitespace-pre-wrap" title={context.text}>
+					{context.text}
+				</div>
+			)}
+			{attached.length > 0 && <div className="truncate text-description">{attached.join(" · ")}</div>}
+		</div>
+	)
+}
+
+/** An item's run says which item it is and links to the run that fanned out. */
+function ItemOf({ run, onOpenTask }: { run: AutomationRun; onOpenTask?: (taskGroupId: string) => void }) {
+	const runs = useAutomationRuns()
+	if (!run.parent) return null
+	const parent = runs.find((candidate) => candidate.id === run.parent?.runId)
+	return (
+		<div className="mt-0.5 flex min-w-0 items-baseline gap-1.5 pl-4 text-description" data-testid={`run-item-of-${run.id}`}>
+			<span className="ph-no-capture min-w-0 truncate" title={run.parent.item}>
+				Item {run.parent.index + 1} of {run.parent.total}: {run.parent.item.split("\n")[0]}
+			</span>
+			{parent?.taskGroupId && parent.taskGroupId !== run.taskGroupId && onOpenTask && (
+				<LinkButton className="shrink-0" onClick={() => onOpenTask(parent.taskGroupId)}>
+					All items
+				</LinkButton>
+			)}
+		</div>
+	)
 }
 
 /**
@@ -522,12 +634,14 @@ export function RunBlock({
 	notesWritten,
 	noteNames,
 	onOpenNote,
+	onOpenTask,
 	now = Date.now(),
 	defaultOpen,
 }: RunBlockProps) {
 	const { taskHistory } = useExtensionState()
+	const allRuns = useAutomationRuns()
 	const actions = useRunActions(run)
-	const timeAndCost = runTimeAndCost(run, taskHistory, now)
+	const timeAndCost = runTimeAndCost(run, taskHistory, now, allRuns)
 	const live = isLiveRun(run)
 	const [, refold] = useReducer((count: number) => count + 1, 0)
 	const [initialOpen] = useState(defaultOpen ?? live)
@@ -583,6 +697,7 @@ export function RunBlock({
 					</Button>
 				)}
 			</div>
+			<ItemOf onOpenTask={onOpenTask} run={run} />
 			{!expanded && (
 				<FoldedRunLine
 					onOpenThread={onOpenThread}
@@ -593,6 +708,7 @@ export function RunBlock({
 					run={run}
 				/>
 			)}
+			{expanded && run.context && <RunContext context={run.context} />}
 			{expanded && (
 				<ol className="m-0 mt-1 list-none p-0" data-testid={`run-steps-${run.id}`} id={`run-steps-${run.id}`}>
 					{run.steps.map((step, index) => (
@@ -601,6 +717,7 @@ export function RunBlock({
 							index={index}
 							key={step.id}
 							onOpenNote={onOpenNote}
+							onOpenTask={onOpenTask}
 							onOpenThread={onOpenThread}
 							onToggle={() => setOpen(foldKey(run, step.id), !stepOpen(index))}
 							open={stepOpen(index)}

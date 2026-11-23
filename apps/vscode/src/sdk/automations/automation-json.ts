@@ -5,6 +5,7 @@ import {
 	type AutomationDefinition,
 	type AutomationStep,
 	type AutomationThreadSpec,
+	DEFAULT_EACH_AT_ONCE,
 } from "@shared/automations"
 import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
 
@@ -55,6 +56,15 @@ function step(raw: unknown): AutomationStep | undefined {
 				question: str(entry.question),
 				choicesFrom: str(entry.choicesFrom),
 				choices: list(entry.choices).map(str).filter(Boolean),
+			}
+		case "each":
+			return {
+				kind: "each",
+				...base,
+				items: str(entry.items),
+				ticket: str(entry.ticket),
+				newTaskTitle: str(entry.newTaskTitle),
+				atOnce: typeof entry.atOnce === "number" ? entry.atOnce : DEFAULT_EACH_AT_ONCE,
 			}
 		default:
 			return undefined

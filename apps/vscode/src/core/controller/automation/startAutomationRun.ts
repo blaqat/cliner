@@ -13,6 +13,7 @@ export async function startAutomationRun(
 	const run = await controller.automations.start(request.name, request.values ?? {}, {
 		taskGroupId: request.taskGroupId || undefined,
 		fingerprint: request.fingerprint,
+		context: { text: request.context ?? "", images: request.contextImages, files: request.contextFiles },
 	})
 	return StartAutomationRunResponse.create({ runId: run.id, taskGroupId: run.taskGroupId })
 }

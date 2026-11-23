@@ -1,5 +1,5 @@
 import type { AutomationFix, AutomationProblem, AutomationRun } from "@shared/automations"
-import { ResumeAutomationRunRequest } from "@shared/proto/cline/automation"
+import { CheckAutomationRunRequest, ResumeAutomationRunRequest } from "@shared/proto/cline/automation"
 import { StringRequest } from "@shared/proto/cline/common"
 import { useCallback, useState, useSyncExternalStore } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
@@ -16,8 +16,13 @@ export const stopRun = (runId: string) =>
 	)
 
 /** What must be fixed before `/name` can run (worktrees, models); empty when it can. */
-export async function checkAutomation(name: string): Promise<AutomationProblem[]> {
-	const response = await AutomationServiceClient.checkAutomationRun(StringRequest.create({ value: name }))
+export async function checkAutomation(
+	name: string,
+	options: Pick<CheckAutomationRunRequest, "taskGroupId" | "resume"> = {},
+): Promise<AutomationProblem[]> {
+	const response = await AutomationServiceClient.checkAutomationRun(
+		CheckAutomationRunRequest.create({ value: name, ...options }),
+	)
 	const parsed = JSON.parse(response.problemsJson || "[]")
 	if (!Array.isArray(parsed)) throw new Error("Couldn't check the workspace.")
 	return parsed as AutomationProblem[]
@@ -55,7 +60,7 @@ function FixLink({ fix, automation }: { fix: Exclude<AutomationFix, "repository"
  * The folder isn't a git repository: open the right folder, or make this one a repository. git init
  * runs only on the click, then the automation is checked again and says what's left (or that it's ready).
  */
-function RepositoryFix({ automation, onRecheck }: ProblemDetailsProps) {
+function RepositoryFix({ onRecheck }: Pick<ProblemDetailsProps, "onRecheck">) {
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState("")
 	const initialize = async () => {
@@ -68,7 +73,7 @@ function RepositoryFix({ automation, onRecheck }: ProblemDetailsProps) {
 				setError(`Couldn't initialize git: ${worktreeErrorText(error)}`)
 				return
 			}
-			onRecheck(await checkAutomation(automation))
+			await onRecheck()
 		} catch {
 			setError("Git is initialized. Couldn't re-check the workspace.")
 		} finally {
@@ -106,7 +111,7 @@ function RepositoryFix({ automation, onRecheck }: ProblemDetailsProps) {
 
 interface ProblemDetailsProps {
 	automation: string
-	onRecheck: (problems: AutomationProblem[]) => void
+	onRecheck: () => Promise<void>
 }
 
 export function ProblemDetails({ problem, automation, onRecheck }: ProblemDetailsProps & { problem: AutomationProblem }) {
@@ -114,7 +119,7 @@ export function ProblemDetails({ problem, automation, onRecheck }: ProblemDetail
 		<>
 			{problem.message}{" "}
 			{problem.fix === "repository" ? (
-				<RepositoryFix automation={automation} onRecheck={onRecheck} />
+				<RepositoryFix onRecheck={onRecheck} />
 			) : problem.fix ? (
 				<FixLink automation={automation} fix={problem.fix} />
 			) : null}
@@ -179,24 +184,36 @@ export function clearRunStartsForTest() {
 export function useRunActions(run: AutomationRun) {
 	const shape = runShape(run)
 	const busy = useSyncExternalStore(subscribeStarting, () => starting.get(run.id) === shape)
-	const [lastCheck, setLastCheck] = useState<{ shape: string; problems: AutomationProblem[]; ready?: boolean }>()
+	const [lastCheck, setLastCheck] = useState<{
+		shape: string
+		problems: AutomationProblem[]
+		ready?: boolean
+		resume?: ResumeAutomationRunRequest
+	}>()
 	const check = lastCheck?.shape === shape ? lastCheck : undefined
-	const onRecheck = (problems: AutomationProblem[]) => setLastCheck({ shape, problems, ready: problems.length === 0 })
+	const onRecheck = async () => {
+		const resume = check?.resume ?? ResumeAutomationRunRequest.create({ runId: run.id })
+		const problems = await checkAutomation(run.automation, { resume })
+		setLastCheck({ shape, problems, ready: problems.length === 0, resume })
+	}
 	const send = useCallback(
 		async (options: { stepId?: string; fresh?: boolean }) => {
 			// Checked synchronously: a double click lands before React re-renders the disabled button.
 			if (starting.get(run.id) === shape) return
 			setStarting(run.id, shape)
+			const resume = ResumeAutomationRunRequest.create({
+				runId: run.id,
+				stepId: options.stepId ?? "",
+				fresh: !!options.fresh,
+			})
 			try {
-				const found = await checkAutomation(run.automation)
-				setLastCheck({ shape, problems: found })
+				const found = await checkAutomation(run.automation, { resume })
+				setLastCheck({ shape, problems: found, resume })
 				if (found.length) {
 					setStarting(run.id, undefined)
 					return
 				}
-				await AutomationServiceClient.resumeAutomationRun(
-					ResumeAutomationRunRequest.create({ runId: run.id, stepId: options.stepId ?? "", fresh: !!options.fresh }),
-				)
+				await AutomationServiceClient.resumeAutomationRun(resume)
 				// Run again makes a new run, which shows up on its own; this one is free again.
 				if (options.fresh) setStarting(run.id, undefined)
 				else
@@ -207,7 +224,7 @@ export function useRunActions(run: AutomationRun) {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error)
 				// Another window (or a click before this one) already got it going: not a failure.
-				if (!/already running/i.test(message)) setLastCheck({ shape, problems: [{ message }] })
+				if (!/already running/i.test(message)) setLastCheck({ shape, problems: [{ message }], resume })
 				setStarting(run.id, undefined)
 			}
 		},

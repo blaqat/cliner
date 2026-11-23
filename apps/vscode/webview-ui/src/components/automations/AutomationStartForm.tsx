@@ -1,35 +1,34 @@
-import { type AutomationArgument, type AutomationProblem, automationDisplayName, formatAutomationCost } from "@shared/automations"
-import { parseTypedOptions, setTypedOption, typedFocus } from "@shared/scripts"
+import {
+	type AutomationProblem,
+	type AutomationStep,
+	automationDisplayName,
+	formatAutomationCost,
+	placesContext,
+} from "@shared/automations"
 import type React from "react"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
-import { type AutomationInput, automationInputValues } from "./automationInput"
+import { type AutomationDraft, automationDraftValues } from "./automationInput"
 import { checkAutomation, ProblemList } from "./runActions"
 import { describeRun, summarizeRun } from "./willRun"
 
 interface AutomationStartFormProps {
-	input: AutomationInput
-	/** Replaces the typed arguments; the composer keeps the focus. */
-	onChange: (nextOptionsText: string) => void
+	draft: AutomationDraft
+	/** The argument chip being edited: the steps that use it are marked. */
+	focusedArg?: string
+	/** Images and files attached in the composer: they go with the context. */
+	attachments: { images: number; files: number }
 	/** The run goes into this task (the composer is in it). */
+	taskGroupId?: string
 	taskTitle?: string
-	/** Ticket keys the task (or thread) is tagged with, offered for ticket arguments. */
-	tickets: readonly string[]
 	/** Trusts the version on screen (a file someone else changed). */
 	onTrust: () => void
 	onViewFile: () => void
 	/** Why the last Run didn't start. */
 	error?: string
-}
-
-const KIND_LABELS: Record<AutomationArgument["kind"], string> = {
-	text: "text",
-	ticket: "ticket",
-	branch: "branch",
-	choice: "choice",
 }
 
 const CHIP_CLASS =
@@ -41,73 +40,84 @@ const SECTION_CLASS = "mt-2 text-[10.5px] font-medium uppercase tracking-wider t
 const CHECK_MS = 4000
 
 /** What must be fixed before `name` can run, kept current while the form is open. */
-function useWorkspaceCheck(name: string) {
-	const [checkResult, setCheckResult] = useState<{ name: string; problems: AutomationProblem[] }>()
-	const active = useRef<{ name: string; sent: number; applied: number }>()
-	const onRecheck = (problems: AutomationProblem[]) => {
+function useWorkspaceCheck(name: string, taskGroupId?: string) {
+	const key = JSON.stringify([name, taskGroupId])
+	const [checkResult, setCheckResult] = useState<{ key: string; problems: AutomationProblem[] }>()
+	const active = useRef<{ sent: number; applied: number }>()
+	const onRecheck = useCallback(async () => {
 		const state = active.current
-		if (state?.name !== name) return
-		state.applied = state.sent
-		setCheckResult({ name, problems })
-	}
+		if (!state) return
+		const request = ++state.sent
+		const problems = await checkAutomation(name, { taskGroupId })
+		if (active.current !== state || request <= state.applied) return
+		state.applied = request
+		setCheckResult((current) =>
+			current?.key === key && JSON.stringify(current.problems) === JSON.stringify(problems) ? current : { key, problems },
+		)
+	}, [key, name, taskGroupId])
 	useEffect(() => {
-		const state = { name, sent: 0, applied: 0 }
-		active.current = state
-		const check = async () => {
-			const request = ++state.sent
-			try {
-				const problems = await checkAutomation(name)
-				if (active.current !== state || request <= state.applied) return
-				state.applied = request
-				setCheckResult((current) =>
-					current?.name === name && JSON.stringify(current.problems) === JSON.stringify(problems)
-						? current
-						: { name, problems },
-				)
-			} catch {
-				// Keep the last verified result while the host is unavailable.
-			}
-		}
+		active.current = { sent: 0, applied: 0 }
+		// Keep the last verified result while the host is unavailable.
+		const check = () => onRecheck().catch(() => {})
 		void check()
 		const timer = setInterval(() => void check(), CHECK_MS)
 		return () => {
 			active.current = undefined
 			clearInterval(timer)
 		}
-	}, [name])
-	return { problems: checkResult?.name === name ? checkResult.problems : [], onRecheck }
+	}, [onRecheck])
+	return { problems: checkResult?.key === key ? checkResult.problems : [], onRecheck }
+}
+
+/** Whether a step fills in `{{name}}` (the start form marks it while that argument is edited). */
+function usesArg(step: AutomationStep | undefined, name: string): boolean {
+	return !!step && new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`).test(JSON.stringify(step))
+}
+
+/** "2 lines, 1 image, 1 file" for the context line. */
+function describeContext(text: string, attachments: { images: number; files: number }): string {
+	const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+	const lines = text.trim() ? text.trim().split("\n").length : 0
+	return [
+		lines ? plural(lines, "line") : "",
+		attachments.images ? plural(attachments.images, "image") : "",
+		attachments.files ? plural(attachments.files, "file") : "",
+	]
+		.filter(Boolean)
+		.join(", ")
 }
 
 /**
- * The start form above the composer for `/name`: arguments (typed inline like script options, or
- * clicked), then every step with its model, so what will run and roughly what it costs is clear before
- * anything starts. Enter or Run starts it.
+ * The start form above the composer for `/name`: what will run, step by step with its model, so what
+ * starts and roughly what it costs is clear before anything does. The arguments are chips in the
+ * composer under it, and the text box there holds the run's context. Enter or Run starts it.
  */
 const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
-	input,
-	onChange,
+	draft,
+	focusedArg,
+	attachments,
+	taskGroupId,
 	taskTitle,
-	tickets,
 	onTrust,
 	onViewFile,
 	error,
 }) => {
-	const { modelSettings, currentBranch, taskHistory, navigateToSettings } = useExtensionState()
+	const { modelSettings, taskHistory, navigateToSettings } = useExtensionState()
 	const runs = useAutomationRuns()
-	const { automation, options, optionsText } = input
+	const { automation } = draft
 	const definition = automation.definition
-	const parsed = parseTypedOptions(optionsText, options)
-	const focus = typedFocus(optionsText, options)
-	const ready = automationInputValues(input)
-	const values =
-		"values" in ready ? ready.values : Object.fromEntries(Object.entries(parsed.values).map(([k, v]) => [k, String(v)]))
+	const ready = automationDraftValues(draft)
+	const values = "values" in ready ? ready.values : draft.values
+	const contextSummary = describeContext(draft.context, attachments)
+	const placed = placesContext(definition.steps)
 	const willRun = describeRun(definition, values, modelSettings, {
-		inTask: !!taskTitle,
+		inTask: !!taskGroupId,
+		text: draft.context,
 		earlierRuns: runs,
 		history: taskHistory,
 	})
 	// Models are checked here; the host checks what only it can see (can a worktree be made?).
-	const workspaceCheck = useWorkspaceCheck(automation.name)
+	const workspaceCheck = useWorkspaceCheck(automation.name, taskGroupId)
 	const workspaceProblems = workspaceCheck.problems.filter((problem) => problem.fix !== "models")
 	const autoApproved = willRun.steps.some((step) => step.threads.some((thread) => thread.worktree && thread.mode === "Act"))
 	const blocked =
@@ -123,14 +133,6 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 		: blocked
 			? { text: blocked, tone: "error" as const }
 			: { text: "Ready. Enter runs it.", tone: "ok" as const }
-	const set = (name: string, value: string) => onChange(setTypedOption(optionsText, options, name, value))
-
-	const suggestionsFor = (arg: AutomationArgument): string[] => {
-		if (arg.kind === "choice") return arg.choices ?? []
-		if (arg.kind === "ticket") return [...tickets]
-		if (arg.kind === "branch") return currentBranch ? [currentBranch] : []
-		return []
-	}
 
 	return (
 		<div
@@ -168,81 +170,31 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 				</div>
 			)}
 
-			{definition.arguments.length > 0 && <div className={SECTION_CLASS}>Arguments</div>}
-			{definition.arguments.map((arg) => {
-				const value = parsed.values[arg.name]
-				const isSet = value !== undefined
-				const isCurrent = focus.option?.name === arg.name
-				const missing = arg.required && !isSet && !arg.default
-				const suggestions = suggestionsFor(arg).filter((choice) => choice !== value)
-				return (
-					<div
-						className={cn(
-							"mt-1 rounded-xs border border-solid px-2 py-1",
-							isCurrent
-								? "border-(--vscode-focusBorder) bg-list-hover"
-								: isSet
-									? "border-success/40"
-									: missing
-										? "border-error/40"
-										: "border-editor-group-border",
-						)}
-						data-testid={`automation-arg-${arg.name}`}
-						key={arg.name}>
-						<div className="flex items-center gap-1.5">
-							<span className="font-mono font-semibold">{arg.name}</span>
-							<span
-								className={cn(
-									"rounded-full border border-solid px-1.5 text-[10px] leading-4",
-									arg.required ? "border-error/50 text-error" : "border-editor-group-border text-description",
-								)}>
-								{arg.required ? "required" : "optional"}
-							</span>
-							<span className="min-w-0 flex-1 truncate text-description">{arg.description}</span>
-							<span className="shrink-0 text-description">{KIND_LABELS[arg.kind]}</span>
-						</div>
-						<div className="mt-0.5 flex flex-wrap items-center gap-1">
-							{isSet ? (
-								<span className="flex items-center gap-0.5 text-success">
-									<span aria-hidden className="codicon codicon-check text-[11px]!" />
-									<span className="ph-no-capture">{String(value)}</span>
-								</span>
-							) : arg.default ? (
-								<span className="text-description">default {arg.default}</span>
-							) : null}
-							{suggestions.map((choice) => (
-								<button
-									className={CHIP_CLASS}
-									data-testid={`automation-arg-${arg.name}-${choice}`}
-									key={choice}
-									onClick={() => set(arg.name, choice)}
-									onMouseDown={(event) => event.preventDefault()}
-									type="button">
-									{arg.kind === "choice" ? choice : `Use ${choice}`}
-								</button>
-							))}
-							{!isSet && !isCurrent && arg.kind !== "choice" && (
-								<LinkButton onClick={() => set(arg.name, "")} onMouseDown={(event) => event.preventDefault()}>
-									type a value
-								</LinkButton>
-							)}
-						</div>
-					</div>
-				)
-			})}
-
 			<div className={cn(SECTION_CLASS, "flex items-baseline gap-2")}>
 				Will run
 				<span className="normal-case tracking-normal font-normal">{summarizeRun(willRun)}</span>
 			</div>
 			<ol className="m-0 mt-1 list-none p-0" data-testid="automation-will-run">
 				{willRun.steps.map((step) => (
-					<li className="mt-0.5" key={`${step.number}-${step.title}`}>
+					<li
+						className={cn(
+							"mt-0.5",
+							step.perItem && "ml-2 border-0 border-l border-solid border-editor-group-border pl-1.5",
+						)}
+						key={`${step.number}-${step.title}`}>
 						<div className="flex items-baseline gap-1.5">
 							<span className="w-4 shrink-0 text-right text-description">{step.number || "·"}</span>
 							<span className="min-w-0 truncate font-medium">{step.title}</span>
-							{step.detail && <span className="min-w-0 flex-1 truncate text-description">{step.detail}</span>}
+							{step.detail && step.kind !== "each" && (
+								<span className="min-w-0 flex-1 truncate text-description">{step.detail}</span>
+							)}
+							{focusedArg && usesArg(definition.steps[step.number - 1], focusedArg) && (
+								<span className="shrink-0 text-link" data-testid={`automation-uses-${step.number}`}>
+									uses {focusedArg}
+								</span>
+							)}
 						</div>
+						{step.kind === "each" && <div className="ml-5.5 text-description">{step.detail}</div>}
 						{step.threads.map((thread) => (
 							<div className="ml-5.5 flex min-w-0 items-baseline gap-1.5" key={thread.title}>
 								{step.threads.length > 1 && <span className="min-w-0 shrink truncate">{thread.title}</span>}
@@ -250,9 +202,14 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 									{thread.problem ?? thread.model}
 								</span>
 								{!thread.problem && <span className="shrink-0 text-description">· {thread.mode}</span>}
-								{thread.worktree && (
+								{thread.worktreeScope && (
 									<span className="shrink-0 text-description">
-										· {thread.worktreeScope === "task" ? "task worktree" : "own worktree"}
+										·{" "}
+										{thread.worktreeScope === "task"
+											? "task worktree"
+											: thread.worktreeScope === "thread"
+												? "own worktree"
+												: "your workspace"}
 									</span>
 								)}
 								{thread.problem && (
@@ -268,7 +225,19 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 					</li>
 				))}
 			</ol>
-			<div className="mt-1.5 text-description" data-testid="automation-cost">
+			<div className="mt-1.5 text-description" data-testid="automation-context">
+				{contextSummary ? (
+					<>
+						<span className="text-foreground">Your context</span> ({contextSummary}){" "}
+						{placed ? "goes where the automation puts {{context}}." : "goes with every thread, after its prompt."}
+					</>
+				) : definition.arguments.length ? (
+					"Fill the arguments below. Anything you type in the box under them goes to the run as context."
+				) : (
+					"Anything you type below goes to the run as context."
+				)}
+			</div>
+			<div className="mt-1 text-description" data-testid="automation-cost">
 				{willRun.cost}
 				{definition.costLimit ? ` Stops itself at ${formatAutomationCost(definition.costLimit)}.` : ""}
 			</div>

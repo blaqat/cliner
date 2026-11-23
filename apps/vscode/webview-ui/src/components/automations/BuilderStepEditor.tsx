@@ -7,6 +7,10 @@ import {
 	automationThreads,
 	automationWorkspace,
 	blankThread,
+	CONTEXT_PLACEHOLDER,
+	eachStepIndex,
+	ITEM_PLACEHOLDER,
+	MAX_EACH_AT_ONCE,
 	uniqueStepId,
 } from "@shared/automations"
 import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
@@ -23,12 +27,18 @@ const LABEL_CLASS = "mt-1.5 mb-0.5 block text-[11px] text-description"
 const CHIP_CLASS =
 	"cursor-pointer rounded-full border border-solid border-editor-group-border bg-transparent px-1.5 font-mono text-[10.5px] leading-4 text-foreground hover:bg-list-hover"
 
-/** Placeholders a step may use: every argument and every step (or together thread) before it. */
+/**
+ * Placeholders a step may use: every argument, the user's context, the item after For each, and every
+ * step (or together thread) before it.
+ */
 export function placeholdersBefore(definition: AutomationDefinition, stepId: string): string[] {
 	const index = definition.steps.findIndex((step) => step.id === stepId)
 	const earlier = definition.steps.slice(0, Math.max(0, index))
+	const each = eachStepIndex(definition.steps)
 	return [
 		...definition.arguments.map((arg) => `{{${arg.name}}}`),
+		`{{${CONTEXT_PLACEHOLDER}}}`,
+		...(each >= 0 && index > each ? [`{{${ITEM_PLACEHOLDER}}}`] : []),
 		...earlier.flatMap((step) =>
 			step.kind === "task"
 				? []
@@ -484,6 +494,55 @@ export function BuilderStepEditor({
 					)}
 					<div className="mt-1 text-[11px] text-description">
 						Later steps get the pick with {`{{steps.${step.id}}}`}: the picked thread's reply, or the choice's name.
+					</div>
+				</div>
+			)
+		}
+		case "each": {
+			const itemPlaceholders = [...placeholders, `{{${ITEM_PLACEHOLDER}}}`]
+			return (
+				<div>
+					{titleField}
+					<PromptField
+						label="The list to go through: one item per line, a JSON list, or comma-separated"
+						onChange={(items) => onChange({ ...step, items: items.replace(/\n/g, " ") })}
+						placeholder="e.g. {{tickets}} or {{steps.plan.list}}"
+						placeholders={placeholders.filter((placeholder) => placeholder !== `{{${CONTEXT_PLACEHOLDER}}}`)}
+						rows={1}
+						testId={`builder-items-${step.id}`}
+						value={step.items}
+					/>
+					<PromptField
+						label="Find each item's task by this ticket (empty makes a new task per item)"
+						onChange={(ticket) => onChange({ ...step, ticket: ticket.replace(/\n/g, " ") })}
+						placeholder="e.g. {{item}}"
+						placeholders={[`{{${ITEM_PLACEHOLDER}}}`]}
+						rows={1}
+						value={step.ticket}
+					/>
+					<PromptField
+						label="Title for a new task (empty uses the item)"
+						onChange={(newTaskTitle) => onChange({ ...step, newTaskTitle: newTaskTitle.replace(/\n/g, " ") })}
+						placeholders={itemPlaceholders.filter((placeholder) => !placeholder.startsWith("{{steps."))}
+						rows={1}
+						value={step.newTaskTitle}
+					/>
+					<label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-description">
+						<span>Items at once</span>
+						<input
+							aria-label="Items at once"
+							className={cn(FIELD_CLASS, "w-14")}
+							max={MAX_EACH_AT_ONCE}
+							min={1}
+							onChange={(event) => onChange({ ...step, atOnce: Number(event.target.value) || 1 })}
+							type="number"
+							value={step.atOnce}
+						/>
+						<span>of up to {MAX_EACH_AT_ONCE}</span>
+					</label>
+					<div className="mt-1 text-[11px] text-description">
+						Every step after this one runs once per item, in that item's task, with {`{{${ITEM_PLACEHOLDER}}}`} as the
+						item. One item failing doesn't stop the others; Retry goes on with only those that didn't finish.
 					</div>
 				</div>
 			)

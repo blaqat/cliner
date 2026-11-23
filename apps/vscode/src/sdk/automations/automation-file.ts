@@ -9,6 +9,7 @@ import {
 	type AutomationOutput,
 	type AutomationStep,
 	type AutomationThreadSpec,
+	DEFAULT_EACH_AT_ONCE,
 	validateAutomation,
 } from "@shared/automations"
 import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
@@ -45,7 +46,7 @@ export interface ParsedAutomationFile {
 	errors: string[]
 }
 
-const STEP_KINDS = ["task", "thread", "together", "checkpoint"] as const
+const STEP_KINDS = ["task", "thread", "together", "checkpoint", "each"] as const
 const FENCE = "````"
 const HEADER_COMMENT = "<!-- Made with the automation builder (Rules & workflows › Automations). Edit it there. -->"
 const META_LINE = /^- ([a-z][a-z ]*):[ \t]*(.*)$/
@@ -207,6 +208,22 @@ function parseSteps(body: string, errors: string[]): AutomationStep[] {
 				steps.push({ kind: "checkpoint", id, title: section.heading, question: section.body, choicesFrom: from, choices })
 				break
 			}
+			case "each": {
+				const raw = section.meta["at once"]
+				const atOnce = raw === undefined || raw === "" ? DEFAULT_EACH_AT_ONCE : Number(raw)
+				if (raw !== undefined && raw !== "" && !Number.isInteger(atOnce))
+					errors.push(`Step "${section.heading}": "at once" must be a whole number`)
+				steps.push({
+					kind: "each",
+					id,
+					title: section.heading,
+					items: section.meta.items ?? "",
+					ticket: section.meta.ticket ?? "",
+					newTaskTitle: section.meta["new task title"] ?? "",
+					atOnce: Number.isInteger(atOnce) ? atOnce : DEFAULT_EACH_AT_ONCE,
+				})
+				break
+			}
 		}
 	}
 	return steps
@@ -363,6 +380,15 @@ export function serializeAutomation(definition: AutomationDefinition): string {
 					],
 					step.question,
 				)
+			case "each":
+				return section(2, heading, [
+					["id", step.id],
+					["kind", "each"],
+					["items", step.items],
+					["ticket", step.ticket],
+					["new task title", step.newTaskTitle],
+					["at once", String(step.atOnce)],
+				])
 		}
 	})
 	const title = definition.title.trim() || definition.name

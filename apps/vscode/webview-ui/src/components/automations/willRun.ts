@@ -5,13 +5,18 @@ import {
 	type AutomationThreadSpec,
 	automationTaskWorktrees,
 	automationWorkspace,
+	CONTEXT_PLACEHOLDER,
+	eachStepIndex,
 	fillPlaceholders,
 	formatAutomationCost,
-	runThreadIds,
+	ITEM_PLACEHOLDER,
+	splitEachItems,
 	withArgumentDefaults,
 } from "@shared/automations"
 import type { HistoryItem } from "@shared/HistoryItem"
 import type { ModelSettingsState } from "@shared/model-settings-state"
+import type { ThreadWorkspaceChoice } from "@shared/thread-worktrees"
+import { runCost } from "./runFacts"
 
 export interface WillRunThread {
 	title: string
@@ -19,7 +24,7 @@ export interface WillRunThread {
 	model: string
 	mode: "Ask" | "Act"
 	worktree: boolean
-	worktreeScope?: "task" | "thread"
+	worktreeScope?: ThreadWorkspaceChoice
 	/** Why it can't start as written; links to Settings › Models. */
 	problem?: string
 }
@@ -31,14 +36,20 @@ export interface WillRunStep {
 	/** One line under the title for steps without threads. */
 	detail?: string
 	threads: WillRunThread[]
+	/** Runs once per item of the For each step before it. */
+	perItem?: boolean
 }
 
-export interface WillRun {
-	steps: WillRunStep[]
+interface RunCounts {
 	threadCount: number
-	models: string[]
 	worktrees: number
 	pauses: number
+}
+
+export interface WillRun extends RunCounts {
+	steps: WillRunStep[]
+	models: string[]
+	perItem?: RunCounts
 	/** Steps that can't run as written; Run stays off until they're fixed. */
 	problems: string[]
 	/** "Cost depends on…" or a range from earlier runs. */
@@ -50,9 +61,11 @@ export function describeRun(
 	definition: AutomationDefinition,
 	values: Readonly<Record<string, string>>,
 	modelSettings: ModelSettingsState | undefined,
-	context: { inTask: boolean; earlierRuns?: readonly AutomationRun[]; history?: readonly HistoryItem[] },
+	context: { inTask: boolean; text?: string; earlierRuns?: readonly AutomationRun[]; history?: readonly HistoryItem[] },
 ): WillRun {
-	const args = withArgumentDefaults(definition.arguments, values)
+	const args: Record<string, string> = withArgumentDefaults(definition.arguments, values)
+	args[CONTEXT_PLACEHOLDER] = context.text?.trim() ?? ""
+	args[ITEM_PLACEHOLDER] = ""
 	// Earlier steps' replies aren't known yet: show where they'll go.
 	const fill = (text: string) =>
 		fillPlaceholders(text, {
@@ -63,13 +76,12 @@ export function describeRun(
 	const models = new Set<string>()
 	const prices = new Map<string, string>()
 	const describeThread = (spec: AutomationThreadSpec, sharesWorktree: boolean): WillRunThread => {
-		const choice = automationWorkspace(spec) ?? (sharesWorktree ? "task" : undefined)
-		const worktreeScope = choice === "task" || choice === "thread" ? choice : undefined
+		const worktreeScope = automationWorkspace(spec) ?? (sharesWorktree ? "task" : undefined)
 		const thread: WillRunThread = {
 			title: fill(spec.title) || spec.id,
 			model: spec.model || "Default",
 			mode: spec.mode === "act" ? "Act" : "Ask",
-			worktree: !!worktreeScope,
+			worktree: worktreeScope === "task" || worktreeScope === "thread",
 			worktreeScope,
 		}
 		if (!modelSettings) {
@@ -94,13 +106,33 @@ export function describeRun(
 		return thread
 	}
 
-	let threadCount = 0
+	const each = eachStepIndex(definition.steps)
 	const { count, threadSteps } = automationTaskWorktrees(definition.steps)
-	let worktrees = count
-	let pauses = 0
+	const itemWorktrees = each < 0 ? 0 : automationTaskWorktrees(definition.steps.slice(each + 1)).count
+	const parent: RunCounts = { threadCount: 0, worktrees: count - itemWorktrees, pauses: 0 }
+	const item: RunCounts = { threadCount: 0, worktrees: itemWorktrees, pauses: 0 }
 	const steps = definition.steps.map((step, index): WillRunStep => {
-		const base = { number: index + 1, kind: step.kind, title: fill(step.title) || step.id }
+		const perItem = each >= 0 && index > each
+		const counts = perItem ? item : parent
+		const base = {
+			number: index + 1,
+			kind: step.kind,
+			title: fill(step.title) || step.id,
+			perItem,
+		}
 		switch (step.kind) {
+			case "each": {
+				const first = index + 2
+				const last = definition.steps.length
+				const items = fill(step.items)
+				const listed = splitEachItems(items)
+				const what = listed.length > 1 ? `${listed.length} items` : listed[0]
+				return {
+					...base,
+					detail: `Steps ${first === last ? first : `${first}–${last}`} run for ${what ? `each of ${what}` : "each item"}, ${step.atOnce} at a time, each in its own task`,
+					threads: [],
+				}
+			}
 			case "task": {
 				const ticket = fill(step.ticket)
 				return { ...base, detail: `Finds the task tagged ${ticket}, or makes one`, threads: [] }
@@ -109,12 +141,12 @@ export function describeRun(
 			case "together": {
 				const specs = step.kind === "thread" ? [step] : step.threads
 				const threads = specs.map((spec) => describeThread(spec, threadSteps.has(step.id)))
-				threadCount += threads.length
-				worktrees += threads.filter((thread) => thread.worktreeScope === "thread").length
+				counts.threadCount += threads.length
+				counts.worktrees += threads.filter((thread) => thread.worktreeScope === "thread").length
 				return { ...base, detail: step.kind === "together" ? `${threads.length} threads at once` : undefined, threads }
 			}
 			case "checkpoint": {
-				pauses++
+				counts.pauses++
 				const from = step.choicesFrom
 					? definition.steps.find((candidate) => candidate.id === step.choicesFrom)
 					: undefined
@@ -133,11 +165,9 @@ export function describeRun(
 
 	// Earlier runs of this automation say what it really costs; prices alone can't.
 	const costs = (context.earlierRuns ?? [])
-		.filter((run) => run.automation === definition.name && run.status === "done")
+		.filter((run) => run.automation === definition.name && run.status === "done" && !run.parent)
 		.slice(-3)
-		.map((run) =>
-			runThreadIds(run).reduce((sum, id) => sum + (context.history?.find((item) => item.id === id)?.totalCost ?? 0), 0),
-		)
+		.map((run) => runCost(run, context.history, context.earlierRuns))
 		.filter((cost) => cost > 0)
 	let cost: string
 	if (costs.length) {
@@ -145,19 +175,29 @@ export function describeRun(
 		const high = Math.max(...costs)
 		const label = costs.length === 1 ? "Last run" : `Last ${costs.length} runs`
 		cost = `${label} ${low === high ? formatAutomationCost(low) : `${formatAutomationCost(low)}–${formatAutomationCost(high)}`}`
-	} else if (threadCount === 0) {
+	} else if (parent.threadCount + item.threadCount === 0) {
 		cost = "No model calls"
 	} else {
 		cost = `Cost depends on how much each thread reads and writes.${
 			prices.size ? ` Per million tokens: ${[...prices.values()].join("; ")}.` : ""
 		}`
 	}
-	return { steps, threadCount, models: [...models], worktrees, pauses, problems, cost }
+	return { ...parent, steps, models: [...models], problems, cost, ...(each >= 0 ? { perItem: item } : {}) }
 }
 
 /** "4 threads on 3 models · 1 worktree · pauses once". */
 export function summarizeRun(willRun: WillRun): string {
 	const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+	const work = (counts: RunCounts) =>
+		[
+			counts.threadCount ? plural(counts.threadCount, "thread") : "",
+			counts.worktrees ? plural(counts.worktrees, "worktree") : "",
+			counts.pauses ? (counts.pauses === 1 ? "pauses once" : `pauses ${counts.pauses} times`) : "",
+		].filter(Boolean)
+	if (willRun.perItem) {
+		const perItem = work(willRun.perItem).join(", ")
+		return [...work(willRun), perItem && `${perItem} per item`].filter(Boolean).join(" · ")
+	}
 	const parts = [
 		willRun.threadCount
 			? `${plural(willRun.threadCount, "thread")}${willRun.models.length ? ` on ${plural(willRun.models.length, "model")}` : ""}`

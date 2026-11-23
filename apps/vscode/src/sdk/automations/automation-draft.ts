@@ -66,15 +66,36 @@ Which review should the build follow?
 - kind: thread
 - model: default
 - mode: act
-- worktree: new
+- worktree: task
 
 Build it following:
 
 {{steps.pick}}
 
+For work over several items (tickets, files, services), one For each step fans out, and every step after it runs once per item in that item's own task:
+
+## For each ticket
+- id: each
+- kind: each
+- items: {{tickets}}
+- ticket: {{item}}
+- at once: 3
+
+## Fix it
+- id: fix
+- kind: thread
+- model: default
+- mode: act
+- worktree: task
+
+Fix {{item}}.
+
 Rules:
-- Step kinds: task (find or open the task for a ticket; only as the first step), thread (one prompt thread), together (two or more ### threads that run at the same time; each may have its own prompt, otherwise they share the step's prompt), checkpoint (waits for the user to pick; "choices from: <together id>" offers that group's threads, or "choices: A, B").
-- mode is ask (reads and answers) or act (edits files). Use act only for steps that change code, and give those "worktree: new".
+- Step kinds: task (find or open the task for a ticket; only as the first step), thread (one prompt thread), together (two or more ### threads that run at the same time; each may have its own prompt, otherwise they share the step's prompt), checkpoint (waits for the user to pick; "choices from: <together id>" offers that group's threads, or "choices: A, B"), each (For each, described next).
+- each: "items:" is the list after placeholders are filled: one item per line, a JSON list, or comma-separated (an argument like {{tickets}} or an earlier output like {{steps.plan.list}}). "ticket: {{item}}" finds each item's task by ticket; leave it out to make a new task per item ("new task title:" names it). "at once:" is how many items run at the same time (1 to 8, default 3). Use at most one each step, never as the last step. {{item}} is the current item in the each step and every step after it, and only there. Steps before it run once.
+- {{context}} is optional extra context the user types when starting a run. Without {{context}} anywhere, every thread gets it after its prompt automatically, so only write {{context}} to put it in one specific place.
+- mode is ask (reads and answers) or act (edits files). Use act only for steps that change code.
+- worktree: task shares one worktree across the task's threads, including within each item's task. Use it for steps that edit code. Use "worktree: thread" for a separate attempt or "worktree: workspace" to use the user's workspace.
 - Write "model: default" unless the description names a model. Only add "level:" when the description asks for one.
 - {{name}} fills in an argument; {{steps.id}} fills in an earlier step's final reply.
 - A thread step or a ### member can declare named outputs using "- output name: Description" (one line per output). Use "{{steps.id.name}}" in later steps to read one. Use the member id for members of a together step. Never refer to a later step or another thread in the same together step.
