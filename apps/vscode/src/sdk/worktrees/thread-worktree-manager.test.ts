@@ -131,6 +131,23 @@ it("hints at mm config in the folder, checks mm.js is there and expands ~ in pat
 	})
 })
 
+it("merges a changed field into what's saved, so two windows don't undo each other", async () => {
+	// Another window shares this storage folder.
+	const other = new ThreadWorktreeManager(storage)
+	await manager.configure({ mmPath: path.join(temp, "window-b-mm.js") })
+	// This window's next save changes only the Node path; it must not bring back the mm.js it last saw.
+	await other.configure({ nodePath: "/window-a/node" })
+	expect(await manager.settings()).toEqual({
+		mode: "git",
+		mmPath: path.join(temp, "window-b-mm.js"),
+		nodePath: "/window-a/node",
+	})
+	await Promise.all([manager.configure({ mode: "mm" }), other.configure({ nodePath: "node" })])
+	expect(await manager.settings()).toMatchObject({ mode: "mm", nodePath: "node" })
+	await expect(manager.configure({ mode: "bogus" as never })).rejects.toThrow("Invalid worktree settings")
+	await expect(manager.configure({ nodePath: 3 as never })).rejects.toThrow("Invalid worktree settings")
+})
+
 it("caches discovery until settings, an explicit refresh, or create request new results", async () => {
 	expect(await manager.availability(workspace)).toMatchObject({ mode: "git", available: true })
 	await write(workspace, ".mm.json", "{")

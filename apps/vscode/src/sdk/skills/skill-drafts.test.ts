@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { AgentToolContext } from "@cline/shared"
+import { readSdkEnabledState } from "@core/context/instructions/user-instructions/frontmatter"
 import { SKILL_DRAFTS_ID } from "@shared/skillsets"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { NotebookStore } from "../task-groups/notebook-store"
@@ -134,6 +135,100 @@ describe("skill drafts", () => {
 		// Its on/off state is the user's; an edit doesn't flip it.
 		expect(parsed.extra.disabled).toBe(true)
 		expect(enabled).toEqual([])
+	})
+
+	describe("keeping an edit of an existing skill", () => {
+		const skillFile = async (text: string) => {
+			const dir = path.join(root, "global-skills", "sql-style")
+			await fs.mkdir(dir, { recursive: true })
+			const file = path.join(dir, "SKILL.md")
+			await fs.writeFile(file, text)
+			return file
+		}
+
+		it.each([
+			["LF", "\n"],
+			["CRLF", "\r\n"],
+		])("changes only the body of a disabled legacy skill, bytes and comments intact (%s)", async (_label, eol) => {
+			const head = [
+				"\uFEFF---",
+				"# Team skill: keep this comment",
+				"name: sql-style",
+				'description: "SQL, house style" # shown',
+				"enabled: false",
+				"extra:   [1,  2]",
+				"---",
+				"",
+			]
+			const file = await skillFile(`${head.join(eol)}${eol}old line${eol}`)
+			await execute({ kind: "skill", name: "sql-style", content: "old line\nnew line" })
+			await keep("skill-sql-style")
+			expect(await fs.readFile(file, "utf8")).toBe(`${head.join(eol)}${eol}old line${eol}new line${eol}`)
+			expect(readSdkEnabledState(await fs.readFile(file, "utf8"), "skill")).toBe(false)
+			expect(enabled).toEqual([])
+		})
+
+		it("leaves the front matter's own line endings alone when the body uses others", async () => {
+			const head = "---\nname: sql-style\ndescription: SQL\nenabled: false\n---\n\n"
+			const file = await skillFile(`${head}old line\r\nsecond\r\n`)
+			await execute({ kind: "skill", name: "sql-style", content: "old line\nsecond\nthird" })
+			await keep("skill-sql-style")
+			expect(await fs.readFile(file, "utf8")).toBe(`${head}old line\r\nsecond\r\nthird\r\n`)
+		})
+
+		it("keeps a legacy enabled: false skill off, and its comments, when the description is edited", async () => {
+			const file = await skillFile(
+				"\uFEFF---\n# keep me\nname: sql-style\ndescription: SQL\nenabled: false\n---\n\nold line\n",
+			)
+			await execute({ kind: "skill", name: "sql-style", content: "old line\nnew line" })
+			await store.updatePendingSkill(SKILL_DRAFTS_ID, "t1", "skill-sql-style", {
+				description: "SQL style: the house rules",
+			})
+			await keep("skill-sql-style")
+			const text = await fs.readFile(file, "utf8")
+			expect(readSdkEnabledState(text, "skill")).toBe(false)
+			expect(text.startsWith("\uFEFF---\n# keep me\n")).toBe(true)
+			expect(parseSkillMarkdown(text)).toMatchObject({ name: "sql-style", description: "SQL style: the house rules" })
+			expect(parseSkillMarkdown(text).body).toContain("new line")
+		})
+
+		it("fixes a name that doesn't match its folder without turning the skill back on", async () => {
+			const file = await skillFile("---\nname: SQL Style\ndescription: SQL\nenabled: false\n---\n\nold line\n")
+			await execute({ kind: "skill", name: "sql-style", content: "new line" })
+			await keep("skill-sql-style")
+			const text = await fs.readFile(file, "utf8")
+			expect(parseSkillMarkdown(text)).toMatchObject({ name: "sql-style", description: "SQL" })
+			expect(readSdkEnabledState(text, "skill")).toBe(false)
+		})
+
+		it("keeps a disabled skill off when its front matter has to be rebuilt", async () => {
+			// A front matter block that isn't a mapping can't be edited in place.
+			const file = await skillFile("---\n- not\n- a mapping\n---\n\nold line\n")
+			await execute({ kind: "skill", name: "sql-style", description: "SQL", content: "new line" })
+			await keep("skill-sql-style")
+			const text = await fs.readFile(file, "utf8")
+			expect(parseSkillMarkdown(text)).toMatchObject({ name: "sql-style", description: "SQL" })
+			expect(parseSkillMarkdown(text).body).toContain("new line")
+		})
+
+		it("keeps the BOM of a workflow that has no front matter", async () => {
+			await fs.mkdir(path.join(root, "workflows"))
+			const file = path.join(root, "workflows", "plain.md")
+			await fs.writeFile(file, "\uFEFFold step\n")
+			await execute({ kind: "workflow", name: "plain", content: "old step\nnew step" })
+			await keep("workflow-plain")
+			expect(await fs.readFile(file, "utf8")).toBe("\uFEFFold step\nnew step\n")
+		})
+
+		it("keeps a disabled legacy workflow's front matter byte for byte", async () => {
+			await fs.mkdir(path.join(root, "workflows"))
+			const file = path.join(root, "workflows", "ship.md")
+			const head = "\uFEFF---\n# comment\nenabled: false\ndescription: Ship   it\n---\n\n"
+			await fs.writeFile(file, `${head}step one\n`)
+			await execute({ kind: "workflow", name: "ship", content: "step one\nstep two" })
+			await keep("workflow-ship")
+			expect(await fs.readFile(file, "utf8")).toBe(`${head}step one\nstep two\n`)
+		})
 	})
 
 	it("refuses unsafe or misplaced files", async () => {

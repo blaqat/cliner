@@ -3240,7 +3240,7 @@ export class Controller {
 				}
 			}
 			case "configure":
-				await this.threadWorktrees.configure(data as ThreadWorktreeSettings)
+				await this.threadWorktrees.configure(data as Partial<ThreadWorktreeSettings>)
 				return {}
 			// The fixes an automation's worktree failure links to; each only on the user's click.
 			case "openFolder":

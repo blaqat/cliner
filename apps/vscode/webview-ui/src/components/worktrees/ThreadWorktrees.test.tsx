@@ -227,15 +227,17 @@ function serveSettings() {
 	mocks.action.mockImplementation(async (request) => {
 		const data = request.json ? JSON.parse(request.json) : {}
 		if (request.action === "configure") {
+			// A save names only what changed; the host merges it into what it has.
+			const settings = { ...mocks.state.settings, ...data }
 			mocks.state = {
 				...mocks.state,
-				settings: data,
-				mmFound: data.mmPath ? data.mmPath === "/tools/mm.js" : undefined,
+				settings,
+				mmFound: settings.mmPath ? settings.mmPath === "/tools/mm.js" : undefined,
 				availability: {
 					...mocks.state.availability,
-					mode: data.mode,
-					available: data.mode !== "off",
-					reason: data.mode === "off" ? WORKTREES_OFF : undefined,
+					mode: settings.mode,
+					available: settings.mode !== "off",
+					reason: settings.mode === "off" ? WORKTREES_OFF : undefined,
 				},
 			}
 		}
@@ -261,7 +263,7 @@ describe("WorktreeSettings", () => {
 		render(<WorktreeSettings />)
 		fireEvent.keyDown(await screen.findByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
 		fireEvent.keyDown(await screen.findByRole("option", { name: "mm" }), { key: "Enter" })
-		await waitFor(() => expect(configured()).toEqual([{ mode: "mm", mmPath: "", nodePath: "node" }]))
+		await waitFor(() => expect(configured()).toEqual([{ mode: "mm" }]))
 		expect(screen.queryByText(/Save worktree settings/)).toBeNull()
 
 		const mmPath = await screen.findByLabelText("Path to mm.js")
@@ -274,7 +276,7 @@ describe("WorktreeSettings", () => {
 		fireEvent.change(mmPath, { target: { value: " /tools/mm.js " } })
 		fireEvent.blur(mmPath)
 		await waitFor(() => expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Found mm.js."))
-		expect(configured().at(-1)).toEqual({ mode: "mm", mmPath: "/tools/mm.js", nodePath: "node" })
+		expect(configured().at(-1)).toEqual({ mmPath: "/tools/mm.js" })
 
 		// Escape puts back the saved path; leaving an unchanged box saves nothing.
 		const saves = configured().length
@@ -285,10 +287,37 @@ describe("WorktreeSettings", () => {
 		const node = screen.getByLabelText("Path to node")
 		fireEvent.change(node, { target: { value: "/usr/local/bin/node" } })
 		fireEvent.blur(node)
-		await waitFor(() =>
-			expect(configured().at(-1)).toEqual({ mode: "mm", mmPath: "/tools/mm.js", nodePath: "/usr/local/bin/node" }),
-		)
+		await waitFor(() => expect(configured().at(-1)).toEqual({ nodePath: "/usr/local/bin/node" }))
 		expect(configured()).toHaveLength(saves + 1)
+	})
+
+	it("keeps a path typed while the last one is still saving", async () => {
+		serveSettings()
+		const serve = mocks.action.getMockImplementation()!
+		let finish!: () => void
+		mocks.action.mockImplementation(async (request) => {
+			if (request.action !== "configure") return serve(request)
+			await new Promise<void>((resolve) => {
+				finish = resolve
+			})
+			return serve(request)
+		})
+		mocks.state = { ...mocks.state, settings: { mode: "mm", mmPath: "/tools/mm.js", nodePath: "node" } }
+		render(<WorktreeSettings />)
+		const node = await screen.findByLabelText("Path to node")
+		fireEvent.change(node, { target: { value: "/first/node" } })
+		fireEvent.blur(node)
+		await waitFor(() => expect(configured()).toHaveLength(1))
+		// The save hasn't come back yet; the user keeps typing.
+		fireEvent.change(node, { target: { value: "/second/node" } })
+		finish()
+		await waitFor(() => expect(screen.getByLabelText("Path to node")).toBeEnabled())
+		expect(screen.getByLabelText("Path to node")).toHaveValue("/second/node")
+		// Leaving the box saves what was typed after.
+		fireEvent.blur(screen.getByLabelText("Path to node"))
+		await waitFor(() => expect(configured()).toHaveLength(2))
+		finish()
+		expect(configured().at(-1)).toEqual({ nodePath: "/second/node" })
 	})
 
 	it("with Mode off says so instead of offering the workspace switch, and offers mm in an mm folder", async () => {
@@ -304,7 +333,7 @@ describe("WorktreeSettings", () => {
 		expect(screen.queryByLabelText("Use worktrees in this workspace")).toBeNull()
 		expect(screen.getByTestId("worktrees-mm-hint")).toHaveTextContent("This folder is an mm workspace (.mmrc).")
 		fireEvent.click(screen.getByRole("button", { name: "Use mm" }))
-		await waitFor(() => expect(configured()).toEqual([{ mode: "mm", mmPath: "", nodePath: "node" }]))
+		await waitFor(() => expect(configured()).toEqual([{ mode: "mm" }]))
 		// mm.js still needs its path: the path box takes focus and says so; the hint has done its job.
 		await waitFor(() => expect(screen.getByLabelText("Path to mm.js")).toHaveFocus())
 		expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Set the path to mm.js to use mm.")
@@ -394,7 +423,7 @@ describe("WorktreeSettings", () => {
 		fireEvent.keyDown(screen.getByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
 		fireEvent.keyDown(await screen.findByRole("option", { name: "Git worktree" }), { key: "Enter" })
 		await waitFor(() => expect(screen.getByTestId("worktrees-status")).toHaveTextContent("Ready."))
-		expect(configured()).toEqual([{ mode: "git", mmPath: "", nodePath: "node" }])
+		expect(configured()).toEqual([{ mode: "git" }])
 		expect(mocks.action).toHaveBeenCalledWith(
 			expect.objectContaining({ action: "workspaceOff", json: JSON.stringify({ disabled: false }) }),
 		)

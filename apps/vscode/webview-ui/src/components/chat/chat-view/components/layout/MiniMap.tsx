@@ -7,6 +7,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import {
+	createMinimapTurnCache,
 	getMinimapTurns,
 	getVisibleMinimapTurns,
 	MINIMAP_MIN_TURNS,
@@ -87,7 +88,13 @@ function visibleRows(scroller: HTMLElement): { first: number; last: number } | u
  */
 export const MiniMap = memo(
 	({ messages, rows, task, listKey, scrollContainerRef, autoScrollDisabledRef, turnActive, onJump }: MiniMapProps) => {
-		const turns = useMemo(() => getMinimapTurns(messages, rows, task, turnActive), [messages, rows, task, turnActive])
+		// Turns before the last one don't change while its reply streams in: each update picks up from
+		// the last prompt instead of scanning the whole thread again.
+		const turnCache = useRef<ReturnType<typeof createMinimapTurnCache>>()
+		const turns = useMemo(() => {
+			turnCache.current ??= createMinimapTurnCache()
+			return getMinimapTurns(messages, rows, task, turnActive, turnCache.current)
+		}, [messages, rows, task, turnActive])
 		const [width, setWidth] = useState(WIDE_CHAT_WIDTH)
 		const [visible, setVisible] = useState<{ first: number; last: number }>({
 			first: Number.MAX_SAFE_INTEGER,

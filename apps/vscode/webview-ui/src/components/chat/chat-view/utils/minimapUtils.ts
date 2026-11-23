@@ -119,15 +119,53 @@ function userSnippet(message: ClineMessage): string {
 	return toSnippet(text)
 }
 
-/** Maps every rendered message (including members of grouped rows) to its row index. */
-function indexRows(rows: readonly (ClineMessage | ClineMessage[])[]): Map<number, number> {
+/**
+ * Maps rendered messages (including members of grouped rows) to their row index. With `fromTs`,
+ * only the rows from the one holding that message on (walking back from the end), which is all a
+ * resumed scan looks at.
+ */
+function indexRows(rows: readonly (ClineMessage | ClineMessage[])[], fromTs?: number): Map<number, number> {
+	let first = 0
+	if (fromTs !== undefined) {
+		// Rows are in transcript order: walk back to the first row that starts before the message.
+		first = rows.length
+		while (first > 0) {
+			const row = rows[--first]
+			if (((Array.isArray(row) ? row[0] : row)?.ts ?? 0) < fromTs) {
+				break
+			}
+		}
+	}
 	const rowByTs = new Map<number, number>()
-	rows.forEach((row, index) => {
+	for (let index = first; index < rows.length; index++) {
+		const row = rows[index]
 		for (const message of Array.isArray(row) ? row : [row]) {
 			rowByTs.set(message.ts, index)
 		}
-	})
+	}
 	return rowByTs
+}
+
+/**
+ * What a scan leaves behind so the next one can pick up from the last turn's prompt: the turns
+ * before it (finished, so they no longer change as the reply streams) and where it starts.
+ */
+export interface MinimapTurnCache {
+	/** Transcript index the last turn started at; 0 when everything is still one turn. */
+	resumeAt: number
+	/** The turns before the last one, as the scan left them. */
+	finished: MinimapTurn[]
+	/** What the finished turns were derived from: the task and the messages around the resume point. */
+	taskTs?: number
+	firstTs?: number
+	beforeTs?: number
+	atTs?: number
+	/** Row the last turn started at: finished turns' rows are only still right while it hasn't moved. */
+	resumeRow?: number
+}
+
+export function createMinimapTurnCache(): MinimapTurnCache {
+	return { resumeAt: 0, finished: [] }
 }
 
 /**
@@ -140,6 +178,10 @@ function indexRows(rows: readonly (ClineMessage | ClineMessage[])[]): Map<number
  * Turns come from the unfiltered transcript (`messages`), since the rendered `rows` hide some
  * user messages (e.g. the echo of a selected followup option); jump targets are then mapped
  * onto the rendered rows.
+ *
+ * One pass over the transcript. With a `cache` (kept between calls on the same thread) the pass
+ * starts at the previous last turn's prompt and reuses the turns before it, so a reply streaming
+ * in costs the size of the last turn, not of the thread.
  */
 export function getMinimapTurns(
 	messages: readonly ClineMessage[],
@@ -150,13 +192,64 @@ export function getMinimapTurns(
 	 * streaming: `partial` flips off and on between every message of a turn.
 	 */
 	turnActive?: boolean,
+	cache?: MinimapTurnCache,
 ): MinimapTurn[] {
-	const turns: MinimapTurn[] = []
-	const rowByTs = indexRows(rows)
+	// Pick up from the cache if what it was derived from is still there.
+	let from = 0
+	let finished: MinimapTurn[] = []
+	if (
+		cache &&
+		cache.resumeAt > 0 &&
+		cache.resumeAt < messages.length &&
+		cache.taskTs === task?.ts &&
+		cache.firstTs === messages[0].ts &&
+		cache.beforeTs === messages[cache.resumeAt - 1].ts &&
+		cache.atTs === messages[cache.resumeAt].ts
+	) {
+		from = cache.resumeAt
+		finished = cache.finished
+	}
+	const scanned = scanTurns(messages, rows, task, from, finished, cache?.resumeRow, turnActive)
+	if (!scanned) {
+		// The rows moved under the finished turns: start over.
+		if (cache) {
+			Object.assign(cache, createMinimapTurnCache())
+		}
+		return getMinimapTurns(messages, rows, task, turnActive, cache)
+	}
+	if (cache) {
+		const resumeAt = scanned.lastStartedAt
+		Object.assign(cache, {
+			resumeAt,
+			finished: scanned.turns.slice(0, -1),
+			taskTs: task?.ts,
+			firstTs: messages[0]?.ts,
+			beforeTs: messages[resumeAt - 1]?.ts,
+			atTs: messages[resumeAt]?.ts,
+			resumeRow: scanned.turns.at(-1)?.startIndex,
+		})
+	}
+	return scanned.turns
+}
+
+function scanTurns(
+	messages: readonly ClineMessage[],
+	rows: readonly (ClineMessage | ClineMessage[])[],
+	task: ClineMessage | undefined,
+	from: number,
+	finished: MinimapTurn[],
+	resumeRow: number | undefined,
+	turnActive: boolean | undefined,
+): { turns: MinimapTurn[]; lastStartedAt: number } | undefined {
+	const turns: MinimapTurn[] = [...finished]
+	const rowByTs = indexRows(rows, from > 0 ? messages[from].ts : undefined)
 	let turn: MinimapTurn | undefined
 	// What the turn's reply ended on, to flag a turn left waiting or failed.
 	let last: ClineMessage | undefined
-	const start = (index: number, ts: number, prompt: string) => {
+	// Per turn, the last rendered message that isn't bookkeeping: what a finished turn ended on.
+	const endedOn = new Map<MinimapTurn, ClineMessage>()
+	let lastStartedAt = 0
+	const start = (index: number, ts: number, prompt: string, messageIndex: number) => {
 		turn = {
 			index,
 			startIndex: index,
@@ -169,24 +262,27 @@ export function getMinimapTurns(
 			streaming: false,
 		}
 		last = undefined
+		lastStartedAt = messageIndex
 		turns.push(turn)
 	}
-	if (task) {
-		start(rowByTs.get(task.ts) ?? 0, task.ts, userSnippet(task))
+	if (task && from === 0) {
+		start(rowByTs.get(task.ts) ?? 0, task.ts, userSnippet(task), 0)
 	}
 
-	// Nearest rendered row at or after message `from`.
-	const nextRenderedRow = (from: number): number | undefined => {
-		for (let i = from; i < messages.length; i++) {
-			const row = rowByTs.get(messages[i].ts)
-			if (row !== undefined) {
-				return row
+	// Nearest rendered row at or after message `from`, from a table built the first time it's asked.
+	let nextRows: (number | undefined)[] | undefined
+	const nextRenderedRow = (at: number): number | undefined => {
+		if (!nextRows) {
+			nextRows = new Array(messages.length + 1)
+			for (let i = messages.length - 1; i >= from; i--) {
+				nextRows[i] = rowByTs.get(messages[i].ts) ?? nextRows[i + 1]
 			}
 		}
-		return undefined
+		return nextRows[at]
 	}
 
-	messages.forEach((message, messageIndex) => {
+	for (let messageIndex = from; messageIndex < messages.length; messageIndex++) {
+		const message = messages[messageIndex]
 		const row = rowByTs.get(message.ts)
 		if (isUserMessage(message)) {
 			// A hidden user message (the echo of a selected followup option) jumps to the
@@ -195,16 +291,16 @@ export function getMinimapTurns(
 			const optionRow = previous?.type === "ask" ? rowByTs.get(previous.ts) : undefined
 			const index = row ?? optionRow ?? nextRenderedRow(messageIndex + 1)
 			if (index !== undefined) {
-				start(index, message.ts, userSnippet(message))
+				start(index, message.ts, userSnippet(message), messageIndex)
 			}
-			return
+			continue
 		}
 		if (!turn) {
 			// Agent output before any prompt (no task row): a turn without a prompt.
 			if (row === undefined) {
-				return
+				continue
 			}
-			start(row, message.ts, "")
+			start(row, message.ts, "", messageIndex)
 		}
 		const current = turn as MinimapTurn
 		const text = agentText(message)?.trim()
@@ -220,11 +316,20 @@ export function getMinimapTurns(
 		}
 		if (!isBookkeeping(message)) {
 			last = message
+			if (row !== undefined) {
+				endedOn.set(current, message)
+			}
 		}
 		if (row !== undefined && row > current.endIndex) {
 			current.endIndex = row
 		}
-	})
+	}
+
+	// The first turn of a resumed scan starts where the cached one did; if its row moved, the
+	// finished turns' rows can't be trusted.
+	if (from > 0 && turns[finished.length]?.startIndex !== resumeRow) {
+		return undefined
+	}
 
 	const final = turns.at(-1)
 	if (final) {
@@ -239,32 +344,19 @@ export function getMinimapTurns(
 			final.attention = "question"
 		}
 	}
-	// A turn that ended on an error (rather than recovering) is flagged wherever it is.
-	for (const [i, item] of turns.entries()) {
+	// A turn that ended on an error (rather than recovering) is flagged wherever it is. The turns
+	// carried over from the cache were settled when they were scanned.
+	for (let i = finished.length; i < turns.length; i++) {
+		const item = turns[i]
 		if (item.errors === 0 || item.attention) {
 			continue
 		}
-		const endedOn = i === turns.length - 1 ? last : undefined
-		if (endedOn ? isError(endedOn) : endsOnError(messages, rowByTs, item)) {
+		const ended = i === turns.length - 1 ? last : endedOn.get(item)
+		if (ended && isError(ended)) {
 			item.attention = "error"
 		}
 	}
-	return turns
-}
-
-/** Whether the last non-bookkeeping message rendered in a finished turn's rows is an error. */
-function endsOnError(messages: readonly ClineMessage[], rowByTs: Map<number, number>, turn: MinimapTurn): boolean {
-	let ended: ClineMessage | undefined
-	for (const message of messages) {
-		const row = rowByTs.get(message.ts)
-		if (row === undefined || row < turn.startIndex || row > turn.endIndex) {
-			continue
-		}
-		if (!isUserMessage(message) && !isBookkeeping(message)) {
-			ended = message
-		}
-	}
-	return !!ended && isError(ended)
+	return { turns, lastStartedAt }
 }
 
 /** Stable identity of a strip: unlike `ts` of the reply, it doesn't change as the turn grows. */

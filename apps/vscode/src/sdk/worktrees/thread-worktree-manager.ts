@@ -201,8 +201,17 @@ export class ThreadWorktreeManager {
 	settings() {
 		return this.read<ThreadWorktreeSettings>("settings.json", defaults)
 	}
-	async configure(settings: ThreadWorktreeSettings) {
+	/**
+	 * Saves the fields in `change` over what's on disk now, read under the lock. Settings can be open in
+	 * another window, so a save names only what the user changed and never restores what it last saw.
+	 */
+	async configure(change: Partial<ThreadWorktreeSettings>) {
 		return this.exclusive(async () => {
+			// A settings file that can't be read is replaced, as before, rather than blocking every save.
+			const settings = { ...(await this.settings().catch(() => defaults)) }
+			if (change.mode !== undefined) settings.mode = change.mode
+			if (change.mmPath !== undefined) settings.mmPath = change.mmPath
+			if (change.nodePath !== undefined) settings.nodePath = change.nodePath
 			if (
 				!["off", "git", "mm"].includes(settings.mode) ||
 				typeof settings.mmPath !== "string" ||
@@ -210,7 +219,11 @@ export class ThreadWorktreeManager {
 			)
 				throw new Error("Invalid worktree settings")
 			const home = (value: string) => value.trim().replace(/^~(?=$|[\\/])/, os.homedir())
-			await this.write("settings.json", { ...settings, mmPath: home(settings.mmPath), nodePath: home(settings.nodePath) })
+			await this.write("settings.json", {
+				mode: settings.mode,
+				mmPath: home(settings.mmPath),
+				nodePath: home(settings.nodePath),
+			})
 			this.mmWorkspaces.clear()
 		})
 	}

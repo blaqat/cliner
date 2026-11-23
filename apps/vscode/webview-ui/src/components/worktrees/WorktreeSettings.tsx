@@ -82,10 +82,14 @@ function PathField({
 	children?: ReactNode
 }) {
 	const [draft, setDraft] = useState<string>()
+	// The latest text in the box, for after a save: typing goes on while one is out.
+	const latest = useRef(draft)
+	latest.current = draft
 	const commit = async () => {
 		if (draft === undefined) return
 		if (draft.trim() !== saved) await onSave(draft.trim())
-		setDraft(undefined)
+		// Only drop the draft if the box still holds what was saved; otherwise the user has typed on.
+		if (latest.current === draft) setDraft(undefined)
 	}
 	return (
 		<div className="space-y-1.5 py-2">
@@ -156,8 +160,6 @@ export function WorktreeSettings() {
 	// A control to focus, and how to bring it into view.
 	const [focusNext, setFocusNext] = useState<{ id: string; block: ScrollLogicalPosition }>()
 	const [landed, setLanded] = useState(false)
-	// The settings last sent, so a path saved right after a mode change doesn't put the old mode back.
-	const sent = useRef<ThreadWorktreeSettings>()
 
 	// Every link here ("Turn on in Settings", a failed thread's or an automation's "Worktree settings",
 	// search) opens the Worktrees row and highlights it. The shell focuses Mode, often before these
@@ -207,16 +209,15 @@ export function WorktreeSettings() {
 
 	const { settings, availability } = state
 	const save = async (change: Partial<ThreadWorktreeSettings>) => {
-		const next = { ...(sent.current ?? settings), ...change }
-		sent.current = next
 		await run(async () => {
-			await threadWorktreeAction("configure", "", next)
+			// Only what changed goes to the host, which merges it into what's saved: Settings can be open in
+			// another window, and a whole copy of what this one last saw would undo that window's change.
+			await threadWorktreeAction("configure", "", change)
 			// Turning worktrees on from Off, here, means using them here: undo this workspace's off switch
 			// too, so one pick is enough (the old "Off for this workspace" switch was easy to flip by mistake).
-			if (settings.mode === "off" && next.mode !== "off" && availability.workspaceOff)
+			if (settings.mode === "off" && change.mode && change.mode !== "off" && availability.workspaceOff)
 				await threadWorktreeAction("workspaceOff", "", { disabled: false })
 		})
-		if (sent.current === next) sent.current = undefined
 	}
 	const showMm = settings.mode === "mm" || !!settings.mmPath
 	// The folder has mm config but mm isn't what worktrees use here yet. In mm mode the mm.js box says what's left.

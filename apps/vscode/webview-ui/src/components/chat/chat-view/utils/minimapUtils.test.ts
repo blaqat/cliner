@@ -2,6 +2,7 @@ import type { ClineMessage } from "@shared/ExtensionMessage"
 import { describe, expect, it } from "vitest"
 import { filterVisibleMessages, groupLowStakesTools, groupMessages } from "./messageUtils"
 import {
+	createMinimapTurnCache,
 	getMinimapKind,
 	getMinimapTurns,
 	getVisibleMinimapTurns,
@@ -208,6 +209,95 @@ describe("getMinimapTurns", () => {
 		expect(performance.now() - started).toBeLessThan(100)
 		expect(turns).toHaveLength(300)
 		expect(turns.at(-1)).toMatchObject({ prompt: "turn 299", reply: "reply 299", streaming: true })
+	})
+})
+
+describe("getMinimapTurns work", () => {
+	/** `say`/`ask` messages whose `ts` reads are counted: a read per message per pass is the unit of work. */
+	const counted = (reads: { count: number }, message: ClineMessage): ClineMessage => {
+		const { ts, ...rest } = message
+		return Object.defineProperty(rest, "ts", {
+			get() {
+				reads.count++
+				return ts
+			},
+			enumerable: true,
+		}) as ClineMessage
+	}
+	/** `turns` turns of three messages each; every other turn hits an error and recovers or ends on it. */
+	const thread = (turns: number, reads: { count: number }): ClineMessage[] => {
+		const messages: ClineMessage[] = []
+		for (let i = 0; i < turns; i++) {
+			messages.push(
+				counted(reads, say(i * 3 + 1, "user_feedback", `turn ${i}`)),
+				counted(reads, say(i * 3 + 2, "text", `reply ${i}`)),
+				counted(reads, i % 2 ? say(i * 3 + 3, "error", "boom") : say(i * 3 + 3, "tool", "{}")),
+			)
+		}
+		return messages
+	}
+	const derive = (messages: ClineMessage[], cache?: ReturnType<typeof createMinimapTurnCache>) =>
+		getMinimapTurns(messages, messages, undefined, true, cache)
+
+	it("reads each message a constant number of times, however many turns ended on an error", () => {
+		const small = { count: 0 }
+		const large = { count: 0 }
+		derive(thread(100, small))
+		derive(thread(400, large))
+		// 4x the messages, about 4x the reads (not 16x).
+		expect(large.count / small.count).toBeLessThan(4.5)
+		expect(large.count).toBeLessThan(400 * 3 * 8)
+	})
+
+	it("flags the same turns whether it starts fresh or picks up where the last update left off", () => {
+		const reads = { count: 0 }
+		const messages = thread(60, reads)
+		const cache = createMinimapTurnCache()
+		for (let end = 12; end <= messages.length; end += 5) {
+			const part = messages.slice(0, end)
+			expect(derive(part, cache)).toEqual(derive(part))
+		}
+		expect(derive(messages, cache).filter((turn) => turn.attention === "error").length).toBeGreaterThan(10)
+	})
+
+	it("only reads the last turn when a streamed update arrives", () => {
+		const reads = { count: 0 }
+		const messages = thread(200, reads)
+		const cache = createMinimapTurnCache()
+		derive(messages, cache)
+		// The reply streams: the last message is replaced by a longer copy, again and again.
+		for (let update = 0; update < 5; update++) {
+			const next = [...messages.slice(0, -1), counted(reads, say(600, "text", `reply ${"x".repeat(update + 1)}`, true))]
+			reads.count = 0
+			const turns = derive(next, cache)
+			expect(reads.count).toBeLessThan(40)
+			expect(turns.at(-1)).toMatchObject({ reply: `reply ${"x".repeat(update + 1)}`, streaming: true })
+			expect(turns).toEqual(derive(next))
+		}
+	})
+
+	it("starts over when rows shift under the turns it kept", () => {
+		const reads = { count: 0 }
+		const messages = thread(10, reads)
+		const cache = createMinimapTurnCache()
+		getMinimapTurns(messages, messages, undefined, true, cache)
+		// Same transcript, but the first two messages now render as one row: every row after moves up.
+		const regrouped: (ClineMessage | ClineMessage[])[] = [[messages[0], messages[1]], ...messages.slice(2)]
+		const turns = getMinimapTurns(messages, regrouped, undefined, true, cache)
+		expect(turns).toEqual(getMinimapTurns(messages, regrouped, undefined, true))
+		expect(turns.at(-1)?.startIndex).toBe(regrouped.length - 3)
+	})
+
+	it("starts over when the transcript changes under it", () => {
+		const reads = { count: 0 }
+		const cache = createMinimapTurnCache()
+		derive(thread(30, reads), cache)
+		const other = thread(30, reads).map((message) =>
+			message.say === "user_feedback" ? { ...message, text: `edited ${message.text}` } : message,
+		)
+		expect(derive(other.slice(0, 20), cache)).toEqual(derive(other.slice(0, 20)))
+		const shorter = thread(5, reads)
+		expect(derive(shorter, cache)).toEqual(derive(shorter))
 	})
 })
 

@@ -1,9 +1,10 @@
-import { parseYamlFrontmatter } from "@core/context/instructions/user-instructions/frontmatter"
+import { parseYamlFrontmatter, readSdkEnabledState } from "@core/context/instructions/user-instructions/frontmatter"
 import { looksRunnable, type SkillItemFile } from "@shared/skillsets"
 import { constants } from "fs"
 import * as fs from "fs/promises"
 import * as yaml from "js-yaml"
 import * as path from "path"
+import { isMap, parseDocument } from "yaml"
 
 /** Files a skill folder can hold before listing stops (a skill is a handful of files). */
 const MAX_LISTED_FILES = 401
@@ -37,6 +38,41 @@ export function buildSkillMarkdown(
 	else delete data.disabled
 	const frontmatter = yaml.dump(data, { lineWidth: -1 }).trimEnd()
 	return `---\n${frontmatter}\n---\n\n${body.replace(/^\s+/, "")}`.replace(/\s*$/, "\n")
+}
+
+/** A front matter block as written: BOM, fences, the blank lines after them. Group 2 is the YAML. */
+const FRONT_MATTER_PARTS = /^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)(?:[ \t]*\r?\n)*)$/
+
+/**
+ * A skill's front matter with `name` and `description` set and nothing else touched: comments, key
+ * order, quoting, the BOM and line endings stay, and so does the on/off state whichever key holds it
+ * (`disabled`, or the legacy `enabled: false`). Undefined when it can't be edited in place (not a
+ * mapping, won't parse) or the edit wouldn't read back as asked; the caller rebuilds it instead.
+ */
+export function editSkillFrontMatter(head: string, fields: { name: string; description: string }): string | undefined {
+	const parts = head.match(FRONT_MATTER_PARTS)
+	if (!parts) return undefined
+	const [, open, block, close] = parts
+	const eol = head.includes("\r\n") ? "\r\n" : "\n"
+	const document = parseDocument(block.replace(/\r\n/g, "\n"))
+	if (document.errors.length > 0 || !isMap(document.contents)) return undefined
+	if (document.get("name") !== fields.name) document.set("name", fields.name)
+	if (document.get("description") !== fields.description) document.set("description", fields.description)
+	const edited = `${open}${document.toString({ lineWidth: 0 }).trimEnd().replace(/\n/g, eol)}${close}`
+	const read = parseSkillMarkdown(`${edited}x`)
+	if (
+		read.name !== fields.name ||
+		read.description !== fields.description ||
+		readSdkEnabledState(`${edited}x`.replace(/^\uFEFF/, ""), "skill") !==
+			readSdkEnabledState(`${head}x`.replace(/^\uFEFF/, ""), "skill")
+	)
+		return undefined
+	return edited
+}
+
+/** Whether the SDK loads this SKILL.md as off, however it says so; false for one it can't read. */
+export function skillMarkdownDisabled(text: string): boolean {
+	return readSdkEnabledState(text.replace(/^\uFEFF/, ""), "skill") === false
 }
 
 /** Reads a SKILL.md: its front matter fields and the body below them. */

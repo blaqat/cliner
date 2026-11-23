@@ -4,7 +4,16 @@ import type { NotebookChange } from "@shared/task-groups"
 import * as fs from "fs/promises"
 import * as path from "path"
 import type { NotebookStore } from "../task-groups/notebook-store"
-import { assertSafePath, buildSkillMarkdown, exists, parseSkillMarkdown, shareableWorkflow, writeInside } from "./skill-files"
+import {
+	assertSafePath,
+	buildSkillMarkdown,
+	editSkillFrontMatter,
+	exists,
+	parseSkillMarkdown,
+	shareableWorkflow,
+	skillMarkdownDisabled,
+	writeInside,
+} from "./skill-files"
 import { safeZipPath } from "./zip"
 
 /** Where skills and workflows are found and kept; injected so tests use temp folders. */
@@ -43,17 +52,23 @@ const MAX_FILE_CHARS = 200_000
 const FRONT_MATTER = /^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)(?:[ \t]*\r?\n)*/
 
 /**
- * A workflow's front matter, exactly as written, and the body below it. The agent sends
- * only a body, so an edit is diffed against the body and kept under the same front matter.
+ * A skill's or workflow's front matter exactly as written (BOM and blank lines after it included;
+ * just the BOM when there's none), and the body below it. The agent sends only a body, so an edit
+ * is diffed against the body and kept under the same front matter.
  */
-function splitWorkflow(text: string): { head: string; body: string } {
-	const head = text.match(FRONT_MATTER)?.[0] ?? ""
+function splitFrontMatter(text: string): { head: string; body: string } {
+	const head = text.match(FRONT_MATTER)?.[0] ?? (text.startsWith("\uFEFF") ? "\uFEFF" : "")
 	return { head, body: text.slice(head.length) }
 }
 
 /** `text` with the line endings `like` uses, so keeping a one-line edit of a CRLF file changes one line. */
 function withLineEndings(text: string, like: string): string {
 	return like.includes("\r\n") ? text.replace(/\r?\n/g, "\r\n") : text
+}
+
+/** `body` in the line endings of the body it replaces (of the whole file when that has none to go by). */
+function bodyLineEndings(body: string, oldBody: string, current: string): string {
+	return withLineEndings(body, oldBody.includes("\n") ? oldBody : current)
 }
 
 interface ExistingItem {
@@ -174,7 +189,7 @@ export async function createSkillDraftTool(context: SkillDraftContext): Promise<
 				if (existing) {
 					const text = await fs.readFile(existing.path, "utf8")
 					const parsed = parseSkillMarkdown(text)
-					baseContent = input.kind === "skill" ? parsed.body : splitWorkflow(text).body
+					baseContent = splitFrontMatter(text).body
 					description ||= parsed.description ?? ""
 				}
 				if (input.kind === "skill" && !description) {
@@ -245,6 +260,33 @@ async function readDraftBase(target: string): Promise<string | null> {
 }
 
 /**
+ * The SKILL.md to write for `body` over `current` (empty for a new skill). The front matter is the file's own,
+ * byte for byte, when its name and description already match; otherwise those two are changed in place. Either
+ * way a skill that was off stays off, whether it said `disabled: true` or the legacy `enabled: false`.
+ */
+function keptSkillMarkdown(current: string, body: string, name: string, description: string): string {
+	const { head, body: oldBody } = splitFrontMatter(current)
+	const existing = parseSkillMarkdown(current)
+	if (head.includes("---")) {
+		const kept =
+			existing.name === name && existing.description === description
+				? head
+				: editSkillFrontMatter(head, { name, description })
+		if (kept !== undefined) {
+			const text = body.replace(/^\s+/, "")
+			return `${kept}${bodyLineEndings(text.endsWith("\n") ? text : `${text}\n`, oldBody, current)}`
+		}
+	}
+	const rebuilt = buildSkillMarkdown(body, {
+		name,
+		description,
+		disabled: skillMarkdownDisabled(current),
+		extra: existing.extra,
+	})
+	return withLineEndings(rebuilt, current)
+}
+
+/**
  * Keeps a staged skill or workflow: writes its files and switches it on (the
  * user just made it). Returns the change's slug, as the notebook's apply does.
  */
@@ -285,12 +327,10 @@ export async function applySkillDraft(
 	}
 	if (draft.kind === "skill") {
 		let dir: string
-		let extra: Record<string, unknown> = {}
 		let current = ""
 		if (keepsTarget && draft.targetPath) {
 			dir = path.dirname(draft.targetPath)
 			current = await fs.readFile(draft.targetPath, "utf8").catch(() => "")
-			extra = parseSkillMarkdown(current).extra
 		} else {
 			const root = await places.skillsDir(draft.scope)
 			let folder = name
@@ -301,15 +341,7 @@ export async function applySkillDraft(
 		const skillMd = await writeInside(
 			dir,
 			"SKILL.md",
-			withLineEndings(
-				buildSkillMarkdown(body, {
-					name: path.basename(dir),
-					description: change.description || name,
-					disabled: extra.disabled === true,
-					extra,
-				}),
-				current,
-			),
+			keptSkillMarkdown(current, body, path.basename(dir), change.description || name),
 		)
 		// A script the agent wrote (a shebang) is executable, as it would be in a shared set.
 		for (const file of draft.files ?? [])
@@ -328,8 +360,9 @@ export async function applySkillDraft(
 		for (let n = 2; await exists(path.join(root, `${file}.md`)); n++) file = `${name}-${n}`
 		target = path.join(root, `${file}.md`)
 	}
-	const text = `${splitWorkflow(current).head}${body.endsWith("\n") ? body : `${body}\n`}`
-	await writeInside(path.dirname(target), path.basename(target), withLineEndings(text, current))
+	const { head, body: oldBody } = splitFrontMatter(current)
+	const text = `${head}${bodyLineEndings(body.endsWith("\n") ? body : `${body}\n`, oldBody, current)}`
+	await writeInside(path.dirname(target), path.basename(target), text)
 	if (!keepsTarget) await setEnabled("workflow", target, isGlobal)
 	return change.slug
 }
