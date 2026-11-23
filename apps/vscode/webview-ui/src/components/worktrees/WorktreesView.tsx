@@ -34,6 +34,7 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 	const [gitRootPath, setGitRootPath] = useState("")
 	const [showCreateForm, setShowCreateForm] = useState(false)
 	const [deleteWorktree, setDeleteWorktree] = useState<WorktreeProto | null>(null)
+	const [removalReview, setRemovalReview] = useState<{ message: string; confirmation: string }>()
 
 	// Merge worktree state
 	const [mergeWorktree, setMergeWorktree] = useState<WorktreeProto | null>(null)
@@ -137,9 +138,14 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 						force: false,
 						deleteBranch,
 						branchName,
+						removalConfirmation: removalReview?.confirmation,
 					}),
 				)
 
+				if (result.removalConfirmation) {
+					setRemovalReview({ message: result.message, confirmation: result.removalConfirmation })
+					return false
+				}
 				if (!result.success) {
 					setError(result.message)
 				} else {
@@ -148,8 +154,9 @@ const WorktreesView = ({ onDone }: WorktreesViewProps) => {
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Failed to delete worktree")
 			}
+			return true
 		},
-		[loadWorktrees],
+		[loadWorktrees, removalReview],
 	)
 
 	const handleSwitchWorktree = useCallback(async (path: string, newWindow: boolean) => {
@@ -255,9 +262,13 @@ Please help me resolve these merge conflicts, then complete the merge. Keep the 
 				{/* Delete worktree form */}
 				<DeleteWorktreeCard
 					branchName={deleteWorktree?.branch || ""}
-					onClose={() => setDeleteWorktree(null)}
+					onClose={() => {
+						setDeleteWorktree(null)
+						setRemovalReview(undefined)
+					}}
 					onConfirm={(deleteBranch) => handleDeleteWorktree(deleteWorktree!.path, deleteBranch, deleteWorktree!.branch)}
 					open={!!deleteWorktree}
+					warning={removalReview?.message}
 					worktreePath={deleteWorktree?.path || ""}
 				/>
 

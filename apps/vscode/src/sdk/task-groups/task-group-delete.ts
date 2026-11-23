@@ -31,6 +31,8 @@ export interface TaskGroupDeleteTaskWorktree {
 export interface TaskGroupDeletePreview {
 	threads: TaskGroupDeleteThread[]
 	taskWorktree?: TaskGroupDeleteTaskWorktree
+	/** Opaque: each inspected worktree's removal token (see ThreadWorktreeManager.reviewRemoval). "" when none. */
+	removalConfirmation: string
 }
 
 export interface TaskGroupDeleteResult {
@@ -55,14 +57,18 @@ export interface TaskGroupDeleteDeps {
 		assertIdle(id: string): Promise<void>
 		/** A live session (here or elsewhere) holds the worktree. */
 		worktreeBusy(id: string): Promise<boolean>
+		/**
+		 * What removal would warn about now (its Git ref scan included, as `refs`) and the token that
+		 * confirms exactly that state. Read-only.
+		 */
+		reviewRemoval(id: string): Promise<{ warning?: string; removalConfirmation?: string; refs?: string }>
+		/** Removes unless it warns; a confirmation from reviewRemoval passes the warning only while nothing changed. */
 		remove(
 			id: string,
-			confirmed: boolean,
+			confirmation?: string,
 			beforeRemove?: () => Promise<void>,
 		): Promise<{ warning?: string; message?: string } | unknown>
 	}
-	/** The removal's Git ref scan: work only the worktree's folders hold, worded for the user. Read-only. */
-	refScan(mapping: ThreadWorktree): Promise<string | undefined>
 	/** Fences new turns on the thread until the returned release. */
 	beginDeletion(id: string): () => void
 	/** Stops the thread's session in this window and releases its worktree lease. */
@@ -82,6 +88,19 @@ const were = (count: number) => (count === 1 ? "was" : "were")
 const theyll = (count: number) => (count === 1 ? "It'll" : "They'll")
 
 const TASK_WORKTREE_LOSES = "The task worktree has work that was never copied to your workspace."
+const CHANGED_SINCE_REVIEW = "A worktree changed since you reviewed this delete. Check what it would discard now."
+
+/** The removal tokens the preview inspected, by worktree id, in a stable order. */
+const encodeConfirmations = (tokens: Map<string, string>) =>
+	tokens.size ? JSON.stringify([...tokens].sort(([a], [b]) => a.localeCompare(b))) : ""
+function decodeConfirmations(confirmation: string | undefined): Map<string, string> {
+	try {
+		const entries = confirmation ? JSON.parse(confirmation) : []
+		return new Map(Array.isArray(entries) ? entries.filter((entry) => typeof entry?.[1] === "string") : [])
+	} catch {
+		return new Map()
+	}
+}
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim()
 
@@ -112,6 +131,7 @@ export async function previewTaskGroupDelete(groupId: string, deps: TaskGroupDel
 	const byId = new Map(items.map((item) => [item.id, item]))
 	const members = items.filter((item) => effectiveTaskGroupId(item, byId) === groupId)
 	const taskMapping = await deps.worktrees.get(taskWorktreeKey(groupId)).catch(() => undefined)
+	const tokens = new Map<string, string>()
 	const rows = new Map<string, TaskGroupDeleteThread>()
 	for (const item of members) {
 		if (item.isSubagent) continue
@@ -165,9 +185,15 @@ export async function previewTaskGroupDelete(groupId: string, deps: TaskGroupDel
 			row.worktreeLosses = Math.max(row.worktreeLosses, 1)
 			row.worktreeNote = `has a worktree that couldn't be checked (${message(error)}). Anything in it will be discarded.`
 		}
+		// A running thread's files keep changing; the delete stops it and its removal asks again.
+		if (!deps.isRunning(item.id)) {
+			const token = (await deps.worktrees.reviewRemoval(item.id).catch(() => undefined))?.removalConfirmation
+			if (token) tokens.set(item.id, token)
+		}
 	}
 	const threads = [...rows.values()]
-	return taskMapping ? { threads, taskWorktree: await previewTaskWorktree(taskMapping, threads, deps) } : { threads }
+	const taskWorktree = taskMapping && (await previewTaskWorktree(taskMapping, threads, deps, tokens))
+	return { threads, ...(taskWorktree ? { taskWorktree } : {}), removalConfirmation: encodeConfirmations(tokens) }
 }
 
 /** What removing the task's worktree stops, needs and loses; the same checks its own Remove makes. */
@@ -175,6 +201,7 @@ async function previewTaskWorktree(
 	mapping: ThreadWorktree,
 	threads: readonly TaskGroupDeleteThread[],
 	deps: TaskGroupDeleteDeps,
+	tokens: Map<string, string>,
 ): Promise<TaskGroupDeleteTaskWorktree> {
 	const using = threads.filter((thread) => thread.usesTaskWorktree)
 	const runningHere = using.filter((thread) => thread.running && !thread.busyElsewhere).map((thread) => thread.title)
@@ -205,7 +232,9 @@ async function previewTaskWorktree(
 		worktree.note = `The task worktree couldn’t be checked (${message(error)}). Anything in it will be discarded.`
 	}
 	try {
-		worktree.refWarning = (await deps.refScan(mapping))?.trim() ?? ""
+		const review = await deps.worktrees.reviewRemoval(mapping.threadId)
+		worktree.refWarning = review.refs?.trim() ?? ""
+		if (review.removalConfirmation) tokens.set(mapping.threadId, review.removalConfirmation)
 	} catch (error) {
 		worktree.refWarning = `Couldn’t check Git work in ${mapping.cwd} (${message(error)}). Inspect it by hand, or discard to continue.`
 	}
@@ -218,7 +247,7 @@ async function previewTaskWorktree(
  */
 async function removeTaskWorktree(
 	groupId: string,
-	discard: boolean,
+	confirmations: ReadonlyMap<string, string>,
 	deps: TaskGroupDeleteDeps,
 	nothingDone: string,
 ): Promise<string | undefined> {
@@ -226,7 +255,7 @@ async function removeTaskWorktree(
 	if (!(await deps.worktrees.get(id).catch(() => undefined))) return undefined
 	let result: unknown
 	try {
-		result = await deps.worktrees.remove(id, discard)
+		result = await deps.worktrees.remove(id, confirmations.get(id))
 	} catch (error) {
 		return `Task worktree: ${message(error)}${nothingDone}`
 	}
@@ -244,6 +273,7 @@ export async function deleteTaskGroupOnly(
 	groupId: string,
 	discard: boolean,
 	deps: TaskGroupDeleteDeps,
+	confirmation?: string,
 ): Promise<TaskGroupDeleteResult> {
 	if (await deps.worktrees.get(taskWorktreeKey(groupId)).catch(() => undefined)) {
 		const preview = await previewTaskGroupDelete(groupId, deps)
@@ -268,7 +298,11 @@ export async function deleteTaskGroupOnly(
 				blocked: TASK_WORKTREE_LOSES,
 				preview,
 			}
-		const stopped = await removeTaskWorktree(groupId, discard, deps, " Nothing was deleted.")
+		const confirmations = discard ? decodeConfirmations(confirmation) : new Map<string, string>()
+		const id = taskWorktreeKey(groupId)
+		if (discard && confirmations.get(id) !== decodeConfirmations(preview.removalConfirmation).get(id))
+			return { deleted: false, blocked: CHANGED_SINCE_REVIEW, preview }
+		const stopped = await removeTaskWorktree(groupId, confirmations, deps, " Nothing was deleted.")
 		if (stopped) return { deleted: false, blocked: stopped, preview: await previewTaskGroupDelete(groupId, deps) }
 	}
 	try {
@@ -290,6 +324,7 @@ export async function deleteTaskGroupWithThreads(
 	groupId: string,
 	discard: boolean,
 	deps: TaskGroupDeleteDeps,
+	confirmation?: string,
 ): Promise<TaskGroupDeleteResult> {
 	const preview = await previewTaskGroupDelete(groupId, deps)
 	const busy = preview.threads.filter((thread) => thread.busyElsewhere)
@@ -316,43 +351,57 @@ export async function deleteTaskGroupWithThreads(
 					: `${quoteList(losing)} ${losing.length === 1 ? "has" : "have"} worktree changes that were never copied to your workspace.`,
 			preview,
 		}
+	// A discard covers only what the user reviewed: a worktree replaced or changed since (another window,
+	// a new stash) gets a fresh look before anything is stopped or removed.
+	if (discard && (confirmation ?? "") !== preview.removalConfirmation)
+		return { deleted: false, blocked: CHANGED_SINCE_REVIEW, preview }
+	const confirmations = discard ? decodeConfirmations(confirmation) : new Map<string, string>()
 
 	const items = await deps.listThreads()
 	const byId = new Map(items.map((item) => [item.id, item]))
 	const ids = new Set(preview.threads.map((thread) => thread.id))
 	// Subagent rows carry their own sessions and maybe worktrees; they go with their thread.
 	const all = items.filter((item) => ids.has(item.id) || ids.has(rootThreadId(item, byId) ?? "")).map((item) => item.id)
-	const releases = all.map((id) => deps.beginDeletion(id))
-	try {
-		// Stopping here releases the leases this window holds on the task worktree, so its removal can go ahead.
-		for (const id of all) if (deps.isLoaded(id)) await deps.stopThread(id)
-		const taskStopped = await removeTaskWorktree(groupId, discard, deps, " Nothing was deleted.")
-		if (taskStopped) return { deleted: false, blocked: taskStopped, preview }
-		let removed = preview.taskWorktree ? 1 : 0
-		for (const id of all) {
-			if (!(await deps.worktrees.get(id).catch(() => undefined))) continue
-			let result: unknown
-			try {
-				result = await deps.worktrees.remove(id, discard, () => deps.stopThread(id))
-			} catch (error) {
-				return { deleted: false, blocked: removalStopped(id, byId, message(error), removed), preview }
-			}
-			const warning = (result as { warning?: string } | undefined)?.warning
-			if (warning) return { deleted: false, blocked: removalStopped(id, byId, warning, removed), preview }
-			removed += 1
-		}
-		// The task goes first: a window showing one of its threads then lands home, not on a task that's about to go.
-		// If it can't go, its threads stay too.
+	let blocked: string | undefined
+	const result = await (async (): Promise<TaskGroupDeleteResult> => {
+		const releases = all.map((id) => deps.beginDeletion(id))
 		try {
-			await deps.deleteGroup(groupId)
-		} catch (error) {
-			return { deleted: false, blocked: `Couldn’t delete the task (${message(error)}).${alreadyRemoved(removed)}` }
+			// Stopping here releases the leases this window holds on the task worktree, so its removal can go ahead.
+			for (const id of all) if (deps.isLoaded(id)) await deps.stopThread(id)
+			blocked = await removeTaskWorktree(groupId, confirmations, deps, " Nothing was deleted.")
+			let removed = preview.taskWorktree ? 1 : 0
+			for (const id of blocked ? [] : all) {
+				if (!(await deps.worktrees.get(id).catch(() => undefined))) continue
+				let removal: unknown
+				try {
+					removal = await deps.worktrees.remove(id, confirmations.get(id), () => deps.stopThread(id))
+				} catch (error) {
+					blocked = removalStopped(id, byId, message(error), removed)
+					break
+				}
+				const warning = (removal as { warning?: string } | undefined)?.warning
+				if (warning) {
+					blocked = removalStopped(id, byId, warning, removed)
+					break
+				}
+				removed += 1
+			}
+			if (blocked) return { deleted: false, blocked }
+			// The task goes first: a window showing one of its threads then lands home, not on a task that's about to go.
+			// If it can't go, its threads stay too.
+			try {
+				await deps.deleteGroup(groupId)
+			} catch (error) {
+				return { deleted: false, blocked: `Couldn’t delete the task (${message(error)}).${alreadyRemoved(removed)}` }
+			}
+			if (ids.size) await deps.deleteThreads([...ids])
+			return { deleted: true }
+		} finally {
+			for (const release of releases) release()
 		}
-		if (ids.size) await deps.deleteThreads([...ids])
-		return { deleted: true }
-	} finally {
-		for (const release of releases) release()
-	}
+	})()
+	// Stopping threads and removing worktrees changed what's there: show it, and bind the next discard to it.
+	return blocked && !result.deleted ? { ...result, preview: await previewTaskGroupDelete(groupId, deps) } : result
 }
 
 const alreadyRemoved = (removed: number) =>

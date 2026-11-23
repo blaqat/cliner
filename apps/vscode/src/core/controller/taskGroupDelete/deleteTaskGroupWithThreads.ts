@@ -10,7 +10,11 @@ export async function deleteTaskGroupWithThreads(
 ): Promise<TaskGroupDeleteResult> {
 	validateTaskGroupIdentifier(request.id, "id")
 	if (!request.id) throw new Error("id is required")
-	const result = await controller.deleteTaskGroupWithThreads(request.id, request.discardWorktreeWork)
+	const result = await controller.deleteTaskGroupWithThreads(
+		request.id,
+		request.discardWorktreeWork,
+		request.removalConfirmation,
+	)
 	return TaskGroupDeleteResult.create({
 		deleted: result.deleted,
 		blocked: result.blocked ?? "",

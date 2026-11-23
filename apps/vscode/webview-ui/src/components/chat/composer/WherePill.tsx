@@ -183,6 +183,12 @@ export function TaskPickerMenu({ onClose, onOpenTaskGroup, suggestion }: TaskPic
 						<span className="text-[11px] text-description">plain thread</span>
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !!selectedId && "invisible")} />
 					</button>
+					{threadId && selectedId && (
+						<p className="m-0 px-2 py-1 text-xs text-description">
+							If this thread uses a task worktree, choosing No task returns it to its original workspace on the next
+							turn.
+						</p>
+					)}
 					<div className={MENU_SEPARATOR_CLASS} />
 					<button
 						className={cn(MENU_ROW_CLASS, "text-link")}

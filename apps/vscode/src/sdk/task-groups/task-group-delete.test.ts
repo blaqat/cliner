@@ -40,6 +40,24 @@ function setup(options: {
 		...(options.taskWorktree ? { [taskKey]: options.taskWorktree.losses ?? 0 } : {}),
 	}
 	const order: string[] = []
+	// Each change to a worktree (see touch) makes its earlier removal token stale.
+	const versions: Record<string, number> = {}
+	const warningFor = (id: string) =>
+		id === taskKey
+			? (options.taskWorktree?.removeWarning ??
+				options.taskWorktree?.refWarning ??
+				(worktrees[id] ? "Changes were never copied here." : undefined))
+			: (options.removeWarning ?? (worktrees[id] ? "Changes were never copied here." : undefined))
+	const token = (id: string) => `${id}@${versions[id] ?? 0}`
+	/** Like Remove: warns unless the confirmation names the state it warned about. */
+	const review = (id: string, confirmation?: string) => {
+		const warning = warningFor(id)
+		if (!warning || confirmation === token(id)) return undefined
+		return { warning: confirmation ? `The worktree changed since you reviewed removal. ${warning}` : warning }
+	}
+	const touch = (id: string) => {
+		versions[id] = (versions[id] ?? 0) + 1
+	}
 	const deps: TaskGroupDeleteDeps = {
 		listThreads: async () => options.items,
 		isLoaded: (id) => !!options.loaded?.includes(id) || !!options.running?.includes(id),
@@ -57,7 +75,14 @@ function setup(options: {
 					!!options.taskWorktree?.users?.some(
 						(user) => options.running?.includes(user) || options.busyElsewhere?.includes(user),
 					)),
-			remove: vi.fn(async (id: string, confirmed: boolean, beforeRemove?: () => Promise<void>) => {
+			reviewRemoval: async (id) => {
+				const warning = warningFor(id)
+				return {
+					...(warning ? { warning, removalConfirmation: token(id) } : {}),
+					...(id === taskKey && options.taskWorktree?.refWarning ? { refs: options.taskWorktree.refWarning } : {}),
+				}
+			},
+			remove: vi.fn(async (id: string, confirmation?: string, beforeRemove?: () => Promise<void>) => {
 				if (id === taskKey) {
 					if (
 						options.taskWorktree?.users?.some(
@@ -67,20 +92,20 @@ function setup(options: {
 						)
 					)
 						throw new Error("Wait for every thread using this task worktree to finish before changing it.")
-					const warning = options.taskWorktree?.removeWarning ?? options.taskWorktree?.refWarning
-					if (!confirmed && warning) return { warning }
+					const stopped = review(id, confirmation)
+					if (stopped) return stopped
 					delete worktrees[taskKey]
 					order.push(`remove-worktree:${id}`)
 					return { message: "Removed" }
 				}
-				if (!confirmed && options.removeWarning) return { warning: options.removeWarning }
+				const stopped = review(id, confirmation)
+				if (stopped) return stopped
 				await beforeRemove?.()
 				order.push(`remove-worktree:${id}`)
 				return { message: "Removed" }
 			}),
 		},
 		usesTaskWorktree: async (id) => !!options.taskWorktree?.users?.includes(id),
-		refScan: async () => options.taskWorktree?.refWarning,
 		beginDeletion: vi.fn(() => () => {}),
 		stopThread: vi.fn(async (id: string) => {
 			order.push(`stop:${id}`)
@@ -94,8 +119,11 @@ function setup(options: {
 			order.push(`group:${id}`)
 		}),
 	}
-	return { deps, order }
+	return { deps, order, touch }
 }
+
+/** What the confirm sends back on "discard": the token of the preview the user saw. */
+const reviewed = async (deps: TaskGroupDeleteDeps) => (await previewTaskGroupDelete("g", deps)).removalConfirmation
 
 const users = ["plain", "busy", "aside", "sub"]
 
@@ -175,9 +203,9 @@ describe("deleteTaskGroupWithThreads", () => {
 
 	it("stops running threads, removes worktrees, then deletes the task and its threads", async () => {
 		const { deps, order } = setup({ items: task, running: ["busy", "sub"], worktrees: { wt: 2 } })
-		const result = await deleteTaskGroupWithThreads("g", true, deps)
+		const result = await deleteTaskGroupWithThreads("g", true, deps, await reviewed(deps))
 		expect(result).toEqual({ deleted: true })
-		expect(deps.worktrees.remove).toHaveBeenCalledWith("wt", true, expect.any(Function))
+		expect(deps.worktrees.remove).toHaveBeenCalledWith("wt", "wt@0", expect.any(Function))
 		expect(order.indexOf("stop:busy")).toBeLessThan(order.indexOf("remove-worktree:wt"))
 		expect(order.indexOf("stop:sub")).toBeGreaterThanOrEqual(0)
 		const deleted = order
@@ -251,7 +279,7 @@ describe("with a task worktree", () => {
 		it("removes a clean task worktree before the threads' own worktrees, then deletes the task and threads", async () => {
 			const { deps, order } = setup({ items: task, running: ["plain"], worktrees: { wt: 0 }, taskWorktree: { users } })
 			expect(await deleteTaskGroupWithThreads("g", false, deps)).toEqual({ deleted: true })
-			expect(removedTaskWorktree(deps)).toEqual([["task:g", false]])
+			expect(removedTaskWorktree(deps)).toEqual([["task:g", undefined]])
 			expect(order.indexOf("stop:plain")).toBeLessThan(order.indexOf("remove-worktree:task:g"))
 			expect(order.indexOf("remove-worktree:task:g")).toBeLessThan(order.indexOf("remove-worktree:wt"))
 			expect(order.indexOf("remove-worktree:wt")).toBeLessThan(order.indexOf("group:g"))
@@ -265,8 +293,51 @@ describe("with a task worktree", () => {
 			expect(result.blocked).toBe("The task worktree has work that was never copied to your workspace.")
 			expect(result.preview?.taskWorktree?.losses).toBe(2)
 			expect(order).toEqual([])
-			expect(await deleteTaskGroupWithThreads("g", true, deps)).toEqual({ deleted: true })
-			expect(removedTaskWorktree(deps)).toEqual([["task:g", true]])
+			expect(await deleteTaskGroupWithThreads("g", true, deps, await reviewed(deps))).toEqual({ deleted: true })
+			expect(removedTaskWorktree(deps)).toEqual([["task:g", "task:g@0"]])
+		})
+
+		it("discards nothing on a stale confirm: a worktree changed since the preview gets a fresh look", async () => {
+			const { deps, order, touch } = setup({ items: task, worktrees: { wt: 1 }, taskWorktree: { losses: 2, users } })
+			const seen = await reviewed(deps)
+			// Another window replaced the task worktree (or a new stash appeared) after the user looked.
+			touch("task:g")
+			const stale = await deleteTaskGroupWithThreads("g", true, deps, seen)
+			expect(stale).toMatchObject({ deleted: false, blocked: expect.stringContaining("changed since you reviewed") })
+			expect(order).toEqual([])
+			expect(deps.worktrees.remove).not.toHaveBeenCalled()
+			expect(stale.preview?.removalConfirmation).not.toBe(seen)
+			expect(await deleteTaskGroupWithThreads("g", true, deps, stale.preview?.removalConfirmation)).toEqual({
+				deleted: true,
+			})
+			expect(removedTaskWorktree(deps)).toEqual([["task:g", "task:g@1"]])
+		})
+
+		it("passes each removal the fresh token it checked, so a change during the delete still stops it", async () => {
+			const running = ["plain"]
+			const { deps, order, touch } = setup({ items: task, running, taskWorktree: { losses: 2, users } })
+			// Stopping a thread that runs in the task worktree writes one last file.
+			vi.mocked(deps.stopThread).mockImplementation(async (id) => {
+				order.push(`stop:${id}`)
+				if (id === "plain") {
+					running.splice(0)
+					touch("task:g")
+				}
+			})
+			const preview = await previewTaskGroupDelete("g", deps)
+			// Its files change while the thread runs: the preview binds nothing for it.
+			expect(preview.removalConfirmation).toBe("")
+			const result = await deleteTaskGroupWithThreads("g", true, deps, preview.removalConfirmation)
+			expect(result).toMatchObject({
+				deleted: false,
+				blocked: "Task worktree: Changes were never copied here. Nothing was deleted.",
+			})
+			expect(removedTaskWorktree(deps)).toEqual([["task:g", undefined]])
+			// The fresh preview, taken once the thread stopped, confirms what's there now.
+			expect(await deleteTaskGroupWithThreads("g", true, deps, result.preview?.removalConfirmation)).toEqual({
+				deleted: true,
+			})
+			expect(removedTaskWorktree(deps).at(-1)).toEqual(["task:g", "task:g@1"])
 		})
 
 		it("treats the ref scan's warning as work to discard", async () => {
@@ -333,7 +404,7 @@ describe("with a task worktree", () => {
 				blocked: "The task worktree has work that was never copied to your workspace.",
 			})
 			expect(dirty.order).toEqual([])
-			expect(await deleteTaskGroupOnly("g", true, dirty.deps)).toEqual({ deleted: true })
+			expect(await deleteTaskGroupOnly("g", true, dirty.deps, await reviewed(dirty.deps))).toEqual({ deleted: true })
 			expect(dirty.order).toEqual(["remove-worktree:task:g", "group:g"])
 
 			const refs = setup({ items: task, taskWorktree: { refWarning: "Git work would be lost.", users } })
@@ -359,6 +430,16 @@ describe("with a task worktree", () => {
 		it("ignores threads busy elsewhere that don't use it: they're kept", async () => {
 			const { deps } = setup({ items: task, busyElsewhere: ["wt"], worktrees: { wt: 0 }, taskWorktree: { users } })
 			expect(await deleteTaskGroupOnly("g", false, deps)).toEqual({ deleted: true })
+		})
+
+		it("keeps the task on a stale confirm", async () => {
+			const { deps, order, touch } = setup({ items: task, taskWorktree: { losses: 1, users } })
+			const seen = await reviewed(deps)
+			touch("task:g")
+			const result = await deleteTaskGroupOnly("g", true, deps, seen)
+			expect(result.blocked).toContain("changed since you reviewed")
+			expect(order).toEqual([])
+			expect(await deleteTaskGroupOnly("g", true, deps, result.preview?.removalConfirmation)).toEqual({ deleted: true })
 		})
 
 		it("keeps the task when the removal warns", async () => {

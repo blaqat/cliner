@@ -27,6 +27,9 @@ message TaskGroupDeleteRequest {
   string id = 2;
   // The user saw the listed worktree losses (the task worktree's included) and chose to discard them.
   bool discard_worktree_work = 3;
+  // The preview's removal_confirmation the user discarded against. A worktree that changed since
+  // (new edits, a new stash, a replaced checkout) stops the delete for a fresh review.
+  string removal_confirmation = 4;
 }
 
 message TaskGroupDeleteThread {
@@ -68,6 +71,8 @@ message TaskGroupDeletePreview {
   repeated TaskGroupDeleteThread threads = 1;
   // Set when the task has its own worktree.
   TaskGroupDeleteTaskWorktree task_worktree = 2;
+  // Opaque: binds a discard to the worktree state this preview inspected. Send it back with the delete.
+  string removal_confirmation = 3;
 }
 
 message TaskGroupDeleteResult {

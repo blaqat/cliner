@@ -304,7 +304,7 @@ it("uses the nearest mm config, prefers .mm.json, and refuses free after module 
 	})
 	expect(mapping.cwd).toBe(path.join(config.isolatesRoot, mapping.branch))
 	await write(workspace, ".mm.json", '{"modules":["other"]}')
-	await expect(manager.remove("config", true)).rejects.toThrow("configuration changed")
+	await expect(manager.remove("config")).rejects.toThrow("configuration changed")
 	await fs.access(mapping.modules[0].path)
 }, 120_000)
 
@@ -438,7 +438,9 @@ for (const mode of ["git", "mm"] as const) {
 		git(parent, "submodule", "deinit", "-f", "vendor")
 		expect((await manager.remove("cache-branch")).warning).toMatch(/vendor.*local-only/)
 		expect(git(parent, `--git-dir=${cache}`, "rev-parse", "refs/heads/local-only")).toBe(commit)
-		expect((await manager.remove("cache-branch", true)).message).toContain("Worktree removed")
+		expect(
+			(await manager.remove("cache-branch", (await manager.remove("cache-branch")).removalConfirmation)).message,
+		).toContain("Worktree removed")
 		expect(await repositoryTools.exists(cache)).toBe(false)
 	}, 120_000)
 

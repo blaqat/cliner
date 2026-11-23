@@ -172,7 +172,7 @@ function Status({ state, hideReason }: { state: WorktreeState; hideReason: boole
 export function WorktreeSettings() {
 	const { state, refresh, error } = useWorktree()
 	const [selected, setSelected] = useState<string[]>([])
-	const [warnings, setWarnings] = useState<Record<string, string>>({})
+	const [warnings, setWarnings] = useState<Record<string, { text: string; confirmation?: string }>>({})
 	const [message, setMessage] = useState<string>()
 	const [busy, setBusy] = useState(false)
 	// A control to focus, and how to bring it into view.
@@ -389,7 +389,7 @@ export function WorktreeSettings() {
 								</VSCodeCheckbox>
 								{warnings[mapping.threadId] && (
 									<InlineNotice className="mt-1" tone="warning">
-										{warnings[mapping.threadId]}
+										{warnings[mapping.threadId].text}
 									</InlineNotice>
 								)}
 							</div>
@@ -402,10 +402,18 @@ export function WorktreeSettings() {
 							disabled={busy}
 							onClick={() =>
 								void run(async () => {
-									const nextWarnings: Record<string, string> = {}
+									const nextWarnings: typeof warnings = {}
 									for (const id of selected) {
-										const result = await threadWorktreeAction("remove", id, undefined, !!warnings[id])
-										if (result.warning) nextWarnings[id] = result.warning
+										const result = await threadWorktreeAction(
+											"remove",
+											id,
+											undefined,
+											!!warnings[id],
+											undefined,
+											warnings[id]?.confirmation,
+										)
+										if (result.warning)
+											nextWarnings[id] = { text: result.warning, confirmation: result.removalConfirmation }
 									}
 									setWarnings(nextWarnings)
 									setSelected(Object.keys(nextWarnings))

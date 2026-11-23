@@ -167,7 +167,7 @@ export class SdkProviderChangeCoordinator {
 		}
 
 		const { sdkHost: oldManager, sessionId: oldSessionId } = activeSession
-		const cwd = await this.options.getWorkspaceRoot()
+		const cwd = activeSession.startConfig?.cwd ?? (await this.options.getWorkspaceRoot())
 		const mode = activeSession.startConfig?.mode ?? this.getCurrentMode()
 
 		Logger.log(`[SdkController] Restarting session ${oldSessionId} for provider change`)

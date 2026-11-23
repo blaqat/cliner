@@ -256,8 +256,13 @@ import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
-import { git, submoduleRemovalWarning } from "./worktrees/repositories"
-import { ThreadWorktreeManager, taskWorktreeKey, threadRunFolder } from "./worktrees/thread-worktree-manager"
+import { git } from "./worktrees/repositories"
+import {
+	matchesTaskWorkspace,
+	ThreadWorktreeManager,
+	taskWorktreeKey,
+	threadRunFolder,
+} from "./worktrees/thread-worktree-manager"
 
 /**
  * Log a stub warning and return undefined.
@@ -391,6 +396,7 @@ function threadIdentityMetadata(item: HistoryItem | undefined): Record<string, u
 	return {
 		...(item?.title ? { threadTitle: item.title } : {}),
 		...(item?.taskGroupId ? { taskGroupId: item.taskGroupId } : {}),
+		...(item?.parentTaskId ? { parentTaskId: item.parentTaskId, forkedAtTs: item.forkedAtTs, sideKind: item.sideKind } : {}),
 		...(item?.tags?.length ? { tags: item.tags } : {}),
 		...(item?.dismissedAutoTags?.length ? { dismissedAutoTags: item.dismissedAutoTags } : {}),
 	}
@@ -473,7 +479,10 @@ export class Controller {
 			this.taskSessions.get(previous.taskId)?.messages.dispose()
 			this.taskSessions.delete(previous.taskId)
 		}
-		if (previous?.taskId !== task?.taskId) this.diffEdits?.onFocusChanged()
+		if (previous?.taskId !== task?.taskId) {
+			this.checkpointRestoreInput = undefined
+			this.diffEdits?.onFocusChanged()
+		}
 		this.focusedTask = task
 		const context = task ? this.getTaskSessionContext(task.taskId, task) : this.homeContext
 		if (!context) return
@@ -664,14 +673,8 @@ export class Controller {
 	private readonly seenWorktreeRemovals = new Map<string, number>()
 	private readonly sessionWorktrees = new Map<string, ThreadWorktree>()
 
-	private async matchesTaskWorkspace(mapping: ThreadWorktree, cwd?: string): Promise<boolean> {
-		if (!cwd) return false
-		const folder = await worktreePath.key(cwd)
-		return (
-			folder === mapping.workspace ||
-			folder === mapping.cwd ||
-			mapping.modules.some((module) => folder === module.workspacePath || folder === module.path)
-		)
+	private matchesTaskWorkspace(mapping: ThreadWorktree, cwd?: string) {
+		return matchesTaskWorkspace(mapping, cwd)
 	}
 
 	private async resolveThreadWorktree(
@@ -702,22 +705,18 @@ export class Controller {
 			sourceId = parent && taskGroupSourceId(parent)
 		}
 		const removed = await this.threadWorktrees.removedWorkspace(id)
-		const home = route.home ?? removed?.workspace
+		const storedCwd =
+			cwd ??
+			("cwdOnTaskInitialization" in item ? item.cwdOnTaskInitialization : undefined) ??
+			this.sessions?.getSession(id)?.startConfig?.cwd
+		const previous = storedCwd ? await this.threadWorktrees.findByPath(storedCwd, true) : undefined
+		if (previous && !previous.taskGroupId && !previous.takenOver) return { mapping: previous }
+		const home = route.home ?? removed?.workspace ?? previous?.workspace
 		const groupId = await resolveEffectiveTaskGroupId(item, find)
 		if (!groupId) return { home }
 		const taskWorktreeId = taskWorktreeKey(groupId)
 		const mapping = await this.threadWorktrees.get(taskWorktreeId)
-		if (
-			mapping &&
-			!(await this.matchesTaskWorkspace(
-				mapping,
-				home ??
-					cwd ??
-					("cwdOnTaskInitialization" in item ? item.cwdOnTaskInitialization : undefined) ??
-					this.sessions?.getSession(id)?.startConfig?.cwd,
-			))
-		)
-			return { home }
+		if (mapping && !(await matchesTaskWorkspace(mapping, home ?? storedCwd))) return { home }
 		return { mapping, taskWorktreeId, home }
 	}
 
@@ -750,14 +749,38 @@ export class Controller {
 		return !!this.threadWorktrees && !!(await this.resolveThreadWorktree(id)).mapping?.taskGroupId
 	}
 
-	private async assertCanRestoreThreadWorkspace(id: string) {
-		if (await this.usesTaskWorktree(id))
-			throw new Error("This thread shares a task worktree. Restore the conversation to keep other threads' changes.")
+	private async workspaceRestoreBlock(id: string, cwd: string): Promise<string | undefined> {
+		const mapping = await this.threadWorktrees?.findByPath(cwd, true)
+		if (mapping?.taskGroupId)
+			return "This thread shares a task worktree. Restore the conversation to keep other threads' changes."
+		if (mapping && mapping.threadId !== id)
+			return "This thread shares another thread's worktree. Restore the conversation to keep its changes."
+		if (
+			mapping &&
+			(await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).some(
+				(record) =>
+					record.sessionId !== id &&
+					record.cwd &&
+					(record.cwd === mapping.cwd || worktreePath.isInside(mapping.cwd, record.cwd)),
+			)
+		)
+			return "Other threads use this worktree. Restore the conversation to keep their changes."
+		return undefined
+	}
+
+	private async assertCanRestoreThreadWorkspace(id: string, cwd: string) {
+		const reason = await this.workspaceRestoreBlock(id, cwd)
+		if (reason) throw new Error(reason)
 	}
 	readonly threadWorktrees: ThreadWorktreeManager
 
 	constructor(readonly context: ClineExtensionContext) {
-		this.threadWorktrees = new ThreadWorktreeManager(path.join(context.globalStorageUri.fsPath, "thread-worktrees"))
+		this.threadWorktrees = new ThreadWorktreeManager(path.join(context.globalStorageUri.fsPath, "thread-worktrees"), () => {
+			const { workspace } = require("vscode") as typeof import("vscode")
+			return workspace.textDocuments
+				.filter((document) => document.isDirty && document.uri.scheme === "file")
+				.map((document) => ({ path: document.uri.fsPath, version: document.version }))
+		})
 		const controller = this
 		// StateManager must be initialized before creating the Controller
 		this.stateManager = StateManager.get()
@@ -3338,11 +3361,17 @@ export class Controller {
 				}
 			},
 		})
-		if (!(await this.matchesTaskWorkspace(mapping, workspace)))
+		if (!(await matchesTaskWorkspace(mapping, workspace)))
 			throw new Error(
 				"This task already has a worktree in another workspace. Open that workspace or choose a private worktree.",
 			)
 		return mapping
+	}
+
+	async removeGitWorktree(workspace: string, checkout: string, force: boolean, confirmation?: string) {
+		return this.threadWorktrees.removeCheckout(workspace, checkout, force, confirmation, async (mapping) => {
+			if (!mapping.taskGroupId) await this.sessions.removeSession(mapping.threadId)
+		})
 	}
 
 	async threadWorktreeAction(request: ThreadWorktreeActionRequest): Promise<WorktreeActionResult> {
@@ -3363,7 +3392,7 @@ export class Controller {
 						settings: await this.threadWorktrees.settings(),
 						availability: await this.threadWorktrees.availability(workspace, workspaceOff, data.refreshMm === true),
 						mapping,
-						taskWorktreeElsewhere: !!(groupId && mapping && !(await this.matchesTaskWorkspace(mapping, workspace))),
+						taskWorktreeElsewhere: !!(groupId && mapping && !(await worktreePath.same(mapping.workspace, workspace))),
 						settled: (
 							await this.threadWorktrees.settled(
 								history.map(sessionHistoryRecordToHistoryItem),
@@ -3405,11 +3434,13 @@ export class Controller {
 					const mapping = await getMapping()
 					return { diffs: mapping ? await this.threadWorktrees.diffs(mapping.threadId) : [] }
 				})
-			case "open": {
+			case "open":
+			case "openTaskWorkspace": {
 				const mapping = await getMapping()
 				if (!mapping) throw new Error("There is no worktree to open.")
-				const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
-				if (!opened.success) throw new Error("Could not open the worktree window")
+				const folder = request.action === "openTaskWorkspace" ? mapping.workspace : mapping.cwd
+				const opened = await HostProvider.workspace.openFolder({ path: folder, newWindow: true })
+				if (!opened.success) throw new Error("Could not open the folder in a new window.")
 				return {}
 			}
 			case "summary": {
@@ -3437,19 +3468,23 @@ export class Controller {
 							? "Manage this worktree from its task."
 							: "Manage this worktree from its owner thread.",
 					)
-				if (request.action === "bring") return this.threadWorktrees.bring(id)
-				if (request.action === "undo") return this.threadWorktrees.undo(id)
+				if (groupId && !(await worktreePath.same(mapping.workspace, workspace)))
+					throw new Error("Open the task's workspace to change its worktree.")
+				const taskWorkspace = groupId ? workspace : undefined
+				if (request.action === "bring") return this.threadWorktrees.bring(id, taskWorkspace)
+				if (request.action === "undo") return this.threadWorktrees.undo(id, taskWorkspace)
 				if (request.action === "takeOver") {
-					const result = await this.threadWorktrees.takeOver(id)
+					const result = await this.threadWorktrees.takeOver(id, taskWorkspace)
 					if (!groupId && result.mapping?.takenOver) await this.sessions.removeSession(id)
 					return result
 				}
 				// Task threads refresh their cwd on the next turn. Keep the loaded
 				// transcripts available, including in other windows.
-				if (groupId) return this.threadWorktrees.remove(id, request.confirmed)
+				const confirmation = request.removalConfirmation ?? (request.confirmed ? "missing" : undefined)
+				if (groupId) return this.threadWorktrees.remove(id, confirmation, undefined, taskWorkspace)
 				const release = this.sessions.beginTaskDeletion(id)
 				try {
-					return await this.threadWorktrees.remove(id, request.confirmed, () => this.sessions.removeSession(id))
+					return await this.threadWorktrees.remove(id, confirmation, () => this.sessions.removeSession(id))
 				} finally {
 					release()
 				}
@@ -3914,7 +3949,6 @@ export class Controller {
 		if (!currentTask) {
 			throw new Error("No active task to edit")
 		}
-		if (input.restoreWorkspace) await this.assertCanRestoreThreadWorkspace(currentTask.taskId)
 		// The rebuilt conversation below is a local session on this machine's
 		// workspace. A cloud task's transcript lives in its sandbox, so rebuilding
 		// it here would silently move the task out of the cloud.
@@ -3968,11 +4002,14 @@ export class Controller {
 			if (input.restoreWorkspace && !workspaceCheckpoint) {
 				throw new Error("No workspace checkpoint is available for this message")
 			}
-			const cwd =
+			const sourceCwd =
+				activeSession?.startConfig?.cwd?.trim() ||
 				sessionRecord?.cwd?.trim() ||
 				sessionRecord?.workspaceRoot?.trim() ||
 				historyItem?.cwdOnTaskInitialization?.trim() ||
 				fallbackCwd
+			if (input.restoreWorkspace) await this.assertCanRestoreThreadWorkspace(sourceSessionId, sourceCwd)
+			const cwd = (this.threadWorktrees && (await this.resolveSessionWorkspace(sourceSessionId, sourceCwd))) || sourceCwd
 			const mode =
 				activeSession?.startConfig?.mode ??
 				this.taskSessions?.get(currentTask.taskId)?.mode ??
@@ -4021,7 +4058,7 @@ export class Controller {
 				await sessionHost.restore({
 					sessionId: sourceSessionId,
 					checkpointRunCount,
-					cwd,
+					cwd: sourceCwd,
 					restore: {
 						messages: false,
 						workspace: true,
@@ -4052,6 +4089,9 @@ export class Controller {
 
 			const newHistoryItem = {
 				...createHistoryItemFromSession(startResult.sessionId, historyTitle, config.modelId, cwd),
+				parentTaskId: historyItem?.parentTaskId,
+				forkedAtTs: historyItem?.forkedAtTs,
+				sideKind: historyItem?.sideKind,
 				apiSelection: getSessionApiSnapshot(config)?.selection,
 			}
 			await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
@@ -4102,7 +4142,15 @@ export class Controller {
 		if (!activeSession || !currentTask) {
 			throw new Error("No active task to restore")
 		}
-		if (restoreWorkspace) await this.assertCanRestoreThreadWorkspace(currentTask.taskId)
+		const sessionRecord = activeSession.startConfig?.cwd
+			? undefined
+			: await activeSession.sdkHost.get(activeSession.sessionId)
+		const sourceCwd =
+			activeSession.startConfig?.cwd?.trim() ||
+			sessionRecord?.cwd?.trim() ||
+			sessionRecord?.workspaceRoot?.trim() ||
+			(await this.getWorkspaceRoot())
+		if (restoreWorkspace) await this.assertCanRestoreThreadWorkspace(currentTask.taskId, sourceCwd)
 		if (activeSession.isRunning) {
 			await this.cancelTask()
 		}
@@ -4113,7 +4161,9 @@ export class Controller {
 			throw new Error(`Could not find user message for checkpoint run ${checkpointRunCount}`)
 		}
 
-		const cwd = await this.getWorkspaceRoot()
+		const cwd =
+			(restoreMessages && this.threadWorktrees && (await this.resolveSessionWorkspace(currentTask.taskId, sourceCwd))) ||
+			sourceCwd
 		const mode =
 			activeSession?.startConfig?.mode ??
 			this.taskSessions?.get(currentTask.taskId)?.mode ??
@@ -4157,7 +4207,7 @@ export class Controller {
 		const restored = await this.sessions.restoreActiveSession({
 			sessionId: activeSession.sessionId,
 			checkpointRunCount,
-			cwd,
+			cwd: sourceCwd,
 			restore: {
 				messages: restoreMessages,
 				workspace: restoreWorkspace,
@@ -4189,6 +4239,9 @@ export class Controller {
 
 		const newHistoryItem = {
 			...createHistoryItemFromSession(restored.sessionId, historyTitle, config?.modelId ?? "", cwd),
+			parentTaskId: historyItem?.parentTaskId,
+			forkedAtTs: historyItem?.forkedAtTs,
+			sideKind: historyItem?.sideKind,
 			apiSelection: getSessionApiSnapshot(config)?.selection,
 		}
 		await this.taskHistory.updateTaskHistoryItem(newHistoryItem)
@@ -4341,7 +4394,6 @@ export class Controller {
 		if (!currentTask) {
 			return false
 		}
-		if (await this.usesTaskWorktree(currentTask.taskId)) return false
 		const clineMessages = currentTask.messageStateHandler.getClineMessages()
 		const targetIndex = clineMessages.findIndex((message) => message.ts === messageTs)
 		if (targetIndex === -1 || getCheckpointRunCountForMessage(clineMessages, targetIndex) === undefined) {
@@ -4356,6 +4408,15 @@ export class Controller {
 				sessionHost.get(sessionId),
 				readCurrentMessages(sessionHost, sessionId) as Promise<SdkUserMessage[]>,
 			])
+			const cwd =
+				activeSession?.startConfig?.cwd?.trim() ||
+				sessionRecord?.cwd?.trim() ||
+				sessionRecord?.workspaceRoot?.trim() ||
+				(this.threadWorktrees
+					? (await this.taskHistory.findHistoryItem(currentTask.taskId))?.cwdOnTaskInitialization?.trim() ||
+						(await this.getWorkspaceRoot())
+					: undefined)
+			if (cwd && (await this.workspaceRestoreBlock(sessionId, cwd))) return false
 			const sdkIndex = findSdkUserMessageIndexByOrdinal(sdkMessages, userOrdinal)
 			if (sdkIndex === -1) {
 				return false
@@ -5196,7 +5257,7 @@ export class Controller {
 		const isolated = this.sessionWorktrees?.get(sessionId) ?? this.sessionWorktrees?.get(threadId)
 		return approvesWithoutAsking(request.toolName, {
 			settings: this.stateManager.getGlobalSettingsKey("autoApprovalSettings"),
-			cwd: this.sessions.getSession(sessionId)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
+			cwd: isolated?.cwd ?? this.sessions.getSession(sessionId)?.startConfig?.cwd,
 			confined: !!automationThread && (!!isolated || automationThread.worktree),
 			workspaceRoots: isolated ? [isolated.cwd] : this._workspaceManager?.getRoots().map((root) => root.path),
 			approveInside: (root) =>
@@ -5522,26 +5583,32 @@ export class Controller {
 
 	/** What deleting a task (alone or with its threads) covers, its worktree included; see task-group-delete.ts. */
 	async previewTaskGroupDelete(id: string): Promise<TaskGroupDeletePreview> {
-		return previewTaskGroupDelete(id, this.taskGroupDeleteDeps())
+		return previewTaskGroupDelete(id, await this.taskGroupDeleteDeps())
 	}
 
 	/** Deletes just the task (threads stay, unfiled), removing its worktree first through the safe removal. */
-	async deleteTaskGroupOnly(id: string, discardWorktreeWork: boolean): Promise<TaskGroupDeleteResult> {
+	async deleteTaskGroupOnly(id: string, discardWorktreeWork: boolean, confirmation?: string): Promise<TaskGroupDeleteResult> {
 		if (!(await this.taskGroupStore.getGroup(id))) throw new Error(`Task group not found: ${id}`)
-		const result = await deleteTaskGroupOnly(id, discardWorktreeWork, this.taskGroupDeleteDeps())
+		const result = await deleteTaskGroupOnly(id, discardWorktreeWork, await this.taskGroupDeleteDeps(), confirmation)
 		if (!result.deleted) await this.postStateToWebview(true)
 		return result
 	}
 
 	/** Deletes a task and every thread in it, after the same checks a single thread's worktree removal makes. */
-	async deleteTaskGroupWithThreads(id: string, discardWorktreeWork: boolean): Promise<TaskGroupDeleteResult> {
+	async deleteTaskGroupWithThreads(
+		id: string,
+		discardWorktreeWork: boolean,
+		confirmation?: string,
+	): Promise<TaskGroupDeleteResult> {
 		if (!(await this.taskGroupStore.getGroup(id))) throw new Error(`Task group not found: ${id}`)
-		const result = await deleteTaskGroupWithThreads(id, discardWorktreeWork, this.taskGroupDeleteDeps())
+		const result = await deleteTaskGroupWithThreads(id, discardWorktreeWork, await this.taskGroupDeleteDeps(), confirmation)
 		if (!result.deleted) await this.postStateToWebview(true)
 		return result
 	}
 
-	private taskGroupDeleteDeps(): TaskGroupDeleteDeps {
+	private async taskGroupDeleteDeps(): Promise<TaskGroupDeleteDeps> {
+		const workspace = await this.getWorkspaceRoot()
+		const worktrees = this.threadWorktrees
 		return {
 			listThreads: async () =>
 				(await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
@@ -5550,8 +5617,18 @@ export class Controller {
 			isLoaded: (threadId) => !!this.sessions.getSession(threadId),
 			isRunning: (threadId) => !!this.sessions.getSession(threadId)?.isRunning,
 			usesTaskWorktree: (threadId) => this.usesTaskWorktree(threadId),
-			worktrees: this.threadWorktrees,
-			refScan: submoduleRemovalWarning,
+			worktrees: {
+				get: (id) => worktrees.get(id),
+				summary: (id) => worktrees.summary(id),
+				assertIdle: (id) => worktrees.assertIdle(id),
+				worktreeBusy: (id) => worktrees.worktreeBusy(id),
+				reviewRemoval: (id) => worktrees.reviewRemoval(id),
+				// Like the task page's Remove: a task worktree changes only from the workspace that owns it.
+				remove: async (id, confirmation, beforeRemove) => {
+					const mapping = await worktrees.get(id)
+					return worktrees.remove(id, confirmation, beforeRemove, mapping?.taskGroupId ? workspace : undefined)
+				},
+			},
 			beginDeletion: (threadId) => this.sessions.beginTaskDeletion(threadId),
 			stopThread: (threadId) => this.sessions.removeSession(threadId),
 			deleteThreads: async (ids) => {
@@ -6275,6 +6352,7 @@ export class Controller {
 		try {
 			const snapshotTask = this.task
 			const snapshotSession = this.sessions.getActiveSession()
+			const checkpointRestoreInput = this.checkpointRestoreInput
 			const snapshotEpoch = this.messageTranslatorState.getMinter().epoch
 			syncTelemetrySettingFromSharedGlobalSettings(this.stateManager)
 			const { getStateToPostToWebview: buildBaseState } = await import("@core/controller/state/getStateToPostToWebview")
@@ -6289,6 +6367,7 @@ export class Controller {
 					foregroundCommandRunning: this.foregroundCommands.isRunning,
 					isRemoteConfigAvailable: this.isRemoteConfigAvailable,
 					currentRemoteConfigRevision: this.currentRemoteConfigRevision,
+					checkpointRestoreInput,
 					// Without this the webview always receives workspaceRoots: [] on the
 					// SDK path (classic Controller exposes a public workspaceManager;
 					// SdkController builds one lazily). The task-header working-directory

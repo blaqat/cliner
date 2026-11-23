@@ -124,14 +124,20 @@ describe("TaskGroupDeleteConfirm", () => {
 		mocks.deleteTaskGroupWithThreads.mockResolvedValueOnce({
 			deleted: false,
 			blocked: "“Thread a” worktree: Some submodule caches hold work. Nothing was deleted.",
-			preview: { threads: [thread("a", { hasWorktree: true })] },
+			preview: { threads: [thread("a", { hasWorktree: true })], removalConfirmation: "fresh" },
 		})
 		renderConfirm()
 		fireEvent.click(await screen.findByRole("button", { name: "Delete task and its 1 thread" }))
+		expect(mocks.deleteTaskGroupWithThreads).toHaveBeenLastCalledWith(
+			expect.objectContaining({ discardWorktreeWork: false, removalConfirmation: "" }),
+		)
 		expect(await screen.findByTestId("task-group-delete-blocked")).toHaveTextContent("Some submodule caches hold work.")
 		expect(onDeleted).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Delete task and 1 thread, discard changes" }))
-		expect(mocks.deleteTaskGroupWithThreads).toHaveBeenLastCalledWith(expect.objectContaining({ discardWorktreeWork: true }))
+		// The discard is bound to what the host showed last, not to the first look.
+		expect(mocks.deleteTaskGroupWithThreads).toHaveBeenLastCalledWith(
+			expect.objectContaining({ discardWorktreeWork: true, removalConfirmation: "fresh" }),
+		)
 	})
 
 	it("offers a plain Delete for a task with no threads", async () => {

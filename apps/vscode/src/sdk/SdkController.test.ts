@@ -28,6 +28,7 @@ import { SdkTaskControlCoordinator } from "./sdk-task-control-coordinator"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
 import { worktreeProject } from "./worktrees/temp-project.test-support"
+import { taskWorktreeKey } from "./worktrees/thread-worktree-manager"
 
 describe("isClineManagedProvider", () => {
 	it("treats both Cline account providers as Cline providers", () => {
@@ -64,7 +65,8 @@ vi.mock("@core/controller/state/getStateToPostToWebview", () => ({
 }))
 
 describe("SDK remote-config coordination", () => {
-	it("posts the current remote-config revision to the webview", async () => {
+	it("includes the remote-config revision and restored draft in the webview state", async () => {
+		const checkpointRestoreInput = { sessionId: "restored", text: "Try again", files: [], images: [] }
 		const controller = {
 			stateManager: {
 				getGlobalSettingsKey: () => undefined,
@@ -77,6 +79,7 @@ describe("SDK remote-config coordination", () => {
 			foregroundCommands: { isRunning: false },
 			isRemoteConfigAvailable: true,
 			currentRemoteConfigRevision: 7,
+			checkpointRestoreInput,
 			ensureWorkspaceManager: async () => undefined,
 			taskHistory: { listHistory: async () => [] },
 			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
@@ -88,7 +91,7 @@ describe("SDK remote-config coordination", () => {
 		await SdkController.prototype.getStateToPostToWebview.call(controller as never)
 
 		expect(buildBaseStateMock).toHaveBeenCalledWith(
-			expect.objectContaining({ isRemoteConfigAvailable: true, currentRemoteConfigRevision: 7 }),
+			expect.objectContaining({ isRemoteConfigAvailable: true, currentRemoteConfigRevision: 7, checkpointRestoreInput }),
 		)
 	})
 
@@ -874,6 +877,72 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 		})
 
 		expect(trackedRestores).toEqual([true, true])
+	})
+
+	it("starts a conversation-only restore in the shared thread's current folder", async () => {
+		const cwd = "/workspace/.worktrees/shared"
+		const restoreActiveSession = vi.fn().mockRejectedValue(new Error("stop at restore"))
+		const controller = controllerFixture({
+			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
+			sessions: {
+				trackSessionStart: (operation: () => Promise<unknown>) => operation(),
+				restoreActiveSession,
+				getActiveSession: () => ({ sessionId: "task-a", startConfig: { cwd }, sdkHost: {} }),
+			},
+			getWorkspaceRoot: async () => "/workspace",
+			taskHistory: { findHistoryItem: async () => ({ id: "task-a", taskGroupId: "shared" }) },
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			sessionConfigBuilder: { build: async (input: { cwd: string }) => ({ ...input, providerId: "openai" }) },
+		})
+		await expect(
+			(controller as SdkController).restoreCheckpoint({ checkpointRunCount: 2, restoreType: "task" }),
+		).rejects.toThrow("stop at restore")
+		expect(restoreActiveSession).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd, start: expect.objectContaining({ config: expect.objectContaining({ cwd }) }) }),
+		)
+	})
+
+	it("blocks workspace restore in the former task worktree after a thread is unfiled", async () => {
+		const cwd = "/workspace/.worktrees/shared"
+		const mapping = { threadId: taskWorktreeKey("shared"), taskGroupId: "shared", cwd, workspace: "/workspace", modules: [] }
+		const restore = vi.fn().mockRejectedValue(new Error("files would be restored"))
+		const restoreActiveSession = vi.fn().mockRejectedValue(new Error("files would be restored"))
+		const controller = controllerFixture({
+			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
+			threadWorktrees: {
+				get: async () => undefined,
+				workspaceRoute: async () => ({ home: "/workspace" }),
+				removedWorkspace: async () => undefined,
+				findByPath: async (folder: string) => (folder === cwd ? mapping : undefined),
+			},
+			sessions: {
+				trackSessionStart: (operation: () => Promise<unknown>) => operation(),
+				restoreActiveSession,
+				getActiveSession: () => ({
+					sessionId: "task-a",
+					startConfig: { cwd },
+					sdkHost: {
+						get: async () => ({ cwd, metadata: { checkpoint: { history: [{ ref: "cp", runCount: 2 }] } } }),
+						readLiveMessages: async () => sdkMessages,
+						restore,
+					},
+				}),
+			},
+			taskHistory: { findHistoryItem: async () => ({ id: "task-a", cwdOnTaskInitialization: cwd }) },
+			getWorkspaceRoot: async () => "/workspace",
+			stateManager: { getGlobalSettingsKey: () => "act" },
+			sessionConfigBuilder: { build: async () => ({ providerId: "openai" }) },
+			resolveContextMentions: async (text: string) => text,
+		})
+		await expect((controller as SdkController).hasWorkspaceCheckpointForMessage(3)).resolves.toBe(false)
+		await expect(
+			(controller as SdkController).restoreCheckpoint({ checkpointRunCount: 2, restoreType: "workspace" }),
+		).rejects.toThrow("shares a task worktree")
+		await expect(
+			(controller as SdkController).editMessageAndRegenerate({ messageTs: 3, text: "edited", restoreWorkspace: true }),
+		).rejects.toThrow("shares a task worktree")
+		expect(restore).not.toHaveBeenCalled()
+		expect(restoreActiveSession).not.toHaveBeenCalled()
 	})
 
 	it("uses and disposes a temporary host for a history task", async () => {
@@ -2729,6 +2798,26 @@ it("saves the final kind when a staged skill is kept as a workflow", async () =>
 	})
 	const { kept } = JSON.parse(saveNotebookChangesMessage.mock.calls[0][1].text)
 	expect(kept[0].skill).toEqual({ kind: "workflow", scope: "workspace" })
+})
+
+it("refuses task worktree mutations from another workspace", async () => {
+	const mapping = {
+		threadId: taskWorktreeKey("task"),
+		taskGroupId: "task",
+		workspace: "/workspace-a",
+		cwd: "/workspace-a/.worktrees/task",
+		modules: [],
+	}
+	const bring = vi.fn()
+	const controller = controllerFixture({
+		threadWorktrees: { get: async () => mapping, bring },
+		getWorkspaceRoot: async () => "/workspace-b",
+		stateManager: { getWorkspaceStateKey: () => undefined },
+	})
+	await expect(
+		controller.threadWorktreeAction({ action: "bring", taskGroupId: "task", threadId: "", json: "", confirmed: false }),
+	).rejects.toThrow("Open the task's workspace")
+	expect(bring).not.toHaveBeenCalled()
 })
 
 for (const mode of ["git", "mm"] as const) {

@@ -151,6 +151,8 @@ export interface WorktreeActionResult {
 	diffs?: ThreadModuleDiff[]
 	summary?: WorktreeSummary
 	warning?: string
+	/** Binds removal confirmation to the inspected checkout and its state. */
+	removalConfirmation?: string
 	conflicts?: string[]
 	message?: string
 	/** Files the action copied or carried along. */

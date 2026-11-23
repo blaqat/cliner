@@ -9,16 +9,18 @@ export async function threadWorktreeAction(
 	data?: unknown,
 	confirmed = false,
 	taskGroupId?: string,
+	removalConfirmation?: string,
 ): Promise<WorktreeActionResult> {
 	const response = await WorktreeServiceClient.threadWorktreeAction({
 		action,
 		threadId,
 		json: data === undefined ? "" : JSON.stringify(data),
 		confirmed,
+		...(removalConfirmation ? { removalConfirmation } : {}),
 		...(taskGroupId ? { taskGroupId } : {}),
 	})
 	const result: WorktreeActionResult = JSON.parse(response.json)
-	if (SETTINGS_ACTIONS.has(action)) settingsSaved()
+	if (SETTINGS_ACTIONS.has(action) && !(action === "remove" && result.warning)) settingsSaved()
 	return result
 }
 

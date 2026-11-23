@@ -85,6 +85,7 @@ message DeleteWorktreeRequest {
   bool force = 3; // Force deletion even if dirty
   bool delete_branch = 4; // Also delete the branch
   string branch_name = 5; // Name of the branch to delete (required if delete_branch is true)
+  optional string removal_confirmation = 1871; // Review returned by the prior removal attempt
 }
 
 // Request to switch to a worktree
@@ -99,6 +100,7 @@ message WorktreeResult {
   bool success = 1;
   string message = 2; // Success or error message
   optional Worktree worktree = 3; // The affected worktree (for create)
+  optional string removal_confirmation = 1872; // Review needed before retrying removal
 }
 
 // List of available branches
@@ -161,6 +163,7 @@ message ThreadWorktreeActionRequest {
   string json = 3;
   bool confirmed = 4;
   optional string task_group_id = 1860;
+  optional string removal_confirmation = 1870; // Review returned by the prior removal attempt
 }
 
 message ThreadWorktreeActionResponse {

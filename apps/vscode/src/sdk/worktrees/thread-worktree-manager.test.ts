@@ -4,6 +4,9 @@ import os from "node:os"
 import path from "node:path"
 import { NO_COMMITS, NOT_A_REPOSITORY, WORKTREES_OFF, WORKTREES_OFF_HERE, worktreeFixFor } from "@shared/thread-worktrees"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { deleteWorktree } from "@/core/controller/worktree/deleteWorktree"
+import { mergeWorktree } from "@/core/controller/worktree/mergeWorktree"
+import * as workspacePaths from "@/utils/path"
 import { worktreeFix } from "../automations/automation-precheck"
 import { submoduleRemovalWarning } from "./repositories"
 import { alive, owner, storageLock } from "./storage-lock"
@@ -56,7 +59,7 @@ it("reuses a task worktree across windows and waits for all its threads before c
 		await write(mapping.cwd, "first.txt", "first thread\n")
 		await write(mapping.cwd, "second.txt", "second thread\n")
 		expect(await other.summary(id)).toMatchObject({ changedFiles: 2 })
-		await expect(manager.remove(id, true)).rejects.toThrow("every thread")
+		await expect(manager.remove(id)).rejects.toThrow("every thread")
 		await releaseFirst()
 		await expect(manager.bring(id)).rejects.toThrow("every thread")
 	} finally {
@@ -362,9 +365,138 @@ it("warns on removal of changes never copied here, including later changes", asy
 	expect((await manager.remove("remove")).warning).toContain("never copied here")
 	await manager.bring("remove")
 	await write(m.cwd, "file.txt", "later\n")
-	expect((await manager.remove("remove")).warning).toContain("never copied here")
-	await manager.remove("remove", true)
+	const { warning, removalConfirmation } = await manager.remove("remove")
+	expect(warning).toContain("never copied here")
+	await manager.remove("remove", removalConfirmation)
 	expect(await manager.get("remove")).toBeUndefined()
+}, 60_000)
+
+it("reinspects when another window replaces a task worktree after a removal warning", async () => {
+	const other = new ThreadWorktreeManager(storage)
+	const task = { id: "replace", beforeCreate: async () => {} }
+	const id = taskWorktreeKey(task.id)
+	const first = await manager.create(id, "Replace", workspace, false, task)
+	await write(first.cwd, "file.txt", "first edits\n")
+	const original = await manager.remove(id)
+	expect(original.warning).toContain("never copied here")
+	await other.bring(id)
+	await other.remove(id)
+	const replacement = await other.create(id, "Replace", workspace, false, task)
+	await write(replacement.cwd, "file.txt", "replacement edits\n")
+
+	const retry = await manager.remove(id, original.removalConfirmation)
+	expect(retry.warning).toContain("changed since")
+	expect(await read(replacement.cwd)).toBe("replacement edits\n")
+	expect(retry.removalConfirmation).not.toBe(original.removalConfirmation)
+}, 60_000)
+
+it("reinspects when newer edits arrive in the same worktree after a warning", async () => {
+	const mapping = await manager.create("newer", "Newer", workspace)
+	await write(mapping.cwd, "file.txt", "old edits\n")
+	const original = await manager.remove("newer")
+	await write(mapping.cwd, "file.txt", "new edits\n")
+	const retry = await manager.remove("newer", original.removalConfirmation)
+	expect(retry.warning).toContain("changed since")
+	expect(await read(mapping.cwd)).toBe("new edits\n")
+	await manager.remove("newer", retry.removalConfirmation)
+	expect(await manager.get("newer")).toBeUndefined()
+}, 60_000)
+
+it("warns about dirty editors even when the task worktree is clean on disk", async () => {
+	const task = { id: "dirty-editor", beforeCreate: async () => {} }
+	const mapping = await manager.create(taskWorktreeKey(task.id), "Dirty editor", workspace, false, task)
+	const withEditors = new ThreadWorktreeManager(storage, () => [{ path: path.join(mapping.cwd, "file.txt"), version: 2 }])
+	const result = await withEditors.remove(mapping.threadId)
+	expect(result.warning).toContain("unsaved")
+	expect(result.warning).toContain("file.txt")
+	expect(result.warning).toContain("other windows")
+	expect(await read(mapping.cwd)).toBe("base\n")
+}, 60_000)
+
+it.each(["delete", "merge"] as const)("honors a running task thread when general Worktrees requests %s", async (action) => {
+	const task = { id: "general", beforeCreate: async () => {} }
+	const mapping = await manager.create(taskWorktreeKey(task.id), "General", workspace, false, task)
+	await fs.appendFile(path.join(workspace, ".git", "info", "exclude"), "\n.worktrees/\n")
+	const cwd = vi.spyOn(workspacePaths, "getWorkspacePath").mockResolvedValue(workspace)
+	const release = await manager.acquireSessionLease("member", async () => ({ mapping }))
+	try {
+		const controller = { removeGitWorktree: manager.removeCheckout.bind(manager) } as never
+		const result =
+			action === "delete"
+				? await deleteWorktree(controller, {
+						metadata: undefined,
+						path: mapping.cwd,
+						force: true,
+						deleteBranch: false,
+						branchName: mapping.branch,
+					})
+				: await mergeWorktree(controller, {
+						metadata: undefined,
+						worktreePath: mapping.cwd,
+						targetBranch: "main",
+						deleteAfterMerge: true,
+					})
+		expect(result.message).toContain("every thread")
+		expect(await read(mapping.cwd)).toBe("base\n")
+		expect(await manager.get(mapping.threadId)).toEqual(mapping)
+	} finally {
+		await release()
+		cwd.mockRestore()
+	}
+}, 60_000)
+
+it("general Worktrees deletes a Cline worktree through its own review and confirmation", async () => {
+	const mapping = await manager.create("general-delete", "General delete", workspace)
+	await write(mapping.cwd, "file.txt", "uncopied\n")
+	const cwd = vi.spyOn(workspacePaths, "getWorkspacePath").mockResolvedValue(workspace)
+	const controller = { removeGitWorktree: manager.removeCheckout.bind(manager) } as never
+	const request = (removalConfirmation?: string) => ({
+		metadata: undefined,
+		path: mapping.cwd,
+		force: true,
+		deleteBranch: false,
+		branchName: mapping.branch,
+		...(removalConfirmation ? { removalConfirmation } : {}),
+	})
+	try {
+		// Force in the general view doesn't skip Cline's checks.
+		const first = await deleteWorktree(controller, request())
+		expect(first).toMatchObject({ success: false, message: expect.stringContaining("never copied here") })
+		expect(first.removalConfirmation).toBeTruthy()
+		await write(mapping.cwd, "file.txt", "newer\n")
+		const stale = await deleteWorktree(controller, request(first.removalConfirmation))
+		expect(stale).toMatchObject({ success: false, message: expect.stringContaining("changed since") })
+		expect(await read(mapping.cwd)).toBe("newer\n")
+		const done = await deleteWorktree(controller, request(stale.removalConfirmation))
+		expect(done.success).toBe(true)
+		expect(await manager.get(mapping.threadId)).toBeUndefined()
+		expect(git(workspace, "worktree", "list")).not.toContain(mapping.cwd)
+	} finally {
+		cwd.mockRestore()
+	}
+}, 60_000)
+
+it("warns about disappearing Git refs when general Worktrees deletes an unmanaged checkout", async () => {
+	const checkout = path.join(temp, "unmanaged")
+	git(workspace, "worktree", "add", "-b", "unmanaged", checkout)
+	const nested = path.join(checkout, "nested")
+	await repo(nested)
+	const oid = git(nested, "rev-parse", "HEAD")
+	const cwd = vi.spyOn(workspacePaths, "getWorkspacePath").mockResolvedValue(workspace)
+	try {
+		const result = await deleteWorktree({ removeGitWorktree: manager.removeCheckout.bind(manager) } as never, {
+			metadata: undefined,
+			path: checkout,
+			force: true,
+			deleteBranch: false,
+			branchName: "unmanaged",
+		})
+		expect(result.message).toContain(oid)
+		expect(result.success).toBe(false)
+		expect(await read(nested)).toBe("base\n")
+	} finally {
+		cwd.mockRestore()
+	}
 }, 60_000)
 it("detects settled/done threads, persists settings, honors workspace off", async () => {
 	await manager.create("settled", "Settled", workspace)
@@ -503,7 +635,7 @@ for (const mode of ["git", "mm"] as const) {
 		try {
 			await expect(other.acquireSessionLease("shared")).rejects.toThrow("active in another window")
 			for (const action of [
-				() => other.remove("shared", true),
+				() => other.remove("shared"),
 				() => other.bring("shared"),
 				() => other.undo("shared"),
 				() => other.takeOver("shared"),
@@ -700,7 +832,7 @@ describe("worktree removal safety", () => {
 		const mapping = await manager.create("changed", "Changed", workspace)
 		git(mapping.cwd, "switch", "-c", "other-branch")
 		await write(mapping.cwd, "file.txt", "dirty\n")
-		await expect(manager.remove("changed", true)).rejects.toThrow(/branch/)
+		await expect(manager.remove("changed")).rejects.toThrow(/branch/)
 		expect(await read(mapping.cwd)).toBe("dirty\n")
 	})
 
@@ -749,6 +881,28 @@ describe("worktree removal safety", () => {
 		expect(await submoduleRemovalWarning(mapping)).toBeUndefined()
 	})
 
+	it("reinspects when a new stash appears after the removal warning", async () => {
+		const { mapping, child } = await withSubmodule()
+		await write(mapping.cwd, "file.txt", "uncopied\n")
+		const original = await manager.remove("safety")
+		expect(original.warning).toContain("never copied here")
+		expect(original.warning).not.toContain("refs/stash")
+		// The submodule's repository lives in the worktree's admin folder, so its stash goes with it.
+		await write(child, "file.txt", "stashed\n")
+		git(child, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "stash")
+		const stash = git(child, "rev-parse", "refs/stash")
+		const retry = await manager.remove("safety", original.removalConfirmation)
+		expect(retry.warning).toContain("changed since")
+		expect(retry.warning).toContain(`refs/stash · ${stash}`)
+		expect(git(child, "rev-parse", "refs/stash")).toBe(stash)
+		// A caller's own review (the task delete's) binds the same state as Remove's warning.
+		const review = await manager.reviewRemoval("safety")
+		expect(review).toMatchObject({ removalConfirmation: retry.removalConfirmation })
+		expect(review.refs).toContain(stash)
+		await manager.remove("safety", review.removalConfirmation)
+		expect(await manager.get("safety")).toBeUndefined()
+	}, 60_000)
+
 	it("reads each directory in an initialized submodule chain once", async () => {
 		const { mapping, child } = await withSubmodule()
 		const third = path.join(temp, "third")
@@ -784,9 +938,9 @@ describe("worktree removal safety", () => {
 		git(mapping.cwd, "config", "submodule.vendor/lib.gitdir", cache)
 		git(mapping.cwd, "submodule", "deinit", "-f", "--", "vendor/lib")
 		expect(() => git(mapping.cwd, "config", "--get", "submodule.vendor/lib.gitdir")).toThrow()
-		const { warning } = await manager.remove("safety")
+		const { warning, removalConfirmation } = await manager.remove("safety")
 		for (const item of ["alternate", "refs/heads/alternate-only", oid]) expect(warning).toContain(item)
-		await manager.remove("safety", true)
+		await manager.remove("safety", removalConfirmation)
 		await expect(fs.access(cache)).rejects.toThrow()
 	})
 
@@ -798,9 +952,9 @@ describe("worktree removal safety", () => {
 		await fs.mkdir(path.dirname(cache), { recursive: true })
 		await fs.rename(path.join(child, ".git"), cache)
 		await fs.rm(mapping.cwd, { recursive: true })
-		const { warning } = await manager.remove("safety")
+		const { warning, removalConfirmation } = await manager.remove("safety")
 		for (const item of ["left/behind", "refs/heads/left-behind", oid]) expect(warning).toContain(item)
-		await manager.remove("safety", true)
+		await manager.remove("safety", removalConfirmation)
 		await expect(fs.access(cache)).rejects.toThrow()
 	})
 
@@ -809,10 +963,10 @@ describe("worktree removal safety", () => {
 		await write(child, "file.txt", "stashed\n")
 		git(child, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "stash", "push")
 		const oid = git(child, "rev-parse", "refs/stash")
-		const { warning } = await manager.remove("safety")
+		const { warning, removalConfirmation } = await manager.remove("safety")
 		for (const item of ["vendor/lib", "refs/stash", oid]) expect(warning).toContain(item)
 		expect(git(child, "rev-parse", "refs/stash")).toBe(oid)
-		await manager.remove("safety", true)
+		await manager.remove("safety", removalConfirmation)
 		await expect(fs.access(mapping.cwd)).rejects.toThrow()
 	})
 
@@ -834,9 +988,9 @@ describe("worktree removal safety", () => {
 		const child = path.join(mapping.cwd, "missing-gitdir")
 		await fs.mkdir(child)
 		await write(child, ".git", "gitdir: missing\n")
-		const { warning } = await manager.remove("broken-child")
+		const { warning, removalConfirmation } = await manager.remove("broken-child")
 		for (const item of [child, "Inspect", "confirm"]) expect(warning).toContain(item)
-		await manager.remove("broken-child", true)
+		await manager.remove("broken-child", removalConfirmation)
 		await expect(fs.access(mapping.cwd)).rejects.toThrow()
 	})
 })

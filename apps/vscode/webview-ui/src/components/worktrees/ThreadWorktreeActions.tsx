@@ -76,7 +76,7 @@ export function ThreadWorktreeActions({
 	const [summary, setSummary] = useState<WorktreeSummary>()
 	const [outcome, setOutcome] = useState<Outcome>()
 	const [busy, setBusy] = useState<Action>()
-	const [removeWarning, setRemoveWarning] = useState<string>()
+	const [removeWarning, setRemoveWarning] = useState<{ text: string; confirmation?: string }>()
 
 	// The status couldn't be read (say, the folder is gone): Remove still works, so the thread is never stuck with it.
 	const [summaryFailed, setSummaryFailed] = useState(false)
@@ -106,11 +106,20 @@ export function ThreadWorktreeActions({
 		setBusy(action)
 		setRemoveWarning(undefined)
 		try {
-			const result = await threadWorktreeAction(action, threadId, undefined, confirmed, taskGroupId)
+			const result = await threadWorktreeAction(
+				action,
+				threadId,
+				undefined,
+				confirmed,
+				taskGroupId,
+				confirmed ? removeWarning?.confirmation : undefined,
+			)
 			if (action === "remove" && result.warning) {
 				// Something would be lost after all: ask on the row.
-				setRemoveWarning(result.warning)
-			} else if (result.warning) {
+				setRemoveWarning({ text: result.warning, confirmation: result.removalConfirmation })
+				return
+			}
+			if (result.warning) {
 				setOutcome({
 					tone: "warning",
 					text: result.warning,
@@ -281,7 +290,7 @@ export function ThreadWorktreeActions({
 					className="flex min-h-6 min-w-0 items-center gap-1.5 rounded-xs bg-error/10 py-1 pr-0.5 pl-2 text-[11.5px] text-error"
 					data-testid="worktree-remove-confirm"
 					role="group">
-					<span className="min-w-0 flex-1 break-words">{removeWarning}</span>
+					<span className="min-w-0 flex-1 whitespace-pre-line break-words">{removeWarning.text}</span>
 					<button
 						className="h-4.5 shrink-0 cursor-pointer rounded-xs border-0 bg-error px-1.5 text-[11px] text-background hover:bg-error/90"
 						onClick={() => void act("remove", true)}

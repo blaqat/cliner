@@ -174,7 +174,9 @@ describe("WherePill: task", () => {
 		// The menu closes once the move lands, so a refused move can say why in place.
 		await waitFor(() => expect(screen.queryByTestId("where-menu")).toBeNull())
 
-		fireEvent.click(within(openMenu()).getByText("No task"))
+		const taskMenu = openMenu()
+		expect(taskMenu).toHaveTextContent("returns it to its original workspace on the next turn")
+		fireEvent.click(within(taskMenu).getByText("No task"))
 		expect(mocks.setThreadTaskGroup).toHaveBeenLastCalledWith(
 			expect.objectContaining({ threadId: "thread-1", taskGroupId: "" }),
 		)

@@ -105,7 +105,12 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 		setBusy(true)
 		setBlocked(undefined)
 		TaskGroupDeleteServiceClient.deleteTaskGroupOnly(
-			TaskGroupDeleteRequest.create({ id: taskGroupId, discardWorktreeWork: discardOnly }),
+			TaskGroupDeleteRequest.create({
+				id: taskGroupId,
+				discardWorktreeWork: discardOnly,
+				// Discards only what this preview showed; a worktree changed since gets a fresh look first.
+				removalConfirmation: discardOnly ? (preview?.removalConfirmation ?? "") : "",
+			}),
 		)
 			.then((result) => (result.deleted ? onDeleted() : stopped(result, () => setDiscardOnlyAfterWarning(true))))
 			.catch(failed("Couldn't delete the task"))
@@ -115,7 +120,11 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 		setBusy(true)
 		setBlocked(undefined)
 		TaskGroupDeleteServiceClient.deleteTaskGroupWithThreads(
-			TaskGroupDeleteRequest.create({ id: taskGroupId, discardWorktreeWork: discardAll }),
+			TaskGroupDeleteRequest.create({
+				id: taskGroupId,
+				discardWorktreeWork: discardAll,
+				removalConfirmation: discardAll ? (preview?.removalConfirmation ?? "") : "",
+			}),
 		)
 			.then((result) => (result.deleted ? onDeleted() : stopped(result, () => setDiscardAllAfterWarning(true))))
 			.catch(failed("Couldn't delete"))

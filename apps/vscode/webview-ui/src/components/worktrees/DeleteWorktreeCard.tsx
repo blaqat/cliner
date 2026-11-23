@@ -8,25 +8,29 @@ import { WorktreeCard } from "./WorktreeCard"
 interface DeleteWorktreeCardProps {
 	open: boolean
 	onClose: () => void
-	onConfirm: (deleteBranch: boolean) => Promise<void>
+	onConfirm: (deleteBranch: boolean) => Promise<boolean>
 	worktreePath: string
 	branchName: string
+	warning?: string
 }
 
-const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName }: DeleteWorktreeCardProps) => {
+const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName, warning }: DeleteWorktreeCardProps) => {
 	const [isDeleting, setIsDeleting] = useState(false)
 	const [deleteBranch, setDeleteBranch] = useState(false)
+
+	const close = useCallback(() => {
+		setDeleteBranch(false)
+		onClose()
+	}, [onClose])
 
 	const handleDelete = useCallback(async () => {
 		setIsDeleting(true)
 		try {
-			await onConfirm(deleteBranch)
-			onClose()
+			if (await onConfirm(deleteBranch)) close()
 		} finally {
 			setIsDeleting(false)
-			setDeleteBranch(false)
 		}
-	}, [onConfirm, onClose, deleteBranch])
+	}, [onConfirm, close, deleteBranch])
 
 	if (!open) {
 		return null
@@ -38,7 +42,7 @@ const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName
 			icon="warning"
 			iconClassName="text-error"
 			label="Remove worktree"
-			onClose={onClose}
+			onClose={close}
 			title="Delete Worktree">
 			{/* Content */}
 			<p className="text-sm text-[var(--vscode-descriptionForeground)] mt-0 mb-3">
@@ -49,6 +53,7 @@ const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName
 			<label className="flex items-center gap-2 cursor-pointer mb-3">
 				<VSCodeCheckbox
 					checked={deleteBranch}
+					disabled={!!warning || isDeleting}
 					onChange={(e) => setDeleteBranch((e.target as HTMLInputElement).checked)}
 				/>
 				<span className="text-sm">
@@ -61,10 +66,15 @@ const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName
 					Warning: Unpushed commits on this branch will be lost.
 				</InlineNotice>
 			)}
+			{warning && (
+				<InlineNotice className="mb-3 whitespace-pre-line wrap-anywhere" tone="warning">
+					{warning}
+				</InlineNotice>
+			)}
 
 			{/* Buttons */}
 			<div className="flex justify-end gap-2">
-				<VSCodeButton appearance="secondary" disabled={isDeleting} onClick={onClose}>
+				<VSCodeButton appearance="secondary" disabled={isDeleting} onClick={close}>
 					Cancel
 				</VSCodeButton>
 				<Button disabled={isDeleting} onClick={handleDelete} variant="danger">
@@ -73,6 +83,8 @@ const DeleteWorktreeCard = ({ open, onClose, onConfirm, worktreePath, branchName
 							<Loader2 className="w-4 h-4 mr-1 animate-spin" />
 							Deleting...
 						</>
+					) : warning ? (
+						"Confirm removal"
 					) : (
 						"Delete"
 					)}

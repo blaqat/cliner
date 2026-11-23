@@ -10,12 +10,13 @@ import {
 	type ThreadWorktreeSettings,
 	WORKTREES_OFF,
 	WORKTREES_OFF_HERE,
+	type WorktreeActionResult,
 	type WorktreeAvailability,
 	type WorktreeSummary,
 	worktreeFixFor,
 } from "@shared/thread-worktrees"
 import { Logger } from "@/shared/services/Logger"
-import { createWorktree } from "@/utils/git-worktree"
+import { createWorktree, deleteWorktree } from "@/utils/git-worktree"
 import { worktreePath } from "@/utils/worktree-paths"
 
 import { type MmWorkspace, mmDisplayPath, mmError, readMmWorkspace } from "./mm-discovery"
@@ -45,6 +46,28 @@ type SessionLease = Owner & { worktreeId?: string }
 interface WorkspaceRoute {
 	home?: string
 	useWorkspace?: boolean
+}
+type DirtyDocument = { path: string; version: number }
+
+export async function matchesTaskWorkspace(mapping: ThreadWorktree, cwd?: string): Promise<boolean> {
+	if (!cwd) return false
+	const folder = await worktreePath.key(cwd)
+	return (
+		folder === mapping.workspace ||
+		folder === mapping.cwd ||
+		mapping.modules.some((module) => folder === module.workspacePath || folder === module.path)
+	)
+}
+
+function removalWarning(warnings: (string | undefined)[], state: unknown, confirmation?: string) {
+	const token = createHash("sha256")
+		.update(JSON.stringify([state, warnings]))
+		.digest("hex")
+	if (confirmation === token) return undefined
+	const warning = [confirmation ? "The worktree changed since you reviewed removal. Review it again." : undefined, ...warnings]
+		.filter(Boolean)
+		.join("\n\n")
+	return warning ? { warning, removalConfirmation: token } : undefined
 }
 const lineCount = (output: string) => output.split("\n").filter((line) => line.trim()).length
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
@@ -200,7 +223,10 @@ export class ThreadWorktreeManager {
 	private queue: Promise<unknown> = Promise.resolve()
 	private readonly mmWorkspaces = new Map<string, { settingsKey: string; result: Promise<MmWorkspace | undefined> }>()
 	private assertMutationOwner: () => void | Promise<void> = async () => {}
-	constructor(readonly storageDir: string) {}
+	constructor(
+		readonly storageDir: string,
+		private readonly dirtyDocuments: () => DirtyDocument[] = () => [],
+	) {}
 	async exclusive<T>(action: () => Promise<T>): Promise<T> {
 		const result = this.queue.then(async () => {
 			const release = await storageLock(this.storageDir)
@@ -372,6 +398,15 @@ export class ThreadWorktreeManager {
 	}
 	async get(id: string) {
 		return this.read<ThreadWorktree | undefined>(this.mappingFile(id), undefined)
+	}
+	async findByPath(cwd: string, includeDescendants = false) {
+		const folder = await worktreePath.key(cwd)
+		return Object.values(await this.list()).find(
+			(mapping) =>
+				mapping.cwd === folder ||
+				mapping.modules.some((module) => module.path === folder) ||
+				(includeDescendants && worktreePath.isInside(mapping.cwd, folder)),
+		)
 	}
 	workspaceRoute(id: string) {
 		return this.read<WorkspaceRoute>(path.join("routes", this.mappingFile(id)), {})
@@ -583,9 +618,12 @@ export class ThreadWorktreeManager {
 		}
 		return modules
 	}
-	private async required(id: string) {
+	private async required(id: string, workspace?: string) {
 		const mapping = await this.get(id)
 		if (!mapping) throw new Error("This thread has no worktree")
+		if (workspace && !(await worktreePath.same(mapping.workspace, workspace))) {
+			throw new Error("Open the task's workspace to change its worktree.")
+		}
 		return mapping
 	}
 	/** Includes committed, staged, unstaged and untracked files without touching the real index. */
@@ -689,8 +727,8 @@ export class ThreadWorktreeManager {
 		}
 		return count
 	}
-	private async repositoryState(mapping: ThreadWorktree, heads?: Map<string, string>) {
-		const diffs = await this.diffs(mapping.threadId)
+	private async repositoryState(mapping: ThreadWorktree, heads?: Map<string, string>, existingDiffs?: ThreadModuleDiff[]) {
+		const diffs = existingDiffs ?? (await this.diffs(mapping.threadId))
 		const states = []
 		for (const diff of diffs)
 			states.push([
@@ -701,9 +739,10 @@ export class ThreadWorktreeManager {
 			])
 		return createHash("sha256").update(JSON.stringify(states)).digest("hex")
 	}
-	private async leftoverChanges(mapping: ThreadWorktree) {
-		if (!mapping.leftoverState || mapping.leftoverState !== (await this.repositoryState(mapping))) return true
-		const diffs = await this.diffs(mapping.threadId)
+	private async leftoverChanges(mapping: ThreadWorktree, diffs?: ThreadModuleDiff[]) {
+		diffs ??= await this.diffs(mapping.threadId)
+		if (!mapping.leftoverState || mapping.leftoverState !== (await this.repositoryState(mapping, undefined, diffs)))
+			return true
 		if (await this.uncopiedStaged(diffs)) return true
 		for (const diff of diffs) if ((await ownStatus(diff.worktreePath)).trim()) return true
 		return false
@@ -770,10 +809,10 @@ export class ThreadWorktreeManager {
 			takenOver: false,
 		}
 	}
-	async bring(id: string) {
+	async bring(id: string, workspace?: string) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
-			const mapping = await this.required(id)
+			const mapping = await this.required(id, workspace)
 			const modules = await this.assertPresent(mapping)
 			const { available, missing, excluded } = await transferRepositories(modules)
 			const captured = await this.diffs(id, true, { modules: available, excluded })
@@ -879,10 +918,10 @@ export class ThreadWorktreeManager {
 			return { message, files, mapping, warning: warning ? `${message}. ${warning}` : undefined }
 		})
 	}
-	async undo(id: string) {
+	async undo(id: string, workspace?: string) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
-			const mapping = await this.required(id)
+			const mapping = await this.required(id, workspace)
 			const bring = [...mapping.bringIns].reverse().find((b) => b.patches.some((p) => p.applied && !p.undone))
 			if (!bring) return { message: "Nothing to undo" }
 			const conflicts: string[] = []
@@ -970,10 +1009,10 @@ export class ThreadWorktreeManager {
 	 * there, applied here), so the thread's work never has to be committed first. Only the workspace's
 	 * own uncommitted changes block it, since checking out the branch would mix them in.
 	 */
-	async takeOver(id: string) {
+	async takeOver(id: string, workspace?: string) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
-			const mapping = await this.required(id)
+			const mapping = await this.required(id, workspace)
 			const modules = await this.assertPresent(mapping)
 			if (mapping.takenOver) return { message: "Your workspace is on this branch now", mapping }
 			const { available: repos, missing } = await transferRepositories(modules)
@@ -1129,110 +1168,242 @@ export class ThreadWorktreeManager {
 		const index = (await git(cwd, ["stash", "list", "--format=%H"])).split("\n").indexOf(stash)
 		if (index >= 0) await git(cwd, ["stash", "drop", "--quiet", `stash@{${index}}`])
 	}
-	async remove(id: string, confirmed = false, beforeRemove?: () => Promise<void>) {
+	private async dirtyEditors(cwd: string) {
+		const documents = await Promise.all(
+			this.dirtyDocuments().map(async (document) =>
+				worktreePath.isInside(cwd, document.path)
+					? document
+					: { ...document, path: await worktreePath.key(document.path) },
+			),
+		)
+		return documents
+			.filter((document) => worktreePath.isInside(cwd, document.path))
+			.sort((a, b) => a.path.localeCompare(b.path))
+	}
+
+	private unsavedWarning(cwd: string, editors: DirtyDocument[]) {
+		if (!editors.length) return undefined
+		const files = editors.map((editor) => path.relative(cwd, editor.path)).join(", ")
+		return `This window has unsaved edits in ${files}. Save them before removing the worktree, or confirm to discard them. Save open files from this worktree in other windows first, too.`
+	}
+
+	async remove(
+		id: string,
+		confirmation?: string,
+		beforeRemove?: () => Promise<void>,
+		workspace?: string,
+	): Promise<WorktreeActionResult> {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
-			const mapping = await this.required(id)
-			const settings = await this.settings()
-			if (mapping.mode === "mm") {
-				const config = await this.discoverMm(mapping.workspace, settings, true)
-				if (
-					!config ||
-					!(await worktreePath.same(config.root, mapping.workspace)) ||
-					path.join(config.isolatesRoot, mapping.branch) !== mapping.cwd ||
-					config.modules.length !== mapping.modules.length ||
-					!(
-						await Promise.all(
-							config.modules.flatMap((module, i) => [
-								worktreePath.same(module.absolutePath, mapping.modules[i].workspacePath),
-								path.join(config.isolatesRoot, mapping.branch, module.isolateFolder) === mapping.modules[i].path,
-							]),
-						)
-					).every(Boolean)
-				)
-					throw mmError(
-						settings,
-						"mm configuration changed since this workspace was created. Restore its module and isolate paths before removing it.",
-						mapping.workspace,
-					)
-			} else if (settings.mmPath || settings.mode === "mm") {
-				// Refresh discovery for the menu while removing a previously created Git worktree.
-				await this.discoverMm(mapping.workspace, settings, true).catch(() => {})
-			}
-			if (
-				mapping.mode === "git" &&
-				mapping.cwd !== path.join(mapping.workspace, ".worktrees", path.basename(mapping.branch))
-			)
-				throw new Error(`The recorded worktree path changed: ${mapping.cwd}. Inspect it before removing it.`)
-			const verifyOwnership = async () => {
-				await worktreeLocation(mapping.workspace, mapping.cwd)
-				return Promise.all(
-					mapping.modules.map(async (module) => {
-						await worktreeLocation(mapping.workspace, module.path)
-						return ownedWorktree(module, mapping)
-					}),
-				)
-			}
-			await verifyOwnership()
-			let warning: string | undefined
-			if (!confirmed && mapping.takenOver) {
-				// The branch is in the workspace; only edits made in the leftover folder since would be lost.
-				let leftover = true
-				try {
-					leftover = await this.leftoverChanges(mapping)
-				} catch {
-					warning = `Couldn't check changes in ${mapping.cwd}. Inspect it by hand, or confirm removal to continue.`
-				}
-				if (leftover) warning ??= "The leftover worktree folder has edits of its own. Remove it and discard them?"
-			} else if (!confirmed) {
-				let changed = true
-				try {
-					const diffs = await this.diffs(id)
-					changed =
-						diffs.some((d) => d.patch || (d.head && d.head !== d.baseHead)) &&
-						this.fingerprint(diffs) !== mapping.transferredDiff
-					// A working-file snapshot cannot represent a different staged version in any descendant.
-					if (await this.uncopiedStaged(diffs)) changed = true
-				} catch (error) {
-					warning = `Couldn't check changes in ${mapping.cwd} (${(error as Error).message.trim()}). Inspect it by hand, or confirm removal to continue.`
-				}
-				if (changed)
-					warning = ["Changes were never copied here. Remove this worktree and discard them?", warning]
-						.filter(Boolean)
-						.join("\n\n")
-			}
-			if (!confirmed) {
-				warning = [await submoduleRemovalWarning(mapping), warning].filter(Boolean).join("\n\n") || undefined
-			}
-			if (warning) return { warning }
-			await beforeRemove?.()
-			const registered = await verifyOwnership()
-			if (mapping.mode === "mm") {
-				await this.assertMutationOwner()
-				try {
-					// Cline has already checked or confirmed this removal, like git mode below.
-					// mm still refuses a worktree on another branch or of another repository.
-					await run(
-						settings.nodePath,
-						[settings.mmPath, "free", mapping.branch, "--force"],
-						await worktreePath.key(mapping.workspace),
-					)
-				} catch (error) {
-					throw mmError(settings, (error as Error).message.trim(), mapping.workspace)
-				}
-			} else if (registered[0]) {
-				await this.assertMutationOwner()
-				await git(mapping.modules[0].workspacePath, ["worktree", "remove", "--force", mapping.cwd])
-			}
-			for (const module of mapping.modules)
-				if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
-			await this.write(path.join("removed", this.mappingFile(id)), { workspace: mapping.workspace, removedAt: Date.now() })
-			await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
-			return {
-				message: mapping.takenOver
-					? "Removed the leftover worktree folder"
-					: "Worktree removed. The next turn runs in your workspace. Saved copies are kept.",
-			}
+			return this.removeMapping(await this.required(id, workspace), confirmation, beforeRemove)
 		})
+	}
+
+	/** The general Git worktree view may address a Cline checkout by a module path. */
+	async removeCheckout(
+		workspace: string,
+		checkout: string,
+		force: boolean,
+		confirmation?: string,
+		beforeRemove?: (mapping: ThreadWorktree) => Promise<void>,
+	): Promise<WorktreeActionResult> {
+		return this.exclusive(async () => {
+			const cwd = await worktreePath.key(checkout)
+			const mapping = await this.findByPath(cwd)
+			if (mapping) {
+				await this.assertIdle(mapping.threadId)
+				if (!(await matchesTaskWorkspace(mapping, workspace)))
+					throw new Error("Open the worktree's original workspace to remove it.")
+				return this.removeMapping(
+					mapping,
+					confirmation,
+					beforeRemove && (() => beforeRemove(mapping)),
+					cwd !== mapping.cwd
+						? "This checkout is part of a Cline worktree. Removing it also removes the worktree's other folders."
+						: undefined,
+				)
+			}
+
+			if (!(await isRegisteredWorktree(workspace, cwd)))
+				throw new Error("This folder is no longer a registered Git worktree.")
+			const source = await removalSourceRepository(workspace)
+			const common = (await source(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trimEnd()
+			const stat = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error
+				return undefined
+			})
+			if (stat && (await git(cwd, ["rev-parse", "--absolute-git-dir"])).trimEnd() === common)
+				throw new Error("The main Git worktree cannot be removed.")
+			const refs = await submoduleRemovalWarning({
+				workspace,
+				modules: [{ name: "", workspacePath: workspace, path: cwd }],
+			} as ThreadWorktree)
+			const editors = await this.dirtyEditors(cwd)
+			const unsaved = this.unsavedWarning(cwd, editors)
+			const dirty = stat && (await ownStatus(cwd)).trim()
+			if (refs || dirty || unsaved || confirmation) {
+				const state = stat
+					? await Promise.all([
+							git(cwd, ["rev-parse", "HEAD"]),
+							git(cwd, ["symbolic-ref", "--quiet", "HEAD"]).catch(() => ""),
+							git(cwd, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"]),
+							git(cwd, ["ls-files", "--stage", "-z"]),
+							this.untrackedState(cwd),
+						])
+					: undefined
+				const review = removalWarning(
+					[refs, dirty ? "This worktree has uncommitted changes. Remove it and discard them?" : undefined, unsaved],
+					[cwd, common, force, stat?.ino, stat?.birthtimeMs, state, editors],
+					confirmation,
+				)
+				if (review) return review
+			}
+			await this.assertMutationOwner()
+			const result = await deleteWorktree(workspace, cwd, force || !!confirmation)
+			if (!result.success) throw new Error(result.message)
+			return { message: result.message }
+		})
+	}
+
+	private async untrackedState(cwd: string) {
+		const files = (await git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+		return Promise.all(
+			files.map(async (file) => {
+				const fullPath = path.join(cwd, file)
+				const stat = await fs.lstat(fullPath)
+				const content = stat.isSymbolicLink()
+					? await fs.readlink(fullPath)
+					: stat.isFile()
+						? await git(cwd, ["hash-object", "--no-filters", "--", file])
+						: undefined
+				return [file, stat.mode, content]
+			}),
+		)
+	}
+
+	/**
+	 * What Remove would warn about now, and the confirmation token for exactly that (undefined when
+	 * removal needs no confirmation). Read-only; lets a caller that shows its own review (the task
+	 * delete) confirm only the state it showed.
+	 */
+	async reviewRemoval(id: string): Promise<{ warning?: string; removalConfirmation?: string; refs?: string }> {
+		return this.exclusive(async () => {
+			const { review, refs } = await this.inspectRemoval(await this.required(id))
+			return { ...review, refs }
+		})
+	}
+
+	/**
+	 * The checks every removal makes before deleting anything: mm config and recorded paths, ownership,
+	 * changes never copied (or a leftover folder's own edits), Git work only the worktree's folders hold
+	 * (the full ref scan), and unsaved editors. The confirmation token covers all of it, so a confirm
+	 * given for an earlier state re-inspects instead.
+	 */
+	private async inspectRemoval(mapping: ThreadWorktree, confirmation?: string, scopeWarning?: string) {
+		const id = mapping.threadId
+		const settings = await this.settings()
+		if (mapping.mode === "mm") {
+			const config = await this.discoverMm(mapping.workspace, settings, true)
+			if (
+				!config ||
+				!(await worktreePath.same(config.root, mapping.workspace)) ||
+				path.join(config.isolatesRoot, mapping.branch) !== mapping.cwd ||
+				config.modules.length !== mapping.modules.length ||
+				!(
+					await Promise.all(
+						config.modules.flatMap((module, i) => [
+							worktreePath.same(module.absolutePath, mapping.modules[i].workspacePath),
+							path.join(config.isolatesRoot, mapping.branch, module.isolateFolder) === mapping.modules[i].path,
+						]),
+					)
+				).every(Boolean)
+			)
+				throw mmError(
+					settings,
+					"mm configuration changed since this workspace was created. Restore its module and isolate paths before removing it.",
+					mapping.workspace,
+				)
+		} else if (settings.mmPath || settings.mode === "mm") {
+			// Refresh discovery for the menu while removing a previously created Git worktree.
+			await this.discoverMm(mapping.workspace, settings, true).catch(() => {})
+		}
+		if (mapping.mode === "git" && mapping.cwd !== path.join(mapping.workspace, ".worktrees", path.basename(mapping.branch)))
+			throw new Error(`The recorded worktree path changed: ${mapping.cwd}. Inspect it before removing it.`)
+		const verifyOwnership = async () => {
+			await worktreeLocation(mapping.workspace, mapping.cwd)
+			return Promise.all(
+				mapping.modules.map(async (module) => {
+					await worktreeLocation(mapping.workspace, module.path)
+					return ownedWorktree(module, mapping)
+				}),
+			)
+		}
+		const registeredAtInspection = await verifyOwnership()
+		let warning: string | undefined
+		let state: string | undefined
+		try {
+			const diffs = await this.diffs(id)
+			state = await this.repositoryState(mapping, undefined, diffs)
+			if (mapping.takenOver) {
+				if (await this.leftoverChanges(mapping, diffs))
+					warning = "The leftover worktree folder has edits of its own. Remove it and discard them?"
+			} else if (
+				(diffs.some((d) => d.patch || (d.head && d.head !== d.baseHead)) &&
+					this.fingerprint(diffs) !== mapping.transferredDiff) ||
+				(await this.uncopiedStaged(diffs))
+			) {
+				warning = "Changes were never copied here. Remove this worktree and discard them?"
+			}
+		} catch (error) {
+			const unchecked = `Couldn't check changes in ${mapping.cwd} (${(error as Error).message.trim()}). Inspect it by hand, or confirm removal to continue.`
+			warning = mapping.takenOver ? unchecked : `There may be changes never copied here. ${unchecked}`
+		}
+		const refs = await submoduleRemovalWarning(mapping)
+		const editors = await this.dirtyEditors(mapping.cwd)
+		const review = removalWarning(
+			[scopeWarning, refs, warning, this.unsavedWarning(mapping.cwd, editors)],
+			[mapping, registeredAtInspection, state, editors],
+			confirmation,
+		)
+		return { review, refs, settings, verifyOwnership }
+	}
+
+	private async removeMapping(
+		mapping: ThreadWorktree,
+		confirmation?: string,
+		beforeRemove?: () => Promise<void>,
+		scopeWarning?: string,
+	): Promise<WorktreeActionResult> {
+		const id = mapping.threadId
+		const { review, settings, verifyOwnership } = await this.inspectRemoval(mapping, confirmation, scopeWarning)
+		if (review) return review
+		await beforeRemove?.()
+		const registered = await verifyOwnership()
+		if (mapping.mode === "mm") {
+			await this.assertMutationOwner()
+			try {
+				// Cline has already checked or confirmed this removal, like git mode below.
+				// mm still refuses a worktree on another branch or of another repository.
+				await run(
+					settings.nodePath,
+					[settings.mmPath, "free", mapping.branch, "--force"],
+					await worktreePath.key(mapping.workspace),
+				)
+			} catch (error) {
+				throw mmError(settings, (error as Error).message.trim(), mapping.workspace)
+			}
+		} else if (registered[0]) {
+			await this.assertMutationOwner()
+			await git(mapping.modules[0].workspacePath, ["worktree", "remove", "--force", mapping.cwd])
+		}
+		for (const module of mapping.modules)
+			if (await exists(path.join(module.path, ".git"))) throw new Error(`Worktree was not removed: ${module.path}`)
+		await this.write(path.join("removed", this.mappingFile(id)), { workspace: mapping.workspace, removedAt: Date.now() })
+		await fs.rm(path.join(this.storageDir, this.mappingFile(id)), { force: true })
+		return {
+			message: mapping.takenOver
+				? "Removed the leftover worktree folder"
+				: "Worktree removed. The next turn runs in your workspace. Saved copies are kept.",
+		}
 	}
 }

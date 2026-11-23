@@ -728,7 +728,19 @@ export class SdkSessionLifecycle {
 		}
 
 		const sourceSessionId = activeSession.sessionId
-		const restored = await activeSession.sdkHost.restore(input)
+		let start = input.start
+		const replacementId = start ? createSessionId() : undefined
+		let restored: RestoreResult
+		try {
+			if (start && replacementId) {
+				start = { ...start, config: { ...start.config, sessionId: replacementId } }
+				await this.ensureLease(replacementId, start)
+				start = (await this.options.prepareStartInput?.(start)) ?? start
+			}
+			restored = await activeSession.sdkHost.restore({ ...input, ...(start ? { start } : {}) })
+		} finally {
+			if (replacementId) await this.releaseLease(replacementId)
+		}
 		if (!restored.startResult || !restored.sessionId) {
 			return restored
 		}
@@ -736,33 +748,37 @@ export class SdkSessionLifecycle {
 		this.activeSession = {
 			...activeSession,
 			sessionId: restored.sessionId,
-			apiSnapshot: input.start?.config ? getSessionApiSnapshot(input.start.config) : activeSession.apiSnapshot,
-			startConfig: input.start?.config
+			apiSnapshot: start?.config ? getSessionApiSnapshot(start.config) : activeSession.apiSnapshot,
+			startConfig: start?.config
 				? {
 						...{
-							[transientAdmission]: (input.start.config as { [transientAdmission]?: () => void })[
-								transientAdmission
-							],
+							[transientAdmission]: (start.config as { [transientAdmission]?: () => void })[transientAdmission],
 						},
-						providerId: input.start.config.providerId,
-						modelId: input.start.config.modelId,
-						cwd: input.start.config.cwd,
-						workspaceRoot: input.start.config.workspaceRoot,
-						mode:
-							input.start.mode === "plan" || input.start.mode === "act"
-								? input.start.mode
-								: activeSession.startConfig?.mode,
+						providerId: start.config.providerId,
+						modelId: start.config.modelId,
+						cwd: start.config.cwd,
+						workspaceRoot: start.config.workspaceRoot,
+						mode: start.mode === "plan" || start.mode === "act" ? start.mode : activeSession.startConfig?.mode,
 					}
 				: activeSession.startConfig,
-			mode: toSessionMode(input.start?.config?.mode) ?? activeSession.mode,
+			mode: toSessionMode(start?.config?.mode) ?? activeSession.mode,
 			startResult: restored.startResult,
 			isRunning: false,
 			queuedPromptCount: 0,
 		}
 
 		this.liveSessions.set(restored.sessionId, this.activeSession)
+		const restoredInput = start ?? this.startInputs.get(sourceSessionId)
+		if (restoredInput) {
+			this.startInputs.set(restored.sessionId, {
+				...restoredInput,
+				config: { ...restoredInput.config, sessionId: restored.sessionId },
+			})
+		}
 		if (restored.sessionId !== sourceSessionId) {
 			this.liveSessions.delete(sourceSessionId)
+			this.startInputs.delete(sourceSessionId)
+			if (this.focusedSessionId === sourceSessionId) this.focusSession(restored.sessionId)
 			const stopPromise = this.trackSessionStop(activeSession.sdkHost, sourceSessionId, "restoreActiveSession")
 			stopPromise.catch((error) => {
 				Logger.warn(`[SdkController] Failed to stop source session after checkpoint restore: ${sourceSessionId}`, error)

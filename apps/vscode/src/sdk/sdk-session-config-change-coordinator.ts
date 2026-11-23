@@ -126,7 +126,7 @@ export class SdkSessionConfigChangeCoordinator {
 
 		let building = false
 		try {
-			const cwd = await this.options.getWorkspaceRoot()
+			const cwd = activeSession.startConfig?.cwd ?? (await this.options.getWorkspaceRoot())
 			const modeValue = this.options.stateManager.getGlobalSettingsKey("mode")
 			const mode: Mode =
 				activeSession.startConfig?.mode ?? (modeValue === "plan" || modeValue === "act" ? modeValue : "act")

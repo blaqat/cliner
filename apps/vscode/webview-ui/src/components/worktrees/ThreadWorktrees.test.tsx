@@ -8,6 +8,7 @@ import {
 } from "@shared/thread-worktrees"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { TaskWorktreeSection, useTaskWorktree } from "./TaskWorktreeSection"
 import { ThreadWorktreeActions, worktreeStatusText } from "./ThreadWorktreeActions"
 import { WorktreeSettings } from "./WorktreeSettings"
 
@@ -75,6 +76,25 @@ function serve(summary: WorktreeSummary, results: Record<string, object | ((requ
 const rowNames = () => screen.getAllByRole("menuitem").map((row) => row.textContent)
 const status = () => screen.getByTestId("worktree-status")
 
+it("only offers to open the home workspace when a task worktree belongs elsewhere", async () => {
+	mocks.state = {
+		...mocks.state,
+		mapping: { ...mapping, taskGroupId: "task" },
+		taskWorktreeElsewhere: true,
+	}
+	function Section() {
+		const worktree = useTaskWorktree("task")
+		return <TaskWorktreeSection refreshKey="" worktree={worktree} />
+	}
+	render(<Section />)
+	const open = await screen.findByRole("button", { name: "Open its workspace" })
+	expect(screen.queryByRole("menuitem", { name: /Copy changes here|Remove worktree/ })).toBeNull()
+	fireEvent.click(open)
+	await waitFor(() =>
+		expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "openTaskWorkspace", taskGroupId: "task" })),
+	)
+})
+
 it("says where the changes stand and lists only what applies", async () => {
 	serve(SUMMARY)
 	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)
@@ -119,7 +139,12 @@ it("links to Source Control when the workspace's own changes block switching", a
 
 it("shows the cache warning on the Remove row before discarding uncopied files", async () => {
 	const warning = "vendor has a local branch (local-only) in this worktree. Preserve it before removing the worktree."
-	serve(SUMMARY, { remove: (request) => (request.confirmed ? { message: "Worktree removed" } : { warning }) })
+	serve(SUMMARY, {
+		remove: (request) =>
+			request.removalConfirmation === "reviewed"
+				? { message: "Worktree removed" }
+				: { warning, removalConfirmation: "reviewed" },
+	})
 	const onChanged = vi.fn(async () => {})
 	render(<ThreadWorktreeActions mapping={mapping} onChanged={onChanged} threadId="thread" />)
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Remove worktree" }))

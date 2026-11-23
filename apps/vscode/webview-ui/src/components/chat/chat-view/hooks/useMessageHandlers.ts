@@ -37,7 +37,12 @@ function isCompactionCommand(text: string): boolean {
  * Handles sending messages, button clicks, and task management
  */
 export function useMessageHandlers(messages: ClineMessage[], chatState: ChatState): MessageHandlers {
-	const { backgroundCommandRunning, turnState, currentTaskItem, mode, navigateHome } = useExtensionState()
+	const { backgroundCommandRunning, turnState, currentTaskItem, checkpointRestoreInput, mode, navigateHome } =
+		useExtensionState()
+	const restoredSessionId =
+		!currentTaskItem || currentTaskItem.id === checkpointRestoreInput?.sessionId
+			? checkpointRestoreInput?.sessionId
+			: undefined
 	// Read at cancel time so a stop never counts as a finished thread for toasts.
 	const currentTaskItemIdRef = useRef(currentTaskItem?.id)
 	currentTaskItemIdRef.current = currentTaskItem?.id
@@ -64,11 +69,11 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 			const isDecisionResponse = input?.responseType !== "messageResponse" || displayedAsk?.ask === "followup"
 			return AskResponseRequest.create({
 				...input,
-				taskId: currentTaskItem?.id,
+				taskId: currentTaskItem?.id ?? restoredSessionId,
 				decisionId: isDecisionResponse ? displayedAsk?.decisionId : undefined,
 			})
 		},
-		[currentTaskItem?.id, displayedAsk],
+		[currentTaskItem?.id, displayedAsk, restoredSessionId],
 	)
 	// The composer's explicit grants (thread picks, a typed script run) and its message tags
 	// apply only to the composer's own text. A send of other text, such as a chat row's option button, carries none.
@@ -430,7 +435,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					return
 				}
 
-				if (messages.length === 0) {
+				if (messages.length === 0 && !restoredSessionId) {
 					const taskGroupId = getComposerSendTaskGroup()
 					const request = NewTaskRequest.create({
 						text: messageToSend,
@@ -543,7 +548,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 							}
 						}
 					}
-				} else if (messages.length > 0) {
+				} else {
 					// No clineAsk set, but there is an existing conversation. Route this to the
 					// active session as a follow-up when either:
 					//
@@ -557,8 +562,9 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 					//      message tail.
 					const lastMessage = messages[messages.length - 1]
 					const isTaskRunning =
-						lastMessage.partial === true || (lastMessage.type === "say" && lastMessage.say === "api_req_started")
+						lastMessage?.partial === true || (lastMessage?.type === "say" && lastMessage.say === "api_req_started")
 					const turnAllowsFollowup =
+						(!!restoredSessionId && turnState?.phase === "idle") ||
 						turnState?.phase === "completed" ||
 						turnState?.phase === "awaiting_followup" ||
 						turnState?.phase === "streaming"
@@ -574,7 +580,10 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 								files,
 							}),
 							{
-								showPendingMessage: turnState?.phase === "completed" || turnState?.phase === "awaiting_followup",
+								showPendingMessage:
+									turnState?.phase === "completed" ||
+									turnState?.phase === "awaiting_followup" ||
+									(!!restoredSessionId && turnState?.phase === "idle"),
 							},
 						)
 						messageSent = true
@@ -593,6 +602,7 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 		},
 		[
 			currentTaskItem,
+			restoredSessionId,
 			createAskResponse,
 			composerGrants,
 			messages,

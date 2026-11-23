@@ -20,7 +20,7 @@ export function useTaskWorktree(taskGroupId: string) {
 			setCreating(false)
 		}
 	}
-	return { ...worktree, creating, create, message, setMessage }
+	return { ...worktree, creating, create, message, setMessage, taskGroupId }
 }
 
 export function TaskWorktreeSection({
@@ -49,11 +49,30 @@ export function TaskWorktreeSection({
 					className="m-0 px-2 py-1 text-xs text-description wrap-anywhere"
 					role={message?.error || error ? "alert" : "status"}>
 					{text}{" "}
-					{message?.error && <LinkButton onClick={() => navigateToSettings("worktrees")}>Worktree settings</LinkButton>}
+					{message?.error && !state?.taskWorktreeElsewhere && (
+						<LinkButton onClick={() => navigateToSettings("worktrees")}>Worktree settings</LinkButton>
+					)}
 					{error && <LinkButton onClick={() => void worktree.refresh(true)}>Try again</LinkButton>}
 				</p>
 			)}
-			{mapping && (
+			{mapping && state?.taskWorktreeElsewhere && (
+				<p className="m-0 px-2 py-1 text-xs text-description">
+					This task’s worktree belongs to another workspace.{" "}
+					<LinkButton
+						onClick={() => {
+							void threadWorktreeAction(
+								"openTaskWorkspace",
+								undefined,
+								undefined,
+								false,
+								worktree.taskGroupId,
+							).catch((error) => setMessage({ text: worktreeErrorText(error), error: true }))
+						}}>
+						Open its workspace
+					</LinkButton>
+				</p>
+			)}
+			{mapping && !state?.taskWorktreeElsewhere && (
 				<ThreadWorktreeActions
 					key={mapping.createdAt}
 					mapping={mapping}

@@ -8,8 +8,9 @@ import type { TaskGroupDeletePreview as Preview } from "@/sdk/task-groups/task-g
 import { validateTaskGroupIdentifier } from "@/sdk/task-groups/task-group-store"
 import type { Controller } from ".."
 
-export const toProtoPreview = ({ threads, taskWorktree }: Preview) =>
+export const toProtoPreview = ({ threads, taskWorktree, removalConfirmation }: Preview) =>
 	TaskGroupDeletePreview.create({
+		removalConfirmation,
 		threads: threads.map((thread) => TaskGroupDeleteThread.create(thread)),
 		taskWorktree: taskWorktree ? TaskGroupDeleteTaskWorktree.create(taskWorktree) : undefined,
 	})

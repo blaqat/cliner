@@ -11,7 +11,7 @@ import { Controller } from ".."
  * @param request The merge worktree request
  * @returns MergeWorktreeResult indicating success, failure, or conflicts
  */
-export async function mergeWorktree(_controller: Controller, request: MergeWorktreeRequest): Promise<MergeWorktreeResult> {
+export async function mergeWorktree(controller: Controller, request: MergeWorktreeRequest): Promise<MergeWorktreeResult> {
 	const cwd = await getWorkspacePath()
 	if (!cwd) {
 		return MergeWorktreeResult.create({
@@ -170,7 +170,8 @@ export async function mergeWorktree(_controller: Controller, request: MergeWorkt
 		// Delete worktree if requested
 		if (deleteAfterMerge) {
 			try {
-				await git.raw(["worktree", "remove", worktreePath, "--force"])
+				const removal = await controller.removeGitWorktree(cwd, worktreePath, true)
+				if (removal.warning) throw new Error(`${removal.warning} Use Delete to review and confirm removal.`)
 			} catch (error) {
 				// Merge succeeded but deletion failed - still return success
 				const errorMessage = error instanceof Error ? error.message : String(error)

@@ -80,11 +80,13 @@ vi.mock("@shared/proto/cline/common", () => ({
 // useExtensionState supplies turnState (+ backgroundCommandRunning, mode) to the hook.
 let mockTurnState: TurnState | undefined
 let mockCurrentTaskItem: { id: string; parentTaskId?: string; isSubagent?: boolean } | undefined
+let mockCheckpointRestoreInput: { sessionId: string } | undefined
 let mockMode: "plan" | "act" = "act"
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		backgroundCommandRunning: false,
 		currentTaskItem: mockCurrentTaskItem,
+		checkpointRestoreInput: mockCheckpointRestoreInput,
 		turnState: mockTurnState,
 		mode: mockMode,
 	}),
@@ -1592,6 +1594,25 @@ describe("useMessageHandlers — task pill", () => {
 		mockTurnState = { phase: "idle", seq: 1 }
 		setComposerTaskGroup(undefined)
 		setComposerPageTaskGroup(undefined)
+	})
+
+	it.each([undefined, { id: "restored" }])("continues a restored conversation when its history item is %j", async (item) => {
+		mockCurrentTaskItem = item
+		mockCheckpointRestoreInput = { sessionId: "restored" }
+		askResponse.mockClear()
+		try {
+			const { result } = renderHook(() => useMessageHandlers([], makeChatState([])))
+			await act(async () => {
+				await result.current.handleSendMessage("continue after restore", [], [])
+			})
+			expect(newTask).not.toHaveBeenCalled()
+			expect(askResponse).toHaveBeenCalledWith(
+				expect.objectContaining({ taskId: "restored", text: "continue after restore", responseType: "messageResponse" }),
+			)
+		} finally {
+			mockCurrentTaskItem = undefined
+			mockCheckpointRestoreInput = undefined
+		}
 	})
 
 	it("on a task page, every background send is filed into the page's task", async () => {

@@ -1354,6 +1354,31 @@ describe("SdkSessionLifecycle", () => {
 		expect(sdkHost.stop).toHaveBeenCalledWith("source-session")
 	})
 
+	it("refreshes a restored session's folder before its next turn", async () => {
+		const sdkHost = makeSdkHost({
+			start: vi.fn().mockResolvedValueOnce({ sessionId: "source" }).mockResolvedValueOnce({ sessionId: "restored" }),
+			restore: vi.fn().mockResolvedValue({ sessionId: "restored", startResult: { sessionId: "restored" } }),
+			readLiveMessages: vi.fn(async () => []),
+		})
+		mockCreateSessionHost.mockResolvedValue(sdkHost)
+		const resolveSessionWorkspace = vi.fn(async () => "/workspace")
+		const lifecycle = makeLifecycle({
+			resolveSessionWorkspace,
+			acquireSessionLease: vi.fn(async () => async () => {}),
+		})
+		const config = { providerId: "openai", modelId: "model", cwd: "/workspace/.worktrees/shared" }
+		await lifecycle.startNewSession({ config: { ...config, sessionId: "source" } } as StartInput)
+		lifecycle.setRunning(false)
+		await lifecycle.restoreActiveSession({ sessionId: "source", checkpointRunCount: 1, start: { config } as StartInput })
+		lifecycle.fireAndForgetSend(sdkHost as never, "restored", "next turn")
+		await vi.waitFor(() => expect(sdkHost.send).toHaveBeenCalled())
+		expect(resolveSessionWorkspace).toHaveBeenCalledWith("restored", config.cwd)
+		expect(sdkHost.start).toHaveBeenLastCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ sessionId: "restored", cwd: "/workspace" }) }),
+		)
+		await lifecycle.dispose()
+	})
+
 	it("updates the active session model for the next turn when supported", async () => {
 		const updateSessionModel = vi.fn().mockResolvedValue(undefined)
 		const sdkHost = makeSdkHost({ startResult: { sessionId: "session-123" }, updateSessionModel })

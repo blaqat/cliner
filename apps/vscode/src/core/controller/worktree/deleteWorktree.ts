@@ -1,5 +1,4 @@
 import { DeleteWorktreeRequest, WorktreeResult } from "@shared/proto/cline/worktree"
-import { deleteWorktree as deleteWorktreeUtil } from "@utils/git-worktree"
 import { getWorkspacePath } from "@utils/path"
 import simpleGit from "simple-git"
 import { Logger } from "@/shared/services/Logger"
@@ -11,7 +10,7 @@ import { Controller } from ".."
  * @param request The request containing path and force flag
  * @returns WorktreeResult with success status
  */
-export async function deleteWorktree(_controller: Controller, request: DeleteWorktreeRequest): Promise<WorktreeResult> {
+export async function deleteWorktree(controller: Controller, request: DeleteWorktreeRequest): Promise<WorktreeResult> {
 	const cwd = await getWorkspacePath()
 	if (!cwd) {
 		return WorktreeResult.create({
@@ -21,12 +20,13 @@ export async function deleteWorktree(_controller: Controller, request: DeleteWor
 	}
 
 	try {
-		const result = await deleteWorktreeUtil(cwd, request.path, request.force)
+		const result = await controller.removeGitWorktree(cwd, request.path, request.force, request.removalConfirmation)
 
-		if (!result.success) {
+		if (result.warning) {
 			return WorktreeResult.create({
-				success: result.success,
-				message: result.message,
+				success: false,
+				message: result.warning,
+				removalConfirmation: result.removalConfirmation,
 			})
 		}
 
@@ -45,7 +45,7 @@ export async function deleteWorktree(_controller: Controller, request: DeleteWor
 		}
 
 		return WorktreeResult.create({
-			success: result.success,
+			success: true,
 			message: request.deleteBranch ? `${result.message} and deleted branch '${request.branchName}'` : result.message,
 		})
 	} catch (error) {

@@ -299,7 +299,7 @@ export class SdkModeCoordinator {
 		let continuationSent = false
 		let sessionReplaced = false
 		try {
-			const cwd = await this.options.getWorkspaceRoot()
+			const cwd = activeSession.startConfig?.cwd ?? (await this.options.getWorkspaceRoot())
 			const selection = this.options.getTaskApiSelection?.(oldSessionId) ?? activeSession.apiSnapshot?.selection
 			const config = await this.options.sessionConfigBuilder.build(
 				{
