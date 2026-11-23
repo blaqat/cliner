@@ -4389,15 +4389,25 @@ export class Controller {
 	 * created for the read and disposed afterwards.
 	 */
 	async hasWorkspaceCheckpointForMessage(messageTs: number): Promise<boolean> {
+		return (await this.workspaceCheckpointForMessage(messageTs)).exists
+	}
+
+	/** Why Reset Code can't restore files for this message although it has a checkpoint; "" when nothing blocks it. */
+	async workspaceRestoreBlockForMessage(messageTs: number): Promise<string> {
+		return (await this.workspaceCheckpointForMessage(messageTs)).blocked ?? ""
+	}
+
+	private async workspaceCheckpointForMessage(messageTs: number): Promise<{ exists: boolean; blocked?: string }> {
+		const none = { exists: false }
 		const activeSession = this.sessions.getActiveSession()
 		const currentTask = this.task
 		if (!currentTask) {
-			return false
+			return none
 		}
 		const clineMessages = currentTask.messageStateHandler.getClineMessages()
 		const targetIndex = clineMessages.findIndex((message) => message.ts === messageTs)
 		if (targetIndex === -1 || getCheckpointRunCountForMessage(clineMessages, targetIndex) === undefined) {
-			return false
+			return none
 		}
 		const userOrdinal = clineMessages.slice(0, targetIndex + 1).filter(isVisibleCheckpointUserMessage).length
 		const sessionId = activeSession?.sessionId ?? currentTask.taskId
@@ -4416,19 +4426,21 @@ export class Controller {
 					? (await this.taskHistory.findHistoryItem(currentTask.taskId))?.cwdOnTaskInitialization?.trim() ||
 						(await this.getWorkspaceRoot())
 					: undefined)
-			if (cwd && (await this.workspaceRestoreBlock(sessionId, cwd))) return false
+			const blocked = cwd ? await this.workspaceRestoreBlock(sessionId, cwd) : undefined
+			if (blocked) return { exists: false, blocked }
 			const sdkIndex = findSdkUserMessageIndexByOrdinal(sdkMessages, userOrdinal)
 			if (sdkIndex === -1) {
-				return false
+				return none
 			}
 			const runCount = getSdkCheckpointRunCountForMessageIndex(sdkMessages, sdkIndex)
-			return (
-				runCount !== undefined &&
-				findCheckpointForRun(readSessionCheckpointHistory(sessionRecord), runCount) !== undefined
-			)
+			return {
+				exists:
+					runCount !== undefined &&
+					findCheckpointForRun(readSessionCheckpointHistory(sessionRecord), runCount) !== undefined,
+			}
 		} catch (error) {
 			Logger.debug(`[SdkController] Failed to resolve workspace checkpoint for message ${messageTs}: ${error}`)
-			return false
+			return none
 		} finally {
 			try {
 				await tempHost?.dispose("workspaceCheckpointForMessage")
@@ -5617,6 +5629,7 @@ export class Controller {
 			isLoaded: (threadId) => !!this.sessions.getSession(threadId),
 			isRunning: (threadId) => !!this.sessions.getSession(threadId)?.isRunning,
 			usesTaskWorktree: (threadId) => this.usesTaskWorktree(threadId),
+			taskWorktreeElsewhere: async (mapping) => !(await matchesTaskWorkspace(mapping, workspace)),
 			worktrees: {
 				get: (id) => worktrees.get(id),
 				summary: (id) => worktrees.summary(id),

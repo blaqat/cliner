@@ -22,6 +22,9 @@ service CheckpointsService {
   // message with the given ts. Asked when the user opens a message for
   // editing, so the answer reflects the checkpoints that exist right then.
   rpc checkpointExistsForMessage(Int64Request) returns (Boolean);
+  // Why Reset Code can't restore files for that message even though a
+  // checkpoint exists (a worktree other threads share); empty when nothing blocks it.
+  rpc checkpointRestoreBlockForMessage(Int64Request) returns (String);
 }
 
 message CheckpointRestoreRequest {

@@ -65,6 +65,8 @@ message TaskGroupDeleteTaskWorktree {
   repeated string running_here = 5;
   // A thread using it is running in another window or session.
   bool busy_elsewhere = 6;
+  // It belongs to another workspace: only a window on that workspace can remove it.
+  bool elsewhere = 7;
 }
 
 message TaskGroupDeletePreview {

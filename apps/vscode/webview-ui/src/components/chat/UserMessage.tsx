@@ -33,7 +33,7 @@ interface UserMessageProps {
 type WorkspaceRestoreAvailability =
 	| { state: "pending" }
 	| { state: "available" }
-	| { state: "unavailable"; reason: "checkpoints_disabled" | "checkpoint_unavailable" }
+	| { state: "unavailable"; reason: "checkpoints_disabled" | "checkpoint_unavailable" | "blocked"; message?: string }
 
 const WORKSPACE_RESTORE_TOOLTIPS: Record<WorkspaceRestoreAvailability["state"], string> = {
 	pending: "Checking for a workspace checkpoint…",
@@ -64,6 +64,8 @@ const UserMessage: React.FC<UserMessageProps> = ({
 	const [errorMessage, setErrorMessage] = useState<string | undefined>()
 	const [workspaceRestorePopoverOpen, setWorkspaceRestorePopoverOpen] = useState(false)
 	const [hasWorkspaceCheckpoint, setHasWorkspaceCheckpoint] = useState<boolean | undefined>()
+	// Why files can't be reset although a checkpoint exists (a worktree other threads share).
+	const [restoreBlock, setRestoreBlock] = useState("")
 	const highlightedText = useMemo(() => highlightText(text), [text])
 	const workspaceRestoreAvailability: WorkspaceRestoreAvailability | undefined = !canRestoreWorkspace
 		? undefined
@@ -71,11 +73,16 @@ const UserMessage: React.FC<UserMessageProps> = ({
 			? { state: "pending" }
 			: hasWorkspaceCheckpoint
 				? { state: "available" }
-				: {
-						state: "unavailable",
-						reason: enableCheckpointsSetting === false ? "checkpoints_disabled" : "checkpoint_unavailable",
-					}
-	const workspaceRestoreTooltip = workspaceRestoreAvailability && WORKSPACE_RESTORE_TOOLTIPS[workspaceRestoreAvailability.state]
+				: restoreBlock
+					? { state: "unavailable", reason: "blocked", message: restoreBlock }
+					: {
+							state: "unavailable",
+							reason: enableCheckpointsSetting === false ? "checkpoints_disabled" : "checkpoint_unavailable",
+						}
+	const workspaceRestoreTooltip =
+		workspaceRestoreAvailability &&
+		((workspaceRestoreAvailability.state === "unavailable" && workspaceRestoreAvailability.message) ||
+			WORKSPACE_RESTORE_TOOLTIPS[workspaceRestoreAvailability.state])
 	const workspaceRestorePending = workspaceRestoreAvailability?.state === "pending"
 
 	// The checkpoint is looked up when the user opens the editor, not pushed
@@ -83,6 +90,7 @@ const UserMessage: React.FC<UserMessageProps> = ({
 	// the latest turn. A failed lookup is reported as no checkpoint.
 	useEffect(() => {
 		setHasWorkspaceCheckpoint(undefined)
+		setRestoreBlock("")
 		if (!isEditing || !canRestoreWorkspace || messageTs === undefined) {
 			return
 		}
@@ -95,8 +103,15 @@ const UserMessage: React.FC<UserMessageProps> = ({
 					return false
 				},
 			)
-			.then((exists) => {
+			.then(async (exists) => {
+				// Only a "no" needs a reason; a failed lookup keeps the generic one.
+				const block = exists
+					? ""
+					: await CheckpointsServiceClient.checkpointRestoreBlockForMessage(Int64Request.create({ value: messageTs }))
+							.then((result) => result.value)
+							.catch(() => "")
 				if (!cancelled) {
+					setRestoreBlock(block)
 					setHasWorkspaceCheckpoint(exists)
 				}
 			})

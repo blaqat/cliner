@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
 	deleteTaskGroupWithThreads: vi.fn(),
 	deleteTaskGroupOnly: vi.fn(),
 }))
+const threadWorktreeAction = vi.fn()
+vi.mock("@/components/worktrees/useWorktree", () => ({
+	threadWorktreeAction: (...args: unknown[]) => threadWorktreeAction(...args),
+}))
 vi.mock("@/services/grpc-client", () => ({
 	TaskGroupServiceClient: { deleteTaskGroup: (request: unknown) => mocks.deleteTaskGroup(request) },
 	TaskGroupDeleteServiceClient: {
@@ -138,6 +142,26 @@ describe("TaskGroupDeleteConfirm", () => {
 		expect(mocks.deleteTaskGroupWithThreads).toHaveBeenLastCalledWith(
 			expect.objectContaining({ discardWorktreeWork: true, removalConfirmation: "fresh" }),
 		)
+	})
+
+	it("can't delete from another workspace and offers to open the one that owns the task worktree", async () => {
+		threadWorktreeAction.mockReset().mockResolvedValue({})
+		mocks.previewTaskGroupDelete.mockResolvedValue({
+			threads: [thread("a")],
+			taskWorktree: taskWorktree({ elsewhere: true }),
+			removalConfirmation: "",
+		})
+		renderConfirm()
+		await screen.findByTestId("task-group-delete-open-workspace")
+		// Neither choice can remove that worktree from here, so neither is offered as a button that fails.
+		expect(screen.getByTestId("task-group-delete-all")).toBeDisabled()
+		expect(screen.getByTestId("task-group-delete-only")).toBeDisabled()
+		expect(screen.getByTestId("task-group-delete-only")).toHaveAttribute(
+			"title",
+			expect.stringContaining("another workspace"),
+		)
+		fireEvent.click(screen.getByTestId("task-group-delete-open-workspace"))
+		expect(threadWorktreeAction).toHaveBeenCalledWith("openTaskWorkspace", undefined, undefined, false, "g1")
 	})
 
 	it("offers a plain Delete for a task with no threads", async () => {

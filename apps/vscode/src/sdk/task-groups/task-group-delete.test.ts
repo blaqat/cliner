@@ -227,6 +227,33 @@ describe("deleteTaskGroupWithThreads", () => {
 		expect(order.some((step) => step.startsWith("delete:") || step.startsWith("group:"))).toBe(false)
 	})
 
+	it("removes nothing when a thread that was running at preview turns out to hold work", async () => {
+		// The preview had no confirmation for the running thread; stopping it must not leave the task
+		// worktree removed while the task and its threads stay.
+		const running = ["wt"]
+		const { deps, order } = setup({
+			items: [item("wt", { taskGroupId: "g" }), item("plain", { taskGroupId: "g" })],
+			running,
+			worktrees: { wt: 2 },
+			taskWorktree: { losses: 0, users: ["plain"] },
+		})
+		vi.mocked(deps.stopThread).mockImplementation(async (id) => {
+			order.push(`stop:${id}`)
+			running.splice(running.indexOf(id), 1)
+		})
+		const first = await deleteTaskGroupWithThreads("g", true, deps, await reviewed(deps))
+		expect(first.deleted).toBe(false)
+		expect(first.blocked).toContain("checked again now that it has stopped")
+		expect(first.blocked).toContain("Nothing was deleted")
+		expect(order.some((step) => step.startsWith("remove-worktree:"))).toBe(false)
+		expect(order.some((step) => step.startsWith("group:") || step.startsWith("delete:"))).toBe(false)
+		// The fresh preview it returns covers the stopped thread, so a second yes goes through.
+		const second = await deleteTaskGroupWithThreads("g", true, deps, first.preview?.removalConfirmation)
+		expect(second).toEqual({ deleted: true })
+		expect(order).toContain("remove-worktree:task:g")
+		expect(order).toContain("remove-worktree:wt")
+	})
+
 	it("deletes an empty task", async () => {
 		const { deps, order } = setup({ items: [item("loose")] })
 		expect(await deleteTaskGroupWithThreads("g", false, deps)).toEqual({ deleted: true })
@@ -253,6 +280,7 @@ describe("with a task worktree", () => {
 				refWarning: "Git work would be lost.\nlib · refs/heads/wip · abc",
 				runningHere: [],
 				busyElsewhere: false,
+				elsewhere: false,
 			})
 			const byId = Object.fromEntries(threads.map((thread) => [thread.id, thread]))
 			expect(byId.plain.usesTaskWorktree).toBe(true)
@@ -328,11 +356,12 @@ describe("with a task worktree", () => {
 			// Its files change while the thread runs: the preview binds nothing for it.
 			expect(preview.removalConfirmation).toBe("")
 			const result = await deleteTaskGroupWithThreads("g", true, deps, preview.removalConfirmation)
-			expect(result).toMatchObject({
-				deleted: false,
-				blocked: "Task worktree: Changes were never copied here. Nothing was deleted.",
-			})
-			expect(removedTaskWorktree(deps)).toEqual([["task:g", undefined]])
+			expect(result.deleted).toBe(false)
+			expect(result.blocked).toBe(
+				"Task worktree: It was busy when you reviewed this delete, so it's checked again now that it has stopped. Changes were never copied here. Nothing was deleted.",
+			)
+			// Checked before any removal, so nothing was even attempted.
+			expect(removedTaskWorktree(deps)).toEqual([])
 			// The fresh preview, taken once the thread stopped, confirms what's there now.
 			expect(await deleteTaskGroupWithThreads("g", true, deps, result.preview?.removalConfirmation)).toEqual({
 				deleted: true,
@@ -361,6 +390,21 @@ describe("with a task worktree", () => {
 					(step) => step.startsWith("remove-worktree") || step.startsWith("group:") || step.startsWith("delete:"),
 				),
 			).toBe(false)
+		})
+
+		it("deletes nothing from a window on another workspace, either way", async () => {
+			const { deps, order } = setup({ items: task, taskWorktree: { users } })
+			deps.taskWorktreeElsewhere = async () => true
+			const preview = await previewTaskGroupDelete("g", deps)
+			expect(preview.taskWorktree?.elsewhere).toBe(true)
+			for (const result of [
+				await deleteTaskGroupWithThreads("g", true, deps, preview.removalConfirmation),
+				await deleteTaskGroupOnly("g", true, deps, preview.removalConfirmation),
+			]) {
+				expect(result.deleted).toBe(false)
+				expect(result.blocked).toContain("belongs to another workspace")
+			}
+			expect(order).toEqual([])
 		})
 
 		it("deletes nothing while a thread using it runs in another window", async () => {

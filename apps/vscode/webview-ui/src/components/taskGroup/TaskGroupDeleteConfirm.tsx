@@ -6,6 +6,7 @@ import {
 } from "@shared/proto/cline/task_group_delete"
 import { type ReactNode, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { threadWorktreeAction } from "@/components/worktrees/useWorktree"
 import { TaskGroupDeleteServiceClient } from "@/services/grpc-client"
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
@@ -90,7 +91,8 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 		const listed =
 			fresh.threads.some((thread) => thread.busyElsewhere || thread.worktreeLosses > 0) ||
 			(!!fresh.taskWorktree &&
-				(fresh.taskWorktree.busyElsewhere ||
+				(fresh.taskWorktree.elsewhere ||
+					fresh.taskWorktree.busyElsewhere ||
 					fresh.taskWorktree.runningHere.length > 0 ||
 					taskWorktreeLoses(fresh.taskWorktree)))
 		if (!listed) offerDiscard()
@@ -136,11 +138,17 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 	const noteworthy = threads?.filter((thread) => thread.busyElsewhere || thread.running || thread.worktreeNote) ?? []
 	const includes = [asides && plural(asides, "side thread"), subagents && plural(subagents, "subagent thread")].filter(Boolean)
 	const runningHere = worktree?.runningHere ?? []
-	const onlyReason = worktree?.busyElsewhere
-		? "A thread using the task worktree is running in another window. Stop it there first."
-		: runningHere.length
-			? "Stop the threads running in the task worktree first."
-			: undefined
+	// Only a window on the workspace that owns the task worktree can remove it, so neither delete can go ahead here.
+	const elsewhereReason = worktree?.elsewhere
+		? "This task’s worktree belongs to another workspace. Open that workspace to delete the task."
+		: undefined
+	const onlyReason = elsewhereReason
+		? elsewhereReason
+		: worktree?.busyElsewhere
+			? "A thread using the task worktree is running in another window. Stop it there first."
+			: runningHere.length
+				? "Stop the threads running in the task worktree first."
+				: undefined
 
 	return (
 		<div
@@ -168,6 +176,26 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 						The task worktree{worktree.branch ? ` (${worktree.branch})` : ""} is removed first
 						{count > 0 ? " either way. Kept threads continue in your workspace." : "."}
 					</DetailLine>
+					{worktree.elsewhere && (
+						<DetailLine icon="warning" warning>
+							It belongs to another workspace, so it can only be removed from there.{" "}
+							<button
+								className="cursor-pointer border-0 bg-transparent p-0 text-link underline hover:text-link-hover"
+								data-testid="task-group-delete-open-workspace"
+								onClick={() => {
+									void threadWorktreeAction(
+										"openTaskWorkspace",
+										undefined,
+										undefined,
+										false,
+										taskGroupId,
+									).catch((error) => setBlocked(error instanceof Error ? error.message : String(error)))
+								}}
+								type="button">
+								Open its workspace
+							</button>
+						</DetailLine>
+					)}
 					{worktree.busyElsewhere && (
 						<DetailLine icon="warning" warning>
 							A thread using it is running in another window. Stop it there first.
@@ -241,13 +269,14 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 				{threads && count > 0 && (
 					<Button
 						data-testid="task-group-delete-all"
-						disabled={busy || busyElsewhere.length > 0 || !!worktree?.busyElsewhere}
+						disabled={busy || busyElsewhere.length > 0 || !!worktree?.busyElsewhere || !!elsewhereReason}
 						onClick={deleteAll}
 						size="xs"
 						title={
-							busyElsewhere.length || worktree?.busyElsewhere
+							elsewhereReason ??
+							(busyElsewhere.length || worktree?.busyElsewhere
 								? "Stop the threads running in another window first."
-								: undefined
+								: undefined)
 						}
 						variant="danger">
 						{busy
