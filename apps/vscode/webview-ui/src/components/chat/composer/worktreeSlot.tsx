@@ -8,7 +8,12 @@ import {
 } from "@/components/common/menuStyles"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ThreadWorktreeActions } from "@/components/worktrees/ThreadWorktreeActions"
-import { clearWorktreeStartFailure, useWorktree, useWorktreeStartFailure } from "@/components/worktrees/useWorktree"
+import {
+	clearWorktreeStartFailure,
+	threadWorktreeAction,
+	useWorktree,
+	useWorktreeStartFailure,
+} from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKeyboard"
@@ -17,8 +22,9 @@ type WorktreeInfo = ReturnType<typeof useWorktree>
 
 /**
  * The workspace menu: a new thread picks between your workspace and a new worktree; a worktree
- * thread gets its worktree actions. Whenever a worktree can't be used (off, mm not set up, no git
- * history), it says why and links to Settings › Worktrees, so the user is never stuck.
+ * thread gets its worktree actions. Whenever a worktree can't be used (off, off here, mm not set up,
+ * no git history), it says which and links to the fix: the control in Settings › Worktrees that turns
+ * it on, or Source Control for the folder's git.
  */
 function WorkspaceMenuBody({
 	threadId,
@@ -37,11 +43,14 @@ function WorkspaceMenuBody({
 		void refresh(true)
 	}, [])
 	const mapping = threadId ? state?.mapping : undefined
-	const off = !availability || availability.mode === "off"
-	const canUse = !off && !!availability?.available
+	const canUse = !!availability?.available
 	const mm = availability?.mode === "mm"
-	// Why a worktree isn't offered right now; empty when it is.
-	const blocker = error || (off ? "Worktrees are off." : availability?.available ? "" : (availability?.reason ?? ""))
+	const fix = availability?.available ? undefined : availability?.fix
+	// Why a worktree isn't offered right now; empty when it is. Before the first check: nothing yet.
+	const mmHint = fix === "mode" && state?.mmConfigFile ? ` This folder is an mm workspace (${state.mmConfigFile}).` : ""
+	const blocker = error || (!availability || availability.available ? "" : (availability.reason ?? "") + mmHint)
+	// Git problems are fixed in the folder; the rest in Settings, on the control that fixes them.
+	const folderFix = fix === "repository" || fix === "commit"
 	const pick = (value: boolean) => {
 		void setEnabled(value)
 		clearWorktreeStartFailure()
@@ -74,7 +83,7 @@ function WorkspaceMenuBody({
 						type="button">
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-repo-forked text-description")} />
 						<span className="min-w-0 flex-1 truncate">New worktree</span>
-						{mm && <span className="shrink-0 text-[11px] text-description">mm</span>}
+						{canUse && mm && <span className="shrink-0 text-[11px] text-description">mm</span>}
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !enabled && "invisible")} />
 					</button>
 				</div>
@@ -110,26 +119,37 @@ function WorkspaceMenuBody({
 				</p>
 			)}
 			<div className={MENU_SEPARATOR_CLASS} />
+			{!mapping && folderFix && (
+				<button
+					className={cn(MENU_ROW_CLASS, "text-link")}
+					data-testid="workspace-folder-fix"
+					onClick={() => {
+						onClose()
+						void threadWorktreeAction("openSourceControl")
+					}}
+					role="menuitem"
+					type="button">
+					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-source-control")} />
+					<span className="min-w-0 flex-1 truncate">Open Source Control</span>
+				</button>
+			)}
 			<button
-				className={cn(MENU_ROW_CLASS, "text-link")}
+				className={cn(MENU_ROW_CLASS, !folderFix && "text-link")}
 				data-testid="workspace-settings"
 				onClick={() => {
 					onClose()
+					// Settings focuses the control that fixes what's in the way (see WorktreeSettings).
 					navigateToSettings("worktrees")
 				}}
 				role="menuitem"
 				type="button">
 				<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-gear")} />
 				<span className="min-w-0 flex-1 truncate">
-					{mapping
+					{mapping || !fix || folderFix
 						? "Worktree settings"
-						: off
-							? "Turn on in Settings"
-							: blocker
-								? mm
-									? "Open Worktrees settings"
-									: "Fix in Settings"
-								: "Worktree settings"}
+						: fix === "mm"
+							? "Fix in Settings"
+							: "Turn on in Settings"}
 				</span>
 				<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-chevron-right")} />
 			</button>

@@ -1,4 +1,11 @@
-import type { ThreadWorktree, WorktreeState, WorktreeSummary } from "@shared/thread-worktrees"
+import {
+	NO_COMMITS,
+	type ThreadWorktree,
+	WORKTREES_OFF,
+	WORKTREES_OFF_HERE,
+	type WorktreeState,
+	type WorktreeSummary,
+} from "@shared/thread-worktrees"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { ThreadWorktreeActions, worktreeStatusText } from "./ThreadWorktreeActions"
@@ -215,28 +222,216 @@ describe("worktreeStatusText", () => {
 		)
 	})
 })
-it("saves mode and paths and provides selective settled-worktree cleanup", async () => {
-	mocks.state.settled = [mapping, { ...mapping, threadId: "keep", branch: "cline/keep" }]
-	render(<WorktreeSettings />)
-	expect(await screen.findByText("2 settled worktrees")).toBeVisible()
-	fireEvent.keyDown(screen.getByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
-	fireEvent.keyDown(await screen.findByRole("option", { name: "mm" }), { key: "Enter" })
-	fireEvent.change(await screen.findByLabelText("Path to mm.js"), { target: { value: "/tools/mm.js" } })
-	fireEvent.click(screen.getByText("Save worktree settings"))
-	await waitFor(() =>
+/** Serves "state" from mocks.state; configure and workspaceOff change it the way the host would. */
+function serveSettings() {
+	mocks.action.mockImplementation(async (request) => {
+		const data = request.json ? JSON.parse(request.json) : {}
+		if (request.action === "configure") {
+			mocks.state = {
+				...mocks.state,
+				settings: data,
+				mmFound: data.mmPath ? data.mmPath === "/tools/mm.js" : undefined,
+				availability: {
+					...mocks.state.availability,
+					mode: data.mode,
+					available: data.mode !== "off",
+					reason: data.mode === "off" ? WORKTREES_OFF : undefined,
+				},
+			}
+		}
+		if (request.action === "workspaceOff")
+			mocks.state = {
+				...mocks.state,
+				availability: {
+					...mocks.state.availability,
+					workspaceOff: data.disabled,
+					available: !data.disabled,
+					reason: data.disabled ? WORKTREES_OFF_HERE : undefined,
+				},
+			}
+		return { json: JSON.stringify(request.action === "state" ? { state: mocks.state } : {}) }
+	})
+}
+const configured = () =>
+	mocks.action.mock.calls.filter(([request]) => request.action === "configure").map(([request]) => JSON.parse(request.json))
+
+describe("WorktreeSettings", () => {
+	it("saves the mode as it changes and paths on Enter or leaving the box, with no Save button", async () => {
+		serveSettings()
+		render(<WorktreeSettings />)
+		fireEvent.keyDown(await screen.findByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
+		fireEvent.keyDown(await screen.findByRole("option", { name: "mm" }), { key: "Enter" })
+		await waitFor(() => expect(configured()).toEqual([{ mode: "mm", mmPath: "", nodePath: "node" }]))
+		expect(screen.queryByText(/Save worktree settings/)).toBeNull()
+
+		const mmPath = await screen.findByLabelText("Path to mm.js")
+		expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Set the path to mm.js to use mm.")
+		fireEvent.change(mmPath, { target: { value: "/tools/missing.js" } })
+		fireEvent.keyDown(mmPath, { key: "Enter" })
+		await waitFor(() =>
+			expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Couldn't find mm.js at /tools/missing.js."),
+		)
+		fireEvent.change(mmPath, { target: { value: " /tools/mm.js " } })
+		fireEvent.blur(mmPath)
+		await waitFor(() => expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Found mm.js."))
+		expect(configured().at(-1)).toEqual({ mode: "mm", mmPath: "/tools/mm.js", nodePath: "node" })
+
+		// Escape puts back the saved path; leaving an unchanged box saves nothing.
+		const saves = configured().length
+		fireEvent.change(mmPath, { target: { value: "/elsewhere" } })
+		fireEvent.keyDown(mmPath, { key: "Escape" })
+		expect(mmPath).toHaveValue("/tools/mm.js")
+		fireEvent.blur(mmPath)
+		const node = screen.getByLabelText("Path to node")
+		fireEvent.change(node, { target: { value: "/usr/local/bin/node" } })
+		fireEvent.blur(node)
+		await waitFor(() =>
+			expect(configured().at(-1)).toEqual({ mode: "mm", mmPath: "/tools/mm.js", nodePath: "/usr/local/bin/node" }),
+		)
+		expect(configured()).toHaveLength(saves + 1)
+	})
+
+	it("with Mode off says so instead of offering the workspace switch, and offers mm in an mm folder", async () => {
+		mocks.state = {
+			...mocks.state,
+			settings: { mode: "off", mmPath: "", nodePath: "node" },
+			availability: { mode: "off", available: false, workspaceOff: false, reason: WORKTREES_OFF, fix: "mode" },
+			mmConfigFile: ".mmrc",
+		}
+		serveSettings()
+		render(<WorktreeSettings />)
+		expect(await screen.findByTestId("worktrees-status")).toHaveTextContent(WORKTREES_OFF)
+		expect(screen.queryByLabelText("Use worktrees in this workspace")).toBeNull()
+		expect(screen.getByTestId("worktrees-mm-hint")).toHaveTextContent("This folder is an mm workspace (.mmrc).")
+		fireEvent.click(screen.getByRole("button", { name: "Use mm" }))
+		await waitFor(() => expect(configured()).toEqual([{ mode: "mm", mmPath: "", nodePath: "node" }]))
+		// mm.js still needs its path: the path box takes focus and says so; the hint has done its job.
+		await waitFor(() => expect(screen.getByLabelText("Path to mm.js")).toHaveFocus())
+		expect(screen.getByTestId("worktrees-mm-found")).toHaveTextContent("Set the path to mm.js to use mm.")
+		expect(screen.queryByTestId("worktrees-mm-hint")).toBeNull()
+	})
+
+	it("says on means on for this workspace, keeping the stored off state's meaning", async () => {
+		// Stored before this wording: worktreeToggles.disabled = true.
+		mocks.state = {
+			...mocks.state,
+			availability: { mode: "off", available: false, workspaceOff: true, reason: WORKTREES_OFF_HERE, fix: "workspace" },
+		}
+		serveSettings()
+		render(<WorktreeSettings />)
+		const toggle = await screen.findByRole("switch", { name: "Use worktrees in this workspace" })
+		expect(toggle).not.toBeChecked()
+		expect(screen.getByTestId("worktrees-status")).toHaveTextContent(WORKTREES_OFF_HERE)
+		fireEvent.click(toggle)
+		await waitFor(() =>
+			expect(mocks.action).toHaveBeenCalledWith(
+				expect.objectContaining({ action: "workspaceOff", json: JSON.stringify({ disabled: false }) }),
+			),
+		)
+		await waitFor(() => expect(toggle).toBeChecked())
+		expect(screen.getByTestId("worktrees-status")).toHaveTextContent("Ready. Pick New worktree under the message box")
+	})
+
+	// The Settings shell highlights the row a link points at; the row then lands on what fixes things now.
+	const renderAsLinkTarget = () => {
+		const row = document.createElement("div")
+		row.id = "setting-tools-worktrees"
+		document.body.append(row)
+		const view = render(<WorktreeSettings />, { container: row })
+		row.classList.add("settings-target-highlight")
+		return { ...view, row }
+	}
+
+	it.each([
+		[
+			"this workspace's switch",
+			{ workspaceOff: true, reason: WORKTREES_OFF_HERE, fix: "workspace" as const },
+			"switch",
+			"Use worktrees in this workspace",
+		],
+		[
+			"the mm.js path",
+			{ reason: "Couldn't find mm.js. mm.js path: /x/mm.js", fix: "mm" as const },
+			"textbox",
+			"Path to mm.js",
+		],
+	])("a link lands on %s once its settings have loaded", async (_, availability, role, name) => {
+		mocks.state = {
+			...mocks.state,
+			settings: { mode: availability.fix === "mm" ? "mm" : "git", mmPath: "", nodePath: "node" },
+			availability: { mode: "git", available: false, workspaceOff: false, ...availability },
+		}
+		const { row } = renderAsLinkTarget()
+		await waitFor(() => expect(screen.getByRole(role, { name })).toHaveFocus())
+		row.remove()
+	})
+
+	it("a link lands on Use mm when worktrees are off in an mm folder, and nowhere without a link", async () => {
+		mocks.state = {
+			...mocks.state,
+			settings: { mode: "off", mmPath: "", nodePath: "node" },
+			availability: { mode: "off", available: false, workspaceOff: false, reason: WORKTREES_OFF, fix: "mode" },
+			mmConfigFile: ".mm.json",
+		}
+		const { unmount } = render(<WorktreeSettings />)
+		await screen.findByRole("button", { name: "Use mm" })
+		expect(document.activeElement).toBe(document.body)
+		unmount()
+		const { row } = renderAsLinkTarget()
+		await waitFor(() => expect(screen.getByRole("button", { name: "Use mm" })).toHaveFocus())
+		row.remove()
+	})
+
+	it("picking a mode from Off also turns this workspace back on", async () => {
+		mocks.state = {
+			...mocks.state,
+			settings: { mode: "off", mmPath: "", nodePath: "node" },
+			availability: { mode: "off", available: false, workspaceOff: true, reason: WORKTREES_OFF, fix: "mode" },
+		}
+		serveSettings()
+		render(<WorktreeSettings />)
+		expect(await screen.findByTestId("worktrees-status")).toHaveTextContent(WORKTREES_OFF)
+		fireEvent.keyDown(screen.getByRole("combobox", { name: "Worktrees mode" }), { key: "Enter" })
+		fireEvent.keyDown(await screen.findByRole("option", { name: "Git worktree" }), { key: "Enter" })
+		await waitFor(() => expect(screen.getByTestId("worktrees-status")).toHaveTextContent("Ready."))
+		expect(configured()).toEqual([{ mode: "git", mmPath: "", nodePath: "node" }])
 		expect(mocks.action).toHaveBeenCalledWith(
-			expect.objectContaining({
-				action: "configure",
-				json: JSON.stringify({ mode: "mm", mmPath: "/tools/mm.js", nodePath: "node" }),
-			}),
-		),
-	)
-	fireEvent.click(screen.getByRole("checkbox", { name: /cline\/test/ }))
-	fireEvent.click(screen.getByText("Remove 1 selected"))
-	await waitFor(() =>
-		expect(mocks.action).toHaveBeenCalledWith(
-			expect.objectContaining({ action: "remove", threadId: "thread", confirmed: false }),
-		),
-	)
-	expect(mocks.action).not.toHaveBeenCalledWith(expect.objectContaining({ action: "remove", threadId: "keep" }))
+			expect.objectContaining({ action: "workspaceOff", json: JSON.stringify({ disabled: false }) }),
+		)
+		expect(screen.getByRole("switch", { name: "Use worktrees in this workspace" })).toBeChecked()
+	})
+
+	it("names mm's modules when ready, and links git problems to Source Control", async () => {
+		mocks.state = {
+			...mocks.state,
+			availability: { mode: "mm", available: true, workspaceOff: false, modules: ["api", "web"] },
+		}
+		const { unmount } = render(<WorktreeSettings />)
+		expect(await screen.findByTestId("worktrees-status")).toHaveTextContent(
+			"Ready. Pick New worktree under the message box to start a thread in mm worktrees of api, web.",
+		)
+		unmount()
+		mocks.state = {
+			...mocks.state,
+			availability: { mode: "git", available: false, workspaceOff: false, reason: NO_COMMITS, fix: "commit" },
+		}
+		render(<WorktreeSettings />)
+		expect(await screen.findByTestId("worktrees-status")).toHaveTextContent(NO_COMMITS)
+		fireEvent.click(screen.getByRole("button", { name: "Open Source Control" }))
+		await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "openSourceControl" })))
+	})
+
+	it("provides selective settled-worktree cleanup", async () => {
+		mocks.state.settled = [mapping, { ...mapping, threadId: "keep", branch: "cline/keep" }]
+		render(<WorktreeSettings />)
+		expect(await screen.findByText("2 settled worktrees")).toBeVisible()
+		fireEvent.click(screen.getByRole("checkbox", { name: /cline\/test/ }))
+		fireEvent.click(screen.getByText("Remove 1 selected"))
+		await waitFor(() =>
+			expect(mocks.action).toHaveBeenCalledWith(
+				expect.objectContaining({ action: "remove", threadId: "thread", confirmed: false }),
+			),
+		)
+		expect(mocks.action).not.toHaveBeenCalledWith(expect.objectContaining({ action: "remove", threadId: "keep" }))
+	})
 })

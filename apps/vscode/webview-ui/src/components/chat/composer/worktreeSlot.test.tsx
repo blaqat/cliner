@@ -1,4 +1,4 @@
-import type { WorktreeState } from "@shared/thread-worktrees"
+import { NOT_A_REPOSITORY, WORKTREES_OFF, WORKTREES_OFF_HERE, type WorktreeState, worktreeFixFor } from "@shared/thread-worktrees"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import {
@@ -50,11 +50,21 @@ vi.mock("@/services/grpc-client", () => ({
 	},
 }))
 
-const withMode = (mode: "off" | "git" | "mm", extra: Partial<WorktreeState["availability"]> = {}): WorktreeState => ({
-	settings: { mode, mmPath: "", nodePath: "node" },
-	availability: { mode, available: mode !== "off", workspaceOff: false, ...extra },
-	settled: [],
-})
+// Like the host: an unavailable state carries its reason and the fix that reason names.
+const withMode = (mode: "off" | "git" | "mm", extra: Partial<WorktreeState["availability"]> = {}): WorktreeState => {
+	const availability = {
+		mode,
+		available: mode !== "off",
+		workspaceOff: false,
+		...(mode === "off" ? { reason: WORKTREES_OFF } : {}),
+		...extra,
+	}
+	return {
+		settings: { mode, mmPath: "", nodePath: "node" },
+		availability: { ...availability, fix: availability.available ? undefined : worktreeFixFor(availability.reason) },
+		settled: [],
+	}
+}
 
 const openMenu = async () => {
 	fireEvent.click(screen.getByTestId("workspace-button"))
@@ -98,11 +108,40 @@ it("never leaves the user stuck: worktrees off still opens a menu with a link to
 	mocks.state = withMode("off")
 	render(<WorkspaceButton />)
 	await openMenu()
-	await waitFor(() => expect(screen.getByTestId("workspace-blocker")).toHaveTextContent("Worktrees are off."))
+	await waitFor(() => expect(screen.getByTestId("workspace-blocker")).toHaveTextContent(WORKTREES_OFF))
 	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Turn on in Settings")
 	expect(screen.getByRole("menuitemradio", { name: /New worktree/ })).toBeDisabled()
 	fireEvent.click(screen.getByTestId("workspace-settings"))
 	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
+})
+
+it("says when only this workspace is off, and links to turn it on", async () => {
+	mocks.state = withMode("git", { available: false, mode: "off", workspaceOff: true, reason: WORKTREES_OFF_HERE })
+	render(<WorkspaceButton />)
+	await openMenu()
+	await waitFor(() => expect(screen.getByTestId("workspace-blocker")).toHaveTextContent(WORKTREES_OFF_HERE))
+	fireEvent.click(screen.getByRole("menuitem", { name: "Turn on in Settings" }))
+	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
+})
+
+it("mentions an mm workspace when worktrees are off in one", async () => {
+	mocks.state = { ...withMode("off"), mmConfigFile: ".mmrc" }
+	render(<WorkspaceButton />)
+	await openMenu()
+	await waitFor(() =>
+		expect(screen.getByTestId("workspace-blocker")).toHaveTextContent(
+			`${WORKTREES_OFF} This folder is an mm workspace (.mmrc).`,
+		),
+	)
+})
+
+it("sends git problems to Source Control, not Settings", async () => {
+	mocks.state = withMode("git", { available: false, reason: NOT_A_REPOSITORY })
+	render(<WorkspaceButton />)
+	const menu = await openMenu()
+	await waitFor(() => expect(within(menu).getByTestId("workspace-blocker")).toHaveTextContent(NOT_A_REPOSITORY))
+	expect(within(menu).getByTestId("workspace-folder-fix")).toHaveTextContent("Open Source Control")
+	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Worktree settings")
 })
 
 it("explains an mm setup gap and links to set it up", async () => {
@@ -112,7 +151,7 @@ it("explains an mm setup gap and links to set it up", async () => {
 	await waitFor(() =>
 		expect(screen.getByTestId("workspace-blocker")).toHaveTextContent("Set the path to mm.js in Worktrees settings"),
 	)
-	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Open Worktrees settings")
+	expect(screen.getByTestId("workspace-settings")).toHaveTextContent("Fix in Settings")
 })
 
 it.each([
@@ -124,7 +163,7 @@ it.each([
 	const menu = await openMenu()
 	await waitFor(() => expect(within(menu).getByTestId("workspace-blocker")).toHaveTextContent(reason))
 	expect(within(menu).getByTestId("workspace-worktree")).toBeDisabled()
-	fireEvent.click(within(menu).getByRole("menuitem", { name: "Open Worktrees settings" }))
+	fireEvent.click(within(menu).getByRole("menuitem", { name: "Fix in Settings" }))
 	expect(mocks.navigateToSettings).toHaveBeenCalledWith("worktrees")
 })
 
@@ -216,7 +255,7 @@ it("offers an mm worktree as soon as a valid mm.js path is saved, without a rest
 	render(<WorkspaceButton />)
 	const menu = await openMenu()
 	await waitFor(() => expect(within(menu).getByTestId("workspace-worktree")).toBeDisabled())
-	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Open Worktrees settings")
+	expect(within(menu).getByTestId("workspace-settings")).toHaveTextContent("Fix in Settings")
 	// Settings saves while the composer's menu stays mounted.
 	const saved = { mode: "mm" as const, mmPath: "/tools/mm.js", nodePath: "node" }
 	mocks.state = { ...withMode("mm"), settings: saved }
