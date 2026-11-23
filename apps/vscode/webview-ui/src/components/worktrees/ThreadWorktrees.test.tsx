@@ -166,14 +166,14 @@ it("removes without asking when nothing would be lost", async () => {
 	expect(screen.queryByTestId("worktree-remove-confirm")).toBeNull()
 })
 
-it("after switching, says so and offers only removing the leftover folder", async () => {
+it("after switching, says so and offers opening or removing the leftover folder", async () => {
 	const switched = { ...SUMMARY, takenOver: true, loseOnRemove: 0, workspaceDirty: true }
 	serve(SUMMARY, {
 		takeOver: { message: "Your workspace is on this branch now, with its 1 uncommitted file", files: 1, after: switched },
 	})
 	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Switch workspace to this branch" }))
-	await waitFor(() => expect(rowNames()).toEqual(["Remove the leftover worktree folder"]))
+	await waitFor(() => expect(rowNames()).toEqual(["Open the leftover worktree", "Remove the leftover worktree folder"]))
 	expect(status()).toHaveTextContent("Your workspace is on this branch now, with its 1 uncommitted file")
 	expect(status()).toHaveAttribute("data-tone", "ok")
 })

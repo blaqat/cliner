@@ -898,7 +898,7 @@ export class ThreadWorktreeManager {
 			const warning = missingSubmoduleWarning(
 				missing,
 				skipped,
-				"Then open the worktree and bring over its remaining submodule changes.",
+				"Then open the leftover worktree (Open the leftover worktree in this menu) and bring over its remaining submodule changes.",
 			)
 			const transferredDiff = this.fingerprint(diffs)
 			// Each step is recorded as it happens so a failure part-way undoes exactly what was done.

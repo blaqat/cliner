@@ -199,17 +199,11 @@ export function ThreadWorktreeActions({
 				)}
 			</div>
 			<div className={MENU_SEPARATOR_CLASS} />
-			{!takenOver && (
-				<button
-					className={MENU_ROW_CLASS}
-					disabled={!!busy}
-					onClick={() => void act("open")}
-					role="menuitem"
-					type="button">
-					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-empty-window")} />
-					<span className="min-w-0 flex-1 truncate">Open in new window</span>
-				</button>
-			)}
+			{/* Still offered after Take over: submodule changes Take over couldn't move stay in the leftover folder. */}
+			<button className={MENU_ROW_CLASS} disabled={!!busy} onClick={() => void act("open")} role="menuitem" type="button">
+				<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-empty-window")} />
+				<span className="min-w-0 flex-1 truncate">{takenOver ? "Open the leftover worktree" : "Open in new window"}</span>
+			</button>
 			{!takenOver && !!summary?.uncopiedFiles && (
 				<button
 					className={MENU_ROW_CLASS}
