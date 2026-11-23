@@ -638,3 +638,104 @@ it("fences removal if ownership changes during worktree inspection", async () =>
 		await successor?.()
 	}
 }, 60_000)
+
+describe("worktree removal safety", () => {
+	async function withSubmodule() {
+		const upstream = path.join(temp, "upstream")
+		await repo(upstream)
+		git(workspace, "-c", "protocol.file.allow=always", "submodule", "add", upstream, "vendor/lib")
+		git(workspace, "commit", "-am", "Add submodule")
+		const mapping = await manager.create("safety", "Safety", workspace)
+		return { mapping, child: path.join(mapping.cwd, "vendor/lib"), source: path.join(workspace, "vendor/lib") }
+	}
+
+	it("keeps a symlinked destination out of the failed-creation journal", async () => {
+		const existing = path.join(temp, "other-worktree")
+		git(workspace, "worktree", "add", "-b", "other", existing)
+		await write(existing, "file.txt", "dirty\n")
+		const dest = path.join(workspace, ".worktrees", "reuse-d9c0d34144")
+		await fs.mkdir(path.dirname(dest))
+		await fs.symlink(existing, dest, "junction")
+		await expect(manager.create("reuse", "Reuse", workspace)).rejects.toThrow(/symlink/i)
+		expect(await manager.get("reuse")).toBeUndefined()
+		expect(await read(existing)).toBe("dirty\n")
+	})
+
+	it("refuses to remove a previously recorded worktree on a different branch", async () => {
+		const mapping = await manager.create("changed", "Changed", workspace)
+		git(mapping.cwd, "switch", "-c", "other-branch")
+		await write(mapping.cwd, "file.txt", "dirty\n")
+		await expect(manager.remove("changed", true)).rejects.toThrow(/branch/)
+		expect(await read(mapping.cwd)).toBe("dirty\n")
+	})
+
+	it("finds a cache moved under the admin directory and deinitialized", async ({ skip }) => {
+		if (!git(temp, "help", "--config").includes("init.defaultSubmodulePathConfig")) skip()
+		const { mapping, child } = await withSubmodule()
+		const oid = git(child, "rev-parse", "HEAD")
+		git(child, "branch", "alternate-only")
+		const admin = git(mapping.cwd, "rev-parse", "--absolute-git-dir")
+		const cache = path.join(admin, "modules", "alternate")
+		await fs.mkdir(path.dirname(cache), { recursive: true })
+		await fs.rename(path.join(child, ".git"), cache)
+		await write(child, ".git", `gitdir: ${cache}\n`)
+		git(child, "config", "core.worktree", child)
+		git(mapping.cwd, "config", "core.repositoryformatversion", "1")
+		git(mapping.cwd, "config", "extensions.submodulePathConfig", "true")
+		git(mapping.cwd, "config", "submodule.vendor/lib.gitdir", cache)
+		git(mapping.cwd, "submodule", "deinit", "-f", "--", "vendor/lib")
+		expect(() => git(mapping.cwd, "config", "--get", "submodule.vendor/lib.gitdir")).toThrow()
+		const { warning } = await manager.remove("safety")
+		for (const item of ["alternate", "refs/heads/alternate-only", oid]) expect(warning).toContain(item)
+		await manager.remove("safety", true)
+		await expect(fs.access(cache)).rejects.toThrow()
+	})
+
+	it("checks the registered admin directory even when the checkout is missing", async () => {
+		const { mapping, child } = await withSubmodule()
+		const cache = git(mapping.cwd, "rev-parse", "--path-format=absolute", "--git-path", "modules/left/behind")
+		const oid = git(child, "rev-parse", "HEAD")
+		git(child, "branch", "left-behind")
+		await fs.mkdir(path.dirname(cache), { recursive: true })
+		await fs.rename(path.join(child, ".git"), cache)
+		await fs.rm(mapping.cwd, { recursive: true })
+		const { warning } = await manager.remove("safety")
+		for (const item of ["left/behind", "refs/heads/left-behind", oid]) expect(warning).toContain(item)
+		await manager.remove("safety", true)
+		await expect(fs.access(cache)).rejects.toThrow()
+	})
+
+	it("lists a checked-out stash before removing the repository", async () => {
+		const { mapping, child } = await withSubmodule()
+		await write(child, "file.txt", "stashed\n")
+		git(child, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "stash", "push")
+		const oid = git(child, "rev-parse", "refs/stash")
+		const { warning } = await manager.remove("safety")
+		for (const item of ["vendor/lib", "refs/stash", oid]) expect(warning).toContain(item)
+		expect(git(child, "rev-parse", "refs/stash")).toBe(oid)
+		await manager.remove("safety", true)
+		await expect(fs.access(mapping.cwd)).rejects.toThrow()
+	})
+
+	it("matches the full branch name and accepts a matching source branch that is ahead", async () => {
+		const { child, source } = await withSubmodule()
+		const oid = git(child, "rev-parse", "HEAD")
+		git(child, "branch", "topic")
+		git(child, "update-ref", "refs/remotes/origin/feature/topic", oid)
+		expect((await manager.remove("safety")).warning).toContain("refs/heads/topic")
+		git(source, "switch", "-c", "topic")
+		git(source, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "Ahead")
+		expect((await manager.remove("safety")).message).toContain("Worktree removed")
+	})
+
+	it("names a repository it could not inspect and how to continue", async () => {
+		const mapping = await manager.create("broken-child", "Broken child", workspace)
+		const child = path.join(mapping.cwd, "missing-gitdir")
+		await fs.mkdir(child)
+		await write(child, ".git", "gitdir: missing\n")
+		const { warning } = await manager.remove("broken-child")
+		for (const item of [child, "Inspect", "confirm"]) expect(warning).toContain(item)
+		await manager.remove("broken-child", true)
+		await expect(fs.access(mapping.cwd)).rejects.toThrow()
+	})
+})

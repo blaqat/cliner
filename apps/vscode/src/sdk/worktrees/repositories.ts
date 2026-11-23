@@ -19,10 +19,14 @@ export async function run(
 			args,
 			{ cwd, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 },
 			(error, stdout, stderr) => {
-				if (error) reject(new Error(`${command} ${args[0]}: ${stderr || error.message}`))
+				if (error) reject(new Error(`${command} ${args[0]}: ${stderr || error.message}`, { cause: error }))
 				else {
-					onStderr?.(stderr)
-					resolve(stdout)
+					try {
+						onStderr?.(stderr)
+						resolve(stdout)
+					} catch (callbackError) {
+						reject(callbackError)
+					}
 				}
 			},
 		)
@@ -30,11 +34,24 @@ export async function run(
 		child.stdin?.end(input)
 	})
 }
-export const git = async (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) =>
-	run("git", ["-c", "submodule.recurse=false", ...args], await worktreePath.key(cwd), input, {
-		GIT_OPTIONAL_LOCKS: "0",
-		...env,
-	})
+export const git = async (
+	cwd: string,
+	args: string[],
+	input?: string,
+	env?: NodeJS.ProcessEnv,
+	onStderr?: (stderr: string) => void,
+) =>
+	run(
+		"git",
+		["-c", "submodule.recurse=false", ...args],
+		await worktreePath.key(cwd),
+		input,
+		{
+			GIT_OPTIONAL_LOCKS: "0",
+			...env,
+		},
+		onStderr,
+	)
 export const exists = (file: string) =>
 	fs.access(file).then(
 		() => true,
@@ -184,56 +201,302 @@ async function submoduleCache(
 const cachedGit = (cwd: string, gitDir: string, args: string[]) =>
 	git(cwd, [`--git-dir=${gitDir}`, `--work-tree=${cwd}`, ...args], undefined, { GIT_NO_LAZY_FETCH: "1" })
 
-/** Git retains refs and nested caches after submodule deinit removes the checkout. */
-export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<string | undefined> {
-	const seen = new Set<string>()
-	async function visit(
-		cwd: string,
-		worktree: string,
-		module: string,
-		repositoryGit: (args: string[]) => Promise<string>,
-	): Promise<string | undefined> {
-		const links = parseGitlinks(await repositoryGit(["ls-tree", "-rz", "HEAD"]), 2)
-		if (!links.size) return undefined
-		const names = await submoduleNames(repositoryGit)
-		for (const [relative, commit] of links) {
-			const child = await submodulePath(worktree, relative)
-			const name = [module, relative].filter(Boolean).join("/")
-			const checkedOut = await exists(path.join(child, ".git"))
-			const gitDir = checkedOut
-				? await worktreePath.key((await git(child, ["rev-parse", "--absolute-git-dir"])).trimEnd())
-				: await submoduleCache(repositoryGit, worktree, submoduleName(names, relative))
-			if (seen.has(gitDir) || !(await exists(gitDir))) continue
-			seen.add(gitDir)
-			const childGit = (args: string[]) => cachedGit(cwd, gitDir, args)
-			const refs = (await childGit(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"]))
-				.trimEnd()
-				.split("\n")
-			const remoteRefs = refs.filter((ref) => ref.startsWith("refs/remotes/"))
-			for (const ref of refs.filter((ref) => ref.startsWith("refs/heads/"))) {
-				const [branch, oid] = ref.slice("refs/heads/".length).split(" ")
-				if (!remoteRefs.some((remote) => remote.endsWith(`/${branch} ${oid}`)))
-					return `${name} has a local branch (${branch}) in this worktree. Preserve it before removing the worktree, or remove and discard it.`
-			}
-			if (!checkedOut) {
-				const base = (await childGit(["rev-parse", "--quiet", "--verify", commit]).catch(() => "")).trim()
-				if (
-					(
-						await childGit(["rev-list", "-1", "--all", "--reflog", "--not", "--remotes", ...(base ? [base] : [])])
-					).trim()
-				)
-					return `${name} has an unpushed commit in its local cache. Preserve it before removing the worktree, or remove and discard it.`
-			}
-			const warning = await visit(cwd, child, name, childGit)
-			if (warning) return warning
-		}
-		return undefined
+const inspectionEnv = { GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" }
+const perWorktreeRef = /^refs\/(bisect|worktree|rewritten)\//
+
+async function removalStat(file: string) {
+	try {
+		return await fs.lstat(file)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+		throw error
 	}
-	for (const module of mapping.modules) {
-		const warning = await visit(module.path, module.path, module.name, (args) => git(module.path, args))
-		if (warning) return warning
+}
+
+type RemovalGit = (args: string[], input?: string) => Promise<string>
+
+/** A configured mm module can be a submodule deinitialized in the source checkout. */
+export async function removalSourceRepository(dir: string): Promise<RemovalGit> {
+	if (await removalStat(path.join(dir, ".git"))) {
+		await assertRepository(dir)
+		return (args) => git(dir, args)
+	}
+	for (let parent = path.dirname(dir); parent !== path.dirname(parent); parent = path.dirname(parent)) {
+		if (!(await removalStat(path.join(parent, ".git")))) continue
+		const read = (args: string[]) => git(parent, args)
+		const names = await submoduleNames(read).catch(() => new Map<string, string>())
+		const name = names.get(path.relative(parent, dir).split(path.sep).join("/"))
+		if (name) return removalGit(parent, await submoduleCache(read, parent, name))
+		break
+	}
+	throw new Error(`Couldn't identify the source repository at ${dir}. Restore it before removing the worktree.`)
+}
+
+async function removalAdmin(source: string, checkout: string) {
+	if (await removalStat(checkout)) return worktreePath.key((await git(checkout, ["rev-parse", "--absolute-git-dir"])).trimEnd())
+	const read = await removalSourceRepository(source)
+	const registry = (await read(["rev-parse", "--path-format=absolute", "--git-path", "worktrees"])).trimEnd()
+	if (!(await removalStat(registry))) return undefined
+	for (const entry of await fs.readdir(registry, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue
+		const admin = path.join(registry, entry.name)
+		const pointer = path.join(admin, "gitdir")
+		if (!(await removalStat(pointer))) continue
+		if (path.resolve(admin, (await fs.readFile(pointer, "utf8")).trimEnd()) === path.join(checkout, ".git")) return admin
 	}
 	return undefined
+}
+
+function removalGit(cwd: string, dir: string): RemovalGit {
+	return (args, input) =>
+		git(cwd, [`--git-dir=${dir}`, `--work-tree=${cwd}`, ...args], input, inspectionEnv, (stderr) => {
+			if (stderr.trim()) throw new Error(stderr.trim())
+		})
+}
+
+async function removalRefs(read: RemovalGit) {
+	const rows = await read(["for-each-ref", "--format=%(refname) %(objectname) %(objecttype) %(symref)"])
+	return rows
+		.split("\n")
+		.filter(Boolean)
+		.map((row) => {
+			const [name, oid, type, symbolic] = row.trimEnd().split(" ")
+			return { name, oid, type, symbolic }
+		})
+}
+
+async function trackingRefs(read: RemovalGit, refs: Awaited<ReturnType<typeof removalRefs>>) {
+	const tracked = new Map<string, string>()
+	if (!refs.some(({ name }) => name.startsWith("refs/remotes/"))) return tracked
+	const prefixes = (await read(["remote"]))
+		.split("\n")
+		.filter(Boolean)
+		.map((remote) => `refs/remotes/${remote}/`)
+		.sort((a, b) => b.length - a.length)
+	for (const { name, symbolic } of refs) {
+		const prefix = prefixes.find((candidate) => name.startsWith(candidate))
+		if (prefix) tracked.set(name, symbolic ? "" : name.slice(prefix.length))
+	}
+	return tracked
+}
+
+async function detachedHead(dir: string) {
+	const head = (await fs.readFile(path.join(dir, "HEAD"), "utf8")).trim()
+	if (head.startsWith("ref: ")) return undefined
+	if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) throw new Error("Invalid Git HEAD")
+	return head
+}
+
+async function contains(read: RemovalGit, oid: string, tip: string, type = "commit") {
+	if (oid === tip) return true
+	if (type !== "commit") return false
+	try {
+		await read(["merge-base", "--is-ancestor", oid, tip])
+		return true
+	} catch (error) {
+		if (((error as Error).cause as { code?: number } | undefined)?.code === 1) return false
+		throw error
+	}
+}
+
+/** Discover repositories in the paths Git will delete, even if the parent forgot their gitlinks. */
+export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<string | undefined> {
+	const lost: string[] = []
+	const unchecked: string[] = []
+	for (const module of mapping.modules) {
+		const checkout = module.path
+		let cwd = checkout
+		const seen = new Set<string>()
+		const recordError = (file: string, error: unknown) => unchecked.push(`${file} (${(error as Error).message.trim()})`)
+		try {
+			const adminPath = await removalAdmin(module.workspacePath, checkout)
+			if (!adminPath) continue
+			const admin = adminPath
+			if (!(await removalStat(checkout))) cwd = mapping.workspace
+			const sourceAdmin = (await git(module.workspacePath, ["rev-parse", "--absolute-git-dir"]).catch(() => "")).trimEnd()
+			const insideDeletion = (dir: string) =>
+				dir === admin || dir === checkout || worktreePath.isInside(admin, dir) || worktreePath.isInside(checkout, dir)
+			const resolveMarker = async (marker: string) =>
+				worktreePath.key((await git(cwd, ["rev-parse", "--resolve-git-dir", marker])).trimEnd())
+			const label = (dir: string) => {
+				const root = worktreePath.isInside(admin, dir) ? admin : checkout
+				const relative = path
+					.relative(root, dir)
+					.split(path.sep)
+					.join("/")
+					.replace(/\/\.git$/, "")
+				return [module.name, dir === admin ? "" : relative].filter(Boolean).join("/") || "Worktree"
+			}
+
+			async function inspect(dir: string, sourceCheckout: string | undefined, sourceCache?: string) {
+				if (!insideDeletion(dir) || seen.has(dir)) return
+				seen.add(dir)
+				try {
+					const read = removalGit(cwd, dir)
+					const common = await worktreePath.key(
+						(await read(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trimEnd(),
+					)
+					const refs = await removalRefs(read)
+					const head = await detachedHead(dir)
+					const transferable = refs.filter(({ name }) => insideDeletion(common) || perWorktreeRef.test(name))
+					if (!transferable.length && !head) return
+					const remotes = await trackingRefs(read, refs)
+					const candidates = transferable.filter(({ name }) => !remotes.has(name))
+					const sourceMarker = sourceCheckout && path.join(sourceCheckout, ".git")
+					const sourceDir =
+						sourceMarker && (await removalStat(sourceMarker))
+							? await resolveMarker(sourceMarker)
+							: sourceCache && (await removalStat(sourceCache))?.isDirectory()
+								? await worktreePath.key(sourceCache)
+								: undefined
+					const sourceRead = sourceDir && !insideDeletion(sourceDir) ? removalGit(cwd, sourceDir) : undefined
+					const sourceCommon =
+						sourceRead &&
+						(await worktreePath.key(
+							(await sourceRead(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trimEnd(),
+						))
+					const source = sourceRead && sourceCommon && !insideDeletion(sourceCommon) ? sourceRead : undefined
+					const sourceRefs = source && (candidates.length || head) ? await removalRefs(source) : []
+					const sourceRemotes = source && candidates.length ? await trackingRefs(source, sourceRefs) : new Map()
+					const sourceHead = source && sourceDir && head ? await detachedHead(sourceDir) : undefined
+					const sourceHas = async (oid: string, targets: typeof refs) => {
+						if (!source || !targets.length) return false
+						if (targets.some((target) => target.oid === oid)) return true
+						// Test object presence without confusing a missing object with an inspection failure.
+						if ((await source(["cat-file", "--batch-check"], `${oid}\n`)).trimEnd().endsWith(" missing")) return false
+						for (const target of targets) if (await contains(source, oid, target.oid, target.type)) return true
+						return false
+					}
+					for (const { name, oid, type } of candidates) {
+						let preserved = false
+						if (name !== "refs/stash") {
+							const branch = name.startsWith("refs/heads/") ? name.slice("refs/heads/".length) : undefined
+							for (const remote of refs) {
+								if (
+									branch !== undefined &&
+									branch === remotes.get(remote.name) &&
+									(await contains(read, oid, remote.oid, type))
+								) {
+									preserved = true
+									break
+								}
+							}
+							preserved ||= await sourceHas(
+								oid,
+								sourceRefs.filter(
+									(ref) =>
+										ref.name === name || (branch !== undefined && sourceRemotes.get(ref.name) === branch),
+								),
+							)
+						}
+						if (!preserved) lost.push(`${label(dir)} · ${name} · ${oid}`)
+					}
+					if (head) {
+						let preserved = await sourceHas(
+							head,
+							sourceHead
+								? [...sourceRefs, { name: "HEAD", oid: sourceHead, type: "commit", symbolic: "" }]
+								: sourceRefs,
+						)
+						for (const ref of refs) {
+							// A ref stored outside the deletion, or an upstream tracking ref, can also retain HEAD.
+							if (preserved) break
+							if (remotes.has(ref.name) || !transferable.includes(ref))
+								preserved = await contains(read, head, ref.oid, ref.type)
+						}
+						if (!preserved) lost.push(`${label(dir)} · detached HEAD · ${head}`)
+					}
+				} catch (error) {
+					recordError(dir, error)
+				}
+			}
+
+			async function walk(dir: string, sourceCheckout?: string, sourceCache?: string, inAdmin = false) {
+				try {
+					const stat = await removalStat(dir)
+					if (!stat || stat.isSymbolicLink()) return
+					if (!stat.isDirectory()) throw new Error("Expected a directory")
+					const entries = await fs.readdir(dir, { withFileTypes: true })
+					const names = new Set(entries.map((entry) => entry.name))
+					if (
+						dir !== checkout &&
+						dir !== admin &&
+						((names.has("HEAD") &&
+							(names.has("commondir") || names.has("objects") || (inAdmin && names.has("config")))) ||
+							(names.has("objects") && (names.has("refs") || names.has("config"))))
+					) {
+						await inspect(dir, sourceCheckout, sourceCache)
+						await walk(
+							path.join(dir, "modules"),
+							sourceCheckout,
+							sourceCache && path.join(sourceCache, "modules"),
+							true,
+						)
+						await walk(path.join(dir, "worktrees"), undefined, undefined, true)
+						return
+					}
+					for (const entry of entries) {
+						const file = path.join(dir, entry.name)
+						const sourceChild = sourceCheckout && path.join(sourceCheckout, entry.name)
+						const sourceChildCache = sourceCache && path.join(sourceCache, entry.name)
+						if (!inAdmin && dir !== checkout && entry.name === ".git" && !entry.isSymbolicLink()) {
+							try {
+								const gitDir = await resolveMarker(file)
+								const sourceGitDir =
+									sourceAdmin &&
+									(worktreePath.isInside(path.join(admin, "modules"), gitDir)
+										? path.join(sourceAdmin, path.relative(admin, gitDir))
+										: sourceCheckout &&
+											path.join(
+												sourceAdmin,
+												"modules",
+												path.relative(module.workspacePath, sourceCheckout),
+											))
+								await inspect(gitDir, sourceCheckout, sourceGitDir || undefined)
+								if (insideDeletion(gitDir)) {
+									await walk(
+										path.join(gitDir, "modules"),
+										sourceCheckout,
+										sourceGitDir ? path.join(sourceGitDir, "modules") : undefined,
+										true,
+									)
+									await walk(path.join(gitDir, "worktrees"), undefined, undefined, true)
+								}
+							} catch (error) {
+								recordError(file, error)
+							}
+						} else if (entry.isDirectory() && (inAdmin || entry.name !== ".git")) {
+							await walk(file, sourceChild, sourceChildCache, inAdmin)
+						}
+					}
+				} catch (error) {
+					recordError(dir, error)
+				}
+			}
+
+			// Prefer checkout-relative source paths when both scans find the same repository.
+			await walk(checkout, module.workspacePath)
+			await walk(
+				path.join(admin, "modules"),
+				module.workspacePath,
+				sourceAdmin ? path.join(sourceAdmin, "modules") : undefined,
+				true,
+			)
+			await inspect(admin, module.workspacePath)
+		} catch (error) {
+			recordError(checkout, error)
+		}
+	}
+	return (
+		[
+			lost.length ? `Git work would be lost.\n${lost.join("\n")}\nPreserve it or confirm removal to discard it.` : "",
+			unchecked.length
+				? `Couldn't check Git work in:\n${unchecked.join("\n")}\nInspect these paths by hand, or confirm removal to continue.`
+				: "",
+		]
+			.filter(Boolean)
+			.join("\n\n") || undefined
+	)
 }
 
 /** Mirror checked-out or cached submodules in an independent clone. */
