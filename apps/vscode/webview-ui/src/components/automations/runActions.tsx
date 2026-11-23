@@ -18,7 +18,7 @@ export const stopRun = (runId: string) =>
 /** What must be fixed before `/name` can run (worktrees, models); empty when it can. */
 export async function checkAutomation(
 	name: string,
-	options: Pick<CheckAutomationRunRequest, "taskGroupId" | "resume"> = {},
+	options: Partial<Pick<CheckAutomationRunRequest, "taskGroupId" | "resume">> = {},
 ): Promise<AutomationProblem[]> {
 	const response = await AutomationServiceClient.checkAutomationRun(
 		CheckAutomationRunRequest.create({ value: name, ...options }),
