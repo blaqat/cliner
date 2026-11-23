@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process"
 import { expect, it, vi } from "vitest"
+import { worktreePaths } from "@/utils/worktree-paths"
 import { readMmWorkspace } from "./mm-discovery"
 
 vi.mock("node:child_process", () => ({ execFile: vi.fn() }))
 vi.mock("./repositories", () => ({ exists: async () => true }))
 
-it("passes an uppercase drive letter to the mm subprocess on Windows", async () => {
+it("passes the canonical working directory to the mm subprocess on Windows", async () => {
 	const failure = Object.assign(new Error("no config"), {
 		stdout: JSON.stringify({ error: { code: "NO_CONFIG", message: "No config" } }),
 	})
@@ -15,7 +16,11 @@ it("passes an uppercase drive letter to the mm subprocess on Windows", async () 
 		return {} as ReturnType<typeof execFile>
 	})
 	await expect(
-		readMmWorkspace("c:\\Users\\Example\\Project", { mode: "mm", mmPath: "mm.js", nodePath: "node" }, "win32"),
+		readMmWorkspace(
+			"z:\\Junction",
+			{ mode: "mm", mmPath: "mm.js", nodePath: "node" },
+			worktreePaths("win32", async () => "C:\\Users\\Example\\Project"),
+		),
 	).resolves.toBeUndefined()
 	expect(execFile).toHaveBeenCalledWith(
 		"node",

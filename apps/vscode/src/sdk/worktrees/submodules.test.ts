@@ -80,7 +80,6 @@ for (const mode of ["git", "mm"] as const) {
 		const mapping = await manager.create("skip", "Skipped submodule", workspace)
 		const child = path.join(mapping.modules[0].path, "vendor", "nested child")
 		expect(logs).toHaveBeenCalledWith(expect.stringMatching(/left nested child unset, like your workspace/i))
-		expect(mapping.unsetSubmodules?.[0]).toMatch(/vendor\/nested child$/)
 		await expect(fs.access(path.join(child, ".git"))).rejects.toThrow()
 		expect((await manager.summary("skip")).changedFiles).toBe(0)
 		await write(mapping.modules[0].path, "file.txt", "thread change\n")
@@ -114,7 +113,6 @@ for (const mode of ["git", "mm"] as const) {
 		const mapping = await manager.create("fetch", "Unavailable commit", workspace)
 		expect(warnings).toHaveBeenCalledWith(expect.stringContaining("Git couldn't fetch"))
 		expect(warnings).toHaveBeenCalledWith(expect.stringMatching(/left vendor unset\./i))
-		expect(mapping.unsetSubmodules?.[0]).toMatch(/vendor$/)
 		await expect(fs.access(path.join(mapping.modules[0].path, "vendor", ".git"))).rejects.toThrow()
 		expect(git(source, "rev-parse", "HEAD")).toBe(original)
 		expect((await manager.summary("fetch")).changedFiles).toBe(0)
@@ -401,3 +399,111 @@ for (const mode of ["git", "mm"] as const) {
 		expect(git(parent, "config", "submodule.vendor.ignore")).toBe("all")
 	}, 120_000)
 }
+
+async function leaveVendorUnset(root: string) {
+	const child = path.join(root, "vendor")
+	const cache = git(child, "rev-parse", "--absolute-git-dir")
+	git(root, "submodule", "deinit", "-f", "vendor")
+	await fs.rm(cache, { recursive: true })
+}
+
+for (const mode of ["git", "mm"] as const) {
+	it(`${mode}: protects local branches in a deinitialized worktree cache`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		await leaveVendorUnset(root)
+		const mapping = await manager.create("cache-branch", "Cache branch", workspace)
+		const parent = mapping.modules[0].path
+		const child = path.join(parent, "vendor")
+		git(parent, "submodule", "update", "--init", "vendor")
+		const base = git(child, "rev-parse", "HEAD")
+		const cache = git(child, "rev-parse", "--absolute-git-dir")
+		identity(child)
+		git(child, "switch", "-c", "local-only")
+		git(child, "commit", "--allow-empty", "-m", "local submodule work")
+		const commit = git(child, "rev-parse", "HEAD")
+		git(child, "checkout", "--detach", base)
+		git(parent, "submodule", "deinit", "-f", "vendor")
+		expect((await manager.remove("cache-branch")).warning).toMatch(/vendor.*local-only/)
+		expect(git(parent, `--git-dir=${cache}`, "rev-parse", "refs/heads/local-only")).toBe(commit)
+		expect((await manager.remove("cache-branch", true)).message).toContain("Worktree removed")
+		expect(await repositoryTools.exists(cache)).toBe(false)
+	}, 120_000)
+
+	it(`${mode}: retains a missing unset gitlink in the temporary diff index`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		await leaveVendorUnset(root)
+		const mapping = await manager.create("missing-unset", "Missing unset", workspace)
+		const parent = mapping.modules[0].path
+		const index = git(parent, "ls-files", "--stage", "vendor")
+		await fs.rm(path.join(parent, "vendor"), { recursive: true })
+		await write(parent, "file.txt", "parent edit\n")
+		const [diff] = await manager.diffs("missing-unset")
+		expect(diff.patch).toContain("+parent edit")
+		expect(diff.patch).not.toContain("vendor")
+		expect(git(parent, "ls-files", "--stage", "vendor")).toBe(index)
+	}, 120_000)
+
+	it(`${mode}: retries creation when the mapping was saved before unset submodule metadata`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		await leaveVendorUnset(root)
+		const first = await manager.create("resume-unset", "Resume unset", workspace)
+		const entry = await fs.readdir(path.join(manager.storageDir, "threads"))
+		const file = path.join(manager.storageDir, "threads", entry[0])
+		const persisted = JSON.parse(await fs.readFile(file, "utf8"))
+		delete persisted.unsetSubmodules
+		await fs.writeFile(file, JSON.stringify(persisted))
+		const resumed = await manager.create("resume-unset", "Resume unset", workspace)
+		expect(resumed.cwd).toBe(first.cwd)
+		expect((await manager.summary("resume-unset")).changedFiles).toBe(0)
+	}, 120_000)
+
+	it.each([false, true])(`${mode}: transfers parent edits with an isolate-only submodule (dirty: %s)`, async (dirty) => {
+		const { workspace, root, manager } = await fixture(mode)
+		git(root, "submodule", "deinit", "-f", "vendor")
+		const mapping = await manager.create("isolate-only", "Isolate only", workspace)
+		const parent = mapping.modules[0].path
+		const child = path.join(parent, "vendor", "nested child")
+		await write(parent, "file.txt", "parent edit\n")
+		if (dirty) await write(child, "file.txt", "child edit\n")
+		const copy = await manager.bring("isolate-only")
+		expect(copy.files).toBe(1)
+		expect(await read(root, "file.txt")).toBe("parent edit\n")
+		expect((await manager.summary("isolate-only")).loseOnRemove > 0).toBe(dirty)
+		await manager.undo("isolate-only")
+		const takeover = await manager.takeOver("isolate-only")
+		expect(takeover.mapping?.takenOver).toBe(true)
+		expect(await read(root, "file.txt")).toBe("parent edit\n")
+		expect(await repositoryTools.exists(path.join(root, "vendor", ".git"))).toBe(false)
+		if (dirty) {
+			for (const result of [copy, takeover]) expect(result.warning).toMatch(/vendor.*only.*worktree.*git submodule update/)
+			expect(await read(child, "file.txt")).toBe("child edit\n")
+			expect((await manager.remove("isolate-only")).warning).toBeDefined()
+		} else {
+			for (const result of [copy, takeover]) expect(result.warning).toBeUndefined()
+			expect((await manager.remove("isolate-only")).warning).toBeUndefined()
+		}
+	}, 120_000)
+}
+
+it("git: finds a configured deinitialized cache that Git restores offline", async (ctx) => {
+	if (!git(temp, "help", "--config").split("\n").includes("init.defaultSubmodulePathConfig"))
+		ctx.skip("Git does not support configured submodule paths")
+	const { workspace, root, manager } = await fixture("git")
+	const child = path.join(root, "vendor")
+	const cache = git(child, "rev-parse", "--absolute-git-dir")
+	const custom = ".git/modules/alternate"
+	git(root, "submodule", "set-url", "vendor", path.join(temp, "unreachable"))
+	git(root, "commit", "-am", "offline URL")
+	git(root, "submodule", "deinit", "-f", "vendor")
+	await fs.mkdir(path.dirname(path.join(root, custom)), { recursive: true })
+	await fs.rename(cache, path.join(root, custom))
+	git(root, "config", "core.repositoryformatversion", "1")
+	git(root, "config", "extensions.submodulePathConfig", "true")
+	git(root, "config", "submodule.vendor.gitdir", custom)
+	git(root, "submodule", "update", "--init", "vendor")
+	git(root, "submodule", "deinit", "-f", "vendor")
+	git(root, "config", "submodule.vendor.gitdir", custom)
+	const mapping = await manager.create("custom-cache", "Custom cache", workspace)
+	expect(await read(path.join(mapping.cwd, "vendor"), "file.txt")).toBe("base\n")
+	expect(await repositoryTools.exists(path.join(child, ".git"))).toBe(false)
+}, 120_000)

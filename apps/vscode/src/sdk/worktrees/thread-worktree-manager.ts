@@ -18,17 +18,21 @@ import { Logger } from "@/shared/services/Logger"
 import { createWorktree } from "@/utils/git-worktree"
 import { worktreePath } from "@/utils/worktree-paths"
 
-import { type MmWorkspace, mmDisplayPath, mmError, mmWorkingDirectory, readMmWorkspace } from "./mm-discovery"
+import { type MmWorkspace, mmDisplayPath, mmError, readMmWorkspace } from "./mm-discovery"
 import {
 	assertRepository,
 	detachHead,
+	emptyOrMissing,
 	exists,
 	git,
+	gitlinks,
 	importCommit,
 	initializeSubmodules,
 	ownStatus,
+	type Repository,
 	repositories,
 	run,
+	submoduleRemovalWarning,
 } from "./repositories"
 
 import { alive, heartbeatMs, type Owner, owner, storageLock } from "./storage-lock"
@@ -96,6 +100,35 @@ async function assertMmRepositories(config: MmWorkspace) {
 			)
 		roots.push(canonical)
 	}
+}
+
+async function transferRepositories(modules: Repository[]) {
+	const available: Repository[] = []
+	const missing: Repository[] = []
+	const unavailable = new Set<string>()
+	const excluded = new Map<string, string[]>()
+	for (const module of modules) {
+		const parent = module.parent
+		if (parent && unavailable.has(parent.name)) {
+			unavailable.add(module.name)
+			missing.push(module)
+		} else if (parent && (await emptyOrMissing(module.workspacePath))) {
+			const links = excluded.get(parent.name) ?? []
+			links.push(parent.relative)
+			excluded.set(parent.name, links)
+			unavailable.add(module.name)
+			missing.push(module)
+		} else {
+			available.push(module)
+		}
+	}
+	return { available, missing, excluded }
+}
+
+function missingSubmoduleWarning(modules: Repository[], changed: Set<string>, next: string) {
+	const names = modules.filter((module) => changed.has(module.name)).map((module) => module.name)
+	if (!names.length) return undefined
+	return `${names.join(", ")} ${names.length === 1 ? "has" : "have"} changes and ${names.length === 1 ? "is" : "are"} set up only in the worktree. In your workspace, run git submodule update --init --recursive from the parent repository. ${next}`
 }
 
 async function isRegisteredWorktree(workspace: string, dir: string, lockedOnly = false) {
@@ -372,8 +405,10 @@ export class ThreadWorktreeManager {
 					.slice(0, 44) || "thread"
 			const branch = `cline/${slug}-${suffix}`
 			const mode = availability.mode
-			if (config) workspace = config.root
-			const cwd = config ? path.join(config.isolatesRoot, branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`)
+			workspace = await worktreePath.key(config?.root ?? workspace)
+			const cwd = await worktreePath.key(
+				config ? path.join(config.isolatesRoot, branch) : path.join(workspace, ".worktrees", `${slug}-${suffix}`),
+			)
 			const modules = config
 				? config.modules.map((module) => ({
 						name: module.relativePath,
@@ -392,6 +427,7 @@ export class ThreadWorktreeManager {
 				modules: [],
 			}
 			for (const module of modules) {
+				module.workspacePath = await worktreePath.key(module.workspacePath)
 				const base = (await git(module.workspacePath, ["rev-parse", "HEAD"])).trim()
 				mapping.modules.push({ ...module, base })
 			}
@@ -403,7 +439,7 @@ export class ThreadWorktreeManager {
 					const output = await run(
 						settings.nodePath,
 						[settings.mmPath, "isolate", branch],
-						mmWorkingDirectory(workspace),
+						workspace,
 						undefined,
 						undefined,
 						(stderr) => {
@@ -422,17 +458,12 @@ export class ThreadWorktreeManager {
 				if (!result.success) throw new Error(result.message)
 				await initializeSubmodules(cwd, mapping.modules[0].workspacePath)
 			}
-			const unset: string[] = []
-			await this.assertPresent(mapping, (name) => unset.push(name))
-			if (unset.length) {
-				mapping.unsetSubmodules = unset
-				await this.save(mapping)
-			}
+			await this.assertPresent(mapping)
 			return mapping
 		})
 	}
-	async assertPresent(mapping: ThreadWorktree, recordUnset?: (name: string) => void) {
-		const modules = await repositories(mapping, recordUnset)
+	async assertPresent(mapping: ThreadWorktree) {
+		const modules = await repositories(mapping)
 		for (const module of modules) {
 			if (!module.configured) continue
 			const branch = (await git(module.path, ["branch", "--show-current"])).trim()
@@ -453,9 +484,13 @@ export class ThreadWorktreeManager {
 		return mapping
 	}
 	/** Includes committed, staged, unstaged and untracked files without touching the real index. */
-	async diffs(id: string, incremental = false): Promise<ThreadModuleDiff[]> {
+	async diffs(
+		id: string,
+		incremental = false,
+		selection?: { modules: Repository[]; excluded?: Map<string, string[]> },
+	): Promise<ThreadModuleDiff[]> {
 		const mapping = await this.required(id)
-		const modules = await this.assertPresent(mapping)
+		const modules = selection?.modules ?? (await this.assertPresent(mapping))
 		const result: ThreadModuleDiff[] = []
 		for (const module of modules) {
 			await fs.mkdir(this.storageDir, { recursive: true })
@@ -465,7 +500,25 @@ export class ThreadWorktreeManager {
 			const base = incremental ? (previous?.tree ?? module.lastBroughtTree ?? module.base) : module.base
 			try {
 				await git(module.path, ["read-tree", "HEAD"], undefined, env)
-				await git(module.path, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
+				await git(
+					module.path,
+					[
+						"add",
+						"-A",
+						"--",
+						".",
+						":(exclude).worktrees",
+						...module.unsetPaths.map((relative) => `:(exclude,literal)${relative}`),
+					],
+					undefined,
+					env,
+				)
+				const skippedLinks = selection?.excluded?.get(module.name)
+				if (skippedLinks?.length) {
+					const links = await gitlinks(module.path, base)
+					const entries = skippedLinks.map((relative) => `160000 ${links.get(relative)}\t${relative}\0`).join("")
+					await git(module.path, ["update-index", "-z", "--index-info"], entries, env)
+				}
 				const patch = await git(
 					module.path,
 					[
@@ -616,9 +669,17 @@ export class ThreadWorktreeManager {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
-			const captured = await this.diffs(id, true)
-			const diffs = captured.filter((d) => d.patch || (d.head && d.head !== d.baseHead))
-			if (!diffs.length) return { message: "Nothing new to copy here" }
+			const modules = await this.assertPresent(mapping)
+			const { available, missing, excluded } = await transferRepositories(modules)
+			const captured = await this.diffs(id, true, { modules: available, excluded })
+			const changed = (diff: ThreadModuleDiff) => !!diff.patch || (!!diff.head && diff.head !== diff.baseHead)
+			const diffs = captured.filter(changed)
+			const skipped = missing.length ? await this.diffs(id, true, { modules: missing }) : []
+			const skippedChanges = new Set(skipped.filter(changed).map((diff) => diff.module))
+			for (const module of missing)
+				if (module.indexHead !== module.base || (await ownStatus(module.path)).trim()) skippedChanges.add(module.name)
+			const warning = missingSubmoduleWarning(missing, skippedChanges, "Then copy the changes here again.")
+			if (!diffs.length) return { message: "Nothing new to copy here", warning }
 			const files = Math.max(
 				diffs.reduce((count, diff) => count + diff.paths.length, 0),
 				diffs.some((diff) => diff.head && diff.head !== diff.baseHead) ? 1 : 0,
@@ -697,9 +758,20 @@ export class ThreadWorktreeManager {
 				if (module) module.lastBroughtTree = patch.tree
 				await this.save(mapping)
 			}
-			mapping.transferredDiff = this.fingerprint(captured)
+			// Clean descendants still belong to the saved snapshot. Changed descendants
+			// stay out of it so removal can detect the work that remains in the isolate.
+			const copied = new Map(
+				[...captured, ...skipped.filter((diff) => !skippedChanges.has(diff.module))].map((diff) => [diff.module, diff]),
+			)
+			mapping.transferredDiff = this.fingerprint(
+				modules.flatMap(({ name }) => {
+					const diff = copied.get(name)
+					return diff ? [diff] : []
+				}),
+			)
 			await this.save(mapping)
-			return { message: `Copied ${plural(files, "file")} into your workspace`, files, mapping }
+			const message = `Copied ${plural(files, "file")} into your workspace`
+			return { message, files, mapping, warning: warning ? `${message}. ${warning}` : undefined }
 		})
 	}
 	async undo(id: string) {
@@ -797,9 +869,9 @@ export class ThreadWorktreeManager {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
-			await this.assertPresent(mapping)
+			const modules = await this.assertPresent(mapping)
 			if (mapping.takenOver) return { message: "Your workspace is on this branch now", mapping }
-			const repos = await repositories(mapping)
+			const { available: repos, missing } = await transferRepositories(modules)
 			for (const module of repos) {
 				await assertRepository(module.workspacePath)
 				if ((await workspaceStatus(module.workspacePath)).trim())
@@ -811,7 +883,24 @@ export class ThreadWorktreeManager {
 				if (await isRegisteredWorktree(module.workspacePath, module.path, true))
 					return { warning: `Unlock ${module.name || "the worktree"} before switching to its branch.` }
 			}
-			const transferredDiff = this.fingerprint(await this.diffs(id))
+			const diffs = await this.diffs(id, false, { modules })
+			const skipped = new Set<string>()
+			for (const module of missing) {
+				const diff = diffs.find((diff) => diff.module === module.name)!
+				if (
+					diff.patch ||
+					diff.head !== diff.baseHead ||
+					module.indexHead !== module.base ||
+					(await ownStatus(module.path)).trim()
+				)
+					skipped.add(module.name)
+			}
+			const warning = missingSubmoduleWarning(
+				missing,
+				skipped,
+				"Then open the worktree and bring over its remaining submodule changes.",
+			)
+			const transferredDiff = this.fingerprint(diffs)
 			// Each step is recorded as it happens so a failure part-way undoes exactly what was done.
 			const steps: {
 				module: Awaited<ReturnType<typeof repositories>>[number]
@@ -899,18 +988,16 @@ export class ThreadWorktreeManager {
 			mapping.transferredDiff = transferredDiff
 			mapping.takenOver = true
 			await this.save(mapping)
-			mapping.leftoverState = await this.repositoryState(
-				mapping,
-				new Map(steps.map((step) => [step.module.name, step.isolateHead])),
-			)
+			if (!warning)
+				mapping.leftoverState = await this.repositoryState(
+					mapping,
+					new Map(steps.map((step) => [step.module.name, step.isolateHead])),
+				)
 			await this.save(mapping)
-			return {
-				message: carried
-					? `Your workspace is on this branch now, with its ${plural(carried, "uncommitted file")}`
-					: "Your workspace is on this branch now",
-				files: carried,
-				mapping,
-			}
+			const message = carried
+				? `Your workspace is on this branch now, with its ${plural(carried, "uncommitted file")}`
+				: "Your workspace is on this branch now"
+			return { message, files: carried, mapping, warning: warning ? `${message}. ${warning}` : undefined }
 		})
 	}
 	/** Git stash hides staged gitlinks too when a submodule is configured with ignore=all. */
@@ -937,7 +1024,7 @@ export class ThreadWorktreeManager {
 		const index = (await git(cwd, ["stash", "list", "--format=%H"])).split("\n").indexOf(stash)
 		if (index >= 0) await git(cwd, ["stash", "drop", "--quiet", `stash@{${index}}`])
 	}
-	async remove(id: string, confirmed = false) {
+	async remove(id: string, confirmed = false, beforeRemove?: () => Promise<void>) {
 		return this.exclusive(async () => {
 			await this.assertIdle(id)
 			const mapping = await this.required(id)
@@ -965,6 +1052,13 @@ export class ThreadWorktreeManager {
 					/* Partial isolates and unreadable indexes still need explicit removal. */
 				}
 				if (changed) warning = "Changes were never copied here. Remove this worktree and discard them?"
+			}
+			if (!confirmed) {
+				try {
+					warning = (await submoduleRemovalWarning(mapping)) ?? warning
+				} catch {
+					warning ??= "Couldn't check every submodule cache. Remove this worktree anyway?"
+				}
 			}
 			const settings = await this.settings()
 			if (mapping.mode === "mm") {
@@ -996,10 +1090,15 @@ export class ThreadWorktreeManager {
 				await this.discoverMm(mapping.workspace, settings, true).catch(() => {})
 			}
 			if (warning) return { warning }
+			await beforeRemove?.()
 			if (mapping.mode === "mm") {
 				await this.assertMutationOwner()
 				try {
-					await run(settings.nodePath, [settings.mmPath, "free", mapping.branch], mmWorkingDirectory(mapping.workspace))
+					await run(
+						settings.nodePath,
+						[settings.mmPath, "free", mapping.branch, ...(confirmed ? ["--force"] : [])],
+						await worktreePath.key(mapping.workspace),
+					)
 				} catch (error) {
 					throw mmError(settings, (error as Error).message.trim(), mapping.workspace)
 				}

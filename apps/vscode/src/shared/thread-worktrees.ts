@@ -19,8 +19,6 @@ export interface ThreadWorktree {
 	cwd: string
 	modules: WorktreeModule[]
 	createdAt: number
-	/** Gitlink paths intentionally left without a checkout when the worktree was created. */
-	unsetSubmodules?: string[]
 	/** The exact diff last brought in or taken over, not just a boolean. */
 	takenOver?: boolean
 	transferredDiff?: string

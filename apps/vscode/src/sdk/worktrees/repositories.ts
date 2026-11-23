@@ -30,8 +30,11 @@ export async function run(
 		child.stdin?.end(input)
 	})
 }
-export const git = (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) =>
-	run("git", ["-c", "submodule.recurse=false", ...args], cwd, input, { GIT_OPTIONAL_LOCKS: "0", ...env })
+export const git = async (cwd: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) =>
+	run("git", ["-c", "submodule.recurse=false", ...args], await worktreePath.key(cwd), input, {
+		GIT_OPTIONAL_LOCKS: "0",
+		...env,
+	})
 export const exists = (file: string) =>
 	fs.access(file).then(
 		() => true,
@@ -88,10 +91,10 @@ export async function submodulePath(dir: string, relative: string): Promise<stri
 	const child = path.resolve(dir, relative)
 	if (!worktreePath.isInside(dir, child) || !(await worktreePath.inside(dir, child)))
 		throw new Error(`Submodule outside its repository: ${relative}`)
-	return child
+	return worktreePath.key(child)
 }
 
-async function emptyOrMissing(dir: string) {
+export async function emptyOrMissing(dir: string) {
 	try {
 		return (await fs.lstat(dir)).isDirectory() && (await fs.readdir(dir)).length === 0
 	} catch (error) {
@@ -104,15 +107,18 @@ export interface Repository extends WorktreeModule {
 	configured: boolean
 	/** Commit the parent index names, which can differ from the checked-out child HEAD. */
 	indexHead?: string
+	parent?: { name: string; relative: string }
+	unsetPaths: string[]
 }
 
 /** Every descendant has its own object database and index, and may have detached HEAD. */
-export async function repositories(mapping: ThreadWorktree, recordUnset?: (name: string) => void): Promise<Repository[]> {
+export async function repositories(mapping: ThreadWorktree): Promise<Repository[]> {
 	const result: Repository[] = []
-	const unset = new Set(mapping.unsetSubmodules)
-	async function visit(module: WorktreeModule, configured: boolean, indexHead?: string) {
+	async function visit(module: WorktreeModule, parent?: Repository["parent"], indexHead?: string) {
 		await assertRepository(module.path)
-		result.push({ ...module, configured, indexHead })
+		module = { ...module, path: await worktreePath.key(module.path) }
+		const unsetPaths: string[] = []
+		result.push({ ...module, configured: !parent, parent, indexHead, unsetPaths })
 		for (const { relative, before, after, index } of await submoduleLinks(module.path, module.base, "HEAD", true)) {
 			if (!before || !after)
 				throw new Error(
@@ -120,46 +126,131 @@ export async function repositories(mapping: ThreadWorktree, recordUnset?: (name:
 				)
 			const name = [module.name, relative].filter(Boolean).join("/")
 			const child = await submodulePath(module.path, relative)
-			if ((recordUnset || unset.has(name)) && before === after && after === index && (await emptyOrMissing(child))) {
-				recordUnset?.(name)
+			if (before === after && after === index && (await emptyOrMissing(child))) {
+				unsetPaths.push(relative)
 				continue
 			}
 			await visit(
 				{
 					name,
 					path: child,
-					workspacePath: path.join(module.workspacePath, relative),
+					workspacePath: await submodulePath(module.workspacePath, relative),
 					base: before,
 				},
-				false,
+				{ name: module.name, relative },
 				index,
 			)
 		}
 	}
-	for (const module of mapping.modules) await visit(module, true)
+	for (const module of mapping.modules) await visit(module)
 	return result
+}
+
+const submodulePathKeys = "^submodule\\..*\\.path$"
+
+async function submoduleNames(repositoryGit: (args: string[]) => Promise<string>) {
+	const entries = await repositoryGit(["config", "--blob", "HEAD:.gitmodules", "--null", "--get-regexp", submodulePathKeys])
+	return new Map(
+		entries
+			.split("\0")
+			.filter(Boolean)
+			.map((entry) => {
+				const newline = entry.indexOf("\n")
+				return [entry.slice(newline + 1), entry.slice("submodule.".length, newline - ".path".length)]
+			}),
+	)
+}
+
+function submoduleName(names: Map<string, string>, relative: string) {
+	const name = names.get(relative)
+	if (!name) throw new Error(`Submodule path missing from .gitmodules: ${relative}`)
+	return name
+}
+
+async function submoduleCache(
+	repositoryGit: (args: string[]) => Promise<string>,
+	worktree: string,
+	name: string,
+): Promise<string> {
+	const configured = await repositoryGit(["config", "--bool", "--get", "extensions.submodulePathConfig"]).catch(() => "")
+	if (configured.trim() === "true") {
+		const location = await repositoryGit(["config", "--get", `submodule.${name}.gitdir`]).catch(() => "")
+		if (location.trimEnd()) return worktreePath.key(path.resolve(worktree, location.trimEnd()))
+	}
+	const modules = (await repositoryGit(["rev-parse", "--path-format=absolute", "--git-path", "modules"])).trimEnd()
+	return submodulePath(modules, name)
+}
+
+const cachedGit = (cwd: string, gitDir: string, args: string[]) =>
+	git(cwd, [`--git-dir=${gitDir}`, `--work-tree=${cwd}`, ...args], undefined, { GIT_NO_LAZY_FETCH: "1" })
+
+/** Git retains refs and nested caches after submodule deinit removes the checkout. */
+export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<string | undefined> {
+	const seen = new Set<string>()
+	async function visit(
+		cwd: string,
+		worktree: string,
+		module: string,
+		repositoryGit: (args: string[]) => Promise<string>,
+	): Promise<string | undefined> {
+		const links = parseGitlinks(await repositoryGit(["ls-tree", "-rz", "HEAD"]), 2)
+		if (!links.size) return undefined
+		const names = await submoduleNames(repositoryGit)
+		for (const [relative, commit] of links) {
+			const child = await submodulePath(worktree, relative)
+			const name = [module, relative].filter(Boolean).join("/")
+			const checkedOut = await exists(path.join(child, ".git"))
+			const gitDir = checkedOut
+				? await worktreePath.key((await git(child, ["rev-parse", "--absolute-git-dir"])).trimEnd())
+				: await submoduleCache(repositoryGit, worktree, submoduleName(names, relative))
+			if (seen.has(gitDir) || !(await exists(gitDir))) continue
+			seen.add(gitDir)
+			const childGit = (args: string[]) => cachedGit(cwd, gitDir, args)
+			const refs = (await childGit(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"]))
+				.trimEnd()
+				.split("\n")
+			const remoteRefs = refs.filter((ref) => ref.startsWith("refs/remotes/"))
+			for (const ref of refs.filter((ref) => ref.startsWith("refs/heads/"))) {
+				const [branch, oid] = ref.slice("refs/heads/".length).split(" ")
+				if (!remoteRefs.some((remote) => remote.endsWith(`/${branch} ${oid}`)))
+					return `${name} has a local branch (${branch}) in this worktree. Preserve it before removing the worktree, or remove and discard it.`
+			}
+			if (!checkedOut) {
+				const base = (await childGit(["rev-parse", "--quiet", "--verify", commit]).catch(() => "")).trim()
+				if (
+					(
+						await childGit(["rev-list", "-1", "--all", "--reflog", "--not", "--remotes", ...(base ? [base] : [])])
+					).trim()
+				)
+					return `${name} has an unpushed commit in its local cache. Preserve it before removing the worktree, or remove and discard it.`
+			}
+			const warning = await visit(cwd, child, name, childGit)
+			if (warning) return warning
+		}
+		return undefined
+	}
+	for (const module of mapping.modules) {
+		const warning = await visit(module.path, module.path, module.name, (args) => git(module.path, args))
+		if (warning) return warning
+	}
+	return undefined
 }
 
 /** Mirror checked-out or cached submodules in an independent clone. */
 export async function initializeSubmodules(dir: string, source: string, sourceGitDir?: string) {
 	const links = await gitlinks(dir, "HEAD")
 	if (!links.size) return
-	const metadata = sourceGitDir ?? (await git(source, ["rev-parse", "--absolute-git-dir"])).trim()
-	const entries = (
-		await git(dir, ["config", "--file", ".gitmodules", "--null", "--get-regexp", "^submodule\\..*\\.path$"])
-	).split("\0")
+	const names = await submoduleNames((args) => git(dir, args))
+	const sourceGit = (args: string[]) => (sourceGitDir ? cachedGit(dir, sourceGitDir, args) : git(source, args))
 	for (const [relative, commit] of links) {
-		const key = entries.find((entry) => entry.slice(entry.indexOf("\n") + 1) === relative)?.split("\n")[0]
-		if (!key) throw new Error(`Submodule path missing from .gitmodules: ${relative}`)
-		const name = key.slice("submodule.".length, -".path".length)
+		const name = submoduleName(names, relative)
 		const child = await submodulePath(dir, relative)
 		const original = await submodulePath(source, relative)
 		const checkedOut = await exists(path.join(original, ".git"))
-		let cached = await submodulePath(path.join(metadata, "modules"), name)
-		if (checkedOut) {
-			await assertRepository(original)
-			cached = (await git(original, ["rev-parse", "--absolute-git-dir"])).trim()
-		}
+		if (checkedOut) await assertRepository(original)
+		const cached = checkedOut
+			? (await git(original, ["rev-parse", "--absolute-git-dir"])).trimEnd()
+			: await submoduleCache(sourceGit, source, name)
 		if (!(await exists(path.join(child, ".git")))) {
 			const local = await git(
 				dir,
@@ -201,7 +292,7 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 				}
 			}
 			await git(child, ["checkout", "--detach", commit])
-			const urlKey = key.slice(0, -"path".length) + "url"
+			const urlKey = `submodule.${name}.url`
 			// Root worktrees share config with the source. Keep any existing local URL override.
 			if (
 				!(await git(dir, ["config", "--get", urlKey]).then(

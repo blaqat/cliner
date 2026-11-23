@@ -117,19 +117,19 @@ it("links to Source Control when the workspace's own changes block switching", a
 	expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "sourceControl" }))
 })
 
-it("asks on the Remove row itself before losing uncopied files", async () => {
-	serve(SUMMARY, { remove: { message: "Worktree removed" } })
+it("shows the cache warning on the Remove row before discarding uncopied files", async () => {
+	const warning = "vendor has a local branch (local-only) in this worktree. Preserve it before removing the worktree."
+	serve(SUMMARY, { remove: (request) => (request.confirmed ? { message: "Worktree removed" } : { warning }) })
 	const onChanged = vi.fn(async () => {})
 	render(<ThreadWorktreeActions mapping={mapping} onChanged={onChanged} threadId="thread" />)
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Remove worktree" }))
-	const confirm = screen.getByTestId("worktree-remove-confirm")
-	expect(confirm).toHaveTextContent("Lose 2 uncopied files?")
-	expect(confirm).toHaveClass("h-6")
-	expect(mocks.action).not.toHaveBeenCalledWith(expect.objectContaining({ action: "remove" }))
+	const confirm = await screen.findByTestId("worktree-remove-confirm")
+	expect(confirm).toHaveTextContent(warning)
+	expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "remove", confirmed: false }))
 	fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }))
 	expect(screen.getByRole("menuitem", { name: "Remove worktree" })).toBeInTheDocument()
 	fireEvent.click(screen.getByRole("menuitem", { name: "Remove worktree" }))
-	fireEvent.click(within(screen.getByTestId("worktree-remove-confirm")).getByRole("button", { name: "Remove" }))
+	fireEvent.click(within(await screen.findByTestId("worktree-remove-confirm")).getByRole("button", { name: "Remove" }))
 	await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "remove", confirmed: true })))
 	await waitFor(() => expect(onChanged).toHaveBeenCalled())
 	expect(screen.queryByRole("dialog")).toBeNull()
@@ -142,14 +142,14 @@ it("when the worktree can't be read, says why, offers Try again, and still lets 
 			if (fail) throw new Error("Error: ENOENT: no such file or directory '/isolate'")
 			return { json: JSON.stringify({ summary: SUMMARY }) }
 		}
-		return { json: JSON.stringify({ message: "Worktree removed" }) }
+		return { json: JSON.stringify({ warning: "Couldn't check every submodule cache. Remove this worktree anyway?" }) }
 	})
 	render(<ThreadWorktreeActions mapping={mapping} threadId="thread" />)
 	await waitFor(() => expect(status()).toHaveTextContent("Couldn't read this worktree: ENOENT: no such file or directory"))
 	const remove = screen.getByRole("menuitem", { name: "Remove worktree" })
 	expect(remove).toBeEnabled()
 	fireEvent.click(remove)
-	expect(screen.getByTestId("worktree-remove-confirm")).toBeInTheDocument()
+	expect(await screen.findByTestId("worktree-remove-confirm")).toBeInTheDocument()
 	fireEvent.click(within(screen.getByTestId("worktree-remove-confirm")).getByRole("button", { name: "Cancel" }))
 	fail = false
 	fireEvent.click(within(status()).getByRole("button", { name: "Try again" }))

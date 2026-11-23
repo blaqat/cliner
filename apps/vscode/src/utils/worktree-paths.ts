@@ -1,13 +1,14 @@
-import { promises as fs } from "node:fs"
+import { realpath as fsRealpath } from "node:fs"
 import path from "node:path"
+import { promisify } from "node:util"
 
-export function worktreePaths(platform = process.platform, realpath: (file: string) => Promise<string> = fs.realpath) {
+const nativeRealpath = promisify(fsRealpath.native)
+
+export function worktreePaths(platform = process.platform, realpath: (file: string) => Promise<string> = nativeRealpath) {
 	const paths = platform === "win32" ? path.win32 : path.posix
-	const ignoreCase = platform === "win32" || platform === "darwin"
-	const fold = (file: string) => (ignoreCase ? file.toLowerCase() : file)
 	async function canonical(file: string): Promise<string> {
 		try {
-			return await realpath(file)
+			return paths.normalize(await realpath(file))
 		} catch (error) {
 			const { code } = error as NodeJS.ErrnoException
 			if (code !== "ENOENT" && code !== "ENOTDIR") throw error
@@ -16,10 +17,11 @@ export function worktreePaths(platform = process.platform, realpath: (file: stri
 			return parent === file ? file : paths.join(await canonical(parent), paths.basename(file))
 		}
 	}
-	const key = async (file: string) => fold(await canonical(paths.resolve(file)))
+	const key = (file: string) => canonical(paths.resolve(file))
 	function isInside(base: string, child: string) {
-		const relative = paths.relative(fold(base), fold(child))
-		return !!relative && relative !== ".." && !relative.startsWith(".." + paths.sep) && !paths.isAbsolute(relative)
+		const parent = paths.resolve(base)
+		const nested = paths.resolve(child)
+		return nested !== parent && nested.startsWith(parent.endsWith(paths.sep) ? parent : parent + paths.sep)
 	}
 	return {
 		key,

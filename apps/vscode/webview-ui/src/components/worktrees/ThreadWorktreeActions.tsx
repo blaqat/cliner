@@ -72,7 +72,7 @@ export function ThreadWorktreeActions({
 	const [summary, setSummary] = useState<WorktreeSummary>()
 	const [outcome, setOutcome] = useState<Outcome>()
 	const [busy, setBusy] = useState<Action>()
-	const [confirmRemove, setConfirmRemove] = useState(false)
+	const [removeWarning, setRemoveWarning] = useState<string>()
 
 	// The status couldn't be read (say, the folder is gone): Remove still works, so the thread is never stuck with it.
 	const [summaryFailed, setSummaryFailed] = useState(false)
@@ -92,14 +92,19 @@ export function ThreadWorktreeActions({
 
 	const act = async (action: Action, confirmed = false) => {
 		setBusy(action)
-		setConfirmRemove(false)
+		setRemoveWarning(undefined)
 		try {
 			const result = await threadWorktreeAction(action, threadId, undefined, confirmed)
 			if (action === "remove" && result.warning) {
 				// Something would be lost after all: ask on the row.
-				setConfirmRemove(true)
+				setRemoveWarning(result.warning)
 			} else if (result.warning) {
-				setOutcome({ tone: "warning", text: result.warning, sourceControl: action === "takeOver" })
+				setOutcome({
+					tone: "warning",
+					text: result.warning,
+					sourceControl: action === "takeOver" && !result.mapping,
+					undo: action === "bring" && !!result.files,
+				})
 			} else if (action !== "open") {
 				const text = result.message ?? ""
 				setOutcome(
@@ -259,12 +264,12 @@ export function ThreadWorktreeActions({
 					)}
 				</>
 			)}
-			{confirmRemove ? (
+			{removeWarning ? (
 				<div
-					className="flex h-6 min-w-0 items-center gap-1.5 rounded-xs bg-error/10 pr-0.5 pl-2 text-[11.5px] text-error"
+					className="flex min-h-6 min-w-0 items-center gap-1.5 rounded-xs bg-error/10 py-1 pr-0.5 pl-2 text-[11.5px] text-error"
 					data-testid="worktree-remove-confirm"
 					role="group">
-					<span className="min-w-0 flex-1 truncate">{removeQuestion(summary)}</span>
+					<span className="min-w-0 flex-1 break-words">{removeWarning}</span>
 					<button
 						className="h-4.5 shrink-0 cursor-pointer rounded-xs border-0 bg-error px-1.5 text-[11px] text-background hover:bg-error/90"
 						onClick={() => void act("remove", true)}
@@ -273,7 +278,7 @@ export function ThreadWorktreeActions({
 					</button>
 					<button
 						className="h-4.5 shrink-0 cursor-pointer rounded-xs border-0 bg-button-secondary-background px-1.5 text-[11px] text-button-secondary-foreground hover:bg-button-secondary-background-hover"
-						onClick={() => setConfirmRemove(false)}
+						onClick={() => setRemoveWarning(undefined)}
 						type="button">
 						Cancel
 					</button>
@@ -282,8 +287,7 @@ export function ThreadWorktreeActions({
 				<button
 					className={MENU_ROW_CLASS}
 					disabled={!!busy || (!summary && !summaryFailed) || running}
-					// Unreadable, nobody can say what would be lost, so it asks first.
-					onClick={() => (summary?.loseOnRemove || summaryFailed ? setConfirmRemove(true) : void act("remove"))}
+					onClick={() => void act("remove")}
 					role="menuitem"
 					title={running ? "Wait for the thread to finish" : undefined}
 					type="button">
@@ -295,12 +299,6 @@ export function ThreadWorktreeActions({
 			)}
 		</div>
 	)
-}
-
-function removeQuestion(summary: WorktreeSummary | undefined): string {
-	const lose = summary?.loseOnRemove ?? 0
-	if (!lose) return "Discard its changes?"
-	return summary?.takenOver ? `Lose ${plural(lose, "edited file")} in it?` : `Lose ${plural(lose, "uncopied file")}?`
 }
 
 /** gRPC errors arrive as "Error: git apply: …"; the menu only wants the sentence. */

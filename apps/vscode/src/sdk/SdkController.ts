@@ -3289,8 +3289,7 @@ export class Controller {
 				if (running) return { warning: "Stop this thread before removing its worktree." }
 				const release = this.sessions.beginTaskDeletion(id)
 				try {
-					await this.sessions.removeSession(id)
-					return await this.threadWorktrees.remove(id, request.confirmed)
+					return await this.threadWorktrees.remove(id, request.confirmed, () => this.sessions.removeSession(id))
 				} finally {
 					release()
 				}

@@ -3,6 +3,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import type { ThreadWorktreeSettings } from "@shared/thread-worktrees"
 import { z } from "zod"
+import { worktreePath } from "@/utils/worktree-paths"
 import { exists } from "./repositories"
 
 const execFileAsync = promisify(execFile)
@@ -32,12 +33,8 @@ export function mmError(settings: ThreadWorktreeSettings, message: string, cwd?:
 	return new Error(`${message} mm.js path: ${settings.mmPath || "(not set)"}${cwd ? `\nRan mm in ${mmDisplayPath(cwd)}.` : ""}`)
 }
 
-export function mmWorkingDirectory(workspace: string, platform = process.platform): string {
-	return platform === "win32" ? workspace.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) : workspace
-}
-
 export function mmDisplayPath(file: string): string {
-	return process.platform === "win32" ? path.win32.normalize(mmWorkingDirectory(file)) : file
+	return process.platform === "win32" ? path.win32.normalize(file) : file
 }
 
 function parseJson(stdout: string): unknown {
@@ -51,7 +48,7 @@ function parseJson(stdout: string): unknown {
 export async function readMmWorkspace(
 	workspace: string,
 	settings: ThreadWorktreeSettings,
-	platform = process.platform,
+	paths = worktreePath,
 ): Promise<MmWorkspace | undefined> {
 	const { mmPath, nodePath } = settings
 	if (!mmPath) throw mmError(settings, "Set the path to mm.js in Worktrees settings.")
@@ -63,7 +60,7 @@ export async function readMmWorkspace(
 	try {
 		stdout = (
 			await execFileAsync(nodePath, [mmPath, "modules", "--json"], {
-				cwd: mmWorkingDirectory(workspace, platform),
+				cwd: await paths.key(workspace),
 				timeout: 10000,
 			})
 		).stdout
