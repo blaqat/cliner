@@ -644,6 +644,21 @@ export class SdkTaskHistory {
 		}
 	}
 
+	/**
+	 * Whether the shared store still has this thread, read past this window's loaded sessions (the
+	 * active host keeps answering for a session it has loaded after another window deleted it).
+	 */
+	async isSavedInStore(sessionId: string): Promise<boolean> {
+		const historyHost = await this.getCachedHistoryHost()
+		this.cachedHistoryHostRefCount += 1
+		try {
+			return !!(await historyHost.get(sessionId))
+		} finally {
+			this.cachedHistoryHostRefCount = Math.max(0, this.cachedHistoryHostRefCount - 1)
+			this.scheduleCachedHistoryHostDispose()
+		}
+	}
+
 	/** Deletion must bypass display pagination and its projection cache. */
 	async listModelSelectionDependencies(): Promise<SessionHistoryRecord[]> {
 		const records = await this.withHistoryHost((host) =>

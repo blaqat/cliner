@@ -77,7 +77,9 @@ describe("previewTaskGroupDelete", () => {
 		expect(byId.busy).toMatchObject({ running: true, subagents: 1 })
 		expect(byId.aside).toMatchObject({ aside: true })
 		expect(byId.wt).toMatchObject({ hasWorktree: true, worktreeLosses: 3 })
-		expect(byId.wt.worktreeNote).toContain("3 changed files never copied")
+		expect(byId.wt.worktreeNote).toBe(
+			"has 3 changed files in its worktree that were never copied to your workspace. They'll be discarded.",
+		)
 		expect(byId.plain).toMatchObject({ running: false, hasWorktree: false, worktreeLosses: 0 })
 	})
 
@@ -85,6 +87,12 @@ describe("previewTaskGroupDelete", () => {
 		const { deps } = setup({ items: task, busyElsewhere: ["plain"] })
 		const plain = (await previewTaskGroupDelete("g", deps)).find((thread) => thread.id === "plain")
 		expect(plain).toMatchObject({ busyElsewhere: true, hasWorktree: false })
+	})
+
+	it("checks a thread loaded but idle here, since another window may be running it", async () => {
+		const { deps } = setup({ items: task, loaded: ["plain"], busyElsewhere: ["plain"] })
+		const plain = (await previewTaskGroupDelete("g", deps)).find((thread) => thread.id === "plain")
+		expect(plain).toMatchObject({ busyElsewhere: true, running: false })
 	})
 
 	it("marks a worktree thread held by another window", async () => {
@@ -112,7 +120,7 @@ describe("deleteTaskGroupWithThreads", () => {
 		expect(order).toEqual([])
 	})
 
-	it("stops running threads, removes worktrees, then deletes the threads and the task", async () => {
+	it("stops running threads, removes worktrees, then deletes the task and its threads", async () => {
 		const { deps, order } = setup({ items: task, running: ["busy", "sub"], worktrees: { wt: 2 } })
 		const result = await deleteTaskGroupWithThreads("g", true, deps)
 		expect(result).toEqual({ deleted: true })
@@ -126,7 +134,7 @@ describe("deleteTaskGroupWithThreads", () => {
 			.sort()
 		// Subagents go with their thread; other tasks and unfiled threads stay.
 		expect(deleted).toEqual(["aside", "busy", "plain", "wt"])
-		expect(order.at(-1)).toBe("group:g")
+		expect(order.indexOf("group:g")).toBeLessThan(order.findIndex((step) => step.startsWith("delete:")))
 	})
 
 	it("stops when the worktree manager warns and keeps every thread", async () => {

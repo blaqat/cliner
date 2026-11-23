@@ -1164,11 +1164,14 @@ export class Controller {
 			},
 		})
 		this.taskHistory.watchHistory(() => {
+			void this.leaveThreadDeletedElsewhere().catch((error) =>
+				Logger.warn("[SdkController] Could not check the open thread:", error),
+			)
 			const cached = this.historyProjectionCache
 			if (cached && cached.revision !== this.taskHistory.revision) {
-				void this.leaveThreadDeletedElsewhere(cached.history)
-					.then(() => this.postStateToWebview())
-					.catch((error) => Logger.warn("[SdkController] Could not refresh shared history:", error))
+				void this.postStateToWebview().catch((error) =>
+					Logger.warn("[SdkController] Could not refresh shared history:", error),
+				)
 			}
 		})
 		void this.ensureTaskGroupsWatcher()
@@ -4434,6 +4437,8 @@ export class Controller {
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
 		}
+		// A thread opened from history is saved: note it, so a delete in another window can be told apart.
+		void this.leaveThreadDeletedElsewhere().catch(() => {})
 		const context = this.taskSessions.get(taskId)
 		if (context && this.task?.taskId === taskId) {
 			const pending = await Promise.all(
@@ -4782,22 +4787,38 @@ export class Controller {
 		return history
 	}
 
+	/** The open thread once the shared store was seen to have it (see leaveThreadDeletedElsewhere). */
+	private openThreadSaved?: { id: string; taskGroupId?: string }
+
 	/**
 	 * Another window deleted the thread open here (alone, or with its task): close it like a local
 	 * delete, so this window leaves for its task page or home instead of showing a thread that's gone.
-	 * Only a thread the last history listing had counts; a new one may not be saved yet.
+	 * Runs on each change to the shared history files. Only a thread this window has seen saved
+	 * counts, so a new one isn't mistaken for a deleted one. A run here stops too: its history is
+	 * gone, and saving it again would bring the thread back.
 	 */
-	private async leaveThreadDeletedElsewhere(previous: readonly HistoryItem[]): Promise<void> {
+	private async leaveThreadDeletedElsewhere(): Promise<void> {
 		const openId = this.task?.taskId
-		if (!openId || this.subagentThreads?.has(openId) || this.sessions.getSession(openId)?.isRunning) return
-		const listed = previous.find((item) => item.id === openId)
-		if (!listed || (await this.taskHistory.findHistoryItem(openId).catch(() => listed))) return
-		if (this.task?.taskId !== openId) return
-		this.deletedOpenThread = {
-			id: openId,
-			taskGroupId: listed.taskGroupId,
-			seq: (this.deletedOpenThread?.seq ?? 0) + 1,
+		if (!openId || this.subagentThreads?.has(openId)) return
+		if (await this.taskHistory.isSavedInStore(openId)) {
+			if (this.openThreadSaved?.id !== openId) {
+				const item = await this.taskHistory.findHistoryItem(openId).catch(() => undefined)
+				this.openThreadSaved = {
+					id: openId,
+					taskGroupId: item
+						? await resolveEffectiveTaskGroupId(item, (id) =>
+								this.taskHistory.findHistoryItem(id).catch(() => undefined),
+							)
+						: undefined,
+				}
+			}
+			return
 		}
+		const seen = this.openThreadSaved
+		if (seen?.id !== openId || this.task?.taskId !== openId) return
+		Logger.debug(`[SdkController] Thread ${openId} was deleted in another window; leaving it`)
+		this.openThreadSaved = undefined
+		this.deletedOpenThread = { ...seen, seq: (this.deletedOpenThread?.seq ?? 0) + 1 }
 		// As beforeDeleteSession does: nothing left to save may write the deleted thread back.
 		this.taskSessions.get(openId)?.messages.cancelPendingSave()
 		await this.sessions.removeSession(openId)

@@ -99,8 +99,9 @@ export async function previewTaskGroupDelete(groupId: string, deps: TaskGroupDel
 	for (const item of members) {
 		const row = rows.get(item.isSubagent ? (rootThreadId(item, byId) ?? "") : item.id)
 		if (!row) continue
-		// Every local session holds a lease while active, worktree or not; one held elsewhere blocks the delete.
-		if (!deps.isLoaded(item.id)) {
+		// Every local session holds a lease while active, worktree or not; one held elsewhere blocks the
+		// delete. Only a run here is ours to stop: a thread merely loaded here can still be running there.
+		if (!deps.isRunning(item.id)) {
 			try {
 				await deps.worktrees.assertIdle(item.id)
 			} catch {
@@ -116,13 +117,13 @@ export async function previewTaskGroupDelete(groupId: string, deps: TaskGroupDel
 			if (summary.loseOnRemove > 0) {
 				row.worktreeLosses += summary.loseOnRemove
 				row.worktreeNote = summary.takenOver
-					? `Its leftover worktree folder has ${files(summary.loseOnRemove)} of its own. They'll be discarded.`
-					: `Its worktree has ${files(row.worktreeLosses)} never copied to your workspace. They'll be discarded.`
+					? `has ${files(summary.loseOnRemove)} of its own in its leftover worktree folder. They'll be discarded.`
+					: `has ${files(row.worktreeLosses)} in its worktree that were never copied to your workspace. They'll be discarded.`
 			}
 		} catch (error) {
 			// An unreadable worktree counts as unsaved work: removing it needs the same explicit yes.
 			row.worktreeLosses = Math.max(row.worktreeLosses, 1)
-			row.worktreeNote = `Couldn't check its worktree (${(error as Error).message.trim()}). Anything in it will be discarded.`
+			row.worktreeNote = `has a worktree that couldn't be checked (${(error as Error).message.trim()}). Anything in it will be discarded.`
 		}
 	}
 	return [...rows.values()]
@@ -176,8 +177,9 @@ export async function deleteTaskGroupWithThreads(
 			if (warning) return { deleted: false, blocked: removalStopped(id, byId, warning, removed), preview }
 			removed += 1
 		}
-		if (ids.size) await deps.deleteThreads([...ids])
+		// The task goes first: a window showing one of its threads then lands home, not on a task that's about to go.
 		await deps.deleteGroup(groupId)
+		if (ids.size) await deps.deleteThreads([...ids])
 		return { deleted: true }
 	} finally {
 		for (const release of releases) release()

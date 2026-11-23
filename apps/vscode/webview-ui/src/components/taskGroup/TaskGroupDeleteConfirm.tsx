@@ -30,15 +30,22 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted }: Tas
 	// A worktree warning the preview couldn't foresee (submodule caches): the next try discards.
 	const [discardAfterWarning, setDiscardAfterWarning] = useState(false)
 
+	// Bumped by "Check again" once a thread running elsewhere has stopped.
+	const [checks, setChecks] = useState(0)
 	useEffect(() => {
 		let live = true
+		void checks
 		TaskGroupDeleteServiceClient.previewTaskGroupDelete(TaskGroupDeleteRequest.create({ id: taskGroupId }))
-			.then((preview) => live && setThreads(preview.threads))
+			.then((preview) => {
+				if (!live) return
+				setThreads(preview.threads)
+				setBlocked(undefined)
+			})
 			.catch((error) => live && setCheckError(error instanceof Error ? error.message : String(error)))
 		return () => {
 			live = false
 		}
-	}, [taskGroupId])
+	}, [taskGroupId, checks])
 
 	const deleteTaskOnly = () => {
 		setBusy(true)
@@ -96,7 +103,9 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted }: Tas
 			{threads && count > 0 && (
 				<>
 					<span>
-						Delete this task? You can keep its {plural(count, "thread")} (they stay, just unfiled) or delete them too
+						{count === 1
+							? "Delete this task? You can keep its thread (it stays, just unfiled) or delete it too"
+							: `Delete this task? You can keep its ${count} threads (they stay, just unfiled) or delete them too`}
 						{includes.length ? ` (includes ${includes.join(" and ")})` : ""}. Notes are deleted either way.
 					</span>
 					{noteworthy.length > 0 && (
@@ -108,16 +117,18 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted }: Tas
 										className={`codicon shrink-0 text-[12px]! leading-4 ${
 											thread.busyElsewhere || thread.worktreeLosses
 												? "codicon-warning text-warning"
-												: "codicon-debug-stop text-description"
+												: "codicon-sync text-description"
 										}`}
 									/>
 									<span className="min-w-0 flex-1 break-words leading-4">
 										<span className="font-medium">“{thread.title}”</span>{" "}
 										{thread.busyElsewhere
 											? "is running in another window. Stop it there first."
-											: [thread.running && "is running; deleting stops it.", thread.worktreeNote]
-													.filter(Boolean)
-													.join(" ")}
+											: thread.running && thread.worktreeNote
+												? `is running; deleting stops it. It also ${thread.worktreeNote}`
+												: thread.running
+													? "is running; deleting stops it."
+													: thread.worktreeNote}
 									</span>
 								</li>
 							))}
@@ -148,6 +159,16 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted }: Tas
 							: discard
 								? `Delete task and ${plural(count, "thread")}, discard changes`
 								: `Delete task and its ${plural(count, "thread")}`}
+					</Button>
+				)}
+				{busyElsewhere.length > 0 && (
+					<Button
+						data-testid="task-group-delete-recheck"
+						disabled={busy}
+						onClick={() => setChecks((count) => count + 1)}
+						size="xs"
+						variant="secondary">
+						Check again
 					</Button>
 				)}
 				<Button

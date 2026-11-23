@@ -49,7 +49,8 @@ describe("TaskGroupDeleteConfirm", () => {
 				thread("b", {
 					hasWorktree: true,
 					worktreeLosses: 3,
-					worktreeNote: "Its worktree has 3 changed files never copied to your workspace. They'll be discarded.",
+					worktreeNote:
+						"has 3 changed files in its worktree that were never copied to your workspace. They'll be discarded.",
 				}),
 				thread("c", { aside: true }),
 			],
@@ -57,7 +58,7 @@ describe("TaskGroupDeleteConfirm", () => {
 		renderConfirm()
 		const details = await screen.findByTestId("task-group-delete-details")
 		expect(details).toHaveTextContent("“Thread a” is running; deleting stops it.")
-		expect(details).toHaveTextContent("“Thread b” Its worktree has 3 changed files never copied")
+		expect(details).toHaveTextContent("“Thread b” has 3 changed files in its worktree that were never copied")
 		expect(confirm()).toHaveTextContent("includes 1 side thread and 2 subagent threads")
 		expect(confirm()).toHaveTextContent("can’t be restored")
 
@@ -87,6 +88,11 @@ describe("TaskGroupDeleteConfirm", () => {
 		expect(screen.getByRole("button", { name: "Delete task and its 1 thread" })).toBeDisabled()
 		// The task alone can still go.
 		expect(screen.getByRole("button", { name: "Delete task only (keep its thread)" })).toBeEnabled()
+		// Once it's stopped there, Check again enables the delete without reopening the confirm.
+		mocks.previewTaskGroupDelete.mockResolvedValue({ threads: [thread("a", { hasWorktree: true })] })
+		fireEvent.click(screen.getByRole("button", { name: "Check again" }))
+		await waitFor(() => expect(screen.getByRole("button", { name: "Delete task and its 1 thread" })).toBeEnabled())
+		expect(screen.queryByRole("button", { name: "Check again" })).toBeNull()
 	})
 
 	it("shows why the host stopped and offers to discard on the next try", async () => {

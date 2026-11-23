@@ -38,7 +38,7 @@ message TaskGroupDeleteThread {
   bool has_worktree = 6;
   // Changes in its worktree that were never copied to the workspace (files), 0 when none.
   int32 worktree_losses = 7;
-  // Why its worktree can't be removed or what removing it discards, in plain words.
+  // What removing its worktree discards, worded to follow the thread's title ("has 2 changed files…").
   string worktree_note = 8;
   // Subagent threads that go with it.
   int32 subagents = 9;
