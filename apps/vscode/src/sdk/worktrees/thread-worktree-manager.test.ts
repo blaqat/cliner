@@ -5,6 +5,7 @@ import path from "node:path"
 import { NO_COMMITS, NOT_A_REPOSITORY, WORKTREES_OFF, WORKTREES_OFF_HERE, worktreeFixFor } from "@shared/thread-worktrees"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { worktreeFix } from "../automations/automation-precheck"
+import { submoduleRemovalWarning } from "./repositories"
 import { alive, owner, storageLock } from "./storage-lock"
 import { mmPath } from "./temp-project.test-support"
 import { ThreadWorktreeManager, taskWorktreeKey } from "./thread-worktree-manager"
@@ -703,6 +704,70 @@ describe("worktree removal safety", () => {
 		expect(await read(mapping.cwd)).toBe("dirty\n")
 	})
 
+	it("finds bare and non-bare repositories anywhere in the worktree admin directory", async () => {
+		const mapping = await manager.create("backup", "Backup", workspace)
+		const admin = git(mapping.cwd, "rev-parse", "--absolute-git-dir")
+		const backup = path.join(admin, "backup.git")
+		git(workspace, "clone", "--bare", workspace, backup)
+		git(backup, "branch", "backup-only")
+		const embedded = path.join(backup, "objects", "embedded")
+		git(workspace, "clone", workspace, embedded)
+		git(embedded, "branch", "embedded-only")
+		const { warning } = await manager.remove("backup")
+		for (const item of ["backup.git", "refs/heads/backup-only", "embedded", "refs/heads/embedded-only"]) {
+			expect(warning).toContain(item)
+		}
+		await expect(fs.access(mapping.cwd)).resolves.toBeUndefined()
+	})
+
+	it("takes the admin directory from the source registry, never from the checkout", async () => {
+		const mapping = await manager.create("swapped", "Swapped", workspace)
+		const admin = git(mapping.cwd, "rev-parse", "--absolute-git-dir")
+		git(workspace, "clone", "--bare", workspace, path.join(admin, "backup.git"))
+		git(path.join(admin, "backup.git"), "branch", "backup-only")
+		const other = path.join(temp, "other")
+		await repo(other)
+		const decoy = path.join(temp, "decoy")
+		git(other, "worktree", "add", "-b", "decoy", decoy)
+		await fs.writeFile(path.join(mapping.cwd, ".git"), `gitdir: ${git(decoy, "rev-parse", "--absolute-git-dir")}\n`)
+		expect(await submoduleRemovalWarning(mapping)).toContain(`The worktree repository changed at ${mapping.cwd}`)
+	})
+
+	it("counts matching source tracking refs, never tracking refs inside the worktree", async () => {
+		const { mapping, child, source } = await withSubmodule()
+		git(child, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "Detached")
+		const oid = git(child, "rev-parse", "HEAD")
+		git(child, "branch", "review")
+		git(child, "update-ref", "refs/remotes/origin/review", oid)
+		const warning = await submoduleRemovalWarning(mapping)
+		expect(warning).toContain(`detached HEAD · ${oid}`)
+		expect(warning).toContain("refs/heads/review")
+		git(child, "branch", "-D", "review")
+		expect(await submoduleRemovalWarning(mapping)).toContain(`detached HEAD · ${oid}`)
+		git(source, "fetch", "--no-tags", child, "HEAD:refs/remotes/origin/review")
+		git(child, "branch", "review")
+		expect(await submoduleRemovalWarning(mapping)).toBeUndefined()
+	})
+
+	it("reads each directory in an initialized submodule chain once", async () => {
+		const { mapping, child } = await withSubmodule()
+		const third = path.join(temp, "third")
+		await repo(third)
+		git(child, "-c", "protocol.file.allow=always", "submodule", "add", third, "nested")
+		const nested = path.join(child, "nested")
+		git(nested, "-c", "protocol.file.allow=always", "submodule", "add", workspace, "leaf")
+		const modules = git(nested, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+		const calls = vi.spyOn(fs, "readdir")
+		try {
+			await submoduleRemovalWarning(mapping)
+			const reads = calls.mock.calls.map(([dir]) => dir)
+			expect(reads.filter((dir) => dir === modules)).toHaveLength(1)
+			expect(reads.length).toBe(new Set(reads).size)
+		} finally {
+			calls.mockRestore()
+		}
+	})
+
 	it("finds a cache moved under the admin directory and deinitialized", async ({ skip }) => {
 		if (!git(temp, "help", "--config").includes("init.defaultSubmodulePathConfig")) skip()
 		const { mapping, child } = await withSubmodule()
@@ -752,13 +817,15 @@ describe("worktree removal safety", () => {
 	})
 
 	it("matches the full branch name and accepts a matching source branch that is ahead", async () => {
-		const { child, source } = await withSubmodule()
+		const { mapping, child, source } = await withSubmodule()
 		const oid = git(child, "rev-parse", "HEAD")
 		git(child, "branch", "topic")
 		git(child, "update-ref", "refs/remotes/origin/feature/topic", oid)
 		expect((await manager.remove("safety")).warning).toContain("refs/heads/topic")
 		git(source, "switch", "-c", "topic")
 		git(source, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "Ahead")
+		expect(await submoduleRemovalWarning(mapping)).toContain("refs/remotes/origin/feature/topic")
+		git(child, "update-ref", "-d", "refs/remotes/origin/feature/topic")
 		expect((await manager.remove("safety")).message).toContain("Worktree removed")
 	})
 

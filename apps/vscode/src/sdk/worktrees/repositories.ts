@@ -232,19 +232,29 @@ export async function removalSourceRepository(dir: string): Promise<RemovalGit> 
 	throw new Error(`Couldn't identify the source repository at ${dir}. Restore it before removing the worktree.`)
 }
 
+/** The source registry, never the checkout, names the admin directory Git will delete. */
 async function removalAdmin(source: string, checkout: string) {
-	if (await removalStat(checkout)) return worktreePath.key((await git(checkout, ["rev-parse", "--absolute-git-dir"])).trimEnd())
 	const read = await removalSourceRepository(source)
 	const registry = (await read(["rev-parse", "--path-format=absolute", "--git-path", "worktrees"])).trimEnd()
-	if (!(await removalStat(registry))) return undefined
-	for (const entry of await fs.readdir(registry, { withFileTypes: true })) {
+	const marker = path.join(checkout, ".git")
+	let registered: string | undefined
+	for (const entry of (await removalStat(registry)) ? await fs.readdir(registry, { withFileTypes: true }) : []) {
 		if (!entry.isDirectory()) continue
 		const admin = path.join(registry, entry.name)
 		const pointer = path.join(admin, "gitdir")
 		if (!(await removalStat(pointer))) continue
-		if (path.resolve(admin, (await fs.readFile(pointer, "utf8")).trimEnd()) === path.join(checkout, ".git")) return admin
+		if (await worktreePath.same(path.resolve(admin, (await fs.readFile(pointer, "utf8")).trimEnd()), marker)) {
+			registered = await worktreePath.key(admin)
+			break
+		}
 	}
-	return undefined
+	if (
+		(await removalStat(checkout)) &&
+		(!registered ||
+			(await worktreePath.key((await git(checkout, ["rev-parse", "--absolute-git-dir"])).trimEnd())) !== registered)
+	)
+		throw new Error(`The worktree repository changed at ${checkout}. Inspect it before removing it.`)
+	return registered
 }
 
 function removalGit(cwd: string, dir: string): RemovalGit {
@@ -303,18 +313,27 @@ async function contains(read: RemovalGit, oid: string, tip: string, type = "comm
 export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<string | undefined> {
 	const lost: string[] = []
 	const unchecked: string[] = []
+	const recordError = (file: string, error: unknown) => unchecked.push(`${file} (${(error as Error).message.trim()})`)
+	const modules: { module: WorktreeModule; admin: string }[] = []
 	for (const module of mapping.modules) {
-		const checkout = module.path
-		let cwd = checkout
-		const seen = new Set<string>()
-		const recordError = (file: string, error: unknown) => unchecked.push(`${file} (${(error as Error).message.trim()})`)
 		try {
-			const adminPath = await removalAdmin(module.workspacePath, checkout)
-			if (!adminPath) continue
-			const admin = adminPath
-			if (!(await removalStat(checkout))) cwd = mapping.workspace
-			const sourceAdmin = (await git(module.workspacePath, ["rev-parse", "--absolute-git-dir"]).catch(() => "")).trimEnd()
-			const insideDeletion = (dir: string) =>
+			const admin = await removalAdmin(module.workspacePath, module.path)
+			if (admin) modules.push({ module, admin })
+		} catch (error) {
+			recordError(module.path, error)
+		}
+	}
+	const deletionRoots = modules.flatMap(({ module, admin }) => [module.path, admin])
+	const insideDeletion = (dir: string) => deletionRoots.some((root) => dir === root || worktreePath.isInside(root, dir))
+	for (const { module, admin } of modules) {
+		const checkout = module.path
+		const visited = new Set<string>()
+		const repositories = new Map<string, { sourceCheckout?: string; sourceCache?: string }>()
+		try {
+			const cwd = (await removalStat(checkout)) ? checkout : mapping.workspace
+			const sourceRead = await removalSourceRepository(module.workspacePath)
+			const sourceAdmin = (await sourceRead(["rev-parse", "--absolute-git-dir"])).trimEnd()
+			const insideModule = (dir: string) =>
 				dir === admin || dir === checkout || worktreePath.isInside(admin, dir) || worktreePath.isInside(checkout, dir)
 			const resolveMarker = async (marker: string) =>
 				worktreePath.key((await git(cwd, ["rev-parse", "--resolve-git-dir", marker])).trimEnd())
@@ -328,9 +347,39 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 				return [module.name, dir === admin ? "" : relative].filter(Boolean).join("/") || "Worktree"
 			}
 
+			// A source submodule can be deinitialized at any depth. Its parent
+			// cache still records the submodule name and Git directory.
+			const sourceDirectories = new Map<string, string | undefined>([[module.workspacePath, sourceAdmin]])
+			async function sourceDirectory(checkout: string): Promise<string | undefined> {
+				if (sourceDirectories.has(checkout)) return sourceDirectories.get(checkout)
+				let dir: string | undefined
+				const marker = path.join(checkout, ".git")
+				if (await removalStat(marker)) {
+					dir = await resolveMarker(marker)
+				} else {
+					for (
+						let child = checkout, parent = path.dirname(child);
+						parent !== child;
+						child = parent, parent = path.dirname(child)
+					) {
+						const parentDir = await sourceDirectory(parent)
+						if (parentDir) {
+							const read = removalGit(cwd, parentDir)
+							const names = await submoduleNames(read).catch(() => new Map<string, string>())
+							const name = names.get(path.relative(parent, checkout).split(path.sep).join("/"))
+							if (name) {
+								const cache = await submoduleCache(read, parent, name)
+								if ((await removalStat(cache))?.isDirectory()) dir = await worktreePath.key(cache)
+							}
+							break
+						}
+					}
+				}
+				sourceDirectories.set(checkout, dir)
+				return dir
+			}
+
 			async function inspect(dir: string, sourceCheckout: string | undefined, sourceCache?: string) {
-				if (!insideDeletion(dir) || seen.has(dir)) return
-				seen.add(dir)
 				try {
 					const read = removalGit(cwd, dir)
 					const common = await worktreePath.key(
@@ -338,17 +387,15 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 					)
 					const refs = await removalRefs(read)
 					const head = await detachedHead(dir)
-					const transferable = refs.filter(({ name }) => insideDeletion(common) || perWorktreeRef.test(name))
-					if (!transferable.length && !head) return
-					const remotes = await trackingRefs(read, refs)
-					const candidates = transferable.filter(({ name }) => !remotes.has(name))
-					const sourceMarker = sourceCheckout && path.join(sourceCheckout, ".git")
+					const deleted = (name: string) => insideDeletion(common) || perWorktreeRef.test(name)
+					const candidates = refs.filter(({ name, symbolic }) => !symbolic && deleted(name))
+					if (!candidates.length && !head) return
+					const remotes = candidates.length ? await trackingRefs(read, refs) : new Map()
 					const sourceDir =
-						sourceMarker && (await removalStat(sourceMarker))
-							? await resolveMarker(sourceMarker)
-							: sourceCache && (await removalStat(sourceCache))?.isDirectory()
-								? await worktreePath.key(sourceCache)
-								: undefined
+						(sourceCheckout && (await sourceDirectory(sourceCheckout))) ||
+						(sourceCache && (await removalStat(sourceCache))?.isDirectory()
+							? await worktreePath.key(sourceCache)
+							: undefined)
 					const sourceRead = sourceDir && !insideDeletion(sourceDir) ? removalGit(cwd, sourceDir) : undefined
 					const sourceCommon =
 						sourceRead &&
@@ -368,27 +415,15 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 						return false
 					}
 					for (const { name, oid, type } of candidates) {
-						let preserved = false
-						if (name !== "refs/stash") {
-							const branch = name.startsWith("refs/heads/") ? name.slice("refs/heads/".length) : undefined
-							for (const remote of refs) {
-								if (
-									branch !== undefined &&
-									branch === remotes.get(remote.name) &&
-									(await contains(read, oid, remote.oid, type))
-								) {
-									preserved = true
-									break
-								}
-							}
-							preserved ||= await sourceHas(
-								oid,
-								sourceRefs.filter(
-									(ref) =>
-										ref.name === name || (branch !== undefined && sourceRemotes.get(ref.name) === branch),
-								),
-							)
-						}
+						const branch = name.startsWith("refs/heads/") ? name.slice("refs/heads/".length) : remotes.get(name)
+						const targets = sourceRefs.filter(
+							(ref) =>
+								ref.name === name ||
+								(branch && (ref.name === `refs/heads/${branch}` || sourceRemotes.get(ref.name) === branch)),
+						)
+						const preserved =
+							name !== "refs/stash" &&
+							(type === "commit" ? await sourceHas(oid, targets) : targets.some((ref) => ref.oid === oid))
 						if (!preserved) lost.push(`${label(dir)} · ${name} · ${oid}`)
 					}
 					if (head) {
@@ -399,10 +434,8 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 								: sourceRefs,
 						)
 						for (const ref of refs) {
-							// A ref stored outside the deletion, or an upstream tracking ref, can also retain HEAD.
 							if (preserved) break
-							if (remotes.has(ref.name) || !transferable.includes(ref))
-								preserved = await contains(read, head, ref.oid, ref.type)
+							if (!deleted(ref.name)) preserved = await contains(read, head, ref.oid, ref.type)
 						}
 						if (!preserved) lost.push(`${label(dir)} · detached HEAD · ${head}`)
 					}
@@ -412,77 +445,58 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 			}
 
 			async function walk(dir: string, sourceCheckout?: string, sourceCache?: string, inAdmin = false) {
+				if (visited.has(dir)) return
+				visited.add(dir)
 				try {
 					const stat = await removalStat(dir)
 					if (!stat || stat.isSymbolicLink()) return
 					if (!stat.isDirectory()) throw new Error("Expected a directory")
 					const entries = await fs.readdir(dir, { withFileTypes: true })
 					const names = new Set(entries.map((entry) => entry.name))
-					if (
-						dir !== checkout &&
-						dir !== admin &&
-						((names.has("HEAD") &&
-							(names.has("commondir") || names.has("objects") || (inAdmin && names.has("config")))) ||
-							(names.has("objects") && (names.has("refs") || names.has("config"))))
-					) {
-						await inspect(dir, sourceCheckout, sourceCache)
-						await walk(
-							path.join(dir, "modules"),
-							sourceCheckout,
-							sourceCache && path.join(sourceCache, "modules"),
-							true,
-						)
-						await walk(path.join(dir, "worktrees"), undefined, undefined, true)
-						return
-					}
+					const gitDirectory =
+						repositories.has(dir) ||
+						(dir !== checkout &&
+							((names.has("HEAD") &&
+								(names.has("commondir") || names.has("objects") || (inAdmin && names.has("config")))) ||
+								(names.has("objects") && (names.has("refs") || names.has("config")))))
+					if (gitDirectory && !repositories.has(dir)) repositories.set(dir, { sourceCheckout, sourceCache })
 					for (const entry of entries) {
 						const file = path.join(dir, entry.name)
-						const sourceChild = sourceCheckout && path.join(sourceCheckout, entry.name)
-						const sourceChildCache = sourceCache && path.join(sourceCache, entry.name)
-						if (!inAdmin && dir !== checkout && entry.name === ".git" && !entry.isSymbolicLink()) {
+						if (entry.name === ".git" && !entry.isSymbolicLink()) {
 							try {
 								const gitDir = await resolveMarker(file)
-								const sourceGitDir =
-									sourceAdmin &&
-									(worktreePath.isInside(path.join(admin, "modules"), gitDir)
+								if (insideModule(gitDir) && !repositories.has(gitDir)) {
+									const cache = worktreePath.isInside(path.join(admin, "modules"), gitDir)
 										? path.join(sourceAdmin, path.relative(admin, gitDir))
 										: sourceCheckout &&
-											path.join(
-												sourceAdmin,
-												"modules",
-												path.relative(module.workspacePath, sourceCheckout),
-											))
-								await inspect(gitDir, sourceCheckout, sourceGitDir || undefined)
-								if (insideDeletion(gitDir)) {
-									await walk(
-										path.join(gitDir, "modules"),
-										sourceCheckout,
-										sourceGitDir ? path.join(sourceGitDir, "modules") : undefined,
-										true,
-									)
-									await walk(path.join(gitDir, "worktrees"), undefined, undefined, true)
+											path.join(sourceAdmin, "modules", path.relative(module.workspacePath, sourceCheckout))
+									repositories.set(gitDir, { sourceCheckout, sourceCache: cache })
 								}
 							} catch (error) {
 								recordError(file, error)
 							}
-						} else if (entry.isDirectory() && (inAdmin || entry.name !== ".git")) {
-							await walk(file, sourceChild, sourceChildCache, inAdmin)
 						}
+						if (!entry.isDirectory()) continue
+						const associated = repositories.get(file)
+						const childCheckout =
+							associated?.sourceCheckout ??
+							(!gitDirectory && !inAdmin && sourceCheckout ? path.join(sourceCheckout, entry.name) : undefined)
+						const cache = repositories.get(dir)?.sourceCache ?? sourceCache
+						const childCache =
+							associated?.sourceCache ??
+							(cache && (!gitDirectory || entry.name === "modules") ? path.join(cache, entry.name) : undefined)
+						await walk(file, childCheckout, childCache, inAdmin || gitDirectory || entry.name === ".git")
 					}
 				} catch (error) {
 					recordError(dir, error)
 				}
 			}
 
-			// Prefer checkout-relative source paths when both scans find the same repository.
+			// Collect checkout pointers before inspecting caches, so each cache keeps its source checkout.
+			repositories.set(admin, { sourceCheckout: module.workspacePath, sourceCache: sourceAdmin })
 			await walk(checkout, module.workspacePath)
-			await walk(
-				path.join(admin, "modules"),
-				module.workspacePath,
-				sourceAdmin ? path.join(sourceAdmin, "modules") : undefined,
-				true,
-			)
-			await inspect(admin, module.workspacePath)
+			await walk(admin, undefined, sourceAdmin, true)
+			for (const [dir, { sourceCheckout, sourceCache }] of repositories) await inspect(dir, sourceCheckout, sourceCache)
 		} catch (error) {
 			recordError(checkout, error)
 		}
