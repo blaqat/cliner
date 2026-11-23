@@ -558,7 +558,8 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 			await git(child, ["remote", "set-url", "origin", upstream])
 			if (!local) {
 				try {
-					await git(child, ["fetch", "--no-tags", "origin", commit])
+					// Apply the transport policy of git submodule update; only the verified local cache is exempt.
+					await git(child, ["fetch", "--no-tags", "origin", commit], undefined, { GIT_PROTOCOL_FROM_USER: "0" })
 				} catch {
 					await fs.rm(child, { force: true, recursive: true })
 					await fs.mkdir(child)

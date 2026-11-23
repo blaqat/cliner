@@ -119,6 +119,19 @@ for (const mode of ["git", "mm"] as const) {
 		expect((await manager.remove("fetch")).warning).toBeUndefined()
 	}, 120_000)
 
+	it(`${mode}: fetches a missing submodule commit under Git's submodule transport policy`, async () => {
+		const { workspace, root, manager } = await fixture(mode)
+		const middle = path.join(temp, "middle")
+		git(middle, "commit", "--allow-empty", "-m", "only upstream")
+		const upstreamOnly = git(middle, "rev-parse", "HEAD")
+		git(root, "update-index", "--cacheinfo", `160000,${upstreamOnly},vendor`)
+		git(root, "commit", "-m", "record upstream-only gitlink")
+		const warnings = vi.spyOn(Logger, "warn")
+		const mapping = await manager.create("policy", "Transport policy", workspace)
+		expect(warnings).toHaveBeenCalledWith(expect.stringMatching(/left vendor unset\./i))
+		await expect(fs.access(path.join(mapping.modules[0].path, "vendor", ".git"))).rejects.toThrow()
+	}, 120_000)
+
 	it(`${mode}: create, diff, bring, undo, try and remove nested relative-URL submodules`, async () => {
 		const { workspace, root, manager } = await fixture(mode)
 		const mapping = await manager.create("nested", "Nested", workspace)
