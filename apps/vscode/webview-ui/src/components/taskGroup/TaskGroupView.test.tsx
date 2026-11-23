@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	deleteTaskGroup: vi.fn(),
 	previewTaskGroupDelete: vi.fn(),
 	deleteTaskGroupWithThreads: vi.fn(),
+	deleteTaskGroupOnly: vi.fn(),
 	toggleTaskSettled: vi.fn(),
 	openNote: vi.fn(),
 	showTaskWithId: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("@/services/grpc-client", () => ({
 	TaskGroupDeleteServiceClient: {
 		previewTaskGroupDelete: (request: unknown) => mocks.previewTaskGroupDelete(request),
 		deleteTaskGroupWithThreads: (request: unknown) => mocks.deleteTaskGroupWithThreads(request),
+		deleteTaskGroupOnly: (request: unknown) => mocks.deleteTaskGroupOnly(request),
 	},
 	TaskServiceClient: {
 		showTaskWithId: (request: unknown) => mocks.showTaskWithId(request),
@@ -209,6 +211,7 @@ describe("TaskGroupView", () => {
 			})),
 		})
 		mocks.deleteTaskGroupWithThreads.mockReset().mockResolvedValue({ deleted: true, blocked: "" })
+		mocks.deleteTaskGroupOnly.mockReset().mockResolvedValue({ deleted: true, blocked: "" })
 		mocks.toggleTaskSettled.mockReset().mockResolvedValue({})
 		mocks.openNote.mockReset().mockResolvedValue({})
 		mocks.showTaskWithId.mockReset().mockResolvedValue({})
@@ -485,7 +488,7 @@ describe("TaskGroupView", () => {
 			name: "Delete task only (keep threads)",
 		})
 		fireEvent.click(only)
-		expect(mocks.deleteTaskGroup).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
+		expect(mocks.deleteTaskGroupOnly).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }))
 		expect(mocks.deleteTaskGroupWithThreads).not.toHaveBeenCalled()
 		await waitFor(() => expect(mocks.state.hideTaskGroupView).toHaveBeenCalled())
 	})

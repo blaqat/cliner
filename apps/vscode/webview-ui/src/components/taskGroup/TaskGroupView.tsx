@@ -109,6 +109,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	// Bumped by ⋯ › Rename task to start renaming in the breadcrumb.
 	const [renameSignal, setRenameSignal] = useState(0)
 	const renameFromMenu = useRef(false)
+	const worktreeSectionRef = useRef<HTMLDivElement>(null)
 	const settleAll = useSettleAll(taskGroupId)
 	const taskWorktree = useTaskWorktree(taskGroupId)
 	const allRuns = useAutomationRuns()
@@ -282,14 +283,12 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							<hr className={MENU_SEPARATOR_CLASS} />
 							<MenuItem
 								destructive
-								disabled={!!taskWorktree.state?.mapping}
 								icon="trash"
 								label="Delete task…"
 								onClick={() => {
 									setMenuOpen(false)
 									setConfirmingDelete(true)
 								}}
-								reason={taskWorktree.state?.mapping ? "Remove the worktree on this task page first." : undefined}
 							/>
 						</div>
 					</PopoverContent>
@@ -315,19 +314,25 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						setConfirmingDelete(false)
 						hideTaskGroupView()
 					}}
+					onShowTaskWorktree={() => {
+						setConfirmingDelete(false)
+						worktreeSectionRef.current?.scrollIntoView({ block: "nearest" })
+					}}
 					taskGroupId={group.id}
 				/>
 			)}
 			<div className="flex-1 overflow-y-auto pb-2">
-				<TaskWorktreeSection
-					refreshKey={timeline
-						.map(
-							({ thread }) =>
-								`${thread.threadId}:${threadStatusFor(threadStatuses, thread.threadId)}:${settledIds.has(thread.threadId)}`,
-						)
-						.join(",")}
-					worktree={taskWorktree}
-				/>
+				<div ref={worktreeSectionRef}>
+					<TaskWorktreeSection
+						refreshKey={timeline
+							.map(
+								({ thread }) =>
+									`${thread.threadId}:${threadStatusFor(threadStatuses, thread.threadId)}:${settledIds.has(thread.threadId)}`,
+							)
+							.join(",")}
+						worktree={taskWorktree}
+					/>
+				</div>
 				{/* The name is in the breadcrumb (like a thread's); under it, just the tags and counts. */}
 				<div className="flex min-w-0 items-start gap-2 px-4 pt-1 pb-2">
 					<TaskTagEditor className="min-w-0 flex-1" onAdd={addTag} onRemove={removeTag} tags={group.tags} />

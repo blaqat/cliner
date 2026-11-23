@@ -10,19 +10,22 @@ option java_package = "bot.cline.proto";
 
 // Deleting a task ("TaskGroup" internally) together with every thread filed in
 // it: its threads, their side threads, and (through their parents) their
-// subagent threads, plus each thread's worktree.
+// subagent threads, plus the task's worktree and each thread's.
 service TaskGroupDeleteService {
   // What deleting the task with its threads would stop, remove and lose. Read-only.
   rpc previewTaskGroupDelete(TaskGroupDeleteRequest) returns (TaskGroupDeletePreview);
   // Stops the task's running threads, removes their worktrees, then deletes the
   // threads and the task. Removes nothing when a check fails: the result says why.
   rpc deleteTaskGroupWithThreads(TaskGroupDeleteRequest) returns (TaskGroupDeleteResult);
+  // Deletes just the task; its threads stay, unfiled. A task worktree is removed
+  // first (so no kept thread points at it); nothing is deleted when that stops.
+  rpc deleteTaskGroupOnly(TaskGroupDeleteRequest) returns (TaskGroupDeleteResult);
 }
 
 message TaskGroupDeleteRequest {
   Metadata metadata = 1;
   string id = 2;
-  // The user saw the listed worktree losses and chose to discard them.
+  // The user saw the listed worktree losses (the task worktree's included) and chose to discard them.
   bool discard_worktree_work = 3;
 }
 
@@ -42,10 +45,29 @@ message TaskGroupDeleteThread {
   string worktree_note = 8;
   // Subagent threads that go with it.
   int32 subagents = 9;
+  // Runs in the task's shared worktree (it, an aside or a subagent of it).
+  bool uses_task_worktree = 10;
+}
+
+// The worktree the task owns and its threads share. Either delete removes it first.
+message TaskGroupDeleteTaskWorktree {
+  string branch = 1;
+  // Files removing it discards (never copied to the workspace); 1 when it couldn't be checked.
+  int32 losses = 2;
+  // What removing it discards, as a sentence; empty when nothing.
+  string note = 3;
+  // Git work only its folders hold (the removal's ref scan), as the worktree manager words it.
+  string ref_warning = 4;
+  // Titles of threads running in it in this window.
+  repeated string running_here = 5;
+  // A thread using it is running in another window or session.
+  bool busy_elsewhere = 6;
 }
 
 message TaskGroupDeletePreview {
   repeated TaskGroupDeleteThread threads = 1;
+  // Set when the task has its own worktree.
+  TaskGroupDeleteTaskWorktree task_worktree = 2;
 }
 
 message TaskGroupDeleteResult {

@@ -236,11 +236,12 @@ import { createNotebookConversion, type NotebookConversionKind, notebookConversi
 import { notebookDiff } from "./task-groups/notebook-diff"
 import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
 import {
+	deleteTaskGroupOnly,
 	deleteTaskGroupWithThreads,
 	previewTaskGroupDelete,
 	type TaskGroupDeleteDeps,
+	type TaskGroupDeletePreview,
 	type TaskGroupDeleteResult,
-	type TaskGroupDeleteThread,
 } from "./task-groups/task-group-delete"
 import { TaskGroupStore, taskGroupsRootDir, validateTaskGroupIdentifier } from "./task-groups/task-group-store"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
@@ -255,7 +256,7 @@ import { VscodeSessionHost } from "./vscode-session-host"
 import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
-import { git } from "./worktrees/repositories"
+import { git, submoduleRemovalWarning } from "./worktrees/repositories"
 import { ThreadWorktreeManager, taskWorktreeKey, threadRunFolder } from "./worktrees/thread-worktree-manager"
 
 /**
@@ -5519,9 +5520,17 @@ export class Controller {
 		await this.postStateToWebview(true)
 	}
 
-	/** What deleting a task with its threads covers; see task-group-delete.ts. */
-	async previewTaskGroupDelete(id: string): Promise<TaskGroupDeleteThread[]> {
+	/** What deleting a task (alone or with its threads) covers, its worktree included; see task-group-delete.ts. */
+	async previewTaskGroupDelete(id: string): Promise<TaskGroupDeletePreview> {
 		return previewTaskGroupDelete(id, this.taskGroupDeleteDeps())
+	}
+
+	/** Deletes just the task (threads stay, unfiled), removing its worktree first through the safe removal. */
+	async deleteTaskGroupOnly(id: string, discardWorktreeWork: boolean): Promise<TaskGroupDeleteResult> {
+		if (!(await this.taskGroupStore.getGroup(id))) throw new Error(`Task group not found: ${id}`)
+		const result = await deleteTaskGroupOnly(id, discardWorktreeWork, this.taskGroupDeleteDeps())
+		if (!result.deleted) await this.postStateToWebview(true)
+		return result
 	}
 
 	/** Deletes a task and every thread in it, after the same checks a single thread's worktree removal makes. */
@@ -5540,7 +5549,9 @@ export class Controller {
 				),
 			isLoaded: (threadId) => !!this.sessions.getSession(threadId),
 			isRunning: (threadId) => !!this.sessions.getSession(threadId)?.isRunning,
+			usesTaskWorktree: (threadId) => this.usesTaskWorktree(threadId),
 			worktrees: this.threadWorktrees,
+			refScan: submoduleRemovalWarning,
 			beginDeletion: (threadId) => this.sessions.beginTaskDeletion(threadId),
 			stopThread: (threadId) => this.sessions.removeSession(threadId),
 			deleteThreads: async (ids) => {
