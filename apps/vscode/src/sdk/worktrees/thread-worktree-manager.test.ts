@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { worktreeFix } from "../automations/automation-precheck"
 import { alive, owner, storageLock } from "./storage-lock"
 import { mmPath } from "./temp-project.test-support"
-import { ThreadWorktreeManager } from "./thread-worktree-manager"
+import { ThreadWorktreeManager, taskWorktreeKey } from "./thread-worktree-manager"
 
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim()
@@ -37,6 +37,40 @@ beforeEach(async () => {
 afterEach(async () => {
 	await fs.rm(temp, { recursive: true, force: true })
 }, 60_000)
+
+it("reuses a task worktree across windows and waits for all its threads before cleanup", async () => {
+	const other = new ThreadWorktreeManager(storage)
+	const id = taskWorktreeKey("shared-task")
+	const task = { id: "shared-task", beforeCreate: vi.fn(async () => {}) }
+	const [mapping, same] = await Promise.all([
+		manager.create(id, "Shared task", workspace, false, task),
+		other.create(id, "Shared task", workspace, false, task),
+	])
+	expect(same).toEqual(mapping)
+	expect(task.beforeCreate).toHaveBeenCalledOnce()
+	expect((await other.get(id))?.taskGroupId).toBe(task.id)
+	const releaseFirst = await manager.acquireSessionLease("first", async () => ({ mapping }))
+	const releaseSecond = await other.acquireSessionLease("second", async () => ({ mapping }))
+	try {
+		await write(mapping.cwd, "first.txt", "first thread\n")
+		await write(mapping.cwd, "second.txt", "second thread\n")
+		expect(await other.summary(id)).toMatchObject({ changedFiles: 2 })
+		await expect(manager.remove(id, true)).rejects.toThrow("every thread")
+		await releaseFirst()
+		await expect(manager.bring(id)).rejects.toThrow("every thread")
+	} finally {
+		await releaseFirst()
+		await releaseSecond()
+	}
+	const reopened = new ThreadWorktreeManager(storage)
+	expect(await reopened.workspaceRoute("second")).toEqual({ home: workspace })
+	expect(await reopened.bring(id)).toMatchObject({ files: 2 })
+	expect(await read(workspace, "second.txt")).toBe("second thread\n")
+	await reopened.remove(id)
+	expect(await manager.get(id)).toBeUndefined()
+	const recreated = await manager.create(id, "Shared task", workspace, false, task)
+	expect(recreated.branch).not.toBe(mapping.branch)
+})
 
 it.each([
 	["prints the former text output", 'console.log("  1 api /workspace/api")'],

@@ -89,6 +89,7 @@ export async function newTask(controller: Controller, request: NewTaskRequest): 
 		...cloudTarget,
 		background: request.runInBackground,
 		runInWorktree: request.runInWorktree,
+		...(request.worktreeScope ? { worktreeScope: request.worktreeScope } : {}),
 		taskGroupId: request.taskGroupId || undefined,
 		provenance: normalizeProvenance(request.provenance),
 		rethrowStartFailure: true,

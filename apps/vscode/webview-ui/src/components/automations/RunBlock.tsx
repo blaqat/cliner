@@ -79,7 +79,11 @@ function ThreadRow({
 	actions: ReturnType<typeof useRunActions>
 }) {
 	const status = liveThreadStatus(thread, statuses)
-	const detail = [thread.model || "Default model", thread.mode === "act" ? "Act" : "Ask", thread.worktree ? "worktree" : ""]
+	const detail = [
+		thread.model || "Default model",
+		thread.mode === "act" ? "Act" : "Ask",
+		thread.worktreeScope === "task" ? "task worktree" : thread.worktree ? "worktree" : "",
+	]
 		.filter(Boolean)
 		.join(" · ")
 	const waiting = status === "waiting"

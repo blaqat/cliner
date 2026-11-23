@@ -88,6 +88,8 @@ message NewTaskRequest {
   optional bool run_in_worktree = 1020;
   // Explicit composer actions for this message (see ComposerProvenance).
   ComposerProvenance provenance = 1021;
+  // "task" creates or uses the task worktree. "thread" and "workspace" override inheritance.
+  optional string worktree_scope = 1861;
 }
 
 // Request message for toggling task favorite status

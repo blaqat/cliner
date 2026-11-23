@@ -1,4 +1,4 @@
-import type { WorktreeActionResult, WorktreeState } from "@shared/thread-worktrees"
+import type { ThreadWorkspaceChoice, WorktreeActionResult, WorktreeState } from "@shared/thread-worktrees"
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { WorktreeServiceClient } from "@/services/grpc-client"
@@ -8,12 +8,14 @@ export async function threadWorktreeAction(
 	threadId = "",
 	data?: unknown,
 	confirmed = false,
+	taskGroupId?: string,
 ): Promise<WorktreeActionResult> {
 	const response = await WorktreeServiceClient.threadWorktreeAction({
 		action,
 		threadId,
 		json: data === undefined ? "" : JSON.stringify(data),
 		confirmed,
+		...(taskGroupId ? { taskGroupId } : {}),
 	})
 	const result: WorktreeActionResult = JSON.parse(response.json)
 	if (SETTINGS_ACTIONS.has(action)) settingsSaved()
@@ -21,7 +23,7 @@ export async function threadWorktreeAction(
 }
 
 /** Actions that change what every worktree menu offers; each mounted useWorktree re-reads after one. */
-const SETTINGS_ACTIONS = new Set(["configure", "workspaceOff"])
+const SETTINGS_ACTIONS = new Set(["configure", "workspaceOff", "createTaskWorktree", "remove", "takeOver"])
 let settingsVersion = 0
 const settingsListeners = new Set<() => void>()
 function settingsSaved() {
@@ -72,69 +74,89 @@ export function useWorktreeStartFailure(): string | undefined {
 	)
 }
 
-let enabled = false
+let draft: { scope: ThreadWorkspaceChoice; taskGroupId?: string } | undefined
 let draftThreadId: string | undefined
 const listeners = new Set<() => void>()
-function setDraft(value: boolean) {
-	enabled = value
+function setDraft(scope?: ThreadWorkspaceChoice, taskGroupId?: string) {
+	draft = scope ? { scope, taskGroupId } : undefined
 	for (const listener of listeners) listener()
 }
 
 /** The where pill's "Run in worktree" pick for the next new thread; the send path reads it. */
 export function getDraftRunInWorktree(): boolean {
-	return enabled
+	return draft?.scope === "thread" && !draft.taskGroupId
+}
+
+export function getDraftWorktreeScope(taskGroupId?: string): ThreadWorkspaceChoice | undefined {
+	return draft?.taskGroupId === taskGroupId ? draft?.scope : undefined
 }
 
 /** Cleared once a thread starts with it, like the composer's pending task pick. */
 export function clearDraftRunInWorktree(): void {
-	if (enabled) setDraft(false)
+	if (draft) setDraft()
 }
 
 /** Mount in the composer's where pill. Pass `enabled` as NewTaskRequest.runInWorktree. */
-export function useWorktree(threadId?: string) {
-	const { currentTaskItem } = useExtensionState()
-	const draftEnabled = useSyncExternalStore(
+export function useWorktree(threadId?: string, taskGroupId?: string) {
+	const { currentTaskItem, sessionStatuses } = useExtensionState()
+	const draftScope = useSyncExternalStore(
 		(listener) => {
 			listeners.add(listener)
 			return () => {
 				listeners.delete(listener)
 			}
 		},
-		() => enabled,
+		() => getDraftWorktreeScope(taskGroupId),
 	)
 	const savedSettings = useSyncExternalStore(subscribeSettings, () => settingsVersion)
-	const [state, setState] = useState<WorktreeState>()
+	const group = threadId === currentTaskItem?.id ? currentTaskItem?.taskGroupId : undefined
+	const status = threadId ? sessionStatuses?.[threadId] : undefined
+	const key = JSON.stringify([threadId, taskGroupId, group])
+	const [snapshot, setSnapshot] = useState<{ key: string; state?: WorktreeState }>()
+	const state = snapshot?.key === key ? snapshot.state : undefined
 	const [error, setError] = useState<string>()
 	const refreshId = useRef(0)
 	const refresh = useCallback(
 		async (refreshMm = false) => {
 			const id = ++refreshId.current
 			try {
-				const result = await threadWorktreeAction("state", threadId, refreshMm ? { refreshMm } : undefined)
+				const result = await threadWorktreeAction(
+					"state",
+					threadId,
+					refreshMm ? { refreshMm } : undefined,
+					false,
+					taskGroupId,
+				)
 				if (id !== refreshId.current) return
-				setState(result.state)
+				setSnapshot({ key, state: result.state })
 				setError(undefined)
 			} catch (error) {
 				if (id === refreshId.current) setError(`Couldn't check worktrees: ${worktreeErrorText(error)}`)
 			}
 		},
-		[threadId],
+		[threadId, taskGroupId, key],
 	)
 	// Saved settings change availability for menus that stayed mounted (the composer's), not just Settings.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: savedSettings is the re-read trigger.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Refresh after a save or when a new thread is persisted.
 	useEffect(() => {
 		void refresh()
-	}, [refresh, savedSettings])
+	}, [refresh, savedSettings, status])
 	useEffect(() => {
 		if (draftThreadId !== currentTaskItem?.id) {
 			draftThreadId = currentTaskItem?.id
-			setDraft(false)
+			setDraft()
 		}
 	}, [currentTaskItem?.id])
-	const setEnabled = useCallback(async (value: boolean) => setDraft(value), [])
+	const setScope = useCallback((scope?: ThreadWorkspaceChoice) => setDraft(scope, taskGroupId), [taskGroupId])
+	const setEnabled = useCallback(
+		async (value: boolean) => setScope(value ? "thread" : taskGroupId ? "workspace" : undefined),
+		[setScope, taskGroupId],
+	)
 	return {
 		state,
-		enabled: threadId ? !!state?.mapping : draftEnabled,
+		enabled: threadId ? !!state?.mapping : draftScope === "thread" || draftScope === "task",
+		scope: draftScope,
+		setScope,
 		availability: state?.availability,
 		setEnabled,
 		refresh,

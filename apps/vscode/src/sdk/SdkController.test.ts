@@ -742,7 +742,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 	it("reads the live conversation of the active session", async () => {
 		const readLiveMessages = vi.fn().mockResolvedValue(sdkMessages)
 		const readMessages = vi.fn().mockResolvedValue([])
-		const controller = {
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: {
 				assertTaskAvailable: vi.fn(),
@@ -757,7 +757,7 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 					},
 				}),
 			},
-		}
+		})
 
 		await expect(SdkController.prototype.hasWorkspaceCheckpointForMessage.call(controller as never, 3)).resolves.toBe(true)
 		await expect(SdkController.prototype.hasWorkspaceCheckpointForMessage.call(controller as never, 1)).resolves.toBe(false)
@@ -884,11 +884,11 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 			readMessages: vi.fn().mockResolvedValue(sdkMessages),
 			dispose: vi.fn().mockRejectedValue(new Error("cleanup failed")),
 		}
-		const controller = {
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost: vi.fn().mockResolvedValue(tempHost),
-		}
+		})
 
 		await expect(SdkController.prototype.hasWorkspaceCheckpointForMessage.call(controller as never, 1)).resolves.toBe(true)
 		expect(tempHost.get).toHaveBeenCalledWith("task-a")
@@ -896,11 +896,11 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 	})
 
 	it("reports no checkpoint when the host cannot be read", async () => {
-		const controller = {
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => messages } },
 			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost: vi.fn().mockRejectedValue(new Error("host unavailable")),
-		}
+		})
 
 		await expect(SdkController.prototype.hasWorkspaceCheckpointForMessage.call(controller as never, 1)).resolves.toBe(false)
 	})
@@ -912,11 +912,11 @@ describe("hasWorkspaceCheckpointForMessage", () => {
 			{ ts: 3, type: "say", say: "user_feedback", text: "src/index.ts" },
 		]
 		const createRemoteConfigAwareSessionHost = vi.fn()
-		const controller = {
+		const controller = controllerFixture({
 			task: { taskId: "task-a", messageStateHandler: { getClineMessages: () => answerMessages } },
 			sessions: { assertTaskAvailable: vi.fn(), getActiveSession: () => undefined },
 			createRemoteConfigAwareSessionHost,
-		}
+		})
 
 		await expect(SdkController.prototype.hasWorkspaceCheckpointForMessage.call(controller as never, 3)).resolves.toBe(false)
 		expect(createRemoteConfigAwareSessionHost).not.toHaveBeenCalled()
@@ -1640,6 +1640,10 @@ describe("aside task membership", () => {
 	function makeFilingController(records: unknown[]) {
 		const stored = new Map<string, string | undefined>()
 		const controller = {
+			threadWorktrees: {
+				exclusive: (action: () => Promise<unknown>) => action(),
+				get: vi.fn(async () => undefined),
+			},
 			taskGroupStore: { getGroup: vi.fn(async (id: string) => ({ id })) },
 			taskHistory: {
 				listHistory: vi.fn(async () =>
@@ -1713,11 +1717,14 @@ describe("aside task membership", () => {
 	it("creating a task with a thread files its asides too", async () => {
 		const { controller, stored } = makeFilingController(family)
 		const createGroup = vi.fn(async () => ({ id: "NEW" }))
-		await SdkController.prototype.createTaskGroup.call({ ...controller, taskGroupStore: { createGroup } } as never, {
-			title: "T",
-			tags: [],
-			threadId: "parent",
-		})
+		await SdkController.prototype.createTaskGroup.call(
+			{ ...controller, taskGroupStore: { ...controller.taskGroupStore, createGroup } } as never,
+			{
+				title: "T",
+				tags: [],
+				threadId: "parent",
+			},
+		)
 		expect(Object.fromEntries(stored)).toEqual({ parent: "NEW", aside: "NEW", nested: "NEW" })
 	})
 
@@ -2732,9 +2739,11 @@ for (const mode of ["git", "mm"] as const) {
 			const mapping = await manager.create("idle", "Idle", workspace)
 			let resident = { isRunning: false, cwd: mapping.cwd } as { isRunning: boolean; cwd: string } | undefined
 			const release = vi.fn()
-			const controller = {
+			const workspaceNotices = new Map<string, string>()
+			const controller = controllerFixture({
 				threadWorktrees: manager,
 				getWorkspaceRoot: async () => workspace,
+				taskHistory: { findHistoryItem: async () => undefined },
 				stateManager: { getWorkspaceStateKey: () => undefined },
 				sessions: {
 					getSession: () => resident,
@@ -2746,9 +2755,10 @@ for (const mode of ["git", "mm"] as const) {
 				},
 				resolveSlashCommands: async (text: string) => text,
 				resolveReferenceMentions: async (text: string) => text,
-				workspaceNotices: new Map<string, string>(),
+				workspaceNotices,
 				seenWorktreeRemovals: new Map<string, number>(),
-			}
+				sessionWorktrees: new Map(),
+			})
 			const result = await SdkController.prototype.threadWorktreeAction.call(controller as never, {
 				action: "remove",
 				threadId: "idle",
@@ -2760,10 +2770,10 @@ for (const mode of ["git", "mm"] as const) {
 			expect(release).toHaveBeenCalledOnce()
 			const resolveWorkspace = Reflect.get(SdkController.prototype, "resolveSessionWorkspace")
 			expect(await resolveWorkspace.call(controller, "idle")).toBe(workspace)
-			expect(controller.workspaceNotices.get("idle")).toContain(workspace)
-			controller.workspaceNotices.clear()
+			expect(workspaceNotices.get("idle")).toContain(workspace)
+			workspaceNotices.clear()
 			await resolveWorkspace.call(controller, "idle")
-			expect(controller.workspaceNotices.size).toBe(0)
+			expect(workspaceNotices.size).toBe(0)
 			const relative = mode === "mm" ? "api/file.txt" : "file.txt"
 			await fs.writeFile(path.join(workspace, relative), "Original workspace context\n")
 			const resolveMentions = Reflect.get(SdkController.prototype, "resolveContextMentions")

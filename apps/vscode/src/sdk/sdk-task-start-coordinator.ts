@@ -86,7 +86,13 @@ export interface SdkTaskStartCoordinatorOptions {
 	 * the configuration it was started with.
 	 */
 	recordTaskApiSelection?: (taskId: string, selection: TaskApiSelection, mode: Mode) => void
-	prepareWorkspace?: (id: string, title: string, workspace: string, enabled?: boolean) => Promise<string>
+	prepareWorkspace?: (
+		id: string,
+		title: string,
+		workspace: string,
+		enabled?: boolean,
+		task?: { id?: string; scope?: string },
+	) => Promise<string>
 	consumeDraftApiSelection?: () => TaskApiSelection | undefined
 	transferDraftModelPick?: (taskId: string) => void
 	/**
@@ -122,6 +128,7 @@ export class SdkTaskStartCoordinator {
 			isViewSuperseded?: () => boolean
 			taskGroupId?: string
 			runInWorktree?: boolean
+			worktreeScope?: string
 			provenance?: ComposerProvenance
 			/** The caller's composer takes the draft back, so it has to hear that the start failed. */
 			rethrowStartFailure?: boolean
@@ -193,9 +200,12 @@ export class SdkTaskStartCoordinator {
 				if (this.options.prepareWorkspace) {
 					const isolatedCwd = await this.options.prepareWorkspace(
 						taskSessionId,
-						prompt ?? "thread",
+						options?.title ?? prompt ?? "thread",
 						cwd,
 						options?.runInWorktree,
+						...(options?.taskGroupId || options?.worktreeScope
+							? [{ id: options.taskGroupId, scope: options.worktreeScope }]
+							: []),
 					)
 					if (isolatedCwd !== cwd) {
 						cwd = isolatedCwd
@@ -283,7 +293,12 @@ export class SdkTaskStartCoordinator {
 				}
 
 				const newHistoryItem = {
-					...this.options.createHistoryItemFromSession(taskSessionId, prompt ?? "", configWithSessionId.modelId, cwd),
+					...this.options.createHistoryItemFromSession(
+						taskSessionId,
+						prompt ?? "",
+						configWithSessionId.modelId,
+						this.options.sessions.getSession?.(taskSessionId)?.startConfig?.cwd ?? cwd,
+					),
 					// The first message is the user's.
 					lastUserMessageTs: Date.now(),
 					lastLine: { author: "user" as const, text: (prompt ?? "").replace(/\s+/g, " ").trim().slice(0, 160) },

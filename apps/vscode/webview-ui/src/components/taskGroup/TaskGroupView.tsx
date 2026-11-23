@@ -21,6 +21,7 @@ import { useThreadStatuses } from "@/components/inbox/useThreadStatuses"
 import { useNavigationHistory } from "@/components/navigation/NavigationHistoryContext"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { TaskWorktreeSection, useTaskWorktree } from "@/components/worktrees/TaskWorktreeSection"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAutomationRuns } from "@/hooks/useAutomationRuns"
 import { cn } from "@/lib/utils"
@@ -108,6 +109,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 	const [renameSignal, setRenameSignal] = useState(0)
 	const renameFromMenu = useRef(false)
 	const settleAll = useSettleAll(taskGroupId)
+	const taskWorktree = useTaskWorktree(taskGroupId)
 	const allRuns = useAutomationRuns()
 	// Newest first; a finished run folds to one line.
 	const runs = useMemo(() => allRuns.filter((run) => run.taskGroupId === taskGroupId).reverse(), [allRuns, taskGroupId])
@@ -186,7 +188,7 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 		setConfirmingDelete(false)
 		TaskGroupServiceClient.deleteTaskGroup(DeleteTaskGroupRequest.create({ id: group.id }))
 			.then(hideTaskGroupView)
-			.catch((error) => console.error("Failed to delete task:", error))
+			.catch((error) => taskWorktree.setMessage({ text: String(error), error: true }))
 	}
 
 	// Through the history layer, so Back returns here, not to the home screen
@@ -240,6 +242,18 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 						onKeyDown={handleMenuKeyDown}
 						side="bottom">
 						<div aria-label="Task actions" className="flex flex-col" role="menu">
+							{!taskWorktree.state?.mapping && (
+								<MenuItem
+									disabled={taskWorktree.creating}
+									icon="repo-forked"
+									label="New worktree for this task"
+									onClick={() => {
+										setMenuOpen(false)
+										void taskWorktree.create()
+									}}
+									reason={taskWorktree.creating ? "Creating the task worktree." : undefined}
+								/>
+							)}
 							<MenuItem
 								icon="edit"
 								label="Rename task"
@@ -273,12 +287,14 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 							<hr className={MENU_SEPARATOR_CLASS} />
 							<MenuItem
 								destructive
+								disabled={!!taskWorktree.state?.mapping}
 								icon="trash"
 								label="Delete task…"
 								onClick={() => {
 									setMenuOpen(false)
 									setConfirmingDelete(true)
 								}}
+								reason={taskWorktree.state?.mapping ? "Remove the worktree on this task page first." : undefined}
 							/>
 						</div>
 					</PopoverContent>
@@ -314,6 +330,15 @@ export const TaskGroupView = ({ taskGroupId, now = Date.now() }: TaskGroupViewPr
 				</div>
 			)}
 			<div className="flex-1 overflow-y-auto pb-2">
+				<TaskWorktreeSection
+					refreshKey={timeline
+						.map(
+							({ thread }) =>
+								`${thread.threadId}:${threadStatusFor(threadStatuses, thread.threadId)}:${settledIds.has(thread.threadId)}`,
+						)
+						.join(",")}
+					worktree={taskWorktree}
+				/>
 				{/* The name is in the breadcrumb (like a thread's); under it, just the tags and counts. */}
 				<div className="flex min-w-0 items-start gap-2 px-4 pt-1 pb-2">
 					<TaskTagEditor className="min-w-0 flex-1" onAdd={addTag} onRemove={removeTag} tags={group.tags} />

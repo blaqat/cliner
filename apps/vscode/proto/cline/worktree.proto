@@ -160,6 +160,7 @@ message ThreadWorktreeActionRequest {
   string thread_id = 2;
   string json = 3;
   bool confirmed = 4;
+  optional string task_group_id = 1860;
 }
 
 message ThreadWorktreeActionResponse {

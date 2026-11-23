@@ -19,6 +19,7 @@ export interface TaskThreadForAutomation {
 	model: string
 	level: string
 	worktree: boolean
+	worktreeScope?: AutomationThreadSpec["worktreeScope"]
 	/** When the mode the thread started in isn't known, worktree threads count as Act, others as Ask. */
 	mode?: "ask" | "act"
 	outputs?: AutomationOutput[]
@@ -65,6 +66,7 @@ export function automationFromTask(task: { title: string; ticket?: string; threa
 			level: thread.level,
 			mode: thread.mode ?? (thread.worktree ? "act" : "ask"),
 			worktree: thread.worktree,
+			...(thread.worktreeScope ? { worktreeScope: thread.worktreeScope } : {}),
 			...(thread.outputs?.length ? { outputs: thread.outputs } : {}),
 		}
 	}

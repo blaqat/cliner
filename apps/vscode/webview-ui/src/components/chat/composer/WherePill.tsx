@@ -80,6 +80,7 @@ interface TaskPickerMenuProps {
 export function TaskPickerMenu({ onClose, onOpenTaskGroup, suggestion }: TaskPickerMenuProps) {
 	const { taskGroups } = useExtensionState()
 	const [query, setQuery] = useState("")
+	const [moveError, setMoveError] = useState<string>()
 	const { threadId, selectedId, fixedTitle } = useWhereTask()
 	const recent = useMemo(
 		() => [...(taskGroups ?? [])].sort((a, b) => b.updatedAt - a.updatedAt).filter((group) => matchesQuery(group, query)),
@@ -87,24 +88,33 @@ export function TaskPickerMenu({ onClose, onOpenTaskGroup, suggestion }: TaskPic
 	)
 
 	const pick = (id: string | undefined) => {
-		onClose()
 		if (!threadId) {
+			onClose()
 			setComposerTaskGroup(id)
 			return
 		}
 		// Clicking the thread's own task opens it (there's no separate Open task row).
 		if (id === selectedId) {
+			onClose()
 			if (id && onOpenTaskGroup) onOpenTaskGroup(id)
 			return
 		}
+		setMoveError(undefined)
 		void TaskGroupServiceClient.setThreadTaskGroup(
 			SetThreadTaskGroupRequest.create({ threadId, taskGroupId: id ?? "" }),
-		).catch((error) => console.error("Failed to move thread to task:", error))
+		).then(onClose, (error) =>
+			setMoveError((error instanceof Error ? error.message : String(error)).replace(/^(Error:\s*)+/, "")),
+		)
 	}
 
 	return (
 		<>
 			{suggestion && <BranchTaskSuggestion onAccept={onClose} suggestion={suggestion} />}
+			{moveError && (
+				<p className="m-0 px-2 py-1 text-xs text-error wrap-anywhere" role="alert">
+					{moveError}
+				</p>
+			)}
 			{fixedTitle ? (
 				<div className="px-2 py-1 text-[12px] text-description" data-testid="where-fixed-task">
 					New threads here go into <span className="text-foreground">{fixedTitle}</span>.

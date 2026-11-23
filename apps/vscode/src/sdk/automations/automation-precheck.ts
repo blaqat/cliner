@@ -1,10 +1,18 @@
-import { type AutomationFix, type AutomationProblem, type AutomationStep, automationThreads } from "@shared/automations"
+import {
+	type AutomationFix,
+	type AutomationProblem,
+	type AutomationStep,
+	automationThreads,
+	automationWorkspace,
+} from "@shared/automations"
 
 export interface PrecheckContext {
 	/** The open folder; undefined when none is open. */
 	workspace: string | undefined
 	/** Whether a new worktree can be made now, and why not. Read only when a step needs one. */
 	worktrees: () => Promise<{ available: boolean; reason?: string }>
+	/** The task the run starts in already has a worktree in this folder. */
+	reuseTaskWorktree?: boolean
 	/** Why a thread's model can't run as written; undefined when it can. */
 	modelProblem?: (model: string, level: string, mode: "ask" | "act") => string | undefined
 }
@@ -49,7 +57,18 @@ export function plainWorktreeReason(reason: string | undefined): string {
 export async function precheckSteps(steps: readonly AutomationStep[], context: PrecheckContext): Promise<AutomationProblem[]> {
 	const problems: AutomationProblem[] = []
 	const threads = automationThreads(steps)
-	const worktreeSteps = [...new Set(threads.filter(({ thread }) => thread.worktree).map(({ step }) => step))]
+	const firstTask = steps.findIndex((step) => step.kind === "task")
+	const existingTaskSteps = context.reuseTaskWorktree ? new Set(firstTask < 0 ? steps : steps.slice(0, firstTask)) : undefined
+	const worktreeSteps = [
+		...new Set(
+			threads
+				.filter(({ step, thread }) => {
+					const scope = automationWorkspace(thread)
+					return scope === "thread" || (scope === "task" && !existingTaskSteps?.has(step))
+				})
+				.map(({ step }) => step),
+		),
+	]
 	if (worktreeSteps.length) {
 		const names = worktreeSteps.map((step) => `“${step.title || step.id}”`).join(", ")
 		const runsIn = worktreeSteps.length === 1 ? `${names} runs in a new worktree` : `${names} run in new worktrees`

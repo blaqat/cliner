@@ -39,6 +39,13 @@ import {
 import { alive, heartbeatMs, type Owner, owner, storageLock } from "./storage-lock"
 
 const defaults: ThreadWorktreeSettings = { mode: "off", mmPath: "", nodePath: "node" }
+const taskWorktreePrefix = "task:"
+export const taskWorktreeKey = (taskGroupId: string) => taskWorktreePrefix + taskGroupId
+type SessionLease = Owner & { worktreeId?: string }
+interface WorkspaceRoute {
+	home?: string
+	useWorkspace?: boolean
+}
 const lineCount = (output: string) => output.split("\n").filter((line) => line.trim()).length
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
 // The workspace's own changes; its .worktrees folder (where git-mode thread worktrees live) isn't one.
@@ -212,7 +219,7 @@ export class ThreadWorktreeManager {
 	private leaseFile(id: string) {
 		return path.join(this.storageDir, "leases", `${createHash("sha256").update(id).digest("hex")}.json`)
 	}
-	private async lease(id: string): Promise<Owner | undefined> {
+	private async lease(id: string): Promise<SessionLease | undefined> {
 		try {
 			return JSON.parse(await fs.readFile(this.leaseFile(id), "utf8"))
 		} catch (error) {
@@ -220,17 +227,47 @@ export class ThreadWorktreeManager {
 			throw error
 		}
 	}
-	async assertIdle(id: string) {
+	async sessionBusy(id: string) {
 		const lease = await this.lease(id)
-		if (lease && (await alive(lease)))
-			throw new Error("This thread is active in another window or session. Stop it there before changing its worktree.")
+		return !!lease && (await alive(lease))
+	}
+	async worktreeBusy(id: string) {
+		if (await this.sessionBusy(id)) return true
+		const dir = path.join(this.storageDir, "leases")
+		const files = await fs.readdir(dir).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return []
+			throw error
+		})
+		for (const file of files) {
+			if (!file.endsWith(".json")) continue
+			const lease = await this.read<SessionLease | undefined>(path.join("leases", file), undefined)
+			if (lease?.worktreeId === id && (await alive(lease))) return true
+		}
+		return false
+	}
+	async assertIdle(id: string) {
+		if (!(await this.worktreeBusy(id))) return
+		throw new Error(
+			id.startsWith(taskWorktreePrefix)
+				? "Wait for every thread using this task worktree to finish before changing it."
+				: "This thread is active in another window or session. Stop it there before changing its worktree.",
+		)
 	}
 	/** Acquired before reading the mapping and retained until the runtime is idle/stopped. */
-	async acquireSessionLease(id: string): Promise<() => Promise<void>> {
+	async acquireSessionLease(
+		id: string,
+		resolveWorktree?: () => Promise<{ mapping?: ThreadWorktree; taskWorktreeId?: string }>,
+	): Promise<() => Promise<void>> {
 		return this.exclusive(() =>
 			this.withLeaseLock(id, async () => {
-				await this.assertIdle(id)
-				const record = owner()
+				if (await this.sessionBusy(id))
+					throw new Error("This thread is active in another window or session. Stop it there before continuing.")
+				const { mapping, taskWorktreeId } = (await resolveWorktree?.()) ?? {}
+				if (mapping && mapping.threadId !== id) {
+					const route = await this.workspaceRoute(id)
+					if (!route.home) await this.saveWorkspaceRoute(id, { ...route, home: mapping.workspace })
+				}
+				const record: SessionLease = { ...owner(), worktreeId: mapping?.threadId ?? taskWorktreeId }
 				const file = this.leaseFile(id)
 				await fs.mkdir(path.dirname(file), { recursive: true })
 				await this.writeLease(file, record)
@@ -258,7 +295,7 @@ export class ThreadWorktreeManager {
 		)
 	}
 
-	private async writeLease(file: string, record: Owner) {
+	private async writeLease(file: string, record: SessionLease) {
 		const temp = `${file}.${randomUUID()}.tmp`
 		await fs.writeFile(temp, JSON.stringify(record), { mode: 0o600 })
 		await fs.rename(temp, file)
@@ -335,6 +372,15 @@ export class ThreadWorktreeManager {
 	}
 	async get(id: string) {
 		return this.read<ThreadWorktree | undefined>(this.mappingFile(id), undefined)
+	}
+	workspaceRoute(id: string) {
+		return this.read<WorkspaceRoute>(path.join("routes", this.mappingFile(id)), {})
+	}
+	private async saveWorkspaceRoute(id: string, route: WorkspaceRoute) {
+		await this.write(path.join("routes", this.mappingFile(id)), route)
+	}
+	async useWorkspace(id: string) {
+		await this.exclusive(() => this.saveWorkspaceRoute(id, { useWorkspace: true }))
 	}
 	async removedWorkspace(id: string) {
 		return this.read<{ workspace: string; removedAt: number } | undefined>(
@@ -432,18 +478,30 @@ export class ThreadWorktreeManager {
 	async availability(workspace: string, workspaceOff = false, refreshMm = false): Promise<WorktreeAvailability> {
 		return (await this.checkAvailability(workspace, await this.settings(), workspaceOff, refreshMm)).availability
 	}
-	async create(threadId: string, title: string, workspace: string, workspaceOff = false): Promise<ThreadWorktree> {
+	async create(
+		threadId: string,
+		title: string,
+		workspace: string,
+		workspaceOff = false,
+		task?: { id: string; beforeCreate: () => Promise<void> },
+	): Promise<ThreadWorktree> {
 		return this.exclusive(async () => {
 			const existing = await this.get(threadId)
 			if (existing) {
 				await this.assertPresent(existing)
 				return existing
 			}
+			if (task) await this.assertIdle(threadId)
+			await task?.beforeCreate()
 			const settings = await this.settings()
 			const { availability, config } = await this.checkAvailability(workspace, settings, workspaceOff, true)
 			if (!availability.available || availability.mode === "off")
 				throw new Error(availability.reason + (availability.mmCwd ? `\nmm working folder is ${availability.mmCwd}.` : ""))
-			const suffix = createHash("sha256").update(threadId).digest("hex").slice(0, 10)
+			// Removing the folder can keep its branch. A task can create another worktree later.
+			const suffix = createHash("sha256")
+				.update(task ? `${threadId}:${randomUUID()}` : threadId)
+				.digest("hex")
+				.slice(0, 10)
 			const slug =
 				title
 					.toLowerCase()
@@ -464,6 +522,7 @@ export class ThreadWorktreeManager {
 				: [{ name: "", workspacePath: (await git(workspace, ["rev-parse", "--show-toplevel"])).trim(), path: cwd }]
 			const mapping: ThreadWorktree = {
 				threadId,
+				...(task ? { taskGroupId: task.id } : {}),
 				mode,
 				branch,
 				workspace,

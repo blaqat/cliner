@@ -570,6 +570,8 @@ describe("TaskGroupView", () => {
 		fireEvent.keyDown(rename, { key: "ArrowDown" })
 		expect(screen.getByRole("menuitem", { name: "Delete task…" })).toHaveFocus()
 		fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+		expect(screen.getByRole("menuitem", { name: "New worktree for this task" })).toHaveFocus()
+		fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
 		expect(rename).toHaveFocus()
 	})
 

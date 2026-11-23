@@ -6,6 +6,7 @@ import {
 	type AutomationStep,
 	type AutomationThreadSpec,
 } from "@shared/automations"
+import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
 
 type Raw = Record<string, unknown>
 
@@ -32,6 +33,7 @@ function thread(raw: unknown): AutomationThreadSpec {
 		level: str(entry.level),
 		mode: entry.mode === "act" ? "act" : "ask",
 		worktree: entry.worktree === true,
+		...(isThreadWorkspaceChoice(entry.worktreeScope) ? { worktreeScope: entry.worktreeScope } : {}),
 		...(outputs.length ? { outputs } : {}),
 	}
 }

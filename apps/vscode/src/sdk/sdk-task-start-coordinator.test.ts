@@ -336,7 +336,9 @@ describe("SdkTaskStartCoordinator", () => {
 				onChange: () => {},
 			})
 			await runner.start(ticketToPr(), { ticket: "PROJ-142" })
-			await vi.waitFor(() => expect(runner.list()[0].steps[1].threads[0].threadId).toBeTruthy())
+			await vi.waitFor(() => expect(runner.list()[0].steps[1].threads[0]).toMatchObject({ threadId: expect.any(String) }), {
+				timeout: 10_000,
+			})
 			const first = runner.list()[0].steps[1].threads[0]
 			const id = first.threadId!
 			expect((await controller.getTaskGroup("group")).threads).toContainEqual(

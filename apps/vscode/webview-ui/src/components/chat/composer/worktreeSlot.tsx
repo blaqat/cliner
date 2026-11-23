@@ -1,3 +1,4 @@
+import type { ThreadWorkspaceChoice, ThreadWorktree } from "@shared/thread-worktrees"
 import { useEffect, useState } from "react"
 import { InlineNotice } from "@/components/common/InlineNotice"
 import {
@@ -6,6 +7,8 @@ import {
 	MENU_ICON_CLASS,
 	MENU_SEPARATOR_CLASS,
 } from "@/components/common/menuStyles"
+import { openTask } from "@/components/inbox/sessionActions"
+import { useResolvedComposerTaskGroup } from "@/components/taskGroup/composerTaskGroup"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ThreadWorktreeActions } from "@/components/worktrees/ThreadWorktreeActions"
 import {
@@ -20,6 +23,23 @@ import { handleMenuKeyDown, MENU_HEADING_CLASS, MENU_ROW_CLASS } from "./menuKey
 
 type WorktreeInfo = ReturnType<typeof useWorktree>
 
+function WorktreeOwnerLink({ mapping }: { mapping: ThreadWorktree }) {
+	const { navigateToTaskGroup } = useExtensionState()
+	return (
+		<button
+			className={MENU_ROW_CLASS}
+			onClick={() => (mapping.taskGroupId ? navigateToTaskGroup(mapping.taskGroupId) : void openTask(mapping.threadId))}
+			role="menuitem"
+			type="button">
+			<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-repo-forked text-description")} />
+			<span className="min-w-0 flex-1 truncate">
+				{mapping.taskGroupId ? "Manage the task worktree" : "Open the owner thread"}
+			</span>
+			<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-chevron-right")} />
+		</button>
+	)
+}
+
 /**
  * The workspace menu: a new thread picks between your workspace and a new worktree; a worktree
  * thread gets its worktree actions. Whenever a worktree can't be used (off, off here, mm not set up,
@@ -28,21 +48,25 @@ type WorktreeInfo = ReturnType<typeof useWorktree>
  */
 function WorkspaceMenuBody({
 	threadId,
+	taskGroupId,
 	worktree,
 	onClose,
 }: {
 	threadId: string | undefined
+	taskGroupId?: string
 	worktree: WorktreeInfo
 	onClose: () => void
 }) {
 	const { navigateToSettings } = useExtensionState()
-	const { availability, state, enabled, setEnabled, error, refresh } = worktree
+	const { availability, state, scope, setScope, error, refresh } = worktree
 	// Re-check on open: mm.js, git history or another window's settings may have changed since.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per open.
 	useEffect(() => {
 		void refresh(true)
 	}, [])
 	const mapping = threadId ? state?.mapping : undefined
+	const taskMapping = taskGroupId && !state?.taskWorktreeElsewhere ? state?.mapping : undefined
+	const currentScope = scope ?? (taskMapping ? "task" : "workspace")
 	const canUse = !!availability?.available
 	const mm = availability?.mode === "mm"
 	const fix = availability?.available ? undefined : availability?.fix
@@ -51,8 +75,8 @@ function WorkspaceMenuBody({
 	const blocker = error || (!availability || availability.available ? "" : (availability.reason ?? "") + mmHint)
 	// Git problems are fixed in the folder; the rest in Settings, on the control that fixes them.
 	const folderFix = fix === "repository" || fix === "commit"
-	const pick = (value: boolean) => {
-		void setEnabled(value)
+	const pick = (value: ThreadWorkspaceChoice) => {
+		setScope(value === "task" && taskMapping ? undefined : value)
 		clearWorktreeStartFailure()
 		onClose()
 	}
@@ -63,32 +87,68 @@ function WorkspaceMenuBody({
 			{!threadId ? (
 				<div aria-label="Where the new thread runs" role="menu">
 					<button
-						aria-checked={!enabled}
+						aria-checked={currentScope === "workspace"}
 						className={MENU_ROW_CLASS}
-						onClick={() => pick(false)}
+						onClick={() => pick("workspace")}
 						role="menuitemradio"
 						type="button">
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-folder text-description")} />
 						<span className="min-w-0 flex-1 truncate">Your workspace</span>
-						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", enabled && "invisible")} />
+						<span
+							aria-hidden
+							className={cn(MENU_ICON_CLASS, "codicon-check", currentScope !== "workspace" && "invisible")}
+						/>
 					</button>
+					{taskGroupId && !state?.taskWorktreeElsewhere && (
+						<button
+							aria-checked={currentScope === "task"}
+							className={MENU_ROW_CLASS}
+							disabled={!taskMapping && !canUse}
+							onClick={() => pick("task")}
+							role="menuitemradio"
+							title={taskMapping?.branch ?? (blocker || undefined)}
+							type="button">
+							<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-repo-forked text-description")} />
+							<span className="min-w-0 flex-1 truncate">
+								{taskMapping ? "Task worktree" : "New worktree for this task"}
+							</span>
+							<span
+								aria-hidden
+								className={cn(MENU_ICON_CLASS, "codicon-check", currentScope !== "task" && "invisible")}
+							/>
+						</button>
+					)}
 					<button
-						aria-checked={enabled}
+						aria-checked={currentScope === "thread"}
 						className={MENU_ROW_CLASS}
 						data-testid="workspace-worktree"
-						disabled={!enabled && !canUse}
-						onClick={() => pick(true)}
+						disabled={currentScope !== "thread" && !canUse}
+						onClick={() => pick("thread")}
 						role="menuitemradio"
 						title={blocker || undefined}
 						type="button">
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-repo-forked text-description")} />
-						<span className="min-w-0 flex-1 truncate">New worktree</span>
+						<span className="min-w-0 flex-1 truncate">
+							{taskGroupId ? "New worktree just for this thread" : "New worktree"}
+						</span>
 						{canUse && mm && <span className="shrink-0 text-[11px] text-description">mm</span>}
-						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-check", !enabled && "invisible")} />
+						<span
+							aria-hidden
+							className={cn(MENU_ICON_CLASS, "codicon-check", currentScope !== "thread" && "invisible")}
+						/>
 					</button>
+					{state?.taskWorktreeElsewhere && (
+						<p className="m-0 px-2 py-1 text-[11px] text-description">
+							Open the task's workspace to use its worktree.
+						</p>
+					)}
 				</div>
 			) : mapping ? (
-				<ThreadWorktreeActions mapping={mapping} onChanged={refresh} onClose={onClose} threadId={threadId} />
+				mapping.threadId !== threadId ? (
+					<WorktreeOwnerLink mapping={mapping} />
+				) : (
+					<ThreadWorktreeActions mapping={mapping} onChanged={refresh} onClose={onClose} threadId={threadId} />
+				)
 			) : (
 				<>
 					<div className="flex h-6 min-w-0 items-center gap-1.5 px-2 text-[12px]" data-testid="workspace-current">
@@ -165,20 +225,34 @@ function WorkspaceMenuBody({
 export function WorkspaceButton() {
 	const { currentTaskItem } = useExtensionState()
 	const threadId = currentTaskItem?.id
-	const worktree = useWorktree(threadId)
+	const composerTaskGroupId = useResolvedComposerTaskGroup()
+	const taskGroupId = threadId ? undefined : composerTaskGroupId
+	const worktree = useWorktree(threadId, taskGroupId)
 	const [open, setOpen] = useState(false)
 	// Subagent threads run where their parent does.
 	if (currentTaskItem?.isSubagent) return null
 
 	// A new thread has no worktree of its own yet; inside a thread the header's branch chip shows it.
 	const mapping = threadId ? worktree.state?.mapping : undefined
-	const enabled = worktree.enabled
-	const text = mapping ? mapping.branch : enabled ? "New worktree" : "Your workspace"
+	const taskMapping = taskGroupId && !worktree.state?.taskWorktreeElsewhere ? worktree.state?.mapping : undefined
+	const usesTask = worktree.scope === "task" || (!worktree.scope && !!taskMapping)
+	const enabled = worktree.enabled || usesTask
+	const text = mapping
+		? mapping.branch
+		: usesTask
+			? taskMapping
+				? `Task worktree: ${taskMapping.branch}`
+				: "New task worktree"
+			: enabled
+				? "New worktree"
+				: "Your workspace"
 	const label = mapping
 		? `Workspace: worktree ${mapping.branch}`
-		: enabled
-			? "Workspace: a new worktree for this thread"
-			: "Workspace: your workspace"
+		: usesTask
+			? `Workspace: ${text}`
+			: enabled
+				? "Workspace: a new worktree for this thread"
+				: "Workspace: your workspace"
 
 	return (
 		<Popover onOpenChange={setOpen} open={open}>
@@ -207,7 +281,12 @@ export function WorkspaceButton() {
 				data-testid="workspace-menu"
 				onKeyDown={handleMenuKeyDown}
 				side="top">
-				<WorkspaceMenuBody onClose={() => setOpen(false)} threadId={threadId} worktree={worktree} />
+				<WorkspaceMenuBody
+					onClose={() => setOpen(false)}
+					taskGroupId={taskGroupId}
+					threadId={threadId}
+					worktree={worktree}
+				/>
 			</PopoverContent>
 		</Popover>
 	)
@@ -233,10 +312,12 @@ export function ThreadBranchChip() {
 					aria-label={`Worktree: ${mapping.branch}`}
 					className={cn(COMPOSER_LINE_CHIP_CLASS, "max-w-40 shrink")}
 					data-testid="thread-branch-chip"
-					title={`This thread runs in its own worktree on ${mapping.branch}`}
+					title={`${mapping.taskGroupId ? "Task worktree" : "Worktree"} on ${mapping.branch}`}
 					type="button">
 					<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-(--vscode-charts-green)" />
-					<span className="ph-no-capture min-w-0 truncate font-mono">{mapping.branch}</span>
+					<span className="ph-no-capture min-w-0 truncate font-mono">
+						{mapping.taskGroupId ? "Task worktree" : mapping.branch}
+					</span>
 				</button>
 			</PopoverTrigger>
 			<PopoverContent
@@ -261,7 +342,8 @@ const NOTICE_LINK_CLASS = "cursor-pointer border-0 bg-transparent p-0 text-[12px
 export function WorktreeStartNotice() {
 	const { navigateToSettings } = useExtensionState()
 	const failure = useWorktreeStartFailure()
-	const worktree = useWorktree()
+	const taskGroupId = useResolvedComposerTaskGroup()
+	const worktree = useWorktree(undefined, taskGroupId)
 	if (!failure) return null
 	return (
 		<InlineNotice
@@ -290,7 +372,7 @@ export function WorktreeStartNotice() {
 						type="button">
 						Worktree settings
 					</button>
-					{worktree.enabled && (
+					{(worktree.enabled || taskGroupId) && (
 						<>
 							{" · "}
 							<button

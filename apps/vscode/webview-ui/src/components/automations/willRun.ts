@@ -3,6 +3,8 @@ import {
 	type AutomationDefinition,
 	type AutomationRun,
 	type AutomationThreadSpec,
+	automationTaskWorktrees,
+	automationWorkspace,
 	fillPlaceholders,
 	formatAutomationCost,
 	runThreadIds,
@@ -17,6 +19,7 @@ export interface WillRunThread {
 	model: string
 	mode: "Ask" | "Act"
 	worktree: boolean
+	worktreeScope?: "task" | "thread"
 	/** Why it can't start as written; links to Settings › Models. */
 	problem?: string
 }
@@ -59,12 +62,15 @@ export function describeRun(
 	const problems: string[] = []
 	const models = new Set<string>()
 	const prices = new Map<string, string>()
-	const describeThread = (spec: AutomationThreadSpec): WillRunThread => {
+	const describeThread = (spec: AutomationThreadSpec, sharesWorktree: boolean): WillRunThread => {
+		const choice = automationWorkspace(spec) ?? (sharesWorktree ? "task" : undefined)
+		const worktreeScope = choice === "task" || choice === "thread" ? choice : undefined
 		const thread: WillRunThread = {
 			title: fill(spec.title) || spec.id,
 			model: spec.model || "Default",
 			mode: spec.mode === "act" ? "Act" : "Ask",
-			worktree: spec.worktree,
+			worktree: !!worktreeScope,
+			worktreeScope,
 		}
 		if (!modelSettings) {
 			thread.model = spec.model ? `${spec.model}${spec.level ? ` · ${spec.level}` : ""}` : "Your current model"
@@ -89,7 +95,8 @@ export function describeRun(
 	}
 
 	let threadCount = 0
-	let worktrees = 0
+	const { count, threadSteps } = automationTaskWorktrees(definition.steps)
+	let worktrees = count
 	let pauses = 0
 	const steps = definition.steps.map((step, index): WillRunStep => {
 		const base = { number: index + 1, kind: step.kind, title: fill(step.title) || step.id }
@@ -101,9 +108,9 @@ export function describeRun(
 			case "thread":
 			case "together": {
 				const specs = step.kind === "thread" ? [step] : step.threads
-				const threads = specs.map(describeThread)
+				const threads = specs.map((spec) => describeThread(spec, threadSteps.has(step.id)))
 				threadCount += threads.length
-				worktrees += threads.filter((thread) => thread.worktree).length
+				worktrees += threads.filter((thread) => thread.worktreeScope === "thread").length
 				return { ...base, detail: step.kind === "together" ? `${threads.length} threads at once` : undefined, threads }
 			}
 			case "checkpoint": {

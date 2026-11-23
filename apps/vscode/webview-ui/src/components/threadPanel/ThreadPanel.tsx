@@ -99,15 +99,16 @@ const Section = ({
 // ---- Branch & changes ----
 
 const WhereSection = ({ item, messages }: { item: HistoryItem; messages: readonly ClineMessage[] }) => {
-	const { currentBranch, navigateToWalkthrough, sessionStatuses } = useExtensionState()
+	const { currentBranch, navigateToWalkthrough, navigateToTaskGroup, sessionStatuses } = useExtensionState()
 	const worktree = useWorktree(item.id)
 	const mapping = worktree.state?.mapping
+	const groupId = mapping?.taskGroupId
 	const [summary, setSummary] = useState<WorktreeSummary>()
 	const status = sessionStatuses?.[item.id]
 	const files = useMemo(() => changedFiles(messages), [messages])
 	// In a worktree git knows every changed file, including ones changed by commands or inside
 	// nested submodules; the thread's edit tools only know their own.
-	const changedCount = mapping && summary ? Math.max(files.length, summary.changedFiles) : files.length
+	const changedCount = mapping && summary && !groupId ? Math.max(files.length, summary.changedFiles) : files.length
 	useEffect(() => {
 		if (!mapping) return
 		let cancelled = false
@@ -126,15 +127,26 @@ const WhereSection = ({ item, messages }: { item: HistoryItem; messages: readonl
 		<Section section="where">
 			{mapping ? (
 				<>
-					<div className={ROW_CLASS} title={`This thread runs in its own worktree on ${mapping.branch}`}>
+					<div className={ROW_CLASS} title={mapping.branch}>
 						<span
 							aria-hidden
 							className="codicon codicon-git-branch shrink-0 text-[13px] text-(--vscode-charts-green)"
 						/>
 						<span className="min-w-0 flex-1 truncate font-mono">{mapping.branch}</span>
-						<span className={META_CLASS}>worktree</span>
+						{groupId ? (
+							<button className={MINI_BUTTON_CLASS} onClick={() => navigateToTaskGroup(groupId)} type="button">
+								Task worktree
+							</button>
+						) : (
+							<span className={META_CLASS}>worktree</span>
+						)}
 					</div>
-					{summary && <div className={SUB_CLASS}>{worktreeStatusText(summary)}</div>}
+					{summary && (
+						<div className={SUB_CLASS}>
+							{groupId ? "Task worktree · " : ""}
+							{worktreeStatusText(summary)}
+						</div>
+					)}
 				</>
 			) : (
 				<div className={ROW_CLASS}>

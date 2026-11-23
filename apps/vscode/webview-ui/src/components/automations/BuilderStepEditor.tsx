@@ -5,9 +5,11 @@ import {
 	type AutomationStep,
 	type AutomationThreadSpec,
 	automationThreads,
+	automationWorkspace,
 	blankThread,
 	uniqueStepId,
 } from "@shared/automations"
+import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
 import { useMemo, useRef, useState } from "react"
 import { ModelPickButton } from "@/components/models/ModelPickButton"
 import type { SelectorRow } from "@/components/models/ModelSelector"
@@ -193,6 +195,7 @@ function ThreadFields({
 	promptLabel?: string
 	promptPlaceholder?: string
 }) {
+	const scope = automationWorkspace(thread)
 	return (
 		<>
 			<PromptField
@@ -207,18 +210,26 @@ function ThreadFields({
 				<ModelField onChange={onChange} thread={thread} />
 				<ModeField mode={thread.mode} onChange={(mode) => onChange({ mode })} />
 				<label className="flex items-center gap-1 text-[11px]">
-					<input
-						checked={thread.worktree}
-						onChange={(event) => onChange({ worktree: event.target.checked })}
-						type="checkbox"
-					/>
-					New worktree
+					Run in
+					<select
+						className={cn(FIELD_CLASS, "w-auto")}
+						onChange={(event) => {
+							const value = event.target.value
+							onChange({ worktree: false, worktreeScope: isThreadWorkspaceChoice(value) ? value : undefined })
+						}}
+						value={scope ?? "default"}>
+						<option value="default">Follow the task</option>
+						<option value="task">Task worktree</option>
+						<option value="thread">Its own worktree</option>
+						<option value="workspace">Your workspace</option>
+					</select>
 				</label>
 			</div>
-			{thread.worktree && (
+			{(scope === "task" || scope === "thread") && (
 				<div className="mt-0.5 text-[11px] text-description">
-					Uses Settings › Worktrees (git or mm). If worktrees are off or can't be used here, the step stops and says
-					why.
+					{scope === "task"
+						? "Creates a worktree that threads in this task can share."
+						: "Starts a separate worktree for this thread."}
 				</div>
 			)}
 			<OutputFields onChange={(outputs) => onChange({ outputs })} thread={thread} />

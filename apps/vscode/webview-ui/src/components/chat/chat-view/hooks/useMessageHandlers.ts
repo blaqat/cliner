@@ -10,6 +10,7 @@ import {
 	clearDraftRunInWorktree,
 	clearWorktreeStartFailure,
 	getDraftRunInWorktree,
+	getDraftWorktreeScope,
 	reportWorktreeStartFailure,
 } from "@/components/worktrees/useWorktree"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -430,13 +431,15 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 				}
 
 				if (messages.length === 0) {
+					const taskGroupId = getComposerSendTaskGroup()
 					const request = NewTaskRequest.create({
 						text: messageToSend,
 						provenance,
 						images,
 						files,
-						taskGroupId: getComposerSendTaskGroup(),
+						taskGroupId,
 						runInWorktree: getDraftRunInWorktree() || undefined,
+						worktreeScope: getDraftWorktreeScope(taskGroupId),
 					})
 					clearSentMessageState()
 					trackPromptSubmitted(false)
@@ -456,7 +459,12 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						rollbackPendingResponse(id, optimisticMessage)
 						restorePendingMessageState()
 						// Most start failures with a worktree are the worktree's: the composer says so and offers the fix.
-						if (request.runInWorktree) reportWorktreeStartFailure(error)
+						if (
+							request.runInWorktree ||
+							(request.worktreeScope && request.worktreeScope !== "workspace") ||
+							(taskGroupId && /worktree|isolate/i.test(String(error)))
+						)
+							reportWorktreeStartFailure(error)
 						throw error
 					}
 					// The where pill's picks applied to this thread; the next new thread starts unfiled, in the workspace.
@@ -869,10 +877,12 @@ export function useMessageHandlers(messages: ClineMessage[], chatState: ChatStat
 						runInBackground: true,
 						taskGroupId: getComposerSendTaskGroup(),
 						runInWorktree: getDraftRunInWorktree() || undefined,
+						worktreeScope: getDraftWorktreeScope(getComposerSendTaskGroup()),
 					}),
 				).then(() => {
 					setComposerTaskGroup(undefined)
 					clearDraftRunInWorktree()
+					clearWorktreeStartFailure()
 				}),
 			).catch((error) => console.error("Failed to start background task:", error))
 		},

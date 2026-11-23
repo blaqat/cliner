@@ -1,10 +1,4 @@
-import {
-	type AutomationArgument,
-	type AutomationProblem,
-	automationDisplayName,
-	automationThreads,
-	formatAutomationCost,
-} from "@shared/automations"
+import { type AutomationArgument, type AutomationProblem, automationDisplayName, formatAutomationCost } from "@shared/automations"
 import { parseTypedOptions, setTypedOption, typedFocus } from "@shared/scripts"
 import type React from "react"
 import { useEffect, useRef, useState } from "react"
@@ -115,7 +109,7 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 	// Models are checked here; the host checks what only it can see (can a worktree be made?).
 	const workspaceCheck = useWorkspaceCheck(automation.name)
 	const workspaceProblems = workspaceCheck.problems.filter((problem) => problem.fix !== "models")
-	const autoApproved = automationThreads(definition.steps).some(({ thread }) => thread.worktree && thread.mode === "act")
+	const autoApproved = willRun.steps.some((step) => step.threads.some((thread) => thread.worktree && thread.mode === "Act"))
 	const blocked =
 		"reason" in ready
 			? ready.reason
@@ -257,8 +251,8 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 								</span>
 								{!thread.problem && <span className="shrink-0 text-description">· {thread.mode}</span>}
 								{thread.worktree && (
-									<span className="shrink-0 text-description" title="Runs in a new worktree">
-										· new worktree
+									<span className="shrink-0 text-description">
+										· {thread.worktreeScope === "task" ? "task worktree" : "own worktree"}
 									</span>
 								)}
 								{thread.problem && (

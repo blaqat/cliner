@@ -13,7 +13,7 @@ import type { VscodeTerminalManager } from "@/hosts/vscode/terminal/VscodeTermin
 import { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import type { ActiveSession } from "./cline-session-factory"
-import { getSessionApiSnapshot } from "./cline-session-factory"
+import { getSessionApiSnapshot, withSessionWorkspace } from "./cline-session-factory"
 import { transientAdmission } from "./model-settings-resolver"
 import type { SdkForegroundCommandCoordinator } from "./sdk-foreground-command-coordinator"
 import { buildToolPolicies } from "./sdk-tool-policies"
@@ -29,7 +29,7 @@ type ReadFileExecutorHandler = NonNullable<Parameters<typeof VscodeSessionHost.c
 export interface SdkSessionLifecycleOptions {
 	resolveSessionWorkspace?: (id: string, cwd?: string) => Promise<string | undefined>
 	consumeWorkspaceNotice?: (id: string) => string | undefined
-	acquireSessionLease?: (id: string) => Promise<() => Promise<void>>
+	acquireSessionLease?: (id: string, input?: Parameters<VscodeSessionHost["start"]>[0]) => Promise<() => Promise<void>>
 	resolveSideThread?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveSideThread"]
 	resolveNotebook?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveNotebook"]
 	resolveAutomationOutput?: NonNullable<Parameters<typeof VscodeSessionHost.create>[0]>["resolveAutomationOutput"]
@@ -126,7 +126,7 @@ export class SdkSessionLifecycle {
 			const cwd = await this.options.resolveSessionWorkspace?.(id, session.startConfig?.cwd)
 			if (!cwd || cwd === session.startConfig?.cwd) return
 			const initialMessages = await (session.sdkHost.readLiveMessages?.(id) ?? session.sdkHost.readMessages(id))
-			const updated = { ...input, initialMessages, config: { ...input.config, cwd, workspaceRoot: cwd } }
+			const updated = { ...input, initialMessages, config: withSessionWorkspace(input.config, cwd) }
 			const prepared = (await this.options.prepareStartInput?.(updated)) ?? updated
 			assertCurrent()
 			await session.sdkHost.stop(id)
@@ -150,11 +150,11 @@ export class SdkSessionLifecycle {
 	}
 	private readonly releasingLeases = new Map<string, Promise<void>>()
 	private readonly leases = new Map<string, Promise<() => Promise<void>>>()
-	private ensureLease(id: string): Promise<unknown> {
+	private ensureLease(id: string, input = this.startInputs.get(id)): Promise<unknown> {
 		if (!this.options.acquireSessionLease) return Promise.resolve()
 		let pending = this.leases.get(id)
 		if (!pending) {
-			pending = (this.releasingLeases.get(id) ?? Promise.resolve()).then(() => this.options.acquireSessionLease!(id))
+			pending = (this.releasingLeases.get(id) ?? Promise.resolve()).then(() => this.options.acquireSessionLease!(id, input))
 			this.leases.set(id, pending)
 			void pending.catch(() => {
 				if (this.leases.get(id) === pending) this.leases.delete(id)
@@ -179,6 +179,7 @@ export class SdkSessionLifecycle {
 		const session = this.liveSessions.get(id)
 		if (
 			this.refreshingWorkspaces.has(id) ||
+			(this.subagentCounts[id]?.live ?? 0) > 0 ||
 			this.pendingStarts.has(id) ||
 			(session && (session.isRunning || session.queuedPromptCount))
 		)
@@ -330,6 +331,7 @@ export class SdkSessionLifecycle {
 			return false
 		}
 		this.subagentCounts[taskId] = counts
+		if (counts.live === 0) this.releaseIdleLease(taskId)
 		return true
 	}
 
@@ -440,7 +442,7 @@ export class SdkSessionLifecycle {
 		const id = startInput.config?.sessionId?.trim()
 		this.assertTaskAvailable(id)
 		const starting = (async () => {
-			if (id && !hostOverride) await this.ensureLease(id)
+			if (id && !hostOverride) await this.ensureLease(id, startInput)
 			try {
 				return await this.performStartNewSession(startInput, options, hostOverride, shouldContinue)
 			} catch (error) {
@@ -636,7 +638,7 @@ export class SdkSessionLifecycle {
 		let sdkHost: SdkSessionHost | undefined
 		let installed = false
 		try {
-			await this.ensureLease(old.sessionId)
+			await this.ensureLease(old.sessionId, options.startInput)
 			const input = (await this.options.prepareStartInput?.(options.startInput)) ?? options.startInput
 			const initialMessages = options.loadInitialMessages ? await options.loadInitialMessages() : options.initialMessages
 			sdkHost = await this.createHost()
@@ -843,6 +845,7 @@ export class SdkSessionLifecycle {
 			this.focusedSessionId !== session.sessionId &&
 			this.activeSession !== session &&
 			!session.isRunning &&
+			!(this.subagentCounts[session.sessionId]?.live ?? 0) &&
 			!this.replacements.has(session.sessionId) &&
 			!session.queuedPromptCount &&
 			this.sessionStatuses[session.sessionId] !== "waiting"

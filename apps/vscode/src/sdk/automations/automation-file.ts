@@ -11,6 +11,7 @@ import {
 	type AutomationThreadSpec,
 	validateAutomation,
 } from "@shared/automations"
+import { isThreadWorkspaceChoice } from "@shared/thread-worktrees"
 import * as yaml from "js-yaml"
 
 /**
@@ -154,6 +155,7 @@ function threadSpec(section: Section, fallbackId: string, errors: string[]): Aut
 		level: section.meta.level ?? "",
 		mode: readMode(section.meta.mode, `Step "${id}"`, errors),
 		worktree: readWorktree(section.meta.worktree),
+		...(isThreadWorkspaceChoice(section.meta.worktree) ? { worktreeScope: section.meta.worktree } : {}),
 		...(section.outputs.length ? { outputs: section.outputs } : {}),
 	}
 }
@@ -288,7 +290,7 @@ function threadMeta(thread: AutomationThreadSpec, withKind: boolean): [string, s
 		["model", thread.model || "default"],
 		["level", thread.level],
 		["mode", thread.mode],
-		["worktree", thread.worktree ? "new" : ""],
+		["worktree", thread.worktreeScope ?? (thread.worktree ? "new" : "")],
 		...(thread.outputs ?? []).map((output): [string, string] => [
 			`${output.saveAsNote ? "note " : ""}output ${output.name}`,
 			output.description,

@@ -1,4 +1,9 @@
 export type WorktreeMode = "off" | "git" | "mm"
+export type ThreadWorkspaceChoice = "task" | "thread" | "workspace"
+
+export function isThreadWorkspaceChoice(value: unknown): value is ThreadWorkspaceChoice {
+	return value === "task" || value === "thread" || value === "workspace"
+}
 export interface ThreadWorktreeSettings {
 	mode: WorktreeMode
 	mmPath: string
@@ -12,7 +17,9 @@ export interface WorktreeModule {
 	lastBroughtTree?: string
 }
 export interface ThreadWorktree {
+	/** Storage key. Task worktrees use a separate namespace from thread IDs. */
 	threadId: string
+	taskGroupId?: string
 	mode: "git" | "mm"
 	branch: string
 	workspace: string
@@ -98,6 +105,8 @@ export interface WorktreeState {
 	settings: ThreadWorktreeSettings
 	availability: WorktreeAvailability
 	mapping?: ThreadWorktree
+	/** The task's worktree belongs to a different workspace than the open folder. */
+	taskWorktreeElsewhere?: boolean
 	settled: ThreadWorktree[]
 	/**
 	 * `.mm.json` or `.mmrc` when the open folder has one at its root: only a hint to suggest mm.
@@ -112,6 +121,7 @@ export interface WorktreeState {
  * actions it lists (only the ones that apply).
  */
 export interface WorktreeSummary {
+	taskGroupId?: string
 	/** Files the thread changed since it started, committed or not. */
 	changedFiles: number
 	/** Commits on the thread's branch since it started. */
@@ -132,6 +142,8 @@ export interface WorktreeSummary {
 	takenOver: boolean
 	/** The thread is running, which blocks copying, switching and removing. */
 	running?: boolean
+	/** All threads using this task worktree are settled. */
+	settled?: boolean
 }
 export interface WorktreeActionResult {
 	state?: WorktreeState

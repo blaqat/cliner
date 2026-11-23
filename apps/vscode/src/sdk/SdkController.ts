@@ -83,7 +83,12 @@ import {
 	type TaskGroupThreadRow,
 	type TaskTag,
 } from "@shared/task-groups"
-import type { ThreadWorktreeSettings, WorktreeActionResult } from "@shared/thread-worktrees"
+import {
+	isThreadWorkspaceChoice,
+	type ThreadWorktree,
+	type ThreadWorktreeSettings,
+	type WorktreeActionResult,
+} from "@shared/thread-worktrees"
 import { extractTicketTags } from "@shared/ticket-tags"
 import type { WalkthroughScope } from "@shared/Walkthrough"
 import type { ClineCheckpointRestore } from "@shared/WebviewMessage"
@@ -135,6 +140,7 @@ import { getCurrentBranch } from "@/utils/git-worktree"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { resolveConfiguredTerminalEnv } from "@/utils/terminal-env"
 import { getTerminalEnvWorkspaceRoot } from "@/utils/terminal-env-root"
+import { worktreePath } from "@/utils/worktree-paths"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
 import { describeDecision } from "./automations/automation-approvals"
@@ -143,7 +149,12 @@ import { AutomationsHost } from "./automations/automation-host"
 import { plainWorktreeReason, precheckSteps, worktreeFix } from "./automations/automation-precheck"
 import { AutomationFixableError, type StartThreadInput } from "./automations/automation-runner"
 import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
-import { buildStartSessionInput, createHistoryItemFromSession, getSessionApiSnapshot } from "./cline-session-factory"
+import {
+	buildStartSessionInput,
+	createHistoryItemFromSession,
+	getSessionApiSnapshot,
+	withSessionWorkspace,
+} from "./cline-session-factory"
 import { buildAgentHooks } from "./hooks-adapter"
 import { findMessageLinkTarget, resolveLinkedMessageText } from "./message-link-anchor"
 import { MessageTranslatorState, reshapeErrorForWebview, translateSessionEvent } from "./message-translator"
@@ -215,6 +226,7 @@ import {
 	asideRootId,
 	effectiveTaskGroupId,
 	resolveEffectiveTaskGroupId,
+	taskGroupSourceId,
 	withEffectiveTaskGroups,
 } from "./task-groups/effective-task-group"
 import { HistorySearcher } from "./task-groups/history-search"
@@ -223,7 +235,7 @@ import { resolveNotebookOwner, type TaskNotebookContext } from "./task-groups/no
 import { createNotebookConversion, type NotebookConversionKind, notebookConversion } from "./task-groups/notebook-convert"
 import { notebookDiff } from "./task-groups/notebook-diff"
 import { NotebookStore, slugifyNoteName } from "./task-groups/notebook-store"
-import { TaskGroupStore, taskGroupsRootDir } from "./task-groups/task-group-store"
+import { TaskGroupStore, taskGroupsRootDir, validateTaskGroupIdentifier } from "./task-groups/task-group-store"
 import type { ThreadTranscriptToolsContext } from "./task-groups/thread-transcript-tool"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
@@ -237,7 +249,7 @@ import type { VscodeTerminalExecutionMode } from "./vscode-terminal-execution-mo
 import { WebviewGrpcBridge } from "./webview-grpc-bridge"
 import { resolveWorkspaceManagerPaths, resolveWorkspaceRootPath } from "./workspace-root"
 import { git } from "./worktrees/repositories"
-import { ThreadWorktreeManager, threadRunFolder } from "./worktrees/thread-worktree-manager"
+import { ThreadWorktreeManager, taskWorktreeKey, threadRunFolder } from "./worktrees/thread-worktree-manager"
 
 /**
  * Log a stub warning and return undefined.
@@ -586,7 +598,7 @@ export class Controller {
 				: undefined
 		},
 		stopThread: (threadId) => this.stopBackgroundThread(threadId),
-		precheck: (steps) => this.precheckAutomationSteps(steps),
+		precheck: (steps, taskGroupId) => this.precheckAutomationSteps(steps, taskGroupId),
 		nameThread: async (id, title) => {
 			// The end-of-turn history save can drop the title set at start; put it back once.
 			if (await this.taskHistory.applyGeneratedThreadTitle(id, title)) await this.postStateToWebview()
@@ -642,11 +654,80 @@ export class Controller {
 
 	private readonly workspaceNotices = new Map<string, string>()
 	private readonly seenWorktreeRemovals = new Map<string, number>()
-	private async resolveSessionWorkspace(id: string): Promise<string | undefined> {
-		const mapping = await this.threadWorktrees.get(id)
+	private readonly sessionWorktrees = new Map<string, ThreadWorktree>()
+
+	private async matchesTaskWorkspace(mapping: ThreadWorktree, cwd?: string): Promise<boolean> {
+		if (!cwd) return false
+		const folder = await worktreePath.key(cwd)
+		return (
+			folder === mapping.workspace ||
+			folder === mapping.cwd ||
+			mapping.modules.some((module) => folder === module.workspacePath || folder === module.path)
+		)
+	}
+
+	private async resolveThreadWorktree(
+		id: string,
+		cwd?: string,
+		metadata?: Parameters<VscodeSessionHost["start"]>[0]["sessionMetadata"],
+	): Promise<{ mapping?: ThreadWorktree; taskWorktreeId?: string; home?: string }> {
+		const own = await this.threadWorktrees.get(id)
+		if (own) return { mapping: own }
+		const route = await this.threadWorktrees.workspaceRoute(id)
+		if (route.useWorkspace) return {}
+		const find = (threadId: string) => this.taskHistory.findHistoryItem(threadId)
+		const item = (await find(id)) ?? {
+			id,
+			taskGroupId:
+				typeof metadata?.taskGroupId === "string" ? metadata.taskGroupId : this.taskSessions?.get(id)?.taskGroupId,
+			parentTaskId: typeof metadata?.parentTaskId === "string" ? metadata.parentTaskId : undefined,
+		}
+		// Asides and subagents of a private attempt stay with that attempt.
+		const seen = new Set([id])
+		for (let sourceId = taskGroupSourceId(item); sourceId && !seen.has(sourceId); ) {
+			seen.add(sourceId)
+			const inherited = await this.threadWorktrees.get(sourceId)
+			if (inherited) return { mapping: inherited }
+			const parentRoute = await this.threadWorktrees.workspaceRoute(sourceId)
+			if (parentRoute.useWorkspace) return { home: route.home ?? parentRoute.home }
+			const parent = await find(sourceId)
+			sourceId = parent && taskGroupSourceId(parent)
+		}
+		const removed = await this.threadWorktrees.removedWorkspace(id)
+		const home = route.home ?? removed?.workspace
+		const groupId = await resolveEffectiveTaskGroupId(item, find)
+		if (!groupId) return { home }
+		const taskWorktreeId = taskWorktreeKey(groupId)
+		const mapping = await this.threadWorktrees.get(taskWorktreeId)
+		if (
+			mapping &&
+			!(await this.matchesTaskWorkspace(
+				mapping,
+				home ??
+					cwd ??
+					("cwdOnTaskInitialization" in item ? item.cwdOnTaskInitialization : undefined) ??
+					this.sessions?.getSession(id)?.startConfig?.cwd,
+			))
+		)
+			return { home }
+		return { mapping, taskWorktreeId, home }
+	}
+
+	private async resolveSessionWorkspace(
+		id: string,
+		cwd?: string,
+		metadata?: Parameters<VscodeSessionHost["start"]>[0]["sessionMetadata"],
+	): Promise<string | undefined> {
+		const { mapping, home } = await this.resolveThreadWorktree(id, cwd, metadata)
+		if (mapping && !mapping.takenOver) {
+			await this.threadWorktrees.assertPresent(mapping)
+			this.sessionWorktrees.set(id, mapping)
+			return threadRunFolder(mapping)
+		}
+		this.sessionWorktrees.delete(id)
 		if (mapping) return threadRunFolder(mapping)
 		const removed = await this.threadWorktrees.removedWorkspace(id)
-		if (!removed) return undefined
+		if (!removed) return home
 		if (this.seenWorktreeRemovals.get(id) !== removed.removedAt) {
 			this.workspaceNotices.set(
 				id,
@@ -655,6 +736,15 @@ export class Controller {
 			this.seenWorktreeRemovals.set(id, removed.removedAt)
 		}
 		return removed.workspace
+	}
+
+	private async usesTaskWorktree(id: string): Promise<boolean> {
+		return !!this.threadWorktrees && !!(await this.resolveThreadWorktree(id)).mapping?.taskGroupId
+	}
+
+	private async assertCanRestoreThreadWorkspace(id: string) {
+		if (await this.usesTaskWorktree(id))
+			throw new Error("This thread shares a task worktree. Restore the conversation to keep other threads' changes.")
 	}
 	readonly threadWorktrees: ThreadWorktreeManager
 
@@ -797,8 +887,11 @@ export class Controller {
 					.saveThreadStatus(id, status)
 					.catch((error) => Logger.warn("[SdkController] Failed to persist thread status", error))
 			},
-			acquireSessionLease: (id) => this.threadWorktrees.acquireSessionLease(id),
-			resolveSessionWorkspace: (id) => this.resolveSessionWorkspace(id),
+			acquireSessionLease: (id, input) =>
+				this.threadWorktrees.acquireSessionLease(id, () =>
+					this.resolveThreadWorktree(id, input?.config?.cwd, input?.sessionMetadata),
+				),
+			resolveSessionWorkspace: (id, cwd) => this.resolveSessionWorkspace(id, cwd),
 			consumeWorkspaceNotice: (id) => {
 				const notice = this.workspaceNotices.get(id)
 				this.workspaceNotices.delete(id)
@@ -806,14 +899,8 @@ export class Controller {
 			},
 			prepareStartInput: async (input) => {
 				const id = input.config?.sessionId || createSessionId()
-				const mapping = await this.threadWorktrees.get(id)
-				if (mapping && !mapping.takenOver) {
-					await this.threadWorktrees.assertPresent(mapping)
-					input = { ...input, config: { ...input.config, cwd: mapping.cwd, workspaceRoot: mapping.cwd } }
-				} else {
-					const workspace = await this.resolveSessionWorkspace(id)
-					if (workspace) input = { ...input, config: { ...input.config, cwd: workspace, workspaceRoot: workspace } }
-				}
+				const workspace = await this.resolveSessionWorkspace(id, input.config?.cwd, input.sessionMetadata)
+				if (workspace) input = { ...input, config: withSessionWorkspace(input.config, workspace) }
 				return {
 					...input,
 					config: {
@@ -911,6 +998,7 @@ export class Controller {
 				return this._terminalManager
 			},
 			onSessionRemoved: (id) => {
+				this.sessionWorktrees.delete(id)
 				this.mcpTools?.forgetSession(id)
 				this.sessionRebuilds?.forgetSession(id)
 				this.taskSessions.get(id)?.interactions.clearPending("Session removed")
@@ -1317,17 +1405,22 @@ export class Controller {
 			isClineManagedProviderActive: () => this.isClineManagedProviderActive(),
 			emitClineAuthError: (task, provenance) => this.emitClineAuthErrorWithTelemetry(task, undefined, provenance),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
-			prepareWorkspace: async (id, title, workspace, runInWorktree) => {
-				const enabled = runInWorktree === true
-				if (!enabled) return workspace
-				return (
-					await this.threadWorktrees.create(
-						id,
-						title,
-						workspace,
-						!!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled,
-					)
-				).cwd
+			prepareWorkspace: async (id, title, workspace, runInWorktree, task) => {
+				const scope = task?.scope
+				const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
+				if (scope === "workspace") {
+					await this.threadWorktrees.useWorkspace(id)
+					return workspace
+				}
+				if (scope === "thread" || (!scope && runInWorktree === true))
+					return (await this.threadWorktrees.create(id, title, workspace, workspaceOff)).cwd
+				if (scope === "task") {
+					if (!task?.id) throw new Error("Choose a task before creating a task worktree.")
+					await this.createTaskWorktree(task.id, workspace, workspaceOff)
+				}
+				// The session reads the task worktree under its lease, including when
+				// another window creates or removes it while this thread is starting.
+				return workspace
 			},
 			consumeDraftApiSelection: () => {
 				const draft = this.draftApiSelection
@@ -2509,16 +2602,17 @@ export class Controller {
 		mentionRegexGlobal.lastIndex = 0
 
 		try {
-			const found = threadId ? await this.threadWorktrees.get(threadId) : undefined
+			const route = threadId ? await this.resolveThreadWorktree(threadId) : undefined
+			const found = route?.mapping
 			// Once the workspace took over the branch, the thread runs (and resolves mentions) there.
 			const mapping = found?.takenOver ? undefined : found
 			const removed = !found && threadId ? await this.threadWorktrees.removedWorkspace(threadId) : undefined
-			const cwd = mapping?.cwd ?? removed?.workspace ?? found?.workspace ?? (await this.getWorkspaceRoot())
+			const cwd = mapping?.cwd ?? removed?.workspace ?? found?.workspace ?? route?.home ?? (await this.getWorkspaceRoot())
 			const urlContentFetcher = new UrlContentFetcher()
 			const workspaceManager = mapping
 				? await WorkspaceRootManager.fromPaths(mapping.modules.map((module) => module.path))
-				: removed
-					? await WorkspaceRootManager.fromPaths([removed.workspace])
+				: removed || route?.home
+					? await WorkspaceRootManager.fromPaths([cwd])
 					: await this.ensureWorkspaceManager()
 			resolved = await parseMentions(withCommands, cwd, urlContentFetcher, undefined, workspaceManager)
 			Logger.log(`[SdkController] Resolved context mentions (${withCommands.length} → ${resolved.length} chars)`)
@@ -3212,23 +3306,53 @@ export class Controller {
 
 	/** Shared with the walkthrough and checkpoints; patches stay relative to each module. */
 	async getThreadWorktreeDiffs(threadId: string) {
-		return this.threadWorktrees.exclusive(() => this.threadWorktrees.diffs(threadId))
+		return this.threadWorktrees.exclusive(async () => {
+			const { mapping } = await this.resolveThreadWorktree(threadId)
+			return mapping ? this.threadWorktrees.diffs(mapping.threadId) : []
+		})
+	}
+
+	private async createTaskWorktree(id: string, workspace: string, workspaceOff: boolean) {
+		validateTaskGroupIdentifier(id, "taskGroupId")
+		const task = await this.taskGroupStore.getGroup(id)
+		if (!task) throw new Error("This task no longer exists. Choose another task.")
+		const mapping = await this.threadWorktrees.create(taskWorktreeKey(id), task.title, workspace, workspaceOff, {
+			id,
+			beforeCreate: async () => {
+				if (!(await this.taskGroupStore.getGroup(id))) throw new Error("This task no longer exists. Choose another task.")
+				const members = await this.taskWorktreeMembers(id)
+				for (const item of members) {
+					if (!(await this.resolveThreadWorktree(item.id)).mapping && (await this.threadWorktrees.sessionBusy(item.id)))
+						throw new Error("Wait for the task's threads to finish before creating its worktree.")
+				}
+			},
+		})
+		if (!(await this.matchesTaskWorkspace(mapping, workspace)))
+			throw new Error(
+				"This task already has a worktree in another workspace. Open that workspace or choose a private worktree.",
+			)
+		return mapping
 	}
 
 	async threadWorktreeAction(request: ThreadWorktreeActionRequest): Promise<WorktreeActionResult> {
 		const workspace = await this.getWorkspaceRoot()
 		const data = request.json ? JSON.parse(request.json) : {}
-		const id = request.threadId
-		const running = this.sessions.getSession(id)?.isRunning
+		const groupId = request.taskGroupId || undefined
+		if (groupId) validateTaskGroupIdentifier(groupId, "taskGroupId")
+		const id = groupId ? taskWorktreeKey(groupId) : request.threadId
+		const getMapping = async () =>
+			groupId ? this.threadWorktrees.get(id) : id ? (await this.resolveThreadWorktree(id)).mapping : undefined
 		const workspaceOff = !!this.stateManager.getWorkspaceStateKey("worktreeToggles")?.disabled
 		switch (request.action) {
 			case "state": {
 				const history = await this.taskHistory.listHistory({ hydrate: false })
+				const mapping = await getMapping()
 				return {
 					state: {
 						settings: await this.threadWorktrees.settings(),
 						availability: await this.threadWorktrees.availability(workspace, workspaceOff, data.refreshMm === true),
-						mapping: id ? await this.threadWorktrees.get(id) : undefined,
+						mapping,
+						taskWorktreeElsewhere: !!(groupId && mapping && !(await this.matchesTaskWorkspace(mapping, workspace))),
 						settled: (
 							await this.threadWorktrees.settled(
 								history.map(sessionHistoryRecordToHistoryItem),
@@ -3239,6 +3363,9 @@ export class Controller {
 					},
 				}
 			}
+			case "createTaskWorktree":
+				if (!groupId) throw new Error("Choose a task first.")
+				return { mapping: await this.createTaskWorktree(groupId, workspace, workspaceOff) }
 			case "configure":
 				await this.threadWorktrees.configure(data as Partial<ThreadWorktreeSettings>)
 				return {}
@@ -3263,30 +3390,52 @@ export class Controller {
 				this.threadWorktrees.invalidateMmWorkspace(workspace)
 				return {}
 			case "diffs":
-				return { diffs: await this.threadWorktrees.diffs(id) }
+				return this.threadWorktrees.exclusive(async () => {
+					const mapping = await getMapping()
+					return { diffs: mapping ? await this.threadWorktrees.diffs(mapping.threadId) : [] }
+				})
 			case "open": {
-				const mapping = await this.threadWorktrees.get(id)
-				if (!mapping) throw new Error("This thread has no worktree")
+				const mapping = await getMapping()
+				if (!mapping) throw new Error("There is no worktree to open.")
 				const opened = await HostProvider.workspace.openFolder({ path: mapping.cwd, newWindow: true })
 				if (!opened.success) throw new Error("Could not open the worktree window")
 				return {}
 			}
-			case "summary":
-				return { summary: { ...(await this.threadWorktrees.summary(id)), running: !!running } }
-			case "bring":
-				if (running) return { warning: "Wait for the thread to finish before copying its changes here." }
-				return this.threadWorktrees.bring(id)
-			case "undo":
-				return this.threadWorktrees.undo(id)
-			case "takeOver": {
-				if (running) return { warning: "Stop this thread before switching your workspace to its branch." }
-				const result = await this.threadWorktrees.takeOver(id)
-				// The next turn starts a fresh session in the workspace (see threadRunFolder).
-				if (result.mapping?.takenOver) await this.sessions.removeSession(id)
-				return result
+			case "summary": {
+				const mapping = await getMapping()
+				if (!mapping) throw new Error("There is no worktree to check.")
+				const running = await this.threadWorktrees.worktreeBusy(mapping.threadId)
+				return {
+					summary: {
+						...(await this.threadWorktrees.summary(mapping.threadId)),
+						taskGroupId: mapping.taskGroupId,
+						running,
+						settled: mapping.taskGroupId && !running ? await this.isTaskWorktreeSettled(mapping) : undefined,
+					},
+				}
 			}
+			case "bring":
+			case "undo":
+			case "takeOver":
 			case "remove": {
-				if (running) return { warning: "Stop this thread before removing its worktree." }
+				const mapping = await getMapping()
+				if (!mapping) throw new Error("There is no worktree to change.")
+				if (mapping.threadId !== id || mapping.taskGroupId !== groupId)
+					throw new Error(
+						mapping.taskGroupId
+							? "Manage this worktree from its task."
+							: "Manage this worktree from its owner thread.",
+					)
+				if (request.action === "bring") return this.threadWorktrees.bring(id)
+				if (request.action === "undo") return this.threadWorktrees.undo(id)
+				if (request.action === "takeOver") {
+					const result = await this.threadWorktrees.takeOver(id)
+					if (!groupId && result.mapping?.takenOver) await this.sessions.removeSession(id)
+					return result
+				}
+				// Task threads refresh their cwd on the next turn. Keep the loaded
+				// transcripts available, including in other windows.
+				if (groupId) return this.threadWorktrees.remove(id, request.confirmed)
 				const release = this.sessions.beginTaskDeletion(id)
 				try {
 					return await this.threadWorktrees.remove(id, request.confirmed, () => this.sessions.removeSession(id))
@@ -3315,6 +3464,7 @@ export class Controller {
 			background?: boolean
 			taskGroupId?: string
 			runInWorktree?: boolean
+			worktreeScope?: string
 			provenance?: ComposerProvenance
 			rethrowStartFailure?: boolean
 			mode?: Mode
@@ -3342,6 +3492,8 @@ export class Controller {
 			return startCloudTask()
 		}
 		await this.waitForInitialRemoteConfig()
+		if (options?.worktreeScope && !isThreadWorkspaceChoice(options.worktreeScope))
+			throw new Error("Unknown workspace choice.")
 		// A stale pill pick (group deleted between selection and send) starts unfiled.
 		if (options?.taskGroupId && !(await this.taskGroupStore.getGroup(options.taskGroupId))) {
 			Logger.warn(`[SdkController] initTask: unknown taskGroupId ${options.taskGroupId}, starting unfiled`)
@@ -3751,6 +3903,7 @@ export class Controller {
 		if (!currentTask) {
 			throw new Error("No active task to edit")
 		}
+		if (input.restoreWorkspace) await this.assertCanRestoreThreadWorkspace(currentTask.taskId)
 		// The rebuilt conversation below is a local session on this machine's
 		// workspace. A cloud task's transcript lives in its sandbox, so rebuilding
 		// it here would silently move the task out of the cloud.
@@ -3938,6 +4091,7 @@ export class Controller {
 		if (!activeSession || !currentTask) {
 			throw new Error("No active task to restore")
 		}
+		if (restoreWorkspace) await this.assertCanRestoreThreadWorkspace(currentTask.taskId)
 		if (activeSession.isRunning) {
 			await this.cancelTask()
 		}
@@ -4081,9 +4235,13 @@ export class Controller {
 				readCurrentMessages(host, taskId),
 				HostProvider.workspace.getWorkspacePaths({}),
 				ensureTaskDirectoryExists(taskId).then(readEdits),
-				this.threadWorktrees.get(taskId),
+				this.resolveThreadWorktree(taskId).then(({ mapping }) => mapping),
 			])
-			const cwd = session?.cwd || session?.workspaceRoot || (await this.getWorkspaceRoot())
+			const cwd =
+				(worktree && threadRunFolder(worktree)) ||
+				session?.cwd ||
+				session?.workspaceRoot ||
+				(await this.getWorkspaceRoot())
 			// An isolated thread's changes live only in its worktree (one per module with mm), not
 			// in the user's own workspace folders.
 			const isolated = worktree && !worktree.takenOver
@@ -4172,6 +4330,7 @@ export class Controller {
 		if (!currentTask) {
 			return false
 		}
+		if (await this.usesTaskWorktree(currentTask.taskId)) return false
 		const clineMessages = currentTask.messageStateHandler.getClineMessages()
 		const targetIndex = clineMessages.findIndex((message) => message.ts === messageTs)
 		if (targetIndex === -1 || getCheckpointRunCountForMessage(clineMessages, targetIndex) === undefined) {
@@ -4918,7 +5077,8 @@ export class Controller {
 		const threads = await Promise.all(
 			roots.map(async (row) => {
 				const item = history.get(row.threadId)
-				const worktree = !!(await this.threadWorktrees.get(row.threadId).catch(() => undefined))
+				const { mapping } = await this.resolveThreadWorktree(row.threadId)
+				const worktree = !!mapping
 				const pick = item?.modelSelectionV1?.act ?? item?.modelSelectionV1?.ask ?? undefined
 				const model = pick ? modelSettings?.settings.models.find((candidate) => candidate.id === pick.modelId) : undefined
 				return {
@@ -4928,6 +5088,7 @@ export class Controller {
 					model: model?.name ?? "",
 					level: model && pick?.levelId && pick.levelId !== "default" ? pick.levelId : "",
 					worktree,
+					worktreeScope: mapping ? (mapping.taskGroupId ? ("task" as const) : ("thread" as const)) : undefined,
 					outputs: this.automations.runner
 						.runForThread(row.threadId)
 						?.steps.flatMap((step) => step.threads)
@@ -4940,11 +5101,13 @@ export class Controller {
 	}
 
 	/** What must be fixed before these automation steps can run: worktrees and models, checked up front. */
-	private async precheckAutomationSteps(steps: Parameters<typeof precheckSteps>[0]) {
+	private async precheckAutomationSteps(steps: Parameters<typeof precheckSteps>[0], taskGroupId?: string) {
 		const workspace = await this.getWorkspaceRoot()
 		const modelSettings = useModelSettings(this.stateManager) ? await readModelSettingsState(this.stateManager) : undefined
+		const mapping = taskGroupId ? await this.threadWorktrees.get(taskWorktreeKey(taskGroupId)) : undefined
 		return precheckSteps(steps, {
 			workspace,
+			reuseTaskWorktree: !!mapping && (await this.matchesTaskWorkspace(mapping, workspace)),
 			worktrees: () =>
 				this.threadWorktrees.availability(
 					workspace,
@@ -4979,11 +5142,12 @@ export class Controller {
 		if (automationThread && this.automationApproves(threadId, request.toolCallId, request.toolName, request.input))
 			return true
 		const sessionId = request.sessionId || threadId
+		const isolated = this.sessionWorktrees?.get(sessionId) ?? this.sessionWorktrees?.get(threadId)
 		return approvesWithoutAsking(request.toolName, {
 			settings: this.stateManager.getGlobalSettingsKey("autoApprovalSettings"),
 			cwd: this.sessions.getSession(sessionId)?.startConfig?.cwd ?? this.lastKnownWorkspaceRoot,
-			confined: !!automationThread?.worktree,
-			workspaceRoots: this._workspaceManager?.getRoots().map((root) => root.path),
+			confined: !!automationThread && (!!isolated || automationThread.worktree),
+			workspaceRoots: isolated ? [isolated.cwd] : this._workspaceManager?.getRoots().map((root) => root.path),
 			approveInside: (root) =>
 				this.diffEdits.approveInWorktree(request.toolCallId, request.toolName, request.input, root, sessionId),
 		})
@@ -4996,7 +5160,13 @@ export class Controller {
 	private automationApproves(threadId: string, toolCallId: string, toolName: string, input: unknown): boolean {
 		const run = this.automations.runner.runForThread(threadId)
 		const thread = run?.steps.flatMap((step) => step.threads).find((candidate) => candidate.threadId === threadId)
-		if (!run || !thread?.worktree || thread.mode !== "act" || (run.status !== "running" && run.status !== "waiting"))
+		if (
+			!run ||
+			!thread ||
+			(!thread.worktree && !this.sessionWorktrees?.has(threadId)) ||
+			thread.mode !== "act" ||
+			(run.status !== "running" && run.status !== "waiting")
+		)
 			return false
 		const cwd = this.sessions.getSession(threadId)?.startConfig?.cwd
 		if (!cwd || !this.lastKnownWorkspaceRoot || arePathsEqual(cwd, this.lastKnownWorkspaceRoot)) return false
@@ -5021,7 +5191,7 @@ export class Controller {
 			taskId = await this.initTask(input.prompt, undefined, undefined, undefined, undefined, {
 				background: true,
 				taskGroupId: input.taskGroupId,
-				runInWorktree: input.worktree,
+				worktreeScope: input.worktreeScope ?? (input.worktree ? "task" : undefined),
 				mode: input.mode === "ask" ? "plan" : "act",
 				apiSelection,
 				title: input.title,
@@ -5192,6 +5362,20 @@ export class Controller {
 		return effectiveTaskGroupId(item, byId)
 	}
 
+	private async taskWorktreeMembers(groupId: string) {
+		const records = await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })
+		const byId = new Map(records.map(sessionHistoryRecordToHistoryItem).map((item) => [item.id, item]))
+		return [...byId.values()].filter((item) => !item.isSubagent && effectiveTaskGroupId(item, byId) === groupId)
+	}
+
+	private async isTaskWorktreeSettled(mapping: ThreadWorktree): Promise<boolean> {
+		const members = await this.taskWorktreeMembers(mapping.taskGroupId!)
+		const users = (
+			await Promise.all(members.map(async (item) => ({ item, route: await this.resolveThreadWorktree(item.id) })))
+		).filter(({ route }) => route.mapping?.threadId === mapping.threadId)
+		return users.length > 0 && users.every(({ item }) => item.isSettled)
+	}
+
 	/** Group detail: summary + note metas + member threads (the webview orders the timeline). */
 	async getTaskGroup(
 		id: string,
@@ -5260,6 +5444,14 @@ export class Controller {
 
 	/** Deleting a task unfiles its threads; it never deletes threads. */
 	async deleteTaskGroup(id: string): Promise<void> {
+		await this.threadWorktrees.exclusive(async () => {
+			if (await this.threadWorktrees.get(taskWorktreeKey(id)))
+				throw new Error("Remove this task’s worktree before deleting the task.")
+			await this.deleteTaskGroupAndUnfileThreads(id)
+		})
+	}
+
+	private async deleteTaskGroupAndUnfileThreads(id: string): Promise<void> {
 		const records = await this.taskHistory.listHistory({ hydrate: false })
 		for (const record of records) {
 			const item = sessionHistoryRecordToHistoryItem(record)
@@ -5279,9 +5471,6 @@ export class Controller {
 
 	/** Files a thread into a task group (empty taskGroupId unfiles it). */
 	async setThreadTaskGroup(threadId: string, taskGroupId: string): Promise<void> {
-		if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId))) {
-			throw new Error(`Task group not found: ${taskGroupId}`)
-		}
 		await this.fileThread(threadId, taskGroupId || undefined)
 		await this.postStateToWebview(true)
 	}
@@ -5294,20 +5483,32 @@ export class Controller {
 	 * Each affected live session reloads its notebook.
 	 */
 	private async fileThread(threadId: string, taskGroupId: string | undefined): Promise<void> {
-		const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
-			sessionHistoryRecordToHistoryItem,
-		)
-		const byId = new Map(items.map((item) => [item.id, item]))
-		const rootId = asideRootId(threadId, byId)
-		const ids = [rootId, ...asideDescendantIds(rootId, items)].filter(
-			(id) => (byId.get(id)?.taskGroupId || undefined) !== taskGroupId,
-		)
-		await Promise.all(
-			ids.map(async (id) => {
-				await this.taskHistory.setTaskGroup(id, taskGroupId)
-				this.sessionConfigChanges.handleTaskGroupChanged(id)
-			}),
-		)
+		await this.threadWorktrees.exclusive(async () => {
+			if (taskGroupId && !(await this.taskGroupStore.getGroup(taskGroupId)))
+				throw new Error(`Task group not found: ${taskGroupId}`)
+			const items = (await this.taskHistory.listHistory({ hydrate: false, includeSubagents: true })).map(
+				sessionHistoryRecordToHistoryItem,
+			)
+			const byId = new Map(items.map((item) => [item.id, item]))
+			const rootId = asideRootId(threadId, byId)
+			const ids = [rootId, ...asideDescendantIds(rootId, items)].filter(
+				(id) => (byId.get(id)?.taskGroupId || undefined) !== taskGroupId,
+			)
+			const from = byId.get(rootId)?.taskGroupId
+			const changesWorktree = await Promise.all(
+				[from, taskGroupId].map((groupId) => (groupId ? this.threadWorktrees.get(taskWorktreeKey(groupId)) : undefined)),
+			)
+			if (changesWorktree.some(Boolean)) {
+				for (const id of ids) {
+					if (!(await this.threadWorktrees.get(id)) && (await this.threadWorktrees.sessionBusy(id)))
+						throw new Error(
+							"Wait for the thread and its side threads to finish before moving them between workspaces.",
+						)
+				}
+			}
+			await Promise.all(ids.map((id) => this.taskHistory.setTaskGroup(id, taskGroupId)))
+			for (const id of ids) this.sessionConfigChanges.handleTaskGroupChanged(id)
+		})
 	}
 
 	/** Creates a note file in the group's notebook; returns its absolute path. */

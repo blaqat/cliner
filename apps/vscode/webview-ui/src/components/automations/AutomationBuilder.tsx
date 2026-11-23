@@ -6,6 +6,7 @@ import {
 	type AutomationStep,
 	type AutomationStepKind,
 	automationDisplayName,
+	automationWorkspace,
 	blankStep,
 	emptyAutomation,
 	validateAutomation,
@@ -30,13 +31,19 @@ const LABEL_CLASS = "mt-1.5 mb-0.5 block text-[11px] text-description"
 const ADD_KINDS: AutomationStepKind[] = ["thread", "together", "checkpoint", "task"]
 
 function stepLine(step: AutomationStep): string {
-	const thread = (model: string, mode: string, worktree: boolean) =>
-		[model || "Default model", mode === "act" ? "Act" : "Ask", worktree ? "new worktree" : ""].filter(Boolean).join(" · ")
 	switch (step.kind) {
 		case "task":
 			return `Finds or opens the task for ${step.ticket || "a ticket"}`
-		case "thread":
-			return thread(step.model, step.mode, step.worktree)
+		case "thread": {
+			const scope = automationWorkspace(step)
+			return [
+				step.model || "Default model",
+				step.mode === "act" ? "Act" : "Ask",
+				scope === "task" ? "task worktree" : scope === "thread" ? "own worktree" : "",
+			]
+				.filter(Boolean)
+				.join(" · ")
+		}
 		case "together":
 			return step.threads.map((t) => `${t.title || t.id}: ${t.model || "Default"}`).join(" · ")
 		case "checkpoint":

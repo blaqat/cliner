@@ -69,7 +69,16 @@ function useWorktreeChanges(threads: readonly Finished[]): Map<string, WorktreeS
 export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, onOpenNote }: ReadyForReviewProps) {
 	const threads = finishedThreads(run)
 	const changes = useWorktreeChanges(threads)
-	const withChanges = threads.filter((thread) => changes?.has(thread.threadId))
+	const taskWorktrees = new Set<string>()
+	const withChanges = threads.filter((thread) => {
+		const summary = changes?.get(thread.threadId)
+		if (!summary) return false
+		if (summary.taskGroupId) {
+			if (taskWorktrees.has(summary.taskGroupId)) return false
+			taskWorktrees.add(summary.taskGroupId)
+		}
+		return true
+	})
 	const notes = [...new Set(threads.flatMap((thread) => notesWritten?.get(thread.threadId) ?? []))]
 	// Wait for the worktrees before saying there's nothing.
 	const nothing = !!changes && withChanges.length === 0 && notes.length === 0
@@ -90,7 +99,9 @@ export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, on
 				<div className="py-0.5" data-testid={`review-code-${thread.id}`} key={thread.id}>
 					<div className="flex min-w-0 items-center gap-1.5">
 						<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-description" />
-						<span className="min-w-0 flex-1 truncate">{thread.title}</span>
+						<span className="min-w-0 flex-1 truncate">
+							{changes?.get(thread.threadId)?.taskGroupId ? "Task worktree" : thread.title}
+						</span>
 						<LinkButton className="shrink-0" onClick={() => onWalkThrough(thread.threadId)}>
 							Walk through
 						</LinkButton>

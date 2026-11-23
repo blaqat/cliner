@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
 	state: {} as WorktreeState,
 	currentTaskItem: undefined as { id: string; isSubagent?: boolean } | undefined,
 	navigateToSettings: vi.fn(),
+	navigateToTaskGroup: vi.fn(),
 	stateRequest: vi.fn(),
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		currentTaskItem: mocks.currentTaskItem,
 		navigateToSettings: mocks.navigateToSettings,
+		navigateToTaskGroup: mocks.navigateToTaskGroup,
 		worktreesEnabled: { featureFlag: false, user: false },
 	}),
 }))
@@ -212,6 +214,29 @@ it("is hidden in subagent threads, which run where their parent does", () => {
 		</>,
 	)
 	expect(container).toBeEmptyDOMElement()
+})
+
+it("links a shared worktree to its task without thread actions", async () => {
+	mocks.currentTaskItem = { id: "member" }
+	mocks.state = {
+		...mocks.state,
+		mapping: {
+			threadId: "task:group",
+			taskGroupId: "group",
+			branch: "cline/shared",
+			mode: "git",
+			workspace: "/repo",
+			cwd: "/repo/.worktrees/shared",
+			createdAt: 0,
+			bringIns: [],
+			modules: [],
+		},
+	}
+	render(<ThreadBranchChip />)
+	fireEvent.click(await screen.findByTestId("thread-branch-chip"))
+	fireEvent.click(await screen.findByRole("menuitem", { name: "Manage the task worktree" }))
+	expect(mocks.navigateToTaskGroup).toHaveBeenCalledWith("group")
+	expect(screen.queryByRole("menuitem", { name: "Remove worktree" })).toBeNull()
 })
 
 it("has no branch chip for a thread in your workspace, or with no thread", async () => {

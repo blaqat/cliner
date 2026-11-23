@@ -7,6 +7,7 @@
 
 import { SCRIPT_NAME_REGEX, type ScriptOption } from "./scripts"
 import { BASE_SLASH_COMMANDS, VSCODE_ONLY_COMMANDS } from "./slashCommands"
+import type { ThreadWorkspaceChoice } from "./thread-worktrees"
 
 export type AutomationArgKind = "text" | "ticket" | "branch" | "choice"
 export const AUTOMATION_ARG_KINDS: readonly AutomationArgKind[] = ["text", "ticket", "branch", "choice"]
@@ -42,9 +43,15 @@ export interface AutomationThreadSpec {
 	/** A level id of that model ("high"). Empty uses the model's default. */
 	level: string
 	mode: AutomationMode
-	/** Run in a new worktree (Settings › Worktrees decides git or mm). */
+	/** Legacy request for a worktree, now shared by the task. */
 	worktree: boolean
+	/** Omitted threads follow the task's workspace choice without creating a worktree. */
+	worktreeScope?: ThreadWorkspaceChoice
 	outputs?: AutomationOutput[]
+}
+
+export function automationWorkspace(thread: Pick<AutomationThreadSpec, "worktree" | "worktreeScope">) {
+	return thread.worktreeScope ?? (thread.worktree ? "task" : undefined)
 }
 
 export interface AutomationTaskStep {
@@ -203,6 +210,26 @@ export function automationThreads(
 				? step.threads.map((thread) => ({ step, thread }))
 				: [],
 	)
+}
+
+/** Counts and marks the worktrees shared by the threads between each Open a task step. */
+export function automationTaskWorktrees(steps: readonly AutomationStep[]) {
+	const threadSteps = new Set<string>()
+	let count = 0
+	let span: AutomationStep[] = []
+	const finish = () => {
+		if (automationThreads(span).some(({ thread }) => automationWorkspace(thread) === "task")) {
+			count++
+			for (const step of span) threadSteps.add(step.id)
+		}
+		span = []
+	}
+	for (const step of steps) {
+		if (step.kind === "task") finish()
+		else span.push(step)
+	}
+	finish()
+	return { count, threadSteps }
 }
 
 /** The prompt a thread is sent before placeholders are filled. */
@@ -420,6 +447,7 @@ export interface AutomationRunThread {
 	level: string
 	mode: AutomationMode
 	worktree: boolean
+	worktreeScope?: ThreadWorkspaceChoice
 	status: AutomationRunStepStatus
 	/** Final reply (trimmed for the wire). */
 	reply?: string

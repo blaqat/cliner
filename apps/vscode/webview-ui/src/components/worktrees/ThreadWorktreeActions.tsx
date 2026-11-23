@@ -61,6 +61,8 @@ export function ThreadWorktreeActions({
 	mapping,
 	onChanged,
 	onClose,
+	onRemoved,
+	refreshKey,
 }: {
 	threadId: string
 	mapping: ThreadWorktree
@@ -68,6 +70,8 @@ export function ThreadWorktreeActions({
 	onChanged?: () => Promise<void>
 	/** Closes the menu (before showing Source Control). */
 	onClose?: () => void
+	onRemoved?: (message: string) => void
+	refreshKey?: string
 }) {
 	const [summary, setSummary] = useState<WorktreeSummary>()
 	const [outcome, setOutcome] = useState<Outcome>()
@@ -76,25 +80,33 @@ export function ThreadWorktreeActions({
 
 	// The status couldn't be read (say, the folder is gone): Remove still works, so the thread is never stuck with it.
 	const [summaryFailed, setSummaryFailed] = useState(false)
+	const taskGroupId = mapping.taskGroupId
+	const waitText = taskGroupId ? "Wait for every thread using this worktree to finish" : "Wait for the thread to finish"
 
 	const refresh = useCallback(async () => {
 		try {
-			setSummary((await threadWorktreeAction("summary", threadId)).summary)
+			setSummary((await threadWorktreeAction("summary", threadId, undefined, false, taskGroupId)).summary)
 			setSummaryFailed(false)
 		} catch (error) {
 			setSummaryFailed(true)
 			setOutcome({ tone: "warning", text: `Couldn't read this worktree: ${errorText(error)}`, retry: true })
 		}
-	}, [threadId])
+	}, [threadId, taskGroupId])
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Refresh when member activity changes.
 	useEffect(() => {
 		void refresh()
-	}, [refresh])
+	}, [refresh, refreshKey])
+	useEffect(() => {
+		if (!taskGroupId || !summary?.running) return
+		const timer = setInterval(() => void refresh(), 1500)
+		return () => clearInterval(timer)
+	}, [refresh, summary?.running, taskGroupId])
 
 	const act = async (action: Action, confirmed = false) => {
 		setBusy(action)
 		setRemoveWarning(undefined)
 		try {
-			const result = await threadWorktreeAction(action, threadId, undefined, confirmed)
+			const result = await threadWorktreeAction(action, threadId, undefined, confirmed, taskGroupId)
 			if (action === "remove" && result.warning) {
 				// Something would be lost after all: ask on the row.
 				setRemoveWarning(result.warning)
@@ -115,6 +127,7 @@ export function ThreadWorktreeActions({
 			}
 			// A removed worktree has nothing left to summarize; the caller's menu goes back to "Your workspace".
 			const removed = action === "remove" && !result.warning
+			if (removed) onRemoved?.(result.message ?? "Worktree removed.")
 			await Promise.all([removed ? undefined : refresh(), onChanged?.()])
 		} catch (error) {
 			// A copy that clashes with the workspace's own edits: those are what to look at.
@@ -199,6 +212,11 @@ export function ThreadWorktreeActions({
 				)}
 			</div>
 			<div className={MENU_SEPARATOR_CLASS} />
+			{taskGroupId && summary?.settled && (
+				<p className="m-0 px-2 py-1 text-[11px] text-description">
+					All threads using this worktree are settled. You can remove it below.
+				</p>
+			)}
 			{/* Still offered after Take over: submodule changes Take over couldn't move stay in the leftover folder. */}
 			<button className={MENU_ROW_CLASS} disabled={!!busy} onClick={() => void act("open")} role="menuitem" type="button">
 				<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-empty-window")} />
@@ -210,7 +228,7 @@ export function ThreadWorktreeActions({
 					disabled={disabled || running}
 					onClick={() => void act("bring")}
 					role="menuitem"
-					title={running ? "Wait for the thread to finish" : "Apply the thread's changes to your workspace's files"}
+					title={running ? waitText : "Apply the worktree's changes to your workspace's files"}
 					type="button">
 					<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-arrow-down")} />
 					<span className="min-w-0 flex-1 truncate">Copy changes here</span>
@@ -220,7 +238,7 @@ export function ThreadWorktreeActions({
 			{!takenOver && summary?.canUndo && (
 				<button
 					className={MENU_ROW_CLASS}
-					disabled={disabled}
+					disabled={disabled || running}
 					onClick={() => void act("undo")}
 					role="menuitem"
 					type="button">
@@ -235,7 +253,7 @@ export function ThreadWorktreeActions({
 						disabled={disabled || !!switchBlocker}
 						onClick={() => void act("takeOver")}
 						role="menuitem"
-						title="Check out this branch in your workspace; the thread carries on there"
+						title="Check out this branch in your workspace and continue there"
 						type="button">
 						<span aria-hidden className={cn(MENU_ICON_CLASS, "codicon-git-branch")} />
 						<span className="min-w-0 flex-1 truncate">Switch workspace to this branch</span>
@@ -245,7 +263,7 @@ export function ThreadWorktreeActions({
 							{switchBlocker === "undo" ? (
 								"Undo the copy (or commit it) first"
 							) : switchBlocker === "running" ? (
-								"Wait for the thread to finish"
+								waitText
 							) : (
 								<>
 									Workspace has uncommitted changes ·{" "}
@@ -283,7 +301,7 @@ export function ThreadWorktreeActions({
 					disabled={!!busy || (!summary && !summaryFailed) || running}
 					onClick={() => void act("remove")}
 					role="menuitem"
-					title={running ? "Wait for the thread to finish" : undefined}
+					title={running ? waitText : undefined}
 					type="button">
 					<span aria-hidden className={cn(MENU_ICON_CLASS, takenOver ? "codicon-trash" : "codicon-close")} />
 					<span className="min-w-0 flex-1 truncate">

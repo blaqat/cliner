@@ -11,6 +11,8 @@ import {
 	type AutomationThreadStep,
 	type AutomationTogetherStep,
 	automationDisplayName,
+	automationTaskWorktrees,
+	automationWorkspace,
 	fillPlaceholders,
 	formatAutomationCost,
 	hasNewAutomationOutputs,
@@ -22,6 +24,7 @@ import {
 	withArgumentDefaults,
 } from "@shared/automations"
 import type { ClineMessage } from "@shared/ExtensionMessage"
+import type { ThreadWorkspaceChoice } from "@shared/thread-worktrees"
 
 /** A failure with a known fix ("Worktrees settings"); the run block links there. */
 export class AutomationFixableError extends Error {
@@ -92,6 +95,7 @@ export interface StartThreadInput {
 	level: string
 	mode: "ask" | "act"
 	worktree: boolean
+	worktreeScope?: ThreadWorkspaceChoice
 	onSessionId?: (id: string) => void
 }
 
@@ -122,7 +126,7 @@ export interface AutomationRunnerDeps {
 	 * What must be fixed before these steps can run (a worktree that can't be made, no folder open).
 	 * Start and resume call it first, so nothing runs when it finds a problem.
 	 */
-	precheck?: (steps: readonly AutomationStep[]) => Promise<AutomationProblem[]>
+	precheck?: (steps: readonly AutomationStep[], taskGroupId?: string) => Promise<AutomationProblem[]>
 	/** Makes sure a run thread keeps the step's title once its turn ends. */
 	nameThread?: (threadId: string, title: string) => Promise<void>
 	/** What a waiting thread needs from the user, in a few words ("Approve an edit to src/app.ts"). */
@@ -168,6 +172,7 @@ function runThreadFor(spec: AutomationThreadSpec): AutomationRunThread {
 		level: spec.level,
 		mode: spec.mode,
 		worktree: spec.worktree,
+		...(spec.worktreeScope ? { worktreeScope: spec.worktreeScope } : {}),
 		status: "pending",
 		...(spec.outputs?.length ? { declaredOutputs: spec.outputs } : {}),
 	}
@@ -327,8 +332,8 @@ export class AutomationRunner {
 			.catch(() => {})
 	}
 
-	private async precheck(steps: readonly AutomationStep[]): Promise<void> {
-		const problems = (await this.deps.precheck?.(steps)) ?? []
+	private async precheck(steps: readonly AutomationStep[], taskGroupId?: string): Promise<void> {
+		const problems = (await this.deps.precheck?.(steps, taskGroupId)) ?? []
 		if (problems.length) throw new AutomationCheckError(problems)
 	}
 
@@ -345,7 +350,7 @@ export class AutomationRunner {
 		const args = withArgumentDefaults(definition.arguments, values)
 		const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
 		if (missing.length) throw new Error(`Needs ${missing.map((arg) => arg.name).join(", ")}`)
-		await this.precheck(definition.steps)
+		await this.precheck(definition.steps, options.taskGroupId)
 		const run: AutomationRun = {
 			id: this.newId(),
 			automation: definition.name,
@@ -406,7 +411,7 @@ export class AutomationRunner {
 			const missing = definition.arguments.filter((arg) => arg.required && !args[arg.name])
 			if (missing.length)
 				throw new Error(`The automation now needs ${missing.map((arg) => arg.name).join(", ")}. Use Run again.`)
-			await this.precheck(definition.steps.slice(fromIndex))
+			await this.precheck(definition.steps.slice(fromIndex), prior.taskGroupId)
 
 			const priorOutputs = this.outputs.get(runId) ?? {}
 			const outputs: Record<string, string> = {}
@@ -495,12 +500,14 @@ export class AutomationRunner {
 	): Promise<void> {
 		const { run } = live
 		const fill = (text: string) => fillPlaceholders(text, { args, outputs: live.outputs })
+		const { threadSteps: taskWorktreeSteps } = automationTaskWorktrees(definition.steps)
 		this.watchCosts()
 		try {
 			for (const [index, step] of definition.steps.entries()) {
 				if (index < fromIndex) continue
 				if (live.stopped) break
 				const runStep = run.steps[index]
+				const useTaskWorktree = taskWorktreeSteps.has(step.id)
 				runStep.title = fill(step.title) || step.id
 				runStep.status = "running"
 				this.changed()
@@ -515,7 +522,7 @@ export class AutomationRunner {
 						break
 					}
 					case "thread": {
-						const outcome = await this.runThread(live, step, step, runStep.threads[0], fill)
+						const outcome = await this.runThread(live, step, step, runStep.threads[0], fill, useTaskWorktree)
 						if (outcome.kind !== "done") return this.finishStep(live, runStep, outcome)
 						live.outputs[step.id] = outcome.reply
 						runStep.status = "done"
@@ -523,7 +530,9 @@ export class AutomationRunner {
 					}
 					case "together": {
 						const outcomes = await Promise.all(
-							step.threads.map((thread, i) => this.runThread(live, step, thread, runStep.threads[i], fill)),
+							step.threads.map((thread, i) =>
+								this.runThread(live, step, thread, runStep.threads[i], fill, useTaskWorktree),
+							),
 						)
 						const bad = outcomes.find((outcome) => outcome.kind !== "done")
 						if (bad) return this.finishStep(live, runStep, bad)
@@ -671,6 +680,7 @@ export class AutomationRunner {
 		spec: AutomationThreadSpec,
 		runThread: AutomationRunThread,
 		fill: (text: string) => string,
+		useTaskWorktree: boolean,
 	): Promise<ThreadOutcome> {
 		if (live.stopped) return { kind: "stopped" }
 		// Kept from before a retry: it already replied.
@@ -678,6 +688,9 @@ export class AutomationRunner {
 			return { kind: "done", reply: live.outputs[spec.id] }
 		runThread.title = fill(spec.title) || spec.id
 		runThread.status = "running"
+		const scope = automationWorkspace(spec) ?? (useTaskWorktree ? "task" : undefined)
+		runThread.worktreeScope = scope
+		runThread.worktree = scope === "task" || scope === "thread"
 		let threadId: string
 		try {
 			threadId = await this.deps.startThread({
@@ -688,7 +701,8 @@ export class AutomationRunner {
 				model: spec.model,
 				level: spec.level,
 				mode: spec.mode,
-				worktree: spec.worktree,
+				worktree: runThread.worktree,
+				...(scope ? { worktreeScope: scope } : {}),
 				...(spec.outputs?.length || live.keepNotes
 					? {
 							onSessionId: (id: string) => {

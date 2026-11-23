@@ -216,6 +216,27 @@ function resolveWorkspaceName(workspacePath: string): string {
 	return name || "workspace"
 }
 
+export function withSessionWorkspace(config: ClineCoreStartInput["config"], cwd: string): CoreSessionConfig {
+	const context = config?.extensionContext
+	const workspace = context?.workspace
+	const previous = workspace?.cwd ?? config?.cwd
+	const prompt = config?.systemPrompt
+	return {
+		...config,
+		cwd,
+		workspaceRoot: cwd,
+		...(previous && previous !== cwd && typeof prompt === "string"
+			? { systemPrompt: prompt.replace(`Working Directory: ${previous}\n`, () => `Working Directory: ${cwd}\n`) }
+			: {}),
+		...(workspace && {
+			extensionContext: {
+				...context,
+				workspace: { ...workspace, cwd, rootPath: cwd, workspaceName: resolveWorkspaceName(cwd) },
+			},
+		}),
+	}
+}
+
 type ReasoningEffort = NonNullable<CoreSessionConfig["reasoningEffort"]>
 type ProviderReasoningSettings = NonNullable<ProviderSettings["reasoning"]>
 type SessionReasoningConfig = Pick<CoreSessionConfig, "thinking" | "reasoningEffort">

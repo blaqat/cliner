@@ -167,7 +167,8 @@ describe("AutomationRunner", () => {
 			model: "Sonnet 5.5",
 			level: "medium",
 			mode: "ask",
-			worktree: false,
+			worktree: true,
+			worktreeScope: "task",
 		})
 
 		await h.finish("thread-1", "502s come from the gateway.")
@@ -175,6 +176,10 @@ describe("AutomationRunner", () => {
 		expect(h.started.map((thread) => thread.title)).toEqual(["Research PROJ-142", "Plan A", "Plan B"])
 		expect(h.started[1].prompt).toBe("Plan a fix for PROJ-142 using:\n\n502s come from the gateway.")
 		expect(h.started[2].prompt).toBe("## Different\nPlan it differently: 502s come from the gateway.")
+		expect(h.started.slice(1).map((thread) => [thread.taskGroupId, thread.worktreeScope])).toEqual([
+			["group-PROJ-142", "task"],
+			["group-PROJ-142", "task"],
+		])
 		expect(h.run().steps[2].threads.map((thread) => thread.status)).toEqual(["running", "running"])
 
 		await h.finish("thread-3", "Plan B: jitter")
@@ -310,7 +315,8 @@ describe("AutomationRunner", () => {
 		const definition = ticketToPr()
 		const h = harness(definition, {
 			startThread: async (input) => {
-				if (input.worktree && failBuild) throw new AutomationFixableError("Couldn't make its worktree.", "worktrees")
+				if (input.mode === "act" && input.worktree && failBuild)
+					throw new AutomationFixableError("Couldn't make its worktree.", "worktrees")
 			},
 		})
 		await h.runner.start(definition, { ticket: "PROJ-9" })
