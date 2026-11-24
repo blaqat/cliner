@@ -36,6 +36,28 @@ const CHIP_CLASS =
 
 const SECTION_CLASS = "mt-2 text-[10.5px] font-medium uppercase tracking-wider text-description"
 
+/** Steps listed before the rest fold under "and N more steps", so the form fits without a scrollbar of its own. */
+const LISTED_STEPS = 5
+
+const PLACEHOLDER_CLASS = "rounded-xs bg-code px-0.5 font-mono text-[11px]"
+
+/** Text with its `{{placeholders}}` set off as code, as the builder and the context line show them. */
+function WithPlaceholders({ text }: { text: string }) {
+	return (
+		<>
+			{text.split(/(\{\{[^{}]+\}\})/).map((part, index) =>
+				/^\{\{[^{}]+\}\}$/.test(part) ? (
+					<code className={PLACEHOLDER_CLASS} key={index}>
+						{part}
+					</code>
+				) : (
+					part
+				),
+			)}
+		</>
+	)
+}
+
 /** How often the open form re-checks the workspace, so a fix made in Settings shows without retyping. */
 const CHECK_MS = 4000
 
@@ -133,11 +155,15 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 		: blocked
 			? { text: blocked, tone: "error" as const }
 			: { text: "Ready. Enter runs it.", tone: "ok" as const }
+	// Only the page scrolls: a long automation lists its first steps and folds the rest.
+	const [allSteps, setAllSteps] = useState(false)
+	const folded = !allSteps && willRun.steps.length > LISTED_STEPS ? willRun.steps.length - (LISTED_STEPS - 1) : 0
+	const listedSteps = folded ? willRun.steps.slice(0, LISTED_STEPS - 1) : willRun.steps
 
 	return (
 		<div
 			aria-label={`Start ${automation.name}`}
-			className="mx-3.5 -mb-1 max-h-80 overflow-y-auto rounded-t-xs border border-b-0 border-editor-group-border bg-(--vscode-editorWidget-background) px-2.5 py-2 text-xs"
+			className="mx-3.5 -mb-1 rounded-t-xs border border-b-0 border-editor-group-border bg-(--vscode-editorWidget-background) px-2.5 py-2 text-xs"
 			data-testid="automation-start-form"
 			role="group">
 			<div className="flex items-baseline gap-2">
@@ -175,7 +201,7 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 				<span className="normal-case tracking-normal font-normal">{summarizeRun(willRun)}</span>
 			</div>
 			<ol className="m-0 mt-1 list-none p-0" data-testid="automation-will-run">
-				{willRun.steps.map((step) => (
+				{listedSteps.map((step) => (
 					<li
 						className={cn(
 							"mt-0.5",
@@ -184,7 +210,9 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 						key={`${step.number}-${step.title}`}>
 						<div className="flex items-baseline gap-1.5">
 							<span className="w-4 shrink-0 text-right text-description">{step.number || "·"}</span>
-							<span className="min-w-0 truncate font-medium">{step.title}</span>
+							<span className="min-w-0 truncate font-medium">
+								<WithPlaceholders text={step.title} />
+							</span>
 							{step.detail && step.kind !== "each" && (
 								<span className="min-w-0 flex-1 truncate text-description">{step.detail}</span>
 							)}
@@ -194,10 +222,18 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 								</span>
 							)}
 						</div>
-						{step.kind === "each" && <div className="ml-5.5 text-description">{step.detail}</div>}
+						{step.kind === "each" && (
+							<div className="ml-5.5 text-description">
+								<WithPlaceholders text={step.detail ?? ""} />
+							</div>
+						)}
 						{step.threads.map((thread) => (
 							<div className="ml-5.5 flex min-w-0 items-baseline gap-1.5" key={thread.title}>
-								{step.threads.length > 1 && <span className="min-w-0 shrink truncate">{thread.title}</span>}
+								{step.threads.length > 1 && (
+									<span className="min-w-0 shrink truncate">
+										<WithPlaceholders text={thread.title} />
+									</span>
+								)}
 								<span className={cn("min-w-0 truncate", thread.problem ? "text-error" : "text-description")}>
 									{thread.problem ?? thread.model}
 								</span>
@@ -224,12 +260,29 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 						))}
 					</li>
 				))}
+				{(folded > 0 || allSteps) && (
+					<li className="mt-0.5 flex items-baseline gap-1.5">
+						<span className="w-4 shrink-0" />
+						<LinkButton
+							data-testid="automation-all-steps"
+							onClick={() => setAllSteps(!allSteps)}
+							onMouseDown={(event) => event.preventDefault()}>
+							{allSteps ? "Show fewer steps" : `and ${folded} more steps`}
+						</LinkButton>
+					</li>
+				)}
 			</ol>
 			<div className="mt-1.5 text-description" data-testid="automation-context">
 				{contextSummary ? (
 					<>
 						<span className="text-foreground">Your context</span> ({contextSummary}){" "}
-						{placed ? "goes where the automation puts {{context}}." : "goes with every thread, after its prompt."}
+						{placed ? (
+							<>
+								goes where the automation puts <WithPlaceholders text="{{context}}" />.
+							</>
+						) : (
+							"goes with every thread, after its prompt."
+						)}
 					</>
 				) : definition.arguments.length ? (
 					"Fill the arguments below. Anything you type in the box under them goes to the run as context."
@@ -237,23 +290,23 @@ const AutomationStartForm: React.FC<AutomationStartFormProps> = ({
 					"Anything you type below goes to the run as context."
 				)}
 			</div>
-			<div className="mt-1 text-description" data-testid="automation-cost">
-				{willRun.cost}
-				{definition.costLimit ? ` Stops itself at ${formatAutomationCost(definition.costLimit)}.` : ""}
-			</div>
-			{autoApproved && (
-				<div className="mt-1 text-description" data-testid="automation-auto-approve">
-					In its worktree, Act steps read and edit files without asking; commands and anything outside it still ask.
-				</div>
-			)}
-			<div className="mt-1 text-description">
+			<p className="m-0 mt-1 text-description">
+				<span data-testid="automation-cost">
+					{willRun.cost}
+					{definition.costLimit ? ` Stops itself at ${formatAutomationCost(definition.costLimit)}.` : ""}
+				</span>{" "}
+				{autoApproved && (
+					<span data-testid="automation-auto-approve">
+						In its worktree, Act steps read and edit files without asking; commands and anything outside it still ask.{" "}
+					</span>
+				)}
 				{taskTitle
 					? `Runs in this task: ${taskTitle}.`
 					: definition.steps[0]?.kind === "task"
 						? "Runs in the ticket's task."
 						: "Runs in a new task."}{" "}
 				Its threads are normal threads: open one and type to step in.
-			</div>
+			</p>
 			{workspaceProblems.length > 0 && (
 				<div className="mt-1.5" data-testid="automation-precheck">
 					<ProblemList automation={automation.name} onRecheck={workspaceCheck.onRecheck} problems={workspaceProblems} />

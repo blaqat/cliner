@@ -40,6 +40,18 @@ describe("describeRun", () => {
 		expect(willRun.cost).toContain("Cost depends on")
 	})
 
+	it("shows what isn't known yet as the placeholder it fills, as the builder writes it", () => {
+		const fanOut: AutomationDefinition = {
+			...definition,
+			steps: [
+				{ kind: "each", id: "each", title: "For each", items: "{{items}}", ticket: "", newTaskTitle: "", atOnce: 2 },
+				{ ...definition.steps[3], title: "Write {{item}} after {{steps.plan}}" } as AutomationDefinition["steps"][number],
+			],
+		}
+		const run = describeRun(fanOut, {}, undefined, { inTask: true })
+		expect(run.steps[1].title).toBe("Write {{item}} after {{steps.plan}}")
+	})
+
 	it("adds a new task when the run isn't in one and has no task step", () => {
 		const noTask = { ...definition, steps: definition.steps.slice(1) }
 		expect(describeRun(noTask, {}, undefined, { inTask: false }).steps[0].title).toBe("New task")

@@ -745,9 +745,11 @@ export function RunBlock({
 			)}
 			{run.status === "done" && expanded && (
 				<ReadyForReview
+					itemRuns={allRuns.filter((candidate) => candidate.parent?.runId === run.id)}
 					noteNames={noteNames}
 					notesWritten={notesWritten}
 					onOpenNote={onOpenNote}
+					onOpenTask={onOpenTask}
 					onWalkThrough={onWalkThrough ?? onOpenThread}
 					run={run}
 				/>

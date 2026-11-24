@@ -66,11 +66,11 @@ export function describeRun(
 	const args: Record<string, string> = withArgumentDefaults(definition.arguments, values)
 	args[CONTEXT_PLACEHOLDER] = context.text?.trim() ?? ""
 	args[ITEM_PLACEHOLDER] = ""
-	// Earlier steps' replies aren't known yet: show where they'll go.
+	// Earlier steps' replies (and each item) aren't known yet: show where they'll go, as written.
 	const fill = (text: string) =>
 		fillPlaceholders(text, {
-			args: Object.fromEntries(Object.entries(args).map(([key, value]) => [key, value || `{${key}}`])),
-			outputs: new Proxy({}, { get: (_target, key) => `{${String(key)}}` }) as Record<string, string>,
+			args: Object.fromEntries(Object.entries(args).map(([key, value]) => [key, value || `{{${key}}}`])),
+			outputs: new Proxy({}, { get: (_target, key) => `{{steps.${String(key)}}}` }) as Record<string, string>,
 		})
 	const problems: string[] = []
 	const models = new Set<string>()

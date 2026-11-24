@@ -200,12 +200,46 @@ describe("ChatTextArea automations", () => {
 		expect(form).toHaveTextContent("Review a ticket")
 		const willRun = screen.getByTestId("automation-will-run")
 		expect(willRun).toHaveTextContent("New task")
-		expect(willRun).toHaveTextContent("Review {ticket}")
+		// What isn't filled yet shows as the placeholder the steps write, set off as code.
+		expect(willRun).toHaveTextContent("Review {{ticket}}")
+		expect(within(willRun).getByText("{{ticket}}").tagName).toBe("CODE")
 		expect(willRun).toHaveTextContent("Opus 5.5 · high· Ask")
 		expect(willRun).toHaveTextContent("Your current model")
 		expect(screen.getByTestId("automation-uses-1")).toHaveTextContent("uses ticket")
 		expect(screen.getByTestId("automation-cost")).toHaveTextContent("Cost depends on")
 		expect(screen.getByTestId("run-button")).toBeInTheDocument()
+	})
+
+	it("lists a long automation's first steps and folds the rest, so the form has no scrollbar of its own", async () => {
+		const long: AutomationDefinition = {
+			...review,
+			name: "long-run",
+			arguments: [],
+			steps: Array.from({ length: 7 }, (_, index) => ({
+				kind: "thread" as const,
+				id: `s${index + 1}`,
+				title: `Step ${index + 1}`,
+				prompt: "Go",
+				model: "",
+				level: "",
+				mode: "ask" as const,
+				worktree: false,
+			})),
+		}
+		mocks.listAutomations.mockResolvedValue(
+			AutomationList.create({ automations: [info(long)], workspaceDir: "/repo/.clinerules/automations", globalDir: "" }),
+		)
+		const { textarea } = await renderComposer()
+		type(textarea, "/long-run ")
+		const form = await screen.findByTestId("automation-start-form")
+		expect(form.className).not.toMatch(/overflow-y-auto|max-h-/)
+		const willRun = screen.getByTestId("automation-will-run")
+		// "New task", then steps 1–3; the other four fold.
+		expect(willRun).toHaveTextContent("Step 3")
+		expect(willRun).not.toHaveTextContent("Step 4")
+		fireEvent.click(screen.getByTestId("automation-all-steps"))
+		expect(willRun).toHaveTextContent("Step 7")
+		expect(screen.getByTestId("automation-all-steps")).toHaveTextContent("Show fewer steps")
 	})
 
 	it("fills the chips from text typed or pasted fast, the rest is context", async () => {

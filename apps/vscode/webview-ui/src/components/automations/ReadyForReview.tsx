@@ -1,4 +1,4 @@
-import type { AutomationRun, AutomationRunThread } from "@shared/automations"
+import type { AutomationRun, AutomationRunItem, AutomationRunThread } from "@shared/automations"
 import type { WorktreeSummary } from "@shared/thread-worktrees"
 import { useEffect, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
@@ -12,6 +12,9 @@ interface ReadyForReviewProps {
 	notesWritten?: ReadonlyMap<string, readonly string[]>
 	noteNames?: ReadonlyMap<string, string>
 	onOpenNote?: (slug: string) => void
+	/** A For each run's item runs: their tasks' changes sum up here. */
+	itemRuns?: readonly AutomationRun[]
+	onOpenTask?: (taskGroupId: string) => void
 }
 
 type Finished = AutomationRunThread & { threadId: string }
@@ -66,9 +69,28 @@ function useWorktreeChanges(threads: readonly Finished[]): Map<string, WorktreeS
  * thread's walkthrough) and notes its threads wrote. Replies stay with their steps above; this only
  * points at what needs a review. Says so when there's nothing to review.
  */
-export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, onOpenNote }: ReadyForReviewProps) {
+export function ReadyForReview({
+	run,
+	onWalkThrough,
+	notesWritten,
+	noteNames,
+	onOpenNote,
+	itemRuns,
+	onOpenTask,
+}: ReadyForReviewProps) {
 	const threads = finishedThreads(run)
-	const changes = useWorktreeChanges(threads)
+	// A For each run's changes are in its items' tasks: each item's finished threads, with its item.
+	const items: { item: AutomationRunItem; threads: Finished[] }[] = run.steps
+		.flatMap((step) => step.items ?? [])
+		.map((item) => {
+			const itemRun = itemRuns?.find((candidate) => candidate.id === item.runId)
+			return { item, threads: itemRun ? finishedThreads(itemRun) : [] }
+		})
+	const changes = useWorktreeChanges([...threads, ...items.flatMap((entry) => entry.threads)])
+	const changedItems = items.flatMap(({ item, threads: itemThreads }) => {
+		const changed = itemThreads.find((thread) => changes?.has(thread.threadId))
+		return changed ? [{ item, thread: changed, summary: changes?.get(changed.threadId) as WorktreeSummary }] : []
+	})
 	const taskWorktrees = new Set<string>()
 	const withChanges = threads.filter((thread) => {
 		const summary = changes?.get(thread.threadId)
@@ -81,7 +103,7 @@ export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, on
 	})
 	const notes = [...new Set(threads.flatMap((thread) => notesWritten?.get(thread.threadId) ?? []))]
 	// Wait for the worktrees before saying there's nothing.
-	const nothing = !!changes && withChanges.length === 0 && notes.length === 0
+	const nothing = !!changes && withChanges.length === 0 && notes.length === 0 && changedItems.length === 0
 	return (
 		<div
 			className="mt-1.5 rounded-xs border border-link/30 bg-link/10 px-2 py-1.5"
@@ -92,9 +114,36 @@ export function ReadyForReview({ run, onWalkThrough, notesWritten, noteNames, on
 			</div>
 			{nothing && (
 				<div className="mt-0.5 text-description" data-testid={`review-nothing-${run.id}`}>
-					No code or notes changed. Each step's reply is in its step above.
+					{items.length
+						? "No item's task changed code or notes. Each item's replies are in its task."
+						: "No code or notes changed. Each step's reply is in its step above."}
 				</div>
 			)}
+			{changedItems.length > 0 && (
+				<div className="mt-0.5 text-description" data-testid={`review-items-${run.id}`}>
+					{changedItems.length === 1 ? "1 task" : `${changedItems.length} tasks`} changed files. Review each in its
+					task.
+				</div>
+			)}
+			{changedItems.map(({ item, thread, summary }) => (
+				<div className="py-0.5" data-testid={`review-item-${item.label}`} key={item.item}>
+					<div className="flex min-w-0 items-center gap-1.5">
+						<span aria-hidden className="codicon codicon-git-branch shrink-0 text-[12px]! text-description" />
+						<span className="ph-no-capture min-w-0 flex-1 truncate" title={item.item}>
+							{item.label}
+						</span>
+						<LinkButton className="shrink-0" onClick={() => onWalkThrough(thread.threadId)}>
+							Walk through
+						</LinkButton>
+						{item.taskGroupId && onOpenTask && (
+							<LinkButton className="shrink-0" onClick={() => onOpenTask(item.taskGroupId as string)}>
+								Open task
+							</LinkButton>
+						)}
+					</div>
+					<div className="pl-4.5 text-description">{worktreeStatusText(summary)}</div>
+				</div>
+			))}
 			{withChanges.map((thread) => (
 				<div className="py-0.5" data-testid={`review-code-${thread.id}`} key={thread.id}>
 					<div className="flex min-w-0 items-center gap-1.5">

@@ -1,5 +1,5 @@
 import type { AutomationRun } from "@shared/automations"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { finishedThreads, ReadyForReview } from "./ReadyForReview"
 
@@ -101,6 +101,65 @@ describe("ReadyForReview", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open note" }))
 		expect(onOpenNote).toHaveBeenCalledWith("plan")
 		expect(mocks.action).toHaveBeenCalledTimes(2)
+	})
+
+	it("sums up a For each run's item tasks that changed files, with links to each", async () => {
+		const parent: AutomationRun = {
+			...run,
+			id: "parent",
+			steps: [
+				{
+					id: "each",
+					kind: "each",
+					title: "Each item",
+					status: "done",
+					threads: [],
+					items: [
+						{ item: "ia", label: "ia", runId: "run-ia", taskGroupId: "task-ia", status: "done" },
+						{ item: "ib", label: "ib", runId: "run-ib", taskGroupId: "task-ib", status: "done" },
+						{ item: "ic", label: "ic", runId: "run-ic", taskGroupId: "task-ic", status: "done" },
+					],
+				},
+			],
+		}
+		const itemRun = (id: string, threadId: string): AutomationRun => ({
+			...run,
+			id,
+			steps: [
+				{
+					id: "write",
+					kind: "thread",
+					title: "Write",
+					status: "done",
+					threads: [thread("write", threadId, "Write", { mode: "act", worktree: true })],
+				},
+			],
+		})
+		mocks.action.mockImplementation(async (_action: string, id: string) => ({
+			summary:
+				id === "t-ic"
+					? { changedFiles: 0, commits: 0 }
+					: { changedFiles: 1, commits: 0, uncopiedFiles: 1, copied: false, takenOver: false, taskGroupId: id },
+		}))
+		const onOpenTask = vi.fn()
+		const onWalkThrough = vi.fn()
+		render(
+			<ReadyForReview
+				itemRuns={[itemRun("run-ia", "t-ia"), itemRun("run-ib", "t-ib"), itemRun("run-ic", "t-ic")]}
+				onOpenTask={onOpenTask}
+				onWalkThrough={onWalkThrough}
+				run={parent}
+			/>,
+		)
+		expect(await screen.findByTestId("review-items-parent")).toHaveTextContent("2 tasks changed files")
+		expect(screen.queryByTestId("review-nothing-parent")).not.toBeInTheDocument()
+		const ia = screen.getByTestId("review-item-ia")
+		expect(ia).toHaveTextContent("1 file changed · not copied here")
+		expect(screen.queryByTestId("review-item-ic")).not.toBeInTheDocument()
+		fireEvent.click(within(ia).getByRole("button", { name: "Open task" }))
+		expect(onOpenTask).toHaveBeenCalledWith("task-ia")
+		fireEvent.click(within(screen.getByTestId("review-item-ib")).getByRole("button", { name: "Walk through" }))
+		expect(onWalkThrough).toHaveBeenCalledWith("t-ib")
 	})
 
 	it("says when there's nothing to review", async () => {
