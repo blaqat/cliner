@@ -381,9 +381,10 @@ describe("buildInbox task groups", () => {
 			taskGroups: [group("live", 0), group("done", 0), group("empty", NOW - 60 * MIN)],
 		})
 
-		expect(groups.map((row) => row.group.id)).toEqual(["live"])
-		expect(settled.map(settledId)).toEqual(["group:done", "group:empty"])
-		expect(settledTotal).toBe(2)
+		// A task with no threads yet isn't settled.
+		expect(groups.map((row) => row.group.id)).toEqual(["live", "empty"])
+		expect(settled.map(settledId)).toEqual(["group:done"])
+		expect(settledTotal).toBe(1)
 		const done = settled[0]
 		expect(done.kind === "group" && done.row.members.map((row) => row.item.id)).toEqual(["done1", "done2"])
 	})
@@ -409,8 +410,8 @@ describe("buildInbox task groups", () => {
 			settledLimit: 4,
 		})
 
-		expect(settled.map(settledId)).toEqual(["s-new", "group:g", "s-mid", "group:empty"])
-		expect(settledTotal).toBe(5)
+		expect(settled.map(settledId)).toEqual(["s-new", "group:g", "s-mid", "s-old"])
+		expect(settledTotal).toBe(4)
 	})
 
 	it("keeps threads filed into an unknown (deleted) group at the top level", () => {
@@ -453,7 +454,8 @@ describe("buildInbox task groups", () => {
 		expect(byId.get("a")?.members.map((row) => row.item.id)).toEqual(["parent"])
 		// The subagent's activity counts as the agent's; the newest aside you wrote in sets the order.
 		expect(byId.get("a")?.members[0]).toMatchObject({ subthreadCount: 2, activityTs: NOW - MIN, agentActivityTs: NOW })
-		expect(byId.has("b")).toBe(false)
+		// "b" holds no thread of its own (the aside sits under its parent), so it's an empty, active task.
+		expect(byId.get("b")?.members).toEqual([])
 		expect(active).toHaveLength(0)
 	})
 
@@ -470,14 +472,12 @@ describe("buildInbox task groups", () => {
 	})
 
 	it("falls back to the group's update time when it has no threads", () => {
-		const { groups, settled } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
+		const { groups, settled, activeEntries } = buildInbox([], {}, undefined, { taskGroups: [group("empty", NOW - 3 * MIN)] })
 
-		// An empty task has nothing in progress, so it is listed under Settled.
-		expect(groups).toHaveLength(0)
-		expect(settled[0]).toMatchObject({
-			kind: "group",
-			row: { activityTs: NOW - 3 * MIN, members: [], runningCount: 0 },
-		})
+		// A new task with no threads isn't settled: it's listed with the active ones.
+		expect(settled).toHaveLength(0)
+		expect(groups[0]).toMatchObject({ activityTs: NOW - 3 * MIN, members: [], runningCount: 0 })
+		expect(activeEntries[0]).toMatchObject({ kind: "group", row: { group: { id: "empty" } } })
 	})
 
 	it("counts members with work in progress, including busy subthreads", () => {

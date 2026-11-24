@@ -399,15 +399,15 @@ describe("InboxList task groups", () => {
 		expect(mocks.showTaskWithId).toHaveBeenCalled()
 	})
 
-	it("lists an empty group under Settled, with No threads yet when expanded", () => {
+	it("lists a new, empty group with the active ones, with No threads yet when expanded", () => {
 		mocks.state.taskHistory = []
 		localStorage.setItem("inbox.expandedTaskGroups", JSON.stringify(["g"]))
 		render(<InboxList now={NOW} showHistoryView={vi.fn()} />)
 
 		const row = screen.getByTestId("inbox-task-group-row")
 		expect(row).toHaveTextContent("0 threads")
-		expect(row).toHaveAttribute("data-settled", "true")
-		expect(isAfter(row, screen.getByRole("button", { name: "Collapse settled chats" }))).toBe(true)
+		expect(row).not.toHaveAttribute("data-settled", "true")
+		expect(screen.queryByRole("button", { name: "Collapse settled chats" })).not.toBeInTheDocument()
 		expect(screen.getByTestId("inbox-task-group-members")).toHaveTextContent("No threads yet")
 	})
 

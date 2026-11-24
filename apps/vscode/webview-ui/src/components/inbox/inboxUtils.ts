@@ -51,7 +51,7 @@ export interface InboxTaskGroupRow {
 	runningCount: number
 }
 
-/** A row in the Settled section: a settled thread, or a task whose threads are all settled (or has none). */
+/** A row in the Settled section: a settled thread, or a task whose threads are all settled. */
 export type InboxSettledEntry = { kind: "thread"; row: InboxRow } | { kind: "group"; row: InboxTaskGroupRow }
 
 /** A row in either inbox section: a thread or a task. */
@@ -92,8 +92,9 @@ export function isRowWorking(row: InboxRow): boolean {
  * subthread count instead of being top-level rows (unless the parent is gone).
  * An aside always belongs to its parent's task, so it never differs in grouping.
  * Threads filed into a known task group move under that group's row. A group
- * is active while any member has unsettled or in-progress work; groups whose
- * members are all settled (or that have none) sit in the settled list.
+ * is active while any member has unsettled or in-progress work, or while it has
+ * no threads yet (a new task isn't settled); groups whose members are all
+ * settled sit in the settled list.
  * Active (unsettled) rows sort by last activity including subthreads; settled
  * rows by their own last activity; groups by their newest member (or their own
  * update time when empty).
@@ -217,7 +218,8 @@ export function buildInbox(
 		})
 		.sort((a, b) => b.activityTs - a.activityTs)
 
-	const isGroupSettled = (row: InboxTaskGroupRow) => row.members.every((member) => member.settled && !isRowWorking(member))
+	const isGroupSettled = (row: InboxTaskGroupRow) =>
+		row.members.length > 0 && row.members.every((member) => member.settled && !isRowWorking(member))
 	const isGroupStashed = (row: InboxTaskGroupRow) => {
 		const members = valid.filter((item) => !item.isSubagent && item.taskGroupId === row.group.id)
 		return members.length > 0 && members.every((item) => item.isStashed)
