@@ -107,8 +107,14 @@ const UserMessage: React.FC<UserMessageProps> = ({
 				// Only a "no" needs a reason; a failed lookup keeps the generic one.
 				const block = exists
 					? ""
-					: await CheckpointsServiceClient.checkpointRestoreBlockForMessage(Int64Request.create({ value: messageTs }))
-							.then((result) => result.value)
+					: await Promise.resolve()
+							.then(() =>
+								CheckpointsServiceClient.checkpointRestoreBlockForMessage(
+									Int64Request.create({ value: messageTs }),
+								),
+							)
+							.then((result) => result?.value ?? "")
+							// The reason is a nicety: any failure keeps the generic one rather than leaving the button pending.
 							.catch(() => "")
 				if (!cancelled) {
 					setRestoreBlock(block)
