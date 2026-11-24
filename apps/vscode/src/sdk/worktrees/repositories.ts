@@ -311,9 +311,9 @@ async function contains(read: RemovalGit, oid: string, tip: string, type = "comm
 
 /** Discover repositories in the paths Git will delete, even if the parent forgot their gitlinks. */
 export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<string | undefined> {
-	const lost: string[] = []
-	const unchecked: string[] = []
-	const recordError = (file: string, error: unknown) => unchecked.push(`${file} (${(error as Error).message.trim()})`)
+	const lost: LostGitWork[] = []
+	const unchecked: { file: string; reason: string }[] = []
+	const recordError = (file: string, error: unknown) => unchecked.push({ file, reason: (error as Error).message.trim() })
 	const modules: { module: WorktreeModule; admin: string }[] = []
 	for (const module of mapping.modules) {
 		try {
@@ -424,7 +424,7 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 						const preserved =
 							name !== "refs/stash" &&
 							(type === "commit" ? await sourceHas(oid, targets) : targets.some((ref) => ref.oid === oid))
-						if (!preserved) lost.push(`${label(dir)} · ${name} · ${oid}`)
+						if (!preserved) lost.push({ repository: label(dir), ref: name, oid })
 					}
 					if (head) {
 						let preserved = await sourceHas(
@@ -437,7 +437,7 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 							if (preserved) break
 							if (!deleted(ref.name)) preserved = await contains(read, head, ref.oid, ref.type)
 						}
-						if (!preserved) lost.push(`${label(dir)} · detached HEAD · ${head}`)
+						if (!preserved) lost.push({ repository: label(dir), ref: "HEAD", oid: head })
 					}
 				} catch (error) {
 					recordError(dir, error)
@@ -501,11 +501,60 @@ export async function submoduleRemovalWarning(mapping: ThreadWorktree): Promise<
 			recordError(checkout, error)
 		}
 	}
+	return lostGitWorkText(lost, unchecked, mapping.cwd)
+}
+
+/** A ref (or a detached HEAD, ref "HEAD") only the worktree's repositories hold. */
+interface LostGitWork {
+	/** "Worktree" for the worktree's own repository, else its path inside the worktree. */
+	repository: string
+	ref: string
+	oid: string
+}
+
+/** "a stash (2ebe885)", "branch `wip` (b7660f6)": a ref in plain words, with a short id to recover it by. */
+function describeLost({ ref, oid }: LostGitWork) {
+	const what =
+		ref === "HEAD"
+			? "commits on no branch"
+			: ref === "refs/stash"
+				? "a stash"
+				: ref.startsWith("refs/heads/")
+					? `branch \`${ref.slice("refs/heads/".length)}\``
+					: ref.startsWith("refs/tags/")
+						? `tag \`${ref.slice("refs/tags/".length)}\``
+						: ref.startsWith("refs/remotes/")
+							? `\`${ref.slice("refs/remotes/".length)}\``
+							: `\`${ref}\``
+	return `${what} (${oid.slice(0, 7)})`
+}
+const andList = (items: string[]) =>
+	items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}` : (items[0] ?? "")
+
+/**
+ * The removal warning for Git work only the worktree holds, in plain words: what would be lost (short
+ * ids, enough to recover it with `git branch <name> <id>` before removing) and what couldn't be checked.
+ */
+export function lostGitWorkText(lost: LostGitWork[], unchecked: { file: string; reason: string }[], worktree: string) {
+	const where = (file: string) => {
+		const relative = path.relative(worktree, file).split(path.sep).join("/")
+		if (!relative) return "the worktree"
+		return !relative.startsWith("..") && !path.isAbsolute(relative) ? `\`${relative}\`` : file
+	}
+	const byRepository = new Map<string, LostGitWork[]>()
+	for (const item of lost) byRepository.set(item.repository, [...(byRepository.get(item.repository) ?? []), item])
 	return (
 		[
-			lost.length ? `Git work would be lost.\n${lost.join("\n")}\nPreserve it or confirm removal to discard it.` : "",
+			lost.length
+				? `Git work only this worktree has: ${[...byRepository]
+						.map(
+							([repository, items]) =>
+								andList(items.map(describeLost)) + (repository === "Worktree" ? "" : ` in \`${repository}\``),
+						)
+						.join("; ")}. Keep it somewhere else first, or remove anyway to discard it.`
+				: "",
 			unchecked.length
-				? `Couldn't check Git work in:\n${unchecked.join("\n")}\nInspect these paths by hand, or confirm removal to continue.`
+				? `Couldn't check ${unchecked.map(({ file, reason }) => `${where(file)} (${reason})`).join(", ")} for Git work only this worktree has. Look by hand, or remove anyway.`
 				: "",
 		]
 			.filter(Boolean)
@@ -582,6 +631,19 @@ export async function initializeSubmodules(dir: string, source: string, sourceGi
 		}
 		await initializeSubmodules(child, original, cached)
 	}
+}
+
+/**
+ * `git add -A` of a folder, minus its .worktrees folder (where git-mode thread worktrees live). Git
+ * refuses a pathspec that names an ignored folder, so the exclusion is left out once .worktrees is
+ * ignored (by .gitignore or the local exclude file Cline writes); add skips it then anyway.
+ */
+export async function addAllButWorktrees(dir: string, env: NodeJS.ProcessEnv, exclude: string[] = []) {
+	const ignored = await git(dir, ["check-ignore", "-q", "--", ".worktrees"]).then(
+		() => true,
+		() => false,
+	)
+	return git(dir, ["add", "-A", "--", ".", ...(ignored ? [] : [":(exclude).worktrees"]), ...exclude], undefined, env)
 }
 
 /** Own files and staged gitlinks; descendant worktrees and unstaged HEAD moves are inspected separately. */

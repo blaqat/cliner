@@ -6,7 +6,7 @@ import {
 	type WorktreeState,
 	type WorktreeSummary,
 } from "@shared/thread-worktrees"
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TaskWorktreeSection, useTaskWorktree } from "./TaskWorktreeSection"
 import { ThreadWorktreeActions, worktreeStatusText } from "./ThreadWorktreeActions"
@@ -144,10 +144,17 @@ it("links to Source Control when the workspace's own changes block switching", a
 	const onClose = vi.fn()
 	render(<ThreadWorktreeActions mapping={mapping} onClose={onClose} threadId="thread" />)
 	const hint = await screen.findByTestId("worktree-switch-hint")
-	expect(hint).toHaveTextContent("Workspace has uncommitted changes · Source Control")
+	expect(hint).toHaveTextContent("Commit or stash your workspace's changes first · Source Control")
 	fireEvent.click(within(hint).getByRole("button", { name: "Source Control" }))
 	expect(onClose).toHaveBeenCalled()
 	expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "sourceControl" }))
+	cleanup()
+	serve({ ...SUMMARY, workspaceDirty: true, workspaceChanges: [".clinerules/", "a.txt", "b.txt", "c.txt"] })
+	render(<ThreadWorktreeActions mapping={mapping} onClose={onClose} threadId="thread" />)
+	// Names what's in the way, so a folder you forgot about isn't a mystery.
+	expect(await screen.findByTestId("worktree-switch-hint")).toHaveTextContent(
+		"Commit or stash your workspace's changes first (.clinerules/, a.txt, b.txt and more)",
+	)
 })
 
 it("shows the cache warning on the Remove row before discarding uncopied files", async () => {
@@ -167,7 +174,7 @@ it("shows the cache warning on the Remove row before discarding uncopied files",
 	fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }))
 	expect(screen.getByRole("menuitem", { name: "Remove worktree" })).toBeInTheDocument()
 	fireEvent.click(screen.getByRole("menuitem", { name: "Remove worktree" }))
-	fireEvent.click(within(await screen.findByTestId("worktree-remove-confirm")).getByRole("button", { name: "Remove" }))
+	fireEvent.click(within(await screen.findByTestId("worktree-remove-confirm")).getByRole("button", { name: "Remove anyway" }))
 	await waitFor(() => expect(mocks.action).toHaveBeenCalledWith(expect.objectContaining({ action: "remove", confirmed: true })))
 	await waitFor(() => expect(onChanged).toHaveBeenCalled())
 	expect(screen.queryByRole("dialog")).toBeNull()

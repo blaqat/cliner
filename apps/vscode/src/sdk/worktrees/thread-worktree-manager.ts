@@ -21,6 +21,7 @@ import { worktreePath } from "@/utils/worktree-paths"
 
 import { type MmWorkspace, mmDisplayPath, mmError, readMmWorkspace } from "./mm-discovery"
 import {
+	addAllButWorktrees,
 	assertRepository,
 	detachHead,
 	emptyOrMissing,
@@ -71,9 +72,58 @@ function removalWarning(warnings: (string | undefined)[], state: unknown, confir
 }
 const lineCount = (output: string) => output.split("\n").filter((line) => line.trim()).length
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
-// The workspace's own changes; its .worktrees folder (where git-mode thread worktrees live) isn't one.
-const workspaceStatus = (workspacePath: string) =>
-	git(workspacePath, ["status", "--porcelain", "--ignore-submodules=none", "--", ".", ":(exclude).worktrees"])
+/**
+ * A Git repository (or submodule) added or removed inside the worktree. Copy changes here can't carry
+ * one over; removal counts it as a change never copied.
+ */
+export class AddedRepositoryError extends Error {
+	constructor(readonly paths: string[]) {
+		const named = paths.map((name) => `\`${name}\``).join(", ")
+		super(
+			`${named} ${paths.length === 1 ? "is a Git repository" : "are Git repositories"} added or removed inside the worktree, which Copy changes here can't copy. Open the worktree and move ${paths.length === 1 ? "it" : "them"} by hand.`,
+		)
+	}
+}
+/** Paths whose diff adds, removes or retypes a gitlink (mode 160000). */
+function addedRepositories(patch: string): string[] {
+	const paths: string[] = []
+	for (const file of patch.split(/^diff --git /m).slice(1)) {
+		const [first, ...rest] = file.split("\n")
+		const end = rest.findIndex((line) => !/^(?:new|deleted|old) (?:file )?mode /.test(line))
+		const header = end < 0 ? rest : rest.slice(0, end)
+		if (!header.some((line) => line.endsWith(" 160000"))) continue
+		paths.push(first.match(/^a\/(.+) b\/\1$/)?.[1] ?? first)
+	}
+	return paths
+}
+/** Where git-mode worktrees of `workspace` live, relative to `repo` (posix), or undefined when outside it. */
+function worktreesFolderIn(repo: string, workspace: string) {
+	const relative = path.relative(repo, path.join(workspace, ".worktrees")).split(path.sep).join("/")
+	return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : undefined
+}
+/**
+ * The workspace's own changes; a .worktrees folder (where git-mode thread worktrees live) isn't one, at
+ * any depth: a window opened on a subfolder keeps its worktrees in that subfolder's .worktrees.
+ */
+const workspaceStatus = (repo: string) =>
+	git(repo, ["status", "--porcelain", "--ignore-submodules=none", "--", ".", ":(exclude,glob)**/.worktrees/**"])
+/**
+ * Lists the .worktrees folder in the repository's local exclude file (never committed), unless something
+ * already ignores it, so other tools don't see it as a change either.
+ */
+export async function ignoreWorktreesFolder(repo: string, workspace: string) {
+	const folder = worktreesFolderIn(repo, workspace)
+	if (!folder) return
+	const ignored = await git(repo, ["check-ignore", "-q", "--", `${folder}/`]).then(
+		() => true,
+		() => false,
+	)
+	if (ignored) return
+	const file = path.resolve(await worktreePath.key(repo), (await git(repo, ["rev-parse", "--git-path", "info/exclude"])).trim())
+	const current = await fs.readFile(file, "utf8").catch(() => "")
+	await fs.mkdir(path.dirname(file), { recursive: true })
+	await fs.appendFile(file, `${current && !current.endsWith("\n") ? "\n" : ""}/${folder}/\n`)
+}
 
 /** The folder a thread runs in: its worktree, or the workspace once the workspace took over its branch. */
 export function threadRunFolder(mapping: ThreadWorktree): string {
@@ -596,6 +646,9 @@ export class ThreadWorktreeManager {
 				await this.assertMutationOwner()
 				const result = await createWorktree(mapping.modules[0].workspacePath, cwd, { branch, createNewBranch: true })
 				if (!result.success) throw new Error(result.message)
+				await ignoreWorktreesFolder(mapping.modules[0].workspacePath, workspace).catch((error) =>
+					Logger.warn(`Couldn't add .worktrees to the repository's exclude file: ${(error as Error).message}`),
+				)
 				await initializeSubmodules(cwd, mapping.modules[0].workspacePath)
 			}
 			await this.assertPresent(mapping)
@@ -643,18 +696,10 @@ export class ThreadWorktreeManager {
 			const base = incremental ? (previous?.tree ?? module.lastBroughtTree ?? module.base) : module.base
 			try {
 				await git(module.path, ["read-tree", "HEAD"], undefined, env)
-				await git(
+				await addAllButWorktrees(
 					module.path,
-					[
-						"add",
-						"-A",
-						"--",
-						".",
-						":(exclude).worktrees",
-						...module.unsetPaths.map((relative) => `:(exclude,literal)${relative}`),
-					],
-					undefined,
 					env,
+					module.unsetPaths.map((relative) => `:(exclude,literal)${relative}`),
 				)
 				const skippedLinks = selection?.excluded?.get(module.name)
 				if (skippedLinks?.length) {
@@ -679,10 +724,9 @@ export class ThreadWorktreeManager {
 					undefined,
 					env,
 				)
-				if (/^(?:new file mode|deleted file mode|new mode|old mode) 160000$/m.test(patch))
-					throw new Error(
-						"Copying added or removed submodules is not supported. Preserve this workspace before removing it.",
-					)
+				const added = addedRepositories(patch)
+				if (added.length)
+					throw new AddedRepositoryError(added.map((name) => (module.name ? `${module.name}/${name}` : name)))
 				const names = await git(
 					module.path,
 					["diff", "--cached", "--ignore-submodules=none", "--name-only", "-z", base, "--"],
@@ -750,11 +794,14 @@ export class ThreadWorktreeManager {
 	/** Where the thread's changes stand (see WorktreeSummary). Read-only. */
 	async summary(id: string): Promise<WorktreeSummary> {
 		const mapping = await this.required(id)
-		let workspaceDirty = false
+		const workspaceChanges: string[] = []
 		const repos = await repositories(mapping)
 		for (const module of repos)
-			if ((await exists(path.join(module.workspacePath, ".git"))) && (await workspaceStatus(module.workspacePath)).trim())
-				workspaceDirty = true
+			if (await exists(path.join(module.workspacePath, ".git")))
+				for (const line of (await workspaceStatus(module.workspacePath)).split("\n"))
+					if (line.trim())
+						workspaceChanges.push((module.name ? `${module.name}/` : "") + line.slice(3).replace(/^"|"$/g, ""))
+		const workspaceDirty = workspaceChanges.length > 0
 		if (mapping.takenOver) {
 			// The branch lives in the workspace now; only edits made in the leftover folder since would be lost.
 			const leftover = (await this.leftoverChanges(mapping))
@@ -775,16 +822,41 @@ export class ThreadWorktreeManager {
 				canUndo: false,
 				loseOnRemove: leftover,
 				workspaceDirty,
+				workspaceChanges: workspaceChanges.slice(0, 4),
 				takenOver: true,
 			}
 		}
-		const full = await this.diffs(id)
-		const incremental = await this.diffs(id, true)
 		let commits = 0
 		let uncommittedFiles = 0
 		for (const module of repos) {
 			commits += Number((await git(module.path, ["rev-list", "--count", `${module.base}..HEAD`])).trim()) || 0
 			uncommittedFiles += lineCount(await ownStatus(module.path))
+		}
+		const copied =
+			mapping.modules.some((module) => module.lastBroughtTree) || !!Object.keys(mapping.repositoryCopies ?? {}).length
+		const canUndo = mapping.bringIns.some((bring) => bring.patches.some((patch) => patch.applied && !patch.undone))
+		let full: ThreadModuleDiff[]
+		let incremental: ThreadModuleDiff[]
+		try {
+			full = await this.diffs(id)
+			incremental = await this.diffs(id, true)
+		} catch (error) {
+			if (!(error instanceof AddedRepositoryError)) throw error
+			// A repository added inside the worktree can't be copied; it's a change removal would discard.
+			// Its files can't be counted without a diff; the worktree's own status lists the repository once.
+			const changed = Math.max(error.paths.length, uncommittedFiles)
+			return {
+				changedFiles: changed,
+				commits,
+				uncommittedFiles,
+				uncopiedFiles: changed,
+				copied,
+				canUndo,
+				loseOnRemove: changed,
+				workspaceDirty,
+				workspaceChanges: workspaceChanges.slice(0, 4),
+				takenOver: false,
+			}
 		}
 		const changedFiles = Math.max(
 			full.reduce((count, diff) => count + diff.paths.length, 0),
@@ -794,8 +866,6 @@ export class ThreadWorktreeManager {
 			incremental.reduce((count, diff) => count + diff.paths.length, 0),
 			incremental.some((diff) => diff.head && diff.head !== diff.baseHead) ? 1 : 0,
 		)
-		const copied =
-			mapping.modules.some((module) => module.lastBroughtTree) || !!Object.keys(mapping.repositoryCopies ?? {}).length
 		const kept = !!mapping.transferredDiff && this.fingerprint(full) === mapping.transferredDiff
 		return {
 			changedFiles,
@@ -803,9 +873,10 @@ export class ThreadWorktreeManager {
 			uncommittedFiles,
 			uncopiedFiles,
 			copied,
-			canUndo: mapping.bringIns.some((bring) => bring.patches.some((patch) => patch.applied && !patch.undone)),
+			canUndo,
 			loseOnRemove: (await this.uncopiedStaged(full)) || (changedFiles > 0 && !kept ? uncopiedFiles || changedFiles : 0),
 			workspaceDirty,
+			workspaceChanges: workspaceChanges.slice(0, 4),
 			takenOver: false,
 		}
 	}
@@ -892,7 +963,7 @@ export class ThreadWorktreeManager {
 				try {
 					const env = { GIT_INDEX_FILE: index }
 					await git(target, ["read-tree", "HEAD"], undefined, env)
-					await git(target, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
+					await addAllButWorktrees(target, env)
 				} finally {
 					await fs.rm(index, { force: true })
 				}
@@ -961,7 +1032,7 @@ export class ThreadWorktreeManager {
 					const env = { GIT_INDEX_FILE: index }
 					try {
 						await git(module.workspacePath, ["read-tree", "HEAD"], undefined, env)
-						await git(module.workspacePath, ["add", "-A", "--", ".", ":(exclude).worktrees"], undefined, env)
+						await addAllButWorktrees(module.workspacePath, env)
 						try {
 							await this.assertMutationOwner()
 							await git(module.workspacePath, ["apply", "-3", "-R", "--index", patch.file], undefined, env)
@@ -1355,8 +1426,15 @@ export class ThreadWorktreeManager {
 				warning = "Changes were never copied here. Remove this worktree and discard them?"
 			}
 		} catch (error) {
-			const unchecked = `Couldn't check changes in ${mapping.cwd} (${(error as Error).message.trim()}). Inspect it by hand, or confirm removal to continue.`
-			warning = mapping.takenOver ? unchecked : `There may be changes never copied here. ${unchecked}`
+			if (error instanceof AddedRepositoryError) {
+				const named = error.paths.map((name) => `\`${name}\``).join(", ")
+				warning = mapping.takenOver
+					? `The leftover worktree folder has a Git repository of its own (${named}). Remove it and discard it?`
+					: `Changes were never copied here, including ${named}, a Git repository added inside the worktree. Remove this worktree and discard them?`
+			} else {
+				const unchecked = `Couldn't check this worktree for changes (${(error as Error).message.trim()}). Look in it by hand, or remove anyway.`
+				warning = mapping.takenOver ? unchecked : `There may be changes never copied here. ${unchecked}`
+			}
 		}
 		const refs = await submoduleRemovalWarning(mapping)
 		const editors = await this.dirtyEditors(mapping.cwd)

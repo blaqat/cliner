@@ -366,8 +366,15 @@ it("never treats a new embedded repository as a copied file", async () => {
 	const { workspace, manager } = await fixture("git")
 	const mapping = await manager.create("embedded", "Embedded", workspace)
 	git(temp, "clone", path.join(temp, "leaf"), path.join(mapping.cwd, "extra"))
-	await expect(manager.diffs("embedded")).rejects.toThrow("added or removed submodules")
-	expect((await manager.remove("embedded")).warning).toContain("never copied here")
+	await expect(manager.diffs("embedded")).rejects.toThrow("`extra` is a Git repository added or removed inside the worktree")
+	expect(await manager.summary("embedded")).toMatchObject({ changedFiles: 1, uncopiedFiles: 1, loseOnRemove: 1 })
+	await write(mapping.cwd, "new.txt", "new\n")
+	expect(await manager.summary("embedded")).toMatchObject({ changedFiles: 2, loseOnRemove: 2 })
+	await expect(manager.bring("embedded")).rejects.toThrow("Open the worktree and move it by hand")
+	const { warning } = await manager.remove("embedded")
+	expect(warning).toContain("Changes were never copied here, including `extra`, a Git repository added inside the worktree.")
+	expect(warning).not.toContain("Couldn't check")
+	expect(warning).not.toContain(mapping.cwd)
 	await fs.access(path.join(mapping.cwd, "extra", "file.txt"))
 }, 120_000)
 
@@ -436,7 +443,7 @@ for (const mode of ["git", "mm"] as const) {
 		const commit = git(child, "rev-parse", "HEAD")
 		git(child, "checkout", "--detach", base)
 		git(parent, "submodule", "deinit", "-f", "vendor")
-		expect((await manager.remove("cache-branch")).warning).toMatch(/vendor.*local-only/)
+		expect((await manager.remove("cache-branch")).warning).toMatch(/branch `local-only` \([0-9a-f]{7}\).* in `[^`]*vendor`/)
 		expect(git(parent, `--git-dir=${cache}`, "rev-parse", "refs/heads/local-only")).toBe(commit)
 		expect(
 			(await manager.remove("cache-branch", (await manager.remove("cache-branch")).removalConfirmation)).message,

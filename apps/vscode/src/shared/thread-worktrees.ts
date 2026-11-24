@@ -138,6 +138,8 @@ export interface WorktreeSummary {
 	loseOnRemove: number
 	/** The workspace has uncommitted changes of its own, which blocks switching it to the branch. */
 	workspaceDirty: boolean
+	/** The first four of those changes (paths as `git status` lists them), to say what's in the way. */
+	workspaceChanges?: string[]
 	/** The workspace is on the thread's branch now; the worktree folder is a leftover. */
 	takenOver: boolean
 	/** The thread is running, which blocks copying, switching and removing. */

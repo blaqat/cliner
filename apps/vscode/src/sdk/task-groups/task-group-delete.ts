@@ -242,7 +242,7 @@ async function previewTaskWorktree(
 		worktree.refWarning = review.refs?.trim() ?? ""
 		if (review.removalConfirmation) tokens.set(mapping.threadId, review.removalConfirmation)
 	} catch (error) {
-		worktree.refWarning = `Couldn’t check Git work in ${mapping.cwd} (${message(error)}). Inspect it by hand, or discard to continue.`
+		worktree.refWarning = `Couldn’t check the task worktree for Git work only it has (${message(error)}). Look by hand, or discard to continue.`
 	}
 	return worktree
 }

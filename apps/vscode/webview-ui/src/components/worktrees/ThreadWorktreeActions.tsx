@@ -2,6 +2,7 @@ import type { ThreadWorktree, WorktreeSummary } from "@shared/thread-worktrees"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { MENU_ROW_CLASS } from "@/components/chat/composer/menuKeyboard"
 import { MENU_ICON_CLASS, MENU_SEPARATOR_CLASS } from "@/components/common/menuStyles"
+import { WarningText } from "@/components/common/WarningText"
 import { cn } from "@/lib/utils"
 import { threadWorktreeAction } from "./useWorktree"
 
@@ -288,14 +289,17 @@ export function ThreadWorktreeActions({
 						<span className="min-w-0 flex-1 truncate">Switch workspace to this branch</span>
 					</button>
 					{switchBlocker && (
-						<div className={HINT_CLASS} data-testid="worktree-switch-hint">
+						<div className={cn(HINT_CLASS, "whitespace-normal wrap-anywhere")} data-testid="worktree-switch-hint">
 							{switchBlocker === "undo" ? (
 								"Undo the copy (or commit it) first"
 							) : switchBlocker === "running" ? (
 								waitText
 							) : (
 								<>
-									Workspace has uncommitted changes ·{" "}
+									{summary?.workspaceChanges?.length
+										? `Commit or stash your workspace's changes first (${summary.workspaceChanges.slice(0, 3).join(", ")}${summary.workspaceChanges.length > 3 ? " and more" : ""})`
+										: "Commit or stash your workspace's changes first"}{" "}
+									·{" "}
 									<button className={LINK_CLASS} onClick={showSourceControl} type="button">
 										Source Control
 									</button>
@@ -307,22 +311,27 @@ export function ThreadWorktreeActions({
 			)}
 			{removeWarning ? (
 				<div
-					className="flex min-h-6 min-w-0 items-center gap-1.5 rounded-xs bg-error/10 py-1 pr-0.5 pl-2 text-[11.5px] text-error"
+					className="mx-1 my-0.5 flex min-w-0 flex-col gap-1.5 rounded-xs border border-solid border-error/40 bg-error/10 px-2 py-1.5 text-[11.5px]"
 					data-testid="worktree-remove-confirm"
 					role="group">
-					<span className="min-w-0 flex-1 whitespace-pre-line break-words">{removeWarning.text}</span>
-					<button
-						className="h-4.5 shrink-0 cursor-pointer rounded-xs border-0 bg-error px-1.5 text-[11px] text-background hover:bg-error/90"
-						onClick={() => void act("remove", true)}
-						type="button">
-						Remove
-					</button>
-					<button
-						className="h-4.5 shrink-0 cursor-pointer rounded-xs border-0 bg-button-secondary-background px-1.5 text-[11px] text-button-secondary-foreground hover:bg-button-secondary-background-hover"
-						onClick={() => setRemoveWarning(undefined)}
-						type="button">
-						Cancel
-					</button>
+					<div className="flex min-w-0 items-start gap-1.5">
+						<span aria-hidden className="codicon codicon-warning mt-px shrink-0 text-[12px]! text-error" />
+						<WarningText className="flex-1" text={removeWarning.text} />
+					</div>
+					<div className="flex items-center gap-1.5 pl-[18px]">
+						<button
+							className="h-5 shrink-0 cursor-pointer rounded-xs border-0 bg-error px-2 text-[11px] text-background hover:bg-error/90"
+							onClick={() => void act("remove", true)}
+							type="button">
+							Remove anyway
+						</button>
+						<button
+							className="h-5 shrink-0 cursor-pointer rounded-xs border-0 bg-button-secondary-background px-2 text-[11px] text-button-secondary-foreground hover:bg-button-secondary-background-hover"
+							onClick={() => setRemoveWarning(undefined)}
+							type="button">
+							Cancel
+						</button>
+					</div>
 				</div>
 			) : (
 				<button

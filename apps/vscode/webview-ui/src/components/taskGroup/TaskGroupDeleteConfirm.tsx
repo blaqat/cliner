@@ -5,6 +5,7 @@ import {
 	type TaskGroupDeleteTaskWorktree,
 } from "@shared/proto/cline/task_group_delete"
 import { type ReactNode, useEffect, useState } from "react"
+import { WarningText } from "@/components/common/WarningText"
 import { Button } from "@/components/ui/button"
 import { threadWorktreeAction } from "@/components/worktrees/useWorktree"
 import { TaskGroupDeleteServiceClient } from "@/services/grpc-client"
@@ -32,9 +33,9 @@ function DetailLine({ icon, warning, children }: { icon: string; warning?: boole
 		<li className="flex min-w-0 items-start gap-1.5">
 			<span
 				aria-hidden
-				className={`codicon codicon-${icon} shrink-0 text-[12px]! leading-4 ${warning ? "text-warning" : "text-description"}`}
+				className={`codicon codicon-${icon} mt-[0.15em] shrink-0 text-[12px]! ${warning ? "text-warning" : "text-description"}`}
 			/>
-			<span className="min-w-0 flex-1 break-words leading-4">{children}</span>
+			<span className="min-w-0 flex-1 wrap-anywhere">{children}</span>
 		</li>
 	)
 }
@@ -152,7 +153,7 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 
 	return (
 		<div
-			className="mx-4 mb-1 flex flex-col gap-1.5 rounded-xs border border-error/50 bg-error/10 px-2 py-1.5 text-xs"
+			className="mx-4 mb-1 flex flex-col gap-2 rounded-xs border border-error/50 bg-error/10 px-2 py-2 text-xs leading-[1.45]"
 			data-testid="task-group-delete-confirm"
 			role="alert">
 			{!threads && !checkError && <span className="text-description">Checking this task’s threads…</span>}
@@ -171,7 +172,7 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 				</span>
 			)}
 			{worktree && (
-				<ul className="m-0 flex list-none flex-col gap-0.5 p-0" data-testid="task-group-delete-worktree">
+				<ul className="m-0 flex list-none flex-col gap-1 p-0" data-testid="task-group-delete-worktree">
 					<DetailLine icon="repo-forked">
 						The task worktree{worktree.branch ? ` (${worktree.branch})` : ""} is removed first
 						{count > 0 ? " either way. Kept threads continue in your workspace." : "."}
@@ -228,7 +229,7 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 					)}
 					{worktree.refWarning && (
 						<DetailLine icon="warning" warning>
-							<span className="whitespace-pre-wrap">{worktree.refWarning}</span>
+							<WarningText text={worktree.refWarning} />
 						</DetailLine>
 					)}
 				</ul>
@@ -236,7 +237,7 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 			{threads && count > 0 && (
 				<>
 					{noteworthy.length > 0 && (
-						<ul className="m-0 flex list-none flex-col gap-0.5 p-0" data-testid="task-group-delete-details">
+						<ul className="m-0 flex list-none flex-col gap-1 p-0" data-testid="task-group-delete-details">
 							{noteworthy.slice(0, LISTED).map((thread) => (
 								<DetailLine
 									icon={thread.busyElsewhere || thread.worktreeLosses ? "warning" : "sync"}
@@ -261,9 +262,9 @@ export function TaskGroupDeleteConfirm({ taskGroupId, onCancel, onDeleted, onSho
 				</>
 			)}
 			{blocked && (
-				<span className="whitespace-pre-wrap text-error" data-testid="task-group-delete-blocked">
-					{blocked}
-				</span>
+				<div className="text-error" data-testid="task-group-delete-blocked">
+					<WarningText text={blocked} />
+				</div>
 			)}
 			<div className="flex flex-wrap items-center gap-1.5">
 				{threads && count > 0 && (
