@@ -217,7 +217,7 @@ export function WalkthroughDiff({
 								<AnnotationRow annotation={annotation} key={`${annotation.kind}:${annotation.text}`} />
 							))}
 						<div
-							// As wide as its code (at least the view), so the Ask slot after the code never covers it.
+							// As wide as its code (at least the view), ending in the Ask slot.
 							className="group/line flex w-max min-w-full"
 							data-line-index={index}
 							data-testid="walkthrough-diff-line"
@@ -257,9 +257,16 @@ export function WalkthroughDiff({
 								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
 							</span>
 							{ask && (
+								// A gutter pinned to the right edge: opaque, so code scrolls under it rather than
+								// under the chip, and a drag from the last visible characters selects them.
 								<span
-									className="ml-auto flex w-12 shrink-0 select-none items-start justify-end pt-0.5 pr-0.5 pl-1.5"
-									data-ask-slot>
+									className="sticky right-0 ml-auto flex w-12 shrink-0 select-none items-start justify-end pt-0.5 pr-0.5 pl-1.5"
+									data-ask-slot
+									style={{
+										background: ROW_BACKGROUND[sign]
+											? `linear-gradient(${ROW_BACKGROUND[sign]}, ${ROW_BACKGROUND[sign]}), var(--vscode-editor-background)`
+											: "var(--vscode-editor-background)",
+									}}>
 									{!pending && (
 										<button
 											aria-label={`Ask why about ${span({ start: index, end: index })}`}

@@ -1179,7 +1179,7 @@ describe("walkthrough Ask instead and the open Ask box", () => {
 		expect(within(stop("Again, for the worker")).getByTestId("walkthrough-ask")).toBeInTheDocument()
 	})
 
-	it("keeps the hover Ask in its own slot after the code, never over it", async () => {
+	it("keeps the hover Ask in its own gutter after the code, never over it", async () => {
 		await renderPage()
 		const line = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")[2]
 		const chip = within(line).getByTestId("walkthrough-line-ask")
@@ -1187,6 +1187,9 @@ describe("walkthrough Ask instead and the open Ask box", () => {
 		const slot = chip.parentElement!
 		expect(slot).toHaveAttribute("data-ask-slot")
 		expect(slot).not.toHaveClass("absolute")
+		// Pinned to the right edge and opaque, so long lines scroll under the gutter, not under the chip.
+		expect(slot).toHaveClass("sticky")
+		expect(slot.style.background).toContain("var(--vscode-editor-background)")
 		const code = line.querySelector(".whitespace-pre")!
 		expect(code.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 	})
