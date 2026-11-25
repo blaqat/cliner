@@ -89,7 +89,7 @@ export function WalkthroughDiff({
 	ask?: DiffAsk
 }) {
 	const asking = ask?.open
-	const setAsking = (open: AskOpen | undefined) => ask?.onOpen(open)
+	const setAsking = (open: AskOpen) => ask?.onOpen(open)
 	// The line whose number (or Ask) has keyboard focus: its Ask button joins the tab order.
 	const [focusLine, setFocusLine] = useState<number>()
 	const body = useMemo(() => hunkBodyLines(hunk.patch), [hunk.patch])
@@ -217,7 +217,8 @@ export function WalkthroughDiff({
 								<AnnotationRow annotation={annotation} key={`${annotation.kind}:${annotation.text}`} />
 							))}
 						<div
-							className="group/line relative flex min-w-0"
+							// As wide as its code (at least the view), so the Ask slot after the code never covers it.
+							className="group/line flex w-max min-w-full"
 							data-line-index={index}
 							data-testid="walkthrough-diff-line"
 							onBlur={(event) => {
@@ -255,18 +256,24 @@ export function WalkthroughDiff({
 							<span className="whitespace-pre">
 								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
 							</span>
-							{ask && !pending && (
-								<button
-									aria-label={`Ask why about ${span({ start: index, end: index })}`}
-									className="absolute top-0.5 right-0.5 hidden h-4 cursor-pointer select-none items-center gap-0.5 rounded-xs border border-solid border-editor-group-border bg-menu px-1 font-sans text-[10.5px] leading-none text-menu-foreground shadow-sm hover:bg-list-hover focus-visible:flex focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) group-hover/line:flex group-focus-within/line:flex"
-									data-testid="walkthrough-line-ask"
-									onClick={() => setAsking({ start: index, end: index })}
-									tabIndex={focusLine === index ? 0 : -1}
-									title="Ask why about this line (A). Opens a question box; asking starts a model call."
-									type="button">
-									<span aria-hidden className="codicon codicon-sparkle text-[10px]!" />
-									Ask
-								</button>
+							{ask && (
+								<span
+									className="ml-auto flex w-12 shrink-0 select-none items-start justify-end pt-0.5 pr-0.5 pl-1.5"
+									data-ask-slot>
+									{!pending && (
+										<button
+											aria-label={`Ask why about ${span({ start: index, end: index })}`}
+											className="hidden h-4 cursor-pointer items-center gap-0.5 rounded-xs border border-solid border-editor-group-border bg-menu px-1 font-sans text-[10.5px] leading-none text-menu-foreground shadow-sm hover:bg-list-hover focus-visible:flex focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) group-hover/line:flex group-focus-within/line:flex"
+											data-testid="walkthrough-line-ask"
+											onClick={() => setAsking({ start: index, end: index })}
+											tabIndex={focusLine === index ? 0 : -1}
+											title="Ask why about this line (A). Opens a question box; asking starts a model call."
+											type="button">
+											<span aria-hidden className="codicon codicon-sparkle text-[10px]!" />
+											Ask
+										</button>
+									)}
+								</span>
 							)}
 						</div>
 						{cline
@@ -302,10 +309,12 @@ export function WalkthroughDiff({
 							<WalkthroughAsk
 								ask={ask}
 								initial={{ question: asking.question, submit: asking.submit }}
-								key={`${asking.start}-${asking.end}-${asking.reviewNote?.id ?? ""}-${asking.question ?? ""}`}
-								// Ask instead: once answered, the question replaces the note it came from.
-								onAsked={asking.fromNote ? () => notes.set(asking, "") : undefined}
-								onClose={() => setAsking(undefined)}
+								key={asking.id}
+								// Ask instead: once its own question is answered, it replaces the (unchanged) note it came from.
+								onAsked={(question) => ask.onAnswered(asking, question)}
+								// Each box closes and keeps the draft of itself only, never a box opened after it.
+								onClose={() => ask.onUpdate(asking.id, undefined)}
+								onDraft={(question) => ask.onUpdate(asking.id, { question, submit: false })}
 								range={{
 									start: asking.start,
 									end: asking.end,
@@ -327,17 +336,19 @@ export function WalkthroughDiff({
 									onAsk={
 										ask &&
 										(() => {
-											const text = (
+											const saved =
 												notes.list.find(
 													(saved) => saved.start === editing.start && saved.end === editing.end,
 												)?.note ?? ""
-											).trim()
+											const text = saved.trim()
 											notes.onEdit(undefined)
 											setAsking({
 												start: editing.start,
 												end: editing.end,
 												quote: editing.quote,
-												...(text ? { question: text, submit: true, fromNote: true } : {}),
+												...(text
+													? { question: text, submit: true, fromNote: { text: saved, question: text } }
+													: {}),
 											})
 										})
 									}

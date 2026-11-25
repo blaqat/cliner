@@ -187,7 +187,7 @@ export class WalkthroughService {
 				hunk,
 				previous ? { ...request, line: previous.line, endLine: previous.endLine } : request,
 			)
-			const reviewNote = previous ? previous.reviewNote : askReviewNote(walk, hunk.id, request.reviewNoteId)
+			const reviewNote = previous ? previous.reviewNote : askReviewNote(walk, hunk.id, request.reviewNoteId, selection)
 			const config = await this.askConfig(request, walk)
 			if (config.unavailable || !config.pick)
 				throw new Error(config.unavailable ?? "Choose an Ask model in Settings > Models.")

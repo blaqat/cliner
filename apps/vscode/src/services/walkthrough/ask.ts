@@ -36,11 +36,24 @@ export function askSelection(hunk: WalkthroughHunk, request: WalkthroughAskReque
 	}
 }
 
-/** The review note an Ask why request names, read from the walkthrough itself (never from the request). */
-export function askReviewNote(walk: ChangeWalkthrough, hunkId: string, id: unknown): WalkthroughAskReviewNote | undefined {
+/**
+ * The review note an Ask why request names, read from the walkthrough itself (never from the request).
+ * The prompt calls it the note on the selected lines, so the selection must overlap the note's lines.
+ */
+export function askReviewNote(
+	walk: ChangeWalkthrough,
+	hunkId: string,
+	id: unknown,
+	lines: { start: number; end: number },
+): WalkthroughAskReviewNote | undefined {
 	if (id === undefined) return undefined
 	const note = typeof id === "string" ? walk.review?.notes.find((item) => item.id === id) : undefined
 	if (!note || note.hunkId !== hunkId) throw new Error("Cline's note is no longer in this walkthrough. Refresh and ask again.")
+	// A line note without a line sits on the hunk's first line (as the walkthrough places it).
+	const first = note.line ?? 0
+	const last = Math.max(first, note.endLine ?? first)
+	if (lines.end < first || lines.start > last)
+		throw new Error("Cline's note isn't on the selected lines. Open Ask why from the note again.")
 	return {
 		id: note.id,
 		kind: note.kind,

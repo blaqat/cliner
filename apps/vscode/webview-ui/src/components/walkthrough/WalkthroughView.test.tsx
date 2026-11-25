@@ -1005,3 +1005,189 @@ describe("walkthrough Ask selection", () => {
 		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("Why?")
 	})
 })
+
+describe("walkthrough Ask instead and the open Ask box", () => {
+	const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+	const answered = (question: string, extra: Record<string, unknown> = {}) => ({
+		value: JSON.stringify({
+			id: "ask-n",
+			hunkId: "h1",
+			line: 2,
+			endLine: 2,
+			turns: [{ question, answer: "Yes, before the reply.", pick: askConfig.pick, context: "thread" }],
+			...extra,
+		}),
+	})
+	const deferred = <T,>() => {
+		let resolve!: (value: T) => void
+		const promise = new Promise<T>((done) => {
+			resolve = done
+		})
+		return { promise, resolve }
+	}
+	const threadKey = reviewStorageKey("task", "thread")
+	const saved = { "diff-1": { lineNotes: { "fp-h1:2-2": { note: "Is enqueue awaited?" } } } }
+	const storedNote = () => JSON.parse(localStorage.getItem(threadKey) ?? "{}")["diff-1"]?.lineNotes?.["fp-h1:2-2"]?.note
+	const askInstead = () => {
+		const first = stop("Stop the request waiting")
+		fireEvent.click(within(first).getByTestId("walkthrough-line-note"))
+		fireEvent.click(within(first).getByTestId("note-ask-instead"))
+		return first
+	}
+	const question = () => screen.getByRole("textbox", { name: "Question about selected lines" })
+
+	beforeEach(() => {
+		mocks.get.mockResolvedValue(response({ ...fixture, askConfig, askThreads: [] }))
+	})
+
+	it("drops an answer that lands after a scope switch, without touching either scope's notes", async () => {
+		const threadStore = {
+			"diff-1": {
+				lineNotes: { "fp-h1:2-2": { note: "Is enqueue awaited?" }, "fp-h3:0-0": { note: "Unrelated thread note" } },
+			},
+		}
+		const gitKey = reviewStorageKey("task", "git")
+		const gitStore = { "diff-git": { lineNotes: { "fp-h5:0-0": { note: "Git note" } } } }
+		localStorage.setItem(threadKey, JSON.stringify(threadStore))
+		localStorage.setItem(gitKey, JSON.stringify(gitStore))
+		const answer = deferred<{ value: string }>()
+		mocks.ask.mockReturnValue(answer.promise)
+		mocks.get
+			.mockResolvedValueOnce(response({ ...fixture, askConfig, askThreads: [] }))
+			.mockResolvedValueOnce(response({ ...fixture, scope: "git", fingerprint: "diff-git", askConfig, askThreads: [] }))
+		await renderPage()
+		askInstead()
+		expect(mocks.ask).toHaveBeenCalledOnce()
+		fireEvent.click(screen.getByRole("button", { name: "Whole git diff" }))
+		await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2))
+		await screen.findByText("Stop the request waiting")
+		await act(async () => answer.resolve(answered("Is enqueue awaited?")))
+		expect(JSON.parse(localStorage.getItem(threadKey)!)).toEqual(threadStore)
+		expect(JSON.parse(localStorage.getItem(gitKey)!)).toEqual(gitStore)
+	})
+
+	it("keeps a note edited while its question was being answered", async () => {
+		localStorage.setItem(threadKey, JSON.stringify(saved))
+		const answer = deferred<{ value: string }>()
+		mocks.ask.mockReturnValue(answer.promise)
+		await renderPage()
+		const first = askInstead()
+		fireEvent.click(within(first).getByTestId("walkthrough-line-note"))
+		fireEvent.change(within(first).getByRole("textbox", { name: "Note on line 2" }), {
+			target: { value: "Check the retry path too." },
+		})
+		await act(async () => answer.resolve(answered("Is enqueue awaited?")))
+		await screen.findByText("Yes, before the reply.")
+		expect(storedNote()).toBe("Check the retry path too.")
+	})
+
+	it("keeps the note when Ask instead failed and a different question was asked after", async () => {
+		localStorage.setItem(threadKey, JSON.stringify(saved))
+		mocks.ask.mockRejectedValueOnce(new Error("Rate limited")).mockResolvedValueOnce(answered("Something else?"))
+		await renderPage()
+		const first = askInstead()
+		await screen.findByText(/Couldn't get an answer: Rate limited/)
+		expect(question()).toHaveValue("Is enqueue awaited?")
+		fireEvent.change(question(), { target: { value: "Something else?" } })
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		await screen.findByText("Yes, before the reply.")
+		expect(sent(mocks.ask, 1).question).toBe("Something else?")
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("Is enqueue awaited?")
+		expect(storedNote()).toBe("Is enqueue awaited?")
+	})
+
+	it("removes the note when the same question is asked again after a failure", async () => {
+		localStorage.setItem(threadKey, JSON.stringify(saved))
+		mocks.ask.mockRejectedValueOnce(new Error("Rate limited")).mockResolvedValueOnce(answered("Is enqueue awaited?"))
+		await renderPage()
+		const first = askInstead()
+		await screen.findByText(/Couldn't get an answer: Rate limited/)
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		await screen.findByText("Yes, before the reply.")
+		expect(within(first).queryByTestId("walkthrough-line-note")).toBeNull()
+		expect(storedNote()).toBeUndefined()
+	})
+
+	it("doesn't ask again when a hunk with a failed Ask instead is folded and opened, and keeps the edited question", async () => {
+		localStorage.setItem(threadKey, JSON.stringify(saved))
+		mocks.ask.mockRejectedValueOnce(new Error("Rate limited"))
+		await renderPage()
+		const first = askInstead()
+		await screen.findByText(/Couldn't get an answer: Rate limited/)
+		fireEvent.change(question(), { target: { value: "Is enqueue awaited before replying?" } })
+		fireEvent.click(within(first).getByRole("button", { name: /Collapse hunk @@ -1,2/ }))
+		expect(screen.queryByRole("textbox", { name: "Question about selected lines" })).toBeNull()
+		fireEvent.click(within(first).getByRole("button", { name: /Expand hunk @@ -1,2/ }))
+		await act(async () => {})
+		expect(mocks.ask).toHaveBeenCalledOnce()
+		expect(question()).toHaveValue("Is enqueue awaited before replying?")
+		expect(storedNote()).toBe("Is enqueue awaited?")
+	})
+
+	it("an earlier answer doesn't close a draft question on another line", async () => {
+		const answer = deferred<{ value: string }>()
+		mocks.ask.mockReturnValue(answer.promise)
+		await renderPage()
+		const lines = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")
+		fireEvent.click(within(lines[1]).getByTestId("walkthrough-line-ask"))
+		fireEvent.change(question(), { target: { value: "Why drop buildCsv?" } })
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		expect(mocks.ask).toHaveBeenCalledOnce()
+		// Another line, in the next hunk, while the first answer is on its way.
+		fireEvent.click(within(lines[3]).getByTestId("walkthrough-line-ask"))
+		fireEvent.change(question(), { target: { value: "Draft about the job id" } })
+		await act(async () => answer.resolve(answered("Why drop buildCsv?", { line: 1, endLine: 1 })))
+		await screen.findByText("Yes, before the reply.")
+		expect(question()).toHaveValue("Draft about the job id")
+	})
+
+	it("opens Ask on one copy of a hunk an authored walkthrough shows twice", async () => {
+		const patch = fixture.hunks[0].patch
+		mocks.get.mockResolvedValue(
+			response({
+				...fixture,
+				scope: "authored",
+				source: "authored",
+				fingerprint: "auth-1",
+				authoredId: "walk-1",
+				askConfig,
+				askThreads: [],
+				chapters: [
+					{
+						id: "c1",
+						title: "Runtime",
+						stops: [
+							{ id: "s1", title: "Stop the request waiting", prose: "", hunkIds: ["h1"] },
+							{ id: "s2", title: "Again, for the worker", prose: "", hunkIds: ["h2"] },
+						],
+					},
+				],
+				support: [],
+				hunks: [
+					hunk("h1", "api/export/controller.ts", patch, { fingerprint: "fp-same", external: true }),
+					hunk("h2", "api/export/controller.ts", patch, { fingerprint: "fp-same", external: true }),
+				],
+			}),
+		)
+		render(<WalkthroughView authoredId="walk-1" onDone={vi.fn()} taskId="task" />)
+		await screen.findByText("Stop the request waiting")
+		fireEvent.click(within(stop("Again, for the worker")).getAllByTestId("walkthrough-line-ask")[2])
+		expect(screen.getAllByRole("textbox", { name: "Question about selected lines" })).toHaveLength(1)
+		fireEvent.change(question(), { target: { value: "Why?" } })
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		expect(sent(mocks.ask)).toMatchObject({ hunkId: "h2", line: 2 })
+		expect(within(stop("Again, for the worker")).getByTestId("walkthrough-ask")).toBeInTheDocument()
+	})
+
+	it("keeps the hover Ask in its own slot after the code, never over it", async () => {
+		await renderPage()
+		const line = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")[2]
+		const chip = within(line).getByTestId("walkthrough-line-ask")
+		expect(chip).not.toHaveClass("absolute")
+		const slot = chip.parentElement!
+		expect(slot).toHaveAttribute("data-ask-slot")
+		expect(slot).not.toHaveClass("absolute")
+		const code = line.querySelector(".whitespace-pre")!
+		expect(code.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+	})
+})

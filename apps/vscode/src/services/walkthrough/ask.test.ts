@@ -139,10 +139,30 @@ describe("walkthrough Ask about a review note", () => {
 	})
 
 	it("reads the note from the walkthrough and refuses one from another hunk or that's gone", () => {
-		expect(askReviewNote(walk, "h1", undefined)).toBeUndefined()
-		expect(askReviewNote(walk, "h1", "n1")).toEqual(note)
-		expect(() => askReviewNote(walk, "h1", "n2")).toThrow("no longer in this walkthrough")
-		expect(() => askReviewNote(walk, "h1", "gone")).toThrow()
-		expect(() => askReviewNote(walk, "h1", 3)).toThrow()
+		const lines = { start: 0, end: 0 }
+		expect(askReviewNote(walk, "h1", undefined, lines)).toBeUndefined()
+		expect(askReviewNote(walk, "h1", "n1", lines)).toEqual(note)
+		expect(() => askReviewNote(walk, "h1", "n2", lines)).toThrow("no longer in this walkthrough")
+		expect(() => askReviewNote(walk, "h1", "gone", lines)).toThrow()
+		expect(() => askReviewNote(walk, "h1", 3, lines)).toThrow()
+	})
+
+	it("refuses a note that isn't on the selected lines, so the prompt never pins it to other code", () => {
+		const ranged = {
+			review: {
+				notes: [
+					{ ...note, hunkId: "h1", line: 2, endLine: 4 },
+					{ id: "n3", kind: "nice", title: "Whole hunk", text: "Fine.", hunkId: "h1" },
+				],
+			},
+		} as unknown as ChangeWalkthrough
+		expect(askReviewNote(ranged, "h1", "n1", { start: 2, end: 2 })).toEqual(note)
+		expect(askReviewNote(ranged, "h1", "n1", { start: 0, end: 2 })).toEqual(note)
+		expect(askReviewNote(ranged, "h1", "n1", { start: 4, end: 6 })).toEqual(note)
+		expect(() => askReviewNote(ranged, "h1", "n1", { start: 0, end: 1 })).toThrow("isn't on the selected lines")
+		expect(() => askReviewNote(ranged, "h1", "n1", { start: 5, end: 5 })).toThrow("isn't on the selected lines")
+		// A note with no line sits on the hunk's first line.
+		expect(askReviewNote(ranged, "h1", "n3", { start: 0, end: 0 })?.id).toBe("n3")
+		expect(() => askReviewNote(ranged, "h1", "n3", { start: 3, end: 3 })).toThrow("isn't on the selected lines")
 	})
 })

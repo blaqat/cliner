@@ -56,7 +56,15 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
-import { type AskOpen, askSideThreadPrompt, askTranscript, type DiffAsk, REVIEW_ASK } from "./WalkthroughAsk"
+import {
+	type AskBox,
+	type AskFromNote,
+	type AskOpen,
+	askSideThreadPrompt,
+	askTranscript,
+	type DiffAsk,
+	REVIEW_ASK,
+} from "./WalkthroughAsk"
 import type { LineNotes } from "./WalkthroughDiff"
 import { ReviewChip, ReviewNoteCard, type ReviewNoteHandlers, ReviewPanel } from "./WalkthroughReviewNotes"
 import {
@@ -174,8 +182,10 @@ export default function WalkthroughView({
 	const [editingStopId, setEditingStopId] = useState<string>()
 	// The selection whose note box is open: its hunk, lines and the exact text picked.
 	const [editingLine, setEditingLine] = useState<{ fingerprint: string } & LineRange & { quote?: string }>()
-	// The open Ask why box for a new question (one on the page): its hunk and lines.
-	const [askingLine, setAskingLine] = useState<{ fingerprint: string } & AskOpen>()
+	// The open Ask why box for a new question (one on the page): its hunk (by id, as an authored
+	// walkthrough can show one hunk twice) and lines. Each box gets a new id.
+	const [askingLine, setAskingLine] = useState<{ hunkId: string } & AskBox>()
+	const askIds = useRef(0)
 	// Cline's review notes: Generate's "Add review notes" (remembered), the kind filter and what's open.
 	// Applies to the next Generate only: notes depend on what's asked for, so the choice isn't remembered.
 	const [reviewNotesOn, setReviewNotesOn] = useState(false)
@@ -192,6 +202,9 @@ export default function WalkthroughView({
 	// Generate finishes long after it starts; it must merge into the latest notes, not a stale render's.
 	const storeRef = useRef(store)
 	storeRef.current = store
+	// Which store `store` is now; an answer can land after the page has moved to another one.
+	const liveStore = useRef({ taskId, scope: activeScope, authoredId })
+	liveStore.current = { taskId, scope: activeScope, authoredId }
 
 	const fetchFree = useCallback(
 		async (forScope: WalkthroughScope) =>
@@ -313,6 +326,33 @@ export default function WalkthroughView({
 	const record: ReviewRecord = walk ? (store[walk.fingerprint] ?? {}) : {}
 	const overallNote = record.overallNote ?? ""
 
+	/** Ask instead was answered: its note goes, from the store it was saved in, if it still reads what was asked. */
+	const removeAskedNote = (from: AskFromNote, question: string) => {
+		if (!from.origin || question !== from.question) return
+		const { taskId: task, scope: where, authoredId: doc, walk: fingerprint, key } = from.origin
+		const live = liveStore.current
+		const isLive = live.taskId === task && live.scope === where && live.authoredId === doc
+		const source = isLive ? storeRef.current : loadReviewStore(task, where, doc)
+		const current = source[fingerprint]
+		const entry = current?.lineNotes?.[key]
+		if (!current || entry === undefined || lineNoteEntry(entry).note !== from.text) return
+		const { [key]: _asked, ...lineNotes } = current.lineNotes ?? {}
+		const next = { ...source, [fingerprint]: { ...current, lineNotes } }
+		saveReviewStore(task, where, doc, next)
+		if (isLive) {
+			storeRef.current = next
+			setStore(next)
+		}
+	}
+	const openAsk = (hunk: WalkthroughHunk, open: AskOpen) => {
+		const fromNote = open.fromNote &&
+			walk && {
+				...open.fromNote,
+				origin: { taskId, scope: activeScope, authoredId, walk: walk.fingerprint, key: lineNoteKey(hunk, open) },
+			}
+		setAskingLine({ ...open, ...(fromNote ? { fromNote } : {}), hunkId: hunk.id, id: ++askIds.current })
+	}
+
 	const updateRecord = (change: (current: ReviewRecord) => ReviewRecord) => {
 		if (!walk) return
 		persist({ ...storeRef.current, [walk.fingerprint]: change(storeRef.current[walk.fingerprint] ?? {}) })
@@ -402,8 +442,11 @@ export default function WalkthroughView({
 						: undefined),
 			},
 			threads: (walk?.askThreads ?? []).filter((thread) => thread.hunkId === hunk.id),
-			open: askingLine?.fingerprint === hunk.fingerprint ? askingLine : undefined,
-			onOpen: (open) => setAskingLine(open && { fingerprint: hunk.fingerprint, ...open }),
+			open: askingLine?.hunkId === hunk.id ? askingLine : undefined,
+			onOpen: (open) => openAsk(hunk, open),
+			onUpdate: (id, change) =>
+				setAskingLine((current) => (current?.id !== id ? current : change && { ...current, ...change })),
+			onAnswered: (box, question) => box.fromNote && removeAskedNote(box.fromNote, question),
 			disabledReason: moved ? "Changes moved. Refresh the walkthrough before asking." : undefined,
 			openSettings: () => {
 				const target = walk?.askConfig?.pick && modelSettings?.availability[walk.askConfig.pick.modelId]?.target
@@ -421,7 +464,7 @@ export default function WalkthroughView({
 						}
 					: undefined,
 			ask: async (range, question, askId) => {
-				if (!walk) return
+				if (!walk) return false
 				const id = sequence.current
 				const result = await TaskServiceClient.askWalkthrough(
 					StringRequest.create({
@@ -441,7 +484,7 @@ export default function WalkthroughView({
 					}),
 				)
 				const thread = JSON.parse(result.value) as WalkthroughAskThread
-				if (id !== sequence.current) return
+				if (id !== sequence.current) return false
 				setWalk((current) =>
 					current?.fingerprint === walk.fingerprint
 						? {
@@ -450,6 +493,7 @@ export default function WalkthroughView({
 							}
 						: current,
 				)
+				return true
 			},
 			isAdded: (thread) =>
 				lineNoteEntry(record.lineNotes?.[lineNoteKey(hunk, { start: thread.line, end: thread.endLine })]).note.includes(
@@ -702,8 +746,7 @@ export default function WalkthroughView({
 		const { id, kind, severity, title, text } = placed.note
 		setEditingLine(undefined)
 		setReplyingId(undefined)
-		setAskingLine({
-			fingerprint: hunk.fingerprint,
+		openAsk(hunk, {
 			start: placed.line,
 			end: placed.endLine ?? placed.line,
 			reviewNote: { id, kind, ...(severity ? { severity } : {}), title, text },

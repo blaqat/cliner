@@ -14,11 +14,13 @@ const thread: WalkthroughAskThread = {
 const props = (): DiffAsk => ({
 	config: { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" },
 	threads: [],
-	ask: vi.fn().mockResolvedValue(undefined),
+	ask: vi.fn().mockResolvedValue(true),
 	addToSend: vi.fn(),
 	isAdded: () => false,
 	openSettings: vi.fn(),
 	onOpen: vi.fn(),
+	onUpdate: vi.fn(),
+	onAnswered: vi.fn(),
 })
 
 describe("walkthrough Ask", () => {
@@ -36,11 +38,11 @@ describe("walkthrough Ask", () => {
 		)
 	})
 	it("shows loading until the user-started request finishes, then closes the new form", async () => {
-		let finish!: () => void
+		let finish!: (answered: boolean) => void
 		const ask = props()
 		ask.ask = vi.fn(
 			() =>
-				new Promise<void>((resolve) => {
+				new Promise<boolean>((resolve) => {
 					finish = resolve
 				}),
 		)
@@ -51,8 +53,37 @@ describe("walkthrough Ask", () => {
 		expect(ask.ask).toHaveBeenCalledWith(range, "Why reject this?", undefined)
 		expect(screen.getByRole("button", { name: "Asking…" })).toBeDisabled()
 		expect(screen.getByText("Waiting for the model…")).toBeInTheDocument()
-		await act(async () => finish())
+		await act(async () => finish(true))
 		expect(onClose).toHaveBeenCalledOnce()
+	})
+	it("treats a dropped answer as no answer: keeps the question and calls nothing back", async () => {
+		const ask = props()
+		ask.ask = vi.fn().mockResolvedValue(false)
+		const onAsked = vi.fn()
+		const onClose = vi.fn()
+		render(<WalkthroughAsk ask={ask} onAsked={onAsked} onClose={onClose} range={range} />)
+		fireEvent.change(screen.getByRole("textbox"), { target: { value: "Why reject this?" } })
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled())
+		expect(onAsked).not.toHaveBeenCalled()
+		expect(onClose).not.toHaveBeenCalled()
+		expect(screen.getByRole("textbox")).toHaveValue("Why reject this?")
+	})
+	it("reports the question it asks right away, so a box opened again won't ask twice", async () => {
+		const ask = props()
+		const onDraft = vi.fn()
+		const onAsked = vi.fn()
+		render(
+			<WalkthroughAsk
+				ask={ask}
+				initial={{ question: "Is this awaited?", submit: true }}
+				onAsked={onAsked}
+				onDraft={onDraft}
+				range={range}
+			/>,
+		)
+		expect(onDraft).toHaveBeenCalledWith("Is this awaited?")
+		await waitFor(() => expect(onAsked).toHaveBeenCalledWith("Is this awaited?"))
 	})
 	it("shows answers with a follow-up and adds nothing to Send without a click", async () => {
 		const ask = props()

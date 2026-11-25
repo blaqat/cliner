@@ -3,6 +3,7 @@ import type {
 	WalkthroughAskReviewNote,
 	WalkthroughAskThread,
 	WalkthroughReviewKind,
+	WalkthroughScope,
 } from "@shared/Walkthrough"
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
@@ -14,8 +15,25 @@ import { InlineCodeProse } from "./WalkthroughNote"
 
 /** The lines a question is about; reviewNote when it's about one of Cline's notes on them (sent as context). */
 export type AskRange = LineRange & { quote?: string; reviewNote?: WalkthroughAskReviewNote }
-/** The Ask box to open: its lines, a question to start with, and whether it came from a line note ("Ask instead"). */
-export type AskOpen = AskRange & { question?: string; submit?: boolean; fromNote?: boolean }
+/** Where an Ask instead note is saved: stamped when its box opens, so removing it never touches another store. */
+export interface AskNoteOrigin {
+	taskId: string
+	scope: WalkthroughScope
+	authoredId?: string
+	/** The walkthrough's fingerprint and the note's lineNoteKey. */
+	walk: string
+	key: string
+}
+/** The line note an Ask instead came from: removed only if it still reads `text` once `question` itself is answered. */
+export interface AskFromNote {
+	text: string
+	question: string
+	origin?: AskNoteOrigin
+}
+/** The Ask box to open: its lines, a question to start with (asked right away with submit), and the note it came from. */
+export type AskOpen = AskRange & { question?: string; submit?: boolean; fromNote?: AskFromNote }
+/** An open Ask box; the id tells it apart from any box opened later. */
+export type AskBox = AskOpen & { id: number }
 
 /** The question an Ask about one of Cline's notes starts with (selected, so typing replaces it). */
 export const REVIEW_ASK: Record<WalkthroughReviewKind, string> = {
@@ -28,7 +46,8 @@ export interface DiffAsk {
 	config?: WalkthroughAskConfig
 	threads: WalkthroughAskThread[]
 	disabledReason?: string
-	ask: (range: AskRange, question: string, askId?: string) => Promise<void>
+	/** False when the answer came back for a page that has changed since (another scope, a refresh); it isn't shown. */
+	ask: (range: AskRange, question: string, askId?: string) => Promise<boolean>
 	addToSend: (thread: WalkthroughAskThread) => void
 	isAdded: (thread: WalkthroughAskThread) => boolean
 	openSettings: () => void
@@ -36,8 +55,12 @@ export interface DiffAsk {
 	/** Continues the conversation in a side thread of this walkthrough's thread; undefined when it can't. */
 	openAsSideThread?: (thread: WalkthroughAskThread) => Promise<void>
 	/** The new-question box open in this hunk (one at a time on the page). */
-	open?: AskOpen
-	onOpen: (open: AskOpen | undefined) => void
+	open?: AskBox
+	onOpen: (open: AskOpen) => void
+	/** Changes box `id` (undefined closes it) while it's still the open one; a later box is left alone. */
+	onUpdate: (id: number, change: Partial<AskOpen> | undefined) => void
+	/** Box `box` got an answer to `question`: an Ask instead of exactly that question removes its unchanged note. */
+	onAnswered: (box: AskBox, question: string) => void
 }
 
 /** "Risk (high): title" */
@@ -83,6 +106,8 @@ function AboutNote({ note }: { note: WalkthroughAskReviewNote }) {
 /**
  * The form has no model controls. Every request, including a follow-up, starts with Ask; `initial`
  * starts the box with a question (selected) or, with submit, asks it right away (Ask instead).
+ * onDraft keeps the question with the box's owner, so folding the hunk doesn't lose it; asking
+ * right away reports it too, so a box opened again never asks a second time.
  */
 export function WalkthroughAsk({
 	ask,
@@ -91,14 +116,16 @@ export function WalkthroughAsk({
 	onClose,
 	initial,
 	onAsked,
+	onDraft,
 }: {
 	ask: DiffAsk
 	range: AskRange
 	thread?: WalkthroughAskThread
 	onClose?: () => void
 	initial?: { question?: string; submit?: boolean }
-	/** After the answer to a new question arrives. */
-	onAsked?: () => void
+	/** After the answer to a new question arrives, with the question it answers. */
+	onAsked?: (question: string) => void
+	onDraft?: (question: string) => void
 }) {
 	const [question, setQuestion] = useState(initial?.question ?? "")
 	const input = useRef<HTMLTextAreaElement>(null)
@@ -106,6 +133,10 @@ export function WalkthroughAsk({
 	const inFlight = useRef(false)
 	const [error, setError] = useState("")
 	const [opening, setOpening] = useState(false)
+	const draft = (value: string) => {
+		setQuestion(value)
+		onDraft?.(value)
+	}
 	const unavailable =
 		ask.disabledReason ??
 		ask.config?.unavailable ??
@@ -115,10 +146,12 @@ export function WalkthroughAsk({
 		inFlight.current = true
 		setBusy(true)
 		setError("")
+		const asked = text.trim()
 		try {
-			await ask.ask(range, text.trim(), thread?.id)
+			// A dropped answer isn't one: the question stays, and nothing that follows an answer runs.
+			if (!(await ask.ask(range, asked, thread?.id))) return
 			setQuestion("")
-			onAsked?.()
+			onAsked?.(asked)
 			onClose?.()
 		} catch (error) {
 			setError(error instanceof Error ? error.message : String(error))
@@ -129,8 +162,10 @@ export function WalkthroughAsk({
 	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once, when the box opens
 	useEffect(() => {
-		if (initial?.submit) void submit(initial.question ?? "")
-		else if (initial?.question) input.current?.select()
+		if (initial?.submit) {
+			onDraft?.(initial.question ?? "")
+			void submit(initial.question ?? "")
+		} else if (initial?.question) input.current?.select()
 	}, [])
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
@@ -206,7 +241,7 @@ export function WalkthroughAsk({
 				</div>
 			)}
 			{!thread && !range.reviewNote && (
-				<LinkButton className="mt-2 block text-[11px]" onClick={() => setQuestion("Why this approach?")}>
+				<LinkButton className="mt-2 block text-[11px]" onClick={() => draft("Why this approach?")}>
 					Why this approach?
 				</LinkButton>
 			)}
@@ -223,7 +258,7 @@ export function WalkthroughAsk({
 				className="mt-2 box-border w-full resize-y rounded-xs border border-solid border-input-border bg-input-background px-2 py-1 font-sans text-xs text-input-foreground focus:outline focus:outline-1 focus:outline-(--vscode-focusBorder)"
 				disabled={busy}
 				maxLength={8000}
-				onChange={(event) => setQuestion(event.target.value)}
+				onChange={(event) => draft(event.target.value)}
 				onKeyDown={onKeyDown}
 				placeholder={
 					thread ? "Ask a follow-up…" : range.reviewNote ? "Ask about Cline's note…" : "Ask about these lines…"
