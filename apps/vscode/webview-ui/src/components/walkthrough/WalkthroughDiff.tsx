@@ -5,7 +5,7 @@ import "../common/codeblock-parser.css"
 import { diffCode as code, highlightDiff } from "./diffHighlight"
 import { type PlacedReviewNote, REVIEW_KINDS, sortReviewNotes } from "./reviewNotes"
 import type { LineRange } from "./reviewState"
-import { type AskRange, type DiffAsk, WalkthroughAsk } from "./WalkthroughAsk"
+import { type AskOpen, type DiffAsk, WalkthroughAsk } from "./WalkthroughAsk"
 import { InlineCodeProse, NoteEditor } from "./WalkthroughNote"
 
 /** "turn3" → "Turn 3"; the checkpoint-recovered turn has no number. */
@@ -88,7 +88,10 @@ export function WalkthroughDiff({
 	review?: DiffReview
 	ask?: DiffAsk
 }) {
-	const [asking, setAsking] = useState<AskRange>()
+	const asking = ask?.open
+	const setAsking = (open: AskOpen | undefined) => ask?.onOpen(open)
+	// The line whose number (or Ask) has keyboard focus: its Ask button joins the tab order.
+	const [focusLine, setFocusLine] = useState<number>()
 	const body = useMemo(() => hunkBodyLines(hunk.patch), [hunk.patch])
 	const highlighted = useMemo(() => highlightDiff(body, hunk.path), [body, hunk.path])
 	const numbers = hunkLineNumbers(hunk)
@@ -214,9 +217,13 @@ export function WalkthroughDiff({
 								<AnnotationRow annotation={annotation} key={`${annotation.kind}:${annotation.text}`} />
 							))}
 						<div
-							className="relative flex min-w-0"
+							className="group/line relative flex min-w-0"
 							data-line-index={index}
 							data-testid="walkthrough-diff-line"
+							onBlur={(event) => {
+								if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusLine(undefined)
+							}}
+							onFocus={() => setFocusLine(index)}
 							style={{
 								background: ROW_BACKGROUND[sign],
 								// Lines a note covers carry its blue edge.
@@ -224,6 +231,7 @@ export function WalkthroughDiff({
 							}}>
 							{gutter && marker(index)}
 							<button
+								aria-keyshortcuts={ask ? "A" : undefined}
 								aria-label={`Note on ${span({ start: index, end: index })}`}
 								className="w-9 shrink-0 cursor-pointer select-none border-0 bg-transparent p-0 pr-1.5 text-right font-mono text-[11px] leading-5 text-description/60 hover:text-foreground hover:underline"
 								onClick={() => notes.onEdit({ start: index, end: index })}
@@ -233,7 +241,11 @@ export function WalkthroughDiff({
 										setAsking({ start: index, end: index })
 									}
 								}}
-								title="Note on this line. Press A to ask about it, or select text for Note and Ask."
+								title={
+									ask
+										? "Note on this line. Ask (or A) asks about it; select text for Note or Ask on several lines."
+										: "Note on this line. Select text to note several lines."
+								}
 								type="button">
 								{numbers[index]}
 							</button>
@@ -243,6 +255,19 @@ export function WalkthroughDiff({
 							<span className="whitespace-pre">
 								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
 							</span>
+							{ask && !pending && (
+								<button
+									aria-label={`Ask why about ${span({ start: index, end: index })}`}
+									className="absolute top-0.5 right-0.5 hidden h-4 cursor-pointer select-none items-center gap-0.5 rounded-xs border border-solid border-editor-group-border bg-menu px-1 font-sans text-[10.5px] leading-none text-menu-foreground shadow-sm hover:bg-list-hover focus-visible:flex focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) group-hover/line:flex group-focus-within/line:flex"
+									data-testid="walkthrough-line-ask"
+									onClick={() => setAsking({ start: index, end: index })}
+									tabIndex={focusLine === index ? 0 : -1}
+									title="Ask why about this line (A). Opens a question box; asking starts a model call."
+									type="button">
+									<span aria-hidden className="codicon codicon-sparkle text-[10px]!" />
+									Ask
+								</button>
+							)}
 						</div>
 						{cline
 							.filter((placed) => (placed.endLine ?? placed.line) === index && review?.isOpen(placed.note.id))
@@ -264,16 +289,29 @@ export function WalkthroughDiff({
 								<WalkthroughAsk
 									ask={ask}
 									key={thread.id}
-									range={{ start: thread.line, end: thread.endLine, quote: thread.quote }}
+									range={{
+										start: thread.line,
+										end: thread.endLine,
+										quote: thread.quote,
+										reviewNote: thread.reviewNote,
+									}}
 									thread={thread}
 								/>
 							))}
 						{ask && asking?.end === index && (
 							<WalkthroughAsk
 								ask={ask}
-								key={`${asking.start}-${asking.end}`}
+								initial={{ question: asking.question, submit: asking.submit }}
+								key={`${asking.start}-${asking.end}-${asking.reviewNote?.id ?? ""}-${asking.question ?? ""}`}
+								// Ask instead: once answered, the question replaces the note it came from.
+								onAsked={asking.fromNote ? () => notes.set(asking, "") : undefined}
 								onClose={() => setAsking(undefined)}
-								range={asking}
+								range={{
+									start: asking.start,
+									end: asking.end,
+									quote: asking.quote,
+									reviewNote: asking.reviewNote,
+								}}
 							/>
 						)}
 						{editing?.end === index && (
@@ -286,6 +324,23 @@ export function WalkthroughDiff({
 								<NoteEditor
 									className="mt-0"
 									label={`Note on ${span(editing)}`}
+									onAsk={
+										ask &&
+										(() => {
+											const text = (
+												notes.list.find(
+													(saved) => saved.start === editing.start && saved.end === editing.end,
+												)?.note ?? ""
+											).trim()
+											notes.onEdit(undefined)
+											setAsking({
+												start: editing.start,
+												end: editing.end,
+												quote: editing.quote,
+												...(text ? { question: text, submit: true, fromNote: true } : {}),
+											})
+										})
+									}
 									onChange={(value) => notes.set(editing, value, editing.quote)}
 									onDone={() => notes.onEdit(undefined)}
 									placeholder={`Note on ${span(editing)}…`}

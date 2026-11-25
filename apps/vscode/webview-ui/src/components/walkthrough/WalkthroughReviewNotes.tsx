@@ -59,11 +59,14 @@ export interface ReviewNoteHandlers {
 	/** The note whose reply box is open (one at a time). */
 	replying?: string
 	onReplying: (id: string | undefined) => void
+	/** Opens Ask why under a line note, about the note; absent where asking isn't offered. */
+	askWhy?: (placed: PlacedReviewNote) => void
 }
 
 /**
- * One of Cline's notes: who, kind, title and text, then Fix, Reply and Dismiss. Fix and a reply go
- * with Send; a dismissed note folds to one line with Undo. Cline wrote it, so it isn't edited.
+ * One of Cline's notes: who, kind, title and text, then Fix, Reply, Ask why and Dismiss. Fix and a
+ * reply go with Send; Ask why answers now, under the note (line notes only); a dismissed note folds
+ * to one line with Undo. Cline wrote it, so it isn't edited.
  */
 export function ReviewNoteCard({
 	walk,
@@ -179,11 +182,22 @@ export function ReviewNoteCard({
 					aria-expanded={replying}
 					className={ACTION_CLASS}
 					onClick={() => handlers.onReplying(replying ? undefined : note.id)}
-					title="Reply under Cline's note; it goes with Send"
+					title="Reply to Cline: your reply goes to the thread with Send"
 					type="button">
 					<span aria-hidden className="codicon codicon-reply text-[12px]!" />
 					{reply.trim() ? "Edit reply" : "Reply"}
 				</button>
+				{handlers.askWhy && placed.hunkId && placed.line !== undefined && (
+					<button
+						className={ACTION_CLASS}
+						data-testid="review-ask-why"
+						onClick={() => handlers.askWhy?.(placed)}
+						title="Ask why now: the answer shows under this note, with Cline's note as context. Starts a model call; nothing goes to the thread until you Send."
+						type="button">
+						<span aria-hidden className="codicon codicon-sparkle text-[12px]!" />
+						Ask why
+					</button>
+				)}
 				<button
 					className={ACTION_CLASS}
 					onClick={() => {

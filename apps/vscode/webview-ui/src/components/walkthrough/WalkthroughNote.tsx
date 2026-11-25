@@ -3,7 +3,7 @@ import MarkdownBlock from "@/components/common/MarkdownBlock"
 import { FormatBar } from "@/components/docEditor/DocEditor"
 import { applyFormat, continueList, type FormatAction, type TextEdit } from "@/components/docEditor/docFormat"
 import { cn } from "@/lib/utils"
-import { getCurrentPlatform } from "@/utils/platformUtils"
+import { getCurrentPlatform, modKeyLabel } from "@/utils/platformUtils"
 import { splitInlineCode } from "./walkthroughUtils"
 
 /** Quick chips from the round 3 mockup; each fills the note box and stays editable. */
@@ -36,6 +36,7 @@ export function InlineCodeProse({ text, className }: { text: string; className?:
  * A note box with quick chips, as quiet as the quote note in the composer: a plain input box that
  * doesn't light up when focused (the caret is enough), growing with the text, with its suggestions
  * and Done inside. Used by each stop and by the overall note. Esc or Cmd/Ctrl+Enter finishes.
+ * A line's note can also be asked instead (Cmd/Ctrl+Shift+Enter): onAsk gets the text.
  */
 export function NoteEditor({
 	value,
@@ -45,6 +46,7 @@ export function NoteEditor({
 	className,
 	onChange,
 	onDone,
+	onAsk,
 }: {
 	value: string
 	placeholder: string
@@ -53,6 +55,8 @@ export function NoteEditor({
 	className?: string
 	onChange: (value: string) => void
 	onDone: () => void
+	/** Turns the text into an Ask why question on the same lines. */
+	onAsk?: () => void
 }) {
 	const textarea = useRef<HTMLTextAreaElement>(null)
 	const pendingSelection = useRef<TextEdit>()
@@ -88,6 +92,12 @@ export function NoteEditor({
 				className="block w-full resize-none border-0 bg-transparent px-2 pt-1.5 pb-1 font-[inherit] text-xs leading-normal text-input-foreground outline-none! placeholder:text-input-placeholder"
 				onChange={(event) => onChange(event.target.value)}
 				onKeyDown={(event) => {
+					if (onAsk && event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+						event.preventDefault()
+						event.stopPropagation()
+						onAsk()
+						return
+					}
 					if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
 						event.preventDefault()
 						event.stopPropagation()
@@ -137,6 +147,17 @@ export function NoteEditor({
 							{text.replace(/[.?]$/, "")}
 						</button>
 					))}
+				{onAsk && (
+					<button
+						className={CHIP_CLASS}
+						data-testid="note-ask-instead"
+						onClick={onAsk}
+						title={`Ask why instead (${modKeyLabel()}+Shift+Enter): asks what you typed about these lines and starts a model call. The answer shows here; the note is removed once it's answered.`}
+						type="button">
+						<span aria-hidden className="codicon codicon-sparkle text-[11px]!" />
+						Ask instead
+					</button>
+				)}
 				<span className="flex-1" />
 				<FormatBar compact onFormat={format} />
 				<span aria-hidden className="shrink-0 text-[10.5px] text-description">
@@ -146,7 +167,7 @@ export function NoteEditor({
 					aria-label="Done"
 					className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-xs border-0 bg-transparent p-0 text-description hover:bg-toolbar-hover hover:text-foreground"
 					onClick={onDone}
-					title="Done (Esc)"
+					title={`Done (${modKeyLabel()}+Enter or Esc)`}
 					type="button">
 					<span aria-hidden className="codicon codicon-check text-[14px]!" />
 				</button>

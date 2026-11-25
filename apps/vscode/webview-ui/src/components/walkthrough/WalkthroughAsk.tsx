@@ -1,12 +1,29 @@
-import type { WalkthroughAskConfig, WalkthroughAskThread } from "@shared/Walkthrough"
-import { type KeyboardEvent, useRef, useState } from "react"
+import type {
+	WalkthroughAskConfig,
+	WalkthroughAskReviewNote,
+	WalkthroughAskThread,
+	WalkthroughReviewKind,
+} from "@shared/Walkthrough"
+import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { LinkButton } from "@/components/common/LinkButton"
 import { Button } from "@/components/ui/button"
 import { modKeyLabel } from "@/utils/platformUtils"
+import { REVIEW_KINDS } from "./reviewNotes"
 import type { LineRange } from "./reviewState"
 import { InlineCodeProse } from "./WalkthroughNote"
 
-export type AskRange = LineRange & { quote?: string }
+/** The lines a question is about; reviewNote when it's about one of Cline's notes on them (sent as context). */
+export type AskRange = LineRange & { quote?: string; reviewNote?: WalkthroughAskReviewNote }
+/** The Ask box to open: its lines, a question to start with, and whether it came from a line note ("Ask instead"). */
+export type AskOpen = AskRange & { question?: string; submit?: boolean; fromNote?: boolean }
+
+/** The question an Ask about one of Cline's notes starts with (selected, so typing replaces it). */
+export const REVIEW_ASK: Record<WalkthroughReviewKind, string> = {
+	risk: "Why is this a problem?",
+	suggestion: "Why would this be better?",
+	question: "Why does this matter?",
+	nice: "Why is this a good choice?",
+}
 export interface DiffAsk {
 	config?: WalkthroughAskConfig
 	threads: WalkthroughAskThread[]
@@ -18,10 +35,22 @@ export interface DiffAsk {
 	refresh?: () => void
 	/** Continues the conversation in a side thread of this walkthrough's thread; undefined when it can't. */
 	openAsSideThread?: (thread: WalkthroughAskThread) => Promise<void>
+	/** The new-question box open in this hunk (one at a time on the page). */
+	open?: AskOpen
+	onOpen: (open: AskOpen | undefined) => void
 }
 
+/** "Risk (high): title" */
+const noteHeading = (note: WalkthroughAskReviewNote) =>
+	`${REVIEW_KINDS[note.kind].label}${note.severity === "high" ? " (high)" : ""}: ${note.title}`
+
 export const askTranscript = (thread: WalkthroughAskThread) =>
-	thread.turns.map((turn) => `Question: ${turn.question}\nAnswer: ${turn.answer}`).join("\n\n")
+	[
+		thread.reviewNote ? `About Cline's review note · ${noteHeading(thread.reviewNote)}\n${thread.reviewNote.text}` : "",
+		...thread.turns.map((turn) => `Question: ${turn.question}\nAnswer: ${turn.answer}`),
+	]
+		.filter(Boolean)
+		.join("\n\n")
 
 /** The first message of a side thread opened from an Ask why answer. */
 export const askSideThreadPrompt = (path: string, thread: WalkthroughAskThread) =>
@@ -36,19 +65,43 @@ export const askSideThreadPrompt = (path: string, thread: WalkthroughAskThread) 
 
 const CONTEXT_LABEL = { thread: "This thread", recent: "Latest user turn", selection: "Selected lines only" }
 
-/** The form has no model controls. Every request, including a follow-up, starts with Ask. */
+/** Which of Cline's notes a question is about, quietly, in Cline's dashed edge. */
+function AboutNote({ note }: { note: WalkthroughAskReviewNote }) {
+	const kind = REVIEW_KINDS[note.kind]
+	return (
+		<div
+			className="mt-1 flex min-w-0 items-center gap-1 border-0 border-l-2 border-dashed border-description/70 pl-1.5 text-[11px] text-description"
+			data-testid="walkthrough-ask-note"
+			title={noteHeading(note)}>
+			<span className="shrink-0">About Cline's note</span>
+			<span aria-hidden className={`codicon codicon-${kind.icon} shrink-0 text-[11px]! ${kind.tone ?? ""}`} />
+			<span className="min-w-0 truncate font-medium text-foreground">{note.title}</span>
+		</div>
+	)
+}
+
+/**
+ * The form has no model controls. Every request, including a follow-up, starts with Ask; `initial`
+ * starts the box with a question (selected) or, with submit, asks it right away (Ask instead).
+ */
 export function WalkthroughAsk({
 	ask,
 	range,
 	thread,
 	onClose,
+	initial,
+	onAsked,
 }: {
 	ask: DiffAsk
 	range: AskRange
 	thread?: WalkthroughAskThread
 	onClose?: () => void
+	initial?: { question?: string; submit?: boolean }
+	/** After the answer to a new question arrives. */
+	onAsked?: () => void
 }) {
-	const [question, setQuestion] = useState("")
+	const [question, setQuestion] = useState(initial?.question ?? "")
+	const input = useRef<HTMLTextAreaElement>(null)
 	const [busy, setBusy] = useState(false)
 	const inFlight = useRef(false)
 	const [error, setError] = useState("")
@@ -57,14 +110,15 @@ export function WalkthroughAsk({
 		ask.disabledReason ??
 		ask.config?.unavailable ??
 		(!ask.config?.pick ? "Ask why has no model yet. Choose one in Settings › Models." : undefined)
-	const submit = async () => {
-		if (!question.trim() || unavailable || inFlight.current) return
+	const submit = async (text = question) => {
+		if (!text.trim() || unavailable || inFlight.current) return
 		inFlight.current = true
 		setBusy(true)
 		setError("")
 		try {
-			await ask.ask(range, question.trim(), thread?.id)
+			await ask.ask(range, text.trim(), thread?.id)
 			setQuestion("")
+			onAsked?.()
 			onClose?.()
 		} catch (error) {
 			setError(error instanceof Error ? error.message : String(error))
@@ -73,6 +127,11 @@ export function WalkthroughAsk({
 			setBusy(false)
 		}
 	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once, when the box opens
+	useEffect(() => {
+		if (initial?.submit) void submit(initial.question ?? "")
+		else if (initial?.question) input.current?.select()
+	}, [])
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
 			event.preventDefault()
@@ -96,7 +155,7 @@ export function WalkthroughAsk({
 	}
 	return (
 		<section
-			aria-label="Ask about selected lines"
+			aria-label={range.reviewNote ? "Ask about Cline's note" : "Ask about selected lines"}
 			className="min-w-0 border-y border-x-0 border-l-2 border-solid border-y-editor-group-border border-l-link bg-code px-2 py-2 font-sans text-xs leading-normal"
 			data-testid="walkthrough-ask">
 			<div className="flex items-center gap-1 text-[11px] text-description">
@@ -105,6 +164,7 @@ export function WalkthroughAsk({
 				<span className="flex-1" />
 				{onClose && !busy && <LinkButton onClick={onClose}>Close</LinkButton>}
 			</div>
+			{range.reviewNote && <AboutNote note={range.reviewNote} />}
 			{range.quote && (
 				<div className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-description">{range.quote}</div>
 			)}
@@ -145,13 +205,19 @@ export function WalkthroughAsk({
 					)}
 				</div>
 			)}
-			{!thread && (
+			{!thread && !range.reviewNote && (
 				<LinkButton className="mt-2 block text-[11px]" onClick={() => setQuestion("Why this approach?")}>
 					Why this approach?
 				</LinkButton>
 			)}
 			<textarea
-				aria-label={thread ? "Follow-up question" : "Question about selected lines"}
+				aria-label={
+					thread
+						? "Follow-up question"
+						: range.reviewNote
+							? "Question about Cline's note"
+							: "Question about selected lines"
+				}
 				// biome-ignore lint/a11y/noAutofocus: the box opens because the user chose Ask
 				autoFocus={!thread}
 				className="mt-2 box-border w-full resize-y rounded-xs border border-solid border-input-border bg-input-background px-2 py-1 font-sans text-xs text-input-foreground focus:outline focus:outline-1 focus:outline-(--vscode-focusBorder)"
@@ -159,7 +225,10 @@ export function WalkthroughAsk({
 				maxLength={8000}
 				onChange={(event) => setQuestion(event.target.value)}
 				onKeyDown={onKeyDown}
-				placeholder={thread ? "Ask a follow-up…" : "Ask about these lines…"}
+				placeholder={
+					thread ? "Ask a follow-up…" : range.reviewNote ? "Ask about Cline's note…" : "Ask about these lines…"
+				}
+				ref={input}
 				rows={2}
 				value={question}
 			/>

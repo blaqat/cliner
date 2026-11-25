@@ -15,7 +15,7 @@ import { HostProvider } from "@/hosts/host-provider"
 import { backgroundHandler, useModelSettings } from "@/sdk/model-settings/background"
 import { resolveEffectiveConfiguredPick } from "@/sdk/model-settings/host-settings"
 import { resolveBackgroundPick } from "@/sdk/model-settings-resolver"
-import { answerWalkthrough, askSelection, buildAskMessages } from "./ask"
+import { answerWalkthrough, askReviewNote, askSelection, buildAskMessages } from "./ask"
 import { readAuthoredWalkthrough } from "./authored"
 import { collect, gitRoots, revertChange } from "./collection"
 import { type ContentChange, cacheKey, formatNotes, generate, hash } from "./engine"
@@ -187,6 +187,7 @@ export class WalkthroughService {
 				hunk,
 				previous ? { ...request, line: previous.line, endLine: previous.endLine } : request,
 			)
+			const reviewNote = previous ? previous.reviewNote : askReviewNote(walk, hunk.id, request.reviewNoteId)
 			const config = await this.askConfig(request, walk)
 			if (config.unavailable || !config.pick)
 				throw new Error(config.unavailable ?? "Choose an Ask model in Settings > Models.")
@@ -195,7 +196,7 @@ export class WalkthroughService {
 			const context = await this.controller.getWalkthroughAskContext(request.taskId)
 			const answer = await answerWalkthrough(
 				handler,
-				buildAskMessages(context.messages, config.context, selection.text, question, previous),
+				buildAskMessages(context.messages, config.context, selection.text, question, previous, reviewNote),
 				config.context === "selection" ? undefined : context.prefix,
 			)
 			const result: WalkthroughAskThread = {
@@ -204,6 +205,7 @@ export class WalkthroughService {
 				line: selection.start,
 				endLine: selection.end,
 				quote: previous?.quote ?? request.quote?.slice(0, 2000),
+				...(reviewNote ? { reviewNote } : {}),
 				turns: [...(previous?.turns ?? []), { question, answer, pick: config.pick, context: config.context }],
 			}
 			const file = await this.askFile(request, walk.fingerprint)

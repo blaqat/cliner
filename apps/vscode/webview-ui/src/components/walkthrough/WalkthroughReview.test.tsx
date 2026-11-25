@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	generate: vi.fn(),
 	send: vi.fn(),
+	ask: vi.fn(),
 	state: {} as Record<string, unknown>,
 }))
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: () => mocks.state }))
@@ -22,6 +23,7 @@ vi.mock("@/services/grpc-client", () => ({
 		revertWalkthroughChange: vi.fn(),
 		sendWalkthroughNotes: mocks.send,
 		openWalkthroughDiff: vi.fn(),
+		askWalkthrough: mocks.ask,
 	},
 	UiServiceClient: { openUrl: vi.fn() },
 }))
@@ -307,5 +309,73 @@ describe("Cline's review notes", () => {
 		await renderPage({ ...fixture, source: "fallback", review: undefined })
 		fireEvent.click(screen.getByRole("button", { name: "Generate options" }))
 		expect(await screen.findByRole("menuitemcheckbox", { name: /Add review notes/ })).toHaveAttribute("aria-checked", "false")
+	})
+})
+
+describe("Ask why about Cline's notes", () => {
+	const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+	const answered = {
+		id: "ask-r1",
+		hunkId: "h1",
+		line: 1,
+		endLine: 2,
+		reviewNote: { id: "r1", kind: "risk", severity: "high", title: "Retries 4xx too", text: "Retry only 5xx, 408 and 429." },
+		turns: [{ question: "Why is this a problem?", answer: "A 404 never succeeds.", pick: askConfig.pick, context: "thread" }],
+	}
+	const callout = (id: string) => document.querySelector<HTMLElement>(`[data-review-callout="${id}"]`) as HTMLElement
+
+	it("opens Ask under the note with a starter question, sends the note by id and keeps the note open above the answer", async () => {
+		mocks.ask.mockResolvedValue({ value: JSON.stringify(answered) })
+		await renderPage({ ...fixture, askConfig })
+		const marker = screen.getAllByTestId("review-marker").find((m) => m.getAttribute("aria-label")?.includes("Retries 4xx"))!
+		fireEvent.click(marker)
+		const askWhy = within(callout("r1")).getByRole("button", { name: "Ask why" })
+		expect(askWhy).toHaveAttribute("title", expect.stringContaining("answer shows under this note"))
+		expect(within(callout("r1")).getByRole("button", { name: "Reply" })).toHaveAttribute(
+			"title",
+			expect.stringContaining("goes to the thread with Send"),
+		)
+		fireEvent.click(askWhy)
+		expect(mocks.ask).not.toHaveBeenCalled()
+		const box = screen.getByRole("textbox", { name: "Question about Cline's note" })
+		expect(box).toHaveValue("Why is this a problem?")
+		expect(screen.getByTestId("walkthrough-ask-note")).toHaveTextContent("About Cline's noteRetries 4xx too")
+		fireEvent.click(screen.getByRole("button", { name: "Ask" }))
+		await screen.findByText("A 404 never succeeds.")
+		expect(sent(mocks.ask)).toMatchObject({ hunkId: "h1", line: 1, endLine: 2, reviewNoteId: "r1" })
+		expect(sent(mocks.ask).question).toBe("Why is this a problem?")
+		// The note stays open, and the answer under it says what it's about.
+		expect(callout("r1")).toBeTruthy()
+		expect(screen.getByTestId("walkthrough-ask-note")).toHaveTextContent("Retries 4xx too")
+		expect(screen.getByRole("textbox", { name: "Follow-up question" })).toBeInTheDocument()
+		expect(mocks.send).not.toHaveBeenCalled()
+	})
+
+	it("opens the note's lines from the review list, and offers Ask why only on line notes", async () => {
+		await renderPage({ ...fixture, askConfig })
+		const row = (title: string) =>
+			within(panel())
+				.getAllByTestId("review-row")
+				.find((r) => r.textContent?.includes(title))!
+		fireEvent.click(within(row("Per-hook limit?")).getAllByRole("button")[0])
+		const stopNote = panel().querySelector<HTMLElement>('[data-review-note="q1"]')!
+		expect(within(stopNote).queryByRole("button", { name: "Ask why" })).toBeNull()
+		fireEvent.click(within(row("Retries 4xx too")).getAllByRole("button")[0])
+		const listed = panel().querySelector<HTMLElement>('[data-review-note="r1"]')!
+		fireEvent.click(within(listed).getByRole("button", { name: "Ask why" }))
+		expect(callout("r1")).toBeTruthy()
+		expect(screen.getByRole("textbox", { name: "Question about Cline's note" })).toHaveValue("Why is this a problem?")
+	})
+
+	it("says why Ask isn't available and links to Settings", async () => {
+		await renderPage({ ...fixture, askConfig: { ...askConfig, pick: null } })
+		fireEvent.click(
+			screen.getAllByTestId("review-marker").find((m) => m.getAttribute("aria-label")?.includes("Retries 4xx"))!,
+		)
+		fireEvent.click(within(callout("r1")).getByRole("button", { name: "Ask why" }))
+		expect(screen.getByRole("alert")).toHaveTextContent("Ask why has no model yet")
+		fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Open Settings" }))
+		expect(mocks.state.navigateToSettings).toHaveBeenCalled()
+		expect(mocks.ask).not.toHaveBeenCalled()
 	})
 })

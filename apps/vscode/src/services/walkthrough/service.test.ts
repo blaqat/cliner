@@ -422,6 +422,8 @@ describe("walkthrough Ask", () => {
 			{ hunkId: "forged" },
 			{ question: " " },
 			{ askId: "missing" },
+			{ reviewNoteId: "missing" },
+			{ reviewNoteId: 7 as unknown as string },
 			{ fingerprint: "stale" },
 		]) {
 			await expect(host.ask({ ...action, ...extra })).rejects.toThrow()

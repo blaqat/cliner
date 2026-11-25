@@ -18,6 +18,7 @@ const props = (): DiffAsk => ({
 	addToSend: vi.fn(),
 	isAdded: () => false,
 	openSettings: vi.fn(),
+	onOpen: vi.fn(),
 })
 
 describe("walkthrough Ask", () => {
@@ -113,5 +114,35 @@ describe("walkthrough Ask", () => {
 		expect(askSideThreadPrompt("src/a.ts", { ...thread, quote: "if (!value) return" })).toBe(
 			"From the walkthrough, about src/a.ts:\n\n```\nif (!value) return\n```\n\nQuestion: Why?\nAnswer: Reject empty input.\n\nLet's keep talking about this here.",
 		)
+	})
+	it("puts Cline's note at the top of a side thread opened from an answer about it", () => {
+		const reviewNote = {
+			id: "r1",
+			kind: "risk" as const,
+			severity: "high" as const,
+			title: "Empty input",
+			text: "Rejects ``.",
+		}
+		expect(askSideThreadPrompt("src/a.ts", { ...thread, reviewNote })).toBe(
+			"From the walkthrough, about src/a.ts:\n\nAbout Cline's review note · Risk (high): Empty input\nRejects ``.\n\nQuestion: Why?\nAnswer: Reject empty input.\n\nLet's keep talking about this here.",
+		)
+	})
+	it("asks a question it opens with right away, and calls back once answered", async () => {
+		const ask = props()
+		const onAsked = vi.fn()
+		render(
+			<WalkthroughAsk ask={ask} initial={{ question: "Is this awaited?", submit: true }} onAsked={onAsked} range={range} />,
+		)
+		await waitFor(() => expect(onAsked).toHaveBeenCalledOnce())
+		expect(ask.ask).toHaveBeenCalledOnce()
+		expect(ask.ask).toHaveBeenCalledWith(range, "Is this awaited?", undefined)
+	})
+	it("selects a starter question so typing replaces it, without asking", () => {
+		const ask = props()
+		render(<WalkthroughAsk ask={ask} initial={{ question: "Why is this a problem?" }} range={range} />)
+		const box = screen.getByRole("textbox") as HTMLTextAreaElement
+		expect(box.selectionStart).toBe(0)
+		expect(box.selectionEnd).toBe("Why is this a problem?".length)
+		expect(ask.ask).not.toHaveBeenCalled()
 	})
 })

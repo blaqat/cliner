@@ -126,12 +126,17 @@ export interface WalkthroughAskTurn {
 	context: WalkthroughAskContext
 }
 
+/** The Cline review note an Ask why thread is about, as it read when the thread started. */
+export type WalkthroughAskReviewNote = Pick<WalkthroughReviewNote, "id" | "kind" | "severity" | "title" | "text">
+
 export interface WalkthroughAskThread {
 	id: string
 	hunkId: string
 	line: number
 	endLine: number
 	quote?: string
+	/** Set when the user asked about one of Cline's review notes; every turn sends it as context. */
+	reviewNote?: WalkthroughAskReviewNote
 	turns: WalkthroughAskTurn[]
 }
 
@@ -148,6 +153,8 @@ export interface WalkthroughAskRequest extends WalkthroughRequest {
 	line?: number
 	endLine?: number
 	quote?: string
+	/** One of Cline's review notes on these lines: the host reads it from the walkthrough and adds it as context. */
+	reviewNoteId?: string
 }
 
 /** Explicit saved choices win; an unavailable choice must be fixed, never silently replaced. */

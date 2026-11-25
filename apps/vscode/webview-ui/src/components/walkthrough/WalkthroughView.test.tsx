@@ -308,7 +308,8 @@ describe("WalkthroughView", () => {
 		// Select from inside the removed line to inside the added one.
 		const range = document.createRange()
 		const pointAt = (row: HTMLElement, offset: number): [Node, number] => {
-			const walker = document.createTreeWalker(row.lastChild!, NodeFilter.SHOW_TEXT)
+			// The code is the row's whitespace-pre span (its hover Ask button comes after it).
+			const walker = document.createTreeWalker(row.querySelector(".whitespace-pre")!, NodeFilter.SHOW_TEXT)
 			let node = walker.nextNode()
 			while (node) {
 				const length = node.textContent?.length ?? 0
@@ -939,5 +940,68 @@ describe("walkthrough Ask selection", () => {
 		const line = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")[0]
 		fireEvent.keyDown(line.querySelector("button")!, { key: "a" })
 		expect(screen.getByRole("textbox", { name: "Question about selected lines" })).toBeInTheDocument()
+	})
+	it("asks from a line's Ask button, which the keyboard reaches from the line number", async () => {
+		const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+		mocks.get.mockResolvedValue(response({ ...fixture, askConfig, askThreads: [] }))
+		await renderPage()
+		const line = within(stop("Stop the request waiting")).getAllByTestId("walkthrough-diff-line")[2]
+		const button = within(line).getByTestId("walkthrough-line-ask")
+		expect(button).toHaveAccessibleName("Ask why about line 2")
+		expect(button).toHaveAttribute("tabindex", "-1")
+		fireEvent.focus(within(line).getByRole("button", { name: /^Note on/ }))
+		expect(button).toHaveAttribute("tabindex", "0")
+		fireEvent.click(button)
+		expect(screen.getByRole("textbox", { name: "Question about selected lines" })).toBeInTheDocument()
+		expect(mocks.ask).not.toHaveBeenCalled()
+	})
+	it("turns a line note into a question with Ask instead, and removes the note once it's answered", async () => {
+		const askConfig = { pick: { modelId: "model", levelId: "high" }, label: "Model · High", context: "thread" as const }
+		const thread = {
+			id: "ask-n",
+			hunkId: "h1",
+			line: 2,
+			endLine: 2,
+			turns: [
+				{ question: "Is enqueue awaited?", answer: "Yes, before the reply.", pick: askConfig.pick, context: "thread" },
+			],
+		}
+		mocks.get.mockResolvedValue(response({ ...fixture, askConfig, askThreads: [] }))
+		mocks.ask.mockResolvedValue({ value: JSON.stringify(thread) })
+		await renderPage()
+		const first = stop("Stop the request waiting")
+		fireEvent.click(within(first).getAllByRole("button", { name: "Note on line 2" })[0])
+		const box = within(first).getByRole("textbox", { name: "Note on line 2" })
+		fireEvent.change(box, { target: { value: "Is enqueue awaited?" } })
+		// Cmd/Ctrl+Enter still only saves the note.
+		fireEvent.keyDown(box, { key: "Enter", metaKey: true, ctrlKey: true })
+		expect(mocks.ask).not.toHaveBeenCalled()
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("Is enqueue awaited?")
+		fireEvent.click(within(first).getByTestId("walkthrough-line-note"))
+		fireEvent.keyDown(within(first).getByRole("textbox", { name: "Note on line 2" }), {
+			key: "Enter",
+			metaKey: true,
+			ctrlKey: true,
+			shiftKey: true,
+		})
+		await screen.findByText("Yes, before the reply.")
+		expect(sent(mocks.ask)).toMatchObject({ hunkId: "h1", line: 2, endLine: 2, question: "Is enqueue awaited?" })
+		expect(sent(mocks.ask).reviewNoteId).toBeUndefined()
+		expect(within(first).queryByTestId("walkthrough-line-note")).toBeNull()
+		expect(screen.queryByRole("button", { name: /^Send \d/ })).toBeNull()
+	})
+	it("keeps the note and says why when Ask instead can't ask", async () => {
+		mocks.get.mockResolvedValue(
+			response({ ...fixture, askConfig: { pick: null, label: "", context: "thread" as const }, askThreads: [] }),
+		)
+		await renderPage()
+		const first = stop("Stop the request waiting")
+		fireEvent.click(within(first).getAllByRole("button", { name: "Note on line 2" })[0])
+		fireEvent.change(within(first).getByRole("textbox", { name: "Note on line 2" }), { target: { value: "Why?" } })
+		fireEvent.click(within(first).getByTestId("note-ask-instead"))
+		expect(screen.getByRole("alert")).toHaveTextContent("Ask why has no model yet")
+		expect(screen.getByRole("textbox", { name: "Question about selected lines" })).toHaveValue("Why?")
+		expect(mocks.ask).not.toHaveBeenCalled()
+		expect(within(first).getByTestId("walkthrough-line-note")).toHaveTextContent("Why?")
 	})
 })

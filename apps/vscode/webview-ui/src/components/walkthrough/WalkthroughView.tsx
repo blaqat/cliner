@@ -56,7 +56,7 @@ import {
 	summarizeStale,
 	unplacedNotes,
 } from "./reviewState"
-import { askSideThreadPrompt, askTranscript, type DiffAsk } from "./WalkthroughAsk"
+import { type AskOpen, askSideThreadPrompt, askTranscript, type DiffAsk, REVIEW_ASK } from "./WalkthroughAsk"
 import type { LineNotes } from "./WalkthroughDiff"
 import { ReviewChip, ReviewNoteCard, type ReviewNoteHandlers, ReviewPanel } from "./WalkthroughReviewNotes"
 import {
@@ -174,6 +174,8 @@ export default function WalkthroughView({
 	const [editingStopId, setEditingStopId] = useState<string>()
 	// The selection whose note box is open: its hunk, lines and the exact text picked.
 	const [editingLine, setEditingLine] = useState<{ fingerprint: string } & LineRange & { quote?: string }>()
+	// The open Ask why box for a new question (one on the page): its hunk and lines.
+	const [askingLine, setAskingLine] = useState<{ fingerprint: string } & AskOpen>()
 	// Cline's review notes: Generate's "Add review notes" (remembered), the kind filter and what's open.
 	// Applies to the next Generate only: notes depend on what's asked for, so the choice isn't remembered.
 	const [reviewNotesOn, setReviewNotesOn] = useState(false)
@@ -325,14 +327,16 @@ export default function WalkthroughView({
 			return walk ? { ...current, [walk.source]: next } : current
 		})
 
-	// Note ids belong to one review; a new document starts with nothing open.
+	// Note ids belong to one review; a new document starts with nothing open. A new Ask why answer
+	// keeps the document (and its review), so the note it's about stays open above it.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset whenever the document changes
 	useEffect(() => {
 		setOpenCallouts({})
 		setOpenStopNotes({})
 		setActiveReviewId(undefined)
 		setReplyingId(undefined)
-	}, [walk])
+		setAskingLine(undefined)
+	}, [walk?.fingerprint, walk?.source, walk?.review])
 	const placed = useMemo(() => placeReviewNotes(walk), [walk])
 	const reviewGroups = useMemo(() => (walk ? groupReviewNotes(walk, placed) : []), [walk, placed])
 	const reviewShown = placed.filter((note) => shownByFilter(reviewFilter, note))
@@ -360,9 +364,10 @@ export default function WalkthroughView({
 				setEditingLine(undefined)
 			}
 		},
+		askWhy: (note) => askAboutReviewNote(note, true),
 	}
-	const reviewCard = (note: PlacedReviewNote, className?: string) =>
-		walk && <ReviewNoteCard className={className} handlers={reviewHandlers} placed={note} walk={walk} />
+	const reviewCard = (note: PlacedReviewNote, className?: string, handlers = reviewHandlers) =>
+		walk && <ReviewNoteCard className={className} handlers={handlers} placed={note} walk={walk} />
 	const highOpen = reviewShown.filter((note) => note.note.severity === "high" && !responses[note.note.id]?.dismissed).length
 
 	const foldKey = walk ? `${activeScope}:${authoredId ?? ""}:${walk.source}` : ""
@@ -397,6 +402,8 @@ export default function WalkthroughView({
 						: undefined),
 			},
 			threads: (walk?.askThreads ?? []).filter((thread) => thread.hunkId === hunk.id),
+			open: askingLine?.fingerprint === hunk.fingerprint ? askingLine : undefined,
+			onOpen: (open) => setAskingLine(open && { fingerprint: hunk.fingerprint, ...open }),
 			disabledReason: moved ? "Changes moved. Refresh the walkthrough before asking." : undefined,
 			openSettings: () => {
 				const target = walk?.askConfig?.pick && modelSettings?.availability[walk.askConfig.pick.modelId]?.target
@@ -427,6 +434,7 @@ export default function WalkthroughView({
 							line: range.start,
 							endLine: range.end,
 							quote: range.quote,
+							...(range.reviewNote ? { reviewNoteId: range.reviewNote.id } : {}),
 							question,
 							askId,
 						}),
@@ -494,7 +502,12 @@ export default function WalkthroughView({
 							// The panel highlights the note too, so the list and the code agree.
 							setActiveReviewId(opening ? ids[0] : undefined)
 						},
-						renderCallout: (note: PlacedReviewNote) => reviewCard(note, "rounded-none"),
+						// In the diff the note is already in view: Ask why opens right under it.
+						renderCallout: (note: PlacedReviewNote) =>
+							reviewCard(note, "rounded-none", {
+								...reviewHandlers,
+								askWhy: (placed) => askAboutReviewNote(placed, false),
+							}),
 					}
 				: undefined,
 		openDiff: (fileId: string) => {
@@ -680,6 +693,23 @@ export default function WalkthroughView({
 				)
 			}),
 		)
+	}
+
+	/** Ask why about one of Cline's line notes: the Ask box opens under the note, starting with a question for its kind. */
+	const askAboutReviewNote = (placed: PlacedReviewNote, jump: boolean) => {
+		const hunk = walk?.hunks.find((candidate) => candidate.id === placed.hunkId)
+		if (!hunk || placed.line === undefined) return
+		const { id, kind, severity, title, text } = placed.note
+		setEditingLine(undefined)
+		setReplyingId(undefined)
+		setAskingLine({
+			fingerprint: hunk.fingerprint,
+			start: placed.line,
+			end: placed.endLine ?? placed.line,
+			reviewNote: { id, kind, ...(severity ? { severity } : {}), title, text },
+			question: REVIEW_ASK[kind],
+		})
+		if (jump) jumpToReviewNote(placed)
 	}
 
 	const stopReview = (stop: WalkthroughStop): StopReviewNotes | undefined => {
