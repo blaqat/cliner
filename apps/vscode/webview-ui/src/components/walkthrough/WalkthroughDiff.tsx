@@ -257,27 +257,22 @@ export function WalkthroughDiff({
 								{highlighted?.[index]?.length ? highlighted[index] : code(raw) || " "}
 							</span>
 							{ask && (
-								// A gutter pinned to the right edge: opaque, so code scrolls under it rather than
-								// under the chip, and a drag from the last visible characters selects them.
+								// Pinned to the right edge but zero-width, so it costs the code no room. Only the small
+								// chip, shown on hover or focus, takes the pointer: a drag starting on the code beside it
+								// still selects text.
 								<span
-									className="sticky right-0 ml-auto flex w-12 shrink-0 select-none items-start justify-end pt-0.5 pr-0.5 pl-1.5"
-									data-ask-slot
-									style={{
-										background: ROW_BACKGROUND[sign]
-											? `linear-gradient(${ROW_BACKGROUND[sign]}, ${ROW_BACKGROUND[sign]}), var(--vscode-editor-background)`
-											: "var(--vscode-editor-background)",
-									}}>
+									className="pointer-events-none sticky right-0 ml-auto w-0 shrink-0 select-none"
+									data-ask-slot>
 									{!pending && (
 										<button
 											aria-label={`Ask why about ${span({ start: index, end: index })}`}
-											className="hidden h-4 cursor-pointer items-center gap-0.5 rounded-xs border border-solid border-editor-group-border bg-menu px-1 font-sans text-[10.5px] leading-none text-menu-foreground shadow-sm hover:bg-list-hover focus-visible:flex focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) group-hover/line:flex group-focus-within/line:flex"
+											className="pointer-events-auto absolute top-0.5 right-0.5 hidden h-4 w-4 cursor-pointer items-center justify-center rounded-xs border border-solid border-editor-group-border bg-menu p-0 text-menu-foreground shadow-sm hover:bg-list-hover focus-visible:flex focus-visible:outline focus-visible:outline-1 focus-visible:outline-(--vscode-focusBorder) group-hover/line:flex group-focus-within/line:flex"
 											data-testid="walkthrough-line-ask"
 											onClick={() => setAsking({ start: index, end: index })}
 											tabIndex={focusLine === index ? 0 : -1}
 											title="Ask why about this line (A). Opens a question box; asking starts a model call."
 											type="button">
 											<span aria-hidden className="codicon codicon-sparkle text-[10px]!" />
-											Ask
 										</button>
 									)}
 								</span>
