@@ -17,8 +17,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 	{
 		id: "release-4",
 		title: "Release 4",
-		builds: "test builds fork.64–72",
-		date: "2026-11-23",
+		builds: "test builds fork.64–73",
+		date: "2026-11-25",
 		notes: [
 			"Now built on Cline 4.1.26 (was 4.1.22), with its fixes: GPT-6 works on Azure and OpenAI-compatible endpoints, reasoning levels fit what each model accepts and Off works everywhere, a provider error mid-reply is retried, long local-model requests no longer time out after 5 minutes, and a reply that ends without a reason is continued",
 			"Also from 4.1.26: switching Ask/Act while a thread starts keeps your first message, a thread open in two apps, or in one that closes mid-reply, no longer gets stuck, attachments reach the model when you answer Cline's question, symlinked rules and .claude/skills load, disabled rules stay off, and running a command no longer moves focus to the terminal",
@@ -30,7 +30,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 			"Skillsets: share skills and workflows as one .skillset.zip; hold Shift and drop one on Cline (or Skills › Add skillset…) and Cline eats it. New items arrive switched off with anything that runs code marked, and Remove all takes a set back out",
 			"Make this a skill: ask, type /skill, or pick Make a skill… from a thread's menu, and the draft lands in the turn's review row to edit, make a workflow, and Keep",
 			"Notes: one review row per turn for notes, About you and skills, with one-click Keep; About you holds lasting things about you that every thread reads, and work notes in a thread outside a task get an offer to file it; a Preview / Edit editor for notes, rules, workflows and skills",
-			"Walkthroughs: select lines and Ask why (⌘/Ctrl+Enter); the answer appears under them, using the model set in Settings (by default the one that made the walkthrough), and can continue as a side thread",
+			"Walkthroughs: Ask why about any lines (hover a line for Ask, select lines, turn a line note into a question with Ask instead, or ask about one of Cline's review notes, which sends the note along); the answer appears under them, using the model set in Settings (by default the one that made the walkthrough), and can continue as a side thread",
 			"Models: each connection shows what it sends, apart from its models; pasting a URL or curl fills the form, and picking which OpenAI model a deployment is fills its prices and limits",
 			"Thread lists in one view show each thread's tags under its title, and new thread titles name what the thread is about rather than echoing the first words",
 			"Faster: settling or stashing a whole task is instant and syncs to your other windows, ＋ always takes you home at once, the task page shows new threads as they start, and threads working in the background no longer open files in your editor",
